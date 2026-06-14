@@ -1,9 +1,6 @@
 [package]
 name = "fewfc"
 version = "0.1.0"
-edition = "2021"
-description = "Deterministic Rust rules engine for CFECards"
-license = "MIT"
-publish = false
+edition = "2024"
 
 [dependencies]
