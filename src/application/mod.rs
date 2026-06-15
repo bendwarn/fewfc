@@ -5,6 +5,7 @@ use crate::domain::{
     GameResult, GameSetup, GameState, PassActionReason, Phase, RecordedEvent, TurnDrawSkipReason,
     validate_setup,
 };
+use crate::rules::{EffectPlan, base_formation_matcher, base_formation_registry};
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,9 +89,9 @@ fn event_source(event: &GameEvent) -> EventSource {
         | GameEvent::TurnDrawSkipped { .. }
         | GameEvent::DiscardRecycledIntoDeck { .. }
         | GameEvent::TurnEnded { .. } => EventSource::System,
-        GameEvent::ActionPassed { .. } | GameEvent::TurnDiscardChosen { .. } => {
-            EventSource::Command
-        }
+        GameEvent::ActionPassed { .. }
+        | GameEvent::FormationPerformed { .. }
+        | GameEvent::TurnDiscardChosen { .. } => EventSource::Command,
     }
 }
 
@@ -258,6 +259,66 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
 
             Ok(vec![GameEvent::ActionPassed { player, reason }])
         }
+        Command::PerformFormation {
+            player,
+            formation_id,
+            cards,
+            declared_targets,
+        } => {
+            ensure_current_player(state, &player)?;
+            ensure_phase(state, Phase::Main)?;
+
+            let registry = base_formation_registry();
+            let formation = registry
+                .formation(&formation_id)
+                .ok_or_else(|| GameError::UnknownFormation(formation_id.clone()))?;
+
+            let hand = state
+                .hand(&player)
+                .ok_or_else(|| GameError::UnknownPlayer(player.clone()))?;
+            let mut seen = HashSet::new();
+            let mut submitted_elements = Vec::new();
+
+            for card in &cards {
+                if !seen.insert(*card) {
+                    return Err(GameError::DuplicateSubmittedCard(*card));
+                }
+
+                if !hand.contains(card) {
+                    return Err(GameError::CardNotInHand(*card));
+                }
+
+                submitted_elements.push(
+                    state
+                        .card_element(*card)
+                        .ok_or(GameError::MissingCardInstanceDefinition(*card))?,
+                );
+            }
+
+            if !base_formation_matcher().matches(&formation.pattern, &submitted_elements) {
+                return Err(GameError::FormationPatternMismatch { formation_id });
+            }
+
+            let effect = registry
+                .effect_for(formation)
+                .expect("base formation registry must link every formation to an effect");
+
+            match effect.plan {
+                EffectPlan::Attack(_) => Ok(vec![GameEvent::FormationPerformed {
+                    player,
+                    formation_id,
+                    used_cards: cards,
+                    declared_targets,
+                }]),
+                EffectPlan::ActiveSpell(_) | EffectPlan::PassiveSpell(_) => {
+                    Err(GameError::RuleImplementation(
+                        crate::domain::RuleImplementationError::EffectNotImplemented(
+                            effect.id.clone(),
+                        ),
+                    ))
+                }
+            }
+        }
         Command::ChooseTurnDiscard { player, discard } => {
             ensure_current_player(state, &player)?;
             ensure_phase(state, Phase::TurnDrawDiscardChoice)?;
@@ -341,6 +402,26 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
         GameEvent::ActionPassed { player, .. } => {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, Phase::Main);
+            state.phase = Phase::TurnDraw;
+        }
+        GameEvent::FormationPerformed {
+            player, used_cards, ..
+        } => {
+            debug_assert_eq!(state.current_player(), Some(player));
+            debug_assert_eq!(state.phase, Phase::Main);
+
+            for used_card in used_cards {
+                let hand = state
+                    .hand_mut(player)
+                    .expect("canonical formation event must target a known player");
+                let position = hand
+                    .iter()
+                    .position(|card| card == used_card)
+                    .expect("canonical formation event must remove cards from hand");
+                let removed = hand.remove(position);
+                state.discard.push(removed);
+            }
+
             state.phase = Phase::TurnDraw;
         }
         GameEvent::CardsDrawnForTurnDiscardChoice {

@@ -348,6 +348,12 @@ pub enum GameEvent {
         player: PlayerId,
         reason: TurnDrawSkipReason,
     },
+    FormationPerformed {
+        player: PlayerId,
+        formation_id: String,
+        used_cards: Vec<CardInstanceId>,
+        declared_targets: Vec<TargetDecl>,
+    },
     DiscardRecycledIntoDeck {
         shuffled_order: Vec<CardInstanceId>,
         placement: DeckPlacement,
@@ -391,10 +397,23 @@ pub enum Command {
         player: PlayerId,
         reason: PassActionReason,
     },
+    PerformFormation {
+        player: PlayerId,
+        formation_id: String,
+        cards: Vec<CardInstanceId>,
+        declared_targets: Vec<TargetDecl>,
+    },
     ChooseTurnDiscard {
         player: PlayerId,
         discard: CardInstanceId,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TargetDecl {
+    Player(PlayerId),
+    Team(TeamId),
+    Card(CardInstanceId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -425,6 +444,12 @@ pub enum GameError {
     },
     MissingPendingChoice,
     IllegalDiscard(CardInstanceId),
+    UnknownFormation(String),
+    DuplicateSubmittedCard(CardInstanceId),
+    CardNotInHand(CardInstanceId),
+    FormationPatternMismatch {
+        formation_id: String,
+    },
     DuplicateCard(CardInstanceId),
     MissingCardInstanceDefinition(CardInstanceId),
     MissingCardDefinition(CardDefId),
@@ -435,6 +460,12 @@ pub enum GameError {
         needed: usize,
         available: usize,
     },
+    RuleImplementation(RuleImplementationError),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuleImplementationError {
+    EffectNotImplemented(String),
 }
 
 pub type GameResult<T> = Result<T, GameError>;

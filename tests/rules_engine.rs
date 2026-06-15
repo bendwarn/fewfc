@@ -4,8 +4,8 @@ use fewfc::application::{
 use fewfc::domain::{
     CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, DeckPlacement, EventSource,
     GameError, GameEvent, GameSetup, GameState, GameStatus, PassActionReason, PendingChoice,
-    PendingChoiceKind, Phase, Player, PlayerHand, PlayerId, StatusDuration, StatusEffect,
-    StatusOwner, TeamHp, TeamId, TurnDrawSkipReason,
+    PendingChoiceKind, Phase, Player, PlayerHand, PlayerId, RuleImplementationError,
+    StatusDuration, StatusEffect, StatusOwner, TeamHp, TeamId, TurnDrawSkipReason,
 };
 use fewfc::rules::Element;
 
@@ -57,6 +57,19 @@ fn two_player_setup() -> GameSetup {
 
 fn official_deck() -> Vec<CardInstanceId> {
     (1..=20).map(card).collect()
+}
+
+fn deck_starting_with(first_cards: &[u64]) -> Vec<CardInstanceId> {
+    let mut deck = first_cards.iter().copied().map(card).collect::<Vec<_>>();
+
+    for id in 1..=20 {
+        let candidate = card(id);
+        if !deck.contains(&candidate) {
+            deck.push(candidate);
+        }
+    }
+
+    deck
 }
 
 fn cannot_act_status(player: PlayerId) -> StatusEffect {
@@ -726,4 +739,177 @@ fn turn_draw_recycles_discard_to_deck_bottom_when_deck_is_insufficient() {
         state.hand(&PlayerId::new("p2")),
         Some(vec![card(5), card(6), card(7), card(8), card(12), card(2)].as_slice())
     );
+}
+
+#[test]
+fn perform_attack_formation_consumes_action_and_moves_used_cards_to_discard() {
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
+    record.advance_automatic().unwrap();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![GameEvent::FormationPerformed {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            used_cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        }]
+    );
+
+    let state = record.state().unwrap();
+    assert_eq!(state.phase, Phase::TurnDraw);
+    assert_eq!(
+        state.hand(&PlayerId::new("p1")),
+        Some(vec![card(2), card(3), card(4)].as_slice())
+    );
+    assert_eq!(state.discard, vec![card(1)]);
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn unimplemented_formation_effect_returns_rule_implementation_error_without_events() {
+    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[2, 7])).unwrap();
+    record.advance_automatic().unwrap();
+    let events_before = record.events().to_vec();
+    let state_before = record.state().unwrap();
+
+    let result = record.handle(Command::PerformFormation {
+        player: PlayerId::new("p1"),
+        formation_id: "defense".to_string(),
+        cards: vec![card(2), card(7)],
+        declared_targets: Vec::new(),
+    });
+
+    assert_eq!(
+        result,
+        Err(GameError::RuleImplementation(
+            RuleImplementationError::EffectNotImplemented("defense".to_string())
+        ))
+    );
+    assert_eq!(record.events(), events_before.as_slice());
+    assert_eq!(record.state().unwrap(), state_before);
+}
+
+#[test]
+fn invalid_perform_formation_commands_leave_events_and_state_unchanged() {
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
+    let turn_start_events = record.events().to_vec();
+    let turn_start_state = record.state().unwrap();
+
+    assert_eq!(
+        record.handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        }),
+        Err(GameError::WrongPhase {
+            expected: Phase::Main,
+            actual: Phase::TurnStart,
+        })
+    );
+    assert_eq!(record.events(), turn_start_events.as_slice());
+    assert_eq!(record.state().unwrap(), turn_start_state);
+
+    record.advance_automatic().unwrap();
+
+    let cases = [
+        (
+            Command::PerformFormation {
+                player: PlayerId::new("p2"),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(5)],
+                declared_targets: Vec::new(),
+            },
+            GameError::WrongPlayer {
+                expected: PlayerId::new("p1"),
+                actual: PlayerId::new("p2"),
+            },
+        ),
+        (
+            Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "missing".to_string(),
+                cards: vec![card(1)],
+                declared_targets: Vec::new(),
+            },
+            GameError::UnknownFormation("missing".to_string()),
+        ),
+        (
+            Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "weapon".to_string(),
+                cards: vec![card(1), card(1)],
+                declared_targets: Vec::new(),
+            },
+            GameError::DuplicateSubmittedCard(card(1)),
+        ),
+        (
+            Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(5)],
+                declared_targets: Vec::new(),
+            },
+            GameError::CardNotInHand(card(5)),
+        ),
+        (
+            Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1), card(2)],
+                declared_targets: Vec::new(),
+            },
+            GameError::FormationPatternMismatch {
+                formation_id: "metal-strike".to_string(),
+            },
+        ),
+    ];
+
+    for (command, expected_error) in cases {
+        let events_before = record.events().to_vec();
+        let state_before = record.state().unwrap();
+
+        assert_eq!(record.handle(command), Err(expected_error));
+        assert_eq!(record.events(), events_before.as_slice());
+        assert_eq!(record.state().unwrap(), state_before);
+    }
+}
+
+#[test]
+fn perform_formation_matches_cards_by_instance_definitions() {
+    let mut record =
+        GameRecord::start(two_player_setup(), deck_starting_with(&[1, 6, 2, 3])).unwrap();
+    record.advance_automatic().unwrap();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "weapon".to_string(),
+                cards: vec![card(1), card(6)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![GameEvent::FormationPerformed {
+            player: PlayerId::new("p1"),
+            formation_id: "weapon".to_string(),
+            used_cards: vec![card(1), card(6)],
+            declared_targets: Vec::new(),
+        }]
+    );
+
+    let state = record.state().unwrap();
+    assert_eq!(
+        state.hand(&PlayerId::new("p1")),
+        Some(vec![card(2), card(3)].as_slice())
+    );
+    assert_eq!(state.discard, vec![card(1), card(6)]);
 }
