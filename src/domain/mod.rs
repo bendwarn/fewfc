@@ -364,8 +364,15 @@ pub enum GameEvent {
         used_cards: Vec<CardInstanceId>,
         point_breakdown: AttackPointBreakdown,
         hp_change: HpChangeDelta,
+        shield_change: Option<ShieldChangeDelta>,
         card_moves: Vec<CardMoveDelta>,
         elemental_context_update: Option<LastElementalAttackUpdate>,
+    },
+    ShieldChanged {
+        player: PlayerId,
+        old_value: i32,
+        delta: i32,
+        new_value: i32,
     },
     DiscardRecycledIntoDeck {
         shuffled_order: Vec<CardInstanceId>,
@@ -472,6 +479,14 @@ pub struct HpChangeDelta {
     pub delta: i32,
     pub new_hp: i32,
     pub effective_delta: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShieldChangeDelta {
+    pub player: PlayerId,
+    pub old_value: i32,
+    pub delta: i32,
+    pub new_value: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -4,8 +4,8 @@ use crate::domain::{
     AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, Command, DamageTransform,
     DeckPlacement, ElementInteraction, EventMetadata, EventSource, GameError, GameEvent,
     GameResult, GameSetup, GameState, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, PassActionReason, Phase, PlayerId, RecordedEvent, TeamId,
-    TurnDrawSkipReason, validate_setup,
+    LastElementalAttackUpdate, PassActionReason, Phase, PlayerId, RecordedEvent, ShieldChangeDelta,
+    TeamId, TurnDrawSkipReason, validate_setup,
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, FormationCategory, PointFormula,
@@ -97,6 +97,7 @@ fn event_source(event: &GameEvent) -> EventSource {
         GameEvent::ActionPassed { .. }
         | GameEvent::AttackResolved { .. }
         | GameEvent::FormationPerformed { .. }
+        | GameEvent::ShieldChanged { .. }
         | GameEvent::TurnDiscardChosen { .. } => EventSource::Command,
     }
 }
@@ -316,14 +317,26 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                     let target_team = player_team(state, &target)?;
                     let points =
                         compute_attack_points(state, &plan.point_formula, &cards, &target)?;
-                    let point_breakdown =
-                        attack_point_breakdown(state, &formation.category, &target, points);
-                    let hp_change = apply_attack_amount(
+                    let has_target_shield = state.shield(&target).is_some_and(|value| value > 0);
+                    let point_breakdown = attack_point_breakdown(
                         state,
-                        &target_team,
-                        point_breakdown.final_amount,
-                        point_breakdown.damage_transform,
-                    )?;
+                        &formation.category,
+                        &target,
+                        points,
+                        has_target_shield,
+                    );
+                    let shield_change =
+                        shield_absorption(state, &target, point_breakdown.final_amount);
+                    let hp_change = if shield_change.is_some() {
+                        no_hp_change(state, &target_team)?
+                    } else {
+                        apply_attack_amount(
+                            state,
+                            &target_team,
+                            point_breakdown.final_amount,
+                            point_breakdown.damage_transform,
+                        )?
+                    };
                     let card_moves = cards
                         .iter()
                         .copied()
@@ -348,6 +361,7 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                         used_cards: cards,
                         point_breakdown,
                         hp_change,
+                        shield_change,
                         card_moves,
                         elemental_context_update,
                     }])
@@ -501,6 +515,7 @@ fn attack_point_breakdown(
     category: &FormationCategory,
     target: &PlayerId,
     base_points: i32,
+    skip_interaction: bool,
 ) -> AttackPointBreakdown {
     let Some(current_element) = elemental_attack_element(category) else {
         return AttackPointBreakdown {
@@ -510,6 +525,14 @@ fn attack_point_breakdown(
             final_amount: base_points,
         };
     };
+    if skip_interaction {
+        return AttackPointBreakdown {
+            base_points,
+            interaction: ElementInteraction::None,
+            damage_transform: DamageTransform::NormalDamage,
+            final_amount: base_points,
+        };
+    }
     let Some(previous_attack) = state.last_elemental_attack_by_player.get(target) else {
         return AttackPointBreakdown {
             base_points,
@@ -609,6 +632,50 @@ fn apply_attack_amount(
     })
 }
 
+fn no_hp_change(state: &GameState, team: &TeamId) -> GameResult<HpChangeDelta> {
+    let old_hp = state
+        .hp
+        .iter()
+        .find(|team_hp| &team_hp.team == team)
+        .map(|team_hp| team_hp.hp)
+        .ok_or_else(|| GameError::MissingTeamHp(team.clone()))?;
+
+    Ok(HpChangeDelta {
+        team: team.clone(),
+        old_hp,
+        delta: 0,
+        new_hp: old_hp,
+        effective_delta: 0,
+    })
+}
+
+fn shield_absorption(
+    state: &GameState,
+    player: &PlayerId,
+    incoming_damage: i32,
+) -> Option<ShieldChangeDelta> {
+    let old_value = state.shield(player)?;
+    if old_value <= 0 {
+        return None;
+    }
+
+    Some(ShieldChangeDelta {
+        player: player.clone(),
+        old_value,
+        delta: -incoming_damage,
+        new_value: (old_value - incoming_damage).max(0),
+    })
+}
+
+fn apply_shield_change(state: &mut GameState, change: &ShieldChangeDelta) {
+    let shield = state
+        .shields
+        .iter_mut()
+        .find(|shield| shield.player == change.player)
+        .expect("canonical shield event must target an existing player");
+    shield.value = change.new_value;
+}
+
 fn elemental_context_update(
     category: &FormationCategory,
     resolved_turn: u64,
@@ -678,6 +745,7 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
         GameEvent::AttackResolved {
             attacker,
             hp_change,
+            shield_change,
             card_moves,
             elemental_context_update,
             ..
@@ -691,6 +759,10 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .find(|team_hp| team_hp.team == hp_change.team)
                 .expect("canonical attack event must target an existing team");
             team_hp.hp = hp_change.new_hp;
+
+            if let Some(shield_change) = shield_change {
+                apply_shield_change(state, shield_change);
+            }
 
             for card_move in card_moves {
                 match (&card_move.from, &card_move.to) {
@@ -716,6 +788,22 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
             }
 
             state.phase = Phase::TurnDraw;
+        }
+        GameEvent::ShieldChanged {
+            player,
+            old_value: _,
+            delta: _,
+            new_value,
+        } => {
+            apply_shield_change(
+                state,
+                &ShieldChangeDelta {
+                    player: player.clone(),
+                    old_value: state.shield(player).unwrap_or(0),
+                    delta: new_value - state.shield(player).unwrap_or(0),
+                    new_value: *new_value,
+                },
+            );
         }
         GameEvent::CardsDrawnForTurnDiscardChoice {
             player,

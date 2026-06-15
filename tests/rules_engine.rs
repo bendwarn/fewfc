@@ -6,8 +6,8 @@ use fewfc::domain::{
     CardZone, Command, DamageTransform, DeckPlacement, ElementInteraction, EventSource, GameError,
     GameEvent, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
     LastElementalAttackUpdate, PassActionReason, PendingChoice, PendingChoiceKind, Phase, Player,
-    PlayerHand, PlayerId, RuleImplementationError, StatusDuration, StatusEffect, StatusOwner,
-    TeamHp, TeamId, TurnDrawSkipReason,
+    PlayerHand, PlayerId, RuleImplementationError, ShieldChangeDelta, StatusDuration, StatusEffect,
+    StatusOwner, TeamHp, TeamId, TurnDrawSkipReason,
 };
 use fewfc::rules::Element;
 
@@ -814,6 +814,7 @@ fn perform_attack_formation_damages_previous_players_team_and_moves_cards_to_dis
                 new_hp: 23,
                 effective_delta: -7,
             },
+            shield_change: None,
             card_moves: vec![CardMoveDelta {
                 card: card(1),
                 from: CardZone::Hand(PlayerId::new("p1")),
@@ -1004,6 +1005,7 @@ fn perform_formation_matches_cards_by_instance_definitions() {
                 new_hp: 18,
                 effective_delta: -12,
             },
+            shield_change: None,
             card_moves: vec![
                 CardMoveDelta {
                     card: card(1),
@@ -1074,6 +1076,7 @@ fn attack_hp_delta_records_clamped_damage() {
                 new_hp: 0,
                 effective_delta: -5,
             },
+            shield_change: None,
             card_moves: vec![CardMoveDelta {
                 card: card(1),
                 from: CardZone::Hand(PlayerId::new("p1")),
@@ -1136,6 +1139,7 @@ fn elemental_attack_overcoming_previous_players_last_element_doubles_damage() {
                 new_hp: 14,
                 effective_delta: -16,
             },
+            shield_change: None,
             card_moves: vec![CardMoveDelta {
                 card: card(9),
                 from: CardZone::Hand(PlayerId::new("p2")),
@@ -1183,6 +1187,7 @@ fn elemental_attack_generating_previous_players_last_element_heals_target_team()
                 new_hp: 39,
                 effective_delta: 9,
             },
+            shield_change: None,
             card_moves: vec![CardMoveDelta {
                 card: card(5),
                 from: CardZone::Hand(PlayerId::new("p2")),
@@ -1230,6 +1235,7 @@ fn elemental_attack_same_as_previous_players_last_element_halves_damage_rounding
                 new_hp: 26,
                 effective_delta: -4,
             },
+            shield_change: None,
             card_moves: vec![CardMoveDelta {
                 card: card(6),
                 from: CardZone::Hand(PlayerId::new("p2")),
@@ -1277,6 +1283,7 @@ fn elemental_attack_without_relationship_to_previous_players_last_element_uses_n
                 new_hp: 24,
                 effective_delta: -6,
             },
+            shield_change: None,
             card_moves: vec![CardMoveDelta {
                 card: card(7),
                 from: CardZone::Hand(PlayerId::new("p2")),
@@ -1291,4 +1298,124 @@ fn elemental_attack_without_relationship_to_previous_players_last_element_uses_n
             }),
         }]
     );
+}
+
+#[test]
+fn shield_absorbs_attack_damage_before_hp_and_skips_element_interaction() {
+    let mut state = record_after_p1_metal_attack_on_turn_1().state().unwrap();
+    apply_event(
+        &mut state,
+        &GameEvent::ShieldChanged {
+            player: PlayerId::new("p1"),
+            old_value: 0,
+            delta: 3,
+            new_value: 3,
+        },
+    );
+
+    assert_eq!(
+        handle_command(
+            &state,
+            Command::PerformFormation {
+                player: PlayerId::new("p2"),
+                formation_id: "fire-strike".to_string(),
+                cards: vec![card(9)],
+                declared_targets: Vec::new(),
+            },
+        )
+        .unwrap(),
+        vec![GameEvent::AttackResolved {
+            attacker: PlayerId::new("p2"),
+            target: PlayerId::new("p1"),
+            formation_id: "fire-strike".to_string(),
+            used_cards: vec![card(9)],
+            point_breakdown: AttackPointBreakdown {
+                base_points: 8,
+                interaction: ElementInteraction::None,
+                damage_transform: DamageTransform::NormalDamage,
+                final_amount: 8,
+            },
+            hp_change: HpChangeDelta {
+                team: TeamId::new("team:p1"),
+                old_hp: 30,
+                delta: 0,
+                new_hp: 30,
+                effective_delta: 0,
+            },
+            shield_change: Some(ShieldChangeDelta {
+                player: PlayerId::new("p1"),
+                old_value: 3,
+                delta: -8,
+                new_value: 0,
+            }),
+            card_moves: vec![CardMoveDelta {
+                card: card(9),
+                from: CardZone::Hand(PlayerId::new("p2")),
+                to: CardZone::Discard,
+            }],
+            elemental_context_update: Some(LastElementalAttackUpdate {
+                player: PlayerId::new("p2"),
+                attack: LastElementalAttack {
+                    element: Element::Fire,
+                    resolved_turn: 2,
+                },
+            }),
+        }]
+    );
+
+    for event in handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p2"),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap()
+    {
+        apply_event(&mut state, &event);
+    }
+
+    assert_eq!(state.shield(&PlayerId::new("p1")), Some(0));
+    assert_eq!(
+        state.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 30,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 23,
+            },
+        ]
+    );
+}
+
+#[test]
+fn shield_change_replaces_existing_player_shield_amount() {
+    let setup = two_player_setup();
+    let mut state = GameState::from_setup(&setup);
+
+    apply_event(
+        &mut state,
+        &GameEvent::ShieldChanged {
+            player: PlayerId::new("p1"),
+            old_value: 0,
+            delta: 3,
+            new_value: 3,
+        },
+    );
+    apply_event(
+        &mut state,
+        &GameEvent::ShieldChanged {
+            player: PlayerId::new("p1"),
+            old_value: 3,
+            delta: 2,
+            new_value: 5,
+        },
+    );
+
+    assert_eq!(state.shield(&PlayerId::new("p1")), Some(5));
 }
