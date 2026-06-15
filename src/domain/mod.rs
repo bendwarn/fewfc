@@ -1,1 +1,465 @@
 //! Domain model: game state, ids, events, commands, and rule invariants.
+
+use std::collections::{HashMap, HashSet};
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PlayerId(String);
+
+impl PlayerId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TeamId(String);
+
+impl TeamId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CardInstanceId(u64);
+
+impl CardInstanceId {
+    pub fn new(id: u64) -> Self {
+        Self(id)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Player {
+    pub id: PlayerId,
+    pub team: TeamId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerHand {
+    pub player: PlayerId,
+    pub cards: Vec<CardInstanceId>,
+}
+
+impl PlayerHand {
+    pub fn new(player: PlayerId, cards: Vec<CardInstanceId>) -> Self {
+        Self { player, cards }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TeamHp {
+    pub team: TeamId,
+    pub hp: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GameStatus {
+    InProgress,
+    Finished { winning_team: TeamId },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerShield {
+    pub player: PlayerId,
+    pub value: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoveredPassive {
+    pub owner: PlayerId,
+    pub cards: Vec<CardInstanceId>,
+    pub covered_on_turn: u64,
+    pub reveal_timing: PassiveTriggerTiming,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassiveTriggerTiming {
+    NextPlayerActionStart,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatusEffect {
+    pub id: String,
+    pub owner: StatusOwner,
+    pub kind: String,
+    pub value: Option<i32>,
+    pub duration: StatusDuration,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StatusOwner {
+    Player(PlayerId),
+    Team(TeamId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusDuration {
+    Turns { remaining: u32 },
+    Rounds { remaining: u32 },
+    UntilNextAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GameSetup {
+    pub players: Vec<Player>,
+    pub turn_order: Vec<PlayerId>,
+    pub hp: Vec<TeamHp>,
+    pub starting_hands: Vec<PlayerHand>,
+    pub hand_limit: usize,
+    pub base_draw: usize,
+}
+
+impl GameSetup {
+    pub fn two_player(
+        first_player: PlayerId,
+        second_player: PlayerId,
+        starting_hp: i32,
+        starting_hands: Vec<(PlayerId, Vec<CardInstanceId>)>,
+    ) -> Self {
+        let first_team = TeamId::new(format!("team:{}", first_player.as_str()));
+        let second_team = TeamId::new(format!("team:{}", second_player.as_str()));
+
+        Self {
+            players: vec![
+                Player {
+                    id: first_player.clone(),
+                    team: first_team.clone(),
+                },
+                Player {
+                    id: second_player.clone(),
+                    team: second_team.clone(),
+                },
+            ],
+            turn_order: vec![first_player, second_player],
+            hp: vec![
+                TeamHp {
+                    team: first_team,
+                    hp: starting_hp,
+                },
+                TeamHp {
+                    team: second_team,
+                    hp: starting_hp,
+                },
+            ],
+            starting_hands: starting_hands
+                .into_iter()
+                .map(|(player, cards)| PlayerHand::new(player, cards))
+                .collect(),
+            hand_limit: 5,
+            base_draw: 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    TurnStart,
+    ActiveWindow,
+    Action,
+    TurnDraw,
+    TurnDrawDiscardChoice,
+    TurnEnd,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GameState {
+    pub status: GameStatus,
+    pub turn_number: u64,
+    pub phase: Phase,
+    pub current_turn_index: usize,
+    pub players: Vec<Player>,
+    pub turn_order: Vec<PlayerId>,
+    pub hp: Vec<TeamHp>,
+    pub deck: Vec<CardInstanceId>,
+    pub hands: Vec<PlayerHand>,
+    pub discard: Vec<CardInstanceId>,
+    pub pending_choice: Option<PendingChoice>,
+    pub shields: Vec<PlayerShield>,
+    pub covered_passives: Vec<CoveredPassive>,
+    pub statuses: Vec<StatusEffect>,
+    pub hand_limit: usize,
+    pub base_draw: usize,
+}
+
+impl GameState {
+    pub fn from_setup(setup: &GameSetup) -> Self {
+        Self {
+            status: GameStatus::InProgress,
+            turn_number: 1,
+            phase: Phase::TurnStart,
+            current_turn_index: 0,
+            players: setup.players.clone(),
+            turn_order: setup.turn_order.clone(),
+            hp: setup.hp.clone(),
+            deck: Vec::new(),
+            hands: setup.starting_hands.clone(),
+            discard: Vec::new(),
+            pending_choice: None,
+            shields: setup
+                .players
+                .iter()
+                .map(|player| PlayerShield {
+                    player: player.id.clone(),
+                    value: 0,
+                })
+                .collect(),
+            covered_passives: Vec::new(),
+            statuses: Vec::new(),
+            hand_limit: setup.hand_limit,
+            base_draw: setup.base_draw,
+        }
+    }
+
+    pub fn current_player(&self) -> Option<&PlayerId> {
+        self.turn_order.get(self.current_turn_index)
+    }
+
+    pub fn hand(&self, player: &PlayerId) -> Option<&[CardInstanceId]> {
+        self.hands
+            .iter()
+            .find(|hand| &hand.player == player)
+            .map(|hand| hand.cards.as_slice())
+    }
+
+    pub fn hand_mut(&mut self, player: &PlayerId) -> Option<&mut Vec<CardInstanceId>> {
+        self.hands
+            .iter_mut()
+            .find(|hand| &hand.player == player)
+            .map(|hand| &mut hand.cards)
+    }
+
+    pub fn shield(&self, player: &PlayerId) -> Option<i32> {
+        self.shields
+            .iter()
+            .find(|shield| &shield.player == player)
+            .map(|shield| shield.value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingChoice {
+    pub player: PlayerId,
+    pub kind: PendingChoiceKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingChoiceKind {
+    TurnDrawDiscard {
+        drawn_cards: Vec<CardInstanceId>,
+        allowed_discards: Vec<CardInstanceId>,
+    },
+    EffectGenerated {
+        effect_id: String,
+        continuation_id: String,
+        allowed_cards: Vec<CardInstanceId>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GameEvent {
+    DeckPrepared {
+        deck_order: Vec<CardInstanceId>,
+    },
+    TurnStarted {
+        player: PlayerId,
+        turn_number: u64,
+    },
+    ActiveWindowEnded {
+        player: PlayerId,
+    },
+    ActionSkipped {
+        player: PlayerId,
+    },
+    CardsDrawnForTurnDiscardChoice {
+        player: PlayerId,
+        drawn_cards: Vec<CardInstanceId>,
+        allowed_discards: Vec<CardInstanceId>,
+    },
+    TurnDiscardChosen {
+        player: PlayerId,
+        discard: CardInstanceId,
+    },
+    TurnDrawSkipped {
+        player: PlayerId,
+        reason: TurnDrawSkipReason,
+    },
+    DiscardRecycledIntoDeck {
+        shuffled_order: Vec<CardInstanceId>,
+        placement: DeckPlacement,
+    },
+    TurnEnded {
+        player: PlayerId,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedEvent {
+    pub metadata: EventMetadata,
+    pub event: GameEvent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventMetadata {
+    pub sequence: u64,
+    pub source: EventSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventSource {
+    System,
+    Command,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnDrawSkipReason {
+    HandLimitReached,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeckPlacement {
+    Bottom,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Command {
+    EndActiveWindow {
+        player: PlayerId,
+    },
+    SkipAction {
+        player: PlayerId,
+    },
+    ChooseTurnDiscard {
+        player: PlayerId,
+        discard: CardInstanceId,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GameError {
+    EmptyTurnOrder,
+    DuplicatePlayer(PlayerId),
+    DuplicateTeamHp(TeamId),
+    MissingTeamHp(TeamId),
+    UnknownPlayer(PlayerId),
+    WrongPlayer {
+        expected: PlayerId,
+        actual: PlayerId,
+    },
+    WrongPhase {
+        expected: Phase,
+        actual: Phase,
+    },
+    TeamSeatingNotAlternating {
+        previous_player: PlayerId,
+        player: PlayerId,
+        team: TeamId,
+    },
+    MissingPendingChoice,
+    IllegalDiscard(CardInstanceId),
+    DuplicateCard(CardInstanceId),
+    NotEnoughCards {
+        needed: usize,
+        available: usize,
+    },
+}
+
+pub type GameResult<T> = Result<T, GameError>;
+
+pub fn validate_setup(setup: &GameSetup) -> GameResult<()> {
+    if setup.turn_order.is_empty() {
+        return Err(GameError::EmptyTurnOrder);
+    }
+
+    let mut players = HashSet::new();
+    for player in &setup.players {
+        if !players.insert(player.id.clone()) {
+            return Err(GameError::DuplicatePlayer(player.id.clone()));
+        }
+    }
+
+    for player in &setup.turn_order {
+        if !players.contains(player) {
+            return Err(GameError::UnknownPlayer(player.clone()));
+        }
+    }
+
+    let mut hp_teams = HashSet::new();
+    for team_hp in &setup.hp {
+        if !hp_teams.insert(team_hp.team.clone()) {
+            return Err(GameError::DuplicateTeamHp(team_hp.team.clone()));
+        }
+    }
+
+    for player in &setup.players {
+        if !hp_teams.contains(&player.team) {
+            return Err(GameError::MissingTeamHp(player.team.clone()));
+        }
+    }
+
+    validate_team_seating(setup)?;
+
+    for hand in &setup.starting_hands {
+        if !players.contains(&hand.player) {
+            return Err(GameError::UnknownPlayer(hand.player.clone()));
+        }
+    }
+
+    let hand_owners = setup
+        .starting_hands
+        .iter()
+        .map(|hand| (hand.player.clone(), ()))
+        .collect::<HashMap<_, _>>();
+
+    for player in &setup.players {
+        if !hand_owners.contains_key(&player.id) {
+            return Err(GameError::UnknownPlayer(player.id.clone()));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_team_seating(setup: &GameSetup) -> GameResult<()> {
+    let mut players_by_team = HashMap::<TeamId, usize>::new();
+    let team_by_player = setup
+        .players
+        .iter()
+        .map(|player| {
+            *players_by_team.entry(player.team.clone()).or_default() += 1;
+            (player.id.clone(), player.team.clone())
+        })
+        .collect::<HashMap<_, _>>();
+
+    let is_team_mode = players_by_team
+        .values()
+        .any(|player_count| *player_count > 1);
+    if !is_team_mode || setup.turn_order.len() < 2 {
+        return Ok(());
+    }
+
+    for index in 0..setup.turn_order.len() {
+        let previous_player = &setup.turn_order[index];
+        let player = &setup.turn_order[(index + 1) % setup.turn_order.len()];
+        let previous_team = team_by_player
+            .get(previous_player)
+            .ok_or_else(|| GameError::UnknownPlayer(previous_player.clone()))?;
+        let team = team_by_player
+            .get(player)
+            .ok_or_else(|| GameError::UnknownPlayer(player.clone()))?;
+
+        if previous_team == team {
+            return Err(GameError::TeamSeatingNotAlternating {
+                previous_player: previous_player.clone(),
+                player: player.clone(),
+                team: team.clone(),
+            });
+        }
+    }
+
+    Ok(())
+}
