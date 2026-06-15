@@ -345,7 +345,9 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
 
             match &effect.plan {
                 EffectPlan::Attack(plan) => {
-                    let _ = declared_targets;
+                    if !declared_targets.is_empty() {
+                        return Err(GameError::UnexpectedDeclaredTargets { formation_id });
+                    }
                     let mut events =
                         passive_flip_events(state, &player, IncomingActionKind::Attack);
                     let target = attack_target(state, &player, &plan)?;

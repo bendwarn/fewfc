@@ -188,6 +188,54 @@ impl GameSetup {
         }
     }
 
+    pub fn team_mode(
+        first_team: TeamId,
+        first_players: Vec<PlayerId>,
+        second_team: TeamId,
+        second_players: Vec<PlayerId>,
+        starting_hp: i32,
+    ) -> Self {
+        let mut players = Vec::new();
+        let mut turn_order = Vec::new();
+
+        for index in 0..first_players.len().max(second_players.len()) {
+            if let Some(player) = first_players.get(index) {
+                players.push(Player {
+                    id: player.clone(),
+                    team: first_team.clone(),
+                });
+                turn_order.push(player.clone());
+            }
+
+            if let Some(player) = second_players.get(index) {
+                players.push(Player {
+                    id: player.clone(),
+                    team: second_team.clone(),
+                });
+                turn_order.push(player.clone());
+            }
+        }
+
+        Self {
+            players,
+            turn_order,
+            hp: vec![
+                TeamHp {
+                    team: first_team,
+                    hp: starting_hp,
+                },
+                TeamHp {
+                    team: second_team,
+                    hp: starting_hp,
+                },
+            ],
+            card_defs: Vec::new(),
+            card_instances: Vec::new(),
+            hand_limit: 5,
+            base_draw: 2,
+        }
+    }
+
     pub fn with_cards(
         mut self,
         card_defs: Vec<CardDef>,
@@ -558,6 +606,20 @@ pub enum GameError {
     GameFinished,
     EmptyTurnOrder,
     DuplicatePlayer(PlayerId),
+    DuplicateTurnOrderPlayer(PlayerId),
+    MissingTurnOrderPlayer(PlayerId),
+    TeamModeRequiresAtLeastFourPlayers {
+        player_count: usize,
+    },
+    TeamModeRequiresExactlyTwoTeams {
+        team_count: usize,
+    },
+    TeamModeRequiresEqualTeamSizes {
+        first_team: TeamId,
+        first_count: usize,
+        second_team: TeamId,
+        second_count: usize,
+    },
     DuplicateTeamHp(TeamId),
     MissingTeamHp(TeamId),
     UnknownPlayer(PlayerId),
@@ -581,6 +643,9 @@ pub enum GameError {
     IllegalDiscard(CardInstanceId),
     IllegalChoiceCard(CardInstanceId),
     UnknownFormation(String),
+    UnexpectedDeclaredTargets {
+        formation_id: String,
+    },
     DuplicateSubmittedCard(CardInstanceId),
     CardNotInHand(CardInstanceId),
     FormationPatternMismatch {
@@ -622,8 +687,24 @@ pub fn validate_setup(setup: &GameSetup) -> GameResult<()> {
     }
 
     for player in &setup.turn_order {
+        if setup
+            .turn_order
+            .iter()
+            .filter(|candidate| *candidate == player)
+            .count()
+            > 1
+        {
+            return Err(GameError::DuplicateTurnOrderPlayer(player.clone()));
+        }
+
         if !players.contains(player) {
             return Err(GameError::UnknownPlayer(player.clone()));
+        }
+    }
+
+    for player in &setup.players {
+        if !setup.turn_order.contains(&player.id) {
+            return Err(GameError::MissingTurnOrderPlayer(player.id.clone()));
         }
     }
 
@@ -680,11 +761,37 @@ fn validate_team_seating(setup: &GameSetup) -> GameResult<()> {
         })
         .collect::<HashMap<_, _>>();
 
-    let is_team_mode = players_by_team
-        .values()
-        .any(|player_count| *player_count > 1);
-    if !is_team_mode || setup.turn_order.len() < 2 {
+    let team_mode_shape = setup.players.len() != 2
+        || players_by_team
+            .values()
+            .any(|player_count| *player_count > 1);
+    if !team_mode_shape {
         return Ok(());
+    }
+
+    if setup.players.len() < 4 {
+        return Err(GameError::TeamModeRequiresAtLeastFourPlayers {
+            player_count: setup.players.len(),
+        });
+    }
+
+    if players_by_team.len() != 2 {
+        return Err(GameError::TeamModeRequiresExactlyTwoTeams {
+            team_count: players_by_team.len(),
+        });
+    }
+
+    let mut team_sizes = players_by_team.iter().collect::<Vec<_>>();
+    team_sizes.sort_by(|(left_team, _), (right_team, _)| left_team.cmp(right_team));
+    let (first_team, first_count) = team_sizes[0];
+    let (second_team, second_count) = team_sizes[1];
+    if first_count != second_count {
+        return Err(GameError::TeamModeRequiresEqualTeamSizes {
+            first_team: first_team.clone(),
+            first_count: *first_count,
+            second_team: second_team.clone(),
+            second_count: *second_count,
+        });
     }
 
     for index in 0..setup.turn_order.len() {

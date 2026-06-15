@@ -70,6 +70,38 @@ fn two_player_setup_with_hp(starting_hp: i32) -> GameSetup {
     )
 }
 
+fn bare_team_setup(players_by_team: &[(&str, &str)]) -> GameSetup {
+    GameSetup {
+        players: players_by_team
+            .iter()
+            .map(|(player, team)| Player {
+                id: PlayerId::new(*player),
+                team: TeamId::new(*team),
+            })
+            .collect(),
+        turn_order: players_by_team
+            .iter()
+            .map(|(player, _)| PlayerId::new(*player))
+            .collect(),
+        hp: players_by_team
+            .iter()
+            .map(|(_, team)| TeamId::new(*team))
+            .fold(Vec::<TeamId>::new(), |mut teams, team| {
+                if !teams.contains(&team) {
+                    teams.push(team);
+                }
+                teams
+            })
+            .into_iter()
+            .map(|team| TeamHp { team, hp: 30 })
+            .collect(),
+        card_defs: Vec::new(),
+        card_instances: Vec::new(),
+        hand_limit: 5,
+        base_draw: 2,
+    }
+}
+
 fn official_deck() -> Vec<CardInstanceId> {
     (1..=20).map(card).collect()
 }
@@ -423,6 +455,193 @@ fn setup_validation_rejects_team_mode_turn_order_that_is_not_alternating() {
             team: TeamId::new("A"),
         })
     );
+}
+
+#[test]
+fn setup_validation_requires_turn_order_to_contain_every_player_once() {
+    let mut setup = two_player_setup();
+    setup.turn_order = vec![PlayerId::new("p1"), PlayerId::new("p1")];
+
+    assert_eq!(
+        GameRecord::start(setup, official_deck()),
+        Err(GameError::DuplicateTurnOrderPlayer(PlayerId::new("p1")))
+    );
+
+    let mut setup = two_player_setup();
+    setup.turn_order = vec![PlayerId::new("p1")];
+
+    assert_eq!(
+        GameRecord::start(setup, official_deck()),
+        Err(GameError::MissingTurnOrderPlayer(PlayerId::new("p2")))
+    );
+}
+
+#[test]
+fn setup_validation_rejects_invalid_team_mode_shapes() {
+    assert_eq!(
+        GameRecord::start(
+            bare_team_setup(&[("p1", "A"), ("p2", "A"), ("p3", "B")]),
+            official_deck()
+        ),
+        Err(GameError::TeamModeRequiresAtLeastFourPlayers { player_count: 3 })
+    );
+
+    assert_eq!(
+        GameRecord::start(
+            bare_team_setup(&[
+                ("p1", "A"),
+                ("p2", "B"),
+                ("p3", "C"),
+                ("p4", "A"),
+                ("p5", "B"),
+                ("p6", "C"),
+            ]),
+            deck_starting_with(&(1..=30).collect::<Vec<_>>()),
+        ),
+        Err(GameError::TeamModeRequiresExactlyTwoTeams { team_count: 3 })
+    );
+
+    assert_eq!(
+        GameRecord::start(
+            bare_team_setup(&[
+                ("p1", "A"),
+                ("p2", "B"),
+                ("p3", "A"),
+                ("p4", "B"),
+                ("p5", "A"),
+            ]),
+            deck_starting_with(&(1..=30).collect::<Vec<_>>()),
+        ),
+        Err(GameError::TeamModeRequiresEqualTeamSizes {
+            first_team: TeamId::new("A"),
+            first_count: 3,
+            second_team: TeamId::new("B"),
+            second_count: 2,
+        })
+    );
+}
+
+#[test]
+fn team_mode_builder_produces_valid_alternating_setup() {
+    let setup = GameSetup::team_mode(
+        TeamId::new("A"),
+        vec![PlayerId::new("p1"), PlayerId::new("p3")],
+        TeamId::new("B"),
+        vec![PlayerId::new("p2"), PlayerId::new("p4")],
+        30,
+    );
+
+    assert_eq!(
+        setup.turn_order,
+        vec![
+            PlayerId::new("p1"),
+            PlayerId::new("p2"),
+            PlayerId::new("p3"),
+            PlayerId::new("p4"),
+        ]
+    );
+    let card_setup = two_player_setup();
+    GameRecord::start(
+        setup.with_cards(card_setup.card_defs, card_setup.card_instances),
+        official_deck(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn team_mode_attack_resolves_previous_player_and_opposing_team_without_declared_targets() {
+    let card_setup = two_player_setup();
+    let setup = GameSetup::team_mode(
+        TeamId::new("A"),
+        vec![PlayerId::new("p1"), PlayerId::new("p3")],
+        TeamId::new("B"),
+        vec![PlayerId::new("p2"), PlayerId::new("p4")],
+        30,
+    )
+    .with_cards(card_setup.card_defs, card_setup.card_instances);
+    let mut record = GameRecord::start(setup, official_deck()).unwrap();
+    record.advance_automatic().unwrap();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![GameEvent::AttackResolved {
+            attacker: PlayerId::new("p1"),
+            target: PlayerId::new("p4"),
+            formation_id: "metal-strike".to_string(),
+            used_cards: vec![card(1)],
+            point_breakdown: AttackPointBreakdown {
+                base_points: 7,
+                interaction: ElementInteraction::None,
+                damage_transform: DamageTransform::NormalDamage,
+                final_amount: 7,
+            },
+            hp_change: HpChangeDelta {
+                team: TeamId::new("B"),
+                old_hp: 30,
+                delta: -7,
+                new_hp: 23,
+                effective_delta: -7,
+            },
+            shield_change: None,
+            card_moves: vec![CardMoveDelta {
+                card: card(1),
+                from: CardZone::Hand(PlayerId::new("p1")),
+                to: CardZone::Discard,
+            }],
+            elemental_context_update: Some(LastElementalAttackUpdate {
+                player: PlayerId::new("p1"),
+                attack: LastElementalAttack {
+                    element: Element::Metal,
+                    resolved_turn: 1,
+                },
+            }),
+        }]
+    );
+
+    let state = record.state().unwrap();
+    assert_eq!(
+        state.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("A"),
+                hp: 30,
+            },
+            TeamHp {
+                team: TeamId::new("B"),
+                hp: 23,
+            },
+        ]
+    );
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn rule_derived_attack_targets_reject_declared_targets_without_events() {
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
+    record.advance_automatic().unwrap();
+    let events_before = record.events().to_vec();
+    let state_before = record.state().unwrap();
+
+    assert_eq!(
+        record.handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: vec![fewfc::domain::TargetDecl::Player(PlayerId::new("p2"))],
+        }),
+        Err(GameError::UnexpectedDeclaredTargets {
+            formation_id: "metal-strike".to_string(),
+        })
+    );
+    assert_eq!(record.events(), events_before.as_slice());
+    assert_eq!(record.state().unwrap(), state_before);
 }
 
 #[test]
