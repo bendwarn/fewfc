@@ -6,9 +6,10 @@ use fewfc::domain::{
     CardZone, Command, DamageTransform, DeckPlacement, ElementInteraction, EventSource, GameError,
     GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
     LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome, PendingChoice,
-    PendingChoiceKind, Phase, Player, PlayerHand, PlayerId, RuleImplementationError,
+    PendingChoiceKind, Phase, Player, PlayerHand, PlayerId, PublicCardRefs, PublicCoveredPassive,
+    PublicGameEvent, PublicPendingChoice, PublicPendingChoiceKind, RuleImplementationError,
     ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
-    TeamId, TurnDrawSkipReason,
+    TeamId, TurnDrawSkipReason, Viewer,
 };
 use fewfc::rules::Element;
 
@@ -1698,6 +1699,269 @@ fn seal_passive_flips_as_applied_before_incoming_spell_resolves() {
         }]
     );
     assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn covered_passive_state_view_shows_cards_only_to_owner() {
+    let mut record = GameRecord::start(two_player_setup(), defense_setup_deck()).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: vec![card(2), card(7)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    let state = record.state().unwrap();
+
+    assert_eq!(
+        state
+            .view_for(Viewer::Player(PlayerId::new("p1")))
+            .covered_passives,
+        vec![PublicCoveredPassive {
+            owner: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: PublicCardRefs::Known(vec![card(2), card(7)]),
+        }]
+    );
+    assert_eq!(
+        state
+            .view_for(Viewer::Player(PlayerId::new("p2")))
+            .covered_passives,
+        vec![PublicCoveredPassive {
+            owner: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: PublicCardRefs::Hidden { count: 2 },
+        }]
+    );
+    assert_eq!(
+        state.view_for(Viewer::Observer).covered_passives,
+        vec![PublicCoveredPassive {
+            owner: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: PublicCardRefs::Hidden { count: 2 },
+        }]
+    );
+    assert_eq!(state.covered_passives[0].cards, vec![card(2), card(7)]);
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
+    let mut record =
+        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 1, 2])).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metamorphosis".to_string(),
+            cards: vec![card(5), card(10)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    let state = record.state().unwrap();
+
+    assert_eq!(
+        state
+            .view_for(Viewer::Player(PlayerId::new("p1")))
+            .pending_choice,
+        Some(PublicPendingChoice {
+            player: PlayerId::new("p1"),
+            kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
+                effect_id: "metamorphosis".to_string(),
+                continuation_id: "metamorphosis:choose-card".to_string(),
+                allowed_cards: vec![card(1), card(2)],
+            }),
+        })
+    );
+    assert_eq!(
+        state
+            .view_for(Viewer::Player(PlayerId::new("p2")))
+            .pending_choice,
+        Some(PublicPendingChoice {
+            player: PlayerId::new("p1"),
+            kind: PublicPendingChoiceKind::Hidden,
+        })
+    );
+    assert_eq!(
+        state.view_for(Viewer::Observer).pending_choice,
+        Some(PublicPendingChoice {
+            player: PlayerId::new("p1"),
+            kind: PublicPendingChoiceKind::Hidden,
+        })
+    );
+    assert_eq!(
+        state.pending_choice,
+        Some(PendingChoice {
+            player: PlayerId::new("p1"),
+            kind: PendingChoiceKind::EffectGenerated {
+                effect_id: "metamorphosis".to_string(),
+                continuation_id: "metamorphosis:choose-card".to_string(),
+                allowed_cards: vec![card(1), card(2)],
+            },
+        })
+    );
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_event() {
+    let event = GameEvent::PassiveCovered {
+        player: PlayerId::new("p1"),
+        formation_id: "defense".to_string(),
+        cards: vec![card(2), card(7)],
+    };
+
+    assert_eq!(
+        event.view_for(Viewer::Player(PlayerId::new("p1"))),
+        PublicGameEvent::PassiveCovered {
+            player: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: PublicCardRefs::Known(vec![card(2), card(7)]),
+        }
+    );
+    assert_eq!(
+        event.view_for(Viewer::Player(PlayerId::new("p2"))),
+        PublicGameEvent::PassiveCovered {
+            player: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: PublicCardRefs::Hidden { count: 2 },
+        }
+    );
+    assert_eq!(
+        event.view_for(Viewer::Observer),
+        PublicGameEvent::PassiveCovered {
+            player: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: PublicCardRefs::Hidden { count: 2 },
+        }
+    );
+    assert_eq!(
+        event,
+        GameEvent::PassiveCovered {
+            player: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: vec![card(2), card(7)],
+        }
+    );
+}
+
+#[test]
+fn effect_choice_event_view_filters_options_and_preserves_canonical_continuation() {
+    let event = GameEvent::EffectChoiceRequested {
+        player: PlayerId::new("p1"),
+        kind: PendingChoiceKind::EffectGenerated {
+            effect_id: "metamorphosis".to_string(),
+            continuation_id: "metamorphosis:choose-card".to_string(),
+            allowed_cards: vec![card(1), card(2)],
+        },
+    };
+
+    assert_eq!(
+        event.view_for(Viewer::Player(PlayerId::new("p1"))),
+        PublicGameEvent::EffectChoiceRequested {
+            player: PlayerId::new("p1"),
+            kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
+                effect_id: "metamorphosis".to_string(),
+                continuation_id: "metamorphosis:choose-card".to_string(),
+                allowed_cards: vec![card(1), card(2)],
+            }),
+        }
+    );
+    assert_eq!(
+        event.view_for(Viewer::Player(PlayerId::new("p2"))),
+        PublicGameEvent::EffectChoiceRequested {
+            player: PlayerId::new("p1"),
+            kind: PublicPendingChoiceKind::Hidden,
+        }
+    );
+    assert_eq!(
+        event.view_for(Viewer::Observer),
+        PublicGameEvent::EffectChoiceRequested {
+            player: PlayerId::new("p1"),
+            kind: PublicPendingChoiceKind::Hidden,
+        }
+    );
+    assert_eq!(
+        event,
+        GameEvent::EffectChoiceRequested {
+            player: PlayerId::new("p1"),
+            kind: PendingChoiceKind::EffectGenerated {
+                effect_id: "metamorphosis".to_string(),
+                continuation_id: "metamorphosis:choose-card".to_string(),
+                allowed_cards: vec![card(1), card(2)],
+            },
+        }
+    );
+}
+
+#[test]
+fn turn_draw_choice_event_view_filters_choice_options_to_choice_player() {
+    let event = GameEvent::CardsDrawnForTurnDiscardChoice {
+        player: PlayerId::new("p1"),
+        drawn_cards: vec![card(10), card(11), card(12)],
+        allowed_discards: vec![card(10), card(11), card(12)],
+    };
+
+    assert_eq!(
+        event.view_for(Viewer::Player(PlayerId::new("p1"))),
+        PublicGameEvent::CardsDrawnForTurnDiscardChoice {
+            player: PlayerId::new("p1"),
+            drawn_cards: PublicCardRefs::Known(vec![card(10), card(11), card(12)]),
+            allowed_discards: PublicCardRefs::Known(vec![card(10), card(11), card(12)]),
+        }
+    );
+    assert_eq!(
+        event.view_for(Viewer::Player(PlayerId::new("p2"))),
+        PublicGameEvent::CardsDrawnForTurnDiscardChoice {
+            player: PlayerId::new("p1"),
+            drawn_cards: PublicCardRefs::Hidden { count: 3 },
+            allowed_discards: PublicCardRefs::Hidden { count: 3 },
+        }
+    );
+    assert_eq!(
+        event,
+        GameEvent::CardsDrawnForTurnDiscardChoice {
+            player: PlayerId::new("p1"),
+            drawn_cards: vec![card(10), card(11), card(12)],
+            allowed_discards: vec![card(10), card(11), card(12)],
+        }
+    );
+}
+
+#[test]
+fn record_event_feed_is_viewer_filtered_and_canonical_events_remain_replay_source() {
+    let mut record = GameRecord::start(two_player_setup(), defense_setup_deck()).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: vec![card(2), card(7)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        record
+            .public_events_for(Viewer::Player(PlayerId::new("p2")))
+            .last(),
+        Some(&PublicGameEvent::PassiveCovered {
+            player: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: PublicCardRefs::Hidden { count: 2 },
+        })
+    );
+    assert_eq!(
+        record.events().last(),
+        Some(&GameEvent::PassiveCovered {
+            player: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: vec![card(2), card(7)],
+        })
+    );
+    assert_eq!(record.replay().unwrap(), record.state().unwrap());
 }
 
 #[test]

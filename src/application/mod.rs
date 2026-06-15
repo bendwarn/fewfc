@@ -5,7 +5,8 @@ use crate::domain::{
     DeckPlacement, ElementInteraction, EventMetadata, EventSource, GameError, GameEvent,
     GameOutcome, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
     LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome, PassiveNoEffectReason, Phase,
-    PlayerId, RecordedEvent, ShieldChangeDelta, TeamId, TurnDrawSkipReason, validate_setup,
+    PlayerId, PublicGameEvent, RecordedEvent, ShieldChangeDelta, TeamId, TurnDrawSkipReason,
+    Viewer, validate_setup,
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, FormationCategory, PointFormula,
@@ -51,6 +52,13 @@ impl GameRecord {
                 },
                 event: event.clone(),
             })
+            .collect()
+    }
+
+    pub fn public_events_for(&self, viewer: Viewer) -> Vec<PublicGameEvent> {
+        self.events
+            .iter()
+            .map(|event| event.view_for(viewer.clone()))
             .collect()
     }
 

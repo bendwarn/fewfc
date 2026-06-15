@@ -361,6 +361,80 @@ impl GameState {
     pub fn card_element(&self, instance: CardInstanceId) -> Option<Element> {
         self.card_def(instance).map(|card_def| card_def.element)
     }
+
+    pub fn view_for(&self, viewer: Viewer) -> PublicGameState {
+        PublicGameState {
+            covered_passives: self
+                .covered_passives
+                .iter()
+                .map(|passive| PublicCoveredPassive {
+                    owner: passive.owner.clone(),
+                    formation_id: passive.formation_id.clone(),
+                    cards: if viewer.can_see_player_hidden_cards(&passive.owner) {
+                        PublicCardRefs::Known(passive.cards.clone())
+                    } else {
+                        PublicCardRefs::Hidden {
+                            count: passive.cards.len(),
+                        }
+                    },
+                })
+                .collect(),
+            pending_choice: self
+                .pending_choice
+                .as_ref()
+                .map(|choice| PublicPendingChoice {
+                    player: choice.player.clone(),
+                    kind: if viewer.can_see_player_hidden_cards(&choice.player) {
+                        PublicPendingChoiceKind::Known(choice.kind.clone())
+                    } else {
+                        PublicPendingChoiceKind::Hidden
+                    },
+                }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Viewer {
+    Player(PlayerId),
+    Observer,
+}
+
+impl Viewer {
+    fn can_see_player_hidden_cards(&self, player: &PlayerId) -> bool {
+        matches!(self, Viewer::Player(viewer) if viewer == player)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicGameState {
+    pub covered_passives: Vec<PublicCoveredPassive>,
+    pub pending_choice: Option<PublicPendingChoice>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicCoveredPassive {
+    pub owner: PlayerId,
+    pub formation_id: String,
+    pub cards: PublicCardRefs,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PublicCardRefs {
+    Known(Vec<CardInstanceId>),
+    Hidden { count: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicPendingChoice {
+    pub player: PlayerId,
+    pub kind: PublicPendingChoiceKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PublicPendingChoiceKind {
+    Known(PendingChoiceKind),
+    Hidden,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -471,6 +545,77 @@ pub enum GameEvent {
     },
     TurnEnded {
         player: PlayerId,
+    },
+}
+
+impl GameEvent {
+    pub fn view_for(&self, viewer: Viewer) -> PublicGameEvent {
+        match self {
+            GameEvent::PassiveCovered {
+                player,
+                formation_id,
+                cards,
+            } => PublicGameEvent::PassiveCovered {
+                player: player.clone(),
+                formation_id: formation_id.clone(),
+                cards: if viewer.can_see_player_hidden_cards(player) {
+                    PublicCardRefs::Known(cards.clone())
+                } else {
+                    PublicCardRefs::Hidden { count: cards.len() }
+                },
+            },
+            GameEvent::CardsDrawnForTurnDiscardChoice {
+                player,
+                drawn_cards,
+                allowed_discards,
+            } => PublicGameEvent::CardsDrawnForTurnDiscardChoice {
+                player: player.clone(),
+                drawn_cards: if viewer.can_see_player_hidden_cards(player) {
+                    PublicCardRefs::Known(drawn_cards.clone())
+                } else {
+                    PublicCardRefs::Hidden {
+                        count: drawn_cards.len(),
+                    }
+                },
+                allowed_discards: if viewer.can_see_player_hidden_cards(player) {
+                    PublicCardRefs::Known(allowed_discards.clone())
+                } else {
+                    PublicCardRefs::Hidden {
+                        count: allowed_discards.len(),
+                    }
+                },
+            },
+            GameEvent::EffectChoiceRequested { player, kind } => {
+                PublicGameEvent::EffectChoiceRequested {
+                    player: player.clone(),
+                    kind: if viewer.can_see_player_hidden_cards(player) {
+                        PublicPendingChoiceKind::Known(kind.clone())
+                    } else {
+                        PublicPendingChoiceKind::Hidden
+                    },
+                }
+            }
+            event => PublicGameEvent::Public(event.clone()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PublicGameEvent {
+    Public(GameEvent),
+    PassiveCovered {
+        player: PlayerId,
+        formation_id: String,
+        cards: PublicCardRefs,
+    },
+    CardsDrawnForTurnDiscardChoice {
+        player: PlayerId,
+        drawn_cards: PublicCardRefs,
+        allowed_discards: PublicCardRefs,
+    },
+    EffectChoiceRequested {
+        player: PlayerId,
+        kind: PublicPendingChoiceKind,
     },
 }
 
