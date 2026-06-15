@@ -381,6 +381,16 @@ pub enum GameEvent {
         delta: i32,
         new_value: i32,
     },
+    EffectChoiceRequested {
+        player: PlayerId,
+        kind: PendingChoiceKind,
+    },
+    EffectChoiceAnswered {
+        player: PlayerId,
+        effect_id: String,
+        continuation_id: String,
+        selected_cards: Vec<CardInstanceId>,
+    },
     PassiveCovered {
         player: PlayerId,
         formation_id: String,
@@ -445,6 +455,10 @@ pub enum Command {
     ChooseTurnDiscard {
         player: PlayerId,
         discard: CardInstanceId,
+    },
+    AnswerEffectChoice {
+        player: PlayerId,
+        selected_cards: Vec<CardInstanceId>,
     },
 }
 
@@ -561,7 +575,11 @@ pub enum GameError {
         team: TeamId,
     },
     MissingPendingChoice,
+    PendingChoiceInProgress {
+        player: PlayerId,
+    },
     IllegalDiscard(CardInstanceId),
+    IllegalChoiceCard(CardInstanceId),
     UnknownFormation(String),
     DuplicateSubmittedCard(CardInstanceId),
     CardNotInHand(CardInstanceId),

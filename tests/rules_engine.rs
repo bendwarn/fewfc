@@ -903,25 +903,198 @@ fn perform_attack_formation_damages_previous_players_team_and_moves_cards_to_dis
 
 #[test]
 fn unimplemented_active_spell_effect_returns_rule_implementation_error_without_events() {
-    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10])).unwrap();
+    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[2, 4, 5])).unwrap();
     record.advance_automatic().unwrap();
     let events_before = record.events().to_vec();
     let state_before = record.state().unwrap();
 
     let result = record.handle(Command::PerformFormation {
         player: PlayerId::new("p1"),
-        formation_id: "metamorphosis".to_string(),
-        cards: vec![card(5), card(10)],
+        formation_id: "generating-formation".to_string(),
+        cards: vec![card(2), card(4), card(5)],
         declared_targets: Vec::new(),
     });
 
     assert_eq!(
         result,
         Err(GameError::RuleImplementation(
-            RuleImplementationError::EffectNotImplemented("metamorphosis".to_string())
+            RuleImplementationError::EffectNotImplemented("generating-formation".to_string())
         ))
     );
     assert_eq!(record.events(), events_before.as_slice());
+    assert_eq!(record.state().unwrap(), state_before);
+}
+
+#[test]
+fn immediate_active_spell_resolves_through_perform_formation() {
+    let mut record =
+        GameRecord::start(two_player_setup(), deck_starting_with(&[2, 7, 1, 4])).unwrap();
+    record.advance_automatic().unwrap();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "barrier".to_string(),
+                cards: vec![card(2), card(7), card(1), card(4)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationPerformed {
+                player: PlayerId::new("p1"),
+                formation_id: "barrier".to_string(),
+                used_cards: vec![card(2), card(7), card(1), card(4)],
+                declared_targets: Vec::new(),
+            },
+            GameEvent::ShieldChanged {
+                player: PlayerId::new("p1"),
+                old_value: 0,
+                delta: 5,
+                new_value: 5,
+            },
+        ]
+    );
+
+    let state = record.state().unwrap();
+    assert_eq!(state.phase, Phase::TurnDraw);
+    assert_eq!(state.hand(&PlayerId::new("p1")), Some([].as_slice()));
+    assert_eq!(state.discard, vec![card(2), card(7), card(1), card(4)]);
+    assert_eq!(state.shield(&PlayerId::new("p1")), Some(5));
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn active_spell_can_request_replay_safe_effect_choice() {
+    let mut record =
+        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 1, 2])).unwrap();
+    record.advance_automatic().unwrap();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "metamorphosis".to_string(),
+                cards: vec![card(5), card(10)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationPerformed {
+                player: PlayerId::new("p1"),
+                formation_id: "metamorphosis".to_string(),
+                used_cards: vec![card(5), card(10)],
+                declared_targets: Vec::new(),
+            },
+            GameEvent::EffectChoiceRequested {
+                player: PlayerId::new("p1"),
+                kind: PendingChoiceKind::EffectGenerated {
+                    effect_id: "metamorphosis".to_string(),
+                    continuation_id: "metamorphosis:choose-card".to_string(),
+                    allowed_cards: vec![card(1), card(2)],
+                },
+            },
+        ]
+    );
+
+    let state = record.state().unwrap();
+    assert_eq!(
+        state.pending_choice,
+        Some(PendingChoice {
+            player: PlayerId::new("p1"),
+            kind: PendingChoiceKind::EffectGenerated {
+                effect_id: "metamorphosis".to_string(),
+                continuation_id: "metamorphosis:choose-card".to_string(),
+                allowed_cards: vec![card(1), card(2)],
+            },
+        })
+    );
+    assert_eq!(state.phase, Phase::TurnDraw);
+    assert_eq!(
+        state.hand(&PlayerId::new("p1")),
+        Some(vec![card(1), card(2)].as_slice())
+    );
+    assert_eq!(state.discard, vec![card(5), card(10)]);
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn answering_effect_choice_resumes_resolution_deterministically() {
+    let mut record =
+        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 1, 2])).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metamorphosis".to_string(),
+            cards: vec![card(5), card(10)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        record
+            .handle(Command::AnswerEffectChoice {
+                player: PlayerId::new("p1"),
+                selected_cards: vec![card(1)],
+            })
+            .unwrap(),
+        vec![
+            GameEvent::EffectChoiceAnswered {
+                player: PlayerId::new("p1"),
+                effect_id: "metamorphosis".to_string(),
+                continuation_id: "metamorphosis:choose-card".to_string(),
+                selected_cards: vec![card(1)],
+            },
+            GameEvent::ShieldChanged {
+                player: PlayerId::new("p1"),
+                old_value: 0,
+                delta: 3,
+                new_value: 3,
+            },
+        ]
+    );
+
+    let state = record.state().unwrap();
+    assert!(state.pending_choice.is_none());
+    assert_eq!(state.phase, Phase::TurnDraw);
+    assert_eq!(
+        state.hand(&PlayerId::new("p1")),
+        Some(vec![card(1), card(2)].as_slice())
+    );
+    assert_eq!(state.shield(&PlayerId::new("p1")), Some(3));
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn commands_and_automatic_advance_wait_while_effect_choice_is_pending() {
+    let mut record =
+        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 1, 2])).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metamorphosis".to_string(),
+            cards: vec![card(5), card(10)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+
+    let events_before = record.events().to_vec();
+    let state_before = record.state().unwrap();
+
+    assert_eq!(
+        record.handle(Command::PassAction {
+            player: PlayerId::new("p1"),
+            reason: PassActionReason::NoCardsInHand,
+        }),
+        Err(GameError::PendingChoiceInProgress {
+            player: PlayerId::new("p1"),
+        })
+    );
+    assert_eq!(record.events(), events_before.as_slice());
+    assert_eq!(record.state().unwrap(), state_before);
+    assert_eq!(record.advance_automatic().unwrap(), Vec::new());
     assert_eq!(record.state().unwrap(), state_before);
 }
 

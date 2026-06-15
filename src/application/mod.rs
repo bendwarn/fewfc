@@ -96,6 +96,8 @@ fn event_source(event: &GameEvent) -> EventSource {
         | GameEvent::TurnEnded { .. } => EventSource::System,
         GameEvent::ActionPassed { .. }
         | GameEvent::AttackResolved { .. }
+        | GameEvent::EffectChoiceAnswered { .. }
+        | GameEvent::EffectChoiceRequested { .. }
         | GameEvent::FormationPerformed { .. }
         | GameEvent::PassiveCovered { .. }
         | GameEvent::PassiveFlipped { .. }
@@ -166,6 +168,9 @@ fn initial_deal_count(setup: &GameSetup) -> usize {
 
 pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
     if matches!(state.status, GameStatus::Finished { .. }) {
+        return Ok(Vec::new());
+    }
+    if state.pending_choice.is_some() {
         return Ok(Vec::new());
     }
 
@@ -251,6 +256,24 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
 pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<GameEvent>> {
     if matches!(state.status, GameStatus::Finished { .. }) {
         return Err(GameError::GameFinished);
+    }
+    if let Some(choice) = &state.pending_choice {
+        let is_choice_answer = matches!(
+            (&choice.kind, &command),
+            (
+                crate::domain::PendingChoiceKind::TurnDrawDiscard { .. },
+                Command::ChooseTurnDiscard { .. }
+            ) | (
+                crate::domain::PendingChoiceKind::EffectGenerated { .. },
+                Command::AnswerEffectChoice { .. }
+            )
+        );
+
+        if !is_choice_answer {
+            return Err(GameError::PendingChoiceInProgress {
+                player: choice.player.clone(),
+            });
+        }
     }
 
     match command {
@@ -397,9 +420,18 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                     });
                     Ok(events)
                 }
-                EffectPlan::ActiveSpell(_) => Err(GameError::RuleImplementation(
-                    crate::domain::RuleImplementationError::EffectNotImplemented(effect.id.clone()),
-                )),
+                EffectPlan::ActiveSpell(spell) => {
+                    let mut events = passive_flip_events(state, &player, IncomingActionKind::Spell);
+                    events.push(GameEvent::FormationPerformed {
+                        player: player.clone(),
+                        formation_id,
+                        used_cards: cards.clone(),
+                        declared_targets,
+                    });
+                    let intents = active_spell_intents(state, &player, &spell.resolver_id, &cards)?;
+                    events.extend(effect_intent_events(state, intents));
+                    Ok(events)
+                }
             }
         }
         Command::ChooseTurnDiscard { player, discard } => {
@@ -422,6 +454,47 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
             }
 
             Ok(vec![GameEvent::TurnDiscardChosen { player, discard }])
+        }
+        Command::AnswerEffectChoice {
+            player,
+            selected_cards,
+        } => {
+            let (effect_id, continuation_id, allowed_cards) = match &state.pending_choice {
+                Some(crate::domain::PendingChoice {
+                    player: choice_player,
+                    kind:
+                        crate::domain::PendingChoiceKind::EffectGenerated {
+                            effect_id,
+                            continuation_id,
+                            allowed_cards,
+                        },
+                }) if choice_player == &player => {
+                    (effect_id.clone(), continuation_id.clone(), allowed_cards)
+                }
+                _ => return Err(GameError::MissingPendingChoice),
+            };
+
+            for selected_card in &selected_cards {
+                if !allowed_cards.contains(selected_card) {
+                    return Err(GameError::IllegalChoiceCard(*selected_card));
+                }
+            }
+
+            let mut events = vec![GameEvent::EffectChoiceAnswered {
+                player: player.clone(),
+                effect_id: effect_id.clone(),
+                continuation_id: continuation_id.clone(),
+                selected_cards: selected_cards.clone(),
+            }];
+            let intents = resume_effect_choice_intents(
+                state,
+                &player,
+                &effect_id,
+                &continuation_id,
+                &selected_cards,
+            )?;
+            events.extend(effect_intent_events(state, intents));
+            Ok(events)
         }
     }
 }
@@ -503,6 +576,103 @@ fn passive_outcome(passive_id: &str, incoming_kind: IncomingActionKind) -> Passi
         _ => PassiveFlipOutcome::NoEffect {
             reason: PassiveNoEffectReason::NotASpell,
         },
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum EffectIntent {
+    SetShield {
+        player: PlayerId,
+        value: i32,
+    },
+    RequestChoice {
+        player: PlayerId,
+        kind: crate::domain::PendingChoiceKind,
+    },
+}
+
+fn active_spell_intents(
+    state: &GameState,
+    player: &PlayerId,
+    resolver_id: &str,
+    used_cards: &[CardInstanceId],
+) -> GameResult<Vec<EffectIntent>> {
+    match resolver_id {
+        "barrier" => Ok(vec![EffectIntent::SetShield {
+            player: player.clone(),
+            value: 5,
+        }]),
+        "metamorphosis" => {
+            let allowed_cards = state
+                .hand(player)
+                .ok_or_else(|| GameError::UnknownPlayer(player.clone()))?
+                .iter()
+                .copied()
+                .filter(|card| !used_cards.contains(card))
+                .collect::<Vec<_>>();
+
+            Ok(vec![EffectIntent::RequestChoice {
+                player: player.clone(),
+                kind: crate::domain::PendingChoiceKind::EffectGenerated {
+                    effect_id: resolver_id.to_string(),
+                    continuation_id: "metamorphosis:choose-card".to_string(),
+                    allowed_cards,
+                },
+            }])
+        }
+        _ => Err(GameError::RuleImplementation(
+            crate::domain::RuleImplementationError::EffectNotImplemented(resolver_id.to_string()),
+        )),
+    }
+}
+
+fn effect_intent_events(state: &GameState, intents: Vec<EffectIntent>) -> Vec<GameEvent> {
+    intents
+        .into_iter()
+        .map(|intent| match intent {
+            EffectIntent::SetShield { player, value } => {
+                let old_value = state.shield(&player).unwrap_or(0);
+                GameEvent::ShieldChanged {
+                    player,
+                    old_value,
+                    delta: value - old_value,
+                    new_value: value,
+                }
+            }
+            EffectIntent::RequestChoice { player, kind } => {
+                GameEvent::EffectChoiceRequested { player, kind }
+            }
+        })
+        .collect()
+}
+
+fn resume_effect_choice_intents(
+    state: &GameState,
+    player: &PlayerId,
+    effect_id: &str,
+    continuation_id: &str,
+    selected_cards: &[CardInstanceId],
+) -> GameResult<Vec<EffectIntent>> {
+    match (effect_id, continuation_id) {
+        ("metamorphosis", "metamorphosis:choose-card") => {
+            let selected_card = selected_cards
+                .first()
+                .ok_or(GameError::MissingPendingChoice)?;
+            let value = state
+                .card_def(*selected_card)
+                .ok_or(GameError::MissingCardInstanceDefinition(*selected_card))?
+                .level as i32;
+
+            Ok(vec![EffectIntent::SetShield {
+                player: player.clone(),
+                value,
+            }])
+        }
+        _ => Err(GameError::RuleImplementation(
+            crate::domain::RuleImplementationError::EffectNotImplemented(
+                continuation_id.to_string(),
+            ),
+        )),
     }
 }
 
@@ -923,6 +1093,33 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
                     new_value: *new_value,
                 },
             );
+        }
+        GameEvent::EffectChoiceRequested { player, kind } => {
+            state.pending_choice = Some(crate::domain::PendingChoice {
+                player: player.clone(),
+                kind: kind.clone(),
+            });
+        }
+        GameEvent::EffectChoiceAnswered {
+            player,
+            selected_cards,
+            ..
+        } => {
+            match &state.pending_choice {
+                Some(crate::domain::PendingChoice {
+                    player: choice_player,
+                    kind: crate::domain::PendingChoiceKind::EffectGenerated { allowed_cards, .. },
+                }) if choice_player == player => {
+                    for selected_card in selected_cards {
+                        if !allowed_cards.contains(selected_card) {
+                            panic!("canonical effect choice answer must select allowed cards");
+                        }
+                    }
+                }
+                _ => panic!("canonical effect choice answer must have a matching pending choice"),
+            }
+
+            state.pending_choice = None;
         }
         GameEvent::CardsDrawnForTurnDiscardChoice {
             player,
