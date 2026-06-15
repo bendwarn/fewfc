@@ -109,18 +109,12 @@ pub struct GameSetup {
     pub players: Vec<Player>,
     pub turn_order: Vec<PlayerId>,
     pub hp: Vec<TeamHp>,
-    pub starting_hands: Vec<PlayerHand>,
     pub hand_limit: usize,
     pub base_draw: usize,
 }
 
 impl GameSetup {
-    pub fn two_player(
-        first_player: PlayerId,
-        second_player: PlayerId,
-        starting_hp: i32,
-        starting_hands: Vec<(PlayerId, Vec<CardInstanceId>)>,
-    ) -> Self {
+    pub fn two_player(first_player: PlayerId, second_player: PlayerId, starting_hp: i32) -> Self {
         let first_team = TeamId::new(format!("team:{}", first_player.as_str()));
         let second_team = TeamId::new(format!("team:{}", second_player.as_str()));
 
@@ -146,10 +140,6 @@ impl GameSetup {
                     hp: starting_hp,
                 },
             ],
-            starting_hands: starting_hands
-                .into_iter()
-                .map(|(player, cards)| PlayerHand::new(player, cards))
-                .collect(),
             hand_limit: 5,
             base_draw: 2,
         }
@@ -196,7 +186,11 @@ impl GameState {
             turn_order: setup.turn_order.clone(),
             hp: setup.hp.clone(),
             deck: Vec::new(),
-            hands: setup.starting_hands.clone(),
+            hands: setup
+                .players
+                .iter()
+                .map(|player| PlayerHand::new(player.id.clone(), Vec::new()))
+                .collect(),
             discard: Vec::new(),
             pending_choice: None,
             shields: setup
@@ -263,6 +257,10 @@ pub enum PendingChoiceKind {
 pub enum GameEvent {
     DeckPrepared {
         deck_order: Vec<CardInstanceId>,
+    },
+    CardsDealt {
+        player: PlayerId,
+        cards: Vec<CardInstanceId>,
     },
     TurnStarted {
         player: PlayerId,
@@ -406,24 +404,6 @@ pub fn validate_setup(setup: &GameSetup) -> GameResult<()> {
     }
 
     validate_team_seating(setup)?;
-
-    for hand in &setup.starting_hands {
-        if !players.contains(&hand.player) {
-            return Err(GameError::UnknownPlayer(hand.player.clone()));
-        }
-    }
-
-    let hand_owners = setup
-        .starting_hands
-        .iter()
-        .map(|hand| (hand.player.clone(), ()))
-        .collect::<HashMap<_, _>>();
-
-    for player in &setup.players {
-        if !hand_owners.contains_key(&player.id) {
-            return Err(GameError::UnknownPlayer(player.id.clone()));
-        }
-    }
 
     Ok(())
 }

@@ -188,7 +188,7 @@ This preserves exactly-one-action turn semantics without treating invalid comman
 
 ### 10. Turn Draw Pending Choice
 
-Turn draw requires a pending choice state because the player draws `N + 1` cards and chooses one card to discard.
+Turn draw requires a pending choice state because the player draws `N + 1` cards and chooses one of the newly drawn cards to discard.
 
 Use a dedicated phase:
 
@@ -233,9 +233,11 @@ Hand limit is 5.
 
 If the player's hand is already at the hand limit, skip turn draw and do not create a pending choice.
 
-Otherwise, turn draw uses the rule intent "draw `N + 1`, then choose 1 card to discard", where `N = min(base_draw, available_hand_space)`.
+Otherwise, turn draw uses the rule intent "draw `N + 1`, then choose 1 newly drawn card to discard", where `N = min(base_draw, available_hand_space)`.
 
 This means a player with at least one available hand slot may temporarily hold one card above the hand limit during `TurnDrawDiscardChoice`, then returns to the hand limit after choosing one card to discard.
+
+`allowed_discards` must contain only the cards drawn by that turn draw. Cards that were already in the player's hand before the draw are not legal choices for `ChooseTurnDiscard`.
 
 When the deck is insufficient, shuffle the discard pile first and place the shuffled discard cards at the bottom of the deck. Then continue drawing.
 

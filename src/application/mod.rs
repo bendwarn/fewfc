@@ -17,11 +17,12 @@ pub struct GameRecord {
 impl GameRecord {
     pub fn start(setup: GameSetup, deck_order: Vec<CardInstanceId>) -> GameResult<Self> {
         validate_setup(&setup)?;
-        validate_card_instances(&setup, &deck_order)?;
+        validate_card_instances(&deck_order)?;
+        let events = initial_events(&setup, deck_order)?;
 
         let record = Self {
             setup,
-            events: vec![GameEvent::DeckPrepared { deck_order }],
+            events,
             latest_snapshot: None,
         };
 
@@ -81,6 +82,7 @@ impl GameRecord {
 fn event_source(event: &GameEvent) -> EventSource {
     match event {
         GameEvent::DeckPrepared { .. }
+        | GameEvent::CardsDealt { .. }
         | GameEvent::TurnStarted { .. }
         | GameEvent::CardsDrawnForTurnDiscardChoice { .. }
         | GameEvent::TurnDrawSkipped { .. }
@@ -92,16 +94,8 @@ fn event_source(event: &GameEvent) -> EventSource {
     }
 }
 
-fn validate_card_instances(setup: &GameSetup, deck_order: &[CardInstanceId]) -> GameResult<()> {
+fn validate_card_instances(deck_order: &[CardInstanceId]) -> GameResult<()> {
     let mut seen = HashSet::new();
-
-    for hand in &setup.starting_hands {
-        for card in &hand.cards {
-            if !seen.insert(*card) {
-                return Err(GameError::DuplicateCard(*card));
-            }
-        }
-    }
 
     for card in deck_order {
         if !seen.insert(*card) {
@@ -110,6 +104,45 @@ fn validate_card_instances(setup: &GameSetup, deck_order: &[CardInstanceId]) -> 
     }
 
     Ok(())
+}
+
+fn initial_events(
+    setup: &GameSetup,
+    deck_order: Vec<CardInstanceId>,
+) -> GameResult<Vec<GameEvent>> {
+    let needed = initial_deal_count(setup);
+    if deck_order.len() < needed {
+        return Err(GameError::NotEnoughCards {
+            needed,
+            available: deck_order.len(),
+        });
+    }
+
+    let mut events = vec![GameEvent::DeckPrepared {
+        deck_order: deck_order.clone(),
+    }];
+    let mut next_card_index = 0;
+
+    for (turn_index, player) in setup.turn_order.iter().enumerate() {
+        let card_count = if turn_index == 0 { 4 } else { 5 };
+        let cards = deck_order[next_card_index..next_card_index + card_count].to_vec();
+        next_card_index += card_count;
+        events.push(GameEvent::CardsDealt {
+            player: player.clone(),
+            cards,
+        });
+    }
+
+    Ok(events)
+}
+
+fn initial_deal_count(setup: &GameSetup) -> usize {
+    setup
+        .turn_order
+        .iter()
+        .enumerate()
+        .map(|(index, _)| if index == 0 { 4 } else { 5 })
+        .sum()
 }
 
 pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
@@ -184,13 +217,11 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
         .take(draw_count)
         .copied()
         .collect::<Vec<_>>();
-    let mut allowed_discards = hand.to_vec();
-    allowed_discards.extend(drawn_cards.iter().copied());
 
     Ok(Some(GameEvent::CardsDrawnForTurnDiscardChoice {
         player,
+        allowed_discards: drawn_cards.clone(),
         drawn_cards,
-        allowed_discards,
     }))
 }
 
@@ -277,6 +308,21 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
     match event {
         GameEvent::DeckPrepared { deck_order } => {
             state.deck = deck_order.clone();
+        }
+        GameEvent::CardsDealt { player, cards } => {
+            let hand = state
+                .hand_mut(player)
+                .expect("canonical deal event must target a known player");
+            hand.extend(cards.iter().copied());
+
+            for card in cards {
+                let position = state
+                    .deck
+                    .iter()
+                    .position(|deck_card| deck_card == card)
+                    .expect("canonical deal event must contain cards from deck");
+                state.deck.remove(position);
+            }
         }
         GameEvent::TurnStarted { player, .. } => {
             debug_assert_eq!(state.current_player(), Some(player));

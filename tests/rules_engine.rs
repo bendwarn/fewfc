@@ -3,8 +3,9 @@ use fewfc::application::{
 };
 use fewfc::domain::{
     CardInstanceId, Command, DeckPlacement, EventSource, GameError, GameEvent, GameSetup,
-    GameStatus, PassActionReason, PendingChoice, PendingChoiceKind, Phase, Player, PlayerHand,
-    PlayerId, StatusDuration, StatusEffect, StatusOwner, TeamHp, TeamId, TurnDrawSkipReason,
+    GameState, GameStatus, PassActionReason, PendingChoice, PendingChoiceKind, Phase, Player,
+    PlayerHand, PlayerId, StatusDuration, StatusEffect, StatusOwner, TeamHp, TeamId,
+    TurnDrawSkipReason,
 };
 
 fn card(id: u64) -> CardInstanceId {
@@ -15,62 +16,92 @@ fn two_player_setup() -> GameSetup {
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
 
-    GameSetup::two_player(
-        p1.clone(),
-        p2.clone(),
-        30,
-        vec![
-            (p1, vec![card(1), card(2), card(3), card(4)]),
-            (p2, vec![card(5), card(6), card(7), card(8), card(9)]),
-        ],
-    )
+    GameSetup::two_player(p1, p2, 30)
 }
 
-fn two_player_setup_with_full_first_hand() -> GameSetup {
-    let p1 = PlayerId::new("p1");
-    let p2 = PlayerId::new("p2");
-
-    GameSetup::two_player(
-        p1.clone(),
-        p2.clone(),
-        30,
-        vec![
-            (p1, vec![card(1), card(2), card(3), card(4), card(5)]),
-            (p2, vec![card(6), card(7), card(8), card(9), card(10)]),
-        ],
-    )
+fn official_deck() -> Vec<CardInstanceId> {
+    (1..=20).map(card).collect()
 }
 
-fn two_player_setup_with_empty_hands() -> GameSetup {
-    let p1 = PlayerId::new("p1");
-    let p2 = PlayerId::new("p2");
-
-    GameSetup::two_player(
-        p1.clone(),
-        p2.clone(),
-        30,
-        vec![(p1, Vec::new()), (p2, Vec::new())],
-    )
+fn cannot_act_status(player: PlayerId) -> StatusEffect {
+    StatusEffect {
+        id: format!("cannot-act-{}", player.as_str()),
+        owner: StatusOwner::Player(player),
+        kind: "CannotAct".to_string(),
+        value: None,
+        duration: StatusDuration::UntilNextAction,
+    }
 }
 
-fn two_player_setup_with_empty_first_hand() -> GameSetup {
-    let p1 = PlayerId::new("p1");
-    let p2 = PlayerId::new("p2");
+fn state_after_cannot_act_pass(record: &GameRecord, player: PlayerId) -> GameState {
+    let mut state = record.state().unwrap();
+    state.statuses.push(cannot_act_status(player.clone()));
 
-    GameSetup::two_player(
-        p1.clone(),
-        p2.clone(),
-        30,
-        vec![
-            (p1, Vec::new()),
-            (p2, vec![card(1), card(2), card(3), card(4), card(5)]),
-        ],
+    let events = handle_command(
+        &state,
+        Command::PassAction {
+            player,
+            reason: PassActionReason::CannotActByStatus,
+        },
     )
+    .unwrap();
+
+    for event in events {
+        apply_event(&mut state, &event);
+    }
+
+    state
+}
+
+#[test]
+fn new_game_deals_initial_hands_from_prepared_deck_order() {
+    let deck = official_deck();
+    let record = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
+
+    assert_eq!(
+        record.events(),
+        &[
+            GameEvent::DeckPrepared {
+                deck_order: deck.clone(),
+            },
+            GameEvent::CardsDealt {
+                player: PlayerId::new("p1"),
+                cards: vec![card(1), card(2), card(3), card(4)],
+            },
+            GameEvent::CardsDealt {
+                player: PlayerId::new("p2"),
+                cards: vec![card(5), card(6), card(7), card(8), card(9)],
+            },
+        ]
+    );
+
+    let state = record.state().unwrap();
+    assert_eq!(
+        state.hand(&PlayerId::new("p1")),
+        Some(vec![card(1), card(2), card(3), card(4)].as_slice())
+    );
+    assert_eq!(
+        state.hand(&PlayerId::new("p2")),
+        Some(vec![card(5), card(6), card(7), card(8), card(9)].as_slice())
+    );
+    assert_eq!(state.deck, (10..=20).map(card).collect::<Vec<_>>());
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn new_game_rejects_deck_that_cannot_satisfy_initial_deal() {
+    assert_eq!(
+        GameRecord::start(two_player_setup(), vec![card(1), card(2), card(3)]),
+        Err(GameError::NotEnoughCards {
+            needed: 9,
+            available: 3,
+        })
+    );
 }
 
 #[test]
 fn new_game_persists_deck_order_and_replay_matches_current_state() {
-    let deck = vec![card(10), card(11), card(12)];
+    let deck = official_deck();
     let record = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
 
     assert_eq!(
@@ -83,18 +114,18 @@ fn new_game_persists_deck_order_and_replay_matches_current_state() {
     let state = record.state().unwrap();
     assert_eq!(state.phase, Phase::TurnStart);
     assert_eq!(state.current_player(), Some(&PlayerId::new("p1")));
-    assert_eq!(state.deck, deck);
+    assert_eq!(state.deck, (10..=20).map(card).collect::<Vec<_>>());
     assert_eq!(record.replay().unwrap(), state);
 }
 
 #[test]
 fn game_record_exposes_recorded_events_with_sequence_metadata() {
-    let deck = vec![card(10), card(11)];
+    let deck = official_deck();
     let record = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
 
     let recorded_events = record.recorded_events();
 
-    assert_eq!(recorded_events.len(), 1);
+    assert_eq!(recorded_events.len(), 3);
     assert_eq!(recorded_events[0].metadata.sequence, 1);
     assert_eq!(recorded_events[0].metadata.source, EventSource::System);
     assert_eq!(
@@ -121,9 +152,12 @@ fn apply_event_projects_canonical_events_without_returning_validation_errors() {
 
 #[test]
 fn setup_validation_rejects_duplicate_card_instances_across_hands_and_deck() {
+    let mut deck = official_deck();
+    deck[1] = card(1);
+
     assert_eq!(
-        GameRecord::start(two_player_setup(), vec![card(4)]),
-        Err(GameError::DuplicateCard(card(4)))
+        GameRecord::start(two_player_setup(), deck),
+        Err(GameError::DuplicateCard(card(1)))
     );
 }
 
@@ -136,13 +170,12 @@ fn setup_validation_requires_hp_for_every_team() {
         }],
         turn_order: vec![PlayerId::new("p1")],
         hp: Vec::new(),
-        starting_hands: vec![PlayerHand::new(PlayerId::new("p1"), vec![card(1)])],
         hand_limit: 5,
         base_draw: 2,
     };
 
     assert_eq!(
-        GameRecord::start(setup, vec![card(2)]),
+        GameRecord::start(setup, official_deck()),
         Err(GameError::MissingTeamHp(TeamId::new("A")))
     );
 }
@@ -184,18 +217,12 @@ fn setup_validation_rejects_team_mode_turn_order_that_is_not_alternating() {
                 hp: 30,
             },
         ],
-        starting_hands: vec![
-            PlayerHand::new(PlayerId::new("p1"), vec![card(1)]),
-            PlayerHand::new(PlayerId::new("p2"), vec![card(2)]),
-            PlayerHand::new(PlayerId::new("p3"), vec![card(3)]),
-            PlayerHand::new(PlayerId::new("p4"), vec![card(4)]),
-        ],
         hand_limit: 5,
         base_draw: 2,
     };
 
     assert_eq!(
-        GameRecord::start(setup, vec![card(5)]),
+        GameRecord::start(setup, official_deck()),
         Err(GameError::TeamSeatingNotAlternating {
             previous_player: PlayerId::new("p1"),
             player: PlayerId::new("p2"),
@@ -206,7 +233,7 @@ fn setup_validation_rejects_team_mode_turn_order_that_is_not_alternating() {
 
 #[test]
 fn new_game_state_exposes_core_status_shields_and_passive_zones() {
-    let record = GameRecord::start(two_player_setup(), vec![card(10), card(11)]).unwrap();
+    let record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     let state = record.state().unwrap();
 
     assert_eq!(state.status, GameStatus::InProgress);
@@ -232,7 +259,7 @@ fn pending_choices_can_store_effect_generated_continuations() {
 
 #[test]
 fn invalid_command_returns_error_without_appending_events_or_changing_state() {
-    let mut record = GameRecord::start(two_player_setup(), vec![card(10), card(11)]).unwrap();
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     let events_before = record.events().to_vec();
     let state_before = record.state().unwrap();
 
@@ -254,7 +281,7 @@ fn invalid_command_returns_error_without_appending_events_or_changing_state() {
 
 #[test]
 fn automatic_advance_stops_at_main_after_turn_start() {
-    let mut record = GameRecord::start(two_player_setup(), vec![card(10), card(11)]).unwrap();
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
 
     assert_eq!(
         record.advance_automatic().unwrap(),
@@ -271,34 +298,35 @@ fn automatic_advance_stops_at_main_after_turn_start() {
 
 #[test]
 fn pass_action_with_no_cards_consumes_the_turn_action_and_enters_turn_draw() {
-    let mut record = GameRecord::start(
-        two_player_setup_with_empty_first_hand(),
-        vec![card(10), card(11), card(12)],
-    )
-    .unwrap();
-    record.advance_automatic().unwrap();
+    let setup = two_player_setup();
+    let mut state = GameState::from_setup(&setup);
+    apply_event(
+        &mut state,
+        &GameEvent::TurnStarted {
+            player: PlayerId::new("p1"),
+            turn_number: 1,
+        },
+    );
 
     assert_eq!(
-        record
-            .handle(Command::PassAction {
+        handle_command(
+            &state,
+            Command::PassAction {
                 player: PlayerId::new("p1"),
                 reason: PassActionReason::NoCardsInHand,
-            })
-            .unwrap(),
+            },
+        )
+        .unwrap(),
         vec![GameEvent::ActionPassed {
             player: PlayerId::new("p1"),
             reason: PassActionReason::NoCardsInHand,
         }]
     );
-
-    let state = record.state().unwrap();
-    assert_eq!(state.phase, Phase::TurnDraw);
-    assert_eq!(record.replay().unwrap(), state);
 }
 
 #[test]
 fn pass_action_with_cards_is_rejected_without_changing_state() {
-    let mut record = GameRecord::start(two_player_setup(), vec![card(10), card(11)]).unwrap();
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     record.advance_automatic().unwrap();
     let events_before = record.events().to_vec();
     let state_before = record.state().unwrap();
@@ -320,16 +348,10 @@ fn pass_action_with_cards_is_rejected_without_changing_state() {
 
 #[test]
 fn pass_action_is_allowed_when_player_cannot_act_by_status() {
-    let mut record = GameRecord::start(two_player_setup(), vec![card(10), card(11)]).unwrap();
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     record.advance_automatic().unwrap();
     let mut state = record.state().unwrap();
-    state.statuses.push(StatusEffect {
-        id: "cannot-act-p1".to_string(),
-        owner: StatusOwner::Player(PlayerId::new("p1")),
-        kind: "CannotAct".to_string(),
-        value: None,
-        duration: StatusDuration::UntilNextAction,
-    });
+    state.statuses.push(cannot_act_status(PlayerId::new("p1")));
 
     assert_eq!(
         handle_command(
@@ -349,139 +371,122 @@ fn pass_action_is_allowed_when_player_cannot_act_by_status() {
 
 #[test]
 fn turn_draw_creates_pending_discard_choice_after_drawing_available_space_plus_one() {
-    let mut record = GameRecord::start(
-        two_player_setup_with_empty_first_hand(),
-        vec![card(10), card(11), card(12), card(13)],
-    )
-    .unwrap();
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     record.advance_automatic().unwrap();
-    record
-        .handle(Command::PassAction {
-            player: PlayerId::new("p1"),
-            reason: PassActionReason::NoCardsInHand,
-        })
-        .unwrap();
+    let mut state = state_after_cannot_act_pass(&record, PlayerId::new("p1"));
 
     assert_eq!(
-        record.advance_automatic().unwrap(),
+        advance_state_automatic(&state).unwrap(),
         vec![GameEvent::CardsDrawnForTurnDiscardChoice {
             player: PlayerId::new("p1"),
-            drawn_cards: vec![card(10), card(11), card(12)],
-            allowed_discards: vec![card(10), card(11), card(12)],
+            drawn_cards: vec![card(10), card(11)],
+            allowed_discards: vec![card(10), card(11)],
         }]
     );
 
-    let state = record.state().unwrap();
+    for event in advance_state_automatic(&state).unwrap() {
+        apply_event(&mut state, &event);
+    }
+
     assert_eq!(state.phase, Phase::TurnDrawDiscardChoice);
     assert_eq!(
         state.hand(&PlayerId::new("p1")),
-        Some(vec![card(10), card(11), card(12)].as_slice())
+        Some(vec![card(1), card(2), card(3), card(4), card(10), card(11)].as_slice())
     );
-    assert_eq!(state.deck, vec![card(13)]);
-    assert!(state.pending_choice.is_some());
-    assert_eq!(record.replay().unwrap(), state);
+    assert_eq!(state.deck, (12..=20).map(card).collect::<Vec<_>>());
+    assert_eq!(
+        state.pending_choice,
+        Some(PendingChoice {
+            player: PlayerId::new("p1"),
+            kind: PendingChoiceKind::TurnDrawDiscard {
+                drawn_cards: vec![card(10), card(11)],
+                allowed_discards: vec![card(10), card(11)],
+            },
+        })
+    );
 }
 
 #[test]
 fn choosing_turn_discard_finishes_draw_choice_and_moves_card_to_discard() {
-    let mut record = GameRecord::start(
-        two_player_setup_with_empty_first_hand(),
-        vec![card(10), card(11), card(12), card(13)],
-    )
-    .unwrap();
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     record.advance_automatic().unwrap();
-    record
-        .handle(Command::PassAction {
-            player: PlayerId::new("p1"),
-            reason: PassActionReason::NoCardsInHand,
-        })
-        .unwrap();
-    record.advance_automatic().unwrap();
+    let mut state = state_after_cannot_act_pass(&record, PlayerId::new("p1"));
+    for event in advance_state_automatic(&state).unwrap() {
+        apply_event(&mut state, &event);
+    }
 
     assert_eq!(
-        record
-            .handle(Command::ChooseTurnDiscard {
+        handle_command(
+            &state,
+            Command::ChooseTurnDiscard {
                 player: PlayerId::new("p1"),
                 discard: card(10),
-            })
-            .unwrap(),
+            },
+        )
+        .unwrap(),
         vec![GameEvent::TurnDiscardChosen {
             player: PlayerId::new("p1"),
             discard: card(10),
         }]
     );
 
-    let state = record.state().unwrap();
+    for event in handle_command(
+        &state,
+        Command::ChooseTurnDiscard {
+            player: PlayerId::new("p1"),
+            discard: card(10),
+        },
+    )
+    .unwrap()
+    {
+        apply_event(&mut state, &event);
+    }
+
     assert_eq!(state.phase, Phase::TurnEnd);
     assert_eq!(
         state.hand(&PlayerId::new("p1")),
-        Some(vec![card(11), card(12)].as_slice())
+        Some(vec![card(1), card(2), card(3), card(4), card(11)].as_slice())
     );
     assert_eq!(state.discard, vec![card(10)]);
     assert!(state.pending_choice.is_none());
-    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn choosing_turn_discard_rejects_cards_not_drawn_this_turn() {
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
+    record.advance_automatic().unwrap();
+    let mut state = state_after_cannot_act_pass(&record, PlayerId::new("p1"));
+    for event in advance_state_automatic(&state).unwrap() {
+        apply_event(&mut state, &event);
+    }
+    let state_before = state.clone();
+
+    assert_eq!(
+        handle_command(
+            &state,
+            Command::ChooseTurnDiscard {
+                player: PlayerId::new("p1"),
+                discard: card(2),
+            },
+        ),
+        Err(GameError::IllegalDiscard(card(2)))
+    );
+    assert_eq!(state, state_before);
 }
 
 #[test]
 fn turn_end_automatic_advance_starts_next_players_turn() {
-    let mut record = GameRecord::start(
-        two_player_setup_with_empty_first_hand(),
-        vec![card(10), card(11), card(12), card(13)],
-    )
-    .unwrap();
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     record.advance_automatic().unwrap();
-    record
-        .handle(Command::PassAction {
-            player: PlayerId::new("p1"),
-            reason: PassActionReason::NoCardsInHand,
-        })
-        .unwrap();
-    record.advance_automatic().unwrap();
-    record
-        .handle(Command::ChooseTurnDiscard {
-            player: PlayerId::new("p1"),
-            discard: card(10),
-        })
-        .unwrap();
-
-    assert_eq!(
-        record.advance_automatic().unwrap(),
-        vec![
-            GameEvent::TurnEnded {
-                player: PlayerId::new("p1"),
-            },
-            GameEvent::TurnStarted {
-                player: PlayerId::new("p2"),
-                turn_number: 2,
-            },
-        ]
-    );
-
-    let state = record.state().unwrap();
-    assert_eq!(state.phase, Phase::Main);
-    assert_eq!(state.current_player(), Some(&PlayerId::new("p2")));
-    assert_eq!(state.turn_number, 2);
-    assert_eq!(record.replay().unwrap(), state);
-}
-
-#[test]
-fn turn_draw_is_skipped_when_hand_is_already_at_limit() {
-    let mut record =
-        GameRecord::start(two_player_setup_with_full_first_hand(), vec![card(11)]).unwrap();
-    record.advance_automatic().unwrap();
-    let mut state = record.state().unwrap();
-    state.statuses.push(StatusEffect {
-        id: "cannot-act-p1".to_string(),
-        owner: StatusOwner::Player(PlayerId::new("p1")),
-        kind: "CannotAct".to_string(),
-        value: None,
-        duration: StatusDuration::UntilNextAction,
-    });
+    let mut state = state_after_cannot_act_pass(&record, PlayerId::new("p1"));
+    for event in advance_state_automatic(&state).unwrap() {
+        apply_event(&mut state, &event);
+    }
     for event in handle_command(
         &state,
-        Command::PassAction {
+        Command::ChooseTurnDiscard {
             player: PlayerId::new("p1"),
-            reason: PassActionReason::CannotActByStatus,
+            discard: card(10),
         },
     )
     .unwrap()
@@ -492,10 +497,6 @@ fn turn_draw_is_skipped_when_hand_is_already_at_limit() {
     assert_eq!(
         advance_state_automatic(&state).unwrap(),
         vec![
-            GameEvent::TurnDrawSkipped {
-                player: PlayerId::new("p1"),
-                reason: TurnDrawSkipReason::HandLimitReached,
-            },
             GameEvent::TurnEnded {
                 player: PlayerId::new("p1"),
             },
@@ -512,65 +513,116 @@ fn turn_draw_is_skipped_when_hand_is_already_at_limit() {
 
     assert_eq!(state.phase, Phase::Main);
     assert_eq!(state.current_player(), Some(&PlayerId::new("p2")));
+    assert_eq!(state.turn_number, 2);
+}
+
+#[test]
+fn turn_draw_is_skipped_when_hand_is_already_at_limit() {
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
+    record.advance_automatic().unwrap();
+    let mut state = state_after_cannot_act_pass(&record, PlayerId::new("p1"));
+    for event in advance_state_automatic(&state).unwrap() {
+        apply_event(&mut state, &event);
+    }
+    for event in handle_command(
+        &state,
+        Command::ChooseTurnDiscard {
+            player: PlayerId::new("p1"),
+            discard: card(10),
+        },
+    )
+    .unwrap()
+    {
+        apply_event(&mut state, &event);
+    }
+    for event in advance_state_automatic(&state).unwrap() {
+        apply_event(&mut state, &event);
+    }
+
+    state.statuses.push(cannot_act_status(PlayerId::new("p2")));
+    for event in handle_command(
+        &state,
+        Command::PassAction {
+            player: PlayerId::new("p2"),
+            reason: PassActionReason::CannotActByStatus,
+        },
+    )
+    .unwrap()
+    {
+        apply_event(&mut state, &event);
+    }
+
     assert_eq!(
-        state.hand(&PlayerId::new("p1")),
-        Some(vec![card(1), card(2), card(3), card(4), card(5)].as_slice())
+        advance_state_automatic(&state).unwrap(),
+        vec![
+            GameEvent::TurnDrawSkipped {
+                player: PlayerId::new("p2"),
+                reason: TurnDrawSkipReason::HandLimitReached,
+            },
+            GameEvent::TurnEnded {
+                player: PlayerId::new("p2"),
+            },
+            GameEvent::TurnStarted {
+                player: PlayerId::new("p1"),
+                turn_number: 3,
+            },
+        ]
     );
-    assert_eq!(state.deck, vec![card(11)]);
+
+    for event in advance_state_automatic(&state).unwrap() {
+        apply_event(&mut state, &event);
+    }
+
+    assert_eq!(state.phase, Phase::Main);
+    assert_eq!(state.current_player(), Some(&PlayerId::new("p1")));
+    assert_eq!(
+        state.hand(&PlayerId::new("p2")),
+        Some(vec![card(5), card(6), card(7), card(8), card(9)].as_slice())
+    );
+    assert_eq!(state.deck, (12..=20).map(card).collect::<Vec<_>>());
     assert!(state.pending_choice.is_none());
 }
 
 #[test]
 fn turn_draw_recycles_discard_to_deck_bottom_when_deck_is_insufficient() {
-    let mut record = GameRecord::start(
-        two_player_setup_with_empty_hands(),
-        vec![card(10), card(11), card(12), card(13), card(14)],
-    )
-    .unwrap();
-    record.advance_automatic().unwrap();
-    record
-        .handle(Command::PassAction {
-            player: PlayerId::new("p1"),
-            reason: PassActionReason::NoCardsInHand,
-        })
-        .unwrap();
-    record.advance_automatic().unwrap();
-    record
-        .handle(Command::ChooseTurnDiscard {
-            player: PlayerId::new("p1"),
-            discard: card(10),
-        })
-        .unwrap();
-    record.advance_automatic().unwrap();
-    record
-        .handle(Command::PassAction {
-            player: PlayerId::new("p2"),
-            reason: PassActionReason::NoCardsInHand,
-        })
-        .unwrap();
+    let setup = two_player_setup();
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::TurnDraw;
+    state.current_turn_index = 1;
+    state.deck = vec![card(12)];
+    state.discard = vec![card(2)];
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), Vec::new()),
+        PlayerHand::new(
+            PlayerId::new("p2"),
+            vec![card(5), card(6), card(7), card(8)],
+        ),
+    ];
 
     assert_eq!(
-        record.advance_automatic().unwrap(),
+        advance_state_automatic(&state).unwrap(),
         vec![
             GameEvent::DiscardRecycledIntoDeck {
-                shuffled_order: vec![card(10)],
+                shuffled_order: vec![card(2)],
                 placement: DeckPlacement::Bottom,
             },
             GameEvent::CardsDrawnForTurnDiscardChoice {
                 player: PlayerId::new("p2"),
-                drawn_cards: vec![card(13), card(14), card(10)],
-                allowed_discards: vec![card(13), card(14), card(10)],
+                drawn_cards: vec![card(12), card(2)],
+                allowed_discards: vec![card(12), card(2)],
             },
         ]
     );
 
-    let state = record.state().unwrap();
+    for event in advance_state_automatic(&state).unwrap() {
+        apply_event(&mut state, &event);
+    }
+
     assert_eq!(state.phase, Phase::TurnDrawDiscardChoice);
     assert_eq!(state.deck, Vec::<CardInstanceId>::new());
     assert_eq!(state.discard, Vec::<CardInstanceId>::new());
     assert_eq!(
         state.hand(&PlayerId::new("p2")),
-        Some(vec![card(13), card(14), card(10)].as_slice())
+        Some(vec![card(5), card(6), card(7), card(8), card(12), card(2)].as_slice())
     );
-    assert_eq!(record.replay().unwrap(), state);
 }
