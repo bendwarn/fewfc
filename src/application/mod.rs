@@ -91,6 +91,7 @@ fn event_source(event: &GameEvent) -> EventSource {
         | GameEvent::CardsDealt { .. }
         | GameEvent::TurnStarted { .. }
         | GameEvent::CardsDrawnForTurnDiscardChoice { .. }
+        | GameEvent::StatusExpired { .. }
         | GameEvent::TurnDrawSkipped { .. }
         | GameEvent::DiscardRecycledIntoDeck { .. }
         | GameEvent::TurnEnded { .. } => EventSource::System,
@@ -102,6 +103,7 @@ fn event_source(event: &GameEvent) -> EventSource {
         | GameEvent::PassiveCovered { .. }
         | GameEvent::PassiveFlipped { .. }
         | GameEvent::ShieldChanged { .. }
+        | GameEvent::StatusAdded { .. }
         | GameEvent::TurnDiscardChosen { .. } => EventSource::Command,
     }
 }
@@ -179,19 +181,43 @@ pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
 
     loop {
         let next_event = match projected.phase {
-            Phase::TurnStart => Some(GameEvent::TurnStarted {
-                player: projected
-                    .current_player()
-                    .ok_or(GameError::EmptyTurnOrder)?
-                    .clone(),
-                turn_number: projected.turn_number,
+            Phase::TurnStart => status_expiry_event(
+                &projected,
+                crate::domain::StatusExpiryTiming::TurnStart {
+                    player: projected
+                        .current_player()
+                        .ok_or(GameError::EmptyTurnOrder)?
+                        .clone(),
+                },
+            )
+            .or_else(|| {
+                Some(GameEvent::TurnStarted {
+                    player: projected
+                        .current_player()
+                        .ok_or(GameError::EmptyTurnOrder)
+                        .ok()?
+                        .clone(),
+                    turn_number: projected.turn_number,
+                })
             }),
             Phase::TurnDraw => next_turn_draw_event(&projected)?,
-            Phase::TurnEnd => Some(GameEvent::TurnEnded {
-                player: projected
-                    .current_player()
-                    .ok_or(GameError::EmptyTurnOrder)?
-                    .clone(),
+            Phase::TurnEnd => status_expiry_event(
+                &projected,
+                crate::domain::StatusExpiryTiming::TurnEnd {
+                    player: projected
+                        .current_player()
+                        .ok_or(GameError::EmptyTurnOrder)?
+                        .clone(),
+                },
+            )
+            .or_else(|| {
+                Some(GameEvent::TurnEnded {
+                    player: projected
+                        .current_player()
+                        .ok_or(GameError::EmptyTurnOrder)
+                        .ok()?
+                        .clone(),
+                })
             }),
             Phase::Main | Phase::TurnDrawDiscardChoice => None,
         };
@@ -205,6 +231,48 @@ pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
     }
 
     Ok(events)
+}
+
+fn status_expiry_event(
+    state: &GameState,
+    timing: crate::domain::StatusExpiryTiming,
+) -> Option<GameEvent> {
+    let status = state
+        .statuses
+        .iter()
+        .find(|status| status_expires_at(&status.duration, &timing))?;
+
+    Some(GameEvent::StatusExpired {
+        status_id: status.id.clone(),
+        owner: status.owner.clone(),
+        expired_at: timing,
+    })
+}
+
+fn status_expires_at(
+    duration: &crate::domain::StatusDuration,
+    timing: &crate::domain::StatusExpiryTiming,
+) -> bool {
+    match (duration, timing) {
+        (
+            crate::domain::StatusDuration::UntilTurnStart {
+                player: duration_player,
+            },
+            crate::domain::StatusExpiryTiming::TurnStart {
+                player: timing_player,
+            },
+        )
+        | (
+            crate::domain::StatusDuration::UntilTurnEnd {
+                player: duration_player,
+            },
+            crate::domain::StatusExpiryTiming::TurnEnd {
+                player: timing_player,
+            },
+        ) => duration_player == timing_player,
+        (crate::domain::StatusDuration::Permanent, _) => false,
+        _ => false,
+    }
 }
 
 fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
@@ -1095,6 +1163,19 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
                     new_value: *new_value,
                 },
             );
+        }
+        GameEvent::StatusAdded { status } => {
+            state.statuses.push(status.clone());
+        }
+        GameEvent::StatusExpired {
+            status_id, owner, ..
+        } => {
+            let position = state
+                .statuses
+                .iter()
+                .position(|status| &status.id == status_id && &status.owner == owner)
+                .expect("canonical status expiry event must target an active status");
+            state.statuses.remove(position);
         }
         GameEvent::EffectChoiceRequested { player, kind } => {
             state.pending_choice = Some(crate::domain::PendingChoice {

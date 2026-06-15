@@ -136,11 +136,17 @@ pub enum StatusOwner {
     Team(TeamId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StatusDuration {
-    Turns { remaining: u32 },
-    Rounds { remaining: u32 },
-    UntilNextAction,
+    UntilTurnStart { player: PlayerId },
+    UntilTurnEnd { player: PlayerId },
+    Permanent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StatusExpiryTiming {
+    TurnStart { player: PlayerId },
+    TurnEnd { player: PlayerId },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -428,6 +434,14 @@ pub enum GameEvent {
         old_value: i32,
         delta: i32,
         new_value: i32,
+    },
+    StatusAdded {
+        status: StatusEffect,
+    },
+    StatusExpired {
+        status_id: String,
+        owner: StatusOwner,
+        expired_at: StatusExpiryTiming,
     },
     EffectChoiceRequested {
         player: PlayerId,

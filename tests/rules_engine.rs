@@ -7,8 +7,8 @@ use fewfc::domain::{
     GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
     LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome, PendingChoice,
     PendingChoiceKind, Phase, Player, PlayerHand, PlayerId, RuleImplementationError,
-    ShieldChangeDelta, StatusDuration, StatusEffect, StatusOwner, TeamHp, TeamId,
-    TurnDrawSkipReason,
+    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
+    TeamId, TurnDrawSkipReason,
 };
 use fewfc::rules::Element;
 
@@ -125,13 +125,17 @@ fn cannot_act_status(player: PlayerId) -> StatusEffect {
         owner: StatusOwner::Player(player),
         kind: "CannotAct".to_string(),
         value: None,
-        duration: StatusDuration::UntilNextAction,
+        duration: StatusDuration::Permanent,
     }
+}
+
+fn add_status(state: &mut GameState, status: StatusEffect) {
+    apply_event(state, &GameEvent::StatusAdded { status });
 }
 
 fn state_after_cannot_act_pass(record: &GameRecord, player: PlayerId) -> GameState {
     let mut state = record.state().unwrap();
-    state.statuses.push(cannot_act_status(player.clone()));
+    add_status(&mut state, cannot_act_status(player.clone()));
 
     let events = handle_command(
         &state,
@@ -671,6 +675,157 @@ fn pending_choices_can_store_effect_generated_continuations() {
 }
 
 #[test]
+fn turn_start_status_expiration_is_event_logged_before_turn_starts() {
+    let setup = two_player_setup();
+    let mut state = GameState::from_setup(&setup);
+    apply_event(
+        &mut state,
+        &GameEvent::StatusAdded {
+            status: StatusEffect {
+                id: "cannot-act-p1".to_string(),
+                owner: StatusOwner::Player(PlayerId::new("p1")),
+                kind: "CannotAct".to_string(),
+                value: None,
+                duration: StatusDuration::UntilTurnStart {
+                    player: PlayerId::new("p1"),
+                },
+            },
+        },
+    );
+
+    let events = advance_state_automatic(&state).unwrap();
+    assert_eq!(
+        events,
+        vec![
+            GameEvent::StatusExpired {
+                status_id: "cannot-act-p1".to_string(),
+                owner: StatusOwner::Player(PlayerId::new("p1")),
+                expired_at: StatusExpiryTiming::TurnStart {
+                    player: PlayerId::new("p1"),
+                },
+            },
+            GameEvent::TurnStarted {
+                player: PlayerId::new("p1"),
+                turn_number: 1,
+            },
+        ]
+    );
+
+    let mut replayed = GameState::from_setup(&setup);
+    add_status(
+        &mut replayed,
+        StatusEffect {
+            id: "cannot-act-p1".to_string(),
+            owner: StatusOwner::Player(PlayerId::new("p1")),
+            kind: "CannotAct".to_string(),
+            value: None,
+            duration: StatusDuration::UntilTurnStart {
+                player: PlayerId::new("p1"),
+            },
+        },
+    );
+
+    for event in &events {
+        apply_event(&mut state, event);
+        apply_event(&mut replayed, event);
+    }
+    assert!(state.statuses.is_empty());
+    assert_eq!(state.phase, Phase::Main);
+    assert_eq!(replayed, state);
+}
+
+#[test]
+fn turn_end_status_expiration_is_event_logged_before_turn_ends() {
+    let setup = two_player_setup();
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::TurnEnd;
+    apply_event(
+        &mut state,
+        &GameEvent::StatusAdded {
+            status: StatusEffect {
+                id: "cannot-act-until-end".to_string(),
+                owner: StatusOwner::Player(PlayerId::new("p1")),
+                kind: "CannotAct".to_string(),
+                value: None,
+                duration: StatusDuration::UntilTurnEnd {
+                    player: PlayerId::new("p1"),
+                },
+            },
+        },
+    );
+
+    let events = advance_state_automatic(&state).unwrap();
+    assert_eq!(
+        events,
+        vec![
+            GameEvent::StatusExpired {
+                status_id: "cannot-act-until-end".to_string(),
+                owner: StatusOwner::Player(PlayerId::new("p1")),
+                expired_at: StatusExpiryTiming::TurnEnd {
+                    player: PlayerId::new("p1"),
+                },
+            },
+            GameEvent::TurnEnded {
+                player: PlayerId::new("p1"),
+            },
+            GameEvent::TurnStarted {
+                player: PlayerId::new("p2"),
+                turn_number: 2,
+            },
+        ]
+    );
+
+    let mut replayed = GameState::from_setup(&setup);
+    replayed.phase = Phase::TurnEnd;
+    add_status(
+        &mut replayed,
+        StatusEffect {
+            id: "cannot-act-until-end".to_string(),
+            owner: StatusOwner::Player(PlayerId::new("p1")),
+            kind: "CannotAct".to_string(),
+            value: None,
+            duration: StatusDuration::UntilTurnEnd {
+                player: PlayerId::new("p1"),
+            },
+        },
+    );
+
+    for event in &events {
+        apply_event(&mut state, event);
+        apply_event(&mut replayed, event);
+    }
+    assert!(state.statuses.is_empty());
+    assert_eq!(state.phase, Phase::Main);
+    assert_eq!(state.current_player(), Some(&PlayerId::new("p2")));
+    assert_eq!(replayed, state);
+}
+
+#[test]
+fn permanent_statuses_do_not_expire_and_remain_visible_to_command_validation() {
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
+    record.advance_automatic().unwrap();
+    let mut state = record.state().unwrap();
+    add_status(&mut state, cannot_act_status(PlayerId::new("p1")));
+
+    assert_eq!(advance_state_automatic(&state).unwrap(), Vec::new());
+    assert_eq!(
+        handle_command(
+            &state,
+            Command::PassAction {
+                player: PlayerId::new("p1"),
+                reason: PassActionReason::CannotActByStatus,
+            },
+        )
+        .unwrap(),
+        vec![GameEvent::ActionPassed {
+            player: PlayerId::new("p1"),
+            reason: PassActionReason::CannotActByStatus,
+        }]
+    );
+    assert_eq!(state.statuses, vec![cannot_act_status(PlayerId::new("p1"))]);
+}
+
+#[test]
 fn invalid_command_returns_error_without_appending_events_or_changing_state() {
     let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     let events_before = record.events().to_vec();
@@ -764,7 +919,7 @@ fn pass_action_is_allowed_when_player_cannot_act_by_status() {
     let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     record.advance_automatic().unwrap();
     let mut state = record.state().unwrap();
-    state.statuses.push(cannot_act_status(PlayerId::new("p1")));
+    add_status(&mut state, cannot_act_status(PlayerId::new("p1")));
 
     assert_eq!(
         handle_command(
@@ -952,7 +1107,7 @@ fn turn_draw_is_skipped_when_hand_is_already_at_limit() {
         apply_event(&mut state, &event);
     }
 
-    state.statuses.push(cannot_act_status(PlayerId::new("p2")));
+    add_status(&mut state, cannot_act_status(PlayerId::new("p2")));
     for event in handle_command(
         &state,
         Command::PassAction {
