@@ -2,7 +2,8 @@
 
 use crate::domain::{
     CardInstanceId, Command, DeckPlacement, EventMetadata, EventSource, GameError, GameEvent,
-    GameResult, GameSetup, GameState, Phase, RecordedEvent, TurnDrawSkipReason, validate_setup,
+    GameResult, GameSetup, GameState, PassActionReason, Phase, RecordedEvent, TurnDrawSkipReason,
+    validate_setup,
 };
 use std::collections::HashSet;
 
@@ -85,9 +86,9 @@ fn event_source(event: &GameEvent) -> EventSource {
         | GameEvent::TurnDrawSkipped { .. }
         | GameEvent::DiscardRecycledIntoDeck { .. }
         | GameEvent::TurnEnded { .. } => EventSource::System,
-        GameEvent::ActiveWindowEnded { .. }
-        | GameEvent::ActionSkipped { .. }
-        | GameEvent::TurnDiscardChosen { .. } => EventSource::Command,
+        GameEvent::ActionPassed { .. } | GameEvent::TurnDiscardChosen { .. } => {
+            EventSource::Command
+        }
     }
 }
 
@@ -131,7 +132,7 @@ pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
                     .ok_or(GameError::EmptyTurnOrder)?
                     .clone(),
             }),
-            Phase::ActiveWindow | Phase::Action | Phase::TurnDrawDiscardChoice => None,
+            Phase::Main | Phase::TurnDrawDiscardChoice => None,
         };
 
         let Some(event) = next_event else {
@@ -195,15 +196,27 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
 
 pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<GameEvent>> {
     match command {
-        Command::EndActiveWindow { player } => {
+        Command::PassAction { player, reason } => {
             ensure_current_player(state, &player)?;
-            ensure_phase(state, Phase::ActiveWindow)?;
-            Ok(vec![GameEvent::ActiveWindowEnded { player }])
-        }
-        Command::SkipAction { player } => {
-            ensure_current_player(state, &player)?;
-            ensure_phase(state, Phase::Action)?;
-            Ok(vec![GameEvent::ActionSkipped { player }])
+            ensure_phase(state, Phase::Main)?;
+
+            match reason {
+                PassActionReason::NoCardsInHand => {
+                    let hand = state
+                        .hand(&player)
+                        .ok_or_else(|| GameError::UnknownPlayer(player.clone()))?;
+                    if !hand.is_empty() {
+                        return Err(GameError::CannotPassAction { reason });
+                    }
+                }
+                PassActionReason::CannotActByStatus => {
+                    if !player_has_status(state, &player, "CannotAct") {
+                        return Err(GameError::CannotPassAction { reason });
+                    }
+                }
+            }
+
+            Ok(vec![GameEvent::ActionPassed { player, reason }])
         }
         Command::ChooseTurnDiscard { player, discard } => {
             ensure_current_player(state, &player)?;
@@ -253,6 +266,13 @@ fn ensure_phase(state: &GameState, expected: Phase) -> GameResult<()> {
     }
 }
 
+fn player_has_status(state: &GameState, player: &crate::domain::PlayerId, kind: &str) -> bool {
+    state.statuses.iter().any(|status| {
+        matches!(&status.owner, crate::domain::StatusOwner::Player(owner) if owner == player)
+            && status.kind == kind
+    })
+}
+
 pub fn apply_event(state: &mut GameState, event: &GameEvent) {
     match event {
         GameEvent::DeckPrepared { deck_order } => {
@@ -261,16 +281,11 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
         GameEvent::TurnStarted { player, .. } => {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, Phase::TurnStart);
-            state.phase = Phase::ActiveWindow;
+            state.phase = Phase::Main;
         }
-        GameEvent::ActiveWindowEnded { player } => {
+        GameEvent::ActionPassed { player, .. } => {
             debug_assert_eq!(state.current_player(), Some(player));
-            debug_assert_eq!(state.phase, Phase::ActiveWindow);
-            state.phase = Phase::Action;
-        }
-        GameEvent::ActionSkipped { player } => {
-            debug_assert_eq!(state.current_player(), Some(player));
-            debug_assert_eq!(state.phase, Phase::Action);
+            debug_assert_eq!(state.phase, Phase::Main);
             state.phase = Phase::TurnDraw;
         }
         GameEvent::CardsDrawnForTurnDiscardChoice {

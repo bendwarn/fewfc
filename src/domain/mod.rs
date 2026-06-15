@@ -159,8 +159,7 @@ impl GameSetup {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     TurnStart,
-    ActiveWindow,
-    Action,
+    Main,
     TurnDraw,
     TurnDrawDiscardChoice,
     TurnEnd,
@@ -269,11 +268,9 @@ pub enum GameEvent {
         player: PlayerId,
         turn_number: u64,
     },
-    ActiveWindowEnded {
+    ActionPassed {
         player: PlayerId,
-    },
-    ActionSkipped {
-        player: PlayerId,
+        reason: PassActionReason,
     },
     CardsDrawnForTurnDiscardChoice {
         player: PlayerId,
@@ -327,16 +324,20 @@ pub enum DeckPlacement {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
-    EndActiveWindow {
+    PassAction {
         player: PlayerId,
-    },
-    SkipAction {
-        player: PlayerId,
+        reason: PassActionReason,
     },
     ChooseTurnDiscard {
         player: PlayerId,
         discard: CardInstanceId,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassActionReason {
+    NoCardsInHand,
+    CannotActByStatus,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -362,6 +363,9 @@ pub enum GameError {
     MissingPendingChoice,
     IllegalDiscard(CardInstanceId),
     DuplicateCard(CardInstanceId),
+    CannotPassAction {
+        reason: PassActionReason,
+    },
     NotEnoughCards {
         needed: usize,
         available: usize,
