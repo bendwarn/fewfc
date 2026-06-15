@@ -33,6 +33,37 @@ impl CardInstanceId {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Element {
+    Metal,
+    Wood,
+    Water,
+    Fire,
+    Earth,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CardDefId(String);
+
+impl CardDefId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardDef {
+    pub id: CardDefId,
+    pub name: String,
+    pub element: Element,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardInstanceDef {
+    pub instance: CardInstanceId,
+    pub definition: CardDefId,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Player {
     pub id: PlayerId,
@@ -109,6 +140,8 @@ pub struct GameSetup {
     pub players: Vec<Player>,
     pub turn_order: Vec<PlayerId>,
     pub hp: Vec<TeamHp>,
+    pub card_defs: Vec<CardDef>,
+    pub card_instances: Vec<CardInstanceDef>,
     pub hand_limit: usize,
     pub base_draw: usize,
 }
@@ -140,9 +173,21 @@ impl GameSetup {
                     hp: starting_hp,
                 },
             ],
+            card_defs: Vec::new(),
+            card_instances: Vec::new(),
             hand_limit: 5,
             base_draw: 2,
         }
+    }
+
+    pub fn with_cards(
+        mut self,
+        card_defs: Vec<CardDef>,
+        card_instances: Vec<CardInstanceDef>,
+    ) -> Self {
+        self.card_defs = card_defs;
+        self.card_instances = card_instances;
+        self
     }
 }
 
@@ -164,6 +209,8 @@ pub struct GameState {
     pub players: Vec<Player>,
     pub turn_order: Vec<PlayerId>,
     pub hp: Vec<TeamHp>,
+    pub card_defs: Vec<CardDef>,
+    pub card_instances: Vec<CardInstanceDef>,
     pub deck: Vec<CardInstanceId>,
     pub hands: Vec<PlayerHand>,
     pub discard: Vec<CardInstanceId>,
@@ -185,6 +232,8 @@ impl GameState {
             players: setup.players.clone(),
             turn_order: setup.turn_order.clone(),
             hp: setup.hp.clone(),
+            card_defs: setup.card_defs.clone(),
+            card_instances: setup.card_instances.clone(),
             deck: Vec::new(),
             hands: setup
                 .players
@@ -231,6 +280,22 @@ impl GameState {
             .iter()
             .find(|shield| &shield.player == player)
             .map(|shield| shield.value)
+    }
+
+    pub fn card_def(&self, instance: CardInstanceId) -> Option<&CardDef> {
+        let definition = &self
+            .card_instances
+            .iter()
+            .find(|card| card.instance == instance)?
+            .definition;
+
+        self.card_defs
+            .iter()
+            .find(|card_def| &card_def.id == definition)
+    }
+
+    pub fn card_element(&self, instance: CardInstanceId) -> Option<Element> {
+        self.card_def(instance).map(|card_def| card_def.element)
     }
 }
 
@@ -361,6 +426,8 @@ pub enum GameError {
     MissingPendingChoice,
     IllegalDiscard(CardInstanceId),
     DuplicateCard(CardInstanceId),
+    MissingCardInstanceDefinition(CardInstanceId),
+    MissingCardDefinition(CardDefId),
     CannotPassAction {
         reason: PassActionReason,
     },
@@ -404,6 +471,30 @@ pub fn validate_setup(setup: &GameSetup) -> GameResult<()> {
     }
 
     validate_team_seating(setup)?;
+    validate_card_setup(setup)?;
+
+    Ok(())
+}
+
+fn validate_card_setup(setup: &GameSetup) -> GameResult<()> {
+    let card_defs = setup
+        .card_defs
+        .iter()
+        .map(|card_def| card_def.id.clone())
+        .collect::<HashSet<_>>();
+    let mut card_instances = HashSet::new();
+
+    for card_instance in &setup.card_instances {
+        if !card_instances.insert(card_instance.instance) {
+            return Err(GameError::DuplicateCard(card_instance.instance));
+        }
+
+        if !card_defs.contains(&card_instance.definition) {
+            return Err(GameError::MissingCardDefinition(
+                card_instance.definition.clone(),
+            ));
+        }
+    }
 
     Ok(())
 }

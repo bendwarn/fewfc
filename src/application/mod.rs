@@ -17,7 +17,7 @@ pub struct GameRecord {
 impl GameRecord {
     pub fn start(setup: GameSetup, deck_order: Vec<CardInstanceId>) -> GameResult<Self> {
         validate_setup(&setup)?;
-        validate_card_instances(&deck_order)?;
+        validate_card_instances(&setup, &deck_order)?;
         let events = initial_events(&setup, deck_order)?;
 
         let record = Self {
@@ -94,12 +94,21 @@ fn event_source(event: &GameEvent) -> EventSource {
     }
 }
 
-fn validate_card_instances(deck_order: &[CardInstanceId]) -> GameResult<()> {
+fn validate_card_instances(setup: &GameSetup, deck_order: &[CardInstanceId]) -> GameResult<()> {
     let mut seen = HashSet::new();
+    let known_instances = setup
+        .card_instances
+        .iter()
+        .map(|card| card.instance)
+        .collect::<HashSet<_>>();
 
     for card in deck_order {
         if !seen.insert(*card) {
             return Err(GameError::DuplicateCard(*card));
+        }
+
+        if !known_instances.contains(card) {
+            return Err(GameError::MissingCardInstanceDefinition(*card));
         }
     }
 

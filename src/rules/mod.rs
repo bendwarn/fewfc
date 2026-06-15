@@ -1,15 +1,7 @@
 //! Rule registries: formations, effects, matchers, and formula resolvers.
 
+pub use crate::domain::Element;
 use std::collections::HashMap;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Element {
-    Metal,
-    Wood,
-    Water,
-    Fire,
-    Earth,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FormationDef {

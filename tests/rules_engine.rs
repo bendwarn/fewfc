@@ -2,21 +2,57 @@ use fewfc::application::{
     GameRecord, advance_automatic as advance_state_automatic, apply_event, handle_command,
 };
 use fewfc::domain::{
-    CardInstanceId, Command, DeckPlacement, EventSource, GameError, GameEvent, GameSetup,
-    GameState, GameStatus, PassActionReason, PendingChoice, PendingChoiceKind, Phase, Player,
-    PlayerHand, PlayerId, StatusDuration, StatusEffect, StatusOwner, TeamHp, TeamId,
-    TurnDrawSkipReason,
+    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, DeckPlacement, EventSource,
+    GameError, GameEvent, GameSetup, GameState, GameStatus, PassActionReason, PendingChoice,
+    PendingChoiceKind, Phase, Player, PlayerHand, PlayerId, StatusDuration, StatusEffect,
+    StatusOwner, TeamHp, TeamId, TurnDrawSkipReason,
 };
+use fewfc::rules::Element;
 
 fn card(id: u64) -> CardInstanceId {
     CardInstanceId::new(id)
+}
+
+fn card_def(id: &str, element: Element) -> CardDef {
+    CardDef {
+        id: CardDefId::new(id),
+        name: id.to_string(),
+        element,
+    }
+}
+
+fn card_instance(instance: u64, def_id: &str) -> CardInstanceDef {
+    CardInstanceDef {
+        instance: card(instance),
+        definition: CardDefId::new(def_id),
+    }
 }
 
 fn two_player_setup() -> GameSetup {
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
 
-    GameSetup::two_player(p1, p2, 30)
+    GameSetup::two_player(p1, p2, 30).with_cards(
+        vec![
+            card_def("metal", Element::Metal),
+            card_def("wood", Element::Wood),
+            card_def("water", Element::Water),
+            card_def("fire", Element::Fire),
+            card_def("earth", Element::Earth),
+        ],
+        (1..=20)
+            .map(|id| {
+                let def_id = match id % 5 {
+                    1 => "metal",
+                    2 => "wood",
+                    3 => "water",
+                    4 => "fire",
+                    _ => "earth",
+                };
+                card_instance(id, def_id)
+            })
+            .collect(),
+    )
 }
 
 fn official_deck() -> Vec<CardInstanceId> {
@@ -86,6 +122,32 @@ fn new_game_deals_initial_hands_from_prepared_deck_order() {
     );
     assert_eq!(state.deck, (10..=20).map(card).collect::<Vec<_>>());
     assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn new_game_preserves_card_instance_definitions_for_lookup() {
+    let record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
+    let state = record.state().unwrap();
+
+    assert_eq!(
+        state.card_def(card(1)),
+        Some(&CardDef {
+            id: CardDefId::new("metal"),
+            name: "metal".to_string(),
+            element: Element::Metal,
+        })
+    );
+    assert_eq!(state.card_def(card(99)), None);
+}
+
+#[test]
+fn game_state_resolves_card_instance_elements_for_formation_matching() {
+    let record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
+    let state = record.state().unwrap();
+
+    assert_eq!(state.card_element(card(1)), Some(Element::Metal));
+    assert_eq!(state.card_element(card(2)), Some(Element::Wood));
+    assert_eq!(state.card_element(card(99)), None);
 }
 
 #[test]
@@ -162,6 +224,41 @@ fn setup_validation_rejects_duplicate_card_instances_across_hands_and_deck() {
 }
 
 #[test]
+fn setup_validation_rejects_deck_card_without_instance_definition() {
+    let mut setup = two_player_setup();
+    setup
+        .card_instances
+        .retain(|instance_def| instance_def.instance != card(20));
+
+    assert_eq!(
+        GameRecord::start(setup, official_deck()),
+        Err(GameError::MissingCardInstanceDefinition(card(20)))
+    );
+}
+
+#[test]
+fn setup_validation_rejects_card_instance_with_unknown_definition() {
+    let mut setup = two_player_setup();
+    setup.card_instances[0].definition = CardDefId::new("missing");
+
+    assert_eq!(
+        GameRecord::start(setup, official_deck()),
+        Err(GameError::MissingCardDefinition(CardDefId::new("missing")))
+    );
+}
+
+#[test]
+fn setup_validation_rejects_duplicate_card_instance_definitions() {
+    let mut setup = two_player_setup();
+    setup.card_instances.push(card_instance(1, "metal"));
+
+    assert_eq!(
+        GameRecord::start(setup, official_deck()),
+        Err(GameError::DuplicateCard(card(1)))
+    );
+}
+
+#[test]
 fn setup_validation_requires_hp_for_every_team() {
     let setup = GameSetup {
         players: vec![Player {
@@ -170,6 +267,8 @@ fn setup_validation_requires_hp_for_every_team() {
         }],
         turn_order: vec![PlayerId::new("p1")],
         hp: Vec::new(),
+        card_defs: Vec::new(),
+        card_instances: Vec::new(),
         hand_limit: 5,
         base_draw: 2,
     };
@@ -217,6 +316,8 @@ fn setup_validation_rejects_team_mode_turn_order_that_is_not_alternating() {
                 hp: 30,
             },
         ],
+        card_defs: Vec::new(),
+        card_instances: Vec::new(),
         hand_limit: 5,
         base_draw: 2,
     };
