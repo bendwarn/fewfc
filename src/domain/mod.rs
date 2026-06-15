@@ -219,6 +219,7 @@ pub struct GameState {
     pub shields: Vec<PlayerShield>,
     pub covered_passives: Vec<CoveredPassive>,
     pub statuses: Vec<StatusEffect>,
+    pub last_elemental_attack_by_player: HashMap<PlayerId, LastElementalAttack>,
     pub hand_limit: usize,
     pub base_draw: usize,
 }
@@ -253,6 +254,7 @@ impl GameState {
                 .collect(),
             covered_passives: Vec::new(),
             statuses: Vec::new(),
+            last_elemental_attack_by_player: HashMap::new(),
             hand_limit: setup.hand_limit,
             base_draw: setup.base_draw,
         }
@@ -363,6 +365,7 @@ pub enum GameEvent {
         point_breakdown: AttackPointBreakdown,
         hp_change: HpChangeDelta,
         card_moves: Vec<CardMoveDelta>,
+        elemental_context_update: Option<LastElementalAttackUpdate>,
     },
     DiscardRecycledIntoDeck {
         shuffled_order: Vec<CardInstanceId>,
@@ -429,7 +432,37 @@ pub enum TargetDecl {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttackPointBreakdown {
     pub base_points: i32,
+    pub interaction: ElementInteraction,
+    pub damage_transform: DamageTransform,
     pub final_amount: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ElementInteraction {
+    Generating,
+    Overcoming,
+    Same,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DamageTransform {
+    NormalDamage,
+    HealTarget,
+    DoubleDamage,
+    HalfDamageRoundUp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastElementalAttack {
+    pub element: Element,
+    pub resolved_turn: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastElementalAttackUpdate {
+    pub player: PlayerId,
+    pub attack: LastElementalAttack,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

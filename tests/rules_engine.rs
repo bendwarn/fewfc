@@ -3,8 +3,9 @@ use fewfc::application::{
 };
 use fewfc::domain::{
     AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId, CardMoveDelta,
-    CardZone, Command, DeckPlacement, EventSource, GameError, GameEvent, GameSetup, GameState,
-    GameStatus, HpChangeDelta, PassActionReason, PendingChoice, PendingChoiceKind, Phase, Player,
+    CardZone, Command, DamageTransform, DeckPlacement, ElementInteraction, EventSource, GameError,
+    GameEvent, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
+    LastElementalAttackUpdate, PassActionReason, PendingChoice, PendingChoiceKind, Phase, Player,
     PlayerHand, PlayerId, RuleImplementationError, StatusDuration, StatusEffect, StatusOwner,
     TeamHp, TeamId, TurnDrawSkipReason,
 };
@@ -113,6 +114,32 @@ fn state_after_cannot_act_pass(record: &GameRecord, player: PlayerId) -> GameSta
     }
 
     state
+}
+
+fn advance_record_to_next_main_after_turn_draw(record: &mut GameRecord, discard: CardInstanceId) {
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::ChooseTurnDiscard {
+            player: PlayerId::new("p1"),
+            discard,
+        })
+        .unwrap();
+    record.advance_automatic().unwrap();
+}
+
+fn record_after_p1_metal_attack_on_turn_1() -> GameRecord {
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut record, card(10));
+    record
 }
 
 #[test]
@@ -776,6 +803,8 @@ fn perform_attack_formation_damages_previous_players_team_and_moves_cards_to_dis
             used_cards: vec![card(1)],
             point_breakdown: AttackPointBreakdown {
                 base_points: 7,
+                interaction: ElementInteraction::None,
+                damage_transform: DamageTransform::NormalDamage,
                 final_amount: 7,
             },
             hp_change: HpChangeDelta {
@@ -790,6 +819,13 @@ fn perform_attack_formation_damages_previous_players_team_and_moves_cards_to_dis
                 from: CardZone::Hand(PlayerId::new("p1")),
                 to: CardZone::Discard,
             }],
+            elemental_context_update: Some(LastElementalAttackUpdate {
+                player: PlayerId::new("p1"),
+                attack: LastElementalAttack {
+                    element: Element::Metal,
+                    resolved_turn: 1,
+                },
+            }),
         }]
     );
 
@@ -812,6 +848,15 @@ fn perform_attack_formation_damages_previous_players_team_and_moves_cards_to_dis
                 hp: 23,
             },
         ]
+    );
+    assert_eq!(
+        state
+            .last_elemental_attack_by_player
+            .get(&PlayerId::new("p1")),
+        Some(&LastElementalAttack {
+            element: Element::Metal,
+            resolved_turn: 1,
+        })
     );
     assert_eq!(record.replay().unwrap(), state);
 }
@@ -948,6 +993,8 @@ fn perform_formation_matches_cards_by_instance_definitions() {
             used_cards: vec![card(1), card(6)],
             point_breakdown: AttackPointBreakdown {
                 base_points: 12,
+                interaction: ElementInteraction::None,
+                damage_transform: DamageTransform::NormalDamage,
                 final_amount: 12,
             },
             hp_change: HpChangeDelta {
@@ -969,6 +1016,7 @@ fn perform_formation_matches_cards_by_instance_definitions() {
                     to: CardZone::Discard,
                 },
             ],
+            elemental_context_update: None,
         }]
     );
 
@@ -991,6 +1039,7 @@ fn perform_formation_matches_cards_by_instance_definitions() {
             },
         ]
     );
+    assert!(state.last_elemental_attack_by_player.is_empty());
 }
 
 #[test]
@@ -1014,6 +1063,8 @@ fn attack_hp_delta_records_clamped_damage() {
             used_cards: vec![card(1)],
             point_breakdown: AttackPointBreakdown {
                 base_points: 7,
+                interaction: ElementInteraction::None,
+                damage_transform: DamageTransform::NormalDamage,
                 final_amount: 7,
             },
             hp_change: HpChangeDelta {
@@ -1028,6 +1079,13 @@ fn attack_hp_delta_records_clamped_damage() {
                 from: CardZone::Hand(PlayerId::new("p1")),
                 to: CardZone::Discard,
             }],
+            elemental_context_update: Some(LastElementalAttackUpdate {
+                player: PlayerId::new("p1"),
+                attack: LastElementalAttack {
+                    element: Element::Metal,
+                    resolved_turn: 1,
+                },
+            }),
         }]
     );
 
@@ -1044,5 +1102,193 @@ fn attack_hp_delta_records_clamped_damage() {
                 hp: 0,
             },
         ]
+    );
+}
+
+#[test]
+fn elemental_attack_overcoming_previous_players_last_element_doubles_damage() {
+    let mut record = record_after_p1_metal_attack_on_turn_1();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p2"),
+                formation_id: "fire-strike".to_string(),
+                cards: vec![card(9)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![GameEvent::AttackResolved {
+            attacker: PlayerId::new("p2"),
+            target: PlayerId::new("p1"),
+            formation_id: "fire-strike".to_string(),
+            used_cards: vec![card(9)],
+            point_breakdown: AttackPointBreakdown {
+                base_points: 8,
+                interaction: ElementInteraction::Overcoming,
+                damage_transform: DamageTransform::DoubleDamage,
+                final_amount: 16,
+            },
+            hp_change: HpChangeDelta {
+                team: TeamId::new("team:p1"),
+                old_hp: 30,
+                delta: -16,
+                new_hp: 14,
+                effective_delta: -16,
+            },
+            card_moves: vec![CardMoveDelta {
+                card: card(9),
+                from: CardZone::Hand(PlayerId::new("p2")),
+                to: CardZone::Discard,
+            }],
+            elemental_context_update: Some(LastElementalAttackUpdate {
+                player: PlayerId::new("p2"),
+                attack: LastElementalAttack {
+                    element: Element::Fire,
+                    resolved_turn: 2,
+                },
+            }),
+        }]
+    );
+}
+
+#[test]
+fn elemental_attack_generating_previous_players_last_element_heals_target_team() {
+    let mut record = record_after_p1_metal_attack_on_turn_1();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p2"),
+                formation_id: "earth-strike".to_string(),
+                cards: vec![card(5)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![GameEvent::AttackResolved {
+            attacker: PlayerId::new("p2"),
+            target: PlayerId::new("p1"),
+            formation_id: "earth-strike".to_string(),
+            used_cards: vec![card(5)],
+            point_breakdown: AttackPointBreakdown {
+                base_points: 9,
+                interaction: ElementInteraction::Generating,
+                damage_transform: DamageTransform::HealTarget,
+                final_amount: 9,
+            },
+            hp_change: HpChangeDelta {
+                team: TeamId::new("team:p1"),
+                old_hp: 30,
+                delta: 9,
+                new_hp: 39,
+                effective_delta: 9,
+            },
+            card_moves: vec![CardMoveDelta {
+                card: card(5),
+                from: CardZone::Hand(PlayerId::new("p2")),
+                to: CardZone::Discard,
+            }],
+            elemental_context_update: Some(LastElementalAttackUpdate {
+                player: PlayerId::new("p2"),
+                attack: LastElementalAttack {
+                    element: Element::Earth,
+                    resolved_turn: 2,
+                },
+            }),
+        }]
+    );
+}
+
+#[test]
+fn elemental_attack_same_as_previous_players_last_element_halves_damage_rounding_up() {
+    let mut record = record_after_p1_metal_attack_on_turn_1();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p2"),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(6)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![GameEvent::AttackResolved {
+            attacker: PlayerId::new("p2"),
+            target: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            used_cards: vec![card(6)],
+            point_breakdown: AttackPointBreakdown {
+                base_points: 7,
+                interaction: ElementInteraction::Same,
+                damage_transform: DamageTransform::HalfDamageRoundUp,
+                final_amount: 4,
+            },
+            hp_change: HpChangeDelta {
+                team: TeamId::new("team:p1"),
+                old_hp: 30,
+                delta: -4,
+                new_hp: 26,
+                effective_delta: -4,
+            },
+            card_moves: vec![CardMoveDelta {
+                card: card(6),
+                from: CardZone::Hand(PlayerId::new("p2")),
+                to: CardZone::Discard,
+            }],
+            elemental_context_update: Some(LastElementalAttackUpdate {
+                player: PlayerId::new("p2"),
+                attack: LastElementalAttack {
+                    element: Element::Metal,
+                    resolved_turn: 2,
+                },
+            }),
+        }]
+    );
+}
+
+#[test]
+fn elemental_attack_without_relationship_to_previous_players_last_element_uses_normal_damage() {
+    let mut record = record_after_p1_metal_attack_on_turn_1();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p2"),
+                formation_id: "wood-strike".to_string(),
+                cards: vec![card(7)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![GameEvent::AttackResolved {
+            attacker: PlayerId::new("p2"),
+            target: PlayerId::new("p1"),
+            formation_id: "wood-strike".to_string(),
+            used_cards: vec![card(7)],
+            point_breakdown: AttackPointBreakdown {
+                base_points: 6,
+                interaction: ElementInteraction::None,
+                damage_transform: DamageTransform::NormalDamage,
+                final_amount: 6,
+            },
+            hp_change: HpChangeDelta {
+                team: TeamId::new("team:p1"),
+                old_hp: 30,
+                delta: -6,
+                new_hp: 24,
+                effective_delta: -6,
+            },
+            card_moves: vec![CardMoveDelta {
+                card: card(7),
+                from: CardZone::Hand(PlayerId::new("p2")),
+                to: CardZone::Discard,
+            }],
+            elemental_context_update: Some(LastElementalAttackUpdate {
+                player: PlayerId::new("p2"),
+                attack: LastElementalAttack {
+                    element: Element::Wood,
+                    resolved_turn: 2,
+                },
+            }),
+        }]
     );
 }

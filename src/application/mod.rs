@@ -1,14 +1,15 @@
 //! Application services: command handling, automatic advancement, and replay.
 
 use crate::domain::{
-    AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, Command, DeckPlacement,
-    EventMetadata, EventSource, GameError, GameEvent, GameResult, GameSetup, GameState,
-    HpChangeDelta, PassActionReason, Phase, PlayerId, RecordedEvent, TeamId, TurnDrawSkipReason,
-    validate_setup,
+    AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, Command, DamageTransform,
+    DeckPlacement, ElementInteraction, EventMetadata, EventSource, GameError, GameEvent,
+    GameResult, GameSetup, GameState, HpChangeDelta, LastElementalAttack,
+    LastElementalAttackUpdate, PassActionReason, Phase, PlayerId, RecordedEvent, TeamId,
+    TurnDrawSkipReason, validate_setup,
 };
 use crate::rules::{
-    AttackPlanDef, DamageTarget, EffectPlan, PointFormula, base_formation_matcher,
-    base_formation_registry,
+    AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, FormationCategory, PointFormula,
+    base_formation_matcher, base_formation_registry,
 };
 use std::collections::HashSet;
 
@@ -315,7 +316,14 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                     let target_team = player_team(state, &target)?;
                     let points =
                         compute_attack_points(state, &plan.point_formula, &cards, &target)?;
-                    let hp_change = damage_team(state, &target_team, points)?;
+                    let point_breakdown =
+                        attack_point_breakdown(state, &formation.category, &target, points);
+                    let hp_change = apply_attack_amount(
+                        state,
+                        &target_team,
+                        point_breakdown.final_amount,
+                        point_breakdown.damage_transform,
+                    )?;
                     let card_moves = cards
                         .iter()
                         .copied()
@@ -325,18 +333,23 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                             to: CardZone::Discard,
                         })
                         .collect::<Vec<_>>();
+                    let elemental_context_update =
+                        elemental_context_update(&formation.category, state.turn_number).map(
+                            |attack| LastElementalAttackUpdate {
+                                player: player.clone(),
+                                attack,
+                            },
+                        );
 
                     Ok(vec![GameEvent::AttackResolved {
                         attacker: player,
                         target,
                         formation_id,
                         used_cards: cards,
-                        point_breakdown: AttackPointBreakdown {
-                            base_points: points,
-                            final_amount: points,
-                        },
+                        point_breakdown,
                         hp_change,
                         card_moves,
+                        elemental_context_update,
                     }])
                 }
                 EffectPlan::ActiveSpell(_) | EffectPlan::PassiveSpell(_) => {
@@ -483,14 +496,108 @@ fn compute_attack_points(
     }
 }
 
-fn damage_team(state: &GameState, team: &TeamId, points: i32) -> GameResult<HpChangeDelta> {
+fn attack_point_breakdown(
+    state: &GameState,
+    category: &FormationCategory,
+    target: &PlayerId,
+    base_points: i32,
+) -> AttackPointBreakdown {
+    let Some(current_element) = elemental_attack_element(category) else {
+        return AttackPointBreakdown {
+            base_points,
+            interaction: ElementInteraction::None,
+            damage_transform: DamageTransform::NormalDamage,
+            final_amount: base_points,
+        };
+    };
+    let Some(previous_attack) = state.last_elemental_attack_by_player.get(target) else {
+        return AttackPointBreakdown {
+            base_points,
+            interaction: ElementInteraction::None,
+            damage_transform: DamageTransform::NormalDamage,
+            final_amount: base_points,
+        };
+    };
+
+    if current_element == previous_attack.element {
+        AttackPointBreakdown {
+            base_points,
+            interaction: ElementInteraction::Same,
+            damage_transform: DamageTransform::HalfDamageRoundUp,
+            final_amount: (base_points + 1) / 2,
+        }
+    } else if generates(current_element, previous_attack.element) {
+        AttackPointBreakdown {
+            base_points,
+            interaction: ElementInteraction::Generating,
+            damage_transform: DamageTransform::HealTarget,
+            final_amount: base_points,
+        }
+    } else if overcomes(current_element, previous_attack.element) {
+        AttackPointBreakdown {
+            base_points,
+            interaction: ElementInteraction::Overcoming,
+            damage_transform: DamageTransform::DoubleDamage,
+            final_amount: base_points * 2,
+        }
+    } else {
+        AttackPointBreakdown {
+            base_points,
+            interaction: ElementInteraction::None,
+            damage_transform: DamageTransform::NormalDamage,
+            final_amount: base_points,
+        }
+    }
+}
+
+fn elemental_attack_element(category: &FormationCategory) -> Option<crate::domain::Element> {
+    match category {
+        FormationCategory::Attack(AttackCategory::Elemental(element)) => Some(*element),
+        FormationCategory::Attack(AttackCategory::Physical | AttackCategory::Special)
+        | FormationCategory::Spell(_) => None,
+    }
+}
+
+fn generates(current: crate::domain::Element, previous: crate::domain::Element) -> bool {
+    matches!(
+        (current, previous),
+        (crate::domain::Element::Metal, crate::domain::Element::Water)
+            | (crate::domain::Element::Water, crate::domain::Element::Wood)
+            | (crate::domain::Element::Wood, crate::domain::Element::Fire)
+            | (crate::domain::Element::Fire, crate::domain::Element::Earth)
+            | (crate::domain::Element::Earth, crate::domain::Element::Metal)
+    )
+}
+
+fn overcomes(current: crate::domain::Element, previous: crate::domain::Element) -> bool {
+    matches!(
+        (current, previous),
+        (crate::domain::Element::Metal, crate::domain::Element::Wood)
+            | (crate::domain::Element::Wood, crate::domain::Element::Earth)
+            | (crate::domain::Element::Earth, crate::domain::Element::Water)
+            | (crate::domain::Element::Water, crate::domain::Element::Fire)
+            | (crate::domain::Element::Fire, crate::domain::Element::Metal)
+    )
+}
+
+fn apply_attack_amount(
+    state: &GameState,
+    team: &TeamId,
+    amount: i32,
+    transform: DamageTransform,
+) -> GameResult<HpChangeDelta> {
     let old_hp = state
         .hp
         .iter()
         .find(|team_hp| &team_hp.team == team)
         .map(|team_hp| team_hp.hp)
         .ok_or_else(|| GameError::MissingTeamHp(team.clone()))?;
-    let delta = -points;
+    let delta = match transform {
+        DamageTransform::HealTarget => amount,
+        DamageTransform::NormalDamage
+        | DamageTransform::DoubleDamage
+        | DamageTransform::HalfDamageRoundUp => -amount,
+    };
     let new_hp = (old_hp + delta).max(0);
 
     Ok(HpChangeDelta {
@@ -500,6 +607,22 @@ fn damage_team(state: &GameState, team: &TeamId, points: i32) -> GameResult<HpCh
         new_hp,
         effective_delta: new_hp - old_hp,
     })
+}
+
+fn elemental_context_update(
+    category: &FormationCategory,
+    resolved_turn: u64,
+) -> Option<LastElementalAttack> {
+    match category {
+        FormationCategory::Attack(AttackCategory::Elemental(element)) => {
+            Some(LastElementalAttack {
+                element: *element,
+                resolved_turn,
+            })
+        }
+        FormationCategory::Attack(AttackCategory::Physical | AttackCategory::Special)
+        | FormationCategory::Spell(_) => None,
+    }
 }
 
 pub fn apply_event(state: &mut GameState, event: &GameEvent) {
@@ -556,6 +679,7 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
             attacker,
             hp_change,
             card_moves,
+            elemental_context_update,
             ..
         } => {
             debug_assert_eq!(state.current_player(), Some(attacker));
@@ -583,6 +707,12 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
                     }
                     _ => panic!("canonical attack event must contain supported card moves"),
                 }
+            }
+
+            if let Some(update) = elemental_context_update {
+                state
+                    .last_elemental_attack_by_player
+                    .insert(update.player.clone(), update.attack.clone());
             }
 
             state.phase = Phase::TurnDraw;
