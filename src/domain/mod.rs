@@ -92,7 +92,13 @@ pub struct TeamHp {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GameStatus {
     InProgress,
-    Finished { winning_team: TeamId },
+    Finished { outcome: GameOutcome },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GameOutcome {
+    Team(TeamId),
+    Draw,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -510,6 +516,7 @@ pub enum PassActionReason {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GameError {
+    GameFinished,
     EmptyTurnOrder,
     DuplicatePlayer(PlayerId),
     DuplicateTeamHp(TeamId),

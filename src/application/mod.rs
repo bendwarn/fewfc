@@ -3,7 +3,7 @@
 use crate::domain::{
     AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, Command, DamageTransform,
     DeckPlacement, ElementInteraction, EventMetadata, EventSource, GameError, GameEvent,
-    GameResult, GameSetup, GameState, HpChangeDelta, LastElementalAttack,
+    GameOutcome, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
     LastElementalAttackUpdate, PassActionReason, Phase, PlayerId, RecordedEvent, ShieldChangeDelta,
     TeamId, TurnDrawSkipReason, validate_setup,
 };
@@ -163,6 +163,10 @@ fn initial_deal_count(setup: &GameSetup) -> usize {
 }
 
 pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
+    if matches!(state.status, GameStatus::Finished { .. }) {
+        return Ok(Vec::new());
+    }
+
     let mut projected = state.clone();
     let mut events = Vec::new();
 
@@ -243,6 +247,10 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
 }
 
 pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<GameEvent>> {
+    if matches!(state.status, GameStatus::Finished { .. }) {
+        return Err(GameError::GameFinished);
+    }
+
     match command {
         Command::PassAction { player, reason } => {
             ensure_current_player(state, &player)?;
@@ -759,6 +767,7 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .find(|team_hp| team_hp.team == hp_change.team)
                 .expect("canonical attack event must target an existing team");
             team_hp.hp = hp_change.new_hp;
+            finish_game_if_needed(state);
 
             if let Some(shield_change) = shield_change {
                 apply_shield_change(state, shield_change);
@@ -892,6 +901,34 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
             state.phase = Phase::TurnStart;
         }
     }
+}
+
+fn finish_game_if_needed(state: &mut GameState) {
+    if matches!(state.status, GameStatus::Finished { .. }) {
+        return;
+    }
+
+    let alive_teams = state
+        .hp
+        .iter()
+        .filter(|team_hp| team_hp.hp > 0)
+        .map(|team_hp| team_hp.team.clone())
+        .collect::<Vec<_>>();
+    let defeated_count = state.hp.iter().filter(|team_hp| team_hp.hp == 0).count();
+
+    if defeated_count == 0 {
+        return;
+    }
+
+    state.status = if alive_teams.len() == 1 {
+        GameStatus::Finished {
+            outcome: GameOutcome::Team(alive_teams[0].clone()),
+        }
+    } else {
+        GameStatus::Finished {
+            outcome: GameOutcome::Draw,
+        }
+    };
 }
 
 pub fn replay(setup: &GameSetup, events: &[GameEvent]) -> Result<GameState, GameError> {

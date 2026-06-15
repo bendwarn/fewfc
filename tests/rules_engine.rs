@@ -4,7 +4,7 @@ use fewfc::application::{
 use fewfc::domain::{
     AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId, CardMoveDelta,
     CardZone, Command, DamageTransform, DeckPlacement, ElementInteraction, EventSource, GameError,
-    GameEvent, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
+    GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
     LastElementalAttackUpdate, PassActionReason, PendingChoice, PendingChoiceKind, Phase, Player,
     PlayerHand, PlayerId, RuleImplementationError, ShieldChangeDelta, StatusDuration, StatusEffect,
     StatusOwner, TeamHp, TeamId, TurnDrawSkipReason,
@@ -1105,6 +1105,138 @@ fn attack_hp_delta_records_clamped_damage() {
                 hp: 0,
             },
         ]
+    );
+}
+
+#[test]
+fn attack_that_reduces_a_team_to_zero_finishes_game_with_opposing_team_winner() {
+    let mut record = GameRecord::start(two_player_setup_with_hp(5), official_deck()).unwrap();
+    record.advance_automatic().unwrap();
+
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+
+    let state = record.state().unwrap();
+    assert_eq!(
+        state.status,
+        GameStatus::Finished {
+            outcome: GameOutcome::Team(TeamId::new("team:p1")),
+        }
+    );
+    assert_eq!(
+        state.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 5,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 0,
+            },
+        ]
+    );
+}
+
+#[test]
+fn commands_after_game_over_are_rejected_without_events_or_state_changes() {
+    let mut record = GameRecord::start(two_player_setup_with_hp(5), official_deck()).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    let events_before = record.events().to_vec();
+    let state_before = record.state().unwrap();
+
+    assert_eq!(
+        record.handle(Command::PassAction {
+            player: PlayerId::new("p1"),
+            reason: PassActionReason::CannotActByStatus,
+        }),
+        Err(GameError::GameFinished)
+    );
+    assert_eq!(record.events(), events_before.as_slice());
+    assert_eq!(record.state().unwrap(), state_before);
+}
+
+#[test]
+fn automatic_advance_stops_after_game_over() {
+    let mut record = GameRecord::start(two_player_setup_with_hp(5), official_deck()).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    let events_before = record.events().to_vec();
+    let state_before = record.state().unwrap();
+
+    assert_eq!(record.advance_automatic().unwrap(), Vec::<GameEvent>::new());
+    assert_eq!(record.events(), events_before.as_slice());
+    assert_eq!(record.state().unwrap(), state_before);
+}
+
+#[test]
+fn hp_resolution_finishes_as_draw_when_no_team_remains_alive() {
+    let setup = two_player_setup();
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.hp = vec![
+        TeamHp {
+            team: TeamId::new("team:p1"),
+            hp: 0,
+        },
+        TeamHp {
+            team: TeamId::new("team:p2"),
+            hp: 1,
+        },
+    ];
+
+    apply_event(
+        &mut state,
+        &GameEvent::AttackResolved {
+            attacker: PlayerId::new("p1"),
+            target: PlayerId::new("p2"),
+            formation_id: "metal-strike".to_string(),
+            used_cards: Vec::new(),
+            point_breakdown: AttackPointBreakdown {
+                base_points: 7,
+                interaction: ElementInteraction::None,
+                damage_transform: DamageTransform::NormalDamage,
+                final_amount: 7,
+            },
+            hp_change: HpChangeDelta {
+                team: TeamId::new("team:p2"),
+                old_hp: 1,
+                delta: -7,
+                new_hp: 0,
+                effective_delta: -1,
+            },
+            shield_change: None,
+            card_moves: Vec::new(),
+            elemental_context_update: None,
+        },
+    );
+
+    assert_eq!(
+        state.status,
+        GameStatus::Finished {
+            outcome: GameOutcome::Draw,
+        }
     );
 }
 
