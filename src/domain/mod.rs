@@ -110,6 +110,7 @@ pub struct PlayerShield {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoveredPassive {
     pub owner: PlayerId,
+    pub formation_id: String,
     pub cards: Vec<CardInstanceId>,
     pub covered_on_turn: u64,
     pub reveal_timing: PassiveTriggerTiming,
@@ -380,6 +381,18 @@ pub enum GameEvent {
         delta: i32,
         new_value: i32,
     },
+    PassiveCovered {
+        player: PlayerId,
+        formation_id: String,
+        cards: Vec<CardInstanceId>,
+    },
+    PassiveFlipped {
+        owner: PlayerId,
+        incoming_player: PlayerId,
+        passive_id: String,
+        cards: Vec<CardInstanceId>,
+        outcome: PassiveFlipOutcome,
+    },
     DiscardRecycledIntoDeck {
         shuffled_order: Vec<CardInstanceId>,
         placement: DeckPlacement,
@@ -440,6 +453,18 @@ pub enum TargetDecl {
     Player(PlayerId),
     Team(TeamId),
     Card(CardInstanceId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PassiveFlipOutcome {
+    Applied { effect_id: String },
+    NoEffect { reason: PassiveNoEffectReason },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassiveNoEffectReason {
+    NotAnAttack,
+    NotASpell,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -542,6 +567,9 @@ pub enum GameError {
     CardNotInHand(CardInstanceId),
     FormationPatternMismatch {
         formation_id: String,
+    },
+    PendingPassiveAlreadyCovered {
+        player: PlayerId,
     },
     DuplicateCard(CardInstanceId),
     MissingCardInstanceDefinition(CardInstanceId),

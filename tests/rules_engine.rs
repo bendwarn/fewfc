@@ -5,9 +5,10 @@ use fewfc::domain::{
     AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId, CardMoveDelta,
     CardZone, Command, DamageTransform, DeckPlacement, ElementInteraction, EventSource, GameError,
     GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, PassActionReason, PendingChoice, PendingChoiceKind, Phase, Player,
-    PlayerHand, PlayerId, RuleImplementationError, ShieldChangeDelta, StatusDuration, StatusEffect,
-    StatusOwner, TeamHp, TeamId, TurnDrawSkipReason,
+    LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome, PendingChoice,
+    PendingChoiceKind, Phase, Player, PlayerHand, PlayerId, RuleImplementationError,
+    ShieldChangeDelta, StatusDuration, StatusEffect, StatusOwner, TeamHp, TeamId,
+    TurnDrawSkipReason,
 };
 use fewfc::rules::Element;
 
@@ -135,6 +136,44 @@ fn record_after_p1_metal_attack_on_turn_1() -> GameRecord {
             player: PlayerId::new("p1"),
             formation_id: "metal-strike".to_string(),
             cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut record, card(10));
+    record
+}
+
+fn defense_setup_deck() -> Vec<CardInstanceId> {
+    deck_starting_with(&[2, 7, 1, 3])
+}
+
+fn seal_setup_deck() -> Vec<CardInstanceId> {
+    deck_starting_with(&[3, 8, 1, 2])
+}
+
+fn record_after_p1_covers_defense() -> GameRecord {
+    let mut record = GameRecord::start(two_player_setup(), defense_setup_deck()).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: vec![card(2), card(7)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut record, card(10));
+    record
+}
+
+fn record_after_p1_covers_seal() -> GameRecord {
+    let mut record = GameRecord::start(two_player_setup(), seal_setup_deck()).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "seal".to_string(),
+            cards: vec![card(3), card(8)],
             declared_targets: Vec::new(),
         })
         .unwrap();
@@ -863,27 +902,255 @@ fn perform_attack_formation_damages_previous_players_team_and_moves_cards_to_dis
 }
 
 #[test]
-fn unimplemented_formation_effect_returns_rule_implementation_error_without_events() {
-    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[2, 7])).unwrap();
+fn unimplemented_active_spell_effect_returns_rule_implementation_error_without_events() {
+    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10])).unwrap();
     record.advance_automatic().unwrap();
     let events_before = record.events().to_vec();
     let state_before = record.state().unwrap();
 
     let result = record.handle(Command::PerformFormation {
         player: PlayerId::new("p1"),
-        formation_id: "defense".to_string(),
-        cards: vec![card(2), card(7)],
+        formation_id: "metamorphosis".to_string(),
+        cards: vec![card(5), card(10)],
         declared_targets: Vec::new(),
     });
 
     assert_eq!(
         result,
         Err(GameError::RuleImplementation(
-            RuleImplementationError::EffectNotImplemented("defense".to_string())
+            RuleImplementationError::EffectNotImplemented("metamorphosis".to_string())
         ))
     );
     assert_eq!(record.events(), events_before.as_slice());
     assert_eq!(record.state().unwrap(), state_before);
+}
+
+#[test]
+fn performing_passive_spell_covers_cards_and_consumes_action() {
+    let mut record = GameRecord::start(two_player_setup(), defense_setup_deck()).unwrap();
+    record.advance_automatic().unwrap();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "defense".to_string(),
+                cards: vec![card(2), card(7)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![GameEvent::PassiveCovered {
+            player: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: vec![card(2), card(7)],
+        }]
+    );
+
+    let state = record.state().unwrap();
+    assert_eq!(state.phase, Phase::TurnDraw);
+    assert_eq!(
+        state.hand(&PlayerId::new("p1")),
+        Some(vec![card(1), card(3)].as_slice())
+    );
+    assert_eq!(
+        state.covered_passives,
+        vec![fewfc::domain::CoveredPassive {
+            owner: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: vec![card(2), card(7)],
+            covered_on_turn: 1,
+            reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
+        }]
+    );
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn player_cannot_cover_second_passive_while_one_is_pending() {
+    let mut state = GameState::from_setup(&two_player_setup());
+    state.phase = Phase::Main;
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(2), card(7)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+    state.covered_passives.push(fewfc::domain::CoveredPassive {
+        owner: PlayerId::new("p1"),
+        formation_id: "seal".to_string(),
+        cards: vec![card(3), card(8)],
+        covered_on_turn: 1,
+        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
+    });
+    let state_before = state.clone();
+
+    assert_eq!(
+        handle_command(
+            &state,
+            Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "defense".to_string(),
+                cards: vec![card(2), card(7)],
+                declared_targets: Vec::new(),
+            },
+        ),
+        Err(GameError::PendingPassiveAlreadyCovered {
+            player: PlayerId::new("p1"),
+        })
+    );
+    assert_eq!(state, state_before);
+}
+
+#[test]
+fn previous_players_covered_passive_flips_before_incoming_attack_and_is_discarded() {
+    let mut record = record_after_p1_covers_defense();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p2"),
+                formation_id: "fire-strike".to_string(),
+                cards: vec![card(9)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::PassiveFlipped {
+                owner: PlayerId::new("p1"),
+                incoming_player: PlayerId::new("p2"),
+                passive_id: "defense".to_string(),
+                cards: vec![card(2), card(7)],
+                outcome: PassiveFlipOutcome::Applied {
+                    effect_id: "defense".to_string(),
+                },
+            },
+            GameEvent::AttackResolved {
+                attacker: PlayerId::new("p2"),
+                target: PlayerId::new("p1"),
+                formation_id: "fire-strike".to_string(),
+                used_cards: vec![card(9)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 8,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 8,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 30,
+                    delta: -8,
+                    new_hp: 22,
+                    effective_delta: -8,
+                },
+                shield_change: None,
+                card_moves: vec![CardMoveDelta {
+                    card: card(9),
+                    from: CardZone::Hand(PlayerId::new("p2")),
+                    to: CardZone::Discard,
+                }],
+                elemental_context_update: Some(LastElementalAttackUpdate {
+                    player: PlayerId::new("p2"),
+                    attack: LastElementalAttack {
+                        element: Element::Fire,
+                        resolved_turn: 2,
+                    },
+                }),
+            },
+        ]
+    );
+
+    let state = record.state().unwrap();
+    assert!(state.covered_passives.is_empty());
+    assert_eq!(state.discard, vec![card(10), card(2), card(7), card(9)]);
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn seal_passive_flips_as_no_effect_against_incoming_attack_and_is_discarded() {
+    let mut record = record_after_p1_covers_seal();
+
+    let events = record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p2"),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        events.first(),
+        Some(&GameEvent::PassiveFlipped {
+            owner: PlayerId::new("p1"),
+            incoming_player: PlayerId::new("p2"),
+            passive_id: "seal".to_string(),
+            cards: vec![card(3), card(8)],
+            outcome: PassiveFlipOutcome::NoEffect {
+                reason: fewfc::domain::PassiveNoEffectReason::NotASpell,
+            },
+        })
+    );
+
+    let state = record.state().unwrap();
+    assert!(state.covered_passives.is_empty());
+    assert_eq!(state.discard, vec![card(10), card(3), card(8), card(9)]);
+    assert_eq!(
+        state.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 22,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 30,
+            },
+        ]
+    );
+}
+
+#[test]
+fn seal_passive_flips_as_applied_before_incoming_spell_resolves() {
+    let mut record = record_after_p1_covers_seal();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p2"),
+                formation_id: "countershock".to_string(),
+                cards: vec![card(4), card(9)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::PassiveFlipped {
+                owner: PlayerId::new("p1"),
+                incoming_player: PlayerId::new("p2"),
+                passive_id: "seal".to_string(),
+                cards: vec![card(3), card(8)],
+                outcome: PassiveFlipOutcome::Applied {
+                    effect_id: "seal".to_string(),
+                },
+            },
+            GameEvent::PassiveCovered {
+                player: PlayerId::new("p2"),
+                formation_id: "countershock".to_string(),
+                cards: vec![card(4), card(9)],
+            },
+        ]
+    );
+
+    let state = record.state().unwrap();
+    assert_eq!(state.discard, vec![card(10), card(3), card(8)]);
+    assert_eq!(
+        state.covered_passives,
+        vec![fewfc::domain::CoveredPassive {
+            owner: PlayerId::new("p2"),
+            formation_id: "countershock".to_string(),
+            cards: vec![card(4), card(9)],
+            covered_on_turn: 2,
+            reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
+        }]
+    );
+    assert_eq!(record.replay().unwrap(), state);
 }
 
 #[test]

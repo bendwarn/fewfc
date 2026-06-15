@@ -4,8 +4,8 @@ use crate::domain::{
     AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, Command, DamageTransform,
     DeckPlacement, ElementInteraction, EventMetadata, EventSource, GameError, GameEvent,
     GameOutcome, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, PassActionReason, Phase, PlayerId, RecordedEvent, ShieldChangeDelta,
-    TeamId, TurnDrawSkipReason, validate_setup,
+    LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome, PassiveNoEffectReason, Phase,
+    PlayerId, RecordedEvent, ShieldChangeDelta, TeamId, TurnDrawSkipReason, validate_setup,
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, FormationCategory, PointFormula,
@@ -97,6 +97,8 @@ fn event_source(event: &GameEvent) -> EventSource {
         GameEvent::ActionPassed { .. }
         | GameEvent::AttackResolved { .. }
         | GameEvent::FormationPerformed { .. }
+        | GameEvent::PassiveCovered { .. }
+        | GameEvent::PassiveFlipped { .. }
         | GameEvent::ShieldChanged { .. }
         | GameEvent::TurnDiscardChosen { .. } => EventSource::Command,
     }
@@ -321,6 +323,8 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
             match &effect.plan {
                 EffectPlan::Attack(plan) => {
                     let _ = declared_targets;
+                    let mut events =
+                        passive_flip_events(state, &player, IncomingActionKind::Attack);
                     let target = attack_target(state, &player, &plan)?;
                     let target_team = player_team(state, &target)?;
                     let points =
@@ -362,7 +366,7 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                             },
                         );
 
-                    Ok(vec![GameEvent::AttackResolved {
+                    events.push(GameEvent::AttackResolved {
                         attacker: player,
                         target,
                         formation_id,
@@ -372,15 +376,30 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                         shield_change,
                         card_moves,
                         elemental_context_update,
-                    }])
+                    });
+
+                    Ok(events)
                 }
-                EffectPlan::ActiveSpell(_) | EffectPlan::PassiveSpell(_) => {
-                    Err(GameError::RuleImplementation(
-                        crate::domain::RuleImplementationError::EffectNotImplemented(
-                            effect.id.clone(),
-                        ),
-                    ))
+                EffectPlan::PassiveSpell(_) => {
+                    if state
+                        .covered_passives
+                        .iter()
+                        .any(|passive| passive.owner == player)
+                    {
+                        return Err(GameError::PendingPassiveAlreadyCovered { player });
+                    }
+
+                    let mut events = passive_flip_events(state, &player, IncomingActionKind::Spell);
+                    events.push(GameEvent::PassiveCovered {
+                        player,
+                        formation_id,
+                        cards,
+                    });
+                    Ok(events)
                 }
+                EffectPlan::ActiveSpell(_) => Err(GameError::RuleImplementation(
+                    crate::domain::RuleImplementationError::EffectNotImplemented(effect.id.clone()),
+                )),
             }
         }
         Command::ChooseTurnDiscard { player, discard } => {
@@ -436,6 +455,55 @@ fn player_has_status(state: &GameState, player: &crate::domain::PlayerId, kind: 
         matches!(&status.owner, crate::domain::StatusOwner::Player(owner) if owner == player)
             && status.kind == kind
     })
+}
+
+#[derive(Clone, Copy)]
+enum IncomingActionKind {
+    Attack,
+    Spell,
+}
+
+fn passive_flip_events(
+    state: &GameState,
+    incoming_player: &PlayerId,
+    incoming_kind: IncomingActionKind,
+) -> Vec<GameEvent> {
+    let Some(previous_player) = previous_player(state, incoming_player).ok() else {
+        return Vec::new();
+    };
+
+    state
+        .covered_passives
+        .iter()
+        .filter(|passive| passive.owner == previous_player)
+        .map(|passive| GameEvent::PassiveFlipped {
+            owner: passive.owner.clone(),
+            incoming_player: incoming_player.clone(),
+            passive_id: passive.formation_id.clone(),
+            cards: passive.cards.clone(),
+            outcome: passive_outcome(&passive.formation_id, incoming_kind),
+        })
+        .collect()
+}
+
+fn passive_outcome(passive_id: &str, incoming_kind: IncomingActionKind) -> PassiveFlipOutcome {
+    match (passive_id, incoming_kind) {
+        ("defense", IncomingActionKind::Attack) => PassiveFlipOutcome::Applied {
+            effect_id: passive_id.to_string(),
+        },
+        ("defense", IncomingActionKind::Spell) => PassiveFlipOutcome::NoEffect {
+            reason: PassiveNoEffectReason::NotAnAttack,
+        },
+        ("seal", IncomingActionKind::Spell) => PassiveFlipOutcome::Applied {
+            effect_id: passive_id.to_string(),
+        },
+        ("seal", IncomingActionKind::Attack) => PassiveFlipOutcome::NoEffect {
+            reason: PassiveNoEffectReason::NotASpell,
+        },
+        _ => PassiveFlipOutcome::NoEffect {
+            reason: PassiveNoEffectReason::NotASpell,
+        },
+    }
 }
 
 fn attack_target(
@@ -749,6 +817,48 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
             }
 
             state.phase = Phase::TurnDraw;
+        }
+        GameEvent::PassiveCovered {
+            player,
+            formation_id,
+            cards,
+        } => {
+            debug_assert_eq!(state.current_player(), Some(player));
+            debug_assert_eq!(state.phase, Phase::Main);
+
+            let hand = state
+                .hand_mut(player)
+                .expect("canonical passive cover event must target a known player");
+            for card in cards {
+                let position = hand
+                    .iter()
+                    .position(|hand_card| hand_card == card)
+                    .expect("canonical passive cover event must remove cards from hand");
+                hand.remove(position);
+            }
+
+            state.covered_passives.push(crate::domain::CoveredPassive {
+                owner: player.clone(),
+                formation_id: formation_id.clone(),
+                cards: cards.clone(),
+                covered_on_turn: state.turn_number,
+                reveal_timing: crate::domain::PassiveTriggerTiming::NextPlayerActionStart,
+            });
+            state.phase = Phase::TurnDraw;
+        }
+        GameEvent::PassiveFlipped {
+            owner,
+            passive_id: _,
+            cards,
+            ..
+        } => {
+            let passive_position = state
+                .covered_passives
+                .iter()
+                .position(|passive| &passive.owner == owner)
+                .expect("canonical passive flip event must target a covered passive");
+            state.covered_passives.remove(passive_position);
+            state.discard.extend(cards.iter().copied());
         }
         GameEvent::AttackResolved {
             attacker,
