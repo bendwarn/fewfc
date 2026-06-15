@@ -1,11 +1,15 @@
 //! Application services: command handling, automatic advancement, and replay.
 
 use crate::domain::{
-    CardInstanceId, Command, DeckPlacement, EventMetadata, EventSource, GameError, GameEvent,
-    GameResult, GameSetup, GameState, PassActionReason, Phase, RecordedEvent, TurnDrawSkipReason,
+    AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, Command, DeckPlacement,
+    EventMetadata, EventSource, GameError, GameEvent, GameResult, GameSetup, GameState,
+    HpChangeDelta, PassActionReason, Phase, PlayerId, RecordedEvent, TeamId, TurnDrawSkipReason,
     validate_setup,
 };
-use crate::rules::{EffectPlan, base_formation_matcher, base_formation_registry};
+use crate::rules::{
+    AttackPlanDef, DamageTarget, EffectPlan, PointFormula, base_formation_matcher,
+    base_formation_registry,
+};
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,6 +94,7 @@ fn event_source(event: &GameEvent) -> EventSource {
         | GameEvent::DiscardRecycledIntoDeck { .. }
         | GameEvent::TurnEnded { .. } => EventSource::System,
         GameEvent::ActionPassed { .. }
+        | GameEvent::AttackResolved { .. }
         | GameEvent::FormationPerformed { .. }
         | GameEvent::TurnDiscardChosen { .. } => EventSource::Command,
     }
@@ -303,13 +308,37 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                 .effect_for(formation)
                 .expect("base formation registry must link every formation to an effect");
 
-            match effect.plan {
-                EffectPlan::Attack(_) => Ok(vec![GameEvent::FormationPerformed {
-                    player,
-                    formation_id,
-                    used_cards: cards,
-                    declared_targets,
-                }]),
+            match &effect.plan {
+                EffectPlan::Attack(plan) => {
+                    let _ = declared_targets;
+                    let target = attack_target(state, &player, &plan)?;
+                    let target_team = player_team(state, &target)?;
+                    let points =
+                        compute_attack_points(state, &plan.point_formula, &cards, &target)?;
+                    let hp_change = damage_team(state, &target_team, points)?;
+                    let card_moves = cards
+                        .iter()
+                        .copied()
+                        .map(|card| CardMoveDelta {
+                            card,
+                            from: CardZone::Hand(player.clone()),
+                            to: CardZone::Discard,
+                        })
+                        .collect::<Vec<_>>();
+
+                    Ok(vec![GameEvent::AttackResolved {
+                        attacker: player,
+                        target,
+                        formation_id,
+                        used_cards: cards,
+                        point_breakdown: AttackPointBreakdown {
+                            base_points: points,
+                            final_amount: points,
+                        },
+                        hp_change,
+                        card_moves,
+                    }])
+                }
                 EffectPlan::ActiveSpell(_) | EffectPlan::PassiveSpell(_) => {
                     Err(GameError::RuleImplementation(
                         crate::domain::RuleImplementationError::EffectNotImplemented(
@@ -374,6 +403,105 @@ fn player_has_status(state: &GameState, player: &crate::domain::PlayerId, kind: 
     })
 }
 
+fn attack_target(
+    state: &GameState,
+    attacker: &PlayerId,
+    plan: &AttackPlanDef,
+) -> GameResult<PlayerId> {
+    match plan.damage_target {
+        DamageTarget::PreviousPlayer => previous_player(state, attacker),
+        DamageTarget::DeclaredPlayer | DamageTarget::TeamOfDeclaredPlayer => {
+            Err(GameError::RuleImplementation(
+                crate::domain::RuleImplementationError::EffectNotImplemented(
+                    "declared-attack-target".to_string(),
+                ),
+            ))
+        }
+    }
+}
+
+fn previous_player(state: &GameState, player: &PlayerId) -> GameResult<PlayerId> {
+    let index = state
+        .turn_order
+        .iter()
+        .position(|candidate| candidate == player)
+        .ok_or_else(|| GameError::UnknownPlayer(player.clone()))?;
+    let previous_index = if index == 0 {
+        state.turn_order.len() - 1
+    } else {
+        index - 1
+    };
+
+    Ok(state.turn_order[previous_index].clone())
+}
+
+fn player_team(state: &GameState, player: &PlayerId) -> GameResult<TeamId> {
+    state
+        .players
+        .iter()
+        .find(|candidate| &candidate.id == player)
+        .map(|player| player.team.clone())
+        .ok_or_else(|| GameError::UnknownPlayer(player.clone()))
+}
+
+fn compute_attack_points(
+    state: &GameState,
+    formula: &PointFormula,
+    cards: &[CardInstanceId],
+    target: &PlayerId,
+) -> GameResult<i32> {
+    let level_sum = || -> GameResult<i32> {
+        cards.iter().try_fold(0, |sum, card| {
+            let level = state
+                .card_def(*card)
+                .ok_or(GameError::MissingCardInstanceDefinition(*card))?
+                .level as i32;
+            Ok(sum + level)
+        })
+    };
+
+    match formula {
+        PointFormula::Fixed(points) => Ok(*points as i32),
+        PointFormula::CardCount => Ok(cards.len() as i32),
+        PointFormula::FormationPoints => Err(GameError::RuleImplementation(
+            crate::domain::RuleImplementationError::EffectNotImplemented(
+                "formation-points".to_string(),
+            ),
+        )),
+        PointFormula::LevelPlus(bonus) => Ok(state
+            .card_def(cards[0])
+            .ok_or(GameError::MissingCardInstanceDefinition(cards[0]))?
+            .level as i32
+            + *bonus as i32),
+        PointFormula::LevelSumTimes(multiplier) => Ok(level_sum()? * *multiplier as i32),
+        PointFormula::TargetHandCountTimes(multiplier) => {
+            let target_hand = state
+                .hand(target)
+                .ok_or_else(|| GameError::UnknownPlayer(target.clone()))?;
+            Ok(target_hand.len() as i32 * *multiplier as i32)
+        }
+    }
+}
+
+fn damage_team(state: &GameState, team: &TeamId, points: i32) -> GameResult<HpChangeDelta> {
+    let old_hp = state
+        .hp
+        .iter()
+        .find(|team_hp| &team_hp.team == team)
+        .map(|team_hp| team_hp.hp)
+        .ok_or_else(|| GameError::MissingTeamHp(team.clone()))?;
+    let delta = -points;
+    let new_hp = (old_hp + delta).max(0);
+
+    Ok(HpChangeDelta {
+        team: team.clone(),
+        old_hp,
+        delta,
+        new_hp,
+        effective_delta: new_hp - old_hp,
+    })
+}
+
 pub fn apply_event(state: &mut GameState, event: &GameEvent) {
     match event {
         GameEvent::DeckPrepared { deck_order } => {
@@ -420,6 +548,41 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
                     .expect("canonical formation event must remove cards from hand");
                 let removed = hand.remove(position);
                 state.discard.push(removed);
+            }
+
+            state.phase = Phase::TurnDraw;
+        }
+        GameEvent::AttackResolved {
+            attacker,
+            hp_change,
+            card_moves,
+            ..
+        } => {
+            debug_assert_eq!(state.current_player(), Some(attacker));
+            debug_assert_eq!(state.phase, Phase::Main);
+
+            let team_hp = state
+                .hp
+                .iter_mut()
+                .find(|team_hp| team_hp.team == hp_change.team)
+                .expect("canonical attack event must target an existing team");
+            team_hp.hp = hp_change.new_hp;
+
+            for card_move in card_moves {
+                match (&card_move.from, &card_move.to) {
+                    (CardZone::Hand(player), CardZone::Discard) => {
+                        let hand = state
+                            .hand_mut(player)
+                            .expect("canonical attack event must move cards from a known hand");
+                        let position = hand
+                            .iter()
+                            .position(|card| card == &card_move.card)
+                            .expect("canonical attack event must move a card from hand");
+                        let removed = hand.remove(position);
+                        state.discard.push(removed);
+                    }
+                    _ => panic!("canonical attack event must contain supported card moves"),
+                }
             }
 
             state.phase = Phase::TurnDraw;

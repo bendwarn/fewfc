@@ -930,8 +930,11 @@ struct CardDef {
     id: CardDefId,
     name: String,
     element: Element,
+    level: u32,
 }
 ```
+
+`level` is a stable printed-card attribute used by base attack point formulas such as `level + 4` and `sum(level) * N`.
 
 Do not add `card_kind` or optional elements until a concrete rule requires non-element cards.
 

@@ -56,6 +56,7 @@ pub struct CardDef {
     pub id: CardDefId,
     pub name: String,
     pub element: Element,
+    pub level: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -354,6 +355,15 @@ pub enum GameEvent {
         used_cards: Vec<CardInstanceId>,
         declared_targets: Vec<TargetDecl>,
     },
+    AttackResolved {
+        attacker: PlayerId,
+        target: PlayerId,
+        formation_id: String,
+        used_cards: Vec<CardInstanceId>,
+        point_breakdown: AttackPointBreakdown,
+        hp_change: HpChangeDelta,
+        card_moves: Vec<CardMoveDelta>,
+    },
     DiscardRecycledIntoDeck {
         shuffled_order: Vec<CardInstanceId>,
         placement: DeckPlacement,
@@ -414,6 +424,34 @@ pub enum TargetDecl {
     Player(PlayerId),
     Team(TeamId),
     Card(CardInstanceId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttackPointBreakdown {
+    pub base_points: i32,
+    pub final_amount: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HpChangeDelta {
+    pub team: TeamId,
+    pub old_hp: i32,
+    pub delta: i32,
+    pub new_hp: i32,
+    pub effective_delta: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardMoveDelta {
+    pub card: CardInstanceId,
+    pub from: CardZone,
+    pub to: CardZone,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CardZone {
+    Hand(PlayerId),
+    Discard,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

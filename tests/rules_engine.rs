@@ -2,10 +2,11 @@ use fewfc::application::{
     GameRecord, advance_automatic as advance_state_automatic, apply_event, handle_command,
 };
 use fewfc::domain::{
-    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, DeckPlacement, EventSource,
-    GameError, GameEvent, GameSetup, GameState, GameStatus, PassActionReason, PendingChoice,
-    PendingChoiceKind, Phase, Player, PlayerHand, PlayerId, RuleImplementationError,
-    StatusDuration, StatusEffect, StatusOwner, TeamHp, TeamId, TurnDrawSkipReason,
+    AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId, CardMoveDelta,
+    CardZone, Command, DeckPlacement, EventSource, GameError, GameEvent, GameSetup, GameState,
+    GameStatus, HpChangeDelta, PassActionReason, PendingChoice, PendingChoiceKind, Phase, Player,
+    PlayerHand, PlayerId, RuleImplementationError, StatusDuration, StatusEffect, StatusOwner,
+    TeamHp, TeamId, TurnDrawSkipReason,
 };
 use fewfc::rules::Element;
 
@@ -18,6 +19,14 @@ fn card_def(id: &str, element: Element) -> CardDef {
         id: CardDefId::new(id),
         name: id.to_string(),
         element,
+        level: match id {
+            "metal" => 3,
+            "wood" => 2,
+            "water" => 1,
+            "fire" => 4,
+            "earth" => 5,
+            _ => 1,
+        },
     }
 }
 
@@ -29,10 +38,14 @@ fn card_instance(instance: u64, def_id: &str) -> CardInstanceDef {
 }
 
 fn two_player_setup() -> GameSetup {
+    two_player_setup_with_hp(30)
+}
+
+fn two_player_setup_with_hp(starting_hp: i32) -> GameSetup {
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
 
-    GameSetup::two_player(p1, p2, 30).with_cards(
+    GameSetup::two_player(p1, p2, starting_hp).with_cards(
         vec![
             card_def("metal", Element::Metal),
             card_def("wood", Element::Wood),
@@ -148,6 +161,7 @@ fn new_game_preserves_card_instance_definitions_for_lookup() {
             id: CardDefId::new("metal"),
             name: "metal".to_string(),
             element: Element::Metal,
+            level: 3,
         })
     );
     assert_eq!(state.card_def(card(99)), None);
@@ -742,7 +756,7 @@ fn turn_draw_recycles_discard_to_deck_bottom_when_deck_is_insufficient() {
 }
 
 #[test]
-fn perform_attack_formation_consumes_action_and_moves_used_cards_to_discard() {
+fn perform_attack_formation_damages_previous_players_team_and_moves_cards_to_discard() {
     let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     record.advance_automatic().unwrap();
 
@@ -755,11 +769,27 @@ fn perform_attack_formation_consumes_action_and_moves_used_cards_to_discard() {
                 declared_targets: Vec::new(),
             })
             .unwrap(),
-        vec![GameEvent::FormationPerformed {
-            player: PlayerId::new("p1"),
+        vec![GameEvent::AttackResolved {
+            attacker: PlayerId::new("p1"),
+            target: PlayerId::new("p2"),
             formation_id: "metal-strike".to_string(),
             used_cards: vec![card(1)],
-            declared_targets: Vec::new(),
+            point_breakdown: AttackPointBreakdown {
+                base_points: 7,
+                final_amount: 7,
+            },
+            hp_change: HpChangeDelta {
+                team: TeamId::new("team:p2"),
+                old_hp: 30,
+                delta: -7,
+                new_hp: 23,
+                effective_delta: -7,
+            },
+            card_moves: vec![CardMoveDelta {
+                card: card(1),
+                from: CardZone::Hand(PlayerId::new("p1")),
+                to: CardZone::Discard,
+            }],
         }]
     );
 
@@ -770,6 +800,19 @@ fn perform_attack_formation_consumes_action_and_moves_used_cards_to_discard() {
         Some(vec![card(2), card(3), card(4)].as_slice())
     );
     assert_eq!(state.discard, vec![card(1)]);
+    assert_eq!(
+        state.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 30,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 23,
+            },
+        ]
+    );
     assert_eq!(record.replay().unwrap(), state);
 }
 
@@ -898,11 +941,34 @@ fn perform_formation_matches_cards_by_instance_definitions() {
                 declared_targets: Vec::new(),
             })
             .unwrap(),
-        vec![GameEvent::FormationPerformed {
-            player: PlayerId::new("p1"),
+        vec![GameEvent::AttackResolved {
+            attacker: PlayerId::new("p1"),
+            target: PlayerId::new("p2"),
             formation_id: "weapon".to_string(),
             used_cards: vec![card(1), card(6)],
-            declared_targets: Vec::new(),
+            point_breakdown: AttackPointBreakdown {
+                base_points: 12,
+                final_amount: 12,
+            },
+            hp_change: HpChangeDelta {
+                team: TeamId::new("team:p2"),
+                old_hp: 30,
+                delta: -12,
+                new_hp: 18,
+                effective_delta: -12,
+            },
+            card_moves: vec![
+                CardMoveDelta {
+                    card: card(1),
+                    from: CardZone::Hand(PlayerId::new("p1")),
+                    to: CardZone::Discard,
+                },
+                CardMoveDelta {
+                    card: card(6),
+                    from: CardZone::Hand(PlayerId::new("p1")),
+                    to: CardZone::Discard,
+                },
+            ],
         }]
     );
 
@@ -912,4 +978,71 @@ fn perform_formation_matches_cards_by_instance_definitions() {
         Some(vec![card(2), card(3)].as_slice())
     );
     assert_eq!(state.discard, vec![card(1), card(6)]);
+    assert_eq!(
+        state.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 30,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 18,
+            },
+        ]
+    );
+}
+
+#[test]
+fn attack_hp_delta_records_clamped_damage() {
+    let mut record = GameRecord::start(two_player_setup_with_hp(5), official_deck()).unwrap();
+    record.advance_automatic().unwrap();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![GameEvent::AttackResolved {
+            attacker: PlayerId::new("p1"),
+            target: PlayerId::new("p2"),
+            formation_id: "metal-strike".to_string(),
+            used_cards: vec![card(1)],
+            point_breakdown: AttackPointBreakdown {
+                base_points: 7,
+                final_amount: 7,
+            },
+            hp_change: HpChangeDelta {
+                team: TeamId::new("team:p2"),
+                old_hp: 5,
+                delta: -7,
+                new_hp: 0,
+                effective_delta: -5,
+            },
+            card_moves: vec![CardMoveDelta {
+                card: card(1),
+                from: CardZone::Hand(PlayerId::new("p1")),
+                to: CardZone::Discard,
+            }],
+        }]
+    );
+
+    let state = record.state().unwrap();
+    assert_eq!(
+        state.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 5,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 0,
+            },
+        ]
+    );
 }
