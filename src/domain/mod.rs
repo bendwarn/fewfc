@@ -112,6 +112,7 @@ pub struct CoveredPassive {
     pub owner: PlayerId,
     pub formation_id: String,
     pub cards: Vec<CardInstanceId>,
+    pub sealed: bool,
     pub covered_on_turn: u64,
     pub reveal_timing: PassiveTriggerTiming,
 }
@@ -537,6 +538,7 @@ pub enum GameEvent {
         player: PlayerId,
         formation_id: String,
         cards: Vec<CardInstanceId>,
+        sealed: bool,
     },
     PassiveFlipped {
         owner: PlayerId,
@@ -561,6 +563,7 @@ impl GameEvent {
                 player,
                 formation_id,
                 cards,
+                sealed: _,
             } => PublicGameEvent::PassiveCovered {
                 player: player.clone(),
                 formation_id: formation_id.clone(),
@@ -684,14 +687,27 @@ pub enum TargetDecl {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PassiveFlipOutcome {
-    Applied { effect_id: String },
-    NoEffect { reason: PassiveNoEffectReason },
+    Applied {
+        effect_id: String,
+        modifications: Vec<ActionModification>,
+    },
+    NoEffect {
+        reason: PassiveNoEffectReason,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActionModification {
+    PreventDamage,
+    CancelSpell,
+    SealCoveredPassive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PassiveNoEffectReason {
     NotAnAttack,
     NotASpell,
+    Sealed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

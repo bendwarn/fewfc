@@ -1,12 +1,12 @@
 //! Application services: command handling, automatic advancement, and replay.
 
 use crate::domain::{
-    AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, Command, DamageTransform,
-    DeckPlacement, ElementInteraction, EventMetadata, EventSource, GameError, GameEvent,
-    GameOutcome, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome, PassiveNoEffectReason, Phase,
-    PlayerId, PublicGameEvent, RecordedEvent, ShieldChangeDelta, TeamId, TurnDrawSkipReason,
-    Viewer, validate_setup,
+    ActionModification, AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, Command,
+    DamageTransform, DeckPlacement, ElementInteraction, EventMetadata, EventSource, GameError,
+    GameEvent, GameOutcome, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta,
+    LastElementalAttack, LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome,
+    PassiveNoEffectReason, Phase, PlayerId, PublicGameEvent, RecordedEvent, ShieldChangeDelta,
+    TeamId, TurnDrawSkipReason, Viewer, validate_setup,
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, FormationCategory, PointFormula,
@@ -430,8 +430,10 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                     if !declared_targets.is_empty() {
                         return Err(GameError::UnexpectedDeclaredTargets { formation_id });
                     }
-                    let mut events =
-                        passive_flip_events(state, &player, IncomingActionKind::Attack);
+                    let passive_resolutions =
+                        passive_resolutions(state, &player, IncomingActionKind::Attack);
+                    let action_modifications = action_modifications(&passive_resolutions);
+                    let mut events = passive_events(passive_resolutions);
                     let target = attack_target(state, &player, &plan)?;
                     let target_team = player_team(state, &target)?;
                     let points =
@@ -444,9 +446,14 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                         points,
                         has_target_shield,
                     );
-                    let shield_change =
-                        shield_absorption(state, &target, point_breakdown.final_amount);
-                    let hp_change = if shield_change.is_some() {
+                    let damage_prevented =
+                        action_modifications.contains(&ActionModification::PreventDamage);
+                    let shield_change = if damage_prevented {
+                        None
+                    } else {
+                        shield_absorption(state, &target, point_breakdown.final_amount)
+                    };
+                    let hp_change = if damage_prevented || shield_change.is_some() {
                         no_hp_change(state, &target_team)?
                     } else {
                         apply_attack_amount(
@@ -496,24 +503,35 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                         return Err(GameError::PendingPassiveAlreadyCovered { player });
                     }
 
-                    let mut events = passive_flip_events(state, &player, IncomingActionKind::Spell);
+                    let passive_resolutions =
+                        passive_resolutions(state, &player, IncomingActionKind::PassiveSpell);
+                    let action_modifications = action_modifications(&passive_resolutions);
+                    let mut events = passive_events(passive_resolutions);
                     events.push(GameEvent::PassiveCovered {
                         player,
                         formation_id,
                         cards,
+                        sealed: action_modifications
+                            .contains(&ActionModification::SealCoveredPassive),
                     });
                     Ok(events)
                 }
                 EffectPlan::ActiveSpell(spell) => {
-                    let mut events = passive_flip_events(state, &player, IncomingActionKind::Spell);
+                    let passive_resolutions =
+                        passive_resolutions(state, &player, IncomingActionKind::ActiveSpell);
+                    let action_modifications = action_modifications(&passive_resolutions);
+                    let mut events = passive_events(passive_resolutions);
                     events.push(GameEvent::FormationPerformed {
                         player: player.clone(),
                         formation_id,
                         used_cards: cards.clone(),
                         declared_targets,
                     });
-                    let intents = active_spell_intents(state, &player, &spell.resolver_id, &cards)?;
-                    events.extend(effect_intent_events(state, intents)?);
+                    if !action_modifications.contains(&ActionModification::CancelSpell) {
+                        let intents =
+                            active_spell_intents(state, &player, &spell.resolver_id, &cards)?;
+                        events.extend(effect_intent_events(state, intents)?);
+                    }
                     Ok(events)
                 }
             }
@@ -617,14 +635,21 @@ fn player_has_status(state: &GameState, player: &crate::domain::PlayerId, kind: 
 #[derive(Clone, Copy)]
 enum IncomingActionKind {
     Attack,
-    Spell,
+    ActiveSpell,
+    PassiveSpell,
 }
 
-fn passive_flip_events(
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PassiveResolution {
+    event: GameEvent,
+    modifications: Vec<ActionModification>,
+}
+
+fn passive_resolutions(
     state: &GameState,
     incoming_player: &PlayerId,
     incoming_kind: IncomingActionKind,
-) -> Vec<GameEvent> {
+) -> Vec<PassiveResolution> {
     let Some(previous_player) = previous_player(state, incoming_player).ok() else {
         return Vec::new();
     };
@@ -633,33 +658,74 @@ fn passive_flip_events(
         .covered_passives
         .iter()
         .filter(|passive| passive.owner == previous_player)
-        .map(|passive| GameEvent::PassiveFlipped {
-            owner: passive.owner.clone(),
-            incoming_player: incoming_player.clone(),
-            passive_id: passive.formation_id.clone(),
-            cards: passive.cards.clone(),
-            outcome: passive_outcome(&passive.formation_id, incoming_kind),
+        .map(|passive| {
+            let modifications =
+                passive_spell_intents(&passive.formation_id, incoming_kind, passive.sealed)
+                    .into_iter()
+                    .filter_map(|intent| match intent {
+                        EffectIntent::ModifyAction { modification } => Some(modification),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+
+            PassiveResolution {
+                event: GameEvent::PassiveFlipped {
+                    owner: passive.owner.clone(),
+                    incoming_player: incoming_player.clone(),
+                    passive_id: passive.formation_id.clone(),
+                    cards: passive.cards.clone(),
+                    outcome: passive_outcome(
+                        &passive.formation_id,
+                        incoming_kind,
+                        passive.sealed,
+                        &modifications,
+                    ),
+                },
+                modifications,
+            }
         })
         .collect()
 }
 
-fn passive_outcome(passive_id: &str, incoming_kind: IncomingActionKind) -> PassiveFlipOutcome {
-    if let Some(effect_id) = passive_spell_intents(passive_id, incoming_kind)
+fn passive_events(resolutions: Vec<PassiveResolution>) -> Vec<GameEvent> {
+    resolutions
         .into_iter()
-        .find_map(|intent| match intent {
-            EffectIntent::ModifyAction {
-                modification: ActionModificationIntent::PassiveApplied { effect_id },
-            } => Some(effect_id),
-            _ => None,
-        })
-    {
-        return PassiveFlipOutcome::Applied { effect_id };
+        .map(|resolution| resolution.event)
+        .collect()
+}
+
+fn action_modifications(resolutions: &[PassiveResolution]) -> Vec<ActionModification> {
+    resolutions
+        .iter()
+        .flat_map(|resolution| resolution.modifications.iter().cloned())
+        .collect()
+}
+
+fn passive_outcome(
+    passive_id: &str,
+    incoming_kind: IncomingActionKind,
+    sealed: bool,
+    modifications: &[ActionModification],
+) -> PassiveFlipOutcome {
+    if sealed {
+        return PassiveFlipOutcome::NoEffect {
+            reason: PassiveNoEffectReason::Sealed,
+        };
+    }
+
+    if !modifications.is_empty() {
+        return PassiveFlipOutcome::Applied {
+            effect_id: passive_id.to_string(),
+            modifications: modifications.to_vec(),
+        };
     }
 
     match (passive_id, incoming_kind) {
-        ("defense", IncomingActionKind::Spell) => PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::NotAnAttack,
-        },
+        ("defense", IncomingActionKind::ActiveSpell | IncomingActionKind::PassiveSpell) => {
+            PassiveFlipOutcome::NoEffect {
+                reason: PassiveNoEffectReason::NotAnAttack,
+            }
+        }
         ("seal", IncomingActionKind::Attack) => PassiveFlipOutcome::NoEffect {
             reason: PassiveNoEffectReason::NotASpell,
         },
@@ -669,17 +735,23 @@ fn passive_outcome(passive_id: &str, incoming_kind: IncomingActionKind) -> Passi
     }
 }
 
-fn passive_spell_intents(passive_id: &str, incoming_kind: IncomingActionKind) -> Vec<EffectIntent> {
-    match (passive_id, incoming_kind) {
-        ("defense", IncomingActionKind::Attack) | ("seal", IncomingActionKind::Spell) => {
-            vec![EffectIntent::ModifyAction {
-                modification: ActionModificationIntent::PassiveApplied {
-                    effect_id: passive_id.to_string(),
-                },
-            }]
-        }
-        _ => Vec::new(),
+fn passive_spell_intents(
+    passive_id: &str,
+    incoming_kind: IncomingActionKind,
+    sealed: bool,
+) -> Vec<EffectIntent> {
+    if sealed {
+        return Vec::new();
     }
+
+    let modification = match (passive_id, incoming_kind) {
+        ("defense", IncomingActionKind::Attack) => ActionModification::PreventDamage,
+        ("seal", IncomingActionKind::ActiveSpell) => ActionModification::CancelSpell,
+        ("seal", IncomingActionKind::PassiveSpell) => ActionModification::SealCoveredPassive,
+        _ => return Vec::new(),
+    };
+
+    vec![EffectIntent::ModifyAction { modification }]
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -699,17 +771,12 @@ enum EffectIntent {
         status: crate::domain::StatusEffect,
     },
     ModifyAction {
-        modification: ActionModificationIntent,
+        modification: ActionModification,
     },
     RequestChoice {
         player: PlayerId,
         kind: crate::domain::PendingChoiceKind,
     },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ActionModificationIntent {
-    PassiveApplied { effect_id: String },
 }
 
 fn active_spell_intents(
@@ -821,7 +888,9 @@ fn effect_intent_events(
             EffectIntent::MoveCards { card_moves } => GameEvent::CardsMoved { card_moves },
             EffectIntent::AddStatus { status } => GameEvent::StatusAdded { status },
             EffectIntent::ModifyAction { modification } => match modification {
-                ActionModificationIntent::PassiveApplied { effect_id: _ } => continue,
+                ActionModification::PreventDamage
+                | ActionModification::CancelSpell
+                | ActionModification::SealCoveredPassive => continue,
             },
             EffectIntent::RequestChoice { player, kind } => {
                 if let Some(existing_player) = requested_choice_player {
@@ -1220,6 +1289,7 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
             player,
             formation_id,
             cards,
+            sealed,
         } => {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, Phase::Main);
@@ -1239,6 +1309,7 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
                 owner: player.clone(),
                 formation_id: formation_id.clone(),
                 cards: cards.clone(),
+                sealed: *sealed,
                 covered_on_turn: state.turn_number,
                 reveal_timing: crate::domain::PassiveTriggerTiming::NextPlayerActionStart,
             });

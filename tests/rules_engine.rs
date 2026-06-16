@@ -2,14 +2,15 @@ use fewfc::application::{
     GameRecord, advance_automatic as advance_state_automatic, apply_event, handle_command,
 };
 use fewfc::domain::{
-    AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId, CardMoveDelta,
-    CardZone, Command, DamageTransform, DeckPlacement, ElementInteraction, EventSource, GameError,
-    GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome, PendingChoice,
-    PendingChoiceKind, Phase, Player, PlayerHand, PlayerId, PublicCardRefs, PublicCoveredPassive,
-    PublicGameEvent, PublicPendingChoice, PublicPendingChoiceKind, RuleImplementationError,
-    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
-    TeamId, TurnDrawSkipReason, Viewer,
+    ActionModification, AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
+    CardMoveDelta, CardZone, Command, DamageTransform, DeckPlacement, ElementInteraction,
+    EventSource, GameError, GameEvent, GameOutcome, GameSetup, GameState, GameStatus,
+    HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate, PassActionReason,
+    PassiveFlipOutcome, PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player,
+    PlayerHand, PlayerId, PublicCardRefs, PublicCoveredPassive, PublicGameEvent,
+    PublicPendingChoice, PublicPendingChoiceKind, RuleImplementationError, ShieldChangeDelta,
+    StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId,
+    TurnDrawSkipReason, Viewer,
 };
 use fewfc::rules::Element;
 
@@ -1661,6 +1662,7 @@ fn performing_passive_spell_covers_cards_and_consumes_action() {
             player: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
             cards: vec![card(2), card(7)],
+            sealed: false,
         }]
     );
 
@@ -1676,6 +1678,7 @@ fn performing_passive_spell_covers_cards_and_consumes_action() {
             owner: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
             cards: vec![card(2), card(7)],
+            sealed: false,
             covered_on_turn: 1,
             reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
         }]
@@ -1695,6 +1698,7 @@ fn player_cannot_cover_second_passive_while_one_is_pending() {
         owner: PlayerId::new("p1"),
         formation_id: "seal".to_string(),
         cards: vec![card(3), card(8)],
+        sealed: false,
         covered_on_turn: 1,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
     });
@@ -1718,7 +1722,7 @@ fn player_cannot_cover_second_passive_while_one_is_pending() {
 }
 
 #[test]
-fn previous_players_covered_passive_flips_before_incoming_attack_and_is_discarded() {
+fn defense_prevents_incoming_attack_damage_and_records_action_modification() {
     let mut record = record_after_p1_covers_defense();
 
     assert_eq!(
@@ -1738,6 +1742,7 @@ fn previous_players_covered_passive_flips_before_incoming_attack_and_is_discarde
                 cards: vec![card(2), card(7)],
                 outcome: PassiveFlipOutcome::Applied {
                     effect_id: "defense".to_string(),
+                    modifications: vec![ActionModification::PreventDamage],
                 },
             },
             GameEvent::AttackResolved {
@@ -1754,9 +1759,9 @@ fn previous_players_covered_passive_flips_before_incoming_attack_and_is_discarde
                 hp_change: HpChangeDelta {
                     team: TeamId::new("team:p1"),
                     old_hp: 30,
-                    delta: -8,
-                    new_hp: 22,
-                    effective_delta: -8,
+                    delta: 0,
+                    new_hp: 30,
+                    effective_delta: 0,
                 },
                 shield_change: None,
                 card_moves: vec![CardMoveDelta {
@@ -1778,6 +1783,19 @@ fn previous_players_covered_passive_flips_before_incoming_attack_and_is_discarde
     let state = record.state().unwrap();
     assert!(state.covered_passives.is_empty());
     assert_eq!(state.discard, vec![card(10), card(2), card(7), card(9)]);
+    assert_eq!(
+        state.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 30,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 30,
+            },
+        ]
+    );
     assert_eq!(record.replay().unwrap(), state);
 }
 
@@ -1802,7 +1820,7 @@ fn seal_passive_flips_as_no_effect_against_incoming_attack_and_is_discarded() {
             passive_id: "seal".to_string(),
             cards: vec![card(3), card(8)],
             outcome: PassiveFlipOutcome::NoEffect {
-                reason: fewfc::domain::PassiveNoEffectReason::NotASpell,
+                reason: PassiveNoEffectReason::NotASpell,
             },
         })
     );
@@ -1826,7 +1844,71 @@ fn seal_passive_flips_as_no_effect_against_incoming_attack_and_is_discarded() {
 }
 
 #[test]
-fn seal_passive_flips_as_applied_before_incoming_spell_resolves() {
+fn seal_cancels_incoming_active_spell_effects_and_consumes_the_action() {
+    let mut state = GameState::from_setup(&two_player_setup());
+    state.phase = Phase::Main;
+    state.current_turn_index = 1;
+    state.turn_number = 2;
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), Vec::new()),
+        PlayerHand::new(
+            PlayerId::new("p2"),
+            vec![card(2), card(7), card(1), card(4)],
+        ),
+    ];
+    state.covered_passives.push(fewfc::domain::CoveredPassive {
+        owner: PlayerId::new("p1"),
+        formation_id: "seal".to_string(),
+        cards: vec![card(3), card(8)],
+        sealed: false,
+        covered_on_turn: 1,
+        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
+    });
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p2"),
+            formation_id: "barrier".to_string(),
+            cards: vec![card(2), card(7), card(1), card(4)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        events,
+        vec![
+            GameEvent::PassiveFlipped {
+                owner: PlayerId::new("p1"),
+                incoming_player: PlayerId::new("p2"),
+                passive_id: "seal".to_string(),
+                cards: vec![card(3), card(8)],
+                outcome: PassiveFlipOutcome::Applied {
+                    effect_id: "seal".to_string(),
+                    modifications: vec![ActionModification::CancelSpell],
+                },
+            },
+            GameEvent::FormationPerformed {
+                player: PlayerId::new("p2"),
+                formation_id: "barrier".to_string(),
+                used_cards: vec![card(2), card(7), card(1), card(4)],
+                declared_targets: Vec::new(),
+            },
+        ]
+    );
+
+    for event in &events {
+        apply_event(&mut state, event);
+    }
+
+    assert_eq!(state.shield(&PlayerId::new("p2")), Some(0));
+    assert_eq!(state.phase, Phase::TurnDraw);
+    assert!(state.covered_passives.is_empty());
+}
+
+#[test]
+fn seal_marks_incoming_passive_cover_as_sealed_without_exposing_the_marker() {
     let mut record = record_after_p1_covers_seal();
 
     assert_eq!(
@@ -1846,12 +1928,14 @@ fn seal_passive_flips_as_applied_before_incoming_spell_resolves() {
                 cards: vec![card(3), card(8)],
                 outcome: PassiveFlipOutcome::Applied {
                     effect_id: "seal".to_string(),
+                    modifications: vec![ActionModification::SealCoveredPassive],
                 },
             },
             GameEvent::PassiveCovered {
                 player: PlayerId::new("p2"),
                 formation_id: "countershock".to_string(),
                 cards: vec![card(4), card(9)],
+                sealed: true,
             },
         ]
     );
@@ -1864,10 +1948,80 @@ fn seal_passive_flips_as_applied_before_incoming_spell_resolves() {
             owner: PlayerId::new("p2"),
             formation_id: "countershock".to_string(),
             cards: vec![card(4), card(9)],
+            sealed: true,
             covered_on_turn: 2,
             reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
         }]
     );
+    assert_eq!(
+        state
+            .view_for(Viewer::Player(PlayerId::new("p1")))
+            .covered_passives,
+        vec![PublicCoveredPassive {
+            owner: PlayerId::new("p2"),
+            formation_id: "countershock".to_string(),
+            cards: PublicCardRefs::Hidden { count: 2 },
+        }]
+    );
+    assert_eq!(
+        state
+            .view_for(Viewer::Player(PlayerId::new("p2")))
+            .covered_passives,
+        vec![PublicCoveredPassive {
+            owner: PlayerId::new("p2"),
+            formation_id: "countershock".to_string(),
+            cards: PublicCardRefs::Known(vec![card(4), card(9)]),
+        }]
+    );
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn sealed_passive_later_flips_as_no_effect_and_is_discarded() {
+    let mut record = record_after_p1_covers_seal();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p2"),
+            formation_id: "countershock".to_string(),
+            cards: vec![card(4), card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::ChooseTurnDiscard {
+            player: PlayerId::new("p2"),
+            discard: card(13),
+        })
+        .unwrap();
+    record.advance_automatic().unwrap();
+
+    let events = record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        events.first(),
+        Some(&GameEvent::PassiveFlipped {
+            owner: PlayerId::new("p2"),
+            incoming_player: PlayerId::new("p1"),
+            passive_id: "countershock".to_string(),
+            cards: vec![card(4), card(9)],
+            outcome: PassiveFlipOutcome::NoEffect {
+                reason: PassiveNoEffectReason::Sealed,
+            },
+        })
+    );
+
+    let state = record.state().unwrap();
+    assert!(state.covered_passives.is_empty());
+    assert!(state.discard.contains(&card(4)));
+    assert!(state.discard.contains(&card(9)));
     assert_eq!(record.replay().unwrap(), state);
 }
 
@@ -1981,6 +2135,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
         player: PlayerId::new("p1"),
         formation_id: "defense".to_string(),
         cards: vec![card(2), card(7)],
+        sealed: true,
     };
 
     assert_eq!(
@@ -2013,6 +2168,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
             player: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
             cards: vec![card(2), card(7)],
+            sealed: true,
         }
     );
 }
@@ -2129,6 +2285,7 @@ fn record_event_feed_is_viewer_filtered_and_canonical_events_remain_replay_sourc
             player: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
             cards: vec![card(2), card(7)],
+            sealed: false,
         })
     );
     assert_eq!(record.replay().unwrap(), record.state().unwrap());
