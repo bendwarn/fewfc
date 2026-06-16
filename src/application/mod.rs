@@ -109,9 +109,11 @@ fn event_source(event: &GameEvent) -> EventSource {
         | GameEvent::TurnEnded { .. } => EventSource::System,
         GameEvent::ActionPassed { .. }
         | GameEvent::AttackResolved { .. }
+        | GameEvent::CardsMoved { .. }
         | GameEvent::EffectChoiceAnswered { .. }
         | GameEvent::EffectChoiceRequested { .. }
         | GameEvent::FormationPerformed { .. }
+        | GameEvent::HpChanged { .. }
         | GameEvent::PassiveCovered { .. }
         | GameEvent::PassiveFlipped { .. }
         | GameEvent::ShieldChanged { .. }
@@ -511,7 +513,7 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                         declared_targets,
                     });
                     let intents = active_spell_intents(state, &player, &spell.resolver_id, &cards)?;
-                    events.extend(effect_intent_events(state, intents));
+                    events.extend(effect_intent_events(state, intents)?);
                     Ok(events)
                 }
             }
@@ -575,7 +577,7 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                 &continuation_id,
                 &selected_cards,
             )?;
-            events.extend(effect_intent_events(state, intents));
+            events.extend(effect_intent_events(state, intents)?);
             Ok(events)
         }
     }
@@ -642,15 +644,21 @@ fn passive_flip_events(
 }
 
 fn passive_outcome(passive_id: &str, incoming_kind: IncomingActionKind) -> PassiveFlipOutcome {
+    if let Some(effect_id) = passive_spell_intents(passive_id, incoming_kind)
+        .into_iter()
+        .find_map(|intent| match intent {
+            EffectIntent::ModifyAction {
+                modification: ActionModificationIntent::PassiveApplied { effect_id },
+            } => Some(effect_id),
+            _ => None,
+        })
+    {
+        return PassiveFlipOutcome::Applied { effect_id };
+    }
+
     match (passive_id, incoming_kind) {
-        ("defense", IncomingActionKind::Attack) => PassiveFlipOutcome::Applied {
-            effect_id: passive_id.to_string(),
-        },
         ("defense", IncomingActionKind::Spell) => PassiveFlipOutcome::NoEffect {
             reason: PassiveNoEffectReason::NotAnAttack,
-        },
-        ("seal", IncomingActionKind::Spell) => PassiveFlipOutcome::Applied {
-            effect_id: passive_id.to_string(),
         },
         ("seal", IncomingActionKind::Attack) => PassiveFlipOutcome::NoEffect {
             reason: PassiveNoEffectReason::NotASpell,
@@ -661,16 +669,47 @@ fn passive_outcome(passive_id: &str, incoming_kind: IncomingActionKind) -> Passi
     }
 }
 
+fn passive_spell_intents(passive_id: &str, incoming_kind: IncomingActionKind) -> Vec<EffectIntent> {
+    match (passive_id, incoming_kind) {
+        ("defense", IncomingActionKind::Attack) | ("seal", IncomingActionKind::Spell) => {
+            vec![EffectIntent::ModifyAction {
+                modification: ActionModificationIntent::PassiveApplied {
+                    effect_id: passive_id.to_string(),
+                },
+            }]
+        }
+        _ => Vec::new(),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum EffectIntent {
     SetShield {
         player: PlayerId,
         value: i32,
     },
+    ChangeHp {
+        team: TeamId,
+        delta: i32,
+    },
+    MoveCards {
+        card_moves: Vec<CardMoveDelta>,
+    },
+    AddStatus {
+        status: crate::domain::StatusEffect,
+    },
+    ModifyAction {
+        modification: ActionModificationIntent,
+    },
     RequestChoice {
         player: PlayerId,
         kind: crate::domain::PendingChoiceKind,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ActionModificationIntent {
+    PassiveApplied { effect_id: String },
 }
 
 fn active_spell_intents(
@@ -702,16 +741,57 @@ fn active_spell_intents(
                 },
             }])
         }
+        "chaos" => {
+            let target = previous_player(state, player)?;
+            Ok(vec![EffectIntent::AddStatus {
+                status: crate::domain::StatusEffect {
+                    id: format!(
+                        "chaos-cannot-act-{}-turn-{}",
+                        target.as_str(),
+                        state.turn_number
+                    ),
+                    owner: crate::domain::StatusOwner::Player(target.clone()),
+                    kind: "CannotAct".to_string(),
+                    value: None,
+                    duration: crate::domain::StatusDuration::UntilTurnEnd {
+                        player: target.clone(),
+                    },
+                },
+            }])
+        }
+        "return-to-origin" => {
+            let team = player_team(state, player)?;
+            Ok(vec![EffectIntent::ChangeHp { team, delta: 5 }])
+        }
+        "five-elements-cycle" => Ok(state
+            .discard
+            .first()
+            .copied()
+            .map(|card| {
+                vec![EffectIntent::MoveCards {
+                    card_moves: vec![CardMoveDelta {
+                        card,
+                        from: CardZone::Discard,
+                        to: CardZone::Hand(player.clone()),
+                    }],
+                }]
+            })
+            .unwrap_or_default()),
         _ => Err(GameError::RuleImplementation(
             crate::domain::RuleImplementationError::EffectNotImplemented(resolver_id.to_string()),
         )),
     }
 }
 
-fn effect_intent_events(state: &GameState, intents: Vec<EffectIntent>) -> Vec<GameEvent> {
-    intents
-        .into_iter()
-        .map(|intent| match intent {
+fn effect_intent_events(
+    state: &GameState,
+    intents: Vec<EffectIntent>,
+) -> GameResult<Vec<GameEvent>> {
+    let mut requested_choice_player = None;
+    let mut events = Vec::new();
+
+    for intent in intents {
+        let event = match intent {
             EffectIntent::SetShield { player, value } => {
                 let old_value = state.shield(&player).unwrap_or(0);
                 GameEvent::ShieldChanged {
@@ -721,11 +801,44 @@ fn effect_intent_events(state: &GameState, intents: Vec<EffectIntent>) -> Vec<Ga
                     new_value: value,
                 }
             }
+            EffectIntent::ChangeHp { team, delta } => {
+                let old_hp = state
+                    .hp
+                    .iter()
+                    .find(|team_hp| team_hp.team == team)
+                    .ok_or_else(|| GameError::MissingTeamHp(team.clone()))?
+                    .hp;
+                GameEvent::HpChanged {
+                    change: HpChangeDelta {
+                        team,
+                        old_hp,
+                        delta,
+                        new_hp: old_hp + delta,
+                        effective_delta: delta,
+                    },
+                }
+            }
+            EffectIntent::MoveCards { card_moves } => GameEvent::CardsMoved { card_moves },
+            EffectIntent::AddStatus { status } => GameEvent::StatusAdded { status },
+            EffectIntent::ModifyAction { modification } => match modification {
+                ActionModificationIntent::PassiveApplied { effect_id: _ } => continue,
+            },
             EffectIntent::RequestChoice { player, kind } => {
+                if let Some(existing_player) = requested_choice_player {
+                    return Err(GameError::PendingChoiceInProgress {
+                        player: existing_player,
+                    });
+                }
+
+                requested_choice_player = Some(player.clone());
                 GameEvent::EffectChoiceRequested { player, kind }
             }
-        })
-        .collect()
+        };
+
+        events.push(event);
+    }
+
+    Ok(events)
 }
 
 fn resume_effect_choice_intents(
@@ -995,6 +1108,39 @@ fn shield_absorption(
     })
 }
 
+fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {
+    let removed = match &card_move.from {
+        CardZone::Hand(player) => {
+            let hand = state
+                .hand_mut(player)
+                .expect("canonical card move must move cards from a known hand");
+            let position = hand
+                .iter()
+                .position(|card| card == &card_move.card)
+                .expect("canonical card move must move an existing card");
+            hand.remove(position)
+        }
+        CardZone::Discard => {
+            let position = state
+                .discard
+                .iter()
+                .position(|card| card == &card_move.card)
+                .expect("canonical card move must move an existing discarded card");
+            state.discard.remove(position)
+        }
+    };
+
+    match &card_move.to {
+        CardZone::Hand(player) => {
+            let hand = state
+                .hand_mut(player)
+                .expect("canonical card move must move cards to a known hand");
+            hand.push(removed);
+        }
+        CardZone::Discard => state.discard.push(removed),
+    }
+}
+
 fn apply_shield_change(state: &mut GameState, change: &ShieldChangeDelta) {
     let shield = state
         .shields
@@ -1136,20 +1282,7 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
             }
 
             for card_move in card_moves {
-                match (&card_move.from, &card_move.to) {
-                    (CardZone::Hand(player), CardZone::Discard) => {
-                        let hand = state
-                            .hand_mut(player)
-                            .expect("canonical attack event must move cards from a known hand");
-                        let position = hand
-                            .iter()
-                            .position(|card| card == &card_move.card)
-                            .expect("canonical attack event must move a card from hand");
-                        let removed = hand.remove(position);
-                        state.discard.push(removed);
-                    }
-                    _ => panic!("canonical attack event must contain supported card moves"),
-                }
+                apply_card_move(state, card_move);
             }
 
             if let Some(update) = elemental_context_update {
@@ -1159,6 +1292,20 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
             }
 
             state.phase = Phase::TurnDraw;
+        }
+        GameEvent::HpChanged { change } => {
+            let team_hp = state
+                .hp
+                .iter_mut()
+                .find(|team_hp| team_hp.team == change.team)
+                .expect("canonical hp event must target an existing team");
+            team_hp.hp = change.new_hp;
+            finish_game_if_needed(state);
+        }
+        GameEvent::CardsMoved { card_moves } => {
+            for card_move in card_moves {
+                apply_card_move(state, card_move);
+            }
         }
         GameEvent::ShieldChanged {
             player,

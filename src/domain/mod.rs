@@ -509,6 +509,12 @@ pub enum GameEvent {
         delta: i32,
         new_value: i32,
     },
+    HpChanged {
+        change: HpChangeDelta,
+    },
+    CardsMoved {
+        card_moves: Vec<CardMoveDelta>,
+    },
     StatusAdded {
         status: StatusEffect,
     },
