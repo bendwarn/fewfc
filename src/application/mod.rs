@@ -41,6 +41,10 @@ impl GameRecord {
         &self.events
     }
 
+    pub fn setup(&self) -> &GameSetup {
+        &self.setup
+    }
+
     pub fn recorded_events(&self) -> Vec<RecordedEvent> {
         self.events
             .iter()
