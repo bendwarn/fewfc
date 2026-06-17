@@ -1,7 +1,7 @@
 use fewfc::application::GameRecord;
 use fewfc::domain::{
-    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, EventSource, GameSetup,
-    PendingChoice, PendingChoiceKind, PlayerId,
+    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, EventSource, GameError,
+    GameSetup, PendingChoice, PendingChoiceKind, PlayerId, RulesetId, ValidationError,
 };
 use fewfc::infrastructure::{
     InMemoryPersistence, PersistedGameRecord, PersistedSnapshot, PersistenceMetadata,
@@ -89,13 +89,14 @@ fn persisted_event_log_round_trip_replays_mid_turn_effect_choice() {
 
     let persisted = PersistedGameRecord::from_record(
         PersistenceMetadata {
-            ruleset_id: "base".to_string(),
+            ruleset_id: "variant-from-caller".to_string(),
             engine_version: "test".to_string(),
         },
         &record,
     );
 
     assert_eq!(persisted.metadata.ruleset_id, "base");
+    assert_eq!(persisted.setup.ruleset, RulesetId::base());
     assert_eq!(
         persisted.recorded_events.len(),
         record.recorded_events().len()
@@ -176,6 +177,27 @@ fn persisted_replay_uses_event_order_and_payloads_not_recorded_metadata() {
     }
 
     assert_eq!(persisted.replay().unwrap(), expected_state);
+}
+
+#[test]
+fn persisted_record_replay_rejects_ruleset_identity_mismatch() {
+    let record = GameRecord::start(two_player_setup(), deck_starting_with(&[1])).unwrap();
+    let mut persisted = PersistedGameRecord::from_record(
+        PersistenceMetadata {
+            ruleset_id: "base".to_string(),
+            engine_version: "test".to_string(),
+        },
+        &record,
+    );
+    persisted.metadata.ruleset_id = "variant".to_string();
+
+    assert_eq!(
+        persisted.replay(),
+        Err(GameError::Validation(ValidationError::RulesetMismatch {
+            setup: RulesetId::base(),
+            metadata: RulesetId::new("variant"),
+        }))
+    );
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! Infrastructure adapters and deterministic setup helpers.
 
 use crate::application::{GameRecord, replay};
-use crate::domain::{GameError, GameSetup, GameState, RecordedEvent};
+use crate::domain::{GameError, GameSetup, GameState, RecordedEvent, RulesetId, ValidationError};
 use crate::ports::{EventLogStorage, SnapshotStorage};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -22,6 +22,9 @@ pub struct PersistedGameRecord {
 
 impl PersistedGameRecord {
     pub fn from_record(metadata: PersistenceMetadata, record: &GameRecord) -> Self {
+        let mut metadata = metadata;
+        metadata.ruleset_id = record.setup().ruleset.as_str().to_string();
+
         Self {
             metadata,
             setup: record.setup().clone(),
@@ -37,6 +40,14 @@ impl PersistedGameRecord {
     }
 
     pub fn replay(&self) -> Result<GameState, GameError> {
+        let metadata_ruleset = RulesetId::new(self.metadata.ruleset_id.clone());
+        if self.setup.ruleset != metadata_ruleset {
+            return Err(GameError::Validation(ValidationError::RulesetMismatch {
+                setup: self.setup.ruleset.clone(),
+                metadata: metadata_ruleset,
+            }));
+        }
+
         let events = self
             .recorded_events
             .iter()

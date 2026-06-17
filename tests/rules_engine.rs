@@ -10,9 +10,9 @@ use fewfc::domain::{
     LastElementalAttack, LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome,
     PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player, PlayerHand, PlayerId,
     PlayerShield, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
-    PublicPendingChoiceKind, PublicPlayerHand, RuleImplementationError, ShieldChangeDelta,
-    StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId,
-    TurnDrawSkipReason, ValidationError, Viewer,
+    PublicPendingChoiceKind, PublicPlayerHand, RuleImplementationError, RulesetId,
+    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
+    TeamId, TurnDrawSkipReason, ValidationError, Viewer,
 };
 use fewfc::rules::Element;
 
@@ -76,6 +76,7 @@ fn two_player_setup_with_hp(starting_hp: i32) -> GameSetup {
 
 fn bare_team_setup(players_by_team: &[(&str, &str)]) -> GameSetup {
     GameSetup {
+        ruleset: RulesetId::base(),
         players: players_by_team
             .iter()
             .map(|(player, team)| Player {
@@ -310,6 +311,7 @@ fn new_game_persists_deck_order_and_replay_matches_current_state() {
 
     let state = record.state().unwrap();
     assert_eq!(state.phase, Phase::TurnStart);
+    assert_eq!(record.setup().ruleset, RulesetId::base());
     assert_eq!(state.current_player(), Some(&PlayerId::new("p1")));
     assert_eq!(state.deck, (10..=20).map(card).collect::<Vec<_>>());
     assert_eq!(record.replay().unwrap(), state);
@@ -436,6 +438,7 @@ fn setup_validation_rejects_duplicate_card_instance_definitions() {
 #[test]
 fn setup_validation_requires_hp_for_every_team() {
     let setup = GameSetup {
+        ruleset: RulesetId::base(),
         players: vec![Player {
             id: PlayerId::new("p1"),
             team: TeamId::new("A"),
@@ -459,6 +462,7 @@ fn setup_validation_requires_hp_for_every_team() {
 #[test]
 fn setup_validation_rejects_team_mode_turn_order_that_is_not_alternating() {
     let setup = GameSetup {
+        ruleset: RulesetId::base(),
         players: vec![
             Player {
                 id: PlayerId::new("p1"),
@@ -604,6 +608,7 @@ fn team_mode_builder_produces_valid_alternating_setup() {
             PlayerId::new("p4"),
         ]
     );
+    assert_eq!(setup.ruleset, RulesetId::base());
     let card_setup = two_player_setup();
     GameRecord::start(
         setup.with_cards(card_setup.card_defs, card_setup.card_instances),

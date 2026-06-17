@@ -24,6 +24,25 @@ impl TeamId {
     }
 }
 
+pub const BASE_RULESET_ID: &str = "base";
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RulesetId(String);
+
+impl RulesetId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn base() -> Self {
+        Self::new(BASE_RULESET_ID)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CardInstanceId(u64);
 
@@ -165,6 +184,7 @@ pub enum StatusExpiryTiming {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameSetup {
+    pub ruleset: RulesetId,
     pub players: Vec<Player>,
     pub turn_order: Vec<PlayerId>,
     pub hp: Vec<TeamHp>,
@@ -180,6 +200,7 @@ impl GameSetup {
         let second_team = TeamId::new(format!("team:{}", second_player.as_str()));
 
         Self {
+            ruleset: RulesetId::base(),
             players: vec![
                 Player {
                     id: first_player.clone(),
@@ -237,6 +258,7 @@ impl GameSetup {
         }
 
         Self {
+            ruleset: RulesetId::base(),
             players,
             turn_order,
             hp: vec![
@@ -953,6 +975,10 @@ pub enum ValidationError {
     DuplicateCard(CardInstanceId),
     MissingCardInstanceDefinition(CardInstanceId),
     MissingCardDefinition(CardDefId),
+    RulesetMismatch {
+        setup: RulesetId,
+        metadata: RulesetId,
+    },
     CannotPassAction {
         reason: PassActionReason,
     },
