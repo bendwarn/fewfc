@@ -652,6 +652,29 @@ fn rule_derived_attack_targets_reject_declared_targets_without_events() {
 }
 
 #[test]
+fn rule_derived_active_spell_targets_reject_declared_targets_without_events() {
+    let mut record =
+        GameRecord::start(two_player_setup(), deck_starting_with(&[2, 7, 1, 4])).unwrap();
+    record.advance_automatic().unwrap();
+    let events_before = record.events().to_vec();
+    let state_before = record.state().unwrap();
+
+    assert_eq!(
+        record.handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "barrier".to_string(),
+            cards: vec![card(2), card(7), card(1), card(4)],
+            declared_targets: vec![fewfc::domain::TargetDecl::Player(PlayerId::new("p1"))],
+        }),
+        Err(GameError::UnexpectedDeclaredTargets {
+            formation_id: "barrier".to_string(),
+        })
+    );
+    assert_eq!(record.events(), events_before.as_slice());
+    assert_eq!(record.state().unwrap(), state_before);
+}
+
+#[test]
 fn new_game_state_exposes_core_status_shields_and_passive_zones() {
     let record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     let state = record.state().unwrap();
@@ -1359,6 +1382,65 @@ fn generating_formation_heals_current_players_team_through_public_command_flow()
             .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
             .map(|team_hp| team_hp.hp),
         Some(23)
+    );
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn generating_formation_targets_own_side_in_team_mode_without_declared_targets() {
+    let card_setup = two_player_setup();
+    let setup = GameSetup::team_mode(
+        TeamId::new("A"),
+        vec![PlayerId::new("p1"), PlayerId::new("p3")],
+        TeamId::new("B"),
+        vec![PlayerId::new("p2"), PlayerId::new("p4")],
+        20,
+    )
+    .with_cards(card_setup.card_defs, card_setup.card_instances);
+    let mut record = GameRecord::start(setup, deck_starting_with(&[1, 3, 2])).unwrap();
+    record.advance_automatic().unwrap();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "generating-formation".to_string(),
+                cards: vec![card(1), card(3), card(2)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationPerformed {
+                player: PlayerId::new("p1"),
+                formation_id: "generating-formation".to_string(),
+                used_cards: vec![card(1), card(3), card(2)],
+                declared_targets: Vec::new(),
+            },
+            GameEvent::HpChanged {
+                change: HpChangeDelta {
+                    team: TeamId::new("A"),
+                    old_hp: 20,
+                    delta: 3,
+                    new_hp: 23,
+                    effective_delta: 3,
+                },
+            },
+        ]
+    );
+
+    let state = record.state().unwrap();
+    assert_eq!(
+        state.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("A"),
+                hp: 23,
+            },
+            TeamHp {
+                team: TeamId::new("B"),
+                hp: 20,
+            },
+        ]
     );
     assert_eq!(record.replay().unwrap(), state);
 }

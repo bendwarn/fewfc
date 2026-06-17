@@ -496,6 +496,10 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                     Ok(events)
                 }
                 EffectPlan::PassiveSpell(_) => {
+                    if !declared_targets.is_empty() {
+                        return Err(GameError::UnexpectedDeclaredTargets { formation_id });
+                    }
+
                     if state
                         .covered_passives
                         .iter()
@@ -518,6 +522,10 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                     Ok(events)
                 }
                 EffectPlan::ActiveSpell(spell) => {
+                    if !declared_targets.is_empty() {
+                        return Err(GameError::UnexpectedDeclaredTargets { formation_id });
+                    }
+
                     let passive_resolutions =
                         passive_resolutions(state, &player, IncomingActionKind::ActiveSpell);
                     let action_modifications = action_modifications(&passive_resolutions);
@@ -814,27 +822,30 @@ fn active_spell_intents(
             }])
         }
         "generating-formation" => {
-            let team = player_team(state, player)?;
+            let team = resolve_rule_team_target(state, player, RuleTeamTarget::OwnSide)?;
             Ok(vec![EffectIntent::ChangeHp { team, delta: 3 }])
         }
         "overcoming-formation" => {
-            let target = previous_player(state, player)?;
-            let team = player_team(state, &target)?;
+            let team = resolve_rule_team_target(state, player, RuleTeamTarget::OpposingSide)?;
             Ok(vec![EffectIntent::ChangeHp { team, delta: -3 }])
         }
-        "radiance" => Ok(state
-            .statuses
-            .iter()
-            .filter(|status| {
-                matches!(&status.owner, crate::domain::StatusOwner::Player(owner) if owner == player)
-            })
-            .map(|status| EffectIntent::RemoveStatus {
-                status_id: status.id.clone(),
-                owner: status.owner.clone(),
-            })
-            .collect()),
+        "radiance" => {
+            let target = resolve_rule_player_target(state, player, RulePlayerTarget::SelfPlayer)?;
+            Ok(state
+                .statuses
+                .iter()
+                .filter(|status| {
+                    matches!(&status.owner, crate::domain::StatusOwner::Player(owner) if owner == &target)
+                })
+                .map(|status| EffectIntent::RemoveStatus {
+                    status_id: status.id.clone(),
+                    owner: status.owner.clone(),
+                })
+                .collect())
+        }
         "chaos" => {
-            let target = previous_player(state, player)?;
+            let target =
+                resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)?;
             Ok(vec![EffectIntent::AddStatus {
                 status: crate::domain::StatusEffect {
                     id: format!(
@@ -974,7 +985,9 @@ fn attack_target(
     plan: &AttackPlanDef,
 ) -> GameResult<PlayerId> {
     match plan.damage_target {
-        DamageTarget::PreviousPlayer => previous_player(state, attacker),
+        DamageTarget::PreviousPlayer => {
+            resolve_rule_player_target(state, attacker, RulePlayerTarget::PreviousPlayer)
+        }
         DamageTarget::DeclaredPlayer | DamageTarget::TeamOfDeclaredPlayer => {
             Err(GameError::RuleImplementation(
                 crate::domain::RuleImplementationError::EffectNotImplemented(
@@ -985,19 +998,70 @@ fn attack_target(
     }
 }
 
-fn previous_player(state: &GameState, player: &PlayerId) -> GameResult<PlayerId> {
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RulePlayerTarget {
+    SelfPlayer,
+    PreviousPlayer,
+    NextPlayer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuleTeamTarget {
+    OwnSide,
+    OpposingSide,
+}
+
+fn resolve_rule_player_target(
+    state: &GameState,
+    player: &PlayerId,
+    target: RulePlayerTarget,
+) -> GameResult<PlayerId> {
+    match target {
+        RulePlayerTarget::SelfPlayer => {
+            if state.turn_order.iter().any(|candidate| candidate == player) {
+                Ok(player.clone())
+            } else {
+                Err(GameError::UnknownPlayer(player.clone()))
+            }
+        }
+        RulePlayerTarget::PreviousPlayer => adjacent_player(state, player, -1),
+        RulePlayerTarget::NextPlayer => adjacent_player(state, player, 1),
+    }
+}
+
+fn resolve_rule_team_target(
+    state: &GameState,
+    player: &PlayerId,
+    target: RuleTeamTarget,
+) -> GameResult<TeamId> {
+    let own_team = player_team(state, player)?;
+
+    match target {
+        RuleTeamTarget::OwnSide => Ok(own_team),
+        RuleTeamTarget::OpposingSide => state
+            .hp
+            .iter()
+            .map(|team_hp| team_hp.team.clone())
+            .find(|team| team != &own_team)
+            .ok_or_else(|| GameError::MissingTeamHp(own_team.clone())),
+    }
+}
+
+fn adjacent_player(state: &GameState, player: &PlayerId, offset: isize) -> GameResult<PlayerId> {
     let index = state
         .turn_order
         .iter()
         .position(|candidate| candidate == player)
-        .ok_or_else(|| GameError::UnknownPlayer(player.clone()))?;
-    let previous_index = if index == 0 {
-        state.turn_order.len() - 1
-    } else {
-        index - 1
-    };
+        .ok_or_else(|| GameError::UnknownPlayer(player.clone()))? as isize;
+    let player_count = state.turn_order.len() as isize;
+    let target_index = (index + offset).rem_euclid(player_count) as usize;
 
-    Ok(state.turn_order[previous_index].clone())
+    Ok(state.turn_order[target_index].clone())
+}
+
+fn previous_player(state: &GameState, player: &PlayerId) -> GameResult<PlayerId> {
+    resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)
 }
 
 fn player_team(state: &GameState, player: &PlayerId) -> GameResult<TeamId> {
@@ -1587,4 +1651,99 @@ pub fn replay(setup: &GameSetup, events: &[GameEvent]) -> Result<GameState, Game
         apply_event(&mut state, event);
     }
     Ok(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn two_player_state() -> GameState {
+        GameState::from_setup(&GameSetup::two_player(
+            PlayerId::new("p1"),
+            PlayerId::new("p2"),
+            30,
+        ))
+    }
+
+    fn team_mode_state() -> GameState {
+        GameState::from_setup(&GameSetup::team_mode(
+            TeamId::new("A"),
+            vec![PlayerId::new("p1"), PlayerId::new("p3")],
+            TeamId::new("B"),
+            vec![PlayerId::new("p2"), PlayerId::new("p4")],
+            30,
+        ))
+    }
+
+    #[test]
+    fn rule_player_targets_resolve_in_two_player_games() {
+        let state = two_player_state();
+
+        assert_eq!(
+            resolve_rule_player_target(&state, &PlayerId::new("p1"), RulePlayerTarget::SelfPlayer),
+            Ok(PlayerId::new("p1"))
+        );
+        assert_eq!(
+            resolve_rule_player_target(
+                &state,
+                &PlayerId::new("p1"),
+                RulePlayerTarget::PreviousPlayer
+            ),
+            Ok(PlayerId::new("p2"))
+        );
+        assert_eq!(
+            resolve_rule_player_target(&state, &PlayerId::new("p1"), RulePlayerTarget::NextPlayer),
+            Ok(PlayerId::new("p2"))
+        );
+    }
+
+    #[test]
+    fn rule_team_targets_resolve_in_two_player_games() {
+        let state = two_player_state();
+
+        assert_eq!(
+            resolve_rule_team_target(&state, &PlayerId::new("p1"), RuleTeamTarget::OwnSide),
+            Ok(TeamId::new("team:p1"))
+        );
+        assert_eq!(
+            resolve_rule_team_target(&state, &PlayerId::new("p1"), RuleTeamTarget::OpposingSide),
+            Ok(TeamId::new("team:p2"))
+        );
+    }
+
+    #[test]
+    fn rule_player_targets_resolve_in_team_mode() {
+        let state = team_mode_state();
+
+        assert_eq!(
+            resolve_rule_player_target(&state, &PlayerId::new("p1"), RulePlayerTarget::SelfPlayer),
+            Ok(PlayerId::new("p1"))
+        );
+        assert_eq!(
+            resolve_rule_player_target(
+                &state,
+                &PlayerId::new("p1"),
+                RulePlayerTarget::PreviousPlayer
+            ),
+            Ok(PlayerId::new("p4"))
+        );
+        assert_eq!(
+            resolve_rule_player_target(&state, &PlayerId::new("p1"), RulePlayerTarget::NextPlayer),
+            Ok(PlayerId::new("p2"))
+        );
+    }
+
+    #[test]
+    fn rule_team_targets_resolve_in_team_mode() {
+        let state = team_mode_state();
+
+        assert_eq!(
+            resolve_rule_team_target(&state, &PlayerId::new("p1"), RuleTeamTarget::OwnSide),
+            Ok(TeamId::new("A"))
+        );
+        assert_eq!(
+            resolve_rule_team_target(&state, &PlayerId::new("p1"), RuleTeamTarget::OpposingSide),
+            Ok(TeamId::new("B"))
+        );
+    }
 }
