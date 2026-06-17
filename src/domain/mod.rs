@@ -565,6 +565,10 @@ pub enum GameEvent {
         owner: StatusOwner,
         expired_at: StatusExpiryTiming,
     },
+    StatusRemoved {
+        status_id: String,
+        owner: StatusOwner,
+    },
     EffectChoiceRequested {
         player: PlayerId,
         kind: PendingChoiceKind,

@@ -118,6 +118,7 @@ fn event_source(event: &GameEvent) -> EventSource {
         | GameEvent::PassiveFlipped { .. }
         | GameEvent::ShieldChanged { .. }
         | GameEvent::StatusAdded { .. }
+        | GameEvent::StatusRemoved { .. }
         | GameEvent::TurnDiscardChosen { .. } => EventSource::Command,
     }
 }
@@ -770,6 +771,10 @@ enum EffectIntent {
     AddStatus {
         status: crate::domain::StatusEffect,
     },
+    RemoveStatus {
+        status_id: String,
+        owner: crate::domain::StatusOwner,
+    },
     ModifyAction {
         modification: ActionModification,
     },
@@ -808,6 +813,26 @@ fn active_spell_intents(
                 },
             }])
         }
+        "generating-formation" => {
+            let team = player_team(state, player)?;
+            Ok(vec![EffectIntent::ChangeHp { team, delta: 3 }])
+        }
+        "overcoming-formation" => {
+            let target = previous_player(state, player)?;
+            let team = player_team(state, &target)?;
+            Ok(vec![EffectIntent::ChangeHp { team, delta: -3 }])
+        }
+        "radiance" => Ok(state
+            .statuses
+            .iter()
+            .filter(|status| {
+                matches!(&status.owner, crate::domain::StatusOwner::Player(owner) if owner == player)
+            })
+            .map(|status| EffectIntent::RemoveStatus {
+                status_id: status.id.clone(),
+                owner: status.owner.clone(),
+            })
+            .collect()),
         "chaos" => {
             let target = previous_player(state, player)?;
             Ok(vec![EffectIntent::AddStatus {
@@ -887,6 +912,9 @@ fn effect_intent_events(
             }
             EffectIntent::MoveCards { card_moves } => GameEvent::CardsMoved { card_moves },
             EffectIntent::AddStatus { status } => GameEvent::StatusAdded { status },
+            EffectIntent::RemoveStatus { status_id, owner } => {
+                GameEvent::StatusRemoved { status_id, owner }
+            }
             EffectIntent::ModifyAction { modification } => match modification {
                 ActionModification::PreventDamage
                 | ActionModification::CancelSpell
@@ -1399,12 +1427,13 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
         }
         GameEvent::StatusExpired {
             status_id, owner, ..
-        } => {
+        }
+        | GameEvent::StatusRemoved { status_id, owner } => {
             let position = state
                 .statuses
                 .iter()
                 .position(|status| &status.id == status_id && &status.owner == owner)
-                .expect("canonical status expiry event must target an active status");
+                .expect("canonical status removal event must target an active status");
             state.statuses.remove(position);
         }
         GameEvent::EffectChoiceRequested { player, kind } => {

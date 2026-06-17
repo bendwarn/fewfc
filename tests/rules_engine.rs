@@ -1,5 +1,6 @@
 use fewfc::application::{
     GameRecord, advance_automatic as advance_state_automatic, apply_event, handle_command,
+    replay as replay_events,
 };
 use fewfc::domain::{
     ActionModification, AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
@@ -8,9 +9,9 @@ use fewfc::domain::{
     HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate, PassActionReason,
     PassiveFlipOutcome, PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player,
     PlayerHand, PlayerId, PlayerShield, PublicCardRefs, PublicCoveredPassive, PublicGameEvent,
-    PublicPendingChoice, PublicPendingChoiceKind, PublicPlayerHand, RuleImplementationError,
-    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
-    TeamId, TurnDrawSkipReason, Viewer,
+    PublicPendingChoice, PublicPendingChoiceKind, PublicPlayerHand, ShieldChangeDelta,
+    StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId,
+    TurnDrawSkipReason, Viewer,
 };
 use fewfc::rules::Element;
 
@@ -1278,30 +1279,6 @@ fn perform_attack_formation_damages_previous_players_team_and_moves_cards_to_dis
 }
 
 #[test]
-fn unimplemented_active_spell_effect_returns_rule_implementation_error_without_events() {
-    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[2, 4, 5])).unwrap();
-    record.advance_automatic().unwrap();
-    let events_before = record.events().to_vec();
-    let state_before = record.state().unwrap();
-
-    let result = record.handle(Command::PerformFormation {
-        player: PlayerId::new("p1"),
-        formation_id: "generating-formation".to_string(),
-        cards: vec![card(2), card(4), card(5)],
-        declared_targets: Vec::new(),
-    });
-
-    assert_eq!(
-        result,
-        Err(GameError::RuleImplementation(
-            RuleImplementationError::EffectNotImplemented("generating-formation".to_string())
-        ))
-    );
-    assert_eq!(record.events(), events_before.as_slice());
-    assert_eq!(record.state().unwrap(), state_before);
-}
-
-#[test]
 fn immediate_active_spell_resolves_through_perform_formation() {
     let mut record =
         GameRecord::start(two_player_setup(), deck_starting_with(&[2, 7, 1, 4])).unwrap();
@@ -1338,6 +1315,178 @@ fn immediate_active_spell_resolves_through_perform_formation() {
     assert_eq!(state.discard, vec![card(2), card(7), card(1), card(4)]);
     assert_eq!(state.shield(&PlayerId::new("p1")), Some(5));
     assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn generating_formation_heals_current_players_team_through_public_command_flow() {
+    let mut record =
+        GameRecord::start(two_player_setup_with_hp(20), deck_starting_with(&[1, 3, 2])).unwrap();
+    record.advance_automatic().unwrap();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "generating-formation".to_string(),
+                cards: vec![card(1), card(3), card(2)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationPerformed {
+                player: PlayerId::new("p1"),
+                formation_id: "generating-formation".to_string(),
+                used_cards: vec![card(1), card(3), card(2)],
+                declared_targets: Vec::new(),
+            },
+            GameEvent::HpChanged {
+                change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 20,
+                    delta: 3,
+                    new_hp: 23,
+                    effective_delta: 3,
+                },
+            },
+        ]
+    );
+
+    let state = record.state().unwrap();
+    assert_eq!(
+        state
+            .hp
+            .iter()
+            .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
+            .map(|team_hp| team_hp.hp),
+        Some(23)
+    );
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn overcoming_formation_damages_previous_players_team_through_public_command_flow() {
+    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1, 2, 5])).unwrap();
+    record.advance_automatic().unwrap();
+
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "overcoming-formation".to_string(),
+                cards: vec![card(1), card(2), card(5)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationPerformed {
+                player: PlayerId::new("p1"),
+                formation_id: "overcoming-formation".to_string(),
+                used_cards: vec![card(1), card(2), card(5)],
+                declared_targets: Vec::new(),
+            },
+            GameEvent::HpChanged {
+                change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 30,
+                    delta: -3,
+                    new_hp: 27,
+                    effective_delta: -3,
+                },
+            },
+        ]
+    );
+
+    let state = record.state().unwrap();
+    assert_eq!(
+        state
+            .hp
+            .iter()
+            .find(|team_hp| team_hp.team == TeamId::new("team:p2"))
+            .map(|team_hp| team_hp.hp),
+        Some(27)
+    );
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn radiance_removes_current_players_statuses_through_public_command_flow() {
+    let mut state = GameState::from_setup(&two_player_setup());
+    state.phase = Phase::Main;
+    state.hands = vec![
+        PlayerHand::new(
+            PlayerId::new("p1"),
+            vec![card(1), card(6), card(4), card(3)],
+        ),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+    state.statuses = vec![cannot_act_status(PlayerId::new("p1"))];
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "radiance".to_string(),
+            cards: vec![card(1), card(6), card(4), card(3)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        events,
+        vec![
+            GameEvent::FormationPerformed {
+                player: PlayerId::new("p1"),
+                formation_id: "radiance".to_string(),
+                used_cards: vec![card(1), card(6), card(4), card(3)],
+                declared_targets: Vec::new(),
+            },
+            GameEvent::StatusRemoved {
+                status_id: "cannot-act-p1".to_string(),
+                owner: StatusOwner::Player(PlayerId::new("p1")),
+            },
+        ]
+    );
+
+    for event in events {
+        apply_event(&mut state, &event);
+    }
+
+    assert!(state.statuses.is_empty());
+    assert_eq!(state.phase, Phase::TurnDraw);
+
+    let replayed = replay_events(
+        &two_player_setup(),
+        &[
+            GameEvent::DeckPrepared {
+                deck_order: official_deck(),
+            },
+            GameEvent::CardsDealt {
+                player: PlayerId::new("p1"),
+                cards: vec![card(1), card(6), card(4), card(3)],
+            },
+            GameEvent::StatusAdded {
+                status: cannot_act_status(PlayerId::new("p1")),
+            },
+            GameEvent::TurnStarted {
+                player: PlayerId::new("p1"),
+                turn_number: 1,
+            },
+            GameEvent::FormationPerformed {
+                player: PlayerId::new("p1"),
+                formation_id: "radiance".to_string(),
+                used_cards: vec![card(1), card(6), card(4), card(3)],
+                declared_targets: Vec::new(),
+            },
+            GameEvent::StatusRemoved {
+                status_id: "cannot-act-p1".to_string(),
+                owner: StatusOwner::Player(PlayerId::new("p1")),
+            },
+        ],
+    )
+    .unwrap();
+    assert!(replayed.statuses.is_empty());
+    assert_eq!(replayed.phase, Phase::TurnDraw);
 }
 
 #[test]
