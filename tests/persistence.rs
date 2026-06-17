@@ -1,7 +1,7 @@
-use fewfc::application::GameRecord;
+use fewfc::application::{GameRecord, ReplayVerificationError, verify_recorded_events};
 use fewfc::domain::{
     CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, EventSource, GameError,
-    GameSetup, PendingChoice, PendingChoiceKind, PlayerId, RulesetId, ValidationError,
+    GameEvent, GameSetup, PendingChoice, PendingChoiceKind, PlayerId, RulesetId, ValidationError,
 };
 use fewfc::infrastructure::{
     FileSystemPersistence, InMemoryPersistence, PersistedGameRecord, PersistedSnapshot,
@@ -225,6 +225,146 @@ fn persisted_replay_uses_event_order_and_payloads_not_recorded_metadata() {
     }
 
     assert_eq!(persisted.replay().unwrap(), expected_state);
+}
+
+#[test]
+fn replay_verification_succeeds_for_recorded_setup_automatic_and_command_events() {
+    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1])).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        verify_recorded_events(record.setup(), &record.recorded_events()).unwrap(),
+        record.state().unwrap()
+    );
+}
+
+#[test]
+fn replay_verification_reports_automatic_event_mismatch_sequence_and_details() {
+    let mut record = GameRecord::start(two_player_setup(), (1..=20).map(card).collect()).unwrap();
+    record.advance_automatic().unwrap();
+    let mut recorded_events = record.recorded_events();
+    let automatic_index = recorded_events
+        .iter()
+        .position(|recorded| matches!(recorded.metadata.source, EventSource::Automatic { .. }))
+        .unwrap();
+    recorded_events[automatic_index].event = GameEvent::TurnStarted {
+        player: PlayerId::new("p2"),
+        turn_number: 1,
+    };
+
+    match verify_recorded_events(record.setup(), &recorded_events) {
+        Err(ReplayVerificationError::EventMismatch {
+            sequence,
+            expected,
+            actual,
+        }) => {
+            assert_eq!(sequence, recorded_events[automatic_index].metadata.sequence);
+            assert_eq!(
+                expected,
+                vec![GameEvent::TurnStarted {
+                    player: PlayerId::new("p1"),
+                    turn_number: 1,
+                }]
+            );
+            assert_eq!(actual, vec![recorded_events[automatic_index].event.clone()]);
+        }
+        other => panic!("expected automatic event mismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn replay_verification_reports_command_event_mismatch_sequence_and_details() {
+    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1])).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    let mut recorded_events = record.recorded_events();
+    let command_index = recorded_events
+        .iter()
+        .position(|recorded| matches!(recorded.event, GameEvent::AttackResolved { .. }))
+        .unwrap();
+    if let GameEvent::AttackResolved { hp_change, .. } = &mut recorded_events[command_index].event {
+        hp_change.delta = -99;
+        hp_change.new_hp = 0;
+    }
+
+    match verify_recorded_events(record.setup(), &recorded_events) {
+        Err(ReplayVerificationError::EventMismatch {
+            sequence,
+            expected,
+            actual,
+        }) => {
+            let first_command_sequence = recorded_events
+                .iter()
+                .find(|recorded| matches!(recorded.metadata.source, EventSource::Command { .. }))
+                .unwrap()
+                .metadata
+                .sequence;
+            assert_eq!(sequence, first_command_sequence);
+            assert_ne!(expected, actual);
+            assert!(matches!(
+                actual
+                    .iter()
+                    .find(|event| matches!(event, GameEvent::AttackResolved { .. })),
+                Some(GameEvent::AttackResolved { hp_change, .. }) if hp_change.delta == -99
+            ));
+        }
+        other => panic!("expected command event mismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn pure_replay_applies_canonical_events_even_when_verification_would_fail() {
+    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1])).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    let mut persisted = PersistedGameRecord::from_record(
+        PersistenceMetadata {
+            ruleset_id: "base".to_string(),
+            engine_version: "test".to_string(),
+        },
+        &record,
+    );
+    let command_index = persisted
+        .recorded_events
+        .iter()
+        .position(|recorded| matches!(recorded.event, GameEvent::AttackResolved { .. }))
+        .unwrap();
+    if let GameEvent::AttackResolved { hp_change, .. } =
+        &mut persisted.recorded_events[command_index].event
+    {
+        hp_change.delta = -99;
+        hp_change.new_hp = 0;
+    }
+
+    assert!(matches!(
+        verify_recorded_events(&persisted.setup, &persisted.recorded_events),
+        Err(ReplayVerificationError::EventMismatch { .. })
+    ));
+    let replayed = persisted.replay().unwrap();
+    assert_ne!(replayed, record.state().unwrap());
+    assert!(replayed.hp.iter().any(|team_hp| team_hp.hp == 0));
 }
 
 #[test]

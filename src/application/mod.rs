@@ -136,6 +136,27 @@ impl GameRecord {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplayVerificationError {
+    DecisionFailed {
+        sequence: u64,
+        source: EventSource,
+        error: GameError,
+    },
+    EventMismatch {
+        sequence: u64,
+        expected: Vec<GameEvent>,
+        actual: Vec<GameEvent>,
+    },
+    MissingSetupDeck {
+        sequence: u64,
+    },
+    CommandContextUnavailable {
+        sequence: u64,
+        source: EventSource,
+    },
+}
+
 fn metadata_for_events(count: usize, source: EventSource) -> Vec<EventMetadata> {
     (0..count)
         .map(|index| EventMetadata {
@@ -1799,6 +1820,166 @@ pub fn replay(setup: &GameSetup, events: &[GameEvent]) -> Result<GameState, Game
         apply_event(&mut state, event);
     }
     Ok(state)
+}
+
+pub fn verify_recorded_events(
+    setup: &GameSetup,
+    recorded_events: &[RecordedEvent],
+) -> Result<GameState, ReplayVerificationError> {
+    validate_setup(setup).map_err(|error| ReplayVerificationError::DecisionFailed {
+        sequence: 0,
+        source: EventSource::Setup,
+        error,
+    })?;
+
+    let mut state = GameState::from_setup(setup);
+    let mut index = 0;
+
+    while index < recorded_events.len() {
+        let sequence = recorded_events[index].metadata.sequence;
+        let source = recorded_events[index].metadata.source.clone();
+        let end = verification_group_end(recorded_events, index);
+        let actual = recorded_events[index..end]
+            .iter()
+            .map(|recorded| recorded.event.clone())
+            .collect::<Vec<_>>();
+
+        let expected = match &source {
+            EventSource::Setup => {
+                let deck_order = actual
+                    .iter()
+                    .find_map(|event| match event {
+                        GameEvent::DeckPrepared { deck_order } => Some(deck_order.clone()),
+                        _ => None,
+                    })
+                    .ok_or(ReplayVerificationError::MissingSetupDeck { sequence })?;
+                initial_events(setup, deck_order).map_err(|error| {
+                    ReplayVerificationError::DecisionFailed {
+                        sequence,
+                        source: source.clone(),
+                        error,
+                    }
+                })?
+            }
+            EventSource::Automatic { .. } => advance_automatic(&state).map_err(|error| {
+                ReplayVerificationError::DecisionFailed {
+                    sequence,
+                    source: source.clone(),
+                    error,
+                }
+            })?,
+            EventSource::Command { context, .. } => {
+                let command = command_from_recorded_events(context, &actual).ok_or_else(|| {
+                    ReplayVerificationError::CommandContextUnavailable {
+                        sequence,
+                        source: source.clone(),
+                    }
+                })?;
+                handle_command(&state, command).map_err(|error| {
+                    ReplayVerificationError::DecisionFailed {
+                        sequence,
+                        source: source.clone(),
+                        error,
+                    }
+                })?
+            }
+        };
+
+        if expected != actual {
+            return Err(ReplayVerificationError::EventMismatch {
+                sequence,
+                expected,
+                actual,
+            });
+        }
+
+        for event in &actual {
+            apply_event(&mut state, event);
+        }
+        index = end;
+    }
+
+    Ok(state)
+}
+
+fn verification_group_end(recorded_events: &[RecordedEvent], start: usize) -> usize {
+    let source = &recorded_events[start].metadata.source;
+    let mut end = start + 1;
+
+    while end < recorded_events.len()
+        && verification_sources_share_group(source, &recorded_events[end].metadata.source)
+    {
+        end += 1;
+    }
+
+    end
+}
+
+fn verification_sources_share_group(first: &EventSource, next: &EventSource) -> bool {
+    match (first, next) {
+        (EventSource::Setup, EventSource::Setup) => true,
+        (EventSource::Automatic { .. }, EventSource::Automatic { .. }) => true,
+        (
+            EventSource::Command {
+                command_id: first_id,
+                ..
+            },
+            EventSource::Command {
+                command_id: next_id,
+                ..
+            },
+        ) => first_id == next_id,
+        _ => false,
+    }
+}
+
+fn command_from_recorded_events(context: &CommandContext, events: &[GameEvent]) -> Option<Command> {
+    match &context.kind {
+        CommandKind::PassAction => events.iter().find_map(|event| match event {
+            GameEvent::ActionPassed { reason, .. } => Some(Command::PassAction {
+                player: context.player.clone(),
+                reason: *reason,
+            }),
+            _ => None,
+        }),
+        CommandKind::PerformFormation { formation_id } => {
+            events.iter().find_map(|event| match event {
+                GameEvent::FormationPerformed {
+                    used_cards,
+                    declared_targets,
+                    ..
+                } => Some(Command::PerformFormation {
+                    player: context.player.clone(),
+                    formation_id: formation_id.clone(),
+                    cards: used_cards.clone(),
+                    declared_targets: declared_targets.clone(),
+                }),
+                GameEvent::AttackResolved { used_cards, .. } => Some(Command::PerformFormation {
+                    player: context.player.clone(),
+                    formation_id: formation_id.clone(),
+                    cards: used_cards.clone(),
+                    declared_targets: Vec::new(),
+                }),
+                _ => None,
+            })
+        }
+        CommandKind::ChooseTurnDiscard => events.iter().find_map(|event| match event {
+            GameEvent::TurnDiscardChosen { discard, .. } => Some(Command::ChooseTurnDiscard {
+                player: context.player.clone(),
+                discard: *discard,
+            }),
+            _ => None,
+        }),
+        CommandKind::AnswerEffectChoice => events.iter().find_map(|event| match event {
+            GameEvent::EffectChoiceAnswered { selected_cards, .. } => {
+                Some(Command::AnswerEffectChoice {
+                    player: context.player.clone(),
+                    selected_cards: selected_cards.clone(),
+                })
+            }
+            _ => None,
+        }),
+    }
 }
 
 #[cfg(test)]
