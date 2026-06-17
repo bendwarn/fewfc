@@ -1259,11 +1259,7 @@ fn compute_attack_points(
     match formula {
         PointFormula::Fixed(points) => Ok(*points as i32),
         PointFormula::CardCount => Ok(cards.len() as i32),
-        PointFormula::FormationPoints => Err(GameError::RuleImplementation(
-            crate::domain::RuleImplementationError::EffectNotImplemented(
-                "formation-points".to_string(),
-            ),
-        )),
+        PointFormula::FormationPoints => level_sum(),
         PointFormula::LevelPlus(bonus) => Ok(state
             .card_def(cards[0])
             .ok_or(GameError::Validation(
@@ -2002,6 +1998,47 @@ mod tests {
             vec![PlayerId::new("p2"), PlayerId::new("p4")],
             30,
         ))
+    }
+
+    #[test]
+    fn formation_points_sum_submitted_card_levels() {
+        let setup = GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30).with_cards(
+            vec![
+                crate::domain::CardDef {
+                    id: crate::domain::CardDefId::new("metal"),
+                    name: "metal".to_string(),
+                    element: crate::rules::Element::Metal,
+                    level: 3,
+                },
+                crate::domain::CardDef {
+                    id: crate::domain::CardDefId::new("wood"),
+                    name: "wood".to_string(),
+                    element: crate::rules::Element::Wood,
+                    level: 2,
+                },
+            ],
+            vec![
+                crate::domain::CardInstanceDef {
+                    instance: CardInstanceId::new(1),
+                    definition: crate::domain::CardDefId::new("metal"),
+                },
+                crate::domain::CardInstanceDef {
+                    instance: CardInstanceId::new(2),
+                    definition: crate::domain::CardDefId::new("wood"),
+                },
+            ],
+        );
+        let state = GameState::from_setup(&setup);
+
+        assert_eq!(
+            compute_attack_points(
+                &state,
+                &PointFormula::FormationPoints,
+                &[CardInstanceId::new(1), CardInstanceId::new(2)],
+                &PlayerId::new("p2"),
+            ),
+            Ok(5)
+        );
     }
 
     #[test]
