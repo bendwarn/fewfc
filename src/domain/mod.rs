@@ -365,6 +365,28 @@ impl GameState {
 
     pub fn view_for(&self, viewer: Viewer) -> PublicGameState {
         PublicGameState {
+            status: self.status.clone(),
+            turn_number: self.turn_number,
+            phase: self.phase,
+            current_player: self.current_player().cloned(),
+            players: self.players.clone(),
+            turn_order: self.turn_order.clone(),
+            hp: self.hp.clone(),
+            hands: self
+                .hands
+                .iter()
+                .map(|hand| PublicPlayerHand {
+                    player: hand.player.clone(),
+                    cards: if viewer.can_see_player_hidden_cards(&hand.player) {
+                        PublicCardRefs::Known(hand.cards.clone())
+                    } else {
+                        PublicCardRefs::Hidden {
+                            count: hand.cards.len(),
+                        }
+                    },
+                })
+                .collect(),
+            discard: self.discard.clone(),
             covered_passives: self
                 .covered_passives
                 .iter()
@@ -391,6 +413,8 @@ impl GameState {
                         PublicPendingChoiceKind::Hidden
                     },
                 }),
+            shields: self.shields.clone(),
+            statuses: self.statuses.clone(),
         }
     }
 }
@@ -409,8 +433,25 @@ impl Viewer {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublicGameState {
+    pub status: GameStatus,
+    pub turn_number: u64,
+    pub phase: Phase,
+    pub current_player: Option<PlayerId>,
+    pub players: Vec<Player>,
+    pub turn_order: Vec<PlayerId>,
+    pub hp: Vec<TeamHp>,
+    pub hands: Vec<PublicPlayerHand>,
+    pub discard: Vec<CardInstanceId>,
     pub covered_passives: Vec<PublicCoveredPassive>,
     pub pending_choice: Option<PublicPendingChoice>,
+    pub shields: Vec<PlayerShield>,
+    pub statuses: Vec<StatusEffect>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicPlayerHand {
+    pub player: PlayerId,
+    pub cards: PublicCardRefs,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -559,6 +600,19 @@ pub enum GameEvent {
 impl GameEvent {
     pub fn view_for(&self, viewer: Viewer) -> PublicGameEvent {
         match self {
+            GameEvent::DeckPrepared { deck_order } => PublicGameEvent::DeckPrepared {
+                deck: PublicCardRefs::Hidden {
+                    count: deck_order.len(),
+                },
+            },
+            GameEvent::CardsDealt { player, cards } => PublicGameEvent::CardsDealt {
+                player: player.clone(),
+                cards: if viewer.can_see_player_hidden_cards(player) {
+                    PublicCardRefs::Known(cards.clone())
+                } else {
+                    PublicCardRefs::Hidden { count: cards.len() }
+                },
+            },
             GameEvent::PassiveCovered {
                 player,
                 formation_id,
@@ -612,6 +666,13 @@ impl GameEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PublicGameEvent {
     Public(GameEvent),
+    DeckPrepared {
+        deck: PublicCardRefs,
+    },
+    CardsDealt {
+        player: PlayerId,
+        cards: PublicCardRefs,
+    },
     PassiveCovered {
         player: PlayerId,
         formation_id: String,

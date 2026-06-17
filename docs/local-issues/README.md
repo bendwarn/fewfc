@@ -4,7 +4,6 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Open Local Issues
 
-- [#24 Complete public state and event filtering](024-complete-public-view-filtering.md)
 - [#26 Implement remaining base active spell effects](026-implement-remaining-active-spells.md)
 - [#27 Complete rule-derived target resolution](027-complete-rule-derived-target-resolution.md)
 - [#28 Split command errors by validation, implementation, and invariant layers](028-split-command-error-taxonomy.md)
@@ -17,4 +16,5 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 ## Completed Local Issues
 
 - [#23 Complete passive action modifications and sealed passives](023-complete-passive-action-modifications.md)
+- [#24 Complete public state and event filtering](024-complete-public-view-filtering.md)
 - [#25 Generalize effect intents for spell resolvers](025-generalize-effect-intents.md)

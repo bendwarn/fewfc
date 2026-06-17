@@ -7,10 +7,10 @@ use fewfc::domain::{
     EventSource, GameError, GameEvent, GameOutcome, GameSetup, GameState, GameStatus,
     HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate, PassActionReason,
     PassiveFlipOutcome, PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player,
-    PlayerHand, PlayerId, PublicCardRefs, PublicCoveredPassive, PublicGameEvent,
-    PublicPendingChoice, PublicPendingChoiceKind, RuleImplementationError, ShieldChangeDelta,
-    StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId,
-    TurnDrawSkipReason, Viewer,
+    PlayerHand, PlayerId, PlayerShield, PublicCardRefs, PublicCoveredPassive, PublicGameEvent,
+    PublicPendingChoice, PublicPendingChoiceKind, PublicPlayerHand, RuleImplementationError,
+    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
+    TeamId, TurnDrawSkipReason, Viewer,
 };
 use fewfc::rules::Element;
 
@@ -2069,6 +2069,160 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
     );
     assert_eq!(state.covered_passives[0].cards, vec![card(2), card(7)]);
     assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn public_state_view_includes_client_state_and_filters_hands_by_viewer() {
+    let record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
+    let state = record.state().unwrap();
+
+    let p1_view = state.view_for(Viewer::Player(PlayerId::new("p1")));
+    assert_eq!(p1_view.status, GameStatus::InProgress);
+    assert_eq!(p1_view.turn_number, 1);
+    assert_eq!(p1_view.phase, Phase::TurnStart);
+    assert_eq!(p1_view.current_player, Some(PlayerId::new("p1")));
+    assert_eq!(p1_view.players, two_player_setup().players);
+    assert_eq!(
+        p1_view.turn_order,
+        vec![PlayerId::new("p1"), PlayerId::new("p2")]
+    );
+    assert_eq!(
+        p1_view.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 30,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 30,
+            },
+        ]
+    );
+    assert_eq!(
+        p1_view.hands,
+        vec![
+            PublicPlayerHand {
+                player: PlayerId::new("p1"),
+                cards: PublicCardRefs::Known(vec![card(1), card(2), card(3), card(4)]),
+            },
+            PublicPlayerHand {
+                player: PlayerId::new("p2"),
+                cards: PublicCardRefs::Hidden { count: 5 },
+            },
+        ]
+    );
+    assert_eq!(p1_view.discard, Vec::<CardInstanceId>::new());
+    assert_eq!(p1_view.covered_passives, Vec::new());
+    assert_eq!(p1_view.pending_choice, None);
+    assert_eq!(
+        p1_view.shields,
+        vec![
+            PlayerShield {
+                player: PlayerId::new("p1"),
+                value: 0,
+            },
+            PlayerShield {
+                player: PlayerId::new("p2"),
+                value: 0,
+            },
+        ]
+    );
+    assert_eq!(p1_view.statuses, Vec::<StatusEffect>::new());
+
+    let p2_view = state.view_for(Viewer::Player(PlayerId::new("p2")));
+    assert_eq!(
+        p2_view.hands,
+        vec![
+            PublicPlayerHand {
+                player: PlayerId::new("p1"),
+                cards: PublicCardRefs::Hidden { count: 4 },
+            },
+            PublicPlayerHand {
+                player: PlayerId::new("p2"),
+                cards: PublicCardRefs::Known(vec![card(5), card(6), card(7), card(8), card(9)]),
+            },
+        ]
+    );
+
+    let observer_view = state.view_for(Viewer::Observer);
+    assert_eq!(
+        observer_view.hands,
+        vec![
+            PublicPlayerHand {
+                player: PlayerId::new("p1"),
+                cards: PublicCardRefs::Hidden { count: 4 },
+            },
+            PublicPlayerHand {
+                player: PlayerId::new("p2"),
+                cards: PublicCardRefs::Hidden { count: 5 },
+            },
+        ]
+    );
+    assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn initial_deal_event_view_filters_cards_to_dealt_player() {
+    let event = GameEvent::CardsDealt {
+        player: PlayerId::new("p1"),
+        cards: vec![card(1), card(2), card(3), card(4)],
+    };
+
+    assert_eq!(
+        event.view_for(Viewer::Player(PlayerId::new("p1"))),
+        PublicGameEvent::CardsDealt {
+            player: PlayerId::new("p1"),
+            cards: PublicCardRefs::Known(vec![card(1), card(2), card(3), card(4)]),
+        }
+    );
+    assert_eq!(
+        event.view_for(Viewer::Player(PlayerId::new("p2"))),
+        PublicGameEvent::CardsDealt {
+            player: PlayerId::new("p1"),
+            cards: PublicCardRefs::Hidden { count: 4 },
+        }
+    );
+    assert_eq!(
+        event.view_for(Viewer::Observer),
+        PublicGameEvent::CardsDealt {
+            player: PlayerId::new("p1"),
+            cards: PublicCardRefs::Hidden { count: 4 },
+        }
+    );
+    assert_eq!(
+        event,
+        GameEvent::CardsDealt {
+            player: PlayerId::new("p1"),
+            cards: vec![card(1), card(2), card(3), card(4)],
+        }
+    );
+}
+
+#[test]
+fn deck_prepared_event_view_hides_deck_order_for_every_viewer() {
+    let event = GameEvent::DeckPrepared {
+        deck_order: vec![card(1), card(2), card(3)],
+    };
+
+    assert_eq!(
+        event.view_for(Viewer::Player(PlayerId::new("p1"))),
+        PublicGameEvent::DeckPrepared {
+            deck: PublicCardRefs::Hidden { count: 3 },
+        }
+    );
+    assert_eq!(
+        event.view_for(Viewer::Observer),
+        PublicGameEvent::DeckPrepared {
+            deck: PublicCardRefs::Hidden { count: 3 },
+        }
+    );
+    assert_eq!(
+        event,
+        GameEvent::DeckPrepared {
+            deck_order: vec![card(1), card(2), card(3)],
+        }
+    );
 }
 
 #[test]
