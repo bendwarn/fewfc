@@ -849,6 +849,13 @@ pub enum PassActionReason {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GameError {
+    Validation(ValidationError),
+    RuleImplementation(RuleImplementationError),
+    EngineInvariant(EngineInvariantError),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ValidationError {
     GameFinished,
     EmptyTurnOrder,
     DuplicatePlayer(PlayerId),
@@ -906,11 +913,14 @@ pub enum GameError {
     CannotPassAction {
         reason: PassActionReason,
     },
-    NotEnoughCards {
-        needed: usize,
-        available: usize,
-    },
-    RuleImplementation(RuleImplementationError),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EngineInvariantError {
+    NotEnoughCards { needed: usize, available: usize },
+    DuplicatePendingChoice { player: PlayerId },
+    DuplicateCoveredPassive { player: PlayerId },
+    ZoneOwnershipInconsistency { card: CardInstanceId },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -922,13 +932,15 @@ pub type GameResult<T> = Result<T, GameError>;
 
 pub fn validate_setup(setup: &GameSetup) -> GameResult<()> {
     if setup.turn_order.is_empty() {
-        return Err(GameError::EmptyTurnOrder);
+        return Err(GameError::Validation(ValidationError::EmptyTurnOrder));
     }
 
     let mut players = HashSet::new();
     for player in &setup.players {
         if !players.insert(player.id.clone()) {
-            return Err(GameError::DuplicatePlayer(player.id.clone()));
+            return Err(GameError::Validation(ValidationError::DuplicatePlayer(
+                player.id.clone(),
+            )));
         }
     }
 
@@ -940,30 +952,40 @@ pub fn validate_setup(setup: &GameSetup) -> GameResult<()> {
             .count()
             > 1
         {
-            return Err(GameError::DuplicateTurnOrderPlayer(player.clone()));
+            return Err(GameError::Validation(
+                ValidationError::DuplicateTurnOrderPlayer(player.clone()),
+            ));
         }
 
         if !players.contains(player) {
-            return Err(GameError::UnknownPlayer(player.clone()));
+            return Err(GameError::Validation(ValidationError::UnknownPlayer(
+                player.clone(),
+            )));
         }
     }
 
     for player in &setup.players {
         if !setup.turn_order.contains(&player.id) {
-            return Err(GameError::MissingTurnOrderPlayer(player.id.clone()));
+            return Err(GameError::Validation(
+                ValidationError::MissingTurnOrderPlayer(player.id.clone()),
+            ));
         }
     }
 
     let mut hp_teams = HashSet::new();
     for team_hp in &setup.hp {
         if !hp_teams.insert(team_hp.team.clone()) {
-            return Err(GameError::DuplicateTeamHp(team_hp.team.clone()));
+            return Err(GameError::Validation(ValidationError::DuplicateTeamHp(
+                team_hp.team.clone(),
+            )));
         }
     }
 
     for player in &setup.players {
         if !hp_teams.contains(&player.team) {
-            return Err(GameError::MissingTeamHp(player.team.clone()));
+            return Err(GameError::Validation(ValidationError::MissingTeamHp(
+                player.team.clone(),
+            )));
         }
     }
 
@@ -983,12 +1005,14 @@ fn validate_card_setup(setup: &GameSetup) -> GameResult<()> {
 
     for card_instance in &setup.card_instances {
         if !card_instances.insert(card_instance.instance) {
-            return Err(GameError::DuplicateCard(card_instance.instance));
+            return Err(GameError::Validation(ValidationError::DuplicateCard(
+                card_instance.instance,
+            )));
         }
 
         if !card_defs.contains(&card_instance.definition) {
-            return Err(GameError::MissingCardDefinition(
-                card_instance.definition.clone(),
+            return Err(GameError::Validation(
+                ValidationError::MissingCardDefinition(card_instance.definition.clone()),
             ));
         }
     }
@@ -1016,15 +1040,19 @@ fn validate_team_seating(setup: &GameSetup) -> GameResult<()> {
     }
 
     if setup.players.len() < 4 {
-        return Err(GameError::TeamModeRequiresAtLeastFourPlayers {
-            player_count: setup.players.len(),
-        });
+        return Err(GameError::Validation(
+            ValidationError::TeamModeRequiresAtLeastFourPlayers {
+                player_count: setup.players.len(),
+            },
+        ));
     }
 
     if players_by_team.len() != 2 {
-        return Err(GameError::TeamModeRequiresExactlyTwoTeams {
-            team_count: players_by_team.len(),
-        });
+        return Err(GameError::Validation(
+            ValidationError::TeamModeRequiresExactlyTwoTeams {
+                team_count: players_by_team.len(),
+            },
+        ));
     }
 
     let mut team_sizes = players_by_team.iter().collect::<Vec<_>>();
@@ -1032,30 +1060,34 @@ fn validate_team_seating(setup: &GameSetup) -> GameResult<()> {
     let (first_team, first_count) = team_sizes[0];
     let (second_team, second_count) = team_sizes[1];
     if first_count != second_count {
-        return Err(GameError::TeamModeRequiresEqualTeamSizes {
-            first_team: first_team.clone(),
-            first_count: *first_count,
-            second_team: second_team.clone(),
-            second_count: *second_count,
-        });
+        return Err(GameError::Validation(
+            ValidationError::TeamModeRequiresEqualTeamSizes {
+                first_team: first_team.clone(),
+                first_count: *first_count,
+                second_team: second_team.clone(),
+                second_count: *second_count,
+            },
+        ));
     }
 
     for index in 0..setup.turn_order.len() {
         let previous_player = &setup.turn_order[index];
         let player = &setup.turn_order[(index + 1) % setup.turn_order.len()];
-        let previous_team = team_by_player
-            .get(previous_player)
-            .ok_or_else(|| GameError::UnknownPlayer(previous_player.clone()))?;
+        let previous_team = team_by_player.get(previous_player).ok_or_else(|| {
+            GameError::Validation(ValidationError::UnknownPlayer(previous_player.clone()))
+        })?;
         let team = team_by_player
             .get(player)
-            .ok_or_else(|| GameError::UnknownPlayer(player.clone()))?;
+            .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
 
         if previous_team == team {
-            return Err(GameError::TeamSeatingNotAlternating {
-                previous_player: previous_player.clone(),
-                player: player.clone(),
-                team: team.clone(),
-            });
+            return Err(GameError::Validation(
+                ValidationError::TeamSeatingNotAlternating {
+                    previous_player: previous_player.clone(),
+                    player: player.clone(),
+                    team: team.clone(),
+                },
+            ));
         }
     }
 

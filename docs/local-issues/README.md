@@ -4,7 +4,6 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Open Local Issues
 
-- [#28 Split command errors by validation, implementation, and invariant layers](028-split-command-error-taxonomy.md)
 - [#29 Enrich recorded event metadata](029-enrich-recorded-event-metadata.md)
 - [#30 Add ruleset identity to setup and persistence](030-add-ruleset-identity.md)
 - [#31 Add serialization and filesystem persistence adapters](031-add-serialization-persistence-adapters.md)
@@ -18,3 +17,4 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 - [#25 Generalize effect intents for spell resolvers](025-generalize-effect-intents.md)
 - [#26 Implement remaining base active spell effects](026-implement-remaining-active-spells.md)
 - [#27 Complete rule-derived target resolution](027-complete-rule-derived-target-resolution.md)
+- [#28 Split command errors by validation, implementation, and invariant layers](028-split-command-error-taxonomy.md)

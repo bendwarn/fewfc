@@ -2,11 +2,11 @@
 
 use crate::domain::{
     ActionModification, AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, Command,
-    DamageTransform, DeckPlacement, ElementInteraction, EventMetadata, EventSource, GameError,
-    GameEvent, GameOutcome, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta,
-    LastElementalAttack, LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome,
-    PassiveNoEffectReason, Phase, PlayerId, PublicGameEvent, RecordedEvent, ShieldChangeDelta,
-    TeamId, TurnDrawSkipReason, Viewer, validate_setup,
+    DamageTransform, DeckPlacement, ElementInteraction, EngineInvariantError, EventMetadata,
+    EventSource, GameError, GameEvent, GameOutcome, GameResult, GameSetup, GameState, GameStatus,
+    HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate, PassActionReason,
+    PassiveFlipOutcome, PassiveNoEffectReason, Phase, PlayerId, PublicGameEvent, RecordedEvent,
+    ShieldChangeDelta, TeamId, TurnDrawSkipReason, ValidationError, Viewer, validate_setup,
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, FormationCategory, PointFormula,
@@ -133,11 +133,13 @@ fn validate_card_instances(setup: &GameSetup, deck_order: &[CardInstanceId]) -> 
 
     for card in deck_order {
         if !seen.insert(*card) {
-            return Err(GameError::DuplicateCard(*card));
+            return Err(GameError::Validation(ValidationError::DuplicateCard(*card)));
         }
 
         if !known_instances.contains(card) {
-            return Err(GameError::MissingCardInstanceDefinition(*card));
+            return Err(GameError::Validation(
+                ValidationError::MissingCardInstanceDefinition(*card),
+            ));
         }
     }
 
@@ -150,10 +152,12 @@ fn initial_events(
 ) -> GameResult<Vec<GameEvent>> {
     let needed = initial_deal_count(setup);
     if deck_order.len() < needed {
-        return Err(GameError::NotEnoughCards {
-            needed,
-            available: deck_order.len(),
-        });
+        return Err(GameError::EngineInvariant(
+            EngineInvariantError::NotEnoughCards {
+                needed,
+                available: deck_order.len(),
+            },
+        ));
     }
 
     let mut events = vec![GameEvent::DeckPrepared {
@@ -184,6 +188,8 @@ fn initial_deal_count(setup: &GameSetup) -> usize {
 }
 
 pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
+    ensure_engine_invariants(state)?;
+
     if matches!(state.status, GameStatus::Finished { .. }) {
         return Ok(Vec::new());
     }
@@ -201,7 +207,7 @@ pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
                 crate::domain::StatusExpiryTiming::TurnStart {
                     player: projected
                         .current_player()
-                        .ok_or(GameError::EmptyTurnOrder)?
+                        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
                         .clone(),
                 },
             )
@@ -209,7 +215,7 @@ pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
                 Some(GameEvent::TurnStarted {
                     player: projected
                         .current_player()
-                        .ok_or(GameError::EmptyTurnOrder)
+                        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))
                         .ok()?
                         .clone(),
                     turn_number: projected.turn_number,
@@ -221,7 +227,7 @@ pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
                 crate::domain::StatusExpiryTiming::TurnEnd {
                     player: projected
                         .current_player()
-                        .ok_or(GameError::EmptyTurnOrder)?
+                        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
                         .clone(),
                 },
             )
@@ -229,7 +235,7 @@ pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
                 Some(GameEvent::TurnEnded {
                     player: projected
                         .current_player()
-                        .ok_or(GameError::EmptyTurnOrder)
+                        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))
                         .ok()?
                         .clone(),
                 })
@@ -293,11 +299,11 @@ fn status_expires_at(
 fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
     let player = state
         .current_player()
-        .ok_or(GameError::EmptyTurnOrder)?
+        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
         .clone();
     let hand = state
         .hand(&player)
-        .ok_or_else(|| GameError::UnknownPlayer(player.clone()))?;
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
     let available_space = state.hand_limit.saturating_sub(hand.len());
 
     if available_space == 0 {
@@ -316,10 +322,12 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
             }));
         }
 
-        return Err(GameError::NotEnoughCards {
-            needed: draw_count,
-            available: state.deck.len(),
-        });
+        return Err(GameError::EngineInvariant(
+            EngineInvariantError::NotEnoughCards {
+                needed: draw_count,
+                available: state.deck.len(),
+            },
+        ));
     }
 
     let drawn_cards = state
@@ -337,8 +345,10 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
 }
 
 pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<GameEvent>> {
+    ensure_engine_invariants(state)?;
+
     if matches!(state.status, GameStatus::Finished { .. }) {
-        return Err(GameError::GameFinished);
+        return Err(GameError::Validation(ValidationError::GameFinished));
     }
     if let Some(choice) = &state.pending_choice {
         let is_choice_answer = matches!(
@@ -353,9 +363,11 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
         );
 
         if !is_choice_answer {
-            return Err(GameError::PendingChoiceInProgress {
-                player: choice.player.clone(),
-            });
+            return Err(GameError::Validation(
+                ValidationError::PendingChoiceInProgress {
+                    player: choice.player.clone(),
+                },
+            ));
         }
     }
 
@@ -366,16 +378,20 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
 
             match reason {
                 PassActionReason::NoCardsInHand => {
-                    let hand = state
-                        .hand(&player)
-                        .ok_or_else(|| GameError::UnknownPlayer(player.clone()))?;
+                    let hand = state.hand(&player).ok_or_else(|| {
+                        GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
+                    })?;
                     if !hand.is_empty() {
-                        return Err(GameError::CannotPassAction { reason });
+                        return Err(GameError::Validation(ValidationError::CannotPassAction {
+                            reason,
+                        }));
                     }
                 }
                 PassActionReason::CannotActByStatus => {
                     if !player_has_status(state, &player, "CannotAct") {
-                        return Err(GameError::CannotPassAction { reason });
+                        return Err(GameError::Validation(ValidationError::CannotPassAction {
+                            reason,
+                        }));
                     }
                 }
             }
@@ -392,34 +408,36 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
             ensure_phase(state, Phase::Main)?;
 
             let registry = base_formation_registry();
-            let formation = registry
-                .formation(&formation_id)
-                .ok_or_else(|| GameError::UnknownFormation(formation_id.clone()))?;
+            let formation = registry.formation(&formation_id).ok_or_else(|| {
+                GameError::Validation(ValidationError::UnknownFormation(formation_id.clone()))
+            })?;
 
-            let hand = state
-                .hand(&player)
-                .ok_or_else(|| GameError::UnknownPlayer(player.clone()))?;
+            let hand = state.hand(&player).ok_or_else(|| {
+                GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
+            })?;
             let mut seen = HashSet::new();
             let mut submitted_elements = Vec::new();
 
             for card in &cards {
                 if !seen.insert(*card) {
-                    return Err(GameError::DuplicateSubmittedCard(*card));
+                    return Err(GameError::Validation(
+                        ValidationError::DuplicateSubmittedCard(*card),
+                    ));
                 }
 
                 if !hand.contains(card) {
-                    return Err(GameError::CardNotInHand(*card));
+                    return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
                 }
 
-                submitted_elements.push(
-                    state
-                        .card_element(*card)
-                        .ok_or(GameError::MissingCardInstanceDefinition(*card))?,
-                );
+                submitted_elements.push(state.card_element(*card).ok_or(GameError::Validation(
+                    ValidationError::MissingCardInstanceDefinition(*card),
+                ))?);
             }
 
             if !base_formation_matcher().matches(&formation.pattern, &submitted_elements) {
-                return Err(GameError::FormationPatternMismatch { formation_id });
+                return Err(GameError::Validation(
+                    ValidationError::FormationPatternMismatch { formation_id },
+                ));
             }
 
             let effect = registry
@@ -429,7 +447,9 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
             match &effect.plan {
                 EffectPlan::Attack(plan) => {
                     if !declared_targets.is_empty() {
-                        return Err(GameError::UnexpectedDeclaredTargets { formation_id });
+                        return Err(GameError::Validation(
+                            ValidationError::UnexpectedDeclaredTargets { formation_id },
+                        ));
                     }
                     let passive_resolutions =
                         passive_resolutions(state, &player, IncomingActionKind::Attack);
@@ -497,7 +517,9 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                 }
                 EffectPlan::PassiveSpell(_) => {
                     if !declared_targets.is_empty() {
-                        return Err(GameError::UnexpectedDeclaredTargets { formation_id });
+                        return Err(GameError::Validation(
+                            ValidationError::UnexpectedDeclaredTargets { formation_id },
+                        ));
                     }
 
                     if state
@@ -505,7 +527,9 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                         .iter()
                         .any(|passive| passive.owner == player)
                     {
-                        return Err(GameError::PendingPassiveAlreadyCovered { player });
+                        return Err(GameError::Validation(
+                            ValidationError::PendingPassiveAlreadyCovered { player },
+                        ));
                     }
 
                     let passive_resolutions =
@@ -523,7 +547,9 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                 }
                 EffectPlan::ActiveSpell(spell) => {
                     if !declared_targets.is_empty() {
-                        return Err(GameError::UnexpectedDeclaredTargets { formation_id });
+                        return Err(GameError::Validation(
+                            ValidationError::UnexpectedDeclaredTargets { formation_id },
+                        ));
                     }
 
                     let passive_resolutions =
@@ -557,11 +583,13 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                             allowed_discards, ..
                         },
                 }) if choice_player == &player => allowed_discards,
-                _ => return Err(GameError::MissingPendingChoice),
+                _ => return Err(GameError::Validation(ValidationError::MissingPendingChoice)),
             };
 
             if !allowed_discards.contains(&discard) {
-                return Err(GameError::IllegalDiscard(discard));
+                return Err(GameError::Validation(ValidationError::IllegalDiscard(
+                    discard,
+                )));
             }
 
             Ok(vec![GameEvent::TurnDiscardChosen { player, discard }])
@@ -582,12 +610,14 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                 }) if choice_player == &player => {
                     (effect_id.clone(), continuation_id.clone(), allowed_cards)
                 }
-                _ => return Err(GameError::MissingPendingChoice),
+                _ => return Err(GameError::Validation(ValidationError::MissingPendingChoice)),
             };
 
             for selected_card in &selected_cards {
                 if !allowed_cards.contains(selected_card) {
-                    return Err(GameError::IllegalChoiceCard(*selected_card));
+                    return Err(GameError::Validation(ValidationError::IllegalChoiceCard(
+                        *selected_card,
+                    )));
                 }
             }
 
@@ -610,16 +640,33 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
     }
 }
 
+fn ensure_engine_invariants(state: &GameState) -> GameResult<()> {
+    let mut covered_passive_owners = HashSet::new();
+    for passive in &state.covered_passives {
+        if !covered_passive_owners.insert(passive.owner.clone()) {
+            return Err(GameError::EngineInvariant(
+                EngineInvariantError::DuplicateCoveredPassive {
+                    player: passive.owner.clone(),
+                },
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn ensure_current_player(state: &GameState, actual: &crate::domain::PlayerId) -> GameResult<()> {
-    let expected = state.current_player().ok_or(GameError::EmptyTurnOrder)?;
+    let expected = state
+        .current_player()
+        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?;
 
     if expected == actual {
         Ok(())
     } else {
-        Err(GameError::WrongPlayer {
+        Err(GameError::Validation(ValidationError::WrongPlayer {
             expected: expected.clone(),
             actual: actual.clone(),
-        })
+        }))
     }
 }
 
@@ -627,10 +674,10 @@ fn ensure_phase(state: &GameState, expected: Phase) -> GameResult<()> {
     if state.phase == expected {
         Ok(())
     } else {
-        Err(GameError::WrongPhase {
+        Err(GameError::Validation(ValidationError::WrongPhase {
             expected,
             actual: state.phase,
-        })
+        }))
     }
 }
 
@@ -806,7 +853,9 @@ fn active_spell_intents(
         "metamorphosis" => {
             let allowed_cards = state
                 .hand(player)
-                .ok_or_else(|| GameError::UnknownPlayer(player.clone()))?
+                .ok_or_else(|| {
+                    GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
+                })?
                 .iter()
                 .copied()
                 .filter(|card| !used_cards.contains(card))
@@ -909,7 +958,9 @@ fn effect_intent_events(
                     .hp
                     .iter()
                     .find(|team_hp| team_hp.team == team)
-                    .ok_or_else(|| GameError::MissingTeamHp(team.clone()))?
+                    .ok_or_else(|| {
+                        GameError::Validation(ValidationError::MissingTeamHp(team.clone()))
+                    })?
                     .hp;
                 GameEvent::HpChanged {
                     change: HpChangeDelta {
@@ -933,9 +984,11 @@ fn effect_intent_events(
             },
             EffectIntent::RequestChoice { player, kind } => {
                 if let Some(existing_player) = requested_choice_player {
-                    return Err(GameError::PendingChoiceInProgress {
-                        player: existing_player,
-                    });
+                    return Err(GameError::EngineInvariant(
+                        EngineInvariantError::DuplicatePendingChoice {
+                            player: existing_player,
+                        },
+                    ));
                 }
 
                 requested_choice_player = Some(player.clone());
@@ -960,10 +1013,12 @@ fn resume_effect_choice_intents(
         ("metamorphosis", "metamorphosis:choose-card") => {
             let selected_card = selected_cards
                 .first()
-                .ok_or(GameError::MissingPendingChoice)?;
+                .ok_or(GameError::Validation(ValidationError::MissingPendingChoice))?;
             let value = state
                 .card_def(*selected_card)
-                .ok_or(GameError::MissingCardInstanceDefinition(*selected_card))?
+                .ok_or(GameError::Validation(
+                    ValidationError::MissingCardInstanceDefinition(*selected_card),
+                ))?
                 .level as i32;
 
             Ok(vec![EffectIntent::SetShield {
@@ -1022,7 +1077,9 @@ fn resolve_rule_player_target(
             if state.turn_order.iter().any(|candidate| candidate == player) {
                 Ok(player.clone())
             } else {
-                Err(GameError::UnknownPlayer(player.clone()))
+                Err(GameError::Validation(ValidationError::UnknownPlayer(
+                    player.clone(),
+                )))
             }
         }
         RulePlayerTarget::PreviousPlayer => adjacent_player(state, player, -1),
@@ -1044,7 +1101,7 @@ fn resolve_rule_team_target(
             .iter()
             .map(|team_hp| team_hp.team.clone())
             .find(|team| team != &own_team)
-            .ok_or_else(|| GameError::MissingTeamHp(own_team.clone())),
+            .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(own_team.clone()))),
     }
 }
 
@@ -1053,7 +1110,8 @@ fn adjacent_player(state: &GameState, player: &PlayerId, offset: isize) -> GameR
         .turn_order
         .iter()
         .position(|candidate| candidate == player)
-        .ok_or_else(|| GameError::UnknownPlayer(player.clone()))? as isize;
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?
+        as isize;
     let player_count = state.turn_order.len() as isize;
     let target_index = (index + offset).rem_euclid(player_count) as usize;
 
@@ -1070,7 +1128,7 @@ fn player_team(state: &GameState, player: &PlayerId) -> GameResult<TeamId> {
         .iter()
         .find(|candidate| &candidate.id == player)
         .map(|player| player.team.clone())
-        .ok_or_else(|| GameError::UnknownPlayer(player.clone()))
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))
 }
 
 fn compute_attack_points(
@@ -1083,7 +1141,9 @@ fn compute_attack_points(
         cards.iter().try_fold(0, |sum, card| {
             let level = state
                 .card_def(*card)
-                .ok_or(GameError::MissingCardInstanceDefinition(*card))?
+                .ok_or(GameError::Validation(
+                    ValidationError::MissingCardInstanceDefinition(*card),
+                ))?
                 .level as i32;
             Ok(sum + level)
         })
@@ -1099,14 +1159,16 @@ fn compute_attack_points(
         )),
         PointFormula::LevelPlus(bonus) => Ok(state
             .card_def(cards[0])
-            .ok_or(GameError::MissingCardInstanceDefinition(cards[0]))?
+            .ok_or(GameError::Validation(
+                ValidationError::MissingCardInstanceDefinition(cards[0]),
+            ))?
             .level as i32
             + *bonus as i32),
         PointFormula::LevelSumTimes(multiplier) => Ok(level_sum()? * *multiplier as i32),
         PointFormula::TargetHandCountTimes(multiplier) => {
-            let target_hand = state
-                .hand(target)
-                .ok_or_else(|| GameError::UnknownPlayer(target.clone()))?;
+            let target_hand = state.hand(target).ok_or_else(|| {
+                GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
+            })?;
             Ok(target_hand.len() as i32 * *multiplier as i32)
         }
     }
@@ -1216,7 +1278,7 @@ fn apply_attack_amount(
         .iter()
         .find(|team_hp| &team_hp.team == team)
         .map(|team_hp| team_hp.hp)
-        .ok_or_else(|| GameError::MissingTeamHp(team.clone()))?;
+        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
     let delta = match transform {
         DamageTransform::HealTarget => amount,
         DamageTransform::NormalDamage
@@ -1240,7 +1302,7 @@ fn no_hp_change(state: &GameState, team: &TeamId) -> GameResult<HpChangeDelta> {
         .iter()
         .find(|team_hp| &team_hp.team == team)
         .map(|team_hp| team_hp.hp)
-        .ok_or_else(|| GameError::MissingTeamHp(team.clone()))?;
+        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
 
     Ok(HpChangeDelta {
         team: team.clone(),

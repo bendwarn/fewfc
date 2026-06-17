@@ -5,13 +5,13 @@ use fewfc::application::{
 use fewfc::domain::{
     ActionModification, AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
     CardMoveDelta, CardZone, Command, DamageTransform, DeckPlacement, ElementInteraction,
-    EventSource, GameError, GameEvent, GameOutcome, GameSetup, GameState, GameStatus,
-    HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate, PassActionReason,
+    EngineInvariantError, EventSource, GameError, GameEvent, GameOutcome, GameSetup, GameState,
+    GameStatus, HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate, PassActionReason,
     PassiveFlipOutcome, PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player,
     PlayerHand, PlayerId, PlayerShield, PublicCardRefs, PublicCoveredPassive, PublicGameEvent,
-    PublicPendingChoice, PublicPendingChoiceKind, PublicPlayerHand, ShieldChangeDelta,
-    StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId,
-    TurnDrawSkipReason, Viewer,
+    PublicPendingChoice, PublicPendingChoiceKind, PublicPlayerHand, RuleImplementationError,
+    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
+    TeamId, TurnDrawSkipReason, ValidationError, Viewer,
 };
 use fewfc::rules::Element;
 
@@ -286,10 +286,12 @@ fn game_state_resolves_card_instance_elements_for_formation_matching() {
 fn new_game_rejects_deck_that_cannot_satisfy_initial_deal() {
     assert_eq!(
         GameRecord::start(two_player_setup(), vec![card(1), card(2), card(3)]),
-        Err(GameError::NotEnoughCards {
-            needed: 9,
-            available: 3,
-        })
+        Err(GameError::EngineInvariant(
+            EngineInvariantError::NotEnoughCards {
+                needed: 9,
+                available: 3,
+            }
+        ))
     );
 }
 
@@ -351,7 +353,9 @@ fn setup_validation_rejects_duplicate_card_instances_across_hands_and_deck() {
 
     assert_eq!(
         GameRecord::start(two_player_setup(), deck),
-        Err(GameError::DuplicateCard(card(1)))
+        Err(GameError::Validation(ValidationError::DuplicateCard(card(
+            1
+        ))))
     );
 }
 
@@ -364,7 +368,9 @@ fn setup_validation_rejects_deck_card_without_instance_definition() {
 
     assert_eq!(
         GameRecord::start(setup, official_deck()),
-        Err(GameError::MissingCardInstanceDefinition(card(20)))
+        Err(GameError::Validation(
+            ValidationError::MissingCardInstanceDefinition(card(20))
+        ))
     );
 }
 
@@ -375,7 +381,9 @@ fn setup_validation_rejects_card_instance_with_unknown_definition() {
 
     assert_eq!(
         GameRecord::start(setup, official_deck()),
-        Err(GameError::MissingCardDefinition(CardDefId::new("missing")))
+        Err(GameError::Validation(
+            ValidationError::MissingCardDefinition(CardDefId::new("missing"))
+        ))
     );
 }
 
@@ -386,7 +394,9 @@ fn setup_validation_rejects_duplicate_card_instance_definitions() {
 
     assert_eq!(
         GameRecord::start(setup, official_deck()),
-        Err(GameError::DuplicateCard(card(1)))
+        Err(GameError::Validation(ValidationError::DuplicateCard(card(
+            1
+        ))))
     );
 }
 
@@ -407,7 +417,9 @@ fn setup_validation_requires_hp_for_every_team() {
 
     assert_eq!(
         GameRecord::start(setup, official_deck()),
-        Err(GameError::MissingTeamHp(TeamId::new("A")))
+        Err(GameError::Validation(ValidationError::MissingTeamHp(
+            TeamId::new("A")
+        )))
     );
 }
 
@@ -456,11 +468,13 @@ fn setup_validation_rejects_team_mode_turn_order_that_is_not_alternating() {
 
     assert_eq!(
         GameRecord::start(setup, official_deck()),
-        Err(GameError::TeamSeatingNotAlternating {
-            previous_player: PlayerId::new("p1"),
-            player: PlayerId::new("p2"),
-            team: TeamId::new("A"),
-        })
+        Err(GameError::Validation(
+            ValidationError::TeamSeatingNotAlternating {
+                previous_player: PlayerId::new("p1"),
+                player: PlayerId::new("p2"),
+                team: TeamId::new("A"),
+            }
+        ))
     );
 }
 
@@ -471,7 +485,9 @@ fn setup_validation_requires_turn_order_to_contain_every_player_once() {
 
     assert_eq!(
         GameRecord::start(setup, official_deck()),
-        Err(GameError::DuplicateTurnOrderPlayer(PlayerId::new("p1")))
+        Err(GameError::Validation(
+            ValidationError::DuplicateTurnOrderPlayer(PlayerId::new("p1"))
+        ))
     );
 
     let mut setup = two_player_setup();
@@ -479,7 +495,9 @@ fn setup_validation_requires_turn_order_to_contain_every_player_once() {
 
     assert_eq!(
         GameRecord::start(setup, official_deck()),
-        Err(GameError::MissingTurnOrderPlayer(PlayerId::new("p2")))
+        Err(GameError::Validation(
+            ValidationError::MissingTurnOrderPlayer(PlayerId::new("p2"))
+        ))
     );
 }
 
@@ -490,7 +508,9 @@ fn setup_validation_rejects_invalid_team_mode_shapes() {
             bare_team_setup(&[("p1", "A"), ("p2", "A"), ("p3", "B")]),
             official_deck()
         ),
-        Err(GameError::TeamModeRequiresAtLeastFourPlayers { player_count: 3 })
+        Err(GameError::Validation(
+            ValidationError::TeamModeRequiresAtLeastFourPlayers { player_count: 3 }
+        ))
     );
 
     assert_eq!(
@@ -505,7 +525,9 @@ fn setup_validation_rejects_invalid_team_mode_shapes() {
             ]),
             deck_starting_with(&(1..=30).collect::<Vec<_>>()),
         ),
-        Err(GameError::TeamModeRequiresExactlyTwoTeams { team_count: 3 })
+        Err(GameError::Validation(
+            ValidationError::TeamModeRequiresExactlyTwoTeams { team_count: 3 }
+        ))
     );
 
     assert_eq!(
@@ -519,12 +541,14 @@ fn setup_validation_rejects_invalid_team_mode_shapes() {
             ]),
             deck_starting_with(&(1..=30).collect::<Vec<_>>()),
         ),
-        Err(GameError::TeamModeRequiresEqualTeamSizes {
-            first_team: TeamId::new("A"),
-            first_count: 3,
-            second_team: TeamId::new("B"),
-            second_count: 2,
-        })
+        Err(GameError::Validation(
+            ValidationError::TeamModeRequiresEqualTeamSizes {
+                first_team: TeamId::new("A"),
+                first_count: 3,
+                second_team: TeamId::new("B"),
+                second_count: 2,
+            }
+        ))
     );
 }
 
@@ -643,9 +667,11 @@ fn rule_derived_attack_targets_reject_declared_targets_without_events() {
             cards: vec![card(1)],
             declared_targets: vec![fewfc::domain::TargetDecl::Player(PlayerId::new("p2"))],
         }),
-        Err(GameError::UnexpectedDeclaredTargets {
-            formation_id: "metal-strike".to_string(),
-        })
+        Err(GameError::Validation(
+            ValidationError::UnexpectedDeclaredTargets {
+                formation_id: "metal-strike".to_string(),
+            }
+        ))
     );
     assert_eq!(record.events(), events_before.as_slice());
     assert_eq!(record.state().unwrap(), state_before);
@@ -666,9 +692,11 @@ fn rule_derived_active_spell_targets_reject_declared_targets_without_events() {
             cards: vec![card(2), card(7), card(1), card(4)],
             declared_targets: vec![fewfc::domain::TargetDecl::Player(PlayerId::new("p1"))],
         }),
-        Err(GameError::UnexpectedDeclaredTargets {
-            formation_id: "barrier".to_string(),
-        })
+        Err(GameError::Validation(
+            ValidationError::UnexpectedDeclaredTargets {
+                formation_id: "barrier".to_string(),
+            }
+        ))
     );
     assert_eq!(record.events(), events_before.as_slice());
     assert_eq!(record.state().unwrap(), state_before);
@@ -698,6 +726,94 @@ fn pending_choices_can_store_effect_generated_continuations() {
     };
 
     assert_eq!(choice.clone(), choice);
+}
+
+#[test]
+fn unknown_effect_choice_continuation_is_rule_implementation_error_without_events_or_state_changes()
+{
+    let setup = two_player_setup();
+    let mut state = GameState::from_setup(&setup);
+    state.pending_choice = Some(PendingChoice {
+        player: PlayerId::new("p1"),
+        kind: PendingChoiceKind::EffectGenerated {
+            effect_id: "unknown-effect".to_string(),
+            continuation_id: "unknown-continuation".to_string(),
+            allowed_cards: Vec::new(),
+        },
+    });
+    let state_before = state.clone();
+
+    assert_eq!(
+        handle_command(
+            &state,
+            Command::AnswerEffectChoice {
+                player: PlayerId::new("p1"),
+                selected_cards: Vec::new(),
+            },
+        ),
+        Err(GameError::RuleImplementation(
+            RuleImplementationError::EffectNotImplemented("unknown-continuation".to_string())
+        ))
+    );
+    assert_eq!(state, state_before);
+}
+
+#[test]
+fn automatic_draw_invariant_error_emits_no_events_and_leaves_state_unchanged() {
+    let setup = two_player_setup();
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::TurnDraw;
+    let state_before = state.clone();
+
+    assert_eq!(
+        advance_state_automatic(&state),
+        Err(GameError::EngineInvariant(
+            EngineInvariantError::NotEnoughCards {
+                needed: 3,
+                available: 0,
+            }
+        ))
+    );
+    assert_eq!(state, state_before);
+}
+
+#[test]
+fn duplicate_covered_passive_is_engine_invariant_before_command_validation() {
+    let mut state = GameState::from_setup(&two_player_setup());
+    state.phase = Phase::Main;
+    state.covered_passives.push(fewfc::domain::CoveredPassive {
+        owner: PlayerId::new("p1"),
+        formation_id: "defense".to_string(),
+        cards: vec![card(2), card(7)],
+        sealed: false,
+        covered_on_turn: 1,
+        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
+    });
+    state.covered_passives.push(fewfc::domain::CoveredPassive {
+        owner: PlayerId::new("p1"),
+        formation_id: "seal".to_string(),
+        cards: vec![card(3), card(8)],
+        sealed: false,
+        covered_on_turn: 1,
+        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
+    });
+    let state_before = state.clone();
+
+    assert_eq!(
+        handle_command(
+            &state,
+            Command::PassAction {
+                player: PlayerId::new("p1"),
+                reason: PassActionReason::NoCardsInHand,
+            },
+        ),
+        Err(GameError::EngineInvariant(
+            EngineInvariantError::DuplicateCoveredPassive {
+                player: PlayerId::new("p1"),
+            }
+        ))
+    );
+    assert_eq!(state, state_before);
 }
 
 #[test]
@@ -864,10 +980,10 @@ fn invalid_command_returns_error_without_appending_events_or_changing_state() {
 
     assert_eq!(
         result,
-        Err(GameError::WrongPhase {
+        Err(GameError::Validation(ValidationError::WrongPhase {
             expected: Phase::TurnDrawDiscardChoice,
             actual: Phase::TurnStart,
-        })
+        }))
     );
     assert_eq!(record.events(), events_before.as_slice());
     assert_eq!(record.state().unwrap(), state_before);
@@ -932,9 +1048,9 @@ fn pass_action_with_cards_is_rejected_without_changing_state() {
 
     assert_eq!(
         result,
-        Err(GameError::CannotPassAction {
+        Err(GameError::Validation(ValidationError::CannotPassAction {
             reason: PassActionReason::NoCardsInHand,
-        })
+        }))
     );
     assert_eq!(record.events(), events_before.as_slice());
     assert_eq!(record.state().unwrap(), state_before);
@@ -1063,7 +1179,9 @@ fn choosing_turn_discard_rejects_cards_not_drawn_this_turn() {
                 discard: card(2),
             },
         ),
-        Err(GameError::IllegalDiscard(card(2)))
+        Err(GameError::Validation(ValidationError::IllegalDiscard(
+            card(2)
+        )))
     );
     assert_eq!(state, state_before);
 }
@@ -1865,9 +1983,11 @@ fn commands_and_automatic_advance_wait_while_effect_choice_is_pending() {
             player: PlayerId::new("p1"),
             reason: PassActionReason::NoCardsInHand,
         }),
-        Err(GameError::PendingChoiceInProgress {
-            player: PlayerId::new("p1"),
-        })
+        Err(GameError::Validation(
+            ValidationError::PendingChoiceInProgress {
+                player: PlayerId::new("p1"),
+            }
+        ))
     );
     assert_eq!(record.events(), events_before.as_slice());
     assert_eq!(record.state().unwrap(), state_before);
@@ -1945,9 +2065,11 @@ fn player_cannot_cover_second_passive_while_one_is_pending() {
                 declared_targets: Vec::new(),
             },
         ),
-        Err(GameError::PendingPassiveAlreadyCovered {
-            player: PlayerId::new("p1"),
-        })
+        Err(GameError::Validation(
+            ValidationError::PendingPassiveAlreadyCovered {
+                player: PlayerId::new("p1"),
+            }
+        ))
     );
     assert_eq!(state, state_before);
 }
@@ -2689,10 +2811,10 @@ fn invalid_perform_formation_commands_leave_events_and_state_unchanged() {
             cards: vec![card(1)],
             declared_targets: Vec::new(),
         }),
-        Err(GameError::WrongPhase {
+        Err(GameError::Validation(ValidationError::WrongPhase {
             expected: Phase::Main,
             actual: Phase::TurnStart,
-        })
+        }))
     );
     assert_eq!(record.events(), turn_start_events.as_slice());
     assert_eq!(record.state().unwrap(), turn_start_state);
@@ -2707,10 +2829,10 @@ fn invalid_perform_formation_commands_leave_events_and_state_unchanged() {
                 cards: vec![card(5)],
                 declared_targets: Vec::new(),
             },
-            GameError::WrongPlayer {
+            GameError::Validation(ValidationError::WrongPlayer {
                 expected: PlayerId::new("p1"),
                 actual: PlayerId::new("p2"),
-            },
+            }),
         ),
         (
             Command::PerformFormation {
@@ -2719,7 +2841,7 @@ fn invalid_perform_formation_commands_leave_events_and_state_unchanged() {
                 cards: vec![card(1)],
                 declared_targets: Vec::new(),
             },
-            GameError::UnknownFormation("missing".to_string()),
+            GameError::Validation(ValidationError::UnknownFormation("missing".to_string())),
         ),
         (
             Command::PerformFormation {
@@ -2728,7 +2850,7 @@ fn invalid_perform_formation_commands_leave_events_and_state_unchanged() {
                 cards: vec![card(1), card(1)],
                 declared_targets: Vec::new(),
             },
-            GameError::DuplicateSubmittedCard(card(1)),
+            GameError::Validation(ValidationError::DuplicateSubmittedCard(card(1))),
         ),
         (
             Command::PerformFormation {
@@ -2737,7 +2859,7 @@ fn invalid_perform_formation_commands_leave_events_and_state_unchanged() {
                 cards: vec![card(5)],
                 declared_targets: Vec::new(),
             },
-            GameError::CardNotInHand(card(5)),
+            GameError::Validation(ValidationError::CardNotInHand(card(5))),
         ),
         (
             Command::PerformFormation {
@@ -2746,9 +2868,9 @@ fn invalid_perform_formation_commands_leave_events_and_state_unchanged() {
                 cards: vec![card(1), card(2)],
                 declared_targets: Vec::new(),
             },
-            GameError::FormationPatternMismatch {
+            GameError::Validation(ValidationError::FormationPatternMismatch {
                 formation_id: "metal-strike".to_string(),
-            },
+            }),
         ),
     ];
 
@@ -2954,7 +3076,7 @@ fn commands_after_game_over_are_rejected_without_events_or_state_changes() {
             player: PlayerId::new("p1"),
             reason: PassActionReason::CannotActByStatus,
         }),
-        Err(GameError::GameFinished)
+        Err(GameError::Validation(ValidationError::GameFinished))
     );
     assert_eq!(record.events(), events_before.as_slice());
     assert_eq!(record.state().unwrap(), state_before);
