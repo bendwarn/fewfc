@@ -4,10 +4,10 @@ use fewfc::domain::{
     GameEvent, GameSetup, PendingChoice, PendingChoiceKind, PlayerId, RulesetId, ValidationError,
 };
 use fewfc::infrastructure::{
-    FileSystemPersistence, InMemoryPersistence, PersistedGameRecord, PersistedSnapshot,
-    PersistenceMetadata,
+    FileSystemPersistence, FixedDeckPreparation, InMemoryPersistence, PersistedGameRecord,
+    PersistedSnapshot, PersistenceMetadata, SeededDeckPreparation,
 };
-use fewfc::ports::{EventLogStorage, SnapshotStorage};
+use fewfc::ports::{DeckPreparation, EventLogStorage, SnapshotStorage};
 use fewfc::rules::Element;
 use std::fs;
 use std::path::PathBuf;
@@ -83,6 +83,55 @@ fn temp_persistence_dir(test_name: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!("fewfc-{test_name}-{}-{nonce}", std::process::id()))
+}
+
+#[test]
+fn seeded_deck_preparation_produces_repeatable_orders_from_setup() {
+    let setup = two_player_setup();
+    let mut first = SeededDeckPreparation::new(42);
+    let mut second = SeededDeckPreparation::new(42);
+    let mut different = SeededDeckPreparation::new(7);
+
+    let first_order = first.prepare_deck(&setup).unwrap();
+
+    assert_eq!(second.prepare_deck(&setup).unwrap(), first_order);
+    assert_ne!(different.prepare_deck(&setup).unwrap(), first_order);
+    assert_eq!(first_order.len(), setup.card_instances.len());
+}
+
+#[test]
+fn fixed_deck_preparation_order_is_recorded_in_deck_prepared_event() {
+    let setup = two_player_setup();
+    let prepared_order = deck_starting_with(&[5, 10, 1, 2]);
+    let mut preparation = FixedDeckPreparation::new(prepared_order.clone());
+    let prepared_deck = preparation.prepare_deck(&setup).unwrap();
+    let record = GameRecord::start(setup, prepared_deck).unwrap();
+
+    assert_eq!(
+        record.events().first(),
+        Some(&GameEvent::DeckPrepared {
+            deck_order: prepared_order,
+        })
+    );
+}
+
+#[test]
+fn replay_uses_recorded_deck_order_not_later_deck_preparation() {
+    let setup = two_player_setup();
+    let mut initial_preparation = SeededDeckPreparation::new(11);
+    let mut later_preparation = SeededDeckPreparation::new(99);
+    let initial_order = initial_preparation.prepare_deck(&setup).unwrap();
+    let later_order = later_preparation.prepare_deck(&setup).unwrap();
+    let record = GameRecord::start(setup.clone(), initial_order.clone()).unwrap();
+
+    assert_ne!(initial_order, later_order);
+    assert_eq!(record.replay().unwrap(), record.state().unwrap());
+    assert_eq!(
+        record.events().first(),
+        Some(&GameEvent::DeckPrepared {
+            deck_order: initial_order,
+        })
+    );
 }
 
 #[test]

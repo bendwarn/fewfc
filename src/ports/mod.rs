@@ -1,5 +1,13 @@
 //! Ports for external persistence or integration boundaries.
 
+use crate::domain::{CardInstanceId, GameSetup};
+
+pub trait DeckPreparation {
+    type Error;
+
+    fn prepare_deck(&mut self, setup: &GameSetup) -> Result<Vec<CardInstanceId>, Self::Error>;
+}
+
 pub trait EventLogStorage {
     type EventLog: Clone;
     type Error;

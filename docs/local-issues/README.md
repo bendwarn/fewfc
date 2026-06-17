@@ -4,8 +4,6 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Open Local Issues
 
-- [#33 Add deterministic deck preparation adapter](033-add-deterministic-deck-preparation-adapter.md)
-
 ## Completed Local Issues
 
 - [#23 Complete passive action modifications and sealed passives](023-complete-passive-action-modifications.md)
@@ -18,3 +16,4 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 - [#30 Add ruleset identity to setup and persistence](030-add-ruleset-identity.md)
 - [#31 Add serialization and filesystem persistence adapters](031-add-serialization-persistence-adapters.md)
 - [#32 Add replay verification mode](032-add-replay-verification-mode.md)
+- [#33 Add deterministic deck preparation adapter](033-add-deterministic-deck-preparation-adapter.md)

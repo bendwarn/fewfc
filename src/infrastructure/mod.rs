@@ -1,8 +1,10 @@
 //! Infrastructure adapters and deterministic setup helpers.
 
 use crate::application::{GameRecord, replay};
-use crate::domain::{GameError, GameSetup, GameState, RecordedEvent, RulesetId, ValidationError};
-use crate::ports::{EventLogStorage, SnapshotStorage};
+use crate::domain::{
+    CardInstanceId, GameError, GameSetup, GameState, RecordedEvent, RulesetId, ValidationError,
+};
+use crate::ports::{DeckPreparation, EventLogStorage, SnapshotStorage};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -135,6 +137,64 @@ impl FileSystemPersistence {
         fs::write(path, json)?;
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FixedDeckPreparation {
+    deck_order: Vec<CardInstanceId>,
+}
+
+impl FixedDeckPreparation {
+    pub fn new(deck_order: Vec<CardInstanceId>) -> Self {
+        Self { deck_order }
+    }
+}
+
+impl DeckPreparation for FixedDeckPreparation {
+    type Error = Infallible;
+
+    fn prepare_deck(&mut self, _setup: &GameSetup) -> Result<Vec<CardInstanceId>, Self::Error> {
+        Ok(self.deck_order.clone())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeededDeckPreparation {
+    seed: u64,
+}
+
+impl SeededDeckPreparation {
+    pub fn new(seed: u64) -> Self {
+        Self { seed }
+    }
+}
+
+impl DeckPreparation for SeededDeckPreparation {
+    type Error = Infallible;
+
+    fn prepare_deck(&mut self, setup: &GameSetup) -> Result<Vec<CardInstanceId>, Self::Error> {
+        let mut deck_order = setup
+            .card_instances
+            .iter()
+            .map(|card| card.instance)
+            .collect::<Vec<_>>();
+        deck_order.sort();
+
+        let mut state = self.seed;
+        for index in (1..deck_order.len()).rev() {
+            state = next_shuffle_state(state);
+            let swap_index = (state as usize) % (index + 1);
+            deck_order.swap(index, swap_index);
+        }
+
+        Ok(deck_order)
+    }
+}
+
+fn next_shuffle_state(state: u64) -> u64 {
+    state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407)
 }
 
 #[derive(Default)]
