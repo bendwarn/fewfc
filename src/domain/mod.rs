@@ -1,8 +1,9 @@
 //! Domain model: game state, ids, events, commands, and rule invariants.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PlayerId(String);
 
 impl PlayerId {
@@ -15,7 +16,7 @@ impl PlayerId {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TeamId(String);
 
 impl TeamId {
@@ -26,7 +27,7 @@ impl TeamId {
 
 pub const BASE_RULESET_ID: &str = "base";
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RulesetId(String);
 
 impl RulesetId {
@@ -43,7 +44,7 @@ impl RulesetId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CardInstanceId(u64);
 
 impl CardInstanceId {
@@ -52,7 +53,7 @@ impl CardInstanceId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CommandId(u64);
 
 impl CommandId {
@@ -65,7 +66,7 @@ impl CommandId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Element {
     Metal,
     Wood,
@@ -74,7 +75,7 @@ pub enum Element {
     Earth,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CardDefId(String);
 
 impl CardDefId {
@@ -83,7 +84,7 @@ impl CardDefId {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CardDef {
     pub id: CardDefId,
     pub name: String,
@@ -91,19 +92,19 @@ pub struct CardDef {
     pub level: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CardInstanceDef {
     pub instance: CardInstanceId,
     pub definition: CardDefId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Player {
     pub id: PlayerId,
     pub team: TeamId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PlayerHand {
     pub player: PlayerId,
     pub cards: Vec<CardInstanceId>,
@@ -115,31 +116,31 @@ impl PlayerHand {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TeamHp {
     pub team: TeamId,
     pub hp: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum GameStatus {
     InProgress,
     Finished { outcome: GameOutcome },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum GameOutcome {
     Team(TeamId),
     Draw,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PlayerShield {
     pub player: PlayerId,
     pub value: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CoveredPassive {
     pub owner: PlayerId,
     pub formation_id: String,
@@ -149,12 +150,12 @@ pub struct CoveredPassive {
     pub reveal_timing: PassiveTriggerTiming,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PassiveTriggerTiming {
     NextPlayerActionStart,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct StatusEffect {
     pub id: String,
     pub owner: StatusOwner,
@@ -163,26 +164,26 @@ pub struct StatusEffect {
     pub duration: StatusDuration,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum StatusOwner {
     Player(PlayerId),
     Team(TeamId),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum StatusDuration {
     UntilTurnStart { player: PlayerId },
     UntilTurnEnd { player: PlayerId },
     Permanent,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum StatusExpiryTiming {
     TurnStart { player: PlayerId },
     TurnEnd { player: PlayerId },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GameSetup {
     pub ruleset: RulesetId,
     pub players: Vec<Player>,
@@ -289,7 +290,7 @@ impl GameSetup {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     TurnStart,
     Main,
@@ -298,7 +299,7 @@ pub enum Phase {
     TurnEnd,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GameState {
     pub status: GameStatus,
     pub turn_number: u64,
@@ -454,7 +455,7 @@ impl GameState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum Viewer {
     Player(PlayerId),
     Observer,
@@ -466,7 +467,7 @@ impl Viewer {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicGameState {
     pub status: GameStatus,
     pub turn_number: u64,
@@ -483,44 +484,44 @@ pub struct PublicGameState {
     pub statuses: Vec<StatusEffect>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicPlayerHand {
     pub player: PlayerId,
     pub cards: PublicCardRefs,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicCoveredPassive {
     pub owner: PlayerId,
     pub formation_id: String,
     pub cards: PublicCardRefs,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PublicCardRefs {
     Known(Vec<CardInstanceId>),
     Hidden { count: usize },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicPendingChoice {
     pub player: PlayerId,
     pub kind: PublicPendingChoiceKind,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PublicPendingChoiceKind {
     Known(PendingChoiceKind),
     Hidden,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PendingChoice {
     pub player: PlayerId,
     pub kind: PendingChoiceKind,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PendingChoiceKind {
     TurnDrawDiscard {
         drawn_cards: Vec<CardInstanceId>,
@@ -533,7 +534,7 @@ pub enum PendingChoiceKind {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum GameEvent {
     DeckPrepared {
         deck_order: Vec<CardInstanceId>,
@@ -702,7 +703,7 @@ impl GameEvent {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PublicGameEvent {
     Public(GameEvent),
     DeckPrepared {
@@ -728,19 +729,19 @@ pub enum PublicGameEvent {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct RecordedEvent {
     pub metadata: EventMetadata,
     pub event: GameEvent,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct EventMetadata {
     pub sequence: u64,
     pub source: EventSource,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum EventSource {
     Setup,
     Automatic {
@@ -752,7 +753,7 @@ pub enum EventSource {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AutomaticReason {
     TurnStart,
     TurnDraw,
@@ -762,13 +763,13 @@ pub enum AutomaticReason {
     TurnEnd,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CommandContext {
     pub player: PlayerId,
     pub kind: CommandKind,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum CommandKind {
     PassAction,
     PerformFormation { formation_id: String },
@@ -776,17 +777,17 @@ pub enum CommandKind {
     AnswerEffectChoice,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TurnDrawSkipReason {
     HandLimitReached,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeckPlacement {
     Bottom,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     PassAction {
         player: PlayerId,
@@ -808,14 +809,14 @@ pub enum Command {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum TargetDecl {
     Player(PlayerId),
     Team(TeamId),
     Card(CardInstanceId),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PassiveFlipOutcome {
     Applied {
         effect_id: String,
@@ -826,21 +827,21 @@ pub enum PassiveFlipOutcome {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum ActionModification {
     PreventDamage,
     CancelSpell,
     SealCoveredPassive,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PassiveNoEffectReason {
     NotAnAttack,
     NotASpell,
     Sealed,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AttackPointBreakdown {
     pub base_points: i32,
     pub interaction: ElementInteraction,
@@ -848,7 +849,7 @@ pub struct AttackPointBreakdown {
     pub final_amount: i32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ElementInteraction {
     Generating,
     Overcoming,
@@ -856,7 +857,7 @@ pub enum ElementInteraction {
     None,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DamageTransform {
     NormalDamage,
     HealTarget,
@@ -864,19 +865,19 @@ pub enum DamageTransform {
     HalfDamageRoundUp,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct LastElementalAttack {
     pub element: Element,
     pub resolved_turn: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct LastElementalAttackUpdate {
     pub player: PlayerId,
     pub attack: LastElementalAttack,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct HpChangeDelta {
     pub team: TeamId,
     pub old_hp: i32,
@@ -885,7 +886,7 @@ pub struct HpChangeDelta {
     pub effective_delta: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ShieldChangeDelta {
     pub player: PlayerId,
     pub old_value: i32,
@@ -893,33 +894,33 @@ pub struct ShieldChangeDelta {
     pub new_value: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CardMoveDelta {
     pub card: CardInstanceId,
     pub from: CardZone,
     pub to: CardZone,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum CardZone {
     Hand(PlayerId),
     Discard,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PassActionReason {
     NoCardsInHand,
     CannotActByStatus,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum GameError {
     Validation(ValidationError),
     RuleImplementation(RuleImplementationError),
     EngineInvariant(EngineInvariantError),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum ValidationError {
     GameFinished,
     EmptyTurnOrder,
@@ -984,7 +985,7 @@ pub enum ValidationError {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum EngineInvariantError {
     NotEnoughCards { needed: usize, available: usize },
     DuplicatePendingChoice { player: PlayerId },
@@ -992,7 +993,7 @@ pub enum EngineInvariantError {
     ZoneOwnershipInconsistency { card: CardInstanceId },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum RuleImplementationError {
     EffectNotImplemented(String),
 }

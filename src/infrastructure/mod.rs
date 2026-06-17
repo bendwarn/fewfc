@@ -3,16 +3,20 @@
 use crate::application::{GameRecord, replay};
 use crate::domain::{GameError, GameSetup, GameState, RecordedEvent, RulesetId, ValidationError};
 use crate::ports::{EventLogStorage, SnapshotStorage};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PersistenceMetadata {
     pub ruleset_id: String,
     pub engine_version: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PersistedGameRecord {
     pub metadata: PersistenceMetadata,
     pub setup: GameSetup,
@@ -55,9 +59,17 @@ impl PersistedGameRecord {
             .collect::<Vec<_>>();
         replay(&self.setup, &events)
     }
+
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PersistedSnapshot {
     pub after_sequence: u64,
     pub state: GameState,
@@ -69,6 +81,59 @@ impl PersistedSnapshot {
             after_sequence,
             state,
         }
+    }
+
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
+    }
+}
+
+#[derive(Debug)]
+pub enum FileSystemPersistenceError {
+    Io(io::Error),
+    Json(serde_json::Error),
+}
+
+impl From<io::Error> for FileSystemPersistenceError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<serde_json::Error> for FileSystemPersistenceError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FileSystemPersistence {
+    root: PathBuf,
+}
+
+impl FileSystemPersistence {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    fn event_log_path(&self, game_id: &str) -> PathBuf {
+        self.root.join("event_logs").join(format!("{game_id}.json"))
+    }
+
+    fn snapshot_path(&self, game_id: &str) -> PathBuf {
+        self.root.join("snapshots").join(format!("{game_id}.json"))
+    }
+
+    fn write_json(path: &Path, json: &str) -> Result<(), FileSystemPersistenceError> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, json)?;
+        Ok(())
     }
 }
 
@@ -112,5 +177,51 @@ impl SnapshotStorage for InMemoryPersistence {
 
     fn load_snapshot(&self, game_id: &str) -> Result<Option<Self::Snapshot>, Self::Error> {
         Ok(self.snapshots.get(game_id).cloned())
+    }
+}
+
+impl EventLogStorage for FileSystemPersistence {
+    type EventLog = PersistedGameRecord;
+    type Error = FileSystemPersistenceError;
+
+    fn save_event_log(
+        &mut self,
+        game_id: &str,
+        event_log: &Self::EventLog,
+    ) -> Result<(), Self::Error> {
+        let json = event_log.to_json()?;
+        Self::write_json(&self.event_log_path(game_id), &json)
+    }
+
+    fn load_event_log(&self, game_id: &str) -> Result<Option<Self::EventLog>, Self::Error> {
+        let path = self.event_log_path(game_id);
+        match fs::read_to_string(path) {
+            Ok(json) => Ok(Some(PersistedGameRecord::from_json(&json)?)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+impl SnapshotStorage for FileSystemPersistence {
+    type Snapshot = PersistedSnapshot;
+    type Error = FileSystemPersistenceError;
+
+    fn save_snapshot(
+        &mut self,
+        game_id: &str,
+        snapshot: &Self::Snapshot,
+    ) -> Result<(), Self::Error> {
+        let json = snapshot.to_json()?;
+        Self::write_json(&self.snapshot_path(game_id), &json)
+    }
+
+    fn load_snapshot(&self, game_id: &str) -> Result<Option<Self::Snapshot>, Self::Error> {
+        let path = self.snapshot_path(game_id);
+        match fs::read_to_string(path) {
+            Ok(json) => Ok(Some(PersistedSnapshot::from_json(&json)?)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 }

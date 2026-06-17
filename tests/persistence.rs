@@ -4,10 +4,14 @@ use fewfc::domain::{
     GameSetup, PendingChoice, PendingChoiceKind, PlayerId, RulesetId, ValidationError,
 };
 use fewfc::infrastructure::{
-    InMemoryPersistence, PersistedGameRecord, PersistedSnapshot, PersistenceMetadata,
+    FileSystemPersistence, InMemoryPersistence, PersistedGameRecord, PersistedSnapshot,
+    PersistenceMetadata,
 };
 use fewfc::ports::{EventLogStorage, SnapshotStorage};
 use fewfc::rules::Element;
+use std::fs;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn card(id: u64) -> CardInstanceId {
     CardInstanceId::new(id)
@@ -71,6 +75,14 @@ fn deck_starting_with(first_cards: &[u64]) -> Vec<CardInstanceId> {
     }
 
     deck
+}
+
+fn temp_persistence_dir(test_name: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!("fewfc-{test_name}-{}-{nonce}", std::process::id()))
 }
 
 #[test]
@@ -151,6 +163,42 @@ fn persisted_event_log_round_trip_replays_turn_draw_discard_choice() {
 }
 
 #[test]
+fn persisted_event_log_json_round_trip_includes_snapshot_and_replays() {
+    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1])).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    let expected_state = record.state().unwrap();
+    let mut persisted = PersistedGameRecord::from_record(
+        PersistenceMetadata {
+            ruleset_id: "base".to_string(),
+            engine_version: "test".to_string(),
+        },
+        &record,
+    );
+    persisted.latest_snapshot = Some(PersistedSnapshot::from_state(
+        persisted.recorded_events.len() as u64,
+        expected_state.clone(),
+    ));
+
+    let json = persisted.to_json().unwrap();
+    assert!(json.contains("\"metadata\""));
+    assert!(json.contains("\"setup\""));
+    assert!(json.contains("\"recorded_events\""));
+    assert!(json.contains("\"latest_snapshot\""));
+
+    let loaded = PersistedGameRecord::from_json(&json).unwrap();
+    assert_eq!(loaded, persisted);
+    assert_eq!(loaded.replay().unwrap(), expected_state);
+}
+
+#[test]
 fn persisted_replay_uses_event_order_and_payloads_not_recorded_metadata() {
     let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1])).unwrap();
     record.advance_automatic().unwrap();
@@ -177,6 +225,46 @@ fn persisted_replay_uses_event_order_and_payloads_not_recorded_metadata() {
     }
 
     assert_eq!(persisted.replay().unwrap(), expected_state);
+}
+
+#[test]
+fn filesystem_persistence_saves_loads_event_logs_and_optional_snapshots() {
+    let root = temp_persistence_dir("filesystem-round-trip");
+    let mut adapter = FileSystemPersistence::new(&root);
+    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[2, 7])).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "defense".to_string(),
+            cards: vec![card(2), card(7)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    let persisted = PersistedGameRecord::from_record(
+        PersistenceMetadata {
+            ruleset_id: "base".to_string(),
+            engine_version: "test".to_string(),
+        },
+        &record,
+    );
+    let snapshot = PersistedSnapshot::from_state(
+        persisted.recorded_events.len() as u64,
+        record.state().unwrap(),
+    );
+
+    adapter.save_event_log("game-1", &persisted).unwrap();
+    assert_eq!(adapter.load_snapshot("game-1").unwrap(), None);
+    adapter.save_snapshot("game-1", &snapshot).unwrap();
+
+    let loaded_log = adapter.load_event_log("game-1").unwrap().unwrap();
+    let loaded_snapshot = adapter.load_snapshot("game-1").unwrap().unwrap();
+
+    assert_eq!(loaded_log, persisted);
+    assert_eq!(loaded_log.replay().unwrap(), record.state().unwrap());
+    assert_eq!(loaded_snapshot, snapshot);
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
