@@ -33,6 +33,19 @@ impl CardInstanceId {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CommandId(u64);
+
+impl CommandId {
+    pub fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Element {
     Metal,
@@ -705,10 +718,40 @@ pub struct EventMetadata {
     pub source: EventSource,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EventSource {
-    System,
-    Command,
+    Setup,
+    Automatic {
+        reason: AutomaticReason,
+    },
+    Command {
+        command_id: CommandId,
+        context: CommandContext,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutomaticReason {
+    TurnStart,
+    TurnDraw,
+    TurnDrawSkipped,
+    DiscardRecycle,
+    StatusExpired,
+    TurnEnd,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandContext {
+    pub player: PlayerId,
+    pub kind: CommandKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommandKind {
+    PassAction,
+    PerformFormation { formation_id: String },
+    ChooseTurnDiscard,
+    AnswerEffectChoice,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

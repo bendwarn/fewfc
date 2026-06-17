@@ -1,7 +1,7 @@
 use fewfc::application::GameRecord;
 use fewfc::domain::{
-    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, GameSetup, PendingChoice,
-    PendingChoiceKind, PlayerId,
+    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, EventSource, GameSetup,
+    PendingChoice, PendingChoiceKind, PlayerId,
 };
 use fewfc::infrastructure::{
     InMemoryPersistence, PersistedGameRecord, PersistedSnapshot, PersistenceMetadata,
@@ -147,6 +147,35 @@ fn persisted_event_log_round_trip_replays_turn_draw_discard_choice() {
             },
         })
     );
+}
+
+#[test]
+fn persisted_replay_uses_event_order_and_payloads_not_recorded_metadata() {
+    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1])).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    let expected_state = record.state().unwrap();
+    let mut persisted = PersistedGameRecord::from_record(
+        PersistenceMetadata {
+            ruleset_id: "base".to_string(),
+            engine_version: "test".to_string(),
+        },
+        &record,
+    );
+
+    for (index, recorded) in persisted.recorded_events.iter_mut().enumerate() {
+        recorded.metadata.sequence = 10_000 - index as u64;
+        recorded.metadata.source = EventSource::Setup;
+    }
+
+    assert_eq!(persisted.replay().unwrap(), expected_state);
 }
 
 #[test]

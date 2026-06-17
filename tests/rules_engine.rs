@@ -3,15 +3,16 @@ use fewfc::application::{
     replay as replay_events,
 };
 use fewfc::domain::{
-    ActionModification, AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
-    CardMoveDelta, CardZone, Command, DamageTransform, DeckPlacement, ElementInteraction,
-    EngineInvariantError, EventSource, GameError, GameEvent, GameOutcome, GameSetup, GameState,
-    GameStatus, HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate, PassActionReason,
-    PassiveFlipOutcome, PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player,
-    PlayerHand, PlayerId, PlayerShield, PublicCardRefs, PublicCoveredPassive, PublicGameEvent,
-    PublicPendingChoice, PublicPendingChoiceKind, PublicPlayerHand, RuleImplementationError,
-    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
-    TeamId, TurnDrawSkipReason, ValidationError, Viewer,
+    ActionModification, AttackPointBreakdown, AutomaticReason, CardDef, CardDefId, CardInstanceDef,
+    CardInstanceId, CardMoveDelta, CardZone, Command, CommandContext, CommandId, CommandKind,
+    DamageTransform, DeckPlacement, ElementInteraction, EngineInvariantError, EventSource,
+    GameError, GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta,
+    LastElementalAttack, LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome,
+    PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player, PlayerHand, PlayerId,
+    PlayerShield, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
+    PublicPendingChoiceKind, PublicPlayerHand, RuleImplementationError, ShieldChangeDelta,
+    StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId,
+    TurnDrawSkipReason, ValidationError, Viewer,
 };
 use fewfc::rules::Element;
 
@@ -317,16 +318,48 @@ fn new_game_persists_deck_order_and_replay_matches_current_state() {
 #[test]
 fn game_record_exposes_recorded_events_with_sequence_metadata() {
     let deck = official_deck();
-    let record = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
+    let mut record = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
 
     let recorded_events = record.recorded_events();
 
-    assert_eq!(recorded_events.len(), 3);
-    assert_eq!(recorded_events[0].metadata.sequence, 1);
-    assert_eq!(recorded_events[0].metadata.source, EventSource::System);
+    assert_eq!(
+        recorded_events
+            .iter()
+            .map(|recorded| recorded.metadata.sequence)
+            .collect::<Vec<_>>(),
+        (1..=recorded_events.len() as u64).collect::<Vec<_>>()
+    );
+    assert_eq!(recorded_events[0].metadata.source, EventSource::Setup);
     assert_eq!(
         recorded_events[0].event,
         GameEvent::DeckPrepared { deck_order: deck }
+    );
+    assert_eq!(
+        recorded_events[3].metadata.source,
+        EventSource::Automatic {
+            reason: AutomaticReason::TurnStart,
+        }
+    );
+    assert_eq!(
+        recorded_events.last().unwrap().metadata.source,
+        EventSource::Command {
+            command_id: CommandId::new(1),
+            context: CommandContext {
+                player: PlayerId::new("p1"),
+                kind: CommandKind::PerformFormation {
+                    formation_id: "metal-strike".to_string(),
+                },
+            },
+        }
     );
 }
 

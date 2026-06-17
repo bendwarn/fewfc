@@ -1,12 +1,13 @@
 //! Application services: command handling, automatic advancement, and replay.
 
 use crate::domain::{
-    ActionModification, AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, Command,
-    DamageTransform, DeckPlacement, ElementInteraction, EngineInvariantError, EventMetadata,
-    EventSource, GameError, GameEvent, GameOutcome, GameResult, GameSetup, GameState, GameStatus,
-    HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate, PassActionReason,
-    PassiveFlipOutcome, PassiveNoEffectReason, Phase, PlayerId, PublicGameEvent, RecordedEvent,
-    ShieldChangeDelta, TeamId, TurnDrawSkipReason, ValidationError, Viewer, validate_setup,
+    ActionModification, AttackPointBreakdown, AutomaticReason, CardInstanceId, CardMoveDelta,
+    CardZone, Command, CommandContext, CommandId, CommandKind, DamageTransform, DeckPlacement,
+    ElementInteraction, EngineInvariantError, EventMetadata, EventSource, GameError, GameEvent,
+    GameOutcome, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
+    LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome, PassiveNoEffectReason, Phase,
+    PlayerId, PublicGameEvent, RecordedEvent, ShieldChangeDelta, TeamId, TurnDrawSkipReason,
+    ValidationError, Viewer, validate_setup,
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, FormationCategory, PointFormula,
@@ -18,6 +19,7 @@ use std::collections::HashSet;
 pub struct GameRecord {
     setup: GameSetup,
     events: Vec<GameEvent>,
+    event_metadata: Vec<EventMetadata>,
     latest_snapshot: Option<GameState>,
 }
 
@@ -26,10 +28,12 @@ impl GameRecord {
         validate_setup(&setup)?;
         validate_card_instances(&setup, &deck_order)?;
         let events = initial_events(&setup, deck_order)?;
+        let event_metadata = metadata_for_events(events.len(), EventSource::Setup);
 
         let record = Self {
             setup,
             events,
+            event_metadata,
             latest_snapshot: None,
         };
 
@@ -48,12 +52,9 @@ impl GameRecord {
     pub fn recorded_events(&self) -> Vec<RecordedEvent> {
         self.events
             .iter()
-            .enumerate()
-            .map(|(index, event)| RecordedEvent {
-                metadata: EventMetadata {
-                    sequence: index as u64 + 1,
-                    source: event_source(event),
-                },
+            .zip(self.event_metadata.iter())
+            .map(|(event, metadata)| RecordedEvent {
+                metadata: metadata.clone(),
                 event: event.clone(),
             })
             .collect()
@@ -84,30 +85,88 @@ impl GameRecord {
 
     pub fn handle(&mut self, command: Command) -> GameResult<Vec<GameEvent>> {
         let state = self.state()?;
+        let source = EventSource::Command {
+            command_id: self.next_command_id(),
+            context: command_context(&command),
+        };
         let events = handle_command(&state, command)?;
-        self.events.extend(events.clone());
+        self.extend_events(events.clone(), |event| {
+            source_for_command_event(event, &source)
+        });
         Ok(events)
     }
 
     pub fn advance_automatic(&mut self) -> GameResult<Vec<GameEvent>> {
         let state = self.state()?;
         let events = advance_automatic(&state)?;
-        self.events.extend(events.clone());
+        self.extend_events(events.clone(), source_for_automatic_event);
         Ok(events)
+    }
+
+    fn extend_events(
+        &mut self,
+        events: Vec<GameEvent>,
+        source_for_event: impl Fn(&GameEvent) -> EventSource,
+    ) {
+        let first_sequence = self.events.len() as u64 + 1;
+        self.event_metadata.extend(
+            events
+                .iter()
+                .enumerate()
+                .map(|(index, event)| EventMetadata {
+                    sequence: first_sequence + index as u64,
+                    source: source_for_event(event),
+                }),
+        );
+        self.events.extend(events.clone());
+    }
+
+    fn next_command_id(&self) -> CommandId {
+        let next_id = self
+            .event_metadata
+            .iter()
+            .filter_map(|metadata| match &metadata.source {
+                EventSource::Command { command_id, .. } => Some(command_id.as_u64()),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            + 1;
+        CommandId::new(next_id)
     }
 }
 
-fn event_source(event: &GameEvent) -> EventSource {
+fn metadata_for_events(count: usize, source: EventSource) -> Vec<EventMetadata> {
+    (0..count)
+        .map(|index| EventMetadata {
+            sequence: index as u64 + 1,
+            source: source.clone(),
+        })
+        .collect()
+}
+
+fn source_for_command_event(_event: &GameEvent, source: &EventSource) -> EventSource {
+    source.clone()
+}
+
+fn source_for_automatic_event(event: &GameEvent) -> EventSource {
+    EventSource::Automatic {
+        reason: automatic_reason(event)
+            .expect("automatic advancement must only emit automatic events"),
+    }
+}
+
+fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
     match event {
+        GameEvent::TurnStarted { .. } => Some(AutomaticReason::TurnStart),
+        GameEvent::CardsDrawnForTurnDiscardChoice { .. } => Some(AutomaticReason::TurnDraw),
+        GameEvent::TurnDrawSkipped { .. } => Some(AutomaticReason::TurnDrawSkipped),
+        GameEvent::DiscardRecycledIntoDeck { .. } => Some(AutomaticReason::DiscardRecycle),
+        GameEvent::StatusExpired { .. } => Some(AutomaticReason::StatusExpired),
+        GameEvent::TurnEnded { .. } => Some(AutomaticReason::TurnEnd),
         GameEvent::DeckPrepared { .. }
         | GameEvent::CardsDealt { .. }
-        | GameEvent::TurnStarted { .. }
-        | GameEvent::CardsDrawnForTurnDiscardChoice { .. }
-        | GameEvent::StatusExpired { .. }
-        | GameEvent::TurnDrawSkipped { .. }
-        | GameEvent::DiscardRecycledIntoDeck { .. }
-        | GameEvent::TurnEnded { .. } => EventSource::System,
-        GameEvent::ActionPassed { .. }
+        | GameEvent::ActionPassed { .. }
         | GameEvent::AttackResolved { .. }
         | GameEvent::CardsMoved { .. }
         | GameEvent::EffectChoiceAnswered { .. }
@@ -119,7 +178,34 @@ fn event_source(event: &GameEvent) -> EventSource {
         | GameEvent::ShieldChanged { .. }
         | GameEvent::StatusAdded { .. }
         | GameEvent::StatusRemoved { .. }
-        | GameEvent::TurnDiscardChosen { .. } => EventSource::Command,
+        | GameEvent::TurnDiscardChosen { .. } => None,
+    }
+}
+
+fn command_context(command: &Command) -> CommandContext {
+    match command {
+        Command::PassAction { player, .. } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::PassAction,
+        },
+        Command::PerformFormation {
+            player,
+            formation_id,
+            ..
+        } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::PerformFormation {
+                formation_id: formation_id.clone(),
+            },
+        },
+        Command::ChooseTurnDiscard { player, .. } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::ChooseTurnDiscard,
+        },
+        Command::AnswerEffectChoice { player, .. } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::AnswerEffectChoice,
+        },
     }
 }
 
