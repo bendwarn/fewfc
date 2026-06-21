@@ -137,13 +137,13 @@ fn replay_uses_recorded_deck_order_not_later_deck_preparation() {
 #[test]
 fn persisted_event_log_round_trip_replays_mid_turn_effect_choice() {
     let mut record =
-        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 1, 2])).unwrap();
+        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 2, 1])).unwrap();
     record.advance_automatic().unwrap();
     record
         .handle(Command::PerformFormation {
             player: PlayerId::new("p1"),
-            formation_id: "metamorphosis".to_string(),
-            cards: vec![card(5), card(10)],
+            formation_id: "chaos".to_string(),
+            cards: vec![card(5), card(10), card(2), card(1)],
             declared_targets: Vec::new(),
         })
         .unwrap();
@@ -168,9 +168,9 @@ fn persisted_event_log_round_trip_replays_mid_turn_effect_choice() {
         Some(PendingChoice {
             player: PlayerId::new("p1"),
             kind: PendingChoiceKind::EffectGenerated {
-                effect_id: "metamorphosis".to_string(),
-                continuation_id: "metamorphosis:choose-card".to_string(),
-                allowed_cards: vec![card(1), card(2)],
+                effect_id: "chaos".to_string(),
+                continuation_id: "chaos:return-two".to_string(),
+                allowed_cards: vec![card(3), card(4), card(6), card(7), card(8)],
             },
         })
     );

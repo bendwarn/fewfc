@@ -1,6 +1,5 @@
 use fewfc::application::{
     GameRecord, advance_automatic as advance_state_automatic, apply_event, handle_command,
-    replay as replay_events,
 };
 use fewfc::domain::{
     ActionModification, AttackPointBreakdown, AutomaticReason, CardDef, CardDefId, CardInstanceDef,
@@ -1482,8 +1481,8 @@ fn immediate_active_spell_resolves_through_perform_formation() {
             GameEvent::ShieldChanged {
                 player: PlayerId::new("p1"),
                 old_value: 0,
-                delta: 5,
-                new_value: 5,
+                delta: 44,
+                new_value: 44,
             },
         ]
     );
@@ -1492,7 +1491,7 @@ fn immediate_active_spell_resolves_through_perform_formation() {
     assert_eq!(state.phase, Phase::TurnDraw);
     assert_eq!(state.hand(&PlayerId::new("p1")), Some([].as_slice()));
     assert_eq!(state.discard, vec![card(2), card(7), card(1), card(4)]);
-    assert_eq!(state.shield(&PlayerId::new("p1")), Some(5));
+    assert_eq!(state.shield(&PlayerId::new("p1")), Some(44));
     assert_eq!(record.replay().unwrap(), state);
 }
 
@@ -1522,9 +1521,9 @@ fn generating_formation_heals_current_players_team_through_public_command_flow()
                 change: HpChangeDelta {
                     team: TeamId::new("team:p1"),
                     old_hp: 20,
-                    delta: 3,
-                    new_hp: 23,
-                    effective_delta: 3,
+                    delta: 18,
+                    new_hp: 38,
+                    effective_delta: 18,
                 },
             },
         ]
@@ -1537,7 +1536,7 @@ fn generating_formation_heals_current_players_team_through_public_command_flow()
             .iter()
             .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
             .map(|team_hp| team_hp.hp),
-        Some(23)
+        Some(38)
     );
     assert_eq!(record.replay().unwrap(), state);
 }
@@ -1576,9 +1575,9 @@ fn generating_formation_targets_own_side_in_team_mode_without_declared_targets()
                 change: HpChangeDelta {
                     team: TeamId::new("A"),
                     old_hp: 20,
-                    delta: 3,
-                    new_hp: 23,
-                    effective_delta: 3,
+                    delta: 18,
+                    new_hp: 38,
+                    effective_delta: 18,
                 },
             },
         ]
@@ -1590,7 +1589,7 @@ fn generating_formation_targets_own_side_in_team_mode_without_declared_targets()
         vec![
             TeamHp {
                 team: TeamId::new("A"),
-                hp: 23,
+                hp: 38,
             },
             TeamHp {
                 team: TeamId::new("B"),
@@ -1603,18 +1602,33 @@ fn generating_formation_targets_own_side_in_team_mode_without_declared_targets()
 
 #[test]
 fn overcoming_formation_damages_previous_players_team_through_public_command_flow() {
-    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1, 2, 5])).unwrap();
-    record.advance_automatic().unwrap();
+    let mut state = GameState::from_setup(&two_player_setup());
+    state.phase = Phase::Main;
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(2), card(5)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+    apply_event(
+        &mut state,
+        &GameEvent::ShieldChanged {
+            player: PlayerId::new("p2"),
+            old_value: 0,
+            delta: 12,
+            new_value: 12,
+        },
+    );
 
     assert_eq!(
-        record
-            .handle(Command::PerformFormation {
+        handle_command(
+            &state,
+            Command::PerformFormation {
                 player: PlayerId::new("p1"),
                 formation_id: "overcoming-formation".to_string(),
                 cards: vec![card(1), card(2), card(5)],
                 declared_targets: Vec::new(),
-            })
-            .unwrap(),
+            }
+        )
+        .unwrap(),
         vec![
             GameEvent::FormationPerformed {
                 player: PlayerId::new("p1"),
@@ -1622,32 +1636,33 @@ fn overcoming_formation_damages_previous_players_team_through_public_command_flo
                 used_cards: vec![card(1), card(2), card(5)],
                 declared_targets: Vec::new(),
             },
-            GameEvent::HpChanged {
-                change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 30,
-                    delta: -3,
-                    new_hp: 27,
-                    effective_delta: -3,
-                },
+            GameEvent::ShieldChanged {
+                player: PlayerId::new("p2"),
+                old_value: 12,
+                delta: -12,
+                new_value: 0,
             },
         ]
     );
 
-    let state = record.state().unwrap();
-    assert_eq!(
-        state
-            .hp
-            .iter()
-            .find(|team_hp| team_hp.team == TeamId::new("team:p2"))
-            .map(|team_hp| team_hp.hp),
-        Some(27)
-    );
-    assert_eq!(record.replay().unwrap(), state);
+    for event in handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "overcoming-formation".to_string(),
+            cards: vec![card(1), card(2), card(5)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap()
+    {
+        apply_event(&mut state, &event);
+    }
+    assert_eq!(state.shield(&PlayerId::new("p2")), Some(0));
 }
 
 #[test]
-fn radiance_removes_current_players_statuses_through_public_command_flow() {
+fn radiance_prevents_next_player_action_and_draw_for_two_turns() {
     let mut state = GameState::from_setup(&two_player_setup());
     state.phase = Phase::Main;
     state.hands = vec![
@@ -1657,7 +1672,6 @@ fn radiance_removes_current_players_statuses_through_public_command_flow() {
         ),
         PlayerHand::new(PlayerId::new("p2"), Vec::new()),
     ];
-    state.statuses = vec![cannot_act_status(PlayerId::new("p1"))];
 
     let events = handle_command(
         &state,
@@ -1679,9 +1693,29 @@ fn radiance_removes_current_players_statuses_through_public_command_flow() {
                 used_cards: vec![card(1), card(6), card(4), card(3)],
                 declared_targets: Vec::new(),
             },
-            GameEvent::StatusRemoved {
-                status_id: "cannot-act-p1".to_string(),
-                owner: StatusOwner::Player(PlayerId::new("p1")),
+            GameEvent::StatusAdded {
+                status: StatusEffect {
+                    id: "radiance-cannot-act-p2-turn-1".to_string(),
+                    owner: StatusOwner::Player(PlayerId::new("p2")),
+                    kind: "CannotAct".to_string(),
+                    value: None,
+                    duration: StatusDuration::UntilTurnEndNumber {
+                        player: PlayerId::new("p2"),
+                        turn_number: 4,
+                    },
+                },
+            },
+            GameEvent::StatusAdded {
+                status: StatusEffect {
+                    id: "radiance-cannot-draw-p2-turn-1".to_string(),
+                    owner: StatusOwner::Player(PlayerId::new("p2")),
+                    kind: "CannotDraw".to_string(),
+                    value: None,
+                    duration: StatusDuration::UntilTurnEndNumber {
+                        player: PlayerId::new("p2"),
+                        turn_number: 4,
+                    },
+                },
             },
         ]
     );
@@ -1690,53 +1724,32 @@ fn radiance_removes_current_players_statuses_through_public_command_flow() {
         apply_event(&mut state, &event);
     }
 
-    assert!(state.statuses.is_empty());
+    assert_eq!(state.statuses.len(), 2);
     assert_eq!(state.phase, Phase::TurnDraw);
-
-    let replayed = replay_events(
-        &two_player_setup(),
-        &[
-            GameEvent::DeckPrepared {
-                deck_order: official_deck(),
-            },
-            GameEvent::CardsDealt {
-                player: PlayerId::new("p1"),
-                cards: vec![card(1), card(6), card(4), card(3)],
-            },
-            GameEvent::StatusAdded {
-                status: cannot_act_status(PlayerId::new("p1")),
-            },
-            GameEvent::TurnStarted {
-                player: PlayerId::new("p1"),
-                turn_number: 1,
-            },
-            GameEvent::FormationPerformed {
-                player: PlayerId::new("p1"),
-                formation_id: "radiance".to_string(),
-                used_cards: vec![card(1), card(6), card(4), card(3)],
-                declared_targets: Vec::new(),
-            },
-            GameEvent::StatusRemoved {
-                status_id: "cannot-act-p1".to_string(),
-                owner: StatusOwner::Player(PlayerId::new("p1")),
-            },
-        ],
-    )
-    .unwrap();
-    assert!(replayed.statuses.is_empty());
-    assert_eq!(replayed.phase, Phase::TurnDraw);
 }
 
 #[test]
-fn active_spell_can_request_replay_safe_effect_choice() {
-    let mut record =
-        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 1, 2])).unwrap();
+fn metamorphosis_copies_previous_players_last_base_formation_effect() {
+    let mut record = GameRecord::start(
+        two_player_setup(),
+        deck_starting_with(&[1, 6, 2, 3, 5, 10, 4, 7, 8]),
+    )
+    .unwrap();
     record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(1), card(6)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut record, card(9));
 
     assert_eq!(
         record
             .handle(Command::PerformFormation {
-                player: PlayerId::new("p1"),
+                player: PlayerId::new("p2"),
                 formation_id: "metamorphosis".to_string(),
                 cards: vec![card(5), card(10)],
                 declared_targets: Vec::new(),
@@ -1744,58 +1757,48 @@ fn active_spell_can_request_replay_safe_effect_choice() {
             .unwrap(),
         vec![
             GameEvent::FormationPerformed {
-                player: PlayerId::new("p1"),
+                player: PlayerId::new("p2"),
                 formation_id: "metamorphosis".to_string(),
                 used_cards: vec![card(5), card(10)],
                 declared_targets: Vec::new(),
             },
-            GameEvent::EffectChoiceRequested {
-                player: PlayerId::new("p1"),
-                kind: PendingChoiceKind::EffectGenerated {
-                    effect_id: "metamorphosis".to_string(),
-                    continuation_id: "metamorphosis:choose-card".to_string(),
-                    allowed_cards: vec![card(1), card(2)],
+            GameEvent::AttackResolved {
+                attacker: PlayerId::new("p2"),
+                target: PlayerId::new("p1"),
+                formation_id: "weapon".to_string(),
+                used_cards: vec![card(5), card(10)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 20,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 20,
                 },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 30,
+                    delta: -20,
+                    new_hp: 10,
+                    effective_delta: -20,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: None,
             },
         ]
     );
 
     let state = record.state().unwrap();
-    assert_eq!(
-        state.pending_choice,
-        Some(PendingChoice {
-            player: PlayerId::new("p1"),
-            kind: PendingChoiceKind::EffectGenerated {
-                effect_id: "metamorphosis".to_string(),
-                continuation_id: "metamorphosis:choose-card".to_string(),
-                allowed_cards: vec![card(1), card(2)],
-            },
-        })
-    );
+    assert!(state.pending_choice.is_none());
     assert_eq!(state.phase, Phase::TurnDraw);
-    assert_eq!(
-        state.hand(&PlayerId::new("p1")),
-        Some(vec![card(1), card(2)].as_slice())
-    );
-    assert_eq!(state.discard, vec![card(5), card(10)]);
+    assert_eq!(state.shield(&PlayerId::new("p2")), Some(0));
     assert_eq!(record.replay().unwrap(), state);
 }
 
 #[test]
-fn active_spell_intent_can_add_status_through_public_command_flow() {
+fn chaos_requests_two_next_player_hand_cards_and_returns_them_to_deck_top() {
     let mut record =
         GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 2, 1])).unwrap();
     record.advance_automatic().unwrap();
-
-    let status = StatusEffect {
-        id: "chaos-cannot-act-p2-turn-1".to_string(),
-        owner: StatusOwner::Player(PlayerId::new("p2")),
-        kind: "CannotAct".to_string(),
-        value: None,
-        duration: StatusDuration::UntilTurnEnd {
-            player: PlayerId::new("p2"),
-        },
-    };
 
     assert_eq!(
         record
@@ -1813,41 +1816,59 @@ fn active_spell_intent_can_add_status_through_public_command_flow() {
                 used_cards: vec![card(5), card(10), card(2), card(1)],
                 declared_targets: Vec::new(),
             },
-            GameEvent::StatusAdded {
-                status: status.clone(),
+            GameEvent::EffectChoiceRequested {
+                player: PlayerId::new("p1"),
+                kind: PendingChoiceKind::EffectGenerated {
+                    effect_id: "chaos".to_string(),
+                    continuation_id: "chaos:return-two".to_string(),
+                    allowed_cards: vec![card(3), card(4), card(6), card(7), card(8)],
+                },
             },
         ]
     );
 
-    assert_eq!(record.state().unwrap().statuses, vec![status.clone()]);
-
-    record.advance_automatic().unwrap();
-    record
-        .handle(Command::ChooseTurnDiscard {
-            player: PlayerId::new("p1"),
-            discard: card(9),
-        })
-        .unwrap();
-    record.advance_automatic().unwrap();
-
-    let state = record.state().unwrap();
-    assert_eq!(state.current_player(), Some(&PlayerId::new("p2")));
-    assert_eq!(state.phase, Phase::Main);
-    assert_eq!(state.statuses, vec![status]);
-
     assert_eq!(
         record
-            .handle(Command::PassAction {
-                player: PlayerId::new("p2"),
-                reason: PassActionReason::CannotActByStatus,
+            .handle(Command::AnswerEffectChoice {
+                player: PlayerId::new("p1"),
+                selected_cards: vec![card(3), card(4)],
             })
             .unwrap(),
-        vec![GameEvent::ActionPassed {
-            player: PlayerId::new("p2"),
-            reason: PassActionReason::CannotActByStatus,
-        }]
+        vec![
+            GameEvent::EffectChoiceAnswered {
+                player: PlayerId::new("p1"),
+                effect_id: "chaos".to_string(),
+                continuation_id: "chaos:return-two".to_string(),
+                selected_cards: vec![card(3), card(4)],
+            },
+            GameEvent::CardsMoved {
+                card_moves: vec![
+                    CardMoveDelta {
+                        card: card(4),
+                        from: CardZone::Hand(PlayerId::new("p2")),
+                        to: CardZone::DeckTop,
+                    },
+                    CardMoveDelta {
+                        card: card(3),
+                        from: CardZone::Hand(PlayerId::new("p2")),
+                        to: CardZone::DeckTop,
+                    },
+                ],
+            },
+        ]
     );
-    assert_eq!(record.replay().unwrap(), record.state().unwrap());
+
+    let state = record.state().unwrap();
+    assert_eq!(
+        state.hand(&PlayerId::new("p2")),
+        Some(vec![card(6), card(7), card(8)].as_slice())
+    );
+    assert_eq!(
+        state.deck.iter().take(2).copied().collect::<Vec<_>>(),
+        vec![card(3), card(4)]
+    );
+    assert!(state.pending_choice.is_none());
+    assert_eq!(record.replay().unwrap(), state);
 }
 
 #[test]
@@ -1876,9 +1897,9 @@ fn active_spell_intent_can_change_hp_through_public_command_flow() {
                 change: HpChangeDelta {
                     team: TeamId::new("team:p1"),
                     old_hp: 30,
-                    delta: 5,
-                    new_hp: 35,
-                    effective_delta: 5,
+                    delta: 36,
+                    new_hp: 66,
+                    effective_delta: 36,
                 },
             },
         ]
@@ -1891,15 +1912,25 @@ fn active_spell_intent_can_change_hp_through_public_command_flow() {
             .iter()
             .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
             .map(|team_hp| team_hp.hp),
-        Some(35)
+        Some(66)
     );
     assert_eq!(record.replay().unwrap(), state);
 }
 
 #[test]
-fn active_spell_intent_can_move_cards_through_public_command_flow() {
+fn five_elements_cycle_exchanges_team_hp_through_public_command_flow() {
     let mut state = GameState::from_setup(&two_player_setup());
     state.phase = Phase::Main;
+    state.hp = vec![
+        TeamHp {
+            team: TeamId::new("team:p1"),
+            hp: 12,
+        },
+        TeamHp {
+            team: TeamId::new("team:p2"),
+            hp: 27,
+        },
+    ];
     state.hands = vec![
         PlayerHand::new(
             PlayerId::new("p1"),
@@ -1907,7 +1938,6 @@ fn active_spell_intent_can_move_cards_through_public_command_flow() {
         ),
         PlayerHand::new(PlayerId::new("p2"), Vec::new()),
     ];
-    state.discard = vec![card(6)];
 
     let events = handle_command(
         &state,
@@ -1929,12 +1959,23 @@ fn active_spell_intent_can_move_cards_through_public_command_flow() {
                 used_cards: vec![card(1), card(2), card(3), card(4), card(5)],
                 declared_targets: Vec::new(),
             },
-            GameEvent::CardsMoved {
-                card_moves: vec![CardMoveDelta {
-                    card: card(6),
-                    from: CardZone::Discard,
-                    to: CardZone::Hand(PlayerId::new("p1")),
-                }],
+            GameEvent::HpChanged {
+                change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 12,
+                    delta: 15,
+                    new_hp: 27,
+                    effective_delta: 15,
+                },
+            },
+            GameEvent::HpChanged {
+                change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 27,
+                    delta: -15,
+                    new_hp: 12,
+                    effective_delta: -15,
+                },
             },
         ]
     );
@@ -1943,10 +1984,23 @@ fn active_spell_intent_can_move_cards_through_public_command_flow() {
         apply_event(&mut state, event);
     }
 
-    assert_eq!(state.hand(&PlayerId::new("p1")), Some([card(6)].as_slice()));
+    assert_eq!(state.hand(&PlayerId::new("p1")), Some([].as_slice()));
     assert_eq!(
         state.discard,
         vec![card(1), card(2), card(3), card(4), card(5)]
+    );
+    assert_eq!(
+        state.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 27,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 12,
+            },
+        ]
     );
     assert_eq!(state.phase, Phase::TurnDraw);
 }
@@ -1954,13 +2008,13 @@ fn active_spell_intent_can_move_cards_through_public_command_flow() {
 #[test]
 fn answering_effect_choice_resumes_resolution_deterministically() {
     let mut record =
-        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 1, 2])).unwrap();
+        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 2, 1])).unwrap();
     record.advance_automatic().unwrap();
     record
         .handle(Command::PerformFormation {
             player: PlayerId::new("p1"),
-            formation_id: "metamorphosis".to_string(),
-            cards: vec![card(5), card(10)],
+            formation_id: "chaos".to_string(),
+            cards: vec![card(5), card(10), card(2), card(1)],
             declared_targets: Vec::new(),
         })
         .unwrap();
@@ -1969,21 +2023,29 @@ fn answering_effect_choice_resumes_resolution_deterministically() {
         record
             .handle(Command::AnswerEffectChoice {
                 player: PlayerId::new("p1"),
-                selected_cards: vec![card(1)],
+                selected_cards: vec![card(3), card(4)],
             })
             .unwrap(),
         vec![
             GameEvent::EffectChoiceAnswered {
                 player: PlayerId::new("p1"),
-                effect_id: "metamorphosis".to_string(),
-                continuation_id: "metamorphosis:choose-card".to_string(),
-                selected_cards: vec![card(1)],
+                effect_id: "chaos".to_string(),
+                continuation_id: "chaos:return-two".to_string(),
+                selected_cards: vec![card(3), card(4)],
             },
-            GameEvent::ShieldChanged {
-                player: PlayerId::new("p1"),
-                old_value: 0,
-                delta: 3,
-                new_value: 3,
+            GameEvent::CardsMoved {
+                card_moves: vec![
+                    CardMoveDelta {
+                        card: card(4),
+                        from: CardZone::Hand(PlayerId::new("p2")),
+                        to: CardZone::DeckTop,
+                    },
+                    CardMoveDelta {
+                        card: card(3),
+                        from: CardZone::Hand(PlayerId::new("p2")),
+                        to: CardZone::DeckTop,
+                    },
+                ],
             },
         ]
     );
@@ -1992,23 +2054,22 @@ fn answering_effect_choice_resumes_resolution_deterministically() {
     assert!(state.pending_choice.is_none());
     assert_eq!(state.phase, Phase::TurnDraw);
     assert_eq!(
-        state.hand(&PlayerId::new("p1")),
-        Some(vec![card(1), card(2)].as_slice())
+        state.hand(&PlayerId::new("p2")),
+        Some(vec![card(6), card(7), card(8)].as_slice())
     );
-    assert_eq!(state.shield(&PlayerId::new("p1")), Some(3));
     assert_eq!(record.replay().unwrap(), state);
 }
 
 #[test]
 fn commands_and_automatic_advance_wait_while_effect_choice_is_pending() {
     let mut record =
-        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 1, 2])).unwrap();
+        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 2, 1])).unwrap();
     record.advance_automatic().unwrap();
     record
         .handle(Command::PerformFormation {
             player: PlayerId::new("p1"),
-            formation_id: "metamorphosis".to_string(),
-            cards: vec![card(5), card(10)],
+            formation_id: "chaos".to_string(),
+            cards: vec![card(5), card(10), card(2), card(1)],
             declared_targets: Vec::new(),
         })
         .unwrap();
@@ -2619,13 +2680,13 @@ fn deck_prepared_event_view_hides_deck_order_for_every_viewer() {
 #[test]
 fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
     let mut record =
-        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 1, 2])).unwrap();
+        GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 2, 1])).unwrap();
     record.advance_automatic().unwrap();
     record
         .handle(Command::PerformFormation {
             player: PlayerId::new("p1"),
-            formation_id: "metamorphosis".to_string(),
-            cards: vec![card(5), card(10)],
+            formation_id: "chaos".to_string(),
+            cards: vec![card(5), card(10), card(2), card(1)],
             declared_targets: Vec::new(),
         })
         .unwrap();
@@ -2638,9 +2699,9 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
         Some(PublicPendingChoice {
             player: PlayerId::new("p1"),
             kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
-                effect_id: "metamorphosis".to_string(),
-                continuation_id: "metamorphosis:choose-card".to_string(),
-                allowed_cards: vec![card(1), card(2)],
+                effect_id: "chaos".to_string(),
+                continuation_id: "chaos:return-two".to_string(),
+                allowed_cards: vec![card(3), card(4), card(6), card(7), card(8)],
             }),
         })
     );
@@ -2665,9 +2726,9 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
         Some(PendingChoice {
             player: PlayerId::new("p1"),
             kind: PendingChoiceKind::EffectGenerated {
-                effect_id: "metamorphosis".to_string(),
-                continuation_id: "metamorphosis:choose-card".to_string(),
-                allowed_cards: vec![card(1), card(2)],
+                effect_id: "chaos".to_string(),
+                continuation_id: "chaos:return-two".to_string(),
+                allowed_cards: vec![card(3), card(4), card(6), card(7), card(8)],
             },
         })
     );

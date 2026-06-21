@@ -150,6 +150,12 @@ pub struct CoveredPassive {
     pub reveal_timing: PassiveTriggerTiming,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct LastFormationUse {
+    pub formation_id: String,
+    pub resolved_turn: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PassiveTriggerTiming {
     NextPlayerActionStart,
@@ -174,6 +180,7 @@ pub enum StatusOwner {
 pub enum StatusDuration {
     UntilTurnStart { player: PlayerId },
     UntilTurnEnd { player: PlayerId },
+    UntilTurnEndNumber { player: PlayerId, turn_number: u64 },
     Permanent,
 }
 
@@ -318,6 +325,8 @@ pub struct GameState {
     pub covered_passives: Vec<CoveredPassive>,
     pub statuses: Vec<StatusEffect>,
     pub last_elemental_attack_by_player: HashMap<PlayerId, LastElementalAttack>,
+    pub last_formation_by_player: HashMap<PlayerId, LastFormationUse>,
+    pub turn_draw_bonus_by_player: HashMap<PlayerId, usize>,
     pub hand_limit: usize,
     pub base_draw: usize,
 }
@@ -353,6 +362,8 @@ impl GameState {
             covered_passives: Vec::new(),
             statuses: Vec::new(),
             last_elemental_attack_by_player: HashMap::new(),
+            last_formation_by_player: HashMap::new(),
+            turn_draw_bonus_by_player: HashMap::new(),
             hand_limit: setup.hand_limit,
             base_draw: setup.base_draw,
         }
@@ -581,6 +592,12 @@ pub enum GameEvent {
         card_moves: Vec<CardMoveDelta>,
         elemental_context_update: Option<LastElementalAttackUpdate>,
     },
+    TurnDrawBonusChanged {
+        player: PlayerId,
+        old_value: usize,
+        delta: i32,
+        new_value: usize,
+    },
     ShieldChanged {
         player: PlayerId,
         old_value: i32,
@@ -780,6 +797,7 @@ pub enum CommandKind {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TurnDrawSkipReason {
     HandLimitReached,
+    CannotDrawByStatus,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -830,6 +848,7 @@ pub enum PassiveFlipOutcome {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum ActionModification {
     PreventDamage,
+    SplitAttackDamage,
     CancelSpell,
     SealCoveredPassive,
 }
@@ -904,6 +923,7 @@ pub struct CardMoveDelta {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum CardZone {
     Hand(PlayerId),
+    DeckTop,
     Discard,
 }
 
@@ -961,6 +981,7 @@ pub enum ValidationError {
     },
     IllegalDiscard(CardInstanceId),
     IllegalChoiceCard(CardInstanceId),
+    DuplicateChoiceCard(CardInstanceId),
     UnknownFormation(String),
     UnexpectedDeclaredTargets {
         formation_id: String,

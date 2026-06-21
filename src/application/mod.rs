@@ -5,9 +5,9 @@ use crate::domain::{
     CardZone, Command, CommandContext, CommandId, CommandKind, DamageTransform, DeckPlacement,
     ElementInteraction, EngineInvariantError, EventMetadata, EventSource, GameError, GameEvent,
     GameOutcome, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome, PassiveNoEffectReason, Phase,
-    PlayerId, PublicGameEvent, RecordedEvent, ShieldChangeDelta, TeamId, TurnDrawSkipReason,
-    ValidationError, Viewer, validate_setup,
+    LastElementalAttackUpdate, LastFormationUse, PassActionReason, PassiveFlipOutcome,
+    PassiveNoEffectReason, Phase, PlayerId, PublicGameEvent, RecordedEvent, ShieldChangeDelta,
+    TeamId, TurnDrawSkipReason, ValidationError, Viewer, validate_setup,
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, FormationCategory, PointFormula,
@@ -199,6 +199,7 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::ShieldChanged { .. }
         | GameEvent::StatusAdded { .. }
         | GameEvent::StatusRemoved { .. }
+        | GameEvent::TurnDrawBonusChanged { .. }
         | GameEvent::TurnDiscardChosen { .. } => None,
     }
 }
@@ -368,7 +369,7 @@ fn status_expiry_event(
     let status = state
         .statuses
         .iter()
-        .find(|status| status_expires_at(&status.duration, &timing))?;
+        .find(|status| status_expires_at(&status.duration, &timing, state.turn_number))?;
 
     Some(GameEvent::StatusExpired {
         status_id: status.id.clone(),
@@ -380,6 +381,7 @@ fn status_expiry_event(
 fn status_expires_at(
     duration: &crate::domain::StatusDuration,
     timing: &crate::domain::StatusExpiryTiming,
+    current_turn_number: u64,
 ) -> bool {
     match (duration, timing) {
         (
@@ -398,6 +400,15 @@ fn status_expires_at(
                 player: timing_player,
             },
         ) => duration_player == timing_player,
+        (
+            crate::domain::StatusDuration::UntilTurnEndNumber {
+                player: duration_player,
+                turn_number,
+            },
+            crate::domain::StatusExpiryTiming::TurnEnd {
+                player: timing_player,
+            },
+        ) => duration_player == timing_player && *turn_number == current_turn_number,
         (crate::domain::StatusDuration::Permanent, _) => false,
         _ => false,
     }
@@ -411,6 +422,12 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
     let hand = state
         .hand(&player)
         .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
+    if player_has_status(state, &player, "CannotDraw") {
+        return Ok(Some(GameEvent::TurnDrawSkipped {
+            player,
+            reason: TurnDrawSkipReason::CannotDrawByStatus,
+        }));
+    }
     let available_space = state.hand_limit.saturating_sub(hand.len());
 
     if available_space == 0 {
@@ -420,7 +437,12 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
         }));
     }
 
-    let draw_count = state.base_draw.min(available_space) + 1;
+    let draw_bonus = state
+        .turn_draw_bonus_by_player
+        .get(&player)
+        .copied()
+        .unwrap_or(0);
+    let draw_count = (state.base_draw + draw_bonus).min(available_space) + 1;
     if state.deck.len() < draw_count {
         if state.deck.len() + state.discard.len() >= draw_count && !state.discard.is_empty() {
             return Ok(Some(GameEvent::DiscardRecycledIntoDeck {
@@ -546,6 +568,13 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                     ValidationError::FormationPatternMismatch { formation_id },
                 ));
             }
+            if formation_id == "five-streams-unite"
+                && !submitted_cards_have_same_level(state, &cards)?
+            {
+                return Err(GameError::Validation(
+                    ValidationError::FormationPatternMismatch { formation_id },
+                ));
+            }
 
             let effect = registry
                 .effect_for(formation)
@@ -574,20 +603,35 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                         points,
                         has_target_shield,
                     );
+                    let final_amount = point_breakdown.final_amount;
                     let damage_prevented =
                         action_modifications.contains(&ActionModification::PreventDamage);
                     let shield_change = if damage_prevented {
                         None
                     } else {
-                        shield_absorption(state, &target, point_breakdown.final_amount)
+                        shield_absorption(state, &target, final_amount)
                     };
-                    let hp_change = if damage_prevented || shield_change.is_some() {
+                    let has_shield_change = shield_change.is_some();
+                    let split_attack_damage = action_modifications
+                        .contains(&ActionModification::SplitAttackDamage)
+                        && !matches!(
+                            point_breakdown.damage_transform,
+                            DamageTransform::HealTarget
+                        );
+                    let hp_change = if damage_prevented || has_shield_change {
                         no_hp_change(state, &target_team)?
+                    } else if split_attack_damage {
+                        apply_attack_amount(
+                            state,
+                            &target_team,
+                            (final_amount + 1) / 2,
+                            DamageTransform::NormalDamage,
+                        )?
                     } else {
                         apply_attack_amount(
                             state,
                             &target_team,
-                            point_breakdown.final_amount,
+                            final_amount,
                             point_breakdown.damage_transform,
                         )?
                     };
@@ -609,16 +653,45 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                         );
 
                     events.push(GameEvent::AttackResolved {
-                        attacker: player,
+                        attacker: player.clone(),
                         target,
-                        formation_id,
-                        used_cards: cards,
+                        formation_id: formation_id.clone(),
+                        used_cards: cards.clone(),
                         point_breakdown,
                         hp_change,
                         shield_change,
                         card_moves,
                         elemental_context_update,
                     });
+
+                    if split_attack_damage && !damage_prevented && !has_shield_change {
+                        let attacker_team = player_team(state, &player)?;
+                        let attacker_damage = final_amount / 2;
+                        if attacker_damage > 0 {
+                            events.push(GameEvent::HpChanged {
+                                change: apply_attack_amount(
+                                    state,
+                                    &attacker_team,
+                                    attacker_damage,
+                                    DamageTransform::NormalDamage,
+                                )?,
+                            });
+                        }
+                    }
+
+                    if formation_id == "five-streams-unite" {
+                        let old_value = state
+                            .turn_draw_bonus_by_player
+                            .get(&player)
+                            .copied()
+                            .unwrap_or(0);
+                        events.push(GameEvent::TurnDrawBonusChanged {
+                            player,
+                            old_value,
+                            delta: 1,
+                            new_value: old_value + 1,
+                        });
+                    }
 
                     Ok(events)
                 }
@@ -720,7 +793,14 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
                 _ => return Err(GameError::Validation(ValidationError::MissingPendingChoice)),
             };
 
+            let mut seen = HashSet::new();
             for selected_card in &selected_cards {
+                if !seen.insert(*selected_card) {
+                    return Err(GameError::Validation(ValidationError::DuplicateChoiceCard(
+                        *selected_card,
+                    )));
+                }
+
                 if !allowed_cards.contains(selected_card) {
                     return Err(GameError::Validation(ValidationError::IllegalChoiceCard(
                         *selected_card,
@@ -792,6 +872,31 @@ fn player_has_status(state: &GameState, player: &crate::domain::PlayerId, kind: 
     state.statuses.iter().any(|status| {
         matches!(&status.owner, crate::domain::StatusOwner::Player(owner) if owner == player)
             && status.kind == kind
+    })
+}
+
+fn submitted_cards_have_same_level(
+    state: &GameState,
+    cards: &[CardInstanceId],
+) -> GameResult<bool> {
+    let Some(first_card) = cards.first() else {
+        return Ok(false);
+    };
+    let first_level = state
+        .card_def(*first_card)
+        .ok_or(GameError::Validation(
+            ValidationError::MissingCardInstanceDefinition(*first_card),
+        ))?
+        .level;
+
+    cards.iter().try_fold(true, |same_level, card| {
+        let level = state
+            .card_def(*card)
+            .ok_or(GameError::Validation(
+                ValidationError::MissingCardInstanceDefinition(*card),
+            ))?
+            .level;
+        Ok(same_level && level == first_level)
     })
 }
 
@@ -889,6 +994,11 @@ fn passive_outcome(
                 reason: PassiveNoEffectReason::NotAnAttack,
             }
         }
+        ("countershock", IncomingActionKind::ActiveSpell | IncomingActionKind::PassiveSpell) => {
+            PassiveFlipOutcome::NoEffect {
+                reason: PassiveNoEffectReason::NotAnAttack,
+            }
+        }
         ("seal", IncomingActionKind::Attack) => PassiveFlipOutcome::NoEffect {
             reason: PassiveNoEffectReason::NotASpell,
         },
@@ -909,6 +1019,7 @@ fn passive_spell_intents(
 
     let modification = match (passive_id, incoming_kind) {
         ("defense", IncomingActionKind::Attack) => ActionModification::PreventDamage,
+        ("countershock", IncomingActionKind::Attack) => ActionModification::SplitAttackDamage,
         ("seal", IncomingActionKind::ActiveSpell) => ActionModification::CancelSpell,
         ("seal", IncomingActionKind::PassiveSpell) => ActionModification::SealCoveredPassive,
         _ => return Vec::new(),
@@ -933,9 +1044,11 @@ enum EffectIntent {
     AddStatus {
         status: crate::domain::StatusEffect,
     },
-    RemoveStatus {
-        status_id: String,
-        owner: crate::domain::StatusOwner,
+    ResolveCopiedAttack {
+        formation_id: String,
+        category: FormationCategory,
+        point_formula: PointFormula,
+        used_cards: Vec<CardInstanceId>,
     },
     ModifyAction {
         modification: ActionModification,
@@ -955,91 +1068,189 @@ fn active_spell_intents(
     match resolver_id {
         "barrier" => Ok(vec![EffectIntent::SetShield {
             player: player.clone(),
-            value: 5,
+            value: level_sum(state, used_cards)? * 4,
         }]),
-        "metamorphosis" => {
+        "metamorphosis" => metamorphosis_intents(state, player, used_cards),
+        "generating-formation" => {
+            let team = resolve_rule_team_target(state, player, RuleTeamTarget::OwnSide)?;
+            Ok(vec![EffectIntent::ChangeHp {
+                team,
+                delta: level_sum(state, used_cards)? * 3,
+            }])
+        }
+        "overcoming-formation" => {
+            let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
+            let old_value = state.shield(&target).unwrap_or(0);
+            let new_value = (old_value - level_sum(state, used_cards)? * 3).max(0);
+            Ok(vec![EffectIntent::SetShield {
+                player: target,
+                value: new_value,
+            }])
+        }
+        "radiance" => {
+            let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
+            let expires_at = nth_future_turn_for_player(state, &target, 2)?;
+            Ok(vec![
+                EffectIntent::AddStatus {
+                    status: crate::domain::StatusEffect {
+                        id: format!(
+                            "radiance-cannot-act-{}-turn-{}",
+                            target.as_str(),
+                            state.turn_number
+                        ),
+                        owner: crate::domain::StatusOwner::Player(target.clone()),
+                        kind: "CannotAct".to_string(),
+                        value: None,
+                        duration: crate::domain::StatusDuration::UntilTurnEndNumber {
+                            player: target.clone(),
+                            turn_number: expires_at,
+                        },
+                    },
+                },
+                EffectIntent::AddStatus {
+                    status: crate::domain::StatusEffect {
+                        id: format!(
+                            "radiance-cannot-draw-{}-turn-{}",
+                            target.as_str(),
+                            state.turn_number
+                        ),
+                        owner: crate::domain::StatusOwner::Player(target.clone()),
+                        kind: "CannotDraw".to_string(),
+                        value: None,
+                        duration: crate::domain::StatusDuration::UntilTurnEndNumber {
+                            player: target,
+                            turn_number: expires_at,
+                        },
+                    },
+                },
+            ])
+        }
+        "chaos" => {
+            let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
             let allowed_cards = state
-                .hand(player)
+                .hand(&target)
                 .ok_or_else(|| {
-                    GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
+                    GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
                 })?
-                .iter()
-                .copied()
-                .filter(|card| !used_cards.contains(card))
-                .collect::<Vec<_>>();
-
+                .to_vec();
+            if allowed_cards.is_empty() {
+                return Ok(Vec::new());
+            }
             Ok(vec![EffectIntent::RequestChoice {
                 player: player.clone(),
                 kind: crate::domain::PendingChoiceKind::EffectGenerated {
                     effect_id: resolver_id.to_string(),
-                    continuation_id: "metamorphosis:choose-card".to_string(),
+                    continuation_id: "chaos:return-two".to_string(),
                     allowed_cards,
-                },
-            }])
-        }
-        "generating-formation" => {
-            let team = resolve_rule_team_target(state, player, RuleTeamTarget::OwnSide)?;
-            Ok(vec![EffectIntent::ChangeHp { team, delta: 3 }])
-        }
-        "overcoming-formation" => {
-            let team = resolve_rule_team_target(state, player, RuleTeamTarget::OpposingSide)?;
-            Ok(vec![EffectIntent::ChangeHp { team, delta: -3 }])
-        }
-        "radiance" => {
-            let target = resolve_rule_player_target(state, player, RulePlayerTarget::SelfPlayer)?;
-            Ok(state
-                .statuses
-                .iter()
-                .filter(|status| {
-                    matches!(&status.owner, crate::domain::StatusOwner::Player(owner) if owner == &target)
-                })
-                .map(|status| EffectIntent::RemoveStatus {
-                    status_id: status.id.clone(),
-                    owner: status.owner.clone(),
-                })
-                .collect())
-        }
-        "chaos" => {
-            let target =
-                resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)?;
-            Ok(vec![EffectIntent::AddStatus {
-                status: crate::domain::StatusEffect {
-                    id: format!(
-                        "chaos-cannot-act-{}-turn-{}",
-                        target.as_str(),
-                        state.turn_number
-                    ),
-                    owner: crate::domain::StatusOwner::Player(target.clone()),
-                    kind: "CannotAct".to_string(),
-                    value: None,
-                    duration: crate::domain::StatusDuration::UntilTurnEnd {
-                        player: target.clone(),
-                    },
                 },
             }])
         }
         "return-to-origin" => {
             let team = player_team(state, player)?;
-            Ok(vec![EffectIntent::ChangeHp { team, delta: 5 }])
+            Ok(vec![EffectIntent::ChangeHp {
+                team,
+                delta: level_sum(state, used_cards)? * 4,
+            }])
         }
-        "five-elements-cycle" => Ok(state
-            .discard
-            .first()
-            .copied()
-            .map(|card| {
-                vec![EffectIntent::MoveCards {
-                    card_moves: vec![CardMoveDelta {
-                        card,
-                        from: CardZone::Discard,
-                        to: CardZone::Hand(player.clone()),
-                    }],
-                }]
-            })
-            .unwrap_or_default()),
+        "five-elements-cycle" => {
+            let own_team = player_team(state, player)?;
+            let opposing_team =
+                resolve_rule_team_target(state, player, RuleTeamTarget::OpposingSide)?;
+            let own_hp = team_hp(state, &own_team)?;
+            let opposing_hp = team_hp(state, &opposing_team)?;
+            Ok(vec![
+                EffectIntent::ChangeHp {
+                    team: own_team,
+                    delta: opposing_hp - own_hp,
+                },
+                EffectIntent::ChangeHp {
+                    team: opposing_team,
+                    delta: own_hp - opposing_hp,
+                },
+            ])
+        }
         _ => Err(GameError::RuleImplementation(
             crate::domain::RuleImplementationError::EffectNotImplemented(resolver_id.to_string()),
         )),
     }
+}
+
+fn metamorphosis_intents(
+    state: &GameState,
+    player: &PlayerId,
+    used_cards: &[CardInstanceId],
+) -> GameResult<Vec<EffectIntent>> {
+    let previous_player =
+        resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)?;
+    let Some(last_formation) = state.last_formation_by_player.get(&previous_player) else {
+        return Ok(Vec::new());
+    };
+
+    let registry = base_formation_registry();
+    let Some(formation) = registry.formation(&last_formation.formation_id) else {
+        return Ok(Vec::new());
+    };
+    let effect = registry
+        .effect_for(formation)
+        .expect("base formation registry must link every formation to an effect");
+
+    match &effect.plan {
+        EffectPlan::Attack(plan) => Ok(vec![EffectIntent::ResolveCopiedAttack {
+            formation_id: formation.id.clone(),
+            category: formation.category.clone(),
+            point_formula: plan.point_formula.clone(),
+            used_cards: used_cards.to_vec(),
+        }]),
+        EffectPlan::ActiveSpell(spell) if spell.resolver_id != "metamorphosis" => {
+            active_spell_intents(state, player, &spell.resolver_id, used_cards)
+        }
+        EffectPlan::ActiveSpell(_) | EffectPlan::PassiveSpell(_) => Ok(Vec::new()),
+    }
+}
+
+fn level_sum(state: &GameState, cards: &[CardInstanceId]) -> GameResult<i32> {
+    cards.iter().try_fold(0, |sum, card| {
+        let level = state
+            .card_def(*card)
+            .ok_or(GameError::Validation(
+                ValidationError::MissingCardInstanceDefinition(*card),
+            ))?
+            .level as i32;
+        Ok(sum + level)
+    })
+}
+
+fn team_hp(state: &GameState, team: &TeamId) -> GameResult<i32> {
+    state
+        .hp
+        .iter()
+        .find(|team_hp| &team_hp.team == team)
+        .map(|team_hp| team_hp.hp)
+        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))
+}
+
+fn nth_future_turn_for_player(
+    state: &GameState,
+    player: &PlayerId,
+    occurrence: usize,
+) -> GameResult<u64> {
+    let current_index = state
+        .current_turn_index
+        .min(state.turn_order.len().saturating_sub(1));
+    let target_index = state
+        .turn_order
+        .iter()
+        .position(|candidate| candidate == player)
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
+    let player_count = state.turn_order.len();
+    let first_distance = (target_index + player_count - current_index) % player_count;
+    let first_distance = if first_distance == 0 {
+        player_count
+    } else {
+        first_distance
+    };
+
+    Ok(state.turn_number + first_distance as u64 + ((occurrence - 1) * player_count) as u64)
 }
 
 fn effect_intent_events(
@@ -1053,6 +1264,9 @@ fn effect_intent_events(
         let event = match intent {
             EffectIntent::SetShield { player, value } => {
                 let old_value = state.shield(&player).unwrap_or(0);
+                if old_value == value {
+                    continue;
+                }
                 GameEvent::ShieldChanged {
                     player,
                     old_value,
@@ -1061,6 +1275,9 @@ fn effect_intent_events(
                 }
             }
             EffectIntent::ChangeHp { team, delta } => {
+                if delta == 0 {
+                    continue;
+                }
                 let old_hp = state
                     .hp
                     .iter()
@@ -1081,11 +1298,62 @@ fn effect_intent_events(
             }
             EffectIntent::MoveCards { card_moves } => GameEvent::CardsMoved { card_moves },
             EffectIntent::AddStatus { status } => GameEvent::StatusAdded { status },
-            EffectIntent::RemoveStatus { status_id, owner } => {
-                GameEvent::StatusRemoved { status_id, owner }
+            EffectIntent::ResolveCopiedAttack {
+                formation_id,
+                category,
+                point_formula,
+                used_cards,
+            } => {
+                let target = attack_target(
+                    state,
+                    &state
+                        .current_player()
+                        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
+                        .clone(),
+                    &AttackPlanDef {
+                        point_formula: point_formula.clone(),
+                        damage_target: DamageTarget::PreviousPlayer,
+                    },
+                )?;
+                let target_team = player_team(state, &target)?;
+                let player = state
+                    .current_player()
+                    .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
+                    .clone();
+                let points = compute_attack_points(state, &point_formula, &used_cards, &target)?;
+                let has_target_shield = state.shield(&target).is_some_and(|value| value > 0);
+                let point_breakdown =
+                    attack_point_breakdown(state, &category, &target, points, has_target_shield);
+                let shield_change = shield_absorption(state, &target, point_breakdown.final_amount);
+                let hp_change = if shield_change.is_some() {
+                    no_hp_change(state, &target_team)?
+                } else {
+                    apply_attack_amount(
+                        state,
+                        &target_team,
+                        point_breakdown.final_amount,
+                        point_breakdown.damage_transform,
+                    )?
+                };
+                GameEvent::AttackResolved {
+                    attacker: player.clone(),
+                    target,
+                    formation_id,
+                    used_cards,
+                    point_breakdown,
+                    hp_change,
+                    shield_change,
+                    card_moves: Vec::new(),
+                    elemental_context_update: elemental_context_update(
+                        &category,
+                        state.turn_number,
+                    )
+                    .map(|attack| LastElementalAttackUpdate { player, attack }),
+                }
             }
             EffectIntent::ModifyAction { modification } => match modification {
                 ActionModification::PreventDamage
+                | ActionModification::SplitAttackDamage
                 | ActionModification::CancelSpell
                 | ActionModification::SealCoveredPassive => continue,
             },
@@ -1131,6 +1399,29 @@ fn resume_effect_choice_intents(
             Ok(vec![EffectIntent::SetShield {
                 player: player.clone(),
                 value,
+            }])
+        }
+        ("chaos", "chaos:return-two") => {
+            let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
+            let target_hand = state.hand(&target).ok_or_else(|| {
+                GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
+            })?;
+            let required_count = target_hand.len().min(2);
+            if selected_cards.len() != required_count {
+                return Err(GameError::Validation(ValidationError::MissingPendingChoice));
+            }
+
+            Ok(vec![EffectIntent::MoveCards {
+                card_moves: selected_cards
+                    .iter()
+                    .rev()
+                    .copied()
+                    .map(|card| CardMoveDelta {
+                        card,
+                        from: CardZone::Hand(target.clone()),
+                        to: CardZone::DeckTop,
+                    })
+                    .collect(),
             }])
         }
         _ => Err(GameError::RuleImplementation(
@@ -1446,6 +1737,18 @@ fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {
                 .expect("canonical card move must move an existing card");
             hand.remove(position)
         }
+        CardZone::DeckTop => {
+            assert!(
+                !state.deck.is_empty(),
+                "canonical card move must move from a non-empty deck"
+            );
+            let position = state
+                .deck
+                .iter()
+                .position(|deck_card| deck_card == &card_move.card)
+                .expect("canonical card move must move an existing deck card");
+            state.deck.remove(position)
+        }
         CardZone::Discard => {
             let position = state
                 .discard
@@ -1463,6 +1766,7 @@ fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {
                 .expect("canonical card move must move cards to a known hand");
             hand.push(removed);
         }
+        CardZone::DeckTop => state.deck.insert(0, removed),
         CardZone::Discard => state.discard.push(removed),
     }
 }
@@ -1523,7 +1827,10 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
             state.phase = Phase::TurnDraw;
         }
         GameEvent::FormationPerformed {
-            player, used_cards, ..
+            player,
+            formation_id,
+            used_cards,
+            ..
         } => {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, Phase::Main);
@@ -1540,6 +1847,13 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
                 state.discard.push(removed);
             }
 
+            state.last_formation_by_player.insert(
+                player.clone(),
+                LastFormationUse {
+                    formation_id: formation_id.clone(),
+                    resolved_turn: state.turn_number,
+                },
+            );
             state.phase = Phase::TurnDraw;
         }
         GameEvent::PassiveCovered {
@@ -1570,6 +1884,13 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
                 covered_on_turn: state.turn_number,
                 reveal_timing: crate::domain::PassiveTriggerTiming::NextPlayerActionStart,
             });
+            state.last_formation_by_player.insert(
+                player.clone(),
+                LastFormationUse {
+                    formation_id: formation_id.clone(),
+                    resolved_turn: state.turn_number,
+                },
+            );
             state.phase = Phase::TurnDraw;
         }
         GameEvent::PassiveFlipped {
@@ -1588,6 +1909,7 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
         }
         GameEvent::AttackResolved {
             attacker,
+            formation_id,
             hp_change,
             shield_change,
             card_moves,
@@ -1595,7 +1917,7 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
             ..
         } => {
             debug_assert_eq!(state.current_player(), Some(attacker));
-            debug_assert_eq!(state.phase, Phase::Main);
+            debug_assert!(matches!(state.phase, Phase::Main | Phase::TurnDraw));
 
             let team_hp = state
                 .hp
@@ -1619,7 +1941,21 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
                     .insert(update.player.clone(), update.attack.clone());
             }
 
+            state.last_formation_by_player.insert(
+                attacker.clone(),
+                LastFormationUse {
+                    formation_id: formation_id.clone(),
+                    resolved_turn: state.turn_number,
+                },
+            );
             state.phase = Phase::TurnDraw;
+        }
+        GameEvent::TurnDrawBonusChanged {
+            player, new_value, ..
+        } => {
+            state
+                .turn_draw_bonus_by_player
+                .insert(player.clone(), *new_value);
         }
         GameEvent::HpChanged { change } => {
             let team_hp = state
@@ -1774,6 +2110,7 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, Phase::TurnEnd);
 
+            state.turn_draw_bonus_by_player.remove(player);
             state.current_turn_index = (state.current_turn_index + 1) % state.turn_order.len();
             state.turn_number += 1;
             state.phase = Phase::TurnStart;
@@ -1782,10 +2119,6 @@ pub fn apply_event(state: &mut GameState, event: &GameEvent) {
 }
 
 fn finish_game_if_needed(state: &mut GameState) {
-    if matches!(state.status, GameStatus::Finished { .. }) {
-        return;
-    }
-
     let alive_teams = state
         .hp
         .iter()
