@@ -9,10 +9,13 @@ use fewfc::domain::{
     GameError, GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta,
     LastElementalAttack, LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome,
     PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player, PlayerHand, PlayerId,
-    PlayerShield, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
-    PublicPendingChoiceKind, PublicPlayerHand, RuleImplementationError, RulesetId,
-    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
-    TeamId, TurnDrawSkipReason, ValidationError, Viewer,
+    PlayerShield, RuleImplementationError, RulesetId, ShieldChangeDelta, StatusDuration,
+    StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId, TurnDrawSkipReason,
+    ValidationError,
+};
+use fewfc::public_view::{
+    self, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
+    PublicPendingChoiceKind, PublicPlayerHand, Viewer,
 };
 use fewfc::rules::Element;
 
@@ -2442,9 +2445,7 @@ fn seal_marks_incoming_passive_cover_as_sealed_without_exposing_the_marker() {
         }]
     );
     assert_eq!(
-        state
-            .view_for(Viewer::Player(PlayerId::new("p1")))
-            .covered_passives,
+        public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).covered_passives,
         vec![PublicCoveredPassive {
             owner: PlayerId::new("p2"),
             formation_id: "countershock".to_string(),
@@ -2452,9 +2453,7 @@ fn seal_marks_incoming_passive_cover_as_sealed_without_exposing_the_marker() {
         }]
     );
     assert_eq!(
-        state
-            .view_for(Viewer::Player(PlayerId::new("p2")))
-            .covered_passives,
+        public_view::state_for(&state, Viewer::Player(PlayerId::new("p2"))).covered_passives,
         vec![PublicCoveredPassive {
             owner: PlayerId::new("p2"),
             formation_id: "countershock".to_string(),
@@ -2528,9 +2527,7 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
     let state = record.state().unwrap();
 
     assert_eq!(
-        state
-            .view_for(Viewer::Player(PlayerId::new("p1")))
-            .covered_passives,
+        public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).covered_passives,
         vec![PublicCoveredPassive {
             owner: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
@@ -2538,9 +2535,7 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
         }]
     );
     assert_eq!(
-        state
-            .view_for(Viewer::Player(PlayerId::new("p2")))
-            .covered_passives,
+        public_view::state_for(&state, Viewer::Player(PlayerId::new("p2"))).covered_passives,
         vec![PublicCoveredPassive {
             owner: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
@@ -2548,7 +2543,7 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
         }]
     );
     assert_eq!(
-        state.view_for(Viewer::Observer).covered_passives,
+        public_view::state_for(&state, Viewer::Observer).covered_passives,
         vec![PublicCoveredPassive {
             owner: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
@@ -2564,7 +2559,7 @@ fn public_state_view_includes_client_state_and_filters_hands_by_viewer() {
     let record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     let state = record.state().unwrap();
 
-    let p1_view = state.view_for(Viewer::Player(PlayerId::new("p1")));
+    let p1_view = public_view::state_for(&state, Viewer::Player(PlayerId::new("p1")));
     assert_eq!(p1_view.status, GameStatus::InProgress);
     assert_eq!(p1_view.turn_number, 1);
     assert_eq!(p1_view.phase, Phase::TurnStart);
@@ -2618,7 +2613,7 @@ fn public_state_view_includes_client_state_and_filters_hands_by_viewer() {
     );
     assert_eq!(p1_view.statuses, Vec::<StatusEffect>::new());
 
-    let p2_view = state.view_for(Viewer::Player(PlayerId::new("p2")));
+    let p2_view = public_view::state_for(&state, Viewer::Player(PlayerId::new("p2")));
     assert_eq!(
         p2_view.hands,
         vec![
@@ -2633,7 +2628,7 @@ fn public_state_view_includes_client_state_and_filters_hands_by_viewer() {
         ]
     );
 
-    let observer_view = state.view_for(Viewer::Observer);
+    let observer_view = public_view::state_for(&state, Viewer::Observer);
     assert_eq!(
         observer_view.hands,
         vec![
@@ -2658,21 +2653,21 @@ fn initial_deal_event_view_filters_cards_to_dealt_player() {
     };
 
     assert_eq!(
-        event.view_for(Viewer::Player(PlayerId::new("p1"))),
+        public_view::event_for(&event, Viewer::Player(PlayerId::new("p1"))),
         PublicGameEvent::CardsDealt {
             player: PlayerId::new("p1"),
             cards: PublicCardRefs::Known(vec![card(1), card(2), card(3), card(4)]),
         }
     );
     assert_eq!(
-        event.view_for(Viewer::Player(PlayerId::new("p2"))),
+        public_view::event_for(&event, Viewer::Player(PlayerId::new("p2"))),
         PublicGameEvent::CardsDealt {
             player: PlayerId::new("p1"),
             cards: PublicCardRefs::Hidden { count: 4 },
         }
     );
     assert_eq!(
-        event.view_for(Viewer::Observer),
+        public_view::event_for(&event, Viewer::Observer),
         PublicGameEvent::CardsDealt {
             player: PlayerId::new("p1"),
             cards: PublicCardRefs::Hidden { count: 4 },
@@ -2694,13 +2689,13 @@ fn deck_prepared_event_view_hides_deck_order_for_every_viewer() {
     };
 
     assert_eq!(
-        event.view_for(Viewer::Player(PlayerId::new("p1"))),
+        public_view::event_for(&event, Viewer::Player(PlayerId::new("p1"))),
         PublicGameEvent::DeckPrepared {
             deck: PublicCardRefs::Hidden { count: 3 },
         }
     );
     assert_eq!(
-        event.view_for(Viewer::Observer),
+        public_view::event_for(&event, Viewer::Observer),
         PublicGameEvent::DeckPrepared {
             deck: PublicCardRefs::Hidden { count: 3 },
         }
@@ -2729,9 +2724,7 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
     let state = record.state().unwrap();
 
     assert_eq!(
-        state
-            .view_for(Viewer::Player(PlayerId::new("p1")))
-            .pending_choice,
+        public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).pending_choice,
         Some(PublicPendingChoice {
             player: PlayerId::new("p1"),
             kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
@@ -2742,16 +2735,14 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
         })
     );
     assert_eq!(
-        state
-            .view_for(Viewer::Player(PlayerId::new("p2")))
-            .pending_choice,
+        public_view::state_for(&state, Viewer::Player(PlayerId::new("p2"))).pending_choice,
         Some(PublicPendingChoice {
             player: PlayerId::new("p1"),
             kind: PublicPendingChoiceKind::Hidden,
         })
     );
     assert_eq!(
-        state.view_for(Viewer::Observer).pending_choice,
+        public_view::state_for(&state, Viewer::Observer).pending_choice,
         Some(PublicPendingChoice {
             player: PlayerId::new("p1"),
             kind: PublicPendingChoiceKind::Hidden,
@@ -2781,7 +2772,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
     };
 
     assert_eq!(
-        event.view_for(Viewer::Player(PlayerId::new("p1"))),
+        public_view::event_for(&event, Viewer::Player(PlayerId::new("p1"))),
         PublicGameEvent::PassiveCovered {
             player: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
@@ -2789,7 +2780,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
         }
     );
     assert_eq!(
-        event.view_for(Viewer::Player(PlayerId::new("p2"))),
+        public_view::event_for(&event, Viewer::Player(PlayerId::new("p2"))),
         PublicGameEvent::PassiveCovered {
             player: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
@@ -2797,7 +2788,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
         }
     );
     assert_eq!(
-        event.view_for(Viewer::Observer),
+        public_view::event_for(&event, Viewer::Observer),
         PublicGameEvent::PassiveCovered {
             player: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
@@ -2827,7 +2818,7 @@ fn effect_choice_event_view_filters_options_and_preserves_canonical_continuation
     };
 
     assert_eq!(
-        event.view_for(Viewer::Player(PlayerId::new("p1"))),
+        public_view::event_for(&event, Viewer::Player(PlayerId::new("p1"))),
         PublicGameEvent::EffectChoiceRequested {
             player: PlayerId::new("p1"),
             kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
@@ -2838,14 +2829,14 @@ fn effect_choice_event_view_filters_options_and_preserves_canonical_continuation
         }
     );
     assert_eq!(
-        event.view_for(Viewer::Player(PlayerId::new("p2"))),
+        public_view::event_for(&event, Viewer::Player(PlayerId::new("p2"))),
         PublicGameEvent::EffectChoiceRequested {
             player: PlayerId::new("p1"),
             kind: PublicPendingChoiceKind::Hidden,
         }
     );
     assert_eq!(
-        event.view_for(Viewer::Observer),
+        public_view::event_for(&event, Viewer::Observer),
         PublicGameEvent::EffectChoiceRequested {
             player: PlayerId::new("p1"),
             kind: PublicPendingChoiceKind::Hidden,
@@ -2873,7 +2864,7 @@ fn turn_draw_choice_event_view_filters_choice_options_to_choice_player() {
     };
 
     assert_eq!(
-        event.view_for(Viewer::Player(PlayerId::new("p1"))),
+        public_view::event_for(&event, Viewer::Player(PlayerId::new("p1"))),
         PublicGameEvent::CardsDrawnForTurnDiscardChoice {
             player: PlayerId::new("p1"),
             drawn_cards: PublicCardRefs::Known(vec![card(10), card(11), card(12)]),
@@ -2881,7 +2872,7 @@ fn turn_draw_choice_event_view_filters_choice_options_to_choice_player() {
         }
     );
     assert_eq!(
-        event.view_for(Viewer::Player(PlayerId::new("p2"))),
+        public_view::event_for(&event, Viewer::Player(PlayerId::new("p2"))),
         PublicGameEvent::CardsDrawnForTurnDiscardChoice {
             player: PlayerId::new("p1"),
             drawn_cards: PublicCardRefs::Hidden { count: 3 },

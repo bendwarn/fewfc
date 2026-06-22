@@ -1,10 +1,90 @@
 //! Viewer-filtered Public View derivation from canonical game data.
 
-use crate::domain::PlayerId;
 use crate::domain::{
-    GameEvent, GameState, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicGameState,
-    PublicPendingChoice, PublicPendingChoiceKind, PublicPlayerHand, Viewer,
+    CardInstanceId, GameEvent, GameState, GameStatus, PendingChoiceKind, Phase, Player, PlayerId,
+    PlayerShield, StatusEffect, TeamHp,
 };
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum Viewer {
+    Player(PlayerId),
+    Observer,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicGameState {
+    pub status: GameStatus,
+    pub turn_number: u64,
+    pub phase: Phase,
+    pub current_player: Option<PlayerId>,
+    pub players: Vec<Player>,
+    pub turn_order: Vec<PlayerId>,
+    pub hp: Vec<TeamHp>,
+    pub hands: Vec<PublicPlayerHand>,
+    pub discard: Vec<CardInstanceId>,
+    pub covered_passives: Vec<PublicCoveredPassive>,
+    pub pending_choice: Option<PublicPendingChoice>,
+    pub shields: Vec<PlayerShield>,
+    pub statuses: Vec<StatusEffect>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicPlayerHand {
+    pub player: PlayerId,
+    pub cards: PublicCardRefs,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicCoveredPassive {
+    pub owner: PlayerId,
+    pub formation_id: String,
+    pub cards: PublicCardRefs,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum PublicCardRefs {
+    Known(Vec<CardInstanceId>),
+    Hidden { count: usize },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicPendingChoice {
+    pub player: PlayerId,
+    pub kind: PublicPendingChoiceKind,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum PublicPendingChoiceKind {
+    Known(PendingChoiceKind),
+    Hidden,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum PublicGameEvent {
+    Public(GameEvent),
+    DeckPrepared {
+        deck: PublicCardRefs,
+    },
+    CardsDealt {
+        player: PlayerId,
+        cards: PublicCardRefs,
+    },
+    PassiveCovered {
+        player: PlayerId,
+        formation_id: String,
+        cards: PublicCardRefs,
+    },
+    CardsDrawnForTurnDiscardChoice {
+        player: PlayerId,
+        drawn_cards: PublicCardRefs,
+        allowed_discards: PublicCardRefs,
+    },
+    EffectChoiceRequested {
+        player: PlayerId,
+        kind: PublicPendingChoiceKind,
+    },
+}
 
 pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
     PublicGameState {

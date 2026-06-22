@@ -6,11 +6,11 @@ mod projection;
 use crate::domain::{
     AutomaticReason, CardInstanceId, Command, CommandContext, CommandId, CommandKind,
     DeckPlacement, EngineInvariantError, EventMetadata, EventSource, GameError, GameEvent,
-    GameResult, GameSetup, GameState, GameStatus, PassActionReason, Phase, PublicGameEvent,
-    PublicGameState, RecordedEvent, RulesetId, TurnDrawSkipReason, ValidationError, Viewer,
-    validate_setup,
+    GameResult, GameSetup, GameState, GameStatus, PassActionReason, Phase, RecordedEvent,
+    RulesetId, TurnDrawSkipReason, ValidationError, validate_setup,
 };
 use crate::ports::DeckPreparation as DeckPreparationPort;
+use crate::public_view::{PublicGameEvent, PublicGameState, Viewer};
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
