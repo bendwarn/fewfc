@@ -49,6 +49,22 @@ pub struct SubmittedCardFacts {
     pub level: u32,
 }
 
+pub type QueryCard = SubmittedCardFacts;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormationMatch {
+    pub formation_id: String,
+    pub formation_name: String,
+    pub card_indexes: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormationCandidate {
+    pub formation_id: String,
+    pub formation_name: String,
+    pub cards: Vec<crate::domain::CardInstanceId>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PointFormula {
     Fixed(u32),
@@ -148,6 +164,12 @@ impl FormationRegistry {
 
     pub fn effect_count(&self) -> usize {
         self.effects.len()
+    }
+
+    pub fn formations(&self) -> Vec<&FormationDef> {
+        let mut formations = self.formations.values().collect::<Vec<_>>();
+        formations.sort_by(|left, right| left.id.cmp(&right.id));
+        formations
     }
 }
 
@@ -274,6 +296,25 @@ pub fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
             };
             submitted.len() == 5 && submitted.iter().all(|card| card.level == first_card.level)
         })
+}
+
+pub fn matching_formations(cards: &[QueryCard]) -> Vec<FormationMatch> {
+    let registry = base_formation_registry();
+    let matcher = base_formation_matcher();
+    let mut matches = Vec::new();
+    let card_indexes = (0..cards.len()).collect::<Vec<_>>();
+
+    for formation in registry.formations() {
+        if matcher.matches(&formation.pattern, cards) {
+            matches.push(FormationMatch {
+                formation_id: formation.id.clone(),
+                formation_name: formation.name.clone(),
+                card_indexes: card_indexes.clone(),
+            });
+        }
+    }
+
+    matches
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

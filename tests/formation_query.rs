@@ -1,0 +1,220 @@
+use fewfc::domain::{
+    CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef, CardInstanceId, GameError,
+    GameSetup, PendingChoice, PendingChoiceKind, Phase, PlayerId, StatusDuration, StatusEffect,
+    StatusOwner, ValidationError,
+};
+use fewfc::rules::base::{BaseRuleset, QueryCard};
+use fewfc::rules::{Element, FormationMatch};
+
+fn card(id: u64) -> CardInstanceId {
+    CardInstanceId::new(id)
+}
+
+fn query_card(element: Element) -> QueryCard {
+    QueryCard { element, level: 1 }
+}
+
+fn card_def(id: &str, element: Element) -> CardDef {
+    CardDef {
+        id: CardDefId::new(id),
+        name: id.to_string(),
+        element,
+        level: 1,
+    }
+}
+
+fn card_instance(instance: u64, def_id: &str) -> CardInstanceDef {
+    CardInstanceDef {
+        instance: card(instance),
+        definition: CardDefId::new(def_id),
+    }
+}
+
+fn setup() -> GameSetup {
+    GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30).with_cards(
+        vec![
+            card_def("metal", Element::Metal),
+            card_def("wood", Element::Wood),
+            card_def("water", Element::Water),
+            card_def("fire", Element::Fire),
+            card_def("earth", Element::Earth),
+        ],
+        (1..=20)
+            .map(|id| {
+                let def_id = match id % 5 {
+                    1 => "metal",
+                    2 => "wood",
+                    3 => "water",
+                    4 => "fire",
+                    _ => "earth",
+                };
+                card_instance(id, def_id)
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn matching_formations_checks_only_the_current_selected_card_set() {
+    let matches = fewfc::rules::matching_formations(&[
+        query_card(Element::Metal),
+        query_card(Element::Wood),
+        query_card(Element::Water),
+        query_card(Element::Fire),
+        query_card(Element::Earth),
+    ]);
+
+    assert!(matches.contains(&FormationMatch {
+        formation_id: "five-elements-cycle".to_string(),
+        formation_name: "五行輪迴".to_string(),
+        card_indexes: vec![0, 1, 2, 3, 4],
+    }));
+    assert!(!matches.iter().any(|candidate| {
+        candidate.formation_id == "metal-strike" || candidate.formation_id == "generating-formation"
+    }));
+}
+
+#[test]
+fn playable_formations_returns_candidates_from_selected_hand_cards() {
+    let ruleset = BaseRuleset::new();
+    let mut state = fewfc::domain::GameState::from_setup(&setup());
+    state.phase = Phase::Main;
+    state.hands = vec![
+        fewfc::domain::PlayerHand::new(
+            PlayerId::new("p1"),
+            vec![card(1), card(2), card(3), card(4), card(5)],
+        ),
+        fewfc::domain::PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+
+    let candidates = ruleset
+        .playable_formations(&state, &PlayerId::new("p1"), &[card(1)])
+        .unwrap();
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].formation_id, "metal-strike");
+    assert_eq!(candidates[0].formation_name, "金擊術");
+    assert_eq!(candidates[0].cards, vec![card(1)]);
+}
+
+#[test]
+fn playable_formations_does_not_return_matches_from_unselected_hand_cards() {
+    let ruleset = BaseRuleset::new();
+    let mut state = fewfc::domain::GameState::from_setup(&setup());
+    state.phase = Phase::Main;
+    state.hands = vec![
+        fewfc::domain::PlayerHand::new(
+            PlayerId::new("p1"),
+            vec![card(1), card(2), card(3), card(4), card(5)],
+        ),
+        fewfc::domain::PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+
+    let candidates = ruleset
+        .playable_formations(
+            &state,
+            &PlayerId::new("p1"),
+            &[card(1), card(2), card(3), card(4), card(5)],
+        )
+        .unwrap();
+
+    assert!(candidates.iter().any(|candidate| {
+        candidate.formation_id == "five-elements-cycle"
+            && candidate.formation_name == "五行輪迴"
+            && candidate.cards == vec![card(1), card(2), card(3), card(4), card(5)]
+    }));
+    assert!(
+        !candidates
+            .iter()
+            .any(|candidate| candidate.formation_id == "metal-strike")
+    );
+}
+
+#[test]
+fn playable_formations_returns_error_when_player_cannot_act_now() {
+    let ruleset = BaseRuleset::new();
+    let mut state = fewfc::domain::GameState::from_setup(&setup());
+    state.phase = Phase::TurnDraw;
+
+    assert_eq!(
+        ruleset.playable_formations(&state, &PlayerId::new("p1"), &[]),
+        Err(GameError::Validation(
+            ValidationError::CannotPerformFormation {
+                reason: CannotPerformFormationReason::WrongPhase {
+                    expected: Phase::Main,
+                    actual: Phase::TurnDraw,
+                },
+            }
+        ))
+    );
+}
+
+#[test]
+fn playable_formations_returns_error_for_non_current_player() {
+    let ruleset = BaseRuleset::new();
+    let mut state = fewfc::domain::GameState::from_setup(&setup());
+    state.phase = Phase::Main;
+
+    assert_eq!(
+        ruleset.playable_formations(&state, &PlayerId::new("p2"), &[]),
+        Err(GameError::Validation(
+            ValidationError::CannotPerformFormation {
+                reason: CannotPerformFormationReason::WrongPlayer {
+                    expected: PlayerId::new("p1"),
+                    actual: PlayerId::new("p2"),
+                },
+            }
+        ))
+    );
+}
+
+#[test]
+fn playable_formations_returns_error_while_choice_is_pending() {
+    let ruleset = BaseRuleset::new();
+    let mut state = fewfc::domain::GameState::from_setup(&setup());
+    state.phase = Phase::Main;
+    state.pending_choice = Some(PendingChoice {
+        player: PlayerId::new("p1"),
+        kind: PendingChoiceKind::EffectGenerated {
+            effect_id: "metamorphosis".to_string(),
+            continuation_id: "metamorphosis:choose-card".to_string(),
+            allowed_cards: vec![card(1)],
+        },
+    });
+
+    assert_eq!(
+        ruleset.playable_formations(&state, &PlayerId::new("p1"), &[]),
+        Err(GameError::Validation(
+            ValidationError::CannotPerformFormation {
+                reason: CannotPerformFormationReason::PendingChoiceInProgress {
+                    player: PlayerId::new("p1"),
+                },
+            }
+        ))
+    );
+}
+
+#[test]
+fn playable_formations_returns_error_when_player_has_cannot_act_status() {
+    let ruleset = BaseRuleset::new();
+    let mut state = fewfc::domain::GameState::from_setup(&setup());
+    state.phase = Phase::Main;
+    state.statuses.push(StatusEffect {
+        id: "cannot-act-p1".to_string(),
+        owner: StatusOwner::Player(PlayerId::new("p1")),
+        kind: "CannotAct".to_string(),
+        value: None,
+        duration: StatusDuration::Permanent,
+    });
+
+    assert_eq!(
+        ruleset.playable_formations(&state, &PlayerId::new("p1"), &[]),
+        Err(GameError::Validation(
+            ValidationError::CannotPerformFormation {
+                reason: CannotPerformFormationReason::CannotActByStatus {
+                    player: PlayerId::new("p1"),
+                },
+            }
+        ))
+    );
+}

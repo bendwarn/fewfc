@@ -738,6 +738,9 @@ pub enum ValidationError {
     FormationPatternMismatch {
         formation_id: String,
     },
+    CannotPerformFormation {
+        reason: CannotPerformFormationReason,
+    },
     PendingPassiveAlreadyCovered {
         player: PlayerId,
     },
@@ -750,6 +753,24 @@ pub enum ValidationError {
     },
     CannotPassAction {
         reason: PassActionReason,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum CannotPerformFormationReason {
+    WrongPhase {
+        expected: Phase,
+        actual: Phase,
+    },
+    WrongPlayer {
+        expected: PlayerId,
+        actual: PlayerId,
+    },
+    PendingChoiceInProgress {
+        player: PlayerId,
+    },
+    CannotActByStatus {
+        player: PlayerId,
     },
 }
 
