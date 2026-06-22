@@ -1,5 +1,6 @@
 use fewfc::application::{
-    GameRecord, advance_automatic as advance_state_automatic, apply_event, handle_command,
+    GameRecord, StartGame, advance_automatic as advance_state_automatic, apply_event,
+    handle_command,
 };
 use fewfc::domain::{
     ActionModification, AttackPointBreakdown, AutomaticReason, CardDef, CardDefId, CardInstanceDef,
@@ -314,6 +315,41 @@ fn new_game_persists_deck_order_and_replay_matches_current_state() {
     assert_eq!(state.current_player(), Some(&PlayerId::new("p1")));
     assert_eq!(state.deck, (10..=20).map(card).collect::<Vec<_>>());
     assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn game_record_facade_applies_commands_and_verifies_replay() {
+    let mut record = GameRecord::start_game(StartGame {
+        setup: two_player_setup(),
+        deck_order: official_deck(),
+    })
+    .unwrap();
+
+    let automatic = record.advance_until_decision().unwrap();
+    assert_eq!(
+        automatic.events(),
+        &[GameEvent::TurnStarted {
+            player: PlayerId::new("p1"),
+            turn_number: 1,
+        }]
+    );
+
+    let command_events = record
+        .apply(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        command_events.events(),
+        [GameEvent::AttackResolved { .. }]
+    ));
+
+    let view = record.public_view(Viewer::Observer).unwrap();
+    assert_eq!(view.phase, Phase::TurnDraw);
+    assert_eq!(record.verify_replay().unwrap(), record.state().unwrap());
 }
 
 #[test]

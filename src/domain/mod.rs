@@ -1,5 +1,7 @@
 //! Domain model: game state, ids, events, commands, and rule invariants.
 
+pub mod targeting;
+
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -411,58 +413,7 @@ impl GameState {
     }
 
     pub fn view_for(&self, viewer: Viewer) -> PublicGameState {
-        PublicGameState {
-            status: self.status.clone(),
-            turn_number: self.turn_number,
-            phase: self.phase,
-            current_player: self.current_player().cloned(),
-            players: self.players.clone(),
-            turn_order: self.turn_order.clone(),
-            hp: self.hp.clone(),
-            hands: self
-                .hands
-                .iter()
-                .map(|hand| PublicPlayerHand {
-                    player: hand.player.clone(),
-                    cards: if viewer.can_see_player_hidden_cards(&hand.player) {
-                        PublicCardRefs::Known(hand.cards.clone())
-                    } else {
-                        PublicCardRefs::Hidden {
-                            count: hand.cards.len(),
-                        }
-                    },
-                })
-                .collect(),
-            discard: self.discard.clone(),
-            covered_passives: self
-                .covered_passives
-                .iter()
-                .map(|passive| PublicCoveredPassive {
-                    owner: passive.owner.clone(),
-                    formation_id: passive.formation_id.clone(),
-                    cards: if viewer.can_see_player_hidden_cards(&passive.owner) {
-                        PublicCardRefs::Known(passive.cards.clone())
-                    } else {
-                        PublicCardRefs::Hidden {
-                            count: passive.cards.len(),
-                        }
-                    },
-                })
-                .collect(),
-            pending_choice: self
-                .pending_choice
-                .as_ref()
-                .map(|choice| PublicPendingChoice {
-                    player: choice.player.clone(),
-                    kind: if viewer.can_see_player_hidden_cards(&choice.player) {
-                        PublicPendingChoiceKind::Known(choice.kind.clone())
-                    } else {
-                        PublicPendingChoiceKind::Hidden
-                    },
-                }),
-            shields: self.shields.clone(),
-            statuses: self.statuses.clone(),
-        }
+        crate::public_view::state_for(self, viewer)
     }
 }
 
@@ -470,12 +421,6 @@ impl GameState {
 pub enum Viewer {
     Player(PlayerId),
     Observer,
-}
-
-impl Viewer {
-    fn can_see_player_hidden_cards(&self, player: &PlayerId) -> bool {
-        matches!(self, Viewer::Player(viewer) if viewer == player)
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -656,67 +601,7 @@ pub enum GameEvent {
 
 impl GameEvent {
     pub fn view_for(&self, viewer: Viewer) -> PublicGameEvent {
-        match self {
-            GameEvent::DeckPrepared { deck_order } => PublicGameEvent::DeckPrepared {
-                deck: PublicCardRefs::Hidden {
-                    count: deck_order.len(),
-                },
-            },
-            GameEvent::CardsDealt { player, cards } => PublicGameEvent::CardsDealt {
-                player: player.clone(),
-                cards: if viewer.can_see_player_hidden_cards(player) {
-                    PublicCardRefs::Known(cards.clone())
-                } else {
-                    PublicCardRefs::Hidden { count: cards.len() }
-                },
-            },
-            GameEvent::PassiveCovered {
-                player,
-                formation_id,
-                cards,
-                sealed: _,
-            } => PublicGameEvent::PassiveCovered {
-                player: player.clone(),
-                formation_id: formation_id.clone(),
-                cards: if viewer.can_see_player_hidden_cards(player) {
-                    PublicCardRefs::Known(cards.clone())
-                } else {
-                    PublicCardRefs::Hidden { count: cards.len() }
-                },
-            },
-            GameEvent::CardsDrawnForTurnDiscardChoice {
-                player,
-                drawn_cards,
-                allowed_discards,
-            } => PublicGameEvent::CardsDrawnForTurnDiscardChoice {
-                player: player.clone(),
-                drawn_cards: if viewer.can_see_player_hidden_cards(player) {
-                    PublicCardRefs::Known(drawn_cards.clone())
-                } else {
-                    PublicCardRefs::Hidden {
-                        count: drawn_cards.len(),
-                    }
-                },
-                allowed_discards: if viewer.can_see_player_hidden_cards(player) {
-                    PublicCardRefs::Known(allowed_discards.clone())
-                } else {
-                    PublicCardRefs::Hidden {
-                        count: allowed_discards.len(),
-                    }
-                },
-            },
-            GameEvent::EffectChoiceRequested { player, kind } => {
-                PublicGameEvent::EffectChoiceRequested {
-                    player: player.clone(),
-                    kind: if viewer.can_see_player_hidden_cards(player) {
-                        PublicPendingChoiceKind::Known(kind.clone())
-                    } else {
-                        PublicPendingChoiceKind::Hidden
-                    },
-                }
-            }
-            event => PublicGameEvent::Public(event.clone()),
-        }
+        crate::public_view::event_for(self, viewer)
     }
 }
 
@@ -1147,7 +1032,7 @@ fn validate_team_seating(setup: &GameSetup) -> GameResult<()> {
     }
 
     let mut team_sizes = players_by_team.iter().collect::<Vec<_>>();
-    team_sizes.sort_by(|(left_team, _), (right_team, _)| left_team.cmp(right_team));
+    team_sizes.sort_by_key(|(team, _)| (*team).clone());
     let (first_team, first_count) = team_sizes[0];
     let (second_team, second_count) = team_sizes[1];
     if first_count != second_count {

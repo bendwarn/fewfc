@@ -116,6 +116,22 @@ fn fixed_deck_preparation_order_is_recorded_in_deck_prepared_event() {
 }
 
 #[test]
+fn game_record_start_can_use_deck_preparation_adapter() {
+    let setup = two_player_setup();
+    let prepared_order = deck_starting_with(&[5, 10, 1, 2]);
+    let mut preparation = FixedDeckPreparation::new(prepared_order.clone());
+
+    let record = GameRecord::start_with_deck_preparation(setup, &mut preparation).unwrap();
+
+    assert_eq!(
+        record.events().first(),
+        Some(&GameEvent::DeckPrepared {
+            deck_order: prepared_order,
+        })
+    );
+}
+
+#[test]
 fn replay_uses_recorded_deck_order_not_later_deck_preparation() {
     let setup = two_player_setup();
     let mut initial_preparation = SeededDeckPreparation::new(11);

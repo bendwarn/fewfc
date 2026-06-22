@@ -6,14 +6,375 @@ use crate::domain::{
     ElementInteraction, EngineInvariantError, EventMetadata, EventSource, GameError, GameEvent,
     GameOutcome, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
     LastElementalAttackUpdate, LastFormationUse, PassActionReason, PassiveFlipOutcome,
-    PassiveNoEffectReason, Phase, PlayerId, PublicGameEvent, RecordedEvent, ShieldChangeDelta,
-    TeamId, TurnDrawSkipReason, ValidationError, Viewer, validate_setup,
+    PassiveNoEffectReason, Phase, PlayerId, PublicGameEvent, PublicGameState, RecordedEvent,
+    RulesetId, ShieldChangeDelta, TargetDecl, TeamId, TurnDrawSkipReason, ValidationError, Viewer,
+    targeting::{RulePlayerTarget, RuleTeamTarget, TurnOrderTargets},
+    validate_setup,
 };
+use crate::ports::DeckPreparation as DeckPreparationPort;
 use crate::rules::{
     AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, FormationCategory, PointFormula,
     base_formation_matcher, base_formation_registry,
 };
 use std::collections::HashSet;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventBatch {
+    events: Vec<GameEvent>,
+}
+
+impl EventBatch {
+    pub fn new(events: Vec<GameEvent>) -> Self {
+        Self { events }
+    }
+
+    pub fn events(&self) -> &[GameEvent] {
+        &self.events
+    }
+
+    pub fn into_events(self) -> Vec<GameEvent> {
+        self.events
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartGame {
+    pub setup: GameSetup,
+    pub deck_order: Vec<CardInstanceId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StartGameWithDeckPreparationError<E> {
+    DeckPreparation(E),
+    Game(GameError),
+}
+
+impl<E> From<GameError> for StartGameWithDeckPreparationError<E> {
+    fn from(error: GameError) -> Self {
+        Self::Game(error)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BaseRuleset;
+
+impl BaseRuleset {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn id(&self) -> RulesetId {
+        RulesetId::base()
+    }
+
+    pub fn start_game(
+        &self,
+        setup: &GameSetup,
+        deck_order: Vec<CardInstanceId>,
+    ) -> GameResult<Vec<GameEvent>> {
+        validate_setup(setup)?;
+        validate_card_instances(setup, &deck_order)?;
+        initial_events(setup, deck_order)
+    }
+
+    pub fn decide_command(
+        &self,
+        state: &GameState,
+        command: Command,
+    ) -> GameResult<Vec<GameEvent>> {
+        decide_command_with_base_ruleset(state, command)
+    }
+
+    pub fn advance_automatic(&self, state: &GameState) -> GameResult<Vec<GameEvent>> {
+        advance_automatic(state)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FormationUseRequest {
+    player: PlayerId,
+    formation_id: String,
+    cards: Vec<CardInstanceId>,
+    declared_targets: Vec<TargetDecl>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FormationUsePlan {
+    player: PlayerId,
+    formation_id: String,
+    cards: Vec<CardInstanceId>,
+    declared_targets: Vec<TargetDecl>,
+    category: FormationCategory,
+    effect_plan: EffectPlan,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct BaseFormationPlanner;
+
+impl BaseFormationPlanner {
+    fn new() -> Self {
+        Self
+    }
+
+    fn plan_use(
+        &self,
+        state: &GameState,
+        request: FormationUseRequest,
+    ) -> GameResult<FormationUsePlan> {
+        let registry = base_formation_registry();
+        let formation = registry.formation(&request.formation_id).ok_or_else(|| {
+            GameError::Validation(ValidationError::UnknownFormation(
+                request.formation_id.clone(),
+            ))
+        })?;
+
+        let hand = state.hand(&request.player).ok_or_else(|| {
+            GameError::Validation(ValidationError::UnknownPlayer(request.player.clone()))
+        })?;
+        let mut seen = HashSet::new();
+        let mut submitted_elements = Vec::new();
+
+        for card in &request.cards {
+            if !seen.insert(*card) {
+                return Err(GameError::Validation(
+                    ValidationError::DuplicateSubmittedCard(*card),
+                ));
+            }
+
+            if !hand.contains(card) {
+                return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
+            }
+
+            submitted_elements.push(state.card_element(*card).ok_or(GameError::Validation(
+                ValidationError::MissingCardInstanceDefinition(*card),
+            ))?);
+        }
+
+        if !base_formation_matcher().matches(&formation.pattern, &submitted_elements) {
+            return Err(GameError::Validation(
+                ValidationError::FormationPatternMismatch {
+                    formation_id: request.formation_id,
+                },
+            ));
+        }
+        if request.formation_id == "five-streams-unite"
+            && !submitted_cards_have_same_level(state, &request.cards)?
+        {
+            return Err(GameError::Validation(
+                ValidationError::FormationPatternMismatch {
+                    formation_id: request.formation_id,
+                },
+            ));
+        }
+
+        let effect = registry
+            .effect_for(formation)
+            .expect("base formation registry must link every formation to an effect");
+
+        Ok(FormationUsePlan {
+            player: request.player,
+            formation_id: request.formation_id,
+            cards: request.cards,
+            declared_targets: request.declared_targets,
+            category: formation.category.clone(),
+            effect_plan: effect.plan.clone(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct BaseEffectResolver;
+
+impl BaseEffectResolver {
+    fn new() -> Self {
+        Self
+    }
+
+    fn resolve(&self, state: &GameState, plan: FormationUsePlan) -> GameResult<Vec<GameEvent>> {
+        match &plan.effect_plan {
+            EffectPlan::Attack(attack_plan) => {
+                if !plan.declared_targets.is_empty() {
+                    return Err(GameError::Validation(
+                        ValidationError::UnexpectedDeclaredTargets {
+                            formation_id: plan.formation_id,
+                        },
+                    ));
+                }
+                let passive_resolutions =
+                    passive_resolutions(state, &plan.player, IncomingActionKind::Attack);
+                let action_modifications = action_modifications(&passive_resolutions);
+                let mut events = passive_events(passive_resolutions);
+                let target = attack_target(state, &plan.player, attack_plan)?;
+                let target_team = player_team(state, &target)?;
+                let points =
+                    compute_attack_points(state, &attack_plan.point_formula, &plan.cards, &target)?;
+                let has_target_shield = state.shield(&target).is_some_and(|value| value > 0);
+                let point_breakdown = attack_point_breakdown(
+                    state,
+                    &plan.category,
+                    &target,
+                    points,
+                    has_target_shield,
+                );
+                let final_amount = point_breakdown.final_amount;
+                let damage_prevented =
+                    action_modifications.contains(&ActionModification::PreventDamage);
+                let shield_change = if damage_prevented {
+                    None
+                } else {
+                    shield_absorption(state, &target, final_amount)
+                };
+                let has_shield_change = shield_change.is_some();
+                let split_attack_damage = action_modifications
+                    .contains(&ActionModification::SplitAttackDamage)
+                    && !matches!(
+                        point_breakdown.damage_transform,
+                        DamageTransform::HealTarget
+                    );
+                let hp_change = if damage_prevented || has_shield_change {
+                    no_hp_change(state, &target_team)?
+                } else if split_attack_damage {
+                    apply_attack_amount(
+                        state,
+                        &target_team,
+                        (final_amount + 1) / 2,
+                        DamageTransform::NormalDamage,
+                    )?
+                } else {
+                    apply_attack_amount(
+                        state,
+                        &target_team,
+                        final_amount,
+                        point_breakdown.damage_transform,
+                    )?
+                };
+                let card_moves = plan
+                    .cards
+                    .iter()
+                    .copied()
+                    .map(|card| CardMoveDelta {
+                        card,
+                        from: CardZone::Hand(plan.player.clone()),
+                        to: CardZone::Discard,
+                    })
+                    .collect::<Vec<_>>();
+                let elemental_context_update =
+                    elemental_context_update(&plan.category, state.turn_number).map(|attack| {
+                        LastElementalAttackUpdate {
+                            player: plan.player.clone(),
+                            attack,
+                        }
+                    });
+
+                events.push(GameEvent::AttackResolved {
+                    attacker: plan.player.clone(),
+                    target,
+                    formation_id: plan.formation_id.clone(),
+                    used_cards: plan.cards.clone(),
+                    point_breakdown,
+                    hp_change,
+                    shield_change,
+                    card_moves,
+                    elemental_context_update,
+                });
+
+                if split_attack_damage && !damage_prevented && !has_shield_change {
+                    let attacker_team = player_team(state, &plan.player)?;
+                    let attacker_damage = final_amount / 2;
+                    if attacker_damage > 0 {
+                        events.push(GameEvent::HpChanged {
+                            change: apply_attack_amount(
+                                state,
+                                &attacker_team,
+                                attacker_damage,
+                                DamageTransform::NormalDamage,
+                            )?,
+                        });
+                    }
+                }
+
+                if plan.formation_id == "five-streams-unite" {
+                    let old_value = state
+                        .turn_draw_bonus_by_player
+                        .get(&plan.player)
+                        .copied()
+                        .unwrap_or(0);
+                    events.push(GameEvent::TurnDrawBonusChanged {
+                        player: plan.player,
+                        old_value,
+                        delta: 1,
+                        new_value: old_value + 1,
+                    });
+                }
+
+                Ok(events)
+            }
+            EffectPlan::PassiveSpell(_) => {
+                if !plan.declared_targets.is_empty() {
+                    return Err(GameError::Validation(
+                        ValidationError::UnexpectedDeclaredTargets {
+                            formation_id: plan.formation_id,
+                        },
+                    ));
+                }
+
+                if state
+                    .covered_passives
+                    .iter()
+                    .any(|passive| passive.owner == plan.player)
+                {
+                    return Err(GameError::Validation(
+                        ValidationError::PendingPassiveAlreadyCovered {
+                            player: plan.player,
+                        },
+                    ));
+                }
+
+                let passive_resolutions =
+                    passive_resolutions(state, &plan.player, IncomingActionKind::PassiveSpell);
+                let action_modifications = action_modifications(&passive_resolutions);
+                let mut events = passive_events(passive_resolutions);
+                events.push(GameEvent::PassiveCovered {
+                    player: plan.player,
+                    formation_id: plan.formation_id,
+                    cards: plan.cards,
+                    sealed: action_modifications.contains(&ActionModification::SealCoveredPassive),
+                });
+                Ok(events)
+            }
+            EffectPlan::ActiveSpell(spell) => {
+                if !plan.declared_targets.is_empty() {
+                    return Err(GameError::Validation(
+                        ValidationError::UnexpectedDeclaredTargets {
+                            formation_id: plan.formation_id,
+                        },
+                    ));
+                }
+
+                let passive_resolutions =
+                    passive_resolutions(state, &plan.player, IncomingActionKind::ActiveSpell);
+                let action_modifications = action_modifications(&passive_resolutions);
+                let mut events = passive_events(passive_resolutions);
+                events.push(GameEvent::FormationPerformed {
+                    player: plan.player.clone(),
+                    formation_id: plan.formation_id,
+                    used_cards: plan.cards.clone(),
+                    declared_targets: plan.declared_targets,
+                });
+                if !action_modifications.contains(&ActionModification::CancelSpell) {
+                    let intents =
+                        active_spell_intents(state, &plan.player, &spell.resolver_id, &plan.cards)?;
+                    events.extend(effect_intent_events(state, intents)?);
+                }
+                Ok(events)
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameRecord {
@@ -25,9 +386,8 @@ pub struct GameRecord {
 
 impl GameRecord {
     pub fn start(setup: GameSetup, deck_order: Vec<CardInstanceId>) -> GameResult<Self> {
-        validate_setup(&setup)?;
-        validate_card_instances(&setup, &deck_order)?;
-        let events = initial_events(&setup, deck_order)?;
+        let ruleset = BaseRuleset::new();
+        let events = ruleset.start_game(&setup, deck_order)?;
         let event_metadata = metadata_for_events(events.len(), EventSource::Setup);
 
         let record = Self {
@@ -39,6 +399,23 @@ impl GameRecord {
 
         record.replay()?;
         Ok(record)
+    }
+
+    pub fn start_game(input: StartGame) -> GameResult<Self> {
+        Self::start(input.setup, input.deck_order)
+    }
+
+    pub fn start_with_deck_preparation<P>(
+        setup: GameSetup,
+        deck_preparation: &mut P,
+    ) -> Result<Self, StartGameWithDeckPreparationError<P::Error>>
+    where
+        P: DeckPreparationPort,
+    {
+        let deck_order = deck_preparation
+            .prepare_deck(&setup)
+            .map_err(StartGameWithDeckPreparationError::DeckPreparation)?;
+        Self::start(setup, deck_order).map_err(StartGameWithDeckPreparationError::Game)
     }
 
     pub fn events(&self) -> &[GameEvent] {
@@ -61,10 +438,11 @@ impl GameRecord {
     }
 
     pub fn public_events_for(&self, viewer: Viewer) -> Vec<PublicGameEvent> {
-        self.events
-            .iter()
-            .map(|event| event.view_for(viewer.clone()))
-            .collect()
+        crate::public_view::events_for(&self.events, viewer)
+    }
+
+    pub fn public_view(&self, viewer: Viewer) -> GameResult<PublicGameState> {
+        Ok(crate::public_view::state_for(&self.state()?, viewer))
     }
 
     pub fn state(&self) -> GameResult<GameState> {
@@ -83,24 +461,36 @@ impl GameRecord {
         self.latest_snapshot.as_ref()
     }
 
-    pub fn handle(&mut self, command: Command) -> GameResult<Vec<GameEvent>> {
+    pub fn apply(&mut self, command: Command) -> GameResult<EventBatch> {
         let state = self.state()?;
         let source = EventSource::Command {
             command_id: self.next_command_id(),
             context: command_context(&command),
         };
-        let events = handle_command(&state, command)?;
+        let events = BaseRuleset::new().decide_command(&state, command)?;
         self.extend_events(events.clone(), |event| {
             source_for_command_event(event, &source)
         });
-        Ok(events)
+        Ok(EventBatch::new(events))
+    }
+
+    pub fn handle(&mut self, command: Command) -> GameResult<Vec<GameEvent>> {
+        self.apply(command).map(EventBatch::into_events)
+    }
+
+    pub fn advance_until_decision(&mut self) -> GameResult<EventBatch> {
+        let state = self.state()?;
+        let events = BaseRuleset::new().advance_automatic(&state)?;
+        self.extend_events(events.clone(), source_for_automatic_event);
+        Ok(EventBatch::new(events))
     }
 
     pub fn advance_automatic(&mut self) -> GameResult<Vec<GameEvent>> {
-        let state = self.state()?;
-        let events = advance_automatic(&state)?;
-        self.extend_events(events.clone(), source_for_automatic_event);
-        Ok(events)
+        self.advance_until_decision().map(EventBatch::into_events)
+    }
+
+    pub fn verify_replay(&self) -> Result<GameState, ReplayVerificationError> {
+        verify_recorded_events(&self.setup, &self.recorded_events())
     }
 
     fn extend_events(
@@ -141,7 +531,7 @@ pub enum ReplayVerificationError {
     DecisionFailed {
         sequence: u64,
         source: EventSource,
-        error: GameError,
+        error: Box<GameError>,
     },
     EventMismatch {
         sequence: u64,
@@ -474,6 +864,13 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
 }
 
 pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<GameEvent>> {
+    BaseRuleset::new().decide_command(state, command)
+}
+
+fn decide_command_with_base_ruleset(
+    state: &GameState,
+    command: Command,
+) -> GameResult<Vec<GameEvent>> {
     ensure_engine_invariants(state)?;
 
     if matches!(state.status, GameStatus::Finished { .. }) {
@@ -536,220 +933,16 @@ pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<Gam
             ensure_current_player(state, &player)?;
             ensure_phase(state, Phase::Main)?;
 
-            let registry = base_formation_registry();
-            let formation = registry.formation(&formation_id).ok_or_else(|| {
-                GameError::Validation(ValidationError::UnknownFormation(formation_id.clone()))
-            })?;
-
-            let hand = state.hand(&player).ok_or_else(|| {
-                GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
-            })?;
-            let mut seen = HashSet::new();
-            let mut submitted_elements = Vec::new();
-
-            for card in &cards {
-                if !seen.insert(*card) {
-                    return Err(GameError::Validation(
-                        ValidationError::DuplicateSubmittedCard(*card),
-                    ));
-                }
-
-                if !hand.contains(card) {
-                    return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
-                }
-
-                submitted_elements.push(state.card_element(*card).ok_or(GameError::Validation(
-                    ValidationError::MissingCardInstanceDefinition(*card),
-                ))?);
-            }
-
-            if !base_formation_matcher().matches(&formation.pattern, &submitted_elements) {
-                return Err(GameError::Validation(
-                    ValidationError::FormationPatternMismatch { formation_id },
-                ));
-            }
-            if formation_id == "five-streams-unite"
-                && !submitted_cards_have_same_level(state, &cards)?
-            {
-                return Err(GameError::Validation(
-                    ValidationError::FormationPatternMismatch { formation_id },
-                ));
-            }
-
-            let effect = registry
-                .effect_for(formation)
-                .expect("base formation registry must link every formation to an effect");
-
-            match &effect.plan {
-                EffectPlan::Attack(plan) => {
-                    if !declared_targets.is_empty() {
-                        return Err(GameError::Validation(
-                            ValidationError::UnexpectedDeclaredTargets { formation_id },
-                        ));
-                    }
-                    let passive_resolutions =
-                        passive_resolutions(state, &player, IncomingActionKind::Attack);
-                    let action_modifications = action_modifications(&passive_resolutions);
-                    let mut events = passive_events(passive_resolutions);
-                    let target = attack_target(state, &player, &plan)?;
-                    let target_team = player_team(state, &target)?;
-                    let points =
-                        compute_attack_points(state, &plan.point_formula, &cards, &target)?;
-                    let has_target_shield = state.shield(&target).is_some_and(|value| value > 0);
-                    let point_breakdown = attack_point_breakdown(
-                        state,
-                        &formation.category,
-                        &target,
-                        points,
-                        has_target_shield,
-                    );
-                    let final_amount = point_breakdown.final_amount;
-                    let damage_prevented =
-                        action_modifications.contains(&ActionModification::PreventDamage);
-                    let shield_change = if damage_prevented {
-                        None
-                    } else {
-                        shield_absorption(state, &target, final_amount)
-                    };
-                    let has_shield_change = shield_change.is_some();
-                    let split_attack_damage = action_modifications
-                        .contains(&ActionModification::SplitAttackDamage)
-                        && !matches!(
-                            point_breakdown.damage_transform,
-                            DamageTransform::HealTarget
-                        );
-                    let hp_change = if damage_prevented || has_shield_change {
-                        no_hp_change(state, &target_team)?
-                    } else if split_attack_damage {
-                        apply_attack_amount(
-                            state,
-                            &target_team,
-                            (final_amount + 1) / 2,
-                            DamageTransform::NormalDamage,
-                        )?
-                    } else {
-                        apply_attack_amount(
-                            state,
-                            &target_team,
-                            final_amount,
-                            point_breakdown.damage_transform,
-                        )?
-                    };
-                    let card_moves = cards
-                        .iter()
-                        .copied()
-                        .map(|card| CardMoveDelta {
-                            card,
-                            from: CardZone::Hand(player.clone()),
-                            to: CardZone::Discard,
-                        })
-                        .collect::<Vec<_>>();
-                    let elemental_context_update =
-                        elemental_context_update(&formation.category, state.turn_number).map(
-                            |attack| LastElementalAttackUpdate {
-                                player: player.clone(),
-                                attack,
-                            },
-                        );
-
-                    events.push(GameEvent::AttackResolved {
-                        attacker: player.clone(),
-                        target,
-                        formation_id: formation_id.clone(),
-                        used_cards: cards.clone(),
-                        point_breakdown,
-                        hp_change,
-                        shield_change,
-                        card_moves,
-                        elemental_context_update,
-                    });
-
-                    if split_attack_damage && !damage_prevented && !has_shield_change {
-                        let attacker_team = player_team(state, &player)?;
-                        let attacker_damage = final_amount / 2;
-                        if attacker_damage > 0 {
-                            events.push(GameEvent::HpChanged {
-                                change: apply_attack_amount(
-                                    state,
-                                    &attacker_team,
-                                    attacker_damage,
-                                    DamageTransform::NormalDamage,
-                                )?,
-                            });
-                        }
-                    }
-
-                    if formation_id == "five-streams-unite" {
-                        let old_value = state
-                            .turn_draw_bonus_by_player
-                            .get(&player)
-                            .copied()
-                            .unwrap_or(0);
-                        events.push(GameEvent::TurnDrawBonusChanged {
-                            player,
-                            old_value,
-                            delta: 1,
-                            new_value: old_value + 1,
-                        });
-                    }
-
-                    Ok(events)
-                }
-                EffectPlan::PassiveSpell(_) => {
-                    if !declared_targets.is_empty() {
-                        return Err(GameError::Validation(
-                            ValidationError::UnexpectedDeclaredTargets { formation_id },
-                        ));
-                    }
-
-                    if state
-                        .covered_passives
-                        .iter()
-                        .any(|passive| passive.owner == player)
-                    {
-                        return Err(GameError::Validation(
-                            ValidationError::PendingPassiveAlreadyCovered { player },
-                        ));
-                    }
-
-                    let passive_resolutions =
-                        passive_resolutions(state, &player, IncomingActionKind::PassiveSpell);
-                    let action_modifications = action_modifications(&passive_resolutions);
-                    let mut events = passive_events(passive_resolutions);
-                    events.push(GameEvent::PassiveCovered {
-                        player,
-                        formation_id,
-                        cards,
-                        sealed: action_modifications
-                            .contains(&ActionModification::SealCoveredPassive),
-                    });
-                    Ok(events)
-                }
-                EffectPlan::ActiveSpell(spell) => {
-                    if !declared_targets.is_empty() {
-                        return Err(GameError::Validation(
-                            ValidationError::UnexpectedDeclaredTargets { formation_id },
-                        ));
-                    }
-
-                    let passive_resolutions =
-                        passive_resolutions(state, &player, IncomingActionKind::ActiveSpell);
-                    let action_modifications = action_modifications(&passive_resolutions);
-                    let mut events = passive_events(passive_resolutions);
-                    events.push(GameEvent::FormationPerformed {
-                        player: player.clone(),
-                        formation_id,
-                        used_cards: cards.clone(),
-                        declared_targets,
-                    });
-                    if !action_modifications.contains(&ActionModification::CancelSpell) {
-                        let intents =
-                            active_spell_intents(state, &player, &spell.resolver_id, &cards)?;
-                        events.extend(effect_intent_events(state, intents)?);
-                    }
-                    Ok(events)
-                }
-            }
+            let plan = BaseFormationPlanner::new().plan_use(
+                state,
+                FormationUseRequest {
+                    player,
+                    formation_id,
+                    cards,
+                    declared_targets,
+                },
+            )?;
+            BaseEffectResolver::new().resolve(state, plan)
         }
         Command::ChooseTurnDiscard { player, discard } => {
             ensure_current_player(state, &player)?;
@@ -1234,23 +1427,7 @@ fn nth_future_turn_for_player(
     player: &PlayerId,
     occurrence: usize,
 ) -> GameResult<u64> {
-    let current_index = state
-        .current_turn_index
-        .min(state.turn_order.len().saturating_sub(1));
-    let target_index = state
-        .turn_order
-        .iter()
-        .position(|candidate| candidate == player)
-        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
-    let player_count = state.turn_order.len();
-    let first_distance = (target_index + player_count - current_index) % player_count;
-    let first_distance = if first_distance == 0 {
-        player_count
-    } else {
-        first_distance
-    };
-
-    Ok(state.turn_number + first_distance as u64 + ((occurrence - 1) * player_count) as u64)
+    TurnOrderTargets::new(state).nth_future_turn_for_player(player, occurrence)
 }
 
 fn effect_intent_events(
@@ -1451,38 +1628,12 @@ fn attack_target(
     }
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RulePlayerTarget {
-    SelfPlayer,
-    PreviousPlayer,
-    NextPlayer,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RuleTeamTarget {
-    OwnSide,
-    OpposingSide,
-}
-
 fn resolve_rule_player_target(
     state: &GameState,
     player: &PlayerId,
     target: RulePlayerTarget,
 ) -> GameResult<PlayerId> {
-    match target {
-        RulePlayerTarget::SelfPlayer => {
-            if state.turn_order.iter().any(|candidate| candidate == player) {
-                Ok(player.clone())
-            } else {
-                Err(GameError::Validation(ValidationError::UnknownPlayer(
-                    player.clone(),
-                )))
-            }
-        }
-        RulePlayerTarget::PreviousPlayer => adjacent_player(state, player, -1),
-        RulePlayerTarget::NextPlayer => adjacent_player(state, player, 1),
-    }
+    TurnOrderTargets::new(state).player_target(player, target)
 }
 
 fn resolve_rule_team_target(
@@ -1490,30 +1641,12 @@ fn resolve_rule_team_target(
     player: &PlayerId,
     target: RuleTeamTarget,
 ) -> GameResult<TeamId> {
-    let own_team = player_team(state, player)?;
-
-    match target {
-        RuleTeamTarget::OwnSide => Ok(own_team),
-        RuleTeamTarget::OpposingSide => state
-            .hp
-            .iter()
-            .map(|team_hp| team_hp.team.clone())
-            .find(|team| team != &own_team)
-            .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(own_team.clone()))),
-    }
+    TurnOrderTargets::new(state).team_target(player, target)
 }
 
+#[allow(dead_code)]
 fn adjacent_player(state: &GameState, player: &PlayerId, offset: isize) -> GameResult<PlayerId> {
-    let index = state
-        .turn_order
-        .iter()
-        .position(|candidate| candidate == player)
-        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?
-        as isize;
-    let player_count = state.turn_order.len() as isize;
-    let target_index = (index + offset).rem_euclid(player_count) as usize;
-
-    Ok(state.turn_order[target_index].clone())
+    TurnOrderTargets::new(state).adjacent_player(player, offset)
 }
 
 fn previous_player(state: &GameState, player: &PlayerId) -> GameResult<PlayerId> {
@@ -1521,12 +1654,7 @@ fn previous_player(state: &GameState, player: &PlayerId) -> GameResult<PlayerId>
 }
 
 fn player_team(state: &GameState, player: &PlayerId) -> GameResult<TeamId> {
-    state
-        .players
-        .iter()
-        .find(|candidate| &candidate.id == player)
-        .map(|player| player.team.clone())
-        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))
+    TurnOrderTargets::new(state).team_of(player)
 }
 
 fn compute_attack_points(
@@ -2158,7 +2286,7 @@ pub fn verify_recorded_events(
     validate_setup(setup).map_err(|error| ReplayVerificationError::DecisionFailed {
         sequence: 0,
         source: EventSource::Setup,
-        error,
+        error: Box::new(error),
     })?;
 
     let mut state = GameState::from_setup(setup);
@@ -2186,7 +2314,7 @@ pub fn verify_recorded_events(
                     ReplayVerificationError::DecisionFailed {
                         sequence,
                         source: source.clone(),
-                        error,
+                        error: Box::new(error),
                     }
                 })?
             }
@@ -2194,7 +2322,7 @@ pub fn verify_recorded_events(
                 ReplayVerificationError::DecisionFailed {
                     sequence,
                     source: source.clone(),
-                    error,
+                    error: Box::new(error),
                 }
             })?,
             EventSource::Command { context, .. } => {
@@ -2208,7 +2336,7 @@ pub fn verify_recorded_events(
                     ReplayVerificationError::DecisionFailed {
                         sequence,
                         source: source.clone(),
-                        error,
+                        error: Box::new(error),
                     }
                 })?
             }
