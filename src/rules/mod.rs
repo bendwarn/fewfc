@@ -1,5 +1,7 @@
 //! Rule registries: formations, effects, matchers, and formula resolvers.
 
+pub mod base;
+
 pub use crate::domain::Element;
 use std::collections::HashMap;
 
