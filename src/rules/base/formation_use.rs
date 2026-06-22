@@ -1,9 +1,8 @@
 use crate::domain::{
     ActionModification, AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone,
-    DamageTransform, Element, ElementInteraction, EngineInvariantError, GameError, GameEvent,
-    GameResult, GameState, HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate,
-    PassiveFlipOutcome, PassiveNoEffectReason, PlayerId, ShieldChangeDelta, TargetDecl, TeamId,
-    ValidationError,
+    DamageTransform, Element, ElementInteraction, GameError, GameEvent, GameResult, GameState,
+    HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate, PassiveFlipOutcome,
+    PassiveNoEffectReason, PlayerId, ShieldChangeDelta, TargetDecl, TeamId, ValidationError,
     targeting::{RulePlayerTarget, RuleTeamTarget, TurnOrderTargets},
 };
 use crate::rules::{
@@ -11,6 +10,8 @@ use crate::rules::{
     base_formation_matcher, base_formation_registry,
 };
 use std::collections::HashSet;
+
+use super::effect_intent::{EffectIntent, effect_intent_events};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct FormationUseRequest {
@@ -435,37 +436,6 @@ fn passive_spell_intents(
     vec![EffectIntent::ModifyAction { modification }]
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum EffectIntent {
-    SetShield {
-        player: PlayerId,
-        value: i32,
-    },
-    ChangeHp {
-        team: TeamId,
-        delta: i32,
-    },
-    MoveCards {
-        card_moves: Vec<CardMoveDelta>,
-    },
-    AddStatus {
-        status: crate::domain::StatusEffect,
-    },
-    ResolveCopiedAttack {
-        formation_id: String,
-        category: AttackCategory,
-        point_formula: PointFormula,
-        used_cards: Vec<CardInstanceId>,
-    },
-    ModifyAction {
-        modification: ActionModification,
-    },
-    RequestChoice {
-        player: PlayerId,
-        kind: crate::domain::PendingChoiceKind,
-    },
-}
-
 fn active_spell_intents(
     state: &GameState,
     player: &PlayerId,
@@ -644,131 +614,6 @@ fn nth_future_turn_for_player(
     TurnOrderTargets::new(state).nth_future_turn_for_player(player, occurrence)
 }
 
-fn effect_intent_events(
-    state: &GameState,
-    intents: Vec<EffectIntent>,
-) -> GameResult<Vec<GameEvent>> {
-    let mut requested_choice_player = None;
-    let mut events = Vec::new();
-
-    for intent in intents {
-        let event = match intent {
-            EffectIntent::SetShield { player, value } => {
-                let old_value = state.shield(&player).unwrap_or(0);
-                if old_value == value {
-                    continue;
-                }
-                GameEvent::ShieldChanged {
-                    player,
-                    old_value,
-                    delta: value - old_value,
-                    new_value: value,
-                }
-            }
-            EffectIntent::ChangeHp { team, delta } => {
-                if delta == 0 {
-                    continue;
-                }
-                let old_hp = state
-                    .hp
-                    .iter()
-                    .find(|team_hp| team_hp.team == team)
-                    .ok_or_else(|| {
-                        GameError::Validation(ValidationError::MissingTeamHp(team.clone()))
-                    })?
-                    .hp;
-                GameEvent::HpChanged {
-                    change: HpChangeDelta {
-                        team,
-                        old_hp,
-                        delta,
-                        new_hp: old_hp + delta,
-                        effective_delta: delta,
-                    },
-                }
-            }
-            EffectIntent::MoveCards { card_moves } => GameEvent::CardsMoved { card_moves },
-            EffectIntent::AddStatus { status } => GameEvent::StatusAdded { status },
-            EffectIntent::ResolveCopiedAttack {
-                formation_id,
-                category,
-                point_formula,
-                used_cards,
-            } => {
-                let target = attack_target(
-                    state,
-                    &state
-                        .current_player()
-                        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
-                        .clone(),
-                    &AttackPlanDef {
-                        category: category.clone(),
-                        point_formula: point_formula.clone(),
-                        damage_target: DamageTarget::PreviousPlayer,
-                    },
-                )?;
-                let target_team = player_team(state, &target)?;
-                let player = state
-                    .current_player()
-                    .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
-                    .clone();
-                let points = compute_attack_points(state, &point_formula, &used_cards, &target)?;
-                let has_target_shield = state.shield(&target).is_some_and(|value| value > 0);
-                let point_breakdown =
-                    attack_point_breakdown(state, &category, &target, points, has_target_shield);
-                let shield_change = shield_absorption(state, &target, point_breakdown.final_amount);
-                let hp_change = if shield_change.is_some() {
-                    no_hp_change(state, &target_team)?
-                } else {
-                    apply_attack_amount(
-                        state,
-                        &target_team,
-                        point_breakdown.final_amount,
-                        point_breakdown.damage_transform,
-                    )?
-                };
-                GameEvent::AttackResolved {
-                    attacker: player.clone(),
-                    target,
-                    formation_id,
-                    used_cards,
-                    point_breakdown,
-                    hp_change,
-                    shield_change,
-                    card_moves: Vec::new(),
-                    elemental_context_update: elemental_context_update(
-                        &category,
-                        state.turn_number,
-                    )
-                    .map(|attack| LastElementalAttackUpdate { player, attack }),
-                }
-            }
-            EffectIntent::ModifyAction { modification } => match modification {
-                ActionModification::PreventDamage
-                | ActionModification::SplitAttackDamage
-                | ActionModification::CancelSpell
-                | ActionModification::SealCoveredPassive => continue,
-            },
-            EffectIntent::RequestChoice { player, kind } => {
-                if let Some(existing_player) = requested_choice_player {
-                    return Err(GameError::EngineInvariant(
-                        EngineInvariantError::DuplicatePendingChoice {
-                            player: existing_player,
-                        },
-                    ));
-                }
-
-                requested_choice_player = Some(player.clone());
-                GameEvent::EffectChoiceRequested { player, kind }
-            }
-        };
-
-        events.push(event);
-    }
-
-    Ok(events)
-}
-
 fn resume_effect_choice_intents(
     state: &GameState,
     player: &PlayerId,
@@ -824,7 +669,7 @@ fn resume_effect_choice_intents(
     }
 }
 
-fn attack_target(
+pub(in crate::rules::base) fn attack_target(
     state: &GameState,
     attacker: &PlayerId,
     plan: &AttackPlanDef,
@@ -863,11 +708,14 @@ fn previous_player(state: &GameState, player: &PlayerId) -> GameResult<PlayerId>
     resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)
 }
 
-fn player_team(state: &GameState, player: &PlayerId) -> GameResult<TeamId> {
+pub(in crate::rules::base) fn player_team(
+    state: &GameState,
+    player: &PlayerId,
+) -> GameResult<TeamId> {
     TurnOrderTargets::new(state).team_of(player)
 }
 
-fn compute_attack_points(
+pub(in crate::rules::base) fn compute_attack_points(
     state: &GameState,
     formula: &PointFormula,
     cards: &[CardInstanceId],
@@ -906,7 +754,7 @@ fn compute_attack_points(
     }
 }
 
-fn attack_point_breakdown(
+pub(in crate::rules::base) fn attack_point_breakdown(
     state: &GameState,
     category: &AttackCategory,
     target: &PlayerId,
@@ -998,7 +846,7 @@ fn overcomes(current: Element, previous: Element) -> bool {
     )
 }
 
-fn apply_attack_amount(
+pub(in crate::rules::base) fn apply_attack_amount(
     state: &GameState,
     team: &TeamId,
     amount: i32,
@@ -1027,7 +875,10 @@ fn apply_attack_amount(
     })
 }
 
-fn no_hp_change(state: &GameState, team: &TeamId) -> GameResult<HpChangeDelta> {
+pub(in crate::rules::base) fn no_hp_change(
+    state: &GameState,
+    team: &TeamId,
+) -> GameResult<HpChangeDelta> {
     let old_hp = state
         .hp
         .iter()
@@ -1044,7 +895,7 @@ fn no_hp_change(state: &GameState, team: &TeamId) -> GameResult<HpChangeDelta> {
     })
 }
 
-fn shield_absorption(
+pub(in crate::rules::base) fn shield_absorption(
     state: &GameState,
     player: &PlayerId,
     incoming_damage: i32,
@@ -1062,7 +913,7 @@ fn shield_absorption(
     })
 }
 
-fn elemental_context_update(
+pub(in crate::rules::base) fn elemental_context_update(
     category: &AttackCategory,
     resolved_turn: u64,
 ) -> Option<LastElementalAttack> {
