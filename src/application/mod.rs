@@ -2,16 +2,21 @@
 
 mod formation_use;
 mod projection;
+mod recorded_event_log;
 
 use crate::domain::{
-    AutomaticReason, CardInstanceId, Command, CommandContext, CommandId, CommandKind,
-    DeckPlacement, EngineInvariantError, EventMetadata, EventSource, GameError, GameEvent,
-    GameResult, GameSetup, GameState, GameStatus, PassActionReason, Phase, RecordedEvent,
-    RulesetId, TurnDrawSkipReason, ValidationError, validate_setup,
+    CardInstanceId, Command, CommandId, DeckPlacement, EngineInvariantError, GameError, GameEvent,
+    GameResult, GameSetup, GameState, GameStatus, PassActionReason, Phase, RulesetId,
+    TurnDrawSkipReason, ValidationError, validate_setup,
 };
 use crate::ports::DeckPreparation as DeckPreparationPort;
 use crate::public_view::{PublicGameEvent, PublicGameState, Viewer};
+use recorded_event_log::RecordedEventLog;
 use std::collections::HashSet;
+
+pub use recorded_event_log::{
+    AutomaticReason, CommandContext, CommandKind, EventMetadata, EventSource, RecordedEvent,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventBatch {
@@ -92,8 +97,7 @@ impl BaseRuleset {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameRecord {
     setup: GameSetup,
-    events: Vec<GameEvent>,
-    event_metadata: Vec<EventMetadata>,
+    event_log: RecordedEventLog,
     latest_snapshot: Option<GameState>,
 }
 
@@ -101,12 +105,10 @@ impl GameRecord {
     pub fn start(setup: GameSetup, deck_order: Vec<CardInstanceId>) -> GameResult<Self> {
         let ruleset = BaseRuleset::new();
         let events = ruleset.start_game(&setup, deck_order)?;
-        let event_metadata = metadata_for_events(events.len(), EventSource::Setup);
 
         let record = Self {
             setup,
-            events,
-            event_metadata,
+            event_log: RecordedEventLog::from_setup_events(events),
             latest_snapshot: None,
         };
 
@@ -132,7 +134,7 @@ impl GameRecord {
     }
 
     pub fn events(&self) -> &[GameEvent] {
-        &self.events
+        self.event_log.events()
     }
 
     pub fn setup(&self) -> &GameSetup {
@@ -140,18 +142,15 @@ impl GameRecord {
     }
 
     pub fn recorded_events(&self) -> Vec<RecordedEvent> {
-        self.events
-            .iter()
-            .zip(self.event_metadata.iter())
-            .map(|(event, metadata)| RecordedEvent {
-                metadata: metadata.clone(),
-                event: event.clone(),
-            })
-            .collect()
+        self.event_log.recorded_events().to_vec()
+    }
+
+    pub fn recorded_event_count(&self) -> usize {
+        self.event_log.len()
     }
 
     pub fn public_events_for(&self, viewer: Viewer) -> Vec<PublicGameEvent> {
-        crate::public_view::events_for(&self.events, viewer)
+        crate::public_view::events_for(self.events(), viewer)
     }
 
     pub fn public_view(&self, viewer: Viewer) -> GameResult<PublicGameState> {
@@ -163,7 +162,7 @@ impl GameRecord {
     }
 
     pub fn replay(&self) -> GameResult<GameState> {
-        projection::project(&self.setup, &self.events)
+        projection::project(&self.setup, self.event_log.events())
     }
 
     pub fn latest_snapshot(&self) -> Option<&GameState> {
@@ -177,7 +176,7 @@ impl GameRecord {
             context: command_context(&command),
         };
         let events = BaseRuleset::new().decide_command(&state, command)?;
-        self.extend_events(events.clone(), |event| {
+        self.event_log.append(events.clone(), |event| {
             source_for_command_event(event, &source)
         });
         Ok(EventBatch::new(events))
@@ -190,7 +189,8 @@ impl GameRecord {
     pub fn advance_until_decision(&mut self) -> GameResult<EventBatch> {
         let state = self.state()?;
         let events = BaseRuleset::new().advance_automatic(&state)?;
-        self.extend_events(events.clone(), source_for_automatic_event);
+        self.event_log
+            .append(events.clone(), source_for_automatic_event);
         Ok(EventBatch::new(events))
     }
 
@@ -202,36 +202,8 @@ impl GameRecord {
         verify_recorded_events(&self.setup, &self.recorded_events())
     }
 
-    fn extend_events(
-        &mut self,
-        events: Vec<GameEvent>,
-        source_for_event: impl Fn(&GameEvent) -> EventSource,
-    ) {
-        let first_sequence = self.events.len() as u64 + 1;
-        self.event_metadata.extend(
-            events
-                .iter()
-                .enumerate()
-                .map(|(index, event)| EventMetadata {
-                    sequence: first_sequence + index as u64,
-                    source: source_for_event(event),
-                }),
-        );
-        self.events.extend(events.clone());
-    }
-
     fn next_command_id(&self) -> CommandId {
-        let next_id = self
-            .event_metadata
-            .iter()
-            .filter_map(|metadata| match &metadata.source {
-                EventSource::Command { command_id, .. } => Some(command_id.as_u64()),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0)
-            + 1;
-        CommandId::new(next_id)
+        self.event_log.next_command_id()
     }
 }
 
@@ -254,15 +226,6 @@ pub enum ReplayVerificationError {
         sequence: u64,
         source: EventSource,
     },
-}
-
-fn metadata_for_events(count: usize, source: EventSource) -> Vec<EventMetadata> {
-    (0..count)
-        .map(|index| EventMetadata {
-            sequence: index as u64 + 1,
-            source: source.clone(),
-        })
-        .collect()
 }
 
 fn source_for_command_event(_event: &GameEvent, source: &EventSource) -> EventSource {

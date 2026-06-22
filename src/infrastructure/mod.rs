@@ -1,9 +1,7 @@
 //! Infrastructure adapters and deterministic setup helpers.
 
-use crate::application::{GameRecord, replay};
-use crate::domain::{
-    CardInstanceId, GameError, GameSetup, GameState, RecordedEvent, RulesetId, ValidationError,
-};
+use crate::application::{GameRecord, RecordedEvent, replay};
+use crate::domain::{CardInstanceId, GameError, GameSetup, GameState, RulesetId, ValidationError};
 use crate::ports::{DeckPreparation, EventLogStorage, SnapshotStorage};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -39,7 +37,7 @@ impl PersistedGameRecord {
                 .latest_snapshot()
                 .cloned()
                 .map(|state| PersistedSnapshot {
-                    after_sequence: record.recorded_events().len() as u64,
+                    after_sequence: record.recorded_event_count() as u64,
                     state,
                 }),
         }

@@ -1,7 +1,9 @@
-use fewfc::application::{GameRecord, ReplayVerificationError, verify_recorded_events};
+use fewfc::application::{
+    EventSource, GameRecord, ReplayVerificationError, verify_recorded_events,
+};
 use fewfc::domain::{
-    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, EventSource, GameError,
-    GameEvent, GameSetup, PendingChoice, PendingChoiceKind, PlayerId, RulesetId, ValidationError,
+    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, GameError, GameEvent, GameSetup,
+    PendingChoice, PendingChoiceKind, PlayerId, RulesetId, ValidationError,
 };
 use fewfc::infrastructure::{
     FileSystemPersistence, FixedDeckPreparation, InMemoryPersistence, PersistedGameRecord,

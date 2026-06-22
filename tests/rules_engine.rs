@@ -1,17 +1,16 @@
 use fewfc::application::{
-    GameRecord, StartGame, advance_automatic as advance_state_automatic, apply_event,
-    handle_command,
+    AutomaticReason, CommandContext, CommandKind, EventSource, GameRecord, StartGame,
+    advance_automatic as advance_state_automatic, apply_event, handle_command,
 };
 use fewfc::domain::{
-    ActionModification, AttackPointBreakdown, AutomaticReason, CardDef, CardDefId, CardInstanceDef,
-    CardInstanceId, CardMoveDelta, CardZone, Command, CommandContext, CommandId, CommandKind,
-    DamageTransform, DeckPlacement, ElementInteraction, EngineInvariantError, EventSource,
-    GameError, GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta,
-    LastElementalAttack, LastElementalAttackUpdate, PassActionReason, PassiveFlipOutcome,
-    PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player, PlayerHand, PlayerId,
-    PlayerShield, RuleImplementationError, RulesetId, ShieldChangeDelta, StatusDuration,
-    StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId, TurnDrawSkipReason,
-    ValidationError,
+    ActionModification, AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
+    CardMoveDelta, CardZone, Command, CommandId, DamageTransform, DeckPlacement,
+    ElementInteraction, EngineInvariantError, GameError, GameEvent, GameOutcome, GameSetup,
+    GameState, GameStatus, HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate,
+    PassActionReason, PassiveFlipOutcome, PassiveNoEffectReason, PendingChoice, PendingChoiceKind,
+    Phase, Player, PlayerHand, PlayerId, PlayerShield, RuleImplementationError, RulesetId,
+    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
+    TeamId, TurnDrawSkipReason, ValidationError,
 };
 use fewfc::public_view::{
     self, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
