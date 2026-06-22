@@ -60,7 +60,7 @@ A movable individual card in a game zone.
 _Avoid_: card definition
 
 **Card Definition**:
-Immutable printed-card data such as name, element, and level.
+Immutable printed-card data such as name, one five-element element, and level from 1 to 5.
 _Avoid_: card instance
 
 **Player**:
@@ -160,6 +160,8 @@ _Avoid_: callback response
 - A **Formation Use** records zone changes through **Card Move Deltas** or equivalent replayable deltas
 - A **Card Move Delta** moves one **Card Instance**
 - A **Card Instance** refers to one **Card Definition**
+- A **Card Definition** has exactly one element: metal, wood, water, fire, or earth
+- A **Card Definition** has a level from 1 to 5
 - An **Attack Plan** may be elemental, physical, or special without changing the **Formation Category**
 - An **Attack** targets a **Previous Player** before resolving HP impact to that player's **Team**
 - The **Main Phase** may accept multiple **Active-Effect Commands** before one **Action Command**

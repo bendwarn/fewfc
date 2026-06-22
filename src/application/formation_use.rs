@@ -7,8 +7,8 @@ use crate::domain::{
     targeting::{RulePlayerTarget, RuleTeamTarget, TurnOrderTargets},
 };
 use crate::rules::{
-    AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, PointFormula, base_formation_matcher,
-    base_formation_registry,
+    AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, PointFormula, SubmittedCardFacts,
+    base_formation_matcher, base_formation_registry,
 };
 use std::collections::HashSet;
 
@@ -73,7 +73,7 @@ impl BaseFormationPlanner {
             GameError::Validation(ValidationError::UnknownPlayer(request.player.clone()))
         })?;
         let mut seen = HashSet::new();
-        let mut submitted_elements = Vec::new();
+        let mut submitted_cards = Vec::new();
 
         for card in &request.cards {
             if !seen.insert(*card) {
@@ -86,21 +86,16 @@ impl BaseFormationPlanner {
                 return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
             }
 
-            submitted_elements.push(state.card_element(*card).ok_or(GameError::Validation(
+            let card_def = state.card_def(*card).ok_or(GameError::Validation(
                 ValidationError::MissingCardInstanceDefinition(*card),
-            ))?);
+            ))?;
+            submitted_cards.push(SubmittedCardFacts {
+                element: card_def.element,
+                level: card_def.level,
+            });
         }
 
-        if !base_formation_matcher().matches(&formation.pattern, &submitted_elements) {
-            return Err(GameError::Validation(
-                ValidationError::FormationPatternMismatch {
-                    formation_id: request.formation_id,
-                },
-            ));
-        }
-        if request.formation_id == "five-streams-unite"
-            && !submitted_cards_have_same_level(state, &request.cards)?
-        {
+        if !base_formation_matcher().matches(&formation.pattern, &submitted_cards) {
             return Err(GameError::Validation(
                 ValidationError::FormationPatternMismatch {
                     formation_id: request.formation_id,
@@ -310,31 +305,6 @@ impl BaseEffectResolver {
             }
         }
     }
-}
-
-fn submitted_cards_have_same_level(
-    state: &GameState,
-    cards: &[CardInstanceId],
-) -> GameResult<bool> {
-    let Some(first_card) = cards.first() else {
-        return Ok(false);
-    };
-    let first_level = state
-        .card_def(*first_card)
-        .ok_or(GameError::Validation(
-            ValidationError::MissingCardInstanceDefinition(*first_card),
-        ))?
-        .level;
-
-    cards.iter().try_fold(true, |same_level, card| {
-        let level = state
-            .card_def(*card)
-            .ok_or(GameError::Validation(
-                ValidationError::MissingCardInstanceDefinition(*card),
-            ))?
-            .level;
-        Ok(same_level && level == first_level)
-    })
 }
 
 #[derive(Clone, Copy)]

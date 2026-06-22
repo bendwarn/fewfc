@@ -1,8 +1,16 @@
 use fewfc::rules::{
     AttackCategory, AttackPlanDef, DamageTarget, EffectDef, EffectPlan, Element, FormationCategory,
-    FormationDef, FormationPattern, FormationRegistry, PointFormula, base_formation_matcher,
-    base_formation_registry,
+    FormationDef, FormationPattern, FormationRegistry, PointFormula, SubmittedCardFacts,
+    base_formation_matcher, base_formation_registry,
 };
+
+fn card(element: Element) -> SubmittedCardFacts {
+    leveled_card(element, 1)
+}
+
+fn leveled_card(element: Element, level: u32) -> SubmittedCardFacts {
+    SubmittedCardFacts { element, level }
+}
 
 #[test]
 fn registry_links_formation_schema_to_effect_plan() {
@@ -141,36 +149,54 @@ fn base_registry_patterns_match_representative_base_formations() {
     assert!(matcher.matches(
         &registry.formation("radiance").unwrap().pattern,
         &[
-            Element::Water,
-            Element::Metal,
-            Element::Fire,
-            Element::Metal
+            card(Element::Water),
+            card(Element::Metal),
+            card(Element::Fire),
+            card(Element::Metal)
         ],
     ));
     assert!(matcher.matches(
         &registry.formation("generating-formation").unwrap().pattern,
-        &[Element::Earth, Element::Wood, Element::Fire],
+        &[
+            card(Element::Earth),
+            card(Element::Wood),
+            card(Element::Fire)
+        ],
     ));
     assert!(matcher.matches(
         &registry.formation("overcoming-formation").unwrap().pattern,
-        &[Element::Water, Element::Wood, Element::Earth],
+        &[
+            card(Element::Water),
+            card(Element::Wood),
+            card(Element::Earth)
+        ],
     ));
     assert!(matcher.matches(
         &registry.formation("empty-city").unwrap().pattern,
-        &[Element::Metal, Element::Wood],
+        &[card(Element::Metal), card(Element::Wood)],
     ));
     assert!(!matcher.matches(
         &registry.formation("empty-city").unwrap().pattern,
-        &[Element::Metal, Element::Metal],
+        &[card(Element::Metal), card(Element::Metal)],
     ));
     assert!(matcher.matches(
         &registry.formation("five-streams-unite").unwrap().pattern,
         &[
-            Element::Metal,
-            Element::Wood,
-            Element::Water,
-            Element::Fire,
-            Element::Earth,
+            leveled_card(Element::Metal, 3),
+            leveled_card(Element::Wood, 3),
+            leveled_card(Element::Water, 3),
+            leveled_card(Element::Fire, 3),
+            leveled_card(Element::Earth, 3),
+        ],
+    ));
+    assert!(!matcher.matches(
+        &registry.formation("five-streams-unite").unwrap().pattern,
+        &[
+            leveled_card(Element::Metal, 3),
+            leveled_card(Element::Wood, 3),
+            leveled_card(Element::Water, 4),
+            leveled_card(Element::Fire, 3),
+            leveled_card(Element::Earth, 3),
         ],
     ));
 }

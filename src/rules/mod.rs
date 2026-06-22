@@ -41,6 +41,12 @@ pub struct ElementCount {
     pub count: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubmittedCardFacts {
+    pub element: Element,
+    pub level: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PointFormula {
     Fixed(u32),
@@ -157,7 +163,7 @@ pub struct FormationMatcher<'a> {
     custom_matchers: HashMap<String, CustomMatcher<'a>>,
 }
 
-type CustomMatcher<'a> = Box<dyn Fn(&[Element]) -> bool + 'a>;
+type CustomMatcher<'a> = Box<dyn Fn(&[SubmittedCardFacts]) -> bool + 'a>;
 
 impl<'a> FormationMatcher<'a> {
     pub fn new() -> Self {
@@ -167,16 +173,17 @@ impl<'a> FormationMatcher<'a> {
     pub fn with_custom(
         mut self,
         id: impl Into<String>,
-        matcher: impl Fn(&[Element]) -> bool + 'a,
+        matcher: impl Fn(&[SubmittedCardFacts]) -> bool + 'a,
     ) -> Self {
         self.custom_matchers.insert(id.into(), Box::new(matcher));
         self
     }
 
-    pub fn matches(&self, pattern: &FormationPattern, submitted: &[Element]) -> bool {
+    pub fn matches(&self, pattern: &FormationPattern, submitted: &[SubmittedCardFacts]) -> bool {
+        let submitted_elements = submitted_elements(submitted);
         match pattern {
             FormationPattern::ExactElements(elements) => {
-                element_counts(elements) == element_counts(submitted)
+                element_counts(elements) == element_counts(&submitted_elements)
             }
             FormationPattern::ElementCounts(required_counts) => {
                 required_counts
@@ -185,7 +192,7 @@ impl<'a> FormationMatcher<'a> {
                     .sum::<usize>()
                     == submitted.len()
                     && required_counts.iter().all(|required| {
-                        submitted
+                        submitted_elements
                             .iter()
                             .filter(|element| **element == required.element)
                             .count()
@@ -193,10 +200,10 @@ impl<'a> FormationMatcher<'a> {
                     })
             }
             FormationPattern::GeneratingSequence { length } => {
-                matches_unordered_sequence(submitted, *length, &GENERATING_CYCLE)
+                matches_unordered_sequence(&submitted_elements, *length, &GENERATING_CYCLE)
             }
             FormationPattern::OvercomingSequence { length } => {
-                matches_unordered_sequence(submitted, *length, &OVERCOMING_CYCLE)
+                matches_unordered_sequence(&submitted_elements, *length, &OVERCOMING_CYCLE)
             }
             FormationPattern::Custom(id) => self
                 .custom_matchers
@@ -204,6 +211,10 @@ impl<'a> FormationMatcher<'a> {
                 .is_some_and(|matcher| matcher(submitted)),
         }
     }
+}
+
+fn submitted_elements(submitted: &[SubmittedCardFacts]) -> Vec<Element> {
+    submitted.iter().map(|card| card.element).collect()
 }
 
 fn element_counts(elements: &[Element]) -> HashMap<Element, usize> {
@@ -253,9 +264,14 @@ pub fn base_formation_registry() -> FormationRegistry {
 pub fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
     FormationMatcher::new()
         .with_custom("two-different-elements", |submitted| {
-            submitted.len() == 2 && submitted[0] != submitted[1]
+            submitted.len() == 2 && submitted[0].element != submitted[1].element
         })
-        .with_custom("five-same-level", |submitted| submitted.len() == 5)
+        .with_custom("five-same-level", |submitted| {
+            let Some(first_card) = submitted.first() else {
+                return false;
+            };
+            submitted.len() == 5 && submitted.iter().all(|card| card.level == first_card.level)
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
