@@ -1,7 +1,7 @@
 use fewfc::rules::{
     AttackCategory, AttackPlanDef, DamageTarget, EffectDef, EffectPlan, Element, FormationCategory,
-    FormationDef, FormationPattern, FormationRegistry, PointFormula, SpellCategory,
-    base_formation_matcher, base_formation_registry,
+    FormationDef, FormationPattern, FormationRegistry, PointFormula, base_formation_matcher,
+    base_formation_registry,
 };
 
 #[test]
@@ -10,7 +10,7 @@ fn registry_links_formation_schema_to_effect_plan() {
         vec![FormationDef {
             id: "metal-strike".to_string(),
             name: "Metal Strike".to_string(),
-            category: FormationCategory::Attack(AttackCategory::Elemental(Element::Metal)),
+            category: FormationCategory::Attack,
             pattern: FormationPattern::ExactElements(vec![
                 Element::Metal,
                 Element::Metal,
@@ -23,6 +23,7 @@ fn registry_links_formation_schema_to_effect_plan() {
         vec![EffectDef {
             id: "deal-formation-damage".to_string(),
             plan: EffectPlan::Attack(AttackPlanDef {
+                category: AttackCategory::Elemental(Element::Metal),
                 point_formula: PointFormula::FormationPoints,
                 damage_target: DamageTarget::PreviousPlayer,
             }),
@@ -34,14 +35,12 @@ fn registry_links_formation_schema_to_effect_plan() {
     let effect = registry.effect_for(formation).unwrap();
 
     assert_eq!(formation.effect_id, "deal-formation-damage");
-    assert_eq!(
-        formation.category,
-        FormationCategory::Attack(AttackCategory::Elemental(Element::Metal))
-    );
+    assert_eq!(formation.category, FormationCategory::Attack);
     assert_eq!(effect.id, "deal-formation-damage");
     assert_eq!(
         effect.plan,
         EffectPlan::Attack(AttackPlanDef {
+            category: AttackCategory::Elemental(Element::Metal),
             point_formula: PointFormula::FormationPoints,
             damage_target: DamageTarget::PreviousPlayer,
         })
@@ -57,10 +56,7 @@ fn base_registry_exposes_all_25_base_formations_with_linked_effects() {
 
     let metal_strike = registry.formation("metal-strike").unwrap();
     assert_eq!(metal_strike.name, "金擊術");
-    assert_eq!(
-        metal_strike.category,
-        FormationCategory::Attack(AttackCategory::Elemental(Element::Metal))
-    );
+    assert_eq!(metal_strike.category, FormationCategory::Attack);
     assert_eq!(
         metal_strike.pattern,
         FormationPattern::ExactElements(vec![Element::Metal])
@@ -72,18 +68,23 @@ fn base_registry_exposes_all_25_base_formations_with_linked_effects() {
 
     let defense = registry.formation("defense").unwrap();
     assert_eq!(defense.name, "防禦");
-    assert_eq!(
-        defense.category,
-        FormationCategory::Spell(SpellCategory::Passive)
-    );
+    assert_eq!(defense.category, FormationCategory::Spell);
+    assert!(matches!(
+        registry.effect_for(defense).unwrap().plan,
+        EffectPlan::PassiveSpell(_)
+    ));
     assert_eq!(registry.effect_for(defense).unwrap().id, "defense");
 
     let five_streams = registry.formation("five-streams-unite").unwrap();
     assert_eq!(five_streams.name, "五流歸一");
-    assert_eq!(
-        five_streams.category,
-        FormationCategory::Attack(AttackCategory::Special)
-    );
+    assert_eq!(five_streams.category, FormationCategory::Attack);
+    assert!(matches!(
+        registry.effect_for(five_streams).unwrap().plan,
+        EffectPlan::Attack(AttackPlanDef {
+            category: AttackCategory::Special,
+            ..
+        })
+    ));
     assert_eq!(
         registry.effect_for(five_streams).unwrap().id,
         "five-streams-unite"
@@ -181,6 +182,7 @@ fn base_registry_effect_plans_match_formation_categories() {
     assert_eq!(
         registry.effect("triple-fire").unwrap().plan,
         EffectPlan::Attack(AttackPlanDef {
+            category: AttackCategory::Elemental(Element::Fire),
             point_formula: PointFormula::LevelSumTimes(3),
             damage_target: DamageTarget::PreviousPlayer,
         })
@@ -188,6 +190,7 @@ fn base_registry_effect_plans_match_formation_categories() {
     assert_eq!(
         registry.effect("shock-burst").unwrap().plan,
         EffectPlan::Attack(AttackPlanDef {
+            category: AttackCategory::Physical,
             point_formula: PointFormula::LevelSumTimes(4),
             damage_target: DamageTarget::PreviousPlayer,
         })

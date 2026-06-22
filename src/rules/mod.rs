@@ -15,8 +15,8 @@ pub struct FormationDef {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FormationCategory {
-    Attack(AttackCategory),
-    Spell(SpellCategory),
+    Attack,
+    Spell,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,12 +24,6 @@ pub enum AttackCategory {
     Elemental(Element),
     Physical,
     Special,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SpellCategory {
-    Active,
-    Passive,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +66,7 @@ pub enum EffectPlan {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttackPlanDef {
+    pub category: AttackCategory,
     pub point_formula: PointFormula,
     pub damage_target: DamageTarget,
 }
@@ -263,7 +258,30 @@ pub fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
         .with_custom("five-same-level", |submitted| submitted.len() == 5)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BaseFormationSpec {
+    formation: FormationDef,
+    effect: EffectDef,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpellTiming {
+    Active,
+    Passive,
+}
+
 fn base_formations() -> Vec<FormationDef> {
+    base_specs()
+        .into_iter()
+        .map(|spec| spec.formation)
+        .collect()
+}
+
+fn base_effects() -> Vec<EffectDef> {
+    base_specs().into_iter().map(|spec| spec.effect).collect()
+}
+
+fn base_specs() -> Vec<BaseFormationSpec> {
     vec![
         elemental_attack(
             "metal-strike",
@@ -310,31 +328,31 @@ fn base_formations() -> Vec<FormationDef> {
         spell(
             "defense",
             "防禦",
-            SpellCategory::Passive,
+            SpellTiming::Passive,
             FormationPattern::ExactElements(vec![Element::Wood, Element::Wood]),
         ),
         spell(
             "seal",
             "封印",
-            SpellCategory::Passive,
+            SpellTiming::Passive,
             FormationPattern::ExactElements(vec![Element::Water, Element::Water]),
         ),
         spell(
             "countershock",
             "反震",
-            SpellCategory::Passive,
+            SpellTiming::Passive,
             FormationPattern::ExactElements(vec![Element::Fire, Element::Fire]),
         ),
         spell(
             "metamorphosis",
             "幻化",
-            SpellCategory::Active,
+            SpellTiming::Active,
             FormationPattern::ExactElements(vec![Element::Earth, Element::Earth]),
         ),
         spell(
             "empty-city",
             "空城",
-            SpellCategory::Passive,
+            SpellTiming::Passive,
             FormationPattern::Custom("two-different-elements".to_string()),
         ),
         elemental_attack(
@@ -375,19 +393,19 @@ fn base_formations() -> Vec<FormationDef> {
         spell(
             "generating-formation",
             "生陣",
-            SpellCategory::Active,
+            SpellTiming::Active,
             FormationPattern::GeneratingSequence { length: 3 },
         ),
         spell(
             "overcoming-formation",
             "剋陣",
-            SpellCategory::Active,
+            SpellTiming::Active,
             FormationPattern::OvercomingSequence { length: 3 },
         ),
         spell(
             "radiance",
             "光芒",
-            SpellCategory::Active,
+            SpellTiming::Active,
             FormationPattern::ExactElements(vec![
                 Element::Metal,
                 Element::Metal,
@@ -398,7 +416,7 @@ fn base_formations() -> Vec<FormationDef> {
         spell(
             "barrier",
             "氣壁",
-            SpellCategory::Active,
+            SpellTiming::Active,
             FormationPattern::ExactElements(vec![
                 Element::Wood,
                 Element::Wood,
@@ -409,7 +427,7 @@ fn base_formations() -> Vec<FormationDef> {
         spell(
             "return-to-origin",
             "歸元",
-            SpellCategory::Active,
+            SpellTiming::Active,
             FormationPattern::ExactElements(vec![
                 Element::Water,
                 Element::Water,
@@ -432,7 +450,7 @@ fn base_formations() -> Vec<FormationDef> {
         spell(
             "chaos",
             "混沌",
-            SpellCategory::Active,
+            SpellTiming::Active,
             FormationPattern::ExactElements(vec![
                 Element::Earth,
                 Element::Earth,
@@ -443,7 +461,7 @@ fn base_formations() -> Vec<FormationDef> {
         spell(
             "five-elements-cycle",
             "五行輪迴",
-            SpellCategory::Active,
+            SpellTiming::Active,
             FormationPattern::ExactElements(vec![
                 Element::Metal,
                 Element::Wood,
@@ -462,42 +480,13 @@ fn base_formations() -> Vec<FormationDef> {
     ]
 }
 
-fn base_effects() -> Vec<EffectDef> {
-    base_formations()
-        .into_iter()
-        .map(|formation| {
-            let plan = match formation.category {
-                FormationCategory::Attack(_) => EffectPlan::Attack(AttackPlanDef {
-                    point_formula: formation.point_formula,
-                    damage_target: DamageTarget::PreviousPlayer,
-                }),
-                FormationCategory::Spell(SpellCategory::Active) => {
-                    EffectPlan::ActiveSpell(SpellPlanDef {
-                        resolver_id: formation.id.clone(),
-                    })
-                }
-                FormationCategory::Spell(SpellCategory::Passive) => {
-                    EffectPlan::PassiveSpell(SpellPlanDef {
-                        resolver_id: formation.id.clone(),
-                    })
-                }
-            };
-
-            EffectDef {
-                id: formation.id,
-                plan,
-            }
-        })
-        .collect()
-}
-
 fn elemental_attack(
     id: &str,
     name: &str,
     element: Element,
     count: usize,
     point_formula: PointFormula,
-) -> FormationDef {
+) -> BaseFormationSpec {
     attack(
         id,
         name,
@@ -513,24 +502,53 @@ fn attack(
     category: AttackCategory,
     pattern: FormationPattern,
     point_formula: PointFormula,
-) -> FormationDef {
-    FormationDef {
+) -> BaseFormationSpec {
+    let formation = FormationDef {
         id: id.to_string(),
         name: name.to_string(),
-        category: FormationCategory::Attack(category),
+        category: FormationCategory::Attack,
         pattern,
         effect_id: id.to_string(),
-        point_formula,
-    }
+        point_formula: point_formula.clone(),
+    };
+    let effect = EffectDef {
+        id: id.to_string(),
+        plan: EffectPlan::Attack(AttackPlanDef {
+            category,
+            point_formula,
+            damage_target: DamageTarget::PreviousPlayer,
+        }),
+    };
+
+    BaseFormationSpec { formation, effect }
 }
 
-fn spell(id: &str, name: &str, category: SpellCategory, pattern: FormationPattern) -> FormationDef {
-    FormationDef {
+fn spell(
+    id: &str,
+    name: &str,
+    timing: SpellTiming,
+    pattern: FormationPattern,
+) -> BaseFormationSpec {
+    let formation = FormationDef {
         id: id.to_string(),
         name: name.to_string(),
-        category: FormationCategory::Spell(category),
+        category: FormationCategory::Spell,
         pattern,
         effect_id: id.to_string(),
         point_formula: PointFormula::Fixed(0),
-    }
+    };
+    let plan = match timing {
+        SpellTiming::Active => EffectPlan::ActiveSpell(SpellPlanDef {
+            resolver_id: id.to_string(),
+        }),
+        SpellTiming::Passive => EffectPlan::PassiveSpell(SpellPlanDef {
+            resolver_id: id.to_string(),
+        }),
+    };
+    let effect = EffectDef {
+        id: id.to_string(),
+        plan,
+    };
+
+    BaseFormationSpec { formation, effect }
 }

@@ -7,8 +7,8 @@ use crate::domain::{
     targeting::{RulePlayerTarget, RuleTeamTarget, TurnOrderTargets},
 };
 use crate::rules::{
-    AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, FormationCategory, PointFormula,
-    base_formation_matcher, base_formation_registry,
+    AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, PointFormula, base_formation_matcher,
+    base_formation_registry,
 };
 use std::collections::HashSet;
 
@@ -26,7 +26,6 @@ struct FormationUsePlan {
     formation_id: String,
     cards: Vec<CardInstanceId>,
     declared_targets: Vec<TargetDecl>,
-    category: FormationCategory,
     effect_plan: EffectPlan,
 }
 
@@ -118,7 +117,6 @@ impl BaseFormationPlanner {
             formation_id: request.formation_id,
             cards: request.cards,
             declared_targets: request.declared_targets,
-            category: formation.category.clone(),
             effect_plan: effect.plan.clone(),
         })
     }
@@ -153,7 +151,7 @@ impl BaseEffectResolver {
                 let has_target_shield = state.shield(&target).is_some_and(|value| value > 0);
                 let point_breakdown = attack_point_breakdown(
                     state,
-                    &plan.category,
+                    &attack_plan.category,
                     &target,
                     points,
                     has_target_shield,
@@ -201,12 +199,12 @@ impl BaseEffectResolver {
                     })
                     .collect::<Vec<_>>();
                 let elemental_context_update =
-                    elemental_context_update(&plan.category, state.turn_number).map(|attack| {
-                        LastElementalAttackUpdate {
+                    elemental_context_update(&attack_plan.category, state.turn_number).map(
+                        |attack| LastElementalAttackUpdate {
                             player: plan.player.clone(),
                             attack,
-                        }
-                    });
+                        },
+                    );
 
                 events.push(GameEvent::AttackResolved {
                     attacker: plan.player.clone(),
@@ -485,7 +483,7 @@ enum EffectIntent {
     },
     ResolveCopiedAttack {
         formation_id: String,
-        category: FormationCategory,
+        category: AttackCategory,
         point_formula: PointFormula,
         used_cards: Vec<CardInstanceId>,
     },
@@ -636,7 +634,7 @@ fn metamorphosis_intents(
     match &effect.plan {
         EffectPlan::Attack(plan) => Ok(vec![EffectIntent::ResolveCopiedAttack {
             formation_id: formation.id.clone(),
-            category: formation.category.clone(),
+            category: plan.category.clone(),
             point_formula: plan.point_formula.clone(),
             used_cards: used_cards.to_vec(),
         }]),
@@ -734,6 +732,7 @@ fn effect_intent_events(
                         .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
                         .clone(),
                     &AttackPlanDef {
+                        category: category.clone(),
                         point_formula: point_formula.clone(),
                         damage_target: DamageTarget::PreviousPlayer,
                     },
@@ -939,7 +938,7 @@ fn compute_attack_points(
 
 fn attack_point_breakdown(
     state: &GameState,
-    category: &FormationCategory,
+    category: &AttackCategory,
     target: &PlayerId,
     base_points: i32,
     skip_interaction: bool,
@@ -1000,11 +999,10 @@ fn attack_point_breakdown(
     }
 }
 
-fn elemental_attack_element(category: &FormationCategory) -> Option<Element> {
+fn elemental_attack_element(category: &AttackCategory) -> Option<Element> {
     match category {
-        FormationCategory::Attack(AttackCategory::Elemental(element)) => Some(*element),
-        FormationCategory::Attack(AttackCategory::Physical | AttackCategory::Special)
-        | FormationCategory::Spell(_) => None,
+        AttackCategory::Elemental(element) => Some(*element),
+        AttackCategory::Physical | AttackCategory::Special => None,
     }
 }
 
@@ -1095,18 +1093,15 @@ fn shield_absorption(
 }
 
 fn elemental_context_update(
-    category: &FormationCategory,
+    category: &AttackCategory,
     resolved_turn: u64,
 ) -> Option<LastElementalAttack> {
     match category {
-        FormationCategory::Attack(AttackCategory::Elemental(element)) => {
-            Some(LastElementalAttack {
-                element: *element,
-                resolved_turn,
-            })
-        }
-        FormationCategory::Attack(AttackCategory::Physical | AttackCategory::Special)
-        | FormationCategory::Spell(_) => None,
+        AttackCategory::Elemental(element) => Some(LastElementalAttack {
+            element: *element,
+            resolved_turn,
+        }),
+        AttackCategory::Physical | AttackCategory::Special => None,
     }
 }
 
