@@ -4,6 +4,8 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Open Local Issues
 
+- [#34 Scaffold Nuxt UI adapter](034-scaffold-nuxt-ui-adapter.md)
+
 ## Completed Local Issues
 
 - [#23 Complete passive action modifications and sealed passives](023-complete-passive-action-modifications.md)
