@@ -17,6 +17,7 @@ Create the first Nuxt website adapter around the rules engine without changing t
 - [x] Add a Nuxt app under `apps/web`.
 - [x] Use TypeScript for UI-facing DTOs.
 - [x] Add a rules-engine adapter boundary that can later be backed by Rust Wasm or a server API without rewriting Vue components.
+- [x] Replace the UI stub with a local Rust rules-engine bridge for start, playable-formation query, automatic advancement, and formation commands.
 - [x] Render current phase, current player, turn number, teams/HP, hands as own cards or hidden counts, discard, covered passives, pending choice, shields, statuses, and game status.
 - [x] Provide local-play controls for starting a sample game, submitting an action pass, choosing turn discard when required, and advancing automatic resolution.
 - [x] Let a player select hand cards, show playable formations, and submit a formation by clicking the formation option without a separate play button.

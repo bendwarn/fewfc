@@ -60,7 +60,7 @@
                 :class="{ hidden: card.hidden, selected: card.selected }"
                 :disabled="!card.selectable"
                 :aria-label="card.hidden ? '隱藏牌' : card.label"
-                @click="game.toggleCardSelection(player.id, card.label)"
+                @click="game.toggleCardSelection(player.id, card.cardId)"
               >
                 {{ card.label }}
               </button>
@@ -72,10 +72,13 @@
       <aside class="side-panel" aria-labelledby="controls-heading">
         <section class="control-band">
           <h2 id="controls-heading">操作</h2>
+          <p v-if="game.errorMessage.value" class="error-message">
+            {{ game.errorMessage.value }}
+          </p>
           <div class="button-row">
-            <button type="button" @click="game.startSampleGame()">重新開始</button>
-            <button type="button" @click="game.passAction()">跳過行動</button>
-            <button type="button" @click="game.advanceAutomatic()">自動推進</button>
+            <button type="button" :disabled="game.isLoading.value" @click="game.startSampleGame()">重新開始</button>
+            <button type="button" :disabled="game.isLoading.value" @click="game.passAction()">跳過行動</button>
+            <button type="button" :disabled="game.isLoading.value" @click="game.advanceAutomatic()">自動推進</button>
           </div>
         </section>
 
@@ -99,6 +102,7 @@
               :key="formation.id"
               type="button"
               class="formation-option"
+              :disabled="game.isLoading.value"
               @click="game.performFormation(formation)"
             >
               <span>{{ formation.name }}</span>
@@ -114,7 +118,22 @@
             {{ playerLabel(state.pendingChoice.player) }}:
             {{ choiceLabel(state.pendingChoice.kind) }}
           </p>
-          <p v-else>目前沒有待選擇項目</p>
+          <div
+            v-if="state.pendingChoice && state.pendingChoice.cards.length > 0"
+            class="choice-card-list"
+          >
+            <button
+              v-for="card in state.pendingChoice.cards"
+              :key="card.id"
+              type="button"
+              class="choice-card"
+              :disabled="game.isLoading.value || viewer !== state.pendingChoice.player"
+              @click="game.choosePendingCard(card.id)"
+            >
+              {{ card.label }}
+            </button>
+          </div>
+          <p v-if="!state.pendingChoice">目前沒有待選擇項目</p>
         </section>
 
         <section class="control-band">
@@ -143,7 +162,7 @@
           <h2>近期事件</h2>
           <ol class="event-feed">
             <li v-for="event in visibleEvents" :key="event.id">
-              <span>{{ eventTypeLabel(event.type) }}</span>
+              <span>{{ eventTypeLabel(event.eventType) }}</span>
               <p>{{ event.summary }}</p>
             </li>
           </ol>
@@ -165,6 +184,7 @@ const visibleEvents = computed(() => game.publicEvents.value.slice(0, 6))
 
 interface CardToken {
   id: string
+  cardId: number
   label: string
   hidden: boolean
   selectable: boolean
@@ -180,16 +200,18 @@ function cardsFor(player: PlayerId): CardToken[] {
 
   if (hand.cards.kind === 'known') {
     return hand.cards.cards.map((card, index) => ({
-      id: `${player}-known-${index}-${card}`,
-      label: card,
+      id: `${player}-known-${index}-${card.id}`,
+      cardId: card.id,
+      label: card.label,
       hidden: false,
       selectable: game.canSelectCard(player),
-      selected: game.selectedCards.value.includes(card),
+      selected: game.selectedCards.value.includes(card.id),
     }))
   }
 
   return Array.from({ length: hand.cards.count }, (_, index) => ({
     id: `${player}-hidden-${index}`,
+    cardId: -index - 1,
     label: '',
     hidden: true,
     selectable: false,
@@ -201,7 +223,11 @@ function viewerLabel(value: ViewerId): string {
   return value === 'observer' ? '觀戰者' : playerLabel(value)
 }
 
-function playerLabel(value: PlayerId): string {
+function playerLabel(value: PlayerId | null): string {
+  if (!value) {
+    return '尚未開始'
+  }
+
   return value === 'alice' ? '玩家 Alice' : '玩家 Bob'
 }
 
@@ -223,8 +249,12 @@ function statusLabel(value: string): string {
 
 function phaseLabel(value: string): string {
   const labels: Record<string, string> = {
+    Main: '主要階段',
     MainPhase: '主要階段',
+    TurnStart: '回合開始',
+    TurnDraw: '回合抽牌',
     TurnDrawDiscardChoice: '回合抽牌棄牌選擇',
+    TurnEnd: '回合結束',
   }
 
   return labels[value] ?? value
@@ -233,6 +263,8 @@ function phaseLabel(value: string): string {
 function choiceLabel(value: string): string {
   const labels: Record<string, string> = {
     'Choose one drawn card to discard': '選擇一張本回合抽到的牌棄置',
+    TurnDrawDiscard: '選擇一張本回合抽到的牌棄置',
+    EffectGenerated: '選擇效果指定的牌',
     Hidden: '隱藏選擇',
   }
 
@@ -460,6 +492,17 @@ h3 {
   margin-top: 0.75rem;
 }
 
+.choice-card-list {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(4.5rem, 1fr));
+  margin-top: 0.75rem;
+}
+
+.choice-card {
+  min-height: 2.75rem;
+}
+
 .formation-option {
   align-items: start;
   display: grid;
@@ -480,6 +523,11 @@ h3 {
 
 .formation-option:hover small {
   color: #dfe9df;
+}
+
+.error-message {
+  color: #a83232;
+  margin-bottom: 0.75rem;
 }
 
 .side-panel {

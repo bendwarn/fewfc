@@ -1,62 +1,26 @@
 import type {
+  CardInstanceId,
+  LocalGameResponse,
   PlayableFormation,
   PlayerId,
   PublicGameEvent,
   PublicGameState,
-  PublicPlayerHand,
+  RecordedDecision,
   ViewerId,
 } from '~/types/fewfc'
 
 type ViewerRef = Ref<ViewerId>
 
-const samplePlayers = [
-  { id: 'alice', team: 'team:alice' },
-  { id: 'bob', team: 'team:bob' },
-] as const
-
-const canonicalHands: Record<PlayerId, string[]> = {
-  alice: ['金 1', '火 2', '木 4', '水 2', '土 3'],
-  bob: ['火 1', '水 5', '金 3', '土 2', '木 1'],
-}
-
-function cloneHands(): Record<PlayerId, string[]> {
-  return {
-    alice: [...canonicalHands.alice],
-    bob: [...canonicalHands.bob],
-  }
-}
-
-function publicHandsFor(viewer: ViewerId, hands: Record<PlayerId, string[]>): PublicPlayerHand[] {
-  return samplePlayers.map((player) => {
-    const cards = hands[player.id]
-
-    if (viewer === player.id) {
-      return {
-        player: player.id,
-        cards: { kind: 'known', cards },
-      }
-    }
-
-    return {
-      player: player.id,
-      cards: { kind: 'hidden', count: cards.length },
-    }
-  })
-}
-
-function sampleStateFor(viewer: ViewerId, hands: Record<PlayerId, string[]>): PublicGameState {
+function emptyState(): PublicGameState {
   return {
     status: 'InProgress',
     turnNumber: 1,
-    phase: 'MainPhase',
-    currentPlayer: 'alice',
-    players: samplePlayers.map((player) => ({ ...player })),
-    turnOrder: ['alice', 'bob'],
-    hp: [
-      { team: 'team:alice', hp: 20 },
-      { team: 'team:bob', hp: 20 },
-    ],
-    hands: publicHandsFor(viewer, hands),
+    phase: 'TurnStart',
+    currentPlayer: null,
+    players: [],
+    turnOrder: [],
+    hp: [],
+    hands: [],
     discard: [],
     coveredPassives: [],
     pendingChoice: null,
@@ -65,129 +29,153 @@ function sampleStateFor(viewer: ViewerId, hands: Record<PlayerId, string[]>): Pu
   }
 }
 
-function initialEvents(): PublicGameEvent[] {
-  return [
-    {
-      id: 'event-3',
-      type: 'TurnStarted',
-      summary: 'Alice 開始第 1 回合。',
-    },
-    {
-      id: 'event-2',
-      type: 'CardsDealt',
-      summary: 'Bob 收到 5 張隱藏手牌。',
-    },
-    {
-      id: 'event-1',
-      type: 'CardsDealt',
-      summary: 'Alice 收到 5 張隱藏手牌。',
-    },
-  ]
+async function callLocalGame(body: unknown): Promise<LocalGameResponse> {
+  return await $fetch<LocalGameResponse>('/api/local-game', {
+    method: 'POST',
+    body,
+  })
 }
 
 export function useLocalGame(viewer: ViewerRef) {
-  const hands = ref<Record<PlayerId, string[]>>(cloneHands())
-  const state = ref<PublicGameState>(sampleStateFor(viewer.value, hands.value))
-  const publicEvents = ref<PublicGameEvent[]>(initialEvents())
-  const selectedCards = ref<string[]>([])
-
-  const playableFormations = computed<PlayableFormation[]>(() => {
-    if (viewer.value !== state.value.currentPlayer || selectedCards.value.length === 0) {
-      return []
-    }
-
-    const selected = selectedCards.value
-    const formations: PlayableFormation[] = []
-
-    if (selected.length >= 2) {
-      formations.push({
-        id: 'basic-attack',
-        name: '合擊',
-        category: 'Attack',
-        summary: '以選取的牌對上一位玩家所屬隊伍造成傷害。',
-      })
-    }
-
-    if (selected.some((card) => card.startsWith('火'))) {
-      formations.push({
-        id: 'fire-spell',
-        name: '烈火術',
-        category: 'Spell',
-        summary: '以火元素牌發動立即法術。',
-      })
-    }
-
-    if (selected.length === 5) {
-      formations.push({
-        id: 'five-elements-cycle',
-        name: '五行流轉',
-        category: 'Spell',
-        summary: '五張牌齊備時發動的大型法術。',
-      })
-    }
-
-    return formations
-  })
+  const record = ref<RecordedDecision[]>([])
+  const state = ref<PublicGameState>(emptyState())
+  const publicEvents = ref<PublicGameEvent[]>([])
+  const selectedCards = ref<CardInstanceId[]>([])
+  const playableFormations = ref<PlayableFormation[]>([])
+  const errorMessage = ref<string | null>(null)
+  const isLoading = ref(false)
 
   watch(viewer, (nextViewer) => {
     selectedCards.value = []
-    state.value = {
-      ...state.value,
-      hands: publicHandsFor(nextViewer, hands.value),
+    playableFormations.value = []
+
+    if (record.value.length > 0) {
+      void refresh(nextViewer)
     }
   })
 
-  function prependEvent(type: string, summary: string) {
-    publicEvents.value = [
-      {
-        id: `event-${Date.now()}`,
-        type,
-        summary,
-      },
-      ...publicEvents.value,
-    ]
-  }
-
-  function startSampleGame() {
-    hands.value = cloneHands()
-    selectedCards.value = []
-    state.value = sampleStateFor(viewer.value, hands.value)
-    publicEvents.value = initialEvents()
-  }
-
-  function passAction() {
-    const previousPlayer = state.value.currentPlayer
-    const nextPlayer = previousPlayer === 'alice' ? 'bob' : 'alice'
-
-    state.value = {
-      ...state.value,
-      currentPlayer: nextPlayer,
-      turnNumber: state.value.turnNumber + 1,
-      hands: publicHandsFor(viewer.value, hands.value),
-      pendingChoice: {
-        player: nextPlayer,
-        kind: nextPlayer === viewer.value ? 'Choose one drawn card to discard' : 'Hidden',
-      },
+  watch(selectedCards, () => {
+    if (selectedCards.value.length === 0 || viewer.value !== state.value.currentPlayer) {
+      playableFormations.value = []
+      return
     }
 
-    prependEvent('ActionPassed', `${previousPlayer} 跳過行動。`)
-  }
-
-  function advanceAutomatic() {
-    state.value = {
-      ...state.value,
-      phase: state.value.pendingChoice ? 'TurnDrawDiscardChoice' : 'MainPhase',
-      pendingChoice: null,
-    }
-
-    prependEvent('AutomaticAdvance', '規則自動推進到下一個決策點。')
-  }
+    void queryPlayableFormations()
+  })
 
   function canSelectCard(player: PlayerId): boolean {
     return viewer.value === player && state.value.currentPlayer === player && !state.value.pendingChoice
   }
 
-  function toggleCardSelection(player: PlayerId, card: string) {
+  function applyResponse(response: LocalGameResponse) {
+    record.value = response.record
+    state.value = response.state
+    publicEvents.value = response.events
+    playableFormations.value = response.playableFormations
+    errorMessage.value = null
+  }
+
+  async function submit(body: unknown) {
+    isLoading.value = true
+    errorMessage.value = null
+
+    try {
+      applyResponse(await callLocalGame(body))
+    } catch (error) {
+      errorMessage.value = error instanceof Error ? error.message : '規則引擎呼叫失敗'
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function refresh(nextViewer = viewer.value) {
+    await submit({
+      action: { type: 'refresh' },
+      viewer: nextViewer,
+      record: record.value,
+    })
+  }
+
+  async function startSampleGame() {
+    selectedCards.value = []
+    await submit({
+      action: { type: 'start' },
+      viewer: viewer.value,
+    })
+  }
+
+  async function passAction() {
+    selectedCards.value = []
+    await submit({
+      action: { type: 'passAction' },
+      viewer: viewer.value,
+      record: record.value,
+    })
+  }
+
+  async function advanceAutomatic() {
+    selectedCards.value = []
+    await submit({
+      action: { type: 'advanceAutomatic' },
+      viewer: viewer.value,
+      record: record.value,
+    })
+  }
+
+  async function queryPlayableFormations() {
+    const player = state.value.currentPlayer
+
+    if (!player) {
+      return
+    }
+
+    await submit({
+      action: {
+        type: 'playableFormations',
+        player,
+        cards: selectedCards.value,
+      },
+      viewer: viewer.value,
+      record: record.value,
+    })
+  }
+
+  async function choosePendingCard(card: CardInstanceId) {
+    const choice = state.value.pendingChoice
+
+    if (!choice || viewer.value !== choice.player) {
+      return
+    }
+
+    selectedCards.value = []
+
+    if (choice.kind === 'TurnDrawDiscard') {
+      await submit({
+        action: {
+          type: 'chooseTurnDiscard',
+          player: choice.player,
+          card,
+        },
+        viewer: viewer.value,
+        record: record.value,
+      })
+      return
+    }
+
+    if (choice.kind === 'EffectGenerated') {
+      await submit({
+        action: {
+          type: 'answerEffectChoice',
+          player: choice.player,
+          cards: [card],
+        },
+        viewer: viewer.value,
+        record: record.value,
+      })
+    }
+  }
+
+  function toggleCardSelection(player: PlayerId, card: CardInstanceId) {
     if (!canSelectCard(player)) {
       return
     }
@@ -197,43 +185,45 @@ export function useLocalGame(viewer: ViewerRef) {
       : [...selectedCards.value, card]
   }
 
-  function performFormation(formation: PlayableFormation) {
+  async function performFormation(formation: PlayableFormation) {
     const player = state.value.currentPlayer
 
     if (viewer.value !== player || selectedCards.value.length === 0) {
       return
     }
 
-    const usedCards = [...selectedCards.value]
-    hands.value = {
-      ...hands.value,
-      [player]: hands.value[player].filter((card) => !usedCards.includes(card)),
-    }
-
-    const nextPlayer = player === 'alice' ? 'bob' : 'alice'
+    const cards = [...selectedCards.value]
     selectedCards.value = []
-    state.value = {
-      ...state.value,
-      currentPlayer: nextPlayer,
-      turnNumber: state.value.turnNumber + 1,
-      hands: publicHandsFor(viewer.value, hands.value),
-      discard: [...state.value.discard, ...usedCards],
-      pendingChoice: null,
-    }
 
-    prependEvent('FormationPerformed', `${player} 發動「${formation.name}」，使用 ${usedCards.length} 張牌。`)
+    await submit({
+      action: {
+        type: 'performFormation',
+        player,
+        formationId: formation.id,
+        cards,
+      },
+      viewer: viewer.value,
+      record: record.value,
+    })
   }
+
+  onMounted(() => {
+    void startSampleGame()
+  })
 
   return {
     state,
     publicEvents,
     selectedCards,
     playableFormations,
+    errorMessage,
+    isLoading,
     startSampleGame,
     passAction,
     advanceAutomatic,
     canSelectCard,
     toggleCardSelection,
     performFormation,
+    choosePendingCard,
   }
 }

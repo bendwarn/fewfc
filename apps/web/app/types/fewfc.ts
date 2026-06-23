@@ -1,6 +1,7 @@
 export type PlayerId = 'alice' | 'bob'
 export type TeamId = `team:${PlayerId}`
 export type ViewerId = PlayerId | 'observer'
+export type CardInstanceId = number
 
 export interface PublicPlayer {
   id: PlayerId
@@ -15,7 +16,7 @@ export interface TeamHp {
 export type PublicCardRefs =
   | {
       kind: 'known'
-      cards: string[]
+      cards: PublicCard[]
     }
   | {
       kind: 'hidden'
@@ -36,18 +37,24 @@ export interface PublicCoveredPassive {
 export interface PublicPendingChoice {
   player: PlayerId
   kind: string
+  cards: PublicCard[]
+}
+
+export interface PublicCard {
+  id: CardInstanceId
+  label: string
 }
 
 export interface PublicGameState {
   status: 'InProgress' | 'Finished'
   turnNumber: number
-  phase: 'MainPhase' | 'TurnDrawDiscardChoice'
-  currentPlayer: PlayerId
+  phase: 'TurnStart' | 'Main' | 'TurnDraw' | 'TurnDrawDiscardChoice' | 'TurnEnd'
+  currentPlayer: PlayerId | null
   players: PublicPlayer[]
   turnOrder: PlayerId[]
   hp: TeamHp[]
   hands: PublicPlayerHand[]
-  discard: string[]
+  discard: PublicCard[]
   coveredPassives: PublicCoveredPassive[]
   pendingChoice: PublicPendingChoice | null
   shields: Array<{ player: PlayerId; value: number }>
@@ -56,7 +63,7 @@ export interface PublicGameState {
 
 export interface PublicGameEvent {
   id: string
-  type: string
+  eventType: string
   summary: string
 }
 
@@ -65,4 +72,13 @@ export interface PlayableFormation {
   name: string
   category: 'Attack' | 'Spell'
   summary: string
+}
+
+export type RecordedDecision = unknown
+
+export interface LocalGameResponse {
+  record: RecordedDecision[]
+  state: PublicGameState
+  events: PublicGameEvent[]
+  playableFormations: PlayableFormation[]
 }
