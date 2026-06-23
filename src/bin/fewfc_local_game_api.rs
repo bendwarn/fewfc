@@ -162,31 +162,92 @@ fn response_for(
 }
 
 fn sample_setup() -> GameSetup {
-    let defs = vec![
-        card_def("metal", "金", Element::Metal, 1),
-        card_def("wood", "木", Element::Wood, 1),
-        card_def("water", "水", Element::Water, 1),
-        card_def("fire", "火", Element::Fire, 1),
-        card_def("earth", "土", Element::Earth, 1),
-    ];
-    let instances = (1..=20)
-        .map(|id| {
-            let def = match id % 5 {
-                1 => "metal",
-                2 => "wood",
-                3 => "water",
-                4 => "fire",
-                _ => "earth",
-            };
-            CardInstanceDef {
-                instance: CardInstanceId::new(id),
-                definition: CardDefId::new(def),
-            }
-        })
-        .collect();
+    let defs = official_card_defs();
+    let instances = official_card_instances();
 
     GameSetup::two_player(PlayerId::new("alice"), PlayerId::new("bob"), 20)
         .with_cards(defs, instances)
+}
+
+fn official_card_defs() -> Vec<CardDef> {
+    elements()
+        .into_iter()
+        .flat_map(|element| {
+            (1..=5).map(move |level| {
+                card_def(
+                    &format!("{}-{}", element.id, level),
+                    element.name,
+                    element.element,
+                    level,
+                )
+            })
+        })
+        .collect()
+}
+
+fn official_card_instances() -> Vec<CardInstanceDef> {
+    let mut next_instance = 1;
+    let mut instances = Vec::new();
+
+    for element in elements() {
+        for level in 1..=5 {
+            let copies = official_copy_count(level);
+            for _ in 0..copies {
+                instances.push(CardInstanceDef {
+                    instance: CardInstanceId::new(next_instance),
+                    definition: CardDefId::new(format!("{}-{}", element.id, level)),
+                });
+                next_instance += 1;
+            }
+        }
+    }
+
+    instances
+}
+
+fn official_copy_count(level: u32) -> u64 {
+    match level {
+        1..=3 => 4,
+        4..=5 => 3,
+        _ => 0,
+    }
+}
+
+fn elements() -> [ElementSpec; 5] {
+    [
+        ElementSpec {
+            id: "metal",
+            name: "金",
+            element: Element::Metal,
+        },
+        ElementSpec {
+            id: "wood",
+            name: "木",
+            element: Element::Wood,
+        },
+        ElementSpec {
+            id: "water",
+            name: "水",
+            element: Element::Water,
+        },
+        ElementSpec {
+            id: "fire",
+            name: "火",
+            element: Element::Fire,
+        },
+        ElementSpec {
+            id: "earth",
+            name: "土",
+            element: Element::Earth,
+        },
+    ]
+}
+
+#[derive(Clone, Copy)]
+struct ElementSpec {
+    id: &'static str,
+    name: &'static str,
+    element: Element,
 }
 
 fn card_def(id: &str, name: &str, element: Element, level: u32) -> CardDef {
@@ -199,7 +260,7 @@ fn card_def(id: &str, name: &str, element: Element, level: u32) -> CardDef {
 }
 
 fn sample_deck() -> Vec<CardInstanceId> {
-    (1..=20).map(CardInstanceId::new).collect()
+    (1..=90).map(CardInstanceId::new).collect()
 }
 
 fn card_labels(setup: &GameSetup) -> HashMap<CardInstanceId, String> {
@@ -623,4 +684,48 @@ fn card_refs_summary(cards: &PublicCardRefs, labels: &HashMap<CardInstanceId, St
 enum ApiError {
     Game(GameError),
     Message(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn official_default_deck_matches_rulebook_composition() {
+        let setup = sample_setup();
+
+        assert_eq!(sample_deck().len(), 90);
+        assert_eq!(setup.card_defs.len(), 25);
+        assert_eq!(setup.card_instances.len(), 90);
+
+        for element in [
+            Element::Metal,
+            Element::Wood,
+            Element::Water,
+            Element::Fire,
+            Element::Earth,
+        ] {
+            for level in 1..=5 {
+                let matching_instances = setup
+                    .card_instances
+                    .iter()
+                    .filter(|instance| {
+                        setup
+                            .card_defs
+                            .iter()
+                            .find(|card_def| card_def.id == instance.definition)
+                            .is_some_and(|card_def| {
+                                card_def.element == element && card_def.level == level
+                            })
+                    })
+                    .count();
+
+                assert_eq!(
+                    matching_instances,
+                    official_copy_count(level) as usize,
+                    "unexpected copies for {element:?} level {level}"
+                );
+            }
+        }
+    }
 }
