@@ -1,8 +1,8 @@
 //! Infrastructure adapters and deterministic setup helpers.
 
-use crate::application::{GameRecord, RecordedEvent, replay};
+use crate::application::{GameRecord, RecordedDecision, ReplayVerificationError, replay};
 use crate::domain::{CardInstanceId, GameError, GameSetup, GameState, RulesetId, ValidationError};
-use crate::ports::{DeckPreparation, EventLogStorage, SnapshotStorage};
+use crate::ports::{DeckPreparation, EventLogStorage, GameRecordRepository, SnapshotStorage};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -20,7 +20,7 @@ pub struct PersistenceMetadata {
 pub struct PersistedGameRecord {
     pub metadata: PersistenceMetadata,
     pub setup: GameSetup,
-    pub recorded_events: Vec<RecordedEvent>,
+    pub recorded_decisions: Vec<RecordedDecision>,
     pub latest_snapshot: Option<PersistedSnapshot>,
 }
 
@@ -32,7 +32,7 @@ impl PersistedGameRecord {
         Self {
             metadata,
             setup: record.setup().clone(),
-            recorded_events: record.recorded_events(),
+            recorded_decisions: record.recorded_decisions(),
             latest_snapshot: record
                 .latest_snapshot()
                 .cloned()
@@ -53,11 +53,23 @@ impl PersistedGameRecord {
         }
 
         let events = self
-            .recorded_events
+            .recorded_decisions
             .iter()
-            .map(|recorded| recorded.event.clone())
+            .flat_map(|decision| decision.events.iter().cloned())
             .collect::<Vec<_>>();
         replay(&self.setup, &events)
+    }
+
+    pub fn to_record(&self) -> Result<GameRecord, PersistedGameRecordLoadError> {
+        self.replay()?;
+        GameRecord::from_recorded_decisions(
+            self.setup.clone(),
+            self.recorded_decisions.clone(),
+            self.latest_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.state.clone()),
+        )
+        .map_err(PersistedGameRecordLoadError::Replay)
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -66,6 +78,18 @@ impl PersistedGameRecord {
 
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
+    }
+}
+
+#[derive(Debug)]
+pub enum PersistedGameRecordLoadError {
+    Game(GameError),
+    Replay(ReplayVerificationError),
+}
+
+impl From<GameError> for PersistedGameRecordLoadError {
+    fn from(error: GameError) -> Self {
+        Self::Game(error)
     }
 }
 
@@ -96,6 +120,7 @@ impl PersistedSnapshot {
 pub enum FileSystemPersistenceError {
     Io(io::Error),
     Json(serde_json::Error),
+    Load(PersistedGameRecordLoadError),
 }
 
 impl From<io::Error> for FileSystemPersistenceError {
@@ -107,6 +132,12 @@ impl From<io::Error> for FileSystemPersistenceError {
 impl From<serde_json::Error> for FileSystemPersistenceError {
     fn from(error: serde_json::Error) -> Self {
         Self::Json(error)
+    }
+}
+
+impl From<PersistedGameRecordLoadError> for FileSystemPersistenceError {
+    fn from(error: PersistedGameRecordLoadError) -> Self {
+        Self::Load(error)
     }
 }
 
@@ -281,5 +312,58 @@ impl SnapshotStorage for FileSystemPersistence {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+impl GameRecordRepository for FileSystemPersistence {
+    type Error = FileSystemPersistenceError;
+
+    fn save_record(&mut self, game_id: &str, record: &GameRecord) -> Result<(), Self::Error> {
+        let persisted = PersistedGameRecord::from_record(repository_metadata(), record);
+        self.save_event_log(game_id, &persisted)?;
+        if let Some(snapshot) = &persisted.latest_snapshot {
+            self.save_snapshot(game_id, snapshot)?;
+        }
+        Ok(())
+    }
+
+    fn load_record(&self, game_id: &str) -> Result<Option<GameRecord>, Self::Error> {
+        let Some(mut persisted) = self.load_event_log(game_id)? else {
+            return Ok(None);
+        };
+        if persisted.latest_snapshot.is_none() {
+            persisted.latest_snapshot = self.load_snapshot(game_id)?;
+        }
+        Ok(Some(persisted.to_record()?))
+    }
+}
+
+impl GameRecordRepository for InMemoryPersistence {
+    type Error = PersistedGameRecordLoadError;
+
+    fn save_record(&mut self, game_id: &str, record: &GameRecord) -> Result<(), Self::Error> {
+        let persisted = PersistedGameRecord::from_record(repository_metadata(), record);
+        if let Some(snapshot) = &persisted.latest_snapshot {
+            self.snapshots.insert(game_id.to_string(), snapshot.clone());
+        }
+        self.event_logs.insert(game_id.to_string(), persisted);
+        Ok(())
+    }
+
+    fn load_record(&self, game_id: &str) -> Result<Option<GameRecord>, Self::Error> {
+        let Some(mut persisted) = self.event_logs.get(game_id).cloned() else {
+            return Ok(None);
+        };
+        if persisted.latest_snapshot.is_none() {
+            persisted.latest_snapshot = self.snapshots.get(game_id).cloned();
+        }
+        Ok(Some(persisted.to_record()?))
+    }
+}
+
+fn repository_metadata() -> PersistenceMetadata {
+    PersistenceMetadata {
+        ruleset_id: RulesetId::base().as_str().to_string(),
+        engine_version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }

@@ -1,5 +1,6 @@
 //! Ports for external persistence or integration boundaries.
 
+use crate::application::GameRecord;
 use crate::domain::{CardInstanceId, GameSetup};
 
 pub trait DeckPreparation {
@@ -30,4 +31,11 @@ pub trait SnapshotStorage {
         snapshot: &Self::Snapshot,
     ) -> Result<(), Self::Error>;
     fn load_snapshot(&self, game_id: &str) -> Result<Option<Self::Snapshot>, Self::Error>;
+}
+
+pub trait GameRecordRepository {
+    type Error;
+
+    fn save_record(&mut self, game_id: &str, record: &GameRecord) -> Result<(), Self::Error>;
+    fn load_record(&self, game_id: &str) -> Result<Option<GameRecord>, Self::Error>;
 }

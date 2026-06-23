@@ -1,5 +1,5 @@
 use fewfc::application::{
-    EventSource, GameRecord, ReplayVerificationError, verify_recorded_events,
+    GameRecord, RecordedDecisionSource, ReplayVerificationError, verify_recorded_decisions,
 };
 use fewfc::domain::{
     CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, GameError, GameEvent, GameSetup,
@@ -9,7 +9,7 @@ use fewfc::infrastructure::{
     FileSystemPersistence, FixedDeckPreparation, InMemoryPersistence, PersistedGameRecord,
     PersistedSnapshot, PersistenceMetadata, SeededDeckPreparation,
 };
-use fewfc::ports::{DeckPreparation, EventLogStorage, SnapshotStorage};
+use fewfc::ports::{DeckPreparation, EventLogStorage, GameRecordRepository, SnapshotStorage};
 use fewfc::rules::Element;
 use std::fs;
 use std::path::PathBuf;
@@ -177,8 +177,8 @@ fn persisted_event_log_round_trip_replays_mid_turn_effect_choice() {
     assert_eq!(persisted.metadata.ruleset_id, "base");
     assert_eq!(persisted.setup.ruleset, RulesetId::base());
     assert_eq!(
-        persisted.recorded_events.len(),
-        record.recorded_events().len()
+        persisted.recorded_decisions.len(),
+        record.recorded_decisions().len()
     );
     assert_eq!(persisted.replay().unwrap(), record.state().unwrap());
     assert_eq!(
@@ -250,14 +250,14 @@ fn persisted_event_log_json_round_trip_includes_snapshot_and_replays() {
         &record,
     );
     persisted.latest_snapshot = Some(PersistedSnapshot::from_state(
-        persisted.recorded_events.len() as u64,
+        record.recorded_event_count() as u64,
         expected_state.clone(),
     ));
 
     let json = persisted.to_json().unwrap();
     assert!(json.contains("\"metadata\""));
     assert!(json.contains("\"setup\""));
-    assert!(json.contains("\"recorded_events\""));
+    assert!(json.contains("\"recorded_decisions\""));
     assert!(json.contains("\"latest_snapshot\""));
 
     let loaded = PersistedGameRecord::from_json(&json).unwrap();
@@ -266,7 +266,7 @@ fn persisted_event_log_json_round_trip_includes_snapshot_and_replays() {
 }
 
 #[test]
-fn persisted_replay_uses_event_order_and_payloads_not_recorded_metadata() {
+fn persisted_replay_uses_event_order_and_payloads_not_decision_source() {
     let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1])).unwrap();
     record.advance_automatic().unwrap();
     record
@@ -286,9 +286,8 @@ fn persisted_replay_uses_event_order_and_payloads_not_recorded_metadata() {
         &record,
     );
 
-    for (index, recorded) in persisted.recorded_events.iter_mut().enumerate() {
-        recorded.metadata.sequence = 10_000 - index as u64;
-        recorded.metadata.source = EventSource::Setup;
+    for decision in &mut persisted.recorded_decisions {
+        decision.source = RecordedDecisionSource::Setup;
     }
 
     assert_eq!(persisted.replay().unwrap(), expected_state);
@@ -308,7 +307,7 @@ fn replay_verification_succeeds_for_recorded_setup_automatic_and_command_events(
         .unwrap();
 
     assert_eq!(
-        verify_recorded_events(record.setup(), &record.recorded_events()).unwrap(),
+        verify_recorded_decisions(record.setup(), &record.recorded_decisions()).unwrap(),
         record.state().unwrap()
     );
 }
@@ -317,23 +316,28 @@ fn replay_verification_succeeds_for_recorded_setup_automatic_and_command_events(
 fn replay_verification_reports_automatic_event_mismatch_sequence_and_details() {
     let mut record = GameRecord::start(two_player_setup(), (1..=20).map(card).collect()).unwrap();
     record.advance_automatic().unwrap();
-    let mut recorded_events = record.recorded_events();
-    let automatic_index = recorded_events
+    let mut recorded_decisions = record.recorded_decisions();
+    let automatic_index = recorded_decisions
         .iter()
-        .position(|recorded| matches!(recorded.metadata.source, EventSource::Automatic { .. }))
+        .position(|decision| matches!(decision.source, RecordedDecisionSource::Automatic))
         .unwrap();
-    recorded_events[automatic_index].event = GameEvent::TurnStarted {
+    recorded_decisions[automatic_index].events[0] = GameEvent::TurnStarted {
         player: PlayerId::new("p2"),
         turn_number: 1,
     };
+    let automatic_sequence = recorded_decisions[..automatic_index]
+        .iter()
+        .map(|decision| decision.events.len() as u64)
+        .sum::<u64>()
+        + 1;
 
-    match verify_recorded_events(record.setup(), &recorded_events) {
+    match verify_recorded_decisions(record.setup(), &recorded_decisions) {
         Err(ReplayVerificationError::EventMismatch {
             sequence,
             expected,
             actual,
         }) => {
-            assert_eq!(sequence, recorded_events[automatic_index].metadata.sequence);
+            assert_eq!(sequence, automatic_sequence);
             assert_eq!(
                 expected,
                 vec![GameEvent::TurnStarted {
@@ -341,7 +345,7 @@ fn replay_verification_reports_automatic_event_mismatch_sequence_and_details() {
                     turn_number: 1,
                 }]
             );
-            assert_eq!(actual, vec![recorded_events[automatic_index].event.clone()]);
+            assert_eq!(actual, recorded_decisions[automatic_index].events);
         }
         other => panic!("expected automatic event mismatch, got {other:?}"),
     }
@@ -359,28 +363,37 @@ fn replay_verification_reports_command_event_mismatch_sequence_and_details() {
             declared_targets: Vec::new(),
         })
         .unwrap();
-    let mut recorded_events = record.recorded_events();
-    let command_index = recorded_events
+    let mut recorded_decisions = record.recorded_decisions();
+    let command_index = recorded_decisions
         .iter()
-        .position(|recorded| matches!(recorded.event, GameEvent::AttackResolved { .. }))
+        .position(|decision| {
+            matches!(decision.source, RecordedDecisionSource::Command { .. })
+                && decision
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, GameEvent::AttackResolved { .. }))
+        })
         .unwrap();
-    if let GameEvent::AttackResolved { hp_change, .. } = &mut recorded_events[command_index].event {
+    if let Some(GameEvent::AttackResolved { hp_change, .. }) = recorded_decisions[command_index]
+        .events
+        .iter_mut()
+        .find(|event| matches!(event, GameEvent::AttackResolved { .. }))
+    {
         hp_change.delta = -99;
         hp_change.new_hp = 0;
     }
+    let first_command_sequence = recorded_decisions[..command_index]
+        .iter()
+        .map(|decision| decision.events.len() as u64)
+        .sum::<u64>()
+        + 1;
 
-    match verify_recorded_events(record.setup(), &recorded_events) {
+    match verify_recorded_decisions(record.setup(), &recorded_decisions) {
         Err(ReplayVerificationError::EventMismatch {
             sequence,
             expected,
             actual,
         }) => {
-            let first_command_sequence = recorded_events
-                .iter()
-                .find(|recorded| matches!(recorded.metadata.source, EventSource::Command { .. }))
-                .unwrap()
-                .metadata
-                .sequence;
             assert_eq!(sequence, first_command_sequence);
             assert_ne!(expected, actual);
             assert!(matches!(
@@ -414,19 +427,27 @@ fn pure_replay_applies_canonical_events_even_when_verification_would_fail() {
         &record,
     );
     let command_index = persisted
-        .recorded_events
+        .recorded_decisions
         .iter()
-        .position(|recorded| matches!(recorded.event, GameEvent::AttackResolved { .. }))
+        .position(|decision| {
+            decision
+                .events
+                .iter()
+                .any(|event| matches!(event, GameEvent::AttackResolved { .. }))
+        })
         .unwrap();
-    if let GameEvent::AttackResolved { hp_change, .. } =
-        &mut persisted.recorded_events[command_index].event
+    if let Some(GameEvent::AttackResolved { hp_change, .. }) = persisted.recorded_decisions
+        [command_index]
+        .events
+        .iter_mut()
+        .find(|event| matches!(event, GameEvent::AttackResolved { .. }))
     {
         hp_change.delta = -99;
         hp_change.new_hp = 0;
     }
 
     assert!(matches!(
-        verify_recorded_events(&persisted.setup, &persisted.recorded_events),
+        verify_recorded_decisions(&persisted.setup, &persisted.recorded_decisions),
         Err(ReplayVerificationError::EventMismatch { .. })
     ));
     let replayed = persisted.replay().unwrap();
@@ -456,7 +477,7 @@ fn filesystem_persistence_saves_loads_event_logs_and_optional_snapshots() {
         &record,
     );
     let snapshot = PersistedSnapshot::from_state(
-        persisted.recorded_events.len() as u64,
+        record.recorded_event_count() as u64,
         record.state().unwrap(),
     );
 
@@ -516,7 +537,7 @@ fn persistence_ports_round_trip_event_log_and_optional_snapshot_checkpoint() {
         &record,
     );
     let snapshot = PersistedSnapshot::from_state(
-        persisted.recorded_events.len() as u64,
+        record.recorded_event_count() as u64,
         record.state().unwrap(),
     );
 
@@ -533,4 +554,29 @@ fn persistence_ports_round_trip_event_log_and_optional_snapshot_checkpoint() {
         loaded_snapshot.state.covered_passives[0].cards,
         vec![card(2), card(7)]
     );
+}
+
+#[test]
+fn game_record_repository_round_trip_loads_game_record_without_persisted_dto_callers() {
+    let mut record =
+        GameRecord::start(two_player_setup(), deck_starting_with(&[1, 2, 3, 4])).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+
+    let mut repository = InMemoryPersistence::default();
+    repository.save_record("game-1", &record).unwrap();
+
+    let loaded = repository.load_record("game-1").unwrap().unwrap();
+
+    assert_eq!(loaded.setup(), record.setup());
+    assert_eq!(loaded.events(), record.events());
+    assert_eq!(loaded.state().unwrap(), record.state().unwrap());
+    assert_eq!(repository.load_record("missing").unwrap(), None);
 }

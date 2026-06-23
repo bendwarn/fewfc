@@ -12,7 +12,8 @@ use recorded_event_log::RecordedEventLog;
 
 pub use crate::rules::base::BaseRuleset;
 pub use recorded_event_log::{
-    AutomaticReason, CommandContext, CommandKind, EventMetadata, EventSource, RecordedEvent,
+    AutomaticReason, CommandContext, CommandKind, EventMetadata, EventSource, RecordedDecision,
+    RecordedDecisionSource, RecordedEvent,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,6 +83,20 @@ impl GameRecord {
         Self::start(input.setup, input.deck_order)
     }
 
+    pub fn from_recorded_decisions(
+        setup: GameSetup,
+        recorded_decisions: Vec<RecordedDecision>,
+        latest_snapshot: Option<GameState>,
+    ) -> Result<Self, ReplayVerificationError> {
+        let record = Self {
+            setup,
+            event_log: RecordedEventLog::from_decisions(recorded_decisions),
+            latest_snapshot,
+        };
+        record.verify_replay()?;
+        Ok(record)
+    }
+
     pub fn start_with_deck_preparation<P>(
         setup: GameSetup,
         deck_preparation: &mut P,
@@ -105,6 +120,10 @@ impl GameRecord {
 
     pub fn recorded_events(&self) -> Vec<RecordedEvent> {
         self.event_log.recorded_events().to_vec()
+    }
+
+    pub fn recorded_decisions(&self) -> Vec<RecordedDecision> {
+        self.event_log.recorded_decisions().to_vec()
     }
 
     pub fn recorded_event_count(&self) -> usize {
@@ -133,14 +152,10 @@ impl GameRecord {
 
     pub fn apply(&mut self, command: Command) -> GameResult<EventBatch> {
         let state = self.state()?;
-        let source = EventSource::Command {
-            command_id: self.next_command_id(),
-            context: command_context(&command),
-        };
-        let events = BaseRuleset::new().decide_command(&state, command)?;
-        self.event_log.append(events.clone(), |event| {
-            source_for_command_event(event, &source)
-        });
+        let command_id = self.next_command_id();
+        let events = BaseRuleset::new().decide_command(&state, command.clone())?;
+        self.event_log
+            .append_command(command_id, command, events.clone());
         Ok(EventBatch::new(events))
     }
 
@@ -151,8 +166,7 @@ impl GameRecord {
     pub fn advance_until_decision(&mut self) -> GameResult<EventBatch> {
         let state = self.state()?;
         let events = BaseRuleset::new().advance_automatic(&state)?;
-        self.event_log
-            .append(events.clone(), source_for_automatic_event);
+        self.event_log.append_automatic(events.clone());
         Ok(EventBatch::new(events))
     }
 
@@ -161,7 +175,7 @@ impl GameRecord {
     }
 
     pub fn verify_replay(&self) -> Result<GameState, ReplayVerificationError> {
-        verify_recorded_events(&self.setup, &self.recorded_events())
+        verify_recorded_decisions(&self.setup, &self.recorded_decisions())
     }
 
     fn next_command_id(&self) -> CommandId {
@@ -188,17 +202,6 @@ pub enum ReplayVerificationError {
         sequence: u64,
         source: EventSource,
     },
-}
-
-fn source_for_command_event(_event: &GameEvent, source: &EventSource) -> EventSource {
-    source.clone()
-}
-
-fn source_for_automatic_event(event: &GameEvent) -> EventSource {
-    EventSource::Automatic {
-        reason: automatic_reason(event)
-            .expect("automatic advancement must only emit automatic events"),
-    }
 }
 
 fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
@@ -271,9 +274,9 @@ pub fn replay(setup: &GameSetup, events: &[GameEvent]) -> Result<GameState, Game
     crate::rules::base::project(setup, events)
 }
 
-pub fn verify_recorded_events(
+pub fn verify_recorded_decisions(
     setup: &GameSetup,
-    recorded_events: &[RecordedEvent],
+    recorded_decisions: &[RecordedDecision],
 ) -> Result<GameState, ReplayVerificationError> {
     validate_setup(setup).map_err(|error| ReplayVerificationError::DecisionFailed {
         sequence: 0,
@@ -282,19 +285,13 @@ pub fn verify_recorded_events(
     })?;
 
     let mut state = GameState::from_setup(setup);
-    let mut index = 0;
+    let mut sequence = 1;
 
-    while index < recorded_events.len() {
-        let sequence = recorded_events[index].metadata.sequence;
-        let source = recorded_events[index].metadata.source.clone();
-        let end = verification_group_end(recorded_events, index);
-        let actual = recorded_events[index..end]
-            .iter()
-            .map(|recorded| recorded.event.clone())
-            .collect::<Vec<_>>();
-
-        let expected = match &source {
-            EventSource::Setup => {
+    for decision in recorded_decisions {
+        let source = source_for_recorded_decision(decision);
+        let actual = decision.events.clone();
+        let expected = match &decision.source {
+            RecordedDecisionSource::Setup => {
                 let deck_order = actual
                     .iter()
                     .find_map(|event| match event {
@@ -310,21 +307,15 @@ pub fn verify_recorded_events(
                         error: Box::new(error),
                     })?
             }
-            EventSource::Automatic { .. } => advance_automatic(&state).map_err(|error| {
+            RecordedDecisionSource::Automatic => advance_automatic(&state).map_err(|error| {
                 ReplayVerificationError::DecisionFailed {
                     sequence,
                     source: source.clone(),
                     error: Box::new(error),
                 }
             })?,
-            EventSource::Command { context, .. } => {
-                let command = command_from_recorded_events(context, &actual).ok_or_else(|| {
-                    ReplayVerificationError::CommandContextUnavailable {
-                        sequence,
-                        source: source.clone(),
-                    }
-                })?;
-                handle_command(&state, command).map_err(|error| {
+            RecordedDecisionSource::Command { command, .. } => {
+                handle_command(&state, command.clone()).map_err(|error| {
                     ReplayVerificationError::DecisionFailed {
                         sequence,
                         source: source.clone(),
@@ -342,92 +333,32 @@ pub fn verify_recorded_events(
             });
         }
 
-        for event in &actual {
+        for event in &decision.events {
             apply_event(&mut state, event);
         }
-        index = end;
+        sequence += decision.events.len() as u64;
     }
 
     Ok(state)
 }
 
-fn verification_group_end(recorded_events: &[RecordedEvent], start: usize) -> usize {
-    let source = &recorded_events[start].metadata.source;
-    let mut end = start + 1;
-
-    while end < recorded_events.len()
-        && verification_sources_share_group(source, &recorded_events[end].metadata.source)
-    {
-        end += 1;
-    }
-
-    end
-}
-
-fn verification_sources_share_group(first: &EventSource, next: &EventSource) -> bool {
-    match (first, next) {
-        (EventSource::Setup, EventSource::Setup) => true,
-        (EventSource::Automatic { .. }, EventSource::Automatic { .. }) => true,
-        (
-            EventSource::Command {
-                command_id: first_id,
-                ..
-            },
-            EventSource::Command {
-                command_id: next_id,
-                ..
-            },
-        ) => first_id == next_id,
-        _ => false,
-    }
-}
-
-fn command_from_recorded_events(context: &CommandContext, events: &[GameEvent]) -> Option<Command> {
-    match &context.kind {
-        CommandKind::PassAction => events.iter().find_map(|event| match event {
-            GameEvent::ActionPassed { reason, .. } => Some(Command::PassAction {
-                player: context.player.clone(),
-                reason: *reason,
-            }),
-            _ => None,
-        }),
-        CommandKind::PerformFormation { formation_id } => {
-            events.iter().find_map(|event| match event {
-                GameEvent::FormationPerformed {
-                    used_cards,
-                    declared_targets,
-                    ..
-                } => Some(Command::PerformFormation {
-                    player: context.player.clone(),
-                    formation_id: formation_id.clone(),
-                    cards: used_cards.clone(),
-                    declared_targets: declared_targets.clone(),
-                }),
-                GameEvent::AttackResolved { used_cards, .. } => Some(Command::PerformFormation {
-                    player: context.player.clone(),
-                    formation_id: formation_id.clone(),
-                    cards: used_cards.clone(),
-                    declared_targets: Vec::new(),
-                }),
-                _ => None,
-            })
-        }
-        CommandKind::ChooseTurnDiscard => events.iter().find_map(|event| match event {
-            GameEvent::TurnDiscardChosen { discard, .. } => Some(Command::ChooseTurnDiscard {
-                player: context.player.clone(),
-                discard: *discard,
-            }),
-            _ => None,
-        }),
-        CommandKind::AnswerEffectChoice => events.iter().find_map(|event| match event {
-            GameEvent::EffectChoiceAnswered { selected_cards, .. } => {
-                Some(Command::AnswerEffectChoice {
-                    player: context.player.clone(),
-                    selected_cards: selected_cards.clone(),
-                })
-            }
-            _ => None,
-        }),
+fn source_for_recorded_decision(decision: &RecordedDecision) -> EventSource {
+    match &decision.source {
+        RecordedDecisionSource::Setup => EventSource::Setup,
+        RecordedDecisionSource::Automatic => EventSource::Automatic {
+            reason: decision
+                .events
+                .first()
+                .and_then(automatic_reason)
+                .unwrap_or(AutomaticReason::TurnStart),
+        },
+        RecordedDecisionSource::Command {
+            command_id,
+            command,
+        } => EventSource::Command {
+            command_id: *command_id,
+            context: command_context(command),
+        },
     }
 }
 

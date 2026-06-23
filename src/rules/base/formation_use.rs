@@ -1,17 +1,14 @@
 use crate::domain::{
-    ActionModification, AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone,
-    DamageTransform, Element, ElementInteraction, GameError, GameEvent, GameResult, GameState,
-    HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate, PassiveFlipOutcome,
-    PassiveNoEffectReason, PlayerId, ShieldChangeDelta, TargetDecl, TeamId, ValidationError,
+    CardInstanceId, CardMoveDelta, CardZone, GameError, GameEvent, GameResult, GameState, PlayerId,
+    TargetDecl, TeamId, ValidationError,
     targeting::{RulePlayerTarget, RuleTeamTarget, TurnOrderTargets},
 };
-use crate::rules::{
-    AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, PointFormula, SubmittedCardFacts,
-    base_formation_matcher, base_formation_registry,
-};
-use std::collections::HashSet;
+use crate::rules::{EffectPlan, base_formation_registry};
 
+use super::attack_resolution::{self, AttackRequest, AttackResolutionMode};
+use super::covered_passive::{self, IncomingActionKind, TriggerRequest};
 use super::effect_intent::{EffectIntent, effect_intent_events};
+use super::formation_selection::FormationSelection;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct FormationUseRequest {
@@ -63,57 +60,15 @@ impl BaseFormationPlanner {
         state: &GameState,
         request: FormationUseRequest,
     ) -> GameResult<FormationUsePlan> {
-        let registry = base_formation_registry();
-        let formation = registry.formation(&request.formation_id).ok_or_else(|| {
-            GameError::Validation(ValidationError::UnknownFormation(
-                request.formation_id.clone(),
-            ))
-        })?;
-
-        let hand = state.hand(&request.player).ok_or_else(|| {
-            GameError::Validation(ValidationError::UnknownPlayer(request.player.clone()))
-        })?;
-        let mut seen = HashSet::new();
-        let mut submitted_cards = Vec::new();
-
-        for card in &request.cards {
-            if !seen.insert(*card) {
-                return Err(GameError::Validation(
-                    ValidationError::DuplicateSubmittedCard(*card),
-                ));
-            }
-
-            if !hand.contains(card) {
-                return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
-            }
-
-            let card_def = state.card_def(*card).ok_or(GameError::Validation(
-                ValidationError::MissingCardInstanceDefinition(*card),
-            ))?;
-            submitted_cards.push(SubmittedCardFacts {
-                element: card_def.element,
-                level: card_def.level,
-            });
-        }
-
-        if !base_formation_matcher().matches(&formation.pattern, &submitted_cards) {
-            return Err(GameError::Validation(
-                ValidationError::FormationPatternMismatch {
-                    formation_id: request.formation_id,
-                },
-            ));
-        }
-
-        let effect = registry
-            .effect_for(formation)
-            .expect("base formation registry must link every formation to an effect");
+        let selected = FormationSelection::new(state, &request.player, request.cards)?
+            .require(&request.formation_id)?;
 
         Ok(FormationUsePlan {
             player: request.player,
-            formation_id: request.formation_id,
-            cards: request.cards,
+            formation_id: selected.formation_id,
+            cards: selected.cards,
             declared_targets: request.declared_targets,
-            effect_plan: effect.plan.clone(),
+            effect_plan: selected.effect_plan,
         })
     }
 }
@@ -136,112 +91,29 @@ impl BaseEffectResolver {
                         },
                     ));
                 }
-                let passive_resolutions =
-                    passive_resolutions(state, &plan.player, IncomingActionKind::Attack);
-                let action_modifications = action_modifications(&passive_resolutions);
-                let mut events = passive_events(passive_resolutions);
-                let target = attack_target(state, &plan.player, attack_plan)?;
-                let target_team = player_team(state, &target)?;
-                let points =
-                    compute_attack_points(state, &attack_plan.point_formula, &plan.cards, &target)?;
-                let has_target_shield = state.shield(&target).is_some_and(|value| value > 0);
-                let point_breakdown = attack_point_breakdown(
+                let passive_trigger = covered_passive::trigger(
                     state,
-                    &attack_plan.category,
-                    &target,
-                    points,
-                    has_target_shield,
+                    TriggerRequest {
+                        incoming_player: plan.player.clone(),
+                        incoming_kind: IncomingActionKind::Attack,
+                    },
                 );
-                let final_amount = point_breakdown.final_amount;
-                let damage_prevented =
-                    action_modifications.contains(&ActionModification::PreventDamage);
-                let shield_change = if damage_prevented {
-                    None
-                } else {
-                    shield_absorption(state, &target, final_amount)
-                };
-                let has_shield_change = shield_change.is_some();
-                let split_attack_damage = action_modifications
-                    .contains(&ActionModification::SplitAttackDamage)
-                    && !matches!(
-                        point_breakdown.damage_transform,
-                        DamageTransform::HealTarget
-                    );
-                let hp_change = if damage_prevented || has_shield_change {
-                    no_hp_change(state, &target_team)?
-                } else if split_attack_damage {
-                    apply_attack_amount(
-                        state,
-                        &target_team,
-                        (final_amount + 1) / 2,
-                        DamageTransform::NormalDamage,
-                    )?
-                } else {
-                    apply_attack_amount(
-                        state,
-                        &target_team,
-                        final_amount,
-                        point_breakdown.damage_transform,
-                    )?
-                };
-                let card_moves = plan
-                    .cards
-                    .iter()
-                    .copied()
-                    .map(|card| CardMoveDelta {
-                        card,
-                        from: CardZone::Hand(plan.player.clone()),
-                        to: CardZone::Discard,
-                    })
-                    .collect::<Vec<_>>();
-                let elemental_context_update =
-                    elemental_context_update(&attack_plan.category, state.turn_number).map(
-                        |attack| LastElementalAttackUpdate {
-                            player: plan.player.clone(),
-                            attack,
-                        },
-                    );
-
-                events.push(GameEvent::AttackResolved {
-                    attacker: plan.player.clone(),
-                    target,
-                    formation_id: plan.formation_id.clone(),
-                    used_cards: plan.cards.clone(),
-                    point_breakdown,
-                    hp_change,
-                    shield_change,
-                    card_moves,
-                    elemental_context_update,
-                });
-
-                if split_attack_damage && !damage_prevented && !has_shield_change {
-                    let attacker_team = player_team(state, &plan.player)?;
-                    let attacker_damage = final_amount / 2;
-                    if attacker_damage > 0 {
-                        events.push(GameEvent::HpChanged {
-                            change: apply_attack_amount(
-                                state,
-                                &attacker_team,
-                                attacker_damage,
-                                DamageTransform::NormalDamage,
-                            )?,
-                        });
-                    }
-                }
-
-                if plan.formation_id == "five-streams-unite" {
-                    let old_value = state
-                        .turn_draw_bonus_by_player
-                        .get(&plan.player)
-                        .copied()
-                        .unwrap_or(0);
-                    events.push(GameEvent::TurnDrawBonusChanged {
-                        player: plan.player,
-                        old_value,
-                        delta: 1,
-                        new_value: old_value + 1,
-                    });
-                }
+                let damage_prevented = passive_trigger.prevents_damage();
+                let split_attack_damage = passive_trigger.splits_attack_damage();
+                let mut events = passive_trigger.events();
+                events.extend(attack_resolution::resolve(
+                    state,
+                    AttackRequest {
+                        attacker: plan.player,
+                        formation_id: plan.formation_id,
+                        category: attack_plan.category.clone(),
+                        point_formula: attack_plan.point_formula.clone(),
+                        used_cards: plan.cards,
+                        damage_prevented,
+                        split_attack_damage,
+                        mode: AttackResolutionMode::FormationUse,
+                    },
+                )?);
 
                 Ok(events)
             }
@@ -266,15 +138,20 @@ impl BaseEffectResolver {
                     ));
                 }
 
-                let passive_resolutions =
-                    passive_resolutions(state, &plan.player, IncomingActionKind::PassiveSpell);
-                let action_modifications = action_modifications(&passive_resolutions);
-                let mut events = passive_events(passive_resolutions);
+                let passive_trigger = covered_passive::trigger(
+                    state,
+                    TriggerRequest {
+                        incoming_player: plan.player.clone(),
+                        incoming_kind: IncomingActionKind::PassiveSpell,
+                    },
+                );
+                let sealed = passive_trigger.seals_covered_passive();
+                let mut events = passive_trigger.events();
                 events.push(GameEvent::PassiveCovered {
                     player: plan.player,
                     formation_id: plan.formation_id,
                     cards: plan.cards,
-                    sealed: action_modifications.contains(&ActionModification::SealCoveredPassive),
+                    sealed,
                 });
                 Ok(events)
             }
@@ -287,17 +164,22 @@ impl BaseEffectResolver {
                     ));
                 }
 
-                let passive_resolutions =
-                    passive_resolutions(state, &plan.player, IncomingActionKind::ActiveSpell);
-                let action_modifications = action_modifications(&passive_resolutions);
-                let mut events = passive_events(passive_resolutions);
+                let passive_trigger = covered_passive::trigger(
+                    state,
+                    TriggerRequest {
+                        incoming_player: plan.player.clone(),
+                        incoming_kind: IncomingActionKind::ActiveSpell,
+                    },
+                );
+                let spell_cancelled = passive_trigger.cancels_spell();
+                let mut events = passive_trigger.events();
                 events.push(GameEvent::FormationPerformed {
                     player: plan.player.clone(),
                     formation_id: plan.formation_id,
                     used_cards: plan.cards.clone(),
                     declared_targets: plan.declared_targets,
                 });
-                if !action_modifications.contains(&ActionModification::CancelSpell) {
+                if !spell_cancelled {
                     let intents =
                         active_spell_intents(state, &plan.player, &spell.resolver_id, &plan.cards)?;
                     events.extend(effect_intent_events(state, intents)?);
@@ -306,134 +188,6 @@ impl BaseEffectResolver {
             }
         }
     }
-}
-
-#[derive(Clone, Copy)]
-enum IncomingActionKind {
-    Attack,
-    ActiveSpell,
-    PassiveSpell,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PassiveResolution {
-    event: GameEvent,
-    modifications: Vec<ActionModification>,
-}
-
-fn passive_resolutions(
-    state: &GameState,
-    incoming_player: &PlayerId,
-    incoming_kind: IncomingActionKind,
-) -> Vec<PassiveResolution> {
-    let Some(previous_player) = previous_player(state, incoming_player).ok() else {
-        return Vec::new();
-    };
-
-    state
-        .covered_passives
-        .iter()
-        .filter(|passive| passive.owner == previous_player)
-        .map(|passive| {
-            let modifications =
-                passive_spell_intents(&passive.formation_id, incoming_kind, passive.sealed)
-                    .into_iter()
-                    .filter_map(|intent| match intent {
-                        EffectIntent::ModifyAction { modification } => Some(modification),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-
-            PassiveResolution {
-                event: GameEvent::PassiveFlipped {
-                    owner: passive.owner.clone(),
-                    incoming_player: incoming_player.clone(),
-                    passive_id: passive.formation_id.clone(),
-                    cards: passive.cards.clone(),
-                    outcome: passive_outcome(
-                        &passive.formation_id,
-                        incoming_kind,
-                        passive.sealed,
-                        &modifications,
-                    ),
-                },
-                modifications,
-            }
-        })
-        .collect()
-}
-
-fn passive_events(resolutions: Vec<PassiveResolution>) -> Vec<GameEvent> {
-    resolutions
-        .into_iter()
-        .map(|resolution| resolution.event)
-        .collect()
-}
-
-fn action_modifications(resolutions: &[PassiveResolution]) -> Vec<ActionModification> {
-    resolutions
-        .iter()
-        .flat_map(|resolution| resolution.modifications.iter().cloned())
-        .collect()
-}
-
-fn passive_outcome(
-    passive_id: &str,
-    incoming_kind: IncomingActionKind,
-    sealed: bool,
-    modifications: &[ActionModification],
-) -> PassiveFlipOutcome {
-    if sealed {
-        return PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::Sealed,
-        };
-    }
-
-    if !modifications.is_empty() {
-        return PassiveFlipOutcome::Applied {
-            effect_id: passive_id.to_string(),
-            modifications: modifications.to_vec(),
-        };
-    }
-
-    match (passive_id, incoming_kind) {
-        ("defense", IncomingActionKind::ActiveSpell | IncomingActionKind::PassiveSpell) => {
-            PassiveFlipOutcome::NoEffect {
-                reason: PassiveNoEffectReason::NotAnAttack,
-            }
-        }
-        ("countershock", IncomingActionKind::ActiveSpell | IncomingActionKind::PassiveSpell) => {
-            PassiveFlipOutcome::NoEffect {
-                reason: PassiveNoEffectReason::NotAnAttack,
-            }
-        }
-        ("seal", IncomingActionKind::Attack) => PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::NotASpell,
-        },
-        _ => PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::NotASpell,
-        },
-    }
-}
-
-fn passive_spell_intents(
-    passive_id: &str,
-    incoming_kind: IncomingActionKind,
-    sealed: bool,
-) -> Vec<EffectIntent> {
-    if sealed {
-        return Vec::new();
-    }
-
-    let modification = match (passive_id, incoming_kind) {
-        ("defense", IncomingActionKind::Attack) => ActionModification::PreventDamage,
-        ("countershock", IncomingActionKind::Attack) => ActionModification::SplitAttackDamage,
-        ("seal", IncomingActionKind::ActiveSpell) => ActionModification::CancelSpell,
-        ("seal", IncomingActionKind::PassiveSpell) => ActionModification::SealCoveredPassive,
-        _ => return Vec::new(),
-    };
-
-    vec![EffectIntent::ModifyAction { modification }]
 }
 
 fn active_spell_intents(
@@ -669,25 +423,6 @@ fn resume_effect_choice_intents(
     }
 }
 
-pub(in crate::rules::base) fn attack_target(
-    state: &GameState,
-    attacker: &PlayerId,
-    plan: &AttackPlanDef,
-) -> GameResult<PlayerId> {
-    match plan.damage_target {
-        DamageTarget::PreviousPlayer => {
-            resolve_rule_player_target(state, attacker, RulePlayerTarget::PreviousPlayer)
-        }
-        DamageTarget::DeclaredPlayer | DamageTarget::TeamOfDeclaredPlayer => {
-            Err(GameError::RuleImplementation(
-                crate::domain::RuleImplementationError::EffectNotImplemented(
-                    "declared-attack-target".to_string(),
-                ),
-            ))
-        }
-    }
-}
-
 fn resolve_rule_player_target(
     state: &GameState,
     player: &PlayerId,
@@ -704,273 +439,6 @@ fn resolve_rule_team_target(
     TurnOrderTargets::new(state).team_target(player, target)
 }
 
-fn previous_player(state: &GameState, player: &PlayerId) -> GameResult<PlayerId> {
-    resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)
-}
-
-pub(in crate::rules::base) fn player_team(
-    state: &GameState,
-    player: &PlayerId,
-) -> GameResult<TeamId> {
+fn player_team(state: &GameState, player: &PlayerId) -> GameResult<TeamId> {
     TurnOrderTargets::new(state).team_of(player)
-}
-
-pub(in crate::rules::base) fn compute_attack_points(
-    state: &GameState,
-    formula: &PointFormula,
-    cards: &[CardInstanceId],
-    target: &PlayerId,
-) -> GameResult<i32> {
-    let level_sum = || -> GameResult<i32> {
-        cards.iter().try_fold(0, |sum, card| {
-            let level = state
-                .card_def(*card)
-                .ok_or(GameError::Validation(
-                    ValidationError::MissingCardInstanceDefinition(*card),
-                ))?
-                .level as i32;
-            Ok(sum + level)
-        })
-    };
-
-    match formula {
-        PointFormula::Fixed(points) => Ok(*points as i32),
-        PointFormula::CardCount => Ok(cards.len() as i32),
-        PointFormula::FormationPoints => level_sum(),
-        PointFormula::LevelPlus(bonus) => Ok(state
-            .card_def(cards[0])
-            .ok_or(GameError::Validation(
-                ValidationError::MissingCardInstanceDefinition(cards[0]),
-            ))?
-            .level as i32
-            + *bonus as i32),
-        PointFormula::LevelSumTimes(multiplier) => Ok(level_sum()? * *multiplier as i32),
-        PointFormula::TargetHandCountTimes(multiplier) => {
-            let target_hand = state.hand(target).ok_or_else(|| {
-                GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
-            })?;
-            Ok(target_hand.len() as i32 * *multiplier as i32)
-        }
-    }
-}
-
-pub(in crate::rules::base) fn attack_point_breakdown(
-    state: &GameState,
-    category: &AttackCategory,
-    target: &PlayerId,
-    base_points: i32,
-    skip_interaction: bool,
-) -> AttackPointBreakdown {
-    let Some(current_element) = elemental_attack_element(category) else {
-        return AttackPointBreakdown {
-            base_points,
-            interaction: ElementInteraction::None,
-            damage_transform: DamageTransform::NormalDamage,
-            final_amount: base_points,
-        };
-    };
-    if skip_interaction {
-        return AttackPointBreakdown {
-            base_points,
-            interaction: ElementInteraction::None,
-            damage_transform: DamageTransform::NormalDamage,
-            final_amount: base_points,
-        };
-    }
-    let Some(previous_attack) = state.last_elemental_attack_by_player.get(target) else {
-        return AttackPointBreakdown {
-            base_points,
-            interaction: ElementInteraction::None,
-            damage_transform: DamageTransform::NormalDamage,
-            final_amount: base_points,
-        };
-    };
-
-    if current_element == previous_attack.element {
-        AttackPointBreakdown {
-            base_points,
-            interaction: ElementInteraction::Same,
-            damage_transform: DamageTransform::HalfDamageRoundUp,
-            final_amount: (base_points + 1) / 2,
-        }
-    } else if generates(current_element, previous_attack.element) {
-        AttackPointBreakdown {
-            base_points,
-            interaction: ElementInteraction::Generating,
-            damage_transform: DamageTransform::HealTarget,
-            final_amount: base_points,
-        }
-    } else if overcomes(current_element, previous_attack.element) {
-        AttackPointBreakdown {
-            base_points,
-            interaction: ElementInteraction::Overcoming,
-            damage_transform: DamageTransform::DoubleDamage,
-            final_amount: base_points * 2,
-        }
-    } else {
-        AttackPointBreakdown {
-            base_points,
-            interaction: ElementInteraction::None,
-            damage_transform: DamageTransform::NormalDamage,
-            final_amount: base_points,
-        }
-    }
-}
-
-fn elemental_attack_element(category: &AttackCategory) -> Option<Element> {
-    match category {
-        AttackCategory::Elemental(element) => Some(*element),
-        AttackCategory::Physical | AttackCategory::Special => None,
-    }
-}
-
-fn generates(current: Element, previous: Element) -> bool {
-    matches!(
-        (current, previous),
-        (Element::Metal, Element::Water)
-            | (Element::Water, Element::Wood)
-            | (Element::Wood, Element::Fire)
-            | (Element::Fire, Element::Earth)
-            | (Element::Earth, Element::Metal)
-    )
-}
-
-fn overcomes(current: Element, previous: Element) -> bool {
-    matches!(
-        (current, previous),
-        (Element::Metal, Element::Wood)
-            | (Element::Wood, Element::Earth)
-            | (Element::Earth, Element::Water)
-            | (Element::Water, Element::Fire)
-            | (Element::Fire, Element::Metal)
-    )
-}
-
-pub(in crate::rules::base) fn apply_attack_amount(
-    state: &GameState,
-    team: &TeamId,
-    amount: i32,
-    transform: DamageTransform,
-) -> GameResult<HpChangeDelta> {
-    let old_hp = state
-        .hp
-        .iter()
-        .find(|team_hp| &team_hp.team == team)
-        .map(|team_hp| team_hp.hp)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
-    let delta = match transform {
-        DamageTransform::HealTarget => amount,
-        DamageTransform::NormalDamage
-        | DamageTransform::DoubleDamage
-        | DamageTransform::HalfDamageRoundUp => -amount,
-    };
-    let new_hp = (old_hp + delta).max(0);
-
-    Ok(HpChangeDelta {
-        team: team.clone(),
-        old_hp,
-        delta,
-        new_hp,
-        effective_delta: new_hp - old_hp,
-    })
-}
-
-pub(in crate::rules::base) fn no_hp_change(
-    state: &GameState,
-    team: &TeamId,
-) -> GameResult<HpChangeDelta> {
-    let old_hp = state
-        .hp
-        .iter()
-        .find(|team_hp| &team_hp.team == team)
-        .map(|team_hp| team_hp.hp)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
-
-    Ok(HpChangeDelta {
-        team: team.clone(),
-        old_hp,
-        delta: 0,
-        new_hp: old_hp,
-        effective_delta: 0,
-    })
-}
-
-pub(in crate::rules::base) fn shield_absorption(
-    state: &GameState,
-    player: &PlayerId,
-    incoming_damage: i32,
-) -> Option<ShieldChangeDelta> {
-    let old_value = state.shield(player)?;
-    if old_value <= 0 {
-        return None;
-    }
-
-    Some(ShieldChangeDelta {
-        player: player.clone(),
-        old_value,
-        delta: -incoming_damage,
-        new_value: (old_value - incoming_damage).max(0),
-    })
-}
-
-pub(in crate::rules::base) fn elemental_context_update(
-    category: &AttackCategory,
-    resolved_turn: u64,
-) -> Option<LastElementalAttack> {
-    match category {
-        AttackCategory::Elemental(element) => Some(LastElementalAttack {
-            element: *element,
-            resolved_turn,
-        }),
-        AttackCategory::Physical | AttackCategory::Special => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::{CardDef, CardDefId, CardInstanceDef};
-
-    #[test]
-    fn formation_points_sum_submitted_card_levels() {
-        let setup =
-            crate::domain::GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30)
-                .with_cards(
-                    vec![
-                        CardDef {
-                            id: CardDefId::new("metal"),
-                            name: "metal".to_string(),
-                            element: crate::rules::Element::Metal,
-                            level: 3,
-                        },
-                        CardDef {
-                            id: CardDefId::new("wood"),
-                            name: "wood".to_string(),
-                            element: crate::rules::Element::Wood,
-                            level: 2,
-                        },
-                    ],
-                    vec![
-                        CardInstanceDef {
-                            instance: CardInstanceId::new(1),
-                            definition: CardDefId::new("metal"),
-                        },
-                        CardInstanceDef {
-                            instance: CardInstanceId::new(2),
-                            definition: CardDefId::new("wood"),
-                        },
-                    ],
-                );
-        let state = GameState::from_setup(&setup);
-
-        assert_eq!(
-            compute_attack_points(
-                &state,
-                &PointFormula::FormationPoints,
-                &[CardInstanceId::new(1), CardInstanceId::new(2)],
-                &PlayerId::new("p2"),
-            ),
-            Ok(5)
-        );
-    }
 }

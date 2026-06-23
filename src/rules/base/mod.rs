@@ -1,4 +1,7 @@
+mod attack_resolution;
+mod covered_passive;
 mod effect_intent;
+mod formation_selection;
 mod formation_use;
 mod projection;
 
@@ -7,7 +10,7 @@ use crate::domain::{
     GameError, GameEvent, GameResult, GameSetup, GameState, GameStatus, PassActionReason, Phase,
     RulesetId, TurnDrawSkipReason, ValidationError, validate_setup,
 };
-use crate::rules::{FormationCandidate, matching_formations};
+use crate::rules::FormationCandidate;
 use std::collections::HashSet;
 
 pub use crate::rules::QueryCard;
@@ -54,41 +57,10 @@ impl BaseRuleset {
     ) -> GameResult<Vec<FormationCandidate>> {
         ensure_can_query_playable_formations(state, player)?;
 
-        let hand = state
-            .hand(player)
-            .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
-        let mut seen = HashSet::new();
-        let query_cards = selected_cards
-            .iter()
-            .map(|card| {
-                if !seen.insert(*card) {
-                    return Err(GameError::Validation(
-                        ValidationError::DuplicateSubmittedCard(*card),
-                    ));
-                }
-
-                if !hand.contains(card) {
-                    return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
-                }
-
-                let card_def = state.card_def(*card).ok_or(GameError::Validation(
-                    ValidationError::MissingCardInstanceDefinition(*card),
-                ))?;
-                Ok(QueryCard {
-                    element: card_def.element,
-                    level: card_def.level,
-                })
-            })
-            .collect::<GameResult<Vec<_>>>()?;
-
-        Ok(matching_formations(&query_cards)
-            .into_iter()
-            .map(|formation_match| FormationCandidate {
-                formation_id: formation_match.formation_id,
-                formation_name: formation_match.formation_name,
-                cards: selected_cards.to_vec(),
-            })
-            .collect())
+        Ok(
+            formation_selection::FormationSelection::new(state, player, selected_cards.to_vec())?
+                .candidates(),
+        )
     }
 }
 

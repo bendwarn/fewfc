@@ -1,8 +1,10 @@
 use crate::domain::{
-    ActionModification, CardInstanceId, CardMoveDelta, EngineInvariantError, GameError, GameEvent,
-    GameResult, GameState, LastElementalAttackUpdate, PlayerId, TeamId, ValidationError,
+    CardInstanceId, CardMoveDelta, EngineInvariantError, GameError, GameEvent, GameResult,
+    GameState, PlayerId, TeamId, ValidationError,
 };
-use crate::rules::{AttackCategory, AttackPlanDef, DamageTarget, PointFormula};
+use crate::rules::{AttackCategory, PointFormula};
+
+use super::attack_resolution::{self, AttackRequest, AttackResolutionMode};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::rules::base) enum EffectIntent {
@@ -25,9 +27,6 @@ pub(in crate::rules::base) enum EffectIntent {
         category: AttackCategory,
         point_formula: PointFormula,
         used_cards: Vec<CardInstanceId>,
-    },
-    ModifyAction {
-        modification: ActionModification,
     },
     RequestChoice {
         player: PlayerId,
@@ -85,75 +84,22 @@ pub(in crate::rules::base) fn effect_intent_events(
                 category,
                 point_formula,
                 used_cards,
-            } => {
-                let target = super::formation_use::attack_target(
-                    state,
-                    &state
+            } => single_event(attack_resolution::resolve(
+                state,
+                AttackRequest {
+                    attacker: state
                         .current_player()
                         .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
                         .clone(),
-                    &AttackPlanDef {
-                        category: category.clone(),
-                        point_formula: point_formula.clone(),
-                        damage_target: DamageTarget::PreviousPlayer,
-                    },
-                )?;
-                let target_team = super::formation_use::player_team(state, &target)?;
-                let player = state
-                    .current_player()
-                    .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
-                    .clone();
-                let points = super::formation_use::compute_attack_points(
-                    state,
-                    &point_formula,
-                    &used_cards,
-                    &target,
-                )?;
-                let has_target_shield = state.shield(&target).is_some_and(|value| value > 0);
-                let point_breakdown = super::formation_use::attack_point_breakdown(
-                    state,
-                    &category,
-                    &target,
-                    points,
-                    has_target_shield,
-                );
-                let shield_change = super::formation_use::shield_absorption(
-                    state,
-                    &target,
-                    point_breakdown.final_amount,
-                );
-                let hp_change = if shield_change.is_some() {
-                    super::formation_use::no_hp_change(state, &target_team)?
-                } else {
-                    super::formation_use::apply_attack_amount(
-                        state,
-                        &target_team,
-                        point_breakdown.final_amount,
-                        point_breakdown.damage_transform,
-                    )?
-                };
-                GameEvent::AttackResolved {
-                    attacker: player.clone(),
-                    target,
                     formation_id,
+                    category,
+                    point_formula,
                     used_cards,
-                    point_breakdown,
-                    hp_change,
-                    shield_change,
-                    card_moves: Vec::new(),
-                    elemental_context_update: super::formation_use::elemental_context_update(
-                        &category,
-                        state.turn_number,
-                    )
-                    .map(|attack| LastElementalAttackUpdate { player, attack }),
-                }
-            }
-            EffectIntent::ModifyAction { modification } => match modification {
-                ActionModification::PreventDamage
-                | ActionModification::SplitAttackDamage
-                | ActionModification::CancelSpell
-                | ActionModification::SealCoveredPassive => continue,
-            },
+                    damage_prevented: false,
+                    split_attack_damage: false,
+                    mode: AttackResolutionMode::CopiedEffect,
+                },
+            )?),
             EffectIntent::RequestChoice { player, kind } => {
                 if let Some(existing_player) = requested_choice_player {
                     return Err(GameError::EngineInvariant(
@@ -172,6 +118,13 @@ pub(in crate::rules::base) fn effect_intent_events(
     }
 
     Ok(events)
+}
+
+fn single_event(mut events: Vec<GameEvent>) -> GameEvent {
+    debug_assert_eq!(events.len(), 1);
+    events
+        .pop()
+        .expect("copied attack resolution must emit one event")
 }
 
 #[cfg(test)]

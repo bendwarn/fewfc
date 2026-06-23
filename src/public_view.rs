@@ -87,6 +87,7 @@ pub enum PublicGameEvent {
 }
 
 pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
+    let policy = RedactionPolicy::new(viewer);
     PublicGameState {
         status: state.status.clone(),
         turn_number: state.turn_number,
@@ -100,7 +101,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .iter()
             .map(|hand| PublicPlayerHand {
                 player: hand.player.clone(),
-                cards: if can_see_player_hidden_cards(&viewer, &hand.player) {
+                cards: if policy.can_see_player_hidden_cards(&hand.player) {
                     PublicCardRefs::Known(hand.cards.clone())
                 } else {
                     PublicCardRefs::Hidden {
@@ -116,7 +117,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .map(|passive| PublicCoveredPassive {
                 owner: passive.owner.clone(),
                 formation_id: passive.formation_id.clone(),
-                cards: if can_see_player_hidden_cards(&viewer, &passive.owner) {
+                cards: if policy.can_see_player_hidden_cards(&passive.owner) {
                     PublicCardRefs::Known(passive.cards.clone())
                 } else {
                     PublicCardRefs::Hidden {
@@ -130,7 +131,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .as_ref()
             .map(|choice| PublicPendingChoice {
                 player: choice.player.clone(),
-                kind: if can_see_player_hidden_cards(&viewer, &choice.player) {
+                kind: if policy.can_see_player_hidden_cards(&choice.player) {
                     PublicPendingChoiceKind::Known(choice.kind.clone())
                 } else {
                     PublicPendingChoiceKind::Hidden
@@ -142,6 +143,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
 }
 
 pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
+    let policy = RedactionPolicy::new(viewer);
     match event {
         GameEvent::DeckPrepared { deck_order } => PublicGameEvent::DeckPrepared {
             deck: PublicCardRefs::Hidden {
@@ -150,7 +152,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         },
         GameEvent::CardsDealt { player, cards } => PublicGameEvent::CardsDealt {
             player: player.clone(),
-            cards: if can_see_player_hidden_cards(&viewer, player) {
+            cards: if policy.can_see_player_hidden_cards(player) {
                 PublicCardRefs::Known(cards.clone())
             } else {
                 PublicCardRefs::Hidden { count: cards.len() }
@@ -164,7 +166,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         } => PublicGameEvent::PassiveCovered {
             player: player.clone(),
             formation_id: formation_id.clone(),
-            cards: if can_see_player_hidden_cards(&viewer, player) {
+            cards: if policy.can_see_player_hidden_cards(player) {
                 PublicCardRefs::Known(cards.clone())
             } else {
                 PublicCardRefs::Hidden { count: cards.len() }
@@ -176,14 +178,14 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
             allowed_discards,
         } => PublicGameEvent::CardsDrawnForTurnDiscardChoice {
             player: player.clone(),
-            drawn_cards: if can_see_player_hidden_cards(&viewer, player) {
+            drawn_cards: if policy.can_see_player_hidden_cards(player) {
                 PublicCardRefs::Known(drawn_cards.clone())
             } else {
                 PublicCardRefs::Hidden {
                     count: drawn_cards.len(),
                 }
             },
-            allowed_discards: if can_see_player_hidden_cards(&viewer, player) {
+            allowed_discards: if policy.can_see_player_hidden_cards(player) {
                 PublicCardRefs::Known(allowed_discards.clone())
             } else {
                 PublicCardRefs::Hidden {
@@ -194,14 +196,30 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         GameEvent::EffectChoiceRequested { player, kind } => {
             PublicGameEvent::EffectChoiceRequested {
                 player: player.clone(),
-                kind: if can_see_player_hidden_cards(&viewer, player) {
+                kind: if policy.can_see_player_hidden_cards(player) {
                     PublicPendingChoiceKind::Known(kind.clone())
                 } else {
                     PublicPendingChoiceKind::Hidden
                 },
             }
         }
-        event => PublicGameEvent::Public(event.clone()),
+        GameEvent::TurnStarted { .. }
+        | GameEvent::ActionPassed { .. }
+        | GameEvent::TurnDiscardChosen { .. }
+        | GameEvent::TurnDrawSkipped { .. }
+        | GameEvent::FormationPerformed { .. }
+        | GameEvent::AttackResolved { .. }
+        | GameEvent::TurnDrawBonusChanged { .. }
+        | GameEvent::ShieldChanged { .. }
+        | GameEvent::HpChanged { .. }
+        | GameEvent::CardsMoved { .. }
+        | GameEvent::StatusAdded { .. }
+        | GameEvent::StatusExpired { .. }
+        | GameEvent::StatusRemoved { .. }
+        | GameEvent::EffectChoiceAnswered { .. }
+        | GameEvent::PassiveFlipped { .. }
+        | GameEvent::DiscardRecycledIntoDeck { .. }
+        | GameEvent::TurnEnded { .. } => PublicGameEvent::Public(event.clone()),
     }
 }
 
@@ -215,6 +233,17 @@ pub fn events_for<'a>(
         .collect()
 }
 
-fn can_see_player_hidden_cards(viewer: &Viewer, player: &PlayerId) -> bool {
-    matches!(viewer, Viewer::Player(viewer) if viewer == player)
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RedactionPolicy {
+    viewer: Viewer,
+}
+
+impl RedactionPolicy {
+    fn new(viewer: Viewer) -> Self {
+        Self { viewer }
+    }
+
+    fn can_see_player_hidden_cards(&self, player: &PlayerId) -> bool {
+        matches!(&self.viewer, Viewer::Player(viewer) if viewer == player)
+    }
 }
