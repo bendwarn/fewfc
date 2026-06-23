@@ -3,7 +3,12 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "nuxt build",
+    "build": "bun run build:rules-wasm && bun run build:nuxt",
+    "build:nuxt": "nuxt build",
+    "build:rules-wasm": "cd ../.. && cargo build --release --target wasm32-unknown-unknown && mkdir -p apps/web/worker/wasm && cp target/wasm32-unknown-unknown/release/fewfc.wasm apps/web/worker/wasm/fewfc.wasm",
+    "cf:dev": "bun run build && wrangler dev --env=\"\"",
+    "cf:deploy": "bun run build && wrangler deploy --env=\"\"",
+    "cf:deploy:staging": "bun run build && wrangler deploy --env staging",
     "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
@@ -13,5 +18,9 @@
     "nuxt": "^4.4.8",
     "vue": "^3.5.38",
     "vue-router": "^5.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260623.1",
+    "wrangler": "^4.103.0"
   }
 }

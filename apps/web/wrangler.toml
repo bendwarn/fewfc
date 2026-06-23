@@ -1,0 +1,27 @@
+name = "fewfc-web"
+main = "worker/index.ts"
+compatibility_date = "2025-07-15"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = ".output/public"
+binding = "ASSETS"
+
+[[durable_objects.bindings]]
+name = "GAME_ROOM"
+class_name = "GameRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GameRoom"]
+
+[env.staging]
+name = "fewfc-web-staging"
+
+[[env.staging.durable_objects.bindings]]
+name = "GAME_ROOM"
+class_name = "GameRoom"
+
+[[env.staging.migrations]]
+tag = "v1"
+new_sqlite_classes = ["GameRoom"]

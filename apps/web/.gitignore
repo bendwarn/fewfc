@@ -4,7 +4,9 @@
 .nuxt
 .nitro
 .cache
+.wrangler
 dist
+worker/wasm/*.wasm
 
 # Node dependencies
 node_modules

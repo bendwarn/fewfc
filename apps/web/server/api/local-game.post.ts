@@ -1,8 +1,6 @@
-import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
-
-function repoRoot(): string {
+async function repoRoot(): Promise<string> {
+  const { existsSync } = await import('node:fs')
+  const { resolve } = await import('node:path')
   const configured = process.env.FEWFC_ROOT
 
   if (configured) {
@@ -18,10 +16,13 @@ function repoRoot(): string {
   return process.cwd()
 }
 
-function runBridge(body: unknown): Promise<unknown> {
+async function runBridge(body: unknown): Promise<unknown> {
+  const { spawn } = await import('node:child_process')
+  const cwd = await repoRoot()
+
   return new Promise((resolveBridge, rejectBridge) => {
     const child = spawn('cargo', ['run', '--quiet', '--bin', 'fewfc_local_game_api'], {
-      cwd: repoRoot(),
+      cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     const timeout = setTimeout(() => {
@@ -74,7 +75,22 @@ function runBridge(body: unknown): Promise<unknown> {
 }
 
 export default defineEventHandler(async (event) => {
+  if (
+    (
+      event.context as {
+        _platform?: {
+          cloudflare?: unknown
+        }
+      }
+    )._platform?.cloudflare
+  ) {
+    throw createError({
+      statusCode: 501,
+      statusMessage: 'The local Cargo bridge is not available on Cloudflare. Use /api/games instead.',
+    })
+  }
+
   const body = await readBody(event)
 
-  return runBridge(body)
+  return await runBridge(body)
 })

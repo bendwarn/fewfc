@@ -16,17 +16,42 @@ Deploy the generated output to Cloudflare Pages.
 
 Use this path once the UI needs server routes or a game-room API.
 
-Configure Nitro for the Cloudflare Workers module preset:
+The app is configured for the Cloudflare Workers module preset:
 
 ```ts
 export default defineNuxtConfig({
   nitro: {
-    preset: 'cloudflare_module',
+    preset: 'cloudflare-module',
   },
 })
 ```
 
+Wrangler uses `worker/index.ts` as a thin wrapper around the Nuxt build output. This wrapper exports the default Nuxt Worker handler and the `GameRoom` Durable Object class required by the binding in `wrangler.toml`.
+
+Build and run the Cloudflare Worker locally:
+
+```bash
+bun run cf:dev
+```
+
+`bun run build` first compiles the Rust rules engine to `worker/wasm/fewfc.wasm`, then runs the Nuxt Cloudflare build. The generated Wasm binary is ignored by git and should be rebuilt in deploy environments.
+
+Deploy staging or production:
+
+```bash
+bun run cf:deploy:staging
+bun run cf:deploy
+```
+
 Durable Objects should own authoritative online Game Records. Browser clients submit Commands and receive viewer-filtered Public Game State and Public Event Feed data.
+
+Current Worker game-room endpoints:
+
+- `POST /api/games` creates or returns a Durable Object game room.
+- `GET /api/games/:id` returns the room snapshot and event feed.
+- `POST /api/games/:id/commands` records an idempotent command by `commandId`.
+
+The `GameRoom` Durable Object stores metadata, an audit event log, and a snapshot backed by the Rust rules-engine record/state/events returned from the Worker Wasm adapter.
 
 ## Local rules-engine bridge
 

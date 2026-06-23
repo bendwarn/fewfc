@@ -10,3 +10,7 @@ pub mod infrastructure;
 pub mod ports;
 pub mod public_view;
 pub mod rules;
+pub mod web_api;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
