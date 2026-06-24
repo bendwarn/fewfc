@@ -24,9 +24,9 @@ export class GameRoom extends DurableObject {
 
     switch (body.type) {
       case 'createGame':
-        return this.json(await this.createGame(body.gameId, body.players))
+        return this.json(await this.createGame(body.gameId, body.actorUserId, body.players))
       case 'getState':
-        return this.json(await this.response())
+        return this.json(await this.response(undefined, body.actorUserId))
       case 'submitCommand':
         return this.json(await this.submitCommand(body))
       default:
@@ -34,7 +34,11 @@ export class GameRoom extends DurableObject {
     }
   }
 
-  private async createGame(gameId: string, players: PlayerId[] = ['alice', 'bob']) {
+  private async createGame(
+    gameId: string,
+    ownerUserId: string,
+    players: PlayerId[] = ['alice', 'bob'],
+  ) {
     const rules = await callRulesEngine({
       action: { type: 'start' },
       viewer: 'observer',
@@ -44,7 +48,7 @@ export class GameRoom extends DurableObject {
       const existing = await this.metadata()
 
       if (existing) {
-        return await this.response(existing)
+        return await this.response(existing, ownerUserId)
       }
 
       const now = new Date().toISOString()
@@ -53,6 +57,7 @@ export class GameRoom extends DurableObject {
         gameId,
         ruleset: 'fewfc-base',
         players,
+        members: [{ userId: ownerUserId, player: players[0] ?? 'alice' }],
         status: 'Active',
         createdAt: now,
         updatedAt: now,
@@ -78,37 +83,45 @@ export class GameRoom extends DurableObject {
       await this.ctx.storage.put('snapshot', snapshot)
       await this.ctx.storage.put(this.eventKey(initialEvent.sequence), initialEvent)
 
-      return await this.response(metadata)
+      return await this.response(metadata, ownerUserId)
     })
   }
 
   private async submitCommand(request: Extract<GameRoomRequest, { type: 'submitCommand' }>) {
-    if (request.action.type === 'playableFormations') {
-      const metadata = await this.requireMetadata()
-      const snapshot = await this.requireSnapshot()
-      const rules = await this.callRules(request.action, request.viewer, snapshot)
+    const metadata = await this.requireMetadata()
+    const actor = this.playerFor(metadata, request.actorUserId)
 
-      return await this.response(metadata, rules.playableFormations)
+    if (!actor) {
+      return this.json({ error: 'only room players may submit commands' }, 403)
+    }
+
+    const action = this.actionForPlayer(request.action, actor)
+    const viewer = actor
+
+    if (request.action.type === 'playableFormations') {
+      const snapshot = await this.requireSnapshot()
+      const rules = await this.callRules(action, viewer, snapshot)
+
+      return await this.response(metadata, request.actorUserId, rules.playableFormations)
     }
 
     return await this.ctx.storage.transaction(async () => {
-      const metadata = await this.requireMetadata()
       const duplicate = await this.findEventByCommandId(request.commandId)
 
       if (duplicate) {
-        return await this.response(metadata)
+        return await this.response(metadata, request.actorUserId)
       }
 
       const previousSnapshot = await this.requireSnapshot()
-      const rules = await this.callRules(request.action, request.viewer, previousSnapshot)
+      const rules = await this.callRules(action, viewer, previousSnapshot)
       const now = new Date().toISOString()
       const sequence = await this.nextSequence()
       const event: StoredGameEvent = {
         sequence,
         type: 'RulesCommandApplied',
         commandId: request.commandId,
-        actor: 'player' in request.action ? request.action.player : undefined,
-        payload: request.action,
+        actor,
+        payload: action,
         createdAt: now,
       }
       const snapshot: GameRoomSnapshot = {
@@ -127,28 +140,52 @@ export class GameRoom extends DurableObject {
         updatedAt: now,
       })
 
-      return await this.response({
-        ...metadata,
-        status: rules.state.status === 'Finished' ? 'Finished' : 'Active',
-        updatedAt: now,
-      })
+      return await this.response(
+        {
+          ...metadata,
+          status: rules.state.status === 'Finished' ? 'Finished' : 'Active',
+          updatedAt: now,
+        },
+        request.actorUserId,
+      )
     })
   }
 
   private async response(
     metadata?: GameRoomMetadata,
+    actorUserId?: string,
     playableFormations = [],
   ): Promise<GameRoomResponse> {
     const currentMetadata = metadata ?? (await this.requireMetadata())
     const snapshot = await this.requireSnapshot()
+    const viewer = actorUserId ? (this.playerFor(currentMetadata, actorUserId) ?? 'observer') : 'observer'
+    const publicRules = await this.callRules({ type: 'refresh' }, viewer, snapshot)
 
     return {
       gameId: currentMetadata.gameId,
       metadata: currentMetadata,
-      record: snapshot.rulesRecord,
-      state: snapshot.publicState,
-      events: snapshot.publicEvents,
+      state: publicRules.state,
+      events: publicRules.events,
       playableFormations,
+    }
+  }
+
+  private playerFor(metadata: GameRoomMetadata, userId: string): PlayerId | undefined {
+    return metadata.members.find((member) => member.userId === userId)?.player
+  }
+
+  private actionForPlayer(action: OnlineGameAction, player: PlayerId): OnlineGameAction {
+    switch (action.type) {
+      case 'performFormation':
+        return { ...action, player }
+      case 'chooseTurnDiscard':
+        return { ...action, player }
+      case 'answerEffectChoice':
+        return { ...action, player }
+      case 'playableFormations':
+        return { ...action, player }
+      default:
+        return action
     }
   }
 

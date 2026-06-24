@@ -9,18 +9,29 @@
     "cf:dev": "bun run build && wrangler dev --env=\"\"",
     "cf:deploy": "bun run build && wrangler deploy --env=\"\"",
     "cf:deploy:staging": "bun run build && wrangler deploy --env staging",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply fewfc-auth --local",
+    "db:migrate:remote": "wrangler d1 migrations apply fewfc-auth --remote",
     "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
-    "postinstall": "nuxt prepare"
+    "postinstall": "nuxt prepare",
+    "typecheck": "nuxt typecheck"
   },
   "dependencies": {
+    "@better-auth/drizzle-adapter": "^1.6.20",
+    "better-auth": "^1.6.20",
+    "drizzle-orm": "^0.45.2",
     "nuxt": "^4.4.8",
     "vue": "^3.5.38",
     "vue-router": "^5.1.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260623.1",
+    "@types/node": "^26.0.0",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^6.0.3",
+    "vue-tsc": "^3.3.5",
     "wrangler": "^4.103.0"
   }
 }

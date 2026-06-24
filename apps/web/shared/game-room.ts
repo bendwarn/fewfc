@@ -5,16 +5,21 @@ import type {
   PublicGameEvent,
   PublicGameState,
   RecordedDecision,
-  ViewerId,
 } from '../app/types/fewfc'
 
 export type GameRoomStatus = 'Active' | 'Finished'
+
+export interface GameRoomMember {
+  userId: string
+  player: PlayerId
+}
 
 export interface GameRoomMetadata {
   schemaVersion: 1
   gameId: string
   ruleset: 'fewfc-base'
   players: PlayerId[]
+  members: GameRoomMember[]
   status: GameRoomStatus
   createdAt: string
   updatedAt: string
@@ -50,21 +55,21 @@ export type GameRoomRequest =
   | {
       type: 'createGame'
       gameId: string
-      viewer?: ViewerId
+      actorUserId: string
       players?: PlayerId[]
     }
   | {
       type: 'getState'
-      viewer?: ViewerId
+      actorUserId: string
     }
   | {
       type: 'submitCommand'
       commandId: string
-      viewer?: ViewerId
+      actorUserId: string
       action: OnlineGameAction
     }
 
-export interface GameRoomResponse extends LocalGameResponse {
+export interface GameRoomResponse extends Omit<LocalGameResponse, 'record'> {
   gameId: string
   metadata: GameRoomMetadata
 }

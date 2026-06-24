@@ -1,4 +1,4 @@
-import type { PlayerId, ViewerId } from '../../app/types/fewfc'
+import type { PlayerId } from '../../app/types/fewfc'
 
 function playerList(value: unknown): PlayerId[] | undefined {
   if (!Array.isArray(value)) {
@@ -11,17 +11,17 @@ function playerList(value: unknown): PlayerId[] | undefined {
 }
 
 export default defineEventHandler(async (event) => {
+  const session = await requireSession(event)
   const body = await readBody<{
     gameId?: string
     players?: unknown
-    viewer?: ViewerId
   }>(event)
   const gameId = body.gameId?.trim() || crypto.randomUUID()
 
   return await callGameRoom(event, gameId, {
     type: 'createGame',
     gameId,
-    viewer: body.viewer,
+    actorUserId: session.user.id,
     players: playerList(body.players),
   })
 })
