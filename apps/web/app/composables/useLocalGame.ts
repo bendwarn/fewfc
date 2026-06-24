@@ -29,7 +29,7 @@ function emptyState(): PublicGameState {
   }
 }
 
-async function callLocalGame(body: unknown): Promise<LocalGameResponse> {
+async function callLocalGame(body: Record<string, unknown>): Promise<LocalGameResponse> {
   return await $fetch<LocalGameResponse>('/api/local-game', {
     method: 'POST',
     body,
@@ -75,7 +75,7 @@ export function useLocalGame(viewer: ViewerRef) {
     errorMessage.value = null
   }
 
-  async function submit(body: unknown) {
+  async function submit(body: Record<string, unknown>) {
     isLoading.value = true
     errorMessage.value = null
 
@@ -206,10 +206,6 @@ export function useLocalGame(viewer: ViewerRef) {
       record: record.value,
     })
   }
-
-  onMounted(() => {
-    void startSampleGame()
-  })
 
   return {
     state,

@@ -1,6 +1,5 @@
-import type { ViewerId } from '../../../app/types/fewfc'
-
 export default defineEventHandler(async (event) => {
+  const session = await requireSession(event)
   const gameId = getRouterParam(event, 'id')
 
   if (!gameId) {
@@ -10,11 +9,8 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const query = getQuery(event)
-  const viewer = typeof query.viewer === 'string' ? (query.viewer as ViewerId) : undefined
-
   return await callGameRoom(event, gameId, {
     type: 'getState',
-    viewer,
+    actorUserId: session.user.id,
   })
 })

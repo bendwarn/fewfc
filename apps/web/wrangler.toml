@@ -3,9 +3,18 @@ main = "worker/index.ts"
 compatibility_date = "2025-07-15"
 compatibility_flags = ["nodejs_compat"]
 
+[vars]
+BETTER_AUTH_URL = "http://localhost:8787"
+
 [assets]
 directory = ".output/public"
 binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "fewfc-auth"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
 
 [[durable_objects.bindings]]
 name = "GAME_ROOM"
@@ -17,6 +26,15 @@ new_sqlite_classes = ["GameRoom"]
 
 [env.staging]
 name = "fewfc-web-staging"
+
+[env.staging.vars]
+BETTER_AUTH_URL = "https://staging.example.com"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "fewfc-auth-staging"
+database_id = "REPLACE_WITH_STAGING_D1_DATABASE_ID"
+migrations_dir = "migrations"
 
 [[env.staging.durable_objects.bindings]]
 name = "GAME_ROOM"
