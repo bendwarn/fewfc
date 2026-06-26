@@ -4,11 +4,7 @@
 
     <header class="site-header">
       <button class="brand" type="button" aria-label="回到首頁" @click="goHome">
-        <span class="brand-mark" aria-hidden="true">五</span>
-        <span>
-          <strong>五行戰牌</strong>
-          <small>CFECARDS</small>
-        </span>
+        <img class="brand-banner" src="/header-banner.svg" alt="五行戰鬥牌">
       </button>
 
       <nav v-if="screen !== 'login'" class="header-actions" aria-label="帳號選單">
@@ -194,42 +190,19 @@
               </button>
             </div>
           </fieldset>
-        </section>
 
-        <aside class="room-preview">
-          <div class="preview-topline">
-            <span>房間預覽</span>
-            <span class="status-pill">等待中</span>
-          </div>
-          <div class="room-emblem"><span>五</span></div>
-          <p class="room-code-label">ROOM CODE</p>
-          <div class="room-code">
-            <strong>{{ roomCode }}</strong>
-            <button type="button" aria-label="複製房間代碼" @click="copyRoomCode">
-              {{ copied ? '已複製' : '複製' }}
-            </button>
-          </div>
-          <h2>{{ roomName || '未命名房間' }}</h2>
-          <p>{{ roomModeLabel }} · {{ roomAccess === 'private' ? '僅限代碼加入' : '公開配對' }}</p>
-
-          <div class="seats">
-            <div class="seat ready">
-              <span class="avatar">{{ playerInitial }}</span>
-              <div><strong>{{ displayName }}</strong><small>房主</small></div>
-              <i>已就緒</i>
+          <div class="setup-summary">
+            <div>
+              <span>目前設定</span>
+              <strong>{{ roomModeLabel }} · {{ roomAccess === 'private' ? '私人房間' : '公開房間' }}</strong>
             </div>
-            <div class="seat">
-              <span class="avatar empty">?</span>
-              <div><strong>玩家 Bob</strong><small>本機對手</small></div>
-              <i>已就緒</i>
-            </div>
+            <p>建立後會直接進入本機雙人示範對局。</p>
           </div>
 
           <button class="primary-button start-button" type="button" @click="createRoom">
             建立並開始對戰 <span>→</span>
           </button>
-          <p class="preview-note">目前使用本機規則引擎建立雙人示範對局。</p>
-        </aside>
+        </section>
       </div>
 
       <section v-else class="join-card">
@@ -443,9 +416,8 @@ const profileOpen = ref(false)
 const lobbyTab = ref<'create' | 'join'>('create')
 const roomName = ref('五行練習場')
 const roomMode = ref('duel')
-const roomAccess = ref<'private' | 'public'>('private')
+const roomAccess = ref<'private' | 'public'>('public')
 const roomCode = ref('WUX-8K2')
-const copied = ref(false)
 const activeRoomName = ref('')
 const viewer = ref<ViewerId>('alice')
 const game = useLocalGame(viewer)
@@ -570,14 +542,6 @@ function leaveGame() {
   screen.value = 'lobby'
 }
 
-async function copyRoomCode() {
-  await navigator.clipboard?.writeText(roomCode.value)
-  copied.value = true
-  window.setTimeout(() => {
-    copied.value = false
-  }, 1400)
-}
-
 onMounted(async () => {
   const session = await authClient.getSession()
 
@@ -683,11 +647,12 @@ function cardName(label: string): string {
 
 .app-shell { @apply min-h-screen bg-ink; }
 .site-header {
-  @apply relative z-20 flex h-18 items-center justify-between border-b border-[#29322d] bg-[rgba(14,19,16,.96)];
-  padding-inline: clamp(20px, 4vw, 64px);
+  @apply relative z-20 flex min-h-[84px] items-center justify-between border-b border-[#29322d] bg-[rgba(14,19,16,.96)];
+  padding: 10px clamp(14px, 4vw, 64px);
 }
 .screen-login .site-header { @apply absolute w-full border-0 bg-transparent; }
-.brand { @apply flex items-center gap-3 border-0 bg-transparent p-0; }
+.brand { @apply flex min-w-0 items-center border-0 bg-transparent p-0; }
+.brand-banner { @apply block h-auto w-[min(52vw,456px)] max-w-full rounded-md shadow-[0_10px_28px_rgba(0,0,0,.32)]; }
 .brand-mark {
   @apply grid size-[38px] rotate-45 place-items-center border border-[#d6af5d] font-serif font-black text-[#e4c47d];
 }
@@ -760,12 +725,12 @@ function cardName(label: string): string {
 .lobby-tabs { @apply flex border-b border-[#38423c]; }
 .lobby-tabs button { @apply border-0 border-b-2 border-transparent bg-transparent px-6 py-3 text-[#78827b]; }
 .lobby-tabs button.active { @apply border-gold text-gold-light; }
-.lobby-grid { @apply grid grid-cols-[1.25fr_.75fr] gap-[22px] max-[900px]:grid-cols-1; }
-.setup-card, .room-preview, .join-card { @apply border border-line bg-panel p-8 max-[600px]:px-[18px] max-[600px]:py-[22px]; }
+.lobby-grid { @apply grid max-w-[760px] gap-[22px]; }
+.setup-card, .join-card { @apply border border-line bg-panel p-8 max-[600px]:px-[18px] max-[600px]:py-[22px]; }
 .card-heading { @apply mb-8 flex gap-[18px]; }
 .step-number { @apply grid size-[42px] place-items-center border border-[#7e693e] font-serif text-[#d3ae62]; }
-.card-heading h2, .room-preview h2, .join-card h2 { @apply mb-1 font-serif text-[21px]; }
-.card-heading p, .room-preview > p { @apply text-xs text-muted; }
+.card-heading h2, .join-card h2 { @apply mb-1 font-serif text-[21px]; }
+.card-heading p { @apply text-xs text-muted; }
 .text-input { @apply mb-[26px] h-12 border border-[#39443d] bg-[#111713] px-3.5 text-[#ece8dd]; }
 fieldset { @apply mb-[26px] border-0 p-0; }
 .option-grid { @apply grid grid-cols-2 gap-3 max-[600px]:grid-cols-1; }
@@ -777,27 +742,16 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .segmented { @apply grid grid-cols-2 bg-[#111713] p-1; }
 .segmented button { @apply min-h-10 border-0 bg-transparent text-muted; }
 .segmented button.active { @apply bg-[#293128] text-[#e1c47f]; }
-.room-preview { @apply text-center; background: linear-gradient(160deg, #1b241e, #121814); }
-.preview-topline { @apply flex justify-between text-left text-[11px] text-[#818b84]; }
-.status-pill { @apply rounded-[20px] border border-[#3a6547] px-2 py-[3px] text-[#80be92]; }
-.room-emblem { width: 84px; height: 84px; border: 1px solid #8f733d; border-radius: 50%; margin: 30px auto 16px; display: grid; place-items: center; background: radial-gradient(circle, #36331f, #151b17 67%); }
-.room-emblem span { font-family: "Noto Serif TC", serif; font-size: 30px; color: #d7b66d; }
-.room-code-label { letter-spacing: .25em; font-size: 9px !important; }
-.room-code { @apply mt-1 mb-5 flex items-center justify-center gap-3; }
-.room-code strong { @apply text-2xl tracking-[.18em] text-[#e6d59d]; }
-.room-code button { @apply border-0 bg-transparent text-[10px] text-[#a48b59]; }
-.seats { @apply mt-7 mb-5 grid gap-2 text-left; }
-.seat { @apply flex items-center gap-2.5 border border-line bg-[#141a16] p-2.5; }
-.seat div { @apply grid flex-1; }
-.seat small { @apply text-[10px] text-[#717b74]; }
-.seat i { @apply text-[10px] not-italic text-[#6da27c]; }
-.avatar.empty { @apply bg-[#252d28] text-[#707b73]; }
+.setup-summary { @apply mb-5 grid gap-2 border border-[#39443d] bg-[#111713] p-4; }
+.setup-summary div { @apply flex items-center justify-between gap-4 max-[600px]:grid; }
+.setup-summary span { @apply text-[10px] tracking-[.18em] text-muted; }
+.setup-summary strong { @apply text-sm text-gold-light; }
+.setup-summary p { @apply text-xs text-muted; }
 .start-button { @apply w-full; }
-.preview-note { margin-top: 12px !important; font-size: 10px !important; }
 .join-card { max-width: 560px; margin: 40px auto; text-align: center; display: grid; gap: 20px; justify-items: center; }
 .code-input { max-width: 320px; height: 52px; border: 1px solid #3a443e; color: white; padding: 0 20px; text-align: center; letter-spacing: .2em; }
 
-.game-page { @apply flex h-[calc(100vh-72px)] flex-col overflow-hidden max-[900px]:h-auto max-[900px]:overflow-visible; }
+.game-page { @apply flex h-[calc(100vh-84px)] flex-col overflow-hidden max-[900px]:h-auto max-[900px]:overflow-visible; }
 .game-statusbar { @apply grid min-h-16 grid-cols-[1fr_auto_1fr] items-center border-b border-line bg-panel px-[26px] max-[900px]:grid-cols-[1fr_auto] max-[600px]:px-2.5; }
 .game-statusbar > div:first-child { @apply flex items-center gap-3; }
 .game-statusbar p { @apply text-[13px] font-bold; }
@@ -883,10 +837,9 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 @media (max-width: 900px) {
   .login-layout { grid-template-columns: 1fr; }
   .login-hero { display: none; }
-  .screen-login .site-header { display: none; }
-  .mobile-brand { display: flex; align-items: center; gap: 15px; margin-bottom: 60px; font-family: serif; font-weight: 800; }
-  .login-panel { min-height: 100vh; }
-  .lobby-grid { grid-template-columns: 1fr; }
+  .screen-login .site-header { position: relative; border-bottom: 1px solid #29322d; background: rgba(14, 19, 16, .96); }
+  .mobile-brand { display: none; }
+  .login-panel { min-height: calc(100vh - 84px); }
   .lobby-heading { align-items: start; gap: 25px; flex-direction: column; }
   .battle-layout { grid-template-columns: 1fr; overflow: auto; }
   .game-page { height: auto; overflow: visible; }
@@ -897,10 +850,12 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 }
 
 @media (max-width: 600px) {
-  .site-header { padding: 0 16px; }
+  .site-header { min-height: 68px; padding: 8px 12px; }
+  .brand-banner { width: min(70vw, 300px); }
+  .screen-login .login-panel { min-height: calc(100vh - 68px); }
   .connection, .profile-button > span:nth-child(2) { display: none; }
   .lobby-page { padding: 36px 16px; }
-  .setup-card, .room-preview { padding: 22px 18px; }
+  .setup-card { padding: 22px 18px; }
   .option-grid { grid-template-columns: 1fr; }
   .game-statusbar { padding: 0 10px; }
   .turn-indicator { padding: 4px 12px; }

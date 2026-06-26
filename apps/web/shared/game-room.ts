@@ -6,16 +6,19 @@ import type {
   RecordedDecision,
 } from '../app/types/fewfc'
 
-export type GameRoomStatus = 'Active' | 'Finished'
+export type GameRoomStatus = 'Waiting' | 'Active' | 'Finished'
+export type GameRoomAccess = 'private' | 'public'
 
 export interface GameRoomMember {
   userId: string
   player: PlayerId
+  ready: boolean
 }
 
 export interface GameRoomMetadata {
   schemaVersion: 1
   gameId: string
+  access: GameRoomAccess
   ruleset: 'fewfc-base'
   players: PlayerId[]
   members: GameRoomMember[]
@@ -54,7 +57,20 @@ export type GameRoomRequest =
       type: 'createGame'
       gameId: string
       actorUserId: string
+      access?: GameRoomAccess
       players?: PlayerId[]
+    }
+  | {
+      type: 'joinGame'
+      actorUserId: string
+    }
+  | {
+      type: 'readyGame'
+      actorUserId: string
+    }
+  | {
+      type: 'startGame'
+      actorUserId: string
     }
   | {
       type: 'getState'
