@@ -196,11 +196,13 @@
               <span>目前設定</span>
               <strong>{{ roomModeLabel }} · {{ roomAccess === 'private' ? '私人房間' : '公開房間' }}</strong>
             </div>
-            <p>建立後會直接進入本機雙人示範對局。</p>
+            <p>{{ roomAccess === 'public' ? '公開房間會先等待其他玩家加入。' : '私人房間會直接進入本機雙人對局。' }}</p>
           </div>
 
-          <button class="primary-button start-button" type="button" @click="createRoom">
-            建立並開始對戰 <span>→</span>
+          <p v-if="lobbyError" class="form-error">{{ lobbyError }}</p>
+
+          <button class="primary-button start-button" type="button" :disabled="lobbyBusy" @click="createRoom">
+            {{ lobbyBusy ? '處理中…' : roomAccess === 'public' ? '建立公開房間' : '建立並開始對戰' }} <span>→</span>
           </button>
         </section>
       </div>
@@ -208,9 +210,36 @@
       <section v-else class="join-card">
         <span class="step-number">+</span>
         <h2>輸入房間代碼</h2>
-        <p class="muted">線上多人連線將在 Durable Object 房間服務完成後開放。</p>
-        <input class="code-input" type="text" value="" placeholder="例如 WUX-8K2" disabled>
-        <button class="primary-button" type="button" disabled>加入房間</button>
+        <p class="muted">輸入公開房間代碼，或從下方公開房間列表加入。</p>
+        <input v-model.trim="joinRoomCode" class="code-input" type="text" placeholder="例如 WUX-8K2">
+        <p v-if="lobbyError" class="form-error">{{ lobbyError }}</p>
+        <button class="primary-button" type="button" :disabled="lobbyBusy || !joinRoomCode" @click="joinRoomByCode">
+          加入房間
+        </button>
+      </section>
+
+      <section class="public-rooms-card">
+        <div class="panel-title">
+          <h2>公開房間</h2>
+          <button type="button" :disabled="lobbyBusy" @click="refreshPublicRooms">更新</button>
+        </div>
+        <p v-if="!publicRooms.length" class="muted">目前沒有等待中的公開房間。</p>
+        <div v-else class="public-room-list">
+          <button
+            v-for="room in publicRooms"
+            :key="room.gameId"
+            type="button"
+            :disabled="lobbyBusy"
+            @click="joinPublicRoom(room.gameId)"
+          >
+            <span class="room-code">{{ room.gameId }}</span>
+            <div>
+              <strong>{{ room.name }}</strong>
+              <small>{{ room.members.length }} / {{ room.capacity }} 玩家 · 等待開始</small>
+            </div>
+            <i>{{ room.members.some((member) => member.userId === currentUserId) ? '已加入' : '加入' }}</i>
+          </button>
+        </div>
       </section>
     </main>
 
@@ -220,15 +249,15 @@
           <button class="back-button" type="button" @click="leaveGame">←</button>
           <div>
             <p>{{ activeRoomName }}</p>
-            <span>房號 {{ roomCode }} · 第 {{ state.turnNumber }} 回合</span>
+            <span>房號 {{ roomCode }} · 第 {{ state.turnNumber }} 回合 · {{ firstTurnText }}</span>
           </div>
         </div>
         <div class="turn-indicator">
-          <span>目前行動</span>
-          <strong>{{ playerLabel(state.currentPlayer) }}</strong>
-          <i>{{ phaseLabel(state.phase) }}</i>
+          <span>{{ roomWaiting ? '等待玩家' : gameFinished ? '戰局結果' : '目前行動' }}</span>
+          <strong>{{ roomWaiting ? waitingStatusText : gameFinished ? gameResultText : playerLabel(state.currentPlayer) }}</strong>
+          <i>{{ roomWaiting ? '尚未開始' : gameFinished ? '遊戲結束' : phaseLabel(state.phase) }}</i>
         </div>
-        <div class="viewer-switch" aria-label="切換觀看者">
+        <div v-if="!game.onlineGameId.value" class="viewer-switch" aria-label="切換觀看者">
           <button
             v-for="option in viewers"
             :key="option"
@@ -329,6 +358,53 @@
               </div>
             </div>
           </div>
+
+          <div v-if="roomWaiting" class="waiting-overlay">
+            <div>
+              <p class="section-kicker">WAITING ROOM</p>
+              <h2>{{ activeRoomName }}</h2>
+              <p>房號 {{ roomCode }} · {{ waitingStatusText }}</p>
+              <div class="waiting-members">
+                <span
+                  v-for="player in onlinePlayers"
+                  :key="player"
+                  :class="{ joined: Boolean(memberForPlayer(player)) }"
+                >
+                  {{ playerLabel(player) }}
+                  <small>{{ memberForPlayer(player) ? '已加入' : '等待中' }}</small>
+                </span>
+              </div>
+              <div class="result-actions">
+                <button class="ghost-button" type="button" :disabled="game.isLoading.value" @click="game.refreshOnlineGame()">更新</button>
+                <button
+                  v-if="isRoomOwner"
+                  class="primary-button"
+                  type="button"
+                  :disabled="game.isLoading.value || !canStartOnlineRoom"
+                  @click="startOnlineRoom"
+                >
+                  開始遊戲 <span>→</span>
+                </button>
+                <button v-else class="primary-button" type="button" disabled>
+                  等待房主開始 <span>…</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="gameFinished" class="result-overlay">
+            <div>
+              <p class="section-kicker">GAME SET</p>
+              <h2>{{ gameResultText }}</h2>
+              <p>{{ firstTurnText }}，本局已結束。</p>
+              <div class="result-actions">
+                <button class="ghost-button" type="button" @click="leaveGame">離開</button>
+                <button class="primary-button" type="button" :disabled="game.isLoading.value" @click="restartGame">
+                  再來一場 <span>↻</span>
+                </button>
+              </div>
+            </div>
+          </div>
         </section>
 
         <aside class="game-sidebar">
@@ -357,14 +433,14 @@
             </div>
             <div v-else class="empty-action">
               <span>◇</span>
-              <p>{{ viewer === state.currentPlayer ? '選擇手牌以尋找可用陣法' : '等待目前玩家完成行動' }}</p>
+              <p>{{ roomWaiting ? '等待玩家加入後由房主開始遊戲' : gameFinished ? '本局已結束，可離開或再來一場' : viewer === state.currentPlayer ? '選擇手牌以尋找可用陣法' : '等待目前玩家完成行動' }}</p>
             </div>
 
             <div class="utility-actions">
-              <button type="button" :disabled="game.isLoading.value" @click="game.advanceAutomatic()">
+              <button type="button" :disabled="game.isLoading.value || gameFinished || roomWaiting" @click="game.advanceAutomatic()">
                 推進階段
               </button>
-              <button type="button" :disabled="game.isLoading.value" @click="game.passAction()">
+              <button type="button" :disabled="game.isLoading.value || gameFinished || roomWaiting" @click="game.passAction()">
                 跳過行動
               </button>
             </div>
@@ -399,9 +475,22 @@
 
 <script setup lang="ts">
 import type { PlayerId, TeamId, ViewerId } from '~/types/fewfc'
+import type { GameRoomMember, GameRoomResponse } from '../shared/game-room'
 import { authClient } from '~/lib/auth-client'
 
 type Screen = 'login' | 'lobby' | 'game'
+
+interface PublicRoomSummary {
+  gameId: string
+  name: string
+  status: string
+  ownerUserId: string
+  players: PlayerId[]
+  members: GameRoomMember[]
+  capacity: number
+  createdAt: string
+  updatedAt: string
+}
 
 const viewers: ViewerId[] = ['alice', 'bob', 'observer']
 const screen = ref<Screen>('login')
@@ -412,12 +501,17 @@ const passwordInput = ref('')
 const authMode = ref<'sign-in' | 'sign-up'>('sign-in')
 const authBusy = ref(false)
 const loginError = ref('')
+const currentUserId = ref('')
 const profileOpen = ref(false)
 const lobbyTab = ref<'create' | 'join'>('create')
 const roomName = ref('五行練習場')
 const roomMode = ref('duel')
 const roomAccess = ref<'private' | 'public'>('public')
 const roomCode = ref('WUX-8K2')
+const joinRoomCode = ref('')
+const lobbyBusy = ref(false)
+const lobbyError = ref('')
+const publicRooms = ref<PublicRoomSummary[]>([])
 const activeRoomName = ref('')
 const viewer = ref<ViewerId>('alice')
 const game = useLocalGame(viewer)
@@ -431,7 +525,37 @@ const modes = [
 const visibleEvents = computed(() => game.publicEvents.value.slice(0, 7))
 const playerInitial = computed(() => displayName.value.trim().charAt(0).toUpperCase() || 'A')
 const roomModeLabel = computed(() => modes.find((mode) => mode.id === roomMode.value)?.label ?? '')
+const onlineMetadata = computed(() => game.metadata.value)
+const roomWaiting = computed(() => onlineMetadata.value?.status === 'Waiting')
+const gameFinished = computed(() => state.value.status === 'Finished')
+const firstPlayer = computed<PlayerId | null>(() => state.value.turnOrder[0] ?? null)
+const firstTurnText = computed(() => firstPlayer.value ? `${playerLabel(firstPlayer.value)} 先手` : '尚未決定先手')
+const onlinePlayers = computed(() => onlineMetadata.value?.players ?? [])
+const waitingStatusText = computed(() => `${onlineMetadata.value?.members.length ?? 0} / ${onlineMetadata.value?.players.length ?? 0} 玩家`)
+const isRoomOwner = computed(() => onlineMetadata.value?.members[0]?.userId === currentUserId.value)
+const canStartOnlineRoom = computed(() => {
+  const metadata = onlineMetadata.value
+
+  return Boolean(metadata && metadata.members.length >= metadata.players.length)
+})
+const gameResultText = computed(() => {
+  const aliveTeams = state.value.hp.filter((entry) => entry.hp > 0)
+
+  if (aliveTeams.length === 1) {
+    return `${teamLabel(aliveTeams[0].team)} 勝利`
+  }
+
+  return '戰局結束'
+})
 const selectedHint = computed(() => {
+  if (gameFinished.value) {
+    return '戰局結束'
+  }
+
+  if (roomWaiting.value) {
+    return '等待開局'
+  }
+
   if (game.selectedCards.value.length) {
     return `已選擇 ${game.selectedCards.value.length} 張牌`
   }
@@ -480,8 +604,10 @@ async function login() {
     }
 
     const session = await authClient.getSession()
+    currentUserId.value = session.data?.user.id ?? ''
     displayName.value = session.data?.user.name || nameInput.value || '玩家'
     screen.value = 'lobby'
+    await refreshPublicRooms()
   } catch {
     loginError.value = '帳號服務目前無法使用'
   } finally {
@@ -502,8 +628,10 @@ async function guestLogin() {
     }
 
     const session = await authClient.getSession()
+    currentUserId.value = session.data?.user.id ?? ''
     displayName.value = session.data?.user.name || '旅人'
     screen.value = 'lobby'
+    await refreshPublicRooms()
   } catch {
     loginError.value = '帳號服務目前無法使用'
   } finally {
@@ -515,6 +643,7 @@ async function logout() {
   await authClient.signOut()
   profileOpen.value = false
   screen.value = 'login'
+  currentUserId.value = ''
   nameInput.value = ''
   emailInput.value = ''
   passwordInput.value = ''
@@ -533,22 +662,129 @@ function goHome() {
 
 async function createRoom() {
   activeRoomName.value = roomName.value || '未命名房間'
-  viewer.value = 'alice'
-  await game.startSampleGame()
+
+  if (roomAccess.value === 'public') {
+    await createPublicRoom()
+    return
+  }
+
+  const startingPlayer = randomPlayer()
+
+  viewer.value = startingPlayer
+  await game.startSampleGame(startingPlayer)
   screen.value = 'game'
 }
 
 function leaveGame() {
   screen.value = 'lobby'
+  void refreshPublicRooms()
+}
+
+async function restartGame() {
+  if (game.onlineGameId.value) {
+    screen.value = 'lobby'
+    await createPublicRoom()
+    return
+  }
+
+  const startingPlayer = randomPlayer()
+
+  viewer.value = startingPlayer
+  await game.startSampleGame(startingPlayer)
+}
+
+async function createPublicRoom() {
+  lobbyBusy.value = true
+  lobbyError.value = ''
+
+  try {
+    const response = await $fetch<GameRoomResponse>('/api/games', {
+      method: 'POST',
+      body: {
+        name: activeRoomName.value,
+        access: 'public',
+      },
+    })
+
+    enterOnlineRoom(response)
+    await refreshPublicRooms()
+  } catch (error) {
+    lobbyError.value = error instanceof Error ? error.message : '無法建立公開房間'
+  } finally {
+    lobbyBusy.value = false
+  }
+}
+
+async function refreshPublicRooms() {
+  if (screen.value === 'login') {
+    return
+  }
+
+  lobbyError.value = ''
+
+  try {
+    const response = await $fetch<{ rooms: PublicRoomSummary[] }>('/api/games')
+    publicRooms.value = response.rooms
+  } catch (error) {
+    lobbyError.value = error instanceof Error ? error.message : '無法取得公開房間'
+  }
+}
+
+async function joinRoomByCode() {
+  if (!joinRoomCode.value) {
+    return
+  }
+
+  await joinPublicRoom(joinRoomCode.value)
+}
+
+async function joinPublicRoom(gameId: string) {
+  lobbyBusy.value = true
+  lobbyError.value = ''
+
+  try {
+    const response = await $fetch<GameRoomResponse>(`/api/games/${gameId}/join`, {
+      method: 'POST',
+    })
+
+    enterOnlineRoom(response)
+    await refreshPublicRooms()
+  } catch (error) {
+    lobbyError.value = error instanceof Error ? error.message : '無法加入房間'
+  } finally {
+    lobbyBusy.value = false
+  }
+}
+
+async function startOnlineRoom() {
+  if (!game.onlineGameId.value) {
+    return
+  }
+
+  await game.startOnlineGame()
+}
+
+function enterOnlineRoom(response: GameRoomResponse) {
+  activeRoomName.value = publicRooms.value.find((room) => room.gameId === response.gameId)?.name || activeRoomName.value || response.gameId
+  roomCode.value = response.gameId
+  joinRoomCode.value = response.gameId
+  game.applyRoomResponse(response)
+
+  const ownMember = response.metadata.members.find((member) => member.userId === currentUserId.value)
+  viewer.value = ownMember?.player ?? 'observer'
+  screen.value = 'game'
 }
 
 onMounted(async () => {
   const session = await authClient.getSession()
 
   if (session.data?.user) {
+    currentUserId.value = session.data.user.id
     displayName.value = session.data.user.name
     screen.value = 'lobby'
+    await refreshPublicRooms()
   }
+
 })
 
 function cardsFor(player: PlayerId): CardToken[] {
@@ -580,6 +816,14 @@ function teamHp(team: TeamId): number {
   return state.value.hp.find((entry) => entry.team === team)?.hp ?? 0
 }
 
+function teamLabel(team: TeamId): string {
+  return team === 'team:alice' ? displayName.value : '玩家 Bob'
+}
+
+function memberForPlayer(player: PlayerId): GameRoomMember | undefined {
+  return onlineMetadata.value?.members.find((member) => member.player === player)
+}
+
 function viewerLabel(value: ViewerId): string {
   if (value === 'observer') return '觀戰'
   if (value === 'alice') return displayName.value
@@ -589,6 +833,10 @@ function viewerLabel(value: ViewerId): string {
 function playerLabel(value: PlayerId | null): string {
   if (!value) return '準備開始'
   return value === 'alice' ? displayName.value : '玩家 Bob'
+}
+
+function randomPlayer(): PlayerId {
+  return Math.random() < 0.5 ? 'alice' : 'bob'
 }
 
 function phaseLabel(value: string): string {
@@ -750,6 +998,16 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .start-button { @apply w-full; }
 .join-card { max-width: 560px; margin: 40px auto; text-align: center; display: grid; gap: 20px; justify-items: center; }
 .code-input { max-width: 320px; height: 52px; border: 1px solid #3a443e; color: white; padding: 0 20px; text-align: center; letter-spacing: .2em; }
+.public-rooms-card { @apply mt-6 border border-line bg-panel p-6; }
+.public-rooms-card .panel-title { @apply mb-4; }
+.public-rooms-card .panel-title button { @apply border border-[#3c463f] bg-[#222a25] px-3 py-1 text-[10px]; }
+.public-room-list { @apply grid gap-3; }
+.public-room-list button { @apply grid grid-cols-[92px_1fr_auto] items-center gap-3 border border-[#354039] bg-[#111713] p-4 text-left hover:border-[#b99550]; }
+.public-room-list button:disabled { @apply cursor-not-allowed opacity-55; }
+.public-room-list strong { @apply block text-sm text-[#ece8dd]; }
+.public-room-list small { @apply text-xs text-muted; }
+.public-room-list i { @apply text-[10px] not-italic text-gold-light; }
+.room-code { @apply font-mono text-[10px] text-[#8a948d]; overflow-wrap: anywhere; }
 
 .game-page { @apply flex h-[calc(100vh-84px)] flex-col overflow-hidden max-[900px]:h-auto max-[900px]:overflow-visible; }
 .game-statusbar { @apply grid min-h-16 grid-cols-[1fr_auto_1fr] items-center border-b border-line bg-panel px-[26px] max-[900px]:grid-cols-[1fr_auto] max-[600px]:px-2.5; }
@@ -800,6 +1058,21 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .choice-overlay h2 { @apply mt-2.5 mb-5 font-serif; }
 .choice-cards { @apply flex justify-center gap-2; }
 .choice-cards button { @apply border border-[#ae8b47] bg-[#ede6d4] p-2.5 text-[#18201c]; }
+.waiting-overlay { @apply absolute inset-0 grid place-items-center bg-[rgba(7,10,8,.78)] text-center backdrop-blur-[4px]; z-index: 13; }
+.waiting-overlay > div { @apply grid min-w-[360px] max-w-[min(90vw,520px)] gap-4 border border-[#8e733d] bg-[#18201b] p-8 shadow-[0_24px_80px_rgba(0,0,0,.42)]; }
+.waiting-overlay h2 { @apply font-serif text-3xl text-gold-light; }
+.waiting-overlay p:not(.section-kicker) { @apply text-sm text-muted; }
+.waiting-members { @apply grid grid-cols-2 gap-3; }
+.waiting-members span { @apply grid gap-1 border border-[#354039] bg-[#111713] p-3 text-sm text-muted; }
+.waiting-members span.joined { @apply border-[#b99550] text-[#ece8dd]; }
+.waiting-members small { @apply text-[10px] text-muted; }
+.result-overlay { @apply absolute inset-0 grid place-items-center bg-[rgba(7,10,8,.82)] text-center backdrop-blur-[5px]; z-index: 14; }
+.result-overlay > div { @apply grid min-w-[360px] max-w-[min(90vw,460px)] gap-4 border border-[#b99550] bg-[#18201b] p-8 shadow-[0_24px_80px_rgba(0,0,0,.45)]; }
+.result-overlay h2 { @apply font-serif text-3xl text-gold-light; }
+.result-overlay p:not(.section-kicker) { @apply text-sm text-muted; }
+.result-actions { @apply mt-2 grid grid-cols-2 gap-3; }
+.result-actions .ghost-button { @apply border-[#59635c] text-[#ece8dd]; }
+.result-actions .primary-button { @apply justify-between; }
 
 .game-sidebar { @apply grid min-h-0 grid-rows-[auto_1fr_auto] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
 .action-panel, .event-panel { @apply border-b border-line p-5; }

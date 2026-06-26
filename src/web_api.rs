@@ -19,15 +19,19 @@ pub fn handle_request_json(input: &str) -> Result<String, String> {
 
 fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
     let ruleset = BaseRuleset::new();
-    let setup = ruleset.sample_game_setup();
+    let setup = setup_for_first_player(&ruleset, request.first_player.as_deref());
     let card_labels = ruleset.card_labels(&setup);
     let viewer = viewer_from_request(request.viewer.as_deref());
-    let mut record = record_from_request(&ruleset, &setup, request.record)?;
+    let deck_seed = request.deck_seed.clone();
+    let mut record = record_from_request(&ruleset, &setup, request.record, deck_seed.as_deref())?;
 
     match request.action {
         ApiAction::Start => {
-            record = GameRecord::start(setup.clone(), ruleset.sample_deck_order(&setup))
-                .map_err(ApiError::Game)?;
+            record = GameRecord::start(
+                setup.clone(),
+                deck_order_for_start(&ruleset, &setup, deck_seed.as_deref()),
+            )
+            .map_err(ApiError::Game)?;
             let _ = record.advance_until_decision().map_err(ApiError::Game)?;
         }
         ApiAction::Refresh => {}
@@ -114,14 +118,18 @@ fn record_from_request(
     ruleset: &BaseRuleset,
     setup: &GameSetup,
     record: Option<Vec<RecordedDecision>>,
+    deck_seed: Option<&str>,
 ) -> Result<GameRecord, ApiError> {
     match record {
         Some(recorded_decisions) if !recorded_decisions.is_empty() => {
             GameRecord::from_recorded_decisions(setup.clone(), recorded_decisions)
                 .map_err(|error| ApiError::Message(format!("{error:?}")))
         }
-        _ => GameRecord::start(setup.clone(), ruleset.sample_deck_order(setup))
-            .map_err(ApiError::Game),
+        _ => GameRecord::start(
+            setup.clone(),
+            deck_order_for_start(ruleset, setup, deck_seed),
+        )
+        .map_err(ApiError::Game),
     }
 }
 
@@ -153,6 +161,10 @@ struct ApiRequest {
     action: ApiAction,
     viewer: Option<String>,
     record: Option<Vec<RecordedDecision>>,
+    #[serde(default, rename = "firstPlayer")]
+    first_player: Option<String>,
+    #[serde(default, rename = "deckSeed")]
+    deck_seed: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -180,6 +192,68 @@ enum ApiAction {
         player: String,
         cards: Vec<CardInstanceId>,
     },
+}
+
+fn setup_for_first_player(ruleset: &BaseRuleset, first_player: Option<&str>) -> GameSetup {
+    if first_player == Some("bob") {
+        let mut setup = GameSetup::two_player(PlayerId::new("bob"), PlayerId::new("alice"), 20);
+        let sample = ruleset.sample_game_setup();
+        setup.card_defs = sample.card_defs;
+        setup.card_instances = sample.card_instances;
+        return setup;
+    }
+
+    ruleset.sample_game_setup()
+}
+
+fn deck_order_for_start(
+    ruleset: &BaseRuleset,
+    setup: &GameSetup,
+    deck_seed: Option<&str>,
+) -> Vec<CardInstanceId> {
+    let mut deck_order = ruleset.sample_deck_order(setup);
+    shuffle_deck(
+        &mut deck_order,
+        deck_seed.unwrap_or("fewfc-default-shuffle"),
+    );
+    deck_order
+}
+
+fn shuffle_deck(deck_order: &mut [CardInstanceId], seed: &str) {
+    if deck_order.len() < 2 {
+        return;
+    }
+
+    let mut state = seed_to_u64(seed);
+
+    for index in (1..deck_order.len()).rev() {
+        state = next_shuffle_state(state);
+        let swap_index = (state as usize) % (index + 1);
+        deck_order.swap(index, swap_index);
+    }
+}
+
+fn seed_to_u64(seed: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+
+    for byte in seed.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+
+    if hash == 0 { 0x9e3779b97f4a7c15 } else { hash }
+}
+
+fn next_shuffle_state(mut state: u64) -> u64 {
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+
+    if state == 0 {
+        0x9e3779b97f4a7c15
+    } else {
+        state
+    }
 }
 
 fn viewer_from_request(viewer: Option<&str>) -> Viewer {
@@ -566,5 +640,30 @@ mod tests {
 
         assert!(response.contains(r#""turnNumber":1"#));
         assert!(response.contains(r#""record""#));
+    }
+
+    #[test]
+    fn start_request_accepts_bob_as_first_player() {
+        let response = handle_request_json(
+            r#"{"action":{"type":"start"},"viewer":"bob","firstPlayer":"bob"}"#,
+        )
+        .expect("start request should succeed");
+
+        assert!(response.contains(r#""currentPlayer":"bob""#));
+        assert!(response.contains(r#""turnOrder":["bob","alice"]"#));
+    }
+
+    #[test]
+    fn start_request_shuffles_deck_by_seed_before_dealing() {
+        let ruleset = BaseRuleset::new();
+        let setup = ruleset.sample_game_setup();
+        let sorted_deck = ruleset.sample_deck_order(&setup);
+        let first_shuffle = deck_order_for_start(&ruleset, &setup, Some("seed-a"));
+        let same_shuffle = deck_order_for_start(&ruleset, &setup, Some("seed-a"));
+        let different_shuffle = deck_order_for_start(&ruleset, &setup, Some("seed-b"));
+
+        assert_ne!(first_shuffle, sorted_deck);
+        assert_eq!(first_shuffle, same_shuffle);
+        assert_ne!(first_shuffle, different_shuffle);
     }
 }

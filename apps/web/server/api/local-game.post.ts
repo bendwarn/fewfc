@@ -86,7 +86,7 @@ export default defineEventHandler(async (event) => {
   ) {
     throw createError({
       statusCode: 501,
-      statusMessage: 'The local Cargo bridge is not available on Cloudflare. Use /api/games instead.',
+      statusMessage: 'The local Cargo bridge is not available on Cloudflare. Use the browser WASM client instead.',
     })
   }
 

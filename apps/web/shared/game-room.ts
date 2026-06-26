@@ -37,13 +37,15 @@ export interface StoredGameEvent {
 }
 
 export interface GameRoomSnapshot {
-  schemaVersion: 2
+  schemaVersion: 3
   sequence: number
+  firstPlayer: PlayerId
+  deckSeed: string
   rulesRecord: RecordedDecision[]
 }
 
 export type OnlineGameAction =
-  | { type: 'start' }
+  | { type: 'start'; firstPlayer?: PlayerId; deckSeed?: string }
   | { type: 'refresh' }
   | { type: 'advanceAutomatic' }
   | { type: 'passAction' }

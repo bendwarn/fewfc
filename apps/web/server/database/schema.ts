@@ -76,10 +76,30 @@ export const playerProfile = sqliteTable('player_profile', {
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
 
+export const publicGameRoom = sqliteTable(
+  'public_game_room',
+  {
+    gameId: text('game_id').primaryKey(),
+    name: text('name').notNull(),
+    access: text('access').notNull(),
+    status: text('status').notNull(),
+    ownerUserId: text('owner_user_id').notNull(),
+    playersJson: text('players_json').notNull(),
+    membersJson: text('members_json').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  },
+  (table) => [
+    index('public_game_room_access_status_idx').on(table.access, table.status),
+    index('public_game_room_updated_at_idx').on(table.updatedAt),
+  ],
+)
+
 export const schema = {
   user,
   session,
   account,
   verification,
   playerProfile,
+  publicGameRoom,
 }

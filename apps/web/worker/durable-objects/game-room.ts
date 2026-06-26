@@ -202,9 +202,13 @@ export class GameRoom extends DurableObject {
         return this.json({ error: 'not all joined players are ready' }, 409)
       }
 
+      const firstPlayer = this.randomFirstPlayer(metadata.players)
+      const deckSeed = crypto.randomUUID()
       const rules = await callRulesEngine({
         action: { type: 'start' },
         viewer: 'observer',
+        firstPlayer,
+        deckSeed,
       })
       const now = new Date().toISOString()
       const sequence = await this.nextSequence()
@@ -214,12 +218,16 @@ export class GameRoom extends DurableObject {
         actor: owner.player,
         payload: {
           players: metadata.players,
+          firstPlayer,
+          deckSeed,
         },
         createdAt: now,
       }
       const snapshot: GameRoomSnapshot = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         sequence,
+        firstPlayer,
+        deckSeed,
         rulesRecord: rules.record,
       }
       const updatedMetadata: GameRoomMetadata = {
@@ -279,8 +287,10 @@ export class GameRoom extends DurableObject {
         createdAt: now,
       }
       const snapshot: GameRoomSnapshot = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         sequence,
+        firstPlayer: previousSnapshot.firstPlayer ?? metadata.players[0] ?? 'alice',
+        deckSeed: previousSnapshot.deckSeed ?? 'fewfc-legacy-snapshot',
         rulesRecord: rules.record,
       }
 
@@ -369,8 +379,21 @@ export class GameRoom extends DurableObject {
     return await callRulesEngine({
       action,
       viewer,
+      firstPlayer: snapshot.firstPlayer ?? 'alice',
+      deckSeed: snapshot.deckSeed ?? 'fewfc-legacy-snapshot',
       record: snapshot.rulesRecord,
     })
+  }
+
+  private randomFirstPlayer(players: PlayerId[]): PlayerId {
+    if (players.length === 0) {
+      return 'alice'
+    }
+
+    const bytes = new Uint32Array(1)
+    crypto.getRandomValues(bytes)
+
+    return players[bytes[0] % players.length] ?? players[0] ?? 'alice'
   }
 
   private async requireMetadata(): Promise<GameRoomMetadata> {
@@ -435,7 +458,9 @@ export class GameRoom extends DurableObject {
     }
 
     if (event.type === 'GameStarted') {
-      return '遊戲已開始。'
+      const firstPlayer = this.payloadValue(event.payload, 'firstPlayer')
+
+      return firstPlayer ? `遊戲已開始，${firstPlayer} 先手。` : '遊戲已開始。'
     }
 
     return event.type
@@ -447,6 +472,18 @@ export class GameRoom extends DurableObject {
     }
 
     return 'unknown'
+  }
+
+  private payloadValue(payload: unknown, key: string): string | undefined {
+    if (payload && typeof payload === 'object') {
+      const record = payload as Record<string, unknown>
+
+      if (key in record) {
+        return String(record[key])
+      }
+    }
+
+    return undefined
   }
 
   private json(body: unknown, status = 200): Response {

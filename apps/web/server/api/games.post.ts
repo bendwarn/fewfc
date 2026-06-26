@@ -19,16 +19,22 @@ export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
   const body = await readBody<{
     gameId?: string
+    name?: string
     access?: unknown
     players?: unknown
   }>(event)
   const gameId = body.gameId?.trim() || crypto.randomUUID()
-
-  return await callGameRoom(event, gameId, {
+  const response = await callGameRoom(event, gameId, {
     type: 'createGame',
     gameId,
     actorUserId: session.user.id,
     access: roomAccess(body.access),
     players: playerList(body.players),
   })
+
+  await upsertPublicRoom(event, response, {
+    name: body.name,
+  })
+
+  return response
 })

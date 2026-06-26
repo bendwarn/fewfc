@@ -11,7 +11,9 @@ interface FewfcWasmExports extends WebAssembly.Exports {
 let wasmInstance: WebAssembly.Instance | undefined
 
 async function instance(): Promise<FewfcWasmExports> {
-  wasmInstance ??= await WebAssembly.instantiate(rulesModule, {})
+  if (!wasmInstance) {
+    wasmInstance = await WebAssembly.instantiate(rulesModule, {}) as WebAssembly.Instance
+  }
 
   return wasmInstance.exports as FewfcWasmExports
 }

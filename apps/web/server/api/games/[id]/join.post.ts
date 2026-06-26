@@ -9,8 +9,12 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  return await callGameRoom(event, gameId, {
+  const response = await callGameRoom(event, gameId, {
     type: 'joinGame',
     actorUserId: session.user.id,
   })
+
+  await updatePublicRoom(event, response)
+
+  return response
 })
