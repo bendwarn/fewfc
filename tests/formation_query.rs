@@ -4,7 +4,7 @@ use fewfc::domain::{
     StatusOwner, ValidationError,
 };
 use fewfc::rules::base::{BaseRuleset, QueryCard};
-use fewfc::rules::{Element, FormationMatch};
+use fewfc::rules::{Element, FormationCategory, FormationMatch};
 
 fn card(id: u64) -> CardInstanceId {
     CardInstanceId::new(id)
@@ -94,6 +94,7 @@ fn playable_formations_returns_candidates_from_selected_hand_cards() {
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].formation_id, "metal-strike");
     assert_eq!(candidates[0].formation_name, "金擊術");
+    assert_eq!(candidates[0].category, FormationCategory::Attack);
     assert_eq!(candidates[0].cards, vec![card(1)]);
 }
 
@@ -121,6 +122,7 @@ fn playable_formations_does_not_return_matches_from_unselected_hand_cards() {
     assert!(candidates.iter().any(|candidate| {
         candidate.formation_id == "five-elements-cycle"
             && candidate.formation_name == "五行輪迴"
+            && candidate.category == FormationCategory::Spell
             && candidate.cards == vec![card(1), card(2), card(3), card(4), card(5)]
     }));
     assert!(

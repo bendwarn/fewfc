@@ -1,12 +1,12 @@
 use crate::application::{BaseRuleset, GameRecord, RecordedDecision};
 use crate::domain::{
-    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, GameError, GameSetup,
-    PassActionReason, PendingChoiceKind, PlayerId, TargetDecl,
+    CardInstanceId, Command, GameError, GameSetup, PassActionReason, PendingChoiceKind, PlayerId,
+    TargetDecl,
 };
 use crate::public_view::{
     PublicCardRefs, PublicGameEvent, PublicGameState, PublicPendingChoiceKind, Viewer,
 };
-use crate::rules::Element;
+use crate::rules::FormationCategory;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -18,14 +18,16 @@ pub fn handle_request_json(input: &str) -> Result<String, String> {
 }
 
 fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
-    let setup = default_setup();
-    let card_labels = card_labels(&setup);
+    let ruleset = BaseRuleset::new();
+    let setup = ruleset.sample_game_setup();
+    let card_labels = ruleset.card_labels(&setup);
     let viewer = viewer_from_request(request.viewer.as_deref());
-    let mut record = record_from_request(&setup, request.record)?;
+    let mut record = record_from_request(&ruleset, &setup, request.record)?;
 
     match request.action {
         ApiAction::Start => {
-            record = GameRecord::start(default_setup(), default_deck()).map_err(ApiError::Game)?;
+            record = GameRecord::start(setup.clone(), ruleset.sample_deck_order(&setup))
+                .map_err(ApiError::Game)?;
             let _ = record.advance_until_decision().map_err(ApiError::Game)?;
         }
         ApiAction::Refresh => {}
@@ -47,7 +49,7 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
             advance_after_command(&mut record)?;
         }
         ApiAction::PlayableFormations { player, cards } => {
-            let candidates = BaseRuleset::new()
+            let candidates = ruleset
                 .playable_formations(record.state(), &PlayerId::new(player), &cards)
                 .map_err(ApiError::Game)?;
             return Ok(response_for(
@@ -59,7 +61,7 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                     .map(|candidate| WebPlayableFormation {
                         id: candidate.formation_id,
                         name: candidate.formation_name,
-                        category: formation_category(&candidate.cards),
+                        category: WebFormationCategory::from(candidate.category),
                         summary: format!("使用 {} 張牌發動。", candidate.cards.len()),
                     })
                     .collect(),
@@ -109,6 +111,7 @@ fn advance_after_command(record: &mut GameRecord) -> Result<(), ApiError> {
 }
 
 fn record_from_request(
+    ruleset: &BaseRuleset,
     setup: &GameSetup,
     record: Option<Vec<RecordedDecision>>,
 ) -> Result<GameRecord, ApiError> {
@@ -117,7 +120,8 @@ fn record_from_request(
             GameRecord::from_recorded_decisions(setup.clone(), recorded_decisions)
                 .map_err(|error| ApiError::Message(format!("{error:?}")))
         }
-        _ => GameRecord::start(setup.clone(), default_deck()).map_err(ApiError::Game),
+        _ => GameRecord::start(setup.clone(), ruleset.sample_deck_order(setup))
+            .map_err(ApiError::Game),
     }
 }
 
@@ -142,133 +146,6 @@ fn response_for(
             .collect(),
         playable_formations,
     })
-}
-
-fn default_setup() -> GameSetup {
-    let defs = official_card_defs();
-    let instances = official_card_instances();
-
-    GameSetup::two_player(PlayerId::new("alice"), PlayerId::new("bob"), 20)
-        .with_cards(defs, instances)
-}
-
-fn official_card_defs() -> Vec<CardDef> {
-    elements()
-        .into_iter()
-        .flat_map(|element| {
-            (1..=5).map(move |level| {
-                card_def(
-                    &format!("{}-{}", element.id, level),
-                    element.name,
-                    element.element,
-                    level,
-                )
-            })
-        })
-        .collect()
-}
-
-fn official_card_instances() -> Vec<CardInstanceDef> {
-    let mut next_instance = 1;
-    let mut instances = Vec::new();
-
-    for element in elements() {
-        for level in 1..=5 {
-            let copies = official_copy_count(level);
-            for _ in 0..copies {
-                instances.push(CardInstanceDef {
-                    instance: CardInstanceId::new(next_instance),
-                    definition: CardDefId::new(format!("{}-{}", element.id, level)),
-                });
-                next_instance += 1;
-            }
-        }
-    }
-
-    instances
-}
-
-fn official_copy_count(level: u32) -> u64 {
-    match level {
-        1..=3 => 4,
-        4..=5 => 3,
-        _ => 0,
-    }
-}
-
-fn elements() -> [ElementSpec; 5] {
-    [
-        ElementSpec {
-            id: "metal",
-            name: "金",
-            element: Element::Metal,
-        },
-        ElementSpec {
-            id: "wood",
-            name: "木",
-            element: Element::Wood,
-        },
-        ElementSpec {
-            id: "water",
-            name: "水",
-            element: Element::Water,
-        },
-        ElementSpec {
-            id: "fire",
-            name: "火",
-            element: Element::Fire,
-        },
-        ElementSpec {
-            id: "earth",
-            name: "土",
-            element: Element::Earth,
-        },
-    ]
-}
-
-#[derive(Clone, Copy)]
-struct ElementSpec {
-    id: &'static str,
-    name: &'static str,
-    element: Element,
-}
-
-fn card_def(id: &str, name: &str, element: Element, level: u32) -> CardDef {
-    CardDef {
-        id: CardDefId::new(id),
-        name: name.to_string(),
-        element,
-        level,
-    }
-}
-
-fn default_deck() -> Vec<CardInstanceId> {
-    (1..=90).map(CardInstanceId::new).collect()
-}
-
-fn card_labels(setup: &GameSetup) -> HashMap<CardInstanceId, String> {
-    setup
-        .card_instances
-        .iter()
-        .filter_map(|instance| {
-            let card_def = setup
-                .card_defs
-                .iter()
-                .find(|card_def| card_def.id == instance.definition)?;
-            Some((
-                instance.instance,
-                format!("{} {}", card_def.name, card_def.level),
-            ))
-        })
-        .collect()
-}
-
-fn formation_category(cards: &[CardInstanceId]) -> WebFormationCategory {
-    if cards.len() == 1 {
-        WebFormationCategory::Attack
-    } else {
-        WebFormationCategory::Spell
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -590,6 +467,15 @@ enum WebFormationCategory {
     Spell,
 }
 
+impl From<FormationCategory> for WebFormationCategory {
+    fn from(category: FormationCategory) -> Self {
+        match category {
+            FormationCategory::Attack => Self::Attack,
+            FormationCategory::Spell => Self::Spell,
+        }
+    }
+}
+
 fn event_type(event: &PublicGameEvent) -> String {
     match event {
         PublicGameEvent::Public(event) => format!("{event:?}")
@@ -672,45 +558,6 @@ enum ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn official_default_deck_matches_rulebook_composition() {
-        let setup = default_setup();
-
-        assert_eq!(default_deck().len(), 90);
-        assert_eq!(setup.card_defs.len(), 25);
-        assert_eq!(setup.card_instances.len(), 90);
-
-        for element in [
-            Element::Metal,
-            Element::Wood,
-            Element::Water,
-            Element::Fire,
-            Element::Earth,
-        ] {
-            for level in 1..=5 {
-                let matching_instances = setup
-                    .card_instances
-                    .iter()
-                    .filter(|instance| {
-                        setup
-                            .card_defs
-                            .iter()
-                            .find(|card_def| card_def.id == instance.definition)
-                            .is_some_and(|card_def| {
-                                card_def.element == element && card_def.level == level
-                            })
-                    })
-                    .count();
-
-                assert_eq!(
-                    matching_instances,
-                    official_copy_count(level) as usize,
-                    "unexpected copies for {element:?} level {level}"
-                );
-            }
-        }
-    }
 
     #[test]
     fn start_request_returns_default_game_state() {

@@ -6,12 +6,13 @@ mod formation_use;
 mod projection;
 
 use crate::domain::{
-    CannotPerformFormationReason, CardInstanceId, Command, DeckPlacement, EngineInvariantError,
-    GameError, GameEvent, GameResult, GameSetup, GameState, GameStatus, PassActionReason, Phase,
-    RulesetId, TurnDrawSkipReason, ValidationError, validate_setup,
+    CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command,
+    DeckPlacement, Element, EngineInvariantError, GameError, GameEvent, GameResult, GameSetup,
+    GameState, GameStatus, PassActionReason, Phase, PlayerId, RulesetId, TurnDrawSkipReason,
+    ValidationError, validate_setup,
 };
 use crate::rules::FormationCandidate;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub use crate::rules::QueryCard;
 
@@ -61,6 +62,128 @@ impl BaseRuleset {
             formation_selection::FormationSelection::new(state, player, selected_cards.to_vec())?
                 .candidates(),
         )
+    }
+
+    pub fn sample_game_setup(&self) -> GameSetup {
+        GameSetup::two_player(PlayerId::new("alice"), PlayerId::new("bob"), 20)
+            .with_cards(official_card_defs(), official_card_instances())
+    }
+
+    pub fn sample_deck_order(&self, setup: &GameSetup) -> Vec<CardInstanceId> {
+        let mut deck_order = setup
+            .card_instances
+            .iter()
+            .map(|card| card.instance)
+            .collect::<Vec<_>>();
+        deck_order.sort();
+        deck_order
+    }
+
+    pub fn card_labels(&self, setup: &GameSetup) -> HashMap<CardInstanceId, String> {
+        setup
+            .card_instances
+            .iter()
+            .filter_map(|instance| {
+                let card_def = setup
+                    .card_defs
+                    .iter()
+                    .find(|card_def| card_def.id == instance.definition)?;
+                Some((
+                    instance.instance,
+                    format!("{} {}", card_def.name, card_def.level),
+                ))
+            })
+            .collect()
+    }
+}
+
+fn official_card_defs() -> Vec<CardDef> {
+    elements()
+        .into_iter()
+        .flat_map(|element| {
+            (1..=5).map(move |level| {
+                card_def(
+                    &format!("{}-{}", element.id, level),
+                    element.name,
+                    element.element,
+                    level,
+                )
+            })
+        })
+        .collect()
+}
+
+fn official_card_instances() -> Vec<CardInstanceDef> {
+    let mut next_instance = 1;
+    let mut instances = Vec::new();
+
+    for element in elements() {
+        for level in 1..=5 {
+            let copies = official_copy_count(level);
+            for _ in 0..copies {
+                instances.push(CardInstanceDef {
+                    instance: CardInstanceId::new(next_instance),
+                    definition: CardDefId::new(format!("{}-{}", element.id, level)),
+                });
+                next_instance += 1;
+            }
+        }
+    }
+
+    instances
+}
+
+fn official_copy_count(level: u32) -> u64 {
+    match level {
+        1..=3 => 4,
+        4..=5 => 3,
+        _ => 0,
+    }
+}
+
+fn elements() -> [ElementSpec; 5] {
+    [
+        ElementSpec {
+            id: "metal",
+            name: "金",
+            element: Element::Metal,
+        },
+        ElementSpec {
+            id: "wood",
+            name: "木",
+            element: Element::Wood,
+        },
+        ElementSpec {
+            id: "water",
+            name: "水",
+            element: Element::Water,
+        },
+        ElementSpec {
+            id: "fire",
+            name: "火",
+            element: Element::Fire,
+        },
+        ElementSpec {
+            id: "earth",
+            name: "土",
+            element: Element::Earth,
+        },
+    ]
+}
+
+#[derive(Clone, Copy)]
+struct ElementSpec {
+    id: &'static str,
+    name: &'static str,
+    element: Element,
+}
+
+fn card_def(id: &str, name: &str, element: Element, level: u32) -> CardDef {
+    CardDef {
+        id: CardDefId::new(id),
+        name: name.to_string(),
+        element,
+        level,
     }
 }
 
@@ -596,6 +719,46 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    #[test]
+    fn sample_game_setup_matches_rulebook_card_composition() {
+        let ruleset = BaseRuleset::new();
+        let setup = ruleset.sample_game_setup();
+
+        assert_eq!(ruleset.sample_deck_order(&setup).len(), 90);
+        assert_eq!(setup.card_defs.len(), 25);
+        assert_eq!(setup.card_instances.len(), 90);
+
+        for element in [
+            Element::Metal,
+            Element::Wood,
+            Element::Water,
+            Element::Fire,
+            Element::Earth,
+        ] {
+            for level in 1..=5 {
+                let matching_instances = setup
+                    .card_instances
+                    .iter()
+                    .filter(|instance| {
+                        setup
+                            .card_defs
+                            .iter()
+                            .find(|card_def| card_def.id == instance.definition)
+                            .is_some_and(|card_def| {
+                                card_def.element == element && card_def.level == level
+                            })
+                    })
+                    .count();
+
+                assert_eq!(
+                    matching_instances,
+                    official_copy_count(level) as usize,
+                    "unexpected copies for {element:?} level {level}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -62,6 +62,7 @@ pub struct FormationMatch {
 pub struct FormationCandidate {
     pub formation_id: String,
     pub formation_name: String,
+    pub category: FormationCategory,
     pub cards: Vec<crate::domain::CardInstanceId>,
 }
 
