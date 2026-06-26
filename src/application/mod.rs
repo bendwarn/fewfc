@@ -61,21 +61,21 @@ impl<E> From<GameError> for StartGameWithDeckPreparationError<E> {
 pub struct GameRecord {
     setup: GameSetup,
     event_log: RecordedEventLog,
-    latest_snapshot: Option<GameState>,
+    current_state: GameState,
 }
 
 impl GameRecord {
     pub fn start(setup: GameSetup, deck_order: Vec<CardInstanceId>) -> GameResult<Self> {
         let ruleset = BaseRuleset::new();
         let events = ruleset.start_game(&setup, deck_order)?;
+        let current_state = replay(&setup, &events)?;
 
         let record = Self {
             setup,
             event_log: RecordedEventLog::from_setup_events(events),
-            latest_snapshot: None,
+            current_state,
         };
 
-        record.replay()?;
         Ok(record)
     }
 
@@ -86,14 +86,13 @@ impl GameRecord {
     pub fn from_recorded_decisions(
         setup: GameSetup,
         recorded_decisions: Vec<RecordedDecision>,
-        latest_snapshot: Option<GameState>,
     ) -> Result<Self, ReplayVerificationError> {
+        let current_state = verify_recorded_decisions(&setup, &recorded_decisions)?;
         let record = Self {
             setup,
             event_log: RecordedEventLog::from_decisions(recorded_decisions),
-            latest_snapshot,
+            current_state,
         };
-        record.verify_replay()?;
         Ok(record)
     }
 
@@ -135,27 +134,25 @@ impl GameRecord {
     }
 
     pub fn public_view(&self, viewer: Viewer) -> GameResult<PublicGameState> {
-        Ok(crate::public_view::state_for(&self.state()?, viewer))
+        Ok(crate::public_view::state_for(self.state(), viewer))
     }
 
-    pub fn state(&self) -> GameResult<GameState> {
-        self.replay()
+    pub fn state(&self) -> &GameState {
+        &self.current_state
     }
 
     pub fn replay(&self) -> GameResult<GameState> {
         replay(&self.setup, self.event_log.events())
     }
 
-    pub fn latest_snapshot(&self) -> Option<&GameState> {
-        self.latest_snapshot.as_ref()
-    }
-
     pub fn apply(&mut self, command: Command) -> GameResult<EventBatch> {
-        let state = self.state()?;
         let command_id = self.next_command_id();
-        let events = BaseRuleset::new().decide_command(&state, command.clone())?;
+        let events = BaseRuleset::new().decide_command(self.state(), command.clone())?;
         self.event_log
             .append_command(command_id, command, events.clone());
+        for event in &events {
+            apply_event(&mut self.current_state, event);
+        }
         Ok(EventBatch::new(events))
     }
 
@@ -164,9 +161,11 @@ impl GameRecord {
     }
 
     pub fn advance_until_decision(&mut self) -> GameResult<EventBatch> {
-        let state = self.state()?;
-        let events = BaseRuleset::new().advance_automatic(&state)?;
+        let events = BaseRuleset::new().advance_automatic(self.state())?;
         self.event_log.append_automatic(events.clone());
+        for event in &events {
+            apply_event(&mut self.current_state, event);
+        }
         Ok(EventBatch::new(events))
     }
 

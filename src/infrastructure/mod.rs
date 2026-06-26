@@ -21,7 +21,6 @@ pub struct PersistedGameRecord {
     pub metadata: PersistenceMetadata,
     pub setup: GameSetup,
     pub recorded_decisions: Vec<RecordedDecision>,
-    pub latest_snapshot: Option<PersistedSnapshot>,
 }
 
 impl PersistedGameRecord {
@@ -33,13 +32,6 @@ impl PersistedGameRecord {
             metadata,
             setup: record.setup().clone(),
             recorded_decisions: record.recorded_decisions(),
-            latest_snapshot: record
-                .latest_snapshot()
-                .cloned()
-                .map(|state| PersistedSnapshot {
-                    after_sequence: record.recorded_event_count() as u64,
-                    state,
-                }),
         }
     }
 
@@ -62,14 +54,8 @@ impl PersistedGameRecord {
 
     pub fn to_record(&self) -> Result<GameRecord, PersistedGameRecordLoadError> {
         self.replay()?;
-        GameRecord::from_recorded_decisions(
-            self.setup.clone(),
-            self.recorded_decisions.clone(),
-            self.latest_snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.state.clone()),
-        )
-        .map_err(PersistedGameRecordLoadError::Replay)
+        GameRecord::from_recorded_decisions(self.setup.clone(), self.recorded_decisions.clone())
+            .map_err(PersistedGameRecordLoadError::Replay)
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -320,20 +306,13 @@ impl GameRecordRepository for FileSystemPersistence {
 
     fn save_record(&mut self, game_id: &str, record: &GameRecord) -> Result<(), Self::Error> {
         let persisted = PersistedGameRecord::from_record(repository_metadata(), record);
-        self.save_event_log(game_id, &persisted)?;
-        if let Some(snapshot) = &persisted.latest_snapshot {
-            self.save_snapshot(game_id, snapshot)?;
-        }
-        Ok(())
+        self.save_event_log(game_id, &persisted)
     }
 
     fn load_record(&self, game_id: &str) -> Result<Option<GameRecord>, Self::Error> {
-        let Some(mut persisted) = self.load_event_log(game_id)? else {
+        let Some(persisted) = self.load_event_log(game_id)? else {
             return Ok(None);
         };
-        if persisted.latest_snapshot.is_none() {
-            persisted.latest_snapshot = self.load_snapshot(game_id)?;
-        }
         Ok(Some(persisted.to_record()?))
     }
 }
@@ -343,20 +322,14 @@ impl GameRecordRepository for InMemoryPersistence {
 
     fn save_record(&mut self, game_id: &str, record: &GameRecord) -> Result<(), Self::Error> {
         let persisted = PersistedGameRecord::from_record(repository_metadata(), record);
-        if let Some(snapshot) = &persisted.latest_snapshot {
-            self.snapshots.insert(game_id.to_string(), snapshot.clone());
-        }
         self.event_logs.insert(game_id.to_string(), persisted);
         Ok(())
     }
 
     fn load_record(&self, game_id: &str) -> Result<Option<GameRecord>, Self::Error> {
-        let Some(mut persisted) = self.event_logs.get(game_id).cloned() else {
+        let Some(persisted) = self.event_logs.get(game_id).cloned() else {
             return Ok(None);
         };
-        if persisted.latest_snapshot.is_none() {
-            persisted.latest_snapshot = self.snapshots.get(game_id).cloned();
-        }
         Ok(Some(persisted.to_record()?))
     }
 }

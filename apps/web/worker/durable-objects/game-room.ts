@@ -72,10 +72,9 @@ export class GameRoom extends DurableObject {
         createdAt: now,
       }
       const snapshot: GameRoomSnapshot = {
+        schemaVersion: 2,
         sequence: initialEvent.sequence,
         rulesRecord: rules.record,
-        publicState: rules.state,
-        publicEvents: rules.events,
       }
 
       await this.ctx.storage.put('metadata', metadata)
@@ -125,10 +124,9 @@ export class GameRoom extends DurableObject {
         createdAt: now,
       }
       const snapshot: GameRoomSnapshot = {
+        schemaVersion: 2,
         sequence,
         rulesRecord: rules.record,
-        publicState: rules.state,
-        publicEvents: rules.events,
       }
 
       await this.ctx.storage.put(this.eventKey(sequence), event)

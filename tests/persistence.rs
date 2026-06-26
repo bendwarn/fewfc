@@ -143,7 +143,7 @@ fn replay_uses_recorded_deck_order_not_later_deck_preparation() {
     let record = GameRecord::start(setup.clone(), initial_order.clone()).unwrap();
 
     assert_ne!(initial_order, later_order);
-    assert_eq!(record.replay().unwrap(), record.state().unwrap());
+    assert_eq!(record.replay().unwrap(), record.state().clone());
     assert_eq!(
         record.events().first(),
         Some(&GameEvent::DeckPrepared {
@@ -180,7 +180,7 @@ fn persisted_event_log_round_trip_replays_mid_turn_effect_choice() {
         persisted.recorded_decisions.len(),
         record.recorded_decisions().len()
     );
-    assert_eq!(persisted.replay().unwrap(), record.state().unwrap());
+    assert_eq!(persisted.replay().unwrap(), record.state().clone());
     assert_eq!(
         persisted.replay().unwrap().pending_choice,
         Some(PendingChoice {
@@ -216,7 +216,7 @@ fn persisted_event_log_round_trip_replays_turn_draw_discard_choice() {
         &record,
     );
 
-    assert_eq!(persisted.replay().unwrap(), record.state().unwrap());
+    assert_eq!(persisted.replay().unwrap(), record.state().clone());
     assert_eq!(
         persisted.replay().unwrap().pending_choice,
         Some(PendingChoice {
@@ -230,7 +230,7 @@ fn persisted_event_log_round_trip_replays_turn_draw_discard_choice() {
 }
 
 #[test]
-fn persisted_event_log_json_round_trip_includes_snapshot_and_replays() {
+fn persisted_event_log_json_round_trip_contains_decision_log_and_replays() {
     let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1])).unwrap();
     record.advance_automatic().unwrap();
     record
@@ -241,24 +241,20 @@ fn persisted_event_log_json_round_trip_includes_snapshot_and_replays() {
             declared_targets: Vec::new(),
         })
         .unwrap();
-    let expected_state = record.state().unwrap();
-    let mut persisted = PersistedGameRecord::from_record(
+    let expected_state = record.state().clone();
+    let persisted = PersistedGameRecord::from_record(
         PersistenceMetadata {
             ruleset_id: "base".to_string(),
             engine_version: "test".to_string(),
         },
         &record,
     );
-    persisted.latest_snapshot = Some(PersistedSnapshot::from_state(
-        record.recorded_event_count() as u64,
-        expected_state.clone(),
-    ));
 
     let json = persisted.to_json().unwrap();
     assert!(json.contains("\"metadata\""));
     assert!(json.contains("\"setup\""));
     assert!(json.contains("\"recorded_decisions\""));
-    assert!(json.contains("\"latest_snapshot\""));
+    assert!(!json.contains("\"latest_snapshot\""));
 
     let loaded = PersistedGameRecord::from_json(&json).unwrap();
     assert_eq!(loaded, persisted);
@@ -277,7 +273,7 @@ fn persisted_replay_uses_event_order_and_payloads_not_decision_source() {
             declared_targets: Vec::new(),
         })
         .unwrap();
-    let expected_state = record.state().unwrap();
+    let expected_state = record.state().clone();
     let mut persisted = PersistedGameRecord::from_record(
         PersistenceMetadata {
             ruleset_id: "base".to_string(),
@@ -308,7 +304,7 @@ fn replay_verification_succeeds_for_recorded_setup_automatic_and_command_events(
 
     assert_eq!(
         verify_recorded_decisions(record.setup(), &record.recorded_decisions()).unwrap(),
-        record.state().unwrap()
+        record.state().clone()
     );
 }
 
@@ -451,7 +447,7 @@ fn pure_replay_applies_canonical_events_even_when_verification_would_fail() {
         Err(ReplayVerificationError::EventMismatch { .. })
     ));
     let replayed = persisted.replay().unwrap();
-    assert_ne!(replayed, record.state().unwrap());
+    assert_ne!(replayed, record.state().clone());
     assert!(replayed.hp.iter().any(|team_hp| team_hp.hp == 0));
 }
 
@@ -476,10 +472,8 @@ fn filesystem_persistence_saves_loads_event_logs_and_optional_snapshots() {
         },
         &record,
     );
-    let snapshot = PersistedSnapshot::from_state(
-        record.recorded_event_count() as u64,
-        record.state().unwrap(),
-    );
+    let snapshot =
+        PersistedSnapshot::from_state(record.recorded_event_count() as u64, record.state().clone());
 
     adapter.save_event_log("game-1", &persisted).unwrap();
     assert_eq!(adapter.load_snapshot("game-1").unwrap(), None);
@@ -489,7 +483,7 @@ fn filesystem_persistence_saves_loads_event_logs_and_optional_snapshots() {
     let loaded_snapshot = adapter.load_snapshot("game-1").unwrap().unwrap();
 
     assert_eq!(loaded_log, persisted);
-    assert_eq!(loaded_log.replay().unwrap(), record.state().unwrap());
+    assert_eq!(loaded_log.replay().unwrap(), record.state().clone());
     assert_eq!(loaded_snapshot, snapshot);
 
     fs::remove_dir_all(root).unwrap();
@@ -536,10 +530,8 @@ fn persistence_ports_round_trip_event_log_and_optional_snapshot_checkpoint() {
         },
         &record,
     );
-    let snapshot = PersistedSnapshot::from_state(
-        record.recorded_event_count() as u64,
-        record.state().unwrap(),
-    );
+    let snapshot =
+        PersistedSnapshot::from_state(record.recorded_event_count() as u64, record.state().clone());
 
     let mut storage = InMemoryPersistence::default();
     storage.save_event_log("game-1", &persisted).unwrap();
@@ -548,8 +540,8 @@ fn persistence_ports_round_trip_event_log_and_optional_snapshot_checkpoint() {
     let loaded_log = storage.load_event_log("game-1").unwrap().unwrap();
     let loaded_snapshot = storage.load_snapshot("game-1").unwrap().unwrap();
 
-    assert_eq!(loaded_log.replay().unwrap(), record.state().unwrap());
-    assert_eq!(loaded_snapshot.state, record.state().unwrap());
+    assert_eq!(loaded_log.replay().unwrap(), record.state().clone());
+    assert_eq!(loaded_snapshot.state, record.state().clone());
     assert_eq!(
         loaded_snapshot.state.covered_passives[0].cards,
         vec![card(2), card(7)]
@@ -577,6 +569,7 @@ fn game_record_repository_round_trip_loads_game_record_without_persisted_dto_cal
 
     assert_eq!(loaded.setup(), record.setup());
     assert_eq!(loaded.events(), record.events());
-    assert_eq!(loaded.state().unwrap(), record.state().unwrap());
+    assert_eq!(loaded.state().clone(), record.state().clone());
+    assert_eq!(repository.load_snapshot("game-1").unwrap(), None);
     assert_eq!(repository.load_record("missing").unwrap(), None);
 }
