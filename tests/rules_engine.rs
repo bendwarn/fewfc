@@ -141,7 +141,7 @@ fn add_status(state: &mut GameState, status: StatusEffect) {
 }
 
 fn state_after_cannot_act_pass(record: &GameRecord, player: PlayerId) -> GameState {
-    let mut state = record.state().unwrap();
+    let mut state = record.state().clone();
     add_status(&mut state, cannot_act_status(player.clone()));
 
     let events = handle_command(
@@ -246,7 +246,7 @@ fn new_game_deals_initial_hands_from_prepared_deck_order() {
         ]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(
         state.hand(&PlayerId::new("p1")),
         Some(vec![card(1), card(2), card(3), card(4)].as_slice())
@@ -262,7 +262,7 @@ fn new_game_deals_initial_hands_from_prepared_deck_order() {
 #[test]
 fn new_game_preserves_card_instance_definitions_for_lookup() {
     let record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
-    let state = record.state().unwrap();
+    let state = record.state().clone();
 
     assert_eq!(
         state.card_def(card(1)),
@@ -279,7 +279,7 @@ fn new_game_preserves_card_instance_definitions_for_lookup() {
 #[test]
 fn game_state_resolves_card_instance_elements_for_formation_matching() {
     let record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
-    let state = record.state().unwrap();
+    let state = record.state().clone();
 
     assert_eq!(state.card_element(card(1)), Some(Element::Metal));
     assert_eq!(state.card_element(card(2)), Some(Element::Wood));
@@ -311,7 +311,7 @@ fn new_game_persists_deck_order_and_replay_matches_current_state() {
         })
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(state.phase, Phase::TurnStart);
     assert_eq!(record.setup().ruleset, RulesetId::base());
     assert_eq!(state.current_player(), Some(&PlayerId::new("p1")));
@@ -351,7 +351,7 @@ fn game_record_facade_applies_commands_and_verifies_replay() {
 
     let view = record.public_view(Viewer::Observer).unwrap();
     assert_eq!(view.phase, Phase::TurnDraw);
-    assert_eq!(record.verify_replay().unwrap(), record.state().unwrap());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }
 
 #[test]
@@ -711,7 +711,7 @@ fn team_mode_attack_resolves_previous_player_and_opposing_team_without_declared_
         }]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(
         state.hp,
         vec![
@@ -733,7 +733,7 @@ fn rule_derived_attack_targets_reject_declared_targets_without_events() {
     let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     record.advance_automatic().unwrap();
     let events_before = record.events().to_vec();
-    let state_before = record.state().unwrap();
+    let state_before = record.state().clone();
 
     assert_eq!(
         record.handle(Command::PerformFormation {
@@ -749,7 +749,7 @@ fn rule_derived_attack_targets_reject_declared_targets_without_events() {
         ))
     );
     assert_eq!(record.events(), events_before.as_slice());
-    assert_eq!(record.state().unwrap(), state_before);
+    assert_eq!(record.state().clone(), state_before);
 }
 
 #[test]
@@ -758,7 +758,7 @@ fn rule_derived_active_spell_targets_reject_declared_targets_without_events() {
         GameRecord::start(two_player_setup(), deck_starting_with(&[2, 7, 1, 4])).unwrap();
     record.advance_automatic().unwrap();
     let events_before = record.events().to_vec();
-    let state_before = record.state().unwrap();
+    let state_before = record.state().clone();
 
     assert_eq!(
         record.handle(Command::PerformFormation {
@@ -774,13 +774,13 @@ fn rule_derived_active_spell_targets_reject_declared_targets_without_events() {
         ))
     );
     assert_eq!(record.events(), events_before.as_slice());
-    assert_eq!(record.state().unwrap(), state_before);
+    assert_eq!(record.state().clone(), state_before);
 }
 
 #[test]
 fn new_game_state_exposes_core_status_shields_and_passive_zones() {
     let record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
-    let state = record.state().unwrap();
+    let state = record.state().clone();
 
     assert_eq!(state.status, GameStatus::InProgress);
     assert_eq!(state.shield(&PlayerId::new("p1")), Some(0));
@@ -1021,7 +1021,7 @@ fn turn_end_status_expiration_is_event_logged_before_turn_ends() {
 fn permanent_statuses_do_not_expire_and_remain_visible_to_command_validation() {
     let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     record.advance_automatic().unwrap();
-    let mut state = record.state().unwrap();
+    let mut state = record.state().clone();
     add_status(&mut state, cannot_act_status(PlayerId::new("p1")));
 
     assert_eq!(advance_state_automatic(&state).unwrap(), Vec::new());
@@ -1046,7 +1046,7 @@ fn permanent_statuses_do_not_expire_and_remain_visible_to_command_validation() {
 fn invalid_command_returns_error_without_appending_events_or_changing_state() {
     let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     let events_before = record.events().to_vec();
-    let state_before = record.state().unwrap();
+    let state_before = record.state().clone();
 
     let result = record.handle(Command::ChooseTurnDiscard {
         player: PlayerId::new("p1"),
@@ -1061,7 +1061,7 @@ fn invalid_command_returns_error_without_appending_events_or_changing_state() {
         }))
     );
     assert_eq!(record.events(), events_before.as_slice());
-    assert_eq!(record.state().unwrap(), state_before);
+    assert_eq!(record.state().clone(), state_before);
 }
 
 #[test]
@@ -1076,7 +1076,7 @@ fn automatic_advance_stops_at_main_after_turn_start() {
         }]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(state.phase, Phase::Main);
     assert_eq!(record.replay().unwrap(), state);
 }
@@ -1114,7 +1114,7 @@ fn pass_action_with_cards_is_rejected_without_changing_state() {
     let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     record.advance_automatic().unwrap();
     let events_before = record.events().to_vec();
-    let state_before = record.state().unwrap();
+    let state_before = record.state().clone();
 
     let result = record.handle(Command::PassAction {
         player: PlayerId::new("p1"),
@@ -1128,14 +1128,14 @@ fn pass_action_with_cards_is_rejected_without_changing_state() {
         }))
     );
     assert_eq!(record.events(), events_before.as_slice());
-    assert_eq!(record.state().unwrap(), state_before);
+    assert_eq!(record.state().clone(), state_before);
 }
 
 #[test]
 fn pass_action_is_allowed_when_player_cannot_act_by_status() {
     let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     record.advance_automatic().unwrap();
-    let mut state = record.state().unwrap();
+    let mut state = record.state().clone();
     add_status(&mut state, cannot_act_status(PlayerId::new("p1")));
 
     assert_eq!(
@@ -1462,7 +1462,7 @@ fn perform_attack_formation_damages_previous_players_team_and_moves_cards_to_dis
         }]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(state.phase, Phase::TurnDraw);
     assert_eq!(
         state.hand(&PlayerId::new("p1")),
@@ -1525,7 +1525,7 @@ fn immediate_active_spell_resolves_through_perform_formation() {
         ]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(state.phase, Phase::TurnDraw);
     assert_eq!(state.hand(&PlayerId::new("p1")), Some([].as_slice()));
     assert_eq!(state.discard, vec![card(2), card(7), card(1), card(4)]);
@@ -1567,7 +1567,7 @@ fn generating_formation_heals_current_players_team_through_public_command_flow()
         ]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(
         state
             .hp
@@ -1621,7 +1621,7 @@ fn generating_formation_targets_own_side_in_team_mode_without_declared_targets()
         ]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(
         state.hp,
         vec![
@@ -1825,7 +1825,7 @@ fn metamorphosis_copies_previous_players_last_base_formation_effect() {
         ]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert!(state.pending_choice.is_none());
     assert_eq!(state.phase, Phase::TurnDraw);
     assert_eq!(state.shield(&PlayerId::new("p2")), Some(0));
@@ -1896,7 +1896,7 @@ fn chaos_requests_two_next_player_hand_cards_and_returns_them_to_deck_top() {
         ]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(
         state.hand(&PlayerId::new("p2")),
         Some(vec![card(6), card(7), card(8)].as_slice())
@@ -1943,7 +1943,7 @@ fn active_spell_intent_can_change_hp_through_public_command_flow() {
         ]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(
         state
             .hp
@@ -2088,7 +2088,7 @@ fn answering_effect_choice_resumes_resolution_deterministically() {
         ]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert!(state.pending_choice.is_none());
     assert_eq!(state.phase, Phase::TurnDraw);
     assert_eq!(
@@ -2113,7 +2113,7 @@ fn commands_and_automatic_advance_wait_while_effect_choice_is_pending() {
         .unwrap();
 
     let events_before = record.events().to_vec();
-    let state_before = record.state().unwrap();
+    let state_before = record.state().clone();
 
     assert_eq!(
         record.handle(Command::PassAction {
@@ -2127,9 +2127,9 @@ fn commands_and_automatic_advance_wait_while_effect_choice_is_pending() {
         ))
     );
     assert_eq!(record.events(), events_before.as_slice());
-    assert_eq!(record.state().unwrap(), state_before);
+    assert_eq!(record.state().clone(), state_before);
     assert_eq!(record.advance_automatic().unwrap(), Vec::new());
-    assert_eq!(record.state().unwrap(), state_before);
+    assert_eq!(record.state().clone(), state_before);
 }
 
 #[test]
@@ -2154,7 +2154,7 @@ fn performing_passive_spell_covers_cards_and_consumes_action() {
         }]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(state.phase, Phase::TurnDraw);
     assert_eq!(
         state.hand(&PlayerId::new("p1")),
@@ -2270,7 +2270,7 @@ fn defense_prevents_incoming_attack_damage_and_records_action_modification() {
         ]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert!(state.covered_passives.is_empty());
     assert_eq!(state.discard, vec![card(10), card(2), card(7), card(9)]);
     assert_eq!(
@@ -2315,7 +2315,7 @@ fn seal_passive_flips_as_no_effect_against_incoming_attack_and_is_discarded() {
         })
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert!(state.covered_passives.is_empty());
     assert_eq!(state.discard, vec![card(10), card(3), card(8), card(9)]);
     assert_eq!(
@@ -2430,7 +2430,7 @@ fn seal_marks_incoming_passive_cover_as_sealed_without_exposing_the_marker() {
         ]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(state.discard, vec![card(10), card(3), card(8)]);
     assert_eq!(
         state.covered_passives,
@@ -2504,7 +2504,7 @@ fn sealed_passive_later_flips_as_no_effect_and_is_discarded() {
         })
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert!(state.covered_passives.is_empty());
     assert!(state.discard.contains(&card(4)));
     assert!(state.discard.contains(&card(9)));
@@ -2523,7 +2523,7 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
             declared_targets: Vec::new(),
         })
         .unwrap();
-    let state = record.state().unwrap();
+    let state = record.state().clone();
 
     assert_eq!(
         public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).covered_passives,
@@ -2556,7 +2556,7 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
 #[test]
 fn public_state_view_includes_client_state_and_filters_hands_by_viewer() {
     let record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
-    let state = record.state().unwrap();
+    let state = record.state().clone();
 
     let p1_view = public_view::state_for(&state, Viewer::Player(PlayerId::new("p1")));
     assert_eq!(p1_view.status, GameStatus::InProgress);
@@ -2720,7 +2720,7 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
             declared_targets: Vec::new(),
         })
         .unwrap();
-    let state = record.state().unwrap();
+    let state = record.state().clone();
 
     assert_eq!(
         public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).pending_choice,
@@ -2920,14 +2920,14 @@ fn record_event_feed_is_viewer_filtered_and_canonical_events_remain_replay_sourc
             sealed: false,
         })
     );
-    assert_eq!(record.replay().unwrap(), record.state().unwrap());
+    assert_eq!(record.replay().unwrap(), record.state().clone());
 }
 
 #[test]
 fn invalid_perform_formation_commands_leave_events_and_state_unchanged() {
     let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     let turn_start_events = record.events().to_vec();
-    let turn_start_state = record.state().unwrap();
+    let turn_start_state = record.state().clone();
 
     assert_eq!(
         record.handle(Command::PerformFormation {
@@ -2942,7 +2942,7 @@ fn invalid_perform_formation_commands_leave_events_and_state_unchanged() {
         }))
     );
     assert_eq!(record.events(), turn_start_events.as_slice());
-    assert_eq!(record.state().unwrap(), turn_start_state);
+    assert_eq!(record.state().clone(), turn_start_state);
 
     record.advance_automatic().unwrap();
 
@@ -3001,11 +3001,11 @@ fn invalid_perform_formation_commands_leave_events_and_state_unchanged() {
 
     for (command, expected_error) in cases {
         let events_before = record.events().to_vec();
-        let state_before = record.state().unwrap();
+        let state_before = record.state().clone();
 
         assert_eq!(record.handle(command), Err(expected_error));
         assert_eq!(record.events(), events_before.as_slice());
-        assert_eq!(record.state().unwrap(), state_before);
+        assert_eq!(record.state().clone(), state_before);
     }
 }
 
@@ -3059,7 +3059,7 @@ fn perform_formation_matches_cards_by_instance_definitions() {
         }]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(
         state.hand(&PlayerId::new("p1")),
         Some(vec![card(2), card(3)].as_slice())
@@ -3129,7 +3129,7 @@ fn attack_hp_delta_records_clamped_damage() {
         }]
     );
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(
         state.hp,
         vec![
@@ -3159,7 +3159,7 @@ fn attack_that_reduces_a_team_to_zero_finishes_game_with_opposing_team_winner() 
         })
         .unwrap();
 
-    let state = record.state().unwrap();
+    let state = record.state().clone();
     assert_eq!(
         state.status,
         GameStatus::Finished {
@@ -3194,7 +3194,7 @@ fn commands_after_game_over_are_rejected_without_events_or_state_changes() {
         })
         .unwrap();
     let events_before = record.events().to_vec();
-    let state_before = record.state().unwrap();
+    let state_before = record.state().clone();
 
     assert_eq!(
         record.handle(Command::PassAction {
@@ -3204,7 +3204,7 @@ fn commands_after_game_over_are_rejected_without_events_or_state_changes() {
         Err(GameError::Validation(ValidationError::GameFinished))
     );
     assert_eq!(record.events(), events_before.as_slice());
-    assert_eq!(record.state().unwrap(), state_before);
+    assert_eq!(record.state().clone(), state_before);
 }
 
 #[test]
@@ -3220,11 +3220,11 @@ fn automatic_advance_stops_after_game_over() {
         })
         .unwrap();
     let events_before = record.events().to_vec();
-    let state_before = record.state().unwrap();
+    let state_before = record.state().clone();
 
     assert_eq!(record.advance_automatic().unwrap(), Vec::<GameEvent>::new());
     assert_eq!(record.events(), events_before.as_slice());
-    assert_eq!(record.state().unwrap(), state_before);
+    assert_eq!(record.state().clone(), state_before);
 }
 
 #[test]
@@ -3471,7 +3471,7 @@ fn elemental_attack_without_relationship_to_previous_players_last_element_uses_n
 
 #[test]
 fn shield_absorbs_attack_damage_before_hp_and_skips_element_interaction() {
-    let mut state = record_after_p1_metal_attack_on_turn_1().state().unwrap();
+    let mut state = record_after_p1_metal_attack_on_turn_1().state().clone();
     apply_event(
         &mut state,
         &GameEvent::ShieldChanged {

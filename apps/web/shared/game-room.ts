@@ -2,7 +2,6 @@ import type {
   LocalGameResponse,
   PlayerId,
   PlayableFormation,
-  PublicGameEvent,
   PublicGameState,
   RecordedDecision,
 } from '../app/types/fewfc'
@@ -35,10 +34,9 @@ export interface StoredGameEvent {
 }
 
 export interface GameRoomSnapshot {
+  schemaVersion: 2
   sequence: number
   rulesRecord: RecordedDecision[]
-  publicState: PublicGameState
-  publicEvents: PublicGameEvent[]
 }
 
 export type OnlineGameAction =

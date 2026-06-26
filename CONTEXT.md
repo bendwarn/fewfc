@@ -16,11 +16,11 @@ The first official ruleset implemented by the engine.
 _Avoid_: team mode ruleset
 
 **Game Record**:
-The canonical persisted game history made from setup, event log, and optional snapshot cache.
+The canonical persisted game history made from setup and accepted setup, command, and automatic advancement decisions.
 _Avoid_: save file, snapshot
 
 **Game State**:
-The current projection derived from game setup plus canonical events.
+The current projection derived from a **Game Record**.
 _Avoid_: record, save
 
 **Game Event**:
@@ -171,7 +171,7 @@ _Avoid_: callback response
 - **Cannot Act** allows an action pass for the affected **Player**
 - A **Choice Requested** creates one **Pending Choice**
 - A **Choice Made** answers one **Pending Choice**
-- A **Game Record** replays **Game Events** into **Game State**
+- A **Game Record** projects **Game Events** into **Game State**
 - A **Public View** is derived from canonical data and is not used for replay
 - A **Public Event Feed** is derived from **Game Events**
 - A **Public State View** is derived from **Game State**

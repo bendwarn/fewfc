@@ -35,7 +35,6 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
         ApiAction::PassAction => {
             let current_player = record
                 .state()
-                .map_err(ApiError::Game)?
                 .current_player()
                 .cloned()
                 .ok_or_else(|| ApiError::Message("missing current player".to_string()))?;
@@ -48,9 +47,8 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
             advance_after_command(&mut record)?;
         }
         ApiAction::PlayableFormations { player, cards } => {
-            let state = record.state().map_err(ApiError::Game)?;
             let candidates = BaseRuleset::new()
-                .playable_formations(&state, &PlayerId::new(player), &cards)
+                .playable_formations(record.state(), &PlayerId::new(player), &cards)
                 .map_err(ApiError::Game)?;
             return Ok(response_for(
                 &record,
@@ -116,7 +114,7 @@ fn record_from_request(
 ) -> Result<GameRecord, ApiError> {
     match record {
         Some(recorded_decisions) if !recorded_decisions.is_empty() => {
-            GameRecord::from_recorded_decisions(setup.clone(), recorded_decisions, None)
+            GameRecord::from_recorded_decisions(setup.clone(), recorded_decisions)
                 .map_err(|error| ApiError::Message(format!("{error:?}")))
         }
         _ => GameRecord::start(setup.clone(), default_deck()).map_err(ApiError::Game),
