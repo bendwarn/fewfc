@@ -33,6 +33,55 @@ export interface GameRoomMetadata {
   updatedAt: string
 }
 
+interface StoredGameRoomMember extends Partial<GameRoomMember> {
+  userId: string
+  player: PlayerId
+  ready: boolean
+}
+
+interface StoredGameRoomMetadata extends Omit<
+  GameRoomMetadata,
+  'schemaVersion' | 'name' | 'capacity' | 'members'
+> {
+  schemaVersion: 1 | 2
+  name?: string
+  capacity?: GameRoomCapacity
+  members: StoredGameRoomMember[]
+}
+
+export function normalizeGameRoomMetadata(
+  stored: GameRoomMetadata | StoredGameRoomMetadata,
+): GameRoomMetadata {
+  const ownerIndex = stored.members.findIndex((member) => member.owner === true)
+  const resolvedOwnerIndex = ownerIndex >= 0 ? ownerIndex : 0
+  const capacity: GameRoomCapacity = stored.capacity === 4 || stored.players.length === 4 ? 4 : 2
+
+  return {
+    schemaVersion: 2,
+    gameId: stored.gameId,
+    name: stored.name?.trim() || stored.gameId,
+    access: stored.access,
+    capacity,
+    ruleset: stored.ruleset,
+    players: stored.players,
+    members: stored.members.map((member, index) => {
+      const owner = index === resolvedOwnerIndex
+
+      return {
+        userId: member.userId,
+        displayName: member.displayName?.trim() || member.player,
+        player: member.player,
+        ready: owner ? false : member.ready,
+        connected: member.connected ?? false,
+        owner,
+      }
+    }),
+    status: stored.status,
+    createdAt: stored.createdAt,
+    updatedAt: stored.updatedAt,
+  }
+}
+
 export interface StoredGameEvent {
   sequence: number
   type: string

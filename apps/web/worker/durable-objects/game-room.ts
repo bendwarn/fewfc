@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers'
 import {
   emptyPublicState,
+  normalizeGameRoomMetadata,
   type GameRoomAccess,
   type GameRoomCapacity,
   type GameRoomMember,
@@ -948,7 +949,19 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   }
 
   private async metadata(): Promise<GameRoomMetadata | undefined> {
-    return await this.ctx.storage.get<GameRoomMetadata>('metadata')
+    const stored = await this.ctx.storage.get<GameRoomMetadata>('metadata')
+
+    if (!stored) {
+      return undefined
+    }
+
+    const metadata = normalizeGameRoomMetadata(stored)
+
+    if (JSON.stringify(metadata) !== JSON.stringify(stored)) {
+      await this.ctx.storage.put('metadata', metadata)
+    }
+
+    return metadata
   }
 
   private async nextSequence(): Promise<number> {
