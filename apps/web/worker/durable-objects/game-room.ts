@@ -854,10 +854,24 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     const canCancelPendingCommand = draft?.actorUserId === actorUserId
     const snapshot = canCancelPendingCommand ? draft.snapshot : await this.requireSnapshot()
     const publicRules = await this.callRules({ type: 'refresh' }, viewer, snapshot)
+    const responseMetadata: GameRoomMetadata = (
+      currentMetadata.status === 'Active'
+      && publicRules.state.status === 'Finished'
+    )
+      ? {
+          ...currentMetadata,
+          status: 'Finished',
+          updatedAt: new Date().toISOString(),
+        }
+      : currentMetadata
+
+    if (responseMetadata !== currentMetadata) {
+      await this.ctx.storage.put('metadata', responseMetadata)
+    }
 
     return {
       gameId: currentMetadata.gameId,
-      metadata: currentMetadata,
+      metadata: responseMetadata,
       state: publicRules.state,
       events: publicRules.events.map((event) => ({
         ...event,

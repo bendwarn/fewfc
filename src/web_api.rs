@@ -409,7 +409,10 @@ struct WebPublicGameState {
 impl WebPublicGameState {
     fn from_public(state: PublicGameState, labels: &HashMap<CardInstanceId, String>) -> Self {
         Self {
-            status: format!("{:?}", state.status),
+            status: match &state.status {
+                crate::domain::GameStatus::InProgress => "InProgress".to_string(),
+                crate::domain::GameStatus::Finished { .. } => "Finished".to_string(),
+            },
             turn_number: state.turn_number,
             phase: format!("{:?}", state.phase),
             current_player: state
@@ -1029,6 +1032,23 @@ mod tests {
             serde_json::to_string(events).expect("visible events should serialize");
         assert!(!visible_events.contains("DeckPrepared"));
         assert!(!visible_events.contains("CardsDealt"));
+    }
+
+    #[test]
+    fn finished_game_status_uses_the_stable_web_value() {
+        let ruleset = BaseRuleset::new();
+        let setup = ruleset.sample_game_setup();
+        let mut state = crate::domain::GameState::from_setup(&setup);
+        state.status = crate::domain::GameStatus::Finished {
+            outcome: crate::domain::GameOutcome::Team(setup.players[0].team.clone()),
+        };
+        let web_state = WebPublicGameState::from_public(
+            crate::public_view::state_for(&state, Viewer::Player(setup.players[0].id.clone())),
+            &ruleset.card_labels(&setup),
+        );
+        let json = serde_json::to_value(web_state).expect("web state should serialize");
+
+        assert_eq!(json["status"], "Finished");
     }
 
     #[test]
