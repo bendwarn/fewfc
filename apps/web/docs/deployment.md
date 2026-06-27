@@ -26,7 +26,7 @@ export default defineNuxtConfig({
 })
 ```
 
-Wrangler uses `worker/index.ts` as a thin wrapper around the Nuxt build output. This wrapper exports the default Nuxt Worker handler and the `GameRoom` Durable Object class required by the binding in `wrangler.toml`.
+Wrangler uses `worker/index.ts` as an authenticated WebSocket gateway around the Nuxt build output. It exports the `GameRoom` and `PlayerNotifications` Durable Object classes required by `wrangler.toml`.
 
 Build and run the Cloudflare Worker locally:
 
@@ -70,13 +70,20 @@ Durable Objects should own authoritative online Game Records. Browser clients su
 
 Current Worker game-room endpoints:
 
-- `POST /api/games` creates or returns a Durable Object game room for the authenticated user.
+- `GET /api/games` returns joinable public rooms and the authenticated player's rooms.
+- `POST /api/games` creates a two-player or four-player public/private room.
 - `GET /api/games/:id` returns a viewer-filtered room snapshot derived from the authenticated user's seat.
+- `POST /api/games/:id/join` joins a room by public listing, invitation link, or room code.
+- `POST /api/games/:id/ready` toggles a non-owner player's readiness.
+- `POST /api/games/:id/start` atomically validates connected/ready players and starts the match.
+- `POST /api/games/:id/leave`, `/remove`, and `/dissolve` manage waiting-room membership.
 - `POST /api/games/:id/commands` records an idempotent command by `commandId` and derives its Player from the authenticated room membership.
+- `GET /api/games/:id/socket` pushes viewer-filtered room and game state.
+- `GET /api/notifications/socket` pushes transient player notifications and public-room invalidations.
 
 The browser cannot choose its own `player` or `viewer` identity. Nitro resolves the Better Auth session, and the `GameRoom` Durable Object maps the immutable account ID to a game Player seat.
 
-The D1 database stores Better Auth users, accounts, sessions, verification records, and the app-owned `player_profile` table. The `GameRoom` Durable Object stores room membership, metadata, an audit event log, and a snapshot backed by the Rust rules-engine record/state/events returned from the Worker Wasm adapter.
+The D1 database stores Better Auth data, player profiles, the room discovery index, and player-to-room membership. `GameRoom` stores authoritative room metadata, an audit event log, WebSocket sessions, and the Rust rules-engine record. `PlayerNotifications` owns the single global WebSocket channel used for targeted notifications and room-list invalidation.
 
 ## Local rules-engine bridge
 
@@ -86,4 +93,4 @@ The current Nuxt server route at `server/api/local-game.post.ts` is a local deve
 cargo run --quiet --bin fewfc_local_game_api
 ```
 
-That route is useful for exercising the real Rust rules engine from the UI without rewriting rule behavior in TypeScript. It is not the Cloudflare deployment adapter because Cloudflare Workers cannot spawn local Cargo processes. Before deploying hosted multiplayer, replace this local bridge with a Worker/Wasm adapter or a dedicated service boundary that runs the same Rust rules-engine API.
+That route remains useful for isolated Nuxt development. Hosted multiplayer uses the same Rust API compiled to `worker/wasm/fewfc.wasm`; Cloudflare does not spawn Cargo processes at runtime.

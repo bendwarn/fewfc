@@ -1,39 +1,51 @@
-import type { PlayerId } from '../../app/types/fewfc'
-import type { GameRoomAccess } from '../../shared/game-room'
-
-function playerList(value: unknown): PlayerId[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined
-  }
-
-  const players = value.filter((player): player is PlayerId => player === 'alice' || player === 'bob')
-
-  return players.length > 0 ? players : undefined
-}
+import type { GameRoomAccess, GameRoomCapacity } from '../../shared/game-room'
 
 function roomAccess(value: unknown): GameRoomAccess {
   return value === 'public' ? 'public' : 'private'
 }
 
+function roomCapacity(value: unknown): GameRoomCapacity {
+  return value === 4 ? 4 : 2
+}
+
+function roomCode(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  const bytes = new Uint8Array(7)
+  crypto.getRandomValues(bytes)
+
+  return [...bytes]
+    .map((byte) => alphabet[byte % alphabet.length])
+    .join('')
+}
+
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
   const body = await readBody<{
-    gameId?: string
     name?: string
     access?: unknown
-    players?: unknown
+    capacity?: unknown
   }>(event)
-  const gameId = body.gameId?.trim() || crypto.randomUUID()
+  const gameId = roomCode()
+  const name = body.name?.trim() || gameId
   const response = await callGameRoom(event, gameId, {
     type: 'createGame',
     gameId,
     actorUserId: session.user.id,
+    actorName: session.user.name,
     access: roomAccess(body.access),
-    players: playerList(body.players),
+    capacity: roomCapacity(body.capacity),
+    name,
   })
 
+  if (!response.metadata.members.some((member) => member.userId === session.user.id)) {
+    throw createError({
+      statusCode: 409,
+      statusMessage: 'Room code collision. Create the room again.',
+    })
+  }
+
   await upsertPublicRoom(event, response, {
-    name: body.name,
+    name,
   })
 
   return response

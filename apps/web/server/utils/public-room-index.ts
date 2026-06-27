@@ -59,6 +59,20 @@ async function ensurePublicRoomTable(event: H3Event) {
     .run()
 
   await db(event)
+    .prepare(`
+      CREATE TABLE IF NOT EXISTS game_room_member (
+        game_id text NOT NULL,
+        user_id text NOT NULL,
+        PRIMARY KEY (game_id, user_id)
+      )
+    `)
+    .run()
+
+  await db(event)
+    .prepare('CREATE INDEX IF NOT EXISTS game_room_member_user_idx ON game_room_member (user_id)')
+    .run()
+
+  await db(event)
     .prepare('CREATE INDEX IF NOT EXISTS public_game_room_access_status_idx ON public_game_room (access, status)')
     .run()
 
@@ -106,10 +120,6 @@ export async function upsertPublicRoom(
 ) {
   const metadata = response.metadata
 
-  if (metadata.access !== 'public') {
-    return
-  }
-
   await ensurePublicRoomTable(event)
 
   const owner = metadata.members[0]
@@ -155,6 +165,24 @@ export async function upsertPublicRoom(
       nameOverride ? 1 : 0,
     )
     .run()
+
+  await db(event)
+    .prepare('DELETE FROM game_room_member WHERE game_id = ?')
+    .bind(metadata.gameId)
+    .run()
+
+  for (const member of metadata.members) {
+    await db(event)
+      .prepare('INSERT OR IGNORE INTO game_room_member (game_id, user_id) VALUES (?, ?)')
+      .bind(metadata.gameId, member.userId)
+      .run()
+  }
+
+  const notifications = workerEnv(event).PLAYER_NOTIFICATIONS
+  const notificationHub = notifications.get(notifications.idFromName('global'))
+  await notificationHub.fetch('https://player-notifications.internal/rooms-changed', {
+    method: 'POST',
+  })
 }
 
 export async function updatePublicRoom(event: H3Event, response: GameRoomResponse) {
@@ -181,6 +209,38 @@ export async function listPublicRooms(event: H3Event): Promise<PublicRoomSummary
       ORDER BY updated_at DESC
       LIMIT 30
     `)
+    .all<PublicRoomRow>()
+
+  return (result.results ?? [])
+    .map(rowToSummary)
+    .filter((room) => room.members.length < room.capacity)
+}
+
+export async function listPlayerRooms(
+  event: H3Event,
+  userId: string,
+): Promise<PublicRoomSummary[]> {
+  await ensurePublicRoomTable(event)
+
+  const result = await db(event)
+    .prepare(`
+      SELECT
+        room.game_id,
+        room.name,
+        room.access,
+        room.status,
+        room.owner_user_id,
+        room.players_json,
+        room.members_json,
+        room.created_at,
+        room.updated_at
+      FROM public_game_room AS room
+      INNER JOIN game_room_member AS member ON member.game_id = room.game_id
+      WHERE member.user_id = ? AND room.status != 'Dissolved'
+      ORDER BY room.updated_at DESC
+      LIMIT 50
+    `)
+    .bind(userId)
     .all<PublicRoomRow>()
 
   return (result.results ?? []).map(rowToSummary)

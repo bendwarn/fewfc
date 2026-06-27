@@ -19,3 +19,4 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 - [#31 Add serialization and filesystem persistence adapters](031-add-serialization-persistence-adapters.md)
 - [#32 Add replay verification mode](032-add-replay-verification-mode.md)
 - [#33 Add deterministic deck preparation adapter](033-add-deterministic-deck-preparation-adapter.md)
+- [#35 Build synchronized online game rooms](035-build-synchronized-online-game-rooms.md)

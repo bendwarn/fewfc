@@ -6,19 +6,25 @@ import type {
   RecordedDecision,
 } from '../app/types/fewfc'
 
-export type GameRoomStatus = 'Waiting' | 'Active' | 'Finished'
+export type GameRoomStatus = 'Waiting' | 'Active' | 'Finished' | 'Dissolved'
 export type GameRoomAccess = 'private' | 'public'
+export type GameRoomCapacity = 2 | 4
 
 export interface GameRoomMember {
   userId: string
+  displayName: string
   player: PlayerId
   ready: boolean
+  connected: boolean
+  owner: boolean
 }
 
 export interface GameRoomMetadata {
-  schemaVersion: 1
+  schemaVersion: 2
   gameId: string
+  name: string
   access: GameRoomAccess
+  capacity: GameRoomCapacity
   ruleset: 'fewfc-base'
   players: PlayerId[]
   members: GameRoomMember[]
@@ -37,11 +43,20 @@ export interface StoredGameEvent {
 }
 
 export interface GameRoomSnapshot {
-  schemaVersion: 3
+  schemaVersion: 4
   sequence: number
   firstPlayer: PlayerId
   deckSeed: string
+  setup: RulesGameSetup
   rulesRecord: RecordedDecision[]
+}
+
+export interface RulesGameSetup {
+  players: Array<{
+    id: PlayerId
+    team: string
+  }>
+  turnOrder: PlayerId[]
 }
 
 export type OnlineGameAction =
@@ -59,19 +74,43 @@ export type GameRoomRequest =
       type: 'createGame'
       gameId: string
       actorUserId: string
+      actorName: string
       access?: GameRoomAccess
-      players?: PlayerId[]
+      capacity?: GameRoomCapacity
+      name?: string
     }
   | {
       type: 'joinGame'
       actorUserId: string
+      actorName: string
     }
   | {
-      type: 'readyGame'
+      type: 'toggleReady'
+      actorUserId: string
+    }
+  | {
+      type: 'leaveGame'
+      actorUserId: string
+    }
+  | {
+      type: 'removePlayer'
+      actorUserId: string
+      targetUserId: string
+    }
+  | {
+      type: 'dissolveGame'
       actorUserId: string
     }
   | {
       type: 'startGame'
+      actorUserId: string
+    }
+  | {
+      type: 'resetGame'
+      actorUserId: string
+    }
+  | {
+      type: 'cancelPendingCommand'
       actorUserId: string
     }
   | {
@@ -88,11 +127,39 @@ export type GameRoomRequest =
 export interface GameRoomResponse extends Omit<LocalGameResponse, 'record'> {
   gameId: string
   metadata: GameRoomMetadata
+  canCancelPendingCommand: boolean
 }
 
 export interface RulesEngineResult extends LocalGameResponse {
   playableFormations: PlayableFormation[]
 }
+
+export type GameRoomSocketMessage =
+  | {
+      type: 'roomState'
+      data: GameRoomResponse
+    }
+  | {
+      type: 'roomDissolved'
+      gameId: string
+    }
+
+export interface PlayerNotification {
+  id: string
+  gameId: string
+  kind: 'gameStarted' | 'yourTurn' | 'roomChanged' | 'removed' | 'dissolved'
+  message: string
+  createdAt: string
+}
+
+export type PlayerNotificationSocketMessage =
+  | {
+      type: 'notification'
+      data: PlayerNotification
+    }
+  | {
+      type: 'roomsChanged'
+    }
 
 export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): PublicGameState {
   return {

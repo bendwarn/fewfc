@@ -20,9 +20,17 @@ migrations_dir = "migrations"
 name = "GAME_ROOM"
 class_name = "GameRoom"
 
+[[durable_objects.bindings]]
+name = "PLAYER_NOTIFICATIONS"
+class_name = "PlayerNotifications"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["GameRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["PlayerNotifications"]
 
 [env.staging]
 name = "fewfc-web-staging"
@@ -40,6 +48,14 @@ migrations_dir = "migrations"
 name = "GAME_ROOM"
 class_name = "GameRoom"
 
+[[env.staging.durable_objects.bindings]]
+name = "PLAYER_NOTIFICATIONS"
+class_name = "PlayerNotifications"
+
 [[env.staging.migrations]]
 tag = "v1"
 new_sqlite_classes = ["GameRoom"]
+
+[[env.staging.migrations]]
+tag = "v2"
+new_sqlite_classes = ["PlayerNotifications"]

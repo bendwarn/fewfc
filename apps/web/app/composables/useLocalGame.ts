@@ -8,7 +8,12 @@ import type {
   RecordedDecision,
   ViewerId,
 } from '~/types/fewfc'
-import type { GameRoomMetadata, GameRoomResponse, OnlineGameAction } from '../../shared/game-room'
+import type {
+  GameRoomMetadata,
+  GameRoomResponse,
+  GameRoomSocketMessage,
+  OnlineGameAction,
+} from '../../shared/game-room'
 
 type ViewerRef = Ref<ViewerId>
 
@@ -108,8 +113,19 @@ export function useLocalGame(viewer: ViewerRef) {
   const playableFormations = ref<PlayableFormation[]>([])
   const errorMessage = ref<string | null>(null)
   const isLoading = ref(false)
+  const interaction = ref({
+    canPass: false,
+    hasOptionalEffect: false,
+  })
+  const canCancelPendingCommand = ref(false)
+  const connectionState = ref<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle')
+  const roomDissolved = ref(false)
   const firstPlayer = ref<PlayerId>('alice')
   const deckSeed = ref(crypto.randomUUID())
+  let roomSocket: WebSocket | null = null
+  let roomSocketGameId: string | null = null
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  let reconnectAttempt = 0
 
   watch(viewer, (nextViewer) => {
     selectedCards.value = []
@@ -145,16 +161,26 @@ export function useLocalGame(viewer: ViewerRef) {
     state.value = response.state
     publicEvents.value = response.events
     playableFormations.value = response.playableFormations
+    interaction.value = response.interaction
+    canCancelPendingCommand.value = false
     errorMessage.value = null
   }
 
   function applyRoomResponse(response: GameRoomResponse) {
+    const changedRoom = onlineGameId.value !== response.gameId
     metadata.value = response.metadata
     onlineGameId.value = response.gameId
     state.value = response.state
     publicEvents.value = response.events
     playableFormations.value = response.playableFormations
+    interaction.value = response.interaction
+    canCancelPendingCommand.value = response.canCancelPendingCommand
     errorMessage.value = null
+    roomDissolved.value = response.metadata.status === 'Dissolved'
+
+    if (changedRoom && import.meta.client) {
+      connectRoomSocket(response.gameId)
+    }
   }
 
   async function submit(body: Record<string, unknown>) {
@@ -170,9 +196,9 @@ export function useLocalGame(viewer: ViewerRef) {
     }
   }
 
-  async function submitOnline(action: OnlineGameAction) {
+  async function submitOnline(action: OnlineGameAction): Promise<boolean> {
     if (!onlineGameId.value) {
-      return
+      return false
     }
 
     isLoading.value = true
@@ -185,8 +211,10 @@ export function useLocalGame(viewer: ViewerRef) {
           action,
         },
       }))
+      return true
     } catch (error) {
       errorMessage.value = error instanceof Error ? error.message : '線上房間呼叫失敗'
+      return false
     } finally {
       isLoading.value = false
     }
@@ -243,6 +271,71 @@ export function useLocalGame(viewer: ViewerRef) {
     }
   }
 
+  async function toggleReady() {
+    await roomMutation('ready')
+  }
+
+  async function leaveOnlineRoom() {
+    const successful = await roomMutation('leave')
+
+    if (successful) {
+      disconnectRoomSocket()
+      metadata.value = null
+      onlineGameId.value = null
+    }
+
+    return successful
+  }
+
+  async function removeOnlinePlayer(userId: string) {
+    return await roomMutation('remove', { userId })
+  }
+
+  async function dissolveOnlineRoom() {
+    const successful = await roomMutation('dissolve')
+
+    if (successful) {
+      disconnectRoomSocket()
+      roomDissolved.value = true
+    }
+
+    return successful
+  }
+
+  async function resetOnlineRoom() {
+    return await roomMutation('reset')
+  }
+
+  async function cancelPendingCommand() {
+    return await roomMutation('cancel-choice')
+  }
+
+  async function roomMutation(path: string, body?: Record<string, unknown>): Promise<boolean> {
+    if (!onlineGameId.value) {
+      return false
+    }
+
+    isLoading.value = true
+    errorMessage.value = null
+
+    try {
+      const response = await $fetch<GameRoomResponse>(
+        `/api/games/${onlineGameId.value}/${path}`,
+        {
+          method: 'POST',
+          body,
+        },
+      )
+      applyRoomResponse(response)
+      return true
+    } catch (error) {
+      errorMessage.value = error instanceof Error ? error.message : '房間操作失敗'
+      return false
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   async function startSampleGame(nextFirstPlayer: PlayerId = 'alice') {
     metadata.value = null
     onlineGameId.value = null
@@ -258,10 +351,10 @@ export function useLocalGame(viewer: ViewerRef) {
   }
 
   async function passAction() {
-    selectedCards.value = []
-
     if (onlineGameId.value) {
-      await submitOnline({ type: 'passAction' })
+      if (await submitOnline({ type: 'passAction' })) {
+        selectedCards.value = []
+      }
       return
     }
 
@@ -327,15 +420,15 @@ export function useLocalGame(viewer: ViewerRef) {
       return
     }
 
-    selectedCards.value = []
-
     if (choice.kind === 'TurnDrawDiscard') {
       if (onlineGameId.value) {
-        await submitOnline({
+        if (await submitOnline({
           type: 'chooseTurnDiscard',
           player: choice.player,
           card,
-        })
+        })) {
+          selectedCards.value = []
+        }
         return
       }
 
@@ -350,16 +443,19 @@ export function useLocalGame(viewer: ViewerRef) {
         deckSeed: deckSeed.value,
         record: record.value,
       })
+      selectedCards.value = []
       return
     }
 
     if (choice.kind === 'EffectGenerated') {
       if (onlineGameId.value) {
-        await submitOnline({
+        if (await submitOnline({
           type: 'answerEffectChoice',
           player: choice.player,
           cards: [card],
-        })
+        }) && !canCancelPendingCommand.value) {
+          selectedCards.value = []
+        }
         return
       }
 
@@ -374,6 +470,7 @@ export function useLocalGame(viewer: ViewerRef) {
         deckSeed: deckSeed.value,
         record: record.value,
       })
+      selectedCards.value = []
     }
   }
 
@@ -395,15 +492,16 @@ export function useLocalGame(viewer: ViewerRef) {
     }
 
     const cards = [...selectedCards.value]
-    selectedCards.value = []
 
     if (onlineGameId.value) {
-      await submitOnline({
+      if (await submitOnline({
         type: 'performFormation',
         player,
         formationId: formation.id,
         cards,
-      })
+      }) && !canCancelPendingCommand.value) {
+        selectedCards.value = []
+      }
       return
     }
 
@@ -419,7 +517,84 @@ export function useLocalGame(viewer: ViewerRef) {
       deckSeed: deckSeed.value,
       record: record.value,
     })
+    selectedCards.value = []
   }
+
+  function connectRoomSocket(gameId = onlineGameId.value) {
+    if (!import.meta.client || !gameId) {
+      return
+    }
+
+    if (
+      roomSocket
+      && roomSocket.readyState <= WebSocket.OPEN
+      && roomSocketGameId === gameId
+    ) {
+      return
+    }
+
+    clearTimeout(reconnectTimer)
+    connectionState.value = reconnectAttempt > 0 ? 'reconnecting' : 'connecting'
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const socket = new WebSocket(
+      `${protocol}//${window.location.host}/api/games/${encodeURIComponent(gameId)}/socket`,
+    )
+    roomSocket = socket
+    roomSocketGameId = gameId
+
+    socket.addEventListener('open', () => {
+      reconnectAttempt = 0
+      connectionState.value = 'connected'
+    })
+
+    socket.addEventListener('message', (event) => {
+      if (typeof event.data !== 'string' || event.data === 'pong') {
+        return
+      }
+
+      const message = JSON.parse(event.data) as GameRoomSocketMessage
+
+      if (message.type === 'roomState') {
+        applyRoomResponse(message.data)
+        return
+      }
+
+      roomDissolved.value = true
+      disconnectRoomSocket()
+    })
+
+    socket.addEventListener('close', () => {
+      if (roomSocket !== socket || onlineGameId.value !== gameId || roomDissolved.value) {
+        return
+      }
+
+      reconnectAttempt += 1
+      connectionState.value = 'reconnecting'
+      reconnectTimer = setTimeout(
+        () => connectRoomSocket(gameId),
+        Math.min(1000 * (2 ** (reconnectAttempt - 1)), 10000),
+      )
+    })
+
+    socket.addEventListener('error', () => {
+      socket.close()
+    })
+  }
+
+  function disconnectRoomSocket() {
+    clearTimeout(reconnectTimer)
+    reconnectAttempt = 0
+    const socket = roomSocket
+    roomSocket = null
+    roomSocketGameId = null
+    connectionState.value = 'idle'
+
+    if (socket && socket.readyState < WebSocket.CLOSING) {
+      socket.close(1000, 'room closed')
+    }
+  }
+
+  onBeforeUnmount(disconnectRoomSocket)
 
   return {
     metadata,
@@ -430,10 +605,21 @@ export function useLocalGame(viewer: ViewerRef) {
     playableFormations,
     errorMessage,
     isLoading,
+    interaction,
+    canCancelPendingCommand,
+    connectionState,
+    roomDissolved,
     startSampleGame,
     applyRoomResponse,
     refreshOnlineGame,
     startOnlineGame,
+    toggleReady,
+    leaveOnlineRoom,
+    removeOnlinePlayer,
+    dissolveOnlineRoom,
+    resetOnlineRoom,
+    cancelPendingCommand,
+    disconnectRoomSocket,
     passAction,
     advanceAutomatic,
     canSelectCard,

@@ -1,14 +1,14 @@
 use crate::application::{BaseRuleset, GameRecord, RecordedDecision};
 use crate::domain::{
-    CardInstanceId, Command, GameError, GameSetup, PassActionReason, PendingChoiceKind, PlayerId,
-    TargetDecl,
+    CardInstanceId, Command, GameError, GameSetup, PassActionReason, PendingChoiceKind, Phase,
+    Player, PlayerId, StatusOwner, TargetDecl, TeamHp, TeamId,
 };
 use crate::public_view::{
     PublicCardRefs, PublicGameEvent, PublicGameState, PublicPendingChoiceKind, Viewer,
 };
 use crate::rules::FormationCategory;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub fn handle_request_json(input: &str) -> Result<String, String> {
     let request: ApiRequest = serde_json::from_str(input).map_err(|error| error.to_string())?;
@@ -19,7 +19,7 @@ pub fn handle_request_json(input: &str) -> Result<String, String> {
 
 fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
     let ruleset = BaseRuleset::new();
-    let setup = setup_for_first_player(&ruleset, request.first_player.as_deref());
+    let setup = setup_for_request(&ruleset, request.setup, request.first_player.as_deref())?;
     let card_labels = ruleset.card_labels(&setup);
     let viewer = viewer_from_request(request.viewer.as_deref());
     let deck_seed = request.deck_seed.clone();
@@ -32,22 +32,19 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                 deck_order_for_start(&ruleset, &setup, deck_seed.as_deref()),
             )
             .map_err(ApiError::Game)?;
-            let _ = record.advance_until_decision().map_err(ApiError::Game)?;
+            advance_to_interactive_decision(&mut record)?;
         }
         ApiAction::Refresh => {}
         ApiAction::AdvanceAutomatic => {
-            let _ = record.advance_until_decision().map_err(ApiError::Game)?;
+            advance_to_interactive_decision(&mut record)?;
         }
         ApiAction::PassAction => {
-            let current_player = record
-                .state()
-                .current_player()
-                .cloned()
-                .ok_or_else(|| ApiError::Message("missing current player".to_string()))?;
+            let (current_player, reason) = pass_action_for_state(record.state())
+                .ok_or_else(|| ApiError::Message("action pass is not legal".to_string()))?;
             let _ = record
                 .handle(Command::PassAction {
                     player: current_player,
-                    reason: PassActionReason::NoCardsInHand,
+                    reason,
                 })
                 .map_err(ApiError::Game)?;
             advance_after_command(&mut record)?;
@@ -110,8 +107,42 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
 }
 
 fn advance_after_command(record: &mut GameRecord) -> Result<(), ApiError> {
-    let _ = record.advance_until_decision().map_err(ApiError::Game)?;
+    advance_to_interactive_decision(record)?;
     Ok(())
+}
+
+fn advance_to_interactive_decision(record: &mut GameRecord) -> Result<(), ApiError> {
+    loop {
+        let _ = record.advance_until_decision().map_err(ApiError::Game)?;
+
+        let Some((player, reason)) = pass_action_for_state(record.state()) else {
+            return Ok(());
+        };
+
+        let _ = record
+            .handle(Command::PassAction { player, reason })
+            .map_err(ApiError::Game)?;
+    }
+}
+
+fn pass_action_for_state(state: &crate::domain::GameState) -> Option<(PlayerId, PassActionReason)> {
+    if state.phase != Phase::Main || state.pending_choice.is_some() {
+        return None;
+    }
+
+    let player = state.current_player()?.clone();
+    let hand = state.hand(&player)?;
+
+    if hand.is_empty() {
+        return Some((player, PassActionReason::NoCardsInHand));
+    }
+
+    let cannot_act = state.statuses.iter().any(|status| {
+        status.kind == "CannotAct"
+            && matches!(&status.owner, StatusOwner::Player(owner) if owner == &player)
+    });
+
+    cannot_act.then_some((player, PassActionReason::CannotActByStatus))
 }
 
 fn record_from_request(
@@ -139,6 +170,8 @@ fn response_for(
     card_labels: &HashMap<CardInstanceId, String>,
     playable_formations: Vec<WebPlayableFormation>,
 ) -> Result<ApiResponse, ApiError> {
+    let can_pass = pass_action_for_state(record.state()).is_some();
+
     Ok(ApiResponse {
         record: record.recorded_decisions(),
         state: WebPublicGameState::from_public(
@@ -153,6 +186,12 @@ fn response_for(
             .map(|(index, event)| WebPublicGameEvent::from_public(index + 1, event, card_labels))
             .collect(),
         playable_formations,
+        interaction: WebInteraction {
+            can_pass,
+            // The current base ruleset does not yet model optional active-effect
+            // Commands separately from the turn-closing Action Command.
+            has_optional_effect: false,
+        },
     })
 }
 
@@ -161,10 +200,25 @@ struct ApiRequest {
     action: ApiAction,
     viewer: Option<String>,
     record: Option<Vec<RecordedDecision>>,
+    #[serde(default)]
+    setup: Option<WebGameSetup>,
     #[serde(default, rename = "firstPlayer")]
     first_player: Option<String>,
     #[serde(default, rename = "deckSeed")]
     deck_seed: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebGameSetup {
+    players: Vec<WebSetupPlayer>,
+    turn_order: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WebSetupPlayer {
+    id: String,
+    team: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -204,6 +258,53 @@ fn setup_for_first_player(ruleset: &BaseRuleset, first_player: Option<&str>) -> 
     }
 
     ruleset.sample_game_setup()
+}
+
+fn setup_for_request(
+    ruleset: &BaseRuleset,
+    requested: Option<WebGameSetup>,
+    first_player: Option<&str>,
+) -> Result<GameSetup, ApiError> {
+    let Some(requested) = requested else {
+        return Ok(setup_for_first_player(ruleset, first_player));
+    };
+
+    if requested.players.is_empty() {
+        return Err(ApiError::Message(
+            "game setup must contain players".to_string(),
+        ));
+    }
+
+    let mut setup = ruleset.sample_game_setup();
+    let players = requested
+        .players
+        .into_iter()
+        .map(|player| Player {
+            id: PlayerId::new(player.id),
+            team: TeamId::new(player.team),
+        })
+        .collect::<Vec<_>>();
+    let turn_order = requested
+        .turn_order
+        .into_iter()
+        .map(PlayerId::new)
+        .collect::<Vec<_>>();
+    let mut seen_teams = HashSet::new();
+    let hp = players
+        .iter()
+        .filter_map(|player| {
+            seen_teams.insert(player.team.clone()).then_some(TeamHp {
+                team: player.team.clone(),
+                hp: 20,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    setup.players = players;
+    setup.turn_order = turn_order;
+    setup.hp = hp;
+
+    Ok(setup)
 }
 
 fn deck_order_for_start(
@@ -258,7 +359,7 @@ fn next_shuffle_state(mut state: u64) -> u64 {
 
 fn viewer_from_request(viewer: Option<&str>) -> Viewer {
     match viewer {
-        Some("alice") | Some("bob") => Viewer::Player(PlayerId::new(viewer.unwrap())),
+        Some(viewer) if viewer != "observer" => Viewer::Player(PlayerId::new(viewer)),
         _ => Viewer::Observer,
     }
 }
@@ -270,6 +371,14 @@ struct ApiResponse {
     state: WebPublicGameState,
     events: Vec<WebPublicGameEvent>,
     playable_formations: Vec<WebPlayableFormation>,
+    interaction: WebInteraction,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebInteraction {
+    can_pass: bool,
+    has_optional_effect: bool,
 }
 
 #[derive(Serialize)]
@@ -665,5 +774,44 @@ mod tests {
         assert_ne!(first_shuffle, sorted_deck);
         assert_eq!(first_shuffle, same_shuffle);
         assert_ne!(first_shuffle, different_shuffle);
+    }
+
+    #[test]
+    fn start_request_accepts_four_player_team_setup() {
+        let response = handle_request_json(
+            r#"{
+                "action":{"type":"start"},
+                "viewer":"p3",
+                "deckSeed":"team-seed",
+                "setup":{
+                    "players":[
+                        {"id":"p1","team":"team-a"},
+                        {"id":"p2","team":"team-b"},
+                        {"id":"p3","team":"team-a"},
+                        {"id":"p4","team":"team-b"}
+                    ],
+                    "turnOrder":["p1","p2","p3","p4"]
+                }
+            }"#,
+        )
+        .expect("four-player start request should succeed");
+
+        assert!(response.contains(r#""currentPlayer":"p1""#));
+        assert!(response.contains(r#""turnOrder":["p1","p2","p3","p4"]"#));
+        assert!(response.contains(r#""id":"p3","team":"team-a""#));
+    }
+
+    #[test]
+    fn pass_reason_is_derived_from_the_current_state() {
+        let mut state =
+            crate::domain::GameState::from_setup(&BaseRuleset::new().sample_game_setup());
+        state.phase = Phase::Main;
+        let current = state.current_player().cloned().unwrap();
+        state.hand_mut(&current).unwrap().clear();
+
+        assert_eq!(
+            pass_action_for_state(&state),
+            Some((current, PassActionReason::NoCardsInHand))
+        );
     }
 }

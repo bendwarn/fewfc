@@ -1,5 +1,5 @@
-export type PlayerId = 'alice' | 'bob'
-export type TeamId = `team:${PlayerId}`
+export type PlayerId = string
+export type TeamId = string
 export type ViewerId = PlayerId | 'observer'
 export type CardInstanceId = number
 
@@ -81,4 +81,8 @@ export interface LocalGameResponse {
   state: PublicGameState
   events: PublicGameEvent[]
   playableFormations: PlayableFormation[]
+  interaction: {
+    canPass: boolean
+    hasOptionalEffect: boolean
+  }
 }

@@ -37,6 +37,13 @@ The login UI supports:
 - Anonymous guest accounts that can later be linked to a permanent account.
 - Cookie-backed sessions.
 
+Online rooms support:
+
+- Public discovery and private invitation codes.
+- Two-player and four-player team rooms.
+- WebSocket-synchronized membership, readiness, game state, and notifications.
+- Durable Object WebSocket Hibernation without client polling.
+
 ## Production
 
 Build the application for production:

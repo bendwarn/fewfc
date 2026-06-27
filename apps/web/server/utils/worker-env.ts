@@ -10,6 +10,7 @@ export interface DurableObjectNamespaceBinding {
 export interface WorkerEnv {
   DB: unknown
   GAME_ROOM: DurableObjectNamespaceBinding
+  PLAYER_NOTIFICATIONS: DurableObjectNamespaceBinding
   BETTER_AUTH_SECRET?: string
   BETTER_AUTH_URL?: string
 }

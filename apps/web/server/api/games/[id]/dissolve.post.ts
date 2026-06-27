@@ -3,18 +3,14 @@ export default defineEventHandler(async (event) => {
   const gameId = getRouterParam(event, 'id')
 
   if (!gameId) {
-    throw createError({
-      statusCode: 400,
-      statusMessage: 'Missing game id.',
-    })
+    throw createError({ statusCode: 400, statusMessage: 'Missing game id.' })
   }
 
   const response = await callGameRoom(event, gameId, {
-    type: 'toggleReady',
+    type: 'dissolveGame',
     actorUserId: session.user.id,
   })
 
   await updatePublicRoom(event, response)
-
   return response
 })
