@@ -30,7 +30,14 @@ export interface PublicPlayerHand {
 
 export interface PublicCoveredPassive {
   owner: PlayerId
-  formationId: string
+  formationId: string | null
+  cards: PublicCardRefs
+}
+
+export interface PublicPreviousTurnFormation {
+  player: PlayerId
+  formationId: string | null
+  formationName: string | null
   cards: PublicCardRefs
 }
 
@@ -59,11 +66,13 @@ export interface PublicGameState {
   pendingChoice: PublicPendingChoice | null
   shields: Array<{ player: PlayerId; value: number }>
   statuses: Array<{ id: string; owner: string; kind: string }>
+  previousTurnFormation: PublicPreviousTurnFormation | null
 }
 
 export interface PublicGameEvent {
   id: string
   eventType: string
+  title: string
   summary: string
 }
 

@@ -838,6 +838,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         events: (await this.events()).map((event) => ({
           id: `room-event-${event.sequence}`,
           eventType: event.type,
+          title: this.eventTitle(event),
           summary: this.displaySummary(currentMetadata, this.eventSummary(event)),
         })).reverse(),
         playableFormations,
@@ -1000,7 +1001,16 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
 
     if (event.type === 'RulesCommandApplied') {
-      return `收到 ${event.actor ?? '系統'} 的 ${this.payloadType(event.payload)} 指令。`
+      const actor = event.actor ?? '玩家'
+      const action = this.payloadType(event.payload)
+      const summaries: Record<string, string> = {
+        passAction: `${actor} 已跳過行動。`,
+        performFormation: `${actor} 已完成陣法行動。`,
+        performFormationWithChoices: `${actor} 已完成陣法與效果選擇。`,
+        chooseTurnDiscard: `${actor} 已完成棄牌。`,
+        answerEffectChoice: `${actor} 已完成效果選擇。`,
+      }
+      return summaries[action] ?? '戰局狀態已更新。'
     }
 
     if (event.type === 'GameStarted') {
@@ -1008,7 +1018,23 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return firstPlayer ? `遊戲已開始，${firstPlayer} 先手。` : '遊戲已開始。'
     }
 
-    return event.type
+    return '房間狀態已更新。'
+  }
+
+  private eventTitle(event: StoredGameEvent): string {
+    const titles: Record<string, string> = {
+      GameCreated: '建立房間',
+      PlayerJoined: '玩家加入',
+      PlayerLeft: '玩家離開',
+      PlayerRemoved: '移除玩家',
+      PlayerReady: '玩家準備',
+      PlayerUnready: '取消準備',
+      PlayersReturnedToRoom: '返回房間',
+      GameStarted: '對局開始',
+      RulesCommandApplied: '戰局更新',
+    }
+
+    return titles[event.type] ?? '房間更新'
   }
 
   private payloadType(payload: unknown): string {

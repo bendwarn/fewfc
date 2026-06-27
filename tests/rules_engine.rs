@@ -7,14 +7,14 @@ use fewfc::domain::{
     CardMoveDelta, CardZone, Command, CommandId, DamageTransform, DeckPlacement,
     ElementInteraction, EngineInvariantError, GameError, GameEvent, GameOutcome, GameSetup,
     GameState, GameStatus, HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate,
-    PassActionReason, PassiveFlipOutcome, PassiveNoEffectReason, PendingChoice, PendingChoiceKind,
-    Phase, Player, PlayerHand, PlayerId, PlayerShield, RuleImplementationError, RulesetId,
-    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
-    TeamId, TurnDrawSkipReason, ValidationError,
+    LastFormationUse, PassActionReason, PassiveFlipOutcome, PassiveNoEffectReason, PendingChoice,
+    PendingChoiceKind, Phase, Player, PlayerHand, PlayerId, PlayerShield, RuleImplementationError,
+    RulesetId, ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner,
+    TeamHp, TeamId, TurnDrawSkipReason, ValidationError,
 };
 use fewfc::public_view::{
     self, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
-    PublicPendingChoiceKind, PublicPlayerHand, Viewer,
+    PublicPendingChoiceKind, PublicPlayerHand, PublicPreviousTurnFormation, Viewer,
 };
 use fewfc::rules::Element;
 
@@ -2447,7 +2447,7 @@ fn seal_marks_incoming_passive_cover_as_sealed_without_exposing_the_marker() {
         public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).covered_passives,
         vec![PublicCoveredPassive {
             owner: PlayerId::new("p2"),
-            formation_id: "countershock".to_string(),
+            formation_id: None,
             cards: PublicCardRefs::Hidden { count: 2 },
         }]
     );
@@ -2455,7 +2455,7 @@ fn seal_marks_incoming_passive_cover_as_sealed_without_exposing_the_marker() {
         public_view::state_for(&state, Viewer::Player(PlayerId::new("p2"))).covered_passives,
         vec![PublicCoveredPassive {
             owner: PlayerId::new("p2"),
-            formation_id: "countershock".to_string(),
+            formation_id: Some("countershock".to_string()),
             cards: PublicCardRefs::Known(vec![card(4), card(9)]),
         }]
     );
@@ -2529,7 +2529,7 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
         public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).covered_passives,
         vec![PublicCoveredPassive {
             owner: PlayerId::new("p1"),
-            formation_id: "defense".to_string(),
+            formation_id: Some("defense".to_string()),
             cards: PublicCardRefs::Known(vec![card(2), card(7)]),
         }]
     );
@@ -2537,7 +2537,7 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
         public_view::state_for(&state, Viewer::Player(PlayerId::new("p2"))).covered_passives,
         vec![PublicCoveredPassive {
             owner: PlayerId::new("p1"),
-            formation_id: "defense".to_string(),
+            formation_id: None,
             cards: PublicCardRefs::Hidden { count: 2 },
         }]
     );
@@ -2545,7 +2545,7 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
         public_view::state_for(&state, Viewer::Observer).covered_passives,
         vec![PublicCoveredPassive {
             owner: PlayerId::new("p1"),
-            formation_id: "defense".to_string(),
+            formation_id: None,
             cards: PublicCardRefs::Hidden { count: 2 },
         }]
     );
@@ -2642,6 +2642,76 @@ fn public_state_view_includes_client_state_and_filters_hands_by_viewer() {
         ]
     );
     assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn public_state_view_exposes_only_the_previous_turns_formation() {
+    let mut state = GameState::from_setup(&two_player_setup());
+    state.turn_number = 3;
+    state.last_formation_by_player.insert(
+        PlayerId::new("p1"),
+        LastFormationUse {
+            formation_id: "metal-strike".to_string(),
+            used_cards: vec![card(1)],
+            resolved_turn: 1,
+        },
+    );
+    state.last_formation_by_player.insert(
+        PlayerId::new("p2"),
+        LastFormationUse {
+            formation_id: "wood-strike".to_string(),
+            used_cards: vec![card(2)],
+            resolved_turn: 2,
+        },
+    );
+
+    assert_eq!(
+        public_view::state_for(&state, Viewer::Observer).previous_turn_formation,
+        Some(PublicPreviousTurnFormation {
+            player: PlayerId::new("p2"),
+            formation_id: Some("wood-strike".to_string()),
+            cards: PublicCardRefs::Known(vec![card(2)]),
+        })
+    );
+}
+
+#[test]
+fn previous_turn_covered_formation_hides_details_from_other_players() {
+    let mut state = GameState::from_setup(&two_player_setup());
+    state.turn_number = 2;
+    state.last_formation_by_player.insert(
+        PlayerId::new("p1"),
+        LastFormationUse {
+            formation_id: "defense".to_string(),
+            used_cards: vec![card(2), card(7)],
+            resolved_turn: 1,
+        },
+    );
+    state.covered_passives.push(fewfc::domain::CoveredPassive {
+        owner: PlayerId::new("p1"),
+        formation_id: "defense".to_string(),
+        cards: vec![card(2), card(7)],
+        sealed: false,
+        covered_on_turn: 1,
+        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
+    });
+
+    assert_eq!(
+        public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).previous_turn_formation,
+        Some(PublicPreviousTurnFormation {
+            player: PlayerId::new("p1"),
+            formation_id: Some("defense".to_string()),
+            cards: PublicCardRefs::Known(vec![card(2), card(7)]),
+        })
+    );
+    assert_eq!(
+        public_view::state_for(&state, Viewer::Player(PlayerId::new("p2"))).previous_turn_formation,
+        Some(PublicPreviousTurnFormation {
+            player: PlayerId::new("p1"),
+            formation_id: None,
+            cards: PublicCardRefs::Hidden { count: 2 },
+        })
+    );
 }
 
 #[test]
@@ -2774,7 +2844,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
         public_view::event_for(&event, Viewer::Player(PlayerId::new("p1"))),
         PublicGameEvent::PassiveCovered {
             player: PlayerId::new("p1"),
-            formation_id: "defense".to_string(),
+            formation_id: Some("defense".to_string()),
             cards: PublicCardRefs::Known(vec![card(2), card(7)]),
         }
     );
@@ -2782,7 +2852,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
         public_view::event_for(&event, Viewer::Player(PlayerId::new("p2"))),
         PublicGameEvent::PassiveCovered {
             player: PlayerId::new("p1"),
-            formation_id: "defense".to_string(),
+            formation_id: None,
             cards: PublicCardRefs::Hidden { count: 2 },
         }
     );
@@ -2790,7 +2860,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
         public_view::event_for(&event, Viewer::Observer),
         PublicGameEvent::PassiveCovered {
             player: PlayerId::new("p1"),
-            formation_id: "defense".to_string(),
+            formation_id: None,
             cards: PublicCardRefs::Hidden { count: 2 },
         }
     );
@@ -2907,7 +2977,7 @@ fn record_event_feed_is_viewer_filtered_and_canonical_events_remain_replay_sourc
             .last(),
         Some(&PublicGameEvent::PassiveCovered {
             player: PlayerId::new("p1"),
-            formation_id: "defense".to_string(),
+            formation_id: None,
             cards: PublicCardRefs::Hidden { count: 2 },
         })
     );

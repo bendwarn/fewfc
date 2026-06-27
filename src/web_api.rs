@@ -1,12 +1,12 @@
 use crate::application::{BaseRuleset, GameRecord, RecordedDecision};
 use crate::domain::{
-    CardInstanceId, Command, GameError, GameSetup, PassActionReason, PendingChoiceKind, Phase,
-    Player, PlayerId, StatusOwner, TargetDecl, TeamHp, TeamId,
+    CardInstanceId, Command, GameError, GameEvent, GameSetup, PassActionReason, PendingChoiceKind,
+    Phase, Player, PlayerId, StatusOwner, TargetDecl, TeamHp, TeamId, TurnDrawSkipReason,
 };
 use crate::public_view::{
     PublicCardRefs, PublicGameEvent, PublicGameState, PublicPendingChoiceKind, Viewer,
 };
-use crate::rules::FormationCategory;
+use crate::rules::{FormationCategory, base_formation_registry};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -182,6 +182,12 @@ fn response_for(
             .public_events_for(viewer)
             .into_iter()
             .enumerate()
+            .filter(|(_, event)| {
+                !matches!(
+                    event,
+                    PublicGameEvent::DeckPrepared { .. } | PublicGameEvent::CardsDealt { .. }
+                )
+            })
             .rev()
             .map(|(index, event)| WebPublicGameEvent::from_public(index + 1, event, card_labels))
             .collect(),
@@ -397,6 +403,7 @@ struct WebPublicGameState {
     pending_choice: Option<WebPendingChoice>,
     shields: Vec<WebShield>,
     statuses: Vec<WebStatus>,
+    previous_turn_formation: Option<WebPreviousTurnFormation>,
 }
 
 impl WebPublicGameState {
@@ -479,6 +486,14 @@ impl WebPublicGameState {
                     kind: status.kind,
                 })
                 .collect(),
+            previous_turn_formation: state.previous_turn_formation.map(|formation| {
+                WebPreviousTurnFormation {
+                    player: formation.player.as_str().to_string(),
+                    formation_id: formation.formation_id.clone(),
+                    formation_name: formation.formation_id.as_deref().map(formation_name),
+                    cards: WebCardRefs::from_public(formation.cards, labels),
+                }
+            }),
         }
     }
 }
@@ -508,7 +523,16 @@ struct WebPlayerHand {
 #[serde(rename_all = "camelCase")]
 struct WebCoveredPassive {
     owner: String,
-    formation_id: String,
+    formation_id: Option<String>,
+    cards: WebCardRefs,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPreviousTurnFormation {
+    player: String,
+    formation_id: Option<String>,
+    formation_name: Option<String>,
     cards: WebCardRefs,
 }
 
@@ -617,6 +641,7 @@ impl WebCard {
 struct WebPublicGameEvent {
     id: String,
     event_type: String,
+    title: String,
     summary: String,
 }
 
@@ -626,10 +651,11 @@ impl WebPublicGameEvent {
         event: PublicGameEvent,
         labels: &HashMap<CardInstanceId, String>,
     ) -> Self {
-        let summary = event_summary(&event, labels);
+        let (title, summary) = event_presentation(&event, labels);
         Self {
             id: format!("event-{sequence}"),
             event_type: event_type(&event),
+            title,
             summary,
         }
     }
@@ -677,42 +703,273 @@ fn event_type(event: &PublicGameEvent) -> String {
     }
 }
 
-fn event_summary(event: &PublicGameEvent, labels: &HashMap<CardInstanceId, String>) -> String {
+fn event_presentation(
+    event: &PublicGameEvent,
+    labels: &HashMap<CardInstanceId, String>,
+) -> (String, String) {
     match event {
-        PublicGameEvent::CardsDealt { player, cards } => {
+        PublicGameEvent::CardsDealt { player, cards } => (
+            "初始發牌".to_string(),
             format!(
                 "{} 收到 {}。",
                 player.as_str(),
                 card_refs_summary(cards, labels)
-            )
-        }
-        PublicGameEvent::DeckPrepared { deck } => {
-            format!("牌庫已準備：{}。", card_refs_summary(deck, labels))
-        }
-        PublicGameEvent::Public(event) => format!("{event:?}"),
+            ),
+        ),
+        PublicGameEvent::DeckPrepared { deck } => (
+            "準備牌庫".to_string(),
+            format!("已準備 {}。", card_refs_summary(deck, labels)),
+        ),
+        PublicGameEvent::Public(event) => game_event_presentation(event, labels),
         PublicGameEvent::PassiveCovered {
             player,
             formation_id,
             cards,
-        } => format!(
-            "{} 覆蓋 {}，使用 {}。",
-            player.as_str(),
-            formation_id,
-            card_refs_summary(cards, labels)
+        } => (
+            "覆蓋陣法".to_string(),
+            formation_id.as_deref().map_or_else(
+                || {
+                    format!(
+                        "{} 覆蓋了 {}。",
+                        player.as_str(),
+                        card_refs_summary(cards, labels)
+                    )
+                },
+                |formation_id| {
+                    format!(
+                        "{} 覆蓋「{}」，使用 {}。",
+                        player.as_str(),
+                        formation_name(formation_id),
+                        card_refs_summary(cards, labels)
+                    )
+                },
+            ),
         ),
         PublicGameEvent::CardsDrawnForTurnDiscardChoice {
             player,
             drawn_cards,
             ..
-        } => format!(
-            "{} 抽牌並需要棄置：{}。",
-            player.as_str(),
-            card_refs_summary(drawn_cards, labels)
+        } => (
+            "抽牌選擇".to_string(),
+            format!(
+                "{} 抽牌並需要棄置：{}。",
+                player.as_str(),
+                card_refs_summary(drawn_cards, labels)
+            ),
         ),
-        PublicGameEvent::EffectChoiceRequested { player, .. } => {
-            format!("{} 需要選擇效果。", player.as_str())
-        }
+        PublicGameEvent::EffectChoiceRequested { player, .. } => (
+            "效果選擇".to_string(),
+            format!("{} 需要選擇效果。", player.as_str()),
+        ),
     }
+}
+
+fn game_event_presentation(
+    event: &GameEvent,
+    labels: &HashMap<CardInstanceId, String>,
+) -> (String, String) {
+    match event {
+        GameEvent::DeckPrepared { deck_order } => (
+            "準備牌庫".to_string(),
+            format!("已準備 {} 張牌。", deck_order.len()),
+        ),
+        GameEvent::CardsDealt { player, cards } => (
+            "初始發牌".to_string(),
+            format!("{} 收到 {} 張牌。", player.as_str(), cards.len()),
+        ),
+        GameEvent::TurnStarted {
+            player,
+            turn_number,
+        } if *turn_number == 1 => (
+            "對局開始".to_string(),
+            format!("已完成洗牌與發牌，{} 先手。", player.as_str()),
+        ),
+        GameEvent::TurnStarted {
+            player,
+            turn_number,
+        } => (
+            "回合開始".to_string(),
+            format!("第 {turn_number} 回合由 {} 行動。", player.as_str()),
+        ),
+        GameEvent::ActionPassed { player, reason } => (
+            "跳過行動".to_string(),
+            format!(
+                "{} 因{}而跳過行動。",
+                player.as_str(),
+                match reason {
+                    PassActionReason::NoCardsInHand => "手中沒有牌",
+                    PassActionReason::CannotActByStatus => "目前狀態無法行動",
+                }
+            ),
+        ),
+        GameEvent::CardsDrawnForTurnDiscardChoice {
+            player,
+            drawn_cards,
+            ..
+        } => (
+            "抽牌選擇".to_string(),
+            format!(
+                "{} 抽了 {}，需要選擇一張棄置。",
+                player.as_str(),
+                cards_summary(drawn_cards, labels)
+            ),
+        ),
+        GameEvent::TurnDiscardChosen { player, discard } => (
+            "棄置手牌".to_string(),
+            format!(
+                "{} 棄置了 {}。",
+                player.as_str(),
+                card_summary(discard, labels)
+            ),
+        ),
+        GameEvent::TurnDrawSkipped { player, reason } => (
+            "略過抽牌".to_string(),
+            format!(
+                "{} 因{}而未抽牌。",
+                player.as_str(),
+                match reason {
+                    TurnDrawSkipReason::HandLimitReached => "手牌已達上限",
+                    TurnDrawSkipReason::CannotDrawByStatus => "目前狀態無法抽牌",
+                }
+            ),
+        ),
+        GameEvent::FormationPerformed {
+            player,
+            formation_id,
+            used_cards,
+            ..
+        } => (
+            "發動陣法".to_string(),
+            format!(
+                "{} 發動「{}」，使用 {}。",
+                player.as_str(),
+                formation_name(formation_id),
+                cards_summary(used_cards, labels)
+            ),
+        ),
+        GameEvent::AttackResolved {
+            attacker,
+            target,
+            formation_id,
+            hp_change,
+            ..
+        } => (
+            "攻擊結算".to_string(),
+            format!(
+                "{} 以「{}」攻擊 {}，生命值由 {} 變為 {}。",
+                attacker.as_str(),
+                formation_name(formation_id),
+                target.as_str(),
+                hp_change.old_hp,
+                hp_change.new_hp
+            ),
+        ),
+        GameEvent::TurnDrawBonusChanged {
+            player,
+            old_value,
+            new_value,
+            ..
+        } => (
+            "抽牌調整".to_string(),
+            format!(
+                "{} 的額外抽牌數由 {old_value} 變為 {new_value}。",
+                player.as_str()
+            ),
+        ),
+        GameEvent::ShieldChanged {
+            player,
+            old_value,
+            new_value,
+            ..
+        } => (
+            "護盾變化".to_string(),
+            format!(
+                "{} 的護盾由 {old_value} 變為 {new_value}。",
+                player.as_str()
+            ),
+        ),
+        GameEvent::HpChanged { change } => (
+            "生命變化".to_string(),
+            format!("隊伍生命值由 {} 變為 {}。", change.old_hp, change.new_hp),
+        ),
+        GameEvent::CardsMoved { card_moves } => (
+            "卡牌移動".to_string(),
+            format!("有 {} 張牌移動到新的區域。", card_moves.len()),
+        ),
+        GameEvent::StatusAdded { .. } => {
+            ("狀態生效".to_string(), "新的狀態效果已生效。".to_string())
+        }
+        GameEvent::StatusExpired { .. } => {
+            ("狀態結束".to_string(), "一個狀態效果已到期。".to_string())
+        }
+        GameEvent::StatusRemoved { .. } => {
+            ("狀態解除".to_string(), "一個狀態效果已解除。".to_string())
+        }
+        GameEvent::EffectChoiceRequested { player, .. } => (
+            "效果選擇".to_string(),
+            format!("{} 需要選擇效果。", player.as_str()),
+        ),
+        GameEvent::EffectChoiceAnswered {
+            player,
+            selected_cards,
+            ..
+        } => (
+            "完成選擇".to_string(),
+            format!(
+                "{} 已選擇 {}。",
+                player.as_str(),
+                cards_summary(selected_cards, labels)
+            ),
+        ),
+        GameEvent::PassiveCovered { player, cards, .. } => (
+            "覆蓋陣法".to_string(),
+            format!("{} 覆蓋了 {} 張牌。", player.as_str(), cards.len()),
+        ),
+        GameEvent::PassiveFlipped {
+            owner, passive_id, ..
+        } => (
+            "伏牌翻開".to_string(),
+            format!(
+                "{} 的「{}」已翻開並完成結算。",
+                owner.as_str(),
+                formation_name(passive_id)
+            ),
+        ),
+        GameEvent::DiscardRecycledIntoDeck { shuffled_order, .. } => (
+            "重整牌庫".to_string(),
+            format!("棄牌堆的 {} 張牌已重新放回牌庫。", shuffled_order.len()),
+        ),
+        GameEvent::TurnEnded { player } => (
+            "回合結束".to_string(),
+            format!("{} 的回合結束。", player.as_str()),
+        ),
+    }
+}
+
+fn formation_name(formation_id: &str) -> String {
+    base_formation_registry()
+        .formation(formation_id)
+        .map(|formation| formation.name.clone())
+        .unwrap_or_else(|| "未知陣法".to_string())
+}
+
+fn card_summary(card: &CardInstanceId, labels: &HashMap<CardInstanceId, String>) -> String {
+    labels
+        .get(card)
+        .cloned()
+        .unwrap_or_else(|| "一張牌".to_string())
+}
+
+fn cards_summary(cards: &[CardInstanceId], labels: &HashMap<CardInstanceId, String>) -> String {
+    if cards.is_empty() {
+        return "0 張牌".to_string();
+    }
+
+    cards
+        .iter()
+        .map(|card| card_summary(card, labels))
+        .collect::<Vec<_>>()
+        .join("、")
 }
 
 fn card_refs_summary(cards: &PublicCardRefs, labels: &HashMap<CardInstanceId, String>) -> String {
@@ -749,6 +1006,29 @@ mod tests {
 
         assert!(response.contains(r#""turnNumber":1"#));
         assert!(response.contains(r#""record""#));
+    }
+
+    #[test]
+    fn start_request_consolidates_setup_events_into_plain_language() {
+        let response = handle_request_json(r#"{"action":{"type":"start"},"viewer":"alice"}"#)
+            .expect("start request should succeed");
+        let json: serde_json::Value =
+            serde_json::from_str(&response).expect("response should be valid JSON");
+        let events = json["events"]
+            .as_array()
+            .expect("response should contain events");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["title"], "對局開始");
+        assert!(
+            events[0]["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("已完成洗牌與發牌"))
+        );
+        let visible_events =
+            serde_json::to_string(events).expect("visible events should serialize");
+        assert!(!visible_events.contains("DeckPrepared"));
+        assert!(!visible_events.contains("CardsDealt"));
     }
 
     #[test]

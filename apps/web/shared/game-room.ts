@@ -237,5 +237,6 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     pendingChoice: null,
     shields: [],
     statuses: [],
+    previousTurnFormation: null,
   }
 }

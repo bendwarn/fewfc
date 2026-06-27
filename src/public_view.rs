@@ -27,6 +27,7 @@ pub struct PublicGameState {
     pub pending_choice: Option<PublicPendingChoice>,
     pub shields: Vec<PlayerShield>,
     pub statuses: Vec<StatusEffect>,
+    pub previous_turn_formation: Option<PublicPreviousTurnFormation>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -38,7 +39,14 @@ pub struct PublicPlayerHand {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicCoveredPassive {
     pub owner: PlayerId,
-    pub formation_id: String,
+    pub formation_id: Option<String>,
+    pub cards: PublicCardRefs,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicPreviousTurnFormation {
+    pub player: PlayerId,
+    pub formation_id: Option<String>,
     pub cards: PublicCardRefs,
 }
 
@@ -72,7 +80,7 @@ pub enum PublicGameEvent {
     },
     PassiveCovered {
         player: PlayerId,
-        formation_id: String,
+        formation_id: Option<String>,
         cards: PublicCardRefs,
     },
     CardsDrawnForTurnDiscardChoice {
@@ -88,6 +96,36 @@ pub enum PublicGameEvent {
 
 pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
     let policy = RedactionPolicy::new(viewer);
+    let previous_turn_formation = state
+        .turn_number
+        .checked_sub(1)
+        .and_then(|previous_turn| {
+            state
+                .last_formation_by_player
+                .iter()
+                .find(|(_, formation)| formation.resolved_turn == previous_turn)
+        })
+        .map(|(player, formation)| {
+            let remains_covered = state.covered_passives.iter().any(|passive| {
+                passive.owner == *player
+                    && passive.formation_id == formation.formation_id
+                    && passive.covered_on_turn == formation.resolved_turn
+            });
+            let can_see_details = !remains_covered || policy.can_see_player_hidden_cards(player);
+
+            PublicPreviousTurnFormation {
+                player: player.clone(),
+                formation_id: can_see_details.then(|| formation.formation_id.clone()),
+                cards: if can_see_details {
+                    PublicCardRefs::Known(formation.used_cards.clone())
+                } else {
+                    PublicCardRefs::Hidden {
+                        count: formation.used_cards.len(),
+                    }
+                },
+            }
+        });
+
     PublicGameState {
         status: state.status.clone(),
         turn_number: state.turn_number,
@@ -116,7 +154,9 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .iter()
             .map(|passive| PublicCoveredPassive {
                 owner: passive.owner.clone(),
-                formation_id: passive.formation_id.clone(),
+                formation_id: policy
+                    .can_see_player_hidden_cards(&passive.owner)
+                    .then(|| passive.formation_id.clone()),
                 cards: if policy.can_see_player_hidden_cards(&passive.owner) {
                     PublicCardRefs::Known(passive.cards.clone())
                 } else {
@@ -139,6 +179,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             }),
         shields: state.shields.clone(),
         statuses: state.statuses.clone(),
+        previous_turn_formation,
     }
 }
 
@@ -165,7 +206,9 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
             sealed: _,
         } => PublicGameEvent::PassiveCovered {
             player: player.clone(),
-            formation_id: formation_id.clone(),
+            formation_id: policy
+                .can_see_player_hidden_cards(player)
+                .then(|| formation_id.clone()),
             cards: if policy.can_see_player_hidden_cards(player) {
                 PublicCardRefs::Known(cards.clone())
             } else {

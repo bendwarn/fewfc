@@ -67,6 +67,7 @@ pub(super) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 player.clone(),
                 LastFormationUse {
                     formation_id: formation_id.clone(),
+                    used_cards: used_cards.clone(),
                     resolved_turn: state.turn_number,
                 },
             );
@@ -104,6 +105,7 @@ pub(super) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 player.clone(),
                 LastFormationUse {
                     formation_id: formation_id.clone(),
+                    used_cards: cards.clone(),
                     resolved_turn: state.turn_number,
                 },
             );
@@ -126,6 +128,7 @@ pub(super) fn apply_event(state: &mut GameState, event: &GameEvent) {
         GameEvent::AttackResolved {
             attacker,
             formation_id,
+            used_cards,
             hp_change,
             shield_change,
             card_moves,
@@ -164,6 +167,7 @@ pub(super) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 attacker.clone(),
                 LastFormationUse {
                     formation_id: formation_id.clone(),
+                    used_cards: used_cards.clone(),
                     resolved_turn: state.turn_number,
                 },
             );

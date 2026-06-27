@@ -63,6 +63,10 @@ _Avoid_: card definition
 Immutable printed-card data such as name, one five-element element, and level from 1 to 5.
 _Avoid_: card instance
 
+**Card Back**:
+The viewer-safe appearance of a hidden Card Instance. It conveys no element, level, owner, or other game information and may vary cosmetically.
+_Avoid_: hidden-card label, element mark
+
 **Player**:
 A seat participant in turn order.
 _Avoid_: user, account
@@ -78,6 +82,10 @@ _Avoid_: team order
 **Previous Player**:
 The player immediately before the current player in turn order.
 _Avoid_: opponent, enemy
+
+**Previous Turn**:
+The immediately completed Player turn before the current turn. It is not the previous round or the Previous Player's older history.
+_Avoid_: previous round, previous formation history
 
 **Formation**:
 A declared combination of card instances that matches a formation pattern and resolves through an effect definition.

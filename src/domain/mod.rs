@@ -155,6 +155,7 @@ pub struct CoveredPassive {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct LastFormationUse {
     pub formation_id: String,
+    pub used_cards: Vec<CardInstanceId>,
     pub resolved_turn: u64,
 }
 

@@ -41,6 +41,7 @@ function emptyState(): PublicGameState {
     pendingChoice: null,
     shields: [],
     statuses: [],
+    previousTurnFormation: null,
   }
 }
 

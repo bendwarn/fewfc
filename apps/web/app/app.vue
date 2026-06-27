@@ -268,82 +268,57 @@
     </main>
 
     <main v-else class="game-page">
-      <section class="game-statusbar">
-        <div>
-          <button class="back-button" type="button" @click="leaveGame">←</button>
-          <div>
-            <p>{{ activeRoomName }}</p>
-            <span>房號 {{ roomCode }} · 第 {{ state.turnNumber }} 回合 · {{ firstTurnText }}</span>
-          </div>
-        </div>
-        <div class="turn-indicator">
-          <span>{{ roomWaiting ? '等待玩家' : gameFinished ? '戰局結果' : '目前行動' }}</span>
-          <strong>{{ roomWaiting ? waitingStatusText : gameFinished ? gameResultText : playerLabel(state.currentPlayer) }}</strong>
-          <i>{{ roomWaiting ? '尚未開始' : gameFinished ? '遊戲結束' : phaseLabel(state.phase) }}</i>
-        </div>
-        <span class="room-connection" :class="game.connectionState.value">
-          {{ roomConnectionText }}
-        </span>
-      </section>
-
       <div class="battle-layout">
-        <section class="battlefield" aria-label="五行戰牌對戰桌">
-          <div v-if="primaryOpponent" class="opponent-zone">
-            <div class="player-identity opponent">
-              <span class="avatar">{{ playerInitialFor(primaryOpponent) }}</span>
-              <div>
-                <strong>{{ playerLabel(primaryOpponent) }}</strong>
-                <small>{{ teamHp(teamForPlayer(primaryOpponent)) }} HP</small>
-              </div>
-              <span v-if="state.currentPlayer === primaryOpponent" class="turn-badge">行動中</span>
-            </div>
-            <div class="hand fan opponent-hand">
-              <button
-                v-for="card in cardsFor(primaryOpponent)"
-                :key="card.id"
-                type="button"
-                class="playing-card"
-                :class="{ hidden: card.hidden, selected: card.selected }"
-                :disabled="!card.selectable || !roomConnected"
-                :aria-label="card.hidden ? undefined : card.label"
-                :aria-hidden="card.hidden"
-                @click="game.toggleCardSelection(primaryOpponent, card.cardId)"
-              >
-                <span v-if="!card.hidden">{{ card.label }}</span>
-                <span v-else class="card-back-mark">五</span>
-              </button>
-            </div>
-          </div>
+        <section
+          class="battlefield"
+          :class="{ 'four-player': playerSeats.length === 4 }"
+          aria-label="五行戰牌對戰桌"
+        >
+          <button
+            class="back-button battlefield-back"
+            type="button"
+            aria-label="返回房間列表"
+            title="返回房間列表"
+            @click="leaveGame"
+          >
+            ←
+          </button>
 
-          <div class="board-center">
-            <div class="participant-strip" aria-label="對局玩家">
+          <div
+            v-for="seat in playerSeats"
+            :key="seat.player"
+            class="player-seat"
+            :class="[`seat-${seat.position}`, { acting: state.currentPlayer === seat.player }]"
+          >
+            <div class="player-identity">
               <span
-                v-for="player in state.turnOrder"
-                :key="player"
-                :class="{ active: state.currentPlayer === player, offline: !memberForPlayer(player)?.connected }"
+                class="connection-dot"
+                :class="{ connected: playerConnected(seat.player) }"
+                :title="playerConnected(seat.player) ? '已連線' : '已斷線'"
+              />
+              <span class="avatar">{{ playerInitialFor(seat.player) }}</span>
+              <div>
+                <strong>{{ playerLabel(seat.player) }}</strong>
+                <small>{{ teamHp(teamForPlayer(seat.player)) }} HP</small>
+              </div>
+              <span
+                v-if="seat.player === ownPlayer && game.connectionState.value === 'reconnecting'"
+                class="reconnecting-label"
               >
-                {{ playerLabel(player) }}
+                重新連線中
               </span>
+              <span
+                v-if="state.currentPlayer === seat.player && !roomWaiting"
+                class="turn-badge"
+              >
+                行動中 · {{ phaseLabel(state.phase) }}
+              </span>
+              <span class="side-hand-count">{{ handCount(seat.player) }} 張</span>
             </div>
-            <div class="deck-pile">
-              <span>牌庫</span>
-              <strong>五</strong>
-            </div>
-            <div class="formation-field">
-              <span>陣法區</span>
-              <div v-if="state.coveredPassives.length" class="covered-card">伏</div>
-              <p v-else>等待陣法發動</p>
-            </div>
-            <div class="discard-pile">
-              <span>棄牌</span>
-              <strong>{{ state.discard.length }}</strong>
-            </div>
-          </div>
 
-          <div class="player-zone">
-            <div class="hand fan player-hand">
+            <div class="hand fan seat-hand">
               <button
-                v-for="card in cardsFor(ownPlayer)"
+                v-for="card in cardsFor(seat.player)"
                 :key="card.id"
                 type="button"
                 class="playing-card"
@@ -352,23 +327,98 @@
                   elementClass(card.label),
                 ]"
                 :disabled="!card.selectable || !roomConnected"
-                :aria-label="card.hidden ? undefined : card.label"
-                :aria-hidden="card.hidden"
-                @click="game.toggleCardSelection(ownPlayer, card.cardId)"
+                :aria-label="card.hidden ? '牌背' : card.label"
+                @click="game.toggleCardSelection(seat.player, card.cardId)"
               >
                 <span v-if="!card.hidden" class="card-level">{{ cardLevel(card.label) }}</span>
                 <span v-if="!card.hidden" class="card-element">{{ cardElement(card.label) }}</span>
                 <span v-if="!card.hidden" class="card-name">{{ cardName(card.label) }}</span>
-                <span v-if="card.hidden" class="card-back-mark">五</span>
               </button>
             </div>
-            <div class="player-identity">
-              <span class="avatar">{{ playerInitial }}</span>
-              <div>
-                <strong>{{ displayName }}</strong>
-                <small>{{ teamHp(teamForPlayer(ownPlayer)) }} HP</small>
+            <span v-if="seat.player === ownPlayer" class="selection-count">
+              {{ game.selectedCards.value.length }} / 5
+            </span>
+          </div>
+
+          <div class="board-center">
+            <div class="deck-pile">
+              <span>牌庫</span>
+              <strong aria-label="牌背"><span class="sr-only">牌背</span></strong>
+            </div>
+            <div class="formation-field">
+              <span class="formation-field-label">陣法區</span>
+              <div class="previous-formation">
+                <template v-if="state.previousTurnFormation">
+                  <small>上一回合 · {{ playerLabel(state.previousTurnFormation.player) }}</small>
+                  <strong>{{ state.previousTurnFormation.formationName ?? '伏牌' }}</strong>
+                  <div class="formation-cards">
+                    <span
+                      v-for="card in previousFormationCards"
+                      :key="card.id"
+                      class="formation-card"
+                      :class="[{
+                        hidden: card.hidden,
+                      }, elementClass(card.label)]"
+                      :aria-label="card.hidden ? '牌背' : card.label"
+                    >
+                      <i v-if="!card.hidden">{{ cardLevel(card.label) }}</i>
+                      <b v-if="!card.hidden">{{ cardElement(card.label) }}</b>
+                    </span>
+                  </div>
+                </template>
+                <p v-else>上一回合未發動陣法</p>
               </div>
-              <span v-if="state.currentPlayer === ownPlayer" class="turn-badge">行動中</span>
+
+              <div
+                v-if="!roomWaiting && !gameFinished && viewer === state.currentPlayer"
+                class="formation-actions"
+              >
+                <p v-if="game.isLoading.value" class="formation-processing">處理中</p>
+                <p v-else-if="game.errorMessage.value" class="formation-error">
+                  {{ game.errorMessage.value }}
+                </p>
+                <div v-if="!game.isLoading.value" class="formation-candidates">
+                  <button
+                    v-for="formation in game.playableFormations.value"
+                    :key="formation.id"
+                    type="button"
+                    :title="formation.summary"
+                    @mouseenter="showFormationDetail(formation)"
+                    @mouseleave="hideFormationDetail"
+                    @focus="showFormationDetail(formation)"
+                    @blur="hideFormationDetail"
+                    @pointerdown="startFormationDetail(formation)"
+                    @pointerup="cancelFormationDetail"
+                    @pointercancel="cancelFormationDetail"
+                    @click="game.performFormation(formation)"
+                  >
+                    {{ formation.name }}
+                  </button>
+                  <button
+                    v-if="showSkip"
+                    class="skip-action"
+                    type="button"
+                    :disabled="!roomConnected"
+                    @click="game.passAction()"
+                  >
+                    跳過
+                  </button>
+                </div>
+                <p
+                  v-if="!game.isLoading.value && !game.playableFormations.value.length && !showSkip && !game.errorMessage.value"
+                  class="formation-prompt"
+                >
+                  選擇手牌以尋找可用陣法
+                </p>
+                <p v-if="formationDetail" class="formation-detail">
+                  <strong>{{ formationDetail.name }}</strong>
+                  {{ formationDetail.summary }}
+                </p>
+              </div>
+            </div>
+            <div class="discard-pile">
+              <span>棄牌</span>
+              <strong>{{ state.discard.length }}</strong>
             </div>
           </div>
 
@@ -502,50 +552,6 @@
         </section>
 
         <aside class="game-sidebar">
-          <section class="action-panel">
-            <div class="panel-heading">
-              <div><span>你的行動</span><strong>{{ selectedHint }}</strong></div>
-              <span class="selection-count">{{ game.selectedCards.value.length }} / 5</span>
-            </div>
-
-            <p v-if="game.errorMessage.value" class="form-error">{{ game.errorMessage.value }}</p>
-
-            <div v-if="game.playableFormations.value.length" class="available-formations">
-              <button
-                v-for="formation in game.playableFormations.value"
-                :key="formation.id"
-                type="button"
-                :disabled="game.isLoading.value"
-                :title="formation.summary"
-                @mouseenter="showFormationDetail(formation)"
-                @mouseleave="hideFormationDetail"
-                @focus="showFormationDetail(formation)"
-                @blur="hideFormationDetail"
-                @pointerdown="startFormationDetail(formation)"
-                @pointerup="cancelFormationDetail"
-                @pointercancel="cancelFormationDetail"
-                @click="game.performFormation(formation)"
-              >
-                <strong>{{ formation.name }}</strong>
-                <i>→</i>
-              </button>
-              <p v-if="formationDetail" class="formation-detail">
-                <strong>{{ formationDetail.name }}</strong>
-                {{ formationDetail.summary }}
-              </p>
-            </div>
-            <div v-else class="empty-action">
-              <span>◇</span>
-              <p>{{ roomWaiting ? '等待玩家準備後由房主開始遊戲' : gameFinished ? '本局已結束' : viewer === state.currentPlayer ? '選擇手牌以尋找可用陣法' : '等待目前玩家完成行動' }}</p>
-            </div>
-
-            <div v-if="showSkip" class="utility-actions">
-              <button type="button" :disabled="game.isLoading.value || !roomConnected" @click="game.passAction()">
-                跳過
-              </button>
-            </div>
-          </section>
-
           <section class="event-panel" :class="{ expanded: eventExpanded }">
             <div class="panel-title">
               <h2>戰局紀錄</h2>
@@ -557,7 +563,7 @@
               <li v-for="event in visibleEvents" :key="event.id">
                 <i />
                 <div>
-                  <span>{{ eventTypeLabel(event.eventType) }}</span>
+                  <span>{{ event.title }}</span>
                   <p>{{ event.summary }}</p>
                 </div>
               </li>
@@ -601,7 +607,7 @@
 </template>
 
 <script setup lang="ts">
-import type { PlayableFormation, PlayerId, TeamId, ViewerId } from '~/types/fewfc'
+import type { PlayableFormation, PlayerId, PublicCardRefs, TeamId, ViewerId } from '~/types/fewfc'
 import type { GameRoomMember, GameRoomResponse } from '../shared/game-room'
 import { authClient } from '~/lib/auth-client'
 
@@ -686,8 +692,29 @@ const canStartOnlineRoom = computed(() => {
     && metadata.members.every((member) => member.owner || member.ready),
   )
 })
-const primaryOpponent = computed(() => (
-  state.value.turnOrder.find((player) => player !== ownPlayer.value) ?? null
+type SeatPosition = 'top' | 'right' | 'bottom' | 'left'
+
+interface PlayerSeat {
+  player: PlayerId
+  position: SeatPosition
+}
+
+const playerSeats = computed<PlayerSeat[]>(() => {
+  const order = state.value.turnOrder
+  const ownIndex = order.indexOf(ownPlayer.value)
+  const startIndex = ownIndex >= 0 ? ownIndex : 0
+  const relativeOrder = [...order.slice(startIndex), ...order.slice(0, startIndex)]
+  const positions: SeatPosition[] = relativeOrder.length === 4
+    ? ['bottom', 'left', 'top', 'right']
+    : ['bottom', 'top']
+
+  return relativeOrder.map((player, index) => ({
+    player,
+    position: positions[index] ?? 'top',
+  }))
+})
+const previousFormationCards = computed(() => (
+  cardTokensForRefs(state.value.previousTurnFormation?.cards, 'previous-formation')
 ))
 const activeTeams = computed(() => [...new Set(state.value.players.map((player) => player.team))])
 const showSkip = computed(() => (
@@ -695,15 +722,6 @@ const showSkip = computed(() => (
   && game.interaction.value.canPass
   && game.interaction.value.hasOptionalEffect
 ))
-const roomConnectionText = computed(() => {
-  const labels = {
-    idle: '未連線',
-    connecting: '連線中',
-    connected: '即時同步',
-    reconnecting: '重新連線中',
-  }
-  return labels[game.connectionState.value]
-})
 const visibleNotifications = computed(() => notifications.notifications.value.filter(
   (notification) => screen.value !== 'game' || notification.gameId !== roomCode.value,
 ))
@@ -723,21 +741,6 @@ const gameResultText = computed(() => {
 
   return '戰局結束'
 })
-const selectedHint = computed(() => {
-  if (gameFinished.value) {
-    return '戰局結束'
-  }
-
-  if (roomWaiting.value) {
-    return '等待開局'
-  }
-
-  if (game.selectedCards.value.length) {
-    return `已選擇 ${game.selectedCards.value.length} 張牌`
-  }
-  return viewer.value === state.value.currentPlayer ? '請選擇手牌' : '等待其他玩家'
-})
-
 interface CardToken {
   id: string
   cardId: number
@@ -1105,6 +1108,44 @@ function cardsFor(player: PlayerId): CardToken[] {
   }))
 }
 
+function cardTokensForRefs(cards: PublicCardRefs | undefined, prefix: string): CardToken[] {
+  if (!cards) return []
+
+  if (cards.kind === 'known') {
+    return cards.cards.map((card, index) => ({
+      id: `${prefix}-known-${index}-${card.id}`,
+      cardId: card.id,
+      label: card.label,
+      hidden: false,
+      selectable: false,
+      selected: false,
+    }))
+  }
+
+  return Array.from({ length: cards.count }, (_, index) => ({
+    id: `${prefix}-hidden-${index}`,
+    cardId: -index - 1,
+    label: '',
+    hidden: true,
+    selectable: false,
+    selected: false,
+  }))
+}
+
+function handCount(player: PlayerId): number {
+  const hand = state.value.hands.find((entry) => entry.player === player)
+  if (!hand) return 0
+  return hand.cards.kind === 'known' ? hand.cards.cards.length : hand.cards.count
+}
+
+function playerConnected(player: PlayerId): boolean {
+  if (player === ownPlayer.value) {
+    return roomConnected.value
+  }
+
+  return memberForPlayer(player)?.connected ?? false
+}
+
 function teamHp(team: TeamId): number {
   return state.value.hp.find((entry) => entry.team === team)?.hp ?? 0
 }
@@ -1204,17 +1245,6 @@ function choiceLabel(value: string): string {
     TurnDrawDiscard: '選擇一張本回合抽到的牌棄置',
     EffectGenerated: '選擇效果指定的牌',
     Hidden: '等待隱藏選擇',
-  }
-  return labels[value] ?? value
-}
-
-function eventTypeLabel(value: string): string {
-  const labels: Record<string, string> = {
-    ActionPassed: '跳過行動',
-    AutomaticAdvance: '階段推進',
-    CardsDealt: '初始發牌',
-    FormationPerformed: '陣法發動',
-    TurnStarted: '回合開始',
   }
   return labels[value] ?? value
 }
@@ -1359,31 +1389,43 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .room-code { @apply font-mono text-[10px] text-[#8a948d]; overflow-wrap: anywhere; }
 
 .game-page { @apply flex h-[calc(100vh-84px)] flex-col overflow-hidden max-[900px]:h-auto max-[900px]:overflow-visible; }
-.game-statusbar { @apply grid min-h-16 grid-cols-[1fr_auto_1fr] items-center border-b border-line bg-panel px-[26px] max-[900px]:grid-cols-[1fr_auto] max-[600px]:px-2.5; }
-.game-statusbar > div:first-child { @apply flex items-center gap-3; }
-.game-statusbar p { @apply text-[13px] font-bold; }
-.game-statusbar span { @apply text-[10px] text-[#7d8780]; }
-.room-connection { @apply justify-self-end border border-[#3c463f] px-2 py-1 text-[9px]!; }
-.room-connection.connected { @apply border-[#396147] text-[#77bd8d]!; }
-.room-connection.reconnecting, .room-connection.connecting { @apply border-[#735f35] text-[#d0aa5e]!; }
-.back-button { @apply size-8 border border-[#39433d] bg-transparent; }
-.turn-indicator { @apply grid border-x border-line px-[38px] py-1 text-center max-[600px]:px-3; }
-.turn-indicator strong { @apply text-[13px] text-gold-light; }
-.turn-indicator i { @apply text-[9px] not-italic text-[#7e8981]; }
-.viewer-switch { @apply flex justify-end max-[900px]:hidden; }
-.viewer-switch button { @apply border-0 bg-transparent px-[9px] py-1.5 text-[10px] text-[#69736c]; }
-.viewer-switch button.active { @apply bg-[#282d24] text-[#e0c27a]; }
+.back-button { @apply grid size-9 place-items-center border border-[#4a554e] bg-[rgba(17,23,19,.88)] text-base text-[#ddd7c9] hover:border-[#b99550] hover:text-gold-light; }
+.battlefield-back { @apply absolute top-4 left-4 z-20; }
 .battle-layout { @apply grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px] max-[900px]:grid-cols-1 max-[900px]:overflow-auto; }
-.battlefield { position: relative; min-width: 0; display: grid; grid-template-rows: 1fr 1fr 1.15fr; padding: 20px 48px; overflow: hidden; background: radial-gradient(ellipse at center, #273029 0%, #141b17 58%, #0f1512 100%); }
+.battlefield {
+  --card-back-base: #232e28;
+  --card-back-stripe: #344039;
+  --card-back-border: #85714a;
+  position: relative;
+  min-width: 0;
+  display: grid;
+  grid-template-areas:
+    "top top top"
+    "left center right"
+    "bottom bottom bottom";
+  grid-template-columns: minmax(108px, .6fr) minmax(300px, 1.8fr) minmax(108px, .6fr);
+  grid-template-rows: minmax(150px, .8fr) minmax(230px, 1.15fr) minmax(175px, 1fr);
+  gap: 8px 14px;
+  padding: 22px 36px;
+  overflow: hidden;
+  background: radial-gradient(ellipse at center, #273029 0%, #141b17 58%, #0f1512 100%);
+}
 .battlefield::before { content: ""; position: absolute; inset: 22px; border: 1px solid rgba(175, 143, 79, .18); pointer-events: none; }
 .battlefield::after { content: "五 行"; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 270px; height: 270px; border: 1px solid rgba(183, 148, 77, .1); border-radius: 50%; display: grid; place-items: center; color: rgba(204, 171, 100, .06); font-family: serif; font-size: 70px; pointer-events: none; }
-.opponent-zone, .player-zone { @apply z-1 grid items-center max-[600px]:grid-cols-1 max-[600px]:justify-items-center; }
-.opponent-zone { grid-template-columns: 210px 1fr; }
-.player-zone { grid-template-columns: 1fr 210px; }
-.player-identity { @apply flex items-center gap-2.5; }
+.player-seat { @apply relative z-1 flex min-h-0 min-w-0 items-center justify-center gap-4; }
+.seat-top { grid-area: top; }
+.seat-bottom { grid-area: bottom; flex-direction: row-reverse; }
+.seat-left { grid-area: left; flex-direction: column; }
+.seat-right { grid-area: right; flex-direction: column; }
+.player-identity { @apply flex min-w-0 items-center gap-2.5; }
 .player-identity div { @apply grid; }
+.player-identity strong { @apply max-w-36 truncate text-xs; }
 .player-identity small { @apply text-[11px] text-[#d0a450]; }
-.turn-badge { @apply rounded-[20px] border border-[#396147] px-[7px] py-[3px] text-[9px]! text-[#77bd8d]!; }
+.connection-dot { @apply size-2 shrink-0 rounded-full border border-[#76524b] bg-[#6f3c34]; }
+.connection-dot.connected { @apply border-[#477557] bg-[#63a979]; }
+.reconnecting-label { @apply text-[9px] text-[#d0aa5e]; }
+.turn-badge { @apply border border-[#477557] bg-[#16251b] px-[7px] py-[3px] text-[9px]! whitespace-nowrap text-[#77bd8d]!; }
+.side-hand-count { @apply hidden text-[9px] text-muted; }
 .hand { @apply flex min-w-0 items-center justify-center; }
 .playing-card {
   width: clamp(62px, 7vw, 92px); aspect-ratio: 5 / 7; border: 1px solid #79715e; border-radius: 5px;
@@ -1392,23 +1434,49 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   box-shadow: 0 5px 15px rgba(0,0,0,.35);
 }
 .playing-card:enabled:hover, .playing-card.selected { transform: translateY(-14px); border-color: #e2bd67; box-shadow: 0 0 0 2px #c9a451, 0 12px 18px rgba(0,0,0,.45); z-index: 5; }
-.playing-card.hidden { background: repeating-linear-gradient(45deg, #232e28, #232e28 5px, #344039 5px, #344039 10px); border: 2px solid #85714a; color: #c7a65e; }
-.card-back-mark { @apply grid size-[42px] rotate-45 place-items-center border border-[#9b814d] font-serif text-lg; }
+.playing-card.hidden, .deck-pile strong, .formation-card.hidden {
+  background: repeating-linear-gradient(45deg, var(--card-back-base), var(--card-back-base) 5px, var(--card-back-stripe) 5px, var(--card-back-stripe) 10px);
+  border: 2px solid var(--card-back-border);
+}
+.playing-card.hidden::after, .deck-pile strong::after, .formation-card.hidden::after {
+  content: "";
+  width: 48%;
+  aspect-ratio: 1;
+  border: 1px solid rgba(198, 163, 94, .58);
+  transform: rotate(45deg);
+}
 .card-level { @apply absolute top-[5px] left-[7px] font-serif text-base font-extrabold; }
 .card-element { @apply grid size-[35px] place-items-center rounded-full border border-current font-serif text-lg; }
 .card-name { @apply mt-2 max-w-full overflow-hidden text-[9px] font-bold; }
 .element-火 .card-element { color: #a43d32; }.element-水 .card-element { color: #357a99; }
 .element-木 .card-element { color: #467d51; }.element-金 .card-element { color: #887b55; }.element-土 .card-element { color: #9b6e35; }
-.opponent-hand .playing-card { width: clamp(48px, 5vw, 68px); }
-.board-center { @apply z-1 grid grid-cols-[120px_1fr_120px] items-center justify-items-center max-[600px]:w-full max-[600px]:grid-cols-[70px_1fr_70px]; }
-.participant-strip { @apply col-span-3 mb-2 flex max-w-full gap-1 overflow-x-auto; }
-.participant-strip span { @apply shrink-0 border border-[#39443d] bg-[#151c18] px-2 py-1 text-[9px] text-muted; }
-.participant-strip span.active { @apply border-[#b99550] text-gold-light; }
-.participant-strip span.offline { @apply opacity-50; }
+.seat-top .playing-card { width: clamp(48px, 5vw, 68px); }
+.seat-left .seat-hand, .seat-right .seat-hand { @apply h-36 flex-col; }
+.seat-left .playing-card, .seat-right .playing-card { width: 43px; margin-top: -55px; margin-left: 0; }
+.seat-left .playing-card:first-child, .seat-right .playing-card:first-child { margin-top: 0; }
+.seat-bottom .selection-count { @apply absolute right-0 bottom-1 border border-[#3b463f] bg-[#151c18] px-[7px] py-1 text-[9px] text-muted; }
+.board-center { grid-area: center; @apply z-1 grid min-w-0 grid-cols-[90px_minmax(220px,1fr)_90px] items-center justify-items-center; }
 .deck-pile, .discard-pile { @apply grid justify-items-center gap-1.5 text-[9px] text-[#707b73]; }
-.deck-pile strong, .discard-pile strong, .covered-card { @apply grid w-[58px] place-items-center border border-[#665b44] bg-[#18201b] font-serif text-xl text-[#a68d56]; aspect-ratio: 5/7; }
-.formation-field { min-width: 220px; min-height: 100px; display: grid; place-items: center; color: #69736c; font-size: 10px; border-left: 1px solid rgba(166, 141, 86, .14); border-right: 1px solid rgba(166, 141, 86, .14); }
-.formation-field > span { color: #9a8251; letter-spacing: .2em; }
+.deck-pile strong, .discard-pile strong { @apply grid w-[52px] place-items-center border border-[#665b44] bg-[#18201b] font-serif text-xl text-[#a68d56]; aspect-ratio: 5/7; }
+.formation-field { @apply relative grid min-h-48 w-full min-w-0 grid-rows-[auto_1fr_auto] items-center border-x border-[rgba(166,141,86,.14)] px-3 py-2 text-center text-[10px] text-[#69736c]; }
+.formation-field-label { @apply text-[#9a8251]; letter-spacing: .2em; }
+.previous-formation { @apply grid min-h-24 content-center justify-items-center gap-1.5; }
+.previous-formation small { @apply text-[9px] text-muted; }
+.previous-formation strong { @apply font-serif text-sm text-gold-light; }
+.previous-formation p { @apply text-[10px] text-[#68726b]; }
+.formation-cards { @apply flex min-h-12 items-center justify-center; }
+.formation-card { @apply relative grid w-8 place-items-center rounded-[3px] border border-[#79715e] bg-[#d8cfba] text-[#18201c]; aspect-ratio: 5/7; margin-left: -4px; }
+.formation-card i { @apply absolute top-0.5 left-1 text-[8px] not-italic; }
+.formation-card b { @apply font-serif text-xs; }
+.formation-actions { @apply relative grid min-h-14 content-center gap-1.5 border-t border-[rgba(166,141,86,.14)] pt-2; }
+.formation-candidates { @apply flex max-w-full flex-wrap justify-center gap-1.5; }
+.formation-candidates button { @apply min-h-8 border border-[#4c554f] bg-[#18201b] px-2.5 py-1.5 text-[10px] text-[#e1ddd2] hover:border-[#b99550]; }
+.formation-candidates .skip-action { @apply border-[#79633b] text-gold-light; }
+.formation-processing { @apply text-[#d0aa5e]; }
+.formation-error { @apply text-[#d79587]; }
+.formation-prompt { @apply text-[#68726b]; }
+.formation-detail { @apply absolute right-0 bottom-[calc(100%+8px)] left-0 z-8 border border-[#64583f] bg-[#1c241f] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
+.formation-detail strong { @apply mr-2 text-gold-light; }
 .choice-overlay { @apply absolute inset-0 z-12 grid place-items-center bg-[rgba(7,10,8,.76)] text-center backdrop-blur-[4px]; }
 .choice-overlay > div { @apply min-w-90 border border-[#8e733d] bg-[#18201b] p-[30px]; }
 .choice-overlay h2 { @apply mt-2.5 mb-5 font-serif; }
@@ -1442,23 +1510,9 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .result-actions .ghost-button { @apply border-[#59635c] text-[#ece8dd]; }
 .result-actions .primary-button { @apply justify-between; }
 
-.game-sidebar { @apply grid min-h-0 grid-rows-[auto_1fr_auto] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
-.action-panel, .event-panel { @apply border-b border-line p-5; }
-.panel-heading, .panel-title { @apply flex items-start justify-between; }
-.panel-heading div { @apply grid; }
-.panel-heading span, .panel-title span { @apply text-[9px] tracking-[.14em] text-[#8a948d]; }
-.panel-heading strong { @apply mt-[3px] text-[13px]; }
-.selection-count { @apply border border-[#3b463f] px-[7px] py-1; }
-.available-formations { @apply mt-3.5 grid gap-[7px]; }
-.available-formations button { min-height: 46px; border: 1px solid #3b463f; background: #111713; display: flex; align-items: center; justify-content: space-between; gap: 9px; text-align: left; padding: 10px 12px; }
-.available-formations i { color: #c8a75f; font-style: normal; font-size: 10px; }
-.formation-detail { @apply border border-[#64583f] bg-[#1c241f] p-3 text-xs leading-5 text-muted; }
-.formation-detail strong { @apply mr-2 text-gold-light; }
-.empty-action { @apply grid min-h-[92px] content-center place-items-center gap-1.5 text-center text-[10px] text-[#667069]; }
-.empty-action span { @apply text-[22px] text-[#806c43]; }
-.utility-actions { @apply grid gap-[7px]; }
-.utility-actions button { border: 1px solid #3c463f; background: #222a25; min-height: 36px; font-size: 10px; }
-.event-panel { @apply min-h-0 overflow-auto; }
+.game-sidebar { @apply grid min-h-0 grid-rows-[1fr_auto] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
+.panel-title { @apply flex items-start justify-between; }
+.event-panel { @apply min-h-0 overflow-auto border-b border-line p-5; }
 .panel-title h2 { @apply font-serif text-[15px]; }
 .event-panel .panel-title button { @apply hidden border-0 bg-transparent text-[10px] text-gold-light; }
 .event-feed { @apply mt-4 grid list-none gap-[13px] p-0; }
@@ -1487,10 +1541,8 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   .lobby-heading { align-items: start; gap: 25px; flex-direction: column; }
   .battle-layout { grid-template-columns: 1fr; overflow: auto; }
   .game-page { height: auto; overflow: visible; }
-  .battlefield { min-height: 680px; padding: 20px; }
+  .battlefield { min-height: 720px; padding: 22px; }
   .game-sidebar { border-left: 0; }
-  .game-statusbar { grid-template-columns: 1fr auto; }
-  .viewer-switch { display: none; }
   .event-panel .panel-title button { display: block; }
   .event-panel:not(.expanded) .event-feed li:nth-child(n+4) { display: none; }
 }
@@ -1503,15 +1555,33 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   .lobby-page { padding: 36px 16px; }
   .setup-card { padding: 22px 18px; }
   .option-grid { grid-template-columns: 1fr; }
-  .game-statusbar { padding: 0 10px; }
-  .turn-indicator { padding: 4px 12px; }
-  .battlefield { grid-template-rows: 1fr .8fr 1fr; }
-  .opponent-zone, .player-zone { grid-template-columns: 1fr; justify-items: center; }
-  .opponent-zone .player-identity { order: 2; }
-  .player-zone .player-identity { order: 2; }
-  .board-center { grid-template-columns: 70px 1fr 70px; width: 100%; }
+  .battlefield {
+    min-height: 690px;
+    grid-template-columns: 76px minmax(0, 1fr) 76px;
+    grid-template-rows: 165px minmax(250px, 1fr) 185px;
+    gap: 4px;
+    padding: 46px 8px 12px;
+  }
+  .battlefield::before { inset: 8px; }
+  .battlefield-back { top: 10px; left: 10px; }
+  .player-seat { gap: 7px; }
+  .seat-top, .seat-bottom { flex-direction: column; }
+  .seat-top .player-identity, .seat-bottom .player-identity { order: 2; }
+  .seat-left .seat-hand, .seat-right .seat-hand { display: none; }
+  .seat-left .player-identity, .seat-right .player-identity { @apply flex-col gap-1 text-center; }
+  .seat-left .player-identity strong, .seat-right .player-identity strong { @apply max-w-18 text-[9px]; }
+  .seat-left .player-identity small, .seat-right .player-identity small { @apply text-[9px]; }
+  .seat-left .turn-badge, .seat-right .turn-badge { @apply max-w-18 whitespace-normal px-1 py-0.5 text-[8px]!; }
+  .seat-left .side-hand-count, .seat-right .side-hand-count { @apply block; }
+  .seat-bottom .selection-count { @apply right-2 bottom-0; }
+  .board-center { grid-template-columns: 48px minmax(0, 1fr) 48px; width: 100%; }
   .formation-field { min-width: 0; width: 100%; }
-  .playing-card { width: 58px; }
+  .deck-pile strong, .discard-pile strong { width: 38px; }
+  .playing-card { width: 54px; }
+  .seat-top .playing-card { width: 43px; }
+  .player-identity strong { max-width: 110px; }
+  .turn-badge { font-size: 8px!important; }
+  .formation-candidates button { min-height: 30px; padding: 4px 7px; }
   .waiting-overlay > div, .result-overlay > div { min-width: 0; width: calc(100vw - 32px); padding: 22px 16px; }
   .waiting-members { grid-template-columns: 1fr 1fr; }
   .notification-stack { top: 76px; right: 16px; }

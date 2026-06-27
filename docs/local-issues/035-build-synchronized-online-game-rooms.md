@@ -35,7 +35,16 @@ Use a Cloudflare Worker as the authenticated gateway and route each room to an a
 - [x] Team and turn order are shown briefly before the engine advances to the first player decision, without another confirmation.
 - [x] The server automatically advances non-decision phases and stops only at an actual player decision.
 - [x] General-player screens do not expose manual refresh, manual phase advancement, or other debug controls.
+- [x] Waiting and active room views have no separate status bar or central player strip: Back sits at the battlefield's top-left, waiting-room details stay in its overlay, action status appears only in the acting player's area, and turn count appears only in the match record.
+- [x] A two-player battlefield keeps player areas at the top and bottom; a four-player battlefield keeps the viewer at the bottom, their teammate opposite, and the two opponents at the left and right.
+- [x] On mobile, four-player side areas use a compact vertical layout with avatar, name, HP, connection, action status, and hand count; only top and bottom areas render card rows.
+- [x] Each player area shows a compact connected/disconnected indicator; only the viewer's area adds reconnecting text, and no standalone synchronization label remains.
+- [x] Hidden hands and the deck use the same text-free default Card Back while retaining an accessible "牌背" label.
+- [x] The central Formation area shows only the Formation used during the Previous Turn and is empty when that turn used no Formation; it shows the Formation name and used cards only to the extent allowed by the viewer's Public View.
 - [x] A player selects hand cards first, after which the UI lists matching formation names only.
+- [x] The Formation area keeps the Previous Turn's Formation visible above current Formation candidates; candidate details appear in a non-resizing hover, focus, or long-press overlay.
+- [x] The separate action panel is removed: selection count stays by the viewer's hand, while Formation candidates and `Skip` share the central candidate area.
+- [x] Formation submission progress and rejection reasons replace the candidate controls in place; rejection restores the candidates without clearing the selected cards.
 - [x] Long press reveals formation details on touch devices; hover and focus provide the desktop equivalent.
 - [x] Selecting a formation activates it immediately unless target or effect choices are required.
 - [x] Before the final Command is submitted, a player can return from target or effect selection without losing the selected cards or formation candidates.
@@ -46,6 +55,8 @@ Use a Cloudflare Worker as the authenticated gateway and route each room to an a
 - [x] While awaiting server acknowledgement, the UI shows a processing state and prevents duplicate submission without optimistic game-state updates.
 - [x] A rejected Command preserves the player's local selection where possible and displays the rejection reason.
 - [x] The game screen always contains a viewer-filtered match record area.
+- [x] Every visible Public Event Feed entry has a plain-language Chinese title and description; internal event identifiers such as `DeckPrepared` are never rendered or used as display fallbacks.
+- [x] Deck preparation, shuffle, and initial deal details are consolidated into one player-facing "對局開始" entry while the canonical Game Record remains complete.
 - [x] Desktop shows a full match-record sidebar; mobile shows the latest two or three entries and can expand the full record.
 - [x] Hidden hands, covered cards, private choices, and private record details are filtered on the server rather than hidden by the client.
 - [x] Teammates can see each other's hand count but not card faces.
@@ -75,6 +86,7 @@ Use a Cloudflare Worker as the authenticated gateway and route each room to an a
 - Surrender, match cancellation, or abnormal-match adjudication.
 - Leaving, removing players, or dissolving a room during an active match.
 - Manual team selection, seat selection, or room-setting changes.
+- Card Back customization beyond keeping the default appearance replaceable.
 
 ## Blocked by
 
