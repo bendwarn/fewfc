@@ -80,6 +80,7 @@ export const publicGameRoom = sqliteTable(
   'public_game_room',
   {
     gameId: text('game_id').primaryKey(),
+    roomCode: text('room_code').notNull().unique(),
     name: text('name').notNull(),
     access: text('access').notNull(),
     status: text('status').notNull(),

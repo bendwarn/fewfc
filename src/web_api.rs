@@ -1,14 +1,14 @@
 use crate::application::{BaseRuleset, GameRecord, RecordedDecision};
 use crate::domain::{
     CardInstanceId, Command, GameError, GameEvent, GameSetup, PassActionReason, PendingChoiceKind,
-    Phase, Player, PlayerId, StatusOwner, TargetDecl, TeamHp, TeamId, TurnDrawSkipReason,
+    Phase, Player, PlayerId, StatusOwner, TargetDecl, TeamId, TurnDrawSkipReason,
 };
 use crate::public_view::{
     PublicCardRefs, PublicGameEvent, PublicGameState, PublicPendingChoiceKind, Viewer,
 };
 use crate::rules::{FormationCategory, base_formation_registry};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub fn handle_request_json(input: &str) -> Result<String, String> {
     let request: ApiRequest = serde_json::from_str(input).map_err(|error| error.to_string())?;
@@ -254,16 +254,15 @@ enum ApiAction {
     },
 }
 
-fn setup_for_first_player(ruleset: &BaseRuleset, first_player: Option<&str>) -> GameSetup {
-    if first_player == Some("bob") {
-        let mut setup = GameSetup::two_player(PlayerId::new("bob"), PlayerId::new("alice"), 20);
-        let sample = ruleset.sample_game_setup();
-        setup.card_defs = sample.card_defs;
-        setup.card_instances = sample.card_instances;
-        return setup;
-    }
+fn fixture_setup(ruleset: &BaseRuleset, first_player: Option<&str>) -> GameSetup {
+    let (first, second) = if first_player == Some("bob") {
+        ("bob", "alice")
+    } else {
+        ("alice", "bob")
+    };
+    let setup = GameSetup::two_player(PlayerId::new(first), PlayerId::new(second), 20);
 
-    ruleset.sample_game_setup()
+    ruleset.official_game_setup(setup.players, setup.turn_order)
 }
 
 fn setup_for_request(
@@ -272,7 +271,7 @@ fn setup_for_request(
     first_player: Option<&str>,
 ) -> Result<GameSetup, ApiError> {
     let Some(requested) = requested else {
-        return Ok(setup_for_first_player(ruleset, first_player));
+        return Ok(fixture_setup(ruleset, first_player));
     };
 
     if requested.players.is_empty() {
@@ -281,7 +280,6 @@ fn setup_for_request(
         ));
     }
 
-    let mut setup = ruleset.sample_game_setup();
     let players = requested
         .players
         .into_iter()
@@ -295,22 +293,7 @@ fn setup_for_request(
         .into_iter()
         .map(PlayerId::new)
         .collect::<Vec<_>>();
-    let mut seen_teams = HashSet::new();
-    let hp = players
-        .iter()
-        .filter_map(|player| {
-            seen_teams.insert(player.team.clone()).then_some(TeamHp {
-                team: player.team.clone(),
-                hp: 20,
-            })
-        })
-        .collect::<Vec<_>>();
-
-    setup.players = players;
-    setup.turn_order = turn_order;
-    setup.hp = hp;
-
-    Ok(setup)
+    Ok(ruleset.official_game_setup(players, turn_order))
 }
 
 fn deck_order_for_start(
@@ -318,7 +301,7 @@ fn deck_order_for_start(
     setup: &GameSetup,
     deck_seed: Option<&str>,
 ) -> Vec<CardInstanceId> {
-    let mut deck_order = ruleset.sample_deck_order(setup);
+    let mut deck_order = ruleset.official_deck_order(setup);
     shuffle_deck(
         &mut deck_order,
         deck_seed.unwrap_or("fewfc-default-shuffle"),
@@ -1037,7 +1020,7 @@ mod tests {
     #[test]
     fn finished_game_status_uses_the_stable_web_value() {
         let ruleset = BaseRuleset::new();
-        let setup = ruleset.sample_game_setup();
+        let setup = fixture_setup(&ruleset, None);
         let mut state = crate::domain::GameState::from_setup(&setup);
         state.status = crate::domain::GameStatus::Finished {
             outcome: crate::domain::GameOutcome::Team(setup.players[0].team.clone()),
@@ -1065,8 +1048,8 @@ mod tests {
     #[test]
     fn start_request_shuffles_deck_by_seed_before_dealing() {
         let ruleset = BaseRuleset::new();
-        let setup = ruleset.sample_game_setup();
-        let sorted_deck = ruleset.sample_deck_order(&setup);
+        let setup = fixture_setup(&ruleset, None);
+        let sorted_deck = ruleset.official_deck_order(&setup);
         let first_shuffle = deck_order_for_start(&ruleset, &setup, Some("seed-a"));
         let same_shuffle = deck_order_for_start(&ruleset, &setup, Some("seed-a"));
         let different_shuffle = deck_order_for_start(&ruleset, &setup, Some("seed-b"));
@@ -1104,7 +1087,7 @@ mod tests {
     #[test]
     fn pass_reason_is_derived_from_the_current_state() {
         let mut state =
-            crate::domain::GameState::from_setup(&BaseRuleset::new().sample_game_setup());
+            crate::domain::GameState::from_setup(&fixture_setup(&BaseRuleset::new(), None));
         state.phase = Phase::Main;
         let current = state.current_player().cloned().unwrap();
         state.hand_mut(&current).unwrap().clear();

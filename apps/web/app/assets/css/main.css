@@ -38,3 +38,42 @@
     @apply m-0;
   }
 }
+.route-page,
+.route-anchor {
+  display: none;
+}
+
+.route-state {
+  display: grid;
+  min-height: calc(100vh - 76px);
+  place-items: center;
+  padding: 24px;
+}
+
+.route-state-content {
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  max-width: 420px;
+  text-align: center;
+}
+
+.route-state-content h1,
+.route-state-content p {
+  margin: 0;
+}
+
+.route-spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid #d7d3cb;
+  border-top-color: #b3382c;
+  border-radius: 50%;
+  animation: route-spin 0.8s linear infinite;
+}
+
+@keyframes route-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

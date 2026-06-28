@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
-import { normalizeGameRoomMetadata } from './game-room'
+import { invitationCredentialMatches, normalizeGameRoomMetadata } from './game-room'
 
 describe('normalizeGameRoomMetadata', () => {
   test('restores the first member as owner when persisted owner flags are false', () => {
@@ -85,5 +85,31 @@ describe('normalizeGameRoomMetadata', () => {
       connected: false,
       owner: true,
     }])
+  })
+})
+
+describe('invitationCredentialMatches', () => {
+  const invitation = {
+    roomCode: 'ABCD234',
+    inviteToken: 'token-value',
+  }
+
+  test('accepts the matching token or case-insensitive room code', () => {
+    assert.equal(invitationCredentialMatches(invitation, {
+      type: 'token',
+      value: 'token-value',
+    }), true)
+    assert.equal(invitationCredentialMatches(invitation, {
+      type: 'code',
+      value: 'abcd234',
+    }), true)
+  })
+
+  test('rejects absent and incorrect credentials', () => {
+    assert.equal(invitationCredentialMatches(invitation, undefined), false)
+    assert.equal(invitationCredentialMatches(invitation, {
+      type: 'token',
+      value: 'wrong',
+    }), false)
   })
 })

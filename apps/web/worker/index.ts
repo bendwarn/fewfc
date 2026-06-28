@@ -5,6 +5,7 @@ import { PlayerNotifications } from './durable-objects/player-notifications'
 interface WorkerEnv {
   GAME_ROOM: DurableObjectNamespace
   PLAYER_NOTIFICATIONS: DurableObjectNamespace
+  APP_ENV: 'development' | 'staging' | 'production'
 }
 
 interface AuthSessionResponse {
@@ -97,6 +98,13 @@ async function websocketResponse(
 
 export default {
   async fetch(request: Request, env: WorkerEnv, context: ExecutionContext): Promise<Response> {
+    if (!['development', 'staging', 'production'].includes(env.APP_ENV)) {
+      return Response.json(
+        { error: 'APP_ENV must be development, staging, or production.' },
+        { status: 500 },
+      )
+    }
+
     const socket = await websocketResponse(request, env, context, new URL(request.url))
 
     if (socket) {

@@ -39,7 +39,8 @@ The login UI supports:
 
 Online rooms support:
 
-- Public discovery and private invitation codes.
+- Stable `/rooms/:id` routes that recover the current room after reload.
+- Public discovery plus separate private invitation links and short room codes.
 - Two-player and four-player team rooms.
 - WebSocket-synchronized membership, readiness, game state, and notifications.
 - Durable Object WebSocket Hibernation without client polling.
@@ -49,7 +50,7 @@ Online rooms support:
 Build the application for production:
 
 ```bash
-bun run build
+APP_ENV=production bun run build
 ```
 
 Locally preview production build:

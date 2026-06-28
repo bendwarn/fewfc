@@ -1,13 +1,14 @@
 <template>
   <div class="app-shell" :class="`screen-${screen}`">
     <NuxtRouteAnnouncer />
+    <NuxtPage class="route-page" />
 
     <header class="site-header">
       <button class="brand" type="button" aria-label="回到首頁" @click="goHome">
         <img class="brand-banner" src="/header-banner.svg" alt="五行戰鬥牌">
       </button>
 
-      <nav v-if="screen !== 'login'" class="header-actions" aria-label="帳號選單">
+      <nav v-if="routeReady && screen !== 'login'" class="header-actions" aria-label="帳號選單">
         <span class="connection" :class="{ offline: appConnectionText !== '已連線' }">
           <i /> {{ appConnectionText }}
         </span>
@@ -22,7 +23,24 @@
       </nav>
     </header>
 
-    <main v-if="screen === 'login'" class="login-layout">
+    <main v-if="!routeReady" class="route-state">
+      <div class="route-state-content">
+        <span class="route-spinner" aria-hidden="true" />
+        <h1>正在載入</h1>
+        <p>正在恢復玩家與房間狀態。</p>
+      </div>
+    </main>
+
+    <main v-else-if="roomRouteError" class="route-state">
+      <div class="route-state-content">
+        <h1>{{ roomRouteError }}</h1>
+        <button class="primary-button" type="button" @click="returnToLobby">
+          返回房間大廳
+        </button>
+      </div>
+    </main>
+
+    <main v-else-if="screen === 'login'" class="login-layout">
       <section class="login-hero">
         <div class="hero-copy">
           <p class="kicker"><span /> 五行交鋒，陣法成局</p>
@@ -49,7 +67,6 @@
       <section class="login-panel">
         <div class="auth-card">
           <div class="mobile-brand"><span class="brand-mark">五</span> 五行戰牌</div>
-          <p class="section-kicker">WELCOME BACK</p>
           <h2>{{ authMode === 'sign-in' ? '登入對戰' : '建立帳號' }}</h2>
           <p class="muted">
             {{ authMode === 'sign-in' ? '使用 Email 登入，繼續你的對戰紀錄。' : '建立可在不同裝置使用的玩家身份。' }}
@@ -108,7 +125,7 @@
 
           <div class="divider"><span>或使用訪客身份</span></div>
           <button class="ghost-button" type="button" :disabled="authBusy" @click="guestLogin">
-            快速開始
+            以訪客身份遊玩
           </button>
           <p class="terms">繼續即表示你同意遊戲規範與使用條款。</p>
         </div>
@@ -118,7 +135,6 @@
     <main v-else-if="screen === 'lobby'" class="lobby-page">
       <div class="lobby-heading">
         <div>
-          <p class="section-kicker">GAME LOBBY</p>
           <h1>準備開局</h1>
           <p class="muted">建立新的對戰房間，或使用房間代碼加入。</p>
         </div>
@@ -126,14 +142,14 @@
           <button
             type="button"
             :class="{ active: lobbyTab === 'create' }"
-            @click="lobbyTab = 'create'"
+            @click="setLobbyTab('create')"
           >
             建立房間
           </button>
           <button
             type="button"
             :class="{ active: lobbyTab === 'join' }"
-            @click="lobbyTab = 'join'"
+            @click="setLobbyTab('join')"
           >
             加入房間
           </button>
@@ -232,7 +248,7 @@
             :disabled="lobbyBusy"
             @click="enterListedRoom(room)"
           >
-            <span class="room-code">{{ room.gameId }}</span>
+            <span class="room-code">{{ room.roomCode }}</span>
             <div>
               <strong>{{ room.name }}</strong>
               <small>{{ room.members.length }} / {{ room.capacity }} 玩家 · 等待開始</small>
@@ -256,7 +272,7 @@
             :disabled="lobbyBusy"
             @click="openJoinedRoom(room.gameId)"
           >
-            <span class="room-code">{{ room.gameId }}</span>
+            <span class="room-code">{{ room.roomCode }}</span>
             <div>
               <strong>{{ room.name }}</strong>
               <small>{{ roomStatusLabel(room) }}</small>
@@ -424,7 +440,6 @@
 
           <div v-if="state.pendingChoice" class="choice-overlay">
             <div>
-              <p class="section-kicker">ACTION REQUIRED</p>
               <h2>{{ choiceLabel(state.pendingChoice.kind) }}</h2>
               <div class="choice-cards">
                 <button
@@ -451,7 +466,6 @@
 
           <div v-if="showSetupReveal" class="setup-reveal">
             <div>
-              <p class="section-kicker">MATCH READY</p>
               <h2>{{ onlineMetadata?.capacity === 4 ? '隊伍與行動順序' : '行動順序' }}</h2>
               <div v-if="onlineMetadata?.capacity === 4" class="revealed-teams">
                 <span v-for="team in activeTeams" :key="team">
@@ -467,9 +481,8 @@
 
           <div v-if="roomWaiting" class="waiting-overlay">
             <div>
-              <p class="section-kicker">WAITING ROOM</p>
               <h2>{{ activeRoomName }}</h2>
-              <p>房號 {{ roomCode }} · {{ waitingStatusText }}</p>
+              <p>{{ waitingRoomSummary }}</p>
               <div class="waiting-members">
                 <span
                   v-for="player in onlinePlayers"
@@ -527,7 +540,7 @@
                 </button>
               </div>
               <button
-                v-if="onlineMetadata?.access === 'private'"
+                v-if="onlineMetadata?.access === 'private' && isRoomOwner && game.invitation.value"
                 class="invite-link"
                 type="button"
                 @click="copyInviteLink"
@@ -539,7 +552,6 @@
 
           <div v-if="gameFinished" class="result-overlay">
             <div>
-              <p class="section-kicker">GAME SET</p>
               <h2>{{ gameResultText }}</h2>
               <p>{{ firstTurnText }}，本局已結束。</p>
               <div class="result-actions">
@@ -610,11 +622,13 @@
 import type { PlayableFormation, PlayerId, PublicCardRefs, TeamId, ViewerId } from '~/types/fewfc'
 import type { GameRoomMember, GameRoomResponse } from '../shared/game-room'
 import { authClient } from '~/lib/auth-client'
+import { roomRouteResult, safeInternalPath } from '~/lib/navigation'
 
 type Screen = 'login' | 'lobby' | 'game'
 
 interface PublicRoomSummary {
   gameId: string
+  roomCode: string
   name: string
   access: 'private' | 'public'
   status: string
@@ -626,8 +640,16 @@ interface PublicRoomSummary {
   updatedAt: string
 }
 
-const screen = ref<Screen>('login')
-const displayName = ref('玩家 Alice')
+const route = useRoute()
+const router = useRouter()
+const screen = computed<Screen>(() => {
+  if (route.path === '/login') return 'login'
+  if (route.path.startsWith('/rooms/')) return 'game'
+  return 'lobby'
+})
+const routeReady = ref(false)
+const roomRouteError = ref('')
+const displayName = ref('玩家')
 const nameInput = ref('')
 const emailInput = ref('')
 const passwordInput = ref('')
@@ -636,8 +658,8 @@ const authBusy = ref(false)
 const loginError = ref('')
 const currentUserId = ref('')
 const profileOpen = ref(false)
-const lobbyTab = ref<'create' | 'join'>('create')
-const roomName = ref('五行練習場')
+const lobbyTab = computed<'create' | 'join'>(() => route.query.tab === 'join' ? 'join' : 'create')
+const roomName = ref('')
 const roomMode = ref('duel')
 const roomCapacity = computed<2 | 4>(() => roomMode.value === 'team' ? 4 : 2)
 const roomAccess = ref<'private' | 'public'>('public')
@@ -649,7 +671,7 @@ const publicRooms = ref<PublicRoomSummary[]>([])
 const myRooms = ref<PublicRoomSummary[]>([])
 const activeRoomName = ref('')
 const viewer = ref<ViewerId>('observer')
-const game = useLocalGame(viewer)
+const game = useGameRoom(viewer)
 const notifications = usePlayerNotifications()
 const state = game.state
 const formationDetail = ref<PlayableFormation | null>(null)
@@ -667,6 +689,9 @@ const visibleEvents = computed(() => game.publicEvents.value)
 const playerInitial = computed(() => displayName.value.trim().charAt(0).toUpperCase() || 'A')
 const roomModeLabel = computed(() => modes.find((mode) => mode.id === roomMode.value)?.label ?? '')
 const onlineMetadata = computed(() => game.metadata.value)
+const waitingRoomSummary = computed(() => game.invitation.value
+  ? `房號 ${game.invitation.value.roomCode} · ${waitingStatusText.value}`
+  : waitingStatusText.value)
 const roomWaiting = computed(() => onlineMetadata.value?.status === 'Waiting')
 const gameFinished = computed(() => state.value.status === 'Finished')
 const firstPlayer = computed<PlayerId | null>(() => (
@@ -726,7 +751,7 @@ const visibleNotifications = computed(() => notifications.notifications.value.fi
   (notification) => screen.value !== 'game' || notification.gameId !== roomCode.value,
 ))
 const appConnectionText = computed(() => {
-  if (screen.value === 'game') {
+  if (screen.value === 'game' && !roomRouteError.value && game.onlineGameId.value) {
     return roomConnected.value ? '已連線' : '重新連線中'
   }
 
@@ -785,10 +810,9 @@ async function login() {
     const session = await authClient.getSession()
     currentUserId.value = session.data?.user.id ?? ''
     displayName.value = session.data?.user.name || nameInput.value || '玩家'
-    screen.value = 'lobby'
     notifications.connect()
-    await refreshRoomLists()
-    await joinInvitedRoom()
+    roomName.value ||= `${displayName.value}的房間`
+    await router.replace(loginRedirect())
   } catch {
     loginError.value = '帳號服務目前無法使用'
   } finally {
@@ -811,10 +835,9 @@ async function guestLogin() {
     const session = await authClient.getSession()
     currentUserId.value = session.data?.user.id ?? ''
     displayName.value = session.data?.user.name || '旅人'
-    screen.value = 'lobby'
     notifications.connect()
-    await refreshRoomLists()
-    await joinInvitedRoom()
+    roomName.value ||= `${displayName.value}的房間`
+    await router.replace(loginRedirect())
   } catch {
     loginError.value = '帳號服務目前無法使用'
   } finally {
@@ -825,13 +848,14 @@ async function guestLogin() {
 async function logout() {
   await authClient.signOut()
   notifications.disconnect()
-  game.disconnectRoomSocket()
+  game.clearRoom()
   profileOpen.value = false
-  screen.value = 'login'
   currentUserId.value = ''
   nameInput.value = ''
   emailInput.value = ''
   passwordInput.value = ''
+  roomName.value = ''
+  await router.replace('/login')
 }
 
 function toggleAuthMode() {
@@ -842,24 +866,24 @@ function toggleAuthMode() {
 function goHome() {
   if (screen.value === 'game') {
     leaveGame()
+    return
   }
+
+  void router.push('/rooms')
 }
 
 async function createRoom() {
-  activeRoomName.value = roomName.value || '未命名房間'
+  activeRoomName.value = roomName.value || `${displayName.value}的房間`
   await createOnlineRoom()
 }
 
 function leaveGame() {
-  game.disconnectRoomSocket()
-  screen.value = 'lobby'
-  void refreshRoomLists()
+  game.clearRoom()
+  void router.push('/rooms')
 }
 
 async function restartGame() {
   if (await game.resetOnlineRoom()) {
-    screen.value = 'lobby'
-    game.disconnectRoomSocket()
     await refreshRoomLists()
   }
 }
@@ -879,7 +903,7 @@ async function createOnlineRoom() {
     })
 
     enterOnlineRoom(response)
-    await refreshRoomLists()
+    await router.push(`/rooms/${encodeURIComponent(response.gameId)}`)
   } catch (error) {
     lobbyError.value = error instanceof Error ? error.message : '無法建立房間'
   } finally {
@@ -911,20 +935,19 @@ async function joinRoomByCode() {
     return
   }
 
-  await joinRoom(joinRoomCode.value.toUpperCase())
-}
-
-async function joinRoom(gameId: string) {
   lobbyBusy.value = true
   lobbyError.value = ''
 
   try {
-    const response = await $fetch<GameRoomResponse>(`/api/games/${gameId}/join`, {
+    const response = await $fetch<GameRoomResponse>('/api/games/join', {
       method: 'POST',
+      body: {
+        code: joinRoomCode.value.toUpperCase(),
+      },
     })
 
     enterOnlineRoom(response)
-    await refreshRoomLists()
+    await router.push(`/rooms/${encodeURIComponent(response.gameId)}`)
   } catch (error) {
     lobbyError.value = error instanceof Error ? error.message : '無法加入房間'
   } finally {
@@ -946,33 +969,18 @@ function enterOnlineRoom(response: GameRoomResponse) {
   viewer.value = ownMember?.player ?? 'observer'
   activeRoomName.value = response.metadata.name
   roomCode.value = response.gameId
-  joinRoomCode.value = response.gameId
+  joinRoomCode.value = response.invitation?.roomCode ?? ''
   eventExpanded.value = false
   notifications.dismissRoom(response.gameId)
   game.applyRoomResponse(response)
-  screen.value = 'game'
 }
 
 async function openJoinedRoom(gameId: string) {
-  lobbyBusy.value = true
-  lobbyError.value = ''
-
-  try {
-    enterOnlineRoom(await $fetch<GameRoomResponse>(`/api/games/${gameId}`))
-  } catch (error) {
-    lobbyError.value = error instanceof Error ? error.message : '無法開啟房間'
-  } finally {
-    lobbyBusy.value = false
-  }
+  await router.push(`/rooms/${encodeURIComponent(gameId)}`)
 }
 
 async function enterListedRoom(room: PublicRoomSummary) {
-  if (room.members.some((member) => member.userId === currentUserId.value)) {
-    await openJoinedRoom(room.gameId)
-    return
-  }
-
-  await joinRoom(room.gameId)
+  await openJoinedRoom(room.gameId)
 }
 
 async function openNotification(gameId: string, notificationId: string) {
@@ -982,8 +990,7 @@ async function openNotification(gameId: string, notificationId: string) {
 
 async function leaveWaitingRoom() {
   if (await game.leaveOnlineRoom()) {
-    screen.value = 'lobby'
-    await refreshRoomLists()
+    await router.replace('/rooms')
   }
 }
 
@@ -995,38 +1002,137 @@ async function removeWaitingPlayer(userId: string) {
 
 async function dissolveWaitingRoom() {
   if (await game.dissolveOnlineRoom()) {
-    screen.value = 'lobby'
-    await refreshRoomLists()
+    await router.replace('/rooms')
   }
 }
 
 async function copyInviteLink() {
-  const url = new URL(window.location.href)
-  url.searchParams.set('room', roomCode.value)
+  const invitation = game.invitation.value
+  if (!invitation) {
+    return
+  }
+
+  const url = new URL(`/rooms/${encodeURIComponent(roomCode.value)}`, window.location.origin)
+  url.searchParams.set('invite', invitation.inviteToken)
   await navigator.clipboard.writeText(url.toString())
 }
 
-async function joinInvitedRoom() {
-  const invitedRoom = new URL(window.location.href).searchParams.get('room')
+function loginRedirect(): string {
+  return safeInternalPath(route.query.redirect) ?? '/rooms'
+}
 
-  if (invitedRoom) {
-    await joinRoom(invitedRoom.toUpperCase())
+function setLobbyTab(tab: 'create' | 'join') {
+  void router.replace({
+    path: '/rooms',
+    query: tab === 'join' ? { tab: 'join' } : {},
+  })
+}
+
+function returnToLobby() {
+  void router.push('/rooms')
+}
+
+async function loadRoomRoute(gameId: string) {
+  game.clearRoom()
+  roomRouteError.value = ''
+
+  let response: GameRoomResponse
+  try {
+    response = await $fetch<GameRoomResponse>(`/api/games/${gameId}`)
+  } catch {
+    try {
+      response = await $fetch<GameRoomResponse>(`/api/games/${gameId}/join`, {
+        method: 'POST',
+        body: {
+          invite: typeof route.query.invite === 'string' ? route.query.invite : undefined,
+        },
+      })
+    } catch (error) {
+      roomRouteError.value = roomRouteResult(error)
+      return
+    }
+  }
+
+  if (response.metadata.status === 'Dissolved') {
+    roomRouteError.value = '找不到這個房間'
+    return
+  }
+
+  enterOnlineRoom(response)
+
+  if (route.query.invite) {
+    await router.replace(`/rooms/${encodeURIComponent(response.gameId)}`)
   }
 }
 
-onMounted(async () => {
+let routeLoadSequence = 0
+
+async function restoreCurrentRoute() {
+  const sequence = ++routeLoadSequence
+  routeReady.value = false
+  roomRouteError.value = ''
   const session = await authClient.getSession()
 
-  if (session.data?.user) {
-    currentUserId.value = session.data.user.id
-    displayName.value = session.data.user.name
-    screen.value = 'lobby'
-    notifications.connect()
-    await refreshRoomLists()
+  if (sequence !== routeLoadSequence) return
 
-    await joinInvitedRoom()
+  if (!session.data?.user) {
+    notifications.disconnect()
+    game.clearRoom()
+    currentUserId.value = ''
+
+    if (route.path !== '/login') {
+      const redirect = safeInternalPath(route.fullPath)
+      await router.replace({
+        path: '/login',
+        query: redirect ? { redirect } : {},
+      })
+    }
+
+    routeReady.value = true
+    return
   }
 
+  currentUserId.value = session.data.user.id
+  displayName.value = session.data.user.name || '玩家'
+  roomName.value ||= `${displayName.value}的房間`
+  notifications.connect()
+
+  if (route.path === '/login') {
+    await router.replace(loginRedirect())
+    return
+  }
+
+  if (route.path === '/') {
+    await router.replace('/rooms')
+    return
+  }
+
+  if (route.path.startsWith('/rooms/')) {
+    const gameId = typeof route.params.gameId === 'string' ? route.params.gameId : ''
+    await loadRoomRoute(gameId)
+  } else {
+    game.clearRoom()
+    await refreshRoomLists()
+  }
+
+  if (sequence === routeLoadSequence) {
+    routeReady.value = true
+  }
+}
+
+onMounted(() => {
+  watch(
+    () => [
+      route.path,
+      route.params.gameId,
+      route.query.redirect,
+      route.query.invite,
+    ],
+    () => {
+      void restoreCurrentRoute()
+    },
+    { immediate: true },
+  )
 })
 
 watch(
@@ -1051,9 +1157,8 @@ watch(
     }
 
     notifications.dismiss(removal.id)
-    game.disconnectRoomSocket()
-    screen.value = 'lobby'
-    void refreshRoomLists()
+    game.clearRoom()
+    void router.replace('/rooms')
   },
   { deep: true },
 )
@@ -1077,8 +1182,7 @@ watch(
   () => game.roomDissolved.value,
   (dissolved) => {
     if (dissolved && screen.value === 'game') {
-      screen.value = 'lobby'
-      void refreshRoomLists()
+      void router.replace('/rooms')
     }
   },
 )

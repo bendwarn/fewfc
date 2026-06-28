@@ -11,6 +11,7 @@ export interface WorkerEnv {
   DB: unknown
   GAME_ROOM: DurableObjectNamespaceBinding
   PLAYER_NOTIFICATIONS: DurableObjectNamespaceBinding
+  APP_ENV?: string
   BETTER_AUTH_SECRET?: string
   BETTER_AUTH_URL?: string
 }
@@ -39,6 +40,8 @@ export function workerEnv(event: H3Event): WorkerEnv {
       statusMessage: 'Cloudflare bindings are unavailable. Run the app through Wrangler.',
     })
   }
+
+  parseAppEnvironment(env.APP_ENV)
 
   return env
 }

@@ -8,8 +8,8 @@ mod projection;
 use crate::domain::{
     CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command,
     DeckPlacement, Element, EngineInvariantError, GameError, GameEvent, GameResult, GameSetup,
-    GameState, GameStatus, PassActionReason, Phase, PlayerId, RulesetId, TurnDrawSkipReason,
-    ValidationError, validate_setup,
+    GameState, GameStatus, PassActionReason, Phase, Player, PlayerId, RulesetId, TeamHp,
+    TurnDrawSkipReason, ValidationError, validate_setup,
 };
 use crate::rules::FormationCandidate;
 use std::collections::{HashMap, HashSet};
@@ -64,12 +64,35 @@ impl BaseRuleset {
         )
     }
 
-    pub fn sample_game_setup(&self) -> GameSetup {
-        GameSetup::two_player(PlayerId::new("alice"), PlayerId::new("bob"), 20)
-            .with_cards(official_card_defs(), official_card_instances())
+    pub fn official_game_setup(
+        &self,
+        players: Vec<Player>,
+        turn_order: Vec<PlayerId>,
+    ) -> GameSetup {
+        let mut teams = HashSet::new();
+        let hp = players
+            .iter()
+            .filter_map(|player| {
+                teams.insert(player.team.clone()).then_some(TeamHp {
+                    team: player.team.clone(),
+                    hp: 20,
+                })
+            })
+            .collect();
+
+        GameSetup {
+            ruleset: self.id(),
+            players,
+            turn_order,
+            hp,
+            card_defs: official_card_defs(),
+            card_instances: official_card_instances(),
+            hand_limit: 5,
+            base_draw: 2,
+        }
     }
 
-    pub fn sample_deck_order(&self, setup: &GameSetup) -> Vec<CardInstanceId> {
+    pub fn official_deck_order(&self, setup: &GameSetup) -> Vec<CardInstanceId> {
         let mut deck_order = setup
             .card_instances
             .iter()
@@ -722,11 +745,14 @@ mod tests {
     }
 
     #[test]
-    fn sample_game_setup_matches_rulebook_card_composition() {
+    fn official_game_setup_matches_rulebook_card_composition() {
         let ruleset = BaseRuleset::new();
-        let setup = ruleset.sample_game_setup();
+        let setup = ruleset.official_game_setup(
+            GameSetup::two_player(PlayerId::new("alice"), PlayerId::new("bob"), 20).players,
+            vec![PlayerId::new("alice"), PlayerId::new("bob")],
+        );
 
-        assert_eq!(ruleset.sample_deck_order(&setup).len(), 90);
+        assert_eq!(ruleset.official_deck_order(&setup).len(), 90);
         assert_eq!(setup.card_defs.len(), 25);
         assert_eq!(setup.card_instances.len(), 90);
 

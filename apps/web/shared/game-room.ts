@@ -33,6 +33,24 @@ export interface GameRoomMetadata {
   updatedAt: string
 }
 
+export interface GameRoomInvitation {
+  roomCode: string
+  inviteToken: string
+}
+
+export function invitationCredentialMatches(
+  invitation: GameRoomInvitation | undefined,
+  credential: Extract<GameRoomRequest, { type: 'joinGame' }>['credential'],
+): boolean {
+  if (!invitation || !credential?.value) {
+    return false
+  }
+
+  return credential.type === 'token'
+    ? credential.value === invitation.inviteToken
+    : credential.value.toUpperCase() === invitation.roomCode
+}
+
 interface StoredGameRoomMember extends Partial<GameRoomMember> {
   userId: string
   player: PlayerId
@@ -127,11 +145,16 @@ export type GameRoomRequest =
       access?: GameRoomAccess
       capacity?: GameRoomCapacity
       name?: string
+      invitation: GameRoomInvitation
     }
   | {
       type: 'joinGame'
       actorUserId: string
       actorName: string
+      credential?: {
+        type: 'code' | 'token'
+        value: string
+      }
     }
   | {
       type: 'toggleReady'
@@ -176,6 +199,7 @@ export type GameRoomRequest =
 export interface GameRoomResponse extends Omit<LocalGameResponse, 'record'> {
   gameId: string
   metadata: GameRoomMetadata
+  invitation?: GameRoomInvitation
   canCancelPendingCommand: boolean
 }
 

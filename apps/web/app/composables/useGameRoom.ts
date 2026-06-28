@@ -1,30 +1,20 @@
 import type {
   CardInstanceId,
-  LocalGameResponse,
   PlayableFormation,
   PlayerId,
   PublicGameEvent,
   PublicGameState,
-  RecordedDecision,
   ViewerId,
 } from '~/types/fewfc'
 import type {
   GameRoomMetadata,
+  GameRoomInvitation,
   GameRoomResponse,
   GameRoomSocketMessage,
   OnlineGameAction,
 } from '../../shared/game-room'
 
 type ViewerRef = Ref<ViewerId>
-
-interface FewfcWasmExports extends WebAssembly.Exports {
-  memory: WebAssembly.Memory
-  fewfc_alloc(len: number): number
-  fewfc_dealloc(ptr: number, len: number): void
-  fewfc_handle_request(ptr: number, len: number): bigint
-}
-
-let browserWasmInstance: WebAssembly.Instance | undefined
 
 function emptyState(): PublicGameState {
   return {
@@ -45,69 +35,10 @@ function emptyState(): PublicGameState {
   }
 }
 
-async function browserRulesEngine(): Promise<FewfcWasmExports> {
-  if (!browserWasmInstance) {
-    const response = await fetch('/fewfc.wasm')
-
-    if (!response.ok) {
-      throw new Error('無法載入規則引擎')
-    }
-
-    const source = await WebAssembly.instantiate(await response.arrayBuffer(), {}) as
-      | WebAssembly.Instance
-      | WebAssembly.WebAssemblyInstantiatedSource
-    browserWasmInstance = source instanceof WebAssembly.Instance ? source : source.instance
-  }
-
-  return (browserWasmInstance as WebAssembly.Instance).exports as FewfcWasmExports
-}
-
-async function callBrowserGame(body: Record<string, unknown>): Promise<LocalGameResponse> {
-  const wasm = await browserRulesEngine()
-  const input = new TextEncoder().encode(JSON.stringify(body))
-  const inputPtr = wasm.fewfc_alloc(input.length)
-
-  new Uint8Array(wasm.memory.buffer).set(input, inputPtr)
-
-  const packed = wasm.fewfc_handle_request(inputPtr, input.length)
-  wasm.fewfc_dealloc(inputPtr, input.length)
-
-  const outputPtr = Number(packed >> BigInt(32))
-  const outputLen = Number(packed & BigInt(0xffffffff))
-  const outputBytes = new Uint8Array(wasm.memory.buffer, outputPtr, outputLen)
-  const output = new TextDecoder().decode(outputBytes)
-  wasm.fewfc_dealloc(outputPtr, outputLen)
-
-  const parsed = JSON.parse(output) as LocalGameResponse | { error: string }
-
-  if ('error' in parsed) {
-    throw new Error(parsed.error)
-  }
-
-  return parsed
-}
-
-async function callLocalGame(body: Record<string, unknown>): Promise<LocalGameResponse> {
-  if (import.meta.client) {
-    try {
-      return await callBrowserGame(body)
-    } catch (error) {
-      if (!import.meta.dev) {
-        throw error
-      }
-    }
-  }
-
-  return await $fetch<LocalGameResponse>('/api/local-game', {
-    method: 'POST',
-    body,
-  })
-}
-
-export function useLocalGame(viewer: ViewerRef) {
-  const record = ref<RecordedDecision[]>([])
+export function useGameRoom(viewer: ViewerRef) {
   const state = ref<PublicGameState>(emptyState())
   const metadata = ref<GameRoomMetadata | null>(null)
+  const invitation = ref<GameRoomInvitation | null>(null)
   const onlineGameId = ref<string | null>(null)
   const publicEvents = ref<PublicGameEvent[]>([])
   const selectedCards = ref<CardInstanceId[]>([])
@@ -121,24 +52,17 @@ export function useLocalGame(viewer: ViewerRef) {
   const canCancelPendingCommand = ref(false)
   const connectionState = ref<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle')
   const roomDissolved = ref(false)
-  const firstPlayer = ref<PlayerId>('alice')
-  const deckSeed = ref(crypto.randomUUID())
   let roomSocket: WebSocket | null = null
   let roomSocketGameId: string | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined
   let reconnectAttempt = 0
 
-  watch(viewer, (nextViewer) => {
+  watch(viewer, () => {
     selectedCards.value = []
     playableFormations.value = []
 
     if (onlineGameId.value) {
       void refreshOnlineGame()
-      return
-    }
-
-    if (record.value.length > 0) {
-      void refresh(nextViewer)
     }
   })
 
@@ -155,21 +79,9 @@ export function useLocalGame(viewer: ViewerRef) {
     return viewer.value === player && state.value.currentPlayer === player && !state.value.pendingChoice
   }
 
-  function applyResponse(response: LocalGameResponse) {
-    metadata.value = null
-    onlineGameId.value = null
-    record.value = response.record
-    state.value = response.state
-    publicEvents.value = response.events
-    playableFormations.value = response.playableFormations
-    interaction.value = response.interaction
-    canCancelPendingCommand.value = false
-    errorMessage.value = null
-  }
-
   function applyRoomResponse(response: GameRoomResponse) {
-    const changedRoom = onlineGameId.value !== response.gameId
     metadata.value = response.metadata
+    invitation.value = response.invitation ?? null
     onlineGameId.value = response.gameId
     state.value = response.state
     publicEvents.value = response.events
@@ -179,21 +91,8 @@ export function useLocalGame(viewer: ViewerRef) {
     errorMessage.value = null
     roomDissolved.value = response.metadata.status === 'Dissolved'
 
-    if (changedRoom && import.meta.client) {
+    if (import.meta.client) {
       connectRoomSocket(response.gameId)
-    }
-  }
-
-  async function submit(body: Record<string, unknown>) {
-    isLoading.value = true
-    errorMessage.value = null
-
-    try {
-      applyResponse(await callLocalGame(body))
-    } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : '規則引擎呼叫失敗'
-    } finally {
-      isLoading.value = false
     }
   }
 
@@ -219,21 +118,6 @@ export function useLocalGame(viewer: ViewerRef) {
     } finally {
       isLoading.value = false
     }
-  }
-
-  async function refresh(nextViewer = viewer.value) {
-    if (onlineGameId.value) {
-      await refreshOnlineGame()
-      return
-    }
-
-    await submit({
-      action: { type: 'refresh' },
-      viewer: nextViewer,
-      firstPlayer: firstPlayer.value,
-      deckSeed: deckSeed.value,
-      record: record.value,
-    })
   }
 
   async function refreshOnlineGame() {
@@ -280,9 +164,7 @@ export function useLocalGame(viewer: ViewerRef) {
     const successful = await roomMutation('leave')
 
     if (successful) {
-      disconnectRoomSocket()
-      metadata.value = null
-      onlineGameId.value = null
+      clearRoom()
     }
 
     return successful
@@ -337,52 +219,10 @@ export function useLocalGame(viewer: ViewerRef) {
     }
   }
 
-  async function startSampleGame(nextFirstPlayer: PlayerId = 'alice') {
-    metadata.value = null
-    onlineGameId.value = null
-    firstPlayer.value = nextFirstPlayer
-    deckSeed.value = crypto.randomUUID()
-    selectedCards.value = []
-    await submit({
-      action: { type: 'start' },
-      viewer: viewer.value,
-      firstPlayer: firstPlayer.value,
-      deckSeed: deckSeed.value,
-    })
-  }
-
   async function passAction() {
-    if (onlineGameId.value) {
-      if (await submitOnline({ type: 'passAction' })) {
-        selectedCards.value = []
-      }
-      return
+    if (await submitOnline({ type: 'passAction' })) {
+      selectedCards.value = []
     }
-
-    await submit({
-      action: { type: 'passAction' },
-      viewer: viewer.value,
-      firstPlayer: firstPlayer.value,
-      deckSeed: deckSeed.value,
-      record: record.value,
-    })
-  }
-
-  async function advanceAutomatic() {
-    selectedCards.value = []
-
-    if (onlineGameId.value) {
-      await submitOnline({ type: 'advanceAutomatic' })
-      return
-    }
-
-    await submit({
-      action: { type: 'advanceAutomatic' },
-      viewer: viewer.value,
-      firstPlayer: firstPlayer.value,
-      deckSeed: deckSeed.value,
-      record: record.value,
-    })
   }
 
   async function queryPlayableFormations() {
@@ -392,25 +232,10 @@ export function useLocalGame(viewer: ViewerRef) {
       return
     }
 
-    if (onlineGameId.value) {
-      await submitOnline({
-        type: 'playableFormations',
-        player,
-        cards: selectedCards.value,
-      })
-      return
-    }
-
-    await submit({
-      action: {
-        type: 'playableFormations',
-        player,
-        cards: selectedCards.value,
-      },
-      viewer: viewer.value,
-      firstPlayer: firstPlayer.value,
-      deckSeed: deckSeed.value,
-      record: record.value,
+    await submitOnline({
+      type: 'playableFormations',
+      player,
+      cards: selectedCards.value,
     })
   }
 
@@ -422,56 +247,24 @@ export function useLocalGame(viewer: ViewerRef) {
     }
 
     if (choice.kind === 'TurnDrawDiscard') {
-      if (onlineGameId.value) {
-        if (await submitOnline({
-          type: 'chooseTurnDiscard',
-          player: choice.player,
-          card,
-        })) {
-          selectedCards.value = []
-        }
-        return
+      if (await submitOnline({
+        type: 'chooseTurnDiscard',
+        player: choice.player,
+        card,
+      })) {
+        selectedCards.value = []
       }
-
-      await submit({
-        action: {
-          type: 'chooseTurnDiscard',
-          player: choice.player,
-          card,
-        },
-        viewer: viewer.value,
-        firstPlayer: firstPlayer.value,
-        deckSeed: deckSeed.value,
-        record: record.value,
-      })
-      selectedCards.value = []
       return
     }
 
     if (choice.kind === 'EffectGenerated') {
-      if (onlineGameId.value) {
-        if (await submitOnline({
-          type: 'answerEffectChoice',
-          player: choice.player,
-          cards: [card],
-        }) && !canCancelPendingCommand.value) {
-          selectedCards.value = []
-        }
-        return
+      if (await submitOnline({
+        type: 'answerEffectChoice',
+        player: choice.player,
+        cards: [card],
+      }) && !canCancelPendingCommand.value) {
+        selectedCards.value = []
       }
-
-      await submit({
-        action: {
-          type: 'answerEffectChoice',
-          player: choice.player,
-          cards: [card],
-        },
-        viewer: viewer.value,
-        firstPlayer: firstPlayer.value,
-        deckSeed: deckSeed.value,
-        record: record.value,
-      })
-      selectedCards.value = []
     }
   }
 
@@ -494,31 +287,14 @@ export function useLocalGame(viewer: ViewerRef) {
 
     const cards = [...selectedCards.value]
 
-    if (onlineGameId.value) {
-      if (await submitOnline({
-        type: 'performFormation',
-        player,
-        formationId: formation.id,
-        cards,
-      }) && !canCancelPendingCommand.value) {
-        selectedCards.value = []
-      }
-      return
+    if (await submitOnline({
+      type: 'performFormation',
+      player,
+      formationId: formation.id,
+      cards,
+    }) && !canCancelPendingCommand.value) {
+      selectedCards.value = []
     }
-
-    await submit({
-      action: {
-        type: 'performFormation',
-        player,
-        formationId: formation.id,
-        cards,
-      },
-      viewer: viewer.value,
-      firstPlayer: firstPlayer.value,
-      deckSeed: deckSeed.value,
-      record: record.value,
-    })
-    selectedCards.value = []
   }
 
   function connectRoomSocket(gameId = onlineGameId.value) {
@@ -595,10 +371,25 @@ export function useLocalGame(viewer: ViewerRef) {
     }
   }
 
+  function clearRoom() {
+    disconnectRoomSocket()
+    metadata.value = null
+    invitation.value = null
+    onlineGameId.value = null
+    state.value = emptyState()
+    publicEvents.value = []
+    selectedCards.value = []
+    playableFormations.value = []
+    errorMessage.value = null
+    canCancelPendingCommand.value = false
+    roomDissolved.value = false
+  }
+
   onBeforeUnmount(disconnectRoomSocket)
 
   return {
     metadata,
+    invitation,
     onlineGameId,
     state,
     publicEvents,
@@ -610,7 +401,6 @@ export function useLocalGame(viewer: ViewerRef) {
     canCancelPendingCommand,
     connectionState,
     roomDissolved,
-    startSampleGame,
     applyRoomResponse,
     refreshOnlineGame,
     startOnlineGame,
@@ -620,9 +410,9 @@ export function useLocalGame(viewer: ViewerRef) {
     dissolveOnlineRoom,
     resetOnlineRoom,
     cancelPendingCommand,
+    clearRoom,
     disconnectRoomSocket,
     passAction,
-    advanceAutomatic,
     canSelectCard,
     toggleCardSelection,
     performFormation,

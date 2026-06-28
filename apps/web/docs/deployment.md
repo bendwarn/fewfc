@@ -2,16 +2,6 @@
 
 The Nuxt UI is intended to deploy on Cloudflare.
 
-## Static or Pages-backed preview
-
-Use this path for local-play UI and early public demos.
-
-```bash
-bun run generate
-```
-
-Deploy the generated output to Cloudflare Pages.
-
 ## Worker-backed deployment
 
 Use this path once the UI needs server routes or a game-room API.
@@ -38,11 +28,16 @@ cp .dev.vars.example .dev.vars
 bun run cf:dev
 ```
 
+`APP_ENV` is the environment policy input. The default Wrangler environment sets it
+to `development`; the explicit `staging` and `production` environments set their
+matching values. A missing or unsupported value fails the build or request.
+
 `BETTER_AUTH_SECRET` must contain at least 32 random characters. Keep it in `.dev.vars` locally and store it as a Worker secret in deployed environments:
 
 ```bash
 bunx wrangler secret put BETTER_AUTH_SECRET
 bunx wrangler secret put BETTER_AUTH_SECRET --env staging
+bunx wrangler secret put BETTER_AUTH_SECRET --env production
 ```
 
 Before deployment:
@@ -55,6 +50,7 @@ Before deployment:
 ```bash
 bun run db:migrate:remote
 bunx wrangler d1 migrations apply fewfc-auth-staging --remote --env staging
+bunx wrangler d1 migrations apply fewfc-auth-production --remote --env production
 ```
 
 `bun run build` first compiles the Rust rules engine to `worker/wasm/fewfc.wasm`, then runs the Nuxt Cloudflare build. The generated Wasm binary is ignored by git and should be rebuilt in deploy environments.
@@ -63,8 +59,11 @@ Deploy staging or production:
 
 ```bash
 bun run cf:deploy:staging
-bun run cf:deploy
+bun run cf:deploy:production
 ```
+
+There is intentionally no unqualified deployment command. Each deployment command
+validates that its origin and D1 ID no longer contain repository placeholders.
 
 Durable Objects should own authoritative online Game Records. Browser clients submit Commands and receive viewer-filtered Public Game State and Public Event Feed data.
 
@@ -73,7 +72,8 @@ Current Worker game-room endpoints:
 - `GET /api/games` returns joinable public rooms and the authenticated player's rooms.
 - `POST /api/games` creates a two-player or four-player public/private room.
 - `GET /api/games/:id` returns a viewer-filtered room snapshot derived from the authenticated user's seat.
-- `POST /api/games/:id/join` joins a room by public listing, invitation link, or room code.
+- `POST /api/games/:id/join` joins a public room or redeems a private invitation token.
+- `POST /api/games/join` resolves and redeems a human-entered room code.
 - `POST /api/games/:id/ready` toggles a non-owner player's readiness.
 - `POST /api/games/:id/start` atomically validates connected/ready players and starts the match.
 - `POST /api/games/:id/leave`, `/remove`, and `/dissolve` manage waiting-room membership.
@@ -85,7 +85,15 @@ The browser cannot choose its own `player` or `viewer` identity. Nitro resolves 
 
 The D1 database stores Better Auth data, player profiles, the room discovery index, and player-to-room membership. `GameRoom` stores authoritative room metadata, an audit event log, WebSocket sessions, and the Rust rules-engine record. `PlayerNotifications` owns the single global WebSocket channel used for targeted notifications and room-list invalidation.
 
-## Local rules-engine bridge
+## Player routes
+
+- `/login` handles account and guest authentication.
+- `/rooms?tab=create|join` displays the room lobby.
+- `/rooms/:id` restores a member's current waiting, active, or completed room state.
+- `/rooms/:id?invite=:token` redeems a private invitation and then removes the token
+  from the URL.
+
+## Development rules-engine bridge
 
 The current Nuxt server route at `server/api/local-game.post.ts` is a local development adapter. It shells out to:
 
@@ -93,4 +101,6 @@ The current Nuxt server route at `server/api/local-game.post.ts` is a local deve
 cargo run --quiet --bin fewfc_local_game_api
 ```
 
-That route remains useful for isolated Nuxt development. Hosted multiplayer uses the same Rust API compiled to `worker/wasm/fewfc.wasm`; Cloudflare does not spawn Cargo processes at runtime.
+The route returns `404` unless `APP_ENV=development`. It is not used by the general
+player UI. Hosted multiplayer uses the same Rust API compiled to
+`worker/wasm/fewfc.wasm`; Cloudflare does not spawn Cargo processes at runtime.

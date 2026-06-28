@@ -4,6 +4,7 @@ compatibility_date = "2025-07-15"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
+APP_ENV = "development"
 BETTER_AUTH_URL = "http://localhost:8787"
 
 [assets]
@@ -36,6 +37,7 @@ new_sqlite_classes = ["PlayerNotifications"]
 name = "fewfc-web-staging"
 
 [env.staging.vars]
+APP_ENV = "staging"
 BETTER_AUTH_URL = "https://staging.example.com"
 
 [[env.staging.d1_databases]]
@@ -57,5 +59,34 @@ tag = "v1"
 new_sqlite_classes = ["GameRoom"]
 
 [[env.staging.migrations]]
+tag = "v2"
+new_sqlite_classes = ["PlayerNotifications"]
+
+[env.production]
+name = "fewfc-web-production"
+
+[env.production.vars]
+APP_ENV = "production"
+BETTER_AUTH_URL = "https://example.com"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "fewfc-auth-production"
+database_id = "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[env.production.durable_objects.bindings]]
+name = "GAME_ROOM"
+class_name = "GameRoom"
+
+[[env.production.durable_objects.bindings]]
+name = "PLAYER_NOTIFICATIONS"
+class_name = "PlayerNotifications"
+
+[[env.production.migrations]]
+tag = "v1"
+new_sqlite_classes = ["GameRoom"]
+
+[[env.production.migrations]]
 tag = "v2"
 new_sqlite_classes = ["PlayerNotifications"]

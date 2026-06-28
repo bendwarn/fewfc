@@ -25,8 +25,12 @@ export default defineEventHandler(async (event) => {
     access?: unknown
     capacity?: unknown
   }>(event)
-  const gameId = roomCode()
-  const name = body.name?.trim() || gameId
+  const gameId = crypto.randomUUID()
+  const invitation = {
+    roomCode: roomCode(),
+    inviteToken: crypto.randomUUID(),
+  }
+  const name = body.name?.trim() || `${session.user.name || '玩家'}的房間`
   const response = await callGameRoom(event, gameId, {
     type: 'createGame',
     gameId,
@@ -35,6 +39,7 @@ export default defineEventHandler(async (event) => {
     access: roomAccess(body.access),
     capacity: roomCapacity(body.capacity),
     name,
+    invitation,
   })
 
   if (!response.metadata.members.some((member) => member.userId === session.user.id)) {

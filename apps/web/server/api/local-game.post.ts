@@ -75,6 +75,8 @@ async function runBridge(body: unknown): Promise<unknown> {
 }
 
 export default defineEventHandler(async (event) => {
+  requireDevelopment(event)
+
   if (
     (
       event.context as {

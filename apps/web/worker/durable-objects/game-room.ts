@@ -1,9 +1,11 @@
 import { DurableObject } from 'cloudflare:workers'
 import {
   emptyPublicState,
+  invitationCredentialMatches,
   normalizeGameRoomMetadata,
   type GameRoomAccess,
   type GameRoomCapacity,
+  type GameRoomInvitation,
   type GameRoomMember,
   type GameRoomMetadata,
   type GameRoomRequest,
@@ -63,7 +65,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         case 'createGame':
           return this.json(await this.createGame(body))
         case 'joinGame':
-          return await this.joinGame(body.actorUserId, body.actorName)
+          return await this.joinGame(body.actorUserId, body.actorName, body.credential)
         case 'toggleReady':
           return await this.toggleReady(body.actorUserId)
         case 'leaveGame':
@@ -79,16 +81,17 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         case 'cancelPendingCommand':
           return await this.cancelPendingCommand(body.actorUserId)
         case 'getState':
-          return this.json(await this.response(undefined, body.actorUserId))
+          return await this.getState(body.actorUserId)
         case 'submitCommand':
           return await this.submitCommand(body)
         default:
           return this.json({ error: 'unknown game-room request' }, 400)
       }
       } catch (error) {
+        const message = error instanceof Error ? error.message : 'game room request failed'
         return this.json({
-          error: error instanceof Error ? error.message : 'game room request failed',
-        }, 500)
+          error: message,
+        }, message === 'game room has not been created' ? 404 : 500)
       }
     })
   }
@@ -167,21 +170,34 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
 
     await this.ctx.storage.put('metadata', metadata)
+    await this.ctx.storage.put('invitation', request.invitation)
     await this.ctx.storage.put('nextSequence', 2)
     await this.ctx.storage.put(this.eventKey(initialEvent.sequence), initialEvent)
 
     return await this.response(metadata, request.actorUserId)
   }
 
-  private async joinGame(actorUserId: string, actorName: string): Promise<Response> {
+  private async joinGame(
+    actorUserId: string,
+    actorName: string,
+    credential?: Extract<GameRoomRequest, { type: 'joinGame' }>['credential'],
+  ): Promise<Response> {
     const metadata = await this.requireMetadata()
-
-    if (metadata.status !== 'Waiting') {
-      return this.json({ error: 'room has already started' }, 409)
-    }
 
     if (metadata.members.some((member) => member.userId === actorUserId)) {
       return this.json(await this.response(metadata, actorUserId))
+    }
+
+    if (metadata.access === 'private' && !await this.validCredential(credential)) {
+      return this.json({ error: 'room not found' }, 404)
+    }
+
+    if (metadata.status === 'Dissolved') {
+      return this.json({ error: 'room not found' }, 404)
+    }
+
+    if (metadata.status !== 'Waiting') {
+      return this.json({ error: 'room has already started' }, 409)
     }
 
     const occupiedPlayers = new Set(metadata.members.map((member) => member.player))
@@ -212,6 +228,30 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }))
 
     return this.json(await this.response(updatedMetadata, actorUserId))
+  }
+
+  private async getState(actorUserId: string): Promise<Response> {
+    const metadata = await this.requireMetadata()
+
+    if (!this.memberFor(metadata, actorUserId)) {
+      return this.json(
+        { error: metadata.access === 'private' ? 'room not found' : 'player is not in this room' },
+        metadata.access === 'private' ? 404 : 403,
+      )
+    }
+
+    return this.json(await this.response(metadata, actorUserId))
+  }
+
+  private async validCredential(
+    credential?: Extract<GameRoomRequest, { type: 'joinGame' }>['credential'],
+  ): Promise<boolean> {
+    if (!credential?.value) {
+      return false
+    }
+
+    const invitation = await this.ctx.storage.get<GameRoomInvitation>('invitation')
+    return invitationCredentialMatches(invitation, credential)
   }
 
   private async toggleReady(actorUserId: string): Promise<Response> {
@@ -834,6 +874,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return {
         gameId: currentMetadata.gameId,
         metadata: currentMetadata,
+        invitation: await this.invitationFor(currentMetadata, actorUserId),
         state: emptyPublicState(currentMetadata.players),
         events: (await this.events()).map((event) => ({
           id: `room-event-${event.sequence}`,
@@ -872,6 +913,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return {
       gameId: currentMetadata.gameId,
       metadata: responseMetadata,
+      invitation: await this.invitationFor(currentMetadata, actorUserId),
       state: publicRules.state,
       events: publicRules.events.map((event) => ({
         ...event,
@@ -881,6 +923,18 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       canCancelPendingCommand,
       interaction: publicRules.interaction,
     }
+  }
+
+  private async invitationFor(
+    metadata: GameRoomMetadata,
+    actorUserId?: string,
+  ): Promise<GameRoomInvitation | undefined> {
+    const actor = actorUserId ? this.memberFor(metadata, actorUserId) : undefined
+    if (!actor?.owner || metadata.status !== 'Waiting') {
+      return undefined
+    }
+
+    return await this.ctx.storage.get<GameRoomInvitation>('invitation')
   }
 
   private playerFor(metadata: GameRoomMetadata, userId: string): PlayerId | undefined {

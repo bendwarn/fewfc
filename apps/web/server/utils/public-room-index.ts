@@ -14,6 +14,7 @@ interface PublicRoomDatabase {
 
 interface PublicRoomRow {
   game_id: string
+  room_code: string | null
   name: string
   access: GameRoomAccess
   status: GameRoomStatus
@@ -26,6 +27,7 @@ interface PublicRoomRow {
 
 export interface PublicRoomSummary {
   gameId: string
+  roomCode: string
   name: string
   access: GameRoomAccess
   status: GameRoomStatus
@@ -46,6 +48,7 @@ async function ensurePublicRoomTable(event: H3Event) {
     .prepare(`
       CREATE TABLE IF NOT EXISTS public_game_room (
         game_id text PRIMARY KEY NOT NULL,
+        room_code text UNIQUE,
         name text NOT NULL,
         access text NOT NULL,
         status text NOT NULL,
@@ -99,6 +102,7 @@ function rowToSummary(row: PublicRoomRow): PublicRoomSummary {
 
   return {
     gameId: row.game_id,
+    roomCode: row.room_code || row.game_id,
     name: row.name,
     access: row.access,
     status: row.status,
@@ -125,11 +129,13 @@ export async function upsertPublicRoom(
   const owner = metadata.members[0]
   const nameOverride = options.name?.trim()
   const name = nameOverride || metadata.gameId
+  const invitation = response.invitation
 
   await db(event)
     .prepare(`
       INSERT INTO public_game_room (
         game_id,
+        room_code,
         name,
         access,
         status,
@@ -139,8 +145,12 @@ export async function upsertPublicRoom(
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(game_id) DO UPDATE SET
+        room_code = CASE
+          WHEN ? = 1 THEN excluded.room_code
+          ELSE public_game_room.room_code
+        END,
         name = CASE
           WHEN ? = 1 THEN excluded.name
           ELSE public_game_room.name
@@ -154,6 +164,7 @@ export async function upsertPublicRoom(
     `)
     .bind(
       metadata.gameId,
+      invitation?.roomCode ?? metadata.gameId,
       name,
       metadata.access,
       metadata.status,
@@ -162,6 +173,7 @@ export async function upsertPublicRoom(
       JSON.stringify(metadata.members),
       timestamp(metadata.createdAt),
       timestamp(metadata.updatedAt),
+      invitation ? 1 : 0,
       nameOverride ? 1 : 0,
     )
     .run()
@@ -196,6 +208,7 @@ export async function listPublicRooms(event: H3Event): Promise<PublicRoomSummary
     .prepare(`
       SELECT
         game_id,
+        room_code,
         name,
         access,
         status,
@@ -226,6 +239,7 @@ export async function listPlayerRooms(
     .prepare(`
       SELECT
         room.game_id,
+        room.room_code,
         room.name,
         room.access,
         room.status,
@@ -244,4 +258,23 @@ export async function listPlayerRooms(
     .all<PublicRoomRow>()
 
   return (result.results ?? []).map(rowToSummary)
+}
+
+export async function gameIdForRoomCode(
+  event: H3Event,
+  roomCode: string,
+): Promise<string | undefined> {
+  await ensurePublicRoomTable(event)
+
+  const result = await db(event)
+    .prepare(`
+      SELECT game_id
+      FROM public_game_room
+      WHERE room_code = ? AND status = 'Waiting'
+      LIMIT 1
+    `)
+    .bind(roomCode.toUpperCase())
+    .all<{ game_id: string }>()
+
+  return result.results?.[0]?.game_id
 }
