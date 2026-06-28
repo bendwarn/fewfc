@@ -287,7 +287,10 @@
       <div class="battle-layout">
         <section
           class="battlefield"
-          :class="{ 'four-player': playerSeats.length === 4 }"
+          :class="{
+            'four-player': playerSeats.length === 4,
+            'discard-open': discardOpen,
+          }"
           aria-label="五行戰牌對戰桌"
         >
           <button
@@ -432,9 +435,62 @@
                 </p>
               </div>
             </div>
-            <div class="discard-pile">
+            <div class="discard-pile" :class="{ disabled: discardUnavailable }">
               <span>棄牌</span>
-              <strong>{{ state.discard.length }}</strong>
+              <button
+                ref="discardTrigger"
+                class="discard-pile-trigger"
+                type="button"
+                aria-haspopup="dialog"
+                aria-controls="discard-composition"
+                :aria-expanded="discardOpen"
+                :aria-disabled="discardUnavailable"
+                :aria-label="`查看棄牌內容，共 ${state.discard.length} 張`"
+                @click.stop="toggleDiscardComposition"
+              >
+                {{ state.discard.length }}
+              </button>
+              <div
+                v-if="discardOpen"
+                class="discard-composition-layer"
+              >
+                <section
+                  id="discard-composition"
+                  class="discard-composition"
+                  role="dialog"
+                  aria-labelledby="discard-composition-title"
+                >
+                  <h2 id="discard-composition-title">棄牌內容</h2>
+                  <table>
+                    <caption class="sr-only">依五行與等級統計棄牌張數</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col"><span class="sr-only">等級</span></th>
+                        <th
+                          v-for="element in DISCARD_ELEMENTS"
+                          :key="`discard-heading-${element}`"
+                          scope="col"
+                        >
+                          {{ element }}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in discardComposition" :key="`discard-level-${row.level}`">
+                        <th scope="row">{{ row.level }}</th>
+                        <td
+                          v-for="cell in row.cells"
+                          :key="`${cell.element}-${cell.level}`"
+                          :class="{ empty: cell.count === 0 }"
+                        >
+                          <span class="sr-only">{{ cell.element }} {{ cell.level }}，{{ cell.count }} 張</span>
+                          <strong aria-hidden="true">{{ cell.count }}</strong>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </section>
+              </div>
             </div>
           </div>
 
@@ -555,6 +611,14 @@
               <h2>{{ gameResultText }}</h2>
               <p>{{ firstTurnText }}，本局已結束。</p>
               <div class="result-actions">
+                <button
+                  v-if="state.discard.length"
+                  class="ghost-button"
+                  type="button"
+                  @click.stop="toggleDiscardComposition"
+                >
+                  查看棄牌
+                </button>
                 <button class="primary-button" type="button" :disabled="game.isLoading.value" @click="restartGame">
                   返回房間 <span>→</span>
                 </button>
@@ -622,6 +686,7 @@
 import type { PlayableFormation, PlayerId, PublicCardRefs, TeamId, ViewerId } from '~/types/fewfc'
 import type { GameRoomMember, GameRoomResponse } from '../shared/game-room'
 import { authClient } from '~/lib/auth-client'
+import { buildDiscardComposition, DISCARD_ELEMENTS } from '~/lib/discard-composition'
 import { roomRouteResult, safeInternalPath } from '~/lib/navigation'
 
 type Screen = 'login' | 'lobby' | 'game'
@@ -677,6 +742,8 @@ const state = game.state
 const formationDetail = ref<PlayableFormation | null>(null)
 const eventExpanded = ref(false)
 const showSetupReveal = ref(false)
+const discardOpen = ref(false)
+const discardTrigger = ref<HTMLButtonElement | null>(null)
 let formationDetailTimer: ReturnType<typeof setTimeout> | undefined
 let setupRevealTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -740,6 +807,10 @@ const playerSeats = computed<PlayerSeat[]>(() => {
 })
 const previousFormationCards = computed(() => (
   cardTokensForRefs(state.value.previousTurnFormation?.cards, 'previous-formation')
+))
+const discardComposition = computed(() => buildDiscardComposition(state.value.discard))
+const discardUnavailable = computed(() => (
+  state.value.discard.length === 0 || Boolean(state.value.pendingChoice)
 ))
 const activeTeams = computed(() => [...new Set(state.value.players.map((player) => player.team))])
 const showSkip = computed(() => (
@@ -880,6 +951,41 @@ async function createRoom() {
 function leaveGame() {
   game.clearRoom()
   void router.push('/rooms')
+}
+
+function toggleDiscardComposition() {
+  if (discardOpen.value) {
+    closeDiscardComposition()
+    return
+  }
+
+  if (discardUnavailable.value) {
+    return
+  }
+
+  discardOpen.value = true
+}
+
+function closeDiscardComposition() {
+  if (!discardOpen.value) {
+    return
+  }
+
+  discardOpen.value = false
+  void nextTick(() => discardTrigger.value?.focus())
+}
+
+function handlePageClick() {
+  closeDiscardComposition()
+}
+
+function handlePageKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || !discardOpen.value) {
+    return
+  }
+
+  event.preventDefault()
+  closeDiscardComposition()
 }
 
 async function restartGame() {
@@ -1121,6 +1227,9 @@ async function restoreCurrentRoute() {
 }
 
 onMounted(() => {
+  window.addEventListener('click', handlePageClick)
+  window.addEventListener('keydown', handlePageKeydown)
+
   watch(
     () => [
       route.path,
@@ -1133,6 +1242,13 @@ onMounted(() => {
     },
     { immediate: true },
   )
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('click', handlePageClick)
+  window.removeEventListener('keydown', handlePageKeydown)
+  clearTimeout(formationDetailTimer)
+  clearTimeout(setupRevealTimer)
 })
 
 watch(
@@ -1162,6 +1278,30 @@ watch(
   },
   { deep: true },
 )
+
+watch(
+  () => state.value.discard.length,
+  (length) => {
+    if (length === 0) {
+      closeDiscardComposition()
+    }
+  },
+)
+
+watch(
+  () => state.value.pendingChoice,
+  (choice) => {
+    if (choice) {
+      closeDiscardComposition()
+    }
+  },
+)
+
+watch(screen, (value) => {
+  if (value !== 'game') {
+    closeDiscardComposition()
+  }
+})
 
 watch(
   () => onlineMetadata.value?.status,
@@ -1560,8 +1700,42 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .seat-left .playing-card:first-child, .seat-right .playing-card:first-child { margin-top: 0; }
 .seat-bottom .selection-count { @apply absolute right-0 bottom-1 border border-[#3b463f] bg-[#151c18] px-[7px] py-1 text-[9px] text-muted; }
 .board-center { grid-area: center; @apply z-1 grid min-w-0 grid-cols-[90px_minmax(220px,1fr)_90px] items-center justify-items-center; }
+.battlefield.discard-open { z-index: 25; overflow: visible; }
+.battlefield.discard-open .board-center { z-index: 16; }
 .deck-pile, .discard-pile { @apply grid justify-items-center gap-1.5 text-[9px] text-[#707b73]; }
-.deck-pile strong, .discard-pile strong { @apply grid w-[52px] place-items-center border border-[#665b44] bg-[#18201b] font-serif text-xl text-[#a68d56]; aspect-ratio: 5/7; }
+.discard-pile { @apply relative; }
+.deck-pile strong, .discard-pile-trigger { @apply grid w-[52px] place-items-center border border-[#665b44] bg-[#18201b] font-serif text-xl text-[#a68d56]; aspect-ratio: 5/7; }
+.discard-pile-trigger { @apply p-0 hover:border-[#b99550] hover:text-gold-light; }
+.discard-pile-trigger:focus-visible { outline: 2px solid #d1ad62; outline-offset: 3px; }
+.discard-pile.disabled .discard-pile-trigger { @apply cursor-not-allowed opacity-45; }
+.discard-composition-layer { @apply absolute right-0 z-20; bottom: calc(100% + 12px); }
+.discard-composition {
+  @apply w-[300px] border border-[#8e733d] bg-[#18201b] p-3.5 text-[#ece8dd] shadow-[0_18px_48px_rgba(0,0,0,.52)];
+}
+.discard-composition::after {
+  content: "";
+  position: absolute;
+  right: 20px;
+  bottom: -6px;
+  width: 11px;
+  height: 11px;
+  border-right: 1px solid #8e733d;
+  border-bottom: 1px solid #8e733d;
+  background: #18201b;
+  transform: rotate(45deg);
+}
+.discard-composition h2 { @apply mb-2.5 font-serif text-sm text-gold-light; }
+.discard-composition table { @apply w-full table-fixed border-collapse; }
+.discard-composition th, .discard-composition td { @apply h-8 border border-[#354039] text-center; }
+.discard-composition thead th { @apply text-[10px] font-bold text-[#d5d8d4]; }
+.discard-composition tbody th { @apply w-7 text-[10px] font-normal text-muted; }
+.discard-composition td strong { @apply font-serif text-sm text-[#e4c47d]; }
+.discard-composition td.empty strong { @apply text-[#59635c]; }
+.discard-composition thead th:nth-child(2) { color: #ded5ba; }
+.discard-composition thead th:nth-child(3) { color: #77a980; }
+.discard-composition thead th:nth-child(4) { color: #75a8bd; }
+.discard-composition thead th:nth-child(5) { color: #d17a6c; }
+.discard-composition thead th:nth-child(6) { color: #c8a265; }
 .formation-field { @apply relative grid min-h-48 w-full min-w-0 grid-rows-[auto_1fr_auto] items-center border-x border-[rgba(166,141,86,.14)] px-3 py-2 text-center text-[10px] text-[#69736c]; }
 .formation-field-label { @apply text-[#9a8251]; letter-spacing: .2em; }
 .previous-formation { @apply grid min-h-24 content-center justify-items-center gap-1.5; }
@@ -1606,8 +1780,8 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .waiting-members small { @apply text-[10px] text-muted; }
 .waiting-members button { @apply mt-1 border-0 bg-transparent text-[9px] text-[#c98e82]; }
 .invite-link { @apply justify-self-center border-0 bg-transparent text-xs text-gold-light; }
-.result-overlay { @apply absolute inset-0 grid place-items-center bg-[rgba(7,10,8,.82)] text-center backdrop-blur-[5px]; z-index: 14; }
-.result-overlay > div { @apply grid min-w-[360px] max-w-[min(90vw,460px)] gap-4 border border-[#b99550] bg-[#18201b] p-8 shadow-[0_24px_80px_rgba(0,0,0,.45)]; }
+.result-overlay { @apply pointer-events-none absolute inset-0 grid place-items-center bg-[rgba(7,10,8,.82)] text-center backdrop-blur-[5px]; z-index: 14; }
+.result-overlay > div { @apply pointer-events-auto grid min-w-[360px] max-w-[min(90vw,460px)] gap-4 border border-[#b99550] bg-[#18201b] p-8 shadow-[0_24px_80px_rgba(0,0,0,.45)]; }
 .result-overlay h2 { @apply font-serif text-3xl text-gold-light; }
 .result-overlay p:not(.section-kicker) { @apply text-sm text-muted; }
 .result-actions { @apply mt-2 grid grid-cols-2 gap-3; }
@@ -1646,6 +1820,11 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   .battle-layout { grid-template-columns: 1fr; overflow: auto; }
   .game-page { height: auto; overflow: visible; }
   .battlefield { min-height: 720px; padding: 22px; }
+  .discard-composition-layer {
+    @apply fixed inset-0 grid place-items-center bg-[rgba(7,10,8,.72)] p-4 backdrop-blur-[3px];
+  }
+  .discard-composition { width: min(330px, calc(100vw - 32px)); }
+  .discard-composition::after { display: none; }
   .game-sidebar { border-left: 0; }
   .event-panel .panel-title button { display: block; }
   .event-panel:not(.expanded) .event-feed li:nth-child(n+4) { display: none; }
@@ -1680,7 +1859,7 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   .seat-bottom .selection-count { @apply right-2 bottom-0; }
   .board-center { grid-template-columns: 48px minmax(0, 1fr) 48px; width: 100%; }
   .formation-field { min-width: 0; width: 100%; }
-  .deck-pile strong, .discard-pile strong { width: 38px; }
+  .deck-pile strong, .discard-pile-trigger { width: 38px; }
   .playing-card { width: 54px; }
   .seat-top .playing-card { width: 43px; }
   .player-identity strong { max-width: 110px; }

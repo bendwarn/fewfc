@@ -3,6 +3,7 @@ import {
   emptyPublicState,
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
+  requiresPendingCommandDraft,
   type GameRoomAccess,
   type GameRoomCapacity,
   type GameRoomInvitation,
@@ -533,7 +534,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     const previousRules = await this.callRules({ type: 'refresh' }, 'observer', previousSnapshot)
     const rules = await this.callRules(action, viewer, previousSnapshot)
 
-    if (!existingDraft && action.type === 'performFormation' && rules.state.pendingChoice) {
+    if (
+      !existingDraft
+      && requiresPendingCommandDraft(action, rules.state.pendingChoice?.kind)
+    ) {
       const draft: PendingCommandDraft = {
         actorUserId: request.actorUserId,
         commandId: request.commandId,

@@ -136,6 +136,13 @@ export type OnlineGameAction =
   | { type: 'answerEffectChoice'; player: PlayerId; cards: number[] }
   | { type: 'playableFormations'; player: PlayerId; cards: number[] }
 
+export function requiresPendingCommandDraft(
+  action: OnlineGameAction,
+  pendingChoiceKind: string | undefined,
+): action is Extract<OnlineGameAction, { type: 'performFormation' }> {
+  return action.type === 'performFormation' && pendingChoiceKind === 'EffectGenerated'
+}
+
 export type GameRoomRequest =
   | {
       type: 'createGame'

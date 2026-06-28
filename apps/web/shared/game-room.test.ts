@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
-import { invitationCredentialMatches, normalizeGameRoomMetadata } from './game-room'
+import {
+  invitationCredentialMatches,
+  normalizeGameRoomMetadata,
+  requiresPendingCommandDraft,
+} from './game-room'
 
 describe('normalizeGameRoomMetadata', () => {
   test('restores the first member as owner when persisted owner flags are false', () => {
@@ -111,5 +115,20 @@ describe('invitationCredentialMatches', () => {
       type: 'token',
       value: 'wrong',
     }), false)
+  })
+})
+
+describe('requiresPendingCommandDraft', () => {
+  const formation = {
+    type: 'performFormation' as const,
+    player: 'alice',
+    formationId: 'fire-strike',
+    cards: [1],
+  }
+
+  test('creates drafts only for effect-generated formation choices', () => {
+    assert.equal(requiresPendingCommandDraft(formation, 'EffectGenerated'), true)
+    assert.equal(requiresPendingCommandDraft(formation, 'TurnDrawDiscard'), false)
+    assert.equal(requiresPendingCommandDraft({ type: 'passAction' }, 'EffectGenerated'), false)
   })
 })

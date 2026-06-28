@@ -16,7 +16,9 @@
     "generate": "APP_ENV=production nuxt generate",
     "preview": "APP_ENV=production nuxt preview",
     "postinstall": "APP_ENV=development nuxt prepare",
-    "test": "bun test app/lib/navigation.test.ts shared/game-room.test.ts",
+    "test": "bun test app/lib/*.test.ts shared/game-room.test.ts",
+    "test:e2e": "playwright test",
+    "test:e2e:server": "APP_ENV=development bun run build && node node_modules/.bin/wrangler d1 migrations apply fewfc-auth --local --persist-to .wrangler/e2e && node node_modules/.bin/wrangler dev --env=\"\" --persist-to .wrangler/e2e --port 8787",
     "typecheck": "APP_ENV=development nuxt typecheck",
     "validate:deploy": "node scripts/validate-deploy-environment.mjs"
   },
@@ -30,6 +32,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260623.1",
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/vite": "^4.3.1",
     "@types/node": "^26.0.0",
     "drizzle-kit": "^0.31.10",
