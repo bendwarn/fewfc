@@ -45,6 +45,7 @@ export interface PublicPendingChoice {
   player: PlayerId
   kind: string
   cards: PublicCard[]
+  requiredCount: number
 }
 
 export interface PublicCard {
@@ -63,6 +64,7 @@ export interface PublicGameState {
   hands: PublicPlayerHand[]
   discard: PublicCard[]
   coveredPassives: PublicCoveredPassive[]
+  counterEffects: Array<{ owner: PlayerId; effectId: string; effectName: string }>
   pendingChoice: PublicPendingChoice | null
   shields: Array<{ player: PlayerId; value: number }>
   statuses: Array<{ id: string; owner: string; kind: string }>

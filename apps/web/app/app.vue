@@ -307,7 +307,10 @@
             v-for="seat in playerSeats"
             :key="seat.player"
             class="player-seat"
-            :class="[`seat-${seat.position}`, { acting: state.currentPlayer === seat.player }]"
+            :class="[
+              `seat-${seat.position}`,
+              { acting: !gameFinished && state.currentPlayer === seat.player },
+            ]"
           >
             <div class="player-identity">
               <span
@@ -327,10 +330,17 @@
                 重新連線中
               </span>
               <span
-                v-if="state.currentPlayer === seat.player && !roomWaiting"
+                v-if="state.currentPlayer === seat.player && !roomWaiting && !gameFinished"
                 class="turn-badge"
               >
                 行動中 · {{ phaseLabel(state.phase) }}
+              </span>
+              <span
+                v-for="counter in counterEffectsFor(seat.player)"
+                :key="`${seat.player}-${counter.effectId}`"
+                class="counter-badge"
+              >
+                反制 · {{ counter.effectName }}
               </span>
               <span class="side-hand-count">{{ handCount(seat.player) }} 張</span>
             </div>
@@ -369,7 +379,7 @@
               <div class="previous-formation">
                 <template v-if="state.previousTurnFormation">
                   <small>上一回合 · {{ playerLabel(state.previousTurnFormation.player) }}</small>
-                  <strong>{{ state.previousTurnFormation.formationName ?? '伏牌' }}</strong>
+                  <strong>{{ state.previousTurnFormation.formationName ?? '蓋牌' }}</strong>
                   <div class="formation-cards">
                     <span
                       v-for="card in previousFormationCards"
@@ -502,21 +512,43 @@
                   v-for="card in state.pendingChoice.cards"
                   :key="card.id"
                   type="button"
-                  :disabled="game.isLoading.value || !roomConnected || viewer !== state.pendingChoice.player"
-                  @click="game.choosePendingCard(card.id)"
+                  :class="{ selected: game.selectedChoiceCards.value.includes(card.id) }"
+                  :aria-pressed="state.pendingChoice.kind === 'EffectGenerated'
+                    ? game.selectedChoiceCards.value.includes(card.id)
+                    : undefined"
+                  :disabled="
+                    game.isLoading.value
+                    || !roomConnected
+                    || viewer !== state.pendingChoice.player
+                    || (
+                      state.pendingChoice.kind === 'EffectGenerated'
+                      && game.selectedChoiceCards.value.length >= state.pendingChoice.requiredCount
+                      && !game.selectedChoiceCards.value.includes(card.id)
+                    )
+                  "
+                  @click="state.pendingChoice.kind === 'EffectGenerated'
+                    ? game.togglePendingChoiceCard(card.id)
+                    : game.choosePendingCard(card.id)"
                 >
                   {{ card.label }}
                 </button>
               </div>
-              <button
-                v-if="game.canCancelPendingCommand.value"
-                class="choice-back"
-                type="button"
-                :disabled="game.isLoading.value"
-                @click="game.cancelPendingCommand()"
+              <template
+                v-if="state.pendingChoice.kind === 'EffectGenerated'
+                  && viewer === state.pendingChoice.player"
               >
-                返回重選
-              </button>
+                <p class="choice-count">
+                  已選 {{ game.selectedChoiceCards.value.length }} / {{ state.pendingChoice.requiredCount }}
+                </p>
+                <button
+                  class="choice-submit"
+                  type="button"
+                  :disabled="game.isLoading.value || !roomConnected || !game.canSubmitPendingChoice.value"
+                  @click="game.submitPendingChoice()"
+                >
+                  確認選擇
+                </button>
+              </template>
             </div>
           </div>
 
@@ -606,28 +638,19 @@
             </div>
           </div>
 
-          <div v-if="gameFinished" class="result-overlay">
-            <div>
-              <h2>{{ gameResultText }}</h2>
-              <p>{{ firstTurnText }}，本局已結束。</p>
-              <div class="result-actions">
-                <button
-                  v-if="state.discard.length"
-                  class="ghost-button"
-                  type="button"
-                  @click.stop="toggleDiscardComposition"
-                >
-                  查看棄牌
-                </button>
-                <button class="primary-button" type="button" :disabled="game.isLoading.value" @click="restartGame">
-                  返回房間 <span>→</span>
-                </button>
-              </div>
-            </div>
-          </div>
         </section>
 
-        <aside class="game-sidebar">
+        <aside class="game-sidebar" :class="{ finished: gameFinished }">
+          <section v-if="gameFinished" class="result-panel">
+            <h2>{{ gameResultText }}</h2>
+            <p>{{ firstTurnText }}，本局已結束。</p>
+            <div class="result-actions">
+              <button class="primary-button" type="button" :disabled="game.isLoading.value" @click="restartGame">
+                返回房間 <span>→</span>
+              </button>
+            </div>
+          </section>
+
           <section class="event-panel" :class="{ expanded: eventExpanded }">
             <div class="panel-title">
               <h2>戰局紀錄</h2>
@@ -649,7 +672,7 @@
           <section class="zone-summary">
             <div><span>護盾</span><strong>{{ state.shields.length }}</strong></div>
             <div><span>狀態</span><strong>{{ state.statuses.length }}</strong></div>
-            <div><span>伏牌</span><strong>{{ state.coveredPassives.length }}</strong></div>
+            <div><span>反制</span><strong>{{ state.coveredPassives.length + state.counterEffects.length }}</strong></div>
           </section>
         </aside>
       </div>
@@ -1382,6 +1405,10 @@ function handCount(player: PlayerId): number {
   return hand.cards.kind === 'known' ? hand.cards.cards.length : hand.cards.count
 }
 
+function counterEffectsFor(player: PlayerId) {
+  return state.value.counterEffects.filter((counter) => counter.owner === player)
+}
+
 function playerConnected(player: PlayerId): boolean {
   if (player === ownPlayer.value) {
     return roomConnected.value
@@ -1488,7 +1515,7 @@ function choiceLabel(value: string): string {
     'Choose one drawn card to discard': '選擇一張本回合抽到的牌棄置',
     TurnDrawDiscard: '選擇一張本回合抽到的牌棄置',
     EffectGenerated: '選擇效果指定的牌',
-    Hidden: '等待隱藏選擇',
+    Hidden: '等待選擇',
   }
   return labels[value] ?? value
 }
@@ -1555,6 +1582,7 @@ function cardName(label: string): string {
 .hero-copy h1 { @apply my-[22px] font-serif leading-[1.22] tracking-[.04em]; font-size: clamp(48px, 5.8vw, 88px); }
 .hero-copy h1 em { @apply not-italic text-[#d1ad62]; }
 .hero-description { @apply max-w-[510px] text-sm leading-[1.95] text-[#a7b0a9]; }
+.hero-copy h1, .hero-description { @apply relative z-1; }
 .hero-footer { @apply flex justify-between text-[11px] text-[#687169]; }
 .element-orbit { position: absolute; width: 460px; height: 460px; border: 1px solid rgba(195, 157, 87, .18); border-radius: 50%; left: 55%; top: 72%; transform: translate(-50%, -50%); }
 .element-orbit::after { content: ""; position: absolute; inset: 50px; border: 1px dashed rgba(195, 157, 87, .14); border-radius: 50%; }
@@ -1669,11 +1697,12 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .connection-dot.connected { @apply border-[#477557] bg-[#63a979]; }
 .reconnecting-label { @apply text-[9px] text-[#d0aa5e]; }
 .turn-badge { @apply border border-[#477557] bg-[#16251b] px-[7px] py-[3px] text-[9px]! whitespace-nowrap text-[#77bd8d]!; }
+.counter-badge { @apply border border-[#8a733b] bg-[#292415] px-[7px] py-[3px] text-[9px]! whitespace-nowrap text-[#d5b868]!; }
 .side-hand-count { @apply hidden text-[9px] text-muted; }
-.hand { @apply flex min-w-0 items-center justify-center; }
+.hand { @apply flex min-w-0 items-center justify-center gap-2; }
 .playing-card {
   width: clamp(62px, 7vw, 92px); aspect-ratio: 5 / 7; border: 1px solid #79715e; border-radius: 5px;
-  background: linear-gradient(145deg, #e9e1ce, #bcb39e); color: #18201c; margin-left: -10px;
+  background: linear-gradient(145deg, #e9e1ce, #bcb39e); color: #18201c;
   @apply relative flex flex-col items-center justify-center p-2 transition-[.18s] max-[600px]:w-[58px];
   box-shadow: 0 5px 15px rgba(0,0,0,.35);
 }
@@ -1695,9 +1724,8 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .element-火 .card-element { color: #a43d32; }.element-水 .card-element { color: #357a99; }
 .element-木 .card-element { color: #467d51; }.element-金 .card-element { color: #887b55; }.element-土 .card-element { color: #9b6e35; }
 .seat-top .playing-card { width: clamp(48px, 5vw, 68px); }
-.seat-left .seat-hand, .seat-right .seat-hand { @apply h-36 flex-col; }
-.seat-left .playing-card, .seat-right .playing-card { width: 43px; margin-top: -55px; margin-left: 0; }
-.seat-left .playing-card:first-child, .seat-right .playing-card:first-child { margin-top: 0; }
+.seat-left .seat-hand, .seat-right .seat-hand { @apply flex-col gap-1; }
+.seat-left .playing-card, .seat-right .playing-card { width: 30px; }
 .seat-bottom .selection-count { @apply absolute right-0 bottom-1 border border-[#3b463f] bg-[#151c18] px-[7px] py-1 text-[9px] text-muted; }
 .board-center { grid-area: center; @apply z-1 grid min-w-0 grid-cols-[90px_minmax(220px,1fr)_90px] items-center justify-items-center; }
 .battlefield.discard-open { z-index: 25; overflow: visible; }
@@ -1755,12 +1783,14 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .formation-prompt { @apply text-[#68726b]; }
 .formation-detail { @apply absolute right-0 bottom-[calc(100%+8px)] left-0 z-8 border border-[#64583f] bg-[#1c241f] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
 .formation-detail strong { @apply mr-2 text-gold-light; }
-.choice-overlay { @apply absolute inset-0 z-12 grid place-items-center bg-[rgba(7,10,8,.76)] text-center backdrop-blur-[4px]; }
-.choice-overlay > div { @apply min-w-90 border border-[#8e733d] bg-[#18201b] p-[30px]; }
+.choice-overlay { @apply absolute inset-0 z-12 grid place-items-center bg-[rgba(7,10,8,.28)] text-center; }
+.choice-overlay > div { @apply min-w-90 border border-[#8e733d] bg-[rgba(24,32,27,.94)] p-[30px] shadow-[0_18px_48px_rgba(0,0,0,.42)]; }
 .choice-overlay h2 { @apply mt-2.5 mb-5 font-serif; }
-.choice-cards { @apply flex justify-center gap-2; }
+.choice-cards { @apply flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
 .choice-cards button { @apply border border-[#ae8b47] bg-[#ede6d4] p-2.5 text-[#18201c]; }
-.choice-back { @apply mt-4 border-0 bg-transparent text-xs text-gold-light; }
+.choice-cards button.selected { @apply bg-[#c9a451] font-bold shadow-[0_0_0_2px_#f0d99e]; }
+.choice-count { @apply mt-4 text-xs text-muted; }
+.choice-submit { @apply mt-3 border border-[#b99550] bg-[#b99550] px-5 py-2 text-xs font-bold text-[#121713] disabled:cursor-not-allowed disabled:opacity-45; }
 .setup-reveal { @apply absolute inset-0 z-15 grid place-items-center bg-[rgba(7,10,8,.88)] text-center backdrop-blur-[5px]; }
 .setup-reveal > div { @apply grid w-[min(520px,calc(100vw-32px))] gap-4 border border-[#b99550] bg-[#18201b] p-7; }
 .setup-reveal h2 { @apply font-serif text-2xl text-gold-light; }
@@ -1780,15 +1810,16 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .waiting-members small { @apply text-[10px] text-muted; }
 .waiting-members button { @apply mt-1 border-0 bg-transparent text-[9px] text-[#c98e82]; }
 .invite-link { @apply justify-self-center border-0 bg-transparent text-xs text-gold-light; }
-.result-overlay { @apply pointer-events-none absolute inset-0 grid place-items-center bg-[rgba(7,10,8,.82)] text-center backdrop-blur-[5px]; z-index: 14; }
-.result-overlay > div { @apply pointer-events-auto grid min-w-[360px] max-w-[min(90vw,460px)] gap-4 border border-[#b99550] bg-[#18201b] p-8 shadow-[0_24px_80px_rgba(0,0,0,.45)]; }
-.result-overlay h2 { @apply font-serif text-3xl text-gold-light; }
-.result-overlay p:not(.section-kicker) { @apply text-sm text-muted; }
 .result-actions { @apply mt-2 grid grid-cols-2 gap-3; }
 .result-actions .ghost-button { @apply border-[#59635c] text-[#ece8dd]; }
 .result-actions .primary-button { @apply justify-between; }
 
 .game-sidebar { @apply grid min-h-0 grid-rows-[1fr_auto] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
+.game-sidebar.finished { grid-template-rows: auto minmax(0, 1fr) auto; }
+.result-panel { @apply border-b border-[#8e733d] bg-[#18201b] p-5; }
+.result-panel h2 { @apply font-serif text-2xl text-gold-light; }
+.result-panel p { @apply mt-1 text-xs text-muted; }
+.result-panel .result-actions { @apply grid-cols-1; }
 .panel-title { @apply flex items-start justify-between; }
 .event-panel { @apply min-h-0 overflow-auto border-b border-line p-5; }
 .panel-title h2 { @apply font-serif text-[15px]; }
@@ -1809,6 +1840,21 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .notification-main strong { @apply text-xs text-[#ece8dd]; }
 .notification-main span { @apply text-[10px] text-gold-light; }
 .notification-dismiss { @apply border-0 border-l border-line bg-transparent text-muted; }
+
+@media (min-width: 901px) {
+  .player-identity strong { font-size: 14px; }
+  .player-identity small { font-size: 12px; }
+  .reconnecting-label, .turn-badge, .counter-badge, .side-hand-count { font-size: 11px!important; }
+  .seat-bottom .selection-count { font-size: 11px; }
+  .deck-pile, .discard-pile { font-size: 11px; }
+  .formation-field { font-size: 12px; }
+  .previous-formation small { font-size: 11px; }
+  .previous-formation p, .formation-candidates button { font-size: 12px; }
+  .panel-title h2 { font-size: 17px; }
+  .event-feed span { font-size: 12px; }
+  .event-feed p, .zone-summary span { font-size: 11px; }
+  .zone-summary strong { font-size: 15px; }
+}
 
 @media (max-width: 900px) {
   .login-layout { grid-template-columns: 1fr; }
@@ -1854,7 +1900,7 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   .seat-left .player-identity, .seat-right .player-identity { @apply flex-col gap-1 text-center; }
   .seat-left .player-identity strong, .seat-right .player-identity strong { @apply max-w-18 text-[9px]; }
   .seat-left .player-identity small, .seat-right .player-identity small { @apply text-[9px]; }
-  .seat-left .turn-badge, .seat-right .turn-badge { @apply max-w-18 whitespace-normal px-1 py-0.5 text-[8px]!; }
+  .seat-left .turn-badge, .seat-right .turn-badge, .seat-left .counter-badge, .seat-right .counter-badge { @apply max-w-18 whitespace-normal px-1 py-0.5 text-[8px]!; }
   .seat-left .side-hand-count, .seat-right .side-hand-count { @apply block; }
   .seat-bottom .selection-count { @apply right-2 bottom-0; }
   .board-center { grid-template-columns: 48px minmax(0, 1fr) 48px; width: 100%; }
@@ -1865,7 +1911,7 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   .player-identity strong { max-width: 110px; }
   .turn-badge { font-size: 8px!important; }
   .formation-candidates button { min-height: 30px; padding: 4px 7px; }
-  .waiting-overlay > div, .result-overlay > div { min-width: 0; width: calc(100vw - 32px); padding: 22px 16px; }
+  .waiting-overlay > div { min-width: 0; width: calc(100vw - 32px); padding: 22px 16px; }
   .waiting-members { grid-template-columns: 1fr 1fr; }
   .notification-stack { top: 76px; right: 16px; }
 }

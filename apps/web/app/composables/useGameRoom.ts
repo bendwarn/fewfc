@@ -13,6 +13,11 @@ import type {
   GameRoomSocketMessage,
   OnlineGameAction,
 } from '../../shared/game-room'
+import {
+  completedPendingChoiceSelection,
+  isPendingChoiceComplete,
+  togglePendingChoiceSelection,
+} from '~/lib/pending-choice-selection'
 
 type ViewerRef = Ref<ViewerId>
 
@@ -28,6 +33,7 @@ function emptyState(): PublicGameState {
     hands: [],
     discard: [],
     coveredPassives: [],
+    counterEffects: [],
     pendingChoice: null,
     shields: [],
     statuses: [],
@@ -42,6 +48,7 @@ export function useGameRoom(viewer: ViewerRef) {
   const onlineGameId = ref<string | null>(null)
   const publicEvents = ref<PublicGameEvent[]>([])
   const selectedCards = ref<CardInstanceId[]>([])
+  const selectedChoiceCards = ref<CardInstanceId[]>([])
   const playableFormations = ref<PlayableFormation[]>([])
   const errorMessage = ref<string | null>(null)
   const isLoading = ref(false)
@@ -49,7 +56,6 @@ export function useGameRoom(viewer: ViewerRef) {
     canPass: false,
     hasOptionalEffect: false,
   })
-  const canCancelPendingCommand = ref(false)
   const connectionState = ref<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle')
   const roomDissolved = ref(false)
   let roomSocket: WebSocket | null = null
@@ -59,6 +65,7 @@ export function useGameRoom(viewer: ViewerRef) {
 
   watch(viewer, () => {
     selectedCards.value = []
+    selectedChoiceCards.value = []
     playableFormations.value = []
 
     if (onlineGameId.value) {
@@ -79,7 +86,24 @@ export function useGameRoom(viewer: ViewerRef) {
     return viewer.value === player && state.value.currentPlayer === player && !state.value.pendingChoice
   }
 
+  const canSubmitPendingChoice = computed(() => {
+    const choice = state.value.pendingChoice
+    return Boolean(
+      choice
+      && choice.kind === 'EffectGenerated'
+      && viewer.value === choice.player
+      && isPendingChoiceComplete(selectedChoiceCards.value, choice.requiredCount),
+    )
+  })
+
+  function pendingChoiceKey(choice: PublicGameState['pendingChoice']): string {
+    return choice
+      ? `${choice.player}:${choice.kind}:${choice.requiredCount}:${choice.cards.map(card => card.id).join(',')}`
+      : ''
+  }
+
   function applyRoomResponse(response: GameRoomResponse) {
+    const previousChoiceKey = pendingChoiceKey(state.value.pendingChoice)
     metadata.value = response.metadata
     invitation.value = response.invitation ?? null
     onlineGameId.value = response.gameId
@@ -87,9 +111,12 @@ export function useGameRoom(viewer: ViewerRef) {
     publicEvents.value = response.events
     playableFormations.value = response.playableFormations
     interaction.value = response.interaction
-    canCancelPendingCommand.value = response.canCancelPendingCommand
     errorMessage.value = null
     roomDissolved.value = response.metadata.status === 'Dissolved'
+
+    if (pendingChoiceKey(response.state.pendingChoice) !== previousChoiceKey) {
+      selectedChoiceCards.value = []
+    }
 
     if (import.meta.client) {
       connectRoomSocket(response.gameId)
@@ -189,10 +216,6 @@ export function useGameRoom(viewer: ViewerRef) {
     return await roomMutation('reset')
   }
 
-  async function cancelPendingCommand() {
-    return await roomMutation('cancel-choice')
-  }
-
   async function roomMutation(path: string, body?: Record<string, unknown>): Promise<boolean> {
     if (!onlineGameId.value) {
       return false
@@ -258,13 +281,49 @@ export function useGameRoom(viewer: ViewerRef) {
     }
 
     if (choice.kind === 'EffectGenerated') {
-      if (await submitOnline({
-        type: 'answerEffectChoice',
-        player: choice.player,
-        cards: [card],
-      }) && !canCancelPendingCommand.value) {
-        selectedCards.value = []
-      }
+      togglePendingChoiceCard(card)
+    }
+  }
+
+  function togglePendingChoiceCard(card: CardInstanceId) {
+    const choice = state.value.pendingChoice
+
+    if (
+      !choice
+      || choice.kind !== 'EffectGenerated'
+      || viewer.value !== choice.player
+    ) {
+      return
+    }
+
+    selectedChoiceCards.value = togglePendingChoiceSelection(
+      selectedChoiceCards.value,
+      card,
+      choice.requiredCount,
+    )
+  }
+
+  async function submitPendingChoice() {
+    const choice = state.value.pendingChoice
+    const cards = choice?.kind === 'EffectGenerated'
+      ? completedPendingChoiceSelection(selectedChoiceCards.value, choice.requiredCount)
+      : undefined
+
+    if (
+      !choice
+      || choice.kind !== 'EffectGenerated'
+      || viewer.value !== choice.player
+      || !cards
+    ) {
+      return
+    }
+
+    if (await submitOnline({
+      type: 'answerEffectChoice',
+      player: choice.player,
+      cards,
+    })) {
+      selectedChoiceCards.value = []
     }
   }
 
@@ -292,7 +351,7 @@ export function useGameRoom(viewer: ViewerRef) {
       player,
       formationId: formation.id,
       cards,
-    }) && !canCancelPendingCommand.value) {
+    })) {
       selectedCards.value = []
     }
   }
@@ -379,9 +438,9 @@ export function useGameRoom(viewer: ViewerRef) {
     state.value = emptyState()
     publicEvents.value = []
     selectedCards.value = []
+    selectedChoiceCards.value = []
     playableFormations.value = []
     errorMessage.value = null
-    canCancelPendingCommand.value = false
     roomDissolved.value = false
   }
 
@@ -394,11 +453,12 @@ export function useGameRoom(viewer: ViewerRef) {
     state,
     publicEvents,
     selectedCards,
+    selectedChoiceCards,
     playableFormations,
     errorMessage,
     isLoading,
     interaction,
-    canCancelPendingCommand,
+    canSubmitPendingChoice,
     connectionState,
     roomDissolved,
     applyRoomResponse,
@@ -409,7 +469,6 @@ export function useGameRoom(viewer: ViewerRef) {
     removeOnlinePlayer,
     dissolveOnlineRoom,
     resetOnlineRoom,
-    cancelPendingCommand,
     clearRoom,
     disconnectRoomSocket,
     passAction,
@@ -417,5 +476,7 @@ export function useGameRoom(viewer: ViewerRef) {
     toggleCardSelection,
     performFormation,
     choosePendingCard,
+    togglePendingChoiceCard,
+    submitPendingChoice,
   }
 }

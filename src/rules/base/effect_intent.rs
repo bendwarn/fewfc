@@ -22,6 +22,15 @@ pub(in crate::rules::base) enum EffectIntent {
     AddStatus {
         status: crate::domain::StatusEffect,
     },
+    EstablishCounterEffect {
+        owner: PlayerId,
+        effect_id: String,
+    },
+    InspectHand {
+        viewer: PlayerId,
+        target: PlayerId,
+        cards: Vec<CardInstanceId>,
+    },
     ResolveCopiedAttack {
         formation_id: String,
         category: AttackCategory,
@@ -67,39 +76,58 @@ pub(in crate::rules::base) fn effect_intent_events(
                         GameError::Validation(ValidationError::MissingTeamHp(team.clone()))
                     })?
                     .hp;
+                let initial_hp = state.initial_hp(&team).ok_or_else(|| {
+                    GameError::Validation(ValidationError::MissingTeamHp(team.clone()))
+                })?;
+                let new_hp = (old_hp + delta).clamp(0, initial_hp);
                 GameEvent::HpChanged {
                     change: crate::domain::HpChangeDelta {
                         team,
                         old_hp,
                         delta,
-                        new_hp: old_hp + delta,
-                        effective_delta: delta,
+                        new_hp,
+                        effective_delta: new_hp - old_hp,
                     },
                 }
             }
             EffectIntent::MoveCards { card_moves } => GameEvent::CardsMoved { card_moves },
             EffectIntent::AddStatus { status } => GameEvent::StatusAdded { status },
+            EffectIntent::EstablishCounterEffect { owner, effect_id } => {
+                GameEvent::CounterEffectEstablished { owner, effect_id }
+            }
+            EffectIntent::InspectHand {
+                viewer,
+                target,
+                cards,
+            } => GameEvent::HandInspected {
+                viewer,
+                target,
+                cards,
+            },
             EffectIntent::ResolveCopiedAttack {
                 formation_id,
                 category,
                 point_formula,
                 used_cards,
-            } => single_event(attack_resolution::resolve(
-                state,
-                AttackRequest {
-                    attacker: state
-                        .current_player()
-                        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
-                        .clone(),
-                    formation_id,
-                    category,
-                    point_formula,
-                    used_cards,
-                    damage_prevented: false,
-                    split_attack_damage: false,
-                    mode: AttackResolutionMode::CopiedEffect,
-                },
-            )?),
+            } => {
+                events.extend(attack_resolution::resolve(
+                    state,
+                    AttackRequest {
+                        attacker: state
+                            .current_player()
+                            .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
+                            .clone(),
+                        formation_id,
+                        category,
+                        point_formula,
+                        used_cards,
+                        damage_prevented: false,
+                        split_attack_damage: false,
+                        mode: AttackResolutionMode::CopiedEffect,
+                    },
+                )?);
+                continue;
+            }
             EffectIntent::RequestChoice { player, kind } => {
                 if let Some(existing_player) = requested_choice_player {
                     return Err(GameError::EngineInvariant(
@@ -118,13 +146,6 @@ pub(in crate::rules::base) fn effect_intent_events(
     }
 
     Ok(events)
-}
-
-fn single_event(mut events: Vec<GameEvent>) -> GameEvent {
-    debug_assert_eq!(events.len(), 1);
-    events
-        .pop()
-        .expect("copied attack resolution must emit one event")
 }
 
 #[cfg(test)]

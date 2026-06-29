@@ -1,8 +1,8 @@
 //! Viewer-filtered Public View derivation from canonical game data.
 
 use crate::domain::{
-    CardInstanceId, GameEvent, GameState, GameStatus, PendingChoiceKind, Phase, Player, PlayerId,
-    PlayerShield, StatusEffect, TeamHp,
+    CardInstanceId, CounterEffect, GameEvent, GameState, GameStatus, PendingChoiceKind, Phase,
+    Player, PlayerId, PlayerShield, StatusEffect, TeamHp,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,7 @@ pub struct PublicGameState {
     pub hands: Vec<PublicPlayerHand>,
     pub discard: Vec<CardInstanceId>,
     pub covered_passives: Vec<PublicCoveredPassive>,
+    pub counter_effects: Vec<CounterEffect>,
     pub pending_choice: Option<PublicPendingChoice>,
     pub shields: Vec<PlayerShield>,
     pub statuses: Vec<StatusEffect>,
@@ -91,6 +92,11 @@ pub enum PublicGameEvent {
     EffectChoiceRequested {
         player: PlayerId,
         kind: PublicPendingChoiceKind,
+    },
+    HandInspected {
+        viewer: PlayerId,
+        target: PlayerId,
+        cards: PublicCardRefs,
     },
 }
 
@@ -166,6 +172,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
                 },
             })
             .collect(),
+        counter_effects: state.counter_effects.clone(),
         pending_choice: state
             .pending_choice
             .as_ref()
@@ -246,11 +253,27 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
                 },
             }
         }
+        GameEvent::HandInspected {
+            viewer,
+            target,
+            cards,
+        } => PublicGameEvent::HandInspected {
+            viewer: viewer.clone(),
+            target: target.clone(),
+            cards: if policy.can_see_player_hidden_cards(viewer) {
+                PublicCardRefs::Known(cards.clone())
+            } else {
+                PublicCardRefs::Hidden { count: cards.len() }
+            },
+        },
         GameEvent::TurnStarted { .. }
         | GameEvent::ActionPassed { .. }
         | GameEvent::TurnDiscardChosen { .. }
         | GameEvent::TurnDrawSkipped { .. }
         | GameEvent::FormationPerformed { .. }
+        | GameEvent::FormationEffectCopied { .. }
+        | GameEvent::CounterEffectEstablished { .. }
+        | GameEvent::CounterEffectResolved { .. }
         | GameEvent::AttackResolved { .. }
         | GameEvent::TurnDrawBonusChanged { .. }
         | GameEvent::ShieldChanged { .. }

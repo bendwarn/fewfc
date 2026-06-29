@@ -515,7 +515,16 @@ fn decide_command_with_base_ruleset(
                 }
             }
 
-            Ok(vec![GameEvent::ActionPassed { player, reason }])
+            let passive_trigger = covered_passive::trigger(
+                state,
+                covered_passive::TriggerRequest {
+                    incoming_player: player.clone(),
+                    incoming_kind: covered_passive::IncomingActionKind::Pass,
+                },
+            );
+            let mut events = passive_trigger.events();
+            events.push(GameEvent::ActionPassed { player, reason });
+            Ok(events)
         }
         Command::PerformFormation {
             player,

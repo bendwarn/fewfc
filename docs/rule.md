@@ -118,14 +118,16 @@ struct GameState {
     players: Vec<Player>,
     turn_order: Vec<PlayerId>,
     hp: Vec<TeamHp>,
+    initial_hp: Vec<TeamHp>,
     deck: Vec<CardInstanceId>,
     hands: Vec<PlayerHand>,
     discard: Vec<CardInstanceId>,
     pending_choice: Option<PendingChoice>,
     shields: Vec<PlayerShield>,
     covered_passives: Vec<CoveredPassive>,
+    counter_effects: Vec<CounterEffect>,
     statuses: Vec<StatusEffect>,
-    last_elemental_attack_by_player: HashMap<PlayerId, LastElementalAttack>,
+    last_formation_by_player: HashMap<PlayerId, LastFormationUse>,
 }
 ```
 
@@ -135,7 +137,9 @@ Notes:
 - The base hand limit is 5.
 - The base turn draw is 2, adjusted by available hand space.
 - Shields are attached to players, not teams.
+- Team HP cannot exceed that match's initial HP.
 - Covered passive cards remain canonical hidden information in domain state and canonical events.
+- Public counter effects are stored separately from hidden covered-passive cards.
 
 ### 2.1 Status Effects
 
@@ -181,6 +185,8 @@ Validation rules:
 - reject illegal formation declarations, missing cards, duplicate submitted cards, and illegal declared targets
 - validation failures emit no events and do not mutate state
 
+The online adapter may store a pending command draft only while an `EffectGenerated` choice suspends and later continues formation resolution. `TurnDrawDiscard` is normal turn completion and must not retain the preceding formation command as a draft.
+
 `PassAction` is legal only when the player has no cards in hand or has **Cannot Act** status. A successful pass consumes the action opportunity and advances toward turn draw.
 
 ## 4) Formation Resolution
@@ -212,13 +218,17 @@ On `PerformFormation` whose effect plan is attack:
 
 Five-element interaction:
 
-- current attack generates previous player's last elemental attack: heal target team
-- current attack overcomes previous player's last elemental attack: double damage
+- current attack generates the previous player's immediately preceding elemental formation: heal target team
+- current attack overcomes the previous player's immediately preceding elemental formation: double damage
 - same element: halve damage and round up
 - unrelated element: normal damage
 - if the target player has shield, skip five-element interaction entirely
 
-Only elemental attack plans update the last elemental attack context. Physical attacks, special attacks, and spells do not.
+Physical attacks deal double damage to a player shield. Shield damage does not
+pierce through to team HP.
+
+Physical attacks, special attacks, and spells break the previous-turn elemental
+context. Older elemental attacks do not remain eligible for interaction.
 
 ### 4.3 Immediate Spell Resolution
 
@@ -229,6 +239,14 @@ On `PerformFormation` whose effect plan is immediate spell:
 - resolve spell intents into semantic events
 - request a pending choice when a spell needs player input
 - record formation-use card movement explicitly through card move deltas or equivalent replayable deltas
+
+Class change keeps `metamorphosis` as the performed formation identity while
+storing the copied category and effect separately. It keeps its active Spell Type,
+recomputes point formulas from its own two Earth cards, and may establish a copied
+counter effect publicly without covered cards.
+
+Radiance records the next player's hand as a canonical snapshot. Public event
+filtering exposes the cards only to the formation player.
 
 ### 4.4 Covered Passive Resolution
 
@@ -242,9 +260,13 @@ On `PerformFormation` whose effect plan is covered passive:
 
 At the next player's action start, the previous player's covered passive flips and attempts to affect that incoming action. The passive is discarded whether it applies or not.
 
+The same flip-and-discard timing applies when the next player passes because no
+action can be performed.
+
 Rules:
 
 - `Defense` applies only to incoming attacks.
+- `Defense` prevents attack damage but not other attack effects such as Five Streams Unite's draw bonus.
 - `Seal` applies only to incoming spells.
 - If `Seal` applies to an incoming covered passive, the incoming passive remains covered and is marked sealed; it later flips as no effect.
 - A player can have at most one pending covered passive.
@@ -301,6 +323,8 @@ Initial hands are dealt by the engine from the prepared deck order and emitted a
 
 Canonical events may contain hidden information needed for replay. Public views and public event feeds filter hidden information per viewer and are not replay sources.
 
+Canonical event and pending-choice payloads are persisted record formats. Adding or changing their fields requires an explicit record migration that preserves replay verification for existing rooms. Presentation-only metadata, such as the number of cards required by an effect choice, is derived by the Web projection instead of being added to canonical payloads.
+
 ## 7) Event Shape
 
 Use semantic events with explicit replayable deltas.
@@ -332,6 +356,9 @@ GameEvent::AttackResolved {
 A single command may emit multiple events, for example:
 
 - `PassiveFlipped`
+- `CounterEffectResolved`
+- `FormationEffectCopied`
+- `HandInspected`
 - `AttackResolved`
 - `EffectChoiceRequested`
 
@@ -365,10 +392,15 @@ A known formation with legal cards but missing resolver is a rule implementation
 - Discard recycling records shuffled order and does not rerun RNG on replay.
 - Attack base damage targets previous player and resolves HP to that player's team.
 - Two-player mode still uses team-owned HP.
-- Five-element interaction uses previous player's last elemental attack and is disabled by target shield.
+- Five-element interaction uses only the previous player's immediately preceding formation and is disabled by target shield.
+- Physical attacks deal double damage to shields.
 - Covered passive flips at next player's action start and is discarded whether it applies or not.
+- Covered passive also flips when that action is passed.
 - `Defense` applies only to attacks.
 - `Seal` applies only to spells, and seals incoming covered passives without revealing them early.
+- Class change preserves its name, stores the copied resolved effect, and copies counter effects without copying passive performance procedure.
+- Recovery is capped at the match's initial HP.
+- Radiance hand snapshots are visible only to the formation player.
 - Public state views and public event feeds do not leak hidden hands, covered cards, draw choices, or effect-choice options.
 - Canonical events remain complete enough for replay.
 - Team-mode setup validation rejects invalid seating and unequal teams.

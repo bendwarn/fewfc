@@ -67,12 +67,38 @@ pub(super) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 player.clone(),
                 LastFormationUse {
                     formation_id: formation_id.clone(),
+                    resolved_effect_id: formation_id.clone(),
                     used_cards: used_cards.clone(),
                     resolved_turn: state.turn_number,
                 },
             );
             state.phase = crate::domain::Phase::TurnDraw;
         }
+        GameEvent::FormationEffectCopied { player, effect_id } => {
+            let last_formation = state
+                .last_formation_by_player
+                .get_mut(player)
+                .expect("copied effect must follow a formation use");
+            last_formation.resolved_effect_id = effect_id.clone();
+        }
+        GameEvent::CounterEffectEstablished { owner, effect_id } => {
+            state.counter_effects.push(crate::domain::CounterEffect {
+                owner: owner.clone(),
+                effect_id: effect_id.clone(),
+                established_on_turn: state.turn_number,
+            });
+        }
+        GameEvent::CounterEffectResolved {
+            owner, effect_id, ..
+        } => {
+            let position = state
+                .counter_effects
+                .iter()
+                .position(|counter| counter.owner == *owner && counter.effect_id == *effect_id)
+                .expect("resolved counter effect must exist");
+            state.counter_effects.remove(position);
+        }
+        GameEvent::HandInspected { .. } => {}
         GameEvent::PassiveCovered {
             player,
             formation_id,
@@ -105,6 +131,7 @@ pub(super) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 player.clone(),
                 LastFormationUse {
                     formation_id: formation_id.clone(),
+                    resolved_effect_id: formation_id.clone(),
                     used_cards: cards.clone(),
                     resolved_turn: state.turn_number,
                 },
@@ -163,14 +190,22 @@ pub(super) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     .insert(update.player.clone(), update.attack.clone());
             }
 
-            state.last_formation_by_player.insert(
-                attacker.clone(),
-                LastFormationUse {
-                    formation_id: formation_id.clone(),
-                    used_cards: used_cards.clone(),
-                    resolved_turn: state.turn_number,
-                },
-            );
+            if let Some(last_formation) = state.last_formation_by_player.get_mut(attacker)
+                && last_formation.resolved_turn == state.turn_number
+                && last_formation.formation_id == "metamorphosis"
+            {
+                last_formation.resolved_effect_id = formation_id.clone();
+            } else {
+                state.last_formation_by_player.insert(
+                    attacker.clone(),
+                    LastFormationUse {
+                        formation_id: formation_id.clone(),
+                        resolved_effect_id: formation_id.clone(),
+                        used_cards: used_cards.clone(),
+                        resolved_turn: state.turn_number,
+                    },
+                );
+            }
             state.phase = crate::domain::Phase::TurnDraw;
         }
         GameEvent::TurnDrawBonusChanged {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import {
+  continuesPendingCommandDraft,
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
   requiresPendingCommandDraft,
@@ -130,5 +131,13 @@ describe('requiresPendingCommandDraft', () => {
     assert.equal(requiresPendingCommandDraft(formation, 'EffectGenerated'), true)
     assert.equal(requiresPendingCommandDraft(formation, 'TurnDrawDiscard'), false)
     assert.equal(requiresPendingCommandDraft({ type: 'passAction' }, 'EffectGenerated'), false)
+  })
+})
+
+describe('continuesPendingCommandDraft', () => {
+  test('continues only for another effect-generated choice', () => {
+    assert.equal(continuesPendingCommandDraft('EffectGenerated'), true)
+    assert.equal(continuesPendingCommandDraft('TurnDrawDiscard'), false)
+    assert.equal(continuesPendingCommandDraft(undefined), false)
   })
 })

@@ -47,14 +47,14 @@ async function beginSingleCardTurn(pages: Page[]) {
 
   await expect.poll(async () => (
     await page.locator('.choice-overlay').isVisible()
-    || await page.locator('.result-overlay').isVisible()
+    || await page.locator('.result-panel').isVisible()
   )).toBe(true)
 
   return page
 }
 
 async function finishSingleCardTurn(page: Page) {
-  if (await page.locator('.result-overlay').isVisible()) {
+  if (await page.locator('.result-panel').isVisible()) {
     return true
   }
 
@@ -62,7 +62,7 @@ async function finishSingleCardTurn(page: Page) {
   await expect(choice).toBeVisible()
   await choice.click()
   await expect(page.locator('.choice-overlay')).toBeHidden()
-  return await page.locator('.result-overlay').isVisible()
+  return await page.locator('.result-panel').isVisible()
 }
 
 async function expectDiscardTotal(pages: Page[], count: number) {
@@ -132,7 +132,47 @@ test('players can inspect a synchronized discard composition throughout a match'
     await startButton.click()
     await Promise.all(pages.map(page => expect(page.locator('.setup-reveal')).toBeHidden()))
 
+    await expect(host.locator('.event-panel')).not.toContainText('隱藏')
+    await expect(host.locator('.zone-summary')).toContainText('蓋牌')
+    await expect(host.locator('.zone-summary')).not.toContainText('伏牌')
+
+    const desktopTextSizes = await host.locator('.game-page').evaluate((gamePage) => {
+      const selectors = [
+        '.event-feed span',
+        '.event-feed p',
+        '.zone-summary span',
+        '.player-identity small',
+      ]
+      return selectors.map((selector) => (
+        Number.parseFloat(getComputedStyle(gamePage.querySelector(selector)!).fontSize)
+      ))
+    })
+    expect(desktopTextSizes.every(size => size >= 11)).toBe(true)
+
+    const handCards = host.locator('.seat-bottom .playing-card')
+    const handBoxes = await handCards.evaluateAll(cards => (
+      cards.map(card => {
+        const box = card.getBoundingClientRect()
+        return { left: box.left, right: box.right }
+      }).sort((left, right) => left.left - right.left)
+    ))
+    for (let index = 1; index < handBoxes.length; index += 1) {
+      expect(handBoxes[index - 1]!.right).toBeLessThanOrEqual(handBoxes[index]!.left)
+    }
+
     let active = await beginSingleCardTurn(pages)
+    await expect(active.getByRole('button', { name: '返回重選' })).toHaveCount(0)
+    const choiceOverlayStyle = await active.locator('.choice-overlay').evaluate((overlay) => {
+      const style = getComputedStyle(overlay)
+      return {
+        background: style.backgroundColor,
+        backdropFilter: style.backdropFilter,
+      }
+    })
+    const overlayAlpha = Number(choiceOverlayStyle.background.match(/[\d.]+\)$/)?.[0]?.slice(0, -1) ?? 1)
+    expect(overlayAlpha).toBeLessThanOrEqual(0.35)
+    expect(choiceOverlayStyle.backdropFilter).toBe('none')
+
     expect(await finishSingleCardTurn(active)).toBe(false)
     await expectDiscardTotal(pages, 2)
 
@@ -204,23 +244,28 @@ test('players can inspect a synchronized discard composition throughout a match'
       finished = await finishSingleCardTurn(active)
     }
     expect(finished).toBe(true)
-    await Promise.all(pages.map(page => expect(page.locator('.result-overlay')).toBeVisible()))
+    await Promise.all(pages.map(page => expect(page.locator('.result-panel')).toBeVisible()))
+    await Promise.all(pages.map(async (page) => {
+      await expect(page.locator('.turn-badge')).toHaveCount(0)
+      await expect(page.locator('.player-seat.acting')).toHaveCount(0)
+    }))
 
+    await Promise.all(pages.map(page => (
+      expect(page.getByRole('button', { name: '查看棄牌', exact: true })).toHaveCount(0)
+    )))
     const finalPage = pages.find(page => page !== active)!
-    const finalAction = finalPage.getByRole('button', { name: '查看棄牌', exact: true })
-    await finalAction.click()
+    const finalTrigger = finalPage.locator('.discard-pile-trigger')
     const finalTotal = Number(
-      (await finalPage.locator('.discard-pile-trigger').getAttribute('aria-label'))
-        ?.match(/\d+/)?.[0] ?? 0,
+      (await finalTrigger.getAttribute('aria-label'))?.match(/\d+/)?.[0] ?? 0,
     )
     expect(finalTotal).toBeGreaterThan(0)
+    await finalTrigger.click()
     await expectStableComposition(finalPage, finalTotal)
+    await discardDialog(finalPage).click()
 
     const resetPage = pages.find(page => page !== finalPage)!
     await resetPage.getByRole('button', { name: '返回房間 →' }).click()
-    await expect(discardDialog(finalPage)).toBeHidden()
     await expect(discardTrigger(finalPage, 0)).toHaveAttribute('aria-disabled', 'true')
-    await expect(discardTrigger(finalPage, 0)).toBeFocused()
   } finally {
     await hostContext.close()
     await guestContext.close()

@@ -39,8 +39,8 @@ to the API.
       discard composition as a second stacked overlay.
 - [x] Outside mandatory action choices, every player may inspect a non-empty
       discard pile regardless of whose turn it is.
-- [x] After the game ends, every player may still inspect the final non-empty
-      discard pile through a dedicated result action.
+- [x] After the game ends, the result stays outside the battlefield and every
+      player may inspect the final discard pile directly from the table.
 - [x] When the discard pile is empty, the trigger displays zero but is disabled and
       does not open the overlay.
 - [x] While the overlay is open, its counts update immediately when the Public
@@ -66,14 +66,15 @@ to the API.
 - Production Nuxt and rules WASM build
 - Playwright E2E through Brave at 377 x 734 and 1280 x 720, including accessible
   table structure, fixed cell count, responsive placement, all close paths,
-  mandatory choice precedence, WebSocket count updates, post-game inspection,
-  and automatic closure when the discard is emptied
+  mandatory choice precedence, WebSocket count updates, and automatic closure
+  when the discard is emptied
 
 ## Non-goals
 
 - Showing deck composition or hidden hands.
 - Persisting the overlay across reload or route changes.
 - Adding discard composition to canonical game state or the Game Record.
+- Adding a separate discard action to the result panel.
 
 ## Blocked by
 

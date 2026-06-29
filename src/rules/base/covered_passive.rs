@@ -9,6 +9,7 @@ pub(super) enum IncomingActionKind {
     Attack,
     ActiveSpell,
     PassiveSpell,
+    Pass,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +86,27 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
         });
     }
 
+    for counter in state
+        .counter_effects
+        .iter()
+        .filter(|counter| counter.owner == previous_player)
+    {
+        let modifications =
+            passive_spell_modifications(&counter.effect_id, request.incoming_kind, false);
+        all_modifications.extend(modifications.iter().cloned());
+        events.push(GameEvent::CounterEffectResolved {
+            owner: counter.owner.clone(),
+            incoming_player: request.incoming_player.clone(),
+            effect_id: counter.effect_id.clone(),
+            outcome: passive_outcome(
+                &counter.effect_id,
+                request.incoming_kind,
+                false,
+                &modifications,
+            ),
+        });
+    }
+
     PassiveTriggerResult {
         events,
         modifications: all_modifications,
@@ -135,16 +157,25 @@ fn passive_outcome(
     }
 
     match (passive_id, incoming_kind) {
-        ("defense", IncomingActionKind::ActiveSpell | IncomingActionKind::PassiveSpell) => {
-            PassiveFlipOutcome::NoEffect {
-                reason: PassiveNoEffectReason::NotAnAttack,
-            }
-        }
-        ("countershock", IncomingActionKind::ActiveSpell | IncomingActionKind::PassiveSpell) => {
-            PassiveFlipOutcome::NoEffect {
-                reason: PassiveNoEffectReason::NotAnAttack,
-            }
-        }
+        ("empty-city", _) => PassiveFlipOutcome::NoEffect {
+            reason: PassiveNoEffectReason::EmptyCity,
+        },
+        (
+            "defense",
+            IncomingActionKind::ActiveSpell
+            | IncomingActionKind::PassiveSpell
+            | IncomingActionKind::Pass,
+        ) => PassiveFlipOutcome::NoEffect {
+            reason: PassiveNoEffectReason::NotAnAttack,
+        },
+        (
+            "countershock",
+            IncomingActionKind::ActiveSpell
+            | IncomingActionKind::PassiveSpell
+            | IncomingActionKind::Pass,
+        ) => PassiveFlipOutcome::NoEffect {
+            reason: PassiveNoEffectReason::NotAnAttack,
+        },
         ("seal", IncomingActionKind::Attack) => PassiveFlipOutcome::NoEffect {
             reason: PassiveNoEffectReason::NotASpell,
         },

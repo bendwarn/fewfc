@@ -213,12 +213,16 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         GameEvent::TurnEnded { .. } => Some(AutomaticReason::TurnEnd),
         GameEvent::DeckPrepared { .. }
         | GameEvent::CardsDealt { .. }
+        | GameEvent::CounterEffectEstablished { .. }
+        | GameEvent::CounterEffectResolved { .. }
         | GameEvent::ActionPassed { .. }
         | GameEvent::AttackResolved { .. }
         | GameEvent::CardsMoved { .. }
         | GameEvent::EffectChoiceAnswered { .. }
         | GameEvent::EffectChoiceRequested { .. }
+        | GameEvent::FormationEffectCopied { .. }
         | GameEvent::FormationPerformed { .. }
+        | GameEvent::HandInspected { .. }
         | GameEvent::HpChanged { .. }
         | GameEvent::PassiveCovered { .. }
         | GameEvent::PassiveFlipped { .. }

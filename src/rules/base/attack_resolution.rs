@@ -5,7 +5,9 @@ use crate::domain::{
     ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
-use crate::rules::{AttackCategory, AttackPlanDef, DamageTarget, PointFormula};
+use crate::rules::{
+    AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, PointFormula, base_formation_registry,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AttackResolutionMode {
@@ -39,31 +41,30 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
     let point_breakdown =
         attack_point_breakdown(state, &request.category, &target, points, has_target_shield);
     let final_amount = point_breakdown.final_amount;
+    let damage_transform = point_breakdown.damage_transform;
+    let split_attack_damage = request.split_attack_damage;
+    let defender_amount = if split_attack_damage {
+        (final_amount + 1) / 2
+    } else {
+        final_amount
+    };
     let shield_change = if request.damage_prevented {
         None
     } else {
-        shield_absorption(state, &target, final_amount)
+        let shield_damage = match request.category {
+            AttackCategory::Physical => defender_amount * 2,
+            AttackCategory::Elemental(_) | AttackCategory::Special => defender_amount,
+        };
+        shield_absorption(state, &target, shield_damage)
     };
     let has_shield_change = shield_change.is_some();
-    let split_attack_damage = request.split_attack_damage
-        && !matches!(
-            point_breakdown.damage_transform,
-            DamageTransform::HealTarget
-        );
     let hp_change = if request.damage_prevented || has_shield_change {
         no_hp_change(state, &target_team)?
-    } else if split_attack_damage {
-        apply_attack_amount(
-            state,
-            &target_team,
-            (final_amount + 1) / 2,
-            DamageTransform::NormalDamage,
-        )?
     } else {
         apply_attack_amount(
             state,
             &target_team,
-            final_amount,
+            defender_amount,
             point_breakdown.damage_transform,
         )?
     };
@@ -101,25 +102,22 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
     if request.mode == AttackResolutionMode::FormationUse
         && split_attack_damage
         && !request.damage_prevented
-        && !has_shield_change
     {
         let attacker_team = player_team(state, &request.attacker)?;
-        let attacker_damage = final_amount / 2;
-        if attacker_damage > 0 {
+        let attacker_amount = (final_amount + 1) / 2;
+        if attacker_amount > 0 {
             events.push(GameEvent::HpChanged {
                 change: apply_attack_amount(
                     state,
                     &attacker_team,
-                    attacker_damage,
-                    DamageTransform::NormalDamage,
+                    attacker_amount,
+                    damage_transform,
                 )?,
             });
         }
     }
 
-    if request.mode == AttackResolutionMode::FormationUse
-        && request.formation_id == "five-streams-unite"
-    {
+    if request.formation_id == "five-streams-unite" {
         let old_value = state
             .turn_draw_bonus_by_player
             .get(&request.attacker)
@@ -181,13 +179,7 @@ fn compute_attack_points(
         PointFormula::Fixed(points) => Ok(*points as i32),
         PointFormula::CardCount => Ok(cards.len() as i32),
         PointFormula::FormationPoints => level_sum(),
-        PointFormula::LevelPlus(bonus) => Ok(state
-            .card_def(cards[0])
-            .ok_or(GameError::Validation(
-                ValidationError::MissingCardInstanceDefinition(cards[0]),
-            ))?
-            .level as i32
-            + *bonus as i32),
+        PointFormula::LevelPlus(bonus) => Ok(level_sum()? + *bonus as i32),
         PointFormula::LevelSumTimes(multiplier) => Ok(level_sum()? * *multiplier as i32),
         PointFormula::TargetHandCountTimes(multiplier) => {
             let target_hand = state.hand(target).ok_or_else(|| {
@@ -221,7 +213,7 @@ fn attack_point_breakdown(
             final_amount: base_points,
         };
     }
-    let Some(previous_attack) = state.last_elemental_attack_by_player.get(target) else {
+    let Some(previous_element) = previous_formation_element(state, target) else {
         return AttackPointBreakdown {
             base_points,
             interaction: ElementInteraction::None,
@@ -230,21 +222,21 @@ fn attack_point_breakdown(
         };
     };
 
-    if current_element == previous_attack.element {
+    if current_element == previous_element {
         AttackPointBreakdown {
             base_points,
             interaction: ElementInteraction::Same,
             damage_transform: DamageTransform::HalfDamageRoundUp,
             final_amount: (base_points + 1) / 2,
         }
-    } else if generates(current_element, previous_attack.element) {
+    } else if generates(current_element, previous_element) {
         AttackPointBreakdown {
             base_points,
             interaction: ElementInteraction::Generating,
             damage_transform: DamageTransform::HealTarget,
             final_amount: base_points,
         }
-    } else if overcomes(current_element, previous_attack.element) {
+    } else if overcomes(current_element, previous_element) {
         AttackPointBreakdown {
             base_points,
             interaction: ElementInteraction::Overcoming,
@@ -258,6 +250,21 @@ fn attack_point_breakdown(
             damage_transform: DamageTransform::NormalDamage,
             final_amount: base_points,
         }
+    }
+}
+
+fn previous_formation_element(state: &GameState, player: &PlayerId) -> Option<Element> {
+    let formation_id = state
+        .last_formation_by_player
+        .get(player)?
+        .effective_effect_id();
+    let registry = base_formation_registry();
+    let formation = registry.formation(formation_id)?;
+    let effect = registry.effect_for(formation)?;
+
+    match &effect.plan {
+        EffectPlan::Attack(plan) => elemental_attack_element(&plan.category),
+        EffectPlan::ActiveSpell(_) | EffectPlan::PassiveSpell(_) => None,
     }
 }
 
@@ -308,7 +315,10 @@ fn apply_attack_amount(
         | DamageTransform::DoubleDamage
         | DamageTransform::HalfDamageRoundUp => -amount,
     };
-    let new_hp = (old_hp + delta).max(0);
+    let initial_hp = state
+        .initial_hp(team)
+        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
+    let new_hp = (old_hp + delta).clamp(0, initial_hp);
 
     Ok(HpChangeDelta {
         team: team.clone(),

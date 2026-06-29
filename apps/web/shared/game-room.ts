@@ -143,6 +143,12 @@ export function requiresPendingCommandDraft(
   return action.type === 'performFormation' && pendingChoiceKind === 'EffectGenerated'
 }
 
+export function continuesPendingCommandDraft(
+  pendingChoiceKind: string | undefined,
+): boolean {
+  return pendingChoiceKind === 'EffectGenerated'
+}
+
 export type GameRoomRequest =
   | {
       type: 'createGame'
@@ -189,10 +195,6 @@ export type GameRoomRequest =
       actorUserId: string
     }
   | {
-      type: 'cancelPendingCommand'
-      actorUserId: string
-    }
-  | {
       type: 'getState'
       actorUserId: string
     }
@@ -207,7 +209,6 @@ export interface GameRoomResponse extends Omit<LocalGameResponse, 'record'> {
   gameId: string
   metadata: GameRoomMetadata
   invitation?: GameRoomInvitation
-  canCancelPendingCommand: boolean
 }
 
 export interface RulesEngineResult extends LocalGameResponse {
@@ -265,6 +266,7 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     })),
     discard: [],
     coveredPassives: [],
+    counterEffects: [],
     pendingChoice: null,
     shields: [],
     statuses: [],

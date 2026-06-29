@@ -387,6 +387,8 @@ Command handling validates and decides events. State mutation happens through `a
 
 Validation failures return errors, emit no events, and do not mutate state.
 
+The online adapter stores a pending command draft only when `PerformFormation` produces an `EffectGenerated` choice that suspends formation resolution. The draft preserves the original command context until the choice continuation completes. `TurnDrawDiscard` is normal turn completion after the action has resolved, so it must not create or continue a formation command draft.
+
 ### 17. Formation Matching
 
 Use data-driven formation patterns where practical, with custom matcher hooks for formations that cannot be represented cleanly as data.
@@ -464,9 +466,12 @@ Rule-derived semantic targets such as previous player, next player, self, own si
 
 This keeps the event log focused on actual player choices while allowing rule-defined targets to remain deterministic projections of state.
 
-### 21. Last Elemental Attack Context
+### 21. Previous-Formation Elemental Context
 
-Track only the fields needed for five-element interaction checks:
+Five-element interaction applies only when the previous player's immediately
+preceding formation resolved as a five-element attack. An older elemental attack
+does not remain eligible after that player performs a physical attack, special
+attack, or spell.
 
 ```rust
 struct LastElementalAttack {
@@ -475,17 +480,16 @@ struct LastElementalAttack {
 }
 ```
 
-State:
-
-```rust
-last_elemental_attack_by_player: HashMap<PlayerId, LastElementalAttack>
-```
-
-The map key identifies the player who performed the attack. Only resolved five-element attacks update this field. Physical attacks, special attacks, and spells do not update it.
+The last-formation state stores the performed formation identity and its resolved
+category/effect separately. Five-element interaction reads the resolved category
+of the previous player's latest formation. Class change that copies a five-element
+attack therefore counts as that copied element, while still retaining `幻化` as
+its formation identity.
 
 Five-element attack attributes are not sealed. If a legal five-element attack is performed, its element remains available for five-element interaction tracking even if other parts of the action are affected by defensive effects.
 
-Update `last_elemental_attack_by_player` whenever a `PerformFormation` command validates successfully as a five-element attack. Damage prevention, shield absorption, or other defensive effects do not prevent this update.
+Damage prevention, shield absorption, or other defensive effects do not change
+the resolved formation category.
 
 Validation failure still does not update it because no game event occurred.
 
@@ -531,7 +535,9 @@ This supports deterministic replay, focused tests, and UI/debug display of how f
 
 ### 23. Five-Element Interaction Rules
 
-Five-element interaction is resolved from the current attack element against the previous player's last five-element attack element.
+Five-element interaction is resolved from the current attack element against the
+element of the previous player's immediately preceding formation, when that
+formation resolved as a five-element attack.
 
 Official relationships:
 
@@ -578,6 +584,9 @@ If the target player has a shield:
 - apply attack damage to the shield
 - excess damage does not pierce through to player/team HP
 
+Physical attacks deal double damage to shields. Special attacks and five-element
+attacks use their otherwise resolved damage amount.
+
 The shield absorbs the attack as a separate defensive layer, even if the incoming damage exceeds the shield amount.
 
 When shield amount reaches 0 or lower, remove it immediately.
@@ -607,6 +616,31 @@ Passive resolution flow:
 3. The effect returns action modifications.
 4. The incoming action resolution applies those modifications.
 
+Once a formation is performed, its resulting effects are treated as one atomic,
+simultaneous resolution from the players' perspective. Event emission order is an
+implementation and replay detail, not an additional observable rule. Tests should
+assert the resolved game state rather than require an event sequence, except where
+the rules explicitly make an intermediate choice or separate action observable.
+
+Countershock (`反震`) splits an incoming attack before defensive layers absorb
+damage. The attacking side receives its reflected share directly. The defending
+player's share then resolves against that player's shield, if present, under the
+normal shield rules. A shield must not suppress Countershock's split. If either
+side reaches 0 HP while applying the split, resolution continues until both shares
+have been applied; game-over evaluation uses the fully resolved state and may
+therefore produce a draw.
+
+Five-element interaction determines the attack's result mode before Countershock
+distributes its amount. Countershock divides the resulting amount but does not
+change that mode. Therefore, when generating interaction makes an attack restore
+HP, both the attacking and defending sides restore their respective shares.
+Overcoming, same-element, and unrelated interactions likewise apply their modified
+amount before it is divided.
+
+Fractional formation points always round up. Countershock calculates each side's
+share independently with ceiling division, so an attack amount of 7 produces 4
+points for the attacking side and 4 points for the defending side.
+
 Seal (`封印`) applies only to spells (`術式`). Do not model it as a broad "spell or effect" cancellation rule.
 
 If seal flips against an incoming attack, it is discarded with no effect because the incoming action is not a spell.
@@ -622,6 +656,9 @@ GameEvent::PassiveFlipped {
 
 Defense (`防禦`) applies only to incoming attacks. If it flips against an incoming spell, pass action, or other non-attack action, it is discarded with no effect.
 
+Defense prevents only the attack's damage. Other effects of the performed attack
+still resolve; in particular, Five Streams Unite still grants its turn-draw bonus.
+
 If seal applies to an incoming passive spell cover action, it does not immediately discard or reveal the incoming covered passive cards.
 
 Instead, the incoming passive remains covered and is marked sealed. When that covered passive later flips at its own trigger timing, it resolves as no effect and is then discarded normally.
@@ -634,9 +671,51 @@ Each player can have at most one pending covered passive. Under normal turn flow
 
 If a command attempts to cover a passive while that player already has a pending covered passive, report an error. Emit no event and do not consume the action.
 
+Empty City (`空城`) is a covered passive with no additional action modification.
+It still consumes the formation cards and turn action, occupies the player's one
+covered-passive position, flips at the normal trigger timing, and moves its cards
+to discard. Its no-effect outcome is intentional rather than an unknown-passive
+fallback. Represent that outcome explicitly as
+`PassiveNoEffectReason::EmptyCity`. User-facing records should say only
+`空城翻開`; they must not add redundant wording about producing no effect.
+
 Class change (`幻化`) is a basic formation, not a special standalone action command and not a special formation category/tag.
 
 It should be handled through the normal `PerformFormation` pipeline like other formations. It consumes the turn action, triggers covered passives at the usual next-player action timing, and uses formation category/effect rules to determine whether any passive applies.
+
+A player with a covered passive necessarily used that passive as their latest
+formation. Therefore, a next-player class change cannot both trigger that passive
+and copy an older attack from the same player. Treat that combination as
+unreachable rather than adding an interaction rule or test for it.
+
+Class change preserves its own formation identity and name while copying the
+previous formation's resolved category and effect. The last-formation state must
+therefore store formation identity separately from the resolved effect plan. A
+later class change copies that resolved category and effect, so class-change
+chains continue to reproduce the original copied behavior even though every link
+is still displayed and recorded as `幻化`.
+
+Class change does not copy a spell's active/passive type because that type controls
+how the formation is performed. Class change remains an active spell: its two
+Earth cards are shown face up and discarded through the active-spell procedure.
+When it copies Defense, Seal, Countershock, or another delayed counter effect, the
+copied effect still waits for and modifies the next player's action, but it is
+public and has no covered cards. Delayed counter state must therefore be modeled
+separately from covered-passive card state.
+
+Copying Empty City records Empty City as the resolved effect but creates no
+delayed counter because Empty City has no effect to establish.
+
+When the copied effect uses a card-based formula, each class change evaluates that
+formula from its own two submitted Earth cards. It copies the formula, category,
+and effect behavior, not the previous formation's already calculated amount.
+For a copied single-card elemental strike, `level + 4` means the submitted class
+change cards' level sum plus 4; it must not read only one of the two Earth cards.
+
+Copying Five Streams Unite (`五流歸一`) includes its complete effect. Resolve its
+damage from the target's current hand count and grant the class-change player the
+formation's next-draw bonus. The bonus is not limited to directly submitting the
+original five-card formation.
 
 Do not add a separate `ChangeClass` command unless a future rule module introduces a genuinely non-formation class-change action.
 
@@ -797,6 +876,14 @@ External event feeds must be viewer-filtered:
 - non-choice players see only public information, such as that a player is making a choice
 - replay uses canonical events, never filtered public events
 
+Radiance (`光芒`) also inspects the next player's hand when it resolves. Record a
+canonical snapshot of that hand at resolution time. Only the formation player may
+see the snapshot in the filtered event; the inspected player, other players, and
+observers receive only the public fact that Radiance resolved. This is a snapshot,
+not ongoing permission to observe later hand changes. Keep that snapshot available
+to the formation player in their private event history so reconnect and replay do
+not lose information they already inspected.
+
 ### 26. Game Over
 
 The game ends when a team's HP reaches 0 or lower.
@@ -824,6 +911,10 @@ HP state is clamped to 0 and never stored as a negative value.
 ```rust
 new_hp = max(0, old_hp - damage)
 ```
+
+Team HP is also capped at that match's initial HP. Every recovery source uses the
+same cap, including Generating Formation, Return to Origin, generating elemental
+attacks, and generating attacks divided by Countershock.
 
 HP change events should preserve enough detail for audit/debug:
 
@@ -1004,6 +1095,8 @@ Modes:
 - verification: optionally rerun commands/automatic advancement and compare produced events with the canonical event log
 
 The canonical event log already contains automatic events such as initial deal, discard recycling, choice requests, and status expiration. Recomputing them during replay could duplicate events or diverge across ruleset versions.
+
+Canonical `GameEvent` and `PendingChoice` payloads are persisted record formats and participate in replay verification. Their shape must not change without an explicit migration for existing records. Data needed only by a client, such as an effect choice's required card count, belongs in the Web projection and is derived from canonical state.
 
 ### 34. Event Granularity
 

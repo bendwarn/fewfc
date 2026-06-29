@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import {
+  continuesPendingCommandDraft,
   emptyPublicState,
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
@@ -79,8 +80,6 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           return await this.startGame(body.actorUserId)
         case 'resetGame':
           return await this.resetGame(body.actorUserId)
-        case 'cancelPendingCommand':
-          return await this.cancelPendingCommand(body.actorUserId)
         case 'getState':
           return await this.getState(body.actorUserId)
         case 'submitCommand':
@@ -554,7 +553,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json(await this.response(metadata, request.actorUserId))
     }
 
-    if (existingDraft && rules.state.pendingChoice) {
+    if (
+      existingDraft
+      && continuesPendingCommandDraft(rules.state.pendingChoice?.kind)
+    ) {
       await this.ctx.storage.put('pendingCommandDraft', {
         ...existingDraft,
         snapshot: {
@@ -614,20 +616,6 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     ]).then(() => undefined))
 
     return this.json(await this.response(updatedMetadata, request.actorUserId))
-  }
-
-  private async cancelPendingCommand(actorUserId: string): Promise<Response> {
-    const metadata = await this.requireMetadata()
-    const draft = await this.pendingDraft()
-
-    if (!draft || draft.actorUserId !== actorUserId) {
-      return this.json({ error: 'no cancellable player choice is pending' }, 409)
-    }
-
-    await this.ctx.storage.delete('pendingCommandDraft')
-    this.ctx.waitUntil(this.broadcast(metadata))
-
-    return this.json(await this.response(metadata, actorUserId))
   }
 
   private async connect(request: Request): Promise<Response> {
@@ -887,7 +875,6 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           summary: this.displaySummary(currentMetadata, this.eventSummary(event)),
         })).reverse(),
         playableFormations,
-        canCancelPendingCommand: false,
         interaction: {
           canPass: false,
           hasOptionalEffect: false,
@@ -896,8 +883,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
 
     const draft = actorUserId ? await this.pendingDraft() : undefined
-    const canCancelPendingCommand = draft?.actorUserId === actorUserId
-    const snapshot = canCancelPendingCommand ? draft.snapshot : await this.requireSnapshot()
+    const ownsPendingCommandDraft = draft?.actorUserId === actorUserId
+    const snapshot = ownsPendingCommandDraft ? draft.snapshot : await this.requireSnapshot()
     const publicRules = await this.callRules({ type: 'refresh' }, viewer, snapshot)
     const responseMetadata: GameRoomMetadata = (
       currentMetadata.status === 'Active'
@@ -924,7 +911,6 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         summary: this.displaySummary(currentMetadata, event.summary),
       })),
       playableFormations,
-      canCancelPendingCommand,
       interaction: publicRules.interaction,
     }
   }

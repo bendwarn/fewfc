@@ -115,9 +115,27 @@ _Avoid_: damage spell
 A formation category whose effect may resolve immediately or be covered as a passive.
 _Avoid_: effect, skill
 
+**Spell Type**:
+The active or passive procedure used to perform a Spell. Spell Type determines
+whether submitted cards are shown and resolved immediately or placed face down;
+it is distinct from Formation Category and is not copied by class change.
+_Avoid_: spell category
+
 **Covered Passive**:
 A hidden passive spell placed by a player and checked at the next player's action start.
 _Avoid_: trap, secret
+
+**Counter Effect**:
+A delayed defensive Formation effect that checks and may modify the next Player's
+action. Passive Spells create hidden Counter Effects through Covered Passives;
+class change may create the copied Counter Effect publicly without covered cards.
+_Avoid_: covered passive effect
+
+**Resolved Formation Effect**:
+The Formation Category and effect behavior actually adopted by a Formation Use,
+stored separately from the performed Formation's identity. Class change keeps its
+own Formation identity while copying a previous Resolved Formation Effect.
+_Avoid_: displayed formation, formation id
 
 **Status Effect**:
 A rule-recognized ongoing effect attached to a player or team.
@@ -165,6 +183,8 @@ _Avoid_: callback response
 - The **Previous Player** is derived from **Turn Order**
 - A **Formation** has exactly one **Formation Category**
 - A **Formation** resolves through exactly one **Effect Plan**
+- A **Spell** has one **Spell Type** that controls its performance procedure
+- A **Formation Use** retains its Formation identity separately from its **Resolved Formation Effect**
 - A **Formation Use** records zone changes through **Card Move Deltas** or equivalent replayable deltas
 - A **Card Move Delta** moves one **Card Instance**
 - A **Card Instance** refers to one **Card Definition**
@@ -175,6 +195,7 @@ _Avoid_: callback response
 - The **Main Phase** may accept multiple **Active-Effect Commands** before one **Action Command**
 - A successful **Action Command** closes the **Main Phase**
 - A **Covered Passive** belongs to one **Player** and flips at the next player's action start
+- A **Counter Effect** may be hidden behind a **Covered Passive** or publicly established by class change
 - A **Status Effect** has one **Status Kind**
 - **Cannot Act** allows an action pass for the affected **Player**
 - A **Choice Requested** creates one **Pending Choice**

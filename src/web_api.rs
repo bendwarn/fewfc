@@ -383,6 +383,7 @@ struct WebPublicGameState {
     hands: Vec<WebPlayerHand>,
     discard: Vec<WebCard>,
     covered_passives: Vec<WebCoveredPassive>,
+    counter_effects: Vec<WebCounterEffect>,
     pending_choice: Option<WebPendingChoice>,
     shields: Vec<WebShield>,
     statuses: Vec<WebStatus>,
@@ -452,6 +453,15 @@ impl WebPublicGameState {
                     cards: WebCardRefs::from_public(passive.cards, labels),
                 })
                 .collect(),
+            counter_effects: state
+                .counter_effects
+                .into_iter()
+                .map(|counter| WebCounterEffect {
+                    owner: counter.owner.as_str().to_string(),
+                    effect_id: counter.effect_id.clone(),
+                    effect_name: formation_name(&counter.effect_id),
+                })
+                .collect(),
             pending_choice: state
                 .pending_choice
                 .map(|choice| WebPendingChoice::from_public(choice, labels)),
@@ -515,6 +525,14 @@ struct WebCoveredPassive {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct WebCounterEffect {
+    owner: String,
+    effect_id: String,
+    effect_name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WebPreviousTurnFormation {
     player: String,
     formation_id: Option<String>,
@@ -528,6 +546,7 @@ struct WebPendingChoice {
     player: String,
     kind: String,
     cards: Vec<WebCard>,
+    required_count: usize,
 }
 
 impl WebPendingChoice {
@@ -535,6 +554,11 @@ impl WebPendingChoice {
         choice: crate::public_view::PublicPendingChoice,
         labels: &HashMap<CardInstanceId, String>,
     ) -> Self {
+        let required_count = match &choice.kind {
+            PublicPendingChoiceKind::Known(kind) => kind.required_count(),
+            PublicPendingChoiceKind::Hidden => 0,
+        };
+
         match choice.kind {
             PublicPendingChoiceKind::Known(PendingChoiceKind::TurnDrawDiscard {
                 allowed_discards,
@@ -542,6 +566,7 @@ impl WebPendingChoice {
             }) => Self {
                 player: choice.player.as_str().to_string(),
                 kind: "TurnDrawDiscard".to_string(),
+                required_count,
                 cards: allowed_discards
                     .into_iter()
                     .map(|card| WebCard::from_id(card, labels))
@@ -553,6 +578,7 @@ impl WebPendingChoice {
             }) => Self {
                 player: choice.player.as_str().to_string(),
                 kind: "EffectGenerated".to_string(),
+                required_count,
                 cards: allowed_cards
                     .into_iter()
                     .map(|card| WebCard::from_id(card, labels))
@@ -562,6 +588,7 @@ impl WebPendingChoice {
                 player: choice.player.as_str().to_string(),
                 kind: "Hidden".to_string(),
                 cards: Vec::new(),
+                required_count: 0,
             },
         }
     }
@@ -686,6 +713,7 @@ fn event_type(event: &PublicGameEvent) -> String {
             "CardsDrawnForTurnDiscardChoice".to_string()
         }
         PublicGameEvent::EffectChoiceRequested { .. } => "EffectChoiceRequested".to_string(),
+        PublicGameEvent::HandInspected { .. } => "HandInspected".to_string(),
     }
 }
 
@@ -712,18 +740,18 @@ fn event_presentation(
             formation_id,
             cards,
         } => (
-            "覆蓋陣法".to_string(),
+            "蓋牌".to_string(),
             formation_id.as_deref().map_or_else(
                 || {
                     format!(
-                        "{} 覆蓋了 {}。",
+                        "{} 蓋下了 {}。",
                         player.as_str(),
                         card_refs_summary(cards, labels)
                     )
                 },
                 |formation_id| {
                     format!(
-                        "{} 覆蓋「{}」，使用 {}。",
+                        "{} 蓋下「{}」，使用 {}。",
                         player.as_str(),
                         formation_name(formation_id),
                         card_refs_summary(cards, labels)
@@ -746,6 +774,27 @@ fn event_presentation(
         PublicGameEvent::EffectChoiceRequested { player, .. } => (
             "效果選擇".to_string(),
             format!("{} 需要選擇效果。", player.as_str()),
+        ),
+        PublicGameEvent::HandInspected {
+            viewer,
+            target,
+            cards,
+        } => (
+            "檢視手牌".to_string(),
+            match cards {
+                PublicCardRefs::Known(_) => format!(
+                    "{} 檢視 {} 的手牌：{}。",
+                    viewer.as_str(),
+                    target.as_str(),
+                    card_refs_summary(cards, labels)
+                ),
+                PublicCardRefs::Hidden { count } => format!(
+                    "{} 檢視了 {} 的 {} 張手牌。",
+                    viewer.as_str(),
+                    target.as_str(),
+                    count
+                ),
+            },
         ),
     }
 }
@@ -833,6 +882,36 @@ fn game_event_presentation(
                 cards_summary(used_cards, labels)
             ),
         ),
+        GameEvent::FormationEffectCopied { player, effect_id } => (
+            "幻化".to_string(),
+            format!(
+                "{} 的幻化複製了「{}」。",
+                player.as_str(),
+                formation_name(effect_id)
+            ),
+        ),
+        GameEvent::CounterEffectEstablished { owner, effect_id } => (
+            "建立反制".to_string(),
+            format!(
+                "{} 建立了公開的「{}」效果。",
+                owner.as_str(),
+                formation_name(effect_id)
+            ),
+        ),
+        GameEvent::CounterEffectResolved {
+            owner, effect_id, ..
+        } => (
+            "反制發動".to_string(),
+            format!(
+                "{} 的「{}」已發動。",
+                owner.as_str(),
+                formation_name(effect_id)
+            ),
+        ),
+        GameEvent::HandInspected { viewer, target, .. } => (
+            "檢視手牌".to_string(),
+            format!("{} 檢視了 {} 的手牌。", viewer.as_str(), target.as_str()),
+        ),
         GameEvent::AttackResolved {
             attacker,
             target,
@@ -908,19 +987,23 @@ fn game_event_presentation(
             ),
         ),
         GameEvent::PassiveCovered { player, cards, .. } => (
-            "覆蓋陣法".to_string(),
-            format!("{} 覆蓋了 {} 張牌。", player.as_str(), cards.len()),
+            "蓋牌".to_string(),
+            format!("{} 蓋下了 {} 張牌。", player.as_str(), cards.len()),
         ),
         GameEvent::PassiveFlipped {
             owner, passive_id, ..
-        } => (
-            "伏牌翻開".to_string(),
-            format!(
-                "{} 的「{}」已翻開並完成結算。",
-                owner.as_str(),
-                formation_name(passive_id)
-            ),
-        ),
+        } => {
+            let detail = if passive_id == "empty-city" {
+                format!("{} 的「空城」翻開。", owner.as_str())
+            } else {
+                format!(
+                    "{} 的「{}」已翻開並完成結算。",
+                    owner.as_str(),
+                    formation_name(passive_id)
+                )
+            };
+            ("蓋牌翻開".to_string(), detail)
+        }
         GameEvent::DiscardRecycledIntoDeck { shuffled_order, .. } => (
             "重整牌庫".to_string(),
             format!("棄牌堆的 {} 張牌已重新放回牌庫。", shuffled_order.len()),
@@ -970,7 +1053,7 @@ fn card_refs_summary(cards: &PublicCardRefs, labels: &HashMap<CardInstanceId, St
             })
             .collect::<Vec<_>>()
             .join("、"),
-        PublicCardRefs::Hidden { count } => format!("{count} 張隱藏牌"),
+        PublicCardRefs::Hidden { count } => format!("{count} 張牌"),
     }
 }
 
@@ -1095,6 +1178,92 @@ mod tests {
         assert_eq!(
             pass_action_for_state(&state),
             Some((current, PassActionReason::NoCardsInHand))
+        );
+    }
+
+    #[test]
+    fn effect_choice_exposes_required_card_count() {
+        let choice = crate::public_view::PublicPendingChoice {
+            player: PlayerId::new("alice"),
+            kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
+                effect_id: "chaos".to_string(),
+                continuation_id: "chaos:return-two".to_string(),
+                allowed_cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
+            }),
+        };
+        let web_choice = WebPendingChoice::from_public(choice, &HashMap::new());
+        let json = serde_json::to_value(web_choice).expect("choice should serialize");
+
+        assert_eq!(json["requiredCount"], 2);
+    }
+
+    #[test]
+    fn hidden_card_refs_use_plain_player_facing_copy() {
+        assert_eq!(
+            card_refs_summary(&PublicCardRefs::Hidden { count: 5 }, &HashMap::new()),
+            "5 張牌"
+        );
+    }
+
+    #[test]
+    fn empty_city_record_only_states_that_it_flipped() {
+        let event = GameEvent::PassiveFlipped {
+            owner: PlayerId::new("alice"),
+            incoming_player: PlayerId::new("bob"),
+            passive_id: "empty-city".to_string(),
+            cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
+            outcome: crate::domain::PassiveFlipOutcome::NoEffect {
+                reason: crate::domain::PassiveNoEffectReason::EmptyCity,
+            },
+        };
+
+        assert_eq!(
+            game_event_presentation(&event, &HashMap::new()),
+            ("蓋牌翻開".to_string(), "alice 的「空城」翻開。".to_string())
+        );
+    }
+
+    #[test]
+    fn inspected_hand_presentation_only_lists_cards_for_the_authorized_view() {
+        let labels = HashMap::from([
+            (CardInstanceId::new(1), "金 1".to_string()),
+            (CardInstanceId::new(2), "木 2".to_string()),
+        ]);
+        let known = PublicGameEvent::HandInspected {
+            viewer: PlayerId::new("alice"),
+            target: PlayerId::new("bob"),
+            cards: PublicCardRefs::Known(vec![CardInstanceId::new(1), CardInstanceId::new(2)]),
+        };
+        let hidden = PublicGameEvent::HandInspected {
+            viewer: PlayerId::new("alice"),
+            target: PlayerId::new("bob"),
+            cards: PublicCardRefs::Hidden { count: 2 },
+        };
+
+        assert!(event_presentation(&known, &labels).1.contains("金 1、木 2"));
+        let hidden_summary = event_presentation(&hidden, &labels).1;
+        assert!(hidden_summary.contains("2 張手牌"));
+        assert!(!hidden_summary.contains("金 1"));
+        assert!(!hidden_summary.contains("木 2"));
+    }
+
+    #[test]
+    fn chaos_choice_requires_two_cards_without_changing_record_schema() {
+        let choice = PendingChoiceKind::EffectGenerated {
+            effect_id: "chaos".to_string(),
+            continuation_id: "chaos:return-two".to_string(),
+            allowed_cards: vec![
+                CardInstanceId::new(1),
+                CardInstanceId::new(2),
+                CardInstanceId::new(3),
+            ],
+        };
+
+        assert_eq!(choice.required_count(), 2);
+        assert!(
+            !serde_json::to_string(&choice)
+                .expect("choice should serialize")
+                .contains("required_count")
         );
     }
 }

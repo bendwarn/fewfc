@@ -153,10 +153,29 @@ pub struct CoveredPassive {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct CounterEffect {
+    pub owner: PlayerId,
+    pub effect_id: String,
+    pub established_on_turn: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct LastFormationUse {
     pub formation_id: String,
+    #[serde(default)]
+    pub resolved_effect_id: String,
     pub used_cards: Vec<CardInstanceId>,
     pub resolved_turn: u64,
+}
+
+impl LastFormationUse {
+    pub fn effective_effect_id(&self) -> &str {
+        if self.resolved_effect_id.is_empty() {
+            &self.formation_id
+        } else {
+            &self.resolved_effect_id
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,6 +337,8 @@ pub struct GameState {
     pub players: Vec<Player>,
     pub turn_order: Vec<PlayerId>,
     pub hp: Vec<TeamHp>,
+    #[serde(default)]
+    pub initial_hp: Vec<TeamHp>,
     pub card_defs: Vec<CardDef>,
     pub card_instances: Vec<CardInstanceDef>,
     pub deck: Vec<CardInstanceId>,
@@ -326,6 +347,8 @@ pub struct GameState {
     pub pending_choice: Option<PendingChoice>,
     pub shields: Vec<PlayerShield>,
     pub covered_passives: Vec<CoveredPassive>,
+    #[serde(default)]
+    pub counter_effects: Vec<CounterEffect>,
     pub statuses: Vec<StatusEffect>,
     pub last_elemental_attack_by_player: HashMap<PlayerId, LastElementalAttack>,
     pub last_formation_by_player: HashMap<PlayerId, LastFormationUse>,
@@ -344,6 +367,7 @@ impl GameState {
             players: setup.players.clone(),
             turn_order: setup.turn_order.clone(),
             hp: setup.hp.clone(),
+            initial_hp: setup.hp.clone(),
             card_defs: setup.card_defs.clone(),
             card_instances: setup.card_instances.clone(),
             deck: Vec::new(),
@@ -363,6 +387,7 @@ impl GameState {
                 })
                 .collect(),
             covered_passives: Vec::new(),
+            counter_effects: Vec::new(),
             statuses: Vec::new(),
             last_elemental_attack_by_player: HashMap::new(),
             last_formation_by_player: HashMap::new(),
@@ -412,6 +437,13 @@ impl GameState {
     pub fn card_element(&self, instance: CardInstanceId) -> Option<Element> {
         self.card_def(instance).map(|card_def| card_def.element)
     }
+
+    pub fn initial_hp(&self, team: &TeamId) -> Option<i32> {
+        self.initial_hp
+            .iter()
+            .find(|team_hp| &team_hp.team == team)
+            .map(|team_hp| team_hp.hp)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -431,6 +463,25 @@ pub enum PendingChoiceKind {
         continuation_id: String,
         allowed_cards: Vec<CardInstanceId>,
     },
+}
+
+impl PendingChoiceKind {
+    pub fn required_count(&self) -> usize {
+        match self {
+            Self::TurnDrawDiscard { .. } => 1,
+            Self::EffectGenerated {
+                continuation_id,
+                allowed_cards,
+                ..
+            } => {
+                if continuation_id == "chaos:return-two" {
+                    allowed_cards.len().min(2)
+                } else {
+                    allowed_cards.len().min(1)
+                }
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -468,6 +519,25 @@ pub enum GameEvent {
         formation_id: String,
         used_cards: Vec<CardInstanceId>,
         declared_targets: Vec<TargetDecl>,
+    },
+    FormationEffectCopied {
+        player: PlayerId,
+        effect_id: String,
+    },
+    CounterEffectEstablished {
+        owner: PlayerId,
+        effect_id: String,
+    },
+    CounterEffectResolved {
+        owner: PlayerId,
+        incoming_player: PlayerId,
+        effect_id: String,
+        outcome: PassiveFlipOutcome,
+    },
+    HandInspected {
+        viewer: PlayerId,
+        target: PlayerId,
+        cards: Vec<CardInstanceId>,
     },
     AttackResolved {
         attacker: PlayerId,
@@ -606,6 +676,7 @@ pub enum PassiveNoEffectReason {
     NotAnAttack,
     NotASpell,
     Sealed,
+    EmptyCity,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

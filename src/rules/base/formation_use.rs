@@ -180,8 +180,25 @@ impl BaseEffectResolver {
                     declared_targets: plan.declared_targets,
                 });
                 if !spell_cancelled {
-                    let intents =
-                        active_spell_intents(state, &plan.player, &spell.resolver_id, &plan.cards)?;
+                    let (copied_effect_id, intents) = if spell.resolver_id == "metamorphosis" {
+                        metamorphosis_intents(state, &plan.player, &plan.cards)?
+                    } else {
+                        (
+                            None,
+                            active_spell_intents(
+                                state,
+                                &plan.player,
+                                &spell.resolver_id,
+                                &plan.cards,
+                            )?,
+                        )
+                    };
+                    if let Some(effect_id) = copied_effect_id {
+                        events.push(GameEvent::FormationEffectCopied {
+                            player: plan.player.clone(),
+                            effect_id,
+                        });
+                    }
                     events.extend(effect_intent_events(state, intents)?);
                 }
                 Ok(events)
@@ -201,7 +218,7 @@ fn active_spell_intents(
             player: player.clone(),
             value: level_sum(state, used_cards)? * 4,
         }]),
-        "metamorphosis" => metamorphosis_intents(state, player, used_cards),
+        "metamorphosis" => Ok(metamorphosis_intents(state, player, used_cards)?.1),
         "generating-formation" => {
             let team = resolve_rule_team_target(state, player, RuleTeamTarget::OwnSide)?;
             Ok(vec![EffectIntent::ChangeHp {
@@ -220,8 +237,19 @@ fn active_spell_intents(
         }
         "radiance" => {
             let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
+            let inspected_cards = state
+                .hand(&target)
+                .ok_or_else(|| {
+                    GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
+                })?
+                .to_vec();
             let expires_at = nth_future_turn_for_player(state, &target, 2)?;
             Ok(vec![
+                EffectIntent::InspectHand {
+                    viewer: player.clone(),
+                    target: target.clone(),
+                    cards: inspected_cards,
+                },
                 EffectIntent::AddStatus {
                     status: crate::domain::StatusEffect {
                         id: format!(
@@ -310,32 +338,46 @@ fn metamorphosis_intents(
     state: &GameState,
     player: &PlayerId,
     used_cards: &[CardInstanceId],
-) -> GameResult<Vec<EffectIntent>> {
+) -> GameResult<(Option<String>, Vec<EffectIntent>)> {
     let previous_player =
         resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)?;
     let Some(last_formation) = state.last_formation_by_player.get(&previous_player) else {
-        return Ok(Vec::new());
+        return Ok((None, Vec::new()));
     };
 
     let registry = base_formation_registry();
-    let Some(formation) = registry.formation(&last_formation.formation_id) else {
-        return Ok(Vec::new());
+    let Some(formation) = registry.formation(last_formation.effective_effect_id()) else {
+        return Ok((None, Vec::new()));
     };
     let effect = registry
         .effect_for(formation)
         .expect("base formation registry must link every formation to an effect");
 
     match &effect.plan {
-        EffectPlan::Attack(plan) => Ok(vec![EffectIntent::ResolveCopiedAttack {
-            formation_id: formation.id.clone(),
-            category: plan.category.clone(),
-            point_formula: plan.point_formula.clone(),
-            used_cards: used_cards.to_vec(),
-        }]),
-        EffectPlan::ActiveSpell(spell) if spell.resolver_id != "metamorphosis" => {
-            active_spell_intents(state, player, &spell.resolver_id, used_cards)
+        EffectPlan::Attack(plan) => Ok((
+            Some(formation.id.clone()),
+            vec![EffectIntent::ResolveCopiedAttack {
+                formation_id: formation.id.clone(),
+                category: plan.category.clone(),
+                point_formula: plan.point_formula.clone(),
+                used_cards: used_cards.to_vec(),
+            }],
+        )),
+        EffectPlan::ActiveSpell(spell) if spell.resolver_id != "metamorphosis" => Ok((
+            Some(formation.id.clone()),
+            active_spell_intents(state, player, &spell.resolver_id, used_cards)?,
+        )),
+        EffectPlan::PassiveSpell(_) if formation.id == "empty-city" => {
+            Ok((Some(formation.id.clone()), Vec::new()))
         }
-        EffectPlan::ActiveSpell(_) | EffectPlan::PassiveSpell(_) => Ok(Vec::new()),
+        EffectPlan::PassiveSpell(_) => Ok((
+            Some(formation.id.clone()),
+            vec![EffectIntent::EstablishCounterEffect {
+                owner: player.clone(),
+                effect_id: formation.id.clone(),
+            }],
+        )),
+        EffectPlan::ActiveSpell(_) => Ok((None, Vec::new())),
     }
 }
 
