@@ -10,6 +10,15 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 - [#42 Resolve Void Star Breaking atomically](042-resolve-void-star-breaking-atomically.md)
 - [#43 Win through Five-Star Alignment](043-win-through-five-star-alignment.md)
 - [#44 Toggle Star advanced rules in Online Game Rooms](044-toggle-star-rules-in-online-game-rooms.md)
+- [#45 Deepen Card selection into playable Actions](045-deepen-card-selection-into-playable-actions.md)
+- [#46 Change Profession into the Warrior School](046-change-profession-into-the-warrior-school.md)
+- [#47 Progress through the Seeker School](047-progress-through-the-seeker-school.md)
+- [#48 Prepare Formations through the Mesmer School](048-prepare-formations-through-the-mesmer-school.md)
+- [#49 Resolve the Mage School](049-resolve-the-mage-school.md)
+- [#50 Resolve the Windwalker School](050-resolve-the-windwalker-school.md)
+- [#51 Add Unaffiliated Professions and Void Reversion](051-add-unaffiliated-professions-and-void-reversion.md)
+- [#52 Conform Hero Schools across Rule Modules](052-conform-hero-schools-across-rule-modules.md)
+- [#53 Release Hero Schools to Online Rooms](053-release-hero-schools-to-online-rooms.md)
 
 ## Completed Local Issues
 

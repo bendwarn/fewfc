@@ -378,11 +378,47 @@ Every Player's Deck count and Discard Pile contents are public. Deck order,
 ordinary opposing hands, Locked Deck List name, and Locked Deck List contents
 remain private.
 
-### 5.3 Web setup
+### 5.3 Hero Schools
+
+Hero Schools is one independently configurable Advanced Rule Module containing
+all 18 Professions, their abilities and Formations, Profession Change, and Void
+Reversion Technique.[4] This implementation target is the official 5.16 rules
+retrieved on 2026-07-01; later changes to the mutable official `latest` pages
+require a separate rule-upgrade decision.
+
+- Every Player starts without a Profession and may own at most one.
+- Profession Change is an Action Command, not a Formation Use. It validates the
+  declared Profession, prerequisite Profession, and selected Cards, then uses
+  the shared action-start and Counter Effect pipeline.
+- The five Schools inherit lower-rank abilities through their Profession
+  progression. Immortal and Saint do not retain the previous Profession's
+  abilities.
+- Automatic Profession Abilities and Formation Proficiencies apply
+  automatically. Activated Profession Abilities resolve during `Main`, do not
+  close the action opportunity, and share one successful activation allowance
+  per Player turn.
+- Formation Proficiencies add Player-scoped alternative matchers to the
+  original Formation rather than creating new Formation identities.
+- When one Card selection has multiple result-changing interpretations, the
+  Player explicitly chooses a Formation Match Option.
+- Prepared Profession Abilities record turn-scoped Card interpretations without
+  mutating Card Instances or Card Definitions. Their declared details are
+  public and clear after the Player takes any Action.
+- Sacred Art may let one physical Card fill two Formation match slots, while
+  Card movement and ordinary level-sum formulas count that Card only once.
+
+Void Reversion Technique is an Active Spell made from three same-level Cards.
+It changes the performing Player's Team HP by -20 and breaks every Profession;
+when made from level-one or level-two Cards, Legendary Professions are retained.
+Its HP delta, Profession Breaking, and Card movement resolve atomically before
+Game Outcome evaluation.
+
+### 5.4 Web setup
 
 New official rooms enable every available Rule Module by default; the Base
-Ruleset cannot be disabled. The room owner may independently disable Discard
-Retrieval or Personal Deck.
+Ruleset cannot be disabled. The room owner may independently disable each
+available Rule Module. Existing rooms retain their stored module configuration
+when a new module becomes available.
 
 The Web application stores one named custom Deck List per account. A minimal
 editor lives at `/deck`, linked from the account menu immediately above logout.
@@ -532,3 +568,4 @@ A known formation with legal cards but missing resolver is a rule implementation
 [1]: https://www.cfecards.org/rule/latest/you-xi-gui-ze '五行戰鬥牌官方網站 - 遊戲規則（完整規則書）'
 [2]: https://www.cfecards.org/rule/latest/basicrule '五行戰鬥牌官方網站 - 基礎規則'
 [3]: https://www.cfecards.org/rule/latest/xuan-yong-gui-ze-qi-pai-gui-ze-ge-ren-pai-zu '五行戰鬥牌官方網站 - 選用規則：棄牌回收、個人牌組'
+[4]: https://www.cfecards.org/rule/latest/hero '五行戰鬥牌官方網站 - 進階規則‧英雄學派'

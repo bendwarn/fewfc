@@ -1389,3 +1389,73 @@ activation time, validation requires at least one legal Formation that could
 complete the prepared effect. The Player may subsequently choose another legal
 Action, but any Action clears the preparation and neither its paid cost nor the
 shared activation allowance is refunded.
+
+Formation matching distinguishes physical Card Instances from match slots.
+Sacred Art may expand one physical Card Instance into two slots for Formation
+matching, but Card movement and ordinary level-sum point formulas count that
+Card Instance only once. A `FormationMatchOption` records both slots as
+originating from the same Card Instance. The Web presents this only as a `×2`
+match annotation and keeps discard count and point previews based on the
+physical Card.
+
+Each physical Card Instance selects at most one element-and-level
+interpretation source in a Formation Match Option: its printed Card Definition,
+a Prepared Profession Ability, or Star Element Substitution. When multiple
+sources are legal, the Formation query returns separate options rather than
+chaining transformations. Sacred Art multiplicity is applied after selecting
+that one interpretation and is not itself another element or level
+transformation.
+
+The normal Web interaction remains Card-selection first. The existing playable
+Formation query deepens into a playable-Action query that returns both
+Formation candidates and Profession Change candidates matching the exact
+selected Card Instances; it does not enumerate every possible hand combination
+or choose Cards for the Player. A separate teaching-mode projection may show
+the full Profession progression graph, requirements, and ability changes.
+
+The battlefield's current Formation control area is divided vertically at every
+viewport size. The upper **Ability** panel contains Active-Effect Commands and
+states that they do not end the turn action. The lower **Action** panel contains
+Formation Uses, Profession Changes, and Pass Action, and states that choosing
+one ends the Main Phase. Do not add a separate Profession panel. Automatic
+Profession Abilities and Formation Proficiencies appear through legal options
+and their explanations rather than as controls.
+
+Each Player seat with a current Profession shows a public Profession badge.
+Selecting the badge opens a read-only summary of that Player's effective
+abilities; activation controls remain in the central Ability panel. A Player
+without a Profession shows no badge.
+
+Deploying Hero Schools does not rewrite existing room module configuration.
+Existing waiting rooms and active games lack the Hero Schools module ID and
+remain Hero-disabled and replay-compatible. Newly created rooms enable the
+module by default. A waiting-room owner may enable it explicitly, which uses the
+existing Rule Module change behavior to invalidate readiness and locked setup
+inputs.
+
+Hero Schools may be implemented internally in vertical slices: shared
+Profession foundations; one slice for each of the five Schools; Unaffiliated
+Professions plus Void Reversion Technique; then cross-module, Web, teaching,
+and E2E integration. The incomplete module is not added to the available
+official catalog. Only the complete set of 18 Professions and end-to-end
+behavior ships behind the single Hero Schools room toggle.
+
+Validation combines exhaustive rule cases with bounded integration coverage:
+
+- Rust conformance tests cover every Profession transition, inherited ability,
+  Automatic Profession Ability, Formation Proficiency, Activated Profession
+  Ability, and Profession Formation.
+- Pairwise integration tests combine Hero Schools separately with Star, Five
+  Directions Legend, Discard Retrieval, and Personal Deck.
+- At least one two-Player and one four-Player browser flow run with every
+  available module enabled.
+- Base-only and Hero-disabled suites remain regression gates.
+
+Do not require the complete Cartesian product of all Rule Module
+configurations.
+
+Hero Schools conformance is pinned to the official 5.16 rules retrieved on
+2026-07-01. The linked official pages remain source references, but changes to
+their mutable `latest` content do not alter this implementation's acceptance
+criteria mid-delivery. A later official revision requires separate rule-upgrade
+work; this change does not introduce a general Rule Module versioning system.

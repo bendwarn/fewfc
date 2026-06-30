@@ -295,14 +295,6 @@
             </div>
           </fieldset>
 
-          <fieldset>
-            <legend>規則模組（預設全開）</legend>
-            <label v-for="rule in ruleOptions" :key="rule.id" class="rule-toggle">
-              <input v-model="roomRuleModules" type="checkbox" :value="rule.id">
-              {{ rule.label }}
-            </label>
-          </fieldset>
-
           <div class="setup-summary">
             <div>
               <span>目前設定</span>
@@ -708,18 +700,21 @@
               <p v-if="game.lockedDeckName.value" class="muted">
                 本局使用：{{ game.lockedDeckName.value }}
               </p>
-              <fieldset v-if="isRoomOwner" class="waiting-rules">
-                <legend>規則模組</legend>
+              <fieldset class="waiting-rules">
+                <legend>{{ isRoomOwner ? '規則模組' : '啟用規則' }}</legend>
                 <label v-for="rule in ruleOptions" :key="rule.id" class="rule-toggle">
                   <input
                     type="checkbox"
                     :checked="onlineMetadata?.enabledRuleModules.includes(rule.id)"
-                    :disabled="game.isLoading.value"
+                    :disabled="game.isLoading.value || !isRoomOwner"
                     @change="toggleWaitingRule(rule.id)"
                   >
                   {{ rule.label }}
                 </label>
               </fieldset>
+              <p v-if="game.errorMessage.value" class="form-error" role="alert">
+                {{ game.errorMessage.value }}
+              </p>
               <div class="waiting-members">
                 <span
                   v-for="player in onlinePlayers"
@@ -904,11 +899,6 @@ const roomName = ref('')
 const roomMode = ref('duel')
 const roomCapacity = computed<2 | 4>(() => roomMode.value === 'team' ? 4 : 2)
 const roomAccess = ref<'private' | 'public'>('public')
-const roomRuleModules = ref<string[]>([
-  'discard-retrieval',
-  'personal-deck',
-  'five-directions-legend',
-])
 const roomCode = ref('')
 const joinRoomCode = ref('')
 const lobbyBusy = ref(false)
@@ -1337,7 +1327,6 @@ async function createOnlineRoom() {
         name: activeRoomName.value,
         access: roomAccess.value,
         capacity: roomCapacity.value,
-        enabledRuleModules: roomRuleModules.value,
       },
     })
 

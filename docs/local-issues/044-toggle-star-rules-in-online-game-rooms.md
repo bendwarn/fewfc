@@ -10,9 +10,11 @@ Every Online Game Room uses the Base Ruleset. Add one default-on room setting
 that enables the complete Star Rule Module; creators may turn off that module
 without disabling any Base rule.
 
-Persist the enabled module configuration as immutable room metadata and use it
-for setup, command handling, automatic advancement, playable-Formation queries,
-Public View updates, room lists, reconnects, and replay.
+Persist the enabled module configuration as room metadata. The owner may change
+it while the room is waiting; every change invalidates non-owner readiness and
+locked setup inputs. Starting the game captures an immutable module
+configuration in Game Setup for command handling, automatic advancement,
+playable-Formation queries, Public View updates, reconnects, and replay.
 
 ## Acceptance criteria
 
@@ -20,14 +22,16 @@ Public View updates, room lists, reconnects, and replay.
 - [ ] Room creation provides one Star advanced-rules toggle that is enabled by default.
 - [ ] Disabling the toggle leaves every Base rule active.
 - [ ] The UI does not expose separate toggles for individual Stars or Star features.
-- [ ] The enabled module configuration is immutable after room creation.
+- [ ] Only the owner can change enabled Rule Modules while the room is waiting.
+- [ ] Changing enabled Rule Modules invalidates non-owner readiness and all waiting-room locked setup inputs.
+- [ ] A started Game Setup retains an immutable module configuration and active-game commands cannot change it.
 - [ ] Public and private room metadata, room lists, invitations, reconnects, and reset matches retain the Star toggle.
 - [ ] Starting a room creates Game Setup with the mandatory Base Ruleset and the selected module configuration.
 - [ ] Every later command, automatic advancement, playable-Formation query, and replay dispatches from the Game State module configuration.
 - [ ] Public State View and Public Event Feed carry complete viewer-safe Star data only when the Star Rule Module is enabled.
 - [ ] Rooms with Star disabled retain Base behavior and do not expose Star state or Star Formations.
 - [ ] Room creation and waiting-room UI clearly show that Base is mandatory and whether Star rules are enabled.
-- [ ] Browser tests cover default-enabled Star rules, explicitly disabled Star rules, two-player and team-mode starts, reconnect, and match reset.
+- [ ] Browser tests cover default-enabled Star rules, explicitly disabled Star rules, waiting-room changes and readiness invalidation, two-player and team-mode starts, reconnect, and match reset.
 - [ ] A complete match with Star rules enabled can be played online without debug controls or manual phase advancement.
 
 ## Blocked by

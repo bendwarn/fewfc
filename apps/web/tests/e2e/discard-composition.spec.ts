@@ -95,9 +95,9 @@ test('an empty discard pile reports zero cards and cannot be opened', async ({ p
   await page.getByRole('button', { name: '建立房間', exact: true }).click()
   await expect(page.getByRole('dialog', { name: '建立房間' })).toBeVisible()
   await page.getByLabel('房間名稱').fill(`棄牌測試 ${Date.now()}`)
-  await page.getByLabel('個人牌組').uncheck()
   await page.getByRole('button', { name: '建立房間 →' }).click()
   await expect(page).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
+  await page.getByLabel('個人牌組').uncheck()
 
   const trigger = discardTrigger(page, 0)
   await expect(trigger).toHaveAttribute('aria-disabled', 'true')
@@ -122,10 +122,10 @@ test('players can inspect a synchronized discard composition throughout a match'
     await expect(host.getByRole('dialog', { name: '建立房間' })).toBeVisible()
     await host.getByLabel('房間名稱').fill(roomName)
     await host.getByRole('button', { name: '公開房間', exact: true }).click()
-    await host.getByLabel('五方傳說').uncheck()
-    await host.getByLabel('個人牌組').uncheck()
     await host.getByRole('button', { name: '建立房間 →' }).click()
     await expect(host).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
+    await host.getByLabel('進階規則‧五方傳說').uncheck()
+    await host.getByLabel('個人牌組').uncheck()
 
     const listedRoom = guest.locator('.public-room-list button').filter({ hasText: roomName })
     await expect(listedRoom).toBeVisible()

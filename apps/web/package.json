@@ -6,7 +6,7 @@
     "build": "bun run build:rules-wasm && bun run build:nuxt",
     "build:nuxt": "nuxt build",
     "build:rules-wasm": "cd ../.. && cargo build --release --target wasm32-unknown-unknown && mkdir -p apps/web/worker/wasm && cp target/wasm32-unknown-unknown/release/fewfc.wasm apps/web/worker/wasm/fewfc.wasm",
-    "cf:dev": "APP_ENV=development bun run build && wrangler dev --env=\"\"",
+    "cf:dev": "APP_ENV=development bun run build && node node_modules/.bin/wrangler d1 migrations apply fewfc-auth --local && node node_modules/.bin/wrangler dev --env=\"\"",
     "cf:deploy:staging": "bun run validate:deploy staging && APP_ENV=staging bun run build && wrangler deploy --env staging",
     "cf:deploy:production": "bun run validate:deploy production && APP_ENV=production bun run build && wrangler deploy --env production",
     "db:generate": "drizzle-kit generate",

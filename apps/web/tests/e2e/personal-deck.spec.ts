@@ -37,16 +37,24 @@ test('default room rules lock preconstructed decks and start personal piles', as
     const roomName = `個人牌組測試 ${Date.now()}`
 
     await host.getByRole('button', { name: '建立房間', exact: true }).click()
-    await expect(host.getByLabel('棄牌回收')).toBeChecked()
-    await expect(host.getByLabel('個人牌組')).toBeChecked()
+    const createDialog = host.getByRole('dialog', { name: '建立房間' })
+    await expect(createDialog.getByText('規則模組')).toHaveCount(0)
     await host.getByLabel('房間名稱').fill(roomName)
     await host.getByRole('button', { name: '建立房間 →' }).click()
+    await expect(host.getByLabel('棄牌回收')).toBeChecked()
+    await expect(host.getByLabel('個人牌組')).toBeChecked()
 
     const listedRoom = guest.locator('.public-room-list button').filter({ hasText: roomName })
     await expect(listedRoom).toBeVisible()
     await listedRoom.click()
 
+    await expect(guest.getByLabel('棄牌回收')).toBeChecked()
+    await expect(guest.getByLabel('個人牌組')).toBeChecked()
+    await expect(guest.getByLabel('進階規則‧五方傳說')).toBeChecked()
+    await expect(guest.getByLabel('個人牌組')).toBeDisabled()
+
     await guest.getByRole('button', { name: '準備 →' }).click()
+    await expect(guest.getByRole('button', { name: '取消準備 →' })).toBeVisible()
     await expect(guest.getByText('本局使用：五行均衡預組')).toBeVisible()
     await host.getByRole('button', { name: '開始遊戲 →' }).click()
 
