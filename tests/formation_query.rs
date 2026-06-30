@@ -94,6 +94,7 @@ fn playable_formations_returns_candidates_from_selected_hand_cards() {
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].formation_id, "metal-strike");
     assert_eq!(candidates[0].formation_name, "金擊術");
+    assert_eq!(candidates[0].rule_text, "金行攻擊，點數＝等級＋４");
     assert_eq!(candidates[0].category, FormationCategory::Attack);
     assert_eq!(candidates[0].cards, vec![card(1)]);
 }

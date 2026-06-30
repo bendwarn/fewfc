@@ -9,6 +9,7 @@ use std::collections::HashMap;
 pub struct FormationDef {
     pub id: String,
     pub name: String,
+    pub rule_text: String,
     pub category: FormationCategory,
     pub pattern: FormationPattern,
     pub effect_id: String,
@@ -62,6 +63,7 @@ pub struct FormationMatch {
 pub struct FormationCandidate {
     pub formation_id: String,
     pub formation_name: String,
+    pub rule_text: String,
     pub category: FormationCategory,
     pub cards: Vec<crate::domain::CardInstanceId>,
 }
@@ -341,6 +343,37 @@ fn base_effects() -> Vec<EffectDef> {
     base_specs().into_iter().map(|spec| spec.effect).collect()
 }
 
+fn base_formation_rule_text(id: &str) -> &'static str {
+    match id {
+        "metal-strike" => "金行攻擊，點數＝等級＋４",
+        "wood-strike" => "木行攻擊，點數＝等級＋４",
+        "water-strike" => "水行攻擊，點數＝等級＋４",
+        "fire-strike" => "火行攻擊，點數＝等級＋４",
+        "earth-strike" => "土行攻擊，點數＝等級＋４",
+        "weapon" => "物理攻擊，點數＝等級總和×２",
+        "defense" => "被動術式，反制：下家下回合攻擊之傷害無效",
+        "seal" => "被動術式，反制：下家下回合術式無效",
+        "countershock" => "被動術式，反制：下家下回合攻擊之傷害由目標與施展者平分",
+        "metamorphosis" => "主動術式，複製上家上回合施展之基礎規則陣法之類別與效果",
+        "empty-city" => "被動術式，無效果",
+        "triple-metal" => "金行攻擊，點數＝等級總和×３",
+        "triple-wood" => "木行攻擊，點數＝等級總和×３",
+        "triple-water" => "水行攻擊，點數＝等級總和×３",
+        "triple-fire" => "火行攻擊，點數＝等級總和×３",
+        "triple-earth" => "土行攻擊，點數＝等級總和×３",
+        "generating-formation" => "主動術式，回復生命值，點數＝等級總和×３",
+        "overcoming-formation" => "主動術式，扣除下家防護罩，點數＝等級總和×３",
+        "radiance" => "主動術式，檢視下家手牌，下家無法行動及抽牌２回合",
+        "barrier" => "主動術式，建構防護罩，點數＝等級總和×４",
+        "return-to-origin" => "主動術式，回復生命值，點數＝等級總和×４",
+        "shock-burst" => "物理攻擊，點數＝等級總和×４",
+        "chaos" => "主動術式，檢視下家手牌，將其中兩張放回牌堆最上方",
+        "five-elements-cycle" => "主動術式，雙方生命值交換",
+        "five-streams-unite" => "特殊攻擊，點數＝目標手牌數×１５，本回合抽牌＋１",
+        _ => panic!("missing base formation rule text for {id}"),
+    }
+}
+
 fn base_specs() -> Vec<BaseFormationSpec> {
     vec![
         elemental_attack(
@@ -566,6 +599,7 @@ fn attack(
     let formation = FormationDef {
         id: id.to_string(),
         name: name.to_string(),
+        rule_text: base_formation_rule_text(id).to_string(),
         category: FormationCategory::Attack,
         pattern,
         effect_id: id.to_string(),
@@ -592,6 +626,7 @@ fn spell(
     let formation = FormationDef {
         id: id.to_string(),
         name: name.to_string(),
+        rule_text: base_formation_rule_text(id).to_string(),
         category: FormationCategory::Spell,
         pattern,
         effect_id: id.to_string(),

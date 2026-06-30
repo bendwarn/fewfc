@@ -92,6 +92,8 @@ async function expectStableComposition(page: Page, total: number) {
 test('an empty discard pile reports zero cards and cannot be opened', async ({ page }) => {
   await loginAsGuest(page)
 
+  await page.getByRole('button', { name: '建立房間', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '建立房間' })).toBeVisible()
   await page.getByLabel('房間名稱').fill(`棄牌測試 ${Date.now()}`)
   await page.getByRole('button', { name: '建立房間 →' }).click()
   await expect(page).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
@@ -115,6 +117,8 @@ test('players can inspect a synchronized discard composition throughout a match'
     await Promise.all(pages.map(loginAsGuest))
 
     const roomName = `同步棄牌測試 ${Date.now()}`
+    await host.getByRole('button', { name: '建立房間', exact: true }).click()
+    await expect(host.getByRole('dialog', { name: '建立房間' })).toBeVisible()
     await host.getByLabel('房間名稱').fill(roomName)
     await host.getByRole('button', { name: '公開房間', exact: true }).click()
     await host.getByRole('button', { name: '建立房間 →' }).click()
@@ -133,14 +137,14 @@ test('players can inspect a synchronized discard composition throughout a match'
     await Promise.all(pages.map(page => expect(page.locator('.setup-reveal')).toBeHidden()))
 
     await expect(host.locator('.event-panel')).not.toContainText('隱藏')
-    await expect(host.locator('.zone-summary')).toContainText('蓋牌')
-    await expect(host.locator('.zone-summary')).not.toContainText('伏牌')
+    await expect(host.locator('.zone-summary')).toHaveCount(0)
+    await expect(host.locator('.selection-count')).toHaveCount(0)
+    await expect(host.locator('.game-page')).not.toContainText('伏牌')
 
     const desktopTextSizes = await host.locator('.game-page').evaluate((gamePage) => {
       const selectors = [
         '.event-feed span',
         '.event-feed p',
-        '.zone-summary span',
         '.player-identity small',
       ]
       return selectors.map((selector) => (

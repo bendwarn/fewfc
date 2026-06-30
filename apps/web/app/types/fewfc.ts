@@ -67,7 +67,11 @@ export interface PublicGameState {
   counterEffects: Array<{ owner: PlayerId; effectId: string; effectName: string }>
   pendingChoice: PublicPendingChoice | null
   shields: Array<{ player: PlayerId; value: number }>
-  statuses: Array<{ id: string; owner: string; kind: string }>
+  statuses: Array<{
+    id: string
+    owner: { kind: 'player' | 'team'; id: string }
+    kind: string
+  }>
   previousTurnFormation: PublicPreviousTurnFormation | null
 }
 

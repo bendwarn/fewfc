@@ -63,7 +63,7 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                         id: candidate.formation_id,
                         name: candidate.formation_name,
                         category: WebFormationCategory::from(candidate.category),
-                        summary: format!("使用 {} 張牌發動。", candidate.cards.len()),
+                        summary: candidate.rule_text,
                     })
                     .collect(),
             )?);
@@ -478,7 +478,18 @@ impl WebPublicGameState {
                 .into_iter()
                 .map(|status| WebStatus {
                     id: status.id,
-                    owner: format!("{:?}", status.owner),
+                    owner: match status.owner {
+                        StatusOwner::Player(player) => WebStatusOwner::Player {
+                            id: player.as_str().to_string(),
+                        },
+                        StatusOwner::Team(team) => WebStatusOwner::Team {
+                            id: serde_json::to_value(team)
+                                .expect("team id should serialize")
+                                .as_str()
+                                .expect("team id should serialize as a string")
+                                .to_string(),
+                        },
+                    },
                     kind: status.kind,
                 })
                 .collect(),
@@ -605,8 +616,15 @@ struct WebShield {
 #[serde(rename_all = "camelCase")]
 struct WebStatus {
     id: String,
-    owner: String,
+    owner: WebStatusOwner,
     kind: String,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum WebStatusOwner {
+    Player { id: String },
+    Team { id: String },
 }
 
 #[derive(Serialize)]
@@ -764,9 +782,9 @@ fn event_presentation(
             drawn_cards,
             ..
         } => (
-            "抽牌選擇".to_string(),
+            "回合抽牌".to_string(),
             format!(
-                "{} 抽牌並需要棄置：{}。",
+                "{} 進行回合抽牌，抽取 {}，需選擇一張捨棄。",
                 player.as_str(),
                 card_refs_summary(drawn_cards, labels)
             ),
@@ -842,17 +860,17 @@ fn game_event_presentation(
             drawn_cards,
             ..
         } => (
-            "抽牌選擇".to_string(),
+            "回合抽牌".to_string(),
             format!(
-                "{} 抽了 {}，需要選擇一張棄置。",
+                "{} 進行回合抽牌，抽取 {}，需選擇一張捨棄。",
                 player.as_str(),
                 cards_summary(drawn_cards, labels)
             ),
         ),
         GameEvent::TurnDiscardChosen { player, discard } => (
-            "棄置手牌".to_string(),
+            "捨棄".to_string(),
             format!(
-                "{} 棄置了 {}。",
+                "{} 捨棄了 {}。",
                 player.as_str(),
                 card_summary(discard, labels)
             ),
@@ -917,18 +935,32 @@ fn game_event_presentation(
             target,
             formation_id,
             hp_change,
+            shield_change,
             ..
-        } => (
-            "攻擊結算".to_string(),
-            format!(
-                "{} 以「{}」攻擊 {}，生命值由 {} 變為 {}。",
-                attacker.as_str(),
-                formation_name(formation_id),
-                target.as_str(),
-                hp_change.old_hp,
-                hp_change.new_hp
-            ),
-        ),
+        } => {
+            let result = shield_change.as_ref().map_or_else(
+                || format!("生命值由 {} 變為 {}", hp_change.old_hp, hp_change.new_hp),
+                |change| {
+                    format!(
+                        "{} 的防護罩由 {} 變為 {}",
+                        target.as_str(),
+                        change.old_value,
+                        change.new_value
+                    )
+                },
+            );
+
+            (
+                "攻擊結算".to_string(),
+                format!(
+                    "{} 以「{}」攻擊 {}，{}。",
+                    attacker.as_str(),
+                    formation_name(formation_id),
+                    target.as_str(),
+                    result
+                ),
+            )
+        }
         GameEvent::TurnDrawBonusChanged {
             player,
             old_value,
@@ -947,9 +979,9 @@ fn game_event_presentation(
             new_value,
             ..
         } => (
-            "護盾變化".to_string(),
+            "防護罩變化".to_string(),
             format!(
-                "{} 的護盾由 {old_value} 變為 {new_value}。",
+                "{} 的防護罩由 {old_value} 變為 {new_value}。",
                 player.as_str()
             ),
         ),
@@ -1118,6 +1150,28 @@ mod tests {
     }
 
     #[test]
+    fn status_owner_is_projected_as_structured_player_data() {
+        let ruleset = BaseRuleset::new();
+        let setup = fixture_setup(&ruleset, None);
+        let mut state = crate::domain::GameState::from_setup(&setup);
+        state.statuses.push(crate::domain::StatusEffect {
+            id: "cannot-act-alice".to_string(),
+            owner: StatusOwner::Player(PlayerId::new("alice")),
+            kind: "CannotAct".to_string(),
+            value: None,
+            duration: crate::domain::StatusDuration::Permanent,
+        });
+        let web_state = WebPublicGameState::from_public(
+            crate::public_view::state_for(&state, Viewer::Player(PlayerId::new("alice"))),
+            &ruleset.card_labels(&setup),
+        );
+        let json = serde_json::to_value(web_state).expect("web state should serialize");
+
+        assert_eq!(json["statuses"][0]["owner"]["kind"], "player");
+        assert_eq!(json["statuses"][0]["owner"]["id"], "alice");
+    }
+
+    #[test]
     fn start_request_accepts_bob_as_first_player() {
         let response = handle_request_json(
             r#"{"action":{"type":"start"},"viewer":"bob","firstPlayer":"bob"}"#,
@@ -1168,6 +1222,45 @@ mod tests {
     }
 
     #[test]
+    fn playable_formation_uses_the_ruleset_rule_text() {
+        let start = handle_request_json(r#"{"action":{"type":"start"},"viewer":"alice"}"#)
+            .expect("start request should succeed");
+        let start: serde_json::Value =
+            serde_json::from_str(&start).expect("start response should be valid JSON");
+        let first_card = start["state"]["hands"]
+            .as_array()
+            .and_then(|hands| {
+                hands
+                    .iter()
+                    .find(|hand| hand["player"] == "alice")
+                    .and_then(|hand| hand["cards"]["cards"].as_array())
+                    .and_then(|cards| cards.first())
+                    .and_then(|card| card["id"].as_u64())
+            })
+            .expect("alice should have a visible card");
+        let request = serde_json::json!({
+            "action": {
+                "type": "playableFormations",
+                "player": "alice",
+                "cards": [first_card],
+            },
+            "viewer": "alice",
+            "record": start["record"].clone(),
+        });
+
+        let response = handle_request_json(&request.to_string())
+            .expect("playable formations request should succeed");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("response should be valid JSON");
+        let summary = response["playableFormations"][0]["summary"]
+            .as_str()
+            .expect("candidate should have rule text");
+
+        assert!(summary.contains("攻擊，點數＝等級＋４"));
+        assert!(!summary.contains("張牌發動"));
+    }
+
+    #[test]
     fn pass_reason_is_derived_from_the_current_state() {
         let mut state =
             crate::domain::GameState::from_setup(&fixture_setup(&BaseRuleset::new(), None));
@@ -1202,6 +1295,71 @@ mod tests {
         assert_eq!(
             card_refs_summary(&PublicCardRefs::Hidden { count: 5 }, &HashMap::new()),
             "5 張牌"
+        );
+    }
+
+    #[test]
+    fn turn_draw_records_use_rulebook_terms() {
+        let labels = HashMap::from([(CardInstanceId::new(1), "金 1".to_string())]);
+        let draw = GameEvent::CardsDrawnForTurnDiscardChoice {
+            player: PlayerId::new("alice"),
+            drawn_cards: vec![CardInstanceId::new(1)],
+            allowed_discards: vec![CardInstanceId::new(1)],
+        };
+        let discard = GameEvent::TurnDiscardChosen {
+            player: PlayerId::new("alice"),
+            discard: CardInstanceId::new(1),
+        };
+
+        assert_eq!(
+            game_event_presentation(&draw, &labels),
+            (
+                "回合抽牌".to_string(),
+                "alice 進行回合抽牌，抽取 金 1，需選擇一張捨棄。".to_string()
+            )
+        );
+        assert_eq!(
+            game_event_presentation(&discard, &labels),
+            ("捨棄".to_string(), "alice 捨棄了 金 1。".to_string())
+        );
+    }
+
+    #[test]
+    fn attack_record_reports_damage_to_the_players_shield() {
+        let event = GameEvent::AttackResolved {
+            attacker: PlayerId::new("alice"),
+            target: PlayerId::new("bob"),
+            formation_id: "weapon".to_string(),
+            used_cards: Vec::new(),
+            point_breakdown: crate::domain::AttackPointBreakdown {
+                base_points: 12,
+                interaction: crate::domain::ElementInteraction::None,
+                damage_transform: crate::domain::DamageTransform::NormalDamage,
+                final_amount: 12,
+            },
+            hp_change: crate::domain::HpChangeDelta {
+                team: TeamId::new("team-b"),
+                old_hp: 20,
+                delta: 0,
+                new_hp: 20,
+                effective_delta: 0,
+            },
+            shield_change: Some(crate::domain::ShieldChangeDelta {
+                player: PlayerId::new("bob"),
+                old_value: 30,
+                delta: -24,
+                new_value: 6,
+            }),
+            card_moves: Vec::new(),
+            elemental_context_update: None,
+        };
+
+        assert_eq!(
+            game_event_presentation(&event, &HashMap::new()),
+            (
+                "攻擊結算".to_string(),
+                "alice 以「武器」攻擊 bob，bob 的防護罩由 30 變為 6。".to_string()
+            )
         );
     }
 

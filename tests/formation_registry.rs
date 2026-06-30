@@ -18,6 +18,7 @@ fn registry_links_formation_schema_to_effect_plan() {
         vec![FormationDef {
             id: "metal-strike".to_string(),
             name: "Metal Strike".to_string(),
+            rule_text: "Elemental attack".to_string(),
             category: FormationCategory::Attack,
             pattern: FormationPattern::ExactElements(vec![
                 Element::Metal,
@@ -64,6 +65,7 @@ fn base_registry_exposes_all_25_base_formations_with_linked_effects() {
 
     let metal_strike = registry.formation("metal-strike").unwrap();
     assert_eq!(metal_strike.name, "金擊術");
+    assert_eq!(metal_strike.rule_text, "金行攻擊，點數＝等級＋４");
     assert_eq!(metal_strike.category, FormationCategory::Attack);
     assert_eq!(
         metal_strike.pattern,
@@ -76,6 +78,10 @@ fn base_registry_exposes_all_25_base_formations_with_linked_effects() {
 
     let defense = registry.formation("defense").unwrap();
     assert_eq!(defense.name, "防禦");
+    assert_eq!(
+        defense.rule_text,
+        "被動術式，反制：下家下回合攻擊之傷害無效"
+    );
     assert_eq!(defense.category, FormationCategory::Spell);
     assert!(matches!(
         registry.effect_for(defense).unwrap().plan,
@@ -85,6 +91,10 @@ fn base_registry_exposes_all_25_base_formations_with_linked_effects() {
 
     let five_streams = registry.formation("five-streams-unite").unwrap();
     assert_eq!(five_streams.name, "五流歸一");
+    assert_eq!(
+        five_streams.rule_text,
+        "特殊攻擊，點數＝目標手牌數×１５，本回合抽牌＋１"
+    );
     assert_eq!(five_streams.category, FormationCategory::Attack);
     assert!(matches!(
         registry.effect_for(five_streams).unwrap().plan,
@@ -132,12 +142,9 @@ fn base_registry_documents_all_base_formation_ids_and_names() {
     ];
 
     for (id, name) in expected {
-        assert_eq!(
-            registry
-                .formation(id)
-                .map(|formation| formation.name.as_str()),
-            Some(name)
-        );
+        let formation = registry.formation(id).expect("base formation must exist");
+        assert_eq!(formation.name, name);
+        assert!(!formation.rule_text.is_empty());
     }
 }
 

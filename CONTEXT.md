@@ -55,6 +55,15 @@ _Avoid_: canonical event log
 An explicit recorded movement of a card instance from one zone to another.
 _Avoid_: inferred movement
 
+**Discard (捨棄)**:
+The action of moving a used or unwanted Card Instance to the Discard Pile.
+_Avoid_: 棄置
+
+**Discard Pile (棄牌堆)**:
+The public zone containing discarded Card Instances. A card selected under the
+Turn Draw discard rule is a **Discarded Card (棄牌)**.
+_Avoid_: 捨棄區
+
 **Card Instance**:
 A movable individual card in a game zone.
 _Avoid_: card definition
@@ -74,6 +83,11 @@ _Avoid_: user, account
 **Team**:
 The HP-owning side that one or more players belong to.
 _Avoid_: player HP owner
+
+**Shield (防護罩)**:
+A player-owned persistent value that takes damage in place of the owning Player.
+Each Player may have at most one Shield.
+_Avoid_: 護盾, team shield
 
 **Turn Order**:
 The circular player sequence used to decide the current player, previous player, next player, and passive trigger relationships.
@@ -153,6 +167,11 @@ _Avoid_: stunned, disabled
 The public input phase where the current player may use active-effect commands before exactly one action command closes the phase.
 _Avoid_: active window, action phase
 
+**Turn Draw (回合抽牌)**:
+The mandatory draw step in the turn flow. It draws one extra card and requires
+the Player to choose one of those cards to Discard.
+_Avoid_: 抽牌選擇
+
 **Active-Effect Command**:
 A non-formation player ability command that may be used during the main phase without closing the player's action opportunity.
 _Avoid_: formation action
@@ -177,6 +196,7 @@ _Avoid_: callback response
 
 - A **Player** belongs to exactly one **Team**
 - A **Team** owns HP for one or more **Players**
+- A **Player** owns at most one **Shield**
 - A **Game Record** uses exactly one **Ruleset**
 - The **Base Ruleset** supports both two-player and team-mode setup shapes
 - **Turn Order** is player-based, not team-based
@@ -187,6 +207,7 @@ _Avoid_: callback response
 - A **Formation Use** retains its Formation identity separately from its **Resolved Formation Effect**
 - A **Formation Use** records zone changes through **Card Move Deltas** or equivalent replayable deltas
 - A **Card Move Delta** moves one **Card Instance**
+- **Discard** moves a **Card Instance** to the **Discard Pile**
 - A **Card Instance** refers to one **Card Definition**
 - A **Card Definition** has exactly one element: metal, wood, water, fire, or earth
 - A **Card Definition** has a level from 1 to 5

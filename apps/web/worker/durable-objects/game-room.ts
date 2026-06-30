@@ -1065,7 +1065,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         passAction: `${actor} 已跳過行動。`,
         performFormation: `${actor} 已完成陣法行動。`,
         performFormationWithChoices: `${actor} 已完成陣法與效果選擇。`,
-        chooseTurnDiscard: `${actor} 已完成棄牌。`,
+        chooseTurnDiscard: `${actor} 已完成捨棄。`,
         answerEffectChoice: `${actor} 已完成效果選擇。`,
       }
       return summaries[action] ?? '戰局狀態已更新。'

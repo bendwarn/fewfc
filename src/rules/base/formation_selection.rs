@@ -68,6 +68,7 @@ impl FormationSelection {
             .map(|formation| FormationCandidate {
                 formation_id: formation.id.clone(),
                 formation_name: formation.name.clone(),
+                rule_text: formation.rule_text.clone(),
                 category: formation.category.clone(),
                 cards: self.cards.clone(),
             })

@@ -135,39 +135,64 @@
     <main v-else-if="screen === 'lobby'" class="lobby-page">
       <div class="lobby-heading">
         <div>
-          <h1>準備開局</h1>
-          <p class="muted">建立新的對戰房間，或使用房間代碼加入。</p>
+          <h1>房間</h1>
+          <p class="muted">選擇等待中的房間，或使用房間代碼加入。</p>
         </div>
-        <div class="lobby-tabs" role="tablist">
+        <div class="lobby-actions">
+          <form class="room-code-form" @submit.prevent="joinRoomByCode">
+            <label class="sr-only" for="join-room-code">房間代碼</label>
+            <input
+              id="join-room-code"
+              v-model.trim="joinRoomCode"
+              class="code-input"
+              type="text"
+              placeholder="房間代碼"
+            >
+            <button type="submit" :disabled="lobbyBusy || !joinRoomCode">
+              加入
+            </button>
+          </form>
           <button
+            ref="createRoomTrigger"
+            class="primary-button create-room-button"
             type="button"
-            :class="{ active: lobbyTab === 'create' }"
-            @click="setLobbyTab('create')"
+            @click="openRoomSettings"
           >
             建立房間
-          </button>
-          <button
-            type="button"
-            :class="{ active: lobbyTab === 'join' }"
-            @click="setLobbyTab('join')"
-          >
-            加入房間
           </button>
         </div>
       </div>
 
-      <div v-if="lobbyTab === 'create'" class="lobby-grid">
-        <section class="setup-card">
+      <p v-if="lobbyError && !roomSettingsOpen" class="form-error lobby-error">{{ lobbyError }}</p>
+
+      <div
+        v-if="roomSettingsOpen"
+        class="room-settings-layer"
+        @click.self="closeRoomSettings"
+      >
+        <form
+          class="setup-card room-settings-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="room-settings-title"
+          @submit.prevent="createRoom"
+        >
           <div class="card-heading">
-            <span class="step-number">01</span>
+            <span class="step-number">+</span>
             <div>
-              <h2>房間設定</h2>
+              <h2 id="room-settings-title">建立房間</h2>
               <p>設定這場對戰的基本資訊。</p>
             </div>
           </div>
 
           <label for="room-name">房間名稱</label>
-          <input id="room-name" v-model="roomName" class="text-input" maxlength="24">
+          <input
+            id="room-name"
+            ref="roomNameInput"
+            v-model="roomName"
+            class="text-input"
+            maxlength="24"
+          >
 
           <fieldset>
             <legend>對戰模式</legend>
@@ -217,22 +242,16 @@
 
           <p v-if="lobbyError" class="form-error">{{ lobbyError }}</p>
 
-          <button class="primary-button start-button" type="button" :disabled="lobbyBusy" @click="createRoom">
-            {{ lobbyBusy ? '處理中…' : '建立房間' }} <span>→</span>
-          </button>
-        </section>
+          <div class="setup-actions">
+            <button class="secondary-button" type="button" :disabled="lobbyBusy" @click="closeRoomSettings">
+              取消
+            </button>
+            <button class="primary-button start-button" type="submit" :disabled="lobbyBusy">
+              {{ lobbyBusy ? '處理中…' : '建立房間' }} <span>→</span>
+            </button>
+          </div>
+        </form>
       </div>
-
-      <section v-else class="join-card">
-        <span class="step-number">+</span>
-        <h2>輸入房間代碼</h2>
-        <p class="muted">輸入公開或私人房間代碼，或從下方清單選擇。</p>
-        <input v-model.trim="joinRoomCode" class="code-input" type="text" placeholder="例如 WUX-8K2">
-        <p v-if="lobbyError" class="form-error">{{ lobbyError }}</p>
-        <button class="primary-button" type="button" :disabled="lobbyBusy || !joinRoomCode" @click="joinRoomByCode">
-          加入房間
-        </button>
-      </section>
 
       <section class="public-rooms-card">
         <div class="panel-title">
@@ -342,6 +361,19 @@
               >
                 反制 · {{ counter.effectName }}
               </span>
+              <span
+                v-if="shieldFor(seat.player) > 0"
+                class="shield-badge"
+              >
+                防護罩 · {{ shieldFor(seat.player) }}
+              </span>
+              <span
+                v-for="status in statusesFor(seat.player)"
+                :key="status.id"
+                class="status-badge"
+              >
+                {{ statusLabel(status.kind) }}
+              </span>
               <span class="side-hand-count">{{ handCount(seat.player) }} 張</span>
             </div>
 
@@ -364,9 +396,6 @@
                 <span v-if="!card.hidden" class="card-name">{{ cardName(card.label) }}</span>
               </button>
             </div>
-            <span v-if="seat.player === ownPlayer" class="selection-count">
-              {{ game.selectedCards.value.length }} / 5
-            </span>
           </div>
 
           <div class="board-center">
@@ -668,12 +697,6 @@
               </li>
             </ol>
           </section>
-
-          <section class="zone-summary">
-            <div><span>護盾</span><strong>{{ state.shields.length }}</strong></div>
-            <div><span>狀態</span><strong>{{ state.statuses.length }}</strong></div>
-            <div><span>反制</span><strong>{{ state.coveredPassives.length + state.counterEffects.length }}</strong></div>
-          </section>
         </aside>
       </div>
     </main>
@@ -746,7 +769,9 @@ const authBusy = ref(false)
 const loginError = ref('')
 const currentUserId = ref('')
 const profileOpen = ref(false)
-const lobbyTab = computed<'create' | 'join'>(() => route.query.tab === 'join' ? 'join' : 'create')
+const roomSettingsOpen = ref(false)
+const createRoomTrigger = ref<HTMLButtonElement | null>(null)
+const roomNameInput = ref<HTMLInputElement | null>(null)
 const roomName = ref('')
 const roomMode = ref('duel')
 const roomCapacity = computed<2 | 4>(() => roomMode.value === 'team' ? 4 : 2)
@@ -971,6 +996,23 @@ async function createRoom() {
   await createOnlineRoom()
 }
 
+async function openRoomSettings() {
+  lobbyError.value = ''
+  roomSettingsOpen.value = true
+  await nextTick()
+  roomNameInput.value?.focus()
+}
+
+function closeRoomSettings() {
+  if (lobbyBusy.value) {
+    return
+  }
+
+  lobbyError.value = ''
+  roomSettingsOpen.value = false
+  void nextTick(() => createRoomTrigger.value?.focus())
+}
+
 function leaveGame() {
   game.clearRoom()
   void router.push('/rooms')
@@ -1003,12 +1045,20 @@ function handlePageClick() {
 }
 
 function handlePageKeydown(event: KeyboardEvent) {
-  if (event.key !== 'Escape' || !discardOpen.value) {
+  if (event.key !== 'Escape') {
     return
   }
 
-  event.preventDefault()
-  closeDiscardComposition()
+  if (discardOpen.value) {
+    event.preventDefault()
+    closeDiscardComposition()
+    return
+  }
+
+  if (roomSettingsOpen.value) {
+    event.preventDefault()
+    closeRoomSettings()
+  }
 }
 
 async function restartGame() {
@@ -1148,13 +1198,6 @@ async function copyInviteLink() {
 
 function loginRedirect(): string {
   return safeInternalPath(route.query.redirect) ?? '/rooms'
-}
-
-function setLobbyTab(tab: 'create' | 'join') {
-  void router.replace({
-    path: '/rooms',
-    query: tab === 'join' ? { tab: 'join' } : {},
-  })
 }
 
 function returnToLobby() {
@@ -1324,6 +1367,10 @@ watch(screen, (value) => {
   if (value !== 'game') {
     closeDiscardComposition()
   }
+
+  if (value !== 'lobby') {
+    roomSettingsOpen.value = false
+  }
 })
 
 watch(
@@ -1407,6 +1454,26 @@ function handCount(player: PlayerId): number {
 
 function counterEffectsFor(player: PlayerId) {
   return state.value.counterEffects.filter((counter) => counter.owner === player)
+}
+
+function shieldFor(player: PlayerId): number {
+  return state.value.shields.find((shield) => shield.player === player)?.value ?? 0
+}
+
+function statusesFor(player: PlayerId) {
+  const team = teamForPlayer(player)
+  return state.value.statuses.filter((status) => (
+    status.owner.kind === 'player'
+      ? status.owner.id === player
+      : status.owner.id === team
+  ))
+}
+
+function statusLabel(kind: string): string {
+  return {
+    CannotAct: '無法行動',
+    CannotDraw: '無法抽牌',
+  }[kind] ?? kind
 }
 
 function playerConnected(player: PlayerId): boolean {
@@ -1504,7 +1571,7 @@ function phaseLabel(value: string): string {
     MainPhase: '主要階段',
     TurnStart: '回合開始',
     TurnDraw: '回合抽牌',
-    TurnDrawDiscardChoice: '棄牌選擇',
+    TurnDrawDiscardChoice: '回合抽牌',
     TurnEnd: '回合結束',
   }
   return labels[value] ?? value
@@ -1512,8 +1579,8 @@ function phaseLabel(value: string): string {
 
 function choiceLabel(value: string): string {
   const labels: Record<string, string> = {
-    'Choose one drawn card to discard': '選擇一張本回合抽到的牌棄置',
-    TurnDrawDiscard: '選擇一張本回合抽到的牌棄置',
+    'Choose one drawn card to discard': '選擇一張本回合抽到的牌捨棄',
+    TurnDrawDiscard: '選擇一張本回合抽到的牌捨棄',
     EffectGenerated: '選擇效果指定的牌',
     Hidden: '等待選擇',
   }
@@ -1619,15 +1686,19 @@ function cardName(label: string): string {
 .form-error { @apply mt-2 text-xs text-[#c84d45]; }
 
 .lobby-page { @apply mx-auto max-w-[1180px] px-[30px] pt-15 pb-[90px] max-[600px]:px-4 max-[600px]:py-9; }
-.lobby-heading { @apply mb-[38px] flex items-end justify-between max-[900px]:flex-col max-[900px]:items-start max-[900px]:gap-6; }
-.lobby-tabs { @apply flex border-b border-[#38423c]; }
-.lobby-tabs button { @apply border-0 border-b-2 border-transparent bg-transparent px-6 py-3 text-[#78827b]; }
-.lobby-tabs button.active { @apply border-gold text-gold-light; }
-.lobby-grid { @apply grid max-w-[760px] gap-[22px]; }
-.setup-card, .join-card { @apply border border-line bg-panel p-8 max-[600px]:px-[18px] max-[600px]:py-[22px]; }
+.lobby-heading { @apply mb-[38px] flex items-end justify-between gap-6 max-[900px]:flex-col max-[900px]:items-start; }
+.lobby-actions { @apply flex items-stretch gap-3 max-[600px]:w-full max-[600px]:flex-col-reverse; }
+.room-code-form { @apply flex min-h-[50px] border border-[#3a443e] bg-[#111713] focus-within:border-[#b99550]; }
+.room-code-form .code-input { @apply h-auto min-w-48 border-0 px-4 text-left tracking-[.08em] max-[600px]:min-w-0; }
+.room-code-form button { @apply border-0 border-l border-[#3a443e] bg-[#222a25] px-4 text-xs text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
+.create-room-button { @apply min-w-35 justify-center; }
+.lobby-error { @apply mb-2 border border-[#6b3532] bg-[#2a1817] p-3; }
+.room-settings-layer { @apply fixed inset-0 z-40 grid place-items-center overflow-y-auto bg-[rgba(7,10,8,.76)] p-5 backdrop-blur-[3px]; }
+.setup-card { @apply border border-line bg-panel p-8 max-[600px]:px-[18px] max-[600px]:py-[22px]; }
+.room-settings-dialog { @apply my-auto w-full max-w-[720px] shadow-[0_24px_70px_rgba(0,0,0,.5)]; }
 .card-heading { @apply mb-8 flex gap-[18px]; }
 .step-number { @apply grid size-[42px] place-items-center border border-[#7e693e] font-serif text-[#d3ae62]; }
-.card-heading h2, .join-card h2 { @apply mb-1 font-serif text-[21px]; }
+.card-heading h2 { @apply mb-1 font-serif text-[21px]; }
 .card-heading p { @apply text-xs text-muted; }
 .text-input { @apply mb-[26px] h-12 border border-[#39443d] bg-[#111713] px-3.5 text-[#ece8dd]; }
 fieldset { @apply mb-[26px] border-0 p-0; }
@@ -1646,10 +1717,11 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .setup-summary strong { @apply text-sm text-gold-light; }
 .setup-summary p { @apply text-xs text-muted; }
 .start-button { @apply w-full; }
-.join-card { max-width: 560px; margin: 40px auto; text-align: center; display: grid; gap: 20px; justify-items: center; }
+.setup-actions { @apply mt-5 grid grid-cols-[auto_1fr] gap-3; }
+.secondary-button { @apply min-h-[50px] border border-[#4a554e] bg-transparent px-5 text-muted hover:border-[#b99550] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
 .code-input { max-width: 320px; height: 52px; border: 1px solid #3a443e; color: white; padding: 0 20px; text-align: center; letter-spacing: .2em; }
-.public-rooms-card { @apply mt-6 border border-line bg-panel p-6; }
-.my-rooms-card { @apply border-[#4a4536]; }
+.public-rooms-card { @apply mt-0 border border-line bg-panel p-6; }
+.my-rooms-card { @apply mt-6 border-[#4a4536]; }
 .public-rooms-card .panel-title { @apply mb-4; }
 .public-rooms-card .panel-title button { @apply border border-[#3c463f] bg-[#222a25] px-3 py-1 text-[10px]; }
 .public-room-list { @apply grid gap-3; }
@@ -1689,7 +1761,7 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .seat-bottom { grid-area: bottom; flex-direction: row-reverse; }
 .seat-left { grid-area: left; flex-direction: column; }
 .seat-right { grid-area: right; flex-direction: column; }
-.player-identity { @apply flex min-w-0 items-center gap-2.5; }
+.player-identity { @apply flex min-w-0 flex-wrap items-center gap-2.5; }
 .player-identity div { @apply grid; }
 .player-identity strong { @apply max-w-36 truncate text-xs; }
 .player-identity small { @apply text-[11px] text-[#d0a450]; }
@@ -1698,6 +1770,8 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .reconnecting-label { @apply text-[9px] text-[#d0aa5e]; }
 .turn-badge { @apply border border-[#477557] bg-[#16251b] px-[7px] py-[3px] text-[9px]! whitespace-nowrap text-[#77bd8d]!; }
 .counter-badge { @apply border border-[#8a733b] bg-[#292415] px-[7px] py-[3px] text-[9px]! whitespace-nowrap text-[#d5b868]!; }
+.shield-badge { @apply border border-[#557684] bg-[#17262c] px-[7px] py-[3px] text-[9px]! whitespace-nowrap text-[#8fc1d5]!; }
+.status-badge { @apply border border-[#765557] bg-[#28191b] px-[7px] py-[3px] text-[9px]! whitespace-nowrap text-[#d49a9a]!; }
 .side-hand-count { @apply hidden text-[9px] text-muted; }
 .hand { @apply flex min-w-0 items-center justify-center gap-2; }
 .playing-card {
@@ -1726,7 +1800,6 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .seat-top .playing-card { width: clamp(48px, 5vw, 68px); }
 .seat-left .seat-hand, .seat-right .seat-hand { @apply flex-col gap-1; }
 .seat-left .playing-card, .seat-right .playing-card { width: 30px; }
-.seat-bottom .selection-count { @apply absolute right-0 bottom-1 border border-[#3b463f] bg-[#151c18] px-[7px] py-1 text-[9px] text-muted; }
 .board-center { grid-area: center; @apply z-1 grid min-w-0 grid-cols-[90px_minmax(220px,1fr)_90px] items-center justify-items-center; }
 .battlefield.discard-open { z-index: 25; overflow: visible; }
 .battlefield.discard-open .board-center { z-index: 16; }
@@ -1814,8 +1887,8 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .result-actions .ghost-button { @apply border-[#59635c] text-[#ece8dd]; }
 .result-actions .primary-button { @apply justify-between; }
 
-.game-sidebar { @apply grid min-h-0 grid-rows-[1fr_auto] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
-.game-sidebar.finished { grid-template-rows: auto minmax(0, 1fr) auto; }
+.game-sidebar { @apply grid min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
+.game-sidebar.finished { grid-template-rows: auto minmax(0, 1fr); }
 .result-panel { @apply border-b border-[#8e733d] bg-[#18201b] p-5; }
 .result-panel h2 { @apply font-serif text-2xl text-gold-light; }
 .result-panel p { @apply mt-1 text-xs text-muted; }
@@ -1829,11 +1902,6 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .event-feed li > i { width: 5px; height: 5px; border-radius: 50%; background: #b79550; margin-top: 6px; box-shadow: 0 0 0 4px rgba(183, 149, 80, .08); }
 .event-feed span { color: #d4d8d4; font-size: 10px; font-weight: 700; }
 .event-feed p { color: #6f7972; font-size: 9px; line-height: 1.45; margin-top: 2px; }
-.zone-summary { @apply grid grid-cols-3 p-3; }
-.zone-summary div { @apply grid border-r border-line text-center; }
-.zone-summary div:last-child { @apply border-0; }
-.zone-summary span { @apply text-[9px] text-[#707a73]; }
-.zone-summary strong { @apply text-[13px] text-[#cbaa64]; }
 .notification-stack { @apply fixed top-24 right-5 z-30 grid w-[min(360px,calc(100vw-32px))] gap-2; }
 .notification-item { @apply grid grid-cols-[1fr_34px] border border-[#8e733d] bg-[#18201b] shadow-[0_12px_36px_rgba(0,0,0,.4)]; }
 .notification-main { @apply grid gap-1 border-0 bg-transparent p-3 text-left; }
@@ -1844,16 +1912,14 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 @media (min-width: 901px) {
   .player-identity strong { font-size: 14px; }
   .player-identity small { font-size: 12px; }
-  .reconnecting-label, .turn-badge, .counter-badge, .side-hand-count { font-size: 11px!important; }
-  .seat-bottom .selection-count { font-size: 11px; }
+  .reconnecting-label, .turn-badge, .counter-badge, .shield-badge, .status-badge, .side-hand-count { font-size: 11px!important; }
   .deck-pile, .discard-pile { font-size: 11px; }
   .formation-field { font-size: 12px; }
   .previous-formation small { font-size: 11px; }
   .previous-formation p, .formation-candidates button { font-size: 12px; }
   .panel-title h2 { font-size: 17px; }
   .event-feed span { font-size: 12px; }
-  .event-feed p, .zone-summary span { font-size: 11px; }
-  .zone-summary strong { font-size: 15px; }
+  .event-feed p { font-size: 11px; }
 }
 
 @media (max-width: 900px) {
@@ -1900,9 +1966,8 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   .seat-left .player-identity, .seat-right .player-identity { @apply flex-col gap-1 text-center; }
   .seat-left .player-identity strong, .seat-right .player-identity strong { @apply max-w-18 text-[9px]; }
   .seat-left .player-identity small, .seat-right .player-identity small { @apply text-[9px]; }
-  .seat-left .turn-badge, .seat-right .turn-badge, .seat-left .counter-badge, .seat-right .counter-badge { @apply max-w-18 whitespace-normal px-1 py-0.5 text-[8px]!; }
+  .seat-left .turn-badge, .seat-right .turn-badge, .seat-left .counter-badge, .seat-right .counter-badge, .seat-left .shield-badge, .seat-right .shield-badge, .seat-left .status-badge, .seat-right .status-badge { @apply max-w-18 whitespace-normal px-1 py-0.5 text-[8px]!; }
   .seat-left .side-hand-count, .seat-right .side-hand-count { @apply block; }
-  .seat-bottom .selection-count { @apply right-2 bottom-0; }
   .board-center { grid-template-columns: 48px minmax(0, 1fr) 48px; width: 100%; }
   .formation-field { min-width: 0; width: 100%; }
   .deck-pile strong, .discard-pile-trigger { width: 38px; }
