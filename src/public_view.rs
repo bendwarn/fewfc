@@ -2,7 +2,7 @@
 
 use crate::domain::{
     CardInstanceId, CounterEffect, GameEvent, GameState, GameStatus, PendingChoiceKind, Phase,
-    Player, PlayerId, PlayerShield, StatusEffect, TeamHp,
+    Player, PlayerId, PlayerShield, RuleModuleId, StatusEffect, TeamHp,
 };
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +14,7 @@ pub enum Viewer {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicGameState {
+    pub enabled_rule_modules: Vec<RuleModuleId>,
     pub status: GameStatus,
     pub turn_number: u64,
     pub phase: Phase,
@@ -23,6 +24,8 @@ pub struct PublicGameState {
     pub hp: Vec<TeamHp>,
     pub hands: Vec<PublicPlayerHand>,
     pub discard: Vec<CardInstanceId>,
+    pub player_decks: Vec<PublicPlayerDeck>,
+    pub player_discards: Vec<PublicPlayerDiscard>,
     pub covered_passives: Vec<PublicCoveredPassive>,
     pub counter_effects: Vec<CounterEffect>,
     pub pending_choice: Option<PublicPendingChoice>,
@@ -35,6 +38,18 @@ pub struct PublicGameState {
 pub struct PublicPlayerHand {
     pub player: PlayerId,
     pub cards: PublicCardRefs,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicPlayerDeck {
+    pub player: PlayerId,
+    pub cards: PublicCardRefs,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicPlayerDiscard {
+    pub player: PlayerId,
+    pub cards: Vec<CardInstanceId>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -55,6 +70,7 @@ pub struct PublicPreviousTurnFormation {
 pub enum PublicCardRefs {
     Known(Vec<CardInstanceId>),
     Hidden { count: usize },
+    PartiallyKnown { cards: Vec<Option<CardInstanceId>> },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -73,6 +89,10 @@ pub enum PublicPendingChoiceKind {
 pub enum PublicGameEvent {
     Public(GameEvent),
     DeckPrepared {
+        deck: PublicCardRefs,
+    },
+    PlayerDeckPrepared {
+        player: PlayerId,
         deck: PublicCardRefs,
     },
     CardsDealt {
@@ -132,7 +152,10 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             }
         });
 
+    let uses_personal_decks = state.uses_personal_decks();
+
     PublicGameState {
+        enabled_rule_modules: state.enabled_rule_modules.clone(),
         status: state.status.clone(),
         turn_number: state.turn_number,
         phase: state.phase,
@@ -145,16 +168,32 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .iter()
             .map(|hand| PublicPlayerHand {
                 player: hand.player.clone(),
-                cards: if policy.can_see_player_hidden_cards(&hand.player) {
-                    PublicCardRefs::Known(hand.cards.clone())
-                } else {
-                    PublicCardRefs::Hidden {
-                        count: hand.cards.len(),
-                    }
-                },
+                cards: public_cards(
+                    &hand.cards,
+                    policy.can_see_player_hidden_cards(&hand.player),
+                    &state.exposed_foreign_cards,
+                ),
             })
             .collect(),
         discard: state.discard.clone(),
+        player_decks: state
+            .player_decks
+            .iter()
+            .filter(|_| uses_personal_decks)
+            .map(|pile| PublicPlayerDeck {
+                player: pile.player.clone(),
+                cards: public_cards(&pile.cards, false, &state.exposed_foreign_cards),
+            })
+            .collect(),
+        player_discards: state
+            .player_discards
+            .iter()
+            .filter(|_| uses_personal_decks)
+            .map(|pile| PublicPlayerDiscard {
+                player: pile.player.clone(),
+                cards: pile.cards.clone(),
+            })
+            .collect(),
         covered_passives: state
             .covered_passives
             .iter()
@@ -198,6 +237,14 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
                 count: deck_order.len(),
             },
         },
+        GameEvent::PlayerDeckPrepared { player, deck_order } => {
+            PublicGameEvent::PlayerDeckPrepared {
+                player: player.clone(),
+                deck: PublicCardRefs::Hidden {
+                    count: deck_order.len(),
+                },
+            }
+        }
         GameEvent::CardsDealt { player, cards } => PublicGameEvent::CardsDealt {
             player: player.clone(),
             cards: if policy.can_see_player_hidden_cards(player) {
@@ -285,7 +332,30 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::EffectChoiceAnswered { .. }
         | GameEvent::PassiveFlipped { .. }
         | GameEvent::DiscardRecycledIntoDeck { .. }
+        | GameEvent::PlayerDiscardRecycledIntoDeck { .. }
+        | GameEvent::DiscardRetrieved { .. }
         | GameEvent::TurnEnded { .. } => PublicGameEvent::Public(event.clone()),
+    }
+}
+
+fn public_cards(
+    cards: &[CardInstanceId],
+    can_see_all: bool,
+    exposed_cards: &[CardInstanceId],
+) -> PublicCardRefs {
+    if can_see_all {
+        return PublicCardRefs::Known(cards.to_vec());
+    }
+
+    if cards.iter().any(|card| exposed_cards.contains(card)) {
+        PublicCardRefs::PartiallyKnown {
+            cards: cards
+                .iter()
+                .map(|card| exposed_cards.contains(card).then_some(*card))
+                .collect(),
+        }
+    } else {
+        PublicCardRefs::Hidden { count: cards.len() }
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::domain::{
-    CardMoveDelta, CardZone, DeckPlacement, GameEvent, GameOutcome, GameResult, GameSetup,
-    GameState, GameStatus, LastFormationUse, ShieldChangeDelta, validate_setup,
+    CardMoveDelta, CardOrigin, CardZone, DeckPlacement, GameEvent, GameOutcome, GameResult,
+    GameSetup, GameState, GameStatus, LastFormationUse, ShieldChangeDelta, validate_setup,
 };
 
 pub(crate) fn project(setup: &GameSetup, events: &[GameEvent]) -> GameResult<GameState> {
@@ -17,19 +17,29 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
         GameEvent::DeckPrepared { deck_order } => {
             state.deck = deck_order.clone();
         }
+        GameEvent::PlayerDeckPrepared { player, deck_order } => {
+            let pile = state
+                .player_decks
+                .iter_mut()
+                .find(|pile| &pile.player == player)
+                .expect("canonical player deck event must target a known player");
+            pile.cards = deck_order.clone();
+        }
         GameEvent::CardsDealt { player, cards } => {
             let hand = state
                 .hand_mut(player)
                 .expect("canonical deal event must target a known player");
             hand.extend(cards.iter().copied());
 
+            let deck = state
+                .deck_for_mut(player)
+                .expect("canonical deal event must target a known player deck");
             for card in cards {
-                let position = state
-                    .deck
+                let position = deck
                     .iter()
                     .position(|deck_card| deck_card == card)
                     .expect("canonical deal event must contain cards from deck");
-                state.deck.remove(position);
+                deck.remove(position);
             }
         }
         GameEvent::TurnStarted { player, .. } => {
@@ -60,7 +70,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     .position(|card| card == used_card)
                     .expect("canonical formation event must remove cards from hand");
                 let removed = hand.remove(position);
-                state.discard.push(removed);
+                push_to_origin_discard(state, removed);
             }
 
             state.last_formation_by_player.insert(
@@ -150,7 +160,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .position(|passive| &passive.owner == owner)
                 .expect("canonical passive flip event must target a covered passive");
             state.covered_passives.remove(passive_position);
-            state.discard.extend(cards.iter().copied());
+            for card in cards {
+                push_to_origin_discard(state, *card);
+            }
         }
         GameEvent::AttackResolved {
             attacker,
@@ -298,7 +310,10 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .hand_mut(player)
                 .expect("canonical draw event must target a known player");
             hand.extend(drawn_cards.iter().copied());
-            state.deck.drain(0..drawn_cards.len());
+            state
+                .deck_for_mut(player)
+                .expect("canonical draw event must target a known player deck")
+                .drain(0..drawn_cards.len());
             state.pending_choice = Some(crate::domain::PendingChoice {
                 player: player.clone(),
                 kind: crate::domain::PendingChoiceKind::TurnDrawDiscard {
@@ -336,7 +351,14 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .expect("canonical discard event must remove a card from hand");
             let discarded = hand.remove(discard_position);
 
-            state.discard.push(discarded);
+            push_to_origin_discard(state, discarded);
+            state.last_turn_discard_by_player.insert(
+                player.clone(),
+                crate::domain::LastTurnDiscard {
+                    card: discarded,
+                    turn_number: state.turn_number,
+                },
+            );
             state.pending_choice = None;
             state.phase = crate::domain::Phase::TurnEnd;
         }
@@ -363,6 +385,45 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     .expect("canonical recycle event must contain cards from discard");
                 state.discard.remove(position);
             }
+        }
+        GameEvent::PlayerDiscardRecycledIntoDeck {
+            player,
+            shuffled_order,
+            placement,
+        } => {
+            debug_assert_eq!(state.phase, crate::domain::Phase::TurnDraw);
+
+            match placement {
+                DeckPlacement::Bottom => state
+                    .deck_for_mut(player)
+                    .expect("canonical recycle event must target a known player deck")
+                    .extend(shuffled_order.iter().copied()),
+            }
+
+            let discard = state
+                .discard_for_mut(player)
+                .expect("canonical recycle event must target a known discard pile");
+            for card in shuffled_order {
+                let position = discard
+                    .iter()
+                    .position(|discarded| discarded == card)
+                    .expect("canonical recycle event must contain cards from discard");
+                discard.remove(position);
+            }
+        }
+        GameEvent::DiscardRetrieved {
+            hp_change,
+            card_move,
+            ..
+        } => {
+            apply_card_move(state, card_move);
+            let team_hp = state
+                .hp
+                .iter_mut()
+                .find(|team_hp| team_hp.team == hp_change.team)
+                .expect("canonical discard retrieval must target an existing team");
+            team_hp.hp = hp_change.new_hp;
+            finish_game_if_needed(state);
         }
         GameEvent::TurnEnded { player } => {
             debug_assert_eq!(state.current_player(), Some(player));
@@ -408,6 +469,26 @@ fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {
                 .expect("canonical card move must move an existing discarded card");
             state.discard.remove(position)
         }
+        CardZone::PlayerDeckTop(player) => {
+            let deck = state
+                .deck_for_mut(player)
+                .expect("canonical card move must target a known player deck");
+            let position = deck
+                .iter()
+                .position(|card| card == &card_move.card)
+                .expect("canonical card move must move an existing player deck card");
+            deck.remove(position)
+        }
+        CardZone::PlayerDiscard(player) => {
+            let discard = state
+                .discard_for_mut(player)
+                .expect("canonical card move must target a known player discard");
+            let position = discard
+                .iter()
+                .position(|card| card == &card_move.card)
+                .expect("canonical card move must move an existing player discard card");
+            discard.remove(position)
+        }
     };
 
     match &card_move.to {
@@ -419,6 +500,44 @@ fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {
         }
         CardZone::DeckTop => state.deck.insert(0, removed),
         CardZone::Discard => state.discard.push(removed),
+        CardZone::PlayerDeckTop(player) => {
+            let is_foreign = matches!(
+                state.card_origin(removed),
+                Some(CardOrigin::Player(origin)) if origin != player
+            );
+            state
+                .deck_for_mut(player)
+                .expect("canonical card move must target a known player deck")
+                .insert(0, removed);
+            if is_foreign && !state.exposed_foreign_cards.contains(&removed) {
+                state.exposed_foreign_cards.push(removed);
+            }
+        }
+        CardZone::PlayerDiscard(player) => {
+            state
+                .discard_for_mut(player)
+                .expect("canonical card move must target a known player discard")
+                .push(removed);
+            state
+                .exposed_foreign_cards
+                .retain(|exposed| *exposed != removed);
+        }
+    }
+}
+
+fn push_to_origin_discard(state: &mut GameState, card: crate::domain::CardInstanceId) {
+    if state.uses_personal_decks()
+        && let Some(CardOrigin::Player(player)) = state.card_origin(card).cloned()
+    {
+        state
+            .discard_for_mut(&player)
+            .expect("card origin must identify a known player discard")
+            .push(card);
+        state
+            .exposed_foreign_cards
+            .retain(|exposed| *exposed != card);
+    } else {
+        state.discard.push(card);
     }
 }
 

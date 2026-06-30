@@ -23,6 +23,7 @@ type ViewerRef = Ref<ViewerId>
 
 function emptyState(): PublicGameState {
   return {
+    enabledRuleModules: [],
     status: 'InProgress',
     turnNumber: 1,
     phase: 'TurnStart',
@@ -32,6 +33,8 @@ function emptyState(): PublicGameState {
     hp: [],
     hands: [],
     discard: [],
+    playerDecks: [],
+    playerDiscards: [],
     coveredPassives: [],
     counterEffects: [],
     pendingChoice: null,
@@ -45,6 +48,7 @@ export function useGameRoom(viewer: ViewerRef) {
   const state = ref<PublicGameState>(emptyState())
   const metadata = ref<GameRoomMetadata | null>(null)
   const invitation = ref<GameRoomInvitation | null>(null)
+  const lockedDeckName = ref<string | null>(null)
   const onlineGameId = ref<string | null>(null)
   const publicEvents = ref<PublicGameEvent[]>([])
   const selectedCards = ref<CardInstanceId[]>([])
@@ -55,6 +59,7 @@ export function useGameRoom(viewer: ViewerRef) {
   const interaction = ref({
     canPass: false,
     hasOptionalEffect: false,
+    canRetrieveDiscard: false,
   })
   const connectionState = ref<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle')
   const roomDissolved = ref(false)
@@ -106,6 +111,7 @@ export function useGameRoom(viewer: ViewerRef) {
     const previousChoiceKey = pendingChoiceKey(state.value.pendingChoice)
     metadata.value = response.metadata
     invitation.value = response.invitation ?? null
+    lockedDeckName.value = response.lockedDeckName ?? null
     onlineGameId.value = response.gameId
     state.value = response.state
     publicEvents.value = response.events
@@ -216,6 +222,28 @@ export function useGameRoom(viewer: ViewerRef) {
     return await roomMutation('reset')
   }
 
+  async function updateRuleModules(enabledRuleModules: string[]) {
+    if (!onlineGameId.value) return false
+
+    isLoading.value = true
+    errorMessage.value = null
+    try {
+      applyRoomResponse(await $fetch<GameRoomResponse>(
+        `/api/games/${onlineGameId.value}/rules`,
+        {
+          method: 'PUT',
+          body: { enabledRuleModules },
+        },
+      ))
+      return true
+    } catch (error) {
+      errorMessage.value = error instanceof Error ? error.message : '無法更新規則'
+      return false
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   async function roomMutation(path: string, body?: Record<string, unknown>): Promise<boolean> {
     if (!onlineGameId.value) {
       return false
@@ -246,6 +274,16 @@ export function useGameRoom(viewer: ViewerRef) {
     if (await submitOnline({ type: 'passAction' })) {
       selectedCards.value = []
     }
+  }
+
+  async function retrievePreviousTurnDiscard() {
+    const player = state.value.currentPlayer
+    if (!player) return
+
+    await submitOnline({
+      type: 'retrievePreviousTurnDiscard',
+      player,
+    })
   }
 
   async function queryPlayableFormations() {
@@ -434,6 +472,7 @@ export function useGameRoom(viewer: ViewerRef) {
     disconnectRoomSocket()
     metadata.value = null
     invitation.value = null
+    lockedDeckName.value = null
     onlineGameId.value = null
     state.value = emptyState()
     publicEvents.value = []
@@ -449,6 +488,7 @@ export function useGameRoom(viewer: ViewerRef) {
   return {
     metadata,
     invitation,
+    lockedDeckName,
     onlineGameId,
     state,
     publicEvents,
@@ -469,9 +509,11 @@ export function useGameRoom(viewer: ViewerRef) {
     removeOnlinePlayer,
     dissolveOnlineRoom,
     resetOnlineRoom,
+    updateRuleModules,
     clearRoom,
     disconnectRoomSocket,
     passAction,
+    retrievePreviousTurnDiscard,
     canSelectCard,
     toggleCardSelection,
     performFormation,

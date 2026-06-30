@@ -37,6 +37,40 @@ The optional official Advanced Rule Module that adds Star Summoning, Stars, Star
 Formations, Star Element Substitution, and Five-Star Alignment.
 _Avoid_: Star Ruleset, star mode
 
+**Five Directions Legend Rule Module (五方傳說規則)**:
+The optional official Advanced Rule Module that adds Sacred Beasts, the shared
+Environment, and Void Meridian-Severing Technique as one indivisible rules option.
+_Avoid_: Five Directions Legend Ruleset, Field Ruleset, individual Sacred Beast toggle
+
+**Sacred Beast (聖獸)**:
+An 81-point elemental attack formed from five Cards of one element under the
+Five Directions Legend Rule Module. It ignores other Formation effects and
+changes the Environment to its element after the attack resolves.
+_Avoid_: divine beast, guardian, uncounterable Formation
+
+**Environment (環境)**:
+The single shared elemental condition affecting all Players under the Five
+Directions Legend Rule Module. A game starts without one Environment, and a new
+Environment replaces the previous one.
+_Avoid_: field, battlefield, player environment, Status Effect
+
+**Environment Transfer (轉移環境)**:
+The replacement of the current Environment with a specified elemental
+Environment. A Sacred Beast transfers the Environment only after its attack has
+resolved under the previously existing Environment.
+_Avoid_: environment mutation, pre-attack environment change
+
+**Environment Effect (環境效果)**:
+A rule imposed by the current Environment that modifies elemental combat or
+makes specified Formations ineffective for every Player.
+_Avoid_: Status Effect, player buff, five-element interaction
+
+**Environment Clearing (破除環境)**:
+The successful removal of the current Environment, returning the game to no
+Environment. Void Meridian-Severing Technique clears only an Environment that
+exists and then changes both Teams' HP simultaneously.
+_Avoid_: environment expiry, Environment Transfer
+
 **Discard Retrieval (棄牌回收)**:
 An Optional Rule Module that lets the current Player pay HP during the
 active-effect timing to return the Previous Player's Discarded Card from the
@@ -107,6 +141,47 @@ The immutable source of a Card Instance: the shared deck or the Player whose
 Personal Deck originally contained it. Moving or retrieving a card does not
 change its Card Origin.
 _Avoid_: current holder, current zone
+
+**Pile Owner**:
+The shared game or Player whose Deck or Discard Pile a zone represents. A pile
+may temporarily contain a Card Instance with a different Card Origin.
+_Avoid_: Card Origin, current holder
+
+**Deck List**:
+The exact 60 Card Definitions selected by one Player before a Personal Deck
+game. It describes deck composition, not shuffled Card Instance order.
+_Avoid_: prepared deck order, hand
+
+**Preconstructed Deck List (預組牌組)**:
+The built-in legal Deck List used when Personal Deck is enabled and a Player has
+no valid custom Deck List. For each element it contains 3/2/3/2/2 cards of
+levels 1/2/3/4/5 respectively, totaling 60 cards and 170 levels.
+_Avoid_: shared deck, shuffled deck
+
+**Locked Deck List**:
+The validated Deck List captured for a non-owner when they become ready, or for
+the room owner when they start a Personal Deck game. It remains that game's
+setup input even if the Player later edits their account Deck List, and records
+the display name actually selected after fallback.
+_Avoid_: live account deck, prepared deck order
+
+**Retrieved Card (回收牌)**:
+A Retrievable Discard moved by Discard Retrieval into the current Player's
+Deck. Under Personal Deck it is an Exposed Foreign Card when its Card Origin is
+another Player.
+_Avoid_: owned card, hidden card
+
+**Exposed Foreign Card**:
+A Card Instance placed in a Player's Personal Deck whose Card Origin is another
+Player. It remains publicly revealed while in that Deck or hand and returns to
+its origin Player's Discard Pile when used or discarded.
+_Avoid_: owned card, hidden card
+
+**Retrievable Discard**:
+The Previous Player's Turn Draw Discarded Card from the immediately completed
+Previous Turn. It is the sole card eligible for the current Player's Discard
+Retrieval.
+_Avoid_: top discarded card, formation cards
 
 **Card Definition**:
 Immutable printed-card data such as name, one five-element element, and level from 1 to 5.
@@ -274,6 +349,31 @@ _Avoid_: callback response
 - A **Player** owns at most one **Shield**
 - Every **Card Instance** has exactly one immutable **Card Origin**
 - A **Card Instance's** current zone does not change its **Card Origin**
+- Every Deck and **Discard Pile** has exactly one **Pile Owner**
+- A **Deck List** contains exactly 60 Card Definitions with total level at most
+  170 and official per-definition copy limits
+- **Personal Deck** uses a Player's valid custom **Deck List**, or automatically
+  substitutes the **Preconstructed Deck List** when the custom list is absent or
+  invalid
+- Each Player in a ready Personal Deck room has one **Locked Deck List**
+- A **Locked Deck List** is private to its Player; other Players see readiness,
+  not its name, contents, or whether it came from a custom or Preconstructed
+  Deck List
+- Under **Personal Deck**, every Player's Deck count and Discard Pile contents
+  are public, while Deck order and ordinary opposing hands remain hidden
+- An **Exposed Foreign Card** remains fully public even while in a Deck or
+  opposing hand, including its position among otherwise hidden Deck cards
+- Changing the room's enabled **Rule Modules** invalidates non-owner readiness
+  and all waiting-room **Locked Deck Lists**
+- New official game configurations enable every available **Rule Module** by
+  default; the **Base Ruleset** remains mandatory
+- A used or discarded **Exposed Foreign Card** returns to its origin Player's
+  **Discard Pile**
+- **Discard Retrieval** derives exactly one **Retrievable Discard** from
+  canonical turn history rather than a Player-submitted card choice
+- Under **Personal Deck**, effects that return cards to the top of a Deck use
+  the performing Player's Deck and create **Exposed Foreign Cards** when origins
+  differ
 - A **Game Record** uses exactly one **Ruleset**
 - Every **Ruleset** includes the **Base Ruleset**
 - A **Ruleset** may enable zero or more **Rule Modules**

@@ -18,6 +18,7 @@
           <span aria-hidden="true">⌄</span>
         </button>
         <div v-if="profileOpen" class="profile-menu">
+          <button type="button" @click="openDeckEditor">個人牌組</button>
           <button type="button" @click="logout">登出</button>
         </div>
       </nav>
@@ -132,6 +133,68 @@
       </section>
     </main>
 
+    <main v-else-if="screen === 'deck'" class="deck-page">
+      <section class="setup-card deck-editor">
+        <div class="card-heading">
+          <span class="step-number">牌</span>
+          <div>
+            <h1>個人牌組</h1>
+            <p>每種牌依屬性與等級調整張數；總數 60、等級總和最多 170。</p>
+          </div>
+        </div>
+
+        <label for="deck-name">牌組名稱</label>
+        <input id="deck-name" v-model.trim="deckDraft.name" class="text-input" maxlength="24">
+
+        <div class="deck-grid" role="table" aria-label="個人牌組卡牌張數">
+          <div />
+          <strong v-for="level in DECK_LEVELS" :key="`level-${level}`">{{ level }} 級</strong>
+          <template v-for="element in DECK_ELEMENTS" :key="element">
+            <strong>{{ deckElementLabel(element) }}</strong>
+            <div v-for="level in DECK_LEVELS" :key="`${element}-${level}`" class="deck-count-control">
+              <button
+                type="button"
+                :aria-label="`減少${deckElementLabel(element)}${level}級`"
+                :disabled="deckCardCount(element, level) === 0"
+                @click="adjustDeckCard(element, level, -1)"
+              >−</button>
+              <span>{{ deckCardCount(element, level) }}</span>
+              <button
+                type="button"
+                :aria-label="`增加${deckElementLabel(element)}${level}級`"
+                :disabled="deckCardCount(element, level) >= (level <= 3 ? 4 : 3)"
+                @click="adjustDeckCard(element, level, 1)"
+              >＋</button>
+            </div>
+          </template>
+        </div>
+
+        <div class="deck-validation" :class="{ invalid: !deckValidation.valid }">
+          <strong>{{ deckValidation.cardCount }} / 60 張</strong>
+          <strong>{{ deckValidation.levelTotal }} / 170 級</strong>
+          <span>{{ deckSource === 'custom' ? '目前使用自訂牌組' : '目前使用內建預組' }}</span>
+        </div>
+        <p v-if="deckError" class="form-error">{{ deckError }}</p>
+
+        <div class="setup-actions">
+          <button class="secondary-button" type="button" :disabled="deckBusy" @click="resetDeck">
+            重設為預組
+          </button>
+          <button class="secondary-button" type="button" :disabled="deckBusy" @click="returnToLobby">
+            返回房間
+          </button>
+          <button
+            class="primary-button"
+            type="button"
+            :disabled="deckBusy || !deckValidation.valid"
+            @click="saveDeck"
+          >
+            {{ deckBusy ? '儲存中…' : '儲存牌組' }}
+          </button>
+        </div>
+      </section>
+    </main>
+
     <main v-else-if="screen === 'lobby'" class="lobby-page">
       <div class="lobby-heading">
         <div>
@@ -230,6 +293,18 @@
                 公開房間
               </button>
             </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>選用規則（預設全開）</legend>
+            <label class="rule-toggle">
+              <input v-model="roomRuleModules" type="checkbox" value="discard-retrieval">
+              棄牌回收
+            </label>
+            <label class="rule-toggle">
+              <input v-model="roomRuleModules" type="checkbox" value="personal-deck">
+              個人牌組
+            </label>
           </fieldset>
 
           <div class="setup-summary">
@@ -341,6 +416,15 @@
               <div>
                 <strong>{{ playerLabel(seat.player) }}</strong>
                 <small>{{ teamHp(teamForPlayer(seat.player)) }} HP</small>
+                <small v-if="state.enabledRuleModules.includes('personal-deck')">
+                  牌庫 {{ playerDeckCount(seat.player) }} · 棄牌 {{ playerDiscardCount(seat.player) }}
+                </small>
+                <small
+                  v-for="card in exposedDeckCards(seat.player)"
+                  :key="`exposed-deck-${seat.player}-${card.id}`"
+                >
+                  公開牌：{{ card.label }}
+                </small>
               </div>
               <span
                 v-if="seat.player === ownPlayer && game.connectionState.value === 'reconnecting'"
@@ -461,6 +545,15 @@
                   >
                     跳過
                   </button>
+                  <button
+                    v-if="game.interaction.value.canRetrieveDiscard"
+                    class="retrieve-action"
+                    type="button"
+                    :disabled="!roomConnected"
+                    @click="game.retrievePreviousTurnDiscard()"
+                  >
+                    棄牌回收
+                  </button>
                 </div>
                 <p
                   v-if="!game.isLoading.value && !game.playableFormations.value.length && !showSkip && !game.errorMessage.value"
@@ -475,7 +568,7 @@
               </div>
             </div>
             <div class="discard-pile" :class="{ disabled: discardUnavailable }">
-              <span>棄牌</span>
+              <span>{{ activeDiscardOwner ? `${playerLabel(activeDiscardOwner)} 棄牌` : '棄牌' }}</span>
               <button
                 ref="discardTrigger"
                 class="discard-pile-trigger"
@@ -484,10 +577,10 @@
                 aria-controls="discard-composition"
                 :aria-expanded="discardOpen"
                 :aria-disabled="discardUnavailable"
-                :aria-label="`查看棄牌內容，共 ${state.discard.length} 張`"
+                :aria-label="`查看棄牌內容，共 ${activeDiscardCards.length} 張`"
                 @click.stop="toggleDiscardComposition"
               >
-                {{ state.discard.length }}
+                {{ activeDiscardCards.length }}
               </button>
               <div
                 v-if="discardOpen"
@@ -500,6 +593,17 @@
                   aria-labelledby="discard-composition-title"
                 >
                   <h2 id="discard-composition-title">棄牌內容</h2>
+                  <div v-if="state.playerDiscards.length" class="discard-owner-tabs">
+                    <button
+                      v-for="pile in state.playerDiscards"
+                      :key="pile.player"
+                      type="button"
+                      :class="{ active: activeDiscardOwner === pile.player }"
+                      @click="activeDiscardOwner = pile.player"
+                    >
+                      {{ playerLabel(pile.player) }}（{{ pile.cards.length }}）
+                    </button>
+                  </div>
                   <table>
                     <caption class="sr-only">依五行與等級統計棄牌張數</caption>
                     <thead>
@@ -600,6 +704,21 @@
             <div>
               <h2>{{ activeRoomName }}</h2>
               <p>{{ waitingRoomSummary }}</p>
+              <p v-if="game.lockedDeckName.value" class="muted">
+                本局使用：{{ game.lockedDeckName.value }}
+              </p>
+              <fieldset v-if="isRoomOwner" class="waiting-rules">
+                <legend>選用規則</legend>
+                <label v-for="rule in ruleOptions" :key="rule.id" class="rule-toggle">
+                  <input
+                    type="checkbox"
+                    :checked="onlineMetadata?.enabledRuleModules.includes(rule.id)"
+                    :disabled="game.isLoading.value"
+                    @change="toggleWaitingRule(rule.id)"
+                  >
+                  {{ rule.label }}
+                </label>
+              </fieldset>
               <div class="waiting-members">
                 <span
                   v-for="player in onlinePlayers"
@@ -734,8 +853,15 @@ import type { GameRoomMember, GameRoomResponse } from '../shared/game-room'
 import { authClient } from '~/lib/auth-client'
 import { buildDiscardComposition, DISCARD_ELEMENTS } from '~/lib/discard-composition'
 import { roomRouteResult, safeInternalPath } from '~/lib/navigation'
+import {
+  DECK_ELEMENTS,
+  DECK_LEVELS,
+  preconstructedDeck,
+  validateDeck,
+  type PlayerDeckList,
+} from '~/lib/player-deck'
 
-type Screen = 'login' | 'lobby' | 'game'
+type Screen = 'login' | 'lobby' | 'deck' | 'game'
 
 interface PublicRoomSummary {
   gameId: string
@@ -755,6 +881,7 @@ const route = useRoute()
 const router = useRouter()
 const screen = computed<Screen>(() => {
   if (route.path === '/login') return 'login'
+  if (route.path === '/deck') return 'deck'
   if (route.path.startsWith('/rooms/')) return 'game'
   return 'lobby'
 })
@@ -776,6 +903,7 @@ const roomName = ref('')
 const roomMode = ref('duel')
 const roomCapacity = computed<2 | 4>(() => roomMode.value === 'team' ? 4 : 2)
 const roomAccess = ref<'private' | 'public'>('public')
+const roomRuleModules = ref<string[]>(['discard-retrieval', 'personal-deck'])
 const roomCode = ref('')
 const joinRoomCode = ref('')
 const lobbyBusy = ref(false)
@@ -791,7 +919,12 @@ const formationDetail = ref<PlayableFormation | null>(null)
 const eventExpanded = ref(false)
 const showSetupReveal = ref(false)
 const discardOpen = ref(false)
+const activeDiscardOwner = ref<PlayerId | null>(null)
 const discardTrigger = ref<HTMLButtonElement | null>(null)
+const deckDraft = ref<PlayerDeckList>(preconstructedDeck())
+const deckSource = ref<'custom' | 'preconstructed'>('preconstructed')
+const deckBusy = ref(false)
+const deckError = ref('')
 let formationDetailTimer: ReturnType<typeof setTimeout> | undefined
 let setupRevealTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -799,6 +932,11 @@ const modes = [
   { id: 'duel', icon: '雙', label: '雙人對戰', description: '1 對 1 經典規則' },
   { id: 'team', icon: '隊', label: '團隊對戰', description: '2 對 2 交錯行動' },
 ]
+const ruleOptions = [
+  { id: 'discard-retrieval', label: '棄牌回收' },
+  { id: 'personal-deck', label: '個人牌組' },
+]
+const deckValidation = computed(() => validateDeck(deckDraft.value))
 
 const visibleEvents = computed(() => game.publicEvents.value)
 const playerInitial = computed(() => displayName.value.trim().charAt(0).toUpperCase() || 'A')
@@ -856,9 +994,19 @@ const playerSeats = computed<PlayerSeat[]>(() => {
 const previousFormationCards = computed(() => (
   cardTokensForRefs(state.value.previousTurnFormation?.cards, 'previous-formation')
 ))
-const discardComposition = computed(() => buildDiscardComposition(state.value.discard))
+const activeDiscardCards = computed(() => {
+  if (!state.value.playerDiscards.length) return state.value.discard
+  const owner = activeDiscardOwner.value
+    ?? (ownPlayer.value || undefined)
+    ?? state.value.currentPlayer
+    ?? state.value.playerDiscards[0]?.player
+  return state.value.playerDiscards.find(pile => pile.player === owner)?.cards ?? []
+})
+const discardComposition = computed(() => buildDiscardComposition(activeDiscardCards.value))
 const discardUnavailable = computed(() => (
-  state.value.discard.length === 0 || Boolean(state.value.pendingChoice)
+  (!state.value.discard.length
+    && state.value.playerDiscards.every(pile => pile.cards.length === 0))
+  || Boolean(state.value.pendingChoice)
 ))
 const activeTeams = computed(() => [...new Set(state.value.players.map((player) => player.team))])
 const showSkip = computed(() => (
@@ -977,6 +1125,103 @@ async function logout() {
   await router.replace('/login')
 }
 
+function openDeckEditor() {
+  profileOpen.value = false
+  void router.push('/deck')
+}
+
+function deckElementLabel(element: typeof DECK_ELEMENTS[number]) {
+  return {
+    metal: '金',
+    wood: '木',
+    water: '水',
+    fire: '火',
+    earth: '土',
+  }[element]
+}
+
+function deckCardCount(
+  element: typeof DECK_ELEMENTS[number],
+  level: typeof DECK_LEVELS[number],
+) {
+  const id = `${element}-${level}`
+  return deckDraft.value.cards.filter(card => card === id).length
+}
+
+function adjustDeckCard(
+  element: typeof DECK_ELEMENTS[number],
+  level: typeof DECK_LEVELS[number],
+  delta: number,
+) {
+  const id = `${element}-${level}`
+  if (delta > 0) {
+    deckDraft.value.cards.push(id)
+    return
+  }
+  const index = deckDraft.value.cards.indexOf(id)
+  if (index >= 0) deckDraft.value.cards.splice(index, 1)
+}
+
+async function loadDeck() {
+  deckBusy.value = true
+  deckError.value = ''
+  try {
+    const response = await $fetch<{
+      deck: PlayerDeckList
+      source: 'custom' | 'preconstructed'
+    }>('/api/deck')
+    deckDraft.value = {
+      name: response.deck.name,
+      cards: [...response.deck.cards],
+    }
+    deckSource.value = response.source
+  } catch (error) {
+    deckError.value = error instanceof Error ? error.message : '無法載入牌組'
+  } finally {
+    deckBusy.value = false
+  }
+}
+
+async function saveDeck() {
+  if (!deckValidation.value.valid) return
+  deckBusy.value = true
+  deckError.value = ''
+  try {
+    const response = await $fetch<{ deck: PlayerDeckList }>('/api/deck', {
+      method: 'PUT',
+      body: deckDraft.value,
+    })
+    deckDraft.value = {
+      name: response.deck.name,
+      cards: [...response.deck.cards],
+    }
+    deckSource.value = 'custom'
+  } catch (error) {
+    deckError.value = error instanceof Error ? error.message : '無法儲存牌組'
+  } finally {
+    deckBusy.value = false
+  }
+}
+
+async function resetDeck() {
+  deckBusy.value = true
+  deckError.value = ''
+  try {
+    const response = await $fetch<{ deck: PlayerDeckList }>('/api/deck', {
+      method: 'DELETE',
+    })
+    deckDraft.value = {
+      name: response.deck.name,
+      cards: [...response.deck.cards],
+    }
+    deckSource.value = 'preconstructed'
+  } catch (error) {
+    deckError.value = error instanceof Error ? error.message : '無法重設牌組'
+  } finally {
+    deckBusy.value = false
+  }
+}
+
 function toggleAuthMode() {
   authMode.value = authMode.value === 'sign-in' ? 'sign-up' : 'sign-in'
   loginError.value = ''
@@ -1067,6 +1312,14 @@ async function restartGame() {
   }
 }
 
+async function toggleWaitingRule(moduleId: string) {
+  const current = onlineMetadata.value?.enabledRuleModules ?? []
+  const enabledRuleModules = current.includes(moduleId)
+    ? current.filter(module => module !== moduleId)
+    : [...current, moduleId]
+  await game.updateRuleModules(enabledRuleModules)
+}
+
 async function createOnlineRoom() {
   lobbyBusy.value = true
   lobbyError.value = ''
@@ -1078,6 +1331,7 @@ async function createOnlineRoom() {
         name: activeRoomName.value,
         access: roomAccess.value,
         capacity: roomCapacity.value,
+        enabledRuleModules: roomRuleModules.value,
       },
     })
 
@@ -1282,6 +1536,9 @@ async function restoreCurrentRoute() {
   if (route.path.startsWith('/rooms/')) {
     const gameId = typeof route.params.gameId === 'string' ? route.params.gameId : ''
     await loadRoomRoute(gameId)
+  } else if (route.path === '/deck') {
+    game.clearRoom()
+    await loadDeck()
   } else {
     game.clearRoom()
     await refreshRoomLists()
@@ -1346,7 +1603,8 @@ watch(
 )
 
 watch(
-  () => state.value.discard.length,
+  () => state.value.discard.length
+    + state.value.playerDiscards.reduce((total, pile) => total + pile.cards.length, 0),
   (length) => {
     if (length === 0) {
       closeDiscardComposition()
@@ -1412,6 +1670,26 @@ function cardsFor(player: PlayerId): CardToken[] {
     }))
   }
 
+  if (hand.cards.kind === 'partiallyKnown') {
+    return hand.cards.cards.map((card, index) => card
+      ? {
+          id: `${player}-known-${index}-${card.id}`,
+          cardId: card.id,
+          label: card.label,
+          hidden: false,
+          selectable: false,
+          selected: false,
+        }
+      : {
+          id: `${player}-hidden-${index}`,
+          cardId: -index - 1,
+          label: '',
+          hidden: true,
+          selectable: false,
+          selected: false,
+        })
+  }
+
   return Array.from({ length: hand.cards.count }, (_, index) => ({
     id: `${player}-hidden-${index}`,
     cardId: -index - 1,
@@ -1436,6 +1714,26 @@ function cardTokensForRefs(cards: PublicCardRefs | undefined, prefix: string): C
     }))
   }
 
+  if (cards.kind === 'partiallyKnown') {
+    return cards.cards.map((card, index) => card
+      ? {
+          id: `${prefix}-known-${index}-${card.id}`,
+          cardId: card.id,
+          label: card.label,
+          hidden: false,
+          selectable: false,
+          selected: false,
+        }
+      : {
+          id: `${prefix}-hidden-${index}`,
+          cardId: -index - 1,
+          label: '',
+          hidden: true,
+          selectable: false,
+          selected: false,
+        })
+  }
+
   return Array.from({ length: cards.count }, (_, index) => ({
     id: `${prefix}-hidden-${index}`,
     cardId: -index - 1,
@@ -1449,7 +1747,22 @@ function cardTokensForRefs(cards: PublicCardRefs | undefined, prefix: string): C
 function handCount(player: PlayerId): number {
   const hand = state.value.hands.find((entry) => entry.player === player)
   if (!hand) return 0
-  return hand.cards.kind === 'known' ? hand.cards.cards.length : hand.cards.count
+  return hand.cards.kind === 'hidden' ? hand.cards.count : hand.cards.cards.length
+}
+
+function playerDeckCount(player: PlayerId): number {
+  const pile = state.value.playerDecks.find(entry => entry.player === player)
+  if (!pile) return 0
+  return pile.cards.kind === 'hidden' ? pile.cards.count : pile.cards.cards.length
+}
+
+function playerDiscardCount(player: PlayerId): number {
+  return state.value.playerDiscards.find(entry => entry.player === player)?.cards.length ?? 0
+}
+
+function exposedDeckCards(player: PlayerId) {
+  const cards = state.value.playerDecks.find(entry => entry.player === player)?.cards
+  return cards?.kind === 'partiallyKnown' ? cards.cards.filter(card => card !== null) : []
 }
 
 function counterEffectsFor(player: PlayerId) {
@@ -1609,6 +1922,17 @@ function cardName(label: string): string {
 @reference "./assets/css/main.css";
 
 .app-shell { @apply min-h-screen bg-ink; }
+.deck-page { @apply mx-auto min-h-screen max-w-5xl px-6 pt-28 pb-12; }
+.deck-editor { @apply grid gap-5; }
+.deck-grid { @apply grid grid-cols-6 gap-2 overflow-x-auto; }
+.deck-grid > strong { @apply flex min-h-11 items-center justify-center text-sm; }
+.deck-count-control { @apply flex min-w-28 items-center justify-between rounded-lg border border-[#c9c2ae] bg-white p-1; }
+.deck-count-control button { @apply grid size-9 place-items-center rounded-md bg-[#e8e2d3] font-bold text-[#18201c] disabled:opacity-35; }
+.deck-count-control span { @apply min-w-6 text-center font-bold; }
+.deck-validation { @apply flex flex-wrap gap-5 rounded-lg border border-emerald-700/30 bg-emerald-50 p-4 text-emerald-900; }
+.deck-validation.invalid { @apply border-red-700/30 bg-red-50 text-red-900; }
+.rule-toggle { @apply flex items-center gap-2 py-2; }
+.waiting-rules { @apply my-4 flex justify-center gap-6 border-y border-white/15 py-2; }
 .site-header {
   @apply relative z-20 flex min-h-[84px] items-center justify-between border-b border-[#29322d] bg-[rgba(14,19,16,.96)];
   padding: 10px clamp(14px, 4vw, 64px);
@@ -1826,6 +2150,9 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   transform: rotate(45deg);
 }
 .discard-composition h2 { @apply mb-2.5 font-serif text-sm text-gold-light; }
+.discard-owner-tabs { @apply mb-3 flex flex-wrap gap-1; }
+.discard-owner-tabs button { @apply rounded border border-[#4e5b53] px-2 py-1 text-[10px] text-muted; }
+.discard-owner-tabs button.active { @apply border-[#d1ad62] text-gold-light; }
 .discard-composition table { @apply w-full table-fixed border-collapse; }
 .discard-composition th, .discard-composition td { @apply h-8 border border-[#354039] text-center; }
 .discard-composition thead th { @apply text-[10px] font-bold text-[#d5d8d4]; }

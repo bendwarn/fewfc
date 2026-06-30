@@ -28,6 +28,8 @@ impl TeamId {
 }
 
 pub const BASE_RULESET_ID: &str = "base";
+pub const DISCARD_RETRIEVAL_MODULE_ID: &str = "discard-retrieval";
+pub const PERSONAL_DECK_MODULE_ID: &str = "personal-deck";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RulesetId(String);
@@ -103,6 +105,10 @@ impl CardDefId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -117,6 +123,34 @@ pub struct CardDef {
 pub struct CardInstanceDef {
     pub instance: CardInstanceId,
     pub definition: CardDefId,
+    #[serde(default)]
+    pub origin: CardOrigin,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub enum CardOrigin {
+    #[default]
+    Shared,
+    Player(PlayerId),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PlayerDeckList {
+    pub player: PlayerId,
+    pub name: String,
+    pub cards: Vec<CardDefId>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PlayerCardPile {
+    pub player: PlayerId,
+    pub cards: Vec<CardInstanceId>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct LastTurnDiscard {
+    pub card: CardInstanceId,
+    pub turn_number: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -241,6 +275,8 @@ pub struct GameSetup {
     pub hp: Vec<TeamHp>,
     pub card_defs: Vec<CardDef>,
     pub card_instances: Vec<CardInstanceDef>,
+    #[serde(default)]
+    pub deck_lists: Vec<PlayerDeckList>,
     pub hand_limit: usize,
     pub base_draw: usize,
 }
@@ -276,6 +312,7 @@ impl GameSetup {
             ],
             card_defs: Vec::new(),
             card_instances: Vec::new(),
+            deck_lists: Vec::new(),
             hand_limit: 5,
             base_draw: 2,
         }
@@ -326,6 +363,7 @@ impl GameSetup {
             ],
             card_defs: Vec::new(),
             card_instances: Vec::new(),
+            deck_lists: Vec::new(),
             hand_limit: 5,
             base_draw: 2,
         }
@@ -344,6 +382,17 @@ impl GameSetup {
     pub fn with_rule_modules(mut self, modules: Vec<RuleModuleId>) -> Self {
         self.enabled_rule_modules = modules;
         self
+    }
+
+    pub fn with_deck_lists(mut self, deck_lists: Vec<PlayerDeckList>) -> Self {
+        self.deck_lists = deck_lists;
+        self
+    }
+
+    pub fn has_rule_module(&self, module_id: &str) -> bool {
+        self.enabled_rule_modules
+            .iter()
+            .any(|module| module.as_str() == module_id)
     }
 }
 
@@ -374,8 +423,16 @@ pub struct GameState {
     pub card_defs: Vec<CardDef>,
     pub card_instances: Vec<CardInstanceDef>,
     pub deck: Vec<CardInstanceId>,
+    #[serde(default)]
+    pub player_decks: Vec<PlayerCardPile>,
     pub hands: Vec<PlayerHand>,
     pub discard: Vec<CardInstanceId>,
+    #[serde(default)]
+    pub player_discards: Vec<PlayerCardPile>,
+    #[serde(default)]
+    pub exposed_foreign_cards: Vec<CardInstanceId>,
+    #[serde(default)]
+    pub last_turn_discard_by_player: HashMap<PlayerId, LastTurnDiscard>,
     pub pending_choice: Option<PendingChoice>,
     pub shields: Vec<PlayerShield>,
     pub covered_passives: Vec<CoveredPassive>,
@@ -405,12 +462,30 @@ impl GameState {
             card_defs: setup.card_defs.clone(),
             card_instances: setup.card_instances.clone(),
             deck: Vec::new(),
+            player_decks: setup
+                .players
+                .iter()
+                .map(|player| PlayerCardPile {
+                    player: player.id.clone(),
+                    cards: Vec::new(),
+                })
+                .collect(),
             hands: setup
                 .players
                 .iter()
                 .map(|player| PlayerHand::new(player.id.clone(), Vec::new()))
                 .collect(),
             discard: Vec::new(),
+            player_discards: setup
+                .players
+                .iter()
+                .map(|player| PlayerCardPile {
+                    player: player.id.clone(),
+                    cards: Vec::new(),
+                })
+                .collect(),
+            exposed_foreign_cards: Vec::new(),
+            last_turn_discard_by_player: HashMap::new(),
             pending_choice: None,
             shields: setup
                 .players
@@ -472,6 +547,74 @@ impl GameState {
         self.card_def(instance).map(|card_def| card_def.element)
     }
 
+    pub fn card_origin(&self, instance: CardInstanceId) -> Option<&CardOrigin> {
+        self.card_instances
+            .iter()
+            .find(|card| card.instance == instance)
+            .map(|card| &card.origin)
+    }
+
+    pub fn has_rule_module(&self, module_id: &str) -> bool {
+        self.enabled_rule_modules
+            .iter()
+            .any(|module| module.as_str() == module_id)
+    }
+
+    pub fn uses_personal_decks(&self) -> bool {
+        self.has_rule_module(PERSONAL_DECK_MODULE_ID)
+    }
+
+    pub fn deck_for(&self, player: &PlayerId) -> Option<&[CardInstanceId]> {
+        if self.uses_personal_decks() {
+            self.player_decks
+                .iter()
+                .find(|pile| &pile.player == player)
+                .map(|pile| pile.cards.as_slice())
+        } else {
+            Some(self.deck.as_slice())
+        }
+    }
+
+    pub fn deck_for_mut(&mut self, player: &PlayerId) -> Option<&mut Vec<CardInstanceId>> {
+        if self.uses_personal_decks() {
+            self.player_decks
+                .iter_mut()
+                .find(|pile| &pile.player == player)
+                .map(|pile| &mut pile.cards)
+        } else {
+            Some(&mut self.deck)
+        }
+    }
+
+    pub fn discard_for(&self, player: &PlayerId) -> Option<&[CardInstanceId]> {
+        if self.uses_personal_decks() {
+            self.player_discards
+                .iter()
+                .find(|pile| &pile.player == player)
+                .map(|pile| pile.cards.as_slice())
+        } else {
+            Some(self.discard.as_slice())
+        }
+    }
+
+    pub fn discard_for_mut(&mut self, player: &PlayerId) -> Option<&mut Vec<CardInstanceId>> {
+        if self.uses_personal_decks() {
+            self.player_discards
+                .iter_mut()
+                .find(|pile| &pile.player == player)
+                .map(|pile| &mut pile.cards)
+        } else {
+            Some(&mut self.discard)
+        }
+    }
+
+    pub fn discard_owner(&self, card: CardInstanceId) -> Option<PlayerId> {
+        match self.card_origin(card)? {
+            CardOrigin::Shared => None,
+            CardOrigin::Player(player) => Some(player.clone()),
+        }
+    }
+
     pub fn initial_hp(&self, team: &TeamId) -> Option<i32> {
         self.initial_hp
             .iter()
@@ -521,6 +664,10 @@ impl PendingChoiceKind {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum GameEvent {
     DeckPrepared {
+        deck_order: Vec<CardInstanceId>,
+    },
+    PlayerDeckPrepared {
+        player: PlayerId,
         deck_order: Vec<CardInstanceId>,
     },
     CardsDealt {
@@ -641,6 +788,18 @@ pub enum GameEvent {
         shuffled_order: Vec<CardInstanceId>,
         placement: DeckPlacement,
     },
+    PlayerDiscardRecycledIntoDeck {
+        player: PlayerId,
+        shuffled_order: Vec<CardInstanceId>,
+        placement: DeckPlacement,
+    },
+    DiscardRetrieved {
+        player: PlayerId,
+        previous_player: PlayerId,
+        card: CardInstanceId,
+        hp_change: HpChangeDelta,
+        card_move: CardMoveDelta,
+    },
     TurnEnded {
         player: PlayerId,
     },
@@ -676,6 +835,9 @@ pub enum Command {
     AnswerEffectChoice {
         player: PlayerId,
         selected_cards: Vec<CardInstanceId>,
+    },
+    RetrievePreviousTurnDiscard {
+        player: PlayerId,
     },
 }
 
@@ -778,6 +940,8 @@ pub enum CardZone {
     Hand(PlayerId),
     DeckTop,
     Discard,
+    PlayerDeckTop(PlayerId),
+    PlayerDiscard(PlayerId),
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -860,6 +1024,33 @@ pub enum ValidationError {
     UnsupportedRuleset(RulesetId),
     DuplicateRuleModule(RuleModuleId),
     UnknownRuleModule(RuleModuleId),
+    PersonalDeckListsRequired,
+    DuplicatePlayerDeckList(PlayerId),
+    MissingPlayerDeckList(PlayerId),
+    UnknownDeckListPlayer(PlayerId),
+    InvalidDeckCardCount {
+        player: PlayerId,
+        expected: usize,
+        actual: usize,
+    },
+    DeckLevelLimitExceeded {
+        player: PlayerId,
+        maximum: u32,
+        actual: u32,
+    },
+    DeckCopyLimitExceeded {
+        player: PlayerId,
+        card: CardDefId,
+        maximum: usize,
+        actual: usize,
+    },
+    DeckInstancesMismatch {
+        player: PlayerId,
+    },
+    DiscardRetrievalDisabled,
+    NoRetrievableDiscard {
+        previous_player: PlayerId,
+    },
     CannotPassAction {
         reason: PassActionReason,
     },
@@ -968,6 +1159,7 @@ pub fn validate_setup(setup: &GameSetup) -> GameResult<()> {
 
     validate_team_seating(setup)?;
     validate_card_setup(setup)?;
+    validate_deck_lists(setup)?;
 
     Ok(())
 }
@@ -990,6 +1182,134 @@ fn validate_card_setup(setup: &GameSetup) -> GameResult<()> {
         if !card_defs.contains(&card_instance.definition) {
             return Err(GameError::Validation(
                 ValidationError::MissingCardDefinition(card_instance.definition.clone()),
+            ));
+        }
+
+        if let CardOrigin::Player(player) = &card_instance.origin
+            && !setup
+                .players
+                .iter()
+                .any(|candidate| &candidate.id == player)
+        {
+            return Err(GameError::Validation(ValidationError::UnknownPlayer(
+                player.clone(),
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_deck_lists(setup: &GameSetup) -> GameResult<()> {
+    if !setup.has_rule_module(PERSONAL_DECK_MODULE_ID) {
+        return Ok(());
+    }
+
+    if setup.deck_lists.is_empty() {
+        return Err(GameError::Validation(
+            ValidationError::PersonalDeckListsRequired,
+        ));
+    }
+
+    let definitions = setup
+        .card_defs
+        .iter()
+        .map(|card| (card.id.clone(), card))
+        .collect::<HashMap<_, _>>();
+    let mut players = HashSet::new();
+
+    for deck in &setup.deck_lists {
+        if !setup.players.iter().any(|player| player.id == deck.player) {
+            return Err(GameError::Validation(
+                ValidationError::UnknownDeckListPlayer(deck.player.clone()),
+            ));
+        }
+        if !players.insert(deck.player.clone()) {
+            return Err(GameError::Validation(
+                ValidationError::DuplicatePlayerDeckList(deck.player.clone()),
+            ));
+        }
+        if deck.cards.len() != 60 {
+            return Err(GameError::Validation(
+                ValidationError::InvalidDeckCardCount {
+                    player: deck.player.clone(),
+                    expected: 60,
+                    actual: deck.cards.len(),
+                },
+            ));
+        }
+
+        let mut level_total = 0;
+        let mut copies = HashMap::<CardDefId, usize>::new();
+        for card_id in &deck.cards {
+            let definition = definitions.get(card_id).ok_or_else(|| {
+                GameError::Validation(ValidationError::MissingCardDefinition(card_id.clone()))
+            })?;
+            level_total += definition.level;
+            *copies.entry(card_id.clone()).or_default() += 1;
+        }
+        if level_total > 170 {
+            return Err(GameError::Validation(
+                ValidationError::DeckLevelLimitExceeded {
+                    player: deck.player.clone(),
+                    maximum: 170,
+                    actual: level_total,
+                },
+            ));
+        }
+        for (card, actual) in copies {
+            let definition = definitions
+                .get(&card)
+                .expect("deck card definitions were validated");
+            let maximum = match definition.level {
+                1..=3 => 4,
+                4..=5 => 3,
+                _ => 0,
+            };
+            if actual > maximum {
+                return Err(GameError::Validation(
+                    ValidationError::DeckCopyLimitExceeded {
+                        player: deck.player.clone(),
+                        card,
+                        maximum,
+                        actual,
+                    },
+                ));
+            }
+        }
+    }
+
+    for player in &setup.players {
+        if !players.contains(&player.id) {
+            return Err(GameError::Validation(
+                ValidationError::MissingPlayerDeckList(player.id.clone()),
+            ));
+        }
+    }
+
+    for deck in &setup.deck_lists {
+        let expected =
+            deck.cards
+                .iter()
+                .fold(HashMap::<CardDefId, usize>::new(), |mut counts, card| {
+                    *counts.entry(card.clone()).or_default() += 1;
+                    counts
+                });
+        let actual = setup
+            .card_instances
+            .iter()
+            .filter(
+                |instance| matches!(&instance.origin, CardOrigin::Player(player) if player == &deck.player),
+            )
+            .fold(HashMap::<CardDefId, usize>::new(), |mut counts, instance| {
+                *counts.entry(instance.definition.clone()).or_default() += 1;
+                counts
+            });
+        if expected != actual {
+            return Err(GameError::Validation(
+                ValidationError::DeckInstancesMismatch {
+                    player: deck.player.clone(),
+                },
             ));
         }
     }

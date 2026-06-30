@@ -215,10 +215,12 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         GameEvent::TurnStarted { .. } => Some(AutomaticReason::TurnStart),
         GameEvent::CardsDrawnForTurnDiscardChoice { .. } => Some(AutomaticReason::TurnDraw),
         GameEvent::TurnDrawSkipped { .. } => Some(AutomaticReason::TurnDrawSkipped),
-        GameEvent::DiscardRecycledIntoDeck { .. } => Some(AutomaticReason::DiscardRecycle),
+        GameEvent::DiscardRecycledIntoDeck { .. }
+        | GameEvent::PlayerDiscardRecycledIntoDeck { .. } => Some(AutomaticReason::DiscardRecycle),
         GameEvent::StatusExpired { .. } => Some(AutomaticReason::StatusExpired),
         GameEvent::TurnEnded { .. } => Some(AutomaticReason::TurnEnd),
         GameEvent::DeckPrepared { .. }
+        | GameEvent::PlayerDeckPrepared { .. }
         | GameEvent::CardsDealt { .. }
         | GameEvent::CounterEffectEstablished { .. }
         | GameEvent::CounterEffectResolved { .. }
@@ -237,7 +239,8 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::StatusAdded { .. }
         | GameEvent::StatusRemoved { .. }
         | GameEvent::TurnDrawBonusChanged { .. }
-        | GameEvent::TurnDiscardChosen { .. } => None,
+        | GameEvent::TurnDiscardChosen { .. }
+        | GameEvent::DiscardRetrieved { .. } => None,
     }
 }
 
@@ -264,6 +267,10 @@ fn command_context(command: &Command) -> CommandContext {
         Command::AnswerEffectChoice { player, .. } => CommandContext {
             player: player.clone(),
             kind: CommandKind::AnswerEffectChoice,
+        },
+        Command::RetrievePreviousTurnDiscard { player } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::RetrievePreviousTurnDiscard,
         },
     }
 }
@@ -311,7 +318,21 @@ pub fn verify_recorded_decisions(
                         GameEvent::DeckPrepared { deck_order } => Some(deck_order.clone()),
                         _ => None,
                     })
-                    .ok_or(ReplayVerificationError::MissingSetupDeck { sequence })?;
+                    .unwrap_or_else(|| {
+                        actual
+                            .iter()
+                            .filter_map(|event| match event {
+                                GameEvent::PlayerDeckPrepared { deck_order, .. } => {
+                                    Some(deck_order.iter().copied())
+                                }
+                                _ => None,
+                            })
+                            .flatten()
+                            .collect()
+                    });
+                if deck_order.is_empty() {
+                    return Err(ReplayVerificationError::MissingSetupDeck { sequence });
+                }
                 OfficialRules::new()
                     .start_game(setup, deck_order)
                     .map_err(|error| ReplayVerificationError::DecisionFailed {

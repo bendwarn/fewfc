@@ -1,4 +1,5 @@
 import type { GameRoomAccess, GameRoomCapacity } from '../../shared/game-room'
+import { normalizeServerRuleModules } from '../utils/rule-modules'
 
 function roomAccess(value: unknown): GameRoomAccess {
   return value === 'public' ? 'public' : 'private'
@@ -24,6 +25,7 @@ export default defineEventHandler(async (event) => {
     name?: string
     access?: unknown
     capacity?: unknown
+    enabledRuleModules?: unknown
   }>(event)
   const gameId = crypto.randomUUID()
   const invitation = {
@@ -39,6 +41,7 @@ export default defineEventHandler(async (event) => {
     access: roomAccess(body.access),
     capacity: roomCapacity(body.capacity),
     name,
+    enabledRuleModules: normalizeServerRuleModules(body.enabledRuleModules),
     invitation,
   })
 

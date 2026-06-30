@@ -22,6 +22,10 @@ export type PublicCardRefs =
       kind: 'hidden'
       count: number
     }
+  | {
+      kind: 'partiallyKnown'
+      cards: Array<PublicCard | null>
+    }
 
 export interface PublicPlayerHand {
   player: PlayerId
@@ -54,6 +58,7 @@ export interface PublicCard {
 }
 
 export interface PublicGameState {
+  enabledRuleModules: string[]
   status: 'InProgress' | 'Finished'
   turnNumber: number
   phase: 'TurnStart' | 'Main' | 'TurnDraw' | 'TurnDrawDiscardChoice' | 'TurnEnd'
@@ -63,6 +68,8 @@ export interface PublicGameState {
   hp: TeamHp[]
   hands: PublicPlayerHand[]
   discard: PublicCard[]
+  playerDecks: Array<{ player: PlayerId; cards: PublicCardRefs }>
+  playerDiscards: Array<{ player: PlayerId; cards: PublicCard[] }>
   coveredPassives: PublicCoveredPassive[]
   counterEffects: Array<{ owner: PlayerId; effectId: string; effectName: string }>
   pendingChoice: PublicPendingChoice | null
@@ -99,5 +106,6 @@ export interface LocalGameResponse {
   interaction: {
     canPass: boolean
     hasOptionalEffect: boolean
+    canRetrieveDiscard: boolean
   }
 }

@@ -131,10 +131,12 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         GameEvent::TurnStarted { .. } => Some(AutomaticReason::TurnStart),
         GameEvent::CardsDrawnForTurnDiscardChoice { .. } => Some(AutomaticReason::TurnDraw),
         GameEvent::TurnDrawSkipped { .. } => Some(AutomaticReason::TurnDrawSkipped),
-        GameEvent::DiscardRecycledIntoDeck { .. } => Some(AutomaticReason::DiscardRecycle),
+        GameEvent::DiscardRecycledIntoDeck { .. }
+        | GameEvent::PlayerDiscardRecycledIntoDeck { .. } => Some(AutomaticReason::DiscardRecycle),
         GameEvent::StatusExpired { .. } => Some(AutomaticReason::StatusExpired),
         GameEvent::TurnEnded { .. } => Some(AutomaticReason::TurnEnd),
         GameEvent::DeckPrepared { .. }
+        | GameEvent::PlayerDeckPrepared { .. }
         | GameEvent::CardsDealt { .. }
         | GameEvent::CounterEffectEstablished { .. }
         | GameEvent::CounterEffectResolved { .. }
@@ -153,7 +155,8 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::StatusAdded { .. }
         | GameEvent::StatusRemoved { .. }
         | GameEvent::TurnDrawBonusChanged { .. }
-        | GameEvent::TurnDiscardChosen { .. } => None,
+        | GameEvent::TurnDiscardChosen { .. }
+        | GameEvent::DiscardRetrieved { .. } => None,
     }
 }
 
@@ -180,6 +183,10 @@ fn command_context(command: &Command) -> CommandContext {
         Command::AnswerEffectChoice { player, .. } => CommandContext {
             player: player.clone(),
             kind: CommandKind::AnswerEffectChoice,
+        },
+        Command::RetrievePreviousTurnDiscard { player } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::RetrievePreviousTurnDiscard,
         },
     }
 }
@@ -246,4 +253,5 @@ pub enum CommandKind {
     PerformFormation { formation_id: String },
     ChooseTurnDiscard,
     AnswerEffectChoice,
+    RetrievePreviousTurnDiscard,
 }

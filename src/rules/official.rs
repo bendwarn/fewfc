@@ -1,12 +1,13 @@
 use crate::domain::{
-    CardInstanceId, Command, GameError, GameEvent, GameResult, GameSetup, GameState, Player,
-    PlayerId, RuleModuleId, RulesetId, ValidationError, validate_setup,
+    CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, GameError, GameEvent, GameResult,
+    GameSetup, GameState, PERSONAL_DECK_MODULE_ID, Player, PlayerDeckList, PlayerId, RuleModuleId,
+    RulesetId, ValidationError, validate_setup,
 };
 use std::collections::{HashMap, HashSet};
 
 use super::{FormationCandidate, base::BaseRuleset, base_formation_registry};
 
-const OFFICIAL_RULE_MODULE_IDS: &[&str] = &[];
+const OFFICIAL_RULE_MODULE_IDS: &[&str] = &[DISCARD_RETRIEVAL_MODULE_ID, PERSONAL_DECK_MODULE_ID];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OfficialRules;
@@ -22,11 +23,35 @@ impl OfficialRules {
         turn_order: Vec<PlayerId>,
         enabled_rule_modules: Vec<RuleModuleId>,
     ) -> GameResult<GameSetup> {
+        self.configure_game_with_decks(players, turn_order, enabled_rule_modules, Vec::new())
+    }
+
+    pub fn configure_game_with_decks(
+        &self,
+        players: Vec<Player>,
+        turn_order: Vec<PlayerId>,
+        enabled_rule_modules: Vec<RuleModuleId>,
+        deck_lists: Vec<PlayerDeckList>,
+    ) -> GameResult<GameSetup> {
         self.validate_modules(&enabled_rule_modules)?;
         let mut setup = BaseRuleset::new().official_game_setup(players, turn_order);
         setup.enabled_rule_modules = enabled_rule_modules;
+        if setup.has_rule_module(PERSONAL_DECK_MODULE_ID) {
+            BaseRuleset::new().configure_personal_decks(&mut setup, deck_lists);
+        }
         self.validate_setup(&setup)?;
         Ok(setup)
+    }
+
+    pub fn default_rule_modules(&self) -> Vec<RuleModuleId> {
+        OFFICIAL_RULE_MODULE_IDS
+            .iter()
+            .map(|id| RuleModuleId::new(*id))
+            .collect()
+    }
+
+    pub fn preconstructed_deck(&self, player: PlayerId) -> PlayerDeckList {
+        BaseRuleset::new().preconstructed_deck(player)
     }
 
     pub fn start_game(

@@ -86,6 +86,16 @@ Zones store card instances, not card definitions.
 
 Rules resolve `CardInstanceId -> CardDefId -> CardDef` when matching formations or computing effects.
 
+Every card instance also has one immutable Card Origin:
+
+- `Shared` when all players use the shared deck
+- `Player(PlayerId)` when the card originated in that player's Personal Deck
+
+Card movement changes the current zone, never Card Origin. This distinction is
+required when another player's card temporarily enters the current player's
+Deck or hand. Each Deck and Discard Pile separately has a Pile Owner (`Shared`
+or `Player(PlayerId)`).
+
 ## 2) State Model
 
 Minimum shape:
@@ -101,11 +111,13 @@ enum Phase {
 
 struct GameSetup {
     ruleset: RulesetId,
+    enabled_rule_modules: Vec<RuleModuleId>,
     players: Vec<Player>,
     turn_order: Vec<PlayerId>,
     hp: Vec<TeamHp>,
     card_defs: Vec<CardDef>,
     card_instances: Vec<CardInstanceDef>,
+    deck_lists: Vec<PlayerDeckList>,
     hand_limit: usize,
     base_draw: usize,
 }
@@ -115,13 +127,15 @@ struct GameState {
     turn_number: u64,
     phase: Phase,
     current_turn_index: usize,
+    enabled_rule_modules: Vec<RuleModuleId>,
     players: Vec<Player>,
     turn_order: Vec<PlayerId>,
     hp: Vec<TeamHp>,
     initial_hp: Vec<TeamHp>,
-    deck: Vec<CardInstanceId>,
+    decks: Vec<CardPile>,
     hands: Vec<PlayerHand>,
-    discard: Vec<CardInstanceId>,
+    discard_piles: Vec<CardPile>,
+    exposed_foreign_cards: Vec<CardInstanceId>,
     pending_choice: Option<PendingChoice>,
     shields: Vec<PlayerShield>,
     covered_passives: Vec<CoveredPassive>,
@@ -133,7 +147,9 @@ struct GameState {
 
 Notes:
 
-- `deck[0]` is the top of the deck.
+- `pile.cards[0]` is the top of a Deck.
+- Shared-deck games have one shared Deck and Discard Pile.
+- Personal Deck games have one Deck and Discard Pile per Player.
 - The base hand limit is 5.
 - The base turn draw is 2, adjusted by available hand space.
 - Shields are attached to players, not teams.
@@ -167,6 +183,7 @@ Required command types:
 - `PassAction`
 - `ChooseTurnDiscard`
 - `AnswerEffectChoice`
+- `RetrievePreviousTurnDiscard` when Discard Retrieval is enabled
 
 Optional future command types:
 
@@ -188,6 +205,10 @@ Validation rules:
 The online adapter may store a pending command draft only while an `EffectGenerated` choice suspends and later continues formation resolution. `TurnDrawDiscard` is normal turn completion and must not retain the preceding formation command as a draft.
 
 `PassAction` is legal only when the player has no cards in hand or has **Cannot Act** status. A successful pass consumes the action opportunity and advances toward turn draw.
+
+`RetrievePreviousTurnDiscard` is an active-effect command. It does not accept a
+card target and does not consume the action opportunity; the rules derive the
+sole Retrievable Discard from canonical turn history.
 
 ## 4) Formation Resolution
 
@@ -273,7 +294,8 @@ Rules:
 
 ## 5) Rulesets
 
-A ruleset is a complete deterministic rule module for:
+A Ruleset is the mandatory Base Ruleset plus zero or more enabled Rule Modules.
+All modules share one deterministic interface for:
 
 - setup validation
 - turn constants
@@ -282,7 +304,13 @@ A ruleset is a complete deterministic rule module for:
 - effect resolution
 - event decisions
 
-The base ruleset provides the 25 base formations and supports both two-player and team-mode setup shapes.
+The Base Ruleset provides the 25 base formations and supports both two-player
+and team-mode setup shapes. Rule Modules retain their official category:
+
+- Advanced Rule Modules, such as Star
+- Optional Rule Modules, such as Discard Retrieval and Personal Deck
+
+The category affects presets, documentation, and UI, not the execution model.
 
 Team mode is not a separate ruleset unless future rule behavior diverges. It is a setup shape with:
 
@@ -291,6 +319,81 @@ Team mode is not a separate ruleset unless future rule behavior diverges. It is 
 - every player assigned to a team
 - every player appearing exactly once in turn order
 - no adjacent players from the same team, including circular adjacency between the last and first player
+
+### 5.1 Discard Retrieval
+
+Discard Retrieval is independently configurable and resolves during `Main` as
+an active effect.[3]
+
+1. The Previous Player must have a Turn Draw Discarded Card from the immediately
+   completed Previous Turn, and that Card Instance must still be in its Discard
+   Pile.
+2. The engine derives that card; the command does not submit a card ID.
+3. The current Player's Team loses HP equal to the card's level times two.
+4. The card moves to the top of the current Player's Deck. In a shared-deck game,
+   this is the shared Deck.
+5. HP change, card movement, and public exposure are one semantic resolution.
+
+Discard Retrieval is optional, does not close `Main`, and remains legal under
+**Cannot Act**. Insufficient HP does not prevent it: HP falls to zero, retrieval
+still resolves, and the game then ends.
+
+### 5.2 Personal Deck
+
+When Personal Deck is enabled:[3]
+
+- each Player uses their own Deck and Discard Pile
+- initial hands and later draws come from that Player's Deck
+- each Deck List contains exactly 60 cards selected from one complete 90-card
+  set
+- each exact element/level combination permits at most four copies at levels
+  1–3 and at most three copies at levels 4–5
+- total card levels must not exceed 170
+
+The built-in Preconstructed Deck List uses the following count for every
+element:
+
+| Level | Copies |
+|---|---:|
+| 1 | 3 |
+| 2 | 2 |
+| 3 | 3 |
+| 4 | 2 |
+| 5 | 2 |
+
+This produces 60 cards with total level 170.
+
+A valid custom Deck List is used when present. A missing or invalid custom list
+automatically falls back to the Preconstructed Deck List, and the Player is
+shown the name actually used.
+
+Card Origin remains immutable. When Discard Retrieval or another effect such as
+Chaos puts a card into a different Player's Deck:
+
+- the destination is the performing Player's Deck
+- the card remains fully public while in that Deck or hand
+- using or discarding it sends it to its origin Player's Discard Pile
+
+Every Player's Deck count and Discard Pile contents are public. Deck order,
+ordinary opposing hands, Locked Deck List name, and Locked Deck List contents
+remain private.
+
+### 5.3 Web setup
+
+New official rooms enable every available Rule Module by default; the Base
+Ruleset cannot be disabled. The room owner may independently disable Discard
+Retrieval or Personal Deck.
+
+The Web application stores one named custom Deck List per account. A minimal
+editor lives at `/deck`, linked from the account menu immediately above logout.
+It uses an element-by-level grid and displays live card-count, total-level, and
+copy-limit validation.
+
+For non-owners, becoming ready captures the effective Locked Deck List. The room
+owner's list is captured when starting the game. Changing any Rule Module,
+cancelling readiness, or leaving invalidates affected waiting-room snapshots.
+Started-game snapshots are immutable. Only the owning Player sees a Locked Deck
+List's name, contents, or fallback notice.
 
 ## 6) Persistence And Replay
 
@@ -306,17 +409,24 @@ struct GameRecord {
 
 The event log is the replay source of truth. Snapshots are optional cache/checkpoint data.
 
-Opening events include the full prepared deck order:
+Opening events preserve the existing shared-deck shape and add an explicit
+per-Player shape:
 
 ```rust
 GameEvent::DeckPrepared {
+    deck_order: Vec<CardInstanceId>,
+}
+
+GameEvent::PlayerDeckPrepared {
+    player: PlayerId,
     deck_order: Vec<CardInstanceId>,
 }
 ```
 
 Replay uses recorded events directly and does not rerun RNG. A seed may be stored as metadata/debug context when generating the initial deck, but once `DeckPrepared` exists, deck order is authoritative.
 
-Initial hands are dealt by the engine from the prepared deck order and emitted as events:
+Initial hands are dealt by the engine from the applicable prepared Deck order
+and emitted as events:
 
 - first player receives 4 cards
 - all other players receive 5 cards
@@ -404,6 +514,21 @@ A known formation with legal cards but missing resolver is a rule implementation
 - Public state views and public event feeds do not leak hidden hands, covered cards, draw choices, or effect-choice options.
 - Canonical events remain complete enough for replay.
 - Team-mode setup validation rejects invalid seating and unequal teams.
+- Every enabled Rule Module executes through the same Ruleset interface.
+- Discard Retrieval derives the Previous Player's Previous Turn discard and
+  emits no events when validation fails.
+- Discard Retrieval remains legal under **Cannot Act** and can end the game by
+  reducing the current Player's Team HP to zero.
+- Personal Deck validation enforces 60 cards, official copy limits, and total
+  level at most 170.
+- The Preconstructed Deck List has per-element counts `3/2/3/2/2` and total
+  level 170.
+- Personal Deck draw, discard recycling, and initial deal use the correct
+  Player-owned piles.
+- Exposed Foreign Cards remain public and return to their origin Discard Pile.
+- Locked Deck Lists and ordinary opposing hands remain private.
+- Rule Module changes invalidate waiting-room readiness and deck snapshots.
 
 [1]: https://www.cfecards.org/rule/latest/you-xi-gui-ze '五行戰鬥牌官方網站 - 遊戲規則（完整規則書）'
 [2]: https://www.cfecards.org/rule/latest/basicrule '五行戰鬥牌官方網站 - 基礎規則'
+[3]: https://www.cfecards.org/rule/latest/xuan-yong-gui-ze-qi-pai-gui-ze-ge-ren-pai-zu '五行戰鬥牌官方網站 - 選用規則：棄牌回收、個人牌組'

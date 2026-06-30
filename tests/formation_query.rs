@@ -22,6 +22,7 @@ fn card_instance(instance: u64, def_id: &str) -> CardInstanceDef {
     CardInstanceDef {
         instance: card(instance),
         definition: CardDefId::new(def_id),
+        origin: Default::default(),
     }
 }
 

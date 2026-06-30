@@ -12,6 +12,7 @@ export function safeInternalPath(value: unknown): string | undefined {
   const url = new URL(value, 'https://fewfc.invalid')
   return url.origin === 'https://fewfc.invalid' && (
     url.pathname === '/'
+    || url.pathname === '/deck'
     || url.pathname === '/rooms'
     || url.pathname.startsWith('/rooms/')
   )

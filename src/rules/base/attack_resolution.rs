@@ -76,7 +76,16 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             .map(|card| CardMoveDelta {
                 card,
                 from: CardZone::Hand(request.attacker.clone()),
-                to: CardZone::Discard,
+                to: if state.uses_personal_decks() {
+                    match state.card_origin(card) {
+                        Some(crate::domain::CardOrigin::Player(owner)) => {
+                            CardZone::PlayerDiscard(owner.clone())
+                        }
+                        _ => CardZone::Discard,
+                    }
+                } else {
+                    CardZone::Discard
+                },
             })
             .collect(),
         AttackResolutionMode::CopiedEffect => Vec::new(),
@@ -394,10 +403,12 @@ mod tests {
                 CardInstanceDef {
                     instance: CardInstanceId::new(1),
                     definition: CardDefId::new("metal"),
+                    origin: Default::default(),
                 },
                 CardInstanceDef {
                     instance: CardInstanceId::new(2),
                     definition: CardDefId::new("wood"),
+                    origin: Default::default(),
                 },
             ],
         );

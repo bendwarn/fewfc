@@ -76,6 +76,16 @@ export const playerProfile = sqliteTable('player_profile', {
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
 
+export const playerDeck = sqliteTable('player_deck', {
+  userId: text('user_id')
+    .primaryKey()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  cardsJson: text('cards_json').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+})
+
 export const publicGameRoom = sqliteTable(
   'public_game_room',
   {
@@ -102,5 +112,6 @@ export const schema = {
   account,
   verification,
   playerProfile,
+  playerDeck,
   publicGameRoom,
 }

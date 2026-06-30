@@ -452,7 +452,11 @@ fn resume_effect_choice_intents(
                     .map(|card| CardMoveDelta {
                         card,
                         from: CardZone::Hand(target.clone()),
-                        to: CardZone::DeckTop,
+                        to: if state.uses_personal_decks() {
+                            CardZone::PlayerDeckTop(player.clone())
+                        } else {
+                            CardZone::DeckTop
+                        },
                     })
                     .collect(),
             }])

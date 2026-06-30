@@ -9,9 +9,11 @@ export default defineEventHandler(async (event) => {
     })
   }
 
+  const { deck } = await effectiveDeckForUser(event, session.user.id)
   const response = await callGameRoom(event, gameId, {
     type: 'startGame',
     actorUserId: session.user.id,
+    deckList: deck,
   })
 
   await updatePublicRoom(event, response)

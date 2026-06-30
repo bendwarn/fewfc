@@ -42,6 +42,7 @@ fn card_instance(instance: u64, def_id: &str) -> CardInstanceDef {
     CardInstanceDef {
         instance: card(instance),
         definition: CardDefId::new(def_id),
+        origin: Default::default(),
     }
 }
 
@@ -105,6 +106,7 @@ fn bare_team_setup(players_by_team: &[(&str, &str)]) -> GameSetup {
             .collect(),
         card_defs: Vec::new(),
         card_instances: Vec::new(),
+        deck_lists: Vec::new(),
         hand_limit: 5,
         base_draw: 2,
     }
@@ -505,6 +507,7 @@ fn setup_validation_requires_hp_for_every_team() {
         hp: Vec::new(),
         card_defs: Vec::new(),
         card_instances: Vec::new(),
+        deck_lists: Vec::new(),
         hand_limit: 5,
         base_draw: 2,
     };
@@ -558,6 +561,7 @@ fn setup_validation_rejects_team_mode_turn_order_that_is_not_alternating() {
         ],
         card_defs: Vec::new(),
         card_instances: Vec::new(),
+        deck_lists: Vec::new(),
         hand_limit: 5,
         base_draw: 2,
     };

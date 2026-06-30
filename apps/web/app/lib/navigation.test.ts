@@ -6,6 +6,7 @@ describe('safeInternalPath', () => {
   test('accepts only application routes', () => {
     assert.equal(safeInternalPath('/rooms/abc?invite=secret'), '/rooms/abc?invite=secret')
     assert.equal(safeInternalPath('/rooms?tab=join'), '/rooms?tab=join')
+    assert.equal(safeInternalPath('/deck'), '/deck')
     assert.equal(safeInternalPath('/login'), undefined)
   })
 

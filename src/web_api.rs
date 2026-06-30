@@ -1,7 +1,8 @@
 use crate::application::{GameRecord, RecordedDecision};
 use crate::domain::{
-    CardInstanceId, Command, GameError, GameEvent, GameSetup, PassActionReason, PendingChoiceKind,
-    Phase, Player, PlayerId, StatusOwner, TargetDecl, TeamId, TurnDrawSkipReason,
+    CardDefId, CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, GameError, GameEvent,
+    GameSetup, PassActionReason, PendingChoiceKind, Phase, Player, PlayerDeckList, PlayerId,
+    RuleModuleId, StatusOwner, TargetDecl, TeamId, TurnDrawSkipReason,
 };
 use crate::public_view::{
     PublicCardRefs, PublicGameEvent, PublicGameState, PublicPendingChoiceKind, Viewer,
@@ -103,6 +104,13 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                 .map_err(ApiError::Game)?;
             advance_after_command(&mut record)?;
         }
+        ApiAction::RetrievePreviousTurnDiscard { player } => {
+            let _ = record
+                .handle(Command::RetrievePreviousTurnDiscard {
+                    player: PlayerId::new(player),
+                })
+                .map_err(ApiError::Game)?;
+        }
     }
 
     response_for(&record, viewer, &card_labels, &formation_names, Vec::new())
@@ -120,6 +128,9 @@ fn advance_to_interactive_decision(record: &mut GameRecord) -> Result<(), ApiErr
         let Some((player, reason)) = pass_action_for_state(record.state()) else {
             return Ok(());
         };
+        if can_retrieve_discard(record.state()) {
+            return Ok(());
+        }
 
         let _ = record
             .handle(Command::PassAction { player, reason })
@@ -174,6 +185,7 @@ fn response_for(
     playable_formations: Vec<WebPlayableFormation>,
 ) -> Result<ApiResponse, ApiError> {
     let can_pass = pass_action_for_state(record.state()).is_some();
+    let can_retrieve_discard = can_retrieve_discard(record.state());
 
     Ok(ApiResponse {
         record: record.recorded_decisions(),
@@ -189,7 +201,9 @@ fn response_for(
             .filter(|(_, event)| {
                 !matches!(
                     event,
-                    PublicGameEvent::DeckPrepared { .. } | PublicGameEvent::CardsDealt { .. }
+                    PublicGameEvent::DeckPrepared { .. }
+                        | PublicGameEvent::PlayerDeckPrepared { .. }
+                        | PublicGameEvent::CardsDealt { .. }
                 )
             })
             .rev()
@@ -200,9 +214,8 @@ fn response_for(
         playable_formations,
         interaction: WebInteraction {
             can_pass,
-            // The current base ruleset does not yet model optional active-effect
-            // Commands separately from the turn-closing Action Command.
-            has_optional_effect: false,
+            has_optional_effect: can_retrieve_discard,
+            can_retrieve_discard,
         },
     })
 }
@@ -225,12 +238,24 @@ struct ApiRequest {
 struct WebGameSetup {
     players: Vec<WebSetupPlayer>,
     turn_order: Vec<String>,
+    #[serde(default)]
+    enabled_rule_modules: Vec<String>,
+    #[serde(default)]
+    deck_lists: Vec<WebSetupDeckList>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct WebSetupPlayer {
     id: String,
     team: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebSetupDeckList {
+    player: String,
+    name: String,
+    cards: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -258,6 +283,46 @@ enum ApiAction {
         player: String,
         cards: Vec<CardInstanceId>,
     },
+    RetrievePreviousTurnDiscard {
+        player: String,
+    },
+}
+
+fn can_retrieve_discard(state: &crate::domain::GameState) -> bool {
+    if state.phase != Phase::Main
+        || state.pending_choice.is_some()
+        || !state.has_rule_module(DISCARD_RETRIEVAL_MODULE_ID)
+    {
+        return false;
+    }
+
+    let Some(player) = state.current_player() else {
+        return false;
+    };
+    let Some(index) = state
+        .turn_order
+        .iter()
+        .position(|candidate| candidate == player)
+    else {
+        return false;
+    };
+    let previous_index = if index == 0 {
+        state.turn_order.len().saturating_sub(1)
+    } else {
+        index - 1
+    };
+    let Some(previous_player) = state.turn_order.get(previous_index) else {
+        return false;
+    };
+    state
+        .last_turn_discard_by_player
+        .get(previous_player)
+        .filter(|discard| discard.turn_number + 1 == state.turn_number)
+        .is_some_and(|turn_discard| {
+            state
+                .discard_for(previous_player)
+                .is_some_and(|discard| discard.contains(&turn_discard.card))
+        })
 }
 
 fn fixture_setup(rules: &OfficialRules, first_player: Option<&str>) -> Result<GameSetup, ApiError> {
@@ -301,8 +366,22 @@ fn setup_for_request(
         .into_iter()
         .map(PlayerId::new)
         .collect::<Vec<_>>();
+    let modules = requested
+        .enabled_rule_modules
+        .into_iter()
+        .map(RuleModuleId::new)
+        .collect();
+    let deck_lists = requested
+        .deck_lists
+        .into_iter()
+        .map(|deck| PlayerDeckList {
+            player: PlayerId::new(deck.player),
+            name: deck.name,
+            cards: deck.cards.into_iter().map(CardDefId::new).collect(),
+        })
+        .collect();
     rules
-        .configure_game(players, turn_order, Vec::new())
+        .configure_game_with_decks(players, turn_order, modules, deck_lists)
         .map_err(ApiError::Game)
 }
 
@@ -378,11 +457,13 @@ struct ApiResponse {
 struct WebInteraction {
     can_pass: bool,
     has_optional_effect: bool,
+    can_retrieve_discard: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WebPublicGameState {
+    enabled_rule_modules: Vec<String>,
     status: String,
     turn_number: u64,
     phase: String,
@@ -392,6 +473,8 @@ struct WebPublicGameState {
     hp: Vec<WebTeamHp>,
     hands: Vec<WebPlayerHand>,
     discard: Vec<WebCard>,
+    player_decks: Vec<WebPlayerDeck>,
+    player_discards: Vec<WebPlayerDiscard>,
     covered_passives: Vec<WebCoveredPassive>,
     counter_effects: Vec<WebCounterEffect>,
     pending_choice: Option<WebPendingChoice>,
@@ -407,6 +490,11 @@ impl WebPublicGameState {
         formation_names: &HashMap<String, String>,
     ) -> Self {
         Self {
+            enabled_rule_modules: state
+                .enabled_rule_modules
+                .into_iter()
+                .map(|module| module.as_str().to_string())
+                .collect(),
             status: match &state.status {
                 crate::domain::GameStatus::InProgress => "InProgress".to_string(),
                 crate::domain::GameStatus::Finished { .. } => "Finished".to_string(),
@@ -457,6 +545,26 @@ impl WebPublicGameState {
                 .discard
                 .into_iter()
                 .map(|card| WebCard::from_id(card, labels))
+                .collect(),
+            player_decks: state
+                .player_decks
+                .into_iter()
+                .map(|pile| WebPlayerDeck {
+                    player: pile.player.as_str().to_string(),
+                    cards: WebCardRefs::from_public(pile.cards, labels),
+                })
+                .collect(),
+            player_discards: state
+                .player_discards
+                .into_iter()
+                .map(|pile| WebPlayerDiscard {
+                    player: pile.player.as_str().to_string(),
+                    cards: pile
+                        .cards
+                        .into_iter()
+                        .map(|card| WebCard::from_id(card, labels))
+                        .collect(),
+                })
                 .collect(),
             covered_passives: state
                 .covered_passives
@@ -541,6 +649,20 @@ struct WebTeamHp {
 struct WebPlayerHand {
     player: String,
     cards: WebCardRefs,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPlayerDeck {
+    player: String,
+    cards: WebCardRefs,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPlayerDiscard {
+    player: String,
+    cards: Vec<WebCard>,
 }
 
 #[derive(Serialize)]
@@ -649,6 +771,7 @@ enum WebStatusOwner {
 enum WebCardRefs {
     Known { cards: Vec<WebCard> },
     Hidden { count: usize },
+    PartiallyKnown { cards: Vec<Option<WebCard>> },
 }
 
 impl WebCardRefs {
@@ -661,6 +784,12 @@ impl WebCardRefs {
                     .collect(),
             },
             PublicCardRefs::Hidden { count } => Self::Hidden { count },
+            PublicCardRefs::PartiallyKnown { cards } => Self::PartiallyKnown {
+                cards: cards
+                    .into_iter()
+                    .map(|card| card.map(|card| WebCard::from_id(card, labels)))
+                    .collect(),
+            },
         }
     }
 }
@@ -743,6 +872,7 @@ fn event_type(event: &PublicGameEvent) -> String {
             .trim_end_matches('{')
             .to_string(),
         PublicGameEvent::DeckPrepared { .. } => "DeckPrepared".to_string(),
+        PublicGameEvent::PlayerDeckPrepared { .. } => "PlayerDeckPrepared".to_string(),
         PublicGameEvent::CardsDealt { .. } => "CardsDealt".to_string(),
         PublicGameEvent::PassiveCovered { .. } => "PassiveCovered".to_string(),
         PublicGameEvent::CardsDrawnForTurnDiscardChoice { .. } => {
@@ -770,6 +900,14 @@ fn event_presentation(
         PublicGameEvent::DeckPrepared { deck } => (
             "準備牌庫".to_string(),
             format!("已準備 {}。", card_refs_summary(deck, labels)),
+        ),
+        PublicGameEvent::PlayerDeckPrepared { player, deck } => (
+            "準備個人牌庫".to_string(),
+            format!(
+                "{} 已準備 {}。",
+                player.as_str(),
+                card_refs_summary(deck, labels)
+            ),
         ),
         PublicGameEvent::Public(event) => game_event_presentation(event, labels, formation_names),
         PublicGameEvent::PassiveCovered {
@@ -831,6 +969,12 @@ fn event_presentation(
                     target.as_str(),
                     count
                 ),
+                PublicCardRefs::PartiallyKnown { .. } => format!(
+                    "{} 檢視 {} 的手牌：{}。",
+                    viewer.as_str(),
+                    target.as_str(),
+                    card_refs_summary(cards, labels)
+                ),
             },
         ),
     }
@@ -845,6 +989,10 @@ fn game_event_presentation(
         GameEvent::DeckPrepared { deck_order } => (
             "準備牌庫".to_string(),
             format!("已準備 {} 張牌。", deck_order.len()),
+        ),
+        GameEvent::PlayerDeckPrepared { player, deck_order } => (
+            "準備個人牌庫".to_string(),
+            format!("{} 已準備 {} 張牌。", player.as_str(), deck_order.len()),
         ),
         GameEvent::CardsDealt { player, cards } => (
             "初始發牌".to_string(),
@@ -1060,6 +1208,35 @@ fn game_event_presentation(
             "重整牌庫".to_string(),
             format!("棄牌堆的 {} 張牌已重新放回牌庫。", shuffled_order.len()),
         ),
+        GameEvent::PlayerDiscardRecycledIntoDeck {
+            player,
+            shuffled_order,
+            ..
+        } => (
+            "重整個人牌庫".to_string(),
+            format!(
+                "{} 的棄牌堆有 {} 張牌重新放回牌庫。",
+                player.as_str(),
+                shuffled_order.len()
+            ),
+        ),
+        GameEvent::DiscardRetrieved {
+            player,
+            previous_player,
+            card,
+            hp_change,
+            ..
+        } => (
+            "棄牌回收".to_string(),
+            format!(
+                "{} 支付生命值（{} → {}），回收 {} 的 {}。",
+                player.as_str(),
+                hp_change.old_hp,
+                hp_change.new_hp,
+                previous_player.as_str(),
+                card_summary(card, labels)
+            ),
+        ),
         GameEvent::TurnEnded { player } => (
             "回合結束".to_string(),
             format!("{} 的回合結束。", player.as_str()),
@@ -1106,6 +1283,10 @@ fn card_refs_summary(cards: &PublicCardRefs, labels: &HashMap<CardInstanceId, St
             .collect::<Vec<_>>()
             .join("、"),
         PublicCardRefs::Hidden { count } => format!("{count} 張牌"),
+        PublicCardRefs::PartiallyKnown { cards } => {
+            let known = cards.iter().flatten().count();
+            format!("{} 張牌（其中 {known} 張公開）", cards.len())
+        }
     }
 }
 
@@ -1127,6 +1308,34 @@ mod tests {
 
         assert!(response.contains(r#""turnNumber":1"#));
         assert!(response.contains(r#""record""#));
+    }
+
+    #[test]
+    fn start_request_supports_default_on_optional_rules_and_personal_decks() {
+        let response = handle_request_json(
+            r#"{
+                "action":{"type":"start"},
+                "viewer":"alice",
+                "setup":{
+                    "players":[
+                        {"id":"alice","team":"team:alice"},
+                        {"id":"bob","team":"team:bob"}
+                    ],
+                    "turnOrder":["alice","bob"],
+                    "enabledRuleModules":["discard-retrieval","personal-deck"],
+                    "deckLists":[]
+                }
+            }"#,
+        )
+        .expect("personal deck start should succeed");
+        let json: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(
+            json["state"]["enabledRuleModules"],
+            serde_json::json!(["discard-retrieval", "personal-deck"])
+        );
+        assert_eq!(json["state"]["playerDecks"][0]["cards"]["count"], 56);
+        assert_eq!(json["state"]["playerDecks"][1]["cards"]["count"], 55);
     }
 
     #[test]

@@ -3,6 +3,7 @@ import {
   continuesPendingCommandDraft,
   emptyPublicState,
   invitationCredentialMatches,
+  normalizeRuleModules,
   normalizeGameRoomMetadata,
   requiresPendingCommandDraft,
   type GameRoomAccess,
@@ -14,6 +15,7 @@ import {
   type GameRoomResponse,
   type GameRoomSnapshot,
   type OnlineGameAction,
+  type PlayerDeckList,
   type PlayerNotification,
   type RulesGameSetup,
   type StoredGameEvent,
@@ -69,7 +71,9 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         case 'joinGame':
           return await this.joinGame(body.actorUserId, body.actorName, body.credential)
         case 'toggleReady':
-          return await this.toggleReady(body.actorUserId)
+          return await this.toggleReady(body.actorUserId, body.deckList)
+        case 'updateRuleModules':
+          return await this.updateRuleModules(body.actorUserId, body.enabledRuleModules)
         case 'leaveGame':
           return await this.leaveGame(body.actorUserId)
         case 'removePlayer':
@@ -77,7 +81,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         case 'dissolveGame':
           return await this.dissolveGame(body.actorUserId)
         case 'startGame':
-          return await this.startGame(body.actorUserId)
+          return await this.startGame(body.actorUserId, body.deckList)
         case 'resetGame':
           return await this.resetGame(body.actorUserId)
         case 'getState':
@@ -139,12 +143,13 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     const players = Array.from({ length: capacity }, (_, index) => `player-${index + 1}`)
     const now = new Date().toISOString()
     const metadata: GameRoomMetadata = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       gameId: request.gameId,
       name: request.name?.trim() || request.gameId,
       access: request.access ?? 'private',
       capacity,
       ruleset: 'fewfc-base',
+      enabledRuleModules: normalizeRuleModules(request.enabledRuleModules),
       players,
       members: [{
         userId: request.actorUserId,
@@ -165,6 +170,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         capacity,
         access: metadata.access,
         ruleset: metadata.ruleset,
+        enabledRuleModules: metadata.enabledRuleModules,
       },
       createdAt: now,
     }
@@ -254,7 +260,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return invitationCredentialMatches(invitation, credential)
   }
 
-  private async toggleReady(actorUserId: string): Promise<Response> {
+  private async toggleReady(
+    actorUserId: string,
+    deckList: PlayerDeckList,
+  ): Promise<Response> {
     const metadata = await this.requireMetadata()
     const actor = this.memberFor(metadata, actorUserId)
 
@@ -275,6 +284,11 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
 
     const ready = !actor.ready
+    if (ready) {
+      await this.ctx.storage.put(this.lockedDeckKey(actorUserId), deckList)
+    } else {
+      await this.ctx.storage.delete(this.lockedDeckKey(actorUserId))
+    }
     const updatedMetadata = await this.storeRoomEvent({
       ...metadata,
       members: metadata.members.map((member) => (
@@ -287,6 +301,35 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
     this.ctx.waitUntil(this.afterRoomMutation(updatedMetadata))
 
+    return this.json(await this.response(updatedMetadata, actorUserId))
+  }
+
+  private async updateRuleModules(
+    actorUserId: string,
+    enabledRuleModules: string[],
+  ): Promise<Response> {
+    const metadata = await this.requireMetadata()
+    const actor = this.memberFor(metadata, actorUserId)
+
+    if (!actor?.owner) {
+      return this.json({ error: 'only room owner may update rules' }, 403)
+    }
+    if (metadata.status !== 'Waiting') {
+      return this.json({ error: 'room has already started' }, 409)
+    }
+
+    const modules = normalizeRuleModules(enabledRuleModules)
+    for (const member of metadata.members) {
+      await this.ctx.storage.delete(this.lockedDeckKey(member.userId))
+    }
+    const updatedMetadata = await this.storeRoomEvent({
+      ...metadata,
+      enabledRuleModules: modules,
+      members: metadata.members.map(member => ({ ...member, ready: false })),
+      updatedAt: new Date().toISOString(),
+    }, 'RuleModulesChanged', actor.player, { enabledRuleModules: modules })
+
+    this.ctx.waitUntil(this.afterRoomMutation(updatedMetadata))
     return this.json(await this.response(updatedMetadata, actorUserId))
   }
 
@@ -311,6 +354,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       members: metadata.members.filter((member) => member.userId !== actorUserId),
       updatedAt: new Date().toISOString(),
     }, 'PlayerLeft', actor.player, { player: actor.player })
+    await this.ctx.storage.delete(this.lockedDeckKey(actorUserId))
 
     this.ctx.waitUntil(this.afterRoomMutation(updatedMetadata, {
       kind: 'roomChanged',
@@ -342,6 +386,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       members: metadata.members.filter((member) => member.userId !== targetUserId),
       updatedAt: new Date().toISOString(),
     }, 'PlayerRemoved', target.player, { player: target.player })
+    await this.ctx.storage.delete(this.lockedDeckKey(targetUserId))
 
     this.ctx.waitUntil(Promise.all([
       this.afterRoomMutation(updatedMetadata, {
@@ -387,7 +432,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return this.json(await this.response(updatedMetadata, actorUserId))
   }
 
-  private async startGame(actorUserId: string): Promise<Response> {
+  private async startGame(
+    actorUserId: string,
+    deckList: PlayerDeckList,
+  ): Promise<Response> {
     const metadata = await this.requireMetadata()
     const owner = metadata.members.find((member) => member.owner)
 
@@ -411,7 +459,12 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'not all joined players are ready' }, 409)
     }
 
-    const setup = this.randomSetup(metadata)
+    await this.ctx.storage.put(this.lockedDeckKey(actorUserId), deckList)
+    const lockedDecks = await Promise.all(metadata.members.map(async member => ({
+      player: member.player,
+      ...await this.requireLockedDeck(member.userId),
+    })))
+    const setup = this.randomSetup(metadata, lockedDecks)
     const firstPlayer = setup.turnOrder[0] ?? metadata.players[0] ?? 'player-1'
     const deckSeed = crypto.randomUUID()
     const rules = await callRulesEngine({
@@ -434,7 +487,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       createdAt: now,
     }
     const snapshot: GameRoomSnapshot = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       sequence,
       firstPlayer,
       deckSeed,
@@ -483,6 +536,9 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       status: 'Waiting',
       updatedAt: new Date().toISOString(),
     }, 'PlayersReturnedToRoom', undefined, {})
+    for (const member of metadata.members) {
+      await this.ctx.storage.delete(this.lockedDeckKey(member.userId))
+    }
 
     this.ctx.waitUntil(this.afterRoomMutation(updatedMetadata))
 
@@ -810,7 +866,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     })
   }
 
-  private randomSetup(metadata: GameRoomMetadata): RulesGameSetup {
+  private randomSetup(
+    metadata: GameRoomMetadata,
+    deckLists: Array<PlayerDeckList & { player: PlayerId }>,
+  ): RulesGameSetup {
     const turnOrder = this.shuffle(metadata.members.map((member) => member.player))
 
     if (metadata.capacity === 2) {
@@ -820,6 +879,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           team: `team-${index + 1}`,
         })),
         turnOrder,
+        enabledRuleModules: metadata.enabledRuleModules,
+        deckLists,
       }
     }
 
@@ -834,6 +895,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         team: teamByPlayer.get(member.player) ?? 'team-a',
       })),
       turnOrder,
+      enabledRuleModules: metadata.enabledRuleModules,
+      deckLists,
     }
   }
 
@@ -858,6 +921,9 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     playableFormations = [],
   ): Promise<GameRoomResponse> {
     const currentMetadata = metadata ?? await this.requireMetadata()
+    const lockedDeckName = actorUserId
+      ? (await this.ctx.storage.get<PlayerDeckList>(this.lockedDeckKey(actorUserId)))?.name
+      : undefined
     const viewer = actorUserId
       ? (this.playerFor(currentMetadata, actorUserId) ?? 'observer')
       : 'observer'
@@ -867,6 +933,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         gameId: currentMetadata.gameId,
         metadata: currentMetadata,
         invitation: await this.invitationFor(currentMetadata, actorUserId),
+        lockedDeckName,
         state: emptyPublicState(currentMetadata.players),
         events: (await this.events()).map((event) => ({
           id: `room-event-${event.sequence}`,
@@ -878,6 +945,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         interaction: {
           canPass: false,
           hasOptionalEffect: false,
+          canRetrieveDiscard: false,
         },
       }
     }
@@ -905,6 +973,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       gameId: currentMetadata.gameId,
       metadata: responseMetadata,
       invitation: await this.invitationFor(currentMetadata, actorUserId),
+      lockedDeckName,
       state: publicRules.state,
       events: publicRules.events.map((event) => ({
         ...event,
@@ -935,11 +1004,24 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return metadata.members.find((member) => member.userId === userId)
   }
 
+  private lockedDeckKey(userId: string) {
+    return `lockedDeck:${userId}`
+  }
+
+  private async requireLockedDeck(userId: string): Promise<PlayerDeckList> {
+    const deck = await this.ctx.storage.get<PlayerDeckList>(this.lockedDeckKey(userId))
+    if (!deck) {
+      throw new Error('player deck was not locked')
+    }
+    return deck
+  }
+
   private actionForPlayer(action: OnlineGameAction, player: PlayerId): OnlineGameAction {
     switch (action.type) {
       case 'performFormation':
       case 'chooseTurnDiscard':
       case 'answerEffectChoice':
+      case 'retrievePreviousTurnDiscard':
       case 'playableFormations':
         return { ...action, player }
       default:
@@ -1051,6 +1133,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       PlayerRemoved: `${event.actor ?? '玩家'} 已被移出房間。`,
       PlayerReady: `${event.actor ?? '玩家'} 已準備。`,
       PlayerUnready: `${event.actor ?? '玩家'} 已取消準備。`,
+      RuleModulesChanged: '房主已更新選用規則，所有玩家需重新準備。',
       PlayersReturnedToRoom: '玩家已返回等待房間。',
     }
 
@@ -1067,6 +1150,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         performFormationWithChoices: `${actor} 已完成陣法與效果選擇。`,
         chooseTurnDiscard: `${actor} 已完成捨棄。`,
         answerEffectChoice: `${actor} 已完成效果選擇。`,
+        retrievePreviousTurnDiscard: `${actor} 已發動棄牌回收。`,
       }
       return summaries[action] ?? '戰局狀態已更新。'
     }
@@ -1087,6 +1171,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       PlayerRemoved: '移除玩家',
       PlayerReady: '玩家準備',
       PlayerUnready: '取消準備',
+      RuleModulesChanged: '更新規則',
       PlayersReturnedToRoom: '返回房間',
       GameStarted: '對局開始',
       RulesCommandApplied: '戰局更新',

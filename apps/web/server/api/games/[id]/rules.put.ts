@@ -1,6 +1,9 @@
+import { normalizeServerRuleModules } from '../../../utils/rule-modules'
+
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
   const gameId = getRouterParam(event, 'id')
+  const body = await readBody<{ enabledRuleModules?: unknown }>(event)
 
   if (!gameId) {
     throw createError({
@@ -9,14 +12,12 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const { deck } = await effectiveDeckForUser(event, session.user.id)
   const response = await callGameRoom(event, gameId, {
-    type: 'toggleReady',
+    type: 'updateRuleModules',
     actorUserId: session.user.id,
-    deckList: deck,
+    enabledRuleModules: normalizeServerRuleModules(body.enabledRuleModules),
   })
 
   await updatePublicRoom(event, response)
-
   return response
 })

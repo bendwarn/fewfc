@@ -5,10 +5,21 @@ import type {
   PublicGameState,
   RecordedDecision,
 } from '../app/types/fewfc'
+export interface PlayerDeckList {
+  name: string
+  cards: string[]
+}
 
 export type GameRoomStatus = 'Waiting' | 'Active' | 'Finished' | 'Dissolved'
 export type GameRoomAccess = 'private' | 'public'
 export type GameRoomCapacity = 2 | 4
+export const AVAILABLE_RULE_MODULES = ['discard-retrieval', 'personal-deck'] as const
+export const DEFAULT_RULE_MODULES = [...AVAILABLE_RULE_MODULES]
+
+export function normalizeRuleModules(modules: unknown): string[] {
+  if (!Array.isArray(modules)) return [...DEFAULT_RULE_MODULES]
+  return AVAILABLE_RULE_MODULES.filter(module => modules.includes(module))
+}
 
 export interface GameRoomMember {
   userId: string
@@ -20,12 +31,13 @@ export interface GameRoomMember {
 }
 
 export interface GameRoomMetadata {
-  schemaVersion: 2
+  schemaVersion: 3
   gameId: string
   name: string
   access: GameRoomAccess
   capacity: GameRoomCapacity
   ruleset: 'fewfc-base'
+  enabledRuleModules: string[]
   players: PlayerId[]
   members: GameRoomMember[]
   status: GameRoomStatus
@@ -59,12 +71,13 @@ interface StoredGameRoomMember extends Partial<GameRoomMember> {
 
 interface StoredGameRoomMetadata extends Omit<
   GameRoomMetadata,
-  'schemaVersion' | 'name' | 'capacity' | 'members'
+  'schemaVersion' | 'name' | 'capacity' | 'members' | 'enabledRuleModules'
 > {
-  schemaVersion: 1 | 2
+  schemaVersion: 1 | 2 | 3
   name?: string
   capacity?: GameRoomCapacity
   members: StoredGameRoomMember[]
+  enabledRuleModules?: string[]
 }
 
 export function normalizeGameRoomMetadata(
@@ -75,12 +88,13 @@ export function normalizeGameRoomMetadata(
   const capacity: GameRoomCapacity = stored.capacity === 4 || stored.players.length === 4 ? 4 : 2
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     gameId: stored.gameId,
     name: stored.name?.trim() || stored.gameId,
     access: stored.access,
     capacity,
     ruleset: stored.ruleset,
+    enabledRuleModules: stored.enabledRuleModules ?? [],
     players: stored.players,
     members: stored.members.map((member, index) => {
       const owner = index === resolvedOwnerIndex
@@ -110,7 +124,7 @@ export interface StoredGameEvent {
 }
 
 export interface GameRoomSnapshot {
-  schemaVersion: 4
+  schemaVersion: 5
   sequence: number
   firstPlayer: PlayerId
   deckSeed: string
@@ -124,6 +138,8 @@ export interface RulesGameSetup {
     team: string
   }>
   turnOrder: PlayerId[]
+  enabledRuleModules: string[]
+  deckLists: Array<PlayerDeckList & { player: PlayerId }>
 }
 
 export type OnlineGameAction =
@@ -134,6 +150,7 @@ export type OnlineGameAction =
   | { type: 'performFormation'; player: PlayerId; formationId: string; cards: number[] }
   | { type: 'chooseTurnDiscard'; player: PlayerId; card: number }
   | { type: 'answerEffectChoice'; player: PlayerId; cards: number[] }
+  | { type: 'retrievePreviousTurnDiscard'; player: PlayerId }
   | { type: 'playableFormations'; player: PlayerId; cards: number[] }
 
 export function requiresPendingCommandDraft(
@@ -158,6 +175,7 @@ export type GameRoomRequest =
       access?: GameRoomAccess
       capacity?: GameRoomCapacity
       name?: string
+      enabledRuleModules?: string[]
       invitation: GameRoomInvitation
     }
   | {
@@ -172,6 +190,7 @@ export type GameRoomRequest =
   | {
       type: 'toggleReady'
       actorUserId: string
+      deckList: PlayerDeckList
     }
   | {
       type: 'leaveGame'
@@ -189,6 +208,12 @@ export type GameRoomRequest =
   | {
       type: 'startGame'
       actorUserId: string
+      deckList: PlayerDeckList
+    }
+  | {
+      type: 'updateRuleModules'
+      actorUserId: string
+      enabledRuleModules: string[]
     }
   | {
       type: 'resetGame'
@@ -209,6 +234,7 @@ export interface GameRoomResponse extends Omit<LocalGameResponse, 'record'> {
   gameId: string
   metadata: GameRoomMetadata
   invitation?: GameRoomInvitation
+  lockedDeckName?: string
 }
 
 export interface RulesEngineResult extends LocalGameResponse {
@@ -244,6 +270,7 @@ export type PlayerNotificationSocketMessage =
 
 export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): PublicGameState {
   return {
+    enabledRuleModules: [],
     status: 'InProgress',
     turnNumber: 1,
     phase: 'TurnStart',
@@ -265,6 +292,8 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
       },
     })),
     discard: [],
+    playerDecks: [],
+    playerDiscards: [],
     coveredPassives: [],
     counterEffects: [],
     pendingChoice: null,

@@ -79,7 +79,8 @@ describe('normalizeGameRoomMetadata', () => {
       updatedAt: '2026-06-28T00:00:00.000Z',
     })
 
-    assert.equal(metadata.schemaVersion, 2)
+    assert.equal(metadata.schemaVersion, 3)
+    assert.deepEqual(metadata.enabledRuleModules, [])
     assert.equal(metadata.name, 'version-one-room')
     assert.equal(metadata.capacity, 2)
     assert.deepEqual(metadata.members, [{

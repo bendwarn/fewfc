@@ -5,10 +5,12 @@ mod formation_selection;
 mod formation_use;
 
 use crate::domain::{
-    CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command,
-    DeckPlacement, Element, EngineInvariantError, GameError, GameEvent, GameResult, GameSetup,
-    GameState, GameStatus, PassActionReason, Phase, Player, PlayerId, RulesetId, TeamHp,
-    TurnDrawSkipReason, ValidationError, validate_setup,
+    CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
+    CardMoveDelta, CardOrigin, CardZone, Command, DISCARD_RETRIEVAL_MODULE_ID, DeckPlacement,
+    Element, EngineInvariantError, GameError, GameEvent, GameResult, GameSetup, GameState,
+    GameStatus, HpChangeDelta, PERSONAL_DECK_MODULE_ID, PassActionReason, Phase, Player,
+    PlayerDeckList, PlayerId, RulesetId, TeamHp, TurnDrawSkipReason, ValidationError,
+    validate_setup,
 };
 use crate::rules::FormationCandidate;
 use crate::rules::projection;
@@ -86,9 +88,49 @@ impl BaseRuleset {
             hp,
             card_defs: official_card_defs(),
             card_instances: official_card_instances(),
+            deck_lists: Vec::new(),
             hand_limit: 5,
             base_draw: 2,
         }
+    }
+
+    pub(crate) fn configure_personal_decks(
+        &self,
+        setup: &mut GameSetup,
+        requested_decks: Vec<PlayerDeckList>,
+    ) {
+        let deck_lists = setup
+            .players
+            .iter()
+            .map(|player| {
+                requested_decks
+                    .iter()
+                    .find(|deck| deck.player == player.id)
+                    .filter(|deck| valid_personal_deck(&setup.card_defs, deck))
+                    .cloned()
+                    .unwrap_or_else(|| preconstructed_deck(player.id.clone()))
+            })
+            .collect::<Vec<_>>();
+
+        let mut next_instance = 1;
+        let mut card_instances = Vec::new();
+        for deck in &deck_lists {
+            for definition in &deck.cards {
+                card_instances.push(CardInstanceDef {
+                    instance: CardInstanceId::new(next_instance),
+                    definition: definition.clone(),
+                    origin: CardOrigin::Player(deck.player.clone()),
+                });
+                next_instance += 1;
+            }
+        }
+
+        setup.deck_lists = deck_lists;
+        setup.card_instances = card_instances;
+    }
+
+    pub(crate) fn preconstructed_deck(&self, player: PlayerId) -> PlayerDeckList {
+        preconstructed_deck(player)
     }
 
     pub(crate) fn official_deck_order(&self, setup: &GameSetup) -> Vec<CardInstanceId> {
@@ -146,6 +188,7 @@ fn official_card_instances() -> Vec<CardInstanceDef> {
                 instances.push(CardInstanceDef {
                     instance: CardInstanceId::new(next_instance),
                     definition: CardDefId::new(format!("{}-{}", element.id, level)),
+                    origin: CardOrigin::Shared,
                 });
                 next_instance += 1;
             }
@@ -161,6 +204,65 @@ fn official_copy_count(level: u32) -> u64 {
         4..=5 => 3,
         _ => 0,
     }
+}
+
+fn preconstructed_deck(player: PlayerId) -> PlayerDeckList {
+    let copies_by_level = [3, 2, 3, 2, 2];
+    let cards = elements()
+        .into_iter()
+        .flat_map(|element| {
+            copies_by_level
+                .into_iter()
+                .enumerate()
+                .flat_map(move |(index, copies)| {
+                    std::iter::repeat_n(
+                        CardDefId::new(format!("{}-{}", element.id, index + 1)),
+                        copies,
+                    )
+                })
+        })
+        .collect();
+
+    PlayerDeckList {
+        player,
+        name: "五行均衡預組".to_string(),
+        cards,
+    }
+}
+
+fn valid_personal_deck(card_defs: &[CardDef], deck: &PlayerDeckList) -> bool {
+    if deck.cards.len() != 60 {
+        return false;
+    }
+
+    let definitions = card_defs
+        .iter()
+        .map(|definition| (&definition.id, definition))
+        .collect::<HashMap<_, _>>();
+    let mut level_total = 0;
+    let mut counts = HashMap::<&CardDefId, usize>::new();
+
+    for card in &deck.cards {
+        let Some(definition) = definitions.get(card) else {
+            return false;
+        };
+        level_total += definition.level;
+        *counts.entry(card).or_default() += 1;
+    }
+
+    level_total <= 170
+        && counts.into_iter().all(|(card, actual)| {
+            let level = definitions
+                .get(card)
+                .expect("counted definitions must exist")
+                .level;
+            actual
+                <= match level {
+                    1..=3 => 4,
+                    4..=5 => 3,
+                    _ => 0,
+                }
+        })
 }
 
 fn elements() -> [ElementSpec; 5] {
@@ -236,6 +338,44 @@ fn initial_events(
     setup: &GameSetup,
     deck_order: Vec<CardInstanceId>,
 ) -> GameResult<Vec<GameEvent>> {
+    if setup.has_rule_module(PERSONAL_DECK_MODULE_ID) {
+        let mut events = Vec::new();
+        for (turn_index, player) in setup.turn_order.iter().enumerate() {
+            let player_deck = deck_order
+                .iter()
+                .copied()
+                .filter(|card| {
+                    setup
+                        .card_instances
+                        .iter()
+                        .find(|instance| instance.instance == *card)
+                        .is_some_and(
+                            |instance| matches!(&instance.origin, CardOrigin::Player(owner) if owner == player),
+                        )
+                })
+                .collect::<Vec<_>>();
+            let card_count = if turn_index == 0 { 4 } else { 5 };
+            if player_deck.len() < card_count {
+                return Err(GameError::EngineInvariant(
+                    EngineInvariantError::NotEnoughCards {
+                        needed: card_count,
+                        available: player_deck.len(),
+                    },
+                ));
+            }
+
+            events.push(GameEvent::PlayerDeckPrepared {
+                player: player.clone(),
+                deck_order: player_deck.clone(),
+            });
+            events.push(GameEvent::CardsDealt {
+                player: player.clone(),
+                cards: player_deck[..card_count].to_vec(),
+            });
+        }
+        return Ok(events);
+    }
+
     let needed = initial_deal_count(setup);
     if deck_order.len() < needed {
         return Err(GameError::EngineInvariant(
@@ -421,28 +561,37 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
         .copied()
         .unwrap_or(0);
     let draw_count = (state.base_draw + draw_bonus).min(available_space) + 1;
-    if state.deck.len() < draw_count {
-        if state.deck.len() + state.discard.len() >= draw_count && !state.discard.is_empty() {
-            return Ok(Some(GameEvent::DiscardRecycledIntoDeck {
-                shuffled_order: state.discard.clone(),
-                placement: DeckPlacement::Bottom,
+    let deck = state
+        .deck_for(&player)
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
+    let discard = state
+        .discard_for(&player)
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
+    if deck.len() < draw_count {
+        if deck.len() + discard.len() >= draw_count && !discard.is_empty() {
+            return Ok(Some(if state.uses_personal_decks() {
+                GameEvent::PlayerDiscardRecycledIntoDeck {
+                    player,
+                    shuffled_order: discard.to_vec(),
+                    placement: DeckPlacement::Bottom,
+                }
+            } else {
+                GameEvent::DiscardRecycledIntoDeck {
+                    shuffled_order: discard.to_vec(),
+                    placement: DeckPlacement::Bottom,
+                }
             }));
         }
 
         return Err(GameError::EngineInvariant(
             EngineInvariantError::NotEnoughCards {
                 needed: draw_count,
-                available: state.deck.len(),
+                available: deck.len(),
             },
         ));
     }
 
-    let drawn_cards = state
-        .deck
-        .iter()
-        .take(draw_count)
-        .copied()
-        .collect::<Vec<_>>();
+    let drawn_cards = deck.iter().take(draw_count).copied().collect::<Vec<_>>();
 
     Ok(Some(GameEvent::CardsDrawnForTurnDiscardChoice {
         player,
@@ -609,7 +758,101 @@ fn decide_command_with_base_ruleset(
             events.extend(resumed_events);
             Ok(events)
         }
+        Command::RetrievePreviousTurnDiscard { player } => {
+            ensure_current_player(state, &player)?;
+            ensure_phase(state, Phase::Main)?;
+            if !state.has_rule_module(DISCARD_RETRIEVAL_MODULE_ID) {
+                return Err(GameError::Validation(
+                    ValidationError::DiscardRetrievalDisabled,
+                ));
+            }
+
+            let previous_player = previous_player(state, &player)?;
+            let card = state
+                .last_turn_discard_by_player
+                .get(&previous_player)
+                .filter(|discard| discard.turn_number + 1 == state.turn_number)
+                .map(|discard| discard.card)
+                .filter(|card| {
+                    state
+                        .discard_for(&previous_player)
+                        .is_some_and(|discard| discard.contains(card))
+                })
+                .ok_or_else(|| {
+                    GameError::Validation(ValidationError::NoRetrievableDiscard {
+                        previous_player: previous_player.clone(),
+                    })
+                })?;
+            let level = state
+                .card_def(card)
+                .ok_or(GameError::Validation(
+                    ValidationError::MissingCardInstanceDefinition(card),
+                ))?
+                .level as i32;
+            let team = state
+                .players
+                .iter()
+                .find(|candidate| candidate.id == player)
+                .map(|candidate| candidate.team.clone())
+                .ok_or_else(|| {
+                    GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
+                })?;
+            let old_hp = state
+                .hp
+                .iter()
+                .find(|team_hp| team_hp.team == team)
+                .map(|team_hp| team_hp.hp)
+                .ok_or_else(|| {
+                    GameError::Validation(ValidationError::MissingTeamHp(team.clone()))
+                })?;
+            let new_hp = (old_hp - level * 2).max(0);
+            let card_move = if state.uses_personal_decks() {
+                CardMoveDelta {
+                    card,
+                    from: CardZone::PlayerDiscard(previous_player.clone()),
+                    to: CardZone::PlayerDeckTop(player.clone()),
+                }
+            } else {
+                CardMoveDelta {
+                    card,
+                    from: CardZone::Discard,
+                    to: CardZone::DeckTop,
+                }
+            };
+
+            Ok(vec![GameEvent::DiscardRetrieved {
+                player,
+                previous_player,
+                card,
+                hp_change: HpChangeDelta {
+                    team,
+                    old_hp,
+                    delta: -(level * 2),
+                    new_hp,
+                    effective_delta: new_hp - old_hp,
+                },
+                card_move,
+            }])
+        }
     }
+}
+
+fn previous_player(state: &GameState, player: &PlayerId) -> GameResult<PlayerId> {
+    let index = state
+        .turn_order
+        .iter()
+        .position(|candidate| candidate == player)
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
+    let previous_index = if index == 0 {
+        state.turn_order.len().saturating_sub(1)
+    } else {
+        index - 1
+    };
+    state
+        .turn_order
+        .get(previous_index)
+        .cloned()
+        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))
 }
 
 fn ensure_engine_invariants(state: &GameState) -> GameResult<()> {
@@ -739,6 +982,7 @@ mod tests {
                 .map(|id| CardInstanceDef {
                     instance: card(id),
                     definition: CardDefId::new("metal"),
+                    origin: Default::default(),
                 })
                 .collect(),
         )
