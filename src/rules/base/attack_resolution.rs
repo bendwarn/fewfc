@@ -1,12 +1,13 @@
 use crate::domain::{
     AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, DamageTransform, Element,
-    ElementInteraction, GameError, GameEvent, GameResult, GameState, HpChangeDelta,
-    LastElementalAttack, LastElementalAttackUpdate, PlayerId, ShieldChangeDelta, TeamId,
-    ValidationError,
+    ElementInteraction, EnvironmentAttackEffect, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
+    GameEvent, GameResult, GameState, HpChangeDelta, LastElementalAttack,
+    LastElementalAttackUpdate, PlayerId, ShieldChangeDelta, TeamId, ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::{
-    AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, PointFormula, base_formation_registry,
+    AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, PointFormula,
+    official_formation_registry, sacred_beast_element,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,10 +134,19 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             .copied()
             .unwrap_or(0);
         events.push(GameEvent::TurnDrawBonusChanged {
-            player: request.attacker,
+            player: request.attacker.clone(),
             old_value,
             delta: 1,
             new_value: old_value + 1,
+        });
+    }
+
+    if let Some(environment) = sacred_beast_element(&request.formation_id) {
+        events.push(GameEvent::EnvironmentTransferred {
+            player: request.attacker,
+            formation_id: request.formation_id,
+            from: state.environment,
+            to: environment,
         });
     }
 
@@ -200,56 +210,81 @@ fn attack_point_breakdown(
     let Some(current_element) = elemental_attack_element(category) else {
         return AttackPointBreakdown {
             base_points,
-            interaction: ElementInteraction::None,
-            damage_transform: DamageTransform::NormalDamage,
-            final_amount: base_points,
-        };
-    };
-    if skip_interaction {
-        return AttackPointBreakdown {
-            base_points,
-            interaction: ElementInteraction::None,
-            damage_transform: DamageTransform::NormalDamage,
-            final_amount: base_points,
-        };
-    }
-    let Some(previous_element) = previous_formation_element(state, target) else {
-        return AttackPointBreakdown {
-            base_points,
+            environment_effect: EnvironmentAttackEffect::None,
             interaction: ElementInteraction::None,
             damage_transform: DamageTransform::NormalDamage,
             final_amount: base_points,
         };
     };
 
-    if current_element == previous_element {
-        AttackPointBreakdown {
-            base_points,
-            interaction: ElementInteraction::Same,
-            damage_transform: DamageTransform::HalfDamageRoundUp,
-            final_amount: (base_points + 1) / 2,
+    let mut amount = base_points;
+    let mut environment_effect = EnvironmentAttackEffect::None;
+    let mut environment_converts_to_healing = false;
+    if state.has_rule_module(FIVE_DIRECTIONS_LEGEND_MODULE_ID)
+        && let Some(environment) = state.environment
+    {
+        if current_element == environment {
+            amount *= 2;
+            environment_effect =
+                EnvironmentAttackEffect::MatchingElementDamageDoubled { environment };
+        } else if !skip_interaction && generates(current_element, environment) {
+            environment_converts_to_healing = true;
+            environment_effect =
+                EnvironmentAttackEffect::GeneratingElementDamageConvertedToHealing { environment };
         }
-    } else if generates(current_element, previous_element) {
-        AttackPointBreakdown {
+    }
+
+    if skip_interaction {
+        return AttackPointBreakdown {
             base_points,
-            interaction: ElementInteraction::Generating,
-            damage_transform: DamageTransform::HealTarget,
-            final_amount: base_points,
-        }
-    } else if overcomes(current_element, previous_element) {
-        AttackPointBreakdown {
-            base_points,
-            interaction: ElementInteraction::Overcoming,
-            damage_transform: DamageTransform::DoubleDamage,
-            final_amount: base_points * 2,
-        }
-    } else {
-        AttackPointBreakdown {
-            base_points,
+            environment_effect,
             interaction: ElementInteraction::None,
             damage_transform: DamageTransform::NormalDamage,
-            final_amount: base_points,
+            final_amount: amount,
+        };
+    }
+
+    let interaction = match previous_formation_element(state, target) {
+        Some(previous_element) if current_element == previous_element => ElementInteraction::Same,
+        Some(previous_element) if generates(current_element, previous_element) => {
+            ElementInteraction::Generating
         }
+        Some(previous_element) if overcomes(current_element, previous_element) => {
+            ElementInteraction::Overcoming
+        }
+        Some(_) | None => ElementInteraction::None,
+    };
+
+    let (damage_transform, final_amount) = match interaction {
+        ElementInteraction::Same => (
+            if environment_converts_to_healing {
+                DamageTransform::HealTarget
+            } else {
+                DamageTransform::HalfDamageRoundUp
+            },
+            (amount + 1) / 2,
+        ),
+        ElementInteraction::Generating => (DamageTransform::HealTarget, amount),
+        ElementInteraction::Overcoming => (
+            if environment_converts_to_healing {
+                DamageTransform::HealTarget
+            } else {
+                DamageTransform::DoubleDamage
+            },
+            amount * 2,
+        ),
+        ElementInteraction::None if environment_converts_to_healing => {
+            (DamageTransform::HealTarget, amount)
+        }
+        ElementInteraction::None => (DamageTransform::NormalDamage, amount),
+    };
+
+    AttackPointBreakdown {
+        base_points,
+        environment_effect,
+        interaction,
+        damage_transform,
+        final_amount,
     }
 }
 
@@ -258,7 +293,7 @@ fn previous_formation_element(state: &GameState, player: &PlayerId) -> Option<El
         .last_formation_by_player
         .get(player)?
         .effective_effect_id();
-    let registry = base_formation_registry();
+    let registry = official_formation_registry(&state.enabled_rule_modules);
     let formation = registry.formation(formation_id)?;
     let effect = registry.effect_for(formation)?;
 

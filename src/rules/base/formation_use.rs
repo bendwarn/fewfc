@@ -3,7 +3,10 @@ use crate::domain::{
     TargetDecl, TeamId, ValidationError,
     targeting::{RulePlayerTarget, RuleTeamTarget, TurnOrderTargets},
 };
-use crate::rules::{EffectPlan, base_formation_registry};
+use crate::rules::{
+    EffectPlan, base_formation_registry, environment_makes_formation_ineffective,
+    sacred_beast_element,
+};
 
 use super::attack_resolution::{self, AttackRequest, AttackResolutionMode};
 use super::covered_passive::{self, IncomingActionKind, TriggerRequest};
@@ -96,11 +99,22 @@ impl BaseEffectResolver {
                     TriggerRequest {
                         incoming_player: plan.player.clone(),
                         incoming_kind: IncomingActionKind::Attack,
+                        ignores_formation_effects: sacred_beast_element(&plan.formation_id)
+                            .is_some(),
                     },
                 );
-                let damage_prevented = passive_trigger.prevents_damage();
+                let environment_ineffective =
+                    environment_makes_formation_ineffective(state, &plan.formation_id);
+                let damage_prevented = passive_trigger.prevents_damage() || environment_ineffective;
                 let split_attack_damage = passive_trigger.splits_attack_damage();
                 let mut events = passive_trigger.events();
+                if environment_ineffective {
+                    events.push(formation_effect_ignored_event(
+                        state,
+                        &plan.player,
+                        &plan.formation_id,
+                    ));
+                }
                 events.extend(attack_resolution::resolve(
                     state,
                     AttackRequest {
@@ -143,6 +157,7 @@ impl BaseEffectResolver {
                     TriggerRequest {
                         incoming_player: plan.player.clone(),
                         incoming_kind: IncomingActionKind::PassiveSpell,
+                        ignores_formation_effects: false,
                     },
                 );
                 let sealed = passive_trigger.seals_covered_passive();
@@ -169,17 +184,33 @@ impl BaseEffectResolver {
                     TriggerRequest {
                         incoming_player: plan.player.clone(),
                         incoming_kind: IncomingActionKind::ActiveSpell,
+                        ignores_formation_effects: false,
                     },
                 );
                 let spell_cancelled = passive_trigger.cancels_spell();
+                let spell_ineffective =
+                    environment_makes_formation_ineffective(state, &plan.formation_id);
                 let mut events = passive_trigger.events();
                 events.push(GameEvent::FormationPerformed {
                     player: plan.player.clone(),
-                    formation_id: plan.formation_id,
+                    formation_id: plan.formation_id.clone(),
                     used_cards: plan.cards.clone(),
                     declared_targets: plan.declared_targets,
                 });
-                if !spell_cancelled {
+                if !spell_cancelled && spell_ineffective {
+                    events.push(formation_effect_ignored_event(
+                        state,
+                        &plan.player,
+                        &plan.formation_id,
+                    ));
+                }
+                if !spell_cancelled && !spell_ineffective {
+                    if spell.resolver_id == "void-meridian-severing" {
+                        if let Some(event) = environment_clearing_event(state, &plan.player)? {
+                            events.push(event);
+                        }
+                        return Ok(events);
+                    }
                     let (copied_effect_id, intents) = if spell.resolver_id == "metamorphosis" {
                         metamorphosis_intents(state, &plan.player, &plan.cards)?
                     } else {
@@ -205,6 +236,51 @@ impl BaseEffectResolver {
             }
         }
     }
+}
+
+fn formation_effect_ignored_event(
+    state: &GameState,
+    player: &PlayerId,
+    formation_id: &str,
+) -> GameEvent {
+    let environment = state
+        .environment
+        .expect("an Environment can only make a Formation ineffective while it exists");
+    GameEvent::FormationEffectIgnored {
+        player: player.clone(),
+        formation_id: formation_id.to_string(),
+        reason: crate::domain::FormationNoEffectReason::IneffectiveInEnvironment { environment },
+    }
+}
+
+fn environment_clearing_event(
+    state: &GameState,
+    player: &PlayerId,
+) -> GameResult<Option<GameEvent>> {
+    let Some(environment) = state.environment else {
+        return Ok(None);
+    };
+    let hp_changes = state
+        .hp
+        .iter()
+        .map(|team_hp| {
+            let new_hp = (team_hp.hp - 20).max(0);
+            crate::domain::HpChangeDelta {
+                team: team_hp.team.clone(),
+                old_hp: team_hp.hp,
+                delta: -20,
+                new_hp,
+                effective_delta: new_hp - team_hp.hp,
+            }
+        })
+        .collect();
+
+    Ok(Some(GameEvent::EnvironmentCleared {
+        player: player.clone(),
+        formation_id: "void-meridian-severing".to_string(),
+        environment,
+        hp_changes,
+    }))
 }
 
 fn active_spell_intents(

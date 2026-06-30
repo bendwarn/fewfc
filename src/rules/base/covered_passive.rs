@@ -1,8 +1,9 @@
 use crate::domain::{
-    ActionModification, GameEvent, GameResult, GameState, PassiveFlipOutcome,
+    ActionModification, Element, GameEvent, GameResult, GameState, PassiveFlipOutcome,
     PassiveNoEffectReason, PlayerId,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
+use crate::rules::environment_makes_formation_ineffective;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum IncomingActionKind {
@@ -16,6 +17,7 @@ pub(super) enum IncomingActionKind {
 pub(super) struct TriggerRequest {
     pub(super) incoming_player: PlayerId,
     pub(super) incoming_kind: IncomingActionKind,
+    pub(super) ignores_formation_effects: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,10 +68,16 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
         .iter()
         .filter(|passive| passive.owner == previous_player)
     {
+        let ineffective_environment =
+            environment_makes_formation_ineffective(state, &passive.formation_id)
+                .then_some(state.environment)
+                .flatten();
         let modifications = passive_spell_modifications(
             &passive.formation_id,
             request.incoming_kind,
             passive.sealed,
+            request.ignores_formation_effects,
+            ineffective_environment,
         );
         all_modifications.extend(modifications.iter().cloned());
         events.push(GameEvent::PassiveFlipped {
@@ -81,6 +89,8 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
                 &passive.formation_id,
                 request.incoming_kind,
                 passive.sealed,
+                request.ignores_formation_effects,
+                ineffective_environment,
                 &modifications,
             ),
         });
@@ -91,8 +101,13 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
         .iter()
         .filter(|counter| counter.owner == previous_player)
     {
-        let modifications =
-            passive_spell_modifications(&counter.effect_id, request.incoming_kind, false);
+        let modifications = passive_spell_modifications(
+            &counter.effect_id,
+            request.incoming_kind,
+            false,
+            request.ignores_formation_effects,
+            None,
+        );
         all_modifications.extend(modifications.iter().cloned());
         events.push(GameEvent::CounterEffectResolved {
             owner: counter.owner.clone(),
@@ -102,6 +117,8 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
                 &counter.effect_id,
                 request.incoming_kind,
                 false,
+                request.ignores_formation_effects,
+                None,
                 &modifications,
             ),
         });
@@ -121,8 +138,10 @@ fn passive_spell_modifications(
     passive_id: &str,
     incoming_kind: IncomingActionKind,
     sealed: bool,
+    ignores_formation_effects: bool,
+    ineffective_environment: Option<Element>,
 ) -> Vec<ActionModification> {
-    if sealed {
+    if sealed || ignores_formation_effects || ineffective_environment.is_some() {
         return Vec::new();
     }
 
@@ -141,8 +160,22 @@ fn passive_outcome(
     passive_id: &str,
     incoming_kind: IncomingActionKind,
     sealed: bool,
+    ignores_formation_effects: bool,
+    ineffective_environment: Option<Element>,
     modifications: &[ActionModification],
 ) -> PassiveFlipOutcome {
+    if ignores_formation_effects {
+        return PassiveFlipOutcome::NoEffect {
+            reason: PassiveNoEffectReason::IgnoredBySacredBeast,
+        };
+    }
+
+    if let Some(environment) = ineffective_environment {
+        return PassiveFlipOutcome::NoEffect {
+            reason: PassiveNoEffectReason::IneffectiveInEnvironment { environment },
+        };
+    }
+
     if sealed {
         return PassiveFlipOutcome::NoEffect {
             reason: PassiveNoEffectReason::Sealed,

@@ -1,7 +1,7 @@
 use fewfc::domain::{
     CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef, CardInstanceId, GameError,
-    GameSetup, PendingChoice, PendingChoiceKind, Phase, PlayerId, StatusDuration, StatusEffect,
-    StatusOwner, ValidationError,
+    GameSetup, PendingChoice, PendingChoiceKind, Phase, PlayerId, RuleModuleId, StatusDuration,
+    StatusEffect, StatusOwner, ValidationError,
 };
 use fewfc::rules::{Element, FormationCategory, OfficialRules};
 
@@ -35,7 +35,7 @@ fn setup() -> GameSetup {
             card_def("fire", Element::Fire),
             card_def("earth", Element::Earth),
         ],
-        (1..=20)
+        (1..=25)
             .map(|id| {
                 let def_id = match id % 5 {
                     1 => "metal",
@@ -48,6 +48,59 @@ fn setup() -> GameSetup {
             })
             .collect(),
     )
+}
+
+#[test]
+fn five_directions_legend_adds_sacred_beast_formations() {
+    let rules = OfficialRules::new();
+    let mut state = fewfc::domain::GameState::from_setup(
+        &setup().with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]),
+    );
+    state.phase = Phase::Main;
+    state.hands = vec![
+        fewfc::domain::PlayerHand::new(
+            PlayerId::new("p1"),
+            vec![card(1), card(6), card(11), card(16), card(21)],
+        ),
+        fewfc::domain::PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+
+    let candidates = rules
+        .playable_formations(
+            &state,
+            &PlayerId::new("p1"),
+            &[card(1), card(6), card(11), card(16), card(21)],
+        )
+        .unwrap();
+
+    assert!(candidates.iter().any(|candidate| {
+        candidate.formation_id == "west-white-tiger"
+            && candidate.formation_name == "西‧白虎"
+            && candidate.category == FormationCategory::Attack
+    }));
+}
+
+#[test]
+fn five_directions_legend_adds_void_meridian_severing_technique() {
+    let rules = OfficialRules::new();
+    let mut state = fewfc::domain::GameState::from_setup(
+        &setup().with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]),
+    );
+    state.phase = Phase::Main;
+    state.hands = vec![
+        fewfc::domain::PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(2), card(3)]),
+        fewfc::domain::PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+
+    let candidates = rules
+        .playable_formations(&state, &PlayerId::new("p1"), &[card(1), card(2), card(3)])
+        .unwrap();
+
+    assert!(candidates.iter().any(|candidate| {
+        candidate.formation_id == "void-meridian-severing"
+            && candidate.formation_name == "虛空斷脈術"
+            && candidate.category == FormationCategory::Spell
+    }));
 }
 
 #[test]

@@ -296,14 +296,10 @@
           </fieldset>
 
           <fieldset>
-            <legend>選用規則（預設全開）</legend>
-            <label class="rule-toggle">
-              <input v-model="roomRuleModules" type="checkbox" value="discard-retrieval">
-              棄牌回收
-            </label>
-            <label class="rule-toggle">
-              <input v-model="roomRuleModules" type="checkbox" value="personal-deck">
-              個人牌組
+            <legend>規則模組（預設全開）</legend>
+            <label v-for="rule in ruleOptions" :key="rule.id" class="rule-toggle">
+              <input v-model="roomRuleModules" type="checkbox" :value="rule.id">
+              {{ rule.label }}
             </label>
           </fieldset>
 
@@ -488,7 +484,12 @@
               <strong aria-label="牌背"><span class="sr-only">牌背</span></strong>
             </div>
             <div class="formation-field">
-              <span class="formation-field-label">陣法區</span>
+              <div class="formation-field-heading">
+                <span class="formation-field-label">陣法區</span>
+                <span class="environment-badge" aria-live="polite">
+                  環境 · {{ environmentLabel(state.environment) }}
+                </span>
+              </div>
               <div class="previous-formation">
                 <template v-if="state.previousTurnFormation">
                   <small>上一回合 · {{ playerLabel(state.previousTurnFormation.player) }}</small>
@@ -708,7 +709,7 @@
                 本局使用：{{ game.lockedDeckName.value }}
               </p>
               <fieldset v-if="isRoomOwner" class="waiting-rules">
-                <legend>選用規則</legend>
+                <legend>規則模組</legend>
                 <label v-for="rule in ruleOptions" :key="rule.id" class="rule-toggle">
                   <input
                     type="checkbox"
@@ -903,7 +904,11 @@ const roomName = ref('')
 const roomMode = ref('duel')
 const roomCapacity = computed<2 | 4>(() => roomMode.value === 'team' ? 4 : 2)
 const roomAccess = ref<'private' | 'public'>('public')
-const roomRuleModules = ref<string[]>(['discard-retrieval', 'personal-deck'])
+const roomRuleModules = ref<string[]>([
+  'discard-retrieval',
+  'personal-deck',
+  'five-directions-legend',
+])
 const roomCode = ref('')
 const joinRoomCode = ref('')
 const lobbyBusy = ref(false)
@@ -933,6 +938,7 @@ const modes = [
   { id: 'team', icon: '隊', label: '團隊對戰', description: '2 對 2 交錯行動' },
 ]
 const ruleOptions = [
+  { id: 'five-directions-legend', label: '進階規則‧五方傳說' },
   { id: 'discard-retrieval', label: '棄牌回收' },
   { id: 'personal-deck', label: '個人牌組' },
 ]
@@ -1890,6 +1896,17 @@ function phaseLabel(value: string): string {
   return labels[value] ?? value
 }
 
+function environmentLabel(value: PublicGameState['environment']): string {
+  if (!value) return '無環境'
+  return {
+    Metal: '金行',
+    Wood: '木行',
+    Water: '水行',
+    Fire: '火行',
+    Earth: '土行',
+  }[value]
+}
+
 function choiceLabel(value: string): string {
   const labels: Record<string, string> = {
     'Choose one drawn card to discard': '選擇一張本回合抽到的牌捨棄',
@@ -2165,7 +2182,9 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .discard-composition thead th:nth-child(5) { color: #d17a6c; }
 .discard-composition thead th:nth-child(6) { color: #c8a265; }
 .formation-field { @apply relative grid min-h-48 w-full min-w-0 grid-rows-[auto_1fr_auto] items-center border-x border-[rgba(166,141,86,.14)] px-3 py-2 text-center text-[10px] text-[#69736c]; }
+.formation-field-heading { @apply flex flex-wrap items-center justify-center gap-2; }
 .formation-field-label { @apply text-[#9a8251]; letter-spacing: .2em; }
+.environment-badge { @apply border border-[#64583f] bg-[#1a211c] px-2 py-1 text-[9px] text-gold-light; }
 .previous-formation { @apply grid min-h-24 content-center justify-items-center gap-1.5; }
 .previous-formation small { @apply text-[9px] text-muted; }
 .previous-formation strong { @apply font-serif text-sm text-gold-light; }

@@ -226,10 +226,13 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::CounterEffectResolved { .. }
         | GameEvent::ActionPassed { .. }
         | GameEvent::AttackResolved { .. }
+        | GameEvent::EnvironmentTransferred { .. }
+        | GameEvent::EnvironmentCleared { .. }
         | GameEvent::CardsMoved { .. }
         | GameEvent::EffectChoiceAnswered { .. }
         | GameEvent::EffectChoiceRequested { .. }
         | GameEvent::FormationEffectCopied { .. }
+        | GameEvent::FormationEffectIgnored { .. }
         | GameEvent::FormationPerformed { .. }
         | GameEvent::HandInspected { .. }
         | GameEvent::HpChanged { .. }

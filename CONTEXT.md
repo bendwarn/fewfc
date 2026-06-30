@@ -42,6 +42,61 @@ The optional official Advanced Rule Module that adds Sacred Beasts, the shared
 Environment, and Void Meridian-Severing Technique as one indivisible rules option.
 _Avoid_: Five Directions Legend Ruleset, Field Ruleset, individual Sacred Beast toggle
 
+**Hero Schools Rule Module (英雄學派規則)**:
+The optional official Advanced Rule Module that adds Professions, Profession
+Changes, Profession Abilities, Profession Formations, and Void Reversion Technique
+as one indivisible rules option.
+_Avoid_: Hero Schools Ruleset, individual Profession toggle
+
+**Profession (職業)**:
+A Player-owned role provided by the Hero Schools Rule Module. A Player starts
+without a Profession and may own at most one; a new Profession replaces the
+previous one.
+_Avoid_: class, hero, character
+
+**Profession Change (轉職)**:
+The action by which a Player acquires or replaces their Profession after meeting
+that Profession's card and prerequisite requirements.
+_Avoid_: class change, setup profession selection
+
+**Profession Breaking (破除職業)**:
+The removal of a Player's current Profession without replacing it, returning
+that Player to having no Profession.
+_Avoid_: Profession Change, profession expiry
+
+**Automatic Profession Ability (普通能力)**:
+A Profession Ability that applies automatically and continuously while the
+Player owns the granting Profession.
+_Avoid_: passive spell, Covered Passive, Status Effect
+
+**Formation Proficiency (專精能力)**:
+An automatic Profession Ability that gives its Player an alternative way to
+match a specified Formation.
+_Avoid_: Formation replacement, card mutation
+
+**Formation Match Option**:
+One legal interpretation of submitted Card Instances for a declared Formation,
+including any role assignment that changes the Formation's result.
+_Avoid_: automatic best match, separate Formation
+
+**Activated Profession Ability (發動能力)**:
+A Profession Ability that its Player may deliberately use during the Main Phase
+without consuming the action opportunity. A Player may successfully use only
+one Activated Profession Ability per turn.
+_Avoid_: Action Command, Formation Use
+
+**Prepared Profession Ability**:
+The declared, turn-scoped result of an Activated Profession Ability that changes
+how one specified Card Instance may be interpreted by the Player's subsequent
+action.
+_Avoid_: Card Definition mutation, hidden draft
+
+**Void Reversion Technique (虛空返璞術)**:
+The Hero Schools Formation that costs its performing Player's Team 20 HP and
+breaks every non-Legendary Profession, or every Profession when made from
+level-three-or-higher Cards.
+_Avoid_: Return to Origin, 歸元, Void Meridian-Severing Technique
+
 **Sacred Beast (聖獸)**:
 An 81-point elemental attack formed from five Cards of one element under the
 Five Directions Legend Rule Module. It ignores other Formation effects and
@@ -70,6 +125,11 @@ The successful removal of the current Environment, returning the game to no
 Environment. Void Meridian-Severing Technique clears only an Environment that
 exists and then changes both Teams' HP simultaneously.
 _Avoid_: environment expiry, Environment Transfer
+
+**Void Meridian-Severing Technique (虛空斷脈術)**:
+An Active Spell formed from three same-level Cards that clears the Environment.
+A successful Environment Clearing reduces each Team's HP by 20 simultaneously.
+_Avoid_: environment reset, player damage, Shield damage
 
 **Discard Retrieval (棄牌回收)**:
 An Optional Rule Module that lets the current Player pay HP during the
@@ -345,6 +405,15 @@ _Avoid_: callback response
 ## Relationships
 
 - A **Player** belongs to exactly one **Team**
+- A **Player** starts without a **Profession** and owns at most one
+- A successful **Profession Change** replaces the Player's previous **Profession**
+- **Profession Breaking** removes a Player's current **Profession** without replacement
+- A **Profession** grants Automatic Profession Abilities, Formation
+  Proficiencies, and Activated Profession Abilities
+- A successful **Activated Profession Ability** use consumes that Player's
+  shared once-per-turn activation allowance
+- A **Prepared Profession Ability** expires after the Player's action or at the
+  end of that turn
 - A **Team** owns HP for one or more **Players**
 - A **Player** owns at most one **Shield**
 - Every **Card Instance** has exactly one immutable **Card Origin**
@@ -381,6 +450,12 @@ _Avoid_: callback response
   configuration and execution model
 - The **Base Ruleset** supports both two-player and team-mode setup shapes
 - The **Star Rule Module** adds Star-specific rules without replacing the Base Ruleset
+- The **Hero Schools Rule Module** adds Profession-specific rules without replacing the Base Ruleset
+- The **Five Directions Legend Rule Module** adds five **Sacred Beasts**, one
+  shared **Environment**, and **Void Meridian-Severing Technique**
+- A game has at most one **Environment**, shared by every **Player**
+- Every **Sacred Beast** completes an **Environment Transfer** after its Attack resolves
+- **Environment Clearing** changes each **Team's** HP once, regardless of Player count
 - A **Team** owns at most one **Star**
 - A **Star** is owned by at most one **Team**
 - **Star Summoning** belongs to one **Player** and grants the Star to that Player's **Team**
@@ -394,6 +469,8 @@ _Avoid_: callback response
 - The **Previous Player** is derived from **Turn Order**
 - A **Formation** has exactly one **Formation Category**
 - A **Formation** resolves through exactly one **Effect Plan**
+- A Formation declaration with multiple result-changing interpretations
+  requires one explicit **Formation Match Option**
 - A **Spell** has one **Spell Type** that controls its performance procedure
 - A **Formation Use** retains its Formation identity separately from its **Resolved Formation Effect**
 - A **Formation Use** records zone changes through **Card Move Deltas** or equivalent replayable deltas

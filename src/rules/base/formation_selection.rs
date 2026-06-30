@@ -1,7 +1,7 @@
 use crate::domain::{CardInstanceId, GameError, GameResult, GameState, PlayerId, ValidationError};
 use crate::rules::{
-    EffectPlan, FormationCandidate, SubmittedCardFacts, base_formation_matcher,
-    base_formation_registry,
+    EffectPlan, FormationCandidate, FormationRegistry, SubmittedCardFacts, base_formation_matcher,
+    official_formation_registry,
 };
 use std::collections::HashSet;
 
@@ -9,6 +9,7 @@ use std::collections::HashSet;
 pub(super) struct FormationSelection {
     cards: Vec<CardInstanceId>,
     facts: Vec<SubmittedCardFacts>,
+    registry: FormationRegistry,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,14 +55,14 @@ impl FormationSelection {
         Ok(Self {
             cards: selected_cards,
             facts,
+            registry: official_formation_registry(&state.enabled_rule_modules),
         })
     }
 
     pub(super) fn candidates(&self) -> Vec<FormationCandidate> {
-        let registry = base_formation_registry();
         let matcher = base_formation_matcher();
 
-        registry
+        self.registry
             .formations()
             .into_iter()
             .filter(|formation| matcher.matches(&formation.pattern, &self.facts))
@@ -76,8 +77,7 @@ impl FormationSelection {
     }
 
     pub(super) fn require(self, formation_id: &str) -> GameResult<SelectedFormation> {
-        let registry = base_formation_registry();
-        let formation = registry.formation(formation_id).ok_or_else(|| {
+        let formation = self.registry.formation(formation_id).ok_or_else(|| {
             GameError::Validation(ValidationError::UnknownFormation(formation_id.to_string()))
         })?;
 
@@ -89,7 +89,8 @@ impl FormationSelection {
             ));
         }
 
-        let effect = registry
+        let effect = self
+            .registry
             .effect_for(formation)
             .expect("base formation registry must link every formation to an effect");
 

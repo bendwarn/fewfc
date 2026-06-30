@@ -79,6 +79,7 @@ export interface PublicGameState {
     owner: { kind: 'player' | 'team'; id: string }
     kind: string
   }>
+  environment: 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth' | null
   previousTurnFormation: PublicPreviousTurnFormation | null
 }
 

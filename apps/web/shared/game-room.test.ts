@@ -4,8 +4,20 @@ import {
   continuesPendingCommandDraft,
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
+  normalizeRuleModules,
   requiresPendingCommandDraft,
 } from './game-room'
+
+test('Five Directions Legend is an available default Rule Module', () => {
+  assert.deepEqual(normalizeRuleModules(undefined), [
+    'discard-retrieval',
+    'personal-deck',
+    'five-directions-legend',
+  ])
+  assert.deepEqual(normalizeRuleModules(['five-directions-legend', 'unknown']), [
+    'five-directions-legend',
+  ])
+})
 
 describe('normalizeGameRoomMetadata', () => {
   test('restores the first member as owner when persisted owner flags are false', () => {

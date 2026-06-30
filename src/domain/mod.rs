@@ -25,10 +25,15 @@ impl TeamId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 pub const BASE_RULESET_ID: &str = "base";
 pub const DISCARD_RETRIEVAL_MODULE_ID: &str = "discard-retrieval";
+pub const FIVE_DIRECTIONS_LEGEND_MODULE_ID: &str = "five-directions-legend";
 pub const PERSONAL_DECK_MODULE_ID: &str = "personal-deck";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -439,6 +444,8 @@ pub struct GameState {
     #[serde(default)]
     pub counter_effects: Vec<CounterEffect>,
     pub statuses: Vec<StatusEffect>,
+    #[serde(default)]
+    pub environment: Option<Element>,
     pub last_elemental_attack_by_player: HashMap<PlayerId, LastElementalAttack>,
     pub last_formation_by_player: HashMap<PlayerId, LastFormationUse>,
     pub turn_draw_bonus_by_player: HashMap<PlayerId, usize>,
@@ -498,6 +505,7 @@ impl GameState {
             covered_passives: Vec::new(),
             counter_effects: Vec::new(),
             statuses: Vec::new(),
+            environment: None,
             last_elemental_attack_by_player: HashMap::new(),
             last_formation_by_player: HashMap::new(),
             turn_draw_bonus_by_player: HashMap::new(),
@@ -705,6 +713,11 @@ pub enum GameEvent {
         player: PlayerId,
         effect_id: String,
     },
+    FormationEffectIgnored {
+        player: PlayerId,
+        formation_id: String,
+        reason: FormationNoEffectReason,
+    },
     CounterEffectEstablished {
         owner: PlayerId,
         effect_id: String,
@@ -730,6 +743,18 @@ pub enum GameEvent {
         shield_change: Option<ShieldChangeDelta>,
         card_moves: Vec<CardMoveDelta>,
         elemental_context_update: Option<LastElementalAttackUpdate>,
+    },
+    EnvironmentTransferred {
+        player: PlayerId,
+        formation_id: String,
+        from: Option<Element>,
+        to: Element,
+    },
+    EnvironmentCleared {
+        player: PlayerId,
+        formation_id: String,
+        environment: Element,
+        hp_changes: Vec<HpChangeDelta>,
     },
     TurnDrawBonusChanged {
         player: PlayerId,
@@ -873,14 +898,35 @@ pub enum PassiveNoEffectReason {
     NotASpell,
     Sealed,
     EmptyCity,
+    IgnoredBySacredBeast,
+    IneffectiveInEnvironment { environment: Element },
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormationNoEffectReason {
+    IneffectiveInEnvironment { environment: Element },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AttackPointBreakdown {
     pub base_points: i32,
+    #[serde(default)]
+    pub environment_effect: EnvironmentAttackEffect,
     pub interaction: ElementInteraction,
     pub damage_transform: DamageTransform,
     pub final_amount: i32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EnvironmentAttackEffect {
+    #[default]
+    None,
+    MatchingElementDamageDoubled {
+        environment: Element,
+    },
+    GeneratingElementDamageConvertedToHealing {
+        environment: Element,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]

@@ -115,3 +115,23 @@ fn base_only_game_runs_through_the_official_rules_interface() {
         record.state().clone()
     );
 }
+
+#[test]
+fn official_setup_uses_rulebook_hp_for_base_and_advanced_games() {
+    let rules = OfficialRules::new();
+    let (base_players, base_turn_order) = players();
+    let base = rules
+        .configure_game(base_players, base_turn_order, Vec::new())
+        .unwrap();
+    assert!(base.hp.iter().all(|team_hp| team_hp.hp == 100));
+
+    let (advanced_players, advanced_turn_order) = players();
+    let advanced = rules
+        .configure_game(
+            advanced_players,
+            advanced_turn_order,
+            vec![RuleModuleId::new("five-directions-legend")],
+        )
+        .unwrap();
+    assert!(advanced.hp.iter().all(|team_hp| team_hp.hp == 200));
+}

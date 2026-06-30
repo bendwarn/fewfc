@@ -40,6 +40,7 @@ function emptyState(): PublicGameState {
     pendingChoice: null,
     shields: [],
     statuses: [],
+    environment: null,
     previousTurnFormation: null,
   }
 }

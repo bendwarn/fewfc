@@ -27,10 +27,7 @@
 - Playwright treats `aria-disabled="true"` as disabled. Use a forced click only
   when a test deliberately verifies that the handler still refuses to open the
   control; normal workflow tests must use actionable controls.
-- An in-app browser tab left on a room from different Wrangler storage can produce
-  repeated WebSocket 500 logs. Those requests are unrelated to isolated E2E state;
-  do not replace automated assertions with manual browser checks to investigate
-  them.
+- 允許在沙箱外跑 E2E
 
 ## Online Game Commands
 

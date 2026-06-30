@@ -122,6 +122,7 @@ test('players can inspect a synchronized discard composition throughout a match'
     await expect(host.getByRole('dialog', { name: '建立房間' })).toBeVisible()
     await host.getByLabel('房間名稱').fill(roomName)
     await host.getByRole('button', { name: '公開房間', exact: true }).click()
+    await host.getByLabel('五方傳說').uncheck()
     await host.getByLabel('個人牌組').uncheck()
     await host.getByRole('button', { name: '建立房間 →' }).click()
     await expect(host).toHaveURL(/\/rooms\/[0-9a-f-]+$/)

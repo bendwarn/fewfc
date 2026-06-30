@@ -91,6 +91,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .expect("copied effect must follow a formation use");
             last_formation.resolved_effect_id = effect_id.clone();
         }
+        GameEvent::FormationEffectIgnored { .. } => {}
         GameEvent::CounterEffectEstablished { owner, effect_id } => {
             state.counter_effects.push(crate::domain::CounterEffect {
                 owner: owner.clone(),
@@ -219,6 +220,21 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 );
             }
             state.phase = crate::domain::Phase::TurnDraw;
+        }
+        GameEvent::EnvironmentTransferred { to, .. } => {
+            state.environment = Some(*to);
+        }
+        GameEvent::EnvironmentCleared { hp_changes, .. } => {
+            state.environment = None;
+            for change in hp_changes {
+                let team_hp = state
+                    .hp
+                    .iter_mut()
+                    .find(|team_hp| team_hp.team == change.team)
+                    .expect("canonical environment clearing must target an existing team");
+                team_hp.hp = change.new_hp;
+            }
+            finish_game_if_needed(state);
         }
         GameEvent::TurnDrawBonusChanged {
             player, new_value, ..

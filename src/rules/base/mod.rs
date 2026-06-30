@@ -660,6 +660,7 @@ fn decide_command_with_base_ruleset(
                 covered_passive::TriggerRequest {
                     incoming_player: player.clone(),
                     incoming_kind: covered_passive::IncomingActionKind::Pass,
+                    ignores_formation_effects: false,
                 },
             );
             let mut events = passive_trigger.events();

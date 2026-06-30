@@ -480,6 +480,7 @@ struct WebPublicGameState {
     pending_choice: Option<WebPendingChoice>,
     shields: Vec<WebShield>,
     statuses: Vec<WebStatus>,
+    environment: Option<String>,
     previous_turn_formation: Option<WebPreviousTurnFormation>,
 }
 
@@ -615,6 +616,9 @@ impl WebPublicGameState {
                     kind: status.kind,
                 })
                 .collect(),
+            environment: state
+                .environment
+                .map(|environment| format!("{environment:?}")),
             previous_turn_formation: state.previous_turn_formation.map(|formation| {
                 WebPreviousTurnFormation {
                     player: formation.player.as_str().to_string(),
@@ -1076,6 +1080,19 @@ fn game_event_presentation(
                 formation_name(formation_names, effect_id)
             ),
         ),
+        GameEvent::FormationEffectIgnored {
+            player,
+            formation_id,
+            reason: crate::domain::FormationNoEffectReason::IneffectiveInEnvironment { environment },
+        } => (
+            "陣法無效".to_string(),
+            format!(
+                "{} 的「{}」因{}而無效。",
+                player.as_str(),
+                formation_name(formation_names, formation_id),
+                element_name(*environment),
+            ),
+        ),
         GameEvent::CounterEffectEstablished { owner, effect_id } => (
             "建立反制".to_string(),
             format!(
@@ -1237,10 +1254,59 @@ fn game_event_presentation(
                 card_summary(card, labels)
             ),
         ),
+        GameEvent::EnvironmentTransferred {
+            player,
+            formation_id,
+            from,
+            to,
+        } => (
+            "環境轉移".to_string(),
+            format!(
+                "{} 的「{}」將環境由{}轉移為{}。",
+                player.as_str(),
+                formation_name(formation_names, formation_id),
+                from.map(element_name).unwrap_or("無環境"),
+                element_name(*to),
+            ),
+        ),
+        GameEvent::EnvironmentCleared {
+            player,
+            formation_id,
+            environment,
+            hp_changes,
+        } => (
+            "環境破除".to_string(),
+            format!(
+                "{} 的「{}」破除{}，{}。",
+                player.as_str(),
+                formation_name(formation_names, formation_id),
+                element_name(*environment),
+                hp_changes
+                    .iter()
+                    .map(|change| format!(
+                        "{} 生命值 {} → {}",
+                        change.team.as_str(),
+                        change.old_hp,
+                        change.new_hp
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("、"),
+            ),
+        ),
         GameEvent::TurnEnded { player } => (
             "回合結束".to_string(),
             format!("{} 的回合結束。", player.as_str()),
         ),
+    }
+}
+
+fn element_name(element: crate::domain::Element) -> &'static str {
+    match element {
+        crate::domain::Element::Metal => "金行環境",
+        crate::domain::Element::Wood => "木行環境",
+        crate::domain::Element::Water => "水行環境",
+        crate::domain::Element::Fire => "火行環境",
+        crate::domain::Element::Earth => "土行環境",
     }
 }
 
@@ -1377,6 +1443,22 @@ mod tests {
         let json = serde_json::to_value(web_state).expect("web state should serialize");
 
         assert_eq!(json["status"], "Finished");
+    }
+
+    #[test]
+    fn shared_environment_is_projected_as_public_web_state() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let mut state = crate::domain::GameState::from_setup(&setup);
+        state.environment = Some(crate::domain::Element::Water);
+        let web_state = WebPublicGameState::from_public(
+            crate::public_view::state_for(&state, Viewer::Observer),
+            &rules.card_labels(&setup).unwrap(),
+            &rules.formation_names(&setup).unwrap(),
+        );
+        let json = serde_json::to_value(web_state).expect("web state should serialize");
+
+        assert_eq!(json["environment"], "Water");
     }
 
     #[test]
@@ -1565,6 +1647,7 @@ mod tests {
             used_cards: Vec::new(),
             point_breakdown: crate::domain::AttackPointBreakdown {
                 base_points: 12,
+                environment_effect: crate::domain::EnvironmentAttackEffect::None,
                 interaction: crate::domain::ElementInteraction::None,
                 damage_transform: crate::domain::DamageTransform::NormalDamage,
                 final_amount: 12,

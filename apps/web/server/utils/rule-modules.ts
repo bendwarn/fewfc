@@ -1,4 +1,8 @@
-const availableRuleModules = ['discard-retrieval', 'personal-deck']
+const availableRuleModules = [
+  'discard-retrieval',
+  'personal-deck',
+  'five-directions-legend',
+]
 
 export function normalizeServerRuleModules(modules: unknown): string[] {
   if (!Array.isArray(modules)) return [...availableRuleModules]

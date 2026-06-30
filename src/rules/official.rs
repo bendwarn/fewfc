@@ -1,13 +1,17 @@
 use crate::domain::{
-    CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, GameError, GameEvent, GameResult,
-    GameSetup, GameState, PERSONAL_DECK_MODULE_ID, Player, PlayerDeckList, PlayerId, RuleModuleId,
-    RulesetId, ValidationError, validate_setup,
+    CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+    GameError, GameEvent, GameResult, GameSetup, GameState, PERSONAL_DECK_MODULE_ID, Player,
+    PlayerDeckList, PlayerId, RuleModuleId, RulesetId, ValidationError, validate_setup,
 };
 use std::collections::{HashMap, HashSet};
 
-use super::{FormationCandidate, base::BaseRuleset, base_formation_registry};
+use super::{FormationCandidate, base::BaseRuleset, official_formation_registry};
 
-const OFFICIAL_RULE_MODULE_IDS: &[&str] = &[DISCARD_RETRIEVAL_MODULE_ID, PERSONAL_DECK_MODULE_ID];
+const OFFICIAL_RULE_MODULE_IDS: &[&str] = &[
+    DISCARD_RETRIEVAL_MODULE_ID,
+    PERSONAL_DECK_MODULE_ID,
+    FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OfficialRules;
@@ -36,6 +40,16 @@ impl OfficialRules {
         self.validate_modules(&enabled_rule_modules)?;
         let mut setup = BaseRuleset::new().official_game_setup(players, turn_order);
         setup.enabled_rule_modules = enabled_rule_modules;
+        let uses_advanced_rules = setup.has_rule_module(FIVE_DIRECTIONS_LEGEND_MODULE_ID);
+        let official_hp = match (setup.players.len(), uses_advanced_rules) {
+            (2, false) => 100,
+            (2, true) => 200,
+            (_, false) => 150,
+            (_, true) => 250,
+        };
+        for team_hp in &mut setup.hp {
+            team_hp.hp = official_hp;
+        }
         if setup.has_rule_module(PERSONAL_DECK_MODULE_ID) {
             BaseRuleset::new().configure_personal_decks(&mut setup, deck_lists);
         }
@@ -99,7 +113,7 @@ impl OfficialRules {
 
     pub fn formation_names(&self, setup: &GameSetup) -> GameResult<HashMap<String, String>> {
         self.validate_setup(setup)?;
-        Ok(base_formation_registry()
+        Ok(official_formation_registry(&setup.enabled_rule_modules)
             .formations()
             .into_iter()
             .map(|formation| (formation.id.clone(), formation.name.clone()))

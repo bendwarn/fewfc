@@ -1,9 +1,10 @@
 use fewfc::application::{
-    GameRecord, RecordedDecisionSource, ReplayVerificationError, verify_recorded_decisions,
+    GameRecord, RecordedDecisionSource, ReplayVerificationError, replay, verify_recorded_decisions,
 };
 use fewfc::domain::{
     CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, GameError, GameEvent, GameSetup,
-    PendingChoice, PendingChoiceKind, PlayerId, RulesetId, ValidationError,
+    HpChangeDelta, PendingChoice, PendingChoiceKind, PlayerId, RuleModuleId, RulesetId, TeamId,
+    ValidationError,
 };
 use fewfc::infrastructure::{
     FileSystemPersistence, FixedDeckPreparation, InMemoryPersistence, PersistedGameRecord,
@@ -573,4 +574,47 @@ fn game_record_repository_round_trip_loads_game_record_without_persisted_dto_cal
     assert_eq!(loaded.state().clone(), record.state().clone());
     assert_eq!(repository.load_snapshot("game-1").unwrap(), None);
     assert_eq!(repository.load_record("missing").unwrap(), None);
+}
+
+#[test]
+fn environment_events_round_trip_and_replay_without_recomputing_rules() {
+    let setup =
+        two_player_setup().with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let events = vec![
+        GameEvent::EnvironmentTransferred {
+            player: PlayerId::new("p1"),
+            formation_id: "south-vermilion-bird".to_string(),
+            from: None,
+            to: Element::Fire,
+        },
+        GameEvent::EnvironmentCleared {
+            player: PlayerId::new("p2"),
+            formation_id: "void-meridian-severing".to_string(),
+            environment: Element::Fire,
+            hp_changes: vec![
+                HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 30,
+                    delta: -20,
+                    new_hp: 10,
+                    effective_delta: -20,
+                },
+                HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 30,
+                    delta: -20,
+                    new_hp: 10,
+                    effective_delta: -20,
+                },
+            ],
+        },
+    ];
+
+    let json = serde_json::to_string(&events).unwrap();
+    let restored: Vec<GameEvent> = serde_json::from_str(&json).unwrap();
+    let state = replay(&setup, &restored).unwrap();
+
+    assert_eq!(restored, events);
+    assert_eq!(state.environment, None);
+    assert!(state.hp.iter().all(|team_hp| team_hp.hp == 10));
 }

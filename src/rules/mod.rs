@@ -254,6 +254,52 @@ pub(crate) fn base_formation_registry() -> FormationRegistry {
         .expect("base formation registry must be internally consistent")
 }
 
+pub(crate) fn official_formation_registry(
+    modules: &[crate::domain::RuleModuleId],
+) -> FormationRegistry {
+    let mut specs = base_specs();
+    if modules
+        .iter()
+        .any(|module| module.as_str() == crate::domain::FIVE_DIRECTIONS_LEGEND_MODULE_ID)
+    {
+        specs.extend(five_directions_legend_specs());
+    }
+    FormationRegistry::new(
+        specs.iter().map(|spec| spec.formation.clone()).collect(),
+        specs.into_iter().map(|spec| spec.effect).collect(),
+    )
+    .expect("official formation registry must be internally consistent")
+}
+
+pub(crate) fn sacred_beast_element(formation_id: &str) -> Option<Element> {
+    match formation_id {
+        "east-azure-dragon" => Some(Element::Wood),
+        "west-white-tiger" => Some(Element::Metal),
+        "south-vermilion-bird" => Some(Element::Fire),
+        "north-black-tortoise" => Some(Element::Water),
+        "center-yellow-serpent" => Some(Element::Earth),
+        _ => None,
+    }
+}
+
+pub(crate) fn environment_makes_formation_ineffective(
+    state: &crate::domain::GameState,
+    formation_id: &str,
+) -> bool {
+    if !state.has_rule_module(crate::domain::FIVE_DIRECTIONS_LEGEND_MODULE_ID) {
+        return false;
+    }
+
+    matches!(
+        (state.environment, formation_id),
+        (Some(Element::Metal), "defense" | "barrier")
+            | (Some(Element::Wood), "metamorphosis" | "chaos")
+            | (Some(Element::Water), "countershock" | "shock-burst")
+            | (Some(Element::Fire), "weapon" | "radiance")
+            | (Some(Element::Earth), "seal" | "return-to-origin")
+    )
+}
+
 pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
     FormationMatcher::new()
         .with_custom("two-different-elements", |submitted| {
@@ -264,6 +310,12 @@ pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
                 return false;
             };
             submitted.len() == 5 && submitted.iter().all(|card| card.level == first_card.level)
+        })
+        .with_custom("three-same-level", |submitted| {
+            let Some(first_card) = submitted.first() else {
+                return false;
+            };
+            submitted.len() == 3 && submitted.iter().all(|card| card.level == first_card.level)
         })
 }
 
@@ -518,6 +570,64 @@ fn base_specs() -> Vec<BaseFormationSpec> {
             PointFormula::TargetHandCountTimes(15),
         ),
     ]
+}
+
+fn five_directions_legend_specs() -> Vec<BaseFormationSpec> {
+    vec![
+        sacred_beast("east-azure-dragon", "東‧青龍", Element::Wood),
+        sacred_beast("west-white-tiger", "西‧白虎", Element::Metal),
+        sacred_beast("south-vermilion-bird", "南‧朱雀", Element::Fire),
+        sacred_beast("north-black-tortoise", "北‧玄武", Element::Water),
+        sacred_beast("center-yellow-serpent", "中‧黃蛇", Element::Earth),
+        BaseFormationSpec {
+            formation: FormationDef {
+                id: "void-meridian-severing".to_string(),
+                name: "虛空斷脈術".to_string(),
+                rule_text: "主動術式，破除環境，環境被破除時雙方扣除２０點生命".to_string(),
+                category: FormationCategory::Spell,
+                pattern: FormationPattern::Custom("three-same-level".to_string()),
+                effect_id: "void-meridian-severing".to_string(),
+                point_formula: PointFormula::Fixed(0),
+            },
+            effect: EffectDef {
+                id: "void-meridian-severing".to_string(),
+                plan: EffectPlan::ActiveSpell(SpellPlanDef {
+                    resolver_id: "void-meridian-severing".to_string(),
+                }),
+            },
+        },
+    ]
+}
+
+fn sacred_beast(id: &str, name: &str, element: Element) -> BaseFormationSpec {
+    let formation = FormationDef {
+        id: id.to_string(),
+        name: name.to_string(),
+        rule_text: format!(
+            "{}行攻擊，點數＝８１，傷害後轉移環境，本陣法不受其他陣法效果影響",
+            match element {
+                Element::Metal => "金",
+                Element::Wood => "木",
+                Element::Water => "水",
+                Element::Fire => "火",
+                Element::Earth => "土",
+            }
+        ),
+        category: FormationCategory::Attack,
+        pattern: FormationPattern::ExactElements(vec![element; 5]),
+        effect_id: id.to_string(),
+        point_formula: PointFormula::Fixed(81),
+    };
+    let effect = EffectDef {
+        id: id.to_string(),
+        plan: EffectPlan::Attack(AttackPlanDef {
+            category: AttackCategory::Elemental(element),
+            point_formula: PointFormula::Fixed(81),
+            damage_target: DamageTarget::PreviousPlayer,
+        }),
+    };
+
+    BaseFormationSpec { formation, effect }
 }
 
 fn elemental_attack(

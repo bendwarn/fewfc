@@ -1,8 +1,8 @@
 //! Viewer-filtered Public View derivation from canonical game data.
 
 use crate::domain::{
-    CardInstanceId, CounterEffect, GameEvent, GameState, GameStatus, PendingChoiceKind, Phase,
-    Player, PlayerId, PlayerShield, RuleModuleId, StatusEffect, TeamHp,
+    CardInstanceId, CounterEffect, Element, GameEvent, GameState, GameStatus, PendingChoiceKind,
+    Phase, Player, PlayerId, PlayerShield, RuleModuleId, StatusEffect, TeamHp,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +31,7 @@ pub struct PublicGameState {
     pub pending_choice: Option<PublicPendingChoice>,
     pub shields: Vec<PlayerShield>,
     pub statuses: Vec<StatusEffect>,
+    pub environment: Option<Element>,
     pub previous_turn_formation: Option<PublicPreviousTurnFormation>,
 }
 
@@ -225,6 +226,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             }),
         shields: state.shields.clone(),
         statuses: state.statuses.clone(),
+        environment: state.environment,
         previous_turn_formation,
     }
 }
@@ -319,9 +321,12 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::TurnDrawSkipped { .. }
         | GameEvent::FormationPerformed { .. }
         | GameEvent::FormationEffectCopied { .. }
+        | GameEvent::FormationEffectIgnored { .. }
         | GameEvent::CounterEffectEstablished { .. }
         | GameEvent::CounterEffectResolved { .. }
         | GameEvent::AttackResolved { .. }
+        | GameEvent::EnvironmentTransferred { .. }
+        | GameEvent::EnvironmentCleared { .. }
         | GameEvent::TurnDrawBonusChanged { .. }
         | GameEvent::ShieldChanged { .. }
         | GameEvent::HpChanged { .. }

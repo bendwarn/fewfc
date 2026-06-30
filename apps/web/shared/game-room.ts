@@ -13,7 +13,11 @@ export interface PlayerDeckList {
 export type GameRoomStatus = 'Waiting' | 'Active' | 'Finished' | 'Dissolved'
 export type GameRoomAccess = 'private' | 'public'
 export type GameRoomCapacity = 2 | 4
-export const AVAILABLE_RULE_MODULES = ['discard-retrieval', 'personal-deck'] as const
+export const AVAILABLE_RULE_MODULES = [
+  'discard-retrieval',
+  'personal-deck',
+  'five-directions-legend',
+] as const
 export const DEFAULT_RULE_MODULES = [...AVAILABLE_RULE_MODULES]
 
 export function normalizeRuleModules(modules: unknown): string[] {
@@ -282,7 +286,7 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     turnOrder: players,
     hp: players.map((player) => ({
       team: `team:${player}`,
-      hp: 20,
+      hp: players.length === 2 ? 100 : 150,
     })),
     hands: players.map((player) => ({
       player,
@@ -299,6 +303,7 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     pendingChoice: null,
     shields: [],
     statuses: [],
+    environment: null,
     previousTurnFormation: null,
   }
 }

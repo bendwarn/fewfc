@@ -1210,3 +1210,182 @@ Because `apply_event` trusts canonical events, it should be infallible:
 ```rust
 fn apply_event(state: &mut GameState, event: &GameEvent);
 ```
+
+### 36. Five Directions Legend Rule Module
+
+Implement the official
+[Five Directions Legend rules](https://www.cfecards.org/rule/latest/field) as
+one independently configurable Advanced Rule Module. Enabling the module adds
+all five Sacred Beasts, one shared Environment, and Void Meridian-Severing
+Technique; none of those features has a separate toggle.
+
+The Environment is absent at game start and holds at most one `Element`.
+`EnvironmentTransferred` is a semantic canonical event emitted after every
+Sacred Beast attack resolves, including a transfer whose previous and resulting
+elements are equal. The attack uses the previously existing Environment. A
+lethal attack still completes its Environment Transfer before the Formation Use
+and Game Outcome are finalized.
+
+Each Sacred Beast is an 81-point elemental Attack made from five Cards of its
+element:
+
+- East Azure Dragon: Wood
+- West White Tiger: Metal
+- South Vermilion Bird: Fire
+- North Black Tortoise: Water
+- Center Yellow Serpent: Earth
+
+A Sacred Beast ignores Formation effects. Covered Passives and public Counter
+Effects still trigger and are consumed at their normal timing, but resolve with
+`NoEffect` against it. General Shield rules still apply because a Shield is a
+separate game element rather than an incoming Formation effect.
+
+Environment Effects apply to all Players:
+
+- damage matching the Environment's element is doubled and stacks with
+  five-element interaction
+- damage whose element generates the Environment's element becomes HP recovery
+- simultaneous overcoming doubles that recovery, while same-element
+  interaction halves it and rounds up
+- the Attack breakdown records the Environment Effect separately from
+  `ElementInteraction` and the final amount
+
+A Shield receives an incoming Attack before its owner. Five-element interaction
+does not apply while the Shield receives the Attack. An Environment Effect that
+would convert damage into HP recovery therefore does not apply because a Shield
+has no HP, while same-Environment damage doubling still changes the damage
+received by the Shield.
+
+Each Environment makes two named Formations ineffective:
+
+- Metal: Defense and Barrier
+- Wood: Metamorphosis and Chaos
+- Water: Countershock and Shock Burst
+- Fire: Weapon and Radiance
+- Earth: Seal and Return to Origin
+
+An ineffective Formation remains legal to perform, consumes the action
+opportunity, and follows its normal Card movement procedure, but its effect
+resolves with `NoEffect`. Attacks and Active Spells emit
+`FormationEffectIgnored` with the current Environment as the reason; Covered
+Passives record the same reason in their flip outcome. Invalidation checks the
+performed Formation's identity, not an effect copied by Metamorphosis. Existing
+persistent state is not removed; for example, an ineffective Barrier does not
+replace or clear an existing Shield.
+
+Void Meridian-Severing Technique is an Active Spell formed from three same-level
+Cards. With no Environment it performs normally but does not change HP. When an
+Environment exists and the Spell is not otherwise made ineffective, it clears
+that Environment and changes each Team's HP by -20 exactly once, regardless of
+Player count. Shield values are irrelevant. Record the Environment Clearing and
+all Team HP deltas in one `EnvironmentCleared` event, apply every delta, and
+only then evaluate the Game Outcome so simultaneous defeat produces a Draw.
+
+Official setup HP follows the current rulebook instead of the previous
+20-point placeholder:
+
+- Base-only two-player and four-player games use 100 and 150 Team HP
+  respectively
+- games with an Advanced Rule Module use 200 and 250 Team HP respectively
+
+The module configuration, current Environment, canonical events, attack
+breakdowns, and Game Outcome must replay deterministically and project through
+Public State View, Public Event Feed, Web DTOs, and the online battlefield.
+
+### 37. Hero Schools Rule Module
+
+Implement the official
+[Hero Schools rules](https://www.cfecards.org/rule/latest/hero) as one
+independently configurable Advanced Rule Module, including all Professions,
+Profession Abilities, Profession Formations, Profession Changes, and Void
+Reversion Technique. New official games enable the complete module by default; the Web
+room configuration exposes only one Hero Schools toggle.
+
+Every Player starts without a Profession. A Profession is acquired only through
+a successful Profession Change, including First Wanderer.
+
+Profession Change is a distinct Action Command rather than a Formation Use. It
+validates the declared Profession, prerequisite Profession, and submitted Card
+Instances; then it enters the shared action-start pipeline, triggers the
+Previous Player's Counter Effect, records explicit Card movement, emits a
+semantic `ProfessionChanged` event, and consumes the current Player's action
+opportunity. Do not represent Profession Change as `PerformFormation` or confuse
+it with Metamorphosis.
+
+Game State stores only each Player's current `ProfessionId`, or no Profession,
+rather than copying the Profession's effective abilities into state.
+`ProfessionChanged` records the previous and resulting Profession identities.
+The official Profession catalog derives effective abilities through explicit
+inheritance links for the five Schools. Immortal and Saint have no inheritance
+link, so changing to either removes the previous Profession's abilities.
+
+All Activated Profession Abilities use one
+`ActivateProfessionAbility` Active-Effect Command and one shared allowance per
+Player turn. A successful activation consumes that allowance without consuming
+the action opportunity. Validation failure consumes neither. Profession Change
+does not reset the allowance, so acquiring a different Activated Profession
+Ability during the same turn never permits a second activation.
+
+Formation Proficiencies add Player-scoped alternative matchers to an existing
+Formation. They do not register duplicate Formations or replace the original
+Formation definition. A Formation Use matched through a Proficiency retains the
+original Formation identity, category, effect, point formula, card movement,
+and canonical event semantics. The alternative matcher is available only while
+the performing Player's current Profession grants it; Public Formation queries
+may label the matching Proficiency as presentation metadata.
+
+Formation matching returns distinct `FormationMatchOption` values whenever the
+same submitted Card Instances have multiple legal role assignments that change
+the result. `PerformFormation` must declare one of those options rather than
+letting the engine maximize or otherwise choose an outcome. The accepted
+Formation event records the resolved role binding and calculation. Formation
+queries expose the legal options and result previews; a single unambiguous
+option requires no additional Web interaction.
+
+Void Reversion Technique resolves as one atomic semantic
+`VoidReversionResolved` event. It records the performing Player's Team HP delta
+of -20, every Profession actually broken, every Legendary Profession retained
+because the Cards were below level three, and the Formation's Card movement.
+Apply all deltas before evaluating the Game Outcome. Reaching zero HP from the
+cost does not stop Profession Breaking or expose an intermediate state.
+
+Automatic Profession Abilities and Formation Proficiencies integrate through
+typed Hero Schools module hooks at explicit rule stages. Hooks may extend
+Formation matching, modify costs or Attack calculation, determine immunity,
+modify Counter Effect applicability, or return post-Formation intents. They
+return declarative values for the shared pipeline and never mutate Game State
+or emit Game Events directly. Do not encode Profession Abilities as generic
+Status Effects or scatter Profession identity checks through Base resolvers.
+
+Cross-module Attack resolution uses one explicit stage order:
+
+1. Apply legal Card interpretations and select a Formation Match Option.
+2. Compute Attack Points, including Profession point modifiers.
+3. Evaluate Attack-Point qualifications such as Windwalking and Star Summoning.
+4. Resolve applicable Counter Effects.
+5. Apply five-element interaction, Environment Effects, and Shields to obtain
+   the final damage or recovery result.
+6. Resolve post-Formation Profession intents.
+
+Windwalking's 15-point threshold therefore reads Attack Points before
+Environment damage modification. Canonical Attack events record Attack Points
+separately from the final result.
+
+Activated Profession Abilities that prepare a later action, such as Illusion
+and Phantasm, create a serializable `PreparedProfessionAbility` in Game State.
+The activation event records the target Card Instance, declared element and
+level, and allowed Formation scope without mutating the Card Instance or Card
+Definition. The preparation is available only during the current Player's turn
+and clears after their action or at Turn End.
+
+Prepared Profession Ability details are public immediately, including the
+target Card Instance and its declared interpretation. Activation cannot be
+rolled back and no other Player decision occurs between preparation and the
+current Player's action, so the Public State View and Public Event Feed do not
+hide these details.
+
+Preparing an ability does not force the Player's next Action to use it. At
+activation time, validation requires at least one legal Formation that could
+complete the prepared effect. The Player may subsequently choose another legal
+Action, but any Action clears the preparation and neither its paid cost nor the
+shared activation allowance is refunded.

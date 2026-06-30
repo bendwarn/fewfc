@@ -5,12 +5,13 @@ use fewfc::application::{
 use fewfc::domain::{
     ActionModification, AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
     CardMoveDelta, CardZone, Command, CommandId, DamageTransform, DeckPlacement,
-    ElementInteraction, EngineInvariantError, GameError, GameEvent, GameOutcome, GameSetup,
-    GameState, GameStatus, HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate,
-    LastFormationUse, PassActionReason, PassiveFlipOutcome, PassiveNoEffectReason, PendingChoice,
-    PendingChoiceKind, Phase, Player, PlayerHand, PlayerId, PlayerShield, RuleImplementationError,
-    RulesetId, ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner,
-    TeamHp, TeamId, TurnDrawSkipReason, ValidationError,
+    ElementInteraction, EngineInvariantError, EnvironmentAttackEffect, GameError, GameEvent,
+    GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
+    LastElementalAttackUpdate, LastFormationUse, PassActionReason, PassiveFlipOutcome,
+    PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player, PlayerHand, PlayerId,
+    PlayerShield, RuleImplementationError, RuleModuleId, RulesetId, ShieldChangeDelta,
+    StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId,
+    TurnDrawSkipReason, ValidationError,
 };
 use fewfc::public_view::{
     self, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
@@ -187,6 +188,611 @@ fn record_after_p1_metal_attack_on_turn_1() -> GameRecord {
         .unwrap();
     advance_record_to_next_main_after_turn_draw(&mut record, card(10));
     record
+}
+
+#[test]
+fn sacred_beast_attacks_then_transfers_the_environment() {
+    let mut setup = two_player_setup_with_hp(200)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    setup.card_instances.push(card_instance(21, "metal"));
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.hands = vec![
+        PlayerHand::new(
+            PlayerId::new("p1"),
+            vec![card(1), card(6), card(11), card(16), card(21)],
+        ),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "west-white-tiger".to_string(),
+            cards: vec![card(1), card(6), card(11), card(16), card(21)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::AttackResolved {
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 81,
+                    final_amount: 81,
+                    ..
+                },
+                ..
+            },
+            GameEvent::EnvironmentTransferred {
+                player,
+                formation_id,
+                from: None,
+                to: Element::Metal,
+            }
+        ] if player == &PlayerId::new("p1") && formation_id == "west-white-tiger"
+    ));
+
+    for event in &events {
+        apply_event(&mut state, event);
+    }
+    assert_eq!(state.environment, Some(Element::Metal));
+    assert_eq!(
+        state
+            .hp
+            .iter()
+            .find(|team_hp| team_hp.team == TeamId::new("team:p2"))
+            .map(|team_hp| team_hp.hp),
+        Some(119)
+    );
+}
+
+#[test]
+fn matching_environment_damage_stacks_with_overcoming_interaction() {
+    let setup = two_player_setup_with_hp(100)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.environment = Some(Element::Metal);
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(1)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+    state.last_formation_by_player.insert(
+        PlayerId::new("p2"),
+        LastFormationUse {
+            formation_id: "wood-strike".to_string(),
+            resolved_effect_id: "wood-strike".to_string(),
+            used_cards: vec![card(2)],
+            resolved_turn: 0,
+        },
+    );
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [GameEvent::AttackResolved {
+            point_breakdown: AttackPointBreakdown {
+                base_points: 7,
+                environment_effect: EnvironmentAttackEffect::MatchingElementDamageDoubled {
+                    environment: Element::Metal,
+                },
+                interaction: ElementInteraction::Overcoming,
+                damage_transform: DamageTransform::DoubleDamage,
+                final_amount: 28,
+            },
+            hp_change: HpChangeDelta { new_hp: 72, .. },
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn environment_healing_stacks_with_overcoming_interaction() {
+    let setup = two_player_setup_with_hp(100)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.environment = Some(Element::Metal);
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(5)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+    state
+        .hp
+        .iter_mut()
+        .find(|team_hp| team_hp.team == TeamId::new("team:p2"))
+        .unwrap()
+        .hp = 40;
+    state.last_formation_by_player.insert(
+        PlayerId::new("p2"),
+        LastFormationUse {
+            formation_id: "water-strike".to_string(),
+            resolved_effect_id: "water-strike".to_string(),
+            used_cards: vec![card(3)],
+            resolved_turn: 0,
+        },
+    );
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "earth-strike".to_string(),
+            cards: vec![card(5)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [GameEvent::AttackResolved {
+            point_breakdown: AttackPointBreakdown {
+                base_points: 9,
+                environment_effect:
+                    EnvironmentAttackEffect::GeneratingElementDamageConvertedToHealing {
+                        environment: Element::Metal,
+                    },
+                interaction: ElementInteraction::Overcoming,
+                damage_transform: DamageTransform::HealTarget,
+                final_amount: 18,
+            },
+            hp_change: HpChangeDelta { new_hp: 58, .. },
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn shield_receives_damage_before_environment_can_convert_it_to_healing() {
+    let setup = two_player_setup_with_hp(100)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.environment = Some(Element::Metal);
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(5)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+    state
+        .hp
+        .iter_mut()
+        .find(|team_hp| team_hp.team == TeamId::new("team:p2"))
+        .unwrap()
+        .hp = 40;
+    state
+        .shields
+        .iter_mut()
+        .find(|shield| shield.player == PlayerId::new("p2"))
+        .unwrap()
+        .value = 20;
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "earth-strike".to_string(),
+            cards: vec![card(5)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [GameEvent::AttackResolved {
+            point_breakdown: AttackPointBreakdown {
+                environment_effect: EnvironmentAttackEffect::None,
+                interaction: ElementInteraction::None,
+                damage_transform: DamageTransform::NormalDamage,
+                final_amount: 9,
+                ..
+            },
+            hp_change: HpChangeDelta { new_hp: 40, .. },
+            shield_change: Some(ShieldChangeDelta { new_value: 11, .. }),
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn sacred_beast_consumes_defense_without_preventing_damage() {
+    let mut setup = two_player_setup_with_hp(200)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    setup.card_instances.push(card_instance(21, "metal"));
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.hands = vec![
+        PlayerHand::new(
+            PlayerId::new("p1"),
+            vec![card(1), card(6), card(11), card(16), card(21)],
+        ),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+    state.covered_passives.push(fewfc::domain::CoveredPassive {
+        owner: PlayerId::new("p2"),
+        formation_id: "defense".to_string(),
+        cards: vec![card(2), card(7)],
+        sealed: false,
+        covered_on_turn: 0,
+        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
+    });
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "west-white-tiger".to_string(),
+            cards: vec![card(1), card(6), card(11), card(16), card(21)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::PassiveFlipped {
+                outcome: PassiveFlipOutcome::NoEffect {
+                    reason: PassiveNoEffectReason::IgnoredBySacredBeast,
+                },
+                ..
+            },
+            GameEvent::AttackResolved {
+                hp_change: HpChangeDelta { new_hp: 119, .. },
+                ..
+            },
+            GameEvent::EnvironmentTransferred { .. },
+        ]
+    ));
+}
+
+#[test]
+fn ineffective_barrier_is_performed_without_replacing_an_existing_shield() {
+    let setup = two_player_setup_with_hp(100)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.environment = Some(Element::Metal);
+    state.hands = vec![
+        PlayerHand::new(
+            PlayerId::new("p1"),
+            vec![card(2), card(7), card(1), card(4)],
+        ),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+    state.shields = vec![
+        PlayerShield {
+            player: PlayerId::new("p1"),
+            value: 5,
+        },
+        PlayerShield {
+            player: PlayerId::new("p2"),
+            value: 0,
+        },
+    ];
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "barrier".to_string(),
+            cards: vec![card(2), card(7), card(1), card(4)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::FormationPerformed { formation_id, .. },
+            GameEvent::FormationEffectIgnored {
+                reason:
+                    fewfc::domain::FormationNoEffectReason::IneffectiveInEnvironment {
+                        environment: Element::Metal,
+                    },
+                ..
+            },
+        ] if formation_id == "barrier"
+    ));
+    for event in &events {
+        apply_event(&mut state, event);
+    }
+    assert_eq!(state.shield(&PlayerId::new("p1")), Some(5));
+    assert!(state.hand(&PlayerId::new("p1")).unwrap().is_empty());
+}
+
+#[test]
+fn ineffective_weapon_is_performed_without_dealing_damage() {
+    let setup = two_player_setup_with_hp(100)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.environment = Some(Element::Fire);
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(6)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(1), card(6)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::FormationEffectIgnored {
+                reason: fewfc::domain::FormationNoEffectReason::IneffectiveInEnvironment {
+                    environment: Element::Fire,
+                },
+                ..
+            },
+            GameEvent::AttackResolved {
+                hp_change: HpChangeDelta {
+                    old_hp: 100,
+                    new_hp: 100,
+                    effective_delta: 0,
+                    ..
+                },
+                shield_change: None,
+                ..
+            },
+        ]
+    ));
+}
+
+#[test]
+fn ineffective_defense_flips_and_is_consumed_without_preventing_damage() {
+    let setup = two_player_setup_with_hp(100)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.current_turn_index = 1;
+    state.environment = Some(Element::Metal);
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), Vec::new()),
+        PlayerHand::new(PlayerId::new("p2"), vec![card(1)]),
+    ];
+    state.covered_passives.push(fewfc::domain::CoveredPassive {
+        owner: PlayerId::new("p1"),
+        formation_id: "defense".to_string(),
+        cards: vec![card(2), card(7)],
+        sealed: false,
+        covered_on_turn: 0,
+        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
+    });
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p2"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::PassiveFlipped {
+                outcome: PassiveFlipOutcome::NoEffect {
+                    reason: PassiveNoEffectReason::IneffectiveInEnvironment {
+                        environment: Element::Metal,
+                    },
+                },
+                ..
+            },
+            GameEvent::AttackResolved {
+                hp_change: HpChangeDelta { new_hp: 86, .. },
+                ..
+            },
+        ]
+    ));
+}
+
+#[test]
+fn public_state_view_exposes_the_shared_environment_to_every_viewer() {
+    let mut state = GameState::from_setup(
+        &two_player_setup_with_hp(100)
+            .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]),
+    );
+    state.environment = Some(Element::Water);
+
+    assert_eq!(
+        public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).environment,
+        Some(Element::Water)
+    );
+    assert_eq!(
+        public_view::state_for(&state, Viewer::Observer).environment,
+        Some(Element::Water)
+    );
+}
+
+#[test]
+fn void_meridian_severing_clears_environment_and_changes_team_hp_atomically() {
+    let setup = two_player_setup_with_hp(15)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.environment = Some(Element::Fire);
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(6), card(11)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "void-meridian-severing".to_string(),
+            cards: vec![card(1), card(6), card(11)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::FormationPerformed { .. },
+            GameEvent::EnvironmentCleared {
+                player,
+                formation_id,
+                environment: Element::Fire,
+                hp_changes,
+            },
+        ] if player == &PlayerId::new("p1")
+            && formation_id == "void-meridian-severing"
+            && hp_changes.len() == 2
+            && hp_changes.iter().all(|change| change.new_hp == 0)
+    ));
+
+    for event in &events {
+        apply_event(&mut state, event);
+    }
+    assert_eq!(state.environment, None);
+    assert_eq!(
+        state.status,
+        GameStatus::Finished {
+            outcome: GameOutcome::Draw,
+        }
+    );
+}
+
+#[test]
+fn void_meridian_severing_without_environment_does_not_change_hp() {
+    let setup = two_player_setup_with_hp(100)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(6), card(11)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "void-meridian-severing".to_string(),
+            cards: vec![card(1), card(6), card(11)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [GameEvent::FormationPerformed { .. }]
+    ));
+    for event in &events {
+        apply_event(&mut state, event);
+    }
+    assert!(state.hp.iter().all(|team_hp| team_hp.hp == 100));
+}
+
+#[test]
+fn void_meridian_severing_changes_each_team_hp_once_in_team_mode() {
+    let card_setup = two_player_setup();
+    let setup = GameSetup::team_mode(
+        TeamId::new("A"),
+        vec![PlayerId::new("p1"), PlayerId::new("p3")],
+        TeamId::new("B"),
+        vec![PlayerId::new("p2"), PlayerId::new("p4")],
+        250,
+    )
+    .with_cards(card_setup.card_defs, card_setup.card_instances)
+    .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.environment = Some(Element::Earth);
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(6), card(11)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+        PlayerHand::new(PlayerId::new("p3"), Vec::new()),
+        PlayerHand::new(PlayerId::new("p4"), Vec::new()),
+    ];
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "void-meridian-severing".to_string(),
+            cards: vec![card(1), card(6), card(11)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::FormationPerformed { .. },
+            GameEvent::EnvironmentCleared { hp_changes, .. },
+        ] if hp_changes.len() == 2
+            && hp_changes.iter().all(|change| change.old_hp == 250 && change.new_hp == 230)
+    ));
+}
+
+#[test]
+fn same_element_sacred_beast_still_records_environment_transfer() {
+    let mut setup = two_player_setup_with_hp(200)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    setup.card_instances.push(card_instance(21, "metal"));
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.environment = Some(Element::Metal);
+    state.hands = vec![
+        PlayerHand::new(
+            PlayerId::new("p1"),
+            vec![card(1), card(6), card(11), card(16), card(21)],
+        ),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "west-white-tiger".to_string(),
+            cards: vec![card(1), card(6), card(11), card(16), card(21)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.last(),
+        Some(GameEvent::EnvironmentTransferred {
+            from: Some(Element::Metal),
+            to: Element::Metal,
+            ..
+        })
+    ));
 }
 
 fn defense_setup_deck() -> Vec<CardInstanceId> {
@@ -710,6 +1316,7 @@ fn team_mode_attack_resolves_previous_player_and_opposing_team_without_declared_
             used_cards: vec![card(1)],
             point_breakdown: AttackPointBreakdown {
                 base_points: 7,
+                environment_effect: EnvironmentAttackEffect::None,
                 interaction: ElementInteraction::None,
                 damage_transform: DamageTransform::NormalDamage,
                 final_amount: 7,
@@ -1560,6 +2167,7 @@ fn perform_attack_formation_damages_previous_players_team_and_moves_cards_to_dis
             used_cards: vec![card(1)],
             point_breakdown: AttackPointBreakdown {
                 base_points: 7,
+                environment_effect: EnvironmentAttackEffect::None,
                 interaction: ElementInteraction::None,
                 damage_transform: DamageTransform::NormalDamage,
                 final_amount: 7,
@@ -2146,6 +2754,7 @@ fn metamorphosis_copies_previous_players_last_base_formation_effect() {
                 used_cards: vec![card(5), card(10)],
                 point_breakdown: AttackPointBreakdown {
                     base_points: 20,
+                    environment_effect: EnvironmentAttackEffect::None,
                     interaction: ElementInteraction::None,
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 20,
@@ -2959,6 +3568,7 @@ fn defense_prevents_incoming_attack_damage_and_records_action_modification() {
                 used_cards: vec![card(9)],
                 point_breakdown: AttackPointBreakdown {
                     base_points: 8,
+                    environment_effect: EnvironmentAttackEffect::None,
                     interaction: ElementInteraction::None,
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 8,
@@ -4139,6 +4749,7 @@ fn perform_formation_matches_cards_by_instance_definitions() {
             used_cards: vec![card(1), card(6)],
             point_breakdown: AttackPointBreakdown {
                 base_points: 12,
+                environment_effect: EnvironmentAttackEffect::None,
                 interaction: ElementInteraction::None,
                 damage_transform: DamageTransform::NormalDamage,
                 final_amount: 12,
@@ -4210,6 +4821,7 @@ fn attack_hp_delta_records_clamped_damage() {
             used_cards: vec![card(1)],
             point_breakdown: AttackPointBreakdown {
                 base_points: 7,
+                environment_effect: EnvironmentAttackEffect::None,
                 interaction: ElementInteraction::None,
                 damage_transform: DamageTransform::NormalDamage,
                 final_amount: 7,
@@ -4360,6 +4972,7 @@ fn hp_resolution_finishes_as_draw_when_no_team_remains_alive() {
             used_cards: Vec::new(),
             point_breakdown: AttackPointBreakdown {
                 base_points: 7,
+                environment_effect: EnvironmentAttackEffect::None,
                 interaction: ElementInteraction::None,
                 damage_transform: DamageTransform::NormalDamage,
                 final_amount: 7,
@@ -4405,6 +5018,7 @@ fn elemental_attack_overcoming_previous_players_last_element_doubles_damage() {
             used_cards: vec![card(9)],
             point_breakdown: AttackPointBreakdown {
                 base_points: 8,
+                environment_effect: EnvironmentAttackEffect::None,
                 interaction: ElementInteraction::Overcoming,
                 damage_transform: DamageTransform::DoubleDamage,
                 final_amount: 16,
@@ -4453,6 +5067,7 @@ fn elemental_attack_generating_previous_players_last_element_heals_target_team()
             used_cards: vec![card(5)],
             point_breakdown: AttackPointBreakdown {
                 base_points: 9,
+                environment_effect: EnvironmentAttackEffect::None,
                 interaction: ElementInteraction::Generating,
                 damage_transform: DamageTransform::HealTarget,
                 final_amount: 9,
@@ -4501,6 +5116,7 @@ fn elemental_attack_same_as_previous_players_last_element_halves_damage_rounding
             used_cards: vec![card(6)],
             point_breakdown: AttackPointBreakdown {
                 base_points: 7,
+                environment_effect: EnvironmentAttackEffect::None,
                 interaction: ElementInteraction::Same,
                 damage_transform: DamageTransform::HalfDamageRoundUp,
                 final_amount: 4,
@@ -4549,6 +5165,7 @@ fn elemental_attack_without_relationship_to_previous_players_last_element_uses_n
             used_cards: vec![card(7)],
             point_breakdown: AttackPointBreakdown {
                 base_points: 6,
+                environment_effect: EnvironmentAttackEffect::None,
                 interaction: ElementInteraction::None,
                 damage_transform: DamageTransform::NormalDamage,
                 final_amount: 6,
@@ -4659,6 +5276,7 @@ fn shield_absorbs_attack_damage_before_hp_and_skips_element_interaction() {
             used_cards: vec![card(9)],
             point_breakdown: AttackPointBreakdown {
                 base_points: 8,
+                environment_effect: EnvironmentAttackEffect::None,
                 interaction: ElementInteraction::None,
                 damage_transform: DamageTransform::NormalDamage,
                 final_amount: 8,
