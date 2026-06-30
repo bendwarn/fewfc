@@ -8,12 +8,45 @@ Deterministic rules engine for CFECards game state, formation resolution, turn f
 A pure Rust library that validates commands, advances deterministic game state, resolves formations, emits canonical events, and supports replay.
 
 **Ruleset**:
-A complete deterministic rule module for setup validation, turn constants, formation matching, effect resolution, and event decisions.
+A complete deterministic rule configuration made from the mandatory Base
+Ruleset and zero or more Rule Modules.
 _Avoid_: formation registry
 
 **Base Ruleset**:
-The first official ruleset implemented by the engine.
-_Avoid_: team mode ruleset
+The mandatory official rules foundation used by every game. It is also a
+complete Ruleset when no Rule Modules are enabled.
+_Avoid_: optional base rules, team mode ruleset
+
+**Rule Module**:
+An optional deterministic addition layered on the Base Ruleset. Official Rule
+Modules retain their published category while sharing one configuration and
+execution model.
+_Avoid_: Ruleset, game mode
+
+**Advanced Rule Module (進階規則)**:
+An official Rule Module categorized as 進階規則, such as the Star Rule Module.
+_Avoid_: Optional Rule Module, Theme Rule Module
+
+**Optional Rule Module (選用規則)**:
+An official Rule Module categorized as an optional or supplemental rule, such
+as Discard Retrieval or Personal Deck.
+_Avoid_: Advanced Rule Module, Base Ruleset
+
+**Star Rule Module (星辰圖記規則)**:
+The optional official Advanced Rule Module that adds Star Summoning, Stars, Star
+Formations, Star Element Substitution, and Five-Star Alignment.
+_Avoid_: Star Ruleset, star mode
+
+**Discard Retrieval (棄牌回收)**:
+An Optional Rule Module that lets the current Player pay HP during the
+active-effect timing to return the Previous Player's Discarded Card from the
+Previous Turn to the top of the current Player's Deck.
+_Avoid_: discard recycling, turn-draw discard
+
+**Personal Deck (個人牌組)**:
+An Optional Rule Module under which each Player prepares and draws from their
+own 60-card Deck instead of all Players sharing one Deck.
+_Avoid_: shared deck, team deck
 
 **Game Record**:
 The canonical persisted game history made from setup and accepted setup, command, and automatic advancement decisions.
@@ -60,13 +93,20 @@ The action of moving a used or unwanted Card Instance to the Discard Pile.
 _Avoid_: 棄置
 
 **Discard Pile (棄牌堆)**:
-The public zone containing discarded Card Instances. A card selected under the
-Turn Draw discard rule is a **Discarded Card (棄牌)**.
+The public zone containing discarded Card Instances, owned by the shared game or
+one Player according to the enabled Rule Modules. A card selected under the Turn
+Draw discard rule is a **Discarded Card (棄牌)**.
 _Avoid_: 捨棄區
 
 **Card Instance**:
 A movable individual card in a game zone.
 _Avoid_: card definition
+
+**Card Origin**:
+The immutable source of a Card Instance: the shared deck or the Player whose
+Personal Deck originally contained it. Moving or retrieving a card does not
+change its Card Origin.
+_Avoid_: current holder, current zone
 
 **Card Definition**:
 Immutable printed-card data such as name, one five-element element, and level from 1 to 5.
@@ -83,6 +123,41 @@ _Avoid_: user, account
 **Team**:
 The HP-owning side that one or more players belong to.
 _Avoid_: player HP owner
+
+**Star (星辰)**:
+A persistent elemental power owned by a Team when the Star Rule Module is
+enabled. A Team may own at most one Star, and each Star may be owned by at most
+one Team.
+_Avoid_: player star, status effect
+
+**Star Summoning (召喚星辰)**:
+The outcome of a qualifying use of 鍠金, 樸木, 洄水, 熾火, or 坱土 that grants
+its associated Star to the attacking Player's Team and records that Player as
+its summoner. Qualification uses Attack points before elemental interaction,
+Counter Effects, Shields, or HP resolution change the outcome; Star Formations
+and copied effects do not qualify.
+_Avoid_: star pickup, team summon
+
+**Star Formation (星辰技)**:
+A Formation made available by the Star owned by the performing Player's Team.
+It is distinct from a Base Ruleset Formation.
+_Avoid_: base formation, skill
+
+**Star Element Substitution (星辰變牌)**:
+The Star-granted ability to treat one matching generating-element Card Instance
+as the Star's element when forming a Base Ruleset Formation. It is an implicit
+matching rule and does not change the Card Instance or its Card Definition.
+_Avoid_: card mutation, universal element change
+
+**Star Breaking (破除星辰)**:
+The removal of a Team's currently owned Star.
+_Avoid_: discard star, expire star
+
+**Five-Star Alignment (五星連珠)**:
+The Star Rule Module victory condition achieved when one Player has personally
+summoned all five kinds of Star. After the Formation Use fully resolves, this
+condition makes that Player's Team the winner before HP-based outcome evaluation.
+_Avoid_: team star collection
 
 **Shield (防護罩)**:
 A player-owned persistent value that takes damage in place of the owning Player.
@@ -197,8 +272,24 @@ _Avoid_: callback response
 - A **Player** belongs to exactly one **Team**
 - A **Team** owns HP for one or more **Players**
 - A **Player** owns at most one **Shield**
+- Every **Card Instance** has exactly one immutable **Card Origin**
+- A **Card Instance's** current zone does not change its **Card Origin**
 - A **Game Record** uses exactly one **Ruleset**
+- Every **Ruleset** includes the **Base Ruleset**
+- A **Ruleset** may enable zero or more **Rule Modules**
+- **Advanced Rule Modules** and **Optional Rule Modules** share one Ruleset
+  configuration and execution model
 - The **Base Ruleset** supports both two-player and team-mode setup shapes
+- The **Star Rule Module** adds Star-specific rules without replacing the Base Ruleset
+- A **Team** owns at most one **Star**
+- A **Star** is owned by at most one **Team**
+- **Star Summoning** belongs to one **Player** and grants the Star to that Player's **Team**
+- A **Star Formation** is available only through the performing Player's Team-owned **Star**
+- An accepted three-card **Star Formation** breaks its enabling **Star** and grants
+  its Turn Draw bonus even when its damage is prevented
+- **Star Element Substitution** applies only while matching a Base Ruleset Formation
+- **Five-Star Alignment** uses one Player's Star Summoning history, not the Team's combined history
+- **Star Breaking** removes the affected Team's currently owned **Star**
 - **Turn Order** is player-based, not team-based
 - The **Previous Player** is derived from **Turn Order**
 - A **Formation** has exactly one **Formation Category**

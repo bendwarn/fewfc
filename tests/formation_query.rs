@@ -3,15 +3,10 @@ use fewfc::domain::{
     GameSetup, PendingChoice, PendingChoiceKind, Phase, PlayerId, StatusDuration, StatusEffect,
     StatusOwner, ValidationError,
 };
-use fewfc::rules::base::{BaseRuleset, QueryCard};
-use fewfc::rules::{Element, FormationCategory, FormationMatch};
+use fewfc::rules::{Element, FormationCategory, OfficialRules};
 
 fn card(id: u64) -> CardInstanceId {
     CardInstanceId::new(id)
-}
-
-fn query_card(element: Element) -> QueryCard {
-    QueryCard { element, level: 1 }
 }
 
 fn card_def(id: &str, element: Element) -> CardDef {
@@ -55,28 +50,8 @@ fn setup() -> GameSetup {
 }
 
 #[test]
-fn matching_formations_checks_only_the_current_selected_card_set() {
-    let matches = fewfc::rules::matching_formations(&[
-        query_card(Element::Metal),
-        query_card(Element::Wood),
-        query_card(Element::Water),
-        query_card(Element::Fire),
-        query_card(Element::Earth),
-    ]);
-
-    assert!(matches.contains(&FormationMatch {
-        formation_id: "five-elements-cycle".to_string(),
-        formation_name: "五行輪迴".to_string(),
-        card_indexes: vec![0, 1, 2, 3, 4],
-    }));
-    assert!(!matches.iter().any(|candidate| {
-        candidate.formation_id == "metal-strike" || candidate.formation_id == "generating-formation"
-    }));
-}
-
-#[test]
 fn playable_formations_returns_candidates_from_selected_hand_cards() {
-    let ruleset = BaseRuleset::new();
+    let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::Main;
     state.hands = vec![
@@ -87,7 +62,7 @@ fn playable_formations_returns_candidates_from_selected_hand_cards() {
         fewfc::domain::PlayerHand::new(PlayerId::new("p2"), Vec::new()),
     ];
 
-    let candidates = ruleset
+    let candidates = rules
         .playable_formations(&state, &PlayerId::new("p1"), &[card(1)])
         .unwrap();
 
@@ -101,7 +76,7 @@ fn playable_formations_returns_candidates_from_selected_hand_cards() {
 
 #[test]
 fn playable_formations_does_not_return_matches_from_unselected_hand_cards() {
-    let ruleset = BaseRuleset::new();
+    let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::Main;
     state.hands = vec![
@@ -112,7 +87,7 @@ fn playable_formations_does_not_return_matches_from_unselected_hand_cards() {
         fewfc::domain::PlayerHand::new(PlayerId::new("p2"), Vec::new()),
     ];
 
-    let candidates = ruleset
+    let candidates = rules
         .playable_formations(
             &state,
             &PlayerId::new("p1"),
@@ -135,12 +110,12 @@ fn playable_formations_does_not_return_matches_from_unselected_hand_cards() {
 
 #[test]
 fn playable_formations_returns_error_when_player_cannot_act_now() {
-    let ruleset = BaseRuleset::new();
+    let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::TurnDraw;
 
     assert_eq!(
-        ruleset.playable_formations(&state, &PlayerId::new("p1"), &[]),
+        rules.playable_formations(&state, &PlayerId::new("p1"), &[]),
         Err(GameError::Validation(
             ValidationError::CannotPerformFormation {
                 reason: CannotPerformFormationReason::WrongPhase {
@@ -154,12 +129,12 @@ fn playable_formations_returns_error_when_player_cannot_act_now() {
 
 #[test]
 fn playable_formations_returns_error_for_non_current_player() {
-    let ruleset = BaseRuleset::new();
+    let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::Main;
 
     assert_eq!(
-        ruleset.playable_formations(&state, &PlayerId::new("p2"), &[]),
+        rules.playable_formations(&state, &PlayerId::new("p2"), &[]),
         Err(GameError::Validation(
             ValidationError::CannotPerformFormation {
                 reason: CannotPerformFormationReason::WrongPlayer {
@@ -173,7 +148,7 @@ fn playable_formations_returns_error_for_non_current_player() {
 
 #[test]
 fn playable_formations_returns_error_while_choice_is_pending() {
-    let ruleset = BaseRuleset::new();
+    let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::Main;
     state.pending_choice = Some(PendingChoice {
@@ -186,7 +161,7 @@ fn playable_formations_returns_error_while_choice_is_pending() {
     });
 
     assert_eq!(
-        ruleset.playable_formations(&state, &PlayerId::new("p1"), &[]),
+        rules.playable_formations(&state, &PlayerId::new("p1"), &[]),
         Err(GameError::Validation(
             ValidationError::CannotPerformFormation {
                 reason: CannotPerformFormationReason::PendingChoiceInProgress {
@@ -199,7 +174,7 @@ fn playable_formations_returns_error_while_choice_is_pending() {
 
 #[test]
 fn playable_formations_returns_error_when_player_has_cannot_act_status() {
-    let ruleset = BaseRuleset::new();
+    let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::Main;
     state.statuses.push(StatusEffect {
@@ -211,7 +186,7 @@ fn playable_formations_returns_error_when_player_has_cannot_act_status() {
     });
 
     assert_eq!(
-        ruleset.playable_formations(&state, &PlayerId::new("p1"), &[]),
+        rules.playable_formations(&state, &PlayerId::new("p1"), &[]),
         Err(GameError::Validation(
             ValidationError::CannotPerformFormation {
                 reason: CannotPerformFormationReason::CannotActByStatus {

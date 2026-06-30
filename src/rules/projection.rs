@@ -3,7 +3,7 @@ use crate::domain::{
     GameState, GameStatus, LastFormationUse, ShieldChangeDelta, validate_setup,
 };
 
-pub(super) fn project(setup: &GameSetup, events: &[GameEvent]) -> GameResult<GameState> {
+pub(crate) fn project(setup: &GameSetup, events: &[GameEvent]) -> GameResult<GameState> {
     validate_setup(setup)?;
     let mut state = GameState::from_setup(setup);
     for event in events {
@@ -12,7 +12,7 @@ pub(super) fn project(setup: &GameSetup, events: &[GameEvent]) -> GameResult<Gam
     Ok(state)
 }
 
-pub(super) fn apply_event(state: &mut GameState, event: &GameEvent) {
+pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
     match event {
         GameEvent::DeckPrepared { deck_order } => {
             state.deck = deck_order.clone();

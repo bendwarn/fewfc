@@ -1,4 +1,4 @@
-use crate::application::{BaseRuleset, GameRecord, RecordedDecision};
+use crate::application::{GameRecord, RecordedDecision};
 use crate::domain::{
     CardInstanceId, Command, GameError, GameEvent, GameSetup, PassActionReason, PendingChoiceKind,
     Phase, Player, PlayerId, StatusOwner, TargetDecl, TeamId, TurnDrawSkipReason,
@@ -6,7 +6,7 @@ use crate::domain::{
 use crate::public_view::{
     PublicCardRefs, PublicGameEvent, PublicGameState, PublicPendingChoiceKind, Viewer,
 };
-use crate::rules::{FormationCategory, base_formation_registry};
+use crate::rules::{FormationCategory, OfficialRules};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -18,18 +18,19 @@ pub fn handle_request_json(input: &str) -> Result<String, String> {
 }
 
 fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
-    let ruleset = BaseRuleset::new();
-    let setup = setup_for_request(&ruleset, request.setup, request.first_player.as_deref())?;
-    let card_labels = ruleset.card_labels(&setup);
+    let rules = OfficialRules::new();
+    let setup = setup_for_request(&rules, request.setup, request.first_player.as_deref())?;
+    let card_labels = rules.card_labels(&setup).map_err(ApiError::Game)?;
+    let formation_names = rules.formation_names(&setup).map_err(ApiError::Game)?;
     let viewer = viewer_from_request(request.viewer.as_deref());
     let deck_seed = request.deck_seed.clone();
-    let mut record = record_from_request(&ruleset, &setup, request.record, deck_seed.as_deref())?;
+    let mut record = record_from_request(&rules, &setup, request.record, deck_seed.as_deref())?;
 
     match request.action {
         ApiAction::Start => {
             record = GameRecord::start(
                 setup.clone(),
-                deck_order_for_start(&ruleset, &setup, deck_seed.as_deref()),
+                deck_order_for_start(&rules, &setup, deck_seed.as_deref())?,
             )
             .map_err(ApiError::Game)?;
             advance_to_interactive_decision(&mut record)?;
@@ -50,13 +51,14 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
             advance_after_command(&mut record)?;
         }
         ApiAction::PlayableFormations { player, cards } => {
-            let candidates = ruleset
-                .playable_formations(record.state(), &PlayerId::new(player), &cards)
+            let candidates = record
+                .playable_formations(&PlayerId::new(player), &cards)
                 .map_err(ApiError::Game)?;
-            return Ok(response_for(
+            return response_for(
                 &record,
                 viewer,
                 &card_labels,
+                &formation_names,
                 candidates
                     .into_iter()
                     .map(|candidate| WebPlayableFormation {
@@ -66,7 +68,7 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                         summary: candidate.rule_text,
                     })
                     .collect(),
-            )?);
+            );
         }
         ApiAction::PerformFormation {
             player,
@@ -103,7 +105,7 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
         }
     }
 
-    response_for(&record, viewer, &card_labels, Vec::new())
+    response_for(&record, viewer, &card_labels, &formation_names, Vec::new())
 }
 
 fn advance_after_command(record: &mut GameRecord) -> Result<(), ApiError> {
@@ -146,7 +148,7 @@ fn pass_action_for_state(state: &crate::domain::GameState) -> Option<(PlayerId, 
 }
 
 fn record_from_request(
-    ruleset: &BaseRuleset,
+    rules: &OfficialRules,
     setup: &GameSetup,
     record: Option<Vec<RecordedDecision>>,
     deck_seed: Option<&str>,
@@ -158,7 +160,7 @@ fn record_from_request(
         }
         _ => GameRecord::start(
             setup.clone(),
-            deck_order_for_start(ruleset, setup, deck_seed),
+            deck_order_for_start(rules, setup, deck_seed)?,
         )
         .map_err(ApiError::Game),
     }
@@ -168,6 +170,7 @@ fn response_for(
     record: &GameRecord,
     viewer: Viewer,
     card_labels: &HashMap<CardInstanceId, String>,
+    formation_names: &HashMap<String, String>,
     playable_formations: Vec<WebPlayableFormation>,
 ) -> Result<ApiResponse, ApiError> {
     let can_pass = pass_action_for_state(record.state()).is_some();
@@ -177,6 +180,7 @@ fn response_for(
         state: WebPublicGameState::from_public(
             record.public_view(viewer.clone()).map_err(ApiError::Game)?,
             card_labels,
+            formation_names,
         ),
         events: record
             .public_events_for(viewer)
@@ -189,7 +193,9 @@ fn response_for(
                 )
             })
             .rev()
-            .map(|(index, event)| WebPublicGameEvent::from_public(index + 1, event, card_labels))
+            .map(|(index, event)| {
+                WebPublicGameEvent::from_public(index + 1, event, card_labels, formation_names)
+            })
             .collect(),
         playable_formations,
         interaction: WebInteraction {
@@ -254,7 +260,7 @@ enum ApiAction {
     },
 }
 
-fn fixture_setup(ruleset: &BaseRuleset, first_player: Option<&str>) -> GameSetup {
+fn fixture_setup(rules: &OfficialRules, first_player: Option<&str>) -> Result<GameSetup, ApiError> {
     let (first, second) = if first_player == Some("bob") {
         ("bob", "alice")
     } else {
@@ -262,16 +268,18 @@ fn fixture_setup(ruleset: &BaseRuleset, first_player: Option<&str>) -> GameSetup
     };
     let setup = GameSetup::two_player(PlayerId::new(first), PlayerId::new(second), 20);
 
-    ruleset.official_game_setup(setup.players, setup.turn_order)
+    rules
+        .configure_game(setup.players, setup.turn_order, Vec::new())
+        .map_err(ApiError::Game)
 }
 
 fn setup_for_request(
-    ruleset: &BaseRuleset,
+    rules: &OfficialRules,
     requested: Option<WebGameSetup>,
     first_player: Option<&str>,
 ) -> Result<GameSetup, ApiError> {
     let Some(requested) = requested else {
-        return Ok(fixture_setup(ruleset, first_player));
+        return fixture_setup(rules, first_player);
     };
 
     if requested.players.is_empty() {
@@ -293,20 +301,22 @@ fn setup_for_request(
         .into_iter()
         .map(PlayerId::new)
         .collect::<Vec<_>>();
-    Ok(ruleset.official_game_setup(players, turn_order))
+    rules
+        .configure_game(players, turn_order, Vec::new())
+        .map_err(ApiError::Game)
 }
 
 fn deck_order_for_start(
-    ruleset: &BaseRuleset,
+    rules: &OfficialRules,
     setup: &GameSetup,
     deck_seed: Option<&str>,
-) -> Vec<CardInstanceId> {
-    let mut deck_order = ruleset.official_deck_order(setup);
+) -> Result<Vec<CardInstanceId>, ApiError> {
+    let mut deck_order = rules.official_deck_order(setup).map_err(ApiError::Game)?;
     shuffle_deck(
         &mut deck_order,
         deck_seed.unwrap_or("fewfc-default-shuffle"),
     );
-    deck_order
+    Ok(deck_order)
 }
 
 fn shuffle_deck(deck_order: &mut [CardInstanceId], seed: &str) {
@@ -391,7 +401,11 @@ struct WebPublicGameState {
 }
 
 impl WebPublicGameState {
-    fn from_public(state: PublicGameState, labels: &HashMap<CardInstanceId, String>) -> Self {
+    fn from_public(
+        state: PublicGameState,
+        labels: &HashMap<CardInstanceId, String>,
+        formation_names: &HashMap<String, String>,
+    ) -> Self {
         Self {
             status: match &state.status {
                 crate::domain::GameStatus::InProgress => "InProgress".to_string(),
@@ -459,7 +473,7 @@ impl WebPublicGameState {
                 .map(|counter| WebCounterEffect {
                     owner: counter.owner.as_str().to_string(),
                     effect_id: counter.effect_id.clone(),
-                    effect_name: formation_name(&counter.effect_id),
+                    effect_name: formation_name(formation_names, &counter.effect_id),
                 })
                 .collect(),
             pending_choice: state
@@ -497,7 +511,10 @@ impl WebPublicGameState {
                 WebPreviousTurnFormation {
                     player: formation.player.as_str().to_string(),
                     formation_id: formation.formation_id.clone(),
-                    formation_name: formation.formation_id.as_deref().map(formation_name),
+                    formation_name: formation
+                        .formation_id
+                        .as_deref()
+                        .map(|id| formation_name(formation_names, id)),
                     cards: WebCardRefs::from_public(formation.cards, labels),
                 }
             }),
@@ -681,8 +698,9 @@ impl WebPublicGameEvent {
         sequence: usize,
         event: PublicGameEvent,
         labels: &HashMap<CardInstanceId, String>,
+        formation_names: &HashMap<String, String>,
     ) -> Self {
-        let (title, summary) = event_presentation(&event, labels);
+        let (title, summary) = event_presentation(&event, labels, formation_names);
         Self {
             id: format!("event-{sequence}"),
             event_type: event_type(&event),
@@ -738,6 +756,7 @@ fn event_type(event: &PublicGameEvent) -> String {
 fn event_presentation(
     event: &PublicGameEvent,
     labels: &HashMap<CardInstanceId, String>,
+    formation_names: &HashMap<String, String>,
 ) -> (String, String) {
     match event {
         PublicGameEvent::CardsDealt { player, cards } => (
@@ -752,7 +771,7 @@ fn event_presentation(
             "準備牌庫".to_string(),
             format!("已準備 {}。", card_refs_summary(deck, labels)),
         ),
-        PublicGameEvent::Public(event) => game_event_presentation(event, labels),
+        PublicGameEvent::Public(event) => game_event_presentation(event, labels, formation_names),
         PublicGameEvent::PassiveCovered {
             player,
             formation_id,
@@ -771,7 +790,7 @@ fn event_presentation(
                     format!(
                         "{} 蓋下「{}」，使用 {}。",
                         player.as_str(),
-                        formation_name(formation_id),
+                        formation_name(formation_names, formation_id),
                         card_refs_summary(cards, labels)
                     )
                 },
@@ -820,6 +839,7 @@ fn event_presentation(
 fn game_event_presentation(
     event: &GameEvent,
     labels: &HashMap<CardInstanceId, String>,
+    formation_names: &HashMap<String, String>,
 ) -> (String, String) {
     match event {
         GameEvent::DeckPrepared { deck_order } => (
@@ -896,7 +916,7 @@ fn game_event_presentation(
             format!(
                 "{} 發動「{}」，使用 {}。",
                 player.as_str(),
-                formation_name(formation_id),
+                formation_name(formation_names, formation_id),
                 cards_summary(used_cards, labels)
             ),
         ),
@@ -905,7 +925,7 @@ fn game_event_presentation(
             format!(
                 "{} 的幻化複製了「{}」。",
                 player.as_str(),
-                formation_name(effect_id)
+                formation_name(formation_names, effect_id)
             ),
         ),
         GameEvent::CounterEffectEstablished { owner, effect_id } => (
@@ -913,7 +933,7 @@ fn game_event_presentation(
             format!(
                 "{} 建立了公開的「{}」效果。",
                 owner.as_str(),
-                formation_name(effect_id)
+                formation_name(formation_names, effect_id)
             ),
         ),
         GameEvent::CounterEffectResolved {
@@ -923,7 +943,7 @@ fn game_event_presentation(
             format!(
                 "{} 的「{}」已發動。",
                 owner.as_str(),
-                formation_name(effect_id)
+                formation_name(formation_names, effect_id)
             ),
         ),
         GameEvent::HandInspected { viewer, target, .. } => (
@@ -955,7 +975,7 @@ fn game_event_presentation(
                 format!(
                     "{} 以「{}」攻擊 {}，{}。",
                     attacker.as_str(),
-                    formation_name(formation_id),
+                    formation_name(formation_names, formation_id),
                     target.as_str(),
                     result
                 ),
@@ -1031,7 +1051,7 @@ fn game_event_presentation(
                 format!(
                     "{} 的「{}」已翻開並完成結算。",
                     owner.as_str(),
-                    formation_name(passive_id)
+                    formation_name(formation_names, passive_id)
                 )
             };
             ("蓋牌翻開".to_string(), detail)
@@ -1047,10 +1067,10 @@ fn game_event_presentation(
     }
 }
 
-fn formation_name(formation_id: &str) -> String {
-    base_formation_registry()
-        .formation(formation_id)
-        .map(|formation| formation.name.clone())
+fn formation_name(formation_names: &HashMap<String, String>, formation_id: &str) -> String {
+    formation_names
+        .get(formation_id)
+        .cloned()
         .unwrap_or_else(|| "未知陣法".to_string())
 }
 
@@ -1089,7 +1109,7 @@ fn card_refs_summary(cards: &PublicCardRefs, labels: &HashMap<CardInstanceId, St
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum ApiError {
     Game(GameError),
@@ -1134,15 +1154,16 @@ mod tests {
 
     #[test]
     fn finished_game_status_uses_the_stable_web_value() {
-        let ruleset = BaseRuleset::new();
-        let setup = fixture_setup(&ruleset, None);
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
         let mut state = crate::domain::GameState::from_setup(&setup);
         state.status = crate::domain::GameStatus::Finished {
             outcome: crate::domain::GameOutcome::Team(setup.players[0].team.clone()),
         };
         let web_state = WebPublicGameState::from_public(
             crate::public_view::state_for(&state, Viewer::Player(setup.players[0].id.clone())),
-            &ruleset.card_labels(&setup),
+            &rules.card_labels(&setup).unwrap(),
+            &rules.formation_names(&setup).unwrap(),
         );
         let json = serde_json::to_value(web_state).expect("web state should serialize");
 
@@ -1151,8 +1172,8 @@ mod tests {
 
     #[test]
     fn status_owner_is_projected_as_structured_player_data() {
-        let ruleset = BaseRuleset::new();
-        let setup = fixture_setup(&ruleset, None);
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
         let mut state = crate::domain::GameState::from_setup(&setup);
         state.statuses.push(crate::domain::StatusEffect {
             id: "cannot-act-alice".to_string(),
@@ -1163,7 +1184,8 @@ mod tests {
         });
         let web_state = WebPublicGameState::from_public(
             crate::public_view::state_for(&state, Viewer::Player(PlayerId::new("alice"))),
-            &ruleset.card_labels(&setup),
+            &rules.card_labels(&setup).unwrap(),
+            &rules.formation_names(&setup).unwrap(),
         );
         let json = serde_json::to_value(web_state).expect("web state should serialize");
 
@@ -1184,12 +1206,12 @@ mod tests {
 
     #[test]
     fn start_request_shuffles_deck_by_seed_before_dealing() {
-        let ruleset = BaseRuleset::new();
-        let setup = fixture_setup(&ruleset, None);
-        let sorted_deck = ruleset.official_deck_order(&setup);
-        let first_shuffle = deck_order_for_start(&ruleset, &setup, Some("seed-a"));
-        let same_shuffle = deck_order_for_start(&ruleset, &setup, Some("seed-a"));
-        let different_shuffle = deck_order_for_start(&ruleset, &setup, Some("seed-b"));
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let sorted_deck = rules.official_deck_order(&setup).unwrap();
+        let first_shuffle = deck_order_for_start(&rules, &setup, Some("seed-a")).unwrap();
+        let same_shuffle = deck_order_for_start(&rules, &setup, Some("seed-a")).unwrap();
+        let different_shuffle = deck_order_for_start(&rules, &setup, Some("seed-b")).unwrap();
 
         assert_ne!(first_shuffle, sorted_deck);
         assert_eq!(first_shuffle, same_shuffle);
@@ -1262,8 +1284,8 @@ mod tests {
 
     #[test]
     fn pass_reason_is_derived_from_the_current_state() {
-        let mut state =
-            crate::domain::GameState::from_setup(&fixture_setup(&BaseRuleset::new(), None));
+        let setup = fixture_setup(&OfficialRules::new(), None).unwrap();
+        let mut state = crate::domain::GameState::from_setup(&setup);
         state.phase = Phase::Main;
         let current = state.current_player().cloned().unwrap();
         state.hand_mut(&current).unwrap().clear();
@@ -1312,20 +1334,21 @@ mod tests {
         };
 
         assert_eq!(
-            game_event_presentation(&draw, &labels),
+            game_event_presentation(&draw, &labels, &HashMap::new()),
             (
                 "回合抽牌".to_string(),
                 "alice 進行回合抽牌，抽取 金 1，需選擇一張捨棄。".to_string()
             )
         );
         assert_eq!(
-            game_event_presentation(&discard, &labels),
+            game_event_presentation(&discard, &labels, &HashMap::new()),
             ("捨棄".to_string(), "alice 捨棄了 金 1。".to_string())
         );
     }
 
     #[test]
     fn attack_record_reports_damage_to_the_players_shield() {
+        let formation_names = HashMap::from([("weapon".to_string(), "武器".to_string())]);
         let event = GameEvent::AttackResolved {
             attacker: PlayerId::new("alice"),
             target: PlayerId::new("bob"),
@@ -1355,7 +1378,7 @@ mod tests {
         };
 
         assert_eq!(
-            game_event_presentation(&event, &HashMap::new()),
+            game_event_presentation(&event, &HashMap::new(), &formation_names),
             (
                 "攻擊結算".to_string(),
                 "alice 以「武器」攻擊 bob，bob 的防護罩由 30 變為 6。".to_string()
@@ -1376,7 +1399,7 @@ mod tests {
         };
 
         assert_eq!(
-            game_event_presentation(&event, &HashMap::new()),
+            game_event_presentation(&event, &HashMap::new(), &HashMap::new()),
             ("蓋牌翻開".to_string(), "alice 的「空城」翻開。".to_string())
         );
     }
@@ -1398,8 +1421,12 @@ mod tests {
             cards: PublicCardRefs::Hidden { count: 2 },
         };
 
-        assert!(event_presentation(&known, &labels).1.contains("金 1、木 2"));
-        let hidden_summary = event_presentation(&hidden, &labels).1;
+        assert!(
+            event_presentation(&known, &labels, &HashMap::new())
+                .1
+                .contains("金 1、木 2")
+        );
+        let hidden_summary = event_presentation(&hidden, &labels, &HashMap::new()).1;
         assert!(hidden_summary.contains("2 張手牌"));
         assert!(!hidden_summary.contains("金 1"));
         assert!(!hidden_summary.contains("木 2"));

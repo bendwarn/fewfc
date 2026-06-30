@@ -46,6 +46,25 @@ impl RulesetId {
     }
 }
 
+impl Default for RulesetId {
+    fn default() -> Self {
+        Self::base()
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RuleModuleId(String);
+
+impl RuleModuleId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CardInstanceId(u64);
 
@@ -215,6 +234,8 @@ pub enum StatusExpiryTiming {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GameSetup {
     pub ruleset: RulesetId,
+    #[serde(default)]
+    pub enabled_rule_modules: Vec<RuleModuleId>,
     pub players: Vec<Player>,
     pub turn_order: Vec<PlayerId>,
     pub hp: Vec<TeamHp>,
@@ -231,6 +252,7 @@ impl GameSetup {
 
         Self {
             ruleset: RulesetId::base(),
+            enabled_rule_modules: Vec::new(),
             players: vec![
                 Player {
                     id: first_player.clone(),
@@ -289,6 +311,7 @@ impl GameSetup {
 
         Self {
             ruleset: RulesetId::base(),
+            enabled_rule_modules: Vec::new(),
             players,
             turn_order,
             hp: vec![
@@ -317,6 +340,11 @@ impl GameSetup {
         self.card_instances = card_instances;
         self
     }
+
+    pub fn with_rule_modules(mut self, modules: Vec<RuleModuleId>) -> Self {
+        self.enabled_rule_modules = modules;
+        self
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,6 +358,10 @@ pub enum Phase {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GameState {
+    #[serde(default)]
+    pub ruleset: RulesetId,
+    #[serde(default)]
+    pub enabled_rule_modules: Vec<RuleModuleId>,
     pub status: GameStatus,
     pub turn_number: u64,
     pub phase: Phase,
@@ -360,6 +392,8 @@ pub struct GameState {
 impl GameState {
     pub fn from_setup(setup: &GameSetup) -> Self {
         Self {
+            ruleset: setup.ruleset.clone(),
+            enabled_rule_modules: setup.enabled_rule_modules.clone(),
             status: GameStatus::InProgress,
             turn_number: 1,
             phase: Phase::TurnStart,
@@ -823,6 +857,9 @@ pub enum ValidationError {
         setup: RulesetId,
         metadata: RulesetId,
     },
+    UnsupportedRuleset(RulesetId),
+    DuplicateRuleModule(RuleModuleId),
+    UnknownRuleModule(RuleModuleId),
     CannotPassAction {
         reason: PassActionReason,
     },
@@ -864,6 +901,15 @@ pub type GameResult<T> = Result<T, GameError>;
 pub fn validate_setup(setup: &GameSetup) -> GameResult<()> {
     if setup.turn_order.is_empty() {
         return Err(GameError::Validation(ValidationError::EmptyTurnOrder));
+    }
+
+    let mut rule_modules = HashSet::new();
+    for module in &setup.enabled_rule_modules {
+        if !rule_modules.insert(module.clone()) {
+            return Err(GameError::Validation(ValidationError::DuplicateRuleModule(
+                module.clone(),
+            )));
+        }
     }
 
     let mut players = HashSet::new();

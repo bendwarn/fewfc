@@ -4,13 +4,12 @@ mod recorded_event_log;
 
 use crate::domain::{
     CardInstanceId, Command, CommandId, GameError, GameEvent, GameResult, GameSetup, GameState,
-    validate_setup,
 };
 use crate::ports::DeckPreparation as DeckPreparationPort;
 use crate::public_view::{PublicGameEvent, PublicGameState, Viewer};
+use crate::rules::{FormationCandidate, OfficialRules};
 use recorded_event_log::RecordedEventLog;
 
-pub use crate::rules::base::BaseRuleset;
 pub use recorded_event_log::{
     AutomaticReason, CommandContext, CommandKind, EventMetadata, EventSource, RecordedDecision,
     RecordedDecisionSource, RecordedEvent,
@@ -66,7 +65,7 @@ pub struct GameRecord {
 
 impl GameRecord {
     pub fn start(setup: GameSetup, deck_order: Vec<CardInstanceId>) -> GameResult<Self> {
-        let ruleset = BaseRuleset::new();
+        let ruleset = OfficialRules::new();
         let events = ruleset.start_game(&setup, deck_order)?;
         let current_state = replay(&setup, &events)?;
 
@@ -147,7 +146,7 @@ impl GameRecord {
 
     pub fn apply(&mut self, command: Command) -> GameResult<EventBatch> {
         let command_id = self.next_command_id();
-        let events = BaseRuleset::new().decide_command(self.state(), command.clone())?;
+        let events = OfficialRules::new().decide_command(self.state(), command.clone())?;
         self.event_log
             .append_command(command_id, command, events.clone());
         for event in &events {
@@ -161,7 +160,7 @@ impl GameRecord {
     }
 
     pub fn advance_until_decision(&mut self) -> GameResult<EventBatch> {
-        let events = BaseRuleset::new().advance_automatic(self.state())?;
+        let events = OfficialRules::new().advance_automatic(self.state())?;
         self.event_log.append_automatic(events.clone());
         for event in &events {
             apply_event(&mut self.current_state, event);
@@ -175,6 +174,14 @@ impl GameRecord {
 
     pub fn verify_replay(&self) -> Result<GameState, ReplayVerificationError> {
         verify_recorded_decisions(&self.setup, &self.recorded_decisions())
+    }
+
+    pub fn playable_formations(
+        &self,
+        player: &crate::domain::PlayerId,
+        selected_cards: &[CardInstanceId],
+    ) -> GameResult<Vec<FormationCandidate>> {
+        OfficialRules::new().playable_formations(self.state(), player, selected_cards)
     }
 
     fn next_command_id(&self) -> CommandId {
@@ -262,30 +269,33 @@ fn command_context(command: &Command) -> CommandContext {
 }
 
 pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
-    BaseRuleset::new().advance_automatic(state)
+    OfficialRules::new().advance_automatic(state)
 }
 
 pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<GameEvent>> {
-    BaseRuleset::new().decide_command(state, command)
+    OfficialRules::new().decide_command(state, command)
 }
 
 pub fn apply_event(state: &mut GameState, event: &GameEvent) {
-    crate::rules::base::apply_event(state, event);
+    crate::rules::projection::apply_event(state, event);
 }
 
 pub fn replay(setup: &GameSetup, events: &[GameEvent]) -> Result<GameState, GameError> {
-    crate::rules::base::project(setup, events)
+    OfficialRules::new().validate_setup(setup)?;
+    crate::rules::projection::project(setup, events)
 }
 
 pub fn verify_recorded_decisions(
     setup: &GameSetup,
     recorded_decisions: &[RecordedDecision],
 ) -> Result<GameState, ReplayVerificationError> {
-    validate_setup(setup).map_err(|error| ReplayVerificationError::DecisionFailed {
-        sequence: 0,
-        source: EventSource::Setup,
-        error: Box::new(error),
-    })?;
+    OfficialRules::new()
+        .validate_setup(setup)
+        .map_err(|error| ReplayVerificationError::DecisionFailed {
+            sequence: 0,
+            source: EventSource::Setup,
+            error: Box::new(error),
+        })?;
 
     let mut state = GameState::from_setup(setup);
     let mut sequence = 1;
@@ -302,7 +312,7 @@ pub fn verify_recorded_decisions(
                         _ => None,
                     })
                     .ok_or(ReplayVerificationError::MissingSetupDeck { sequence })?;
-                BaseRuleset::new()
+                OfficialRules::new()
                     .start_game(setup, deck_order)
                     .map_err(|error| ReplayVerificationError::DecisionFailed {
                         sequence,

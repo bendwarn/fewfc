@@ -143,13 +143,6 @@ fn attack_target(
         DamageTarget::PreviousPlayer => {
             TurnOrderTargets::new(state).player_target(attacker, RulePlayerTarget::PreviousPlayer)
         }
-        DamageTarget::DeclaredPlayer | DamageTarget::TeamOfDeclaredPlayer => {
-            Err(GameError::RuleImplementation(
-                crate::domain::RuleImplementationError::EffectNotImplemented(
-                    "declared-attack-target".to_string(),
-                ),
-            ))
-        }
     }
 }
 
@@ -177,8 +170,6 @@ fn compute_attack_points(
 
     match formula {
         PointFormula::Fixed(points) => Ok(*points as i32),
-        PointFormula::CardCount => Ok(cards.len() as i32),
-        PointFormula::FormationPoints => level_sum(),
         PointFormula::LevelPlus(bonus) => Ok(level_sum()? + *bonus as i32),
         PointFormula::LevelSumTimes(multiplier) => Ok(level_sum()? * *multiplier as i32),
         PointFormula::TargetHandCountTimes(multiplier) => {
@@ -383,7 +374,7 @@ mod tests {
     use crate::domain::{CardDef, CardDefId, CardInstanceDef, GameSetup};
 
     #[test]
-    fn formation_points_sum_submitted_card_levels() {
+    fn level_sum_formula_sums_submitted_card_levels() {
         let setup = GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30).with_cards(
             vec![
                 CardDef {
@@ -415,7 +406,7 @@ mod tests {
         assert_eq!(
             compute_attack_points(
                 &state,
-                &PointFormula::FormationPoints,
+                &PointFormula::LevelSumTimes(1),
                 &[CardInstanceId::new(1), CardInstanceId::new(2)],
                 &PlayerId::new("p2"),
             ),

@@ -3,7 +3,6 @@ mod covered_passive;
 mod effect_intent;
 mod formation_selection;
 mod formation_use;
-mod projection;
 
 use crate::domain::{
     CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command,
@@ -12,23 +11,22 @@ use crate::domain::{
     TurnDrawSkipReason, ValidationError, validate_setup,
 };
 use crate::rules::FormationCandidate;
+use crate::rules::projection;
 use std::collections::{HashMap, HashSet};
 
-pub use crate::rules::QueryCard;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct BaseRuleset;
+pub(crate) struct BaseRuleset;
 
 impl BaseRuleset {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 
-    pub fn id(&self) -> RulesetId {
+    pub(crate) fn id(&self) -> RulesetId {
         RulesetId::base()
     }
 
-    pub fn start_game(
+    pub(crate) fn start_game(
         &self,
         setup: &GameSetup,
         deck_order: Vec<CardInstanceId>,
@@ -38,7 +36,7 @@ impl BaseRuleset {
         initial_events(setup, deck_order)
     }
 
-    pub fn decide_command(
+    pub(crate) fn decide_command(
         &self,
         state: &GameState,
         command: Command,
@@ -46,11 +44,11 @@ impl BaseRuleset {
         decide_command_with_base_ruleset(state, command)
     }
 
-    pub fn advance_automatic(&self, state: &GameState) -> GameResult<Vec<GameEvent>> {
+    pub(crate) fn advance_automatic(&self, state: &GameState) -> GameResult<Vec<GameEvent>> {
         advance_automatic(state)
     }
 
-    pub fn playable_formations(
+    pub(crate) fn playable_formations(
         &self,
         state: &GameState,
         player: &crate::domain::PlayerId,
@@ -64,7 +62,7 @@ impl BaseRuleset {
         )
     }
 
-    pub fn official_game_setup(
+    pub(crate) fn official_game_setup(
         &self,
         players: Vec<Player>,
         turn_order: Vec<PlayerId>,
@@ -82,6 +80,7 @@ impl BaseRuleset {
 
         GameSetup {
             ruleset: self.id(),
+            enabled_rule_modules: Vec::new(),
             players,
             turn_order,
             hp,
@@ -92,7 +91,7 @@ impl BaseRuleset {
         }
     }
 
-    pub fn official_deck_order(&self, setup: &GameSetup) -> Vec<CardInstanceId> {
+    pub(crate) fn official_deck_order(&self, setup: &GameSetup) -> Vec<CardInstanceId> {
         let mut deck_order = setup
             .card_instances
             .iter()
@@ -102,7 +101,7 @@ impl BaseRuleset {
         deck_order
     }
 
-    pub fn card_labels(&self, setup: &GameSetup) -> HashMap<CardInstanceId, String> {
+    pub(crate) fn card_labels(&self, setup: &GameSetup) -> HashMap<CardInstanceId, String> {
         setup
             .card_instances
             .iter()
@@ -208,14 +207,6 @@ fn card_def(id: &str, name: &str, element: Element, level: u32) -> CardDef {
         element,
         level,
     }
-}
-
-pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
-    projection::apply_event(state, event);
-}
-
-pub(crate) fn project(setup: &GameSetup, events: &[GameEvent]) -> GameResult<GameState> {
-    projection::project(setup, events)
 }
 
 fn validate_card_instances(setup: &GameSetup, deck_order: &[CardInstanceId]) -> GameResult<()> {
@@ -814,7 +805,7 @@ mod tests {
         let events = BaseRuleset::new()
             .start_game(&setup(), (1..=10).map(card).collect())
             .unwrap();
-        let state = project(&setup(), &events).unwrap();
+        let state = projection::project(&setup(), &events).unwrap();
 
         assert_eq!(
             BaseRuleset::new().advance_automatic(&state).unwrap(),

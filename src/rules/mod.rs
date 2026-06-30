@@ -1,12 +1,16 @@
 //! Rule registries: formations, effects, matchers, and formula resolvers.
 
-pub mod base;
+pub(crate) mod base;
+mod official;
+pub(crate) mod projection;
+
+pub use official::OfficialRules;
 
 pub use crate::domain::Element;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormationDef {
+pub(crate) struct FormationDef {
     pub id: String,
     pub name: String,
     pub rule_text: String,
@@ -23,40 +27,24 @@ pub enum FormationCategory {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AttackCategory {
+pub(crate) enum AttackCategory {
     Elemental(Element),
     Physical,
     Special,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FormationPattern {
+pub(crate) enum FormationPattern {
     ExactElements(Vec<Element>),
-    ElementCounts(Vec<ElementCount>),
     GeneratingSequence { length: usize },
     OvercomingSequence { length: usize },
     Custom(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ElementCount {
-    pub element: Element,
-    pub count: usize,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SubmittedCardFacts {
+pub(crate) struct SubmittedCardFacts {
     pub element: Element,
     pub level: u32,
-}
-
-pub type QueryCard = SubmittedCardFacts;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormationMatch {
-    pub formation_id: String,
-    pub formation_name: String,
-    pub card_indexes: Vec<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,55 +57,51 @@ pub struct FormationCandidate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PointFormula {
+pub(crate) enum PointFormula {
     Fixed(u32),
-    CardCount,
-    FormationPoints,
     LevelPlus(u32),
     LevelSumTimes(u32),
     TargetHandCountTimes(u32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EffectDef {
+pub(crate) struct EffectDef {
     pub id: String,
     pub plan: EffectPlan,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EffectPlan {
+pub(crate) enum EffectPlan {
     Attack(AttackPlanDef),
     ActiveSpell(SpellPlanDef),
     PassiveSpell(SpellPlanDef),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AttackPlanDef {
+pub(crate) struct AttackPlanDef {
     pub category: AttackCategory,
     pub point_formula: PointFormula,
     pub damage_target: DamageTarget,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpellPlanDef {
+pub(crate) struct SpellPlanDef {
     pub resolver_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DamageTarget {
+pub(crate) enum DamageTarget {
     PreviousPlayer,
-    DeclaredPlayer,
-    TeamOfDeclaredPlayer,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormationRegistry {
+pub(crate) struct FormationRegistry {
     formations: HashMap<String, FormationDef>,
     effects: HashMap<String, EffectDef>,
 }
 
 impl FormationRegistry {
-    pub fn new(
+    pub(crate) fn new(
         formations: Vec<FormationDef>,
         effects: Vec<EffectDef>,
     ) -> Result<Self, RegistryError> {
@@ -149,27 +133,19 @@ impl FormationRegistry {
         })
     }
 
-    pub fn formation(&self, id: &str) -> Option<&FormationDef> {
+    pub(crate) fn formation(&self, id: &str) -> Option<&FormationDef> {
         self.formations.get(id)
     }
 
-    pub fn effect(&self, id: &str) -> Option<&EffectDef> {
+    pub(crate) fn effect(&self, id: &str) -> Option<&EffectDef> {
         self.effects.get(id)
     }
 
-    pub fn effect_for(&self, formation: &FormationDef) -> Option<&EffectDef> {
+    pub(crate) fn effect_for(&self, formation: &FormationDef) -> Option<&EffectDef> {
         self.effect(&formation.effect_id)
     }
 
-    pub fn formation_count(&self) -> usize {
-        self.formations.len()
-    }
-
-    pub fn effect_count(&self) -> usize {
-        self.effects.len()
-    }
-
-    pub fn formations(&self) -> Vec<&FormationDef> {
+    pub(crate) fn formations(&self) -> Vec<&FormationDef> {
         let mut formations = self.formations.values().collect::<Vec<_>>();
         formations.sort_by(|left, right| left.id.cmp(&right.id));
         formations
@@ -177,7 +153,7 @@ impl FormationRegistry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RegistryError {
+pub(crate) enum RegistryError {
     DuplicateFormation,
     MissingEffect {
         formation_id: String,
@@ -186,18 +162,18 @@ pub enum RegistryError {
 }
 
 #[derive(Default)]
-pub struct FormationMatcher<'a> {
+pub(crate) struct FormationMatcher<'a> {
     custom_matchers: HashMap<String, CustomMatcher<'a>>,
 }
 
 type CustomMatcher<'a> = Box<dyn Fn(&[SubmittedCardFacts]) -> bool + 'a>;
 
 impl<'a> FormationMatcher<'a> {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub fn with_custom(
+    pub(crate) fn with_custom(
         mut self,
         id: impl Into<String>,
         matcher: impl Fn(&[SubmittedCardFacts]) -> bool + 'a,
@@ -206,25 +182,15 @@ impl<'a> FormationMatcher<'a> {
         self
     }
 
-    pub fn matches(&self, pattern: &FormationPattern, submitted: &[SubmittedCardFacts]) -> bool {
+    pub(crate) fn matches(
+        &self,
+        pattern: &FormationPattern,
+        submitted: &[SubmittedCardFacts],
+    ) -> bool {
         let submitted_elements = submitted_elements(submitted);
         match pattern {
             FormationPattern::ExactElements(elements) => {
                 element_counts(elements) == element_counts(&submitted_elements)
-            }
-            FormationPattern::ElementCounts(required_counts) => {
-                required_counts
-                    .iter()
-                    .map(|required| required.count)
-                    .sum::<usize>()
-                    == submitted.len()
-                    && required_counts.iter().all(|required| {
-                        submitted_elements
-                            .iter()
-                            .filter(|element| **element == required.element)
-                            .count()
-                            == required.count
-                    })
             }
             FormationPattern::GeneratingSequence { length } => {
                 matches_unordered_sequence(&submitted_elements, *length, &GENERATING_CYCLE)
@@ -283,12 +249,12 @@ fn matches_unordered_sequence(submitted: &[Element], length: usize, cycle: &[Ele
     })
 }
 
-pub fn base_formation_registry() -> FormationRegistry {
+pub(crate) fn base_formation_registry() -> FormationRegistry {
     FormationRegistry::new(base_formations(), base_effects())
         .expect("base formation registry must be internally consistent")
 }
 
-pub fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
+pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
     FormationMatcher::new()
         .with_custom("two-different-elements", |submitted| {
             submitted.len() == 2 && submitted[0].element != submitted[1].element
@@ -299,25 +265,6 @@ pub fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
             };
             submitted.len() == 5 && submitted.iter().all(|card| card.level == first_card.level)
         })
-}
-
-pub fn matching_formations(cards: &[QueryCard]) -> Vec<FormationMatch> {
-    let registry = base_formation_registry();
-    let matcher = base_formation_matcher();
-    let mut matches = Vec::new();
-    let card_indexes = (0..cards.len()).collect::<Vec<_>>();
-
-    for formation in registry.formations() {
-        if matcher.matches(&formation.pattern, cards) {
-            matches.push(FormationMatch {
-                formation_id: formation.id.clone(),
-                formation_name: formation.name.clone(),
-                card_indexes: card_indexes.clone(),
-            });
-        }
-    }
-
-    matches
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -646,4 +593,218 @@ fn spell(
     };
 
     BaseFormationSpec { formation, effect }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(element: Element) -> SubmittedCardFacts {
+        leveled_card(element, 1)
+    }
+
+    fn leveled_card(element: Element, level: u32) -> SubmittedCardFacts {
+        SubmittedCardFacts { element, level }
+    }
+
+    #[test]
+    fn matcher_handles_unordered_exact_counts_and_sequences() {
+        let matcher = FormationMatcher::default();
+
+        assert!(matcher.matches(
+            &FormationPattern::ExactElements(vec![
+                Element::Metal,
+                Element::Metal,
+                Element::Fire,
+                Element::Water,
+            ]),
+            &[
+                card(Element::Water),
+                card(Element::Metal),
+                card(Element::Fire),
+                card(Element::Metal),
+            ],
+        ));
+        assert!(matcher.matches(
+            &FormationPattern::GeneratingSequence { length: 3 },
+            &[
+                card(Element::Earth),
+                card(Element::Wood),
+                card(Element::Fire),
+            ],
+        ));
+        assert!(matcher.matches(
+            &FormationPattern::OvercomingSequence { length: 3 },
+            &[
+                card(Element::Water),
+                card(Element::Wood),
+                card(Element::Earth),
+            ],
+        ));
+    }
+
+    #[test]
+    fn matcher_rejects_incomplete_or_wrong_patterns() {
+        let matcher = FormationMatcher::default();
+
+        assert!(!matcher.matches(
+            &FormationPattern::ExactElements(vec![Element::Metal, Element::Fire, Element::Water,]),
+            &[card(Element::Metal), card(Element::Fire)],
+        ));
+        assert!(!matcher.matches(
+            &FormationPattern::GeneratingSequence { length: 3 },
+            &[
+                card(Element::Metal),
+                card(Element::Fire),
+                card(Element::Water),
+            ],
+        ));
+        assert!(!matcher.matches(
+            &FormationPattern::OvercomingSequence { length: 3 },
+            &[
+                card(Element::Wood),
+                card(Element::Fire),
+                card(Element::Earth),
+            ],
+        ));
+    }
+
+    #[test]
+    fn matcher_keeps_custom_hooks_internal() {
+        let matcher = FormationMatcher::new().with_custom("all-water", |submitted| {
+            submitted.len() == 3
+                && submitted
+                    .iter()
+                    .all(|card| card.element == Element::Water && card.level > 1)
+        });
+        let pattern = FormationPattern::Custom("all-water".to_string());
+
+        assert!(matcher.matches(
+            &pattern,
+            &[
+                leveled_card(Element::Water, 2),
+                leveled_card(Element::Water, 3),
+                leveled_card(Element::Water, 4),
+            ],
+        ));
+        assert!(!matcher.matches(
+            &pattern,
+            &[
+                leveled_card(Element::Water, 2),
+                leveled_card(Element::Water, 1),
+                leveled_card(Element::Water, 4),
+            ],
+        ));
+    }
+
+    #[test]
+    fn registry_links_formation_schema_to_effect_plan() {
+        let registry = FormationRegistry::new(
+            vec![FormationDef {
+                id: "metal-strike".to_string(),
+                name: "Metal Strike".to_string(),
+                rule_text: "Elemental attack".to_string(),
+                category: FormationCategory::Attack,
+                pattern: FormationPattern::ExactElements(vec![Element::Metal]),
+                effect_id: "deal-formation-damage".to_string(),
+                point_formula: PointFormula::Fixed(3),
+            }],
+            vec![EffectDef {
+                id: "deal-formation-damage".to_string(),
+                plan: EffectPlan::Attack(AttackPlanDef {
+                    category: AttackCategory::Elemental(Element::Metal),
+                    point_formula: PointFormula::LevelSumTimes(1),
+                    damage_target: DamageTarget::PreviousPlayer,
+                }),
+            }],
+        )
+        .unwrap();
+
+        let formation = registry.formation("metal-strike").unwrap();
+        let effect = registry.effect_for(formation).unwrap();
+
+        assert_eq!(formation.effect_id, "deal-formation-damage");
+        assert_eq!(effect.id, "deal-formation-damage");
+        assert!(matches!(effect.plan, EffectPlan::Attack(_)));
+    }
+
+    #[test]
+    fn base_registry_contains_every_documented_formation() {
+        let registry = base_formation_registry();
+        let expected = [
+            ("metal-strike", "金擊術"),
+            ("wood-strike", "木擊術"),
+            ("water-strike", "水擊術"),
+            ("fire-strike", "火擊術"),
+            ("earth-strike", "土擊術"),
+            ("weapon", "武器"),
+            ("defense", "防禦"),
+            ("seal", "封印"),
+            ("countershock", "反震"),
+            ("metamorphosis", "幻化"),
+            ("empty-city", "空城"),
+            ("triple-metal", "鍠金"),
+            ("triple-wood", "樸木"),
+            ("triple-water", "洄水"),
+            ("triple-fire", "熾火"),
+            ("triple-earth", "坱土"),
+            ("generating-formation", "生陣"),
+            ("overcoming-formation", "剋陣"),
+            ("radiance", "光芒"),
+            ("barrier", "氣壁"),
+            ("return-to-origin", "歸元"),
+            ("shock-burst", "震暴"),
+            ("chaos", "混沌"),
+            ("five-elements-cycle", "五行輪迴"),
+            ("five-streams-unite", "五流歸一"),
+        ];
+
+        assert_eq!(registry.formations().len(), expected.len());
+        assert_eq!(registry.effects.len(), expected.len());
+        for (id, name) in expected {
+            let formation = registry.formation(id).expect("base formation must exist");
+            assert_eq!(formation.name, name);
+            assert!(!formation.rule_text.is_empty());
+            assert!(registry.effect_for(formation).is_some());
+        }
+    }
+
+    #[test]
+    fn base_registry_patterns_and_effect_plans_are_consistent() {
+        let registry = base_formation_registry();
+        let matcher = base_formation_matcher();
+
+        assert!(matcher.matches(
+            &registry.formation("empty-city").unwrap().pattern,
+            &[card(Element::Metal), card(Element::Wood)],
+        ));
+        assert!(!matcher.matches(
+            &registry.formation("empty-city").unwrap().pattern,
+            &[card(Element::Metal), card(Element::Metal)],
+        ));
+        assert!(matcher.matches(
+            &registry.formation("five-streams-unite").unwrap().pattern,
+            &[
+                leveled_card(Element::Metal, 3),
+                leveled_card(Element::Wood, 3),
+                leveled_card(Element::Water, 3),
+                leveled_card(Element::Fire, 3),
+                leveled_card(Element::Earth, 3),
+            ],
+        ));
+        assert_eq!(
+            registry.effect("triple-fire").unwrap().plan,
+            EffectPlan::Attack(AttackPlanDef {
+                category: AttackCategory::Elemental(Element::Fire),
+                point_formula: PointFormula::LevelSumTimes(3),
+                damage_target: DamageTarget::PreviousPlayer,
+            }),
+        );
+        assert_eq!(
+            registry.effect("barrier").unwrap().plan,
+            EffectPlan::ActiveSpell(SpellPlanDef {
+                resolver_id: "barrier".to_string(),
+            }),
+        );
+    }
 }

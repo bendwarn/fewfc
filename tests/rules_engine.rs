@@ -79,6 +79,7 @@ fn two_player_setup_with_hp(starting_hp: i32) -> GameSetup {
 fn bare_team_setup(players_by_team: &[(&str, &str)]) -> GameSetup {
     GameSetup {
         ruleset: RulesetId::base(),
+        enabled_rule_modules: Vec::new(),
         players: players_by_team
             .iter()
             .map(|(player, team)| Player {
@@ -495,6 +496,7 @@ fn setup_validation_rejects_duplicate_card_instance_definitions() {
 fn setup_validation_requires_hp_for_every_team() {
     let setup = GameSetup {
         ruleset: RulesetId::base(),
+        enabled_rule_modules: Vec::new(),
         players: vec![Player {
             id: PlayerId::new("p1"),
             team: TeamId::new("A"),
@@ -519,6 +521,7 @@ fn setup_validation_requires_hp_for_every_team() {
 fn setup_validation_rejects_team_mode_turn_order_that_is_not_alternating() {
     let setup = GameSetup {
         ruleset: RulesetId::base(),
+        enabled_rule_modules: Vec::new(),
         players: vec![
             Player {
                 id: PlayerId::new("p1"),
