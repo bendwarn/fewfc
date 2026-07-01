@@ -8,13 +8,15 @@ import {
   requiresPendingCommandDraft,
 } from './game-room'
 
-test('Five Directions Legend is an available default Rule Module', () => {
+test('Star and Five Directions Legend are available default Rule Modules', () => {
   assert.deepEqual(normalizeRuleModules(undefined), [
+    'star',
     'discard-retrieval',
     'personal-deck',
     'five-directions-legend',
   ])
-  assert.deepEqual(normalizeRuleModules(['five-directions-legend', 'unknown']), [
+  assert.deepEqual(normalizeRuleModules(['star', 'five-directions-legend', 'unknown']), [
+    'star',
     'five-directions-legend',
   ])
 })

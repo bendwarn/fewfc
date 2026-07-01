@@ -2,6 +2,7 @@ export type PlayerId = string
 export type TeamId = string
 export type ViewerId = PlayerId | 'observer'
 export type CardInstanceId = number
+export type StarKind = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
 
 export interface PublicPlayer {
   id: PlayerId
@@ -80,6 +81,9 @@ export interface PublicGameState {
     kind: string
   }>
   environment: 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth' | null
+  teamStars: Array<{ team: TeamId; star: StarKind }>
+  starHistories: Array<{ player: PlayerId; stars: StarKind[] }>
+  fiveStarAlignment: { player: PlayerId; team: TeamId } | null
   previousTurnFormation: PublicPreviousTurnFormation | null
 }
 
@@ -90,12 +94,15 @@ export interface PublicGameEvent {
   summary: string
 }
 
-export interface PlayableFormation {
-  id: string
-  name: string
-  category: 'Attack' | 'Spell'
-  summary: string
-}
+export type PlayableAction =
+  | {
+      type: 'performFormation'
+      id: string
+      name: string
+      category: 'Attack' | 'Spell'
+      summary: string
+      cards: CardInstanceId[]
+    }
 
 export type RecordedDecision = unknown
 
@@ -103,7 +110,7 @@ export interface LocalGameResponse {
   record: RecordedDecision[]
   state: PublicGameState
   events: PublicGameEvent[]
-  playableFormations: PlayableFormation[]
+  playableActions: PlayableAction[]
   interaction: {
     canPass: boolean
     hasOptionalEffect: boolean

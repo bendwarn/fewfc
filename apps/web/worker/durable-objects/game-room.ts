@@ -84,6 +84,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           return await this.startGame(body.actorUserId, body.deckList)
         case 'resetGame':
           return await this.resetGame(body.actorUserId)
+        case 'seedEndgameFixture':
+          return await this.seedEndgameFixture(body.actorUserId)
         case 'getState':
           return await this.getState(body.actorUserId)
         case 'submitCommand':
@@ -170,7 +172,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         capacity,
         access: metadata.access,
         ruleset: metadata.ruleset,
-        enabledRuleModules: metadata.enabledRuleModules,
+        enabledRuleModules: [...metadata.enabledRuleModules],
       },
       createdAt: now,
     }
@@ -545,6 +547,41 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return this.json(await this.response(updatedMetadata, actorUserId))
   }
 
+  private async seedEndgameFixture(actorUserId: string): Promise<Response> {
+    const metadata = await this.requireMetadata()
+    const actor = this.memberFor(metadata, actorUserId)
+
+    if (!actor?.owner) {
+      return this.json({ error: 'only room owner may seed a test fixture' }, 403)
+    }
+    if (metadata.status !== 'Active') {
+      return this.json({ error: 'test fixture requires an active match' }, 409)
+    }
+
+    const snapshot = await this.requireSnapshot()
+    const teams = [...new Set(snapshot.setup.players.map(player => player.team))]
+    const setup: RulesGameSetup = {
+      ...snapshot.setup,
+      initialHp: teams.map(team => ({ team, hp: 1 })),
+    }
+    const rules = await callRulesEngine({
+      action: { type: 'start' },
+      viewer: 'observer',
+      setup,
+      deckSeed: snapshot.deckSeed,
+    })
+
+    await this.ctx.storage.put('snapshot', {
+      ...snapshot,
+      setup,
+      rulesRecord: rules.record,
+    } satisfies GameRoomSnapshot)
+    await this.ctx.storage.delete('pendingCommandDraft')
+    this.ctx.waitUntil(this.broadcast(metadata))
+
+    return this.json(await this.response(metadata, actorUserId))
+  }
+
   private async submitCommand(
     request: Extract<GameRoomRequest, { type: 'submitCommand' }>,
   ): Promise<Response> {
@@ -563,11 +600,11 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     const viewer = actor
     const existingDraft = await this.pendingDraft()
 
-    if (request.action.type === 'playableFormations') {
+    if (request.action.type === 'playableActions') {
       const snapshot = await this.requireSnapshot()
       const rules = await this.callRules(action, viewer, snapshot)
 
-      return this.json(await this.response(metadata, request.actorUserId, rules.playableFormations))
+      return this.json(await this.response(metadata, request.actorUserId, rules.playableActions))
     }
 
     if (existingDraft && existingDraft.actorUserId !== request.actorUserId) {
@@ -895,7 +932,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         team: teamByPlayer.get(member.player) ?? 'team-a',
       })),
       turnOrder,
-      enabledRuleModules: metadata.enabledRuleModules,
+      enabledRuleModules: [...metadata.enabledRuleModules],
       deckLists,
     }
   }
@@ -918,7 +955,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private async response(
     metadata?: GameRoomMetadata,
     actorUserId?: string,
-    playableFormations = [],
+    playableActions = [],
   ): Promise<GameRoomResponse> {
     const currentMetadata = metadata ?? await this.requireMetadata()
     const lockedDeckName = actorUserId
@@ -941,7 +978,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           title: this.eventTitle(event),
           summary: this.displaySummary(currentMetadata, this.eventSummary(event)),
         })).reverse(),
-        playableFormations,
+        playableActions,
         interaction: {
           canPass: false,
           hasOptionalEffect: false,
@@ -979,7 +1016,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         ...event,
         summary: this.displaySummary(currentMetadata, event.summary),
       })),
-      playableFormations,
+      playableActions,
       interaction: publicRules.interaction,
     }
   }
@@ -1022,7 +1059,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       case 'chooseTurnDiscard':
       case 'answerEffectChoice':
       case 'retrievePreviousTurnDiscard':
-      case 'playableFormations':
+      case 'playableActions':
         return { ...action, player }
       default:
         return action

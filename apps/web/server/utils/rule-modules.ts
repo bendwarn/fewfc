@@ -1,4 +1,5 @@
 const availableRuleModules = [
+  'star',
   'discard-retrieval',
   'personal-deck',
   'five-directions-legend',

@@ -144,6 +144,10 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::AttackResolved { .. }
         | GameEvent::EnvironmentTransferred { .. }
         | GameEvent::EnvironmentCleared { .. }
+        | GameEvent::StarBroken { .. }
+        | GameEvent::StarSummoned { .. }
+        | GameEvent::VoidStarBreakingCompleted { .. }
+        | GameEvent::FiveStarAlignmentAchieved { .. }
         | GameEvent::CardsMoved { .. }
         | GameEvent::EffectChoiceAnswered { .. }
         | GameEvent::EffectChoiceRequested { .. }

@@ -107,7 +107,7 @@ fn base_only_game_runs_through_the_official_rules_interface() {
     assert!(record.state().enabled_rule_modules.is_empty());
     assert!(
         record
-            .playable_formations(&current_player, &[selected_card])
+            .playable_actions(&current_player, &[selected_card])
             .is_ok()
     );
     assert_eq!(

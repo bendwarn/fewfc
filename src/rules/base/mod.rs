@@ -12,7 +12,7 @@ use crate::domain::{
     PlayerDeckList, PlayerId, RulesetId, TeamHp, TurnDrawSkipReason, ValidationError,
     validate_setup,
 };
-use crate::rules::FormationCandidate;
+use crate::rules::PlayableAction;
 use crate::rules::projection;
 use std::collections::{HashMap, HashSet};
 
@@ -50,17 +50,20 @@ impl BaseRuleset {
         advance_automatic(state)
     }
 
-    pub(crate) fn playable_formations(
+    pub(crate) fn playable_actions(
         &self,
         state: &GameState,
         player: &crate::domain::PlayerId,
         selected_cards: &[CardInstanceId],
-    ) -> GameResult<Vec<FormationCandidate>> {
-        ensure_can_query_playable_formations(state, player)?;
+    ) -> GameResult<Vec<PlayableAction>> {
+        ensure_can_query_playable_actions(state, player)?;
 
         Ok(
             formation_selection::FormationSelection::new(state, player, selected_cards.to_vec())?
-                .candidates(),
+                .candidates()
+                .into_iter()
+                .map(PlayableAction::PerformFormation)
+                .collect(),
         )
     }
 
@@ -871,7 +874,7 @@ fn ensure_engine_invariants(state: &GameState) -> GameResult<()> {
     Ok(())
 }
 
-fn ensure_can_query_playable_formations(
+fn ensure_can_query_playable_actions(
     state: &GameState,
     player: &crate::domain::PlayerId,
 ) -> GameResult<()> {

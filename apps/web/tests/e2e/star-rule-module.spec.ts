@@ -1,0 +1,234 @@
+import { expect, test, type Page } from '@playwright/test'
+
+async function loginAsGuest(page: Page) {
+  await page.goto('/login')
+  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
+  await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
+}
+
+async function createPublicRoom(host: Page, roomName: string, teamMode = false) {
+  await host.getByRole('button', { name: '建立房間', exact: true }).click()
+  const dialog = host.getByRole('dialog', { name: '建立房間' })
+  await expect(dialog.getByLabel('進階規則‧星辰圖記')).toHaveCount(0)
+  await host.getByLabel('房間名稱').fill(roomName)
+  if (teamMode) {
+    await host.getByRole('button', { name: /團隊對戰/ }).click()
+  }
+  await host.getByRole('button', { name: '公開房間', exact: true }).click()
+  await host.getByRole('button', { name: '建立房間 →' }).click()
+  await expect(host).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
+}
+
+async function joinListedRoom(page: Page, roomName: string) {
+  const room = page.locator('.public-room-list button').filter({ hasText: roomName })
+  await expect(room).toContainText('星辰圖記：啟用')
+  await room.click()
+  await expect(page).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
+}
+
+async function indexedModules(page: Page, roomName: string): Promise<string[]> {
+  return await page.evaluate(async (name) => {
+    const response = await fetch('/api/games')
+    const result = await response.json() as {
+      myRooms: Array<{ name: string; enabledRuleModules: string[] }>
+    }
+    return result.myRooms.find(room => room.name === name)?.enabledRuleModules ?? []
+  }, roomName)
+}
+
+test('Star defaults on, survives reconnect, and is immutable after a two-player start', async ({ browser }) => {
+  test.setTimeout(180_000)
+
+  const hostContext = await browser.newContext()
+  const guestContext = await browser.newContext()
+  const host = await hostContext.newPage()
+  const guest = await guestContext.newPage()
+
+  try {
+    await Promise.all([loginAsGuest(host), loginAsGuest(guest)])
+    const roomName = `星辰預設測試 ${Date.now()}`
+    await createPublicRoom(host, roomName)
+
+    await expect(host.getByText('基礎規則（固定啟用）')).toBeVisible()
+    await expect(host.getByLabel('進階規則‧星辰圖記')).toBeChecked()
+    await expect(host.getByLabel('進階規則‧星辰圖記')).toBeEnabled()
+    expect(await indexedModules(host, roomName)).toContain('star')
+
+    await joinListedRoom(guest, roomName)
+    await expect(guest.getByLabel('進階規則‧星辰圖記')).toBeChecked()
+    await expect(guest.getByLabel('進階規則‧星辰圖記')).toBeDisabled()
+    await guest.getByRole('button', { name: '準備 →' }).click()
+    await host.getByRole('button', { name: '開始遊戲 →' }).click()
+
+    await Promise.all([host, guest].map(async (page) => {
+      const rules = page.getByRole('region', { name: '啟用規則' })
+      await expect(rules).toContainText('基礎規則')
+      await expect(rules).toContainText('進階規則‧星辰圖記')
+      await expect(page.locator('.player-identity')).toContainText(['召星 0 / 5', '召星 0 / 5'])
+    }))
+
+    const roomId = new URL(host.url()).pathname.split('/').pop()
+    const updateStatus = await host.evaluate(async (id) => {
+      const response = await fetch(`/api/games/${id}/rules`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabledRuleModules: [] }),
+      })
+      return response.status
+    }, roomId)
+    expect(updateStatus).toBe(409)
+
+    await guest.reload()
+    await expect(guest.getByRole('region', { name: '啟用規則' }))
+      .toContainText('進階規則‧星辰圖記')
+  } finally {
+    await hostContext.close()
+    await guestContext.close()
+  }
+})
+
+test('disabling Star invalidates readiness and locked decks while preserving Base play', async ({ browser }) => {
+  test.setTimeout(180_000)
+
+  const hostContext = await browser.newContext()
+  const guestContext = await browser.newContext()
+  const host = await hostContext.newPage()
+  const guest = await guestContext.newPage()
+
+  try {
+    await Promise.all([loginAsGuest(host), loginAsGuest(guest)])
+    const roomName = `星辰關閉測試 ${Date.now()}`
+    await createPublicRoom(host, roomName)
+    await joinListedRoom(guest, roomName)
+
+    await guest.getByRole('button', { name: '準備 →' }).click()
+    await expect(guest.getByText('本局使用：五行均衡預組')).toBeVisible()
+    await host.getByLabel('進階規則‧星辰圖記').uncheck()
+
+    await expect(guest.getByLabel('進階規則‧星辰圖記')).not.toBeChecked()
+    await expect(guest.getByRole('button', { name: '準備 →' })).toBeVisible()
+    await expect(guest.getByText('本局使用：五行均衡預組')).toHaveCount(0)
+    expect(await indexedModules(host, roomName)).not.toContain('star')
+
+    await guest.reload()
+    await expect(guest.getByLabel('進階規則‧星辰圖記')).not.toBeChecked()
+    await guest.getByRole('button', { name: '準備 →' }).click()
+    await host.getByRole('button', { name: '開始遊戲 →' }).click()
+
+    await Promise.all([host, guest].map(async (page) => {
+      await expect(page.getByRole('region', { name: '啟用規則' }))
+        .not.toContainText('星辰圖記')
+      await expect(page.locator('.player-identity').filter({ hasText: '召星' })).toHaveCount(0)
+    }))
+
+    const active = (await host.locator('.playing-card:enabled:not(.hidden)').count()) ? host : guest
+    await active.locator('.playing-card:enabled:not(.hidden)').first().click()
+    await expect(active.locator('.action-panel .action-candidates button:not(.skip-action)').first())
+      .toBeVisible()
+
+    const roomId = new URL(host.url()).pathname.split('/').pop()
+    const publicState = await host.evaluate(async (id) => {
+      const response = await fetch(`/api/games/${id}`)
+      return (await response.json()).state as {
+        enabledRuleModules: string[]
+        teamStars: unknown[]
+        starHistories: unknown[]
+      }
+    }, roomId)
+    expect(publicState.enabledRuleModules).not.toContain('star')
+    expect(publicState.teamStars).toEqual([])
+    expect(publicState.starHistories).toEqual([])
+  } finally {
+    await hostContext.close()
+    await guestContext.close()
+  }
+})
+
+test('a four-player team room starts with one shared immutable Star configuration', async ({ browser }) => {
+  test.setTimeout(240_000)
+
+  const contexts = await Promise.all(Array.from({ length: 4 }, () => browser.newContext()))
+  const pages = await Promise.all(contexts.map(context => context.newPage()))
+  const [host, ...guests] = pages
+
+  try {
+    await Promise.all(pages.map(loginAsGuest))
+    const roomName = `星辰團隊測試 ${Date.now()}`
+    await createPublicRoom(host!, roomName, true)
+
+    for (const guest of guests) {
+      await joinListedRoom(guest, roomName)
+      await expect(guest.getByLabel('進階規則‧星辰圖記')).toBeChecked()
+      await guest.getByRole('button', { name: '準備 →' }).click()
+    }
+
+    const start = host!.getByRole('button', { name: '開始遊戲 →' })
+    await expect(start).toBeEnabled()
+    await start.click()
+
+    await Promise.all(pages.map(async (page) => {
+      await expect(page.getByRole('region', { name: '啟用規則' }))
+        .toContainText('進階規則‧星辰圖記')
+      await expect(page.locator('.player-seat')).toHaveCount(4)
+      await expect(page.locator('.player-identity')).toContainText([
+        '召星 0 / 5',
+        '召星 0 / 5',
+        '召星 0 / 5',
+        '召星 0 / 5',
+      ])
+    }))
+  } finally {
+    await Promise.all(contexts.map(context => context.close()))
+  }
+})
+
+test('a Star endgame fixture finishes through normal UI play and resets with its rules', async ({ browser }) => {
+  test.setTimeout(120_000)
+
+  const hostContext = await browser.newContext()
+  const guestContext = await browser.newContext()
+  const host = await hostContext.newPage()
+  const guest = await guestContext.newPage()
+  const pages = [host, guest]
+
+  try {
+    await Promise.all(pages.map(loginAsGuest))
+    const roomName = `星辰殘局測試 ${Date.now()}`
+    await createPublicRoom(host, roomName)
+    await joinListedRoom(guest, roomName)
+    await guest.getByRole('button', { name: '準備 →' }).click()
+    await host.getByRole('button', { name: '開始遊戲 →' }).click()
+    await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
+
+    const roomId = new URL(host.url()).pathname.split('/').pop()
+    const seeded = await host.evaluate(async (id) => {
+      const response = await fetch(`/api/games/${id}/test-endgame`, { method: 'POST' })
+      return response.ok
+    }, roomId)
+    expect(seeded).toBe(true)
+
+    await Promise.all(pages.map(page => (
+      expect(page.locator('.player-identity')).toContainText(['1 HP', '1 HP'])
+    )))
+    const active = (await host.locator('.playing-card:enabled:not(.hidden)').count()) ? host : guest
+    await active.locator('.playing-card:enabled:not(.hidden)').first().click()
+    const attack = active.locator('.action-panel .action-candidates button:not(.skip-action)').first()
+    await expect(attack).toBeVisible()
+    await attack.click()
+
+    await Promise.all(pages.map(async (page) => {
+      await expect(page.locator('.result-panel')).toBeVisible()
+      await expect(page.getByRole('region', { name: '啟用規則' }))
+        .toContainText('進階規則‧星辰圖記')
+    }))
+
+    await host.getByRole('button', { name: '返回房間 →' }).click()
+    await Promise.all(pages.map(async (page) => {
+      await expect(page.getByLabel('進階規則‧星辰圖記')).toBeChecked()
+      await expect(page.getByText('基礎規則（固定啟用）')).toBeVisible()
+    }))
+  } finally {
+    await hostContext.close()
+    await guestContext.close()
+  }
+})

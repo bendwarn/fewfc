@@ -378,7 +378,32 @@ Every Player's Deck count and Discard Pile contents are public. Deck order,
 ordinary opposing hands, Locked Deck List name, and Locked Deck List contents
 remain private.
 
-### 5.3 Hero Schools
+### 5.3 Star
+
+When the Star Rule Module is enabled:[5]
+
+- a use of 鍠金、樸木、洄水、熾火、or 坱土 with at least 30 Attack Points
+  summons its associated Star before elemental interaction, Environment Effects,
+  Shields, or HP resolution can change the attack result
+- a Team owns at most one Star, a newly summoned Star replaces its old Star,
+  and one Star kind may be owned by only one Team
+- summoning a Star also breaks its official opposing Star if currently owned
+- each Team-owned Star enables its one-card fixed-10 Star strike, its three-card
+  level-sum-times-three Star Formation, and one generating-element Card
+  interpretation while matching a Base Ruleset Formation
+- a three-card Star Formation grants one Turn Draw bonus and breaks its enabling
+  Star after the attack, even when damage is prevented
+
+虛空破星術 is an Active Spell made from three same-level Cards. Unless
+cancelled by Seal, it breaks every owned Star and directly removes 20 HP from
+each affected Team. All affected Teams resolve before Game Outcome evaluation.
+
+Star Summoning history is retained per Player after Stars are replaced or
+broken. A Player who personally summons all five Star kinds achieves Five-Star
+Alignment; after the complete Formation Use resolves, their Team wins before
+HP-based outcome evaluation.
+
+### 5.4 Hero Schools
 
 Hero Schools is one independently configurable Advanced Rule Module containing
 all 18 Professions, their abilities and Formations, Profession Change, and Void
@@ -413,12 +438,17 @@ when made from level-one or level-two Cards, Legendary Professions are retained.
 Its HP delta, Profession Breaking, and Card movement resolve atomically before
 Game Outcome evaluation.
 
-### 5.4 Web setup
+### 5.5 Web setup
 
 New official rooms enable every available Rule Module by default; the Base
 Ruleset cannot be disabled. The room owner may independently disable each
 available Rule Module. Existing rooms retain their stored module configuration
 when a new module becomes available.
+
+The room-creation dialog intentionally omits Rule Module controls. In the
+waiting room, Base is shown as fixed-on and each optional module, including the
+complete Star Rule Module, has one owner-only toggle. The enabled module list is
+also visible during an active match and in room-list metadata.
 
 The Web application stores one named custom Deck List per account. A minimal
 editor lives at `/deck`, linked from the account menu immediately above logout.
@@ -569,3 +599,4 @@ A known formation with legal cards but missing resolver is a rule implementation
 [2]: https://www.cfecards.org/rule/latest/basicrule '五行戰鬥牌官方網站 - 基礎規則'
 [3]: https://www.cfecards.org/rule/latest/xuan-yong-gui-ze-qi-pai-gui-ze-ge-ren-pai-zu '五行戰鬥牌官方網站 - 選用規則：棄牌回收、個人牌組'
 [4]: https://www.cfecards.org/rule/latest/hero '五行戰鬥牌官方網站 - 進階規則‧英雄學派'
+[5]: https://www.cfecards.org/rule/latest/star '五行戰鬥牌官方網站 - 進階規則‧星辰圖記'

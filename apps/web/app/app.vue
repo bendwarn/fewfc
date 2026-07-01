@@ -334,6 +334,7 @@
             <div>
               <strong>{{ room.name }}</strong>
               <small>{{ room.members.length }} / {{ room.capacity }} 玩家 · 等待開始</small>
+              <small>{{ roomRuleSummary(room) }}</small>
             </div>
             <i>{{ room.members.some((member) => member.userId === currentUserId) ? '已加入' : '加入' }}</i>
           </button>
@@ -358,6 +359,7 @@
             <div>
               <strong>{{ room.name }}</strong>
               <small>{{ roomStatusLabel(room) }}</small>
+              <small>{{ roomRuleSummary(room) }}</small>
             </div>
             <i>{{ roomNeedsAttention(room) ? '輪到你' : '進入' }}</i>
           </button>
@@ -404,6 +406,12 @@
               <div>
                 <strong>{{ playerLabel(seat.player) }}</strong>
                 <small>{{ teamHp(teamForPlayer(seat.player)) }} HP</small>
+                <small v-if="teamStar(teamForPlayer(seat.player))">
+                  星辰 · {{ starLabel(teamStar(teamForPlayer(seat.player))!) }}
+                </small>
+                <small v-if="state.enabledRuleModules.includes('star')">
+                  召星 {{ starHistoryCount(seat.player) }} / 5
+                </small>
                 <small v-if="state.enabledRuleModules.includes('personal-deck')">
                   牌庫 {{ playerDeckCount(seat.player) }} · 棄牌 {{ playerDiscardCount(seat.player) }}
                 </small>
@@ -506,57 +514,75 @@
 
               <div
                 v-if="!roomWaiting && !gameFinished && viewer === state.currentPlayer"
-                class="formation-actions"
+                class="turn-controls"
               >
-                <p v-if="game.isLoading.value" class="formation-processing">處理中</p>
-                <p v-else-if="game.errorMessage.value" class="formation-error">
+                <p v-if="game.isLoading.value" class="action-processing">處理中</p>
+                <p v-else-if="game.errorMessage.value" class="action-error">
                   {{ game.errorMessage.value }}
                 </p>
-                <div v-if="!game.isLoading.value" class="formation-candidates">
-                  <button
-                    v-for="formation in game.playableFormations.value"
-                    :key="formation.id"
-                    type="button"
-                    :title="formation.summary"
-                    @mouseenter="showFormationDetail(formation)"
-                    @mouseleave="hideFormationDetail"
-                    @focus="showFormationDetail(formation)"
-                    @blur="hideFormationDetail"
-                    @pointerdown="startFormationDetail(formation)"
-                    @pointerup="cancelFormationDetail"
-                    @pointercancel="cancelFormationDetail"
-                    @click="game.performFormation(formation)"
+
+                <section class="ability-panel" aria-labelledby="ability-panel-title">
+                  <header>
+                    <h3 id="ability-panel-title">能力</h3>
+                    <small>不結束行動階段</small>
+                  </header>
+                  <div class="action-candidates">
+                    <button
+                      v-if="game.interaction.value.canRetrieveDiscard"
+                      class="retrieve-action"
+                      type="button"
+                      :disabled="!roomConnected"
+                      @click="game.retrievePreviousTurnDiscard()"
+                    >
+                      棄牌回收
+                    </button>
+                    <p v-else>目前沒有可用能力</p>
+                  </div>
+                </section>
+
+                <section class="action-panel" aria-labelledby="action-panel-title">
+                  <header>
+                    <h3 id="action-panel-title">行動</h3>
+                    <small>使用後結束行動階段</small>
+                  </header>
+                  <div v-if="!game.isLoading.value" class="action-candidates">
+                    <button
+                      v-for="action in game.playableActions.value"
+                      :key="`${action.type}:${action.id}:${action.cards.join('-')}`"
+                      type="button"
+                      :title="action.summary"
+                      @mouseenter="showActionDetail(action)"
+                      @mouseleave="hideActionDetail"
+                      @focus="showActionDetail(action)"
+                      @blur="hideActionDetail"
+                      @pointerdown="startActionDetail(action)"
+                      @pointerup="cancelActionDetail"
+                      @pointercancel="cancelActionDetail"
+                      @click="game.performPlayableAction(action)"
+                    >
+                      {{ action.name }}
+                    </button>
+                    <button
+                      v-if="showSkip"
+                      class="skip-action"
+                      type="button"
+                      :disabled="!roomConnected"
+                      @click="game.passAction()"
+                    >
+                      跳過
+                    </button>
+                  </div>
+                  <p
+                    v-if="!game.isLoading.value && !game.playableActions.value.length && !game.errorMessage.value"
+                    class="action-prompt"
                   >
-                    {{ formation.name }}
-                  </button>
-                  <button
-                    v-if="showSkip"
-                    class="skip-action"
-                    type="button"
-                    :disabled="!roomConnected"
-                    @click="game.passAction()"
-                  >
-                    跳過
-                  </button>
-                  <button
-                    v-if="game.interaction.value.canRetrieveDiscard"
-                    class="retrieve-action"
-                    type="button"
-                    :disabled="!roomConnected"
-                    @click="game.retrievePreviousTurnDiscard()"
-                  >
-                    棄牌回收
-                  </button>
-                </div>
-                <p
-                  v-if="!game.isLoading.value && !game.playableFormations.value.length && !showSkip && !game.errorMessage.value"
-                  class="formation-prompt"
-                >
-                  選擇手牌以尋找可用陣法
-                </p>
-                <p v-if="formationDetail" class="formation-detail">
-                  <strong>{{ formationDetail.name }}</strong>
-                  {{ formationDetail.summary }}
+                    選擇手牌以尋找可用行動
+                  </p>
+                </section>
+
+                <p v-if="actionDetail" class="action-detail">
+                  <strong>{{ actionDetail.name }}</strong>
+                  {{ actionDetail.summary }}
                 </p>
               </div>
             </div>
@@ -630,7 +656,10 @@
             </div>
           </div>
 
-          <div v-if="state.pendingChoice" class="choice-overlay">
+          <div
+            v-if="state.pendingChoice && viewer === state.pendingChoice.player"
+            class="choice-overlay"
+          >
             <div>
               <h2>{{ choiceLabel(state.pendingChoice.kind) }}</h2>
               <div class="choice-cards">
@@ -702,6 +731,7 @@
               </p>
               <fieldset class="waiting-rules">
                 <legend>{{ isRoomOwner ? '規則模組' : '啟用規則' }}</legend>
+                <p class="mandatory-rule">基礎規則（固定啟用）</p>
                 <label v-for="rule in ruleOptions" :key="rule.id" class="rule-toggle">
                   <input
                     type="checkbox"
@@ -785,6 +815,10 @@
         </section>
 
         <aside class="game-sidebar" :class="{ finished: gameFinished }">
+          <section v-if="!roomWaiting" class="enabled-rules-panel" aria-labelledby="enabled-rules-title">
+            <h2 id="enabled-rules-title">啟用規則</h2>
+            <p>{{ enabledRuleLabels.join(' · ') }}</p>
+          </section>
           <section v-if="gameFinished" class="result-panel">
             <h2>{{ gameResultText }}</h2>
             <p>{{ firstTurnText }}，本局已結束。</p>
@@ -844,7 +878,7 @@
 </template>
 
 <script setup lang="ts">
-import type { PlayableFormation, PlayerId, PublicCardRefs, TeamId, ViewerId } from '~/types/fewfc'
+import type { PlayableAction, PlayerId, PublicCardRefs, TeamId, ViewerId } from '~/types/fewfc'
 import type { GameRoomMember, GameRoomResponse } from '../shared/game-room'
 import { authClient } from '~/lib/auth-client'
 import { buildDiscardComposition, DISCARD_ELEMENTS } from '~/lib/discard-composition'
@@ -869,6 +903,7 @@ interface PublicRoomSummary {
   players: PlayerId[]
   members: GameRoomMember[]
   capacity: number
+  enabledRuleModules: string[]
   createdAt: string
   updatedAt: string
 }
@@ -910,7 +945,7 @@ const viewer = ref<ViewerId>('observer')
 const game = useGameRoom(viewer)
 const notifications = usePlayerNotifications()
 const state = game.state
-const formationDetail = ref<PlayableFormation | null>(null)
+const actionDetail = ref<PlayableAction | null>(null)
 const eventExpanded = ref(false)
 const showSetupReveal = ref(false)
 const discardOpen = ref(false)
@@ -920,7 +955,7 @@ const deckDraft = ref<PlayerDeckList>(preconstructedDeck())
 const deckSource = ref<'custom' | 'preconstructed'>('preconstructed')
 const deckBusy = ref(false)
 const deckError = ref('')
-let formationDetailTimer: ReturnType<typeof setTimeout> | undefined
+let actionDetailTimer: ReturnType<typeof setTimeout> | undefined
 let setupRevealTimer: ReturnType<typeof setTimeout> | undefined
 
 const modes = [
@@ -928,10 +963,12 @@ const modes = [
   { id: 'team', icon: '隊', label: '團隊對戰', description: '2 對 2 交錯行動' },
 ]
 const ruleOptions = [
+  { id: 'star', label: '進階規則‧星辰圖記' },
   { id: 'five-directions-legend', label: '進階規則‧五方傳說' },
   { id: 'discard-retrieval', label: '棄牌回收' },
   { id: 'personal-deck', label: '個人牌組' },
 ]
+const ruleLabelById = new Map(ruleOptions.map(rule => [rule.id, rule.label]))
 const deckValidation = computed(() => validateDeck(deckDraft.value))
 
 const visibleEvents = computed(() => game.publicEvents.value)
@@ -955,6 +992,12 @@ const currentMember = computed(() => onlineMetadata.value?.members.find(
 const ownPlayer = computed(() => currentMember.value?.player ?? '')
 const isRoomOwner = computed(() => currentMember.value?.owner === true)
 const roomConnected = computed(() => game.connectionState.value === 'connected')
+const enabledRuleLabels = computed(() => [
+  '基礎規則',
+  ...(onlineMetadata.value?.enabledRuleModules ?? [])
+    .map(moduleId => ruleLabelById.get(moduleId))
+    .filter((label): label is string => Boolean(label)),
+])
 const canStartOnlineRoom = computed(() => {
   const metadata = onlineMetadata.value
 
@@ -1021,6 +1064,10 @@ const appConnectionText = computed(() => {
   return notifications.connectionState.value === 'connected' ? '已連線' : '連線中'
 })
 const gameResultText = computed(() => {
+  if (state.value.fiveStarAlignment) {
+    return `五星連珠 · ${teamLabel(state.value.fiveStarAlignment.team)} 勝利`
+  }
+
   const aliveTeams = state.value.hp.filter((entry) => entry.hp > 0)
 
   if (aliveTeams.length === 1) {
@@ -1565,7 +1612,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('click', handlePageClick)
   window.removeEventListener('keydown', handlePageKeydown)
-  clearTimeout(formationDetailTimer)
+  clearTimeout(actionDetailTimer)
   clearTimeout(setupRevealTimer)
 })
 
@@ -1755,6 +1802,24 @@ function playerDiscardCount(player: PlayerId): number {
   return state.value.playerDiscards.find(entry => entry.player === player)?.cards.length ?? 0
 }
 
+function teamStar(team: TeamId) {
+  return state.value.teamStars.find(owned => owned.team === team)?.star
+}
+
+function starHistoryCount(player: PlayerId): number {
+  return state.value.starHistories.find(history => history.player === player)?.stars.length ?? 0
+}
+
+function starLabel(star: import('~/types/fewfc').StarKind): string {
+  return {
+    Metal: '金星‧太白',
+    Wood: '木星‧歲星',
+    Water: '水星‧辰星',
+    Fire: '火星‧熒惑',
+    Earth: '土星‧鎮星',
+  }[star]
+}
+
 function exposedDeckCards(player: PlayerId) {
   const cards = state.value.playerDecks.find(entry => entry.player === player)?.cards
   return cards?.kind === 'partiallyKnown' ? cards.cards.filter(card => card !== null) : []
@@ -1845,6 +1910,10 @@ function roomStatusLabel(room: PublicRoomSummary): string {
   return `${room.members.length} / ${room.capacity} 玩家 · ${status}`
 }
 
+function roomRuleSummary(room: PublicRoomSummary): string {
+  return room.enabledRuleModules.includes('star') ? '星辰圖記：啟用' : '星辰圖記：停用'
+}
+
 function roomNeedsAttention(room: PublicRoomSummary): boolean {
   return notifications.notifications.value.some((notification) => (
     notification.gameId === room.gameId
@@ -1852,25 +1921,25 @@ function roomNeedsAttention(room: PublicRoomSummary): boolean {
   ))
 }
 
-function showFormationDetail(formation: PlayableFormation) {
-  clearTimeout(formationDetailTimer)
-  formationDetail.value = formation
+function showActionDetail(action: PlayableAction) {
+  clearTimeout(actionDetailTimer)
+  actionDetail.value = action
 }
 
-function hideFormationDetail() {
-  clearTimeout(formationDetailTimer)
-  formationDetail.value = null
+function hideActionDetail() {
+  clearTimeout(actionDetailTimer)
+  actionDetail.value = null
 }
 
-function startFormationDetail(formation: PlayableFormation) {
-  clearTimeout(formationDetailTimer)
-  formationDetailTimer = setTimeout(() => {
-    formationDetail.value = formation
+function startActionDetail(action: PlayableAction) {
+  clearTimeout(actionDetailTimer)
+  actionDetailTimer = setTimeout(() => {
+    actionDetail.value = action
   }, 450)
 }
 
-function cancelFormationDetail() {
-  clearTimeout(formationDetailTimer)
+function cancelActionDetail() {
+  clearTimeout(actionDetailTimer)
 }
 
 function phaseLabel(value: string): string {
@@ -1938,7 +2007,9 @@ function cardName(label: string): string {
 .deck-validation { @apply flex flex-wrap gap-5 rounded-lg border border-emerald-700/30 bg-emerald-50 p-4 text-emerald-900; }
 .deck-validation.invalid { @apply border-red-700/30 bg-red-50 text-red-900; }
 .rule-toggle { @apply flex items-center gap-2 py-2; }
-.waiting-rules { @apply my-4 flex justify-center gap-6 border-y border-white/15 py-2; }
+.waiting-rules { @apply my-4 flex flex-wrap justify-center gap-x-6 gap-y-1 border-y border-white/15 py-2; }
+.waiting-rules legend, .mandatory-rule { @apply w-full; }
+.mandatory-rule { @apply border border-[#59635c] bg-[#18201b] px-3 py-2 text-center text-xs text-[#ece8dd]; }
 .site-header {
   @apply relative z-20 flex min-h-[84px] items-center justify-between border-b border-[#29322d] bg-[rgba(14,19,16,.96)];
   padding: 10px clamp(14px, 4vw, 64px);
@@ -2182,15 +2253,20 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .formation-card { @apply relative grid w-8 place-items-center rounded-[3px] border border-[#79715e] bg-[#d8cfba] text-[#18201c]; aspect-ratio: 5/7; margin-left: -4px; }
 .formation-card i { @apply absolute top-0.5 left-1 text-[8px] not-italic; }
 .formation-card b { @apply font-serif text-xs; }
-.formation-actions { @apply relative grid min-h-14 content-center gap-1.5 border-t border-[rgba(166,141,86,.14)] pt-2; }
-.formation-candidates { @apply flex max-w-full flex-wrap justify-center gap-1.5; }
-.formation-candidates button { @apply min-h-8 border border-[#4c554f] bg-[#18201b] px-2.5 py-1.5 text-[10px] text-[#e1ddd2] hover:border-[#b99550]; }
-.formation-candidates .skip-action { @apply border-[#79633b] text-gold-light; }
-.formation-processing { @apply text-[#d0aa5e]; }
-.formation-error { @apply text-[#d79587]; }
-.formation-prompt { @apply text-[#68726b]; }
-.formation-detail { @apply absolute right-0 bottom-[calc(100%+8px)] left-0 z-8 border border-[#64583f] bg-[#1c241f] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
-.formation-detail strong { @apply mr-2 text-gold-light; }
+.turn-controls { @apply relative grid min-h-14 content-center gap-2 border-t border-[rgba(166,141,86,.14)] pt-2; }
+.ability-panel, .action-panel { @apply grid gap-1.5 border border-[rgba(166,141,86,.18)] bg-[rgba(17,23,19,.45)] p-2; }
+.ability-panel header, .action-panel header { @apply flex flex-wrap items-baseline justify-between gap-x-2 text-left; }
+.ability-panel h3, .action-panel h3 { @apply font-serif text-xs text-gold-light; }
+.ability-panel small, .action-panel small { @apply text-[9px] text-muted; }
+.action-candidates { @apply flex max-w-full flex-wrap justify-center gap-1.5; }
+.action-candidates button { @apply min-h-8 border border-[#4c554f] bg-[#18201b] px-2.5 py-1.5 text-[10px] text-[#e1ddd2] hover:border-[#b99550]; }
+.action-candidates p { @apply text-[9px] text-[#68726b]; }
+.action-candidates .skip-action { @apply border-[#79633b] text-gold-light; }
+.action-processing { @apply text-[#d0aa5e]; }
+.action-error { @apply text-[#d79587]; }
+.action-prompt { @apply text-[#68726b]; }
+.action-detail { @apply absolute right-0 bottom-[calc(100%+8px)] left-0 z-8 border border-[#64583f] bg-[#1c241f] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
+.action-detail strong { @apply mr-2 text-gold-light; }
 .choice-overlay { @apply absolute inset-0 z-12 grid place-items-center bg-[rgba(7,10,8,.28)] text-center; }
 .choice-overlay > div { @apply min-w-90 border border-[#8e733d] bg-[rgba(24,32,27,.94)] p-[30px] shadow-[0_18px_48px_rgba(0,0,0,.42)]; }
 .choice-overlay h2 { @apply mt-2.5 mb-5 font-serif; }
@@ -2222,8 +2298,11 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .result-actions .ghost-button { @apply border-[#59635c] text-[#ece8dd]; }
 .result-actions .primary-button { @apply justify-between; }
 
-.game-sidebar { @apply grid min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
-.game-sidebar.finished { grid-template-rows: auto minmax(0, 1fr); }
+.game-sidebar { @apply grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
+.game-sidebar.finished { grid-template-rows: auto auto minmax(0, 1fr); }
+.enabled-rules-panel { @apply border-b border-line p-4; }
+.enabled-rules-panel h2 { @apply font-serif text-sm text-gold-light; }
+.enabled-rules-panel p { @apply mt-1 text-[10px] leading-5 text-muted; }
 .result-panel { @apply border-b border-[#8e733d] bg-[#18201b] p-5; }
 .result-panel h2 { @apply font-serif text-2xl text-gold-light; }
 .result-panel p { @apply mt-1 text-xs text-muted; }
@@ -2251,7 +2330,7 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   .deck-pile, .discard-pile { font-size: 11px; }
   .formation-field { font-size: 12px; }
   .previous-formation small { font-size: 11px; }
-  .previous-formation p, .formation-candidates button { font-size: 12px; }
+  .previous-formation p, .action-candidates button { font-size: 12px; }
   .panel-title h2 { font-size: 17px; }
   .event-feed span { font-size: 12px; }
   .event-feed p { font-size: 11px; }
@@ -2310,7 +2389,7 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   .seat-top .playing-card { width: 43px; }
   .player-identity strong { max-width: 110px; }
   .turn-badge { font-size: 8px!important; }
-  .formation-candidates button { min-height: 30px; padding: 4px 7px; }
+  .action-candidates button { min-height: 30px; padding: 4px 7px; }
   .waiting-overlay > div { min-width: 0; width: calc(100vw - 32px); padding: 22px 16px; }
   .waiting-members { grid-template-columns: 1fr 1fr; }
   .notification-stack { top: 76px; right: 16px; }

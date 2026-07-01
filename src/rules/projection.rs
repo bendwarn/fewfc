@@ -236,6 +236,56 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             }
             finish_game_if_needed(state);
         }
+        GameEvent::StarBroken {
+            team,
+            star,
+            hp_change,
+            ..
+        } => {
+            let position = state
+                .team_stars
+                .iter()
+                .position(|owned| &owned.team == team && owned.star == *star)
+                .expect("canonical Star breaking must target an owned Star");
+            state.team_stars.remove(position);
+
+            if let Some(change) = hp_change {
+                let team_hp = state
+                    .hp
+                    .iter_mut()
+                    .find(|team_hp| team_hp.team == change.team)
+                    .expect("canonical Star breaking must target an existing Team");
+                team_hp.hp = change.new_hp;
+            }
+        }
+        GameEvent::StarSummoned { player, team, star } => {
+            debug_assert!(state.star_for_team(team).is_none());
+            debug_assert!(!state.team_stars.iter().any(|owned| owned.star == *star));
+            state.team_stars.push(crate::domain::TeamStar {
+                team: team.clone(),
+                star: *star,
+            });
+            let history = state
+                .star_histories
+                .iter_mut()
+                .find(|history| &history.player == player)
+                .expect("canonical Star summoning must target a known Player");
+            if !history.stars.contains(star) {
+                history.stars.push(*star);
+            }
+        }
+        GameEvent::VoidStarBreakingCompleted { .. } => {
+            finish_game_if_needed(state);
+        }
+        GameEvent::FiveStarAlignmentAchieved { player, team } => {
+            state.five_star_alignment = Some(crate::domain::FiveStarAlignment {
+                player: player.clone(),
+                team: team.clone(),
+            });
+            state.status = GameStatus::Finished {
+                outcome: GameOutcome::Team(team.clone()),
+            };
+        }
         GameEvent::TurnDrawBonusChanged {
             player, new_value, ..
         } => {

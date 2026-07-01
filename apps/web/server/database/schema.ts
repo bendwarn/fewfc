@@ -97,6 +97,7 @@ export const publicGameRoom = sqliteTable(
     ownerUserId: text('owner_user_id').notNull(),
     playersJson: text('players_json').notNull(),
     membersJson: text('members_json').notNull(),
+    enabledRuleModulesJson: text('enabled_rule_modules_json').notNull().default('[]'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
   },

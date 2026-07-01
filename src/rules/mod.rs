@@ -3,6 +3,7 @@
 pub(crate) mod base;
 mod official;
 pub(crate) mod projection;
+pub(crate) mod star;
 
 pub use official::OfficialRules;
 
@@ -54,6 +55,11 @@ pub struct FormationCandidate {
     pub rule_text: String,
     pub category: FormationCategory,
     pub cards: Vec<crate::domain::CardInstanceId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlayableAction {
+    PerformFormation(FormationCandidate),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -263,6 +269,12 @@ pub(crate) fn official_formation_registry(
         .any(|module| module.as_str() == crate::domain::FIVE_DIRECTIONS_LEGEND_MODULE_ID)
     {
         specs.extend(five_directions_legend_specs());
+    }
+    if modules
+        .iter()
+        .any(|module| module.as_str() == crate::domain::STAR_MODULE_ID)
+    {
+        specs.extend(star::specs());
     }
     FormationRegistry::new(
         specs.iter().map(|spec| spec.formation.clone()).collect(),

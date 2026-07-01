@@ -4,12 +4,6 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Open Local Issues
 
-- [#34 Scaffold Nuxt UI adapter](034-scaffold-nuxt-ui-adapter.md)
-- [#40 Summon and display all five Stars](040-summon-and-display-all-five-stars.md)
-- [#41 Use Star Formations and Star Element Substitution](041-use-star-formations-and-element-substitution.md)
-- [#42 Resolve Void Star Breaking atomically](042-resolve-void-star-breaking-atomically.md)
-- [#43 Win through Five-Star Alignment](043-win-through-five-star-alignment.md)
-- [#44 Toggle Star advanced rules in Online Game Rooms](044-toggle-star-rules-in-online-game-rooms.md)
 - [#45 Deepen Card selection into playable Actions](045-deepen-card-selection-into-playable-actions.md)
 - [#46 Change Profession into the Warrior School](046-change-profession-into-the-warrior-school.md)
 - [#47 Progress through the Seeker School](047-progress-through-the-seeker-school.md)
@@ -22,6 +16,12 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Completed Local Issues
 
+- [#44 Toggle Star advanced rules in Online Game Rooms](044-toggle-star-rules-in-online-game-rooms.md)
+- [#43 Win through Five-Star Alignment](043-win-through-five-star-alignment.md)
+- [#42 Resolve Void Star Breaking atomically](042-resolve-void-star-breaking-atomically.md)
+- [#41 Use Star Formations and Star Element Substitution](041-use-star-formations-and-element-substitution.md)
+- [#40 Summon and display all five Stars](040-summon-and-display-all-five-stars.md)
+- [#34 Scaffold Nuxt UI adapter](034-scaffold-nuxt-ui-adapter.md)
 - [#39 Compose the Base Ruleset with official rule modules](039-compose-base-ruleset-with-official-rule-modules.md)
 - [#23 Complete passive action modifications and sealed passives](023-complete-passive-action-modifications.md)
 - [#24 Complete public state and event filtering](024-complete-public-view-filtering.md)

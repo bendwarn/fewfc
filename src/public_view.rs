@@ -2,7 +2,8 @@
 
 use crate::domain::{
     CardInstanceId, CounterEffect, Element, GameEvent, GameState, GameStatus, PendingChoiceKind,
-    Phase, Player, PlayerId, PlayerShield, RuleModuleId, StatusEffect, TeamHp,
+    Phase, Player, PlayerId, PlayerShield, PlayerStarHistory, RuleModuleId, StatusEffect, TeamHp,
+    TeamStar,
 };
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +33,9 @@ pub struct PublicGameState {
     pub shields: Vec<PlayerShield>,
     pub statuses: Vec<StatusEffect>,
     pub environment: Option<Element>,
+    pub team_stars: Vec<TeamStar>,
+    pub star_histories: Vec<PlayerStarHistory>,
+    pub five_star_alignment: Option<crate::domain::FiveStarAlignment>,
     pub previous_turn_formation: Option<PublicPreviousTurnFormation>,
 }
 
@@ -154,6 +158,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
         });
 
     let uses_personal_decks = state.uses_personal_decks();
+    let uses_stars = state.has_rule_module(crate::domain::STAR_MODULE_ID);
 
     PublicGameState {
         enabled_rule_modules: state.enabled_rule_modules.clone(),
@@ -227,6 +232,21 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
         shields: state.shields.clone(),
         statuses: state.statuses.clone(),
         environment: state.environment,
+        team_stars: state
+            .team_stars
+            .iter()
+            .filter(|_| uses_stars)
+            .cloned()
+            .collect(),
+        star_histories: state
+            .star_histories
+            .iter()
+            .filter(|_| uses_stars)
+            .cloned()
+            .collect(),
+        five_star_alignment: uses_stars
+            .then(|| state.five_star_alignment.clone())
+            .flatten(),
         previous_turn_formation,
     }
 }
@@ -327,6 +347,10 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::AttackResolved { .. }
         | GameEvent::EnvironmentTransferred { .. }
         | GameEvent::EnvironmentCleared { .. }
+        | GameEvent::StarBroken { .. }
+        | GameEvent::StarSummoned { .. }
+        | GameEvent::VoidStarBreakingCompleted { .. }
+        | GameEvent::FiveStarAlignmentAchieved { .. }
         | GameEvent::TurnDrawBonusChanged { .. }
         | GameEvent::ShieldChanged { .. }
         | GameEvent::HpChanged { .. }

@@ -7,7 +7,7 @@ use crate::domain::{
 };
 use crate::ports::DeckPreparation as DeckPreparationPort;
 use crate::public_view::{PublicGameEvent, PublicGameState, Viewer};
-use crate::rules::{FormationCandidate, OfficialRules};
+use crate::rules::{OfficialRules, PlayableAction};
 use recorded_event_log::RecordedEventLog;
 
 pub use recorded_event_log::{
@@ -176,12 +176,12 @@ impl GameRecord {
         verify_recorded_decisions(&self.setup, &self.recorded_decisions())
     }
 
-    pub fn playable_formations(
+    pub fn playable_actions(
         &self,
         player: &crate::domain::PlayerId,
         selected_cards: &[CardInstanceId],
-    ) -> GameResult<Vec<FormationCandidate>> {
-        OfficialRules::new().playable_formations(self.state(), player, selected_cards)
+    ) -> GameResult<Vec<PlayableAction>> {
+        OfficialRules::new().playable_actions(self.state(), player, selected_cards)
     }
 
     fn next_command_id(&self) -> CommandId {
@@ -228,6 +228,10 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::AttackResolved { .. }
         | GameEvent::EnvironmentTransferred { .. }
         | GameEvent::EnvironmentCleared { .. }
+        | GameEvent::StarBroken { .. }
+        | GameEvent::StarSummoned { .. }
+        | GameEvent::VoidStarBreakingCompleted { .. }
+        | GameEvent::FiveStarAlignmentAchieved { .. }
         | GameEvent::CardsMoved { .. }
         | GameEvent::EffectChoiceAnswered { .. }
         | GameEvent::EffectChoiceRequested { .. }

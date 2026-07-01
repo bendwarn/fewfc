@@ -1,6 +1,6 @@
 import type {
   CardInstanceId,
-  PlayableFormation,
+  PlayableAction,
   PlayerId,
   PublicGameEvent,
   PublicGameState,
@@ -41,6 +41,9 @@ function emptyState(): PublicGameState {
     shields: [],
     statuses: [],
     environment: null,
+    teamStars: [],
+    starHistories: [],
+    fiveStarAlignment: null,
     previousTurnFormation: null,
   }
 }
@@ -54,7 +57,7 @@ export function useGameRoom(viewer: ViewerRef) {
   const publicEvents = ref<PublicGameEvent[]>([])
   const selectedCards = ref<CardInstanceId[]>([])
   const selectedChoiceCards = ref<CardInstanceId[]>([])
-  const playableFormations = ref<PlayableFormation[]>([])
+  const playableActions = ref<PlayableAction[]>([])
   const errorMessage = ref<string | null>(null)
   const isLoading = ref(false)
   const interaction = ref({
@@ -72,7 +75,7 @@ export function useGameRoom(viewer: ViewerRef) {
   watch(viewer, () => {
     selectedCards.value = []
     selectedChoiceCards.value = []
-    playableFormations.value = []
+    playableActions.value = []
 
     if (onlineGameId.value) {
       void refreshOnlineGame()
@@ -81,11 +84,11 @@ export function useGameRoom(viewer: ViewerRef) {
 
   watch(selectedCards, () => {
     if (selectedCards.value.length === 0 || viewer.value !== state.value.currentPlayer) {
-      playableFormations.value = []
+      playableActions.value = []
       return
     }
 
-    void queryPlayableFormations()
+    void queryPlayableActions()
   })
 
   function canSelectCard(player: PlayerId): boolean {
@@ -116,7 +119,7 @@ export function useGameRoom(viewer: ViewerRef) {
     onlineGameId.value = response.gameId
     state.value = response.state
     publicEvents.value = response.events
-    playableFormations.value = response.playableFormations
+    playableActions.value = response.playableActions
     interaction.value = response.interaction
     errorMessage.value = null
     roomDissolved.value = response.metadata.status === 'Dissolved'
@@ -287,7 +290,7 @@ export function useGameRoom(viewer: ViewerRef) {
     })
   }
 
-  async function queryPlayableFormations() {
+  async function queryPlayableActions() {
     const player = state.value.currentPlayer
 
     if (!player) {
@@ -295,7 +298,7 @@ export function useGameRoom(viewer: ViewerRef) {
     }
 
     await submitOnline({
-      type: 'playableFormations',
+      type: 'playableActions',
       player,
       cards: selectedCards.value,
     })
@@ -376,22 +379,24 @@ export function useGameRoom(viewer: ViewerRef) {
       : [...selectedCards.value, card]
   }
 
-  async function performFormation(formation: PlayableFormation) {
+  async function performPlayableAction(action: PlayableAction) {
     const player = state.value.currentPlayer
 
-    if (viewer.value !== player || selectedCards.value.length === 0) {
+    if (viewer.value !== player) {
       return
     }
 
-    const cards = [...selectedCards.value]
-
-    if (await submitOnline({
-      type: 'performFormation',
-      player,
-      formationId: formation.id,
-      cards,
-    })) {
-      selectedCards.value = []
+    switch (action.type) {
+      case 'performFormation':
+        if (await submitOnline({
+          type: 'performFormation',
+          player,
+          formationId: action.id,
+          cards: action.cards,
+        })) {
+          selectedCards.value = []
+        }
+        break
     }
   }
 
@@ -479,7 +484,7 @@ export function useGameRoom(viewer: ViewerRef) {
     publicEvents.value = []
     selectedCards.value = []
     selectedChoiceCards.value = []
-    playableFormations.value = []
+    playableActions.value = []
     errorMessage.value = null
     roomDissolved.value = false
   }
@@ -495,7 +500,7 @@ export function useGameRoom(viewer: ViewerRef) {
     publicEvents,
     selectedCards,
     selectedChoiceCards,
-    playableFormations,
+    playableActions,
     errorMessage,
     isLoading,
     interaction,
@@ -517,7 +522,7 @@ export function useGameRoom(viewer: ViewerRef) {
     retrievePreviousTurnDiscard,
     canSelectCard,
     toggleCardSelection,
-    performFormation,
+    performPlayableAction,
     choosePendingCard,
     togglePendingChoiceCard,
     submitPendingChoice,

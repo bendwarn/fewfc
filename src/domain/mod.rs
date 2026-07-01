@@ -35,6 +35,7 @@ pub const BASE_RULESET_ID: &str = "base";
 pub const DISCARD_RETRIEVAL_MODULE_ID: &str = "discard-retrieval";
 pub const FIVE_DIRECTIONS_LEGEND_MODULE_ID: &str = "five-directions-legend";
 pub const PERSONAL_DECK_MODULE_ID: &str = "personal-deck";
+pub const STAR_MODULE_ID: &str = "star";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RulesetId(String);
@@ -101,6 +102,41 @@ pub enum Element {
     Water,
     Fire,
     Earth,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum StarKind {
+    Metal,
+    Wood,
+    Water,
+    Fire,
+    Earth,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct TeamStar {
+    pub team: TeamId,
+    pub star: StarKind,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PlayerStarHistory {
+    pub player: PlayerId,
+    pub stars: Vec<StarKind>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FiveStarAlignment {
+    pub player: PlayerId,
+    pub team: TeamId,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum StarBreakReason {
+    Replaced,
+    OpposedBy(StarKind),
+    StarFormationUsed { formation_id: String },
+    VoidStarBreaking,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -446,6 +482,12 @@ pub struct GameState {
     pub statuses: Vec<StatusEffect>,
     #[serde(default)]
     pub environment: Option<Element>,
+    #[serde(default)]
+    pub team_stars: Vec<TeamStar>,
+    #[serde(default)]
+    pub star_histories: Vec<PlayerStarHistory>,
+    #[serde(default)]
+    pub five_star_alignment: Option<FiveStarAlignment>,
     pub last_elemental_attack_by_player: HashMap<PlayerId, LastElementalAttack>,
     pub last_formation_by_player: HashMap<PlayerId, LastFormationUse>,
     pub turn_draw_bonus_by_player: HashMap<PlayerId, usize>,
@@ -506,6 +548,16 @@ impl GameState {
             counter_effects: Vec::new(),
             statuses: Vec::new(),
             environment: None,
+            team_stars: Vec::new(),
+            star_histories: setup
+                .players
+                .iter()
+                .map(|player| PlayerStarHistory {
+                    player: player.id.clone(),
+                    stars: Vec::new(),
+                })
+                .collect(),
+            five_star_alignment: None,
             last_elemental_attack_by_player: HashMap::new(),
             last_formation_by_player: HashMap::new(),
             turn_draw_bonus_by_player: HashMap::new(),
@@ -628,6 +680,20 @@ impl GameState {
             .iter()
             .find(|team_hp| &team_hp.team == team)
             .map(|team_hp| team_hp.hp)
+    }
+
+    pub fn star_for_team(&self, team: &TeamId) -> Option<StarKind> {
+        self.team_stars
+            .iter()
+            .find(|owned| &owned.team == team)
+            .map(|owned| owned.star)
+    }
+
+    pub fn summoned_stars_for(&self, player: &PlayerId) -> Option<&[StarKind]> {
+        self.star_histories
+            .iter()
+            .find(|history| &history.player == player)
+            .map(|history| history.stars.as_slice())
     }
 }
 
@@ -755,6 +821,24 @@ pub enum GameEvent {
         formation_id: String,
         environment: Element,
         hp_changes: Vec<HpChangeDelta>,
+    },
+    StarBroken {
+        team: TeamId,
+        star: StarKind,
+        reason: StarBreakReason,
+        hp_change: Option<HpChangeDelta>,
+    },
+    StarSummoned {
+        player: PlayerId,
+        team: TeamId,
+        star: StarKind,
+    },
+    VoidStarBreakingCompleted {
+        player: PlayerId,
+    },
+    FiveStarAlignmentAchieved {
+        player: PlayerId,
+        team: TeamId,
     },
     TurnDrawBonusChanged {
         player: PlayerId,

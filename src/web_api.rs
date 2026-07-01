@@ -2,12 +2,12 @@ use crate::application::{GameRecord, RecordedDecision};
 use crate::domain::{
     CardDefId, CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, GameError, GameEvent,
     GameSetup, PassActionReason, PendingChoiceKind, Phase, Player, PlayerDeckList, PlayerId,
-    RuleModuleId, StatusOwner, TargetDecl, TeamId, TurnDrawSkipReason,
+    RuleModuleId, StatusOwner, TargetDecl, TeamHp, TeamId, TurnDrawSkipReason,
 };
 use crate::public_view::{
     PublicCardRefs, PublicGameEvent, PublicGameState, PublicPendingChoiceKind, Viewer,
 };
-use crate::rules::{FormationCategory, OfficialRules};
+use crate::rules::{FormationCategory, OfficialRules, PlayableAction};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -51,9 +51,9 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                 .map_err(ApiError::Game)?;
             advance_after_command(&mut record)?;
         }
-        ApiAction::PlayableFormations { player, cards } => {
+        ApiAction::PlayableActions { player, cards } => {
             let candidates = record
-                .playable_formations(&PlayerId::new(player), &cards)
+                .playable_actions(&PlayerId::new(player), &cards)
                 .map_err(ApiError::Game)?;
             return response_for(
                 &record,
@@ -62,11 +62,16 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                 &formation_names,
                 candidates
                     .into_iter()
-                    .map(|candidate| WebPlayableFormation {
-                        id: candidate.formation_id,
-                        name: candidate.formation_name,
-                        category: WebFormationCategory::from(candidate.category),
-                        summary: candidate.rule_text,
+                    .map(|candidate| match candidate {
+                        PlayableAction::PerformFormation(candidate) => {
+                            WebPlayableAction::PerformFormation {
+                                id: candidate.formation_id,
+                                name: candidate.formation_name,
+                                category: WebFormationCategory::from(candidate.category),
+                                summary: candidate.rule_text,
+                                cards: candidate.cards,
+                            }
+                        }
                     })
                     .collect(),
             );
@@ -182,7 +187,7 @@ fn response_for(
     viewer: Viewer,
     card_labels: &HashMap<CardInstanceId, String>,
     formation_names: &HashMap<String, String>,
-    playable_formations: Vec<WebPlayableFormation>,
+    playable_actions: Vec<WebPlayableAction>,
 ) -> Result<ApiResponse, ApiError> {
     let can_pass = pass_action_for_state(record.state()).is_some();
     let can_retrieve_discard = can_retrieve_discard(record.state());
@@ -211,7 +216,7 @@ fn response_for(
                 WebPublicGameEvent::from_public(index + 1, event, card_labels, formation_names)
             })
             .collect(),
-        playable_formations,
+        playable_actions,
         interaction: WebInteraction {
             can_pass,
             has_optional_effect: can_retrieve_discard,
@@ -242,12 +247,20 @@ struct WebGameSetup {
     enabled_rule_modules: Vec<String>,
     #[serde(default)]
     deck_lists: Vec<WebSetupDeckList>,
+    #[serde(default)]
+    initial_hp: Vec<WebSetupTeamHp>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct WebSetupPlayer {
     id: String,
     team: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WebSetupTeamHp {
+    team: String,
+    hp: i32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -265,7 +278,7 @@ enum ApiAction {
     Refresh,
     AdvanceAutomatic,
     PassAction,
-    PlayableFormations {
+    PlayableActions {
         player: String,
         cards: Vec<CardInstanceId>,
     },
@@ -380,9 +393,21 @@ fn setup_for_request(
             cards: deck.cards.into_iter().map(CardDefId::new).collect(),
         })
         .collect();
-    rules
+    let mut setup = rules
         .configure_game_with_decks(players, turn_order, modules, deck_lists)
-        .map_err(ApiError::Game)
+        .map_err(ApiError::Game)?;
+    if !requested.initial_hp.is_empty() {
+        setup.hp = requested
+            .initial_hp
+            .into_iter()
+            .map(|team_hp| TeamHp {
+                team: TeamId::new(team_hp.team),
+                hp: team_hp.hp,
+            })
+            .collect();
+        rules.validate_setup(&setup).map_err(ApiError::Game)?;
+    }
+    Ok(setup)
 }
 
 fn deck_order_for_start(
@@ -448,7 +473,7 @@ struct ApiResponse {
     record: Vec<RecordedDecision>,
     state: WebPublicGameState,
     events: Vec<WebPublicGameEvent>,
-    playable_formations: Vec<WebPlayableFormation>,
+    playable_actions: Vec<WebPlayableAction>,
     interaction: WebInteraction,
 }
 
@@ -481,6 +506,9 @@ struct WebPublicGameState {
     shields: Vec<WebShield>,
     statuses: Vec<WebStatus>,
     environment: Option<String>,
+    team_stars: Vec<WebTeamStar>,
+    star_histories: Vec<WebPlayerStarHistory>,
+    five_star_alignment: Option<WebFiveStarAlignment>,
     previous_turn_formation: Option<WebPreviousTurnFormation>,
 }
 
@@ -619,6 +647,32 @@ impl WebPublicGameState {
             environment: state
                 .environment
                 .map(|environment| format!("{environment:?}")),
+            team_stars: state
+                .team_stars
+                .into_iter()
+                .map(|owned| WebTeamStar {
+                    team: owned.team.as_str().to_string(),
+                    star: format!("{:?}", owned.star),
+                })
+                .collect(),
+            star_histories: state
+                .star_histories
+                .into_iter()
+                .map(|history| WebPlayerStarHistory {
+                    player: history.player.as_str().to_string(),
+                    stars: history
+                        .stars
+                        .into_iter()
+                        .map(|star| format!("{star:?}"))
+                        .collect(),
+                })
+                .collect(),
+            five_star_alignment: state
+                .five_star_alignment
+                .map(|alignment| WebFiveStarAlignment {
+                    player: alignment.player.as_str().to_string(),
+                    team: alignment.team.as_str().to_string(),
+                }),
             previous_turn_formation: state.previous_turn_formation.map(|formation| {
                 WebPreviousTurnFormation {
                     player: formation.player.as_str().to_string(),
@@ -646,6 +700,27 @@ struct WebPlayer {
 struct WebTeamHp {
     team: String,
     hp: i32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebTeamStar {
+    team: String,
+    star: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPlayerStarHistory {
+    player: String,
+    stars: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebFiveStarAlignment {
+    player: String,
+    team: String,
 }
 
 #[derive(Serialize)]
@@ -844,12 +919,15 @@ impl WebPublicGameEvent {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebPlayableFormation {
-    id: String,
-    name: String,
-    category: WebFormationCategory,
-    summary: String,
+#[serde(tag = "type", rename_all = "camelCase")]
+enum WebPlayableAction {
+    PerformFormation {
+        id: String,
+        name: String,
+        category: WebFormationCategory,
+        summary: String,
+        cards: Vec<CardInstanceId>,
+    },
 }
 
 #[derive(Serialize)]
@@ -1293,11 +1371,47 @@ fn game_event_presentation(
                     .join("、"),
             ),
         ),
+        GameEvent::StarBroken {
+            team,
+            star,
+            hp_change,
+            ..
+        } => (
+            "星辰破除".to_string(),
+            hp_change.as_ref().map_or_else(
+                || format!("{} 的{}已被破除。", team.as_str(), star_name(*star)),
+                |change| {
+                    format!(
+                        "{} 的{}已被破除，生命值 {} → {}。",
+                        team.as_str(),
+                        star_name(*star),
+                        change.old_hp,
+                        change.new_hp
+                    )
+                },
+            ),
+        ),
+        GameEvent::StarSummoned { player, star, .. } => (
+            "召喚星辰".to_string(),
+            format!("{} 召喚了{}。", player.as_str(), star_name(*star)),
+        ),
+        GameEvent::VoidStarBreakingCompleted { player } => (
+            "破星結算".to_string(),
+            format!("{} 的虛空破星術已完成結算。", player.as_str()),
+        ),
+        GameEvent::FiveStarAlignmentAchieved { player, .. } => (
+            "五星連珠".to_string(),
+            format!("{} 完成五星連珠，所屬隊伍獲勝。", player.as_str()),
+        ),
         GameEvent::TurnEnded { player } => (
             "回合結束".to_string(),
             format!("{} 的回合結束。", player.as_str()),
         ),
     }
+}
+
+fn star_name(star: crate::domain::StarKind) -> &'static str {
+    crate::rules::star::star_name(star)
 }
 
 fn element_name(element: crate::domain::Element) -> &'static str {
@@ -1402,6 +1516,57 @@ mod tests {
         );
         assert_eq!(json["state"]["playerDecks"][0]["cards"]["count"], 56);
         assert_eq!(json["state"]["playerDecks"][1]["cards"]["count"], 55);
+    }
+
+    #[test]
+    fn star_state_and_events_are_projected_for_web_clients() {
+        let rules = OfficialRules::new();
+        let setup = rules
+            .configure_game(
+                vec![
+                    crate::domain::Player {
+                        id: PlayerId::new("alice"),
+                        team: TeamId::new("team:alice"),
+                    },
+                    crate::domain::Player {
+                        id: PlayerId::new("bob"),
+                        team: TeamId::new("team:bob"),
+                    },
+                ],
+                vec![PlayerId::new("alice"), PlayerId::new("bob")],
+                vec![RuleModuleId::new(crate::domain::STAR_MODULE_ID)],
+            )
+            .unwrap();
+        let mut state = crate::domain::GameState::from_setup(&setup);
+        state.team_stars.push(crate::domain::TeamStar {
+            team: TeamId::new("team:alice"),
+            star: crate::domain::StarKind::Metal,
+        });
+        state.star_histories[0].stars = vec![crate::domain::StarKind::Metal];
+        let public = crate::public_view::state_for(&state, Viewer::Observer);
+        let web = WebPublicGameState::from_public(
+            public,
+            &rules.card_labels(&setup).unwrap(),
+            &rules.formation_names(&setup).unwrap(),
+        );
+        let json = serde_json::to_value(web).unwrap();
+
+        assert_eq!(json["teamStars"][0]["star"], "Metal");
+        assert_eq!(json["starHistories"][0]["stars"][0], "Metal");
+        assert!(json["fiveStarAlignment"].is_null());
+
+        let event = GameEvent::StarSummoned {
+            player: PlayerId::new("alice"),
+            team: TeamId::new("team:alice"),
+            star: crate::domain::StarKind::Metal,
+        };
+        assert_eq!(
+            game_event_presentation(&event, &HashMap::new(), &HashMap::new()),
+            (
+                "召喚星辰".to_string(),
+                "alice 召喚了金星‧太白。".to_string()
+            )
+        );
     }
 
     #[test]
@@ -1535,7 +1700,7 @@ mod tests {
     }
 
     #[test]
-    fn playable_formation_uses_the_ruleset_rule_text() {
+    fn playable_action_preserves_discriminant_rule_text_and_cards() {
         let start = handle_request_json(r#"{"action":{"type":"start"},"viewer":"alice"}"#)
             .expect("start request should succeed");
         let start: serde_json::Value =
@@ -1553,7 +1718,7 @@ mod tests {
             .expect("alice should have a visible card");
         let request = serde_json::json!({
             "action": {
-                "type": "playableFormations",
+                "type": "playableActions",
                 "player": "alice",
                 "cards": [first_card],
             },
@@ -1565,10 +1730,13 @@ mod tests {
             .expect("playable formations request should succeed");
         let response: serde_json::Value =
             serde_json::from_str(&response).expect("response should be valid JSON");
-        let summary = response["playableFormations"][0]["summary"]
+        let candidate = &response["playableActions"][0];
+        let summary = candidate["summary"]
             .as_str()
             .expect("candidate should have rule text");
 
+        assert_eq!(candidate["type"], "performFormation");
+        assert_eq!(candidate["cards"], serde_json::json!([first_card]));
         assert!(summary.contains("攻擊，點數＝等級＋４"));
         assert!(!summary.contains("張牌發動"));
     }

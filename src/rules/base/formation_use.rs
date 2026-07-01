@@ -211,6 +211,10 @@ impl BaseEffectResolver {
                         }
                         return Ok(events);
                     }
+                    if spell.resolver_id == "void-star-breaking" {
+                        events.extend(void_star_breaking_events(state, &plan.player));
+                        return Ok(events);
+                    }
                     let (copied_effect_id, intents) = if spell.resolver_id == "metamorphosis" {
                         metamorphosis_intents(state, &plan.player, &plan.cards)?
                     } else {
@@ -236,6 +240,41 @@ impl BaseEffectResolver {
             }
         }
     }
+}
+
+fn void_star_breaking_events(state: &GameState, player: &PlayerId) -> Vec<GameEvent> {
+    let mut events = state
+        .team_stars
+        .iter()
+        .map(|owned| {
+            let old_hp = state
+                .hp
+                .iter()
+                .find(|team_hp| team_hp.team == owned.team)
+                .expect("an owned Star must belong to a Team with HP")
+                .hp;
+            let new_hp = (old_hp - 20).max(0);
+            GameEvent::StarBroken {
+                team: owned.team.clone(),
+                star: owned.star,
+                reason: crate::domain::StarBreakReason::VoidStarBreaking,
+                hp_change: Some(crate::domain::HpChangeDelta {
+                    team: owned.team.clone(),
+                    old_hp,
+                    delta: -20,
+                    new_hp,
+                    effective_delta: new_hp - old_hp,
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if !events.is_empty() {
+        events.push(GameEvent::VoidStarBreakingCompleted {
+            player: player.clone(),
+        });
+    }
+    events
 }
 
 fn formation_effect_ignored_event(

@@ -24,7 +24,7 @@ Create the first Nuxt website adapter around the rules engine without changing t
 - [x] Show a recent viewer-filtered Public Event Feed.
 - [x] Do not expose canonical Game State or canonical Game Events directly as browser replay sources.
 - [x] Add a documented Cloudflare deployment path using Nuxt/Nitro presets.
-- [ ] Add focused UI tests or component tests for hidden-card rendering and pending-choice rendering.
+- [x] Add focused UI tests or component tests for hidden-card rendering and pending-choice rendering.
 
 ## Blocked by
 

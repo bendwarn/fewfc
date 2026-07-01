@@ -6,7 +6,7 @@ import { normalizeRuleModules } from '../../shared/game-room'
 test('server and room Rule Module allowlists stay aligned', () => {
   assert.deepEqual(normalizeServerRuleModules(undefined), normalizeRuleModules(undefined))
   assert.deepEqual(
-    normalizeServerRuleModules(['five-directions-legend', 'unknown']),
-    normalizeRuleModules(['five-directions-legend', 'unknown']),
+    normalizeServerRuleModules(['star', 'five-directions-legend', 'unknown']),
+    normalizeRuleModules(['star', 'five-directions-legend', 'unknown']),
   )
 })

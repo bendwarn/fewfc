@@ -20,19 +20,19 @@ Public Event Feed, Web DTOs, and the game display. Follow the official
 
 ## Acceptance criteria
 
-- [ ] The official module catalog enables the Star Rule Module alongside the mandatory Base Ruleset.
-- [ ] Base-only games never summon or expose Stars.
-- [ ] Each of the five named Base Formations summons its associated Star when its Attack points are at least 30.
-- [ ] Summoning qualification uses Attack points before elemental interaction, Counter Effects, Shields, or HP resolution.
-- [ ] Star Formations, copied effects, and other three-card attacks cannot summon a Star.
-- [ ] A Team owns at most one Star; a newly summoned Star replaces that Team's previous Star.
-- [ ] A Star can be owned by at most one Team, and an already-owned Star is not summoned again or added again to Player history.
-- [ ] Each Star summons with the official opposing-Star breaking relationship.
-- [ ] `StarSummoned` and `StarBroken` are semantic canonical Game Events rather than Status Effect strings.
-- [ ] Game State retains current Team Stars and distinct Star kinds summoned by each Player.
-- [ ] Public State View and Public Event Feed expose Star ownership and summoning without exposing canonical replay data directly.
-- [ ] The Web game display shows current Team Stars and viewer-safe summoning progress.
-- [ ] Direct execution and replay produce identical Star state in two-player and team-mode games.
+- [x] The official module catalog enables the Star Rule Module alongside the mandatory Base Ruleset.
+- [x] Base-only games never summon or expose Stars.
+- [x] Each of the five named Base Formations summons its associated Star when its Attack points are at least 30.
+- [x] Summoning qualification uses Attack points before elemental interaction, Counter Effects, Shields, or HP resolution.
+- [x] Star Formations, copied effects, and other three-card attacks cannot summon a Star.
+- [x] A Team owns at most one Star; a newly summoned Star replaces that Team's previous Star.
+- [x] A Star can be owned by at most one Team, and an already-owned Star is not summoned again or added again to Player history.
+- [x] Each Star summons with the official opposing-Star breaking relationship.
+- [x] `StarSummoned` and `StarBroken` are semantic canonical Game Events rather than Status Effect strings.
+- [x] Game State retains current Team Stars and distinct Star kinds summoned by each Player.
+- [x] Public State View and Public Event Feed expose Star ownership and summoning without exposing canonical replay data directly.
+- [x] The Web game display shows current Team Stars and viewer-safe summoning progress.
+- [x] Direct execution and replay produce identical Star state in two-player and team-mode games.
 
 ## Blocked by
 

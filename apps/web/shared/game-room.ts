@@ -1,7 +1,7 @@
 import type {
   LocalGameResponse,
   PlayerId,
-  PlayableFormation,
+  PlayableAction,
   PublicGameState,
   RecordedDecision,
 } from '../app/types/fewfc'
@@ -14,6 +14,7 @@ export type GameRoomStatus = 'Waiting' | 'Active' | 'Finished' | 'Dissolved'
 export type GameRoomAccess = 'private' | 'public'
 export type GameRoomCapacity = 2 | 4
 export const AVAILABLE_RULE_MODULES = [
+  'star',
   'discard-retrieval',
   'personal-deck',
   'five-directions-legend',
@@ -144,6 +145,10 @@ export interface RulesGameSetup {
   turnOrder: PlayerId[]
   enabledRuleModules: string[]
   deckLists: Array<PlayerDeckList & { player: PlayerId }>
+  initialHp?: Array<{
+    team: string
+    hp: number
+  }>
 }
 
 export type OnlineGameAction =
@@ -155,7 +160,7 @@ export type OnlineGameAction =
   | { type: 'chooseTurnDiscard'; player: PlayerId; card: number }
   | { type: 'answerEffectChoice'; player: PlayerId; cards: number[] }
   | { type: 'retrievePreviousTurnDiscard'; player: PlayerId }
-  | { type: 'playableFormations'; player: PlayerId; cards: number[] }
+  | { type: 'playableActions'; player: PlayerId; cards: number[] }
 
 export function requiresPendingCommandDraft(
   action: OnlineGameAction,
@@ -224,6 +229,10 @@ export type GameRoomRequest =
       actorUserId: string
     }
   | {
+      type: 'seedEndgameFixture'
+      actorUserId: string
+    }
+  | {
       type: 'getState'
       actorUserId: string
     }
@@ -242,7 +251,7 @@ export interface GameRoomResponse extends Omit<LocalGameResponse, 'record'> {
 }
 
 export interface RulesEngineResult extends LocalGameResponse {
-  playableFormations: PlayableFormation[]
+  playableActions: PlayableAction[]
 }
 
 export type GameRoomSocketMessage =
@@ -304,6 +313,9 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     shields: [],
     statuses: [],
     environment: null,
+    teamStars: [],
+    starHistories: [],
+    fiveStarAlignment: null,
     previousTurnFormation: null,
   }
 }

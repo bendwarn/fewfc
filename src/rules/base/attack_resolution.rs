@@ -2,12 +2,13 @@ use crate::domain::{
     AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, DamageTransform, Element,
     ElementInteraction, EnvironmentAttackEffect, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
     GameEvent, GameResult, GameState, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, PlayerId, ShieldChangeDelta, TeamId, ValidationError,
+    LastElementalAttackUpdate, PlayerId, STAR_MODULE_ID, ShieldChangeDelta, StarBreakReason,
+    StarKind, TeamId, ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, PointFormula,
-    official_formation_registry, sacred_beast_element,
+    official_formation_registry, sacred_beast_element, star,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,10 +144,105 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
 
     if let Some(environment) = sacred_beast_element(&request.formation_id) {
         events.push(GameEvent::EnvironmentTransferred {
-            player: request.attacker,
-            formation_id: request.formation_id,
+            player: request.attacker.clone(),
+            formation_id: request.formation_id.clone(),
             from: state.environment,
             to: environment,
+        });
+    }
+
+    if request.mode == AttackResolutionMode::FormationUse && state.has_rule_module(STAR_MODULE_ID) {
+        if let Some(star) = star::summoning_formation_star(&request.formation_id)
+            && points >= 30
+        {
+            events.extend(star_summoning_events(state, &request.attacker, star)?);
+        }
+
+        if let Some(star) = star::three_card_formation_star(&request.formation_id) {
+            let old_value = state
+                .turn_draw_bonus_by_player
+                .get(&request.attacker)
+                .copied()
+                .unwrap_or(0);
+            events.push(GameEvent::TurnDrawBonusChanged {
+                player: request.attacker.clone(),
+                old_value,
+                delta: 1,
+                new_value: old_value + 1,
+            });
+            let team = player_team(state, &request.attacker)?;
+            events.push(GameEvent::StarBroken {
+                team,
+                star,
+                reason: StarBreakReason::StarFormationUsed {
+                    formation_id: request.formation_id,
+                },
+                hp_change: None,
+            });
+        }
+    }
+
+    Ok(events)
+}
+
+fn star_summoning_events(
+    state: &GameState,
+    player: &PlayerId,
+    summoned_star: StarKind,
+) -> GameResult<Vec<GameEvent>> {
+    if state
+        .team_stars
+        .iter()
+        .any(|owned| owned.star == summoned_star)
+    {
+        return Ok(Vec::new());
+    }
+
+    let team = player_team(state, player)?;
+    let mut events = Vec::new();
+    let mut broken = Vec::new();
+
+    if let Some(current_star) = state.star_for_team(&team) {
+        broken.push((team.clone(), current_star));
+        events.push(GameEvent::StarBroken {
+            team: team.clone(),
+            star: current_star,
+            reason: StarBreakReason::Replaced,
+            hp_change: None,
+        });
+    }
+
+    let opposed = star::opposing_star(summoned_star);
+    for owned in state
+        .team_stars
+        .iter()
+        .filter(|owned| owned.star == opposed)
+    {
+        if broken
+            .iter()
+            .any(|(team, star)| team == &owned.team && star == &owned.star)
+        {
+            continue;
+        }
+        events.push(GameEvent::StarBroken {
+            team: owned.team.clone(),
+            star: owned.star,
+            reason: StarBreakReason::OpposedBy(summoned_star),
+            hp_change: None,
+        });
+    }
+
+    events.push(GameEvent::StarSummoned {
+        player: player.clone(),
+        team: team.clone(),
+        star: summoned_star,
+    });
+
+    let history = state.summoned_stars_for(player).unwrap_or_default();
+    if history.len() == 4 && !history.contains(&summoned_star) {
+        events.push(GameEvent::FiveStarAlignmentAchieved {
+            player: player.clone(),
+            team,
         });
     }
 

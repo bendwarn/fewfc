@@ -21,6 +21,7 @@ interface PublicRoomRow {
   owner_user_id: string
   players_json: string
   members_json: string
+  enabled_rule_modules_json: string
   created_at: number
   updated_at: number
 }
@@ -35,6 +36,7 @@ export interface PublicRoomSummary {
   players: string[]
   members: GameRoomMember[]
   capacity: number
+  enabledRuleModules: string[]
   createdAt: string
   updatedAt: string
 }
@@ -55,6 +57,7 @@ async function ensurePublicRoomTable(event: H3Event) {
         owner_user_id text NOT NULL,
         players_json text NOT NULL,
         members_json text NOT NULL,
+        enabled_rule_modules_json text NOT NULL DEFAULT '[]',
         created_at integer NOT NULL,
         updated_at integer NOT NULL
       )
@@ -110,6 +113,7 @@ function rowToSummary(row: PublicRoomRow): PublicRoomSummary {
     players,
     members,
     capacity: players.length,
+    enabledRuleModules: parseJson<string[]>(row.enabled_rule_modules_json, []),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   }
@@ -142,10 +146,11 @@ export async function upsertPublicRoom(
         owner_user_id,
         players_json,
         members_json,
+        enabled_rule_modules_json,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(game_id) DO UPDATE SET
         room_code = CASE
           WHEN ? = 1 THEN excluded.room_code
@@ -160,6 +165,7 @@ export async function upsertPublicRoom(
         owner_user_id = excluded.owner_user_id,
         players_json = excluded.players_json,
         members_json = excluded.members_json,
+        enabled_rule_modules_json = excluded.enabled_rule_modules_json,
         updated_at = excluded.updated_at
     `)
     .bind(
@@ -171,6 +177,7 @@ export async function upsertPublicRoom(
       owner?.userId ?? '',
       JSON.stringify(metadata.players),
       JSON.stringify(metadata.members),
+      JSON.stringify(metadata.enabledRuleModules),
       timestamp(metadata.createdAt),
       timestamp(metadata.updatedAt),
       invitation ? 1 : 0,
@@ -215,6 +222,7 @@ export async function listPublicRooms(event: H3Event): Promise<PublicRoomSummary
         owner_user_id,
         players_json,
         members_json,
+        enabled_rule_modules_json,
         created_at,
         updated_at
       FROM public_game_room
@@ -246,6 +254,7 @@ export async function listPlayerRooms(
         room.owner_user_id,
         room.players_json,
         room.members_json,
+        room.enabled_rule_modules_json,
         room.created_at,
         room.updated_at
       FROM public_game_room AS room

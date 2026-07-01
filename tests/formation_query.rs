@@ -3,7 +3,7 @@ use fewfc::domain::{
     GameSetup, PendingChoice, PendingChoiceKind, Phase, PlayerId, RuleModuleId, StatusDuration,
     StatusEffect, StatusOwner, ValidationError,
 };
-use fewfc::rules::{Element, FormationCategory, OfficialRules};
+use fewfc::rules::{Element, FormationCandidate, FormationCategory, OfficialRules, PlayableAction};
 
 fn card(id: u64) -> CardInstanceId {
     CardInstanceId::new(id)
@@ -50,6 +50,15 @@ fn setup() -> GameSetup {
     )
 }
 
+fn formations(actions: Vec<PlayableAction>) -> Vec<FormationCandidate> {
+    actions
+        .into_iter()
+        .map(|action| match action {
+            PlayableAction::PerformFormation(candidate) => candidate,
+        })
+        .collect()
+}
+
 #[test]
 fn five_directions_legend_adds_sacred_beast_formations() {
     let rules = OfficialRules::new();
@@ -65,13 +74,15 @@ fn five_directions_legend_adds_sacred_beast_formations() {
         fewfc::domain::PlayerHand::new(PlayerId::new("p2"), Vec::new()),
     ];
 
-    let candidates = rules
-        .playable_formations(
-            &state,
-            &PlayerId::new("p1"),
-            &[card(1), card(6), card(11), card(16), card(21)],
-        )
-        .unwrap();
+    let candidates = formations(
+        rules
+            .playable_actions(
+                &state,
+                &PlayerId::new("p1"),
+                &[card(1), card(6), card(11), card(16), card(21)],
+            )
+            .unwrap(),
+    );
 
     assert!(candidates.iter().any(|candidate| {
         candidate.formation_id == "west-white-tiger"
@@ -92,9 +103,11 @@ fn five_directions_legend_adds_void_meridian_severing_technique() {
         fewfc::domain::PlayerHand::new(PlayerId::new("p2"), Vec::new()),
     ];
 
-    let candidates = rules
-        .playable_formations(&state, &PlayerId::new("p1"), &[card(1), card(2), card(3)])
-        .unwrap();
+    let candidates = formations(
+        rules
+            .playable_actions(&state, &PlayerId::new("p1"), &[card(1), card(2), card(3)])
+            .unwrap(),
+    );
 
     assert!(candidates.iter().any(|candidate| {
         candidate.formation_id == "void-meridian-severing"
@@ -104,7 +117,7 @@ fn five_directions_legend_adds_void_meridian_severing_technique() {
 }
 
 #[test]
-fn playable_formations_returns_candidates_from_selected_hand_cards() {
+fn playable_actions_returns_formation_candidates_from_selected_hand_cards() {
     let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::Main;
@@ -116,9 +129,11 @@ fn playable_formations_returns_candidates_from_selected_hand_cards() {
         fewfc::domain::PlayerHand::new(PlayerId::new("p2"), Vec::new()),
     ];
 
-    let candidates = rules
-        .playable_formations(&state, &PlayerId::new("p1"), &[card(1)])
-        .unwrap();
+    let candidates = formations(
+        rules
+            .playable_actions(&state, &PlayerId::new("p1"), &[card(1)])
+            .unwrap(),
+    );
 
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].formation_id, "metal-strike");
@@ -129,7 +144,7 @@ fn playable_formations_returns_candidates_from_selected_hand_cards() {
 }
 
 #[test]
-fn playable_formations_does_not_return_matches_from_unselected_hand_cards() {
+fn playable_actions_does_not_return_matches_from_unselected_hand_cards() {
     let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::Main;
@@ -141,13 +156,15 @@ fn playable_formations_does_not_return_matches_from_unselected_hand_cards() {
         fewfc::domain::PlayerHand::new(PlayerId::new("p2"), Vec::new()),
     ];
 
-    let candidates = rules
-        .playable_formations(
-            &state,
-            &PlayerId::new("p1"),
-            &[card(1), card(2), card(3), card(4), card(5)],
-        )
-        .unwrap();
+    let candidates = formations(
+        rules
+            .playable_actions(
+                &state,
+                &PlayerId::new("p1"),
+                &[card(1), card(2), card(3), card(4), card(5)],
+            )
+            .unwrap(),
+    );
 
     assert!(candidates.iter().any(|candidate| {
         candidate.formation_id == "five-elements-cycle"
@@ -163,13 +180,13 @@ fn playable_formations_does_not_return_matches_from_unselected_hand_cards() {
 }
 
 #[test]
-fn playable_formations_returns_error_when_player_cannot_act_now() {
+fn playable_actions_returns_error_when_player_cannot_act_now() {
     let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::TurnDraw;
 
     assert_eq!(
-        rules.playable_formations(&state, &PlayerId::new("p1"), &[]),
+        rules.playable_actions(&state, &PlayerId::new("p1"), &[]),
         Err(GameError::Validation(
             ValidationError::CannotPerformFormation {
                 reason: CannotPerformFormationReason::WrongPhase {
@@ -182,13 +199,13 @@ fn playable_formations_returns_error_when_player_cannot_act_now() {
 }
 
 #[test]
-fn playable_formations_returns_error_for_non_current_player() {
+fn playable_actions_returns_error_for_non_current_player() {
     let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::Main;
 
     assert_eq!(
-        rules.playable_formations(&state, &PlayerId::new("p2"), &[]),
+        rules.playable_actions(&state, &PlayerId::new("p2"), &[]),
         Err(GameError::Validation(
             ValidationError::CannotPerformFormation {
                 reason: CannotPerformFormationReason::WrongPlayer {
@@ -201,7 +218,7 @@ fn playable_formations_returns_error_for_non_current_player() {
 }
 
 #[test]
-fn playable_formations_returns_error_while_choice_is_pending() {
+fn playable_actions_returns_error_while_choice_is_pending() {
     let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::Main;
@@ -215,7 +232,7 @@ fn playable_formations_returns_error_while_choice_is_pending() {
     });
 
     assert_eq!(
-        rules.playable_formations(&state, &PlayerId::new("p1"), &[]),
+        rules.playable_actions(&state, &PlayerId::new("p1"), &[]),
         Err(GameError::Validation(
             ValidationError::CannotPerformFormation {
                 reason: CannotPerformFormationReason::PendingChoiceInProgress {
@@ -227,7 +244,7 @@ fn playable_formations_returns_error_while_choice_is_pending() {
 }
 
 #[test]
-fn playable_formations_returns_error_when_player_has_cannot_act_status() {
+fn playable_actions_returns_error_when_player_has_cannot_act_status() {
     let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::Main;
@@ -240,7 +257,7 @@ fn playable_formations_returns_error_when_player_has_cannot_act_status() {
     });
 
     assert_eq!(
-        rules.playable_formations(&state, &PlayerId::new("p1"), &[]),
+        rules.playable_actions(&state, &PlayerId::new("p1"), &[]),
         Err(GameError::Validation(
             ValidationError::CannotPerformFormation {
                 reason: CannotPerformFormationReason::CannotActByStatus {

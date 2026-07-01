@@ -16,16 +16,16 @@ View, and Web Formation paths rather than creating a standalone action.
 
 ## Acceptance criteria
 
-- [ ] Three same-level Card Instances match 虛空破星術 only when the Star Rule Module is enabled.
-- [ ] 虛空破星術 is an active Spell submitted through the normal Formation Use command.
-- [ ] Seal cancels the Spell before any Star is broken or HP is changed.
-- [ ] Successful resolution emits one `StarBroken` event for every affected Team Star.
-- [ ] Each Team whose Star is broken loses 20 HP directly; Teams without a Star lose no HP.
-- [ ] The HP loss does not interact with Player Shields.
-- [ ] All Star Breaking and HP changes resolve before Game Outcome evaluation.
-- [ ] If every Team reaches zero HP, the result is a draw.
-- [ ] Public State View and Public Event Feed show the complete viewer-safe result.
-- [ ] Direct execution and replay produce identical Star, HP, and Game Outcome state.
+- [x] Three same-level Card Instances match 虛空破星術 only when the Star Rule Module is enabled.
+- [x] 虛空破星術 is an active Spell submitted through the normal Formation Use command.
+- [x] Seal cancels the Spell before any Star is broken or HP is changed.
+- [x] Successful resolution emits one `StarBroken` event for every affected Team Star.
+- [x] Each Team whose Star is broken loses 20 HP directly; Teams without a Star lose no HP.
+- [x] The HP loss does not interact with Player Shields.
+- [x] All Star Breaking and HP changes resolve before Game Outcome evaluation.
+- [x] If every Team reaches zero HP, the result is a draw.
+- [x] Public State View and Public Event Feed show the complete viewer-safe result.
+- [x] Direct execution and replay produce identical Star, HP, and Game Outcome state.
 
 ## Blocked by
 
