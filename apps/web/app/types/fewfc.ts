@@ -3,6 +3,13 @@ export type TeamId = string
 export type ViewerId = PlayerId | 'observer'
 export type CardInstanceId = number
 export type StarKind = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
+export type Element = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
+
+export interface StarElementSubstitution {
+  card: CardInstanceId
+  printedElement: Element
+  interpretedElement: Element
+}
 
 export interface PublicPlayer {
   id: PlayerId
@@ -37,6 +44,7 @@ export interface PublicCoveredPassive {
   owner: PlayerId
   formationId: string | null
   cards: PublicCardRefs
+  starSubstitution: StarElementSubstitution | null
 }
 
 export interface PublicPreviousTurnFormation {
@@ -84,6 +92,32 @@ export interface PublicGameState {
   teamStars: Array<{ team: TeamId; star: StarKind }>
   starHistories: Array<{ player: PlayerId; stars: StarKind[] }>
   fiveStarAlignment: { player: PlayerId; team: TeamId } | null
+  professions: Array<{
+    player: PlayerId
+    id: string
+    name: string
+    abilities: string[]
+  }>
+  professionCatalog: Array<{
+    id: string
+    name: string
+    requirement: string
+    parentName: string | null
+    inheritance: string
+    abilities: string[]
+    formations: Array<{
+      name: string
+      summary: string
+    }>
+  }>
+  preparedProfessionAbilities: Array<{
+    player: PlayerId
+    abilityId: string
+    card: CardInstanceId
+    element: Element
+    level: number
+    allowedFormationScope: string[]
+  }>
   previousTurnFormation: PublicPreviousTurnFormation | null
 }
 
@@ -102,6 +136,30 @@ export type PlayableAction =
       category: 'Attack' | 'Spell'
       summary: string
       cards: CardInstanceId[]
+      starSubstitution: StarElementSubstitution | null
+      matchOption: {
+        role: string
+        card: CardInstanceId
+        slots: number
+        preview: string | null
+      } | null
+    }
+  | {
+      type: 'changeProfession'
+      id: string
+      name: string
+      summary: string
+      cards: CardInstanceId[]
+    }
+  | {
+      type: 'activateProfessionAbility'
+      id: string
+      name: string
+      summary: string
+      cards: CardInstanceId[]
+      targetCard: CardInstanceId | null
+      declaredElement: Element | null
+      declaredLevel: number | null
     }
 
 export type RecordedDecision = unknown

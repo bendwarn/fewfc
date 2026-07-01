@@ -386,6 +386,61 @@
           >
             ←
           </button>
+          <button
+            v-if="state.enabledRuleModules.includes('hero-schools')"
+            class="teaching-button"
+            type="button"
+            aria-haspopup="dialog"
+            :aria-expanded="teachingOpen"
+            @click="teachingOpen = true"
+          >
+            職業教學
+          </button>
+
+          <div
+            v-if="teachingOpen"
+            class="teaching-layer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="teaching-title"
+          >
+            <section class="teaching-dialog">
+              <header>
+                <div>
+                  <h2 id="teaching-title">英雄學派職業圖鑑</h2>
+                  <p>只供查閱；合法行動仍由所選手牌列出。</p>
+                </div>
+                <button type="button" aria-label="關閉職業教學" @click="teachingOpen = false">×</button>
+              </header>
+              <div class="profession-catalog">
+                <article
+                  v-for="profession in state.professionCatalog"
+                  :key="profession.id"
+                  class="profession-card"
+                >
+                  <p v-if="profession.parentName" class="profession-parent">
+                    {{ profession.parentName }} →
+                  </p>
+                  <h3>{{ profession.name }}</h3>
+                  <p>{{ profession.requirement }}</p>
+                  <small>{{ profession.inheritance }}</small>
+                  <h4>有效能力</h4>
+                  <ul>
+                    <li v-for="ability in profession.abilities" :key="ability">{{ ability }}</li>
+                  </ul>
+                  <template v-if="profession.formations.length">
+                    <h4>職業陣法</h4>
+                    <dl>
+                      <template v-for="formation in profession.formations" :key="formation.name">
+                        <dt>{{ formation.name }}</dt>
+                        <dd>{{ formation.summary }}</dd>
+                      </template>
+                    </dl>
+                  </template>
+                </article>
+              </div>
+            </section>
+          </div>
 
           <div
             v-for="seat in playerSeats"
@@ -411,6 +466,32 @@
                 </small>
                 <small v-if="state.enabledRuleModules.includes('star')">
                   召星 {{ starHistoryCount(seat.player) }} / 5
+                </small>
+                <span
+                  v-if="professionFor(seat.player)"
+                  class="profession-badge"
+                  tabindex="0"
+                  :aria-label="professionSummaryLabel(seat.player)"
+                >
+                  職業 · {{ professionFor(seat.player)!.name }}
+                  <span class="profession-summary" role="note">
+                    <b>{{ professionFor(seat.player)!.name }}</b>
+                    <small
+                      v-for="ability in professionFor(seat.player)!.abilities"
+                      :key="ability"
+                    >
+                      {{ ability }}
+                    </small>
+                  </span>
+                </span>
+                <small
+                  v-for="prepared in preparedAbilitiesFor(seat.player)"
+                  :key="`${seat.player}-${prepared.abilityId}-${prepared.card}`"
+                  class="prepared-ability"
+                >
+                  已準備 · {{ preparedAbilityLabel(prepared.abilityId) }}
+                  {{ elementLabel(prepared.element) }}{{ prepared.level }}
+                  （牌 {{ prepared.card }}）
                 </small>
                 <small v-if="state.enabledRuleModules.includes('personal-deck')">
                   牌庫 {{ playerDeckCount(seat.player) }} · 棄牌 {{ playerDiscardCount(seat.player) }}
@@ -528,6 +609,16 @@
                   </header>
                   <div class="action-candidates">
                     <button
+                      v-for="ability in game.playableAbilities.value"
+                      :key="`ability:${ability.id}:${ability.cards.join('-')}:${ability.targetCard ?? ''}:${ability.declaredElement ?? ''}:${ability.declaredLevel ?? ''}`"
+                      type="button"
+                      :title="ability.summary"
+                      :aria-label="`${ability.name}：${ability.summary}`"
+                      @click="game.performPlayableAction(ability)"
+                    >
+                      {{ ability.name }}
+                    </button>
+                    <button
                       v-if="game.interaction.value.canRetrieveDiscard"
                       class="retrieve-action"
                       type="button"
@@ -536,7 +627,9 @@
                     >
                       棄牌回收
                     </button>
-                    <p v-else>目前沒有可用能力</p>
+                    <p v-if="!game.playableAbilities.value.length && !game.interaction.value.canRetrieveDiscard">
+                      目前沒有可用能力
+                    </p>
                   </div>
                 </section>
 
@@ -547,8 +640,8 @@
                   </header>
                   <div v-if="!game.isLoading.value" class="action-candidates">
                     <button
-                      v-for="action in game.playableActions.value"
-                      :key="`${action.type}:${action.id}:${action.cards.join('-')}`"
+                      v-for="action in game.playableMainActions.value"
+                      :key="`${action.type}:${action.id}:${action.cards.join('-')}:${action.type === 'performFormation' ? `${action.starSubstitution?.card ?? 'printed'}:${action.matchOption?.role ?? 'default'}:${action.matchOption?.card ?? ''}` : 'profession'}`"
                       type="button"
                       :title="action.summary"
                       @mouseenter="showActionDetail(action)"
@@ -560,7 +653,7 @@
                       @pointercancel="cancelActionDetail"
                       @click="game.performPlayableAction(action)"
                     >
-                      {{ action.name }}
+                      {{ playableActionName(action) }}
                     </button>
                     <button
                       v-if="showSkip"
@@ -573,7 +666,7 @@
                     </button>
                   </div>
                   <p
-                    v-if="!game.isLoading.value && !game.playableActions.value.length && !game.errorMessage.value"
+                    v-if="!game.isLoading.value && !game.playableMainActions.value.length && !game.errorMessage.value"
                     class="action-prompt"
                   >
                     選擇手牌以尋找可用行動
@@ -878,7 +971,7 @@
 </template>
 
 <script setup lang="ts">
-import type { PlayableAction, PlayerId, PublicCardRefs, TeamId, ViewerId } from '~/types/fewfc'
+import type { Element, PlayableAction, PlayerId, PublicCardRefs, TeamId, ViewerId } from '~/types/fewfc'
 import type { GameRoomMember, GameRoomResponse } from '../shared/game-room'
 import { authClient } from '~/lib/auth-client'
 import { buildDiscardComposition, DISCARD_ELEMENTS } from '~/lib/discard-composition'
@@ -949,6 +1042,7 @@ const actionDetail = ref<PlayableAction | null>(null)
 const eventExpanded = ref(false)
 const showSetupReveal = ref(false)
 const discardOpen = ref(false)
+const teachingOpen = ref(false)
 const activeDiscardOwner = ref<PlayerId | null>(null)
 const discardTrigger = ref<HTMLButtonElement | null>(null)
 const deckDraft = ref<PlayerDeckList>(preconstructedDeck())
@@ -964,6 +1058,7 @@ const modes = [
 ]
 const ruleOptions = [
   { id: 'star', label: '進階規則‧星辰圖記' },
+  { id: 'hero-schools', label: '進階規則‧英雄學派' },
   { id: 'five-directions-legend', label: '進階規則‧五方傳說' },
   { id: 'discard-retrieval', label: '棄牌回收' },
   { id: 'personal-deck', label: '個人牌組' },
@@ -1810,6 +1905,35 @@ function starHistoryCount(player: PlayerId): number {
   return state.value.starHistories.find(history => history.player === player)?.stars.length ?? 0
 }
 
+function professionFor(player: PlayerId) {
+  return state.value.professions.find(profession => profession.player === player)
+}
+
+function preparedAbilitiesFor(player: PlayerId) {
+  return state.value.preparedProfessionAbilities.filter(prepared => prepared.player === player)
+}
+
+function preparedAbilityLabel(abilityId: string): string {
+  return abilityId === 'illusion' ? '幻術' : abilityId === 'phantasm' ? '幻朧' : abilityId
+}
+
+function elementLabel(element: Element): string {
+  return {
+    Metal: '金',
+    Wood: '木',
+    Water: '水',
+    Fire: '火',
+    Earth: '土',
+  }[element]
+}
+
+function professionSummaryLabel(player: PlayerId): string {
+  const profession = professionFor(player)
+  return profession
+    ? `職業 ${profession.name}。能力：${profession.abilities.join('；')}`
+    : ''
+}
+
 function starLabel(star: import('~/types/fewfc').StarKind): string {
   return {
     Metal: '金星‧太白',
@@ -1919,6 +2043,26 @@ function roomNeedsAttention(room: PublicRoomSummary): boolean {
     notification.gameId === room.gameId
     && (notification.kind === 'gameStarted' || notification.kind === 'yourTurn')
   ))
+}
+
+function playableActionName(action: PlayableAction): string {
+  if (action.type !== 'performFormation') {
+    return action.name
+  }
+  if (action.matchOption) {
+    return `${action.name}（${action.matchOption.preview ?? `指定牌 ${action.matchOption.card}`}）`
+  }
+  if (!action.starSubstitution) {
+    return action.name
+  }
+
+  const substitution = action.starSubstitution
+  const card = state.value.hands
+    .flatMap(hand => hand.cards.kind === 'known' ? hand.cards.cards : [])
+    .find(candidate => candidate.id === substitution.card)
+  const cardLabel = card?.label ?? `牌 ${substitution.card}`
+
+  return `${action.name}（${cardLabel}：${environmentLabel(substitution.printedElement)}→${environmentLabel(substitution.interpretedElement)}）`
 }
 
 function showActionDetail(action: PlayableAction) {
@@ -2136,6 +2280,23 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .game-page { @apply flex h-[calc(100vh-84px)] flex-col overflow-hidden max-[900px]:h-auto max-[900px]:overflow-visible; }
 .back-button { @apply grid size-9 place-items-center border border-[#4a554e] bg-[rgba(17,23,19,.88)] text-base text-[#ddd7c9] hover:border-[#b99550] hover:text-gold-light; }
 .battlefield-back { @apply absolute top-4 left-4 z-20; }
+.teaching-button { @apply absolute top-4 right-4 z-20 border border-[#79633b] bg-[#18201b] px-3 py-1.5 text-xs text-gold-light; }
+.teaching-layer { @apply fixed inset-0 z-50 grid place-items-center bg-[rgba(7,10,8,.78)] p-4 backdrop-blur-[3px]; }
+.teaching-dialog { @apply grid max-h-[min(820px,calc(100vh-32px))] w-[min(1120px,calc(100vw-32px))] grid-rows-[auto_1fr] gap-4 overflow-hidden border border-[#79633b] bg-[#121915] p-5 shadow-[0_20px_70px_rgba(0,0,0,.55)]; }
+.teaching-dialog > header { @apply flex items-start justify-between gap-4 border-b border-line pb-3; }
+.teaching-dialog h2 { @apply font-serif text-xl text-gold-light; }
+.teaching-dialog header p { @apply mt-1 text-xs text-muted; }
+.teaching-dialog header button { @apply border border-line bg-transparent px-3 py-1 text-lg text-muted; }
+.profession-catalog { @apply grid grid-cols-1 gap-3 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3; }
+.profession-card { @apply content-start border border-[rgba(166,141,86,.25)] bg-[rgba(24,32,27,.72)] p-3 text-left; }
+.profession-card h3 { @apply font-serif text-base text-gold-light; }
+.profession-card h4 { @apply mt-3 text-xs text-[#d4c291]; }
+.profession-card p, .profession-card li, .profession-card dd { @apply text-[11px] leading-5 text-[#c5cbc7]; }
+.profession-card small, .profession-parent { @apply text-[10px]! text-muted!; }
+.profession-card ul { @apply mt-1 list-disc pl-4; }
+.profession-card dl { @apply mt-1 grid gap-1; }
+.profession-card dt { @apply text-xs text-[#e2d3a7]; }
+.profession-card dd { @apply mb-1; }
 .battle-layout { @apply grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px] max-[900px]:grid-cols-1 max-[900px]:overflow-auto; }
 .battlefield {
   --card-back-base: #232e28;
@@ -2166,6 +2327,12 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .player-identity div { @apply grid; }
 .player-identity strong { @apply max-w-36 truncate text-xs; }
 .player-identity small { @apply text-[11px] text-[#d0a450]; }
+.profession-badge { @apply relative cursor-help border border-[#79633b] bg-[#18201b] px-1.5 py-0.5 text-[10px] text-gold-light outline-none focus-visible:border-[#d1ad62]; }
+.profession-summary { @apply invisible absolute top-[calc(100%+6px)] left-0 z-20 grid w-64 gap-1 border border-[#64583f] bg-[#18201b] p-2.5 text-left opacity-0 shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
+.profession-summary b { @apply font-serif text-xs text-gold-light; }
+.profession-summary small { @apply whitespace-normal text-[10px]! leading-4 text-muted!; }
+.prepared-ability { @apply border border-[#526c7c] bg-[#17232b] px-1.5 py-0.5 text-[9px]! text-[#b9d5e5]!; }
+.profession-badge:hover .profession-summary, .profession-badge:focus .profession-summary, .profession-badge:focus-within .profession-summary { @apply visible opacity-100; }
 .connection-dot { @apply size-2 shrink-0 rounded-full border border-[#76524b] bg-[#6f3c34]; }
 .connection-dot.connected { @apply border-[#477557] bg-[#63a979]; }
 .reconnecting-label { @apply text-[9px] text-[#d0aa5e]; }
@@ -2373,6 +2540,7 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   }
   .battlefield::before { inset: 8px; }
   .battlefield-back { top: 10px; left: 10px; }
+  .teaching-button { top: 10px; right: 10px; }
   .player-seat { gap: 7px; }
   .seat-top, .seat-bottom { flex-direction: column; }
   .seat-top .player-identity, .seat-bottom .player-identity { order: 2; }

@@ -58,13 +58,23 @@ impl BaseRuleset {
     ) -> GameResult<Vec<PlayableAction>> {
         ensure_can_query_playable_actions(state, player)?;
 
-        Ok(
+        let mut actions =
             formation_selection::FormationSelection::new(state, player, selected_cards.to_vec())?
                 .candidates()
                 .into_iter()
                 .map(PlayableAction::PerformFormation)
-                .collect(),
-        )
+                .collect::<Vec<_>>();
+        actions.extend(
+            crate::rules::hero::playable_profession_changes(state, player, selected_cards)?
+                .into_iter()
+                .map(PlayableAction::ChangeProfession),
+        );
+        actions.extend(
+            crate::rules::hero::playable_profession_abilities(state, player, selected_cards)?
+                .into_iter()
+                .map(PlayableAction::ActivateProfessionAbility),
+        );
+        Ok(actions)
     }
 
     pub(crate) fn official_game_setup(
@@ -664,6 +674,7 @@ fn decide_command_with_base_ruleset(
                     incoming_player: player.clone(),
                     incoming_kind: covered_passive::IncomingActionKind::Pass,
                     ignores_formation_effects: false,
+                    ignores_counter_effects: false,
                 },
             );
             let mut events = passive_trigger.events();
@@ -687,6 +698,74 @@ fn decide_command_with_base_ruleset(
                     cards,
                     declared_targets,
                 },
+            )
+        }
+        Command::ChangeProfession {
+            player,
+            profession,
+            cards,
+        } => {
+            ensure_current_player(state, &player)?;
+            ensure_phase(state, Phase::Main)?;
+            if player_has_status(state, &player, "CannotAct") {
+                return Err(GameError::Validation(
+                    ValidationError::CannotChangeProfession {
+                        reason: CannotPerformFormationReason::CannotActByStatus {
+                            player: player.clone(),
+                        },
+                    },
+                ));
+            }
+            crate::rules::hero::validate_profession_change(state, &player, &profession, &cards)?;
+            let passive_trigger = covered_passive::trigger(
+                state,
+                covered_passive::TriggerRequest {
+                    incoming_player: player.clone(),
+                    incoming_kind: covered_passive::IncomingActionKind::ProfessionChange,
+                    ignores_formation_effects: false,
+                    ignores_counter_effects: false,
+                },
+            );
+            let card_moves = cards
+                .into_iter()
+                .map(|card| CardMoveDelta {
+                    card,
+                    from: CardZone::Hand(player.clone()),
+                    to: discard_zone_for_card(state, card),
+                })
+                .collect();
+            let mut events = passive_trigger.events();
+            events.push(GameEvent::ProfessionChanged {
+                player: player.clone(),
+                previous: state.profession_for(&player).cloned(),
+                profession,
+                card_moves,
+            });
+            Ok(events)
+        }
+        Command::ActivateProfessionAbility {
+            player,
+            ability_id,
+            cards,
+            target_card,
+            declared_element,
+            declared_level,
+        } => {
+            ensure_current_player(state, &player)?;
+            ensure_phase(state, Phase::Main)?;
+            if player_has_status(state, &player, "CannotAct") {
+                return Err(GameError::Validation(
+                    ValidationError::ProfessionAbilityCannotResolve(ability_id),
+                ));
+            }
+            crate::rules::hero::activate_profession_ability(
+                state,
+                &player,
+                &ability_id,
+                &cards,
+                target_card,
+                declared_element,
+                declared_level,
             )
         }
         Command::ChooseTurnDiscard { player, discard } => {
@@ -809,7 +888,8 @@ fn decide_command_with_base_ruleset(
                 .ok_or_else(|| {
                     GameError::Validation(ValidationError::MissingTeamHp(team.clone()))
                 })?;
-            let new_hp = (old_hp - level * 2).max(0);
+            let hp_cost = crate::rules::hero::discard_retrieval_cost(state, &player, level * 2);
+            let new_hp = (old_hp - hp_cost).max(0);
             let card_move = if state.uses_personal_decks() {
                 CardMoveDelta {
                     card,
@@ -831,13 +911,24 @@ fn decide_command_with_base_ruleset(
                 hp_change: HpChangeDelta {
                     team,
                     old_hp,
-                    delta: -(level * 2),
+                    delta: -hp_cost,
                     new_hp,
                     effective_delta: new_hp - old_hp,
                 },
                 card_move,
             }])
         }
+    }
+}
+
+fn discard_zone_for_card(state: &GameState, card: CardInstanceId) -> CardZone {
+    if state.uses_personal_decks() {
+        match state.card_origin(card) {
+            Some(CardOrigin::Player(owner)) => CardZone::PlayerDiscard(owner.clone()),
+            _ => CardZone::Discard,
+        }
+    } else {
+        CardZone::Discard
     }
 }
 
@@ -866,6 +957,17 @@ fn ensure_engine_invariants(state: &GameState) -> GameResult<()> {
             return Err(GameError::EngineInvariant(
                 EngineInvariantError::DuplicateCoveredPassive {
                     player: passive.owner.clone(),
+                },
+            ));
+        }
+    }
+
+    let mut profession_owners = HashSet::new();
+    for profession in &state.professions {
+        if !profession_owners.insert(profession.player.clone()) {
+            return Err(GameError::EngineInvariant(
+                EngineInvariantError::DuplicateProfession {
+                    player: profession.player.clone(),
                 },
             ));
         }

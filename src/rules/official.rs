@@ -1,8 +1,8 @@
 use crate::domain::{
     CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, FIVE_DIRECTIONS_LEGEND_MODULE_ID,
-    GameError, GameEvent, GameResult, GameSetup, GameState, PERSONAL_DECK_MODULE_ID, Player,
-    PlayerDeckList, PlayerId, RuleModuleId, RulesetId, STAR_MODULE_ID, ValidationError,
-    validate_setup,
+    GameError, GameEvent, GameResult, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID,
+    PERSONAL_DECK_MODULE_ID, Player, PlayerDeckList, PlayerId, RuleModuleId, RulesetId,
+    STAR_MODULE_ID, ValidationError, validate_setup,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -13,6 +13,14 @@ const OFFICIAL_RULE_MODULE_IDS: &[&str] = &[
     PERSONAL_DECK_MODULE_ID,
     FIVE_DIRECTIONS_LEGEND_MODULE_ID,
     STAR_MODULE_ID,
+    HERO_SCHOOLS_MODULE_ID,
+];
+const DEFAULT_RULE_MODULE_IDS: &[&str] = &[
+    DISCARD_RETRIEVAL_MODULE_ID,
+    PERSONAL_DECK_MODULE_ID,
+    FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+    STAR_MODULE_ID,
+    HERO_SCHOOLS_MODULE_ID,
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -43,7 +51,8 @@ impl OfficialRules {
         let mut setup = BaseRuleset::new().official_game_setup(players, turn_order);
         setup.enabled_rule_modules = enabled_rule_modules;
         let uses_advanced_rules = setup.has_rule_module(FIVE_DIRECTIONS_LEGEND_MODULE_ID)
-            || setup.has_rule_module(STAR_MODULE_ID);
+            || setup.has_rule_module(STAR_MODULE_ID)
+            || setup.has_rule_module(HERO_SCHOOLS_MODULE_ID);
         let official_hp = match (setup.players.len(), uses_advanced_rules) {
             (2, false) => 100,
             (2, true) => 200,
@@ -61,7 +70,7 @@ impl OfficialRules {
     }
 
     pub fn default_rule_modules(&self) -> Vec<RuleModuleId> {
-        OFFICIAL_RULE_MODULE_IDS
+        DEFAULT_RULE_MODULE_IDS
             .iter()
             .map(|id| RuleModuleId::new(*id))
             .collect()

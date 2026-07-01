@@ -1,5 +1,6 @@
 const availableRuleModules = [
   'star',
+  'hero-schools',
   'discard-retrieval',
   'personal-deck',
   'five-directions-legend',

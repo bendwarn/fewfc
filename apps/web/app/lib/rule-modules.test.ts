@@ -10,3 +10,15 @@ test('server and room Rule Module allowlists stay aligned', () => {
     normalizeRuleModules(['star', 'five-directions-legend', 'unknown']),
   )
 })
+
+test('Hero Schools is available and enabled by default for new rooms', () => {
+  assert.equal(normalizeRuleModules(['hero-schools']).includes('hero-schools'), true)
+  assert.equal(normalizeServerRuleModules(['hero-schools']).includes('hero-schools'), true)
+  assert.equal(normalizeRuleModules(undefined).includes('hero-schools'), true)
+  assert.equal(normalizeServerRuleModules(undefined).includes('hero-schools'), true)
+})
+
+test('stored room module lists remain Hero-disabled when they omit Hero Schools', () => {
+  assert.equal(normalizeRuleModules(['star']).includes('hero-schools'), false)
+  assert.equal(normalizeServerRuleModules(['star']).includes('hero-schools'), false)
+})

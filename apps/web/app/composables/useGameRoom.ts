@@ -44,6 +44,9 @@ function emptyState(): PublicGameState {
     teamStars: [],
     starHistories: [],
     fiveStarAlignment: null,
+    professions: [],
+    professionCatalog: [],
+    preparedProfessionAbilities: [],
     previousTurnFormation: null,
   }
 }
@@ -58,6 +61,15 @@ export function useGameRoom(viewer: ViewerRef) {
   const selectedCards = ref<CardInstanceId[]>([])
   const selectedChoiceCards = ref<CardInstanceId[]>([])
   const playableActions = ref<PlayableAction[]>([])
+  const playableAbilities = computed(() => (
+    playableActions.value.filter(
+      (action): action is Extract<PlayableAction, { type: 'activateProfessionAbility' }> =>
+        action.type === 'activateProfessionAbility',
+    )
+  ))
+  const playableMainActions = computed(() => (
+    playableActions.value.filter(action => action.type !== 'activateProfessionAbility')
+  ))
   const errorMessage = ref<string | null>(null)
   const isLoading = ref(false)
   const interaction = ref({
@@ -393,6 +405,33 @@ export function useGameRoom(viewer: ViewerRef) {
           player,
           formationId: action.id,
           cards: action.cards,
+          starSubstitutionCard: action.starSubstitution?.card,
+          matchOptionRole: action.matchOption?.role,
+          matchOptionCard: action.matchOption?.card,
+          matchOptionSlots: action.matchOption?.slots,
+        })) {
+          selectedCards.value = []
+        }
+        break
+      case 'changeProfession':
+        if (await submitOnline({
+          type: 'changeProfession',
+          player,
+          professionId: action.id,
+          cards: action.cards,
+        })) {
+          selectedCards.value = []
+        }
+        break
+      case 'activateProfessionAbility':
+        if (await submitOnline({
+          type: 'activateProfessionAbility',
+          player,
+          abilityId: action.id,
+          cards: action.cards,
+          targetCard: action.targetCard ?? undefined,
+          declaredElement: action.declaredElement ?? undefined,
+          declaredLevel: action.declaredLevel ?? undefined,
         })) {
           selectedCards.value = []
         }
@@ -501,6 +540,8 @@ export function useGameRoom(viewer: ViewerRef) {
     selectedCards,
     selectedChoiceCards,
     playableActions,
+    playableAbilities,
+    playableMainActions,
     errorMessage,
     isLoading,
     interaction,

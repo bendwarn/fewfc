@@ -37,11 +37,38 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
     };
     let target = attack_target(state, &request.attacker, &plan)?;
     let target_team = player_team(state, &target)?;
-    let points =
+    let raw_points =
         compute_attack_points(state, &request.point_formula, &request.used_cards, &target)?;
+    let points = if request.mode == AttackResolutionMode::FormationUse {
+        crate::rules::hero::modify_attack_points(
+            state,
+            &request.attacker,
+            &request.formation_id,
+            &request.used_cards,
+            raw_points,
+        )
+    } else {
+        raw_points
+    };
     let has_target_shield = state.shield(&target).is_some_and(|value| value > 0);
-    let point_breakdown =
+    let mut point_breakdown =
         attack_point_breakdown(state, &request.category, &target, points, has_target_shield);
+    if !has_target_shield {
+        match crate::rules::hero::incoming_damage_modifier(
+            state,
+            &target,
+            &request.category,
+            point_breakdown.damage_transform != DamageTransform::HealTarget,
+        ) {
+            crate::rules::hero::IncomingDamageModifier::None => {}
+            crate::rules::hero::IncomingDamageModifier::HalfRoundUp => {
+                point_breakdown.final_amount = (point_breakdown.final_amount + 1) / 2;
+            }
+            crate::rules::hero::IncomingDamageModifier::Prevent => {
+                point_breakdown.final_amount = 0;
+            }
+        }
+    }
     let final_amount = point_breakdown.final_amount;
     let damage_transform = point_breakdown.damage_transform;
     let split_attack_damage = request.split_attack_damage;
@@ -102,7 +129,7 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
         attacker: request.attacker.clone(),
         target,
         formation_id: request.formation_id.clone(),
-        used_cards: request.used_cards,
+        used_cards: request.used_cards.clone(),
         point_breakdown,
         hp_change,
         shield_change,
@@ -154,6 +181,12 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
     if request.mode == AttackResolutionMode::FormationUse && state.has_rule_module(STAR_MODULE_ID) {
         if let Some(star) = star::summoning_formation_star(&request.formation_id)
             && points >= 30
+            && crate::rules::hero::star_summoning_allowed(
+                state,
+                &request.attacker,
+                &request.formation_id,
+                &request.used_cards,
+            )
         {
             events.extend(star_summoning_events(state, &request.attacker, star)?);
         }
@@ -175,14 +208,65 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
                 team,
                 star,
                 reason: StarBreakReason::StarFormationUsed {
-                    formation_id: request.formation_id,
+                    formation_id: request.formation_id.clone(),
                 },
                 hp_change: None,
             });
         }
     }
 
+    if request.mode == AttackResolutionMode::FormationUse {
+        for intent in crate::rules::hero::post_formation_intents(
+            state,
+            &request.attacker,
+            &request.formation_id,
+        )? {
+            match intent {
+                crate::rules::hero::PostFormationIntent::AddTurnDraw { player, amount } => {
+                    let old_value = state
+                        .turn_draw_bonus_by_player
+                        .get(&player)
+                        .copied()
+                        .unwrap_or(0);
+                    events.push(GameEvent::TurnDrawBonusChanged {
+                        player,
+                        old_value,
+                        delta: amount as i32,
+                        new_value: old_value + amount,
+                    });
+                }
+                crate::rules::hero::PostFormationIntent::AddStatus { status } => {
+                    events.push(GameEvent::StatusAdded { status });
+                }
+                crate::rules::hero::PostFormationIntent::EstablishCounterEffect {
+                    owner,
+                    effect_id,
+                } => {
+                    events.push(GameEvent::CounterEffectEstablished { owner, effect_id });
+                }
+            }
+        }
+    }
+
     Ok(events)
+}
+
+pub(super) fn preview_attack_points(
+    state: &GameState,
+    attacker: &PlayerId,
+    formation_id: &str,
+    plan: &AttackPlanDef,
+    cards: &[CardInstanceId],
+) -> GameResult<i32> {
+    let target = attack_target(state, attacker, plan)?;
+    let points = compute_attack_points(state, &plan.point_formula, cards, &target)?;
+    Ok(crate::rules::hero::modify_attack_points(
+        state,
+        attacker,
+        formation_id,
+        cards,
+        points,
+    ))
 }
 
 fn star_summoning_events(
@@ -292,6 +376,18 @@ fn compute_attack_points(
                 GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
             })?;
             Ok(target_hand.len() as i32 * *multiplier as i32)
+        }
+        PointFormula::ElementProductTimes {
+            element,
+            multiplier,
+        } => {
+            let levels = cards
+                .iter()
+                .filter_map(|card| state.card_def(*card))
+                .filter(|card| card.element == *element)
+                .map(|card| card.level as i32)
+                .collect::<Vec<_>>();
+            Ok(levels.into_iter().product::<i32>() * *multiplier as i32)
         }
     }
 }

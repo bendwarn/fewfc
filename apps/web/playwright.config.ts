@@ -8,7 +8,7 @@ const browserPath = process.env.PLAYWRIGHT_BROWSER_PATH
 export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: false,
-  workers: 1,
+  workers: 2,
   timeout: 60_000,
   expect: {
     timeout: 10_000,

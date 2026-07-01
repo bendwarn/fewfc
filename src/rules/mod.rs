@@ -1,6 +1,7 @@
 //! Rule registries: formations, effects, matchers, and formula resolvers.
 
 pub(crate) mod base;
+pub(crate) mod hero;
 mod official;
 pub(crate) mod projection;
 pub(crate) mod star;
@@ -55,11 +56,35 @@ pub struct FormationCandidate {
     pub rule_text: String,
     pub category: FormationCategory,
     pub cards: Vec<crate::domain::CardInstanceId>,
+    pub star_substitution: Option<crate::domain::StarElementSubstitution>,
+    pub declared_targets: Vec<crate::domain::TargetDecl>,
+    pub preview: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlayableAction {
     PerformFormation(FormationCandidate),
+    ChangeProfession(ProfessionChangeCandidate),
+    ActivateProfessionAbility(ProfessionAbilityCandidate),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfessionChangeCandidate {
+    pub profession_id: crate::domain::ProfessionId,
+    pub profession_name: String,
+    pub rule_text: String,
+    pub cards: Vec<crate::domain::CardInstanceId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfessionAbilityCandidate {
+    pub ability_id: String,
+    pub ability_name: String,
+    pub rule_text: String,
+    pub cards: Vec<crate::domain::CardInstanceId>,
+    pub target_card: Option<crate::domain::CardInstanceId>,
+    pub declared_element: Option<Element>,
+    pub declared_level: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +93,7 @@ pub(crate) enum PointFormula {
     LevelPlus(u32),
     LevelSumTimes(u32),
     TargetHandCountTimes(u32),
+    ElementProductTimes { element: Element, multiplier: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -276,6 +302,12 @@ pub(crate) fn official_formation_registry(
     {
         specs.extend(star::specs());
     }
+    if modules
+        .iter()
+        .any(|module| module.as_str() == crate::domain::HERO_SCHOOLS_MODULE_ID)
+    {
+        specs.extend(hero::formation_specs());
+    }
     FormationRegistry::new(
         specs.iter().map(|spec| spec.formation.clone()).collect(),
         specs.into_iter().map(|spec| spec.effect).collect(),
@@ -329,12 +361,90 @@ pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
             };
             submitted.len() == 3 && submitted.iter().all(|card| card.level == first_card.level)
         })
+        .with_custom("metal-and-same-level", |submitted| {
+            submitted.len() == 2
+                && submitted.iter().any(|card| card.element == Element::Metal)
+                && submitted[0].level == submitted[1].level
+        })
+        .with_custom("wood-and-same-level", |submitted| {
+            submitted.len() == 2
+                && submitted.iter().any(|card| card.element == Element::Wood)
+                && submitted[0].level == submitted[1].level
+        })
+        .with_custom("water-and-same-level", |submitted| {
+            submitted.len() == 2
+                && submitted.iter().any(|card| card.element == Element::Water)
+                && submitted[0].level == submitted[1].level
+        })
+        .with_custom("fire-and-same-level", |submitted| {
+            submitted.len() == 2
+                && submitted.iter().any(|card| card.element == Element::Fire)
+                && submitted[0].level == submitted[1].level
+        })
+        .with_custom("earth-and-same-level", |submitted| {
+            submitted.len() == 2
+                && submitted.iter().any(|card| card.element == Element::Earth)
+                && submitted[0].level == submitted[1].level
+        })
+        .with_custom("reincarnation", |submitted| {
+            submitted.len() == 4
+                && submitted.iter().enumerate().any(|(wood_index, wood)| {
+                    wood.element == Element::Wood
+                        && matches_unordered_sequence(
+                            &submitted
+                                .iter()
+                                .enumerate()
+                                .filter(|(index, _)| *index != wood_index)
+                                .map(|(_, card)| card.element)
+                                .collect::<Vec<_>>(),
+                            3,
+                            &GENERATING_CYCLE,
+                        )
+                        && submitted
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| *index != wood_index)
+                            .map(|(_, card)| card.level)
+                            .sum::<u32>()
+                            >= 10
+                })
+        })
+        .with_custom("water-water-three-any", |submitted| {
+            submitted.len() == 5
+                && submitted
+                    .iter()
+                    .filter(|card| card.element == Element::Water)
+                    .count()
+                    >= 2
+        })
+        .with_custom("fire-fire-two-non-fire", |submitted| {
+            submitted.len() == 4
+                && submitted
+                    .iter()
+                    .filter(|card| card.element == Element::Fire)
+                    .count()
+                    == 2
+        })
+        .with_custom("earth-sum-ten", |submitted| {
+            !submitted.is_empty()
+                && submitted.iter().all(|card| card.element == Element::Earth)
+                && submitted.iter().map(|card| card.level).sum::<u32>() >= 10
+        })
+        .with_custom("three-level-five", |submitted| {
+            submitted.len() == 3 && submitted.iter().all(|card| card.level == 5)
+        })
+        .with_custom("single-even-level", |submitted| {
+            submitted.len() == 1 && submitted[0].level % 2 == 0
+        })
+        .with_custom("three-level-four", |submitted| {
+            submitted.len() == 3 && submitted.iter().all(|card| card.level == 4)
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct BaseFormationSpec {
-    formation: FormationDef,
-    effect: EffectDef,
+pub(crate) struct BaseFormationSpec {
+    pub(crate) formation: FormationDef,
+    pub(crate) effect: EffectDef,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

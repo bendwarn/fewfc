@@ -25,12 +25,49 @@ _Avoid_: Ruleset, game mode
 
 **Advanced Rule Module (進階規則)**:
 An official Rule Module categorized as 進階規則, such as the Star Rule Module.
-_Avoid_: Optional Rule Module, Theme Rule Module
+_Avoid_: Optional Rule Module, Base Ruleset
 
 **Optional Rule Module (選用規則)**:
 An official Rule Module categorized as an optional or supplemental rule, such
 as Discard Retrieval or Personal Deck.
 _Avoid_: Advanced Rule Module, Base Ruleset
+
+**Theme Rule Module (主題規則)**:
+An official expansion Rule Module layered on the complete official-play
+configuration: the Base Ruleset and all three Advanced Rule Modules.
+_Avoid_: Optional Rule Module, Advanced Rule Module
+
+**Spirit Rule Module (精靈規則)**:
+The official Theme Rule Module that adds player-owned Spirits, Spirit Power,
+Spirit Skills, five Spirit-summoning Formations, and Void Spirit-Shattering
+Technique. It requires Star, Five Directions Legend, and Hero Schools.
+_Avoid_: Spirit Ruleset, individual Spirit toggle
+
+**Spirit (精靈)**:
+A persistent elemental entity owned by one Player under the Spirit Rule Module.
+A Player may own at most one Spirit, while different Players may own the same
+kind.
+_Avoid_: team Spirit, status effect
+
+**Spirit Power (靈力)**:
+The bounded resource held by a Spirit and spent to use its Spirit Skills. Its
+range is zero through six.
+_Avoid_: mana, Player resource
+
+**Spirit Skill (精靈技能)**:
+An ability granted by a Player's Spirit, normally used during the active-effect
+timing by spending Spirit Power. Bloom may also trigger automatically.
+_Avoid_: Formation, Profession Ability
+
+**Spirit Summoning (召喚精靈)**:
+The acquisition of a specified Spirit with two initial Spirit Power. It replaces
+the summoning Player's existing Spirit, if any.
+_Avoid_: Spirit transformation, team summon
+
+**Spirit Breaking (破除精靈)**:
+The removal of a Player's Spirit when it is replaced or its Spirit Power reaches
+zero.
+_Avoid_: voluntary dismissal, Spirit expiry
 
 **Star Rule Module (星辰圖記規則)**:
 The optional official Advanced Rule Module that adds Star Summoning, Stars, Star
@@ -90,6 +127,25 @@ The declared, turn-scoped result of an Activated Profession Ability that changes
 how one specified Card Instance may be interpreted by the Player's subsequent
 action.
 _Avoid_: Card Definition mutation, hidden draft
+
+**Card Level Interpretation**:
+A turn-scoped instruction to treat one specified Card Instance as a declared
+level wherever rules read that Card's level. It does not change the Card
+Instance or its Card Definition.
+_Avoid_: Card Definition mutation, level counter
+
+**Card Interpretation Layer**:
+A rule-provided override of one or more effective Card dimensions, such as
+element or level. Layers apply in effect order, and a later layer replaces only
+the dimensions it specifies.
+_Avoid_: Card Definition mutation, mutually exclusive interpretation source
+
+**Sacred Art Multiplicity (聖術視為兩張)**:
+The Saint's ability to let one eligible physical Card fill two Formation match
+slots with one shared element and level interpretation. It cannot use Star
+Element Substitution, and the Card still moves and contributes to ordinary
+level sums only once.
+_Avoid_: cloned Card, independently interpreted slots
 
 **Void Reversion Technique (虛空返璞術)**:
 The Hero Schools Formation that costs its performing Player's Team 20 HP and

@@ -1459,3 +1459,106 @@ Hero Schools conformance is pinned to the official 5.16 rules retrieved on
 their mutable `latest` content do not alter this implementation's acceptance
 criteria mid-delivery. A later official revision requires separate rule-upgrade
 work; this change does not introduce a general Rule Module versioning system.
+
+### 38. Official 5.16 Advanced-Rule Source Reconciliation
+
+On 2026-07-01, all three official Advanced Rule Web pages and all six Hero
+School subpages were compared with printed pages 13-24 of the
+[official 5.16 complete rulebook](https://www.dropbox.com/scl/fi/4cigz3t61p07l5tkgvjyl/5.16.pdf?dl=0&rlkey=m2zx1x5dwb6cw7llyy8wt9xiy&st=mqligrpj).
+The Web pages remain the normal readable source. The following PDF-only details
+are normative supplements because they change matching, timing, or resolution;
+differences that merely restate a rule or add a non-distinguishing example are
+not listed.
+
+#### Star Chart
+
+Compared with the
+[Star Chart Web page](https://www.cfecards.org/rule/latest/star), printed page
+13 adds:
+
+- A qualifying Star summon is mandatory unless that Star already exists or
+  another rule makes the summon impossible.
+- Star element substitution changes a Card only while testing Formation
+  composition. At every other time the Card retains its printed element.
+- When element substitution is used to cover a Passive Spell, the Player must
+  declare the substitution and identify the affected face-down Card when
+  covering it. The Card is not revealed.
+
+The Web page already states that substitution affects only one Card and only
+Base Rule Formations, so it cannot be used for Advanced or Theme Formations or
+Profession Changes.
+
+#### Five Directions Legend
+
+Compared with the
+[Five Directions Legend Web page](https://www.cfecards.org/rule/latest/field),
+printed page 15 adds:
+
+- A Sacred Beast changes the Environment after resolving its damage, so its
+  own damage is modified by the previous Environment.
+- Immunity to Formation effects does not imply immunity to non-Formation
+  rules. Profession resistance still applies to Sacred Beast damage.
+- Environment damage doubling occurs before five-element generation,
+  overcoming, or neutralization.
+- When Environment conversion and five-element generation would both turn the
+  same damage into recovery, recovery occurs once rather than twice.
+- Void Meridian Severing deducts HP only if it actually clears an Environment.
+  No HP is deducted when there is no Environment or another effect prevents
+  the clear.
+
+#### Hero Schools: General Rules
+
+Compared with the
+[Hero Schools Web page](https://www.cfecards.org/rule/latest/hero) and its
+school subpages, printed pages 17-18 add:
+
+- Profession Change resolves in this order: declare the Profession, reveal the
+  required Cards, reveal and resolve the Previous Player's covered Passive,
+  change Profession, then discard the required Cards.
+- Profession Change is an Action but is not a Formation. Effects that apply to
+  Formation Uses do not apply to it.
+- Automatic Profession Abilities cannot be declined. An Activated Profession
+  Ability cannot be used while the Player Cannot Act or when its complete
+  effect cannot be achieved.
+- Unaffiliated Professions are not one School. Even two Players with the same
+  Unaffiliated Profession do not count as sharing a School.
+- Elemental resistance makes the damage invalid. Consequently, five-element
+  generation from that damage does not recover HP.
+
+The Warrior Web page already contains the PDF's Shield clarification:
+resistance and Unloading apply only when the Player receives damage, so a
+Shield receives the unreduced damage.
+
+#### Hero Schools: School-Specific Rules
+
+- **Warrior:** printed page 19 and the
+  [Warrior Web page](https://www.cfecards.org/rule/latest/hero/warrior)
+  conflict on how physical Card placement distinguishes Defense from
+  Countershock when Wood and Fire are covered together. The PDF prefers the
+  left Card when they do not overlap and uses the Card nearer the Player only
+  when left/right is unavailable; the Web page prefers the nearer Card first
+  and uses the Player's left only when near/far is unavailable. The online
+  engine does not infer physical layout. It requires the covering Player to
+  select Defense or Countershock when both are legal and records that
+  selection.
+- **Seeker:** printed page 20 adds one distinguishing Reincarnation example
+  absent from the
+  [Seeker Web page](https://www.cfecards.org/rule/latest/hero/seeker). With
+  Wood 2, Wood 3, Fire 3, and Earth 4, only Wood 2 may be the standalone Wood
+  Card because Wood 2 + Fire 3 + Earth 4 totals only 9. There is one legal
+  option recovering 50 HP. A choice is required only when multiple role
+  assignments are legal.
+- **Mesmer:** printed page 21 explicitly states that Phantasm and Illusion are
+  different Activated Abilities, so Phantasm does not trigger Illusion
+  Refinement (`幻術精研`). This is consistent with, but not stated directly by,
+  the [Mesmer Web page](https://www.cfecards.org/rule/latest/hero/mesmer).
+- **Windwalker:** printed page 23 classifies Instant Shadow Death's halving as
+  an HP deduction. Resolve it by setting the target Team's HP to
+  `floor(original HP / 2)` and record the resulting negative HP delta. The
+  [Windwalker Web page](https://www.cfecards.org/rule/latest/hero/windwalker)
+  states the round-down rule but omits the HP-deduction classification.
+- **Mage and Unaffiliated:** no additional semantic rule remains after
+  combining the general Hero Schools page with the respective
+  [Mage](https://www.cfecards.org/rule/latest/hero/mage) and
+  [Unaffiliated](https://www.cfecards.org/rule/latest/hero/others)
+  subpages.

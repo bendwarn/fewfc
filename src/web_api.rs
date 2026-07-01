@@ -2,7 +2,8 @@ use crate::application::{GameRecord, RecordedDecision};
 use crate::domain::{
     CardDefId, CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, GameError, GameEvent,
     GameSetup, PassActionReason, PendingChoiceKind, Phase, Player, PlayerDeckList, PlayerId,
-    RuleModuleId, StatusOwner, TargetDecl, TeamHp, TeamId, TurnDrawSkipReason,
+    ProfessionId, RuleModuleId, StarElementSubstitution, StatusOwner, TargetDecl, TeamHp, TeamId,
+    TurnDrawSkipReason,
 };
 use crate::public_view::{
     PublicCardRefs, PublicGameEvent, PublicGameState, PublicPendingChoiceKind, Viewer,
@@ -64,12 +65,69 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                     .into_iter()
                     .map(|candidate| match candidate {
                         PlayableAction::PerformFormation(candidate) => {
+                            let summary = candidate.star_substitution.as_ref().map_or_else(
+                                || candidate.rule_text.clone(),
+                                |substitution| {
+                                    format!(
+                                        "{} 星辰替代：{}由{}視為{}。",
+                                        candidate.rule_text,
+                                        card_summary(&substitution.card, &card_labels),
+                                        element_name(substitution.printed_element),
+                                        element_name(substitution.interpreted_element),
+                                    )
+                                },
+                            );
                             WebPlayableAction::PerformFormation {
                                 id: candidate.formation_id,
                                 name: candidate.formation_name,
                                 category: WebFormationCategory::from(candidate.category),
+                                summary,
+                                cards: candidate.cards,
+                                star_substitution: candidate
+                                    .star_substitution
+                                    .map(WebStarElementSubstitution::from),
+                                match_option: candidate.declared_targets.iter().find_map(
+                                    |target| match target {
+                                        TargetDecl::FormationRole { role, card } => {
+                                            Some(WebFormationMatchOption {
+                                                role: role.clone(),
+                                                card: *card,
+                                                slots: 1,
+                                                preview: candidate.preview.clone(),
+                                            })
+                                        }
+                                        TargetDecl::CardMultiplicity { card, slots } => {
+                                            Some(WebFormationMatchOption {
+                                                role: "card-multiplicity".to_string(),
+                                                card: *card,
+                                                slots: *slots,
+                                                preview: candidate.preview.clone(),
+                                            })
+                                        }
+                                        _ => None,
+                                    },
+                                ),
+                            }
+                        }
+                        PlayableAction::ChangeProfession(candidate) => {
+                            WebPlayableAction::ChangeProfession {
+                                id: candidate.profession_id.as_str().to_string(),
+                                name: candidate.profession_name,
                                 summary: candidate.rule_text,
                                 cards: candidate.cards,
+                            }
+                        }
+                        PlayableAction::ActivateProfessionAbility(candidate) => {
+                            WebPlayableAction::ActivateProfessionAbility {
+                                id: candidate.ability_id,
+                                name: candidate.ability_name,
+                                summary: candidate.rule_text,
+                                cards: candidate.cards,
+                                target_card: candidate.target_card,
+                                declared_element: candidate
+                                    .declared_element
+                                    .map(|element| format!("{element:?}")),
+                                declared_level: candidate.declared_level,
                             }
                         }
                     })
@@ -80,16 +138,67 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
             player,
             formation_id,
             cards,
+            star_substitution_card,
+            match_option_role,
+            match_option_card,
+            match_option_slots,
         } => {
+            let mut declared_targets = star_substitution_card
+                .map(TargetDecl::Card)
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let (Some(role), Some(card)) = (match_option_role, match_option_card) {
+                if role == "card-multiplicity" {
+                    declared_targets.push(TargetDecl::CardMultiplicity {
+                        card,
+                        slots: match_option_slots.unwrap_or(2),
+                    });
+                } else {
+                    declared_targets.push(TargetDecl::FormationRole { role, card });
+                }
+            }
             let _ = record
                 .handle(Command::PerformFormation {
                     player: PlayerId::new(player),
                     formation_id,
                     cards,
-                    declared_targets: Vec::<TargetDecl>::new(),
+                    declared_targets,
                 })
                 .map_err(ApiError::Game)?;
             advance_after_command(&mut record)?;
+        }
+        ApiAction::ChangeProfession {
+            player,
+            profession_id,
+            cards,
+        } => {
+            let _ = record
+                .handle(Command::ChangeProfession {
+                    player: PlayerId::new(player),
+                    profession: ProfessionId::new(profession_id),
+                    cards,
+                })
+                .map_err(ApiError::Game)?;
+            advance_after_command(&mut record)?;
+        }
+        ApiAction::ActivateProfessionAbility {
+            player,
+            ability_id,
+            cards,
+            target_card,
+            declared_element,
+            declared_level,
+        } => {
+            let _ = record
+                .handle(Command::ActivateProfessionAbility {
+                    player: PlayerId::new(player),
+                    ability_id,
+                    cards,
+                    target_card,
+                    declared_element,
+                    declared_level,
+                })
+                .map_err(ApiError::Game)?;
         }
         ApiAction::ChooseTurnDiscard { player, card } => {
             let _ = record
@@ -287,6 +396,32 @@ enum ApiAction {
         #[serde(rename = "formationId")]
         formation_id: String,
         cards: Vec<CardInstanceId>,
+        #[serde(default, rename = "starSubstitutionCard")]
+        star_substitution_card: Option<CardInstanceId>,
+        #[serde(default, rename = "matchOptionRole")]
+        match_option_role: Option<String>,
+        #[serde(default, rename = "matchOptionCard")]
+        match_option_card: Option<CardInstanceId>,
+        #[serde(default, rename = "matchOptionSlots")]
+        match_option_slots: Option<usize>,
+    },
+    ChangeProfession {
+        player: String,
+        #[serde(rename = "professionId")]
+        profession_id: String,
+        cards: Vec<CardInstanceId>,
+    },
+    ActivateProfessionAbility {
+        player: String,
+        #[serde(rename = "abilityId")]
+        ability_id: String,
+        cards: Vec<CardInstanceId>,
+        #[serde(default, rename = "targetCard")]
+        target_card: Option<CardInstanceId>,
+        #[serde(default, rename = "declaredElement")]
+        declared_element: Option<crate::domain::Element>,
+        #[serde(default, rename = "declaredLevel")]
+        declared_level: Option<u32>,
     },
     ChooseTurnDiscard {
         player: String,
@@ -509,6 +644,9 @@ struct WebPublicGameState {
     team_stars: Vec<WebTeamStar>,
     star_histories: Vec<WebPlayerStarHistory>,
     five_star_alignment: Option<WebFiveStarAlignment>,
+    professions: Vec<WebPlayerProfession>,
+    profession_catalog: Vec<WebProfessionCatalogEntry>,
+    prepared_profession_abilities: Vec<WebPreparedProfessionAbility>,
     previous_turn_formation: Option<WebPreviousTurnFormation>,
 }
 
@@ -518,6 +656,10 @@ impl WebPublicGameState {
         labels: &HashMap<CardInstanceId, String>,
         formation_names: &HashMap<String, String>,
     ) -> Self {
+        let hero_schools_enabled = state
+            .enabled_rule_modules
+            .iter()
+            .any(|module| module.as_str() == crate::domain::HERO_SCHOOLS_MODULE_ID);
         Self {
             enabled_rule_modules: state
                 .enabled_rule_modules
@@ -602,6 +744,9 @@ impl WebPublicGameState {
                     owner: passive.owner.as_str().to_string(),
                     formation_id: passive.formation_id,
                     cards: WebCardRefs::from_public(passive.cards, labels),
+                    star_substitution: passive
+                        .star_substitution
+                        .map(WebStarElementSubstitution::from),
                 })
                 .collect(),
             counter_effects: state
@@ -673,6 +818,78 @@ impl WebPublicGameState {
                     player: alignment.player.as_str().to_string(),
                     team: alignment.team.as_str().to_string(),
                 }),
+            professions: state
+                .professions
+                .into_iter()
+                .filter_map(|owned| {
+                    let profession = crate::rules::hero::profession(&owned.profession)?;
+                    Some(WebPlayerProfession {
+                        player: owned.player.as_str().to_string(),
+                        id: owned.profession.as_str().to_string(),
+                        name: profession.name.to_string(),
+                        abilities: crate::rules::hero::effective_ability_summaries(
+                            &owned.profession,
+                        )
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                    })
+                })
+                .collect(),
+            profession_catalog: hero_schools_enabled
+                .then(|| {
+                    crate::rules::hero::catalog()
+                        .into_iter()
+                        .map(|profession| {
+                            let parent_name = profession.parent.as_ref().and_then(|parent| {
+                                crate::rules::hero::profession(parent)
+                                    .map(|definition| definition.name.to_string())
+                            });
+                            let inheritance = if let Some(parent) = &parent_name {
+                                format!("升階後保留 {parent} 的能力")
+                            } else if matches!(profession.id.as_str(), "immortal" | "saint") {
+                                "轉職後不保留原學派能力".to_string()
+                            } else {
+                                "不繼承其他職業能力".to_string()
+                            };
+                            WebProfessionCatalogEntry {
+                                id: profession.id.as_str().to_string(),
+                                name: profession.name.to_string(),
+                                requirement: profession.rule_text.to_string(),
+                                parent_name,
+                                inheritance,
+                                abilities: crate::rules::hero::effective_ability_summaries(
+                                    &profession.id,
+                                )
+                                .into_iter()
+                                .map(str::to_string)
+                                .collect(),
+                                formations: crate::rules::hero::profession_formation_summaries(
+                                    &profession.id,
+                                )
+                                .into_iter()
+                                .map(|(name, summary)| WebProfessionFormationSummary {
+                                    name,
+                                    summary,
+                                })
+                                .collect(),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            prepared_profession_abilities: state
+                .prepared_profession_abilities
+                .into_iter()
+                .map(|prepared| WebPreparedProfessionAbility {
+                    player: prepared.player.as_str().to_string(),
+                    ability_id: prepared.ability_id,
+                    card: prepared.card,
+                    element: format!("{:?}", prepared.element),
+                    level: prepared.level,
+                    allowed_formation_scope: prepared.allowed_formation_scope,
+                })
+                .collect(),
             previous_turn_formation: state.previous_turn_formation.map(|formation| {
                 WebPreviousTurnFormation {
                     player: formation.player.as_str().to_string(),
@@ -725,6 +942,45 @@ struct WebFiveStarAlignment {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct WebPlayerProfession {
+    player: String,
+    id: String,
+    name: String,
+    abilities: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebProfessionCatalogEntry {
+    id: String,
+    name: String,
+    requirement: String,
+    parent_name: Option<String>,
+    inheritance: String,
+    abilities: Vec<String>,
+    formations: Vec<WebProfessionFormationSummary>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebProfessionFormationSummary {
+    name: String,
+    summary: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPreparedProfessionAbility {
+    player: String,
+    ability_id: String,
+    card: CardInstanceId,
+    element: String,
+    level: u32,
+    allowed_formation_scope: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WebPlayerHand {
     player: String,
     cards: WebCardRefs,
@@ -750,6 +1006,34 @@ struct WebCoveredPassive {
     owner: String,
     formation_id: Option<String>,
     cards: WebCardRefs,
+    star_substitution: Option<WebStarElementSubstitution>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebStarElementSubstitution {
+    card: CardInstanceId,
+    printed_element: crate::domain::Element,
+    interpreted_element: crate::domain::Element,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebFormationMatchOption {
+    role: String,
+    card: CardInstanceId,
+    slots: usize,
+    preview: Option<String>,
+}
+
+impl From<StarElementSubstitution> for WebStarElementSubstitution {
+    fn from(substitution: StarElementSubstitution) -> Self {
+        Self {
+            card: substitution.card,
+            printed_element: substitution.printed_element,
+            interpreted_element: substitution.interpreted_element,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -927,6 +1211,28 @@ enum WebPlayableAction {
         category: WebFormationCategory,
         summary: String,
         cards: Vec<CardInstanceId>,
+        #[serde(rename = "starSubstitution")]
+        star_substitution: Option<WebStarElementSubstitution>,
+        #[serde(rename = "matchOption")]
+        match_option: Option<WebFormationMatchOption>,
+    },
+    ChangeProfession {
+        id: String,
+        name: String,
+        summary: String,
+        cards: Vec<CardInstanceId>,
+    },
+    ActivateProfessionAbility {
+        id: String,
+        name: String,
+        summary: String,
+        cards: Vec<CardInstanceId>,
+        #[serde(rename = "targetCard")]
+        target_card: Option<CardInstanceId>,
+        #[serde(rename = "declaredElement")]
+        declared_element: Option<String>,
+        #[serde(rename = "declaredLevel")]
+        declared_level: Option<u32>,
     },
 }
 
@@ -960,6 +1266,9 @@ fn event_type(event: &PublicGameEvent) -> String {
         PublicGameEvent::CardsDrawnForTurnDiscardChoice { .. } => {
             "CardsDrawnForTurnDiscardChoice".to_string()
         }
+        PublicGameEvent::CardsDrawnForProfessionChoice { .. } => {
+            "CardsDrawnForProfessionChoice".to_string()
+        }
         PublicGameEvent::EffectChoiceRequested { .. } => "EffectChoiceRequested".to_string(),
         PublicGameEvent::HandInspected { .. } => "HandInspected".to_string(),
     }
@@ -975,6 +1284,18 @@ fn event_presentation(
             "初始發牌".to_string(),
             format!(
                 "{} 收到 {}。",
+                player.as_str(),
+                card_refs_summary(cards, labels)
+            ),
+        ),
+        PublicGameEvent::CardsDrawnForProfessionChoice {
+            player,
+            ability_id: _,
+            cards,
+        } => (
+            "職業能力抽牌".to_string(),
+            format!(
+                "{} 因職業能力抽取 {}。",
                 player.as_str(),
                 card_refs_summary(cards, labels)
             ),
@@ -996,6 +1317,7 @@ fn event_presentation(
             player,
             formation_id,
             cards,
+            star_substitution: _,
         } => (
             "蓋牌".to_string(),
             formation_id.as_deref().map_or_else(
@@ -1105,6 +1427,60 @@ fn game_event_presentation(
                 }
             ),
         ),
+        GameEvent::ProfessionChanged {
+            player,
+            previous,
+            profession,
+            ..
+        } => (
+            "轉職".to_string(),
+            format!(
+                "{} 由{}轉職為{}。",
+                player.as_str(),
+                previous
+                    .as_ref()
+                    .and_then(crate::rules::hero::profession)
+                    .map(|profession| profession.name)
+                    .unwrap_or("無職業"),
+                crate::rules::hero::profession(profession)
+                    .map(|profession| profession.name)
+                    .unwrap_or(profession.as_str())
+            ),
+        ),
+        GameEvent::ProfessionBroken { player, profession } => (
+            "職業破除".to_string(),
+            format!(
+                "{} 的{}已被破除。",
+                player.as_str(),
+                crate::rules::hero::profession(profession)
+                    .map(|profession| profession.name)
+                    .unwrap_or(profession.as_str())
+            ),
+        ),
+        GameEvent::ProfessionAbilityActivated {
+            player,
+            ability_id,
+            prepared,
+        } => (
+            "發動職業能力".to_string(),
+            prepared.as_ref().map_or_else(
+                || format!("{} 發動了「{}」。", player.as_str(), ability_id),
+                |prepared| {
+                    format!(
+                        "{} 發動「{}」，將牌 {} 準備為 {:?} {} 級。",
+                        player.as_str(),
+                        ability_id,
+                        prepared.card.as_u64(),
+                        prepared.element,
+                        prepared.level
+                    )
+                },
+            ),
+        ),
+        GameEvent::CardsDrawnForProfessionChoice { .. } => (
+            "職業能力抽牌".to_string(),
+            "已抽取職業能力指定的牌。".to_string(),
+        ),
         GameEvent::CardsDrawnForTurnDiscardChoice {
             player,
             drawn_cards,
@@ -1148,6 +1524,18 @@ fn game_event_presentation(
                 player.as_str(),
                 formation_name(formation_names, formation_id),
                 cards_summary(used_cards, labels)
+            ),
+        ),
+        GameEvent::FormationMatchOptionDeclared {
+            player,
+            formation_id,
+            ..
+        } => (
+            "陣法解釋".to_string(),
+            format!(
+                "{} 已指定「{}」的組成方式。",
+                player.as_str(),
+                formation_name(formation_names, formation_id)
             ),
         ),
         GameEvent::FormationEffectCopied { player, effect_id } => (
@@ -1285,6 +1673,10 @@ fn game_event_presentation(
             "蓋牌".to_string(),
             format!("{} 蓋下了 {} 張牌。", player.as_str(), cards.len()),
         ),
+        GameEvent::PassiveCoverRevealed { owner } => (
+            "蓋牌公開".to_string(),
+            format!("{} 的蓋牌改為正面展示。", owner.as_str()),
+        ),
         GameEvent::PassiveFlipped {
             owner, passive_id, ..
         } => {
@@ -1398,6 +1790,20 @@ fn game_event_presentation(
         GameEvent::VoidStarBreakingCompleted { player } => (
             "破星結算".to_string(),
             format!("{} 的虛空破星術已完成結算。", player.as_str()),
+        ),
+        GameEvent::VoidReversionResolved {
+            player,
+            broken_professions,
+            retained_legendary_professions,
+            ..
+        } => (
+            "虛空返璞".to_string(),
+            format!(
+                "{} 破除 {} 個職業，保留 {} 個低等級保護的傳說職業。",
+                player.as_str(),
+                broken_professions.len(),
+                retained_legendary_professions.len()
+            ),
         ),
         GameEvent::FiveStarAlignmentAchieved { player, .. } => (
             "五星連珠".to_string(),
@@ -1570,6 +1976,45 @@ mod tests {
     }
 
     #[test]
+    fn star_substitution_is_exposed_and_accepted_by_the_web_formation_flow() {
+        let substitution = WebStarElementSubstitution {
+            card: CardInstanceId::new(42),
+            printed_element: crate::domain::Element::Water,
+            interpreted_element: crate::domain::Element::Wood,
+        };
+        let candidate = WebPlayableAction::PerformFormation {
+            id: "defense".to_string(),
+            name: "防禦".to_string(),
+            category: WebFormationCategory::Spell,
+            summary: "星辰替代".to_string(),
+            cards: vec![CardInstanceId::new(7), CardInstanceId::new(42)],
+            star_substitution: Some(substitution),
+            match_option: None,
+        };
+        let json = serde_json::to_value(candidate).unwrap();
+
+        assert_eq!(json["starSubstitution"]["card"], 42);
+        assert_eq!(json["starSubstitution"]["printedElement"], "Water");
+        assert_eq!(json["starSubstitution"]["interpretedElement"], "Wood");
+
+        let action: ApiAction = serde_json::from_value(serde_json::json!({
+            "type": "performFormation",
+            "player": "alice",
+            "formationId": "defense",
+            "cards": [7, 42],
+            "starSubstitutionCard": 42
+        }))
+        .unwrap();
+        assert!(matches!(
+            action,
+            ApiAction::PerformFormation {
+                star_substitution_card: Some(card),
+                ..
+            } if card == CardInstanceId::new(42)
+        ));
+    }
+
+    #[test]
     fn start_request_consolidates_setup_events_into_plain_language() {
         let response = handle_request_json(r#"{"action":{"type":"start"},"viewer":"alice"}"#)
             .expect("start request should succeed");
@@ -1647,6 +2092,93 @@ mod tests {
 
         assert_eq!(json["statuses"][0]["owner"]["kind"], "player");
         assert_eq!(json["statuses"][0]["owner"]["id"], "alice");
+    }
+
+    #[test]
+    fn profession_is_projected_with_inherited_ability_summary() {
+        let rules = OfficialRules::new();
+        let setup = rules
+            .configure_game(
+                vec![
+                    Player {
+                        id: PlayerId::new("alice"),
+                        team: TeamId::new("team:alice"),
+                    },
+                    Player {
+                        id: PlayerId::new("bob"),
+                        team: TeamId::new("team:bob"),
+                    },
+                ],
+                vec![PlayerId::new("alice"), PlayerId::new("bob")],
+                vec![RuleModuleId::new(crate::domain::HERO_SCHOOLS_MODULE_ID)],
+            )
+            .unwrap();
+        let mut state = crate::domain::GameState::from_setup(&setup);
+        state.professions.push(crate::domain::PlayerProfession {
+            player: PlayerId::new("alice"),
+            profession: ProfessionId::new("hero"),
+        });
+        let web_state = WebPublicGameState::from_public(
+            crate::public_view::state_for(&state, Viewer::Observer),
+            &rules.card_labels(&setup).unwrap(),
+            &rules.formation_names(&setup).unwrap(),
+        );
+        let json = serde_json::to_value(web_state).expect("web state should serialize");
+
+        assert_eq!(json["professions"][0]["name"], "勇者");
+        assert_eq!(
+            json["professions"][0]["abilities"]
+                .as_array()
+                .unwrap()
+                .len(),
+            8
+        );
+        assert_eq!(json["professionCatalog"].as_array().unwrap().len(), 18);
+        assert_eq!(json["professionCatalog"][2]["name"], "勇者");
+        assert_eq!(json["professionCatalog"][2]["parentName"], "戰神");
+        assert!(
+            json["professionCatalog"][2]["formations"]
+                .as_array()
+                .is_some_and(|formations| formations
+                    .iter()
+                    .any(|formation| { formation["name"] == "落光斬" }))
+        );
+    }
+
+    #[test]
+    fn profession_catalog_is_absent_when_hero_schools_is_disabled() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let web_state = WebPublicGameState::from_public(
+            crate::public_view::state_for(
+                &crate::domain::GameState::from_setup(&setup),
+                Viewer::Observer,
+            ),
+            &rules.card_labels(&setup).unwrap(),
+            &rules.formation_names(&setup).unwrap(),
+        );
+        let json = serde_json::to_value(web_state).expect("web state should serialize");
+
+        assert_eq!(json["professionCatalog"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn profession_ability_action_uses_the_web_camel_case_contract() {
+        let action = WebPlayableAction::ActivateProfessionAbility {
+            id: "illusion".to_string(),
+            name: "幻術".to_string(),
+            summary: "prepare".to_string(),
+            cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
+            target_card: Some(CardInstanceId::new(3)),
+            declared_element: Some("Water".to_string()),
+            declared_level: Some(4),
+        };
+        let json = serde_json::to_value(action).expect("action should serialize");
+
+        assert_eq!(json["targetCard"], 3);
+        assert_eq!(json["declaredElement"], "Water");
+        assert_eq!(json["declaredLevel"], 4);
+        assert!(json.get("target_card").is_none());
     }
 
     #[test]

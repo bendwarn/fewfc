@@ -51,6 +51,52 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, crate::domain::Phase::Main);
             state.phase = crate::domain::Phase::TurnDraw;
+            clear_prepared_ability(state, player);
+        }
+        GameEvent::ProfessionChanged {
+            player,
+            profession,
+            card_moves,
+            ..
+        } => {
+            debug_assert_eq!(state.current_player(), Some(player));
+            debug_assert_eq!(state.phase, crate::domain::Phase::Main);
+            for card_move in card_moves {
+                apply_card_move(state, card_move);
+            }
+            if let Some(owned) = state
+                .professions
+                .iter_mut()
+                .find(|owned| &owned.player == player)
+            {
+                owned.profession = profession.clone();
+            } else {
+                state.professions.push(crate::domain::PlayerProfession {
+                    player: player.clone(),
+                    profession: profession.clone(),
+                });
+            }
+            state.phase = crate::domain::Phase::TurnDraw;
+            clear_prepared_ability(state, player);
+        }
+        GameEvent::ProfessionBroken { player, profession } => {
+            let position = state
+                .professions
+                .iter()
+                .position(|owned| &owned.player == player && &owned.profession == profession)
+                .expect("canonical Profession breaking must target an owned Profession");
+            state.professions.remove(position);
+        }
+        GameEvent::ProfessionAbilityActivated {
+            player, prepared, ..
+        } => {
+            state
+                .activated_profession_ability_turns
+                .insert(player.clone(), state.turn_number);
+            clear_prepared_ability(state, player);
+            if let Some(prepared) = prepared {
+                state.prepared_profession_abilities.push(prepared.clone());
+            }
         }
         GameEvent::FormationPerformed {
             player,
@@ -83,7 +129,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 },
             );
             state.phase = crate::domain::Phase::TurnDraw;
+            clear_prepared_ability(state, player);
         }
+        GameEvent::FormationMatchOptionDeclared { .. } => {}
         GameEvent::FormationEffectCopied { player, effect_id } => {
             let last_formation = state
                 .last_formation_by_player
@@ -114,6 +162,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             player,
             formation_id,
             cards,
+            star_substitution,
             sealed,
         } => {
             debug_assert_eq!(state.current_player(), Some(player));
@@ -134,6 +183,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 owner: player.clone(),
                 formation_id: formation_id.clone(),
                 cards: cards.clone(),
+                star_substitution: star_substitution.clone(),
                 sealed: *sealed,
                 covered_on_turn: state.turn_number,
                 reveal_timing: crate::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -148,6 +198,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 },
             );
             state.phase = crate::domain::Phase::TurnDraw;
+            clear_prepared_ability(state, player);
         }
         GameEvent::PassiveFlipped {
             owner,
@@ -161,8 +212,16 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .position(|passive| &passive.owner == owner)
                 .expect("canonical passive flip event must target a covered passive");
             state.covered_passives.remove(passive_position);
+            state
+                .revealed_covered_passive_owners
+                .retain(|player| player != owner);
             for card in cards {
                 push_to_origin_discard(state, *card);
+            }
+        }
+        GameEvent::PassiveCoverRevealed { owner } => {
+            if !state.revealed_covered_passive_owners.contains(owner) {
+                state.revealed_covered_passive_owners.push(owner.clone());
             }
         }
         GameEvent::AttackResolved {
@@ -220,6 +279,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 );
             }
             state.phase = crate::domain::Phase::TurnDraw;
+            clear_prepared_ability(state, attacker);
         }
         GameEvent::EnvironmentTransferred { to, .. } => {
             state.environment = Some(*to);
@@ -275,6 +335,38 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             }
         }
         GameEvent::VoidStarBreakingCompleted { .. } => {
+            finish_game_if_needed(state);
+        }
+        GameEvent::VoidReversionResolved {
+            player,
+            hp_change,
+            card_moves,
+            broken_professions,
+            ..
+        } => {
+            for card_move in card_moves {
+                apply_card_move(state, card_move);
+            }
+            let team_hp = state
+                .hp
+                .iter_mut()
+                .find(|team_hp| team_hp.team == hp_change.team)
+                .expect("canonical Void Reversion must target an existing Team");
+            team_hp.hp = hp_change.new_hp;
+            state
+                .professions
+                .retain(|owned| !broken_professions.iter().any(|broken| broken == owned));
+            state.last_formation_by_player.insert(
+                player.clone(),
+                LastFormationUse {
+                    formation_id: "void-reversion".to_string(),
+                    resolved_effect_id: "void-reversion".to_string(),
+                    used_cards: card_moves.iter().map(|movement| movement.card).collect(),
+                    resolved_turn: state.turn_number,
+                },
+            );
+            state.phase = crate::domain::Phase::TurnDraw;
+            clear_prepared_ability(state, player);
             finish_game_if_needed(state);
         }
         GameEvent::FiveStarAlignmentAchieved { player, team } => {
@@ -364,6 +456,22 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
 
             state.pending_choice = None;
         }
+        GameEvent::CardsDrawnForProfessionChoice { player, cards, .. } => {
+            let hand = state
+                .hand_mut(player)
+                .expect("canonical Profession draw must target a known Player");
+            hand.extend(cards.iter().copied());
+            let deck = state
+                .deck_for_mut(player)
+                .expect("canonical Profession draw must target a known Deck");
+            for card in cards {
+                let position = deck
+                    .iter()
+                    .position(|candidate| candidate == card)
+                    .expect("canonical Profession draw must remove cards from the Deck");
+                deck.remove(position);
+            }
+        }
         GameEvent::CardsDrawnForTurnDiscardChoice {
             player,
             drawn_cards,
@@ -437,8 +545,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             shuffled_order,
             placement,
         } => {
-            debug_assert_eq!(state.phase, crate::domain::Phase::TurnDraw);
-
             match placement {
                 DeckPlacement::Bottom => state.deck.extend(shuffled_order.iter().copied()),
             }
@@ -457,8 +563,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             shuffled_order,
             placement,
         } => {
-            debug_assert_eq!(state.phase, crate::domain::Phase::TurnDraw);
-
             match placement {
                 DeckPlacement::Bottom => state
                     .deck_for_mut(player)
@@ -499,8 +603,15 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             state.current_turn_index = (state.current_turn_index + 1) % state.turn_order.len();
             state.turn_number += 1;
             state.phase = crate::domain::Phase::TurnStart;
+            clear_prepared_ability(state, player);
         }
     }
+}
+
+fn clear_prepared_ability(state: &mut GameState, player: &crate::domain::PlayerId) {
+    state
+        .prepared_profession_abilities
+        .retain(|prepared| &prepared.player != player);
 }
 
 fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {

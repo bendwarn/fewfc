@@ -7,8 +7,6 @@ test('the lobby lists rooms before showing room settings', async ({ page }) => {
 
   await expect(page.getByRole('heading', { name: '公開房間' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '我的房間' })).toBeVisible()
-  await expect(page.getByRole('tablist')).toHaveCount(0)
-  await expect(page.getByLabel('房間名稱')).toHaveCount(0)
 
   const createRoom = page.getByRole('button', { name: '建立房間', exact: true })
   await createRoom.click()

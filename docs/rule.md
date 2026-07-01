@@ -308,6 +308,7 @@ The Base Ruleset provides the 25 base formations and supports both two-player
 and team-mode setup shapes. Rule Modules retain their official category:
 
 - Advanced Rule Modules, such as Star
+- Theme Rule Modules, such as Spirit
 - Optional Rule Modules, such as Discard Retrieval and Personal Deck
 
 The category affects presets, documentation, and UI, not the execution model.
@@ -438,17 +439,96 @@ when made from level-one or level-two Cards, Legendary Professions are retained.
 Its HP delta, Profession Breaking, and Card movement resolve atomically before
 Game Outcome evaluation.
 
-### 5.5 Web setup
+### 5.5 Spirit
+
+Spirit is a Theme Rule Module from the official 5.16 PDF, pages 25-26. It may be
+enabled only with all three Advanced Rule Modules: Star, Five Directions
+Legend, and Hero Schools. Optional Rule Modules remain independently
+composable.
+
+Each Player may own at most one Spirit. Different Players may own the same
+Spirit kind. Spirit kind and current Spirit Power are public; a new Spirit
+Summoning replaces the Player's old Spirit and starts the new Spirit at two
+power.
+
+Spirit Power ranges from zero through six:
+
+- a Spirit breaks immediately when its power reaches zero
+- a Player cannot dismiss their Spirit voluntarily
+- choosing a same-element Turn Draw discard adds one power to that Player's
+  Spirit, capped at six
+- another Player's discard never charges the Spirit
+
+The five Spirit-summoning Formations are Active Spells made from two
+same-element Cards: 金靈喚術、木靈喚術、水靈喚術、火靈喚術、and 土靈喚術.
+
+Spirit Skills resolve as active effects during `Main`, do not close the Action
+opportunity, and remain legal while the Player has **Cannot Act**. Each
+individual Spirit may use one Skill per Player turn; replacing a Spirit creates
+a new Spirit with its own allowance. A Skill validates only its printed timing,
+inputs, and power cost. It may resolve with no benefit or a detrimental result,
+and paid power is not refunded.
+
+| Spirit | Skill | Cost | Effect |
+|---|---|---:|---|
+| Metal | 飛刃 | 2 | Previous Player's Team HP -10 |
+| Metal | 劍雨 | 6 | Previous Player's Team HP -40 |
+| Wood | 芬芳 | 2 | own Team HP +10 |
+| Wood | 綻放 | 6 | own Team HP +40; also triggers automatically at zero HP |
+| Water | 川流 | 1 | discard one selected hand Card; Turn Draw bonus +1 |
+| Water | 浩瀚 | 3 | Turn Draw bonus +1 |
+| Fire | 螢光 | 1 | one selected hand Card is level 3 for this turn |
+| Fire | 絢爛 | 3 | one selected hand Card is a declared level 1-5 for this turn |
+| Earth | 石盾 | 2 | the next Player's attack damage is ineffective during that Player's next turn |
+| Earth | 岩壁 | 6 | construct a 40-point Shield |
+
+Direct HP changes from Spirit Skills are not Attacks and bypass Shields and
+Attack modifiers. Stone Shield prevents only attack damage; other effects of
+the Attack still resolve, and the protection expires at the end of the next
+Player's next turn even if they do not Attack. Because it is a Spirit Skill
+rather than a Formation effect, it also prevents Sacred Beast attack damage.
+
+Fire Skills add a turn-scoped Card Interpretation Layer without mutating the
+Card Instance or Card Definition. Layers compose by dimension in effect order,
+and a later layer replaces only the dimensions it specifies. Sacred Art
+Multiplicity applies afterward: it may compose with a Fire level
+interpretation, but it cannot use Star Element Substitution. Both Sacred Art
+match slots retain the same element and level and cannot be reinterpreted
+independently.
+
+The canonical Fire Skill event records the selected Card Instance. Public views
+show the Skill and declared level but reveal the selected Card only to its owner
+until ordinary Card movement makes it public. Spirit Skill uses remain visible
+in the Public Event Feed; Public State does not duplicate them as an
+`already used` presentation field.
+
+Automatic Bloom resolves before HP-based Game Outcome evaluation. Every
+eligible six-power Wood Spirit owned by the defeated Team triggers
+simultaneously; one canonical resolution consumes all triggering power and
+recovers 40 HP per trigger, capped at initial Team HP. Direct victory such as
+Five-Star Alignment does not trigger Bloom.
+
+虛空碎靈術 is an Active Spell made from three same-level Cards. It atomically
+reduces every Spirit's power by two before directly removing 20 HP for each
+Spirit owner. All Spirit and Team deltas resolve before Game Outcome evaluation.
+Bloom observes the reduced power, so a Wood Spirit reduced from six to four
+cannot answer HP loss caused by that same resolution.
+
+### 5.6 Web setup
 
 New official rooms enable every available Rule Module by default; the Base
-Ruleset cannot be disabled. The room owner may independently disable each
-available Rule Module. Existing rooms retain their stored module configuration
-when a new module becomes available.
+Ruleset cannot be disabled. Existing rooms retain their stored module
+configuration when a new module becomes available.
+
+The room owner may change Rule Modules subject to declared dependencies.
+Enabling Spirit automatically enables Star, Five Directions Legend, and Hero
+Schools. Disabling any of those Advanced Rule Modules automatically disables
+Spirit. Server-side setup validation rejects any invalid dependency combination.
 
 The room-creation dialog intentionally omits Rule Module controls. In the
-waiting room, Base is shown as fixed-on and each optional module, including the
-complete Star Rule Module, has one owner-only toggle. The enabled module list is
-also visible during an active match and in room-list metadata.
+waiting room, Base is shown as fixed-on and each Rule Module has one owner-only
+toggle grouped by its official category. The enabled module list is also visible
+during an active match and in room-list metadata.
 
 The Web application stores one named custom Deck List per account. A minimal
 editor lives at `/deck`, linked from the account menu immediately above logout.
@@ -594,6 +674,21 @@ A known formation with legal cards but missing resolver is a rule implementation
 - Exposed Foreign Cards remain public and return to their origin Discard Pile.
 - Locked Deck Lists and ordinary opposing hands remain private.
 - Rule Module changes invalidate waiting-room readiness and deck snapshots.
+- Spirit setup requires Star, Five Directions Legend, and Hero Schools.
+- Spirit Summoning replaces the old Player-owned Spirit at two power.
+- Matching Turn Draw discards charge only the discarding Player's Spirit and
+  never exceed six power.
+- Spirit Skills remain active effects under **Cannot Act**, consume power even
+  when ineffective, and allow one successful use per Spirit instance per turn.
+- Public State exposes Spirit kind and power without exposing Fire's selected
+  hidden Card or duplicating Skill-use history as presentation state.
+- Fire Card Interpretation Layers compose by dimension and expire at Turn End.
+- Sacred Art never combines with Star Element Substitution and never gives its
+  two match slots independent interpretations.
+- Stone Shield expires after the next Player's next turn, prevents only attack
+  damage, and applies to Sacred Beast damage.
+- Simultaneous Bloom and Void Spirit-Shattering replay without transient
+  winners or event-order-dependent outcomes.
 
 [1]: https://www.cfecards.org/rule/latest/you-xi-gui-ze '五行戰鬥牌官方網站 - 遊戲規則（完整規則書）'
 [2]: https://www.cfecards.org/rule/latest/basicrule '五行戰鬥牌官方網站 - 基礎規則'

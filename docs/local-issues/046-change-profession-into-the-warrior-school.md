@@ -19,18 +19,18 @@ inherited ability from the
 
 ## Acceptance criteria
 
-- [ ] Every Player starts without a Profession and Game State stores at most one `ProfessionId` per Player.
-- [ ] Profession Change validates the target Profession, prerequisite, and exact selected Card Instances as an Action Command rather than a Formation Use.
-- [ ] Accepted Profession Change enters the shared action-start pipeline, consumes the action opportunity, records explicit Card movement, and emits `ProfessionChanged`.
-- [ ] A new Profession replaces the previous Profession; effective abilities derive from catalog inheritance rather than copied state.
-- [ ] Typed hooks return declarative modifiers or intents and never mutate Game State or emit events directly.
-- [ ] Warrior, War God, and Hero implement all official transitions, inherited abilities, Proficiencies, and Profession Formations.
-- [ ] Profession Proficiencies retain the original Formation identity and effect.
-- [ ] Public State View, Public Event Feed, Web DTOs, recorded-event metadata, direct execution, and replay agree.
-- [ ] A Player with a Profession shows a public seat badge and read-only effective-ability summary; no badge appears without a Profession.
-- [ ] The selected-Card Action panel presents legal Profession Changes without enumerating other Card combinations.
-- [ ] The incomplete Hero Schools module cannot be enabled in production room configuration.
-- [ ] Two-Player and four-Player tests cover legal progression, illegal skipping, replacement, Profession Breaking, and Hero-disabled regression.
+- [x] Every Player starts without a Profession and Game State stores at most one `ProfessionId` per Player.
+- [x] Profession Change validates the target Profession, prerequisite, and exact selected Card Instances as an Action Command rather than a Formation Use.
+- [x] Accepted Profession Change enters the shared action-start pipeline, consumes the action opportunity, records explicit Card movement, and emits `ProfessionChanged`.
+- [x] A new Profession replaces the previous Profession; effective abilities derive from catalog inheritance rather than copied state.
+- [x] Typed hooks return declarative modifiers or intents and never mutate Game State or emit events directly.
+- [x] Warrior, War God, and Hero implement all official transitions, inherited abilities, Proficiencies, and Profession Formations.
+- [x] Profession Proficiencies retain the original Formation identity and effect.
+- [x] Public State View, Public Event Feed, Web DTOs, recorded-event metadata, direct execution, and replay agree.
+- [x] A Player with a Profession shows a public seat badge and read-only effective-ability summary; no badge appears without a Profession.
+- [x] The selected-Card Action panel presents legal Profession Changes without enumerating other Card combinations.
+- [x] The incomplete Hero Schools module cannot be enabled in production room configuration.
+- [x] Two-Player and four-Player tests cover legal progression, illegal skipping, replacement, Profession Breaking, and Hero-disabled regression.
 
 ## Blocked by
 

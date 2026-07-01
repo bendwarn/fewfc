@@ -10,6 +10,7 @@ pub(super) enum IncomingActionKind {
     Attack,
     ActiveSpell,
     PassiveSpell,
+    ProfessionChange,
     Pass,
 }
 
@@ -18,6 +19,7 @@ pub(super) struct TriggerRequest {
     pub(super) incoming_player: PlayerId,
     pub(super) incoming_kind: IncomingActionKind,
     pub(super) ignores_formation_effects: bool,
+    pub(super) ignores_counter_effects: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +52,11 @@ impl PassiveTriggerResult {
         self.modifications
             .contains(&ActionModification::SealCoveredPassive)
     }
+
+    pub(super) fn reveals_covered_passive(&self) -> bool {
+        self.modifications
+            .contains(&ActionModification::RevealCoveredPassive)
+    }
 }
 
 pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTriggerResult {
@@ -77,6 +84,7 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
             request.incoming_kind,
             passive.sealed,
             request.ignores_formation_effects,
+            request.ignores_counter_effects,
             ineffective_environment,
         );
         all_modifications.extend(modifications.iter().cloned());
@@ -90,6 +98,7 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
                 request.incoming_kind,
                 passive.sealed,
                 request.ignores_formation_effects,
+                request.ignores_counter_effects,
                 ineffective_environment,
                 &modifications,
             ),
@@ -106,6 +115,7 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
             request.incoming_kind,
             false,
             request.ignores_formation_effects,
+            request.ignores_counter_effects,
             None,
         );
         all_modifications.extend(modifications.iter().cloned());
@@ -118,6 +128,7 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
                 request.incoming_kind,
                 false,
                 request.ignores_formation_effects,
+                request.ignores_counter_effects,
                 None,
                 &modifications,
             ),
@@ -139,17 +150,29 @@ fn passive_spell_modifications(
     incoming_kind: IncomingActionKind,
     sealed: bool,
     ignores_formation_effects: bool,
+    ignores_counter_effects: bool,
     ineffective_environment: Option<Element>,
 ) -> Vec<ActionModification> {
-    if sealed || ignores_formation_effects || ineffective_environment.is_some() {
+    if sealed
+        || ignores_formation_effects
+        || ignores_counter_effects
+        || ineffective_environment.is_some()
+    {
         return Vec::new();
     }
 
     let modification = match (passive_id, incoming_kind) {
-        ("defense", IncomingActionKind::Attack) => ActionModification::PreventDamage,
-        ("countershock", IncomingActionKind::Attack) => ActionModification::SplitAttackDamage,
-        ("seal", IncomingActionKind::ActiveSpell) => ActionModification::CancelSpell,
+        ("defense" | "dao-defense", IncomingActionKind::Attack) => {
+            ActionModification::PreventDamage
+        }
+        ("countershock" | "magic-shock", IncomingActionKind::Attack) => {
+            ActionModification::SplitAttackDamage
+        }
+        ("seal" | "magic-seal", IncomingActionKind::ActiveSpell) => ActionModification::CancelSpell,
         ("seal", IncomingActionKind::PassiveSpell) => ActionModification::SealCoveredPassive,
+        ("holy-light-break", IncomingActionKind::PassiveSpell) => {
+            ActionModification::RevealCoveredPassive
+        }
         _ => return Vec::new(),
     };
 
@@ -161,12 +184,18 @@ fn passive_outcome(
     incoming_kind: IncomingActionKind,
     sealed: bool,
     ignores_formation_effects: bool,
+    ignores_counter_effects: bool,
     ineffective_environment: Option<Element>,
     modifications: &[ActionModification],
 ) -> PassiveFlipOutcome {
     if ignores_formation_effects {
         return PassiveFlipOutcome::NoEffect {
             reason: PassiveNoEffectReason::IgnoredBySacredBeast,
+        };
+    }
+    if ignores_counter_effects {
+        return PassiveFlipOutcome::NoEffect {
+            reason: PassiveNoEffectReason::IgnoredByProfessionAbility,
         };
     }
 
@@ -197,6 +226,7 @@ fn passive_outcome(
             "defense",
             IncomingActionKind::ActiveSpell
             | IncomingActionKind::PassiveSpell
+            | IncomingActionKind::ProfessionChange
             | IncomingActionKind::Pass,
         ) => PassiveFlipOutcome::NoEffect {
             reason: PassiveNoEffectReason::NotAnAttack,
@@ -205,6 +235,7 @@ fn passive_outcome(
             "countershock",
             IncomingActionKind::ActiveSpell
             | IncomingActionKind::PassiveSpell
+            | IncomingActionKind::ProfessionChange
             | IncomingActionKind::Pass,
         ) => PassiveFlipOutcome::NoEffect {
             reason: PassiveNoEffectReason::NotAnAttack,

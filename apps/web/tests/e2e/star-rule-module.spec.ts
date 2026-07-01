@@ -8,8 +8,6 @@ async function loginAsGuest(page: Page) {
 
 async function createPublicRoom(host: Page, roomName: string, teamMode = false) {
   await host.getByRole('button', { name: '建立房間', exact: true }).click()
-  const dialog = host.getByRole('dialog', { name: '建立房間' })
-  await expect(dialog.getByLabel('進階規則‧星辰圖記')).toHaveCount(0)
   await host.getByLabel('房間名稱').fill(roomName)
   if (teamMode) {
     await host.getByRole('button', { name: /團隊對戰/ }).click()

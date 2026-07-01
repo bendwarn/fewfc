@@ -14,16 +14,19 @@ modifiers, Public View presentation, and Web Action candidates from the
 
 ## Acceptance criteria
 
-- [ ] All three Seeker School Profession Changes enforce their official prerequisite and Wood-level cost.
-- [ ] Seeker's Discard Retrieval modifier changes the HP cost only while the effective ability is owned.
-- [ ] Generating Formation, Overcoming Formation, Return to Origin, and Five Elements Cycle Proficiencies add alternative matchers without changing Formation identity.
-- [ ] Dao Defense resolves its official Attack and Counter Effect through the shared pipelines.
-- [ ] Benevolent's Wood resistance and Spell protection apply at typed resolution stages and disappear after Profession replacement or breaking.
-- [ ] Reincarnation implements its official pattern and recovery formula.
-- [ ] Ambiguous Reincarnation role assignments return separate Formation Match Options with accurate previews and require an explicit selection.
-- [ ] Public events record the selected role binding and resolved recovery without recomputing rules during replay.
-- [ ] Direct execution, replay, playable Actions, Web DTOs, and ability summaries agree.
-- [ ] Tests cover two-Player and team-mode targeting, Discard Retrieval enabled and disabled, Profession replacement, and Hero-disabled behavior.
+- [x] All three Seeker School Profession Changes enforce their official prerequisite and Wood-level cost.
+- [x] Seeker's Discard Retrieval modifier changes the HP cost only while the effective ability is owned.
+- [x] Generating Formation, Overcoming Formation, Return to Origin, and Five Elements Cycle Proficiencies add alternative matchers without changing Formation identity.
+- [x] Dao Defense resolves its official Attack and Counter Effect through the shared pipelines.
+- [x] Benevolent's Wood resistance and Spell protection apply at typed resolution stages and disappear after Profession replacement or breaking.
+- [x] Reincarnation implements its official pattern and recovery formula.
+- [x] Reincarnation returns one Formation Match Option when only one assignment
+  of its standalone Wood Card is legal; when both assignments are legal and
+  produce different recovery values, it returns separate options with accurate
+  previews and requires an explicit selection.
+- [x] Public events record the selected role binding and resolved recovery without recomputing rules during replay.
+- [x] Direct execution, replay, playable Actions, Web DTOs, and ability summaries agree.
+- [x] Tests cover two-Player and team-mode targeting, Discard Retrieval enabled and disabled, Profession replacement, and Hero-disabled behavior.
 
 ## Blocked by
 

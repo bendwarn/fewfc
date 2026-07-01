@@ -2,8 +2,8 @@
 
 use crate::domain::{
     CardInstanceId, CounterEffect, Element, GameEvent, GameState, GameStatus, PendingChoiceKind,
-    Phase, Player, PlayerId, PlayerShield, PlayerStarHistory, RuleModuleId, StatusEffect, TeamHp,
-    TeamStar,
+    Phase, Player, PlayerId, PlayerProfession, PlayerShield, PlayerStarHistory, RuleModuleId,
+    StatusEffect, TeamHp, TeamStar,
 };
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +36,8 @@ pub struct PublicGameState {
     pub team_stars: Vec<TeamStar>,
     pub star_histories: Vec<PlayerStarHistory>,
     pub five_star_alignment: Option<crate::domain::FiveStarAlignment>,
+    pub professions: Vec<PlayerProfession>,
+    pub prepared_profession_abilities: Vec<crate::domain::PreparedProfessionAbility>,
     pub previous_turn_formation: Option<PublicPreviousTurnFormation>,
 }
 
@@ -62,6 +64,7 @@ pub struct PublicCoveredPassive {
     pub owner: PlayerId,
     pub formation_id: Option<String>,
     pub cards: PublicCardRefs,
+    pub star_substitution: Option<crate::domain::StarElementSubstitution>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -108,11 +111,17 @@ pub enum PublicGameEvent {
         player: PlayerId,
         formation_id: Option<String>,
         cards: PublicCardRefs,
+        star_substitution: Option<crate::domain::StarElementSubstitution>,
     },
     CardsDrawnForTurnDiscardChoice {
         player: PlayerId,
         drawn_cards: PublicCardRefs,
         allowed_discards: PublicCardRefs,
+    },
+    CardsDrawnForProfessionChoice {
+        player: PlayerId,
+        ability_id: String,
+        cards: PublicCardRefs,
     },
     EffectChoiceRequested {
         player: PlayerId,
@@ -203,18 +212,23 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
         covered_passives: state
             .covered_passives
             .iter()
-            .map(|passive| PublicCoveredPassive {
-                owner: passive.owner.clone(),
-                formation_id: policy
-                    .can_see_player_hidden_cards(&passive.owner)
-                    .then(|| passive.formation_id.clone()),
-                cards: if policy.can_see_player_hidden_cards(&passive.owner) {
-                    PublicCardRefs::Known(passive.cards.clone())
-                } else {
-                    PublicCardRefs::Hidden {
-                        count: passive.cards.len(),
-                    }
-                },
+            .map(|passive| {
+                let visible = policy.can_see_player_hidden_cards(&passive.owner)
+                    || state
+                        .revealed_covered_passive_owners
+                        .contains(&passive.owner);
+                PublicCoveredPassive {
+                    owner: passive.owner.clone(),
+                    formation_id: visible.then(|| passive.formation_id.clone()),
+                    cards: if visible {
+                        PublicCardRefs::Known(passive.cards.clone())
+                    } else {
+                        PublicCardRefs::Hidden {
+                            count: passive.cards.len(),
+                        }
+                    },
+                    star_substitution: visible.then(|| passive.star_substitution.clone()).flatten(),
+                }
             })
             .collect(),
         counter_effects: state.counter_effects.clone(),
@@ -247,6 +261,14 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
         five_star_alignment: uses_stars
             .then(|| state.five_star_alignment.clone())
             .flatten(),
+        professions: state
+            .has_rule_module(crate::domain::HERO_SCHOOLS_MODULE_ID)
+            .then(|| state.professions.clone())
+            .unwrap_or_default(),
+        prepared_profession_abilities: state
+            .has_rule_module(crate::domain::HERO_SCHOOLS_MODULE_ID)
+            .then(|| state.prepared_profession_abilities.clone())
+            .unwrap_or_default(),
         previous_turn_formation,
     }
 }
@@ -279,6 +301,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
             player,
             formation_id,
             cards,
+            star_substitution,
             sealed: _,
         } => PublicGameEvent::PassiveCovered {
             player: player.clone(),
@@ -290,6 +313,10 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
             } else {
                 PublicCardRefs::Hidden { count: cards.len() }
             },
+            star_substitution: policy
+                .can_see_player_hidden_cards(player)
+                .then(|| star_substitution.clone())
+                .flatten(),
         },
         GameEvent::CardsDrawnForTurnDiscardChoice {
             player,
@@ -310,6 +337,19 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
                 PublicCardRefs::Hidden {
                     count: allowed_discards.len(),
                 }
+            },
+        },
+        GameEvent::CardsDrawnForProfessionChoice {
+            player,
+            ability_id,
+            cards,
+        } => PublicGameEvent::CardsDrawnForProfessionChoice {
+            player: player.clone(),
+            ability_id: ability_id.clone(),
+            cards: if policy.can_see_player_hidden_cards(player) {
+                PublicCardRefs::Known(cards.clone())
+            } else {
+                PublicCardRefs::Hidden { count: cards.len() }
             },
         },
         GameEvent::EffectChoiceRequested { player, kind } => {
@@ -337,9 +377,14 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         },
         GameEvent::TurnStarted { .. }
         | GameEvent::ActionPassed { .. }
+        | GameEvent::ProfessionChanged { .. }
+        | GameEvent::ProfessionBroken { .. }
+        | GameEvent::ProfessionAbilityActivated { .. }
+        | GameEvent::PassiveCoverRevealed { .. }
         | GameEvent::TurnDiscardChosen { .. }
         | GameEvent::TurnDrawSkipped { .. }
         | GameEvent::FormationPerformed { .. }
+        | GameEvent::FormationMatchOptionDeclared { .. }
         | GameEvent::FormationEffectCopied { .. }
         | GameEvent::FormationEffectIgnored { .. }
         | GameEvent::CounterEffectEstablished { .. }
@@ -350,6 +395,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::StarBroken { .. }
         | GameEvent::StarSummoned { .. }
         | GameEvent::VoidStarBreakingCompleted { .. }
+        | GameEvent::VoidReversionResolved { .. }
         | GameEvent::FiveStarAlignmentAchieved { .. }
         | GameEvent::TurnDrawBonusChanged { .. }
         | GameEvent::ShieldChanged { .. }

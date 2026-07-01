@@ -1,4 +1,7 @@
-use crate::domain::{CardInstanceId, GameError, GameResult, GameState, PlayerId, ValidationError};
+use crate::domain::{
+    CardInstanceId, GameError, GameResult, GameState, PlayerId, StarElementSubstitution,
+    TargetDecl, ValidationError,
+};
 use crate::rules::{
     EffectPlan, FormationCandidate, FormationDef, FormationRegistry, SubmittedCardFacts,
     base_formation_matcher, base_formation_registry, official_formation_registry, star,
@@ -7,10 +10,12 @@ use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct FormationSelection {
+    profession: Option<crate::domain::ProfessionId>,
     cards: Vec<CardInstanceId>,
     facts: Vec<SubmittedCardFacts>,
     registry: FormationRegistry,
     team_star: Option<crate::domain::StarKind>,
+    prepared: Option<crate::domain::PreparedProfessionAbility>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,6 +23,8 @@ pub(super) struct SelectedFormation {
     pub(super) formation_id: String,
     pub(super) cards: Vec<CardInstanceId>,
     pub(super) effect_plan: EffectPlan,
+    pub(super) star_substitution: Option<StarElementSubstitution>,
+    pub(super) declared_targets: Vec<TargetDecl>,
 }
 
 impl FormationSelection {
@@ -65,10 +72,18 @@ impl FormationSelection {
             .flatten();
 
         Ok(Self {
+            profession: state.profession_for(player).cloned(),
             cards: selected_cards,
             facts,
             registry: official_formation_registry(&state.enabled_rule_modules),
             team_star,
+            prepared: state
+                .prepared_profession_abilities
+                .iter()
+                .find(|prepared| {
+                    &prepared.player == player && prepared.prepared_on_turn == state.turn_number
+                })
+                .cloned(),
         })
     }
 
@@ -78,23 +93,121 @@ impl FormationSelection {
         self.registry
             .formations()
             .into_iter()
-            .filter(|formation| self.matches_formation(formation, &matcher))
-            .map(|formation| FormationCandidate {
-                formation_id: formation.id.clone(),
-                formation_name: formation.name.clone(),
-                rule_text: formation.rule_text.clone(),
-                category: formation.category.clone(),
-                cards: self.cards.clone(),
+            .flat_map(|formation| {
+                let role_options = crate::rules::hero::formation_role_options(
+                    &formation.id,
+                    &self.cards,
+                    &self.facts,
+                );
+                let role_options = if role_options.is_empty() {
+                    vec![(Vec::new(), None)]
+                } else {
+                    role_options
+                        .into_iter()
+                        .map(|(target, preview)| (vec![target], Some(preview)))
+                        .collect()
+                };
+                let mut candidates =
+                    self.match_options(formation, &matcher)
+                        .into_iter()
+                        .flat_map(move |star_substitution| {
+                            role_options.clone().into_iter().map(
+                                move |(declared_targets, preview)| FormationCandidate {
+                                    formation_id: formation.id.clone(),
+                                    formation_name: formation.name.clone(),
+                                    rule_text: formation.rule_text.clone(),
+                                    category: formation.category.clone(),
+                                    cards: self.cards.clone(),
+                                    star_substitution: star_substitution.clone(),
+                                    declared_targets,
+                                    preview,
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                if self.prepared_matches(formation, &matcher)
+                    && let Some(prepared) = &self.prepared
+                {
+                    candidates.push(FormationCandidate {
+                        formation_id: formation.id.clone(),
+                        formation_name: formation.name.clone(),
+                        rule_text: formation.rule_text.clone(),
+                        category: formation.category.clone(),
+                        cards: self.cards.clone(),
+                        star_substitution: None,
+                        declared_targets: vec![TargetDecl::FormationRole {
+                            role: "prepared".to_string(),
+                            card: prepared.card,
+                        }],
+                        preview: Some(format!(
+                            "指定牌視為 {:?} {} 級",
+                            prepared.element, prepared.level
+                        )),
+                    });
+                }
+                for card in self.sacred_art_options(formation, &matcher) {
+                    candidates.push(FormationCandidate {
+                        formation_id: formation.id.clone(),
+                        formation_name: formation.name.clone(),
+                        rule_text: formation.rule_text.clone(),
+                        category: formation.category.clone(),
+                        cards: self.cards.clone(),
+                        star_substitution: None,
+                        declared_targets: vec![TargetDecl::CardMultiplicity { card, slots: 2 }],
+                        preview: Some(format!(
+                            "牌 {} ×2；實際使用 {} 張牌",
+                            card.as_u64(),
+                            self.cards.len()
+                        )),
+                    });
+                }
+                candidates
             })
             .collect()
     }
 
-    pub(super) fn require(self, formation_id: &str) -> GameResult<SelectedFormation> {
-        let formation = self.registry.formation(formation_id).ok_or_else(|| {
-            GameError::Validation(ValidationError::UnknownFormation(formation_id.to_string()))
-        })?;
+    pub(super) fn require(
+        self,
+        formation_id: &str,
+        declared_targets: Vec<TargetDecl>,
+    ) -> GameResult<SelectedFormation> {
+        let formation = self
+            .registry
+            .formation(formation_id)
+            .cloned()
+            .ok_or_else(|| {
+                GameError::Validation(ValidationError::UnknownFormation(formation_id.to_string()))
+            })?;
 
-        if !self.matches_formation(formation, &base_formation_matcher()) {
+        if let Some(prepared_card) = declared_targets.iter().find_map(|target| match target {
+            TargetDecl::FormationRole { role, card } if role == "prepared" => Some(*card),
+            _ => None,
+        }) {
+            if self
+                .prepared
+                .as_ref()
+                .is_some_and(|prepared| prepared.card == prepared_card)
+                && self.prepared_matches(&formation, &base_formation_matcher())
+            {
+                return self.selected(&formation, None, declared_targets);
+            }
+            return Err(GameError::Validation(
+                ValidationError::FormationPatternMismatch {
+                    formation_id: formation_id.to_string(),
+                },
+            ));
+        }
+        if let Some((card, slots)) = declared_targets.iter().find_map(|target| match target {
+            TargetDecl::CardMultiplicity { card, slots } => Some((*card, *slots)),
+            _ => None,
+        }) {
+            if slots == 2
+                && self
+                    .sacred_art_options(&formation, &base_formation_matcher())
+                    .contains(&card)
+            {
+                return self.selected(&formation, None, declared_targets);
+            }
             return Err(GameError::Validation(
                 ValidationError::FormationPatternMismatch {
                     formation_id: formation_id.to_string(),
@@ -102,6 +215,94 @@ impl FormationSelection {
             ));
         }
 
+        let options = self.match_options(&formation, &base_formation_matcher());
+        if options.is_empty() {
+            return Err(GameError::Validation(
+                ValidationError::FormationPatternMismatch {
+                    formation_id: formation_id.to_string(),
+                },
+            ));
+        }
+        let role_options =
+            crate::rules::hero::formation_role_options(&formation.id, &self.cards, &self.facts);
+        let mut declared_targets = declared_targets;
+        if !role_options.is_empty() {
+            let declared_role = declared_targets
+                .iter()
+                .find(|target| matches!(target, TargetDecl::FormationRole { .. }));
+            match declared_role {
+                Some(target) if role_options.iter().any(|(legal, _)| legal == target) => {}
+                Some(_) => {
+                    return Err(GameError::Validation(
+                        ValidationError::FormationPatternMismatch {
+                            formation_id: formation_id.to_string(),
+                        },
+                    ));
+                }
+                None if role_options.len() == 1 => {
+                    declared_targets.push(role_options[0].0.clone());
+                }
+                None => {
+                    return Err(GameError::Validation(
+                        ValidationError::FormationMatchOptionRequired {
+                            formation_id: formation_id.to_string(),
+                        },
+                    ));
+                }
+            }
+        }
+        let declared_substitution = declared_targets.iter().find_map(|target| match target {
+            TargetDecl::Card(card) => Some(*card),
+            TargetDecl::Player(_)
+            | TargetDecl::Team(_)
+            | TargetDecl::FormationRole { .. }
+            | TargetDecl::CardMultiplicity { .. } => None,
+        });
+        let star_substitution = match declared_substitution {
+            Some(card) => options
+                .iter()
+                .find_map(|option| {
+                    option
+                        .as_ref()
+                        .filter(|substitution| substitution.card == card)
+                        .cloned()
+                })
+                .ok_or_else(|| {
+                    GameError::Validation(ValidationError::FormationPatternMismatch {
+                        formation_id: formation_id.to_string(),
+                    })
+                })?,
+            None if options.contains(&None) => {
+                return self.selected(&formation, None, declared_targets);
+            }
+            None if options.len() == 1 => {
+                // Legacy commands predate explicit match-option declarations. They may
+                // still use the sole substituted match, but must reproduce their
+                // original event payload without inventing a declaration.
+                return self.selected(&formation, None, declared_targets);
+            }
+            None => {
+                return Err(GameError::Validation(
+                    ValidationError::FormationMatchOptionRequired {
+                        formation_id: formation_id.to_string(),
+                    },
+                ));
+            }
+        };
+        let remaining_targets = declared_targets
+            .into_iter()
+            .filter(|target| !matches!(target, TargetDecl::Card(card) if *card == star_substitution.card))
+            .collect();
+
+        self.selected(&formation, Some(star_substitution), remaining_targets)
+    }
+
+    fn selected(
+        self,
+        formation: &FormationDef,
+        star_substitution: Option<StarElementSubstitution>,
+        declared_targets: Vec<TargetDecl>,
+    ) -> GameResult<SelectedFormation> {
         let effect = self
             .registry
             .effect_for(formation)
@@ -111,38 +312,129 @@ impl FormationSelection {
             formation_id: formation.id.clone(),
             cards: self.cards,
             effect_plan: effect.plan.clone(),
+            star_substitution,
+            declared_targets,
         })
     }
 
-    fn matches_formation(
+    fn match_options(
+        &self,
+        formation: &FormationDef,
+        matcher: &crate::rules::FormationMatcher<'_>,
+    ) -> Vec<Option<StarElementSubstitution>> {
+        if crate::rules::hero::is_profession_formation(&formation.id)
+            && !crate::rules::hero::can_use_profession_formation(
+                self.profession.as_ref(),
+                &formation.id,
+            )
+        {
+            return Vec::new();
+        }
+
+        if let Some(required_star) = star::required_star(&formation.id)
+            && self.team_star != Some(required_star)
+        {
+            return Vec::new();
+        }
+
+        let mut options = Vec::new();
+        if matcher.matches(&formation.pattern, &self.facts) {
+            options.push(None);
+        }
+
+        if crate::rules::hero::matches_proficiency(
+            self.profession.as_ref(),
+            &formation.id,
+            &self.facts,
+        ) && !options.contains(&None)
+        {
+            options.push(None);
+        }
+
+        let Some(owned_star) = self.team_star else {
+            return options;
+        };
+        if base_formation_registry().formation(&formation.id).is_none() {
+            return options;
+        }
+
+        options.extend(self.facts.iter().enumerate().filter_map(|(index, card)| {
+            if card.element != star::companion_element(owned_star) {
+                return None;
+            }
+            let mut interpreted = self.facts.clone();
+            interpreted[index].element = star::element(owned_star);
+            matcher.matches(&formation.pattern, &interpreted).then(|| {
+                Some(StarElementSubstitution {
+                    card: self.cards[index],
+                    printed_element: card.element,
+                    interpreted_element: star::element(owned_star),
+                })
+            })
+        }));
+        options
+    }
+
+    fn prepared_matches(
         &self,
         formation: &FormationDef,
         matcher: &crate::rules::FormationMatcher<'_>,
     ) -> bool {
-        if let Some(required_star) = star::required_star(&formation.id)
-            && self.team_star != Some(required_star)
+        let Some(prepared) = &self.prepared else {
+            return false;
+        };
+        if !self.cards.contains(&prepared.card)
+            || !prepared.allowed_formation_scope.iter().any(|scope| {
+                scope == &formation.id
+                    || (scope == "base"
+                        && base_formation_registry().formation(&formation.id).is_some())
+            })
         {
             return false;
         }
-
-        if matcher.matches(&formation.pattern, &self.facts) {
-            return true;
-        }
-
-        let Some(owned_star) = self.team_star else {
+        let mut interpreted = self.facts.clone();
+        let Some(index) = self.cards.iter().position(|card| *card == prepared.card) else {
             return false;
         };
-        if base_formation_registry().formation(&formation.id).is_none() {
-            return false;
-        }
+        interpreted[index] = SubmittedCardFacts {
+            element: prepared.element,
+            level: prepared.level,
+        };
+        matcher.matches(&formation.pattern, &interpreted)
+            || crate::rules::hero::matches_proficiency(
+                self.profession.as_ref(),
+                &formation.id,
+                &interpreted,
+            )
+    }
 
-        self.facts.iter().enumerate().any(|(index, card)| {
-            if card.element != star::companion_element(owned_star) {
-                return false;
-            }
-            let mut interpreted = self.facts.clone();
-            interpreted[index].element = star::element(owned_star);
-            matcher.matches(&formation.pattern, &interpreted)
-        })
+    fn sacred_art_options(
+        &self,
+        formation: &FormationDef,
+        matcher: &crate::rules::FormationMatcher<'_>,
+    ) -> Vec<CardInstanceId> {
+        if self.cards.len() != 3
+            || base_formation_registry().formation(&formation.id).is_none()
+            || !crate::rules::hero::profession_has_ability(
+                self.profession.as_ref(),
+                crate::rules::hero::ProfessionAbility::SacredArt,
+            )
+        {
+            return Vec::new();
+        }
+        self.facts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, fact)| {
+                if fact.level < 4 {
+                    return None;
+                }
+                let mut slots = self.facts.clone();
+                slots.push(*fact);
+                matcher
+                    .matches(&formation.pattern, &slots)
+                    .then_some(self.cards[index])
+            })
+            .collect()
     }
 }

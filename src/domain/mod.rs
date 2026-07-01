@@ -36,6 +36,7 @@ pub const DISCARD_RETRIEVAL_MODULE_ID: &str = "discard-retrieval";
 pub const FIVE_DIRECTIONS_LEGEND_MODULE_ID: &str = "five-directions-legend";
 pub const PERSONAL_DECK_MODULE_ID: &str = "personal-deck";
 pub const STAR_MODULE_ID: &str = "star";
+pub const HERO_SCHOOLS_MODULE_ID: &str = "hero-schools";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RulesetId(String);
@@ -61,6 +62,36 @@ impl Default for RulesetId {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ProfessionId(String);
+
+impl ProfessionId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PlayerProfession {
+    pub player: PlayerId,
+    pub profession: ProfessionId,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PreparedProfessionAbility {
+    pub player: PlayerId,
+    pub ability_id: String,
+    pub card: CardInstanceId,
+    pub element: Element,
+    pub level: u32,
+    pub allowed_formation_scope: Vec<String>,
+    pub prepared_on_turn: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RuleModuleId(String);
 
 impl RuleModuleId {
@@ -79,6 +110,10 @@ pub struct CardInstanceId(u64);
 impl CardInstanceId {
     pub fn new(id: u64) -> Self {
         Self(id)
+    }
+
+    pub fn as_u64(self) -> u64 {
+        self.0
     }
 }
 
@@ -111,6 +146,13 @@ pub enum StarKind {
     Water,
     Fire,
     Earth,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct StarElementSubstitution {
+    pub card: CardInstanceId,
+    pub printed_element: Element,
+    pub interpreted_element: Element,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -241,6 +283,8 @@ pub struct CoveredPassive {
     pub owner: PlayerId,
     pub formation_id: String,
     pub cards: Vec<CardInstanceId>,
+    #[serde(default)]
+    pub star_substitution: Option<StarElementSubstitution>,
     pub sealed: bool,
     pub covered_on_turn: u64,
     pub reveal_timing: PassiveTriggerTiming,
@@ -478,6 +522,8 @@ pub struct GameState {
     pub shields: Vec<PlayerShield>,
     pub covered_passives: Vec<CoveredPassive>,
     #[serde(default)]
+    pub revealed_covered_passive_owners: Vec<PlayerId>,
+    #[serde(default)]
     pub counter_effects: Vec<CounterEffect>,
     pub statuses: Vec<StatusEffect>,
     #[serde(default)]
@@ -488,6 +534,12 @@ pub struct GameState {
     pub star_histories: Vec<PlayerStarHistory>,
     #[serde(default)]
     pub five_star_alignment: Option<FiveStarAlignment>,
+    #[serde(default)]
+    pub professions: Vec<PlayerProfession>,
+    #[serde(default)]
+    pub prepared_profession_abilities: Vec<PreparedProfessionAbility>,
+    #[serde(default)]
+    pub activated_profession_ability_turns: HashMap<PlayerId, u64>,
     pub last_elemental_attack_by_player: HashMap<PlayerId, LastElementalAttack>,
     pub last_formation_by_player: HashMap<PlayerId, LastFormationUse>,
     pub turn_draw_bonus_by_player: HashMap<PlayerId, usize>,
@@ -545,6 +597,7 @@ impl GameState {
                 })
                 .collect(),
             covered_passives: Vec::new(),
+            revealed_covered_passive_owners: Vec::new(),
             counter_effects: Vec::new(),
             statuses: Vec::new(),
             environment: None,
@@ -558,6 +611,9 @@ impl GameState {
                 })
                 .collect(),
             five_star_alignment: None,
+            professions: Vec::new(),
+            prepared_profession_abilities: Vec::new(),
+            activated_profession_ability_turns: HashMap::new(),
             last_elemental_attack_by_player: HashMap::new(),
             last_formation_by_player: HashMap::new(),
             turn_draw_bonus_by_player: HashMap::new(),
@@ -695,6 +751,13 @@ impl GameState {
             .find(|history| &history.player == player)
             .map(|history| history.stars.as_slice())
     }
+
+    pub fn profession_for(&self, player: &PlayerId) -> Option<&ProfessionId> {
+        self.professions
+            .iter()
+            .find(|owned| &owned.player == player)
+            .map(|owned| &owned.profession)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -756,10 +819,30 @@ pub enum GameEvent {
         player: PlayerId,
         reason: PassActionReason,
     },
+    ProfessionChanged {
+        player: PlayerId,
+        previous: Option<ProfessionId>,
+        profession: ProfessionId,
+        card_moves: Vec<CardMoveDelta>,
+    },
+    ProfessionBroken {
+        player: PlayerId,
+        profession: ProfessionId,
+    },
+    ProfessionAbilityActivated {
+        player: PlayerId,
+        ability_id: String,
+        prepared: Option<PreparedProfessionAbility>,
+    },
     CardsDrawnForTurnDiscardChoice {
         player: PlayerId,
         drawn_cards: Vec<CardInstanceId>,
         allowed_discards: Vec<CardInstanceId>,
+    },
+    CardsDrawnForProfessionChoice {
+        player: PlayerId,
+        ability_id: String,
+        cards: Vec<CardInstanceId>,
     },
     TurnDiscardChosen {
         player: PlayerId,
@@ -774,6 +857,11 @@ pub enum GameEvent {
         formation_id: String,
         used_cards: Vec<CardInstanceId>,
         declared_targets: Vec<TargetDecl>,
+    },
+    FormationMatchOptionDeclared {
+        player: PlayerId,
+        formation_id: String,
+        targets: Vec<TargetDecl>,
     },
     FormationEffectCopied {
         player: PlayerId,
@@ -836,6 +924,13 @@ pub enum GameEvent {
     VoidStarBreakingCompleted {
         player: PlayerId,
     },
+    VoidReversionResolved {
+        player: PlayerId,
+        hp_change: HpChangeDelta,
+        card_moves: Vec<CardMoveDelta>,
+        broken_professions: Vec<PlayerProfession>,
+        retained_legendary_professions: Vec<PlayerProfession>,
+    },
     FiveStarAlignmentAchieved {
         player: PlayerId,
         team: TeamId,
@@ -884,7 +979,12 @@ pub enum GameEvent {
         player: PlayerId,
         formation_id: String,
         cards: Vec<CardInstanceId>,
+        #[serde(default)]
+        star_substitution: Option<StarElementSubstitution>,
         sealed: bool,
+    },
+    PassiveCoverRevealed {
+        owner: PlayerId,
     },
     PassiveFlipped {
         owner: PlayerId,
@@ -937,6 +1037,19 @@ pub enum Command {
         cards: Vec<CardInstanceId>,
         declared_targets: Vec<TargetDecl>,
     },
+    ChangeProfession {
+        player: PlayerId,
+        profession: ProfessionId,
+        cards: Vec<CardInstanceId>,
+    },
+    ActivateProfessionAbility {
+        player: PlayerId,
+        ability_id: String,
+        cards: Vec<CardInstanceId>,
+        target_card: Option<CardInstanceId>,
+        declared_element: Option<Element>,
+        declared_level: Option<u32>,
+    },
     ChooseTurnDiscard {
         player: PlayerId,
         discard: CardInstanceId,
@@ -955,6 +1068,8 @@ pub enum TargetDecl {
     Player(PlayerId),
     Team(TeamId),
     Card(CardInstanceId),
+    FormationRole { role: String, card: CardInstanceId },
+    CardMultiplicity { card: CardInstanceId, slots: usize },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -974,6 +1089,7 @@ pub enum ActionModification {
     SplitAttackDamage,
     CancelSpell,
     SealCoveredPassive,
+    RevealCoveredPassive,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -983,6 +1099,7 @@ pub enum PassiveNoEffectReason {
     Sealed,
     EmptyCity,
     IgnoredBySacredBeast,
+    IgnoredByProfessionAbility,
     IneffectiveInEnvironment { environment: Element },
 }
 
@@ -1130,6 +1247,23 @@ pub enum ValidationError {
     IllegalChoiceCard(CardInstanceId),
     DuplicateChoiceCard(CardInstanceId),
     UnknownFormation(String),
+    HeroSchoolsDisabled,
+    UnknownProfession(ProfessionId),
+    ProfessionPrerequisiteNotMet {
+        profession: ProfessionId,
+        required: ProfessionId,
+        actual: Option<ProfessionId>,
+    },
+    ProfessionChangePatternMismatch {
+        profession: ProfessionId,
+    },
+    UnknownProfessionAbility(String),
+    ProfessionAbilityUnavailable(String),
+    ProfessionAbilityAlreadyActivated {
+        player: PlayerId,
+        turn_number: u64,
+    },
+    ProfessionAbilityCannotResolve(String),
     UnexpectedDeclaredTargets {
         formation_id: String,
     },
@@ -1138,7 +1272,13 @@ pub enum ValidationError {
     FormationPatternMismatch {
         formation_id: String,
     },
+    FormationMatchOptionRequired {
+        formation_id: String,
+    },
     CannotPerformFormation {
+        reason: CannotPerformFormationReason,
+    },
+    CannotChangeProfession {
         reason: CannotPerformFormationReason,
     },
     PendingPassiveAlreadyCovered {
@@ -1209,6 +1349,7 @@ pub enum EngineInvariantError {
     NotEnoughCards { needed: usize, available: usize },
     DuplicatePendingChoice { player: PlayerId },
     DuplicateCoveredPassive { player: PlayerId },
+    DuplicateProfession { player: PlayerId },
     ZoneOwnershipInconsistency { card: CardInstanceId },
 }
 

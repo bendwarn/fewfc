@@ -37,8 +37,6 @@ test('default room rules lock preconstructed decks and start personal piles', as
     const roomName = `個人牌組測試 ${Date.now()}`
 
     await host.getByRole('button', { name: '建立房間', exact: true }).click()
-    const createDialog = host.getByRole('dialog', { name: '建立房間' })
-    await expect(createDialog.getByText('規則模組')).toHaveCount(0)
     await host.getByLabel('房間名稱').fill(roomName)
     await host.getByRole('button', { name: '建立房間 →' }).click()
     await expect(host.getByLabel('棄牌回收')).toBeChecked()

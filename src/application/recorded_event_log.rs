@@ -141,12 +141,17 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::CounterEffectEstablished { .. }
         | GameEvent::CounterEffectResolved { .. }
         | GameEvent::ActionPassed { .. }
+        | GameEvent::ProfessionChanged { .. }
+        | GameEvent::ProfessionBroken { .. }
+        | GameEvent::ProfessionAbilityActivated { .. }
+        | GameEvent::CardsDrawnForProfessionChoice { .. }
         | GameEvent::AttackResolved { .. }
         | GameEvent::EnvironmentTransferred { .. }
         | GameEvent::EnvironmentCleared { .. }
         | GameEvent::StarBroken { .. }
         | GameEvent::StarSummoned { .. }
         | GameEvent::VoidStarBreakingCompleted { .. }
+        | GameEvent::VoidReversionResolved { .. }
         | GameEvent::FiveStarAlignmentAchieved { .. }
         | GameEvent::CardsMoved { .. }
         | GameEvent::EffectChoiceAnswered { .. }
@@ -154,9 +159,11 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::FormationEffectCopied { .. }
         | GameEvent::FormationEffectIgnored { .. }
         | GameEvent::FormationPerformed { .. }
+        | GameEvent::FormationMatchOptionDeclared { .. }
         | GameEvent::HandInspected { .. }
         | GameEvent::HpChanged { .. }
         | GameEvent::PassiveCovered { .. }
+        | GameEvent::PassiveCoverRevealed { .. }
         | GameEvent::PassiveFlipped { .. }
         | GameEvent::ShieldChanged { .. }
         | GameEvent::StatusAdded { .. }
@@ -181,6 +188,22 @@ fn command_context(command: &Command) -> CommandContext {
             player: player.clone(),
             kind: CommandKind::PerformFormation {
                 formation_id: formation_id.clone(),
+            },
+        },
+        Command::ChangeProfession {
+            player, profession, ..
+        } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::ChangeProfession {
+                profession: profession.clone(),
+            },
+        },
+        Command::ActivateProfessionAbility {
+            player, ability_id, ..
+        } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::ActivateProfessionAbility {
+                ability_id: ability_id.clone(),
             },
         },
         Command::ChooseTurnDiscard { player, .. } => CommandContext {
@@ -257,7 +280,15 @@ pub struct CommandContext {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum CommandKind {
     PassAction,
-    PerformFormation { formation_id: String },
+    PerformFormation {
+        formation_id: String,
+    },
+    ChangeProfession {
+        profession: crate::domain::ProfessionId,
+    },
+    ActivateProfessionAbility {
+        ability_id: String,
+    },
     ChooseTurnDiscard,
     AnswerEffectChoice,
     RetrievePreviousTurnDiscard,

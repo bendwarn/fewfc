@@ -27,6 +27,7 @@ struct FormationUsePlan {
     formation_id: String,
     cards: Vec<CardInstanceId>,
     declared_targets: Vec<TargetDecl>,
+    star_substitution: Option<crate::domain::StarElementSubstitution>,
     effect_plan: EffectPlan,
 }
 
@@ -64,13 +65,14 @@ impl BaseFormationPlanner {
         request: FormationUseRequest,
     ) -> GameResult<FormationUsePlan> {
         let selected = FormationSelection::new(state, &request.player, request.cards)?
-            .require(&request.formation_id)?;
+            .require(&request.formation_id, request.declared_targets)?;
 
         Ok(FormationUsePlan {
             player: request.player,
             formation_id: selected.formation_id,
             cards: selected.cards,
-            declared_targets: request.declared_targets,
+            declared_targets: selected.declared_targets,
+            star_substitution: selected.star_substitution,
             effect_plan: selected.effect_plan,
         })
     }
@@ -87,13 +89,20 @@ impl BaseEffectResolver {
     fn resolve(&self, state: &GameState, plan: FormationUsePlan) -> GameResult<Vec<GameEvent>> {
         match &plan.effect_plan {
             EffectPlan::Attack(attack_plan) => {
-                if !plan.declared_targets.is_empty() {
+                if has_effect_targets(&plan.declared_targets) {
                     return Err(GameError::Validation(
                         ValidationError::UnexpectedDeclaredTargets {
                             formation_id: plan.formation_id,
                         },
                     ));
                 }
+                let attack_points = attack_resolution::preview_attack_points(
+                    state,
+                    &plan.player,
+                    &plan.formation_id,
+                    attack_plan,
+                    &plan.cards,
+                )?;
                 let passive_trigger = covered_passive::trigger(
                     state,
                     TriggerRequest {
@@ -101,13 +110,19 @@ impl BaseEffectResolver {
                         incoming_kind: IncomingActionKind::Attack,
                         ignores_formation_effects: sacred_beast_element(&plan.formation_id)
                             .is_some(),
+                        ignores_counter_effects: crate::rules::hero::windwalking_applies(
+                            state,
+                            &plan.player,
+                            attack_points,
+                        ),
                     },
                 );
                 let environment_ineffective =
                     environment_makes_formation_ineffective(state, &plan.formation_id);
                 let damage_prevented = passive_trigger.prevents_damage() || environment_ineffective;
                 let split_attack_damage = passive_trigger.splits_attack_damage();
-                let mut events = passive_trigger.events();
+                let mut events = match_option_events(&plan);
+                events.extend(passive_trigger.events());
                 if environment_ineffective {
                     events.push(formation_effect_ignored_event(
                         state,
@@ -132,7 +147,7 @@ impl BaseEffectResolver {
                 Ok(events)
             }
             EffectPlan::PassiveSpell(_) => {
-                if !plan.declared_targets.is_empty() {
+                if has_effect_targets(&plan.declared_targets) {
                     return Err(GameError::Validation(
                         ValidationError::UnexpectedDeclaredTargets {
                             formation_id: plan.formation_id,
@@ -158,20 +173,30 @@ impl BaseEffectResolver {
                         incoming_player: plan.player.clone(),
                         incoming_kind: IncomingActionKind::PassiveSpell,
                         ignores_formation_effects: false,
+                        ignores_counter_effects: crate::rules::hero::spell_counter_immunity(
+                            state,
+                            &plan.player,
+                        ),
                     },
                 );
                 let sealed = passive_trigger.seals_covered_passive();
-                let mut events = passive_trigger.events();
+                let revealed = passive_trigger.reveals_covered_passive();
+                let mut events = match_option_events(&plan);
+                events.extend(passive_trigger.events());
                 events.push(GameEvent::PassiveCovered {
-                    player: plan.player,
+                    player: plan.player.clone(),
                     formation_id: plan.formation_id,
                     cards: plan.cards,
+                    star_substitution: plan.star_substitution,
                     sealed,
                 });
+                if revealed {
+                    events.push(GameEvent::PassiveCoverRevealed { owner: plan.player });
+                }
                 Ok(events)
             }
             EffectPlan::ActiveSpell(spell) => {
-                if !plan.declared_targets.is_empty() {
+                if has_effect_targets(&plan.declared_targets) {
                     return Err(GameError::Validation(
                         ValidationError::UnexpectedDeclaredTargets {
                             formation_id: plan.formation_id,
@@ -185,18 +210,27 @@ impl BaseEffectResolver {
                         incoming_player: plan.player.clone(),
                         incoming_kind: IncomingActionKind::ActiveSpell,
                         ignores_formation_effects: false,
+                        ignores_counter_effects: crate::rules::hero::spell_counter_immunity(
+                            state,
+                            &plan.player,
+                        ),
                     },
                 );
                 let spell_cancelled = passive_trigger.cancels_spell();
                 let spell_ineffective =
                     environment_makes_formation_ineffective(state, &plan.formation_id);
-                let mut events = passive_trigger.events();
-                events.push(GameEvent::FormationPerformed {
-                    player: plan.player.clone(),
-                    formation_id: plan.formation_id.clone(),
-                    used_cards: plan.cards.clone(),
-                    declared_targets: plan.declared_targets,
-                });
+                let mut events = match_option_events(&plan);
+                events.extend(passive_trigger.events());
+                let void_reversion_succeeds =
+                    spell.resolver_id == "void-reversion" && !spell_cancelled && !spell_ineffective;
+                if !void_reversion_succeeds {
+                    events.push(GameEvent::FormationPerformed {
+                        player: plan.player.clone(),
+                        formation_id: plan.formation_id.clone(),
+                        used_cards: plan.cards.clone(),
+                        declared_targets: plan.declared_targets.clone(),
+                    });
+                }
                 if !spell_cancelled && spell_ineffective {
                     events.push(formation_effect_ignored_event(
                         state,
@@ -205,6 +239,10 @@ impl BaseEffectResolver {
                     ));
                 }
                 if !spell_cancelled && !spell_ineffective {
+                    if spell.resolver_id == "void-reversion" {
+                        events.push(void_reversion_event(state, &plan.player, &plan.cards)?);
+                        return Ok(events);
+                    }
                     if spell.resolver_id == "void-meridian-severing" {
                         if let Some(event) = environment_clearing_event(state, &plan.player)? {
                             events.push(event);
@@ -225,6 +263,7 @@ impl BaseEffectResolver {
                                 &plan.player,
                                 &spell.resolver_id,
                                 &plan.cards,
+                                &plan.declared_targets,
                             )?,
                         )
                     };
@@ -239,6 +278,38 @@ impl BaseEffectResolver {
                 Ok(events)
             }
         }
+    }
+}
+
+fn has_effect_targets(targets: &[TargetDecl]) -> bool {
+    targets.iter().any(|target| {
+        matches!(
+            target,
+            TargetDecl::Player(_) | TargetDecl::Team(_) | TargetDecl::Card(_)
+        )
+    })
+}
+
+fn match_option_events(plan: &FormationUsePlan) -> Vec<GameEvent> {
+    let targets = plan
+        .declared_targets
+        .iter()
+        .filter(|target| {
+            matches!(
+                target,
+                TargetDecl::FormationRole { .. } | TargetDecl::CardMultiplicity { .. }
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        Vec::new()
+    } else {
+        vec![GameEvent::FormationMatchOptionDeclared {
+            player: plan.player.clone(),
+            formation_id: plan.formation_id.clone(),
+            targets,
+        }]
     }
 }
 
@@ -322,13 +393,145 @@ fn environment_clearing_event(
     }))
 }
 
+fn void_reversion_event(
+    state: &GameState,
+    player: &PlayerId,
+    cards: &[CardInstanceId],
+) -> GameResult<GameEvent> {
+    let team = player_team(state, player)?;
+    let old_hp = team_hp(state, &team)?;
+    let new_hp = (old_hp - 20).max(0);
+    let high_level = cards.iter().try_fold(true, |_, card| {
+        state
+            .card_def(*card)
+            .map(|definition| definition.level >= 3)
+            .ok_or(GameError::Validation(
+                ValidationError::MissingCardInstanceDefinition(*card),
+            ))
+    })?;
+    let (broken_professions, retained_legendary_professions) = state
+        .professions
+        .iter()
+        .cloned()
+        .partition(|owned| high_level || !crate::rules::hero::is_legendary(&owned.profession));
+    let card_moves = cards
+        .iter()
+        .copied()
+        .map(|card| CardMoveDelta {
+            card,
+            from: CardZone::Hand(player.clone()),
+            to: super::discard_zone_for_card(state, card),
+        })
+        .collect();
+
+    Ok(GameEvent::VoidReversionResolved {
+        player: player.clone(),
+        hp_change: crate::domain::HpChangeDelta {
+            team,
+            old_hp,
+            delta: -20,
+            new_hp,
+            effective_delta: new_hp - old_hp,
+        },
+        card_moves,
+        broken_professions,
+        retained_legendary_professions,
+    })
+}
+
 fn active_spell_intents(
     state: &GameState,
     player: &PlayerId,
     resolver_id: &str,
     used_cards: &[CardInstanceId],
+    declared_targets: &[TargetDecl],
 ) -> GameResult<Vec<EffectIntent>> {
     match resolver_id {
+        "reincarnation" => {
+            let standalone = declared_targets.iter().find_map(|target| match target {
+                TargetDecl::FormationRole { role, card } if role == "standalone-wood" => {
+                    Some(*card)
+                }
+                _ => None,
+            });
+            let standalone = standalone.ok_or(GameError::Validation(
+                ValidationError::FormationMatchOptionRequired {
+                    formation_id: resolver_id.to_string(),
+                },
+            ))?;
+            let level = state
+                .card_def(standalone)
+                .ok_or(GameError::Validation(
+                    ValidationError::MissingCardInstanceDefinition(standalone),
+                ))?
+                .level as i32;
+            Ok(vec![EffectIntent::ChangeHp {
+                team: player_team(state, player)?,
+                delta: level * 25,
+            }])
+        }
+        "purple-light-shield" => Ok(vec![EffectIntent::SetShield {
+            player: player.clone(),
+            value: level_sum(state, used_cards)? * 5,
+        }]),
+        "shadow-assault" => {
+            let target =
+                resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)?;
+            Ok(vec![EffectIntent::ChangeHp {
+                team: player_team(state, &target)?,
+                delta: -level_sum(state, used_cards)? * 3,
+            }])
+        }
+        "instant-shadow-death" => {
+            let target =
+                resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)?;
+            let team = player_team(state, &target)?;
+            let old_hp = team_hp(state, &team)?;
+            Ok(vec![EffectIntent::ChangeHp {
+                team,
+                delta: old_hp / 2 - old_hp,
+            }])
+        }
+        "holy-wind" => {
+            let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
+            let team = player_team(state, &target)?;
+            let hand = state.hand(&target).ok_or_else(|| {
+                GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
+            })?;
+            let highest = hand
+                .iter()
+                .filter_map(|card| state.card_def(*card).map(|definition| definition.level))
+                .max();
+            let allowed_cards = highest.map_or_else(Vec::new, |highest| {
+                hand.iter()
+                    .copied()
+                    .filter(|card| {
+                        state
+                            .card_def(*card)
+                            .is_some_and(|definition| definition.level == highest)
+                    })
+                    .collect()
+            });
+            let mut intents = vec![
+                EffectIntent::ChangeHp { team, delta: -20 },
+                EffectIntent::InspectHand {
+                    viewer: player.clone(),
+                    target: target.clone(),
+                    cards: hand.to_vec(),
+                },
+            ];
+            if !allowed_cards.is_empty() {
+                intents.push(EffectIntent::RequestChoice {
+                    player: player.clone(),
+                    kind: crate::domain::PendingChoiceKind::EffectGenerated {
+                        effect_id: resolver_id.to_string(),
+                        continuation_id: "holy-wind:take-highest".to_string(),
+                        allowed_cards,
+                    },
+                });
+            }
+            Ok(intents)
+        }
         "barrier" => Ok(vec![EffectIntent::SetShield {
             player: player.clone(),
             value: level_sum(state, used_cards)? * 4,
@@ -351,6 +554,9 @@ fn active_spell_intents(
             }])
         }
         "radiance" => {
+            if crate::rules::hero::target_ignores_disruptive_spell(state, player, resolver_id)? {
+                return Ok(Vec::new());
+            }
             let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
             let inspected_cards = state
                 .hand(&target)
@@ -400,6 +606,9 @@ fn active_spell_intents(
             ])
         }
         "chaos" => {
+            if crate::rules::hero::target_ignores_disruptive_spell(state, player, resolver_id)? {
+                return Ok(Vec::new());
+            }
             let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
             let allowed_cards = state
                 .hand(&target)
@@ -480,7 +689,7 @@ fn metamorphosis_intents(
         )),
         EffectPlan::ActiveSpell(spell) if spell.resolver_id != "metamorphosis" => Ok((
             Some(formation.id.clone()),
-            active_spell_intents(state, player, &spell.resolver_id, used_cards)?,
+            active_spell_intents(state, player, &spell.resolver_id, used_cards, &[])?,
         )),
         EffectPlan::PassiveSpell(_) if formation.id == "empty-city" => {
             Ok((Some(formation.id.clone()), Vec::new()))
@@ -572,6 +781,43 @@ fn resume_effect_choice_intents(
                         } else {
                             CardZone::DeckTop
                         },
+                    })
+                    .collect(),
+            }])
+        }
+        ("holy-wind", "holy-wind:take-highest") => {
+            let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
+            let card = *selected_cards
+                .first()
+                .ok_or(GameError::Validation(ValidationError::MissingPendingChoice))?;
+            Ok(vec![EffectIntent::MoveCards {
+                card_moves: vec![CardMoveDelta {
+                    card,
+                    from: CardZone::Hand(target),
+                    to: CardZone::Hand(player.clone()),
+                }],
+            }])
+        }
+        ("revelation", "revelation:keep-one") => {
+            let allowed_cards = match &state.pending_choice {
+                Some(crate::domain::PendingChoice {
+                    kind: crate::domain::PendingChoiceKind::EffectGenerated { allowed_cards, .. },
+                    ..
+                }) => allowed_cards,
+                _ => return Err(GameError::Validation(ValidationError::MissingPendingChoice)),
+            };
+            let kept = selected_cards
+                .first()
+                .ok_or(GameError::Validation(ValidationError::MissingPendingChoice))?;
+            Ok(vec![EffectIntent::MoveCards {
+                card_moves: allowed_cards
+                    .iter()
+                    .filter(|card| *card != kept)
+                    .copied()
+                    .map(|card| CardMoveDelta {
+                        card,
+                        from: CardZone::Hand(player.clone()),
+                        to: super::discard_zone_for_card(state, card),
                     })
                     .collect(),
             }])

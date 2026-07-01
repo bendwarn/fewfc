@@ -86,6 +86,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           return await this.resetGame(body.actorUserId)
         case 'seedEndgameFixture':
           return await this.seedEndgameFixture(body.actorUserId)
+        case 'seedHeroSchoolsFixture':
+          return await this.seedHeroSchoolsFixture(body.actorUserId)
         case 'getState':
           return await this.getState(body.actorUserId)
         case 'submitCommand':
@@ -582,6 +584,145 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return this.json(await this.response(metadata, actorUserId))
   }
 
+  private async seedHeroSchoolsFixture(actorUserId: string): Promise<Response> {
+    const metadata = await this.requireMetadata()
+    const actor = this.memberFor(metadata, actorUserId)
+
+    if (!actor?.owner) {
+      return this.json({ error: 'only room owner may seed a test fixture' }, 403)
+    }
+    if (metadata.status !== 'Active') {
+      return this.json({ error: 'test fixture requires an active match' }, 409)
+    }
+
+    const snapshot = await this.requireSnapshot()
+    if (!snapshot.setup.enabledRuleModules.includes('hero-schools')) {
+      return this.json({ error: 'test fixture requires Hero Schools' }, 409)
+    }
+    const setup: RulesGameSetup = {
+      ...snapshot.setup,
+      turnOrder: [
+        actor.player,
+        ...snapshot.setup.turnOrder.filter(player => player !== actor.player),
+      ],
+    }
+    const deckSeed = 'hero-e2e'
+    let rules = await callRulesEngine({
+      action: { type: 'start' },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+    })
+    const hand = rules.state.hands.find(entry => entry.player === actor.player)
+    const qualifyingWaterCard = hand?.cards.kind === 'known'
+      ? hand.cards.cards.find(card => /^水 [3-5]$/.test(card.label))
+      : undefined
+    if (!qualifyingWaterCard) {
+      return this.json({ error: 'test fixture could not find a Mesmer transition Card' }, 500)
+    }
+    rules = await callRulesEngine({
+      action: {
+        type: 'changeProfession',
+        player: actor.player,
+        professionId: 'mesmer',
+        cards: [qualifyingWaterCard.id],
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+    const discardChoice = rules.state.pendingChoice?.cards[0]
+    if (discardChoice) {
+      rules = await callRulesEngine({
+        action: {
+          type: 'chooseTurnDiscard',
+          player: actor.player,
+          card: discardChoice.id,
+        },
+        viewer: actor.player,
+        setup,
+        deckSeed,
+        record: rules.record,
+      })
+    }
+    const opponent = setup.turnOrder.find(player => player !== actor.player)
+    if (!opponent || rules.state.currentPlayer !== opponent) {
+      return this.json({ error: 'test fixture did not advance to the opponent' }, 500)
+    }
+    rules = await callRulesEngine({
+      action: { type: 'refresh' },
+      viewer: opponent,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+    const opponentHand = rules.state.hands.find(entry => entry.player === opponent)
+    const opponentCard = opponentHand?.cards.kind === 'known'
+      ? opponentHand.cards.cards[0]
+      : undefined
+    if (!opponentCard) {
+      return this.json({ error: 'test fixture could not inspect the opponent hand' }, 500)
+    }
+    const options = await callRulesEngine({
+      action: {
+        type: 'playableActions',
+        player: opponent,
+        cards: [opponentCard.id],
+      },
+      viewer: opponent,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+    const formation = options.playableActions.find(action => action.type === 'performFormation')
+    if (!formation || formation.type !== 'performFormation') {
+      return this.json({ error: 'test fixture could not find an opponent Formation' }, 500)
+    }
+    rules = await callRulesEngine({
+      action: {
+        type: 'performFormation',
+        player: opponent,
+        formationId: formation.id,
+        cards: formation.cards,
+        starSubstitutionCard: formation.starSubstitution?.card,
+        matchOptionRole: formation.matchOption?.role,
+        matchOptionCard: formation.matchOption?.card,
+        matchOptionSlots: formation.matchOption?.slots,
+      },
+      viewer: opponent,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+    const opponentDiscardChoice = rules.state.pendingChoice?.cards[0]
+    if (opponentDiscardChoice) {
+      rules = await callRulesEngine({
+        action: {
+          type: 'chooseTurnDiscard',
+          player: opponent,
+          card: opponentDiscardChoice.id,
+        },
+        viewer: opponent,
+        setup,
+        deckSeed,
+        record: rules.record,
+      })
+    }
+
+    await this.ctx.storage.put('snapshot', {
+      ...snapshot,
+      firstPlayer: actor.player,
+      deckSeed,
+      setup,
+      rulesRecord: rules.record,
+    } satisfies GameRoomSnapshot)
+    await this.ctx.storage.delete('pendingCommandDraft')
+    this.ctx.waitUntil(this.broadcast(metadata))
+
+    return this.json(await this.response(metadata, actorUserId))
+  }
+
   private async submitCommand(
     request: Extract<GameRoomRequest, { type: 'submitCommand' }>,
   ): Promise<Response> {
@@ -1056,6 +1197,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private actionForPlayer(action: OnlineGameAction, player: PlayerId): OnlineGameAction {
     switch (action.type) {
       case 'performFormation':
+      case 'activateProfessionAbility':
+      case 'changeProfession':
       case 'chooseTurnDiscard':
       case 'answerEffectChoice':
       case 'retrievePreviousTurnDiscard':
@@ -1184,6 +1327,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       const summaries: Record<string, string> = {
         passAction: `${actor} 已跳過行動。`,
         performFormation: `${actor} 已完成陣法行動。`,
+        activateProfessionAbility: `${actor} 已發動職業能力。`,
         performFormationWithChoices: `${actor} 已完成陣法與效果選擇。`,
         chooseTurnDiscard: `${actor} 已完成捨棄。`,
         answerEffectChoice: `${actor} 已完成效果選擇。`,

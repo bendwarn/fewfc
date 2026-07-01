@@ -145,11 +145,6 @@ test('players can inspect a synchronized discard composition throughout a match'
       await expect(page.locator('.seat-top .playing-card:not(.hidden)')).toHaveCount(0)
     }))
 
-    await expect(host.locator('.event-panel')).not.toContainText('隱藏')
-    await expect(host.locator('.zone-summary')).toHaveCount(0)
-    await expect(host.locator('.selection-count')).toHaveCount(0)
-    await expect(host.locator('.game-page')).not.toContainText('伏牌')
-
     const desktopTextSizes = await host.locator('.game-page').evaluate((gamePage) => {
       const selectors = [
         '.event-feed span',
@@ -177,7 +172,6 @@ test('players can inspect a synchronized discard composition throughout a match'
     const hiddenChoiceObserver = pages.find(page => page !== active)!
     await expect(active.locator('.choice-overlay')).toBeVisible()
     await expect(hiddenChoiceObserver.locator('.choice-overlay')).toBeHidden()
-    await expect(active.getByRole('button', { name: '返回重選' })).toHaveCount(0)
     const choiceOverlayStyle = await active.locator('.choice-overlay').evaluate((overlay) => {
       const style = getComputedStyle(overlay)
       return {

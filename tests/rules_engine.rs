@@ -358,6 +358,116 @@ fn environment_healing_stacks_with_overcoming_interaction() {
 }
 
 #[test]
+fn overlapping_environment_and_generating_recovery_applies_once() {
+    let setup = two_player_setup_with_hp(100)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.environment = Some(Element::Metal);
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(5)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+    state
+        .hp
+        .iter_mut()
+        .find(|team_hp| team_hp.team == TeamId::new("team:p2"))
+        .unwrap()
+        .hp = 40;
+    state.last_formation_by_player.insert(
+        PlayerId::new("p2"),
+        LastFormationUse {
+            formation_id: "metal-strike".to_string(),
+            resolved_effect_id: "metal-strike".to_string(),
+            used_cards: vec![card(1)],
+            resolved_turn: 0,
+        },
+    );
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "earth-strike".to_string(),
+            cards: vec![card(5)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [GameEvent::AttackResolved {
+            point_breakdown: AttackPointBreakdown {
+                environment_effect:
+                    EnvironmentAttackEffect::GeneratingElementDamageConvertedToHealing {
+                        environment: Element::Metal,
+                    },
+                interaction: ElementInteraction::Generating,
+                damage_transform: DamageTransform::HealTarget,
+                final_amount: 9,
+                ..
+            },
+            hp_change: HpChangeDelta { new_hp: 49, .. },
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn environment_recovery_is_halved_rounding_up_by_same_element_neutralization() {
+    let setup = two_player_setup_with_hp(100)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.environment = Some(Element::Metal);
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(5)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+    state
+        .hp
+        .iter_mut()
+        .find(|team_hp| team_hp.team == TeamId::new("team:p2"))
+        .unwrap()
+        .hp = 40;
+    state.last_formation_by_player.insert(
+        PlayerId::new("p2"),
+        LastFormationUse {
+            formation_id: "earth-strike".to_string(),
+            resolved_effect_id: "earth-strike".to_string(),
+            used_cards: vec![card(5)],
+            resolved_turn: 0,
+        },
+    );
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "earth-strike".to_string(),
+            cards: vec![card(5)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [GameEvent::AttackResolved {
+            point_breakdown: AttackPointBreakdown {
+                interaction: ElementInteraction::Same,
+                damage_transform: DamageTransform::HealTarget,
+                final_amount: 5,
+                ..
+            },
+            hp_change: HpChangeDelta { new_hp: 45, .. },
+            ..
+        }]
+    ));
+}
+
+#[test]
 fn shield_receives_damage_before_environment_can_convert_it_to_healing() {
     let setup = two_player_setup_with_hp(100)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
@@ -427,6 +537,7 @@ fn sacred_beast_consumes_defense_without_preventing_damage() {
         owner: PlayerId::new("p2"),
         formation_id: "defense".to_string(),
         cards: vec![card(2), card(7)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 0,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -579,6 +690,7 @@ fn ineffective_defense_flips_and_is_consumed_without_preventing_damage() {
         owner: PlayerId::new("p1"),
         formation_id: "defense".to_string(),
         cards: vec![card(2), card(7)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 0,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -712,6 +824,49 @@ fn void_meridian_severing_without_environment_does_not_change_hp() {
     for event in &events {
         apply_event(&mut state, event);
     }
+    assert!(state.hp.iter().all(|team_hp| team_hp.hp == 100));
+}
+
+#[test]
+fn sealed_void_meridian_severing_does_not_clear_environment_or_change_hp() {
+    let setup = two_player_setup_with_hp(100)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.environment = Some(Element::Fire);
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(6), card(11)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+    state.covered_passives.push(fewfc::domain::CoveredPassive {
+        owner: PlayerId::new("p2"),
+        formation_id: "seal".to_string(),
+        cards: vec![card(3), card(8)],
+        star_substitution: None,
+        sealed: false,
+        covered_on_turn: 0,
+        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
+    });
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "void-meridian-severing".to_string(),
+            cards: vec![card(1), card(6), card(11)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        GameEvent::EnvironmentCleared { .. } | GameEvent::HpChanged { .. }
+    )));
+    for event in &events {
+        apply_event(&mut state, event);
+    }
+    assert_eq!(state.environment, Some(Element::Fire));
     assert!(state.hp.iter().all(|team_hp| team_hp.hp == 100));
 }
 
@@ -1557,6 +1712,7 @@ fn duplicate_covered_passive_is_engine_invariant_before_command_validation() {
         owner: PlayerId::new("p1"),
         formation_id: "defense".to_string(),
         cards: vec![card(2), card(7)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 1,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -1565,6 +1721,7 @@ fn duplicate_covered_passive_is_engine_invariant_before_command_validation() {
         owner: PlayerId::new("p1"),
         formation_id: "seal".to_string(),
         cards: vec![card(3), card(8)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 1,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -2997,6 +3154,7 @@ fn metamorphosis_copies_a_passive_effect_as_a_public_delayed_counter() {
         owner: PlayerId::new("p1"),
         formation_id: "defense".to_string(),
         cards: vec![card(2), card(7)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 1,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -3435,6 +3593,7 @@ fn performing_passive_spell_covers_cards_and_consumes_action() {
             player: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
             cards: vec![card(2), card(7)],
+            star_substitution: None,
             sealed: false,
         }]
     );
@@ -3451,6 +3610,7 @@ fn performing_passive_spell_covers_cards_and_consumes_action() {
             owner: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
             cards: vec![card(2), card(7)],
+            star_substitution: None,
             sealed: false,
             covered_on_turn: 1,
             reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -3512,6 +3672,7 @@ fn player_cannot_cover_second_passive_while_one_is_pending() {
         owner: PlayerId::new("p1"),
         formation_id: "seal".to_string(),
         cards: vec![card(3), card(8)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 1,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -3635,6 +3796,7 @@ fn defense_prevents_five_streams_damage_but_not_its_draw_bonus() {
         owner: PlayerId::new("p1"),
         formation_id: "defense".to_string(),
         cards: vec![card(7), card(12)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 1,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -3726,6 +3888,7 @@ fn countershock_splits_before_the_defenders_shield_absorbs_physical_damage() {
         owner: PlayerId::new("p1"),
         formation_id: "countershock".to_string(),
         cards: vec![card(4), card(9)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 1,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -3810,6 +3973,7 @@ fn countershock_splits_a_generating_attack_and_both_sides_recover_hp() {
         owner: PlayerId::new("p1"),
         formation_id: "countershock".to_string(),
         cards: vec![card(4), card(9)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 1,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -3858,6 +4022,7 @@ fn countershock_finishes_as_a_draw_when_both_sides_reach_zero() {
         owner: PlayerId::new("p1"),
         formation_id: "countershock".to_string(),
         cards: vec![card(4), card(9)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 1,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -3947,6 +4112,7 @@ fn seal_cancels_incoming_active_spell_effects_and_consumes_the_action() {
         owner: PlayerId::new("p1"),
         formation_id: "seal".to_string(),
         cards: vec![card(3), card(8)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 1,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -4011,6 +4177,7 @@ fn seal_cancels_chaos_without_leaving_a_pending_choice() {
         owner: PlayerId::new("p1"),
         formation_id: "seal".to_string(),
         cards: vec![card(8), card(13)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 1,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -4070,6 +4237,7 @@ fn seal_marks_incoming_passive_cover_as_sealed_without_exposing_the_marker() {
                 player: PlayerId::new("p2"),
                 formation_id: "countershock".to_string(),
                 cards: vec![card(4), card(9)],
+                star_substitution: None,
                 sealed: true,
             },
         ]
@@ -4083,6 +4251,7 @@ fn seal_marks_incoming_passive_cover_as_sealed_without_exposing_the_marker() {
             owner: PlayerId::new("p2"),
             formation_id: "countershock".to_string(),
             cards: vec![card(4), card(9)],
+            star_substitution: None,
             sealed: true,
             covered_on_turn: 2,
             reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -4094,6 +4263,7 @@ fn seal_marks_incoming_passive_cover_as_sealed_without_exposing_the_marker() {
             owner: PlayerId::new("p2"),
             formation_id: None,
             cards: PublicCardRefs::Hidden { count: 2 },
+            star_substitution: None,
         }]
     );
     assert_eq!(
@@ -4102,6 +4272,7 @@ fn seal_marks_incoming_passive_cover_as_sealed_without_exposing_the_marker() {
             owner: PlayerId::new("p2"),
             formation_id: Some("countershock".to_string()),
             cards: PublicCardRefs::Known(vec![card(4), card(9)]),
+            star_substitution: None,
         }]
     );
     assert_eq!(record.replay().unwrap(), state);
@@ -4176,6 +4347,7 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
             owner: PlayerId::new("p1"),
             formation_id: Some("defense".to_string()),
             cards: PublicCardRefs::Known(vec![card(2), card(7)]),
+            star_substitution: None,
         }]
     );
     assert_eq!(
@@ -4184,6 +4356,7 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
             owner: PlayerId::new("p1"),
             formation_id: None,
             cards: PublicCardRefs::Hidden { count: 2 },
+            star_substitution: None,
         }]
     );
     assert_eq!(
@@ -4192,6 +4365,7 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
             owner: PlayerId::new("p1"),
             formation_id: None,
             cards: PublicCardRefs::Hidden { count: 2 },
+            star_substitution: None,
         }]
     );
     assert_eq!(state.covered_passives[0].cards, vec![card(2), card(7)]);
@@ -4339,6 +4513,7 @@ fn previous_turn_covered_formation_hides_details_from_other_players() {
         owner: PlayerId::new("p1"),
         formation_id: "defense".to_string(),
         cards: vec![card(2), card(7)],
+        star_substitution: None,
         sealed: false,
         covered_on_turn: 1,
         reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -4485,6 +4660,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
         player: PlayerId::new("p1"),
         formation_id: "defense".to_string(),
         cards: vec![card(2), card(7)],
+        star_substitution: None,
         sealed: true,
     };
 
@@ -4494,6 +4670,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
             player: PlayerId::new("p1"),
             formation_id: Some("defense".to_string()),
             cards: PublicCardRefs::Known(vec![card(2), card(7)]),
+            star_substitution: None,
         }
     );
     assert_eq!(
@@ -4502,6 +4679,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
             player: PlayerId::new("p1"),
             formation_id: None,
             cards: PublicCardRefs::Hidden { count: 2 },
+            star_substitution: None,
         }
     );
     assert_eq!(
@@ -4510,6 +4688,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
             player: PlayerId::new("p1"),
             formation_id: None,
             cards: PublicCardRefs::Hidden { count: 2 },
+            star_substitution: None,
         }
     );
     assert_eq!(
@@ -4518,6 +4697,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
             player: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
             cards: vec![card(2), card(7)],
+            star_substitution: None,
             sealed: true,
         }
     );
@@ -4627,6 +4807,7 @@ fn record_event_feed_is_viewer_filtered_and_canonical_events_remain_replay_sourc
             player: PlayerId::new("p1"),
             formation_id: None,
             cards: PublicCardRefs::Hidden { count: 2 },
+            star_substitution: None,
         })
     );
     assert_eq!(
@@ -4635,6 +4816,7 @@ fn record_event_feed_is_viewer_filtered_and_canonical_events_remain_replay_sourc
             player: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
             cards: vec![card(2), card(7)],
+            star_substitution: None,
             sealed: false,
         })
     );

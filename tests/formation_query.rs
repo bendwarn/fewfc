@@ -53,8 +53,11 @@ fn setup() -> GameSetup {
 fn formations(actions: Vec<PlayableAction>) -> Vec<FormationCandidate> {
     actions
         .into_iter()
-        .map(|action| match action {
-            PlayableAction::PerformFormation(candidate) => candidate,
+        .filter_map(|action| match action {
+            PlayableAction::PerformFormation(candidate) => Some(candidate),
+            PlayableAction::ChangeProfession(_) | PlayableAction::ActivateProfessionAbility(_) => {
+                None
+            }
         })
         .collect()
 }

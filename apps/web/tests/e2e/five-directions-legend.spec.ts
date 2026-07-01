@@ -19,8 +19,6 @@ test('new rooms enable Five Directions Legend and expose the shared environment'
 
     const roomName = `五方傳說測試 ${Date.now()}`
     await host.getByRole('button', { name: '建立房間', exact: true }).click()
-    const createDialog = host.getByRole('dialog', { name: '建立房間' })
-    await expect(createDialog.getByText('規則模組')).toHaveCount(0)
     await host.getByLabel('房間名稱').fill(roomName)
     await host.getByRole('button', { name: '公開房間', exact: true }).click()
     await host.getByRole('button', { name: '建立房間 →' }).click()

@@ -1,4 +1,5 @@
 import type {
+  Element,
   LocalGameResponse,
   PlayerId,
   PlayableAction,
@@ -15,6 +16,7 @@ export type GameRoomAccess = 'private' | 'public'
 export type GameRoomCapacity = 2 | 4
 export const AVAILABLE_RULE_MODULES = [
   'star',
+  'hero-schools',
   'discard-retrieval',
   'personal-deck',
   'five-directions-legend',
@@ -156,7 +158,26 @@ export type OnlineGameAction =
   | { type: 'refresh' }
   | { type: 'advanceAutomatic' }
   | { type: 'passAction' }
-  | { type: 'performFormation'; player: PlayerId; formationId: string; cards: number[] }
+  | {
+      type: 'performFormation'
+      player: PlayerId
+      formationId: string
+      cards: number[]
+      starSubstitutionCard?: number
+      matchOptionRole?: string
+      matchOptionCard?: number
+      matchOptionSlots?: number
+    }
+  | { type: 'changeProfession'; player: PlayerId; professionId: string; cards: number[] }
+  | {
+      type: 'activateProfessionAbility'
+      player: PlayerId
+      abilityId: string
+      cards: number[]
+      targetCard?: number
+      declaredElement?: Element
+      declaredLevel?: number
+    }
   | { type: 'chooseTurnDiscard'; player: PlayerId; card: number }
   | { type: 'answerEffectChoice'; player: PlayerId; cards: number[] }
   | { type: 'retrievePreviousTurnDiscard'; player: PlayerId }
@@ -230,6 +251,10 @@ export type GameRoomRequest =
     }
   | {
       type: 'seedEndgameFixture'
+      actorUserId: string
+    }
+  | {
+      type: 'seedHeroSchoolsFixture'
       actorUserId: string
     }
   | {
@@ -316,6 +341,9 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     teamStars: [],
     starHistories: [],
     fiveStarAlignment: null,
+    professions: [],
+    professionCatalog: [],
+    preparedProfessionAbilities: [],
     previousTurnFormation: null,
   }
 }

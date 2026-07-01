@@ -8,9 +8,10 @@ import {
   requiresPendingCommandDraft,
 } from './game-room'
 
-test('Star and Five Directions Legend are available default Rule Modules', () => {
+test('all released advanced rules are available default Rule Modules', () => {
   assert.deepEqual(normalizeRuleModules(undefined), [
     'star',
+    'hero-schools',
     'discard-retrieval',
     'personal-deck',
     'five-directions-legend',
