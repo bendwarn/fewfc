@@ -55,9 +55,9 @@ fn formations(actions: Vec<PlayableAction>) -> Vec<FormationCandidate> {
         .into_iter()
         .filter_map(|action| match action {
             PlayableAction::PerformFormation(candidate) => Some(candidate),
-            PlayableAction::ChangeProfession(_) | PlayableAction::ActivateProfessionAbility(_) => {
-                None
-            }
+            PlayableAction::ChangeProfession(_)
+            | PlayableAction::ActivateProfessionAbility(_)
+            | PlayableAction::UseSpiritSkill(_) => None,
         })
         .collect()
 }
@@ -247,7 +247,7 @@ fn playable_actions_returns_error_while_choice_is_pending() {
 }
 
 #[test]
-fn playable_actions_returns_error_when_player_has_cannot_act_status() {
+fn playable_actions_returns_no_formations_when_player_has_cannot_act_status() {
     let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::Main;
@@ -260,13 +260,9 @@ fn playable_actions_returns_error_when_player_has_cannot_act_status() {
     });
 
     assert_eq!(
-        rules.playable_actions(&state, &PlayerId::new("p1"), &[]),
-        Err(GameError::Validation(
-            ValidationError::CannotPerformFormation {
-                reason: CannotPerformFormationReason::CannotActByStatus {
-                    player: PlayerId::new("p1"),
-                },
-            }
-        ))
+        rules
+            .playable_actions(&state, &PlayerId::new("p1"), &[])
+            .unwrap(),
+        Vec::new()
     );
 }

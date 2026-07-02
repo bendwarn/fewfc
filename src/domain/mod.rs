@@ -37,6 +37,7 @@ pub const FIVE_DIRECTIONS_LEGEND_MODULE_ID: &str = "five-directions-legend";
 pub const PERSONAL_DECK_MODULE_ID: &str = "personal-deck";
 pub const STAR_MODULE_ID: &str = "star";
 pub const HERO_SCHOOLS_MODULE_ID: &str = "hero-schools";
+pub const SPIRIT_MODULE_ID: &str = "spirit";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RulesetId(String);
@@ -89,6 +90,8 @@ pub struct PreparedProfessionAbility {
     pub level: u32,
     pub allowed_formation_scope: Vec<String>,
     pub prepared_on_turn: u64,
+    #[serde(default)]
+    pub interpretation_revision: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -146,6 +149,72 @@ pub enum StarKind {
     Water,
     Fire,
     Earth,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SpiritKind {
+    Metal,
+    Wood,
+    Water,
+    Fire,
+    Earth,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PlayerSpirit {
+    pub player: PlayerId,
+    pub spirit: SpiritKind,
+    pub power: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SpiritSkill {
+    FlyingBlade,
+    SwordRain,
+    Fragrance,
+    Bloom,
+    Flow,
+    Vastness,
+    Glimmer,
+    Splendor,
+    StoneShield,
+    RockWall,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SpiritLevelInterpretation {
+    pub player: PlayerId,
+    pub card: CardInstanceId,
+    pub level: u32,
+    pub applied_on_turn: u64,
+    pub interpretation_revision: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpiritBreakReason {
+    PowerDepleted,
+    VoidSpiritShattering,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SpiritPowerDelta {
+    pub player: PlayerId,
+    pub spirit: SpiritKind,
+    pub old_power: u32,
+    pub delta: i32,
+    pub new_power: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct TeamBloomResolution {
+    pub team: TeamId,
+    pub spirit_changes: Vec<SpiritPowerDelta>,
+    pub hp_change: HpChangeDelta,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum SpiritPowerChangeReason {
+    TurnDrawDiscard { card: CardInstanceId },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -537,6 +606,14 @@ pub struct GameState {
     #[serde(default)]
     pub professions: Vec<PlayerProfession>,
     #[serde(default)]
+    pub spirits: Vec<PlayerSpirit>,
+    #[serde(default)]
+    pub spirit_skill_use_turns: HashMap<PlayerId, u64>,
+    #[serde(default)]
+    pub spirit_level_interpretations: Vec<SpiritLevelInterpretation>,
+    #[serde(default)]
+    pub card_interpretation_revision: u64,
+    #[serde(default)]
     pub prepared_profession_abilities: Vec<PreparedProfessionAbility>,
     #[serde(default)]
     pub activated_profession_ability_turns: HashMap<PlayerId, u64>,
@@ -612,6 +689,10 @@ impl GameState {
                 .collect(),
             five_star_alignment: None,
             professions: Vec::new(),
+            spirits: Vec::new(),
+            spirit_skill_use_turns: HashMap::new(),
+            spirit_level_interpretations: Vec::new(),
+            card_interpretation_revision: 0,
             prepared_profession_abilities: Vec::new(),
             activated_profession_ability_turns: HashMap::new(),
             last_elemental_attack_by_player: HashMap::new(),
@@ -758,6 +839,23 @@ impl GameState {
             .find(|owned| &owned.player == player)
             .map(|owned| &owned.profession)
     }
+
+    pub fn spirit_for(&self, player: &PlayerId) -> Option<&PlayerSpirit> {
+        self.spirits.iter().find(|owned| &owned.player == player)
+    }
+
+    pub fn card_level_for(&self, player: &PlayerId, card: CardInstanceId) -> Option<u32> {
+        self.spirit_level_interpretations
+            .iter()
+            .rev()
+            .find(|interpretation| {
+                &interpretation.player == player
+                    && interpretation.card == card
+                    && interpretation.applied_on_turn == self.turn_number
+            })
+            .map(|interpretation| interpretation.level)
+            .or_else(|| self.card_def(card).map(|definition| definition.level))
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -833,6 +931,43 @@ pub enum GameEvent {
         player: PlayerId,
         ability_id: String,
         prepared: Option<PreparedProfessionAbility>,
+    },
+    SpiritSummoned {
+        player: PlayerId,
+        previous: Option<SpiritKind>,
+        spirit: SpiritKind,
+    },
+    SpiritPowerChanged {
+        player: PlayerId,
+        spirit: SpiritKind,
+        old_power: u32,
+        delta: i32,
+        new_power: u32,
+        reason: SpiritPowerChangeReason,
+    },
+    SpiritSkillUsed {
+        player: PlayerId,
+        spirit: SpiritKind,
+        skill: SpiritSkill,
+        old_power: u32,
+        new_power: u32,
+        selected_card: Option<CardInstanceId>,
+        declared_level: Option<u32>,
+    },
+    SpiritLevelInterpreted {
+        player: PlayerId,
+        card: CardInstanceId,
+        level: u32,
+        applied_on_turn: u64,
+        interpretation_revision: u64,
+    },
+    SpiritBroken {
+        player: PlayerId,
+        spirit: SpiritKind,
+        reason: SpiritBreakReason,
+    },
+    AutomaticBloomsResolved {
+        resolutions: Vec<TeamBloomResolution>,
     },
     CardsDrawnForTurnDiscardChoice {
         player: PlayerId,
@@ -930,6 +1065,13 @@ pub enum GameEvent {
         card_moves: Vec<CardMoveDelta>,
         broken_professions: Vec<PlayerProfession>,
         retained_legendary_professions: Vec<PlayerProfession>,
+    },
+    VoidSpiritShatteringResolved {
+        player: PlayerId,
+        card_moves: Vec<CardMoveDelta>,
+        spirit_changes: Vec<SpiritPowerDelta>,
+        broken_spirits: Vec<PlayerSpirit>,
+        hp_changes: Vec<HpChangeDelta>,
     },
     FiveStarAlignmentAchieved {
         player: PlayerId,
@@ -1048,6 +1190,12 @@ pub enum Command {
         cards: Vec<CardInstanceId>,
         target_card: Option<CardInstanceId>,
         declared_element: Option<Element>,
+        declared_level: Option<u32>,
+    },
+    UseSpiritSkill {
+        player: PlayerId,
+        skill: SpiritSkill,
+        selected_card: Option<CardInstanceId>,
         declared_level: Option<u32>,
     },
     ChooseTurnDiscard {
@@ -1264,6 +1412,25 @@ pub enum ValidationError {
         turn_number: u64,
     },
     ProfessionAbilityCannotResolve(String),
+    SpiritRuleDisabled,
+    NoSpirit {
+        player: PlayerId,
+    },
+    SpiritSkillUnavailable {
+        spirit: SpiritKind,
+        skill: SpiritSkill,
+    },
+    SpiritSkillAlreadyUsed {
+        player: PlayerId,
+        turn_number: u64,
+    },
+    InsufficientSpiritPower {
+        required: u32,
+        actual: u32,
+    },
+    SpiritSkillInputInvalid {
+        skill: SpiritSkill,
+    },
     UnexpectedDeclaredTargets {
         formation_id: String,
     },
@@ -1294,6 +1461,10 @@ pub enum ValidationError {
     UnsupportedRuleset(RulesetId),
     DuplicateRuleModule(RuleModuleId),
     UnknownRuleModule(RuleModuleId),
+    MissingRuleModuleDependencies {
+        module: RuleModuleId,
+        required: Vec<RuleModuleId>,
+    },
     PersonalDeckListsRequired,
     DuplicatePlayerDeckList(PlayerId),
     MissingPlayerDeckList(PlayerId),

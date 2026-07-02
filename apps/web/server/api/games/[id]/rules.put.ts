@@ -1,4 +1,7 @@
-import { normalizeServerRuleModules } from '../../../utils/rule-modules'
+import {
+  hasValidServerRuleModuleDependencies,
+  normalizeServerRuleModules,
+} from '../../../utils/rule-modules'
 
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
@@ -9,6 +12,12 @@ export default defineEventHandler(async (event) => {
     throw createError({
       statusCode: 400,
       statusMessage: 'Missing game id.',
+    })
+  }
+  if (!hasValidServerRuleModuleDependencies(body.enabledRuleModules)) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: 'Spirit requires every Advanced Rule Module.',
     })
   }
 

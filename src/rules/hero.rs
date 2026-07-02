@@ -579,7 +579,9 @@ fn submitted_card_facts(
             ))?;
             Ok(SubmittedCardFacts {
                 element: definition.element,
-                level: definition.level,
+                level: state
+                    .card_level_for(player, *card)
+                    .expect("known Card must have an effective level"),
             })
         })
         .collect()
@@ -1001,16 +1003,19 @@ pub(crate) fn playable_profession_abilities(
     let abilities = effective_abilities(profession);
     let mut candidates = Vec::new();
     if cards.len() == 1 {
-        let definition = state.card_def(cards[0]).ok_or(GameError::Validation(
-            ValidationError::MissingCardInstanceDefinition(cards[0]),
-        ))?;
+        let effective_level =
+            state
+                .card_level_for(player, cards[0])
+                .ok_or(GameError::Validation(
+                    ValidationError::MissingCardInstanceDefinition(cards[0]),
+                ))?;
         if abilities.contains(&ProfessionAbility::ShadowCut) {
             candidates.push(ProfessionAbilityCandidate {
                 ability_id: "shadow-cut".to_string(),
                 ability_name: "影切".to_string(),
                 rule_text: format!(
                     "捨棄此牌，上家扣除 {} 點生命；不結束行動",
-                    definition.level * 2
+                    effective_level * 2
                 ),
                 cards: cards.to_vec(),
                 target_card: None,
@@ -1018,7 +1023,7 @@ pub(crate) fn playable_profession_abilities(
                 declared_level: None,
             });
         }
-        if definition.level >= 4 && abilities.contains(&ProfessionAbility::Meditation) {
+        if effective_level >= 4 && abilities.contains(&ProfessionAbility::Meditation) {
             candidates.push(ProfessionAbilityCandidate {
                 ability_id: "meditation".to_string(),
                 ability_name: "冥思".to_string(),
@@ -1029,7 +1034,7 @@ pub(crate) fn playable_profession_abilities(
                 declared_level: None,
             });
         }
-        if definition.level >= 4
+        if effective_level >= 4
             && abilities.contains(&ProfessionAbility::Revelation)
             && state.deck_for(player).is_some_and(|deck| deck.len() >= 3)
         {
@@ -1194,6 +1199,7 @@ pub(crate) fn activate_profession_ability(
                     level,
                     allowed_formation_scope,
                     prepared_on_turn: state.turn_number,
+                    interpretation_revision: state.card_interpretation_revision + 1,
                 }),
             });
             events.push(GameEvent::CardsMoved {
@@ -1214,11 +1220,10 @@ pub(crate) fn activate_profession_ability(
                 .player_target(player, RulePlayerTarget::PreviousPlayer)?;
             let team = TurnOrderTargets::new(state).team_of(&target)?;
             let level = state
-                .card_def(cards[0])
+                .card_level_for(player, cards[0])
                 .ok_or(GameError::Validation(
                     ValidationError::MissingCardInstanceDefinition(cards[0]),
-                ))?
-                .level as i32;
+                ))? as i32;
             events.push(GameEvent::ProfessionAbilityActivated {
                 player: player.clone(),
                 ability_id: ability_id.to_string(),
@@ -1232,7 +1237,11 @@ pub(crate) fn activate_profession_ability(
             });
         }
         "meditation" => {
-            if cards.len() != 1 || state.card_def(cards[0]).is_none_or(|card| card.level < 4) {
+            if cards.len() != 1
+                || state
+                    .card_level_for(player, cards[0])
+                    .is_none_or(|level| level < 4)
+            {
                 return cannot_resolve(ability_id);
             }
             events.push(GameEvent::ProfessionAbilityActivated {
@@ -1246,7 +1255,11 @@ pub(crate) fn activate_profession_ability(
             events.push(turn_draw_bonus_event(state, player, 1));
         }
         "revelation" => {
-            if cards.len() != 1 || state.card_def(cards[0]).is_none_or(|card| card.level < 4) {
+            if cards.len() != 1
+                || state
+                    .card_level_for(player, cards[0])
+                    .is_none_or(|level| level < 4)
+            {
                 return cannot_resolve(ability_id);
             }
             let deck = state.deck_for(player).ok_or_else(|| {

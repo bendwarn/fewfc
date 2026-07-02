@@ -2,7 +2,7 @@ use crate::domain::{
     CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, FIVE_DIRECTIONS_LEGEND_MODULE_ID,
     GameError, GameEvent, GameResult, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID,
     PERSONAL_DECK_MODULE_ID, Player, PlayerDeckList, PlayerId, RuleModuleId, RulesetId,
-    STAR_MODULE_ID, ValidationError, validate_setup,
+    SPIRIT_MODULE_ID, STAR_MODULE_ID, ValidationError, validate_setup,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -14,6 +14,7 @@ const OFFICIAL_RULE_MODULE_IDS: &[&str] = &[
     FIVE_DIRECTIONS_LEGEND_MODULE_ID,
     STAR_MODULE_ID,
     HERO_SCHOOLS_MODULE_ID,
+    SPIRIT_MODULE_ID,
 ];
 const DEFAULT_RULE_MODULE_IDS: &[&str] = &[
     DISCARD_RETRIEVAL_MODULE_ID,
@@ -21,6 +22,7 @@ const DEFAULT_RULE_MODULE_IDS: &[&str] = &[
     FIVE_DIRECTIONS_LEGEND_MODULE_ID,
     STAR_MODULE_ID,
     HERO_SCHOOLS_MODULE_ID,
+    SPIRIT_MODULE_ID,
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -166,6 +168,29 @@ impl OfficialRules {
                 return Err(GameError::Validation(ValidationError::UnknownRuleModule(
                     module.clone(),
                 )));
+            }
+        }
+
+        if modules
+            .iter()
+            .any(|module| module.as_str() == SPIRIT_MODULE_ID)
+        {
+            let required = [
+                STAR_MODULE_ID,
+                FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+                HERO_SCHOOLS_MODULE_ID,
+            ]
+            .into_iter()
+            .filter(|required| !modules.iter().any(|module| module.as_str() == *required))
+            .map(RuleModuleId::new)
+            .collect::<Vec<_>>();
+            if !required.is_empty() {
+                return Err(GameError::Validation(
+                    ValidationError::MissingRuleModuleDependencies {
+                        module: RuleModuleId::new(SPIRIT_MODULE_ID),
+                        required,
+                    },
+                ));
             }
         }
 

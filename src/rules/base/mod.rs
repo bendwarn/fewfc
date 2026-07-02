@@ -43,7 +43,9 @@ impl BaseRuleset {
         state: &GameState,
         command: Command,
     ) -> GameResult<Vec<GameEvent>> {
-        decide_command_with_base_ruleset(state, command)
+        let mut events = decide_command_with_base_ruleset(state, command)?;
+        crate::rules::spirit::append_automatic_blooms(state, &mut events)?;
+        Ok(events)
     }
 
     pub(crate) fn advance_automatic(&self, state: &GameState) -> GameResult<Vec<GameEvent>> {
@@ -58,21 +60,33 @@ impl BaseRuleset {
     ) -> GameResult<Vec<PlayableAction>> {
         ensure_can_query_playable_actions(state, player)?;
 
-        let mut actions =
-            formation_selection::FormationSelection::new(state, player, selected_cards.to_vec())?
+        let mut actions = Vec::new();
+        if !player_has_status(state, player, "CannotAct") {
+            actions.extend(
+                formation_selection::FormationSelection::new(
+                    state,
+                    player,
+                    selected_cards.to_vec(),
+                )?
                 .candidates()
                 .into_iter()
-                .map(PlayableAction::PerformFormation)
-                .collect::<Vec<_>>();
+                .map(PlayableAction::PerformFormation),
+            );
+            actions.extend(
+                crate::rules::hero::playable_profession_changes(state, player, selected_cards)?
+                    .into_iter()
+                    .map(PlayableAction::ChangeProfession),
+            );
+            actions.extend(
+                crate::rules::hero::playable_profession_abilities(state, player, selected_cards)?
+                    .into_iter()
+                    .map(PlayableAction::ActivateProfessionAbility),
+            );
+        }
         actions.extend(
-            crate::rules::hero::playable_profession_changes(state, player, selected_cards)?
+            crate::rules::spirit::playable_skills(state, player, selected_cards)
                 .into_iter()
-                .map(PlayableAction::ChangeProfession),
-        );
-        actions.extend(
-            crate::rules::hero::playable_profession_abilities(state, player, selected_cards)?
-                .into_iter()
-                .map(PlayableAction::ActivateProfessionAbility),
+                .map(PlayableAction::UseSpiritSkill),
         );
         Ok(actions)
     }
@@ -768,6 +782,16 @@ fn decide_command_with_base_ruleset(
                 declared_level,
             )
         }
+        Command::UseSpiritSkill {
+            player,
+            skill,
+            selected_card,
+            declared_level,
+        } => {
+            ensure_current_player(state, &player)?;
+            ensure_phase(state, Phase::Main)?;
+            crate::rules::spirit::use_skill(state, &player, skill, selected_card, declared_level)
+        }
         Command::ChooseTurnDiscard { player, discard } => {
             ensure_current_player(state, &player)?;
             ensure_phase(state, Phase::TurnDrawDiscardChoice)?;
@@ -789,7 +813,26 @@ fn decide_command_with_base_ruleset(
                 )));
             }
 
-            Ok(vec![GameEvent::TurnDiscardChosen { player, discard }])
+            let mut events = vec![GameEvent::TurnDiscardChosen {
+                player: player.clone(),
+                discard,
+            }];
+            if let Some(owned) = state.spirit_for(&player)
+                && owned.power < 6
+                && state.card_element(discard) == Some(crate::rules::spirit::element(owned.spirit))
+            {
+                events.push(GameEvent::SpiritPowerChanged {
+                    player,
+                    spirit: owned.spirit,
+                    old_power: owned.power,
+                    delta: 1,
+                    new_power: owned.power + 1,
+                    reason: crate::domain::SpiritPowerChangeReason::TurnDrawDiscard {
+                        card: discard,
+                    },
+                });
+            }
+            Ok(events)
         }
         Command::AnswerEffectChoice {
             player,
@@ -1016,16 +1059,6 @@ fn ensure_can_query_playable_actions(
                 reason: CannotPerformFormationReason::WrongPhase {
                     expected: Phase::Main,
                     actual: state.phase,
-                },
-            },
-        ));
-    }
-
-    if player_has_status(state, player, "CannotAct") {
-        return Err(GameError::Validation(
-            ValidationError::CannotPerformFormation {
-                reason: CannotPerformFormationReason::CannotActByStatus {
-                    player: player.clone(),
                 },
             },
         ));

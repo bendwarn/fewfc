@@ -37,8 +37,13 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
     };
     let target = attack_target(state, &request.attacker, &plan)?;
     let target_team = player_team(state, &target)?;
-    let raw_points =
-        compute_attack_points(state, &request.point_formula, &request.used_cards, &target)?;
+    let raw_points = compute_attack_points(
+        state,
+        &request.attacker,
+        &request.point_formula,
+        &request.used_cards,
+        &target,
+    )?;
     let points = if request.mode == AttackResolutionMode::FormationUse {
         crate::rules::hero::modify_attack_points(
             state,
@@ -259,7 +264,7 @@ pub(super) fn preview_attack_points(
     cards: &[CardInstanceId],
 ) -> GameResult<i32> {
     let target = attack_target(state, attacker, plan)?;
-    let points = compute_attack_points(state, &plan.point_formula, cards, &target)?;
+    let points = compute_attack_points(state, attacker, &plan.point_formula, cards, &target)?;
     Ok(crate::rules::hero::modify_attack_points(
         state,
         attacker,
@@ -351,6 +356,7 @@ fn player_team(state: &GameState, player: &PlayerId) -> GameResult<TeamId> {
 
 fn compute_attack_points(
     state: &GameState,
+    attacker: &PlayerId,
     formula: &PointFormula,
     cards: &[CardInstanceId],
     target: &PlayerId,
@@ -358,11 +364,10 @@ fn compute_attack_points(
     let level_sum = || -> GameResult<i32> {
         cards.iter().try_fold(0, |sum, card| {
             let level = state
-                .card_def(*card)
+                .card_level_for(attacker, *card)
                 .ok_or(GameError::Validation(
                     ValidationError::MissingCardInstanceDefinition(*card),
-                ))?
-                .level as i32;
+                ))? as i32;
             Ok(sum + level)
         })
     };
@@ -383,9 +388,13 @@ fn compute_attack_points(
         } => {
             let levels = cards
                 .iter()
-                .filter_map(|card| state.card_def(*card))
-                .filter(|card| card.element == *element)
-                .map(|card| card.level as i32)
+                .filter(|card| {
+                    state
+                        .card_def(**card)
+                        .is_some_and(|definition| definition.element == *element)
+                })
+                .filter_map(|card| state.card_level_for(attacker, *card))
+                .map(|level| level as i32)
                 .collect::<Vec<_>>();
             Ok(levels.into_iter().product::<i32>() * *multiplier as i32)
         }
@@ -644,6 +653,7 @@ mod tests {
         assert_eq!(
             compute_attack_points(
                 &state,
+                &PlayerId::new("p1"),
                 &PointFormula::LevelSumTimes(1),
                 &[CardInstanceId::new(1), CardInstanceId::new(2)],
                 &PlayerId::new("p2"),

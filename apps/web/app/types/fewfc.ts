@@ -3,6 +3,7 @@ export type TeamId = string
 export type ViewerId = PlayerId | 'observer'
 export type CardInstanceId = number
 export type StarKind = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
+export type SpiritKind = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
 export type Element = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
 
 export interface StarElementSubstitution {
@@ -118,6 +119,11 @@ export interface PublicGameState {
     level: number
     allowedFormationScope: string[]
   }>
+  spirits: Array<{
+    player: PlayerId
+    spirit: SpiritKind
+    power: number
+  }>
   previousTurnFormation: PublicPreviousTurnFormation | null
 }
 
@@ -159,6 +165,15 @@ export type PlayableAction =
       cards: CardInstanceId[]
       targetCard: CardInstanceId | null
       declaredElement: Element | null
+      declaredLevel: number | null
+    }
+  | {
+      type: 'useSpiritSkill'
+      id: string
+      name: string
+      summary: string
+      cards: CardInstanceId[]
+      selectedCard: CardInstanceId | null
       declaredLevel: number | null
     }
 

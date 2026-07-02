@@ -38,6 +38,7 @@ pub struct PublicGameState {
     pub five_star_alignment: Option<crate::domain::FiveStarAlignment>,
     pub professions: Vec<PlayerProfession>,
     pub prepared_profession_abilities: Vec<crate::domain::PreparedProfessionAbility>,
+    pub spirits: Vec<crate::domain::PlayerSpirit>,
     pub previous_turn_formation: Option<PublicPreviousTurnFormation>,
 }
 
@@ -122,6 +123,21 @@ pub enum PublicGameEvent {
         player: PlayerId,
         ability_id: String,
         cards: PublicCardRefs,
+    },
+    SpiritSkillUsed {
+        player: PlayerId,
+        spirit: crate::domain::SpiritKind,
+        skill: crate::domain::SpiritSkill,
+        old_power: u32,
+        new_power: u32,
+        selected_card: Option<CardInstanceId>,
+        declared_level: Option<u32>,
+    },
+    SpiritLevelInterpreted {
+        player: PlayerId,
+        card: Option<CardInstanceId>,
+        level: u32,
+        applied_on_turn: u64,
     },
     EffectChoiceRequested {
         player: PlayerId,
@@ -269,6 +285,10 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .has_rule_module(crate::domain::HERO_SCHOOLS_MODULE_ID)
             .then(|| state.prepared_profession_abilities.clone())
             .unwrap_or_default(),
+        spirits: state
+            .has_rule_module(crate::domain::SPIRIT_MODULE_ID)
+            .then(|| state.spirits.clone())
+            .unwrap_or_default(),
         previous_turn_formation,
     }
 }
@@ -375,11 +395,47 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
                 PublicCardRefs::Hidden { count: cards.len() }
             },
         },
+        GameEvent::SpiritSkillUsed {
+            player,
+            spirit,
+            skill,
+            old_power,
+            new_power,
+            selected_card,
+            declared_level,
+        } => PublicGameEvent::SpiritSkillUsed {
+            player: player.clone(),
+            spirit: *spirit,
+            skill: *skill,
+            old_power: *old_power,
+            new_power: *new_power,
+            selected_card: policy
+                .can_see_player_hidden_cards(player)
+                .then_some(*selected_card)
+                .flatten(),
+            declared_level: *declared_level,
+        },
+        GameEvent::SpiritLevelInterpreted {
+            player,
+            card,
+            level,
+            applied_on_turn,
+            ..
+        } => PublicGameEvent::SpiritLevelInterpreted {
+            player: player.clone(),
+            card: policy.can_see_player_hidden_cards(player).then_some(*card),
+            level: *level,
+            applied_on_turn: *applied_on_turn,
+        },
         GameEvent::TurnStarted { .. }
         | GameEvent::ActionPassed { .. }
         | GameEvent::ProfessionChanged { .. }
         | GameEvent::ProfessionBroken { .. }
         | GameEvent::ProfessionAbilityActivated { .. }
+        | GameEvent::SpiritSummoned { .. }
+        | GameEvent::SpiritPowerChanged { .. }
+        | GameEvent::SpiritBroken { .. }
+        | GameEvent::AutomaticBloomsResolved { .. }
         | GameEvent::PassiveCoverRevealed { .. }
         | GameEvent::TurnDiscardChosen { .. }
         | GameEvent::TurnDrawSkipped { .. }
@@ -396,6 +452,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::StarSummoned { .. }
         | GameEvent::VoidStarBreakingCompleted { .. }
         | GameEvent::VoidReversionResolved { .. }
+        | GameEvent::VoidSpiritShatteringResolved { .. }
         | GameEvent::FiveStarAlignmentAchieved { .. }
         | GameEvent::TurnDrawBonusChanged { .. }
         | GameEvent::ShieldChanged { .. }

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { normalizeServerRuleModules } from '../../server/utils/rule-modules'
+import {
+  hasValidServerRuleModuleDependencies,
+  normalizeServerRuleModules,
+} from '../../server/utils/rule-modules'
 import { normalizeRuleModules } from '../../shared/game-room'
 
 test('server and room Rule Module allowlists stay aligned', () => {
@@ -21,4 +24,16 @@ test('Hero Schools is available and enabled by default for new rooms', () => {
 test('stored room module lists remain Hero-disabled when they omit Hero Schools', () => {
   assert.equal(normalizeRuleModules(['star']).includes('hero-schools'), false)
   assert.equal(normalizeServerRuleModules(['star']).includes('hero-schools'), false)
+})
+
+test('Spirit is default-on and requires every Advanced Rule Module', () => {
+  assert.equal(normalizeRuleModules(undefined).includes('spirit'), true)
+  assert.equal(normalizeServerRuleModules(undefined).includes('spirit'), true)
+  assert.equal(normalizeRuleModules(['spirit']).includes('spirit'), false)
+  assert.equal(normalizeServerRuleModules(['spirit']).includes('spirit'), false)
+  assert.equal(hasValidServerRuleModuleDependencies(['spirit']), false)
+  const complete = ['star', 'hero-schools', 'five-directions-legend', 'spirit']
+  assert.equal(normalizeRuleModules(complete).includes('spirit'), true)
+  assert.equal(normalizeServerRuleModules(complete).includes('spirit'), true)
+  assert.equal(hasValidServerRuleModuleDependencies(complete), true)
 })

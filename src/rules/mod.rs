@@ -4,6 +4,7 @@ pub(crate) mod base;
 pub(crate) mod hero;
 mod official;
 pub(crate) mod projection;
+pub(crate) mod spirit;
 pub(crate) mod star;
 
 pub use official::OfficialRules;
@@ -66,6 +67,7 @@ pub enum PlayableAction {
     PerformFormation(FormationCandidate),
     ChangeProfession(ProfessionChangeCandidate),
     ActivateProfessionAbility(ProfessionAbilityCandidate),
+    UseSpiritSkill(SpiritSkillCandidate),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,6 +86,15 @@ pub struct ProfessionAbilityCandidate {
     pub cards: Vec<crate::domain::CardInstanceId>,
     pub target_card: Option<crate::domain::CardInstanceId>,
     pub declared_element: Option<Element>,
+    pub declared_level: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpiritSkillCandidate {
+    pub skill: crate::domain::SpiritSkill,
+    pub skill_name: String,
+    pub rule_text: String,
+    pub selected_card: Option<crate::domain::CardInstanceId>,
     pub declared_level: Option<u32>,
 }
 
@@ -307,6 +318,12 @@ pub(crate) fn official_formation_registry(
         .any(|module| module.as_str() == crate::domain::HERO_SCHOOLS_MODULE_ID)
     {
         specs.extend(hero::formation_specs());
+    }
+    if modules
+        .iter()
+        .any(|module| module.as_str() == crate::domain::SPIRIT_MODULE_ID)
+    {
+        specs.extend(spirit::specs());
     }
     FormationRegistry::new(
         specs.iter().map(|spec| spec.formation.clone()).collect(),

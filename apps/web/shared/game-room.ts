@@ -20,12 +20,21 @@ export const AVAILABLE_RULE_MODULES = [
   'discard-retrieval',
   'personal-deck',
   'five-directions-legend',
+  'spirit',
 ] as const
 export const DEFAULT_RULE_MODULES = [...AVAILABLE_RULE_MODULES]
+const SPIRIT_DEPENDENCIES = ['star', 'hero-schools', 'five-directions-legend'] as const
 
 export function normalizeRuleModules(modules: unknown): string[] {
   if (!Array.isArray(modules)) return [...DEFAULT_RULE_MODULES]
-  return AVAILABLE_RULE_MODULES.filter(module => modules.includes(module))
+  const normalized = AVAILABLE_RULE_MODULES.filter(module => modules.includes(module))
+  if (
+    normalized.includes('spirit')
+    && !SPIRIT_DEPENDENCIES.every(module => normalized.includes(module))
+  ) {
+    return normalized.filter(module => module !== 'spirit')
+  }
+  return normalized
 }
 
 export interface GameRoomMember {
@@ -178,6 +187,13 @@ export type OnlineGameAction =
       declaredElement?: Element
       declaredLevel?: number
     }
+  | {
+      type: 'useSpiritSkill'
+      player: PlayerId
+      skill: string
+      selectedCard?: number
+      declaredLevel?: number
+    }
   | { type: 'chooseTurnDiscard'; player: PlayerId; card: number }
   | { type: 'answerEffectChoice'; player: PlayerId; cards: number[] }
   | { type: 'retrievePreviousTurnDiscard'; player: PlayerId }
@@ -255,6 +271,10 @@ export type GameRoomRequest =
     }
   | {
       type: 'seedHeroSchoolsFixture'
+      actorUserId: string
+    }
+  | {
+      type: 'seedSpiritFixture'
       actorUserId: string
     }
   | {
@@ -344,6 +364,7 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     professions: [],
     professionCatalog: [],
     preparedProfessionAbilities: [],
+    spirits: [],
     previousTurnFormation: null,
   }
 }

@@ -47,6 +47,7 @@ function emptyState(): PublicGameState {
     professions: [],
     professionCatalog: [],
     preparedProfessionAbilities: [],
+    spirits: [],
     previousTurnFormation: null,
   }
 }
@@ -63,12 +64,16 @@ export function useGameRoom(viewer: ViewerRef) {
   const playableActions = ref<PlayableAction[]>([])
   const playableAbilities = computed(() => (
     playableActions.value.filter(
-      (action): action is Extract<PlayableAction, { type: 'activateProfessionAbility' }> =>
-        action.type === 'activateProfessionAbility',
+      (action): action is Extract<
+        PlayableAction,
+        { type: 'activateProfessionAbility' | 'useSpiritSkill' }
+      > => action.type === 'activateProfessionAbility' || action.type === 'useSpiritSkill',
     )
   ))
   const playableMainActions = computed(() => (
-    playableActions.value.filter(action => action.type !== 'activateProfessionAbility')
+    playableActions.value.filter(
+      action => action.type !== 'activateProfessionAbility' && action.type !== 'useSpiritSkill',
+    )
   ))
   const errorMessage = ref<string | null>(null)
   const isLoading = ref(false)
@@ -431,6 +436,17 @@ export function useGameRoom(viewer: ViewerRef) {
           cards: action.cards,
           targetCard: action.targetCard ?? undefined,
           declaredElement: action.declaredElement ?? undefined,
+          declaredLevel: action.declaredLevel ?? undefined,
+        })) {
+          selectedCards.value = []
+        }
+        break
+      case 'useSpiritSkill':
+        if (await submitOnline({
+          type: 'useSpiritSkill',
+          player,
+          skill: action.id,
+          selectedCard: action.selectedCard ?? undefined,
           declaredLevel: action.declaredLevel ?? undefined,
         })) {
           selectedCards.value = []

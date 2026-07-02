@@ -1,5 +1,8 @@
 import type { GameRoomAccess, GameRoomCapacity } from '../../shared/game-room'
-import { normalizeServerRuleModules } from '../utils/rule-modules'
+import {
+  hasValidServerRuleModuleDependencies,
+  normalizeServerRuleModules,
+} from '../utils/rule-modules'
 
 function roomAccess(value: unknown): GameRoomAccess {
   return value === 'public' ? 'public' : 'private'
@@ -28,6 +31,12 @@ export default defineEventHandler(async (event) => {
     enabledRuleModules?: unknown
   }>(event)
   const gameId = crypto.randomUUID()
+  if (!hasValidServerRuleModuleDependencies(body.enabledRuleModules)) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: 'Spirit requires every Advanced Rule Module.',
+    })
+  }
   const invitation = {
     roomCode: roomCode(),
     inviteToken: crypto.randomUUID(),

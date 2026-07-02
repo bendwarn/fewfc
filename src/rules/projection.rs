@@ -95,8 +95,117 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .insert(player.clone(), state.turn_number);
             clear_prepared_ability(state, player);
             if let Some(prepared) = prepared {
+                state.card_interpretation_revision = state
+                    .card_interpretation_revision
+                    .max(prepared.interpretation_revision);
                 state.prepared_profession_abilities.push(prepared.clone());
             }
+        }
+        GameEvent::SpiritSummoned { player, spirit, .. } => {
+            state.spirit_skill_use_turns.remove(player);
+            if let Some(owned) = state
+                .spirits
+                .iter_mut()
+                .find(|owned| &owned.player == player)
+            {
+                owned.spirit = *spirit;
+                owned.power = 2;
+            } else {
+                state.spirits.push(crate::domain::PlayerSpirit {
+                    player: player.clone(),
+                    spirit: *spirit,
+                    power: 2,
+                });
+            }
+        }
+        GameEvent::SpiritPowerChanged {
+            player,
+            spirit,
+            old_power,
+            new_power,
+            ..
+        } => {
+            let owned = state
+                .spirits
+                .iter_mut()
+                .find(|owned| &owned.player == player && owned.spirit == *spirit)
+                .expect("canonical Spirit Power change must target the owned Spirit");
+            debug_assert_eq!(owned.power, *old_power);
+            owned.power = *new_power;
+        }
+        GameEvent::SpiritSkillUsed {
+            player,
+            spirit,
+            old_power,
+            new_power,
+            ..
+        } => {
+            let owned = state
+                .spirits
+                .iter_mut()
+                .find(|owned| &owned.player == player && owned.spirit == *spirit)
+                .expect("canonical Spirit Skill must target the owned Spirit");
+            debug_assert_eq!(owned.power, *old_power);
+            owned.power = *new_power;
+            state
+                .spirit_skill_use_turns
+                .insert(player.clone(), state.turn_number);
+        }
+        GameEvent::SpiritLevelInterpreted {
+            player,
+            card,
+            level,
+            applied_on_turn,
+            interpretation_revision,
+        } => {
+            state.card_interpretation_revision = state
+                .card_interpretation_revision
+                .max(*interpretation_revision);
+            state
+                .spirit_level_interpretations
+                .push(crate::domain::SpiritLevelInterpretation {
+                    player: player.clone(),
+                    card: *card,
+                    level: *level,
+                    applied_on_turn: *applied_on_turn,
+                    interpretation_revision: *interpretation_revision,
+                });
+        }
+        GameEvent::SpiritBroken { player, spirit, .. } => {
+            let position = state
+                .spirits
+                .iter()
+                .position(|owned| &owned.player == player && owned.spirit == *spirit)
+                .expect("canonical Spirit breaking must target the owned Spirit");
+            state.spirits.remove(position);
+            state.spirit_skill_use_turns.remove(player);
+        }
+        GameEvent::AutomaticBloomsResolved { resolutions } => {
+            for resolution in resolutions {
+                for change in &resolution.spirit_changes {
+                    let owned = state
+                        .spirits
+                        .iter_mut()
+                        .find(|owned| {
+                            owned.player == change.player && owned.spirit == change.spirit
+                        })
+                        .expect("canonical Bloom must target an owned Spirit");
+                    debug_assert_eq!(owned.power, change.old_power);
+                    owned.power = change.new_power;
+                    if change.new_power == 0 {
+                        state.spirit_skill_use_turns.remove(&change.player);
+                    }
+                }
+                let team_hp = state
+                    .hp
+                    .iter_mut()
+                    .find(|team_hp| team_hp.team == resolution.team)
+                    .expect("canonical Bloom must target an existing Team");
+                debug_assert_eq!(team_hp.hp, resolution.hp_change.old_hp);
+                team_hp.hp = resolution.hp_change.new_hp;
+            }
+            state.spirits.retain(|owned| owned.power > 0);
+            finish_game_if_needed(state);
         }
         GameEvent::FormationPerformed {
             player,
@@ -369,6 +478,51 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             clear_prepared_ability(state, player);
             finish_game_if_needed(state);
         }
+        GameEvent::VoidSpiritShatteringResolved {
+            player,
+            card_moves,
+            spirit_changes,
+            broken_spirits,
+            hp_changes,
+        } => {
+            for card_move in card_moves {
+                apply_card_move(state, card_move);
+            }
+            for change in spirit_changes {
+                let owned = state
+                    .spirits
+                    .iter_mut()
+                    .find(|owned| owned.player == change.player && owned.spirit == change.spirit)
+                    .expect("canonical Void Spirit-Shattering must target an owned Spirit");
+                debug_assert_eq!(owned.power, change.old_power);
+                owned.power = change.new_power;
+            }
+            for broken in broken_spirits {
+                state.spirit_skill_use_turns.remove(&broken.player);
+            }
+            state.spirits.retain(|owned| owned.power > 0);
+            for change in hp_changes {
+                let team_hp = state
+                    .hp
+                    .iter_mut()
+                    .find(|team_hp| team_hp.team == change.team)
+                    .expect("canonical Void Spirit-Shattering must target an existing Team");
+                debug_assert_eq!(team_hp.hp, change.old_hp);
+                team_hp.hp = change.new_hp;
+            }
+            state.last_formation_by_player.insert(
+                player.clone(),
+                LastFormationUse {
+                    formation_id: "void-spirit-shattering".to_string(),
+                    resolved_effect_id: "void-spirit-shattering".to_string(),
+                    used_cards: card_moves.iter().map(|movement| movement.card).collect(),
+                    resolved_turn: state.turn_number,
+                },
+            );
+            state.phase = crate::domain::Phase::TurnDraw;
+            clear_prepared_ability(state, player);
+            finish_game_if_needed(state);
+        }
         GameEvent::FiveStarAlignmentAchieved { player, team } => {
             state.five_star_alignment = Some(crate::domain::FiveStarAlignment {
                 player: player.clone(),
@@ -600,6 +754,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             debug_assert_eq!(state.phase, crate::domain::Phase::TurnEnd);
 
             state.turn_draw_bonus_by_player.remove(player);
+            state
+                .spirit_level_interpretations
+                .retain(|interpretation| &interpretation.player != player);
             state.current_turn_index = (state.current_turn_index + 1) % state.turn_order.len();
             state.turn_number += 1;
             state.phase = crate::domain::Phase::TurnStart;
@@ -737,6 +894,25 @@ fn finish_game_if_needed(state: &mut GameState) {
     let defeated_count = state.hp.iter().filter(|team_hp| team_hp.hp == 0).count();
 
     if defeated_count == 0 {
+        return;
+    }
+    if state.has_rule_module(crate::domain::SPIRIT_MODULE_ID)
+        && state
+            .hp
+            .iter()
+            .filter(|team_hp| team_hp.hp == 0)
+            .any(|team_hp| {
+                state.spirits.iter().any(|owned| {
+                    owned.spirit == crate::domain::SpiritKind::Wood
+                        && owned.power == 6
+                        && state
+                            .players
+                            .iter()
+                            .find(|player| player.id == owned.player)
+                            .is_some_and(|player| player.team == team_hp.team)
+                })
+            })
+    {
         return;
     }
 

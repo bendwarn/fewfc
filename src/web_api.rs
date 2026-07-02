@@ -130,6 +130,16 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                                 declared_level: candidate.declared_level,
                             }
                         }
+                        PlayableAction::UseSpiritSkill(candidate) => {
+                            WebPlayableAction::UseSpiritSkill {
+                                id: format!("{:?}", candidate.skill),
+                                name: candidate.skill_name,
+                                summary: candidate.rule_text,
+                                cards: candidate.selected_card.into_iter().collect(),
+                                selected_card: candidate.selected_card,
+                                declared_level: candidate.declared_level,
+                            }
+                        }
                     })
                     .collect(),
             );
@@ -196,6 +206,21 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                     cards,
                     target_card,
                     declared_element,
+                    declared_level,
+                })
+                .map_err(ApiError::Game)?;
+        }
+        ApiAction::UseSpiritSkill {
+            player,
+            skill,
+            selected_card,
+            declared_level,
+        } => {
+            let _ = record
+                .handle(Command::UseSpiritSkill {
+                    player: PlayerId::new(player),
+                    skill,
+                    selected_card,
                     declared_level,
                 })
                 .map_err(ApiError::Game)?;
@@ -296,10 +321,48 @@ fn response_for(
     viewer: Viewer,
     card_labels: &HashMap<CardInstanceId, String>,
     formation_names: &HashMap<String, String>,
-    playable_actions: Vec<WebPlayableAction>,
+    mut playable_actions: Vec<WebPlayableAction>,
 ) -> Result<ApiResponse, ApiError> {
     let can_pass = pass_action_for_state(record.state()).is_some();
     let can_retrieve_discard = can_retrieve_discard(record.state());
+    if let Viewer::Player(player) = &viewer
+        && record.state().current_player() == Some(player)
+        && record.state().phase == Phase::Main
+        && record.state().pending_choice.is_none()
+    {
+        for candidate in record
+            .playable_actions(player, &[])
+            .map_err(ApiError::Game)?
+            .into_iter()
+            .filter_map(|action| match action {
+                PlayableAction::UseSpiritSkill(candidate) => Some(candidate),
+                _ => None,
+            })
+        {
+            let id = format!("{:?}", candidate.skill);
+            let duplicate = playable_actions.iter().any(|action| {
+                matches!(
+                    action,
+                    WebPlayableAction::UseSpiritSkill {
+                        id: existing,
+                        selected_card: None,
+                        declared_level: None,
+                        ..
+                    } if existing == &id
+                )
+            });
+            if !duplicate {
+                playable_actions.push(WebPlayableAction::UseSpiritSkill {
+                    id,
+                    name: candidate.skill_name,
+                    summary: candidate.rule_text,
+                    cards: Vec::new(),
+                    selected_card: None,
+                    declared_level: None,
+                });
+            }
+        }
+    }
 
     Ok(ApiResponse {
         record: record.recorded_decisions(),
@@ -420,6 +483,14 @@ enum ApiAction {
         target_card: Option<CardInstanceId>,
         #[serde(default, rename = "declaredElement")]
         declared_element: Option<crate::domain::Element>,
+        #[serde(default, rename = "declaredLevel")]
+        declared_level: Option<u32>,
+    },
+    UseSpiritSkill {
+        player: String,
+        skill: crate::domain::SpiritSkill,
+        #[serde(default, rename = "selectedCard")]
+        selected_card: Option<CardInstanceId>,
         #[serde(default, rename = "declaredLevel")]
         declared_level: Option<u32>,
     },
@@ -647,6 +718,7 @@ struct WebPublicGameState {
     professions: Vec<WebPlayerProfession>,
     profession_catalog: Vec<WebProfessionCatalogEntry>,
     prepared_profession_abilities: Vec<WebPreparedProfessionAbility>,
+    spirits: Vec<WebPlayerSpirit>,
     previous_turn_formation: Option<WebPreviousTurnFormation>,
 }
 
@@ -890,6 +962,15 @@ impl WebPublicGameState {
                     allowed_formation_scope: prepared.allowed_formation_scope,
                 })
                 .collect(),
+            spirits: state
+                .spirits
+                .into_iter()
+                .map(|owned| WebPlayerSpirit {
+                    player: owned.player.as_str().to_string(),
+                    spirit: format!("{:?}", owned.spirit),
+                    power: owned.power,
+                })
+                .collect(),
             previous_turn_formation: state.previous_turn_formation.map(|formation| {
                 WebPreviousTurnFormation {
                     player: formation.player.as_str().to_string(),
@@ -931,6 +1012,14 @@ struct WebTeamStar {
 struct WebPlayerStarHistory {
     player: String,
     stars: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPlayerSpirit {
+    player: String,
+    spirit: String,
+    power: u32,
 }
 
 #[derive(Serialize)]
@@ -1234,6 +1323,16 @@ enum WebPlayableAction {
         #[serde(rename = "declaredLevel")]
         declared_level: Option<u32>,
     },
+    UseSpiritSkill {
+        id: String,
+        name: String,
+        summary: String,
+        cards: Vec<CardInstanceId>,
+        #[serde(rename = "selectedCard")]
+        selected_card: Option<CardInstanceId>,
+        #[serde(rename = "declaredLevel")]
+        declared_level: Option<u32>,
+    },
 }
 
 #[derive(Serialize)]
@@ -1271,6 +1370,8 @@ fn event_type(event: &PublicGameEvent) -> String {
         }
         PublicGameEvent::EffectChoiceRequested { .. } => "EffectChoiceRequested".to_string(),
         PublicGameEvent::HandInspected { .. } => "HandInspected".to_string(),
+        PublicGameEvent::SpiritSkillUsed { .. } => "SpiritSkillUsed".to_string(),
+        PublicGameEvent::SpiritLevelInterpreted { .. } => "SpiritLevelInterpreted".to_string(),
     }
 }
 
@@ -1381,6 +1482,49 @@ fn event_presentation(
                 ),
             },
         ),
+        PublicGameEvent::SpiritSkillUsed {
+            player,
+            skill,
+            old_power,
+            new_power,
+            selected_card,
+            declared_level,
+            ..
+        } => (
+            "使用精靈技能".to_string(),
+            format!(
+                "{} 使用「{}」，靈力由 {} 變為 {}{}{}。",
+                player.as_str(),
+                spirit_skill_name(*skill),
+                old_power,
+                new_power,
+                selected_card
+                    .map(|card| format!("，指定牌 {}", card.as_u64()))
+                    .unwrap_or_default(),
+                declared_level
+                    .map(|level| format!("，宣告 {level} 級"))
+                    .unwrap_or_default(),
+            ),
+        ),
+        PublicGameEvent::SpiritLevelInterpreted {
+            player,
+            card,
+            level,
+            ..
+        } => (
+            "精靈改變等級".to_string(),
+            card.map_or_else(
+                || format!("{} 指定一張手牌本回合視為 {} 級。", player.as_str(), level),
+                |card| {
+                    format!(
+                        "{} 指定牌 {} 本回合視為 {} 級。",
+                        player.as_str(),
+                        card.as_u64(),
+                        level
+                    )
+                },
+            ),
+        ),
     }
 }
 
@@ -1475,6 +1619,94 @@ fn game_event_presentation(
                         prepared.level
                     )
                 },
+            ),
+        ),
+        GameEvent::SpiritSummoned {
+            player,
+            previous,
+            spirit,
+        } => (
+            "召喚精靈".to_string(),
+            if let Some(previous) = previous {
+                format!(
+                    "{} 的{}精靈被{}精靈取代，靈力為 2。",
+                    player.as_str(),
+                    spirit_name(*previous),
+                    spirit_name(*spirit)
+                )
+            } else {
+                format!(
+                    "{} 召喚{}精靈，靈力為 2。",
+                    player.as_str(),
+                    spirit_name(*spirit)
+                )
+            },
+        ),
+        GameEvent::SpiritPowerChanged {
+            player,
+            spirit,
+            old_power,
+            new_power,
+            ..
+        } => (
+            "精靈靈力增加".to_string(),
+            format!(
+                "{} 的{}精靈靈力由 {} 增加為 {}。",
+                player.as_str(),
+                spirit_name(*spirit),
+                old_power,
+                new_power
+            ),
+        ),
+        GameEvent::SpiritSkillUsed {
+            player,
+            skill,
+            old_power,
+            new_power,
+            ..
+        } => (
+            "使用精靈技能".to_string(),
+            format!(
+                "{} 使用「{}」，靈力由 {} 變為 {}。",
+                player.as_str(),
+                spirit_skill_name(*skill),
+                old_power,
+                new_power
+            ),
+        ),
+        GameEvent::SpiritLevelInterpreted {
+            player,
+            card,
+            level,
+            ..
+        } => (
+            "精靈改變等級".to_string(),
+            format!(
+                "{} 指定牌 {} 本回合視為 {} 級。",
+                player.as_str(),
+                card.as_u64(),
+                level
+            ),
+        ),
+        GameEvent::SpiritBroken { player, spirit, .. } => (
+            "精靈破除".to_string(),
+            format!("{} 的{}精靈已破除。", player.as_str(), spirit_name(*spirit)),
+        ),
+        GameEvent::AutomaticBloomsResolved { resolutions } => (
+            "自動綻放".to_string(),
+            format!(
+                "{}。",
+                resolutions
+                    .iter()
+                    .map(|resolution| format!(
+                        "{} 有 {} 個木精靈綻放，生命值 {} → {}",
+                        resolution.team.as_str(),
+                        resolution.spirit_changes.len(),
+                        resolution.hp_change.old_hp,
+                        resolution.hp_change.new_hp
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("；")
             ),
         ),
         GameEvent::CardsDrawnForProfessionChoice { .. } => (
@@ -1805,6 +2037,31 @@ fn game_event_presentation(
                 retained_legendary_professions.len()
             ),
         ),
+        GameEvent::VoidSpiritShatteringResolved {
+            player,
+            spirit_changes,
+            broken_spirits,
+            hp_changes,
+            ..
+        } => (
+            "虛空碎靈".to_string(),
+            format!(
+                "{} 使 {} 個精靈靈力下降、破除 {} 個精靈；{}。",
+                player.as_str(),
+                spirit_changes.len(),
+                broken_spirits.len(),
+                hp_changes
+                    .iter()
+                    .map(|change| format!(
+                        "{} 生命值 {} → {}",
+                        change.team.as_str(),
+                        change.old_hp,
+                        change.new_hp
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("、")
+            ),
+        ),
         GameEvent::FiveStarAlignmentAchieved { player, .. } => (
             "五星連珠".to_string(),
             format!("{} 完成五星連珠，所屬隊伍獲勝。", player.as_str()),
@@ -1827,6 +2084,31 @@ fn element_name(element: crate::domain::Element) -> &'static str {
         crate::domain::Element::Water => "水行環境",
         crate::domain::Element::Fire => "火行環境",
         crate::domain::Element::Earth => "土行環境",
+    }
+}
+
+fn spirit_name(spirit: crate::domain::SpiritKind) -> &'static str {
+    match spirit {
+        crate::domain::SpiritKind::Metal => "金",
+        crate::domain::SpiritKind::Wood => "木",
+        crate::domain::SpiritKind::Water => "水",
+        crate::domain::SpiritKind::Fire => "火",
+        crate::domain::SpiritKind::Earth => "土",
+    }
+}
+
+fn spirit_skill_name(skill: crate::domain::SpiritSkill) -> &'static str {
+    match skill {
+        crate::domain::SpiritSkill::FlyingBlade => "飛刃",
+        crate::domain::SpiritSkill::SwordRain => "劍雨",
+        crate::domain::SpiritSkill::Fragrance => "芬芳",
+        crate::domain::SpiritSkill::Bloom => "綻放",
+        crate::domain::SpiritSkill::Flow => "川流",
+        crate::domain::SpiritSkill::Vastness => "浩瀚",
+        crate::domain::SpiritSkill::Glimmer => "螢光",
+        crate::domain::SpiritSkill::Splendor => "絢爛",
+        crate::domain::SpiritSkill::StoneShield => "石盾",
+        crate::domain::SpiritSkill::RockWall => "岩壁",
     }
 }
 
@@ -1971,6 +2253,65 @@ mod tests {
             (
                 "召喚星辰".to_string(),
                 "alice 召喚了金星‧太白。".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn spirit_state_and_events_are_projected_for_web_clients() {
+        let rules = OfficialRules::new();
+        let setup = rules
+            .configure_game(
+                vec![
+                    crate::domain::Player {
+                        id: PlayerId::new("alice"),
+                        team: TeamId::new("team:alice"),
+                    },
+                    crate::domain::Player {
+                        id: PlayerId::new("bob"),
+                        team: TeamId::new("team:bob"),
+                    },
+                ],
+                vec![PlayerId::new("alice"), PlayerId::new("bob")],
+                [
+                    crate::domain::STAR_MODULE_ID,
+                    crate::domain::FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+                    crate::domain::HERO_SCHOOLS_MODULE_ID,
+                    crate::domain::SPIRIT_MODULE_ID,
+                ]
+                .into_iter()
+                .map(RuleModuleId::new)
+                .collect(),
+            )
+            .unwrap();
+        let mut state = crate::domain::GameState::from_setup(&setup);
+        state.spirits.push(crate::domain::PlayerSpirit {
+            player: PlayerId::new("alice"),
+            spirit: crate::domain::SpiritKind::Fire,
+            power: 4,
+        });
+        let public = crate::public_view::state_for(&state, Viewer::Observer);
+        let web = WebPublicGameState::from_public(
+            public,
+            &rules.card_labels(&setup).unwrap(),
+            &rules.formation_names(&setup).unwrap(),
+        );
+        let json = serde_json::to_value(web).unwrap();
+
+        assert_eq!(json["spirits"][0]["player"], "alice");
+        assert_eq!(json["spirits"][0]["spirit"], "Fire");
+        assert_eq!(json["spirits"][0]["power"], 4);
+
+        let event = GameEvent::SpiritSummoned {
+            player: PlayerId::new("alice"),
+            previous: None,
+            spirit: crate::domain::SpiritKind::Fire,
+        };
+        assert_eq!(
+            game_event_presentation(&event, &HashMap::new(), &HashMap::new()),
+            (
+                "召喚精靈".to_string(),
+                "alice 召喚火精靈，靈力為 2。".to_string()
             )
         );
     }

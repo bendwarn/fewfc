@@ -18,9 +18,10 @@ import {
   type PlayerDeckList,
   type PlayerNotification,
   type RulesGameSetup,
+  type RulesEngineResult,
   type StoredGameEvent,
 } from '../../shared/game-room'
-import type { PlayerId } from '../../app/types/fewfc'
+import type { PlayableAction, PlayerId } from '../../app/types/fewfc'
 import { callRulesEngine } from '../rules-engine'
 
 interface GameRoomEnv {
@@ -88,6 +89,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           return await this.seedEndgameFixture(body.actorUserId)
         case 'seedHeroSchoolsFixture':
           return await this.seedHeroSchoolsFixture(body.actorUserId)
+        case 'seedSpiritFixture':
+          return await this.seedSpiritFixture(body.actorUserId)
         case 'getState':
           return await this.getState(body.actorUserId)
         case 'submitCommand':
@@ -723,6 +726,171 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return this.json(await this.response(metadata, actorUserId))
   }
 
+  private async seedSpiritFixture(actorUserId: string): Promise<Response> {
+    const metadata = await this.requireMetadata()
+    const actor = this.memberFor(metadata, actorUserId)
+
+    if (!actor?.owner) {
+      return this.json({ error: 'only room owner may seed a test fixture' }, 403)
+    }
+    if (metadata.status !== 'Active') {
+      return this.json({ error: 'test fixture requires an active match' }, 409)
+    }
+
+    const snapshot = await this.requireSnapshot()
+    if (!snapshot.setup.enabledRuleModules.includes('spirit')) {
+      return this.json({ error: 'test fixture requires Spirit' }, 409)
+    }
+    const setup: RulesGameSetup = {
+      ...snapshot.setup,
+      turnOrder: [
+        actor.player,
+        ...snapshot.setup.turnOrder.filter(player => player !== actor.player),
+      ],
+    }
+
+    let rules: RulesEngineResult | undefined
+    let deckSeed = ''
+    let metalCards: number[] = []
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      deckSeed = `spirit-e2e-${attempt}`
+      const candidate = await callRulesEngine({
+        action: { type: 'start' },
+        viewer: actor.player,
+        setup,
+        deckSeed,
+      })
+      const hand = candidate.state.hands.find(entry => entry.player === actor.player)
+      metalCards = hand?.cards.kind === 'known'
+        ? hand.cards.cards.filter(card => /^金 /.test(card.label)).slice(0, 2).map(card => card.id)
+        : []
+      if (metalCards.length === 2) {
+        rules = candidate
+        break
+      }
+    }
+    if (!rules) {
+      return this.json({ error: 'test fixture could not find two Metal Cards' }, 500)
+    }
+
+    rules = await callRulesEngine({
+      action: {
+        type: 'performFormation',
+        player: actor.player,
+        formationId: 'metal-spirit-summoning',
+        cards: metalCards,
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+
+    for (let guard = 0; rules.state.currentPlayer !== actor.player || rules.state.phase !== 'Main'; guard += 1) {
+      if (guard >= 20) {
+        return this.json({
+          error: 'test fixture could not return to owner turn',
+          currentPlayer: rules.state.currentPlayer,
+          phase: rules.state.phase,
+          pendingChoice: rules.state.pendingChoice,
+        }, 500)
+      }
+      if (rules.state.pendingChoice) {
+        const choiceView = await callRulesEngine({
+          action: { type: 'refresh' },
+          viewer: rules.state.pendingChoice.player,
+          setup,
+          deckSeed,
+          record: rules.record,
+        })
+        const choice = choiceView.state.pendingChoice
+        if (choice?.kind !== 'TurnDrawDiscard' || !choice.cards[0]) {
+          return this.json({ error: 'test fixture cannot answer pending choice' }, 500)
+        }
+        rules = await callRulesEngine({
+          action: {
+            type: 'chooseTurnDiscard',
+            player: choice.player,
+            card: choice.cards[0].id,
+          },
+          viewer: actor.player,
+          setup,
+          deckSeed,
+          record: rules.record,
+        })
+        continue
+      }
+      if (rules.state.phase !== 'Main' || !rules.state.currentPlayer) {
+        rules = await callRulesEngine({
+          action: { type: 'advanceAutomatic' },
+          viewer: actor.player,
+          setup,
+          deckSeed,
+          record: rules.record,
+        })
+        continue
+      }
+
+      const currentPlayer = rules.state.currentPlayer
+      const currentView = await callRulesEngine({
+        action: { type: 'refresh' },
+        viewer: currentPlayer,
+        setup,
+        deckSeed,
+        record: rules.record,
+      })
+      const hand = currentView.state.hands.find(entry => entry.player === currentPlayer)
+      const firstCard = hand?.cards.kind === 'known' ? hand.cards.cards[0] : undefined
+      if (!firstCard) {
+        return this.json({ error: 'test fixture opponent has no playable Card' }, 500)
+      }
+      const candidates = await callRulesEngine({
+        action: {
+          type: 'playableActions',
+          player: currentPlayer,
+          cards: [firstCard.id],
+        },
+        viewer: currentPlayer,
+        setup,
+        deckSeed,
+        record: rules.record,
+      })
+      const formation = candidates.playableActions.find(
+        action => action.type === 'performFormation',
+      )
+      if (!formation || formation.type !== 'performFormation') {
+        return this.json({ error: 'test fixture opponent has no one-Card Formation' }, 500)
+      }
+      rules = await callRulesEngine({
+        action: {
+          type: 'performFormation',
+          player: currentPlayer,
+          formationId: formation.id,
+          cards: formation.cards,
+          starSubstitutionCard: formation.starSubstitution?.card,
+          matchOptionRole: formation.matchOption?.role,
+          matchOptionCard: formation.matchOption?.card,
+          matchOptionSlots: formation.matchOption?.slots,
+        },
+        viewer: actor.player,
+        setup,
+        deckSeed,
+        record: rules.record,
+      })
+    }
+
+    await this.ctx.storage.put('snapshot', {
+      ...snapshot,
+      setup,
+      deckSeed,
+      rulesRecord: rules.record,
+    } satisfies GameRoomSnapshot)
+    await this.ctx.storage.delete('pendingCommandDraft')
+    this.ctx.waitUntil(this.broadcast(metadata))
+
+    return this.json(await this.response(metadata, actorUserId))
+  }
+
   private async submitCommand(
     request: Extract<GameRoomRequest, { type: 'submitCommand' }>,
   ): Promise<Response> {
@@ -1096,7 +1264,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private async response(
     metadata?: GameRoomMetadata,
     actorUserId?: string,
-    playableActions = [],
+    playableActions?: PlayableAction[],
   ): Promise<GameRoomResponse> {
     const currentMetadata = metadata ?? await this.requireMetadata()
     const lockedDeckName = actorUserId
@@ -1119,7 +1287,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           title: this.eventTitle(event),
           summary: this.displaySummary(currentMetadata, this.eventSummary(event)),
         })).reverse(),
-        playableActions,
+        playableActions: playableActions ?? [],
         interaction: {
           canPass: false,
           hasOptionalEffect: false,
@@ -1157,7 +1325,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         ...event,
         summary: this.displaySummary(currentMetadata, event.summary),
       })),
-      playableActions,
+      playableActions: playableActions ?? publicRules.playableActions,
       interaction: publicRules.interaction,
     }
   }
@@ -1198,6 +1366,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     switch (action.type) {
       case 'performFormation':
       case 'activateProfessionAbility':
+      case 'useSpiritSkill':
       case 'changeProfession':
       case 'chooseTurnDiscard':
       case 'answerEffectChoice':

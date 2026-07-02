@@ -8,6 +8,9 @@ None.
 
 ## Completed Local Issues
 
+- [#57 Resolve Bloom and Void Spirit-Shattering atomically](057-resolve-bloom-and-void-spirit-shattering.md)
+- [#56 Use Spirit Skills](056-use-spirit-skills.md)
+- [#55 Summon and display Spirits](055-summon-and-display-spirits.md)
 - [#54 Conform Five Directions Legend to the 5.16 PDF clarifications](054-conform-five-directions-legend-to-pdf-clarifications.md)
 - [#53 Release Hero Schools to Online Rooms](053-release-hero-schools-to-online-rooms.md)
 - [#52 Conform Hero Schools across Rule Modules](052-conform-hero-schools-across-rule-modules.md)

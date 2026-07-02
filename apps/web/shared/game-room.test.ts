@@ -15,6 +15,7 @@ test('all released advanced rules are available default Rule Modules', () => {
     'discard-retrieval',
     'personal-deck',
     'five-directions-legend',
+    'spirit',
   ])
   assert.deepEqual(normalizeRuleModules(['star', 'five-directions-legend', 'unknown']), [
     'star',
@@ -106,6 +107,31 @@ describe('normalizeGameRoomMetadata', () => {
       connected: false,
       owner: true,
     }])
+  })
+
+  test('preserves stored rooms without newly released Spirit', () => {
+    const metadata = normalizeGameRoomMetadata({
+      schemaVersion: 3,
+      gameId: 'pre-spirit-room',
+      name: 'Pre-Spirit room',
+      access: 'public',
+      capacity: 2,
+      ruleset: 'fewfc-base',
+      enabledRuleModules: ['star', 'hero-schools', 'five-directions-legend'],
+      players: ['alice', 'bob'],
+      members: [{
+        userId: 'alice-user',
+        displayName: 'Alice',
+        player: 'alice',
+        ready: false,
+        owner: true,
+      }],
+      status: 'Waiting',
+      createdAt: '2026-06-28T00:00:00.000Z',
+      updatedAt: '2026-06-28T00:00:00.000Z',
+    })
+
+    assert.equal(metadata.enabledRuleModules.includes('spirit'), false)
   })
 })
 

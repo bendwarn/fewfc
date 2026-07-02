@@ -467,6 +467,10 @@
                 <small v-if="state.enabledRuleModules.includes('star')">
                   召星 {{ starHistoryCount(seat.player) }} / 5
                 </small>
+                <small v-if="spiritFor(seat.player)" class="spirit-status">
+                  精靈 · {{ spiritLabel(spiritFor(seat.player)!.spirit) }}
+                  · 靈力 {{ spiritFor(seat.player)!.power }} / 6
+                </small>
                 <span
                   v-if="professionFor(seat.player)"
                   class="profession-badge"
@@ -610,7 +614,7 @@
                   <div class="action-candidates">
                     <button
                       v-for="ability in game.playableAbilities.value"
-                      :key="`ability:${ability.id}:${ability.cards.join('-')}:${ability.targetCard ?? ''}:${ability.declaredElement ?? ''}:${ability.declaredLevel ?? ''}`"
+                      :key="playableAbilityKey(ability)"
                       type="button"
                       :title="ability.summary"
                       :aria-label="`${ability.name}：${ability.summary}`"
@@ -971,7 +975,15 @@
 </template>
 
 <script setup lang="ts">
-import type { Element, PlayableAction, PlayerId, PublicCardRefs, TeamId, ViewerId } from '~/types/fewfc'
+import type {
+  Element,
+  PlayableAction,
+  PlayerId,
+  PublicCardRefs,
+  SpiritKind,
+  TeamId,
+  ViewerId,
+} from '~/types/fewfc'
 import type { GameRoomMember, GameRoomResponse } from '../shared/game-room'
 import { authClient } from '~/lib/auth-client'
 import { buildDiscardComposition, DISCARD_ELEMENTS } from '~/lib/discard-composition'
@@ -1060,9 +1072,11 @@ const ruleOptions = [
   { id: 'star', label: '進階規則‧星辰圖記' },
   { id: 'hero-schools', label: '進階規則‧英雄學派' },
   { id: 'five-directions-legend', label: '進階規則‧五方傳說' },
+  { id: 'spirit', label: '主題規則‧精靈' },
   { id: 'discard-retrieval', label: '棄牌回收' },
   { id: 'personal-deck', label: '個人牌組' },
 ]
+const spiritDependencies = ['star', 'hero-schools', 'five-directions-legend']
 const ruleLabelById = new Map(ruleOptions.map(rule => [rule.id, rule.label]))
 const deckValidation = computed(() => validateDeck(deckDraft.value))
 
@@ -1452,10 +1466,19 @@ async function restartGame() {
 
 async function toggleWaitingRule(moduleId: string) {
   const current = onlineMetadata.value?.enabledRuleModules ?? []
-  const enabledRuleModules = current.includes(moduleId)
-    ? current.filter(module => module !== moduleId)
-    : [...current, moduleId]
-  await game.updateRuleModules(enabledRuleModules)
+  const next = new Set(current)
+  if (next.has(moduleId)) {
+    next.delete(moduleId)
+    if (spiritDependencies.includes(moduleId)) {
+      next.delete('spirit')
+    }
+  } else {
+    next.add(moduleId)
+    if (moduleId === 'spirit') {
+      spiritDependencies.forEach(dependency => next.add(dependency))
+    }
+  }
+  await game.updateRuleModules([...next])
 }
 
 async function createOnlineRoom() {
@@ -1905,6 +1928,20 @@ function starHistoryCount(player: PlayerId): number {
   return state.value.starHistories.find(history => history.player === player)?.stars.length ?? 0
 }
 
+function spiritFor(player: PlayerId) {
+  return state.value.spirits.find(owned => owned.player === player)
+}
+
+function spiritLabel(spirit: SpiritKind): string {
+  return {
+    Metal: '金精靈',
+    Wood: '木精靈',
+    Water: '水精靈',
+    Fire: '火精靈',
+    Earth: '土精靈',
+  }[spirit]
+}
+
 function professionFor(player: PlayerId) {
   return state.value.professions.find(profession => profession.player === player)
 }
@@ -2035,7 +2072,9 @@ function roomStatusLabel(room: PublicRoomSummary): string {
 }
 
 function roomRuleSummary(room: PublicRoomSummary): string {
-  return room.enabledRuleModules.includes('star') ? '星辰圖記：啟用' : '星辰圖記：停用'
+  const spirit = room.enabledRuleModules.includes('spirit') ? '精靈：啟用' : '精靈：停用'
+  const star = room.enabledRuleModules.includes('star') ? '星辰圖記：啟用' : '星辰圖記：停用'
+  return `${spirit} · ${star}`
 }
 
 function roomNeedsAttention(room: PublicRoomSummary): boolean {
@@ -2063,6 +2102,15 @@ function playableActionName(action: PlayableAction): string {
   const cardLabel = card?.label ?? `牌 ${substitution.card}`
 
   return `${action.name}（${cardLabel}：${environmentLabel(substitution.printedElement)}→${environmentLabel(substitution.interpretedElement)}）`
+}
+
+function playableAbilityKey(
+  ability: Extract<PlayableAction, { type: 'activateProfessionAbility' | 'useSpiritSkill' }>,
+): string {
+  if (ability.type === 'useSpiritSkill') {
+    return `spirit:${ability.id}:${ability.selectedCard ?? ''}:${ability.declaredLevel ?? ''}`
+  }
+  return `profession:${ability.id}:${ability.cards.join('-')}:${ability.targetCard ?? ''}:${ability.declaredElement ?? ''}:${ability.declaredLevel ?? ''}`
 }
 
 function showActionDetail(action: PlayableAction) {

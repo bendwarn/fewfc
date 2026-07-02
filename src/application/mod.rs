@@ -228,6 +228,12 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::ProfessionChanged { .. }
         | GameEvent::ProfessionBroken { .. }
         | GameEvent::ProfessionAbilityActivated { .. }
+        | GameEvent::SpiritSummoned { .. }
+        | GameEvent::SpiritPowerChanged { .. }
+        | GameEvent::SpiritSkillUsed { .. }
+        | GameEvent::SpiritLevelInterpreted { .. }
+        | GameEvent::SpiritBroken { .. }
+        | GameEvent::AutomaticBloomsResolved { .. }
         | GameEvent::CardsDrawnForProfessionChoice { .. }
         | GameEvent::AttackResolved { .. }
         | GameEvent::EnvironmentTransferred { .. }
@@ -236,6 +242,7 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::StarSummoned { .. }
         | GameEvent::VoidStarBreakingCompleted { .. }
         | GameEvent::VoidReversionResolved { .. }
+        | GameEvent::VoidSpiritShatteringResolved { .. }
         | GameEvent::FiveStarAlignmentAchieved { .. }
         | GameEvent::CardsMoved { .. }
         | GameEvent::EffectChoiceAnswered { .. }
@@ -289,6 +296,10 @@ fn command_context(command: &Command) -> CommandContext {
             kind: CommandKind::ActivateProfessionAbility {
                 ability_id: ability_id.clone(),
             },
+        },
+        Command::UseSpiritSkill { player, skill, .. } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::UseSpiritSkill { skill: *skill },
         },
         Command::ChooseTurnDiscard { player, .. } => CommandContext {
             player: player.clone(),

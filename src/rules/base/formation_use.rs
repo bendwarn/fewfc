@@ -119,7 +119,9 @@ impl BaseEffectResolver {
                 );
                 let environment_ineffective =
                     environment_makes_formation_ineffective(state, &plan.formation_id);
-                let damage_prevented = passive_trigger.prevents_damage() || environment_ineffective;
+                let damage_prevented = passive_trigger.prevents_damage()
+                    || environment_ineffective
+                    || crate::rules::spirit::stone_shield_prevents_attack(state, &plan.player);
                 let split_attack_damage = passive_trigger.splits_attack_damage();
                 let mut events = match_option_events(&plan);
                 events.extend(passive_trigger.events());
@@ -221,9 +223,12 @@ impl BaseEffectResolver {
                     environment_makes_formation_ineffective(state, &plan.formation_id);
                 let mut events = match_option_events(&plan);
                 events.extend(passive_trigger.events());
-                let void_reversion_succeeds =
-                    spell.resolver_id == "void-reversion" && !spell_cancelled && !spell_ineffective;
-                if !void_reversion_succeeds {
+                let composite_spell_succeeds = matches!(
+                    spell.resolver_id.as_str(),
+                    "void-reversion" | "void-spirit-shattering"
+                ) && !spell_cancelled
+                    && !spell_ineffective;
+                if !composite_spell_succeeds {
                     events.push(GameEvent::FormationPerformed {
                         player: plan.player.clone(),
                         formation_id: plan.formation_id.clone(),
@@ -243,6 +248,14 @@ impl BaseEffectResolver {
                         events.push(void_reversion_event(state, &plan.player, &plan.cards)?);
                         return Ok(events);
                     }
+                    if spell.resolver_id == "void-spirit-shattering" {
+                        events.push(crate::rules::spirit::void_spirit_shattering_event(
+                            state,
+                            &plan.player,
+                            &plan.cards,
+                        )?);
+                        return Ok(events);
+                    }
                     if spell.resolver_id == "void-meridian-severing" {
                         if let Some(event) = environment_clearing_event(state, &plan.player)? {
                             events.push(event);
@@ -251,6 +264,16 @@ impl BaseEffectResolver {
                     }
                     if spell.resolver_id == "void-star-breaking" {
                         events.extend(void_star_breaking_events(state, &plan.player));
+                        return Ok(events);
+                    }
+                    if let Some(spirit) =
+                        crate::rules::spirit::summoning_formation_spirit(&spell.resolver_id)
+                    {
+                        events.push(GameEvent::SpiritSummoned {
+                            player: plan.player.clone(),
+                            previous: state.spirit_for(&plan.player).map(|owned| owned.spirit),
+                            spirit,
+                        });
                         return Ok(events);
                     }
                     let (copied_effect_id, intents) = if spell.resolver_id == "metamorphosis" {
@@ -403,8 +426,8 @@ fn void_reversion_event(
     let new_hp = (old_hp - 20).max(0);
     let high_level = cards.iter().try_fold(true, |_, card| {
         state
-            .card_def(*card)
-            .map(|definition| definition.level >= 3)
+            .card_level_for(player, *card)
+            .map(|level| level >= 3)
             .ok_or(GameError::Validation(
                 ValidationError::MissingCardInstanceDefinition(*card),
             ))
@@ -460,11 +483,10 @@ fn active_spell_intents(
                 },
             ))?;
             let level = state
-                .card_def(standalone)
+                .card_level_for(player, standalone)
                 .ok_or(GameError::Validation(
                     ValidationError::MissingCardInstanceDefinition(standalone),
-                ))?
-                .level as i32;
+                ))? as i32;
             Ok(vec![EffectIntent::ChangeHp {
                 team: player_team(state, player)?,
                 delta: level * 25,
@@ -472,14 +494,14 @@ fn active_spell_intents(
         }
         "purple-light-shield" => Ok(vec![EffectIntent::SetShield {
             player: player.clone(),
-            value: level_sum(state, used_cards)? * 5,
+            value: level_sum(state, player, used_cards)? * 5,
         }]),
         "shadow-assault" => {
             let target =
                 resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)?;
             Ok(vec![EffectIntent::ChangeHp {
                 team: player_team(state, &target)?,
-                delta: -level_sum(state, used_cards)? * 3,
+                delta: -level_sum(state, player, used_cards)? * 3,
             }])
         }
         "instant-shadow-death" => {
@@ -534,20 +556,20 @@ fn active_spell_intents(
         }
         "barrier" => Ok(vec![EffectIntent::SetShield {
             player: player.clone(),
-            value: level_sum(state, used_cards)? * 4,
+            value: level_sum(state, player, used_cards)? * 4,
         }]),
         "metamorphosis" => Ok(metamorphosis_intents(state, player, used_cards)?.1),
         "generating-formation" => {
             let team = resolve_rule_team_target(state, player, RuleTeamTarget::OwnSide)?;
             Ok(vec![EffectIntent::ChangeHp {
                 team,
-                delta: level_sum(state, used_cards)? * 3,
+                delta: level_sum(state, player, used_cards)? * 3,
             }])
         }
         "overcoming-formation" => {
             let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
             let old_value = state.shield(&target).unwrap_or(0);
-            let new_value = (old_value - level_sum(state, used_cards)? * 3).max(0);
+            let new_value = (old_value - level_sum(state, player, used_cards)? * 3).max(0);
             Ok(vec![EffectIntent::SetShield {
                 player: target,
                 value: new_value,
@@ -632,7 +654,7 @@ fn active_spell_intents(
             let team = player_team(state, player)?;
             Ok(vec![EffectIntent::ChangeHp {
                 team,
-                delta: level_sum(state, used_cards)? * 4,
+                delta: level_sum(state, player, used_cards)? * 4,
             }])
         }
         "five-elements-cycle" => {
@@ -705,14 +727,13 @@ fn metamorphosis_intents(
     }
 }
 
-fn level_sum(state: &GameState, cards: &[CardInstanceId]) -> GameResult<i32> {
+fn level_sum(state: &GameState, player: &PlayerId, cards: &[CardInstanceId]) -> GameResult<i32> {
     cards.iter().try_fold(0, |sum, card| {
         let level = state
-            .card_def(*card)
+            .card_level_for(player, *card)
             .ok_or(GameError::Validation(
                 ValidationError::MissingCardInstanceDefinition(*card),
-            ))?
-            .level as i32;
+            ))? as i32;
         Ok(sum + level)
     })
 }
@@ -746,12 +767,12 @@ fn resume_effect_choice_intents(
             let selected_card = selected_cards
                 .first()
                 .ok_or(GameError::Validation(ValidationError::MissingPendingChoice))?;
-            let value = state
-                .card_def(*selected_card)
-                .ok_or(GameError::Validation(
-                    ValidationError::MissingCardInstanceDefinition(*selected_card),
-                ))?
-                .level as i32;
+            let value =
+                state
+                    .card_level_for(player, *selected_card)
+                    .ok_or(GameError::Validation(
+                        ValidationError::MissingCardInstanceDefinition(*selected_card),
+                    ))? as i32;
 
             Ok(vec![EffectIntent::SetShield {
                 player: player.clone(),

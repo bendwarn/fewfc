@@ -16,6 +16,7 @@ pub(super) struct FormationSelection {
     registry: FormationRegistry,
     team_star: Option<crate::domain::StarKind>,
     prepared: Option<crate::domain::PreparedProfessionAbility>,
+    spirit_level_interpretations: Vec<crate::domain::SpiritLevelInterpretation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,7 +56,9 @@ impl FormationSelection {
                 ))?;
                 Ok(SubmittedCardFacts {
                     element: card_def.element,
-                    level: card_def.level,
+                    level: state
+                        .card_level_for(player, *card)
+                        .expect("known Card must have an effective level"),
                 })
             })
             .collect::<GameResult<Vec<_>>>()?;
@@ -84,6 +87,15 @@ impl FormationSelection {
                     &prepared.player == player && prepared.prepared_on_turn == state.turn_number
                 })
                 .cloned(),
+            spirit_level_interpretations: state
+                .spirit_level_interpretations
+                .iter()
+                .filter(|interpretation| {
+                    &interpretation.player == player
+                        && interpretation.applied_on_turn == state.turn_number
+                })
+                .cloned()
+                .collect(),
         })
     }
 
@@ -202,6 +214,9 @@ impl FormationSelection {
             _ => None,
         }) {
             if slots == 2
+                && !declared_targets
+                    .iter()
+                    .any(|target| matches!(target, TargetDecl::Card(_)))
                 && self
                     .sacred_art_options(&formation, &base_formation_matcher())
                     .contains(&card)
@@ -396,9 +411,18 @@ impl FormationSelection {
         let Some(index) = self.cards.iter().position(|card| *card == prepared.card) else {
             return false;
         };
+        let later_spirit_level = self
+            .spirit_level_interpretations
+            .iter()
+            .rev()
+            .find(|interpretation| {
+                interpretation.card == prepared.card
+                    && interpretation.interpretation_revision > prepared.interpretation_revision
+            })
+            .map(|interpretation| interpretation.level);
         interpreted[index] = SubmittedCardFacts {
             element: prepared.element,
-            level: prepared.level,
+            level: later_spirit_level.unwrap_or(prepared.level),
         };
         matcher.matches(&formation.pattern, &interpreted)
             || crate::rules::hero::matches_proficiency(
