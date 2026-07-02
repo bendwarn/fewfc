@@ -88,6 +88,8 @@ export function useGameRoom(viewer: ViewerRef) {
   let roomSocketGameId: string | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined
   let reconnectAttempt = 0
+  let playableQueryRevision = 0
+  let playableQueryInFlight = false
 
   watch(viewer, () => {
     selectedCards.value = []
@@ -100,12 +102,13 @@ export function useGameRoom(viewer: ViewerRef) {
   })
 
   watch(selectedCards, () => {
-    if (selectedCards.value.length === 0 || viewer.value !== state.value.currentPlayer) {
+    const revision = ++playableQueryRevision
+    if (viewer.value !== state.value.currentPlayer) {
       playableActions.value = []
       return
     }
 
-    void queryPlayableActions()
+    void queryPlayableActions(revision, [...selectedCards.value])
   })
 
   function canSelectCard(player: PlayerId): boolean {
@@ -129,6 +132,11 @@ export function useGameRoom(viewer: ViewerRef) {
   }
 
   function applyRoomResponse(response: GameRoomResponse) {
+    playableQueryRevision += 1
+    if (playableQueryInFlight) {
+      playableQueryInFlight = false
+      isLoading.value = false
+    }
     const previousChoiceKey = pendingChoiceKey(state.value.pendingChoice)
     metadata.value = response.metadata
     invitation.value = response.invitation ?? null
@@ -155,6 +163,7 @@ export function useGameRoom(viewer: ViewerRef) {
       return false
     }
 
+    playableQueryInFlight = true
     isLoading.value = true
     errorMessage.value = null
 
@@ -307,18 +316,44 @@ export function useGameRoom(viewer: ViewerRef) {
     })
   }
 
-  async function queryPlayableActions() {
+  async function queryPlayableActions(revision: number, cards: CardInstanceId[]) {
     const player = state.value.currentPlayer
 
-    if (!player) {
+    if (!player || !onlineGameId.value) {
       return
     }
 
-    await submitOnline({
-      type: 'playableActions',
-      player,
-      cards: selectedCards.value,
-    })
+    isLoading.value = true
+    errorMessage.value = null
+    try {
+      const response = await $fetch<GameRoomResponse>(
+        `/api/games/${onlineGameId.value}/commands`,
+        {
+          method: 'POST',
+          body: {
+            action: {
+              type: 'playableActions',
+              player,
+              cards,
+            },
+          },
+        },
+      )
+      if (revision !== playableQueryRevision) {
+        return
+      }
+      playableActions.value = response.playableActions
+      interaction.value = response.interaction
+    } catch (error) {
+      if (revision === playableQueryRevision) {
+        errorMessage.value = error instanceof Error ? error.message : '線上房間呼叫失敗'
+      }
+    } finally {
+      if (revision === playableQueryRevision) {
+        playableQueryInFlight = false
+        isLoading.value = false
+      }
+    }
   }
 
   async function choosePendingCard(card: CardInstanceId) {

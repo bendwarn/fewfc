@@ -248,6 +248,27 @@ fn warrior_proficiencies_keep_original_formation_identity_and_effect() {
 }
 
 #[test]
+fn passive_proficiency_suppresses_empty_city_fallback() {
+    let mut state = state(2, true);
+    set_profession(&mut state, "p1", "warrior");
+    let defense_cards = cards(&state, &[(Element::Wood, 1), (Element::Metal, 1)]);
+    set_hand(&mut state, "p1", defense_cards.clone());
+
+    let actions = OfficialRules::new()
+        .playable_actions(&state, &PlayerId::new("p1"), &defense_cards)
+        .unwrap();
+
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        PlayableAction::PerformFormation(candidate) if candidate.formation_id == "defense"
+    )));
+    assert!(!actions.iter().any(|action| matches!(
+        action,
+        PlayableAction::PerformFormation(candidate) if candidate.formation_id == "empty-city"
+    )));
+}
+
+#[test]
 fn warrior_and_hero_damage_hooks_modify_only_matching_damage() {
     let mut warrior = state(2, true);
     set_profession(&mut warrior, "p2", "warrior");
@@ -387,5 +408,39 @@ fn hero_formations_and_battle_soul_work_in_four_player_games() {
             .filter(|event| matches!(event, GameEvent::StatusAdded { .. }))
             .count(),
         6
+    );
+}
+
+#[test]
+fn lethal_formation_does_not_apply_post_formation_statuses() {
+    let mut state = state(4, true);
+    set_profession(&mut state, "p1", "hero");
+    state
+        .hp
+        .iter_mut()
+        .find(|team_hp| team_hp.team == TeamId::new("team:b"))
+        .unwrap()
+        .hp = 20;
+    let shock = cards(
+        &state,
+        &[
+            (Element::Fire, 1),
+            (Element::Fire, 2),
+            (Element::Water, 1),
+            (Element::Metal, 1),
+        ],
+    );
+    set_hand(&mut state, "p1", shock.clone());
+
+    let events = perform(&state, "shock-burst", shock);
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved { hp_change, .. } if hp_change.new_hp == 0
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, GameEvent::StatusAdded { .. }))
     );
 }

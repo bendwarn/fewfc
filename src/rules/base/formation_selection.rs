@@ -337,6 +337,10 @@ impl FormationSelection {
         formation: &FormationDef,
         matcher: &crate::rules::FormationMatcher<'_>,
     ) -> Vec<Option<StarElementSubstitution>> {
+        if formation.id == "empty-city" && self.matches_passive_proficiency() {
+            return Vec::new();
+        }
+
         if crate::rules::hero::is_profession_formation(&formation.id)
             && !crate::rules::hero::can_use_profession_formation(
                 self.profession.as_ref(),
@@ -388,6 +392,23 @@ impl FormationSelection {
             })
         }));
         options
+    }
+
+    fn matches_passive_proficiency(&self) -> bool {
+        self.registry.formations().into_iter().any(|formation| {
+            formation.id != "empty-city"
+                && matches!(
+                    self.registry
+                        .effect_for(formation)
+                        .map(|effect| &effect.plan),
+                    Some(EffectPlan::PassiveSpell(_))
+                )
+                && crate::rules::hero::matches_proficiency(
+                    self.profession.as_ref(),
+                    &formation.id,
+                    &self.facts,
+                )
+        })
     }
 
     fn prepared_matches(

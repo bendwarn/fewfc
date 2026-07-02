@@ -276,6 +276,7 @@ export type GameRoomRequest =
   | {
       type: 'seedSpiritFixture'
       actorUserId: string
+      spirit?: 'Metal' | 'Fire'
     }
   | {
       type: 'getState'

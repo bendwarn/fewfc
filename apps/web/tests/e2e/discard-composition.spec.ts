@@ -206,7 +206,7 @@ test('players can inspect a synchronized discard composition throughout a match'
     await expect(trigger).toBeFocused()
 
     await trigger.click()
-    await observer.locator('.deck-pile').click()
+    await observer.locator('.formation-field').click()
     await expect(discardDialog(observer)).toBeHidden()
     await expect(trigger).toBeFocused()
 

@@ -1,7 +1,7 @@
 use crate::domain::{
     AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, DamageTransform, Element,
     ElementInteraction, EnvironmentAttackEffect, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
-    GameEvent, GameResult, GameState, HpChangeDelta, LastElementalAttack,
+    GameEvent, GameResult, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
     LastElementalAttackUpdate, PlayerId, STAR_MODULE_ID, ShieldChangeDelta, StarBreakReason,
     StarKind, TeamId, ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
@@ -220,7 +220,15 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
         }
     }
 
-    if request.mode == AttackResolutionMode::FormationUse {
+    let game_continues = {
+        let mut projected = state.clone();
+        for event in &events {
+            crate::rules::projection::apply_event(&mut projected, event);
+        }
+        projected.status == GameStatus::InProgress
+    };
+
+    if request.mode == AttackResolutionMode::FormationUse && game_continues {
         for intent in crate::rules::hero::post_formation_intents(
             state,
             &request.attacker,

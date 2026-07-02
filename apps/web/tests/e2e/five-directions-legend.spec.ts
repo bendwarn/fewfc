@@ -6,7 +6,7 @@ async function loginAsGuest(page: Page) {
   await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
 }
 
-test('new rooms enable Five Directions Legend and expose the shared environment', async ({ browser }) => {
+test('new rooms enable Five Directions Legend and hide the environment until one exists', async ({ browser }) => {
   test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
@@ -34,9 +34,11 @@ test('new rooms enable Five Directions Legend and expose the shared environment'
     await startButton.click()
 
     await Promise.all([
-      expect(host.locator('.environment-badge')).toHaveText('環境 · 無環境'),
-      expect(guest.locator('.environment-badge')).toHaveText('環境 · 無環境'),
+      expect(host.locator('.formation-field-heading')).toHaveText('陣法區'),
+      expect(guest.locator('.formation-field-heading')).toHaveText('陣法區'),
     ])
+    await expect(host.locator('.environment-badge')).toHaveCount(0)
+    await expect(guest.locator('.environment-badge')).toHaveCount(0)
   } finally {
     await hostContext.close()
     await guestContext.close()

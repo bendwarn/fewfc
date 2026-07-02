@@ -69,11 +69,11 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                                 || candidate.rule_text.clone(),
                                 |substitution| {
                                     format!(
-                                        "{} 星辰替代：{}由{}視為{}。",
+                                        "{} 星辰效果：將{}（{}）視為{}。",
                                         candidate.rule_text,
                                         card_summary(&substitution.card, &card_labels),
-                                        element_name(substitution.printed_element),
-                                        element_name(substitution.interpreted_element),
+                                        card_element_name(substitution.printed_element),
+                                        card_element_name(substitution.interpreted_element),
                                     )
                                 },
                             );
@@ -2087,6 +2087,16 @@ fn element_name(element: crate::domain::Element) -> &'static str {
     }
 }
 
+fn card_element_name(element: crate::domain::Element) -> &'static str {
+    match element {
+        crate::domain::Element::Metal => "金行牌",
+        crate::domain::Element::Wood => "木行牌",
+        crate::domain::Element::Water => "水行牌",
+        crate::domain::Element::Fire => "火行牌",
+        crate::domain::Element::Earth => "土行牌",
+    }
+}
+
 fn spirit_name(spirit: crate::domain::SpiritKind) -> &'static str {
     match spirit {
         crate::domain::SpiritKind::Metal => "金",
@@ -2318,6 +2328,7 @@ mod tests {
 
     #[test]
     fn star_substitution_is_exposed_and_accepted_by_the_web_formation_flow() {
+        assert_eq!(card_element_name(crate::domain::Element::Water), "水行牌");
         let substitution = WebStarElementSubstitution {
             card: CardInstanceId::new(42),
             printed_element: crate::domain::Element::Water,

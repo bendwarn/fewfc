@@ -464,8 +464,10 @@
                 <small v-if="teamStar(teamForPlayer(seat.player))">
                   星辰 · {{ starLabel(teamStar(teamForPlayer(seat.player))!) }}
                 </small>
-                <small v-if="state.enabledRuleModules.includes('star')">
-                  召星 {{ starHistoryCount(seat.player) }} / 5
+                <small
+                  v-if="state.enabledRuleModules.includes('star') && starHistoryLabel(seat.player)"
+                >
+                  召星 · {{ starHistoryLabel(seat.player) }}
                 </small>
                 <small v-if="spiritFor(seat.player)" class="spirit-status">
                   精靈 · {{ spiritLabel(spiritFor(seat.player)!.spirit) }}
@@ -564,14 +566,39 @@
           </div>
 
           <div class="board-center">
-            <div class="deck-pile">
-              <span>牌庫</span>
-              <strong aria-label="牌背"><span class="sr-only">牌背</span></strong>
+            <div
+              class="discard-piles"
+              :class="{ personal: state.playerDiscards.length > 0 }"
+              aria-label="棄牌堆"
+            >
+              <div
+                v-for="pile in visibleDiscardPiles"
+                :key="pile.owner ?? 'shared'"
+                class="discard-pile"
+                :class="[
+                  { disabled: discardPileUnavailable(pile.cards) },
+                  pile.position ? `discard-position-${pile.position}` : '',
+                ]"
+              >
+                <span>{{ pile.owner ? `${playerLabel(pile.owner)} 棄牌` : '棄牌' }}</span>
+                <button
+                  class="discard-pile-trigger"
+                  type="button"
+                  aria-haspopup="dialog"
+                  aria-controls="discard-composition"
+                  :aria-expanded="discardOpen && activeDiscardOwner === pile.owner"
+                  :aria-disabled="discardPileUnavailable(pile.cards)"
+                  :aria-label="`查看${pile.owner ? `${playerLabel(pile.owner)}的` : ''}棄牌內容，共 ${pile.cards.length} 張`"
+                  @click.stop="toggleDiscardComposition(pile.owner, $event)"
+                >
+                  {{ pile.cards.length }}
+                </button>
+              </div>
             </div>
             <div class="formation-field">
               <div class="formation-field-heading">
                 <span class="formation-field-label">陣法區</span>
-                <span class="environment-badge" aria-live="polite">
+                <span v-if="state.environment" class="environment-badge" aria-live="polite">
                   環境 · {{ environmentLabel(state.environment) }}
                 </span>
               </div>
@@ -613,7 +640,7 @@
                   </header>
                   <div class="action-candidates">
                     <button
-                      v-for="ability in game.playableAbilities.value"
+                      v-for="ability in directPlayableAbilities"
                       :key="playableAbilityKey(ability)"
                       type="button"
                       :title="ability.summary"
@@ -622,6 +649,28 @@
                     >
                       {{ ability.name }}
                     </button>
+                    <div
+                      v-if="splendorAbilities.length"
+                      class="spirit-level-picker"
+                      role="group"
+                      aria-label="絢爛：選擇指定等級"
+                      tabindex="0"
+                    >
+                      <span>絢爛</span>
+                      <div class="spirit-level-options" role="menu">
+                        <button
+                          v-for="ability in splendorAbilities"
+                          :key="playableAbilityKey(ability)"
+                          type="button"
+                          role="menuitem"
+                          :title="ability.summary"
+                          :aria-label="`絢爛：指定為 ${ability.declaredLevel} 級`"
+                          @click="game.performPlayableAction(ability)"
+                        >
+                          {{ ability.declaredLevel }} 級
+                        </button>
+                      </div>
+                    </div>
                     <button
                       v-if="game.interaction.value.canRetrieveDiscard"
                       class="retrieve-action"
@@ -683,25 +732,10 @@
                 </p>
               </div>
             </div>
-            <div class="discard-pile" :class="{ disabled: discardUnavailable }">
-              <span>{{ activeDiscardOwner ? `${playerLabel(activeDiscardOwner)} 棄牌` : '棄牌' }}</span>
-              <button
-                ref="discardTrigger"
-                class="discard-pile-trigger"
-                type="button"
-                aria-haspopup="dialog"
-                aria-controls="discard-composition"
-                :aria-expanded="discardOpen"
-                :aria-disabled="discardUnavailable"
-                :aria-label="`查看棄牌內容，共 ${activeDiscardCards.length} 張`"
-                @click.stop="toggleDiscardComposition"
-              >
-                {{ activeDiscardCards.length }}
-              </button>
-              <div
-                v-if="discardOpen"
-                class="discard-composition-layer"
-              >
+            <div
+              v-if="discardOpen"
+              class="discard-composition-layer"
+            >
                 <section
                   id="discard-composition"
                   class="discard-composition"
@@ -709,17 +743,6 @@
                   aria-labelledby="discard-composition-title"
                 >
                   <h2 id="discard-composition-title">棄牌內容</h2>
-                  <div v-if="state.playerDiscards.length" class="discard-owner-tabs">
-                    <button
-                      v-for="pile in state.playerDiscards"
-                      :key="pile.player"
-                      type="button"
-                      :class="{ active: activeDiscardOwner === pile.player }"
-                      @click="activeDiscardOwner = pile.player"
-                    >
-                      {{ playerLabel(pile.player) }}（{{ pile.cards.length }}）
-                    </button>
-                  </div>
                   <table>
                     <caption class="sr-only">依五行與等級統計棄牌張數</caption>
                     <thead>
@@ -749,7 +772,6 @@
                     </tbody>
                   </table>
                 </section>
-              </div>
             </div>
           </div>
 
@@ -828,16 +850,23 @@
               </p>
               <fieldset class="waiting-rules">
                 <legend>{{ isRoomOwner ? '規則模組' : '啟用規則' }}</legend>
-                <p class="mandatory-rule">基礎規則（固定啟用）</p>
-                <label v-for="rule in ruleOptions" :key="rule.id" class="rule-toggle">
-                  <input
-                    type="checkbox"
-                    :checked="onlineMetadata?.enabledRuleModules.includes(rule.id)"
-                    :disabled="game.isLoading.value || !isRoomOwner"
-                    @change="toggleWaitingRule(rule.id)"
-                  >
-                  {{ rule.label }}
-                </label>
+                <section
+                  v-for="group in ruleGroups"
+                  :key="group.id"
+                  class="waiting-rule-group"
+                  :aria-labelledby="`waiting-rule-group-${group.id}`"
+                >
+                  <h3 :id="`waiting-rule-group-${group.id}`">{{ group.label }}</h3>
+                  <label v-for="rule in group.rules" :key="rule.id" class="rule-toggle">
+                    <input
+                      type="checkbox"
+                      :checked="onlineMetadata?.enabledRuleModules.includes(rule.id)"
+                      :disabled="game.isLoading.value || !isRoomOwner"
+                      @change="toggleWaitingRule(rule.id)"
+                    >
+                    {{ rule.label }}
+                  </label>
+                </section>
               </fieldset>
               <p v-if="game.errorMessage.value" class="form-error" role="alert">
                 {{ game.errorMessage.value }}
@@ -912,10 +941,6 @@
         </section>
 
         <aside class="game-sidebar" :class="{ finished: gameFinished }">
-          <section v-if="!roomWaiting" class="enabled-rules-panel" aria-labelledby="enabled-rules-title">
-            <h2 id="enabled-rules-title">啟用規則</h2>
-            <p>{{ enabledRuleLabels.join(' · ') }}</p>
-          </section>
           <section v-if="gameFinished" class="result-panel">
             <h2>{{ gameResultText }}</h2>
             <p>{{ firstTurnText }}，本局已結束。</p>
@@ -933,6 +958,14 @@
                 {{ eventExpanded ? '收合' : '完整紀錄' }}
               </button>
             </div>
+            <section
+              v-if="!roomWaiting"
+              class="enabled-rules-panel"
+              aria-labelledby="enabled-rules-title"
+            >
+              <h2 id="enabled-rules-title">啟用規則</h2>
+              <p>{{ enabledRuleLabels.join(' · ') }}</p>
+            </section>
             <ol class="event-feed">
               <li v-for="event in visibleEvents" :key="event.id">
                 <i />
@@ -1050,6 +1083,18 @@ const viewer = ref<ViewerId>('observer')
 const game = useGameRoom(viewer)
 const notifications = usePlayerNotifications()
 const state = game.state
+const splendorAbilities = computed(() => (
+  game.playableAbilities.value
+    .filter(ability => ability.type === 'useSpiritSkill'
+      && ability.id === 'Splendor'
+      && ability.declaredLevel !== null)
+    .sort((left, right) => (left.declaredLevel ?? 0) - (right.declaredLevel ?? 0))
+))
+const directPlayableAbilities = computed(() => (
+  game.playableAbilities.value.filter(
+    ability => ability.type !== 'useSpiritSkill' || ability.id !== 'Splendor',
+  )
+))
 const actionDetail = ref<PlayableAction | null>(null)
 const eventExpanded = ref(false)
 const showSetupReveal = ref(false)
@@ -1068,14 +1113,33 @@ const modes = [
   { id: 'duel', icon: '雙', label: '雙人對戰', description: '1 對 1 經典規則' },
   { id: 'team', icon: '隊', label: '團隊對戰', description: '2 對 2 交錯行動' },
 ]
-const ruleOptions = [
-  { id: 'star', label: '進階規則‧星辰圖記' },
-  { id: 'hero-schools', label: '進階規則‧英雄學派' },
-  { id: 'five-directions-legend', label: '進階規則‧五方傳說' },
-  { id: 'spirit', label: '主題規則‧精靈' },
-  { id: 'discard-retrieval', label: '棄牌回收' },
-  { id: 'personal-deck', label: '個人牌組' },
+const ruleGroups = [
+  {
+    id: 'gameplay',
+    label: '牌局設定',
+    rules: [
+      { id: 'discard-retrieval', label: '棄牌回收' },
+      { id: 'personal-deck', label: '個人牌組' },
+    ],
+  },
+  {
+    id: 'advanced',
+    label: '進階規則',
+    rules: [
+      { id: 'star', label: '進階規則‧星辰圖記' },
+      { id: 'hero-schools', label: '進階規則‧英雄學派' },
+      { id: 'five-directions-legend', label: '進階規則‧五方傳說' },
+    ],
+  },
+  {
+    id: 'theme',
+    label: '主題規則',
+    rules: [
+      { id: 'spirit', label: '主題規則‧精靈' },
+    ],
+  },
 ]
+const ruleOptions = ruleGroups.flatMap(group => group.rules)
 const spiritDependencies = ['star', 'hero-schools', 'five-directions-legend']
 const ruleLabelById = new Map(ruleOptions.map(rule => [rule.id, rule.label]))
 const deckValidation = computed(() => validateDeck(deckDraft.value))
@@ -1150,12 +1214,16 @@ const activeDiscardCards = computed(() => {
     ?? state.value.playerDiscards[0]?.player
   return state.value.playerDiscards.find(pile => pile.player === owner)?.cards ?? []
 })
-const discardComposition = computed(() => buildDiscardComposition(activeDiscardCards.value))
-const discardUnavailable = computed(() => (
-  (!state.value.discard.length
-    && state.value.playerDiscards.every(pile => pile.cards.length === 0))
-  || Boolean(state.value.pendingChoice)
+const visibleDiscardPiles = computed(() => (
+  state.value.playerDiscards.length
+    ? state.value.playerDiscards.map(pile => ({
+        owner: pile.player,
+        cards: pile.cards,
+        position: playerSeats.value.find(seat => seat.player === pile.player)?.position ?? 'top',
+      }))
+    : [{ owner: null, cards: state.value.discard, position: null }]
 ))
+const discardComposition = computed(() => buildDiscardComposition(activeDiscardCards.value))
 const activeTeams = computed(() => [...new Set(state.value.players.map((player) => player.team))])
 const showSkip = computed(() => (
   roomConnected.value
@@ -1415,16 +1483,23 @@ function leaveGame() {
   void router.push('/rooms')
 }
 
-function toggleDiscardComposition() {
-  if (discardOpen.value) {
+function discardPileUnavailable(cards: readonly unknown[]): boolean {
+  return cards.length === 0 || Boolean(state.value.pendingChoice)
+}
+
+function toggleDiscardComposition(owner: PlayerId | null, event: MouseEvent) {
+  if (discardOpen.value && activeDiscardOwner.value === owner) {
     closeDiscardComposition()
     return
   }
 
-  if (discardUnavailable.value) {
+  const pile = visibleDiscardPiles.value.find(candidate => candidate.owner === owner)
+  if (!pile || discardPileUnavailable(pile.cards)) {
     return
   }
 
+  discardTrigger.value = event.currentTarget as HTMLButtonElement
+  activeDiscardOwner.value = owner
   discardOpen.value = true
 }
 
@@ -1924,8 +1999,18 @@ function teamStar(team: TeamId) {
   return state.value.teamStars.find(owned => owned.team === team)?.star
 }
 
-function starHistoryCount(player: PlayerId): number {
-  return state.value.starHistories.find(history => history.player === player)?.stars.length ?? 0
+function starHistoryLabel(player: PlayerId): string {
+  const stars = state.value.starHistories.find(history => history.player === player)?.stars ?? []
+  if (!stars.length) return ''
+
+  const labels = {
+    Metal: '金',
+    Wood: '木',
+    Water: '水',
+    Fire: '火',
+    Earth: '土',
+  }
+  return stars.map(star => labels[star]).join('、')
 }
 
 function spiritFor(player: PlayerId) {
@@ -2101,7 +2186,11 @@ function playableActionName(action: PlayableAction): string {
     .find(candidate => candidate.id === substitution.card)
   const cardLabel = card?.label ?? `牌 ${substitution.card}`
 
-  return `${action.name}（${cardLabel}：${environmentLabel(substitution.printedElement)}→${environmentLabel(substitution.interpretedElement)}）`
+  return `${action.name}（${cardLabel}：${cardElementLabel(substitution.printedElement)}視為${cardElementLabel(substitution.interpretedElement)}）`
+}
+
+function cardElementLabel(element: Element): string {
+  return `${environmentLabel(element).replace('環境', '')}牌`
 }
 
 function playableAbilityKey(
@@ -2199,9 +2288,10 @@ function cardName(label: string): string {
 .deck-validation { @apply flex flex-wrap gap-5 rounded-lg border border-emerald-700/30 bg-emerald-50 p-4 text-emerald-900; }
 .deck-validation.invalid { @apply border-red-700/30 bg-red-50 text-red-900; }
 .rule-toggle { @apply flex items-center gap-2 py-2; }
-.waiting-rules { @apply my-4 flex flex-wrap justify-center gap-x-6 gap-y-1 border-y border-white/15 py-2; }
-.waiting-rules legend, .mandatory-rule { @apply w-full; }
-.mandatory-rule { @apply border border-[#59635c] bg-[#18201b] px-3 py-2 text-center text-xs text-[#ece8dd]; }
+.waiting-rules { @apply my-4 grid gap-2 border-y border-white/15 py-2; }
+.waiting-rules legend { @apply w-full; }
+.waiting-rule-group { @apply grid grid-cols-1 gap-1 border border-[#354039] bg-[#121915] p-2 sm:grid-cols-2; }
+.waiting-rule-group h3 { @apply col-span-full text-left font-serif text-xs text-gold-light; }
 .site-header {
   @apply relative z-20 flex min-h-[84px] items-center justify-between border-b border-[#29322d] bg-[rgba(14,19,16,.96)];
   padding: 10px clamp(14px, 4vw, 64px);
@@ -2397,11 +2487,11 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   box-shadow: 0 5px 15px rgba(0,0,0,.35);
 }
 .playing-card:enabled:hover, .playing-card.selected { transform: translateY(-14px); border-color: #e2bd67; box-shadow: 0 0 0 2px #c9a451, 0 12px 18px rgba(0,0,0,.45); z-index: 5; }
-.playing-card.hidden, .deck-pile strong, .formation-card.hidden {
+.playing-card.hidden, .formation-card.hidden {
   background: repeating-linear-gradient(45deg, var(--card-back-base), var(--card-back-base) 5px, var(--card-back-stripe) 5px, var(--card-back-stripe) 10px);
   border: 2px solid var(--card-back-border);
 }
-.playing-card.hidden::after, .deck-pile strong::after, .formation-card.hidden::after {
+.playing-card.hidden::after, .formation-card.hidden::after {
   content: "";
   width: 48%;
   aspect-ratio: 1;
@@ -2416,16 +2506,22 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .seat-top .playing-card { width: clamp(48px, 5vw, 68px); }
 .seat-left .seat-hand, .seat-right .seat-hand { @apply flex-col gap-1; }
 .seat-left .playing-card, .seat-right .playing-card { width: 30px; }
-.board-center { grid-area: center; @apply z-1 grid min-w-0 grid-cols-[90px_minmax(220px,1fr)_90px] items-center justify-items-center; }
+.board-center { grid-area: center; @apply relative z-1 grid min-w-0 grid-cols-[90px_minmax(220px,1fr)_90px] items-center justify-items-center; }
 .battlefield.discard-open { z-index: 25; overflow: visible; }
 .battlefield.discard-open .board-center { z-index: 16; }
-.deck-pile, .discard-pile { @apply grid justify-items-center gap-1.5 text-[9px] text-[#707b73]; }
-.discard-pile { @apply relative; }
-.deck-pile strong, .discard-pile-trigger { @apply grid w-[52px] place-items-center border border-[#665b44] bg-[#18201b] font-serif text-xl text-[#a68d56]; aspect-ratio: 5/7; }
+.discard-piles { @apply z-2 flex w-full justify-end; grid-column: 1 / -1; grid-row: 1; }
+.discard-piles.personal { @apply pointer-events-none absolute inset-0 block; }
+.discard-pile { @apply grid justify-items-center gap-1.5 text-[9px] text-[#707b73]; }
+.discard-piles.personal .discard-pile { @apply pointer-events-auto absolute w-[90px]; }
+.discard-position-top { top: 0; left: 0; }
+.discard-position-left { bottom: 0; left: 0; }
+.discard-position-right { top: 0; right: 0; }
+.discard-position-bottom { right: 0; bottom: 0; }
+.discard-pile-trigger { @apply grid w-[52px] place-items-center border border-[#665b44] bg-[#18201b] font-serif text-xl text-[#a68d56]; aspect-ratio: 5/7; }
 .discard-pile-trigger { @apply p-0 hover:border-[#b99550] hover:text-gold-light; }
 .discard-pile-trigger:focus-visible { outline: 2px solid #d1ad62; outline-offset: 3px; }
 .discard-pile.disabled .discard-pile-trigger { @apply cursor-not-allowed opacity-45; }
-.discard-composition-layer { @apply absolute right-0 z-20; bottom: calc(100% + 12px); }
+.discard-composition-layer { @apply absolute right-0 z-20; bottom: calc(50% + 48px); }
 .discard-composition {
   @apply w-[300px] border border-[#8e733d] bg-[#18201b] p-3.5 text-[#ece8dd] shadow-[0_18px_48px_rgba(0,0,0,.52)];
 }
@@ -2442,9 +2538,6 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   transform: rotate(45deg);
 }
 .discard-composition h2 { @apply mb-2.5 font-serif text-sm text-gold-light; }
-.discard-owner-tabs { @apply mb-3 flex flex-wrap gap-1; }
-.discard-owner-tabs button { @apply rounded border border-[#4e5b53] px-2 py-1 text-[10px] text-muted; }
-.discard-owner-tabs button.active { @apply border-[#d1ad62] text-gold-light; }
 .discard-composition table { @apply w-full table-fixed border-collapse; }
 .discard-composition th, .discard-composition td { @apply h-8 border border-[#354039] text-center; }
 .discard-composition thead th { @apply text-[10px] font-bold text-[#d5d8d4]; }
@@ -2456,7 +2549,7 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .discard-composition thead th:nth-child(4) { color: #75a8bd; }
 .discard-composition thead th:nth-child(5) { color: #d17a6c; }
 .discard-composition thead th:nth-child(6) { color: #c8a265; }
-.formation-field { @apply relative grid min-h-48 w-full min-w-0 grid-rows-[auto_1fr_auto] items-center border-x border-[rgba(166,141,86,.14)] px-3 py-2 text-center text-[10px] text-[#69736c]; }
+.formation-field { @apply relative z-3 grid min-h-48 w-full min-w-0 grid-rows-[auto_1fr_auto] items-center border-x border-[rgba(166,141,86,.14)] px-3 py-2 text-center text-[10px] text-[#69736c]; grid-column: 2; grid-row: 1; }
 .formation-field-heading { @apply flex flex-wrap items-center justify-center gap-2; }
 .formation-field-label { @apply text-[#9a8251]; letter-spacing: .2em; }
 .environment-badge { @apply border border-[#64583f] bg-[#1a211c] px-2 py-1 text-[9px] text-gold-light; }
@@ -2476,6 +2569,12 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .action-candidates { @apply flex max-w-full flex-wrap justify-center gap-1.5; }
 .action-candidates button { @apply min-h-8 border border-[#4c554f] bg-[#18201b] px-2.5 py-1.5 text-[10px] text-[#e1ddd2] hover:border-[#b99550]; }
 .action-candidates p { @apply text-[9px] text-[#68726b]; }
+.spirit-level-picker { @apply relative min-h-8 border border-[#4c554f] bg-[#18201b] px-2.5 py-1.5 text-[10px] text-[#e1ddd2]; }
+.spirit-level-picker > span { @apply grid min-h-4 place-items-center; }
+.spirit-level-picker:focus-visible { outline: 2px solid #d1ad62; outline-offset: 2px; }
+.spirit-level-options { @apply invisible absolute bottom-[calc(100%+5px)] left-1/2 z-10 grid min-w-20 -translate-x-1/2 gap-1 border border-[#64583f] bg-[#121915] p-1 opacity-0 shadow-[0_10px_24px_rgba(0,0,0,.45)]; }
+.spirit-level-picker:hover .spirit-level-options, .spirit-level-picker:focus-within .spirit-level-options { @apply visible opacity-100; }
+.action-candidates .spirit-level-options button { @apply min-h-7 whitespace-nowrap px-2 py-1; }
 .action-candidates .skip-action { @apply border-[#79633b] text-gold-light; }
 .action-processing { @apply text-[#d0aa5e]; }
 .action-error { @apply text-[#d79587]; }
@@ -2513,9 +2612,9 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .result-actions .ghost-button { @apply border-[#59635c] text-[#ece8dd]; }
 .result-actions .primary-button { @apply justify-between; }
 
-.game-sidebar { @apply grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
-.game-sidebar.finished { grid-template-rows: auto auto minmax(0, 1fr); }
-.enabled-rules-panel { @apply border-b border-line p-4; }
+.game-sidebar { @apply grid min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
+.game-sidebar.finished { grid-template-rows: auto minmax(0, 1fr); }
+.enabled-rules-panel { @apply mt-4 border border-line bg-[#151c18] p-3; }
 .enabled-rules-panel h2 { @apply font-serif text-sm text-gold-light; }
 .enabled-rules-panel p { @apply mt-1 text-[10px] leading-5 text-muted; }
 .result-panel { @apply border-b border-[#8e733d] bg-[#18201b] p-5; }
@@ -2542,7 +2641,7 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   .player-identity strong { font-size: 14px; }
   .player-identity small { font-size: 12px; }
   .reconnecting-label, .turn-badge, .counter-badge, .shield-badge, .status-badge, .side-hand-count { font-size: 11px!important; }
-  .deck-pile, .discard-pile { font-size: 11px; }
+  .discard-pile { font-size: 11px; }
   .formation-field { font-size: 12px; }
   .previous-formation small { font-size: 11px; }
   .previous-formation p, .action-candidates button { font-size: 12px; }
@@ -2600,7 +2699,8 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   .seat-left .side-hand-count, .seat-right .side-hand-count { @apply block; }
   .board-center { grid-template-columns: 48px minmax(0, 1fr) 48px; width: 100%; }
   .formation-field { min-width: 0; width: 100%; }
-  .deck-pile strong, .discard-pile-trigger { width: 38px; }
+  .discard-piles.personal .discard-pile { width: 48px; }
+  .discard-pile-trigger { width: 38px; }
   .playing-card { width: 54px; }
   .seat-top .playing-card { width: 43px; }
   .player-identity strong { max-width: 110px; }

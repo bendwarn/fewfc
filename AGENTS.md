@@ -5,14 +5,7 @@
 - This repository is a Rust crate. Prefer `cargo test` for the main validation path unless the task specifically touches package tooling.
 - The Nuxt app lives under `apps/web`. Auth and online room APIs need Wrangler/Cloudflare bindings; plain `bun run dev` is only for Nuxt-only UI work.
 - For `apps/web` Worker/Durable Object local dev, ensure `.dev.vars` exists and `BETTER_AUTH_SECRET` is at least 32 characters, otherwise Better Auth routes fail with `500 BETTER_AUTH_SECRET must contain at least 32 characters`.
-- Wrangler must run under Node, not Bun. If `bun run cf:dev` fails with `Wrangler does not support the Bun runtime`, run `bun run build`, then start Wrangler with Node: `node node_modules/.bin/wrangler dev --env=""`. In Codex Desktop, use `load_workspace_dependencies` if `node` is not on `PATH`.
 - Local dev servers may need sandbox escalation to bind localhost ports. If a dev server reports no available port while nothing is reachable, rerun with escalated permissions.
-- When supplying a custom `PATH` for Node in Codex Desktop, preserve the Rust toolchain path as well. Playwright's web-server process runs the WASM build and otherwise fails with `cargo: command not found`.
-- In Codex Desktop, `bun run test:e2e` can still make Wrangler detect the Bun
-  runtime when `node` is absent from the original `PATH`, even though the script
-  invokes `node node_modules/.bin/wrangler`. Load workspace dependencies and put
-  their real Node directory first in `PATH`; retain
-  `/opt/homebrew/opt/rustup/bin` and the Bun directory.
 
 ## Browser and E2E Validation
 

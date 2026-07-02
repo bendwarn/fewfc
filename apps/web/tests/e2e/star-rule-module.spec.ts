@@ -47,7 +47,9 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
     const roomName = `星辰預設測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
 
-    await expect(host.getByText('基礎規則（固定啟用）')).toBeVisible()
+    await expect(host.getByRole('heading', { name: '牌局設定' })).toBeVisible()
+    await expect(host.getByRole('heading', { name: '進階規則' })).toBeVisible()
+    await expect(host.getByRole('heading', { name: '主題規則' })).toBeVisible()
     await expect(host.getByLabel('進階規則‧星辰圖記')).toBeChecked()
     await expect(host.getByLabel('進階規則‧星辰圖記')).toBeEnabled()
     expect(await indexedModules(host, roomName)).toContain('star')
@@ -62,7 +64,8 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
       const rules = page.getByRole('region', { name: '啟用規則' })
       await expect(rules).toContainText('基礎規則')
       await expect(rules).toContainText('進階規則‧星辰圖記')
-      await expect(page.locator('.player-identity')).toContainText(['召星 0 / 5', '召星 0 / 5'])
+      await expect(page.locator('.event-panel .enabled-rules-panel')).toBeVisible()
+      await expect(page.locator('.player-identity').filter({ hasText: '召星' })).toHaveCount(0)
     }))
 
     const roomId = new URL(host.url()).pathname.split('/').pop()
@@ -168,12 +171,12 @@ test('a four-player team room starts with one shared immutable Star configuratio
       await expect(page.getByRole('region', { name: '啟用規則' }))
         .toContainText('進階規則‧星辰圖記')
       await expect(page.locator('.player-seat')).toHaveCount(4)
-      await expect(page.locator('.player-identity')).toContainText([
-        '召星 0 / 5',
-        '召星 0 / 5',
-        '召星 0 / 5',
-        '召星 0 / 5',
-      ])
+      await expect(page.getByLabel('棄牌堆').locator('.discard-pile')).toHaveCount(4)
+      await expect(page.locator('.discard-position-top')).toHaveCount(1)
+      await expect(page.locator('.discard-position-left')).toHaveCount(1)
+      await expect(page.locator('.discard-position-right')).toHaveCount(1)
+      await expect(page.locator('.discard-position-bottom')).toHaveCount(1)
+      await expect(page.locator('.player-identity').filter({ hasText: '召星' })).toHaveCount(0)
     }))
   } finally {
     await Promise.all(contexts.map(context => context.close()))
@@ -223,7 +226,7 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
     await host.getByRole('button', { name: '返回房間 →' }).click()
     await Promise.all(pages.map(async (page) => {
       await expect(page.getByLabel('進階規則‧星辰圖記')).toBeChecked()
-      await expect(page.getByText('基礎規則（固定啟用）')).toBeVisible()
+      await expect(page.getByRole('heading', { name: '進階規則' })).toBeVisible()
     }))
   } finally {
     await hostContext.close()

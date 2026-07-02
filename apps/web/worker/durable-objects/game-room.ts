@@ -90,7 +90,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         case 'seedHeroSchoolsFixture':
           return await this.seedHeroSchoolsFixture(body.actorUserId)
         case 'seedSpiritFixture':
-          return await this.seedSpiritFixture(body.actorUserId)
+          return await this.seedSpiritFixture(body.actorUserId, body.spirit)
         case 'getState':
           return await this.getState(body.actorUserId)
         case 'submitCommand':
@@ -726,7 +726,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return this.json(await this.response(metadata, actorUserId))
   }
 
-  private async seedSpiritFixture(actorUserId: string): Promise<Response> {
+  private async seedSpiritFixture(
+    actorUserId: string,
+    spirit: 'Metal' | 'Fire' = 'Metal',
+  ): Promise<Response> {
     const metadata = await this.requireMetadata()
     const actor = this.memberFor(metadata, actorUserId)
 
@@ -751,9 +754,13 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
     let rules: RulesEngineResult | undefined
     let deckSeed = ''
-    let metalCards: number[] = []
+    const elementLabel = spirit === 'Fire' ? '火' : '金'
+    const summoningFormation = spirit === 'Fire'
+      ? 'fire-spirit-summoning'
+      : 'metal-spirit-summoning'
+    let spiritCards: number[] = []
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      deckSeed = `spirit-e2e-${attempt}`
+      deckSeed = `spirit-${spirit.toLowerCase()}-e2e-${attempt}`
       const candidate = await callRulesEngine({
         action: { type: 'start' },
         viewer: actor.player,
@@ -761,24 +768,27 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         deckSeed,
       })
       const hand = candidate.state.hands.find(entry => entry.player === actor.player)
-      metalCards = hand?.cards.kind === 'known'
-        ? hand.cards.cards.filter(card => /^金 /.test(card.label)).slice(0, 2).map(card => card.id)
+      spiritCards = hand?.cards.kind === 'known'
+        ? hand.cards.cards
+            .filter(card => card.label.startsWith(`${elementLabel} `))
+            .slice(0, 2)
+            .map(card => card.id)
         : []
-      if (metalCards.length === 2) {
+      if (spiritCards.length === 2) {
         rules = candidate
         break
       }
     }
     if (!rules) {
-      return this.json({ error: 'test fixture could not find two Metal Cards' }, 500)
+      return this.json({ error: `test fixture could not find two ${spirit} Cards` }, 500)
     }
 
     rules = await callRulesEngine({
       action: {
         type: 'performFormation',
         player: actor.player,
-        formationId: 'metal-spirit-summoning',
-        cards: metalCards,
+        formationId: summoningFormation,
+        cards: spiritCards,
       },
       viewer: actor.player,
       setup,
@@ -786,13 +796,22 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       record: rules.record,
     })
 
-    for (let guard = 0; rules.state.currentPlayer !== actor.player || rules.state.phase !== 'Main'; guard += 1) {
-      if (guard >= 20) {
+    for (let guard = 0; ; guard += 1) {
+      const actorSpirit = rules.state.spirits.find(owned => owned.player === actor.player)
+      if (
+        rules.state.currentPlayer === actor.player
+        && rules.state.phase === 'Main'
+        && (spirit === 'Metal' || (actorSpirit?.power ?? 0) >= 3)
+      ) {
+        break
+      }
+      if (guard >= 80) {
         return this.json({
-          error: 'test fixture could not return to owner turn',
+          error: 'test fixture could not prepare the requested Spirit Skill',
           currentPlayer: rules.state.currentPlayer,
           phase: rules.state.phase,
           pendingChoice: rules.state.pendingChoice,
+          spirit: actorSpirit,
         }, 500)
       }
       if (rules.state.pendingChoice) {
@@ -807,11 +826,14 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         if (choice?.kind !== 'TurnDrawDiscard' || !choice.cards[0]) {
           return this.json({ error: 'test fixture cannot answer pending choice' }, 500)
         }
+        const preferredDiscard = choice.player === actor.player && spirit === 'Fire'
+          ? choice.cards.find(card => card.label.startsWith(`${elementLabel} `))
+          : undefined
         rules = await callRulesEngine({
           action: {
             type: 'chooseTurnDiscard',
             player: choice.player,
-            card: choice.cards[0].id,
+            card: (preferredDiscard ?? choice.cards[0]).id,
           },
           viewer: actor.player,
           setup,
