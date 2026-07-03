@@ -517,8 +517,8 @@ cannot answer HP loss caused by that same resolution.
 ### 5.6 Pouch
 
 Pouch is a Theme Rule Module from the official 5.16 PDF, pages 37-38. This
-product intentionally permits it only when Personal Deck and all three Advanced
-Rule Modules are enabled.
+product intentionally permits it only when Personal Deck and Spirit are
+enabled; Spirit transitively requires all three Advanced Rule Modules.
 
 Before initial hands are dealt, Players choose starting Pouches in Turn Order
 from their unshuffled Personal Decks. Each choice removes one Card Instance from
@@ -528,11 +528,52 @@ those orders before dealing. Pouch identity is visible only to its owner until
 the Card is revealed, while canonical events retain enough information for
 replay.
 
+This is a public, reconnectable Game Preparation lifecycle:
+`InitialPouchSelection -> PendingDeckShuffle -> InitialDeal -> Ongoing`. It does
+not add values to the Turn Phase model, and the first Turn begins only after the
+initial deal completes.
+
+Pouch knowledge is viewer-specific and persists across reconnects. An initial
+Pouch is known only to its Pouch Owner. When Chain gives a Pouch to a teammate,
+the performing Player retains knowledge because they selected the Card, and the
+new Pouch Owner may also inspect it; every other viewer sees only a Card Back.
+Once revealed or moved into a public Discard Pile, its identity is public.
+
 Triggering a Pouch is an active effect during `Main`, before the Player's Action,
 and remains legal under **Cannot Act**. The Player reveals the Card, chooses
 exactly one Secret Strategy whose condition matches its printed element or
 level, resolves that effect, and only then moves the revealed Card to its origin
 Discard Pile.
+
+Before submission, the Player may close the Pouch UI without changing canonical
+state. Submission validates the selected Secret Strategy and all immediately
+required input before emitting the reveal. Once revealed, the trigger cannot be
+cancelled; any remaining target, Card, or branch choices are completed through
+typed Pending Choices and replayable continuations. A validation failure emits
+no reveal and leaves the Pouch in place.
+
+A Secret Strategy that was legally triggered still reveals and discards its
+source Card when prevention or current state makes its effect ineffective. For
+example, Dark Crossing under an effect that forbids Profession Change performs
+no Profession Change, and Retreat performs no Environment Clearing when no
+Environment exists. An option that the published rule explicitly forbids is not
+offered, such as Retreat's discard-and-transfer option when the Player has no
+Card in hand.
+
+The ten Secret Strategies use printed Pouch values:
+
+| Strategy | Condition | Resolution |
+|---|---|---|
+| 金蟬 | Metal | Ignore Cannot Act, Cannot Draw, Counter Effects, and other Players' Secret Strategy effects for this Turn |
+| 偷梁 | Wood | Cards in the triggering hand snapshot have level +1 until Turn End |
+| 混水 | Water | Turn Draw bonus +1 this Turn |
+| 觀火 | Fire | Protect the next Player's next Turn from attack damage and Formation-caused Team HP changes |
+| 離山 | Earth | Suppress one Player's Profession Abilities and Spirit Skills and prevent Spirit Power gain for one Turn |
+| 還魂 | Level 1 | Summon the source element's Spirit at one power plus the replaced Spirit's power, capped at six |
+| 牽羊 | Level 2 | Exchange two selected Deck Cards for two selected Discard Pile Cards, then shuffle |
+| 暗渡 | Level 3 | Directly change to the source element's first-tier Hero School Profession |
+| 瞞天 | Level 4 | Break one selected existing Star or gain one selected Temporary Star Effect this Turn |
+| 走為 | Level 5 | Clear the current Environment or discard one hand Card and transfer to its printed element's Environment |
 
 Chain is an Active Spell made from three Cards with pairwise-different elements
 and levels. It searches the performing Player's Personal Deck for exactly one
@@ -552,6 +593,11 @@ Pile may therefore be selected by Sheep Stealing.
 
 Pouch ownership does not change Card Origin. A Pouch given to a teammate by
 Chain enters the origin Player's Discard Pile when it is triggered or replaced.
+Chain does not shuffle after searching. Its private choice options expose
+eligible Card Instances without revealing their Deck positions, and selected
+Cards are removed while the relative order of the remaining Deck is preserved.
+If the Deck has only one Card when Chain begins, normal exhaustion recycling
+runs before the search as required by the published rule.
 
 Sheep Stealing first discards two selected Cards from the Player's Personal
 Deck, then returns two selected Cards from that Player's Discard Pile and
@@ -584,6 +630,17 @@ Activated Abilities and Skills may still be used, pay their costs, and consume
 their usage allowances, but their effects do not execute. Automatic,
 proficiency, and persistent abilities are suppressed. The affected Spirit also
 cannot gain Spirit Power during that duration.
+
+Steal the Beam snapshots the Card Instances in the triggering Player's hand and
+gives those Cards level +1 until Turn End. Cards that enter the hand after the
+strategy triggers are not affected. The interpretation remains attached to each
+snapshotted Card Instance for the duration even if it temporarily leaves and
+re-enters the hand.
+
+Golden Cicada does not prevent an eligible Covered Passive from reaching its
+ordinary trigger. The passive still flips, becomes public, and moves to its
+origin Discard Pile; only its Counter Effect is ineffective against the
+protected Player's action during that Turn.
 
 Watch the Fire prevents all attack damage during the next Player's next Turn,
 including damage that a Shield would otherwise absorb. It also prevents Team HP
@@ -689,6 +746,11 @@ owner's list is captured when starting the game. Changing any Rule Module,
 cancelling readiness, or leaving invalidates affected waiting-room snapshots.
 Started-game snapshots are immutable. Only the owning Player sees a Locked Deck
 List's name, contents, or fallback notice.
+
+When Pouch is enabled, starting the room still immediately locks membership,
+Rule Modules, and Deck Lists and routes Players to the game. The room is already
+started while `InitialPouchSelection` and `PendingDeckShuffle` are in progress;
+these reconnectable steps do not run in the waiting room.
 
 ## 6) Persistence And Replay
 

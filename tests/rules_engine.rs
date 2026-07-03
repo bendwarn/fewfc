@@ -4643,6 +4643,7 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
         public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).pending_choice,
         Some(PublicPendingChoice {
             player: PlayerId::new("p1"),
+            purpose: "chaos".to_string(),
             kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
                 effect_id: "chaos".to_string(),
                 continuation_id: "chaos:return-two".to_string(),
@@ -4654,6 +4655,7 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
         public_view::state_for(&state, Viewer::Player(PlayerId::new("p2"))).pending_choice,
         Some(PublicPendingChoice {
             player: PlayerId::new("p1"),
+            purpose: "chaos".to_string(),
             kind: PublicPendingChoiceKind::Hidden,
         })
     );
@@ -4661,6 +4663,7 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
         public_view::state_for(&state, Viewer::Observer).pending_choice,
         Some(PublicPendingChoice {
             player: PlayerId::new("p1"),
+            purpose: "chaos".to_string(),
             kind: PublicPendingChoiceKind::Hidden,
         })
     );
@@ -4742,6 +4745,7 @@ fn effect_choice_event_view_filters_options_and_preserves_canonical_continuation
         public_view::event_for(&event, Viewer::Player(PlayerId::new("p1"))),
         PublicGameEvent::EffectChoiceRequested {
             player: PlayerId::new("p1"),
+            purpose: "metamorphosis".to_string(),
             kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
                 effect_id: "metamorphosis".to_string(),
                 continuation_id: "metamorphosis:choose-card".to_string(),
@@ -4753,6 +4757,7 @@ fn effect_choice_event_view_filters_options_and_preserves_canonical_continuation
         public_view::event_for(&event, Viewer::Player(PlayerId::new("p2"))),
         PublicGameEvent::EffectChoiceRequested {
             player: PlayerId::new("p1"),
+            purpose: "metamorphosis".to_string(),
             kind: PublicPendingChoiceKind::Hidden,
         }
     );
@@ -4760,6 +4765,7 @@ fn effect_choice_event_view_filters_options_and_preserves_canonical_continuation
         public_view::event_for(&event, Viewer::Observer),
         PublicGameEvent::EffectChoiceRequested {
             player: PlayerId::new("p1"),
+            purpose: "metamorphosis".to_string(),
             kind: PublicPendingChoiceKind::Hidden,
         }
     );

@@ -135,8 +135,14 @@ impl BaseEffectResolver {
                         &plan.formation_id,
                     )
                     && environment_makes_formation_ineffective(state, &plan.formation_id);
+                let formation_suppressed = crate::rules::echo::formation_use_is_suppressed(
+                    state,
+                    &plan.player,
+                    &plan.formation_id,
+                );
                 let damage_prevented = passive_trigger.prevents_damage()
                     || environment_ineffective
+                    || formation_suppressed
                     || crate::rules::spirit::stone_shield_prevents_attack(state, &plan.player);
                 let split_attack_damage = passive_trigger.splits_attack_damage();
                 let mut events = crate::rules::dark::pre_formation_events(
@@ -149,7 +155,7 @@ impl BaseEffectResolver {
                 events.extend(crate::rules::jianghu::poison_smoke_flip_events(
                     state, &events,
                 ));
-                if environment_ineffective {
+                if environment_ineffective || formation_suppressed {
                     events.push(formation_effect_ignored_event(
                         state,
                         &plan.player,
@@ -218,6 +224,24 @@ impl BaseEffectResolver {
                 events.extend(crate::rules::jianghu::poison_smoke_flip_events(
                     state, &events,
                 ));
+                if crate::rules::echo::formation_use_is_suppressed(
+                    state,
+                    &plan.player,
+                    &plan.formation_id,
+                ) {
+                    events.push(GameEvent::FormationPerformed {
+                        player: plan.player.clone(),
+                        formation_id: plan.formation_id.clone(),
+                        used_cards: plan.cards.clone(),
+                        declared_targets: plan.declared_targets.clone(),
+                    });
+                    events.push(formation_effect_ignored_event(
+                        state,
+                        &plan.player,
+                        &plan.formation_id,
+                    ));
+                    return Ok(events);
+                }
                 events.push(GameEvent::PassiveCovered {
                     player: plan.player.clone(),
                     formation_id: plan.formation_id,
@@ -258,7 +282,12 @@ impl BaseEffectResolver {
                         state,
                         &plan.player,
                         &plan.formation_id,
-                    ) && environment_makes_formation_ineffective(state, &plan.formation_id);
+                    ) && environment_makes_formation_ineffective(state, &plan.formation_id)
+                        || crate::rules::echo::formation_use_is_suppressed(
+                            state,
+                            &plan.player,
+                            &plan.formation_id,
+                        );
                 let mut events = crate::rules::dark::pre_formation_events(
                     state,
                     &plan.player,
@@ -324,6 +353,21 @@ impl BaseEffectResolver {
                     }
                     if spell.resolver_id == "void-star-breaking" {
                         events.extend(void_star_breaking_events(state, &plan.player));
+                        return Ok(events);
+                    }
+                    if let Some(mut echo_events) = {
+                        let mut projected = state.clone();
+                        for event in &events {
+                            crate::rules::projection::apply_event(&mut projected, event);
+                        }
+                        crate::rules::echo::formation_main_effect_events(
+                            state,
+                            &projected,
+                            &plan.player,
+                            &spell.resolver_id,
+                        )?
+                    } {
+                        events.append(&mut echo_events);
                         return Ok(events);
                     }
                     if let Some(mut jianghu_events) = crate::rules::jianghu::active_spell_events(
@@ -476,6 +520,19 @@ fn formation_effect_ignored_event(
     player: &PlayerId,
     formation_id: &str,
 ) -> GameEvent {
+    if let Some(suppression) = state.formation_suppressions.iter().find(|suppression| {
+        &suppression.target == player
+            && suppression.formation_id == formation_id
+            && suppression.expires_on_turn_number == state.turn_number
+    }) {
+        return GameEvent::FormationEffectIgnored {
+            player: player.clone(),
+            formation_id: formation_id.to_string(),
+            reason: crate::domain::FormationNoEffectReason::SuppressedBySplitEarth {
+                source: suppression.source.clone(),
+            },
+        };
+    }
     let environment = state
         .environment
         .expect("an Environment can only make a Formation ineffective while it exists");

@@ -99,6 +99,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           return await this.seedHeroSchoolsFixture(body.actorUserId)
         case 'seedSpiritFixture':
           return await this.seedSpiritFixture(body.actorUserId, body.spirit)
+        case 'seedEchoFixture':
+          return await this.seedEchoFixture(body.actorUserId)
         case 'getState':
           return await this.getState(body.actorUserId)
         case 'submitCommand':
@@ -925,6 +927,101 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return this.json(await this.response(metadata, actorUserId))
   }
 
+  private async seedEchoFixture(actorUserId: string): Promise<Response> {
+    const metadata = await this.requireMetadata()
+    const actor = this.memberFor(metadata, actorUserId)
+
+    if (!actor?.owner) {
+      return this.json({ error: 'only room owner may seed a test fixture' }, 403)
+    }
+    if (metadata.status !== 'Active') {
+      return this.json({ error: 'test fixture requires an active match' }, 409)
+    }
+
+    const snapshot = await this.requireSnapshot()
+    if (!snapshot.setup.enabledRuleModules.includes('echo')) {
+      return this.json({ error: 'test fixture requires Echo' }, 409)
+    }
+    const setup: RulesGameSetup = {
+      ...snapshot.setup,
+      turnOrder: [
+        actor.player,
+        ...snapshot.setup.turnOrder.filter(player => player !== actor.player),
+      ],
+    }
+
+    let rules: RulesEngineResult | undefined
+    let deckSeed = ''
+    let pureFire: Extract<PlayableAction, { type: 'performFormation' }> | undefined
+    for (let attempt = 0; attempt < 300 && !pureFire; attempt += 1) {
+      deckSeed = `echo-pure-fire-e2e-${attempt}`
+      const candidate = await callRulesEngine({
+        action: { type: 'start' },
+        viewer: actor.player,
+        setup,
+        deckSeed,
+      })
+      const hand = candidate.state.hands.find(entry => entry.player === actor.player)
+      const cards = hand?.cards.kind === 'known' ? hand.cards.cards : []
+      for (let left = 0; left < cards.length && !pureFire; left += 1) {
+        for (let right = left + 1; right < cards.length && !pureFire; right += 1) {
+          const actions = await callRulesEngine({
+            action: {
+              type: 'playableActions',
+              player: actor.player,
+              cards: [cards[left]!.id, cards[right]!.id],
+            },
+            viewer: actor.player,
+            setup,
+            deckSeed,
+            record: candidate.record,
+          })
+          pureFire = actions.playableActions.find(
+            (action): action is Extract<PlayableAction, { type: 'performFormation' }> => (
+              action.type === 'performFormation' && action.id === 'echo:pure-fire'
+            ),
+          )
+          if (pureFire) {
+            rules = candidate
+          }
+        }
+      }
+    }
+    if (!rules || !pureFire) {
+      return this.json({ error: 'test fixture could not find Pure Fire Cards' }, 500)
+    }
+
+    rules = await callRulesEngine({
+      action: {
+        type: 'performFormation',
+        player: actor.player,
+        formationId: pureFire.id,
+        cards: pureFire.cards,
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+    if (
+      rules.state.pendingChoice?.kind !== 'TypedEffect'
+      || rules.state.pendingChoice.purpose !== 'echo:pure-fire'
+    ) {
+      return this.json({ error: 'test fixture did not reach Pure Fire target choice' }, 500)
+    }
+
+    await this.ctx.storage.put('snapshot', {
+      ...snapshot,
+      setup,
+      deckSeed,
+      rulesRecord: rules.record,
+    } satisfies GameRoomSnapshot)
+    await this.ctx.storage.delete('pendingCommandDraft')
+    this.ctx.waitUntil(this.broadcast(metadata))
+
+    return this.json(await this.response(metadata, actorUserId))
+  }
+
   private async submitCommand(
     request: Extract<GameRoomRequest, { type: 'submitCommand' }>,
   ): Promise<Response> {
@@ -1360,8 +1457,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
 
     const draft = actorUserId ? await this.pendingDraft() : undefined
-    const ownsPendingCommandDraft = draft?.actorUserId === actorUserId
-    const snapshot = ownsPendingCommandDraft ? draft.snapshot : await this.requireSnapshot()
+    const snapshot = draft?.snapshot ?? await this.requireSnapshot()
     const publicRules = await this.callRules({ type: 'refresh' }, viewer, snapshot)
     const responseMetadata: GameRoomMetadata = (
       currentMetadata.status === 'Active'

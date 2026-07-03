@@ -84,8 +84,9 @@ _Avoid_: Confluence Ruleset, Hero Schools extension
 
 **Pouch Rule Module (錦囊規則)**:
 The official Theme Rule Module that adds player-owned Pouches, ten Secret
-Strategies, and the Chain Formation. It requires all three Advanced Rule
-Modules and the Personal Deck Optional Rule Module in this product.
+Strategies, and the Chain Formation. In this product it requires the Personal
+Deck and Spirit Rule Modules, transitively requiring all three Advanced Rule
+Modules.
 _Avoid_: Pouch Ruleset, optional setup rule
 
 **Pouch (錦囊)**:
@@ -103,6 +104,11 @@ The pre-deal stage in which each Player privately chooses their starting
 Pouch from their unshuffled Personal Deck. After every Player has chosen, the
 remaining Personal Decks are shuffled before the initial hands are dealt.
 _Avoid_: room configuration, starting hand choice
+
+**Game Preparation**:
+The pre-turn lifecycle in which enabled rules collect Player setup decisions,
+trusted randomness, and the initial deal before the first Turn begins.
+_Avoid_: Turn Phase, waiting room configuration
 
 **Secret Strategy (秘計)**:
 One of ten effects triggered by revealing a Pouch whose printed element or

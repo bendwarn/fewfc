@@ -104,6 +104,38 @@ test('Dark Glimmer is default-on and depends transitively on Spirit', () => {
   ])
 })
 
+test('Echo is default-on and requires every Advanced Rule Module', () => {
+  const spec = RULE_MODULE_SPECS.find(module => module.id === 'echo')
+  assert.deepEqual(spec, {
+    id: 'echo',
+    label: '主題規則‧迴響',
+    group: 'theme',
+    defaultEnabled: true,
+    dependencies: ['star', 'five-directions-legend', 'hero-schools'],
+  })
+  assert.equal(normalizeRuleModules(undefined).includes('echo'), true)
+  assert.equal(normalizeRuleModules(['echo']).includes('echo'), false)
+  assert.deepEqual(enableRuleModule([], 'echo'), [
+    'star',
+    'hero-schools',
+    'five-directions-legend',
+    'echo',
+  ])
+  assert.deepEqual(
+    disableRuleModule(
+      ['star', 'hero-schools', 'five-directions-legend', 'echo'],
+      'hero-schools',
+    ),
+    ['star', 'five-directions-legend'],
+  )
+})
+
+test('stored room module lists do not infer newly released Echo', () => {
+  const stored = ['star', 'hero-schools', 'five-directions-legend', 'spirit']
+  assert.equal(normalizeRuleModules(stored).includes('echo'), false)
+  assert.equal(normalizeServerRuleModules(stored).includes('echo'), false)
+})
+
 test('generic dependency operations add requirements and remove dependents', () => {
   assert.deepEqual(enableRuleModule([], 'spirit'), [
     'star',

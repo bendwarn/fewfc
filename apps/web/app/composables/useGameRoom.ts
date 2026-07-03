@@ -42,6 +42,10 @@ function emptyState(): PublicGameState {
     jianghuStates: [],
     limitedUses: [],
     confluenceCardObligations: [],
+    scheduledEchoes: [],
+    flowStates: [],
+    formationSuppressions: [],
+    scheduledPlantEarth: [],
     environment: null,
     teamStars: [],
     starHistories: [],
@@ -121,7 +125,8 @@ export function useGameRoom(viewer: ViewerRef) {
     const choice = state.value.pendingChoice
     return Boolean(
       choice
-      && choice.kind === 'EffectGenerated'
+      && (choice.kind === 'EffectGenerated' || choice.kind === 'TypedEffect')
+      && choice.cards.length > 0
       && viewer.value === choice.player
       && selectedChoiceCards.value.length >= choice.minimumCount
       && selectedChoiceCards.value.length <= choice.maximumCount,
@@ -130,7 +135,16 @@ export function useGameRoom(viewer: ViewerRef) {
 
   function pendingChoiceKey(choice: PublicGameState['pendingChoice']): string {
     return choice
-      ? `${choice.player}:${choice.kind}:${choice.requiredCount}:${choice.cards.map(card => card.id).join(',')}`
+      ? [
+          choice.player,
+          choice.kind,
+          choice.purpose,
+          choice.requiredCount,
+          choice.cards.map(card => card.id).join(','),
+          choice.players.join(','),
+          choice.formations.join(','),
+          choice.canDecline,
+        ].join(':')
       : ''
   }
 
@@ -387,7 +401,7 @@ export function useGameRoom(viewer: ViewerRef) {
       return
     }
 
-    if (choice.kind === 'EffectGenerated') {
+    if (choice.kind === 'EffectGenerated' || choice.kind === 'TypedEffect') {
       togglePendingChoiceCard(card)
     }
   }
@@ -397,7 +411,8 @@ export function useGameRoom(viewer: ViewerRef) {
 
     if (
       !choice
-      || choice.kind !== 'EffectGenerated'
+      || (choice.kind !== 'EffectGenerated' && choice.kind !== 'TypedEffect')
+      || choice.cards.length === 0
       || viewer.value !== choice.player
     ) {
       return
@@ -412,7 +427,8 @@ export function useGameRoom(viewer: ViewerRef) {
 
   async function submitPendingChoice() {
     const choice = state.value.pendingChoice
-    const cards = choice?.kind === 'EffectGenerated'
+    const cards = choice
+      && (choice.kind === 'EffectGenerated' || choice.kind === 'TypedEffect')
       && selectedChoiceCards.value.length >= choice.minimumCount
       && selectedChoiceCards.value.length <= choice.maximumCount
       ? [...selectedChoiceCards.value]
@@ -420,7 +436,8 @@ export function useGameRoom(viewer: ViewerRef) {
 
     if (
       !choice
-      || choice.kind !== 'EffectGenerated'
+      || (choice.kind !== 'EffectGenerated' && choice.kind !== 'TypedEffect')
+      || choice.cards.length === 0
       || viewer.value !== choice.player
       || !cards
     ) {
@@ -434,6 +451,57 @@ export function useGameRoom(viewer: ViewerRef) {
     })) {
       selectedChoiceCards.value = []
     }
+  }
+
+  async function choosePendingPlayer(player: PlayerId) {
+    const choice = state.value.pendingChoice
+    if (
+      !choice
+      || choice.kind !== 'TypedEffect'
+      || viewer.value !== choice.player
+      || !choice.players.includes(player)
+    ) {
+      return
+    }
+    await submitOnline({
+      type: 'answerEffectChoiceTyped',
+      player: choice.player,
+      answer: { type: 'player', player },
+    })
+  }
+
+  async function choosePendingFormation(formationId: string) {
+    const choice = state.value.pendingChoice
+    if (
+      !choice
+      || choice.kind !== 'TypedEffect'
+      || viewer.value !== choice.player
+      || !choice.formations.includes(formationId)
+    ) {
+      return
+    }
+    await submitOnline({
+      type: 'answerEffectChoiceTyped',
+      player: choice.player,
+      answer: { type: 'formation', formationId },
+    })
+  }
+
+  async function declinePendingChoice() {
+    const choice = state.value.pendingChoice
+    if (
+      !choice
+      || choice.kind !== 'TypedEffect'
+      || viewer.value !== choice.player
+      || !choice.canDecline
+    ) {
+      return
+    }
+    await submitOnline({
+      type: 'answerEffectChoiceTyped',
+      player: choice.player,
+      answer: { type: 'decline' },
+    })
   }
 
   function toggleCardSelection(player: PlayerId, card: CardInstanceId) {
@@ -631,6 +699,9 @@ export function useGameRoom(viewer: ViewerRef) {
     toggleCardSelection,
     performPlayableAction,
     choosePendingCard,
+    choosePendingPlayer,
+    choosePendingFormation,
+    declinePendingChoice,
     togglePendingChoiceCard,
     submitPendingChoice,
   }

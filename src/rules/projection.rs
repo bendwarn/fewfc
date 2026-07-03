@@ -364,6 +364,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .expect("canonical passive flip event must target a covered passive");
             state.covered_passives.remove(passive_position);
             state
+                .neutralized_covered_passive_owners
+                .retain(|player| player != owner);
+            state
                 .revealed_covered_passive_owners
                 .retain(|player| player != owner);
             for card in cards {
@@ -892,9 +895,21 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 (request_id, deck),
                 "canonical randomness result must match the pending request"
             );
+            let recycles_discard = pending.continuation_id == "echo:ringing-metal:recycle-discard";
+            let recycled_cards = pending.current_order.clone();
             match deck {
                 crate::domain::RandomnessDeck::Shared => {
                     state.deck = shuffled_order.clone();
+                    if recycles_discard {
+                        for card in &recycled_cards {
+                            let position = state
+                                .discard
+                                .iter()
+                                .position(|discarded| discarded == card)
+                                .expect("recycled shared Card must remain in the Discard Pile");
+                            state.discard.remove(position);
+                        }
+                    }
                 }
                 crate::domain::RandomnessDeck::Player(player) => {
                     state
@@ -903,9 +918,207 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                         .find(|pile| &pile.player == player)
                         .expect("canonical randomness result must target a known player deck")
                         .cards = shuffled_order.clone();
+                    if recycles_discard {
+                        let discard = &mut state
+                            .player_discards
+                            .iter_mut()
+                            .find(|pile| &pile.player == player)
+                            .expect(
+                                "canonical randomness recycling must target a known player discard",
+                            )
+                            .cards;
+                        for card in &recycled_cards {
+                            let position = discard
+                                .iter()
+                                .position(|discarded| discarded == card)
+                                .expect("recycled personal Card must remain in the Discard Pile");
+                            discard.remove(position);
+                        }
+                    }
                 }
             }
             state.pending_randomness = None;
+        }
+        GameEvent::EchoCostPaid { card_move, .. } => {
+            apply_card_move(state, card_move);
+        }
+        GameEvent::EchoDeclined { .. } => {}
+        GameEvent::EchoScheduled { schedule } => {
+            state.scheduled_echoes.push(schedule.clone());
+        }
+        GameEvent::EchoResolutionStarted { schedule } => {
+            let position = state
+                .scheduled_echoes
+                .iter()
+                .position(|pending| pending == schedule)
+                .expect("canonical Echo start must target a scheduled Echo");
+            state.scheduled_echoes.remove(position);
+            state.active_echo_resolution = Some(schedule.clone());
+        }
+        GameEvent::EchoResolutionCompleted { .. } => {
+            state.active_echo_resolution = None;
+        }
+        GameEvent::TimedEffectsReduced { reductions, .. } => {
+            for reduction in reductions {
+                match reduction {
+                    crate::domain::TimedEffectReduction::Status {
+                        status_id,
+                        owner,
+                        new_duration,
+                        ..
+                    } => {
+                        let position = state
+                            .statuses
+                            .iter()
+                            .position(|status| &status.id == status_id && &status.owner == owner)
+                            .expect("timed reduction must target an active Status Effect");
+                        if let Some(duration) = new_duration {
+                            state.statuses[position].duration = duration.clone();
+                        } else {
+                            state.statuses.remove(position);
+                        }
+                    }
+                    crate::domain::TimedEffectReduction::CoveredPassive { owner } => {
+                        assert!(
+                            state
+                                .covered_passives
+                                .iter()
+                                .any(|passive| &passive.owner == owner),
+                            "timed reduction must target a Covered Passive"
+                        );
+                        if !state.neutralized_covered_passive_owners.contains(owner) {
+                            state.neutralized_covered_passive_owners.push(owner.clone());
+                        }
+                    }
+                    crate::domain::TimedEffectReduction::CounterEffect { owner, effect_id } => {
+                        let position = state
+                            .counter_effects
+                            .iter()
+                            .position(|counter| {
+                                &counter.owner == owner && &counter.effect_id == effect_id
+                            })
+                            .expect("timed reduction must target a Counter Effect");
+                        state.counter_effects.remove(position);
+                    }
+                    crate::domain::TimedEffectReduction::JianghuState {
+                        owner,
+                        kind,
+                        new_remaining_turns,
+                        new_expires_on_turn,
+                        ..
+                    } => {
+                        let position = state
+                            .jianghu_states
+                            .iter()
+                            .position(|active| &active.owner == owner && &active.kind == kind)
+                            .expect("timed reduction must target a Jianghu State");
+                        if *new_remaining_turns == 0 && new_expires_on_turn.is_none() {
+                            state.jianghu_states.remove(position);
+                        } else {
+                            state.jianghu_states[position].remaining_turns = *new_remaining_turns;
+                            state.jianghu_states[position].expires_on_turn = *new_expires_on_turn;
+                        }
+                    }
+                    crate::domain::TimedEffectReduction::FlowState {
+                        player, new_layers, ..
+                    } => {
+                        if *new_layers == 0 {
+                            state.flow_layers_by_player.remove(player);
+                        } else {
+                            state
+                                .flow_layers_by_player
+                                .insert(player.clone(), *new_layers);
+                        }
+                    }
+                    crate::domain::TimedEffectReduction::FormationSuppression {
+                        target,
+                        formation_id,
+                    } => {
+                        state.formation_suppressions.retain(|active| {
+                            &active.target != target || &active.formation_id != formation_id
+                        });
+                    }
+                }
+            }
+        }
+        GameEvent::FlowStateChanged {
+            player, new_layers, ..
+        } => {
+            if *new_layers == 0 {
+                state.flow_layers_by_player.remove(player);
+            } else {
+                state
+                    .flow_layers_by_player
+                    .insert(player.clone(), *new_layers);
+            }
+        }
+        GameEvent::FlowStateTriggered {
+            player,
+            new_layers,
+            new_draw_bonus,
+            ..
+        } => {
+            if *new_layers == 0 {
+                state.flow_layers_by_player.remove(player);
+            } else {
+                state
+                    .flow_layers_by_player
+                    .insert(player.clone(), *new_layers);
+            }
+            state
+                .turn_draw_bonus_by_player
+                .insert(player.clone(), *new_draw_bonus);
+            state
+                .flow_triggered_turn_by_player
+                .insert(player.clone(), state.turn_number);
+        }
+        GameEvent::FormationSuppressionSet { suppression } => {
+            state
+                .formation_suppressions
+                .retain(|active| active.target != suppression.target);
+            state.formation_suppressions.push(suppression.clone());
+        }
+        GameEvent::FormationSuppressionExpired {
+            target,
+            formation_id,
+            ..
+        } => {
+            state
+                .formation_suppressions
+                .retain(|active| &active.target != target || &active.formation_id != formation_id);
+        }
+        GameEvent::RingingMetalCardRevealed { selection } => {
+            let deck = state
+                .deck_for_mut(&selection.player)
+                .expect("canonical Ringing Metal reveal must target a known deck");
+            let position = deck
+                .iter()
+                .position(|card| card == &selection.card)
+                .expect("canonical Ringing Metal reveal must select a card in the deck");
+            deck.remove(position);
+            state.ringing_metal_selection = Some(selection.clone());
+        }
+        GameEvent::RingingMetalCompleted { selection } => {
+            state
+                .deck_for_mut(&selection.player)
+                .expect("canonical Ringing Metal completion must target a known deck")
+                .insert(0, selection.card);
+            state.ringing_metal_selection = None;
+        }
+        GameEvent::PlantEarthScheduled { schedule } => {
+            state.scheduled_plant_earth.push(schedule.clone());
+        }
+        GameEvent::PlantEarthResolutionStarted { schedule } => {
+            let position = state
+                .scheduled_plant_earth
+                .iter()
+                .position(|pending| pending == schedule)
+                .expect("canonical Plant Earth start must target a schedule");
+            state.scheduled_plant_earth.remove(position);
+            state.active_plant_earth_resolution = Some(schedule.clone());
+        }
+        GameEvent::PlantEarthResolutionCompleted { .. } => {
+            state.active_plant_earth_resolution = None;
         }
         GameEvent::CardsDrawnForProfessionChoice { player, cards, .. } => {
             let hand = state
@@ -1053,6 +1266,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             debug_assert_eq!(state.phase, crate::domain::Phase::TurnEnd);
 
             state.turn_draw_bonus_by_player.remove(player);
+            state.flow_triggered_turn_by_player.remove(player);
             state
                 .spirit_level_interpretations
                 .retain(|interpretation| &interpretation.player != player);

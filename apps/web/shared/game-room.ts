@@ -316,6 +316,10 @@ export type GameRoomRequest =
       spirit?: 'Metal' | 'Fire'
     }
   | {
+      type: 'seedEchoFixture'
+      actorUserId: string
+    }
+  | {
       type: 'getState'
       actorUserId: string
     }
@@ -402,6 +406,10 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     jianghuStates: [],
     limitedUses: [],
     confluenceCardObligations: [],
+    scheduledEchoes: [],
+    flowStates: [],
+    formationSuppressions: [],
+    scheduledPlantEarth: [],
     environment: null,
     teamStars: [],
     starHistories: [],

@@ -1,9 +1,10 @@
 //! Viewer-filtered Public View derivation from canonical game data.
 
 use crate::domain::{
-    CardInstanceId, CounterEffect, Element, GameEvent, GameState, GameStatus, JianghuState,
-    LimitedUse, PendingChoiceKind, Phase, Player, PlayerId, PlayerProfession, PlayerShield,
-    PlayerStarHistory, RandomnessDeck, RuleModuleId, StatusEffect, TeamHp, TeamStar,
+    CardInstanceId, CounterEffect, Element, FormationSuppression, GameEvent, GameState, GameStatus,
+    JianghuState, LimitedUse, PendingChoiceKind, Phase, Player, PlayerId, PlayerProfession,
+    PlayerShield, PlayerStarHistory, RandomnessDeck, RuleModuleId, ScheduledEcho,
+    ScheduledPlantEarth, StatusEffect, TeamHp, TeamStar,
 };
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,10 @@ pub struct PublicGameState {
     pub jianghu_states: Vec<JianghuState>,
     pub limited_uses: Vec<LimitedUse>,
     pub confluence_card_obligations: Vec<PublicConfluenceCardObligation>,
+    pub scheduled_echoes: Vec<ScheduledEcho>,
+    pub flow_states: Vec<PublicFlowState>,
+    pub formation_suppressions: Vec<FormationSuppression>,
+    pub scheduled_plant_earth: Vec<ScheduledPlantEarth>,
     pub environment: Option<Element>,
     pub team_stars: Vec<TeamStar>,
     pub star_histories: Vec<PlayerStarHistory>,
@@ -51,6 +56,12 @@ pub struct PublicConfluenceCardObligation {
     pub owner: PlayerId,
     pub card: Option<CardInstanceId>,
     pub allow_profession_formation: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicFlowState {
+    pub player: PlayerId,
+    pub layers: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -96,6 +107,7 @@ pub enum PublicCardRefs {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicPendingChoice {
     pub player: PlayerId,
+    pub purpose: String,
     pub kind: PublicPendingChoiceKind,
 }
 
@@ -159,6 +171,7 @@ pub enum PublicGameEvent {
     },
     EffectChoiceRequested {
         player: PlayerId,
+        purpose: String,
         kind: PublicPendingChoiceKind,
     },
     RandomnessRequested {
@@ -281,6 +294,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .as_ref()
             .map(|choice| PublicPendingChoice {
                 player: choice.player.clone(),
+                purpose: pending_choice_purpose(&choice.kind),
                 kind: if policy.can_see_player_hidden_cards(&choice.player) {
                     PublicPendingChoiceKind::Known(choice.kind.clone())
                 } else {
@@ -313,6 +327,10 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
                 allow_profession_formation: obligation.allow_profession_formation,
             })
             .collect(),
+        scheduled_echoes: state.scheduled_echoes.clone(),
+        flow_states: public_flow_states(state),
+        formation_suppressions: state.formation_suppressions.clone(),
+        scheduled_plant_earth: state.scheduled_plant_earth.clone(),
         environment: state.environment,
         team_stars: state
             .team_stars
@@ -353,6 +371,19 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
         },
         previous_turn_formation,
     }
+}
+
+fn public_flow_states(state: &GameState) -> Vec<PublicFlowState> {
+    let mut flows = state
+        .flow_layers_by_player
+        .iter()
+        .map(|(player, layers)| PublicFlowState {
+            player: player.clone(),
+            layers: *layers,
+        })
+        .collect::<Vec<_>>();
+    flows.sort_by(|left, right| left.player.cmp(&right.player));
+    flows
 }
 
 pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
@@ -437,6 +468,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         GameEvent::EffectChoiceRequested { player, kind } => {
             PublicGameEvent::EffectChoiceRequested {
                 player: player.clone(),
+                purpose: pending_choice_purpose(kind),
                 kind: if policy.can_see_player_hidden_cards(player) {
                     PublicPendingChoiceKind::Known(kind.clone())
                 } else {
@@ -549,11 +581,35 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::ConfluenceCardObligationCleared { .. }
         | GameEvent::EffectChoiceAnswered { .. }
         | GameEvent::TypedEffectChoiceAnswered { .. }
+        | GameEvent::EchoCostPaid { .. }
+        | GameEvent::EchoDeclined { .. }
+        | GameEvent::EchoScheduled { .. }
+        | GameEvent::EchoResolutionStarted { .. }
+        | GameEvent::EchoResolutionCompleted { .. }
+        | GameEvent::TimedEffectsReduced { .. }
+        | GameEvent::FlowStateChanged { .. }
+        | GameEvent::FlowStateTriggered { .. }
+        | GameEvent::FormationSuppressionSet { .. }
+        | GameEvent::FormationSuppressionExpired { .. }
+        | GameEvent::RingingMetalCardRevealed { .. }
+        | GameEvent::RingingMetalCompleted { .. }
+        | GameEvent::PlantEarthScheduled { .. }
+        | GameEvent::PlantEarthResolutionStarted { .. }
+        | GameEvent::PlantEarthResolutionCompleted { .. }
         | GameEvent::PassiveFlipped { .. }
         | GameEvent::DiscardRecycledIntoDeck { .. }
         | GameEvent::PlayerDiscardRecycledIntoDeck { .. }
         | GameEvent::DiscardRetrieved { .. }
         | GameEvent::TurnEnded { .. } => PublicGameEvent::Public(event.clone()),
+    }
+}
+
+fn pending_choice_purpose(kind: &PendingChoiceKind) -> String {
+    match kind {
+        PendingChoiceKind::TurnDrawDiscard { .. } => "turn-draw-discard".to_string(),
+        PendingChoiceKind::EffectGenerated { effect_id, .. }
+        | PendingChoiceKind::CardSetChoice { effect_id, .. }
+        | PendingChoiceKind::TypedEffect { effect_id, .. } => effect_id.clone(),
     }
 }
 

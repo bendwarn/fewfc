@@ -10,6 +10,16 @@ use crate::rules::{
     ProfessionChangeCandidate, SpellPlanDef, SubmittedCardFacts,
 };
 
+pub(crate) fn timed_effect_reductions(
+    state: &GameState,
+    target: &PlayerId,
+) -> Vec<crate::domain::TimedEffectReduction> {
+    if !state.has_rule_module(crate::domain::DARK_GLIMMER_MODULE_ID) {
+        return Vec::new();
+    }
+    crate::rules::timed_effect::status_reductions(state, target, |id| id.starts_with("dark-"))
+}
+
 pub(crate) const DARK_WALKER_ID: &str = "dark:dark-walker";
 pub(crate) const DARK_SPIRIT_ENVOY_ID: &str = "dark:dark-spirit-envoy";
 pub(crate) const SHADOW_WARRIOR_ID: &str = "dark:shadow-warrior";

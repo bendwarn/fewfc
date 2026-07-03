@@ -509,6 +509,33 @@
               >
                 {{ statusLabel(status.kind) }}
               </span>
+              <span
+                v-if="flowLayersFor(seat.player) > 0"
+                class="status-badge"
+              >
+                流水 · {{ flowLayersFor(seat.player) }} 層
+              </span>
+              <span
+                v-for="schedule in echoSchedulesFor(seat.player)"
+                :key="`echo-${seat.player}-${schedule.melodyId}-${schedule.dueTurnNumber}`"
+                class="status-badge"
+              >
+                迴響 · 第 {{ schedule.dueTurnNumber }} 回合
+              </span>
+              <span
+                v-for="schedule in plantEarthSchedulesFor(seat.player)"
+                :key="`plant-earth-${seat.player}-${schedule.dueTurnNumber}`"
+                class="status-badge"
+              >
+                植土 · 第 {{ schedule.dueTurnNumber }} 回合
+              </span>
+              <span
+                v-for="suppression in formationSuppressionsFor(seat.player)"
+                :key="`split-earth-${seat.player}-${suppression.formationId}`"
+                class="status-badge"
+              >
+                裂土 · {{ formationChoiceLabel(suppression.formationId) }}
+              </span>
               <span class="side-hand-count">{{ handCount(seat.player) }} 張</span>
             </div>
 
@@ -748,7 +775,7 @@
             class="choice-overlay"
           >
             <div>
-              <h2>{{ choiceLabel(state.pendingChoice.kind) }}</h2>
+              <h2>{{ pendingChoiceLabel(state.pendingChoice) }}</h2>
               <div class="choice-cards">
                 <button
                   v-for="card in state.pendingChoice.cards"
@@ -756,6 +783,7 @@
                   type="button"
                   :class="{ selected: game.selectedChoiceCards.value.includes(card.id) }"
                   :aria-pressed="state.pendingChoice.kind === 'EffectGenerated'
+                    || state.pendingChoice.kind === 'TypedEffect'
                     ? game.selectedChoiceCards.value.includes(card.id)
                     : undefined"
                   :disabled="
@@ -763,12 +791,14 @@
                     || !roomConnected
                     || viewer !== state.pendingChoice.player
                     || (
-                      state.pendingChoice.kind === 'EffectGenerated'
+                      (state.pendingChoice.kind === 'EffectGenerated'
+                        || state.pendingChoice.kind === 'TypedEffect')
                       && game.selectedChoiceCards.value.length >= state.pendingChoice.maximumCount
                       && !game.selectedChoiceCards.value.includes(card.id)
                     )
                   "
                   @click="state.pendingChoice.kind === 'EffectGenerated'
+                    || state.pendingChoice.kind === 'TypedEffect'
                     ? game.togglePendingChoiceCard(card.id)
                     : game.choosePendingCard(card.id)"
                 >
@@ -776,7 +806,9 @@
                 </button>
               </div>
               <template
-                v-if="state.pendingChoice.kind === 'EffectGenerated'
+                v-if="(state.pendingChoice.kind === 'EffectGenerated'
+                  || state.pendingChoice.kind === 'TypedEffect')
+                  && state.pendingChoice.cards.length > 0
                   && viewer === state.pendingChoice.player"
               >
                 <p class="choice-count">
@@ -792,6 +824,74 @@
                   確認選擇
                 </button>
               </template>
+              <div
+                v-if="state.pendingChoice.kind === 'TypedEffect'
+                  && state.pendingChoice.players.length > 0"
+                class="choice-options"
+                aria-label="選擇玩家"
+              >
+                <button
+                  v-for="player in state.pendingChoice.players"
+                  :key="`choice-player-${player}`"
+                  type="button"
+                  :disabled="game.isLoading.value || !roomConnected"
+                  :aria-label="`選擇玩家 ${playerLabel(player)}`"
+                  @click="game.choosePendingPlayer(player)"
+                >
+                  {{ playerLabel(player) }}
+                </button>
+              </div>
+              <div
+                v-if="state.pendingChoice.kind === 'TypedEffect'
+                  && state.pendingChoice.formations.length > 0"
+                class="choice-options"
+                aria-label="選擇陣法"
+              >
+                <button
+                  v-for="formationId in state.pendingChoice.formations"
+                  :key="`choice-formation-${formationId}`"
+                  type="button"
+                  :disabled="game.isLoading.value || !roomConnected"
+                  :aria-label="`選擇陣法 ${formationChoiceLabel(formationId)}`"
+                  @click="game.choosePendingFormation(formationId)"
+                >
+                  {{ formationChoiceLabel(formationId) }}
+                </button>
+              </div>
+              <button
+                v-if="state.pendingChoice.kind === 'TypedEffect'
+                  && state.pendingChoice.canDecline"
+                class="choice-submit"
+                type="button"
+                :disabled="game.isLoading.value || !roomConnected"
+                @click="game.declinePendingChoice()"
+              >
+                放棄迴響
+              </button>
+            </div>
+          </div>
+
+          <div
+            v-else-if="state.pendingChoice"
+            class="choice-overlay"
+            role="status"
+            aria-live="polite"
+          >
+            <div>
+              <h2>等待 {{ playerLabel(state.pendingChoice.player) }}</h2>
+              <p>{{ pendingChoiceLabel(state.pendingChoice) }}</p>
+            </div>
+          </div>
+
+          <div
+            v-if="state.pendingRandomness"
+            class="choice-overlay"
+            role="status"
+            aria-live="polite"
+          >
+            <div>
+              <h2>伺服器正在洗牌</h2>
+              <p>正在安全地重新排列 {{ state.pendingRandomness.cardCount }} 張牌。</p>
             </div>
           </div>
 
@@ -2086,6 +2186,22 @@ function statusesFor(player: PlayerId) {
   ))
 }
 
+function flowLayersFor(player: PlayerId): number {
+  return state.value.flowStates.find(flow => flow.player === player)?.layers ?? 0
+}
+
+function echoSchedulesFor(player: PlayerId) {
+  return state.value.scheduledEchoes.filter(schedule => schedule.player === player)
+}
+
+function plantEarthSchedulesFor(player: PlayerId) {
+  return state.value.scheduledPlantEarth.filter(schedule => schedule.player === player)
+}
+
+function formationSuppressionsFor(player: PlayerId) {
+  return state.value.formationSuppressions.filter(suppression => suppression.target === player)
+}
+
 function statusLabel(kind: string): string {
   return {
     CannotAct: '無法行動',
@@ -2247,11 +2363,39 @@ function environmentLabel(value: PublicGameState['environment']): string {
 function choiceLabel(value: string): string {
   const labels: Record<string, string> = {
     'Choose one drawn card to discard': '選擇一張本回合抽到的牌捨棄',
+    'turn-draw-discard': '選擇一張本回合抽到的牌捨棄',
     TurnDrawDiscard: '選擇一張本回合抽到的牌捨棄',
     EffectGenerated: '選擇效果指定的牌',
+    TypedEffect: '選擇效果',
     Hidden: '等待選擇',
+    'echo:ringing-metal': '鳴金：選擇牌組中的一張牌',
+    'echo:falling-wood': '落木：選擇迴響代價',
+    'echo:flowing-water': '流水：選擇迴響代價',
+    'echo:war-fire': '戰火：選擇迴響代價',
+    'echo:split-earth': '裂土：選擇陣法',
+    'echo:pure-fire': '淨火：選擇玩家',
+    'echo:plant-earth': '植土：選擇曲調',
   }
   return labels[value] ?? value
+}
+
+function pendingChoiceLabel(choice: PublicGameState['pendingChoice']): string {
+  if (!choice) return '等待選擇'
+  const purpose = choiceLabel(choice.purpose)
+  return purpose === choice.purpose ? choiceLabel(choice.kind) : purpose
+}
+
+function formationChoiceLabel(formationId: string): string {
+  const labels: Record<string, string> = {
+    'echo:ringing-metal': '商調‧鳴金',
+    'echo:falling-wood': '角調‧落木',
+    'echo:flowing-water': '羽調‧流水',
+    'echo:war-fire': '徵調‧戰火',
+    'echo:split-earth': '宮調‧裂土',
+    'echo:pure-fire': '變徵‧淨火',
+    'echo:plant-earth': '變宮‧植土',
+  }
+  return labels[formationId] ?? formationId
 }
 
 function elementClass(label: string): string {

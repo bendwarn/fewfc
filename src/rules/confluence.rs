@@ -8,6 +8,16 @@ use crate::rules::{
     BaseFormationSpec, EffectDef, EffectPlan, FormationCategory, FormationDef, FormationPattern,
     PointFormula, SpellPlanDef,
 };
+
+pub(crate) fn timed_effect_reductions(
+    state: &GameState,
+    target: &PlayerId,
+) -> Vec<crate::domain::TimedEffectReduction> {
+    if !state.has_rule_module(crate::domain::CONFLUENCE_GENERATION_MODULE_ID) {
+        return Vec::new();
+    }
+    crate::rules::timed_effect::status_reductions(state, target, |id| id.starts_with("confluence-"))
+}
 use crate::rules::{ProfessionAbilityCandidate, ProfessionChangeCandidate, SubmittedCardFacts};
 
 pub(crate) const TUNER_ID: &str = "confluence:tuner";

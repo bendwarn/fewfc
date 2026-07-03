@@ -148,7 +148,16 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         GameEvent::JianghuStateExpired { .. } => Some(AutomaticReason::StatusExpired),
         GameEvent::JianghuPoisonTicked { .. } => Some(AutomaticReason::TurnEnd),
         GameEvent::JianghuDelayedDamageResolved { .. } => Some(AutomaticReason::TurnEnd),
-        GameEvent::TurnEnded { .. } => Some(AutomaticReason::TurnEnd),
+        GameEvent::TurnEnded { .. } | GameEvent::FormationSuppressionExpired { .. } => {
+            Some(AutomaticReason::TurnEnd)
+        }
+        GameEvent::EchoResolutionStarted { .. }
+        | GameEvent::EchoResolutionCompleted { .. }
+        | GameEvent::FlowStateChanged { .. }
+        | GameEvent::HpChanged { .. } => Some(AutomaticReason::EchoResolution),
+        GameEvent::PlantEarthResolutionStarted { .. }
+        | GameEvent::PlantEarthResolutionCompleted { .. } => Some(AutomaticReason::EchoResolution),
+        GameEvent::FlowStateTriggered { .. } => Some(AutomaticReason::TurnDraw),
         GameEvent::DeckPrepared { .. }
         | GameEvent::PlayerDeckPrepared { .. }
         | GameEvent::CardsDealt { .. }
@@ -182,13 +191,20 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::EffectChoiceRequested { .. }
         | GameEvent::RandomnessRequested { .. }
         | GameEvent::RandomnessResolved { .. }
+        | GameEvent::EchoCostPaid { .. }
+        | GameEvent::EchoDeclined { .. }
+        | GameEvent::EchoScheduled { .. }
+        | GameEvent::TimedEffectsReduced { .. }
+        | GameEvent::FormationSuppressionSet { .. }
+        | GameEvent::RingingMetalCardRevealed { .. }
+        | GameEvent::RingingMetalCompleted { .. }
+        | GameEvent::PlantEarthScheduled { .. }
         | GameEvent::FormationEffectCopied { .. }
         | GameEvent::FormationEffectIgnored { .. }
         | GameEvent::FormationPerformed { .. }
         | GameEvent::FormationMatchOptionDeclared { .. }
         | GameEvent::HandInspected { .. }
         | GameEvent::DeckTopRevealed { .. }
-        | GameEvent::HpChanged { .. }
         | GameEvent::PassiveCovered { .. }
         | GameEvent::PassiveCoverRevealed { .. }
         | GameEvent::PassiveFlipped { .. }
@@ -317,6 +333,7 @@ pub enum AutomaticReason {
     DiscardRecycle,
     StatusExpired,
     TurnEnd,
+    EchoResolution,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

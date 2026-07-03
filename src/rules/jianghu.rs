@@ -36,6 +36,44 @@ pub(crate) const THOUSAND_POISON_HAND: &str = "jianghu:thousand-poison-hand";
 pub(crate) const LINGERING_FROST_HAND: &str = "jianghu:lingering-frost-hand";
 pub(crate) const KING_YAMA_DECREE: &str = "jianghu:king-yama-decree";
 
+pub(crate) fn timed_effect_reductions(
+    state: &GameState,
+    target: &PlayerId,
+) -> Vec<crate::domain::TimedEffectReduction> {
+    if !state.has_rule_module(JIANGHU_MODULE_ID) {
+        return Vec::new();
+    }
+    let mut reductions = crate::rules::timed_effect::status_reductions(state, target, |id| {
+        id.starts_with("jianghu-fan-beyond-heaven-")
+            || id.starts_with("jianghu-lingering-frost-")
+            || id.starts_with("jianghu-snow-treading-")
+            || id.starts_with("jianghu-water-dotting-fan-")
+    });
+    reductions.extend(
+        state
+            .jianghu_states
+            .iter()
+            .filter(|active| active.owner == *target)
+            .map(|active| {
+                let (new_remaining_turns, new_expires_on_turn) =
+                    if active.kind == JianghuStateKind::Poison {
+                        (active.remaining_turns.saturating_sub(1), None)
+                    } else {
+                        (active.remaining_turns, None)
+                    };
+                crate::domain::TimedEffectReduction::JianghuState {
+                    owner: active.owner.clone(),
+                    kind: active.kind,
+                    old_remaining_turns: active.remaining_turns,
+                    new_remaining_turns,
+                    old_expires_on_turn: active.expires_on_turn,
+                    new_expires_on_turn,
+                }
+            }),
+    );
+    reductions
+}
+
 pub(crate) fn formation_specs() -> Vec<BaseFormationSpec> {
     vec![
         attack(

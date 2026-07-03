@@ -11,6 +11,7 @@ pub(crate) mod profession;
 pub(crate) mod projection;
 pub(crate) mod spirit;
 pub(crate) mod star;
+pub(crate) mod timed_effect;
 
 pub use official::OfficialRules;
 
@@ -411,6 +412,18 @@ pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
                 return false;
             };
             submitted.len() == 3 && submitted.iter().all(|card| card.level == first_card.level)
+        })
+        .with_custom("echo:pure-fire", |submitted| {
+            submitted.len() == 2
+                && submitted.iter().any(|card| card.element == Element::Fire)
+                && submitted.iter().any(|card| card.element == Element::Water)
+                && submitted.iter().map(|card| card.level).sum::<u32>() >= 7
+        })
+        .with_custom("echo:plant-earth", |submitted| {
+            submitted.len() == 2
+                && submitted.iter().any(|card| card.element == Element::Earth)
+                && submitted.iter().any(|card| card.element == Element::Wood)
+                && submitted.iter().map(|card| card.level).sum::<u32>() >= 7
         })
         .with_custom("metal-and-same-level", |submitted| {
             submitted.len() == 2

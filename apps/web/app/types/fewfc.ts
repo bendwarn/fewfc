@@ -57,6 +57,7 @@ export interface PublicPreviousTurnFormation {
 
 export interface PublicPendingChoice {
   player: PlayerId
+  purpose: string
   kind: string
   cards: PublicCard[]
   requiredCount: number
@@ -123,6 +124,25 @@ export interface PublicGameState {
     owner: PlayerId
     card: CardInstanceId | null
     allowProfessionFormation: boolean
+  }>
+  scheduledEchoes: Array<{
+    player: PlayerId
+    melodyId: string
+    dueTurnNumber: number
+  }>
+  flowStates: Array<{
+    player: PlayerId
+    layers: number
+  }>
+  formationSuppressions: Array<{
+    source: PlayerId
+    target: PlayerId
+    formationId: string
+    expiresOnTurnNumber: number
+  }>
+  scheduledPlantEarth: Array<{
+    player: PlayerId
+    dueTurnNumber: number
   }>
   environment: 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth' | null
   teamStars: Array<{ team: TeamId; star: StarKind }>

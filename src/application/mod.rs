@@ -234,7 +234,16 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         GameEvent::JianghuStateExpired { .. } => Some(AutomaticReason::StatusExpired),
         GameEvent::JianghuPoisonTicked { .. } => Some(AutomaticReason::TurnEnd),
         GameEvent::JianghuDelayedDamageResolved { .. } => Some(AutomaticReason::TurnEnd),
-        GameEvent::TurnEnded { .. } => Some(AutomaticReason::TurnEnd),
+        GameEvent::TurnEnded { .. } | GameEvent::FormationSuppressionExpired { .. } => {
+            Some(AutomaticReason::TurnEnd)
+        }
+        GameEvent::EchoResolutionStarted { .. }
+        | GameEvent::EchoResolutionCompleted { .. }
+        | GameEvent::FlowStateChanged { .. }
+        | GameEvent::HpChanged { .. } => Some(AutomaticReason::EchoResolution),
+        GameEvent::PlantEarthResolutionStarted { .. }
+        | GameEvent::PlantEarthResolutionCompleted { .. } => Some(AutomaticReason::EchoResolution),
+        GameEvent::FlowStateTriggered { .. } => Some(AutomaticReason::TurnDraw),
         GameEvent::DeckPrepared { .. }
         | GameEvent::PlayerDeckPrepared { .. }
         | GameEvent::CardsDealt { .. }
@@ -268,13 +277,20 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::EffectChoiceRequested { .. }
         | GameEvent::RandomnessRequested { .. }
         | GameEvent::RandomnessResolved { .. }
+        | GameEvent::EchoCostPaid { .. }
+        | GameEvent::EchoDeclined { .. }
+        | GameEvent::EchoScheduled { .. }
+        | GameEvent::TimedEffectsReduced { .. }
+        | GameEvent::FormationSuppressionSet { .. }
+        | GameEvent::RingingMetalCardRevealed { .. }
+        | GameEvent::RingingMetalCompleted { .. }
+        | GameEvent::PlantEarthScheduled { .. }
         | GameEvent::FormationEffectCopied { .. }
         | GameEvent::FormationEffectIgnored { .. }
         | GameEvent::FormationPerformed { .. }
         | GameEvent::FormationMatchOptionDeclared { .. }
         | GameEvent::HandInspected { .. }
         | GameEvent::DeckTopRevealed { .. }
-        | GameEvent::HpChanged { .. }
         | GameEvent::PassiveCovered { .. }
         | GameEvent::PassiveCoverRevealed { .. }
         | GameEvent::PassiveFlipped { .. }
@@ -373,13 +389,30 @@ pub fn resolve_trusted_randomness(
         ));
     }
 
-    let current_order = match &request.deck {
-        RandomnessDeck::Shared => &state.deck,
-        RandomnessDeck::Player(player) => state
+    let recycles_discard = request.continuation_id == "echo:ringing-metal:recycle-discard";
+    let current_order = match (&request.deck, recycles_discard) {
+        (RandomnessDeck::Shared, false) => &state.deck,
+        (RandomnessDeck::Shared, true) => &state.discard,
+        (RandomnessDeck::Player(player), false) => state
             .deck_for(player)
             .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?,
+        (RandomnessDeck::Player(player), true) => state
+            .discard_for(player)
+            .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?,
     };
-    if current_order != request.current_order {
+    let current_matches_request = if recycles_discard {
+        let mut available = current_order.to_vec();
+        request.current_order.iter().all(|card| {
+            available
+                .iter()
+                .position(|candidate| candidate == card)
+                .map(|position| available.remove(position))
+                .is_some()
+        })
+    } else {
+        current_order == request.current_order
+    };
+    if !current_matches_request {
         return Err(GameError::Validation(
             ValidationError::StalePendingRandomness,
         ));
@@ -395,11 +428,18 @@ pub fn resolve_trusted_randomness(
         ));
     }
 
-    Ok(vec![GameEvent::RandomnessResolved {
+    let mut events = vec![GameEvent::RandomnessResolved {
         request_id: request.request_id.clone(),
         deck: request.deck.clone(),
         shuffled_order: answer.shuffled_order.clone(),
-    }])
+    }];
+    let mut projected = state.clone();
+    apply_event(&mut projected, &events[0]);
+    events.extend(crate::rules::echo::after_randomness_events(
+        &projected,
+        &request.continuation_id,
+    )?);
+    Ok(events)
 }
 
 pub fn apply_event(state: &mut GameState, event: &GameEvent) {

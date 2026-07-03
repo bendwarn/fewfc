@@ -16,6 +16,44 @@ use crate::rules::PlayableAction;
 use crate::rules::projection;
 use std::collections::{HashMap, HashSet};
 
+pub(crate) fn timed_effect_reductions(
+    state: &GameState,
+    target: &PlayerId,
+) -> Vec<crate::domain::TimedEffectReduction> {
+    let mut reductions = crate::rules::timed_effect::status_reductions(state, target, |id| {
+        id.starts_with("radiance-")
+    });
+    reductions.extend(
+        state
+            .covered_passives
+            .iter()
+            .filter(|passive| {
+                passive.owner == *target
+                    && !state
+                        .neutralized_covered_passive_owners
+                        .contains(&passive.owner)
+            })
+            .map(
+                |passive| crate::domain::TimedEffectReduction::CoveredPassive {
+                    owner: passive.owner.clone(),
+                },
+            ),
+    );
+    reductions.extend(
+        state
+            .counter_effects
+            .iter()
+            .filter(|counter| counter.owner == *target)
+            .map(
+                |counter| crate::domain::TimedEffectReduction::CounterEffect {
+                    owner: counter.owner.clone(),
+                    effect_id: counter.effect_id.clone(),
+                },
+            ),
+    );
+    reductions
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BaseRuleset;
 
@@ -462,6 +500,32 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
     let mut events = Vec::new();
 
     loop {
+        if projected.phase == Phase::TurnStart {
+            let player = projected
+                .current_player()
+                .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
+                .clone();
+            let expiry = crate::domain::StatusExpiryTiming::TurnStart {
+                player: player.clone(),
+            };
+            if status_expiry_event(&projected, expiry).is_none() {
+                let echo_events = crate::rules::echo::turn_start_events(&projected)?;
+                if !echo_events.is_empty() {
+                    for event in echo_events {
+                        projection::apply_event(&mut projected, &event);
+                        events.push(event);
+                    }
+                    if matches!(projected.status, GameStatus::Finished { .. }) {
+                        break;
+                    }
+                    if projected.pending_choice.is_some() || projected.pending_randomness.is_some()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+            }
+        }
         let next_event = match projected.phase {
             Phase::TurnStart => status_expiry_event(
                 &projected,
@@ -495,6 +559,7 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
                         },
                     )
                 })
+                .or_else(|| crate::rules::echo::turn_end_expiry_event(&projected))
                 .or_else(|| {
                     Some(GameEvent::TurnEnded {
                         player: projected
@@ -591,6 +656,9 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
             player,
             reason: TurnDrawSkipReason::HandLimitReached,
         }));
+    }
+    if let Some(event) = crate::rules::echo::flow_trigger_event(state, &player) {
+        return Ok(Some(event));
     }
 
     let draw_bonus = state
@@ -1110,7 +1178,15 @@ fn decide_command_with_base_ruleset(
                 continuation_id: continuation_id.clone(),
                 answer: answer.clone(),
             }];
-            if let crate::domain::EffectChoiceAnswer::Cards { cards } = &answer {
+            if let Some(echo_events) = crate::rules::echo::answer_choice(
+                state,
+                &player,
+                &effect_id,
+                &continuation_id,
+                &answer,
+            )? {
+                events.extend(echo_events);
+            } else if let crate::domain::EffectChoiceAnswer::Cards { cards } = &answer {
                 events.extend(formation_use::answer_effect_choice(
                     state,
                     &player,

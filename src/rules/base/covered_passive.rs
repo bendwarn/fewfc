@@ -80,30 +80,43 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
             environment_makes_formation_ineffective(state, &passive.formation_id)
                 .then_some(state.environment)
                 .flatten();
-        let modifications = passive_spell_modifications(
-            &passive.formation_id,
-            request.incoming_kind,
-            passive.sealed,
-            request.ignores_formation_effects,
-            request.ignores_counter_effects,
-            ineffective_environment,
-            request.attack_points,
-        );
-        all_modifications.extend(modifications.iter().cloned());
-        events.push(GameEvent::PassiveFlipped {
-            owner: passive.owner.clone(),
-            incoming_player: request.incoming_player.clone(),
-            passive_id: passive.formation_id.clone(),
-            cards: passive.cards.clone(),
-            outcome: passive_outcome(
+        let neutralized = state
+            .neutralized_covered_passive_owners
+            .contains(&passive.owner);
+        let modifications = if neutralized {
+            Vec::new()
+        } else {
+            passive_spell_modifications(
                 &passive.formation_id,
                 request.incoming_kind,
                 passive.sealed,
                 request.ignores_formation_effects,
                 request.ignores_counter_effects,
                 ineffective_environment,
-                &modifications,
-            ),
+                request.attack_points,
+            )
+        };
+        all_modifications.extend(modifications.iter().cloned());
+        events.push(GameEvent::PassiveFlipped {
+            owner: passive.owner.clone(),
+            incoming_player: request.incoming_player.clone(),
+            passive_id: passive.formation_id.clone(),
+            cards: passive.cards.clone(),
+            outcome: if neutralized {
+                PassiveFlipOutcome::NoEffect {
+                    reason: crate::domain::PassiveNoEffectReason::Neutralized,
+                }
+            } else {
+                passive_outcome(
+                    &passive.formation_id,
+                    request.incoming_kind,
+                    passive.sealed,
+                    request.ignores_formation_effects,
+                    request.ignores_counter_effects,
+                    ineffective_environment,
+                    &modifications,
+                )
+            },
         });
     }
 

@@ -30,6 +30,18 @@ pub(crate) const FIRST_WANDERER_ID: &str = "first-wanderer";
 pub(crate) const IMMORTAL_ID: &str = "immortal";
 pub(crate) const SAINT_ID: &str = "saint";
 
+pub(crate) fn timed_effect_reductions(
+    state: &GameState,
+    target: &PlayerId,
+) -> Vec<crate::domain::TimedEffectReduction> {
+    if !state.has_rule_module(HERO_SCHOOLS_MODULE_ID) {
+        return Vec::new();
+    }
+    crate::rules::timed_effect::status_reductions(state, target, |id| {
+        id.starts_with("magic-reflection-")
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProfessionAbility {
     PhysicalDamageResistance,

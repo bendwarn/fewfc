@@ -81,6 +81,7 @@ test('all released advanced rules are available default Rule Modules', () => {
     'jianghu',
     'confluence-generation',
     'dark-glimmer',
+    'echo',
   ])
   assert.deepEqual(normalizeRuleModules(['star', 'five-directions-legend', 'unknown']), [
     'star',

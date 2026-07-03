@@ -465,6 +465,40 @@ pub enum StatusExpiryTiming {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum TimedEffectReduction {
+    Status {
+        status_id: String,
+        owner: StatusOwner,
+        old_duration: StatusDuration,
+        new_duration: Option<StatusDuration>,
+    },
+    CoveredPassive {
+        owner: PlayerId,
+    },
+    CounterEffect {
+        owner: PlayerId,
+        effect_id: String,
+    },
+    JianghuState {
+        owner: PlayerId,
+        kind: JianghuStateKind,
+        old_remaining_turns: u32,
+        new_remaining_turns: u32,
+        old_expires_on_turn: Option<u64>,
+        new_expires_on_turn: Option<u64>,
+    },
+    FlowState {
+        player: PlayerId,
+        old_layers: u32,
+        new_layers: u32,
+    },
+    FormationSuppression {
+        target: PlayerId,
+        formation_id: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GameSetup {
     pub ruleset: RulesetId,
     #[serde(default)]
@@ -638,6 +672,8 @@ pub struct GameState {
     pub shields: Vec<PlayerShield>,
     pub covered_passives: Vec<CoveredPassive>,
     #[serde(default)]
+    pub neutralized_covered_passive_owners: Vec<PlayerId>,
+    #[serde(default)]
     pub revealed_covered_passive_owners: Vec<PlayerId>,
     #[serde(default)]
     pub counter_effects: Vec<CounterEffect>,
@@ -648,6 +684,22 @@ pub struct GameState {
     pub limited_uses: Vec<LimitedUse>,
     #[serde(default)]
     pub confluence_card_obligations: Vec<ConfluenceCardObligation>,
+    #[serde(default)]
+    pub scheduled_echoes: Vec<ScheduledEcho>,
+    #[serde(default)]
+    pub flow_layers_by_player: HashMap<PlayerId, u32>,
+    #[serde(default)]
+    pub flow_triggered_turn_by_player: HashMap<PlayerId, u64>,
+    #[serde(default)]
+    pub formation_suppressions: Vec<FormationSuppression>,
+    #[serde(default)]
+    pub active_echo_resolution: Option<ScheduledEcho>,
+    #[serde(default)]
+    pub ringing_metal_selection: Option<RingingMetalSelection>,
+    #[serde(default)]
+    pub scheduled_plant_earth: Vec<ScheduledPlantEarth>,
+    #[serde(default)]
+    pub active_plant_earth_resolution: Option<ScheduledPlantEarth>,
     #[serde(default)]
     pub environment: Option<Element>,
     #[serde(default)]
@@ -728,12 +780,21 @@ impl GameState {
                 })
                 .collect(),
             covered_passives: Vec::new(),
+            neutralized_covered_passive_owners: Vec::new(),
             revealed_covered_passive_owners: Vec::new(),
             counter_effects: Vec::new(),
             statuses: Vec::new(),
             jianghu_states: Vec::new(),
             limited_uses: Vec::new(),
             confluence_card_obligations: Vec::new(),
+            scheduled_echoes: Vec::new(),
+            flow_layers_by_player: HashMap::new(),
+            flow_triggered_turn_by_player: HashMap::new(),
+            formation_suppressions: Vec::new(),
+            active_echo_resolution: None,
+            ringing_metal_selection: None,
+            scheduled_plant_earth: Vec::new(),
+            active_plant_earth_resolution: None,
             environment: None,
             team_stars: Vec::new(),
             star_histories: setup
@@ -1046,6 +1107,38 @@ pub struct TrustedRandomnessAnswer {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledEcho {
+    pub player: PlayerId,
+    pub melody_id: String,
+    pub due_turn_number: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FormationSuppression {
+    pub source: PlayerId,
+    pub target: PlayerId,
+    pub formation_id: String,
+    pub expires_on_turn_number: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RingingMetalSelection {
+    pub player: PlayerId,
+    pub card: CardInstanceId,
+    pub deck: RandomnessDeck,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledPlantEarth {
+    pub player: PlayerId,
+    pub due_turn_number: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum GameEvent {
     DeckPrepared {
         deck_order: Vec<CardInstanceId>,
@@ -1338,6 +1431,68 @@ pub enum GameEvent {
         deck: RandomnessDeck,
         shuffled_order: Vec<CardInstanceId>,
     },
+    EchoCostPaid {
+        player: PlayerId,
+        melody_id: String,
+        card_move: CardMoveDelta,
+    },
+    EchoDeclined {
+        player: PlayerId,
+        melody_id: String,
+    },
+    EchoScheduled {
+        schedule: ScheduledEcho,
+    },
+    EchoResolutionStarted {
+        schedule: ScheduledEcho,
+    },
+    EchoResolutionCompleted {
+        player: PlayerId,
+        melody_id: String,
+        due_turn_number: u64,
+    },
+    TimedEffectsReduced {
+        source: PlayerId,
+        target: PlayerId,
+        reductions: Vec<TimedEffectReduction>,
+    },
+    FlowStateChanged {
+        player: PlayerId,
+        old_layers: u32,
+        new_layers: u32,
+    },
+    FlowStateTriggered {
+        player: PlayerId,
+        old_layers: u32,
+        new_layers: u32,
+        old_draw_bonus: usize,
+        new_draw_bonus: usize,
+    },
+    FormationSuppressionSet {
+        suppression: FormationSuppression,
+    },
+    FormationSuppressionExpired {
+        target: PlayerId,
+        formation_id: String,
+        expired_on_turn_number: u64,
+    },
+    RingingMetalCardRevealed {
+        selection: RingingMetalSelection,
+    },
+    RingingMetalCompleted {
+        selection: RingingMetalSelection,
+    },
+    PlantEarthScheduled {
+        schedule: ScheduledPlantEarth,
+    },
+    PlantEarthResolutionStarted {
+        schedule: ScheduledPlantEarth,
+    },
+    PlantEarthResolutionCompleted {
+        player: PlayerId,
+        due_turn_number: u64,
+        melody_id: String,
+    },
     PassiveCovered {
         player: PlayerId,
         formation_id: String,
@@ -1484,15 +1639,17 @@ pub enum PassiveNoEffectReason {
     NotAnAttack,
     NotASpell,
     Sealed,
+    Neutralized,
     EmptyCity,
     IgnoredBySacredBeast,
     IgnoredByProfessionAbility,
     IneffectiveInEnvironment { environment: Element },
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum FormationNoEffectReason {
     IneffectiveInEnvironment { environment: Element },
+    SuppressedBySplitEarth { source: PlayerId },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

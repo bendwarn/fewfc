@@ -4,12 +4,13 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Open Local Issues
 
-- [#63 Resolve basic Melodies and Echo](063-resolve-basic-melodies-and-echo.md)
-- [#64 Resolve Pure Fire and Plant Earth](064-resolve-pure-fire-and-plant-earth.md)
-- [#65 Release the Echo Rule Module](065-release-echo-rule-module.md)
+- [#66 Release the Tribulation Rule Module](066-release-tribulation-rule-module.md)
 
 ## Completed Local Issues
 
+- [#65 Release the Echo Rule Module](065-release-echo-rule-module.md)
+- [#64 Resolve Pure Fire and Plant Earth](064-resolve-pure-fire-and-plant-earth.md)
+- [#63 Resolve basic Melodies and Echo](063-resolve-basic-melodies-and-echo.md)
 - [#62 Generalize choices and midgame randomness](062-generalize-choices-and-midgame-randomness.md)
 - [#61 Release the Dark Glimmer Rule Module](061-release-dark-glimmer-rule-module.md)
 - [#60 Release the Confluence Generation Rule Module](060-release-confluence-generation-rule-module.md)

@@ -70,7 +70,7 @@ const OFFICIAL_RULE_MODULES: &[RuleModuleSpec] = &[
     },
     RuleModuleSpec {
         id: ECHO_MODULE_ID,
-        default_enabled: false,
+        default_enabled: true,
         dependencies: ADVANCED_RULE_MODULE_IDS,
     },
 ];

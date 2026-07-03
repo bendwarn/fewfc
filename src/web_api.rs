@@ -811,6 +811,10 @@ struct WebPublicGameState {
     jianghu_states: Vec<WebJianghuState>,
     limited_uses: Vec<WebLimitedUse>,
     confluence_card_obligations: Vec<WebConfluenceCardObligation>,
+    scheduled_echoes: Vec<WebScheduledEcho>,
+    flow_states: Vec<WebFlowState>,
+    formation_suppressions: Vec<WebFormationSuppression>,
+    scheduled_plant_earth: Vec<WebScheduledPlantEarth>,
     environment: Option<String>,
     team_stars: Vec<WebTeamStar>,
     star_histories: Vec<WebPlayerStarHistory>,
@@ -996,6 +1000,41 @@ impl WebPublicGameState {
                     owner: obligation.owner.as_str().to_string(),
                     card: obligation.card,
                     allow_profession_formation: obligation.allow_profession_formation,
+                })
+                .collect(),
+            scheduled_echoes: state
+                .scheduled_echoes
+                .into_iter()
+                .map(|schedule| WebScheduledEcho {
+                    player: schedule.player.as_str().to_string(),
+                    melody_id: schedule.melody_id,
+                    due_turn_number: schedule.due_turn_number,
+                })
+                .collect(),
+            flow_states: state
+                .flow_states
+                .into_iter()
+                .map(|flow| WebFlowState {
+                    player: flow.player.as_str().to_string(),
+                    layers: flow.layers,
+                })
+                .collect(),
+            formation_suppressions: state
+                .formation_suppressions
+                .into_iter()
+                .map(|suppression| WebFormationSuppression {
+                    source: suppression.source.as_str().to_string(),
+                    target: suppression.target.as_str().to_string(),
+                    formation_id: suppression.formation_id,
+                    expires_on_turn_number: suppression.expires_on_turn_number,
+                })
+                .collect(),
+            scheduled_plant_earth: state
+                .scheduled_plant_earth
+                .into_iter()
+                .map(|schedule| WebScheduledPlantEarth {
+                    player: schedule.player.as_str().to_string(),
+                    due_turn_number: schedule.due_turn_number,
                 })
                 .collect(),
             environment: state
@@ -1308,6 +1347,7 @@ struct WebPreviousTurnFormation {
 #[serde(rename_all = "camelCase")]
 struct WebPendingChoice {
     player: String,
+    purpose: String,
     kind: String,
     cards: Vec<WebCard>,
     required_count: usize,
@@ -1324,6 +1364,37 @@ struct WebPendingRandomness {
     request_id: String,
     deck: String,
     card_count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebScheduledEcho {
+    player: String,
+    melody_id: String,
+    due_turn_number: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebFlowState {
+    player: String,
+    layers: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebFormationSuppression {
+    source: String,
+    target: String,
+    formation_id: String,
+    expires_on_turn_number: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebScheduledPlantEarth {
+    player: String,
+    due_turn_number: u64,
 }
 
 impl WebPendingChoice {
@@ -1343,6 +1414,7 @@ impl WebPendingChoice {
                 ..
             }) => Self {
                 player: choice.player.as_str().to_string(),
+                purpose: choice.purpose,
                 kind: "TurnDrawDiscard".to_string(),
                 required_count,
                 minimum_count,
@@ -1360,6 +1432,7 @@ impl WebPendingChoice {
                 ..
             }) => Self {
                 player: choice.player.as_str().to_string(),
+                purpose: choice.purpose,
                 kind: "EffectGenerated".to_string(),
                 required_count,
                 minimum_count,
@@ -1377,6 +1450,7 @@ impl WebPendingChoice {
                 ..
             }) => Self {
                 player: choice.player.as_str().to_string(),
+                purpose: choice.purpose,
                 kind: "EffectGenerated".to_string(),
                 required_count,
                 minimum_count,
@@ -1392,6 +1466,7 @@ impl WebPendingChoice {
             PublicPendingChoiceKind::Known(PendingChoiceKind::TypedEffect { options, .. }) => {
                 Self {
                     player: choice.player.as_str().to_string(),
+                    purpose: choice.purpose,
                     kind: "TypedEffect".to_string(),
                     required_count,
                     minimum_count,
@@ -1417,6 +1492,7 @@ impl WebPendingChoice {
             }
             PublicPendingChoiceKind::Hidden => Self {
                 player: choice.player.as_str().to_string(),
+                purpose: choice.purpose,
                 kind: "Hidden".to_string(),
                 cards: Vec::new(),
                 required_count: 0,
@@ -1687,9 +1763,11 @@ fn event_presentation(
                 card_refs_summary(drawn_cards, labels)
             ),
         ),
-        PublicGameEvent::EffectChoiceRequested { player, .. } => (
+        PublicGameEvent::EffectChoiceRequested {
+            player, purpose, ..
+        } => (
             "效果選擇".to_string(),
-            format!("{} 需要選擇效果。", player.as_str()),
+            format!("{} 需要為 {} 作出選擇。", player.as_str(), purpose),
         ),
         PublicGameEvent::RandomnessRequested { card_count, .. } => (
             "等待洗牌".to_string(),
@@ -2063,6 +2141,18 @@ fn game_event_presentation(
                 element_name(*environment),
             ),
         ),
+        GameEvent::FormationEffectIgnored {
+            player,
+            formation_id,
+            reason: crate::domain::FormationNoEffectReason::SuppressedBySplitEarth { .. },
+        } => (
+            "陣法無效".to_string(),
+            format!(
+                "{} 的「{}」受裂土影響而無效。",
+                player.as_str(),
+                formation_name(formation_names, formation_id),
+            ),
+        ),
         GameEvent::CounterEffectEstablished { owner, effect_id } => (
             "建立反制".to_string(),
             format!(
@@ -2235,10 +2325,22 @@ fn game_event_presentation(
                 cards_summary(selected_cards, labels)
             ),
         ),
-        GameEvent::TypedEffectChoiceAnswered { player, .. } => (
-            "完成選擇".to_string(),
-            format!("{} 已完成效果選擇。", player.as_str()),
-        ),
+        GameEvent::TypedEffectChoiceAnswered { player, answer, .. } => {
+            let selection = match answer {
+                crate::domain::EffectChoiceAnswer::Cards { cards } => cards_summary(cards, labels),
+                crate::domain::EffectChoiceAnswer::Player { player } => {
+                    format!("玩家 {}", player.as_str())
+                }
+                crate::domain::EffectChoiceAnswer::Formation { formation_id } => {
+                    format!("陣法 {}", formation_name(formation_names, formation_id))
+                }
+                crate::domain::EffectChoiceAnswer::Decline => "放棄".to_string(),
+            };
+            (
+                "完成選擇".to_string(),
+                format!("{} 選擇了 {}。", player.as_str(), selection),
+            )
+        }
         GameEvent::RandomnessRequested { request } => (
             "等待洗牌".to_string(),
             format!("正在重新排列 {} 張牌。", request.current_order.len()),
@@ -2411,6 +2513,104 @@ fn game_event_presentation(
         GameEvent::FiveStarAlignmentAchieved { player, .. } => (
             "五星連珠".to_string(),
             format!("{} 完成五星連珠，所屬隊伍獲勝。", player.as_str()),
+        ),
+        GameEvent::EchoCostPaid { player, .. } => (
+            "支付迴響代價".to_string(),
+            format!("{} 捨棄一張牌並排定迴響。", player.as_str()),
+        ),
+        GameEvent::EchoDeclined { player, .. } => (
+            "放棄迴響".to_string(),
+            format!("{} 選擇不觸發迴響。", player.as_str()),
+        ),
+        GameEvent::EchoScheduled { schedule } => (
+            "排定迴響".to_string(),
+            format!(
+                "{} 的曲調將於第 {} 回合開始時迴響。",
+                schedule.player.as_str(),
+                schedule.due_turn_number
+            ),
+        ),
+        GameEvent::EchoResolutionStarted { schedule } => (
+            "迴響開始".to_string(),
+            format!("{} 開始執行曲調迴響。", schedule.player.as_str()),
+        ),
+        GameEvent::EchoResolutionCompleted { player, .. } => (
+            "迴響完成".to_string(),
+            format!("{} 已完成曲調迴響。", player.as_str()),
+        ),
+        GameEvent::TimedEffectsReduced {
+            source,
+            target,
+            reductions,
+        } => (
+            "淨火".to_string(),
+            format!(
+                "{} 使 {} 的 {} 個合格時效效果減少一回合或一層。",
+                source.as_str(),
+                target.as_str(),
+                reductions.len()
+            ),
+        ),
+        GameEvent::FlowStateChanged {
+            player, new_layers, ..
+        } => (
+            "流水狀態".to_string(),
+            format!("{} 的流水狀態為 {} 層。", player.as_str(), new_layers),
+        ),
+        GameEvent::FlowStateTriggered { player, .. } => (
+            "流水觸發".to_string(),
+            format!("{} 消耗一層流水，使本回合抽牌＋１。", player.as_str()),
+        ),
+        GameEvent::FormationSuppressionSet { suppression } => (
+            "裂土指定".to_string(),
+            format!(
+                "{} 指定 {} 的陣法 {} 於下回合無效。",
+                suppression.source.as_str(),
+                suppression.target.as_str(),
+                suppression.formation_id
+            ),
+        ),
+        GameEvent::FormationSuppressionExpired {
+            target,
+            formation_id,
+            ..
+        } => (
+            "裂土結束".to_string(),
+            format!(
+                "{} 的陣法 {} 不再受裂土影響。",
+                target.as_str(),
+                formation_id
+            ),
+        ),
+        GameEvent::RingingMetalCardRevealed { selection } => (
+            "鳴金檢索".to_string(),
+            format!(
+                "{} 展示了牌 {}。",
+                selection.player.as_str(),
+                selection.card.as_u64()
+            ),
+        ),
+        GameEvent::RingingMetalCompleted { selection } => (
+            "鳴金完成".to_string(),
+            format!("{} 將展示牌放到牌組最上方。", selection.player.as_str()),
+        ),
+        GameEvent::PlantEarthScheduled { schedule } => (
+            "植土排定".to_string(),
+            format!(
+                "{} 將於第 {} 回合開始選擇曲調主效果。",
+                schedule.player.as_str(),
+                schedule.due_turn_number
+            ),
+        ),
+        GameEvent::PlantEarthResolutionStarted { schedule } => (
+            "植土開始".to_string(),
+            format!("{} 開始結算植土。", schedule.player.as_str()),
+        ),
+        GameEvent::PlantEarthResolutionCompleted {
+            player, melody_id, ..
+        } => (
+            "植土完成".to_string(),
+            format!("{} 已執行曲調 {} 的主效果。", player.as_str(), melody_id),
         ),
         GameEvent::TurnEnded { player } => (
             "回合結束".to_string(),
@@ -3032,6 +3232,7 @@ mod tests {
     fn effect_choice_exposes_required_card_count() {
         let choice = crate::public_view::PublicPendingChoice {
             player: PlayerId::new("alice"),
+            purpose: "chaos".to_string(),
             kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
                 effect_id: "chaos".to_string(),
                 continuation_id: "chaos:return-two".to_string(),
@@ -3042,6 +3243,7 @@ mod tests {
         let json = serde_json::to_value(web_choice).expect("choice should serialize");
 
         assert_eq!(json["requiredCount"], 2);
+        assert_eq!(json["purpose"], "chaos");
     }
 
     #[test]
@@ -3182,6 +3384,77 @@ mod tests {
             !serde_json::to_string(&choice)
                 .expect("choice should serialize")
                 .contains("required_count")
+        );
+    }
+
+    #[test]
+    fn echo_public_state_uses_the_web_camel_case_contract() {
+        let setup = fixture_setup(&OfficialRules::new(), None).unwrap();
+        let mut state = crate::domain::GameState::from_setup(&setup);
+        state.scheduled_echoes.push(crate::domain::ScheduledEcho {
+            player: PlayerId::new("alice"),
+            melody_id: "echo:falling-wood".to_string(),
+            due_turn_number: 3,
+        });
+        state
+            .flow_layers_by_player
+            .insert(PlayerId::new("alice"), 2);
+        state
+            .formation_suppressions
+            .push(crate::domain::FormationSuppression {
+                source: PlayerId::new("alice"),
+                target: PlayerId::new("bob"),
+                formation_id: "weapon".to_string(),
+                expires_on_turn_number: 2,
+            });
+        state
+            .scheduled_plant_earth
+            .push(crate::domain::ScheduledPlantEarth {
+                player: PlayerId::new("alice"),
+                due_turn_number: 3,
+            });
+
+        let public = crate::public_view::state_for(&state, Viewer::Observer);
+        let web = WebPublicGameState::from_public(public, &HashMap::new(), &HashMap::new());
+        let json = serde_json::to_value(web).expect("Echo state should serialize");
+
+        assert_eq!(json["scheduledEchoes"][0]["melodyId"], "echo:falling-wood");
+        assert_eq!(json["scheduledEchoes"][0]["dueTurnNumber"], 3);
+        assert_eq!(json["flowStates"][0]["layers"], 2);
+        assert_eq!(json["formationSuppressions"][0]["expiresOnTurnNumber"], 2);
+        assert_eq!(json["scheduledPlantEarth"][0]["dueTurnNumber"], 3);
+        assert!(json.get("scheduled_echoes").is_none());
+    }
+
+    #[test]
+    fn typed_echo_answers_are_explicit_in_event_history() {
+        let target = GameEvent::TypedEffectChoiceAnswered {
+            player: PlayerId::new("alice"),
+            effect_id: "echo:pure-fire".to_string(),
+            continuation_id: "echo:pure-fire:target".to_string(),
+            answer: EffectChoiceAnswer::Player {
+                player: PlayerId::new("bob"),
+            },
+        };
+        assert!(
+            game_event_presentation(&target, &HashMap::new(), &HashMap::new())
+                .1
+                .contains("玩家 bob")
+        );
+
+        let formation = GameEvent::TypedEffectChoiceAnswered {
+            player: PlayerId::new("alice"),
+            effect_id: "echo:plant-earth".to_string(),
+            continuation_id: "echo:plant-earth:melody".to_string(),
+            answer: EffectChoiceAnswer::Formation {
+                formation_id: "echo:ringing-metal".to_string(),
+            },
+        };
+        let names = HashMap::from([("echo:ringing-metal".to_string(), "商調‧鳴金".to_string())]);
+        assert!(
+            game_event_presentation(&formation, &HashMap::new(), &names)
+                .1
+                .contains("商調‧鳴金")
         );
     }
 }

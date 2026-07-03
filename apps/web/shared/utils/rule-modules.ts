@@ -62,6 +62,13 @@ export const RULE_MODULE_SPECS = [
     defaultEnabled: true,
     dependencies: ['spirit'],
   },
+  {
+    id: 'echo',
+    label: '主題規則‧迴響',
+    group: 'theme',
+    defaultEnabled: true,
+    dependencies: ['star', 'five-directions-legend', 'hero-schools'],
+  },
 ] as const
 
 export type RuleModuleId = typeof RULE_MODULE_SPECS[number]['id']

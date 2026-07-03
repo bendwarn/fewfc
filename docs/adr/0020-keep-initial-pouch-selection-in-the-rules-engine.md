@@ -8,3 +8,9 @@ each remaining Personal Deck and submits the result as canonical randomness;
 only then does the engine deal initial hands and begin the first Turn. This
 preserves deterministic replay, validates that each Pouch came from the correct
 Deck, and keeps its hidden information under the existing Public View boundary.
+The lifecycle is modeled as Game Preparation - Initial Pouch Selection,
+Pending Deck Shuffle, and Initial Deal - rather than adding pre-turn values to
+the Turn Phase enum. The game becomes Ongoing only after preparation completes.
+Starting the room locks membership, rules, and Deck Lists immediately and moves
+Players to this reconnectable in-game preparation state; Initial Pouch Selection
+is not a waiting-room workflow.
