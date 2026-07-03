@@ -3,7 +3,7 @@ export type TeamId = string
 export type ViewerId = PlayerId | 'observer'
 export type CardInstanceId = number
 export type StarKind = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
-export type SpiritKind = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
+export type SpiritKind = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth' | 'Evil' | 'Death'
 export type Element = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
 
 export interface StarElementSubstitution {
@@ -60,6 +60,23 @@ export interface PublicPendingChoice {
   kind: string
   cards: PublicCard[]
   requiredCount: number
+  minimumCount: number
+  maximumCount: number
+  players: PlayerId[]
+  formations: string[]
+  canDecline: boolean
+}
+
+export type EffectChoiceAnswer =
+  | { type: 'cards'; cards: CardInstanceId[] }
+  | { type: 'player'; player: PlayerId }
+  | { type: 'formation'; formationId: string }
+  | { type: 'decline' }
+
+export interface PublicPendingRandomness {
+  requestId: string
+  deck: string
+  cardCount: number
 }
 
 export interface PublicCard {
@@ -83,11 +100,29 @@ export interface PublicGameState {
   coveredPassives: PublicCoveredPassive[]
   counterEffects: Array<{ owner: PlayerId; effectId: string; effectName: string }>
   pendingChoice: PublicPendingChoice | null
+  pendingRandomness: PublicPendingRandomness | null
   shields: Array<{ player: PlayerId; value: number }>
   statuses: Array<{
     id: string
     owner: { kind: 'player' | 'team'; id: string }
     kind: string
+  }>
+  jianghuStates: Array<{
+    owner: PlayerId
+    kind: 'ThousandBlades' | 'SnowTreading' | 'Poison'
+    remainingTurns: number
+    expiresOnTurn: number | null
+  }>
+  limitedUses: Array<{
+    owner: PlayerId
+    key: string
+    remaining: number
+    maximum: number
+  }>
+  confluenceCardObligations: Array<{
+    owner: PlayerId
+    card: CardInstanceId | null
+    allowProfessionFormation: boolean
   }>
   environment: 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth' | null
   teamStars: Array<{ team: TeamId; star: StarKind }>
@@ -188,5 +223,12 @@ export interface LocalGameResponse {
     canPass: boolean
     hasOptionalEffect: boolean
     canRetrieveDiscard: boolean
+  }
+  trustedRandomCandidates?: CardInstanceId[]
+  pendingRandomnessRequest?: {
+    requestId: string
+    deck: 'Shared' | { Player: PlayerId }
+    continuationId: string
+    currentOrder: CardInstanceId[]
   }
 }

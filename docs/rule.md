@@ -514,16 +514,165 @@ Spirit owner. All Spirit and Team deltas resolve before Game Outcome evaluation.
 Bloom observes the reduced power, so a Wood Spirit reduced from six to four
 cannot answer HP loss caused by that same resolution.
 
-### 5.6 Web setup
+### 5.6 Pouch
+
+Pouch is a Theme Rule Module from the official 5.16 PDF, pages 37-38. This
+product intentionally permits it only when Personal Deck and all three Advanced
+Rule Modules are enabled.
+
+Before initial hands are dealt, Players choose starting Pouches in Turn Order
+from their unshuffled Personal Decks. Each choice removes one Card Instance from
+that Deck and places it face down under its Pouch Owner. After all choices, a
+trusted adapter shuffles the remaining Personal Decks and the engine records
+those orders before dealing. Pouch identity is visible only to its owner until
+the Card is revealed, while canonical events retain enough information for
+replay.
+
+Triggering a Pouch is an active effect during `Main`, before the Player's Action,
+and remains legal under **Cannot Act**. The Player reveals the Card, chooses
+exactly one Secret Strategy whose condition matches its printed element or
+level, resolves that effect, and only then moves the revealed Card to its origin
+Discard Pile.
+
+Chain is an Active Spell made from three Cards with pairwise-different elements
+and levels. It searches the performing Player's Personal Deck for exactly one
+or two Cards:
+
+- one selected Card becomes a Pouch owned by a selected friendly Player
+- when a second Card is selected, it must differ in both element and level from
+  the first and publicly triggers one eligible Secret Strategy immediately
+- selecting zero Cards is not legal
+
+When two Cards are selected, Chain first places the new Pouch. Any Pouch
+previously owned by the target is immediately moved to its origin Discard Pile.
+Chain then reveals the second Card and resolves its selected Secret Strategy,
+moving that source Card to its origin Discard Pile only after the strategy
+finishes. A replaced Pouch already present in the performing Player's Discard
+Pile may therefore be selected by Sheep Stealing.
+
+Pouch ownership does not change Card Origin. A Pouch given to a teammate by
+Chain enters the origin Player's Discard Pile when it is triggered or replaced.
+
+Sheep Stealing first discards two selected Cards from the Player's Personal
+Deck, then returns two selected Cards from that Player's Discard Pile and
+shuffles. If the Deck contains fewer than two Cards when resolution begins, its
+existing Discard Pile is shuffled back first. The Secret Strategy source Card
+is discarded only after resolution and is therefore never one of the returned
+Cards.
+
+Dark Crossing causes a Direct Profession Change based on the source Card's
+printed element: Metal to Warrior, Wood to Seeker, Water to Mesmer, Fire to
+Mage, and Earth to Windwalker. It does not pay ordinary Profession Change Cards,
+check prerequisite Professions, consume the Action opportunity, or enter the
+ordinary Counter Effect pipeline. Effects that forbid Profession Change still
+prevent it.
+
+Deceive Heaven may grant the triggering Player one specified Temporary Star
+Effect until Turn End. The grant includes that Star's element substitution and
+both Star Formations, and it composes with a different Star already owned by the
+Player's Team. It does not create or summon a Star and does not add Five-Star
+Alignment history. When a granted Star Formation says to break its enabling
+Star, it can break only the same-named Star owned by the performing Player's
+Team; it never breaks an opposing Team's Star. If that Team does not own the
+same-named Star, the breaking has no effect and the Temporary Star Effect still
+lasts until Turn End. Deceive Heaven's alternative direct-breaking option is
+different: it may target any existing Star, including one owned by either Team.
+
+Lure the Tiger Away makes the selected Player's Profession Abilities and Spirit
+Skills ineffective for its duration rather than prohibiting their use.
+Activated Abilities and Skills may still be used, pay their costs, and consume
+their usage allowances, but their effects do not execute. Automatic,
+proficiency, and persistent abilities are suppressed. The affected Spirit also
+cannot gain Spirit Power during that duration.
+
+Watch the Fire prevents all attack damage during the next Player's next Turn,
+including damage that a Shield would otherwise absorb. It also prevents Team HP
+loss or recovery caused by Formations during that Turn. Other Formation effects,
+Card movement, non-damage Shield reduction, and performance costs still resolve.
+Effects from Spirit Skills, Secret Strategies, and other non-Formation sources
+are outside this protection.
+
+### 5.7 Tribulation
+
+Tribulation is a Theme Rule Module from the official 5.16 PDF, page 36. It
+requires Star, Five Directions Legend, and Hero Schools; Optional Rule Modules
+remain independently composable.
+
+The five Tribulations are variable-card-count Special Attacks. Each uses exactly
+its named pair of overcoming elements, with one or more Cards of each element
+and an effective level sum of at least seven for each element. They never
+satisfy a rule that requires a fixed Formation card count.
+
+| Formation | Elements | Attack | Additional effect |
+|---|---|---:|---|
+| 天雷劫火 | Metal and Fire | 60 | both Teams lose 15 HP |
+| 烈風暴雨 | Fire and Water | 60 | every Player gains Gale-Rain Status for two turns |
+| 泥石轟流 | Water and Earth | 60 or 80 | every Shield loses 20 points |
+| 裂地崩山 | Earth and Wood | 60 | transfer the Environment and make every Player discard an Environment-Element Card or reveal their hand |
+| 鏽鐵枯林 | Wood and Metal | 60 | reveal the top eight Cards of each applicable Deck, discard Cards of printed level three or higher, and shuffle the rest back |
+
+Mudslide Torrent is 80 Attack Points only when its global Shield effect
+effectively deducts at least one Shield point. Attack damage to a Shield does
+not trigger the increase. Determine whether the target still has a Shield after
+the global deduction: a remaining Shield receives the Attack; when that effect
+breaks the target's Shield, the Attack reaches the Player.
+
+Earth-Rending Mountain Collapse may select any Environment, including the
+current one. Discard eligibility uses printed Card elements and the selected
+Environment. Starting with the performing Player's Next Player, Players choose
+sequentially; the performing Player is last. The declared Environment and
+answers remain in the pending Formation command until every answer is present.
+Under main rule 5-2.4i, Environment Transfer, discards or hand reveals, Attack
+damage, and the rest of the Formation resolve atomically before Game Outcome
+evaluation.
+
+Rusted Iron Withered Forest processes a shared Deck once. With Personal Deck
+enabled, it processes each Player-owned Deck separately. A shared-Deck shuffle
+therefore recovers Tailwind for every eligible owner, while a Personal Deck
+shuffle recovers it only for that Deck's owner.
+
+Gale-Rain Status makes life recovery from Formations performed by its owner
+ineffective; it does not block non-Formation recovery or Formations performed by
+an unaffected teammate. Main rule 6-1 tracks each two-turn application
+independently. The performing Player's current Turn End counts as their first
+turn under the Status.
+
+神算 is an Active Spell formed from one Card of effective level four or higher.
+It removes every existing Divine Calculation Status, then grants its performing
+Player one exclusive, non-stacking Divine Calculation Status. The Status lasts
+until another 神算 removes it or the next Tribulation consumes it, including a
+Tribulation performed by its owner.
+
+When consumed, Divine Calculation makes that Tribulation's additional effect
+ineffective for its owner. It also reduces Tribulation Attack damage received by
+its owner by 20, including damage reflected to an attacking owner by
+Countershock. A Shield takes unreduced damage because its owner did not
+personally receive that damage.
+
+The reduction is a rule of Divine Calculation Status itself, not a repeated
+effect of the 神算 Formation. Snow-Treading Status therefore does not make a
+Tribulation Attack bypass this reduction.
+
+The additional-effect immunity applies by affected resource:
+
+- Thunder-Fire Tribulation does not deduct 15 HP from the Status owner's Team.
+- Gale-Rain Status is not added to the protected Player.
+- Mudslide Torrent does not deduct points from the protected Player's Shield.
+- Earth-Rending Mountain Collapse still transfers the shared Environment, but
+  the protected Player neither discards nor reveals their hand.
+- Rusted Iron Withered Forest still processes a shared Deck. With Personal Deck
+  enabled, it skips the protected Player's Deck.
+
+### 5.8 Web setup
 
 New official rooms enable every available Rule Module by default; the Base
 Ruleset cannot be disabled. Existing rooms retain their stored module
 configuration when a new module becomes available.
 
 The room owner may change Rule Modules subject to declared dependencies.
-Enabling Spirit automatically enables Star, Five Directions Legend, and Hero
-Schools. Disabling any of those Advanced Rule Modules automatically disables
-Spirit. Server-side setup validation rejects any invalid dependency combination.
+Enabling a Rule Module automatically enables its transitive dependencies;
+disabling a dependency automatically disables every dependent Rule Module.
+Server-side setup validation rejects any invalid dependency combination.
 
 The room-creation dialog intentionally omits Rule Module controls. In the
 waiting room, Base is shown as fixed-on and each Rule Module has one owner-only

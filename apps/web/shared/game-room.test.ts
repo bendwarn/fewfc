@@ -2,11 +2,73 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import {
   continuesPendingCommandDraft,
+  isOnlineGameAction,
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
   normalizeRuleModules,
+  resolvePendingRandomnessSequence,
   requiresPendingCommandDraft,
 } from './game-room'
+
+test('trusted randomness actions are not player-submittable', () => {
+  assert.equal(isOnlineGameAction({
+    type: 'resolveRandomness',
+    requestId: 'request',
+    shuffledOrder: [3, 1, 2],
+  }), false)
+  assert.equal(isOnlineGameAction({
+    type: 'answerEffectChoiceTyped',
+    player: 'alice',
+    answer: { type: 'decline' },
+  }), true)
+})
+
+test('trusted randomness resolves sequential requests as distinct persisted decisions', async () => {
+  type Result = {
+    marker: string
+    pendingRandomnessRequest?: {
+      requestId: string
+      currentOrder: number[]
+    }
+  }
+  const persisted: string[] = []
+  const actions: Array<{ requestId: string; shuffledOrder: number[] }> = []
+  const responses: Result[] = [
+    {
+      marker: 'after-first',
+      pendingRandomnessRequest: {
+        requestId: 'post-search',
+        currentOrder: [4, 5],
+      },
+    },
+    { marker: 'complete' },
+  ]
+
+  const result = await resolvePendingRandomnessSequence<Result>(
+    {
+      marker: 'initial',
+      pendingRandomnessRequest: {
+        requestId: 'discard-recycle',
+        currentOrder: [1, 2, 3],
+      },
+    },
+    cards => [...cards].reverse(),
+    async (current) => {
+      persisted.push(current.pendingRandomnessRequest?.requestId ?? '')
+    },
+    async (action) => {
+      actions.push(action)
+      return responses.shift() as Result
+    },
+  )
+
+  assert.equal(result.marker, 'complete')
+  assert.deepEqual(persisted, ['discard-recycle', 'post-search'])
+  assert.deepEqual(actions, [
+    { type: 'resolveRandomness', requestId: 'discard-recycle', shuffledOrder: [3, 2, 1] },
+    { type: 'resolveRandomness', requestId: 'post-search', shuffledOrder: [5, 4] },
+  ])
+})
 
 test('all released advanced rules are available default Rule Modules', () => {
   assert.deepEqual(normalizeRuleModules(undefined), [
@@ -16,6 +78,9 @@ test('all released advanced rules are available default Rule Modules', () => {
     'personal-deck',
     'five-directions-legend',
     'spirit',
+    'jianghu',
+    'confluence-generation',
+    'dark-glimmer',
   ])
   assert.deepEqual(normalizeRuleModules(['star', 'five-directions-legend', 'unknown']), [
     'star',

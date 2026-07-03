@@ -20,6 +20,7 @@ pub(super) struct TriggerRequest {
     pub(super) incoming_kind: IncomingActionKind,
     pub(super) ignores_formation_effects: bool,
     pub(super) ignores_counter_effects: bool,
+    pub(super) attack_points: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,6 +87,7 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
             request.ignores_formation_effects,
             request.ignores_counter_effects,
             ineffective_environment,
+            request.attack_points,
         );
         all_modifications.extend(modifications.iter().cloned());
         events.push(GameEvent::PassiveFlipped {
@@ -117,6 +119,7 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
             request.ignores_formation_effects,
             request.ignores_counter_effects,
             None,
+            request.attack_points,
         );
         all_modifications.extend(modifications.iter().cloned());
         events.push(GameEvent::CounterEffectResolved {
@@ -152,6 +155,7 @@ fn passive_spell_modifications(
     ignores_formation_effects: bool,
     ignores_counter_effects: bool,
     ineffective_environment: Option<Element>,
+    attack_points: Option<i32>,
 ) -> Vec<ActionModification> {
     if sealed
         || ignores_formation_effects
@@ -163,6 +167,11 @@ fn passive_spell_modifications(
 
     let modification = match (passive_id, incoming_kind) {
         ("defense" | "dao-defense", IncomingActionKind::Attack) => {
+            ActionModification::PreventDamage
+        }
+        (crate::rules::jianghu::FLOWING_SHADOW_SWORD, IncomingActionKind::Attack)
+            if attack_points.is_some_and(|points| points <= 40) =>
+        {
             ActionModification::PreventDamage
         }
         ("countershock" | "magic-shock", IncomingActionKind::Attack) => {

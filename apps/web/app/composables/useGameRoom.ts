@@ -14,8 +14,6 @@ import type {
   OnlineGameAction,
 } from '../../shared/game-room'
 import {
-  completedPendingChoiceSelection,
-  isPendingChoiceComplete,
   togglePendingChoiceSelection,
 } from '~/lib/pending-choice-selection'
 
@@ -38,8 +36,12 @@ function emptyState(): PublicGameState {
     coveredPassives: [],
     counterEffects: [],
     pendingChoice: null,
+    pendingRandomness: null,
     shields: [],
     statuses: [],
+    jianghuStates: [],
+    limitedUses: [],
+    confluenceCardObligations: [],
     environment: null,
     teamStars: [],
     starHistories: [],
@@ -121,7 +123,8 @@ export function useGameRoom(viewer: ViewerRef) {
       choice
       && choice.kind === 'EffectGenerated'
       && viewer.value === choice.player
-      && isPendingChoiceComplete(selectedChoiceCards.value, choice.requiredCount),
+      && selectedChoiceCards.value.length >= choice.minimumCount
+      && selectedChoiceCards.value.length <= choice.maximumCount,
     )
   })
 
@@ -131,11 +134,19 @@ export function useGameRoom(viewer: ViewerRef) {
       : ''
   }
 
-  function applyRoomResponse(response: GameRoomResponse) {
-    playableQueryRevision += 1
-    if (playableQueryInFlight) {
-      playableQueryInFlight = false
-      isLoading.value = false
+  function applyRoomResponse(
+    response: GameRoomResponse,
+    preservePlayableActionsForSameState = false,
+  ) {
+    const preservePlayableActions = preservePlayableActionsForSameState
+      && selectedCards.value.length > 0
+      && JSON.stringify(state.value) === JSON.stringify(response.state)
+    if (!preservePlayableActions) {
+      playableQueryRevision += 1
+      if (playableQueryInFlight) {
+        playableQueryInFlight = false
+        isLoading.value = false
+      }
     }
     const previousChoiceKey = pendingChoiceKey(state.value.pendingChoice)
     metadata.value = response.metadata
@@ -144,7 +155,9 @@ export function useGameRoom(viewer: ViewerRef) {
     onlineGameId.value = response.gameId
     state.value = response.state
     publicEvents.value = response.events
-    playableActions.value = response.playableActions
+    if (!preservePlayableActions) {
+      playableActions.value = response.playableActions
+    }
     interaction.value = response.interaction
     errorMessage.value = null
     roomDissolved.value = response.metadata.status === 'Dissolved'
@@ -393,14 +406,16 @@ export function useGameRoom(viewer: ViewerRef) {
     selectedChoiceCards.value = togglePendingChoiceSelection(
       selectedChoiceCards.value,
       card,
-      choice.requiredCount,
+      choice.maximumCount,
     )
   }
 
   async function submitPendingChoice() {
     const choice = state.value.pendingChoice
     const cards = choice?.kind === 'EffectGenerated'
-      ? completedPendingChoiceSelection(selectedChoiceCards.value, choice.requiredCount)
+      && selectedChoiceCards.value.length >= choice.minimumCount
+      && selectedChoiceCards.value.length <= choice.maximumCount
+      ? [...selectedChoiceCards.value]
       : undefined
 
     if (
@@ -413,9 +428,9 @@ export function useGameRoom(viewer: ViewerRef) {
     }
 
     if (await submitOnline({
-      type: 'answerEffectChoice',
+      type: 'answerEffectChoiceTyped',
       player: choice.player,
-      cards,
+      answer: { type: 'cards', cards },
     })) {
       selectedChoiceCards.value = []
     }
@@ -525,7 +540,7 @@ export function useGameRoom(viewer: ViewerRef) {
       const message = JSON.parse(event.data) as GameRoomSocketMessage
 
       if (message.type === 'roomState') {
-        applyRoomResponse(message.data)
+        applyRoomResponse(message.data, true)
         return
       }
 

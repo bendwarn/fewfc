@@ -1,9 +1,9 @@
 //! Viewer-filtered Public View derivation from canonical game data.
 
 use crate::domain::{
-    CardInstanceId, CounterEffect, Element, GameEvent, GameState, GameStatus, PendingChoiceKind,
-    Phase, Player, PlayerId, PlayerProfession, PlayerShield, PlayerStarHistory, RuleModuleId,
-    StatusEffect, TeamHp, TeamStar,
+    CardInstanceId, CounterEffect, Element, GameEvent, GameState, GameStatus, JianghuState,
+    LimitedUse, PendingChoiceKind, Phase, Player, PlayerId, PlayerProfession, PlayerShield,
+    PlayerStarHistory, RandomnessDeck, RuleModuleId, StatusEffect, TeamHp, TeamStar,
 };
 use serde::{Deserialize, Serialize};
 
@@ -30,8 +30,12 @@ pub struct PublicGameState {
     pub covered_passives: Vec<PublicCoveredPassive>,
     pub counter_effects: Vec<CounterEffect>,
     pub pending_choice: Option<PublicPendingChoice>,
+    pub pending_randomness: Option<PublicPendingRandomness>,
     pub shields: Vec<PlayerShield>,
     pub statuses: Vec<StatusEffect>,
+    pub jianghu_states: Vec<JianghuState>,
+    pub limited_uses: Vec<LimitedUse>,
+    pub confluence_card_obligations: Vec<PublicConfluenceCardObligation>,
     pub environment: Option<Element>,
     pub team_stars: Vec<TeamStar>,
     pub star_histories: Vec<PlayerStarHistory>,
@@ -40,6 +44,13 @@ pub struct PublicGameState {
     pub prepared_profession_abilities: Vec<crate::domain::PreparedProfessionAbility>,
     pub spirits: Vec<crate::domain::PlayerSpirit>,
     pub previous_turn_formation: Option<PublicPreviousTurnFormation>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicConfluenceCardObligation {
+    pub owner: PlayerId,
+    pub card: Option<CardInstanceId>,
+    pub allow_profession_formation: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -95,6 +106,13 @@ pub enum PublicPendingChoiceKind {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicPendingRandomness {
+    pub request_id: String,
+    pub deck: RandomnessDeck,
+    pub card_count: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PublicGameEvent {
     Public(GameEvent),
     DeckPrepared {
@@ -142,6 +160,16 @@ pub enum PublicGameEvent {
     EffectChoiceRequested {
         player: PlayerId,
         kind: PublicPendingChoiceKind,
+    },
+    RandomnessRequested {
+        request_id: String,
+        deck: RandomnessDeck,
+        card_count: usize,
+    },
+    RandomnessResolved {
+        request_id: String,
+        deck: RandomnessDeck,
+        card_count: usize,
     },
     HandInspected {
         viewer: PlayerId,
@@ -259,8 +287,32 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
                     PublicPendingChoiceKind::Hidden
                 },
             }),
+        pending_randomness: state.pending_randomness.as_ref().map(|request| {
+            PublicPendingRandomness {
+                request_id: request.request_id.clone(),
+                deck: request.deck.clone(),
+                card_count: request.current_order.len(),
+            }
+        }),
         shields: state.shields.clone(),
         statuses: state.statuses.clone(),
+        jianghu_states: if state.has_rule_module(crate::domain::JIANGHU_MODULE_ID) {
+            state.jianghu_states.clone()
+        } else {
+            Vec::new()
+        },
+        limited_uses: state.limited_uses.clone(),
+        confluence_card_obligations: state
+            .confluence_card_obligations
+            .iter()
+            .map(|obligation| PublicConfluenceCardObligation {
+                owner: obligation.owner.clone(),
+                card: policy
+                    .can_see_player_hidden_cards(&obligation.owner)
+                    .then_some(obligation.card),
+                allow_profession_formation: obligation.allow_profession_formation,
+            })
+            .collect(),
         environment: state.environment,
         team_stars: state
             .team_stars
@@ -277,18 +329,28 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
         five_star_alignment: uses_stars
             .then(|| state.five_star_alignment.clone())
             .flatten(),
-        professions: state
+        professions: if state.enabled_rule_modules.iter().any(|module| {
+            matches!(
+                module.as_str(),
+                crate::domain::HERO_SCHOOLS_MODULE_ID | crate::domain::JIANGHU_MODULE_ID
+            )
+        }) {
+            state.professions.clone()
+        } else {
+            Vec::new()
+        },
+        prepared_profession_abilities: if state
             .has_rule_module(crate::domain::HERO_SCHOOLS_MODULE_ID)
-            .then(|| state.professions.clone())
-            .unwrap_or_default(),
-        prepared_profession_abilities: state
-            .has_rule_module(crate::domain::HERO_SCHOOLS_MODULE_ID)
-            .then(|| state.prepared_profession_abilities.clone())
-            .unwrap_or_default(),
-        spirits: state
-            .has_rule_module(crate::domain::SPIRIT_MODULE_ID)
-            .then(|| state.spirits.clone())
-            .unwrap_or_default(),
+        {
+            state.prepared_profession_abilities.clone()
+        } else {
+            Vec::new()
+        },
+        spirits: if state.has_rule_module(crate::domain::SPIRIT_MODULE_ID) {
+            state.spirits.clone()
+        } else {
+            Vec::new()
+        },
         previous_turn_formation,
     }
 }
@@ -382,6 +444,20 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
                 },
             }
         }
+        GameEvent::RandomnessRequested { request } => PublicGameEvent::RandomnessRequested {
+            request_id: request.request_id.clone(),
+            deck: request.deck.clone(),
+            card_count: request.current_order.len(),
+        },
+        GameEvent::RandomnessResolved {
+            request_id,
+            deck,
+            shuffled_order,
+        } => PublicGameEvent::RandomnessResolved {
+            request_id: request_id.clone(),
+            deck: deck.clone(),
+            card_count: shuffled_order.len(),
+        },
         GameEvent::HandInspected {
             viewer,
             target,
@@ -430,9 +506,11 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         GameEvent::TurnStarted { .. }
         | GameEvent::ActionPassed { .. }
         | GameEvent::ProfessionChanged { .. }
+        | GameEvent::ProfessionTransformed { .. }
         | GameEvent::ProfessionBroken { .. }
         | GameEvent::ProfessionAbilityActivated { .. }
         | GameEvent::SpiritSummoned { .. }
+        | GameEvent::SpiritTransformed { .. }
         | GameEvent::SpiritPowerChanged { .. }
         | GameEvent::SpiritBroken { .. }
         | GameEvent::AutomaticBloomsResolved { .. }
@@ -458,10 +536,19 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::ShieldChanged { .. }
         | GameEvent::HpChanged { .. }
         | GameEvent::CardsMoved { .. }
+        | GameEvent::DeckTopRevealed { .. }
         | GameEvent::StatusAdded { .. }
         | GameEvent::StatusExpired { .. }
         | GameEvent::StatusRemoved { .. }
+        | GameEvent::JianghuStateApplied { .. }
+        | GameEvent::JianghuStateExpired { .. }
+        | GameEvent::JianghuPoisonTicked { .. }
+        | GameEvent::JianghuDelayedDamageResolved { .. }
+        | GameEvent::LimitedUseChanged { .. }
+        | GameEvent::ConfluenceCardObligationSet { .. }
+        | GameEvent::ConfluenceCardObligationCleared { .. }
         | GameEvent::EffectChoiceAnswered { .. }
+        | GameEvent::TypedEffectChoiceAnswered { .. }
         | GameEvent::PassiveFlipped { .. }
         | GameEvent::DiscardRecycledIntoDeck { .. }
         | GameEvent::PlayerDiscardRecycledIntoDeck { .. }

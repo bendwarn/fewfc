@@ -1562,3 +1562,238 @@ Shield receives the unreduced damage.
   [Mage](https://www.cfecards.org/rule/latest/hero/mage) and
   [Unaffiliated](https://www.cfecards.org/rule/latest/hero/others)
   subpages.
+
+### 39. Theme Rule Module Delivery Scope And Defaults
+
+Add Jianghu, Confluence Generation, and Dark Glimmer as three independently
+selectable Theme Rule Modules, delivered in that order. Each delivery is a
+complete vertical slice through the Rust rules engine, canonical replay,
+viewer-filtered projections, Online Game Room configuration, UI, and automated
+tests.
+
+The normative source is the supplied `cfecards-5.16.pdf`. Implement the complete
+rules for those three Theme Rule Modules and their interactions with the Base
+Ruleset, all three Advanced Rule Modules, and the Spirit Rule Module. References
+to unimplemented Theme Rule Modules, such as Delayed Spells, remain inert until
+those modules are separately added; do not invent placeholder behavior.
+
+Every Theme Rule Module is independently selectable and may be combined with
+the others. Like Spirit, Jianghu and Confluence Generation require Star, Five
+Directions Legend, and Hero Schools. Dark Glimmer additionally requires Spirit
+because its Evil and Death Spirits use the Spirit rules. Selecting a Theme Rule
+Module automatically selects its transitive dependencies; removing a dependency
+removes every Theme Rule Module that requires it.
+
+New games and Online Game Rooms enable every available Rule Module by default,
+including Spirit, Jianghu, Confluence Generation, and Dark Glimmer. Persisted
+rooms retain their explicitly stored Rule Module list rather than gaining newly
+released modules implicitly.
+
+The Jianghu term **State (狀態)** is narrower than the engine's established
+generic `StatusEffect` concept. Define a separate typed Jianghu State collection
+containing only 千鋒, 踏雪, and 中毒; do not rename or change the generic model or
+serialized `statuses` contract. New canonical and Public State fields use
+backward-compatible defaults. See ADR 0012.
+
+Remove the existing Profession teaching/catalog dialog rather than expanding it
+for the new Theme Professions. The battlefield retains each Player's current
+Profession badge and read-only effective-ability summary. Public Limited Use
+counts from Confluence Generation appear with the granting Profession or
+ability because they are required current game state, not teaching content.
+
+All enabled Rule Modules contribute to one composed Profession catalog and one
+Player-owned Profession slot. Module-owned definitions and typed hooks remain
+separate even when a Profession explicitly inherits abilities from a Profession
+defined by another module. See ADR 0013.
+
+Jianghu poison has one structurally unique source: every poison-producing
+Formation affects its performing Player's Next Player, and fixed Turn Order
+gives each poisoned Player exactly one Previous Player. Repeated poison
+applications therefore add to one remaining-turn count; do not introduce
+per-source poison segments. At each poisoned Turn End, Poison Mastery reads the
+unique source Player's then-current Profession, which also covers poison applied
+before that Player changed into 毒聖.
+
+The source terms `星行牌` and `環行牌` both read printed Card elements rather
+than temporary Card interpretations. A Star-Element Card matches the Star
+currently owned by the relevant Player's Team; an Environment-Element Card
+matches the Environment current at the rule's check timing. If the corresponding
+Star or Environment does not exist, no Card qualifies.
+
+Confluence Generation's `上家棄牌` is the existing Retrievable Discard: the
+Previous Player's Turn Draw Discarded Card from the immediately completed
+Previous Turn, provided that Card remains in its Discard Pile. Residual Element
+(`餘行`) and Residual Level (`餘級`) read that Card's printed definition. If no
+Retrievable Discard exists, neither residual fact exists, and 調律 or 天響 has
+no Card to retrieve.
+
+Dark Glimmer's Mischief (`戲鬧`) calculates its HP deduction from the highest
+printed level among the Card Instances actually inspected by the triggering
+effect. Evil Gaze therefore uses only its two randomly inspected Cards, while an
+effect that inspects a complete hand uses that complete hand. Canonical events
+record the inspected set, but viewer filtering reveals it only to the inspecting
+Player and never supplements it with uninspected hidden Cards.
+
+Fair Wind's Tailwind (`順風`) recovers according to the Deck that was shuffled,
+not the Player or effect that caused the shuffle. Shuffling a shared Deck
+recovers Tailwind for every Player who currently owns that ability. With
+Personal Deck enabled, shuffling one Player-owned Deck recovers Tailwind only
+for that Pile Owner.
+
+Death Spirit's Shared Fate (`同命`) reads the resolved Formation's Affected
+Player Set, not the Team HP delta by itself. A direct Player target contributes
+only that Player, so a Death Spirit does not trigger merely because its owner's
+teammate was hit by Shadow Assault. Team targets such as 我方, 對方, and 雙方
+expand to every Player on the targeted Team; Star Breaking and a successful
+Environment Clearing therefore include each Player on every Team whose HP is
+deducted. Shared Fate triggers once for each included Death Spirit owner when
+the Formation actually deducts HP. Under Void Spirit-Shattering, a Death Spirit
+that remains owned after losing two Spirit Power triggers Shared Fate normally;
+a Death Spirit reduced to zero and broken by that Technique does not. A Spirit
+newly summoned by 魔靈復甦 did not exist for the triggering HP deduction and
+does not trigger retroactively.
+
+The Affected Player Set is recorded or deterministically derivable from the
+resolved semantic event even when one Team HP delta represents the result.
+Shared Fate itself is a Spirit Skill consequence rather than a Formation, so it
+cannot recursively trigger another Shared Fate.
+
+#### Jianghu execution model
+
+Canonical Game State stores Jianghu States separately from generic Status
+Effects. 千鋒 and 踏雪 retain explicit expiry through the end of the owner's next
+turn and apply immediately to the Formation that created them. 中毒 stores one
+aggregate remaining-turn count on its affected Player, deducts HP and decrements
+at that Player's Turn End, and blocks only Formation-provided HP recovery.
+Applying, extending, reducing, and ending a Jianghu State is event-recorded.
+
+Typed Jianghu hooks participate at the stages the published rules require:
+Formation matching, Attack-point calculation, Formation-effect immunity,
+recovery resolution, post-Formation consequences, and Turn End. They return
+declarative deltas and do not mutate Game State directly.
+
+#### Confluence Generation execution model
+
+Limited Uses are public canonical records keyed by Player and stable Formation
+or Ability identity, with explicit maximum and remaining counts. Consumption,
+recovery, maximum changes, and Profession-reacquisition resets are semantic
+events. Changing from 道法師 to 道法聖 increases 禁錮法陣's maximum and remaining
+count by one without resetting prior use; 無盡法陣 restores it to the current
+maximum.
+
+調律 creates a turn-scoped, Card-specific use obligation: the retrieved Card
+must participate in that turn's Profession Change, or in the permitted
+Profession Formation while 易弦 applies. Activating 調律 is legal only when at
+least one such action can be completed. 天響 retrieves the same Card without
+that restriction. Choices that inspect a Deck, retain Cards, select a 五鳴術, or
+decide 晴風's revealed top Card use typed Pending Choices and replayable
+continuations.
+
+#### Dark Glimmer execution model
+
+惡精靈 and 死精靈 extend the Player's existing single Spirit slot and retain the
+zero-through-six Spirit Power rules. 魔靈附體 transforms the current Spirit kind
+without changing power; 魔靈復甦 and the two summoning Formations summon a new
+Spirit at the published initial power. Persistent Spirit Skills execute through
+typed hooks and never consume the once-per-Spirit-per-turn activated Skill
+allowance.
+
+Random hand selection and inspection use the trusted application randomness
+boundary; canonical events record the selected Card Instances and their order,
+while Public Views preserve the rule's inspection boundary. Dark Formation
+Environment invalidation is keyed by performed Formation identity. 暗境 bypasses
+that invalidation only for its owner, and the Hero Schools 影遁 hook ignores only
+the two additionally named Dark Formation effects.
+
+### 40. Tribulation Theme Rule Module Scope And Source Interpretations
+
+Add Tribulation as an independently selectable Theme Rule Module and deliver it
+as a complete vertical slice through the Rust rules engine, canonical replay,
+viewer-filtered projections, Online Game Room configuration, UI, and automated
+tests. It follows the existing Theme Rule Module dependency and default-selection
+policies.
+
+Each of the five Tribulations is a variable-card-count Formation: it contains
+exactly its two specified overcoming elements, with one or more Cards of each
+element and an effective level sum of at least seven per element. In practice
+the five-Card hand limit permits four or five physical Cards. Under main rule
+2-5.5c, a Tribulation never satisfies a rule that requires a fixed Formation
+card count, regardless of how many Cards were physically used.
+
+For Earth-Rending Mountain Collapse (`裂地崩山`), the source phrase `環行牌`
+means a Card whose printed element matches the Environment after the Formation
+transfers it. The new Environment therefore determines every Player's eligible
+discard.
+
+The performing Player may select any of the five Environments, including the
+currently active one. A same-element selection still emits an Environment
+Transfer and still requires the Environment-matching discards.
+
+Main rule 5-2.4i makes an Attack's damage and additional effect simultaneous.
+Earth-Rending Mountain Collapse therefore records the declared Environment and
+collects Player choices sequentially from the Next Player without applying
+Formation consequences between answers. After the last answer, one atomic
+resolution transfers the Environment, applies every discard or hand reveal,
+resolves the 60-point Attack, and only then evaluates Game Outcome. Choice
+request and answer events remain replayable intermediate facts, not early
+application of the Formation effect.
+
+For Rusted Iron Withered Forest (`鏽鐵枯林`), a shared Deck is processed once:
+reveal its top eight Cards, discard Cards of level three or higher, then shuffle
+the rest back into that shared Deck. With Personal Deck enabled, each Player's
+Deck is processed separately.
+
+In team play, Divine Calculation Status makes Thunder-Fire Tribulation's
+(`天雷劫火`) 15-point global HP deduction ineffective for the Status owner's
+Team. Team HP is the Player's HP-bearing resource, so applying the immunity only
+to an individual Player would make this part of Divine Calculation ineffective
+in team play.
+
+Divine Calculation's 20-point reduction applies only when its owner personally
+receives Tribulation attack damage. If the owner's Shield takes the damage
+instead, the Shield takes the unreduced amount because the Player did not receive
+that damage. The Status still makes that Tribulation's additional effect
+ineffective for its owner and is still removed after the Tribulation.
+
+Divine Calculation Status owns its protection after the 神算 Formation grants
+it; applying that protection does not repeat or resume the granting Formation's
+effect. Snow-Treading Status therefore does not bypass Divine Calculation's
+20-point reduction, although Snow-Treading still handles direct Formation
+effects against the Attack through its normal rules.
+
+Divine Calculation does not prevent Rusted Iron Withered Forest from processing
+a shared Deck because that Deck is not owned by the protected Player. With
+Personal Deck enabled, skip only the Status owner's Deck and process every other
+Player's Deck normally.
+
+Against Earth-Rending Mountain Collapse, Divine Calculation does not prevent
+the shared Environment Transfer. Its owner neither discards an
+Environment-Element Card nor reveals their hand; every other Player resolves
+that part of the effect normally.
+
+Mudslide Torrent (`泥石轟流`) increases from 60 to 80 Attack Points only when
+its additional effect effectively deducts at least one point from any Shield.
+Shield loss caused later by the Attack itself cannot trigger the increase. A
+Shield protected by Divine Calculation contributes no effective deduction to
+this test.
+
+Gale-Rain Status (`烈風暴雨狀態`) invalidates life recovery based on the
+Formation's performing Player, matching the Jianghu poison precedent. A
+Formation performed by a Player without Gale-Rain Status may still recover that
+Player's Team HP even when a teammate has the Status. Non-Formation recovery
+remains effective.
+
+Main rule 6-1 governs each Gale-Rain Status duration independently. The
+performing Player's current Turn End counts as that Player's first affected
+turn; every other Player counts their next two Turn Ends. Repeated applications
+overlap as distinct two-turn effects rather than merging or extending one
+counter. Divine Calculation prevents only the new application from the
+Tribulation it answers and does not remove an older Gale-Rain Status.
+
+Earth-Rending Mountain Collapse makes a Player **reveal** their hand when no
+Environment-Element Card exists; it does not let another Player **inspect** that
+hand and therefore does not trigger Evil Spirit's Mischief. Thunder-Fire
+Tribulation's `both Teams` HP deduction expands through the existing Affected
+Player Set rule, so Shared Fate triggers once for each included Death Spirit
+owner only when that Team actually loses HP. A Team protected by Divine
+Calculation has no such HP deduction or Shared Fate trigger.

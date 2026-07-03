@@ -44,18 +44,38 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
         &request.used_cards,
         &target,
     )?;
+    let points = crate::rules::jianghu::modify_attack_points(
+        state,
+        &request.attacker,
+        &request.formation_id,
+        &request.point_formula,
+        &request.used_cards,
+        raw_points,
+    );
+    let points = crate::rules::dark::modify_attack_points(
+        state,
+        &request.attacker,
+        &request.formation_id,
+        &request.used_cards,
+        points,
+    );
     let points = if request.mode == AttackResolutionMode::FormationUse {
         crate::rules::hero::modify_attack_points(
             state,
             &request.attacker,
             &request.formation_id,
             &request.used_cards,
-            raw_points,
+            points,
         )
     } else {
-        raw_points
+        points
     };
-    let has_target_shield = state.shield(&target).is_some_and(|value| value > 0);
+    let extreme_yang = crate::rules::jianghu::extreme_yang_applies(
+        state,
+        &request.attacker,
+        &request.formation_id,
+    );
+    let has_target_shield = !extreme_yang && state.shield(&target).is_some_and(|value| value > 0);
     let mut point_breakdown =
         attack_point_breakdown(state, &request.category, &target, points, has_target_shield);
     if !has_target_shield {
@@ -72,6 +92,11 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             crate::rules::hero::IncomingDamageModifier::Prevent => {
                 point_breakdown.final_amount = 0;
             }
+        }
+        if crate::rules::jianghu::halves_incoming_damage(state, &target, &request.category)
+            && point_breakdown.damage_transform != DamageTransform::HealTarget
+        {
+            point_breakdown.final_amount = (point_breakdown.final_amount + 1) / 2;
         }
     }
     let final_amount = point_breakdown.final_amount;
@@ -130,9 +155,21 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             attack,
         });
 
-    let mut events = vec![GameEvent::AttackResolved {
+    let mut events = Vec::new();
+    if extreme_yang {
+        let old_value = state.shield(&target).unwrap_or(0);
+        if old_value > 0 {
+            events.push(GameEvent::ShieldChanged {
+                player: target.clone(),
+                old_value,
+                delta: -old_value,
+                new_value: 0,
+            });
+        }
+    }
+    events.push(GameEvent::AttackResolved {
         attacker: request.attacker.clone(),
-        target,
+        target: target.clone(),
         formation_id: request.formation_id.clone(),
         used_cards: request.used_cards.clone(),
         point_breakdown,
@@ -140,7 +177,7 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
         shield_change,
         card_moves,
         elemental_context_update,
-    }];
+    });
 
     if request.mode == AttackResolutionMode::FormationUse
         && split_attack_damage
@@ -249,7 +286,9 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
                     });
                 }
                 crate::rules::hero::PostFormationIntent::AddStatus { status } => {
-                    events.push(GameEvent::StatusAdded { status });
+                    events.push(GameEvent::StatusAdded {
+                        status: crate::rules::jianghu::shorten_enemy_status(state, status),
+                    });
                 }
                 crate::rules::hero::PostFormationIntent::EstablishCounterEffect {
                     owner,
@@ -259,6 +298,39 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
                 }
             }
         }
+        let mut projected = state.clone();
+        for event in &events {
+            crate::rules::projection::apply_event(&mut projected, event);
+        }
+        events.extend(crate::rules::jianghu::post_attack_events(
+            &projected,
+            &request.attacker,
+            &request.formation_id,
+        )?);
+        events.extend(crate::rules::dark::post_attack_events(
+            &projected,
+            &request.attacker,
+            &request.formation_id,
+            &request.used_cards,
+        )?);
+    }
+    if request.mode == AttackResolutionMode::CopiedEffect
+        && game_continues
+        && crate::rules::jianghu::extreme_yang_applies(
+            state,
+            &request.attacker,
+            &request.formation_id,
+        )
+    {
+        let mut projected = state.clone();
+        for event in &events {
+            crate::rules::projection::apply_event(&mut projected, event);
+        }
+        events.extend(crate::rules::jianghu::post_attack_events(
+            &projected,
+            &request.attacker,
+            &request.formation_id,
+        )?);
     }
 
     Ok(events)
@@ -273,6 +345,16 @@ pub(super) fn preview_attack_points(
 ) -> GameResult<i32> {
     let target = attack_target(state, attacker, plan)?;
     let points = compute_attack_points(state, attacker, &plan.point_formula, cards, &target)?;
+    let points = crate::rules::jianghu::modify_attack_points(
+        state,
+        attacker,
+        formation_id,
+        &plan.point_formula,
+        cards,
+        points,
+    );
+    let points =
+        crate::rules::dark::modify_attack_points(state, attacker, formation_id, cards, points);
     Ok(crate::rules::hero::modify_attack_points(
         state,
         attacker,
@@ -554,6 +636,7 @@ fn apply_attack_amount(
         .map(|team_hp| team_hp.hp)
         .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
     let delta = match transform {
+        DamageTransform::HealTarget if crate::rules::jianghu::team_has_poison(state, team) => 0,
         DamageTransform::HealTarget => amount,
         DamageTransform::NormalDamage
         | DamageTransform::DoubleDamage

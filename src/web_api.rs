@@ -1,9 +1,10 @@
 use crate::application::{GameRecord, RecordedDecision};
+use crate::domain::targeting::{RulePlayerTarget, TurnOrderTargets};
 use crate::domain::{
-    CardDefId, CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, GameError, GameEvent,
-    GameSetup, PassActionReason, PendingChoiceKind, Phase, Player, PlayerDeckList, PlayerId,
-    ProfessionId, RuleModuleId, StarElementSubstitution, StatusOwner, TargetDecl, TeamHp, TeamId,
-    TurnDrawSkipReason,
+    CardDefId, CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, EffectChoiceAnswer, GameError,
+    GameEvent, GameSetup, PassActionReason, PendingChoiceKind, PendingRandomness, Phase, Player,
+    PlayerDeckList, PlayerId, ProfessionId, RuleModuleId, StarElementSubstitution, StatusOwner,
+    TargetDecl, TeamHp, TeamId, TrustedRandomnessAnswer, TurnDrawSkipReason,
 };
 use crate::public_view::{
     PublicCardRefs, PublicGameEvent, PublicGameState, PublicPendingChoiceKind, Viewer,
@@ -144,6 +145,37 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                     .collect(),
             );
         }
+        ApiAction::TrustedRandomHandCandidates { player } => {
+            let player = PlayerId::new(player);
+            if record.state().current_player() != Some(&player) {
+                return Err(ApiError::Game(GameError::Validation(
+                    crate::domain::ValidationError::WrongPlayer {
+                        expected: record
+                            .state()
+                            .current_player()
+                            .cloned()
+                            .unwrap_or_else(|| player.clone()),
+                        actual: player,
+                    },
+                )));
+            }
+            let target = TurnOrderTargets::new(record.state())
+                .player_target(&player, RulePlayerTarget::NextPlayer)
+                .map_err(ApiError::Game)?;
+            let candidates = record
+                .state()
+                .hand(&target)
+                .ok_or_else(|| {
+                    ApiError::Game(GameError::Validation(
+                        crate::domain::ValidationError::UnknownPlayer(target.clone()),
+                    ))
+                })?
+                .to_vec();
+            let mut response =
+                response_for(&record, viewer, &card_labels, &formation_names, Vec::new())?;
+            response.trusted_random_candidates = Some(candidates);
+            return Ok(response);
+        }
         ApiAction::PerformFormation {
             player,
             formation_id,
@@ -152,6 +184,7 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
             match_option_role,
             match_option_card,
             match_option_slots,
+            trusted_random_cards,
         } => {
             let mut declared_targets = star_substitution_card
                 .map(TargetDecl::Card)
@@ -167,14 +200,23 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                     declared_targets.push(TargetDecl::FormationRole { role, card });
                 }
             }
-            let _ = record
-                .handle(Command::PerformFormation {
+            let command = if let Some(random_cards) = trusted_random_cards {
+                Command::PerformFormationWithTrustedRandomness {
                     player: PlayerId::new(player),
                     formation_id,
                     cards,
                     declared_targets,
-                })
-                .map_err(ApiError::Game)?;
+                    random_cards,
+                }
+            } else {
+                Command::PerformFormation {
+                    player: PlayerId::new(player),
+                    formation_id,
+                    cards,
+                    declared_targets,
+                }
+            };
+            let _ = record.handle(command).map_err(ApiError::Game)?;
             advance_after_command(&mut record)?;
         }
         ApiAction::ChangeProfession {
@@ -215,15 +257,25 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
             skill,
             selected_card,
             declared_level,
+            trusted_random_cards,
         } => {
-            let _ = record
-                .handle(Command::UseSpiritSkill {
+            let command = if let Some(random_cards) = trusted_random_cards {
+                Command::UseSpiritSkillWithTrustedRandomness {
                     player: PlayerId::new(player),
                     skill,
                     selected_card,
                     declared_level,
-                })
-                .map_err(ApiError::Game)?;
+                    random_cards,
+                }
+            } else {
+                Command::UseSpiritSkill {
+                    player: PlayerId::new(player),
+                    skill,
+                    selected_card,
+                    declared_level,
+                }
+            };
+            let _ = record.handle(command).map_err(ApiError::Game)?;
         }
         ApiAction::ChooseTurnDiscard { player, card } => {
             let _ = record
@@ -239,6 +291,27 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                 .handle(Command::AnswerEffectChoice {
                     player: PlayerId::new(player),
                     selected_cards: cards,
+                })
+                .map_err(ApiError::Game)?;
+            advance_after_command(&mut record)?;
+        }
+        ApiAction::AnswerEffectChoiceTyped { player, answer } => {
+            let _ = record
+                .handle(Command::AnswerEffectChoiceTyped {
+                    player: PlayerId::new(player),
+                    answer,
+                })
+                .map_err(ApiError::Game)?;
+            advance_after_command(&mut record)?;
+        }
+        ApiAction::ResolveRandomness {
+            request_id,
+            shuffled_order,
+        } => {
+            let _ = record
+                .resolve_randomness(TrustedRandomnessAnswer {
+                    request_id,
+                    shuffled_order,
                 })
                 .map_err(ApiError::Game)?;
             advance_after_command(&mut record)?;
@@ -394,6 +467,8 @@ fn response_for(
             has_optional_effect: can_retrieve_discard,
             can_retrieve_discard,
         },
+        trusted_random_candidates: None,
+        pending_randomness_request: record.state().pending_randomness.clone(),
     })
 }
 
@@ -454,6 +529,9 @@ enum ApiAction {
         player: String,
         cards: Vec<CardInstanceId>,
     },
+    TrustedRandomHandCandidates {
+        player: String,
+    },
     PerformFormation {
         player: String,
         #[serde(rename = "formationId")]
@@ -467,6 +545,8 @@ enum ApiAction {
         match_option_card: Option<CardInstanceId>,
         #[serde(default, rename = "matchOptionSlots")]
         match_option_slots: Option<usize>,
+        #[serde(default, rename = "trustedRandomCards")]
+        trusted_random_cards: Option<Vec<CardInstanceId>>,
     },
     ChangeProfession {
         player: String,
@@ -493,6 +573,8 @@ enum ApiAction {
         selected_card: Option<CardInstanceId>,
         #[serde(default, rename = "declaredLevel")]
         declared_level: Option<u32>,
+        #[serde(default, rename = "trustedRandomCards")]
+        trusted_random_cards: Option<Vec<CardInstanceId>>,
     },
     ChooseTurnDiscard {
         player: String,
@@ -501,6 +583,16 @@ enum ApiAction {
     AnswerEffectChoice {
         player: String,
         cards: Vec<CardInstanceId>,
+    },
+    AnswerEffectChoiceTyped {
+        player: String,
+        answer: EffectChoiceAnswer,
+    },
+    ResolveRandomness {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        #[serde(rename = "shuffledOrder")]
+        shuffled_order: Vec<CardInstanceId>,
     },
     RetrievePreviousTurnDiscard {
         player: String,
@@ -681,6 +773,10 @@ struct ApiResponse {
     events: Vec<WebPublicGameEvent>,
     playable_actions: Vec<WebPlayableAction>,
     interaction: WebInteraction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trusted_random_candidates: Option<Vec<CardInstanceId>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_randomness_request: Option<PendingRandomness>,
 }
 
 #[derive(Serialize)]
@@ -709,8 +805,12 @@ struct WebPublicGameState {
     covered_passives: Vec<WebCoveredPassive>,
     counter_effects: Vec<WebCounterEffect>,
     pending_choice: Option<WebPendingChoice>,
+    pending_randomness: Option<WebPendingRandomness>,
     shields: Vec<WebShield>,
     statuses: Vec<WebStatus>,
+    jianghu_states: Vec<WebJianghuState>,
+    limited_uses: Vec<WebLimitedUse>,
+    confluence_card_obligations: Vec<WebConfluenceCardObligation>,
     environment: Option<String>,
     team_stars: Vec<WebTeamStar>,
     star_histories: Vec<WebPlayerStarHistory>,
@@ -728,14 +828,10 @@ impl WebPublicGameState {
         labels: &HashMap<CardInstanceId, String>,
         formation_names: &HashMap<String, String>,
     ) -> Self {
-        let hero_schools_enabled = state
-            .enabled_rule_modules
-            .iter()
-            .any(|module| module.as_str() == crate::domain::HERO_SCHOOLS_MODULE_ID);
+        let enabled_rule_modules = state.enabled_rule_modules.clone();
         Self {
-            enabled_rule_modules: state
-                .enabled_rule_modules
-                .into_iter()
+            enabled_rule_modules: enabled_rule_modules
+                .iter()
                 .map(|module| module.as_str().to_string())
                 .collect(),
             status: match &state.status {
@@ -833,6 +929,18 @@ impl WebPublicGameState {
             pending_choice: state
                 .pending_choice
                 .map(|choice| WebPendingChoice::from_public(choice, labels)),
+            pending_randomness: state
+                .pending_randomness
+                .map(|request| WebPendingRandomness {
+                    request_id: request.request_id,
+                    deck: match request.deck {
+                        crate::domain::RandomnessDeck::Shared => "shared".to_string(),
+                        crate::domain::RandomnessDeck::Player(player) => {
+                            format!("player:{}", player.as_str())
+                        }
+                    },
+                    card_count: request.card_count,
+                }),
             shields: state
                 .shields
                 .into_iter()
@@ -859,6 +967,35 @@ impl WebPublicGameState {
                         },
                     },
                     kind: status.kind,
+                })
+                .collect(),
+            jianghu_states: state
+                .jianghu_states
+                .into_iter()
+                .map(|active| WebJianghuState {
+                    owner: active.owner.as_str().to_string(),
+                    kind: format!("{:?}", active.kind),
+                    remaining_turns: active.remaining_turns,
+                    expires_on_turn: active.expires_on_turn,
+                })
+                .collect(),
+            limited_uses: state
+                .limited_uses
+                .into_iter()
+                .map(|use_count| WebLimitedUse {
+                    owner: use_count.owner.as_str().to_string(),
+                    key: use_count.key,
+                    remaining: use_count.remaining,
+                    maximum: use_count.maximum,
+                })
+                .collect(),
+            confluence_card_obligations: state
+                .confluence_card_obligations
+                .into_iter()
+                .map(|obligation| WebConfluenceCardObligation {
+                    owner: obligation.owner.as_str().to_string(),
+                    card: obligation.card,
+                    allow_profession_formation: obligation.allow_profession_formation,
                 })
                 .collect(),
             environment: state
@@ -894,12 +1031,16 @@ impl WebPublicGameState {
                 .professions
                 .into_iter()
                 .filter_map(|owned| {
-                    let profession = crate::rules::hero::profession(&owned.profession)?;
+                    let profession = crate::rules::profession::definition(
+                        &enabled_rule_modules,
+                        &owned.profession,
+                    )?;
                     Some(WebPlayerProfession {
                         player: owned.player.as_str().to_string(),
                         id: owned.profession.as_str().to_string(),
                         name: profession.name.to_string(),
-                        abilities: crate::rules::hero::effective_ability_summaries(
+                        abilities: crate::rules::profession::effective_ability_summaries(
+                            &enabled_rule_modules,
                             &owned.profession,
                         )
                         .into_iter()
@@ -908,48 +1049,43 @@ impl WebPublicGameState {
                     })
                 })
                 .collect(),
-            profession_catalog: hero_schools_enabled
-                .then(|| {
-                    crate::rules::hero::catalog()
+            profession_catalog: crate::rules::profession::catalog(&enabled_rule_modules)
+                .into_iter()
+                .map(|profession| {
+                    let parent_name = profession.parents.first().and_then(|parent| {
+                        crate::rules::profession::definition(&enabled_rule_modules, parent)
+                            .map(|definition| definition.name.to_string())
+                    });
+                    let inheritance = if let Some(parent) = &parent_name {
+                        format!("升階後保留 {parent} 的能力")
+                    } else if matches!(profession.id.as_str(), "immortal" | "saint") {
+                        "轉職後不保留原學派能力".to_string()
+                    } else {
+                        "不繼承其他職業能力".to_string()
+                    };
+                    WebProfessionCatalogEntry {
+                        id: profession.id.as_str().to_string(),
+                        name: profession.name.to_string(),
+                        requirement: profession.rule_text.to_string(),
+                        parent_name,
+                        inheritance,
+                        abilities: crate::rules::profession::effective_ability_summaries(
+                            &enabled_rule_modules,
+                            &profession.id,
+                        )
                         .into_iter()
-                        .map(|profession| {
-                            let parent_name = profession.parent.as_ref().and_then(|parent| {
-                                crate::rules::hero::profession(parent)
-                                    .map(|definition| definition.name.to_string())
-                            });
-                            let inheritance = if let Some(parent) = &parent_name {
-                                format!("升階後保留 {parent} 的能力")
-                            } else if matches!(profession.id.as_str(), "immortal" | "saint") {
-                                "轉職後不保留原學派能力".to_string()
-                            } else {
-                                "不繼承其他職業能力".to_string()
-                            };
-                            WebProfessionCatalogEntry {
-                                id: profession.id.as_str().to_string(),
-                                name: profession.name.to_string(),
-                                requirement: profession.rule_text.to_string(),
-                                parent_name,
-                                inheritance,
-                                abilities: crate::rules::hero::effective_ability_summaries(
-                                    &profession.id,
-                                )
-                                .into_iter()
-                                .map(str::to_string)
-                                .collect(),
-                                formations: crate::rules::hero::profession_formation_summaries(
-                                    &profession.id,
-                                )
-                                .into_iter()
-                                .map(|(name, summary)| WebProfessionFormationSummary {
-                                    name,
-                                    summary,
-                                })
-                                .collect(),
-                            }
-                        })
-                        .collect()
+                        .map(str::to_string)
+                        .collect(),
+                        formations: crate::rules::profession::profession_formation_summaries(
+                            &enabled_rule_modules,
+                            &profession.id,
+                        )
+                        .into_iter()
+                        .map(|(name, summary)| WebProfessionFormationSummary { name, summary })
+                        .collect(),
+                    }
                 })
-                .unwrap_or_default(),
+                .collect(),
             prepared_profession_abilities: state
                 .prepared_profession_abilities
                 .into_iter()
@@ -1020,6 +1156,32 @@ struct WebPlayerSpirit {
     player: String,
     spirit: String,
     power: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebJianghuState {
+    owner: String,
+    kind: String,
+    remaining_turns: u32,
+    expires_on_turn: Option<u64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebLimitedUse {
+    owner: String,
+    key: String,
+    remaining: u32,
+    maximum: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebConfluenceCardObligation {
+    owner: String,
+    card: Option<CardInstanceId>,
+    allow_profession_formation: bool,
 }
 
 #[derive(Serialize)]
@@ -1149,6 +1311,19 @@ struct WebPendingChoice {
     kind: String,
     cards: Vec<WebCard>,
     required_count: usize,
+    minimum_count: usize,
+    maximum_count: usize,
+    players: Vec<String>,
+    formations: Vec<String>,
+    can_decline: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPendingRandomness {
+    request_id: String,
+    deck: String,
+    card_count: usize,
 }
 
 impl WebPendingChoice {
@@ -1156,10 +1331,11 @@ impl WebPendingChoice {
         choice: crate::public_view::PublicPendingChoice,
         labels: &HashMap<CardInstanceId, String>,
     ) -> Self {
-        let required_count = match &choice.kind {
-            PublicPendingChoiceKind::Known(kind) => kind.required_count(),
-            PublicPendingChoiceKind::Hidden => 0,
+        let (minimum_count, maximum_count) = match &choice.kind {
+            PublicPendingChoiceKind::Known(kind) => kind.selection_bounds(),
+            PublicPendingChoiceKind::Hidden => (0, 0),
         };
+        let required_count = minimum_count;
 
         match choice.kind {
             PublicPendingChoiceKind::Known(PendingChoiceKind::TurnDrawDiscard {
@@ -1169,10 +1345,15 @@ impl WebPendingChoice {
                 player: choice.player.as_str().to_string(),
                 kind: "TurnDrawDiscard".to_string(),
                 required_count,
+                minimum_count,
+                maximum_count,
                 cards: allowed_discards
                     .into_iter()
                     .map(|card| WebCard::from_id(card, labels))
                     .collect(),
+                players: Vec::new(),
+                formations: Vec::new(),
+                can_decline: false,
             },
             PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
                 allowed_cards,
@@ -1181,16 +1362,69 @@ impl WebPendingChoice {
                 player: choice.player.as_str().to_string(),
                 kind: "EffectGenerated".to_string(),
                 required_count,
+                minimum_count,
+                maximum_count,
                 cards: allowed_cards
                     .into_iter()
                     .map(|card| WebCard::from_id(card, labels))
                     .collect(),
+                players: Vec::new(),
+                formations: Vec::new(),
+                can_decline: false,
             },
+            PublicPendingChoiceKind::Known(PendingChoiceKind::CardSetChoice {
+                allowed_cards,
+                ..
+            }) => Self {
+                player: choice.player.as_str().to_string(),
+                kind: "EffectGenerated".to_string(),
+                required_count,
+                minimum_count,
+                maximum_count,
+                cards: allowed_cards
+                    .into_iter()
+                    .map(|card| WebCard::from_id(card, labels))
+                    .collect(),
+                players: Vec::new(),
+                formations: Vec::new(),
+                can_decline: false,
+            },
+            PublicPendingChoiceKind::Known(PendingChoiceKind::TypedEffect { options, .. }) => {
+                Self {
+                    player: choice.player.as_str().to_string(),
+                    kind: "TypedEffect".to_string(),
+                    required_count,
+                    minimum_count,
+                    maximum_count,
+                    cards: options
+                        .cards
+                        .map(|cards| {
+                            cards
+                                .allowed_cards
+                                .into_iter()
+                                .map(|card| WebCard::from_id(card, labels))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    players: options
+                        .players
+                        .into_iter()
+                        .map(|player| player.as_str().to_string())
+                        .collect(),
+                    formations: options.formations,
+                    can_decline: options.can_decline,
+                }
+            }
             PublicPendingChoiceKind::Hidden => Self {
                 player: choice.player.as_str().to_string(),
                 kind: "Hidden".to_string(),
                 cards: Vec::new(),
                 required_count: 0,
+                minimum_count: 0,
+                maximum_count: 0,
+                players: Vec::new(),
+                formations: Vec::new(),
+                can_decline: false,
             },
         }
     }
@@ -1369,6 +1603,8 @@ fn event_type(event: &PublicGameEvent) -> String {
             "CardsDrawnForProfessionChoice".to_string()
         }
         PublicGameEvent::EffectChoiceRequested { .. } => "EffectChoiceRequested".to_string(),
+        PublicGameEvent::RandomnessRequested { .. } => "RandomnessRequested".to_string(),
+        PublicGameEvent::RandomnessResolved { .. } => "RandomnessResolved".to_string(),
         PublicGameEvent::HandInspected { .. } => "HandInspected".to_string(),
         PublicGameEvent::SpiritSkillUsed { .. } => "SpiritSkillUsed".to_string(),
         PublicGameEvent::SpiritLevelInterpreted { .. } => "SpiritLevelInterpreted".to_string(),
@@ -1454,6 +1690,14 @@ fn event_presentation(
         PublicGameEvent::EffectChoiceRequested { player, .. } => (
             "效果選擇".to_string(),
             format!("{} 需要選擇效果。", player.as_str()),
+        ),
+        PublicGameEvent::RandomnessRequested { card_count, .. } => (
+            "等待洗牌".to_string(),
+            format!("正在重新排列 {card_count} 張牌。"),
+        ),
+        PublicGameEvent::RandomnessResolved { card_count, .. } => (
+            "完成洗牌".to_string(),
+            format!("已重新排列 {card_count} 張牌。"),
         ),
         PublicGameEvent::HandInspected {
             viewer,
@@ -1591,6 +1835,20 @@ fn game_event_presentation(
                     .unwrap_or(profession.as_str())
             ),
         ),
+        GameEvent::ProfessionTransformed {
+            player,
+            profession,
+            reason,
+            ..
+        } => (
+            "職業轉化".to_string(),
+            format!(
+                "{} 因 {} 轉化為 {}。",
+                player.as_str(),
+                reason,
+                profession.as_str()
+            ),
+        ),
         GameEvent::ProfessionBroken { player, profession } => (
             "職業破除".to_string(),
             format!(
@@ -1641,6 +1899,20 @@ fn game_event_presentation(
                     spirit_name(*spirit)
                 )
             },
+        ),
+        GameEvent::SpiritTransformed {
+            player,
+            previous,
+            spirit,
+            power,
+        } => (
+            "魔靈附體".to_string(),
+            format!(
+                "{} 的 {:?} 轉化為 {:?}，保留 {power} 點靈力。",
+                player.as_str(),
+                previous,
+                spirit
+            ),
         ),
         GameEvent::SpiritPowerChanged {
             player,
@@ -1813,6 +2085,14 @@ fn game_event_presentation(
             "檢視手牌".to_string(),
             format!("{} 檢視了 {} 的手牌。", viewer.as_str(), target.as_str()),
         ),
+        GameEvent::DeckTopRevealed { player, card } => (
+            "晴風".to_string(),
+            format!(
+                "{} 展示牌堆最上方的 {}。",
+                player.as_str(),
+                cards_summary(&[*card], labels)
+            ),
+        ),
         GameEvent::AttackResolved {
             attacker,
             target,
@@ -1885,6 +2165,60 @@ fn game_event_presentation(
         GameEvent::StatusRemoved { .. } => {
             ("狀態解除".to_string(), "一個狀態效果已解除。".to_string())
         }
+        GameEvent::JianghuStateApplied { state } => (
+            "江湖狀態生效".to_string(),
+            format!("{} 進入 {:?}。", state.owner.as_str(), state.kind),
+        ),
+        GameEvent::JianghuStateExpired { owner, kind } => (
+            "江湖狀態結束".to_string(),
+            format!("{} 的 {:?} 已結束。", owner.as_str(), kind),
+        ),
+        GameEvent::JianghuPoisonTicked {
+            owner,
+            damage,
+            remaining_turns,
+            ..
+        } => (
+            "中毒".to_string(),
+            format!(
+                "{} 因中毒扣除 {damage} 點生命，剩餘 {remaining_turns} 回合。",
+                owner.as_str()
+            ),
+        ),
+        GameEvent::JianghuDelayedDamageResolved {
+            owner, hp_change, ..
+        } => (
+            "天外飛扇".to_string(),
+            format!(
+                "{} 行動後扣除 {} 點生命。",
+                owner.as_str(),
+                -hp_change.effective_delta
+            ),
+        ),
+        GameEvent::LimitedUseChanged {
+            owner,
+            key,
+            new_remaining,
+            maximum,
+            ..
+        } => (
+            "次數限制".to_string(),
+            format!(
+                "{} 的 {key} 剩餘 {new_remaining}/{maximum} 次。",
+                owner.as_str()
+            ),
+        ),
+        GameEvent::ConfluenceCardObligationSet { obligation } => (
+            "調律".to_string(),
+            format!(
+                "{} 取得的牌須於本回合依調律限制使用。",
+                obligation.owner.as_str()
+            ),
+        ),
+        GameEvent::ConfluenceCardObligationCleared { owner, .. } => (
+            "調律完成".to_string(),
+            format!("{} 已完成調律牌義務。", owner.as_str()),
+        ),
         GameEvent::EffectChoiceRequested { player, .. } => (
             "效果選擇".to_string(),
             format!("{} 需要選擇效果。", player.as_str()),
@@ -1900,6 +2234,18 @@ fn game_event_presentation(
                 player.as_str(),
                 cards_summary(selected_cards, labels)
             ),
+        ),
+        GameEvent::TypedEffectChoiceAnswered { player, .. } => (
+            "完成選擇".to_string(),
+            format!("{} 已完成效果選擇。", player.as_str()),
+        ),
+        GameEvent::RandomnessRequested { request } => (
+            "等待洗牌".to_string(),
+            format!("正在重新排列 {} 張牌。", request.current_order.len()),
+        ),
+        GameEvent::RandomnessResolved { shuffled_order, .. } => (
+            "完成洗牌".to_string(),
+            format!("已重新排列 {} 張牌。", shuffled_order.len()),
         ),
         GameEvent::PassiveCovered { player, cards, .. } => (
             "蓋牌".to_string(),
@@ -2104,6 +2450,8 @@ fn spirit_name(spirit: crate::domain::SpiritKind) -> &'static str {
         crate::domain::SpiritKind::Water => "水",
         crate::domain::SpiritKind::Fire => "火",
         crate::domain::SpiritKind::Earth => "土",
+        crate::domain::SpiritKind::Evil => "惡",
+        crate::domain::SpiritKind::Death => "死",
     }
 }
 
@@ -2119,6 +2467,8 @@ fn spirit_skill_name(skill: crate::domain::SpiritSkill) -> &'static str {
         crate::domain::SpiritSkill::Splendor => "絢爛",
         crate::domain::SpiritSkill::StoneShield => "石盾",
         crate::domain::SpiritSkill::RockWall => "岩壁",
+        crate::domain::SpiritSkill::EvilGaze => "惡視",
+        crate::domain::SpiritSkill::DeathOmen => "死兆",
     }
 }
 
@@ -2531,6 +2881,45 @@ mod tests {
         assert_eq!(json["declaredElement"], "Water");
         assert_eq!(json["declaredLevel"], 4);
         assert!(json.get("target_card").is_none());
+    }
+
+    #[test]
+    fn typed_choice_and_randomness_actions_use_the_web_camel_case_contract() {
+        let choice: ApiAction = serde_json::from_value(serde_json::json!({
+            "type": "answerEffectChoiceTyped",
+            "player": "alice",
+            "answer": {
+                "type": "formation",
+                "formationId": "echo:melody"
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            choice,
+            ApiAction::AnswerEffectChoiceTyped {
+                answer: EffectChoiceAnswer::Formation { formation_id },
+                ..
+            } if formation_id == "echo:melody"
+        ));
+
+        let randomness: ApiAction = serde_json::from_value(serde_json::json!({
+            "type": "resolveRandomness",
+            "requestId": "shuffle-1",
+            "shuffledOrder": [3, 1, 2]
+        }))
+        .unwrap();
+        assert!(matches!(
+            randomness,
+            ApiAction::ResolveRandomness {
+                request_id,
+                shuffled_order,
+            } if request_id == "shuffle-1"
+                && shuffled_order == vec![
+                    CardInstanceId::new(3),
+                    CardInstanceId::new(1),
+                    CardInstanceId::new(2),
+                ]
+        ));
     }
 
     #[test]

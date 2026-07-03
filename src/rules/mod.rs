@@ -1,8 +1,13 @@
 //! Rule registries: formations, effects, matchers, and formula resolvers.
 
 pub(crate) mod base;
+pub(crate) mod confluence;
+pub(crate) mod dark;
+pub(crate) mod echo;
 pub(crate) mod hero;
+pub(crate) mod jianghu;
 mod official;
+pub(crate) mod profession;
 pub(crate) mod projection;
 pub(crate) mod spirit;
 pub(crate) mod star;
@@ -325,6 +330,30 @@ pub(crate) fn official_formation_registry(
     {
         specs.extend(spirit::specs());
     }
+    if modules
+        .iter()
+        .any(|module| module.as_str() == crate::domain::JIANGHU_MODULE_ID)
+    {
+        specs.extend(jianghu::formation_specs());
+    }
+    if modules
+        .iter()
+        .any(|module| module.as_str() == crate::domain::CONFLUENCE_GENERATION_MODULE_ID)
+    {
+        specs.extend(confluence::formation_specs());
+    }
+    if modules
+        .iter()
+        .any(|module| module.as_str() == crate::domain::DARK_GLIMMER_MODULE_ID)
+    {
+        specs.extend(dark::formation_specs());
+    }
+    if modules
+        .iter()
+        .any(|module| module.as_str() == crate::domain::ECHO_MODULE_ID)
+    {
+        specs.extend(echo::formation_specs());
+    }
     FormationRegistry::new(
         specs.iter().map(|spec| spec.formation.clone()).collect(),
         specs.into_iter().map(|spec| spec.effect).collect(),
@@ -354,10 +383,15 @@ pub(crate) fn environment_makes_formation_ineffective(
     matches!(
         (state.environment, formation_id),
         (Some(Element::Metal), "defense" | "barrier")
+            | (Some(Element::Metal), dark::DARK_BARRIER)
             | (Some(Element::Wood), "metamorphosis" | "chaos")
+            | (Some(Element::Wood), dark::DARK_CHAOS)
             | (Some(Element::Water), "countershock" | "shock-burst")
+            | (Some(Element::Water), dark::DARK_SHOCK_BURST)
             | (Some(Element::Fire), "weapon" | "radiance")
+            | (Some(Element::Fire), dark::DARK_RADIANCE)
             | (Some(Element::Earth), "seal" | "return-to-origin")
+            | (Some(Element::Earth), dark::DARK_RETURN_TO_ORIGIN)
     )
 }
 
@@ -455,6 +489,65 @@ pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
         })
         .with_custom("three-level-four", |submitted| {
             submitted.len() == 3 && submitted.iter().all(|card| card.level == 4)
+        })
+        .with_custom("three-different-levels", |submitted| {
+            submitted.len() == 3
+                && submitted
+                    .iter()
+                    .map(|card| card.level)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    == 3
+        })
+        .with_custom("metal-metal-and-level-five", |submitted| {
+            submitted.len() == 3
+                && submitted
+                    .iter()
+                    .filter(|card| card.element == Element::Metal)
+                    .count()
+                    >= 2
+                && submitted.iter().any(|card| card.level == 5)
+        })
+        .with_custom("water-water-and-level-five", |submitted| {
+            submitted.len() == 3
+                && submitted
+                    .iter()
+                    .filter(|card| card.element == Element::Water)
+                    .count()
+                    >= 2
+                && submitted.iter().any(|card| card.level == 5)
+        })
+        .with_custom("levels-one-through-five", |submitted| {
+            submitted.len() == 5
+                && submitted
+                    .iter()
+                    .map(|card| card.level)
+                    .collect::<std::collections::HashSet<_>>()
+                    == std::collections::HashSet::from([1, 2, 3, 4, 5])
+        })
+        .with_custom("single-level-one", |submitted| {
+            submitted.len() == 1 && submitted[0].level == 1
+        })
+        .with_custom("single-level-three", |submitted| {
+            submitted.len() == 1 && submitted[0].level == 3
+        })
+        .with_custom("single-level-five", |submitted| {
+            submitted.len() == 1 && submitted[0].level == 5
+        })
+        .with_custom("three-different-elements-same-level", |submitted| {
+            submitted.len() == 3
+                && submitted
+                    .iter()
+                    .all(|card| card.level == submitted[0].level)
+                && submitted
+                    .iter()
+                    .map(|card| card.element)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    == 3
+        })
+        .with_custom("three-water", |submitted| {
+            submitted.len() == 3 && submitted.iter().all(|card| card.element == Element::Water)
         })
 }
 

@@ -1,6 +1,7 @@
 use crate::domain::{
-    CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, FIVE_DIRECTIONS_LEGEND_MODULE_ID,
-    GameError, GameEvent, GameResult, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID,
+    CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, Command, DARK_GLIMMER_MODULE_ID,
+    DISCARD_RETRIEVAL_MODULE_ID, ECHO_MODULE_ID, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
+    GameEvent, GameResult, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID,
     PERSONAL_DECK_MODULE_ID, Player, PlayerDeckList, PlayerId, RuleModuleId, RulesetId,
     SPIRIT_MODULE_ID, STAR_MODULE_ID, ValidationError, validate_setup,
 };
@@ -8,21 +9,70 @@ use std::collections::{HashMap, HashSet};
 
 use super::{PlayableAction, base::BaseRuleset, official_formation_registry};
 
-const OFFICIAL_RULE_MODULE_IDS: &[&str] = &[
-    DISCARD_RETRIEVAL_MODULE_ID,
-    PERSONAL_DECK_MODULE_ID,
-    FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+const ADVANCED_RULE_MODULE_IDS: &[&str] = &[
     STAR_MODULE_ID,
+    FIVE_DIRECTIONS_LEGEND_MODULE_ID,
     HERO_SCHOOLS_MODULE_ID,
-    SPIRIT_MODULE_ID,
 ];
-const DEFAULT_RULE_MODULE_IDS: &[&str] = &[
-    DISCARD_RETRIEVAL_MODULE_ID,
-    PERSONAL_DECK_MODULE_ID,
-    FIVE_DIRECTIONS_LEGEND_MODULE_ID,
-    STAR_MODULE_ID,
-    HERO_SCHOOLS_MODULE_ID,
-    SPIRIT_MODULE_ID,
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RuleModuleSpec {
+    id: &'static str,
+    default_enabled: bool,
+    dependencies: &'static [&'static str],
+}
+
+const OFFICIAL_RULE_MODULES: &[RuleModuleSpec] = &[
+    RuleModuleSpec {
+        id: DISCARD_RETRIEVAL_MODULE_ID,
+        default_enabled: true,
+        dependencies: &[],
+    },
+    RuleModuleSpec {
+        id: PERSONAL_DECK_MODULE_ID,
+        default_enabled: true,
+        dependencies: &[],
+    },
+    RuleModuleSpec {
+        id: FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+        default_enabled: true,
+        dependencies: &[],
+    },
+    RuleModuleSpec {
+        id: STAR_MODULE_ID,
+        default_enabled: true,
+        dependencies: &[],
+    },
+    RuleModuleSpec {
+        id: HERO_SCHOOLS_MODULE_ID,
+        default_enabled: true,
+        dependencies: &[],
+    },
+    RuleModuleSpec {
+        id: SPIRIT_MODULE_ID,
+        default_enabled: true,
+        dependencies: ADVANCED_RULE_MODULE_IDS,
+    },
+    RuleModuleSpec {
+        id: JIANGHU_MODULE_ID,
+        default_enabled: true,
+        dependencies: ADVANCED_RULE_MODULE_IDS,
+    },
+    RuleModuleSpec {
+        id: CONFLUENCE_GENERATION_MODULE_ID,
+        default_enabled: true,
+        dependencies: ADVANCED_RULE_MODULE_IDS,
+    },
+    RuleModuleSpec {
+        id: DARK_GLIMMER_MODULE_ID,
+        default_enabled: true,
+        dependencies: &[SPIRIT_MODULE_ID],
+    },
+    RuleModuleSpec {
+        id: ECHO_MODULE_ID,
+        default_enabled: false,
+        dependencies: ADVANCED_RULE_MODULE_IDS,
+    },
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,9 +122,10 @@ impl OfficialRules {
     }
 
     pub fn default_rule_modules(&self) -> Vec<RuleModuleId> {
-        DEFAULT_RULE_MODULE_IDS
+        OFFICIAL_RULE_MODULES
             .iter()
-            .map(|id| RuleModuleId::new(*id))
+            .filter(|module| module.default_enabled)
+            .map(|module| RuleModuleId::new(module.id))
             .collect()
     }
 
@@ -164,30 +215,31 @@ impl OfficialRules {
                 )));
             }
 
-            if !OFFICIAL_RULE_MODULE_IDS.contains(&module.as_str()) {
+            if !OFFICIAL_RULE_MODULES
+                .iter()
+                .any(|known| known.id == module.as_str())
+            {
                 return Err(GameError::Validation(ValidationError::UnknownRuleModule(
                     module.clone(),
                 )));
             }
         }
 
-        if modules
-            .iter()
-            .any(|module| module.as_str() == SPIRIT_MODULE_ID)
-        {
-            let required = [
-                STAR_MODULE_ID,
-                FIVE_DIRECTIONS_LEGEND_MODULE_ID,
-                HERO_SCHOOLS_MODULE_ID,
-            ]
-            .into_iter()
-            .filter(|required| !modules.iter().any(|module| module.as_str() == *required))
-            .map(RuleModuleId::new)
-            .collect::<Vec<_>>();
+        for enabled in modules {
+            let spec = OFFICIAL_RULE_MODULES
+                .iter()
+                .find(|known| known.id == enabled.as_str())
+                .expect("unknown Rule Modules returned above");
+            let required = spec
+                .dependencies
+                .iter()
+                .filter(|required| !modules.iter().any(|module| module.as_str() == **required))
+                .map(|required| RuleModuleId::new(*required))
+                .collect::<Vec<_>>();
             if !required.is_empty() {
                 return Err(GameError::Validation(
                     ValidationError::MissingRuleModuleDependencies {
-                        module: RuleModuleId::new(SPIRIT_MODULE_ID),
+                        module: enabled.clone(),
                         required,
                     },
                 ));

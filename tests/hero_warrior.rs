@@ -14,9 +14,11 @@ fn state(player_count: usize, hero_enabled: bool) -> GameState {
         })
         .collect::<Vec<_>>();
     let turn_order = players.iter().map(|player| player.id.clone()).collect();
-    let modules = hero_enabled
-        .then(|| vec![RuleModuleId::new(HERO_SCHOOLS_MODULE_ID)])
-        .unwrap_or_default();
+    let modules = if hero_enabled {
+        vec![RuleModuleId::new(HERO_SCHOOLS_MODULE_ID)]
+    } else {
+        Vec::new()
+    };
     let setup = OfficialRules::new()
         .configure_game(players, turn_order, modules)
         .unwrap();

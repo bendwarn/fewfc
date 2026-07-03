@@ -65,6 +65,11 @@ pub(in crate::rules::base) fn effect_intent_events(
                 }
             }
             EffectIntent::ChangeHp { team, delta } => {
+                let delta = if delta > 0 && crate::rules::jianghu::team_has_poison(state, &team) {
+                    0
+                } else {
+                    delta
+                };
                 if delta == 0 {
                     continue;
                 }
@@ -91,7 +96,9 @@ pub(in crate::rules::base) fn effect_intent_events(
                 }
             }
             EffectIntent::MoveCards { card_moves } => GameEvent::CardsMoved { card_moves },
-            EffectIntent::AddStatus { status } => GameEvent::StatusAdded { status },
+            EffectIntent::AddStatus { status } => GameEvent::StatusAdded {
+                status: crate::rules::jianghu::shorten_enemy_status(state, status),
+            },
             EffectIntent::EstablishCounterEffect { owner, effect_id } => {
                 GameEvent::CounterEffectEstablished { owner, effect_id }
             }

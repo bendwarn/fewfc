@@ -43,6 +43,100 @@ Spirit Skills, five Spirit-summoning Formations, and Void Spirit-Shattering
 Technique. It requires Star, Five Directions Legend, and Hero Schools.
 _Avoid_: Spirit Ruleset, individual Spirit toggle
 
+**Jianghu Rule Module (江湖規則)**:
+The official Theme Rule Module that adds 獨行客 and the 劍客, 煉氣者, 尋墨客,
+and 毒師 Profession systems. It also defines the 千鋒, 踏雪, and 中毒 Jianghu
+States.
+_Avoid_: Jianghu Ruleset, Hero Schools extension
+
+**Echo Rule Module (迴響規則)**:
+The official Theme Rule Module that adds seven shared Melody Formations, optional
+Echo costs, and delayed repetition of Melody main effects. It requires all three
+Advanced Rule Modules, while Personal Deck remains optional.
+_Avoid_: Echo Ruleset, Personal Deck extension
+
+**Melody Formation (曲調)**:
+One of the seven Formations shared by every Player under the Echo Rule Module.
+Each Melody defines a main effect and may repeat that effect at a later timing.
+_Avoid_: song, Player ability
+
+**Echo (迴響)**:
+The one-time repetition of a Melody's main effect at its performing Player's
+next Turn Start. It is not a new Formation Use and cannot trigger another Echo.
+_Avoid_: Formation replay, recurring effect
+
+**Echo Cost (迴響代價)**:
+The specified-element Card that a Player may Discard after a Melody's main
+effect resolves to schedule its Echo. 變徵‧淨火 schedules Echo without a cost.
+_Avoid_: casting cost, Formation card
+
+**Scheduled Echo**:
+A committed one-time Echo due at its Player's next Turn Start. It retains the
+Player, Melody, and timing, while targets and other choices resolve from the
+then-current Game State.
+_Avoid_: Pending Choice, copied result
+
+**Confluence Generation Rule Module (匯流世代規則)**:
+The official Theme Rule Module that adds the 調律師, 道法師, 晴風士, and
+虛空追尋者 Profession systems. Some of its Formations and Profession Abilities
+have limited uses that can be recovered or reset.
+_Avoid_: Confluence Ruleset, Hero Schools extension
+
+**Pouch Rule Module (錦囊規則)**:
+The official Theme Rule Module that adds player-owned Pouches, ten Secret
+Strategies, and the Chain Formation. It requires all three Advanced Rule
+Modules and the Personal Deck Optional Rule Module in this product.
+_Avoid_: Pouch Ruleset, optional setup rule
+
+**Pouch (錦囊)**:
+One face-down Card owned by a Player and chosen from a Deck. Its owner may
+reveal it before their action to trigger one eligible Secret Strategy.
+_Avoid_: hand Card, Covered Passive, shared Pouch
+
+**Pouch Owner**:
+The Player who may inspect and trigger a Pouch. Pouch ownership does not change
+the Card's immutable Card Origin when Chain gives a Card to a teammate.
+_Avoid_: Card Origin, Pile Owner
+
+**Initial Pouch Selection**:
+The pre-deal stage in which each Player privately chooses their starting
+Pouch from their unshuffled Personal Deck. After every Player has chosen, the
+remaining Personal Decks are shuffled before the initial hands are dealt.
+_Avoid_: room configuration, starting hand choice
+
+**Secret Strategy (秘計)**:
+One of ten effects triggered by revealing a Pouch whose printed element or
+level satisfies that strategy's condition.
+_Avoid_: Formation, Spirit Skill, Pouch effect
+
+**Chain Formation (連環)**:
+The active Spell that searches a Deck for one or two Cards with different
+elements and levels. One becomes a friendly Player's Pouch; when a second is
+chosen, it triggers one eligible Secret Strategy immediately.
+_Avoid_: Chain status, two-Card Formation
+
+**Dark Glimmer Rule Module (黑暗微光規則)**:
+The official Theme Rule Module that adds the 暗行者, 影戰士, and 魔靈師
+Profession systems, Dark Formations, and the 惡精靈 and 死精靈. Its Spirits
+follow and require the Spirit Rule Module.
+_Avoid_: Dark Glimmer Ruleset, Spirit extension
+
+**Tribulation Rule Module (天劫規則)**:
+The official Theme Rule Module that adds the five Tribulations and Divine
+Calculation, including their shared global effects and statuses.
+_Avoid_: Tribulation Ruleset, individual Tribulation toggle
+
+**Divine Calculation Status (神算狀態)**:
+The exclusive Player-owned protection granted by Divine Calculation and
+consumed by the next Tribulation any Player performs. Its protection is the
+Status's own rule, not a repeated effect of the granting Formation.
+_Avoid_: Team status, stackable protection, timed status
+
+**Gale-Rain Status (烈風暴雨狀態)**:
+A Player-owned, two-turn Tribulation effect that makes life-recovery effects of
+Formations performed by that Player ineffective.
+_Avoid_: Team healing prohibition, non-Formation healing prohibition
+
 **Spirit (精靈)**:
 A persistent elemental entity owned by one Player under the Spirit Rule Module.
 A Player may own at most one Spirit, while different Players may own the same
@@ -86,15 +180,32 @@ as one indivisible rules option.
 _Avoid_: Hero Schools Ruleset, individual Profession toggle
 
 **Profession (職業)**:
-A Player-owned role provided by the Hero Schools Rule Module. A Player starts
-without a Profession and may own at most one; a new Profession replaces the
-previous one.
+A Player-owned role provided by an enabled Rule Module. A Player starts without
+a Profession and may own at most one across all modules; a new Profession
+replaces the previous one.
 _Avoid_: class, hero, character
 
+**Profession System (職業系統)**:
+A published progression family whose Professions share transition or inherited
+ability relationships. A Profession System does not give a Player another
+Profession slot.
+_Avoid_: separate Profession track, Rule Module
+
+**Legendary Profession (傳說職業)**:
+A published Profession classification that normally survives Void Reversion
+Technique when its performing Cards are below level three.
+_Avoid_: third-tier Profession, automatically strongest Profession
+
 **Profession Change (轉職)**:
-The action by which a Player acquires or replaces their Profession after meeting
-that Profession's card and prerequisite requirements.
+The transition by which a Player acquires or replaces their Profession after
+meeting the requirements imposed by the action or effect causing it.
 _Avoid_: class change, setup profession selection
+
+**Direct Profession Change**:
+A Profession Change caused by a rule effect without paying the Profession's
+ordinary Card or prerequisite requirements. It remains subject to effects that
+forbid Profession Change.
+_Avoid_: Profession Change action, free normal Profession Change
 
 **Profession Breaking (破除職業)**:
 The removal of a Player's current Profession without replacing it, returning
@@ -135,16 +246,16 @@ Instance or its Card Definition.
 _Avoid_: Card Definition mutation, level counter
 
 **Card Interpretation Layer**:
-A rule-provided override of one or more effective Card dimensions, such as
-element or level. Layers apply in effect order, and a later layer replaces only
+A rule-scoped override of one or more effective Card dimensions, such as element
+or level. Eligible layers apply in effect order, and a later layer replaces only
 the dimensions it specifies.
 _Avoid_: Card Definition mutation, mutually exclusive interpretation source
 
 **Sacred Art Multiplicity (聖術視為兩張)**:
-The Saint's ability to let one eligible physical Card fill two Formation match
-slots with one shared element and level interpretation. It cannot use Star
-Element Substitution, and the Card still moves and contributes to ordinary
-level sums only once.
+The Saint's ability to let one eligible physical Card fill two match slots when
+forming a Base Ruleset four-Card Formation. It cannot use Star Element
+Substitution, and the Card still moves and contributes to ordinary level sums
+only once.
 _Avoid_: cloned Card, independently interpreted slots
 
 **Void Reversion Technique (虛空返璞術)**:
@@ -175,6 +286,12 @@ _Avoid_: environment mutation, pre-attack environment change
 A rule imposed by the current Environment that modifies elemental combat or
 makes specified Formations ineffective for every Player.
 _Avoid_: Status Effect, player buff, five-element interaction
+
+**Environment-Element Card (環行牌)**:
+A Card Instance whose printed element matches the current Environment when the
+rule checks it. There is no Environment-Element Card while no Environment
+exists.
+_Avoid_: interpreted-element Card, Card matching the previous Environment
 
 **Environment Clearing (破除環境)**:
 The successful removal of the current Environment, returning the game to no
@@ -299,6 +416,16 @@ Previous Turn. It is the sole card eligible for the current Player's Discard
 Retrieval.
 _Avoid_: top discarded card, formation cards
 
+**Residual Element (餘行)**:
+The printed element of the Retrievable Discard. It does not exist when there is
+no Retrievable Discard.
+_Avoid_: Previous Formation element, interpreted element
+
+**Residual Level (餘級)**:
+The printed level of the Retrievable Discard. It does not exist when there is no
+Retrievable Discard.
+_Avoid_: Previous Formation level, interpreted level
+
 **Card Definition**:
 Immutable printed-card data such as name, one five-element element, and level from 1 to 5.
 _Avoid_: card instance
@@ -314,6 +441,12 @@ _Avoid_: user, account
 **Team**:
 The HP-owning side that one or more players belong to.
 _Avoid_: player HP owner
+
+**Affected Player Set (受影響玩家集合)**:
+The Players to whom a resolved effect applies. A Player target contributes that
+Player only, while a Team target such as 我方, 對方, or 雙方 contributes every
+Player on the targeted Team even when HP is stored as one shared Team value.
+_Avoid_: every Player sharing an HP delta, declared target text
 
 **Star (星辰)**:
 A persistent elemental power owned by a Team when the Star Rule Module is
@@ -340,6 +473,17 @@ as the Star's element when forming a Base Ruleset Formation. It is an implicit
 matching rule and does not change the Card Instance or its Card Definition.
 _Avoid_: card mutation, universal element change
 
+**Temporary Star Effect**:
+A turn-scoped grant of one specified Star's Star Element Substitution and Star
+Formations without owning or summoning that Star.
+_Avoid_: temporary Star, Star Summoning, Five-Star Alignment progress
+
+**Star-Element Card (星行牌)**:
+A Card Instance whose printed element matches the Star currently owned by the
+relevant Player's Team. There is no Star-Element Card while that Team owns no
+Star.
+_Avoid_: Star Element Substitution, interpreted-element Card
+
 **Star Breaking (破除星辰)**:
 The removal of a Team's currently owned Star.
 _Avoid_: discard star, expire star
@@ -359,6 +503,11 @@ _Avoid_: 護盾, team shield
 The circular player sequence used to decide the current player, previous player, next player, and passive trigger relationships.
 _Avoid_: team order
 
+**Turn Start (回合開始)**:
+The opening timing of a Player's turn, when due expirations resolve before
+delayed rule effects. All Turn Start effects finish before the Main Phase.
+_Avoid_: start of Main Phase
+
 **Previous Player**:
 The player immediately before the current player in turn order.
 _Avoid_: opponent, enemy
@@ -371,9 +520,19 @@ _Avoid_: previous round, previous formation history
 A declared combination of card instances that matches a formation pattern and resolves through an effect definition.
 _Avoid_: combo, hand pattern
 
+**Formation Catalog**:
+The complete set of Formations contributed by the Base Ruleset and enabled Rule
+Modules, independent of whether a Player can currently perform them.
+_Avoid_: playable actions, current hand matches
+
 **Formation Use**:
 The accepted use of a declared formation, including its semantic resolution and explicit card movement.
 _Avoid_: implicit card discard
+
+**Ineffective Formation (陣法效果無效)**:
+An accepted Formation Use whose Formation effects do not execute. It still
+consumes its action and Cards and satisfies rules based only on performing it.
+_Avoid_: Validation Failure, unperformed Formation
 
 **Formation Category**:
 The official top-level kind of a formation: attack or spell.
@@ -402,7 +561,9 @@ it is distinct from Formation Category and is not copied by class change.
 _Avoid_: spell category
 
 **Covered Passive**:
-A hidden passive spell placed by a player and checked at the next player's action start.
+A hidden passive spell placed by a player and checked at the next player's
+action start. If neutralized before that timing, it remains hidden until its
+ordinary reveal and discard.
 _Avoid_: trap, secret
 
 **Counter Effect**:
@@ -421,9 +582,41 @@ _Avoid_: displayed formation, formation id
 A rule-recognized ongoing effect attached to a player or team.
 _Avoid_: arbitrary tag
 
+**Timed Formation Effect (時效性陣法效果)**:
+A Formation effect whose remaining duration or layer count can expire and can
+be shortened by rules such as 變徵‧淨火.
+_Avoid_: every Status Effect, permanent effect
+
+**Flow State (流水狀態)**:
+A stackable Player-owned Timed Formation Effect that may spend at most one layer
+per Turn Draw to increase a draw that would otherwise not fill the hand.
+_Avoid_: permanent draw bonus, per-draw trigger
+
 **Status Kind**:
 The rule-recognized type of a status effect.
 _Avoid_: string metadata
+
+**Jianghu State (江湖狀態)**:
+The official collective term used only for the 千鋒, 踏雪, and 中毒 ongoing
+Formation effects defined by the Jianghu Rule Module. Similar ongoing effects
+from other rules are not Jianghu States.
+_Avoid_: generic Status Effect, all ongoing Formation effects
+
+**Limited Use (次數限制)**:
+A bounded allowance attached to a specified Formation or Profession Ability
+under the Confluence Generation Rule Module. Exhausted uses remain unavailable
+until the published recovery or Profession reacquisition condition resets them.
+_Avoid_: per-turn allowance, cooldown
+
+**Dark Formation (暗黑陣法)**:
+One of 暗黑光芒, 暗黑氣壁, 暗黑歸元, 暗黑震暴, 暗黑混沌, or 暗行輪迴 under
+the Dark Glimmer Rule Module.
+_Avoid_: every Dark Glimmer Formation, ordinary elemental Formation
+
+**Persistent Spirit Skill (常駐技能)**:
+A Spirit Skill that remains continuously in effect while its granting Spirit
+is owned and does not require active use.
+_Avoid_: activated Spirit Skill, Automatic Profession Ability
 
 **Cannot Act**:
 A status kind that prevents a player from taking an action command.
@@ -450,6 +643,11 @@ _Avoid_: active-effect command
 A serialized waiting state requiring a player decision before deterministic resolution can continue.
 _Avoid_: prompt, callback
 
+**Pending Randomness**:
+A serialized waiting state requiring a trusted application adapter to supply a
+rule-authorized random result before deterministic resolution can continue.
+_Avoid_: Pending Choice, client-provided shuffle
+
 **Choice Requested**:
 A game event moment that creates a pending choice for one player.
 _Avoid_: UI prompt
@@ -474,6 +672,8 @@ _Avoid_: callback response
 - A **Player** owns at most one **Shield**
 - Every **Card Instance** has exactly one immutable **Card Origin**
 - A **Card Instance's** current zone does not change its **Card Origin**
+- A **Pouch** has exactly one **Pouch Owner**, which may differ from its Card
+  Origin
 - Every Deck and **Discard Pile** has exactly one **Pile Owner**
 - A **Deck List** contains exactly 60 Card Definitions with total level at most
   170 and official per-definition copy limits
@@ -496,9 +696,17 @@ _Avoid_: callback response
   **Discard Pile**
 - **Discard Retrieval** derives exactly one **Retrievable Discard** from
   canonical turn history rather than a Player-submitted card choice
+- An **Echo Cost** is an ordinary **Discard**, not a Turn Draw Discard, and
+  therefore neither charges a Spirit nor becomes a **Retrievable Discard**
+- An **Echo Cost** reads a Card's printed element unless the granting rule
+  explicitly extends a **Card Interpretation Layer** beyond Formation matching
 - Under **Personal Deck**, effects that return cards to the top of a Deck use
   the performing Player's Deck and create **Exposed Foreign Cards** when origins
   differ
+- 商調‧鳴金 searches and shuffles the performing Player's current Deck under
+  **Personal Deck**, or the shared Deck otherwise, regardless of **Card Origin**
+- If that Deck is empty, 商調‧鳴金 performs the ordinary pile-scoped Discard
+  recycling before searching it
 - A **Game Record** uses exactly one **Ruleset**
 - Every **Ruleset** includes the **Base Ruleset**
 - A **Ruleset** may enable zero or more **Rule Modules**
@@ -529,6 +737,16 @@ _Avoid_: callback response
   requires one explicit **Formation Match Option**
 - A **Spell** has one **Spell Type** that controls its performance procedure
 - A **Formation Use** retains its Formation identity separately from its **Resolved Formation Effect**
+- An **Echo** may be scheduled only after its Melody main effect executes; a
+  no-change result remains eligible, while an **Ineffective Formation** does not
+- **Scheduled Echo** and 變宮‧植土's fixed next-Turn-Start schedule have no
+  reducible duration or layer count and are not shortened by 變徵‧淨火
+- **Echo** and 變宮‧植土 execute Melody main effects during **Turn Start**
+  without creating a **Formation Use** or triggering a **Covered Passive**
+- **Echo** and 變宮‧植土 do not update the previous **Formation Use** or satisfy
+  rules that require performing a Formation
+- 宮調‧裂土 makes only a matching **Formation Use** ineffective; it does not
+  suppress the same Melody main effect when executed by **Echo** or 變宮‧植土
 - A **Formation Use** records zone changes through **Card Move Deltas** or equivalent replayable deltas
 - A **Card Move Delta** moves one **Card Instance**
 - **Discard** moves a **Card Instance** to the **Discard Pile**

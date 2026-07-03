@@ -1,4 +1,4 @@
-use crate::domain::{Command, CommandId, GameEvent, PlayerId};
+use crate::domain::{Command, CommandId, GameEvent, PlayerId, TrustedRandomnessAnswer};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +68,14 @@ impl RecordedEventLog {
         self.append_decision(RecordedDecisionSource::Automatic, events);
     }
 
+    pub(super) fn append_randomness(
+        &mut self,
+        answer: TrustedRandomnessAnswer,
+        events: Vec<GameEvent>,
+    ) {
+        self.append_decision(RecordedDecisionSource::Randomness { answer }, events);
+    }
+
     fn append_setup(&mut self, events: Vec<GameEvent>) {
         self.append_decision(RecordedDecisionSource::Setup, events);
     }
@@ -116,6 +124,9 @@ fn event_source(source: &RecordedDecisionSource, event: &GameEvent) -> EventSour
             reason: automatic_reason(event)
                 .expect("automatic advancement must only emit automatic events"),
         },
+        RecordedDecisionSource::Randomness { answer } => EventSource::Randomness {
+            request_id: answer.request_id.clone(),
+        },
         RecordedDecisionSource::Command {
             command_id,
             command,
@@ -134,6 +145,9 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         GameEvent::DiscardRecycledIntoDeck { .. }
         | GameEvent::PlayerDiscardRecycledIntoDeck { .. } => Some(AutomaticReason::DiscardRecycle),
         GameEvent::StatusExpired { .. } => Some(AutomaticReason::StatusExpired),
+        GameEvent::JianghuStateExpired { .. } => Some(AutomaticReason::StatusExpired),
+        GameEvent::JianghuPoisonTicked { .. } => Some(AutomaticReason::TurnEnd),
+        GameEvent::JianghuDelayedDamageResolved { .. } => Some(AutomaticReason::TurnEnd),
         GameEvent::TurnEnded { .. } => Some(AutomaticReason::TurnEnd),
         GameEvent::DeckPrepared { .. }
         | GameEvent::PlayerDeckPrepared { .. }
@@ -142,9 +156,11 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::CounterEffectResolved { .. }
         | GameEvent::ActionPassed { .. }
         | GameEvent::ProfessionChanged { .. }
+        | GameEvent::ProfessionTransformed { .. }
         | GameEvent::ProfessionBroken { .. }
         | GameEvent::ProfessionAbilityActivated { .. }
         | GameEvent::SpiritSummoned { .. }
+        | GameEvent::SpiritTransformed { .. }
         | GameEvent::SpiritPowerChanged { .. }
         | GameEvent::SpiritSkillUsed { .. }
         | GameEvent::SpiritLevelInterpreted { .. }
@@ -162,12 +178,16 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::FiveStarAlignmentAchieved { .. }
         | GameEvent::CardsMoved { .. }
         | GameEvent::EffectChoiceAnswered { .. }
+        | GameEvent::TypedEffectChoiceAnswered { .. }
         | GameEvent::EffectChoiceRequested { .. }
+        | GameEvent::RandomnessRequested { .. }
+        | GameEvent::RandomnessResolved { .. }
         | GameEvent::FormationEffectCopied { .. }
         | GameEvent::FormationEffectIgnored { .. }
         | GameEvent::FormationPerformed { .. }
         | GameEvent::FormationMatchOptionDeclared { .. }
         | GameEvent::HandInspected { .. }
+        | GameEvent::DeckTopRevealed { .. }
         | GameEvent::HpChanged { .. }
         | GameEvent::PassiveCovered { .. }
         | GameEvent::PassiveCoverRevealed { .. }
@@ -175,6 +195,10 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::ShieldChanged { .. }
         | GameEvent::StatusAdded { .. }
         | GameEvent::StatusRemoved { .. }
+        | GameEvent::JianghuStateApplied { .. }
+        | GameEvent::LimitedUseChanged { .. }
+        | GameEvent::ConfluenceCardObligationSet { .. }
+        | GameEvent::ConfluenceCardObligationCleared { .. }
         | GameEvent::TurnDrawBonusChanged { .. }
         | GameEvent::TurnDiscardChosen { .. }
         | GameEvent::DiscardRetrieved { .. } => None,
@@ -188,6 +212,11 @@ fn command_context(command: &Command) -> CommandContext {
             kind: CommandKind::PassAction,
         },
         Command::PerformFormation {
+            player,
+            formation_id,
+            ..
+        }
+        | Command::PerformFormationWithTrustedRandomness {
             player,
             formation_id,
             ..
@@ -213,7 +242,8 @@ fn command_context(command: &Command) -> CommandContext {
                 ability_id: ability_id.clone(),
             },
         },
-        Command::UseSpiritSkill { player, skill, .. } => CommandContext {
+        Command::UseSpiritSkill { player, skill, .. }
+        | Command::UseSpiritSkillWithTrustedRandomness { player, skill, .. } => CommandContext {
             player: player.clone(),
             kind: CommandKind::UseSpiritSkill { skill: *skill },
         },
@@ -221,7 +251,8 @@ fn command_context(command: &Command) -> CommandContext {
             player: player.clone(),
             kind: CommandKind::ChooseTurnDiscard,
         },
-        Command::AnswerEffectChoice { player, .. } => CommandContext {
+        Command::AnswerEffectChoice { player, .. }
+        | Command::AnswerEffectChoiceTyped { player, .. } => CommandContext {
             player: player.clone(),
             kind: CommandKind::AnswerEffectChoice,
         },
@@ -242,6 +273,9 @@ pub struct RecordedDecision {
 pub enum RecordedDecisionSource {
     Setup,
     Automatic,
+    Randomness {
+        answer: TrustedRandomnessAnswer,
+    },
     Command {
         command_id: CommandId,
         command: Command,
@@ -265,6 +299,9 @@ pub enum EventSource {
     Setup,
     Automatic {
         reason: AutomaticReason,
+    },
+    Randomness {
+        request_id: String,
     },
     Command {
         command_id: CommandId,

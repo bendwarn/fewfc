@@ -19,6 +19,7 @@ pub(super) struct FormationUseRequest {
     pub(super) formation_id: String,
     pub(super) cards: Vec<CardInstanceId>,
     pub(super) declared_targets: Vec<TargetDecl>,
+    pub(super) trusted_random_cards: Option<Vec<CardInstanceId>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,14 +30,20 @@ struct FormationUsePlan {
     declared_targets: Vec<TargetDecl>,
     star_substitution: Option<crate::domain::StarElementSubstitution>,
     effect_plan: EffectPlan,
+    trusted_random_cards: Option<Vec<CardInstanceId>>,
 }
 
 pub(super) fn resolve(
     state: &GameState,
     request: FormationUseRequest,
 ) -> GameResult<Vec<GameEvent>> {
+    let player = request.player.clone();
+    let formation_id = request.formation_id.clone();
     let plan = BaseFormationPlanner::new().plan_use(state, request)?;
-    BaseEffectResolver::new().resolve(state, plan)
+    let mut events = BaseEffectResolver::new().resolve(state, plan)?;
+    crate::rules::dark::append_shared_fate_events(state, &player, &formation_id, &mut events)?;
+    crate::rules::dark::append_mischief_events(state, &mut events)?;
+    Ok(events)
 }
 
 pub(super) fn answer_effect_choice(
@@ -74,6 +81,7 @@ impl BaseFormationPlanner {
             declared_targets: selected.declared_targets,
             star_substitution: selected.star_substitution,
             effect_plan: selected.effect_plan,
+            trusted_random_cards: request.trusted_random_cards,
         })
     }
 }
@@ -103,28 +111,44 @@ impl BaseEffectResolver {
                     attack_plan,
                     &plan.cards,
                 )?;
+                let ignores_formation_effects = sacred_beast_element(&plan.formation_id).is_some()
+                    || crate::rules::jianghu::ignores_other_formation_effects(state, &plan.player)
+                    || plan.formation_id == crate::rules::jianghu::SNOW_TREADING_SWORD_ART;
                 let passive_trigger = covered_passive::trigger(
                     state,
                     TriggerRequest {
                         incoming_player: plan.player.clone(),
                         incoming_kind: IncomingActionKind::Attack,
-                        ignores_formation_effects: sacred_beast_element(&plan.formation_id)
-                            .is_some(),
+                        ignores_formation_effects,
                         ignores_counter_effects: crate::rules::hero::windwalking_applies(
                             state,
                             &plan.player,
                             attack_points,
                         ),
+                        attack_points: Some(attack_points),
                     },
                 );
-                let environment_ineffective =
-                    environment_makes_formation_ineffective(state, &plan.formation_id);
+                let environment_ineffective = !ignores_formation_effects
+                    && !crate::rules::dark::ignores_environment(
+                        state,
+                        &plan.player,
+                        &plan.formation_id,
+                    )
+                    && environment_makes_formation_ineffective(state, &plan.formation_id);
                 let damage_prevented = passive_trigger.prevents_damage()
                     || environment_ineffective
                     || crate::rules::spirit::stone_shield_prevents_attack(state, &plan.player);
                 let split_attack_damage = passive_trigger.splits_attack_damage();
-                let mut events = match_option_events(&plan);
+                let mut events = crate::rules::dark::pre_formation_events(
+                    state,
+                    &plan.player,
+                    &plan.formation_id,
+                );
+                events.extend(match_option_events(&plan));
                 events.extend(passive_trigger.events());
+                events.extend(crate::rules::jianghu::poison_smoke_flip_events(
+                    state, &events,
+                ));
                 if environment_ineffective {
                     events.push(formation_effect_ignored_event(
                         state,
@@ -179,12 +203,21 @@ impl BaseEffectResolver {
                             state,
                             &plan.player,
                         ),
+                        attack_points: None,
                     },
                 );
                 let sealed = passive_trigger.seals_covered_passive();
                 let revealed = passive_trigger.reveals_covered_passive();
-                let mut events = match_option_events(&plan);
+                let mut events = crate::rules::dark::pre_formation_events(
+                    state,
+                    &plan.player,
+                    &plan.formation_id,
+                );
+                events.extend(match_option_events(&plan));
                 events.extend(passive_trigger.events());
+                events.extend(crate::rules::jianghu::poison_smoke_flip_events(
+                    state, &events,
+                ));
                 events.push(GameEvent::PassiveCovered {
                     player: plan.player.clone(),
                     formation_id: plan.formation_id,
@@ -216,13 +249,26 @@ impl BaseEffectResolver {
                             state,
                             &plan.player,
                         ),
+                        attack_points: None,
                     },
                 );
                 let spell_cancelled = passive_trigger.cancels_spell();
                 let spell_ineffective =
-                    environment_makes_formation_ineffective(state, &plan.formation_id);
-                let mut events = match_option_events(&plan);
+                    !crate::rules::dark::ignores_environment(
+                        state,
+                        &plan.player,
+                        &plan.formation_id,
+                    ) && environment_makes_formation_ineffective(state, &plan.formation_id);
+                let mut events = crate::rules::dark::pre_formation_events(
+                    state,
+                    &plan.player,
+                    &plan.formation_id,
+                );
+                events.extend(match_option_events(&plan));
                 events.extend(passive_trigger.events());
+                events.extend(crate::rules::jianghu::poison_smoke_flip_events(
+                    state, &events,
+                ));
                 let composite_spell_succeeds = matches!(
                     spell.resolver_id.as_str(),
                     "void-reversion" | "void-spirit-shattering"
@@ -245,7 +291,21 @@ impl BaseEffectResolver {
                 }
                 if !spell_cancelled && !spell_ineffective {
                     if spell.resolver_id == "void-reversion" {
-                        events.push(void_reversion_event(state, &plan.player, &plan.cards)?);
+                        events.extend(crate::rules::confluence::void_transcendence_events(
+                            state,
+                            &plan.player,
+                            &plan.cards,
+                        )?);
+                        let mut projected = state.clone();
+                        for event in &events {
+                            crate::rules::projection::apply_event(&mut projected, event);
+                        }
+                        events.push(void_reversion_event(&projected, &plan.player, &plan.cards)?);
+                        events.extend(crate::rules::confluence::void_realm_consumption_events(
+                            &projected,
+                            &plan.player,
+                            &plan.cards,
+                        ));
                         return Ok(events);
                     }
                     if spell.resolver_id == "void-spirit-shattering" {
@@ -264,6 +324,46 @@ impl BaseEffectResolver {
                     }
                     if spell.resolver_id == "void-star-breaking" {
                         events.extend(void_star_breaking_events(state, &plan.player));
+                        return Ok(events);
+                    }
+                    if let Some(mut jianghu_events) = crate::rules::jianghu::active_spell_events(
+                        state,
+                        &plan.player,
+                        &spell.resolver_id,
+                    )? {
+                        events.append(&mut jianghu_events);
+                        return Ok(events);
+                    }
+                    if let Some(mut confluence_events) = {
+                        if spell.resolver_id == crate::rules::confluence::VOID_RETURN_TO_NOTHING {
+                            events.extend(crate::rules::confluence::void_transcendence_events(
+                                state,
+                                &plan.player,
+                                &plan.cards,
+                            )?);
+                        }
+                        let mut projected = state.clone();
+                        for event in &events {
+                            crate::rules::projection::apply_event(&mut projected, event);
+                        }
+                        crate::rules::confluence::active_spell_events(
+                            &projected,
+                            &plan.player,
+                            &spell.resolver_id,
+                            &plan.declared_targets,
+                        )?
+                    } {
+                        events.append(&mut confluence_events);
+                        return Ok(events);
+                    }
+                    if let Some(mut dark_events) = crate::rules::dark::active_spell_events(
+                        state,
+                        &plan.player,
+                        &spell.resolver_id,
+                        &plan.cards,
+                        plan.trusted_random_cards.as_deref(),
+                    )? {
+                        events.append(&mut dark_events);
                         return Ok(events);
                     }
                     if let Some(spirit) =
@@ -424,10 +524,10 @@ fn void_reversion_event(
     let team = player_team(state, player)?;
     let old_hp = team_hp(state, &team)?;
     let new_hp = (old_hp - 20).max(0);
-    let high_level = cards.iter().try_fold(true, |_, card| {
+    let high_level = cards.iter().try_fold(true, |all_high_level, card| {
         state
             .card_level_for(player, *card)
-            .map(|level| level >= 3)
+            .map(|level| all_high_level && level >= 3)
             .ok_or(GameError::Validation(
                 ValidationError::MissingCardInstanceDefinition(*card),
             ))
@@ -435,8 +535,13 @@ fn void_reversion_event(
     let (broken_professions, retained_legendary_professions) = state
         .professions
         .iter()
+        .filter(|owned| {
+            !(high_level && crate::rules::confluence::void_realm_protects(state, &owned.player))
+        })
         .cloned()
-        .partition(|owned| high_level || !crate::rules::hero::is_legendary(&owned.profession));
+        .partition(|owned| {
+            high_level || !crate::rules::profession::is_legendary(&owned.profession)
+        });
     let card_moves = cards
         .iter()
         .copied()
@@ -641,14 +746,21 @@ fn active_spell_intents(
             if allowed_cards.is_empty() {
                 return Ok(Vec::new());
             }
-            Ok(vec![EffectIntent::RequestChoice {
-                player: player.clone(),
-                kind: crate::domain::PendingChoiceKind::EffectGenerated {
-                    effect_id: resolver_id.to_string(),
-                    continuation_id: "chaos:return-two".to_string(),
-                    allowed_cards,
+            Ok(vec![
+                EffectIntent::InspectHand {
+                    viewer: player.clone(),
+                    target: target.clone(),
+                    cards: allowed_cards.clone(),
                 },
-            }])
+                EffectIntent::RequestChoice {
+                    player: player.clone(),
+                    kind: crate::domain::PendingChoiceKind::EffectGenerated {
+                        effect_id: resolver_id.to_string(),
+                        continuation_id: "chaos:return-two".to_string(),
+                        allowed_cards,
+                    },
+                },
+            ])
         }
         "return-to-origin" => {
             let team = player_team(state, player)?;
@@ -824,8 +936,95 @@ fn resume_effect_choice_intents(
                 Some(crate::domain::PendingChoice {
                     kind: crate::domain::PendingChoiceKind::EffectGenerated { allowed_cards, .. },
                     ..
+                })
+                | Some(crate::domain::PendingChoice {
+                    kind: crate::domain::PendingChoiceKind::CardSetChoice { allowed_cards, .. },
+                    ..
                 }) => allowed_cards,
                 _ => return Err(GameError::Validation(ValidationError::MissingPendingChoice)),
+            };
+            Ok(vec![EffectIntent::MoveCards {
+                card_moves: allowed_cards
+                    .iter()
+                    .filter(|card| !selected_cards.contains(card))
+                    .copied()
+                    .map(|card| CardMoveDelta {
+                        card,
+                        from: CardZone::Hand(player.clone()),
+                        to: super::discard_zone_for_card(state, card),
+                    })
+                    .collect(),
+            }])
+        }
+        ("jianghu:azure-cloud-step", "jianghu:azure-cloud-step:return-one") => {
+            let allowed_cards = match &state.pending_choice {
+                Some(crate::domain::PendingChoice {
+                    kind:
+                        crate::domain::PendingChoiceKind::EffectGenerated {
+                            effect_id: pending_effect,
+                            continuation_id: pending_continuation,
+                            allowed_cards,
+                        },
+                    ..
+                }) if pending_effect == effect_id && pending_continuation == continuation_id => {
+                    allowed_cards
+                }
+                _ => {
+                    return Err(GameError::Validation(ValidationError::MissingPendingChoice));
+                }
+            };
+            if selected_cards.len() != 1 || !allowed_cards.contains(&selected_cards[0]) {
+                return Err(GameError::Validation(ValidationError::MissingPendingChoice));
+            }
+            let returned = selected_cards[0];
+            Ok(vec![EffectIntent::MoveCards {
+                card_moves: allowed_cards
+                    .iter()
+                    .copied()
+                    .map(|card| CardMoveDelta {
+                        card,
+                        from: CardZone::Hand(player.clone()),
+                        to: if card == returned {
+                            if state.uses_personal_decks() {
+                                CardZone::PlayerDeckTop(player.clone())
+                            } else {
+                                CardZone::DeckTop
+                            }
+                        } else {
+                            super::discard_zone_for_card(state, card)
+                        },
+                    })
+                    .collect(),
+            }])
+        }
+        (
+            "confluence:mirror-resonance"
+            | "confluence:myriad-resonance"
+            | "confluence:thousand-resonance",
+            "confluence:discard-inspected-card",
+        ) => {
+            let target =
+                resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)?;
+            let card = *selected_cards
+                .first()
+                .ok_or(GameError::Validation(ValidationError::MissingPendingChoice))?;
+            Ok(vec![EffectIntent::MoveCards {
+                card_moves: vec![CardMoveDelta {
+                    card,
+                    from: CardZone::Hand(target),
+                    to: super::discard_zone_for_card(state, card),
+                }],
+            }])
+        }
+        ("confluence:clear-wind-ten-thousand-miles", "confluence:clear-wind:keep-one") => {
+            let allowed_cards = match &state.pending_choice {
+                Some(crate::domain::PendingChoice {
+                    kind: crate::domain::PendingChoiceKind::EffectGenerated { allowed_cards, .. },
+                    ..
+                }) => allowed_cards,
+                _ => {
+                    return Err(GameError::Validation(ValidationError::MissingPendingChoice));
+                }
             };
             let kept = selected_cards
                 .first()

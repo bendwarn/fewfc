@@ -5,13 +5,13 @@ use fewfc::application::{
 use fewfc::domain::{
     ActionModification, AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
     CardMoveDelta, CardZone, Command, CommandId, DamageTransform, DeckPlacement,
-    ElementInteraction, EngineInvariantError, EnvironmentAttackEffect, GameError, GameEvent,
-    GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, LastFormationUse, PassActionReason, PassiveFlipOutcome,
-    PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player, PlayerHand, PlayerId,
-    PlayerShield, RuleImplementationError, RuleModuleId, RulesetId, ShieldChangeDelta,
-    StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId,
-    TurnDrawSkipReason, ValidationError,
+    EffectChoiceAnswer, ElementInteraction, EngineInvariantError, EnvironmentAttackEffect,
+    GameError, GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta,
+    LastElementalAttack, LastElementalAttackUpdate, LastFormationUse, PassActionReason,
+    PassiveFlipOutcome, PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player,
+    PlayerHand, PlayerId, PlayerShield, RuleImplementationError, RuleModuleId, RulesetId,
+    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
+    TeamId, TurnDrawSkipReason, ValidationError,
 };
 use fewfc::public_view::{
     self, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
@@ -3289,6 +3289,11 @@ fn chaos_requests_two_next_player_hand_cards_and_returns_them_to_deck_top() {
                 used_cards: vec![card(5), card(10), card(2), card(1)],
                 declared_targets: Vec::new(),
             },
+            GameEvent::HandInspected {
+                viewer: PlayerId::new("p1"),
+                target: PlayerId::new("p2"),
+                cards: vec![card(3), card(4), card(6), card(7), card(8)],
+            },
             GameEvent::EffectChoiceRequested {
                 player: PlayerId::new("p1"),
                 kind: PendingChoiceKind::EffectGenerated {
@@ -3301,26 +3306,45 @@ fn chaos_requests_two_next_player_hand_cards_and_returns_them_to_deck_top() {
     );
 
     assert_eq!(
-        record.handle(Command::AnswerEffectChoice {
+        record.handle(Command::AnswerEffectChoiceTyped {
             player: PlayerId::new("p1"),
-            selected_cards: vec![card(3)],
+            answer: EffectChoiceAnswer::Cards {
+                cards: vec![card(3)],
+            },
         }),
-        Err(GameError::Validation(ValidationError::MissingPendingChoice))
+        Err(GameError::Validation(
+            ValidationError::InvalidEffectChoiceAnswer
+        ))
+    );
+    assert_eq!(
+        record.handle(Command::AnswerEffectChoiceTyped {
+            player: PlayerId::new("p1"),
+            answer: EffectChoiceAnswer::Cards {
+                cards: vec![card(3), card(3)],
+            },
+        }),
+        Err(GameError::Validation(
+            ValidationError::InvalidEffectChoiceAnswer
+        ))
     );
 
     assert_eq!(
         record
-            .handle(Command::AnswerEffectChoice {
+            .handle(Command::AnswerEffectChoiceTyped {
                 player: PlayerId::new("p1"),
-                selected_cards: vec![card(3), card(4)],
+                answer: EffectChoiceAnswer::Cards {
+                    cards: vec![card(3), card(4)],
+                },
             })
             .unwrap(),
         vec![
-            GameEvent::EffectChoiceAnswered {
+            GameEvent::TypedEffectChoiceAnswered {
                 player: PlayerId::new("p1"),
                 effect_id: "chaos".to_string(),
                 continuation_id: "chaos:return-two".to_string(),
-                selected_cards: vec![card(3), card(4)],
+                answer: EffectChoiceAnswer::Cards {
+                    cards: vec![card(3), card(4)],
+                },
             },
             GameEvent::CardsMoved {
                 card_moves: vec![

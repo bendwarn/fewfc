@@ -1,11 +1,18 @@
 import type {
   Element,
+  EffectChoiceAnswer,
   LocalGameResponse,
   PlayerId,
   PlayableAction,
   PublicGameState,
   RecordedDecision,
 } from '../app/types/fewfc'
+export {
+  AVAILABLE_RULE_MODULES,
+  DEFAULT_RULE_MODULES,
+  normalizeRuleModules,
+} from './utils/rule-modules'
+import { normalizeRuleModules } from './utils/rule-modules'
 export interface PlayerDeckList {
   name: string
   cards: string[]
@@ -14,28 +21,6 @@ export interface PlayerDeckList {
 export type GameRoomStatus = 'Waiting' | 'Active' | 'Finished' | 'Dissolved'
 export type GameRoomAccess = 'private' | 'public'
 export type GameRoomCapacity = 2 | 4
-export const AVAILABLE_RULE_MODULES = [
-  'star',
-  'hero-schools',
-  'discard-retrieval',
-  'personal-deck',
-  'five-directions-legend',
-  'spirit',
-] as const
-export const DEFAULT_RULE_MODULES = [...AVAILABLE_RULE_MODULES]
-const SPIRIT_DEPENDENCIES = ['star', 'hero-schools', 'five-directions-legend'] as const
-
-export function normalizeRuleModules(modules: unknown): string[] {
-  if (!Array.isArray(modules)) return [...DEFAULT_RULE_MODULES]
-  const normalized = AVAILABLE_RULE_MODULES.filter(module => modules.includes(module))
-  if (
-    normalized.includes('spirit')
-    && !SPIRIT_DEPENDENCIES.every(module => normalized.includes(module))
-  ) {
-    return normalized.filter(module => module !== 'spirit')
-  }
-  return normalized
-}
 
 export interface GameRoomMember {
   userId: string
@@ -195,9 +180,61 @@ export type OnlineGameAction =
       declaredLevel?: number
     }
   | { type: 'chooseTurnDiscard'; player: PlayerId; card: number }
-  | { type: 'answerEffectChoice'; player: PlayerId; cards: number[] }
+  | { type: 'answerEffectChoiceTyped'; player: PlayerId; answer: EffectChoiceAnswer }
   | { type: 'retrievePreviousTurnDiscard'; player: PlayerId }
   | { type: 'playableActions'; player: PlayerId; cards: number[] }
+
+export function isOnlineGameAction(value: unknown): value is OnlineGameAction {
+  if (!value || typeof value !== 'object' || !('type' in value)) {
+    return false
+  }
+  return [
+    'start',
+    'refresh',
+    'advanceAutomatic',
+    'passAction',
+    'performFormation',
+    'changeProfession',
+    'activateProfessionAbility',
+    'useSpiritSkill',
+    'chooseTurnDiscard',
+    'answerEffectChoiceTyped',
+    'retrievePreviousTurnDiscard',
+    'playableActions',
+  ].includes(String(value.type))
+}
+
+export interface TrustedRandomnessRequest {
+  requestId: string
+  currentOrder: number[]
+}
+
+export interface TrustedRandomnessAction {
+  type: 'resolveRandomness'
+  requestId: string
+  shuffledOrder: number[]
+}
+
+export async function resolvePendingRandomnessSequence<
+  Result extends { pendingRandomnessRequest?: TrustedRandomnessRequest },
+>(
+  initial: Result,
+  shuffle: (cards: number[]) => number[],
+  persistPending: (result: Result) => Promise<void>,
+  resolve: (action: TrustedRandomnessAction, result: Result) => Promise<Result>,
+): Promise<Result> {
+  let result = initial
+  while (result.pendingRandomnessRequest) {
+    const request = result.pendingRandomnessRequest
+    await persistPending(result)
+    result = await resolve({
+      type: 'resolveRandomness',
+      requestId: request.requestId,
+      shuffledOrder: shuffle(request.currentOrder),
+    }, result)
+  }
+  return result
+}
 
 export function requiresPendingCommandDraft(
   action: OnlineGameAction,
@@ -289,7 +326,10 @@ export type GameRoomRequest =
       action: OnlineGameAction
     }
 
-export interface GameRoomResponse extends Omit<LocalGameResponse, 'record'> {
+export interface GameRoomResponse extends Omit<
+  LocalGameResponse,
+  'record' | 'trustedRandomCandidates' | 'pendingRandomnessRequest'
+> {
   gameId: string
   metadata: GameRoomMetadata
   invitation?: GameRoomInvitation
@@ -356,8 +396,12 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     coveredPassives: [],
     counterEffects: [],
     pendingChoice: null,
+    pendingRandomness: null,
     shields: [],
     statuses: [],
+    jianghuStates: [],
+    limitedUses: [],
+    confluenceCardObligations: [],
     environment: null,
     teamStars: [],
     starHistories: [],

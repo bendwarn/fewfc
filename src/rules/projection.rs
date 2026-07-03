@@ -64,6 +64,14 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             for card_move in card_moves {
                 apply_card_move(state, card_move);
             }
+            clear_confluence_obligations_for_cards(
+                state,
+                player,
+                &card_moves
+                    .iter()
+                    .map(|movement| movement.card)
+                    .collect::<Vec<_>>(),
+            );
             if let Some(owned) = state
                 .professions
                 .iter_mut()
@@ -78,6 +86,22 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             }
             state.phase = crate::domain::Phase::TurnDraw;
             clear_prepared_ability(state, player);
+        }
+        GameEvent::ProfessionTransformed {
+            player, profession, ..
+        } => {
+            if let Some(owned) = state
+                .professions
+                .iter_mut()
+                .find(|owned| &owned.player == player)
+            {
+                owned.profession = profession.clone();
+            } else {
+                state.professions.push(crate::domain::PlayerProfession {
+                    player: player.clone(),
+                    profession: profession.clone(),
+                });
+            }
         }
         GameEvent::ProfessionBroken { player, profession } => {
             let position = state
@@ -117,6 +141,21 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     power: 2,
                 });
             }
+        }
+        GameEvent::SpiritTransformed {
+            player,
+            previous,
+            spirit,
+            power,
+        } => {
+            let owned = state
+                .spirits
+                .iter_mut()
+                .find(|owned| &owned.player == player && owned.spirit == *previous)
+                .expect("canonical Spirit transformation must target the owned Spirit");
+            owned.spirit = *spirit;
+            owned.power = *power;
+            state.spirit_skill_use_turns.remove(player);
         }
         GameEvent::SpiritPowerChanged {
             player,
@@ -227,6 +266,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 let removed = hand.remove(position);
                 push_to_origin_discard(state, removed);
             }
+            clear_confluence_obligations_for_cards(state, player, used_cards);
 
             state.last_formation_by_player.insert(
                 player.clone(),
@@ -267,6 +307,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             state.counter_effects.remove(position);
         }
         GameEvent::HandInspected { .. } => {}
+        GameEvent::DeckTopRevealed { .. } => {}
         GameEvent::PassiveCovered {
             player,
             formation_id,
@@ -297,6 +338,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 covered_on_turn: state.turn_number,
                 reveal_timing: crate::domain::PassiveTriggerTiming::NextPlayerActionStart,
             });
+            clear_confluence_obligations_for_cards(state, player, cards);
             state.last_formation_by_player.insert(
                 player.clone(),
                 LastFormationUse {
@@ -364,6 +406,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             for card_move in card_moves {
                 apply_card_move(state, card_move);
             }
+            clear_confluence_obligations_for_cards(state, attacker, used_cards);
 
             if let Some(update) = elemental_context_update {
                 state
@@ -484,6 +527,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             spirit_changes,
             broken_spirits,
             hp_changes,
+            broken_professions,
+            revived_spirits,
+            shared_fate_hp_changes,
         } => {
             for card_move in card_moves {
                 apply_card_move(state, card_move);
@@ -501,12 +547,29 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 state.spirit_skill_use_turns.remove(&broken.player);
             }
             state.spirits.retain(|owned| owned.power > 0);
+            state
+                .professions
+                .retain(|owned| !broken_professions.contains(owned));
+            for revived in revived_spirits {
+                state.spirits.retain(|owned| owned.player != revived.player);
+                state.spirits.push(revived.clone());
+                state.spirit_skill_use_turns.remove(&revived.player);
+            }
             for change in hp_changes {
                 let team_hp = state
                     .hp
                     .iter_mut()
                     .find(|team_hp| team_hp.team == change.team)
                     .expect("canonical Void Spirit-Shattering must target an existing Team");
+                debug_assert_eq!(team_hp.hp, change.old_hp);
+                team_hp.hp = change.new_hp;
+            }
+            for change in shared_fate_hp_changes {
+                let team_hp = state
+                    .hp
+                    .iter_mut()
+                    .find(|team_hp| team_hp.team == change.team)
+                    .expect("canonical Shared Fate must target an existing Team");
                 debug_assert_eq!(team_hp.hp, change.old_hp);
                 team_hp.hp = change.new_hp;
             }
@@ -583,6 +646,129 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .expect("canonical status removal event must target an active status");
             state.statuses.remove(position);
         }
+        GameEvent::JianghuStateApplied {
+            state: applied_state,
+        } => {
+            if let Some(active) = state.jianghu_states.iter_mut().find(|active| {
+                active.owner == applied_state.owner && active.kind == applied_state.kind
+            }) {
+                *active = applied_state.clone();
+            } else {
+                state.jianghu_states.push(applied_state.clone());
+            }
+        }
+        GameEvent::JianghuStateExpired { owner, kind } => {
+            let position = state
+                .jianghu_states
+                .iter()
+                .position(|active| &active.owner == owner && active.kind == *kind)
+                .expect("canonical Jianghu State expiry must target an active State");
+            state.jianghu_states.remove(position);
+        }
+        GameEvent::JianghuPoisonTicked {
+            owner,
+            remaining_turns,
+            hp_change,
+            shared_fate_hp_change,
+            ..
+        } => {
+            let team_hp = state
+                .hp
+                .iter_mut()
+                .find(|team_hp| team_hp.team == hp_change.team)
+                .expect("canonical Poison tick must target an existing Team");
+            debug_assert_eq!(team_hp.hp, hp_change.old_hp);
+            team_hp.hp = hp_change.new_hp;
+            let position = state
+                .jianghu_states
+                .iter()
+                .position(|active| {
+                    &active.owner == owner && active.kind == crate::domain::JianghuStateKind::Poison
+                })
+                .expect("canonical Poison tick must target active Poison");
+            if *remaining_turns == 0 {
+                state.jianghu_states.remove(position);
+            } else {
+                state.jianghu_states[position].remaining_turns = *remaining_turns;
+                state.jianghu_states[position].last_resolved_turn = Some(state.turn_number);
+            }
+            if let Some(change) = shared_fate_hp_change {
+                let target_hp = state
+                    .hp
+                    .iter_mut()
+                    .find(|team_hp| team_hp.team == change.team)
+                    .expect("canonical Poison Shared Fate targets an existing Team");
+                debug_assert_eq!(target_hp.hp, change.old_hp);
+                target_hp.hp = change.new_hp;
+            }
+            finish_game_if_needed(state);
+        }
+        GameEvent::JianghuDelayedDamageResolved {
+            owner,
+            status_id,
+            hp_change,
+            shared_fate_hp_change,
+        } => {
+            let position = state
+                .statuses
+                .iter()
+                .position(|status| {
+                    status.id == *status_id
+                        && status.owner == crate::domain::StatusOwner::Player(owner.clone())
+                })
+                .expect("canonical delayed Jianghu damage must target an active Status");
+            state.statuses.remove(position);
+            let team_hp = state
+                .hp
+                .iter_mut()
+                .find(|team_hp| team_hp.team == hp_change.team)
+                .expect("canonical delayed Jianghu damage must target an existing Team");
+            team_hp.hp = hp_change.new_hp;
+            if let Some(change) = shared_fate_hp_change {
+                let target_hp = state
+                    .hp
+                    .iter_mut()
+                    .find(|team_hp| team_hp.team == change.team)
+                    .expect("canonical delayed Shared Fate targets an existing Team");
+                debug_assert_eq!(target_hp.hp, change.old_hp);
+                target_hp.hp = change.new_hp;
+            }
+            finish_game_if_needed(state);
+        }
+        GameEvent::LimitedUseChanged {
+            owner,
+            key,
+            new_remaining,
+            maximum,
+            ..
+        } => {
+            if let Some(use_count) = state
+                .limited_uses
+                .iter_mut()
+                .find(|use_count| &use_count.owner == owner && use_count.key == *key)
+            {
+                use_count.remaining = *new_remaining;
+                use_count.maximum = *maximum;
+            } else {
+                state.limited_uses.push(crate::domain::LimitedUse {
+                    owner: owner.clone(),
+                    key: key.clone(),
+                    remaining: *new_remaining,
+                    maximum: *maximum,
+                });
+            }
+        }
+        GameEvent::ConfluenceCardObligationSet { obligation } => {
+            state
+                .confluence_card_obligations
+                .retain(|active| active.owner != obligation.owner);
+            state.confluence_card_obligations.push(obligation.clone());
+        }
+        GameEvent::ConfluenceCardObligationCleared { owner, card } => {
+            state
+                .confluence_card_obligations
+                .retain(|active| &active.owner != owner || active.card != *card);
+        }
         GameEvent::EffectChoiceRequested { player, kind } => {
             state.pending_choice = Some(crate::domain::PendingChoice {
                 player: player.clone(),
@@ -605,10 +791,121 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                         }
                     }
                 }
+                Some(crate::domain::PendingChoice {
+                    player: choice_player,
+                    kind:
+                        crate::domain::PendingChoiceKind::CardSetChoice {
+                            allowed_cards,
+                            minimum,
+                            maximum,
+                            ..
+                        },
+                }) if choice_player == player
+                    && selected_cards.len() >= *minimum
+                    && selected_cards.len() <= *maximum =>
+                {
+                    for selected_card in selected_cards {
+                        if !allowed_cards.contains(selected_card) {
+                            panic!("canonical effect choice answer must select allowed cards");
+                        }
+                    }
+                }
                 _ => panic!("canonical effect choice answer must have a matching pending choice"),
             }
 
             state.pending_choice = None;
+        }
+        GameEvent::TypedEffectChoiceAnswered { player, answer, .. } => {
+            let matches = match (&state.pending_choice, answer) {
+                (
+                    Some(crate::domain::PendingChoice {
+                        player: choice_player,
+                        kind:
+                            crate::domain::PendingChoiceKind::EffectGenerated { allowed_cards, .. },
+                    }),
+                    crate::domain::EffectChoiceAnswer::Cards { cards },
+                ) => {
+                    choice_player == player
+                        && cards.len()
+                            == state
+                                .pending_choice
+                                .as_ref()
+                                .expect("matched pending choice")
+                                .kind
+                                .required_count()
+                        && crate::rules::base::effect_choice_cards_are_valid(allowed_cards, cards)
+                }
+                (
+                    Some(crate::domain::PendingChoice {
+                        player: choice_player,
+                        kind:
+                            crate::domain::PendingChoiceKind::CardSetChoice {
+                                allowed_cards,
+                                minimum,
+                                maximum,
+                                ..
+                            },
+                    }),
+                    crate::domain::EffectChoiceAnswer::Cards { cards },
+                ) => {
+                    choice_player == player
+                        && cards.len() >= *minimum
+                        && cards.len() <= *maximum
+                        && crate::rules::base::effect_choice_cards_are_valid(allowed_cards, cards)
+                }
+                (
+                    Some(crate::domain::PendingChoice {
+                        player: choice_player,
+                        kind: crate::domain::PendingChoiceKind::TypedEffect { options, .. },
+                    }),
+                    answer,
+                ) => {
+                    choice_player == player
+                        && crate::rules::base::effect_choice_answer_is_valid(options, answer)
+                }
+                _ => false,
+            };
+            assert!(
+                matches,
+                "canonical typed effect choice answer must match the pending choice"
+            );
+            state.pending_choice = None;
+        }
+        GameEvent::RandomnessRequested { request } => {
+            assert!(
+                state.pending_randomness.is_none(),
+                "canonical randomness request cannot replace a pending request"
+            );
+            state.pending_randomness = Some(request.clone());
+        }
+        GameEvent::RandomnessResolved {
+            request_id,
+            deck,
+            shuffled_order,
+        } => {
+            let pending = state
+                .pending_randomness
+                .as_ref()
+                .expect("canonical randomness result must have a pending request");
+            assert_eq!(
+                (&pending.request_id, &pending.deck),
+                (request_id, deck),
+                "canonical randomness result must match the pending request"
+            );
+            match deck {
+                crate::domain::RandomnessDeck::Shared => {
+                    state.deck = shuffled_order.clone();
+                }
+                crate::domain::RandomnessDeck::Player(player) => {
+                    state
+                        .player_decks
+                        .iter_mut()
+                        .find(|pile| &pile.player == player)
+                        .expect("canonical randomness result must target a known player deck")
+                        .cards = shuffled_order.clone();
+                }
+            }
+            state.pending_randomness = None;
         }
         GameEvent::CardsDrawnForProfessionChoice { player, cards, .. } => {
             let hand = state
@@ -711,6 +1008,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     .expect("canonical recycle event must contain cards from discard");
                 state.discard.remove(position);
             }
+            recover_tailwind_uses(state, None);
         }
         GameEvent::PlayerDiscardRecycledIntoDeck {
             player,
@@ -734,6 +1032,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     .expect("canonical recycle event must contain cards from discard");
                 discard.remove(position);
             }
+            recover_tailwind_uses(state, Some(player));
         }
         GameEvent::DiscardRetrieved {
             hp_change,
@@ -769,6 +1068,26 @@ fn clear_prepared_ability(state: &mut GameState, player: &crate::domain::PlayerI
     state
         .prepared_profession_abilities
         .retain(|prepared| &prepared.player != player);
+}
+
+fn clear_confluence_obligations_for_cards(
+    state: &mut GameState,
+    player: &crate::domain::PlayerId,
+    cards: &[crate::domain::CardInstanceId],
+) {
+    state
+        .confluence_card_obligations
+        .retain(|obligation| &obligation.owner != player || !cards.contains(&obligation.card));
+}
+
+fn recover_tailwind_uses(state: &mut GameState, owner: Option<&crate::domain::PlayerId>) {
+    for use_count in &mut state.limited_uses {
+        if use_count.key == crate::rules::confluence::TAILWIND_USE
+            && owner.is_none_or(|owner| &use_count.owner == owner)
+        {
+            use_count.remaining = use_count.maximum;
+        }
+    }
 }
 
 fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {

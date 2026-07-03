@@ -4,10 +4,17 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Open Local Issues
 
-None.
+- [#63 Resolve basic Melodies and Echo](063-resolve-basic-melodies-and-echo.md)
+- [#64 Resolve Pure Fire and Plant Earth](064-resolve-pure-fire-and-plant-earth.md)
+- [#65 Release the Echo Rule Module](065-release-echo-rule-module.md)
 
 ## Completed Local Issues
 
+- [#62 Generalize choices and midgame randomness](062-generalize-choices-and-midgame-randomness.md)
+- [#61 Release the Dark Glimmer Rule Module](061-release-dark-glimmer-rule-module.md)
+- [#60 Release the Confluence Generation Rule Module](060-release-confluence-generation-rule-module.md)
+- [#59 Release the Jianghu Rule Module](059-release-jianghu-rule-module.md)
+- [#58 Compose Profession and Rule Module catalogs](058-compose-profession-and-rule-module-catalogs.md)
 - [#57 Resolve Bloom and Void Spirit-Shattering atomically](057-resolve-bloom-and-void-spirit-shattering.md)
 - [#56 Use Spirit Skills](056-use-spirit-skills.md)
 - [#55 Summon and display Spirits](055-summon-and-display-spirits.md)

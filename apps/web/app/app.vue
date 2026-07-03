@@ -386,61 +386,6 @@
           >
             ←
           </button>
-          <button
-            v-if="state.enabledRuleModules.includes('hero-schools')"
-            class="teaching-button"
-            type="button"
-            aria-haspopup="dialog"
-            :aria-expanded="teachingOpen"
-            @click="teachingOpen = true"
-          >
-            職業教學
-          </button>
-
-          <div
-            v-if="teachingOpen"
-            class="teaching-layer"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="teaching-title"
-          >
-            <section class="teaching-dialog">
-              <header>
-                <div>
-                  <h2 id="teaching-title">英雄學派職業圖鑑</h2>
-                  <p>只供查閱；合法行動仍由所選手牌列出。</p>
-                </div>
-                <button type="button" aria-label="關閉職業教學" @click="teachingOpen = false">×</button>
-              </header>
-              <div class="profession-catalog">
-                <article
-                  v-for="profession in state.professionCatalog"
-                  :key="profession.id"
-                  class="profession-card"
-                >
-                  <p v-if="profession.parentName" class="profession-parent">
-                    {{ profession.parentName }} →
-                  </p>
-                  <h3>{{ profession.name }}</h3>
-                  <p>{{ profession.requirement }}</p>
-                  <small>{{ profession.inheritance }}</small>
-                  <h4>有效能力</h4>
-                  <ul>
-                    <li v-for="ability in profession.abilities" :key="ability">{{ ability }}</li>
-                  </ul>
-                  <template v-if="profession.formations.length">
-                    <h4>職業陣法</h4>
-                    <dl>
-                      <template v-for="formation in profession.formations" :key="formation.name">
-                        <dt>{{ formation.name }}</dt>
-                        <dd>{{ formation.summary }}</dd>
-                      </template>
-                    </dl>
-                  </template>
-                </article>
-              </div>
-            </section>
-          </div>
 
           <div
             v-for="seat in playerSeats"
@@ -498,6 +443,29 @@
                   已準備 · {{ preparedAbilityLabel(prepared.abilityId) }}
                   {{ elementLabel(prepared.element) }}{{ prepared.level }}
                   （牌 {{ prepared.card }}）
+                </small>
+                <small
+                  v-for="jianghuState in jianghuStatesFor(seat.player)"
+                  :key="`${seat.player}-${jianghuState.kind}`"
+                  class="jianghu-state"
+                >
+                  江湖狀態 · {{ jianghuStateLabel(jianghuState) }}
+                </small>
+                <small
+                  v-for="limitedUse in limitedUsesFor(seat.player)"
+                  :key="`${seat.player}-${limitedUse.key}`"
+                  class="limited-use"
+                >
+                  {{ limitedUseLabel(limitedUse.key) }} ·
+                  {{ limitedUse.remaining }}/{{ limitedUse.maximum }}
+                </small>
+                <small
+                  v-for="obligation in confluenceObligationsFor(seat.player)"
+                  :key="`${seat.player}-tuning-${obligation.card ?? 'hidden'}`"
+                >
+                  調律牌 ·
+                  {{ obligation.card === null ? '隱藏' : `牌 ${obligation.card}` }}
+                  （{{ obligation.allowProfessionFormation ? '可用於職業陣法' : '僅可轉職' }}）
                 </small>
                 <small v-if="state.enabledRuleModules.includes('personal-deck')">
                   牌庫 {{ playerDeckCount(seat.player) }} · 棄牌 {{ playerDiscardCount(seat.player) }}
@@ -796,7 +764,7 @@
                     || viewer !== state.pendingChoice.player
                     || (
                       state.pendingChoice.kind === 'EffectGenerated'
-                      && game.selectedChoiceCards.value.length >= state.pendingChoice.requiredCount
+                      && game.selectedChoiceCards.value.length >= state.pendingChoice.maximumCount
                       && !game.selectedChoiceCards.value.includes(card.id)
                     )
                   "
@@ -812,7 +780,8 @@
                   && viewer === state.pendingChoice.player"
               >
                 <p class="choice-count">
-                  已選 {{ game.selectedChoiceCards.value.length }} / {{ state.pendingChoice.requiredCount }}
+                  已選 {{ game.selectedChoiceCards.value.length }}
+                  （{{ state.pendingChoice.minimumCount }}–{{ state.pendingChoice.maximumCount }}）
                 </p>
                 <button
                   class="choice-submit"
@@ -1013,11 +982,17 @@ import type {
   PlayableAction,
   PlayerId,
   PublicCardRefs,
+  PublicGameState,
   SpiritKind,
   TeamId,
   ViewerId,
 } from '~/types/fewfc'
 import type { GameRoomMember, GameRoomResponse } from '../shared/game-room'
+import {
+  disableRuleModule,
+  enableRuleModule,
+  RULE_MODULE_SPECS,
+} from '#shared/utils/rule-modules'
 import { authClient } from '~/lib/auth-client'
 import { buildDiscardComposition, DISCARD_ELEMENTS } from '~/lib/discard-composition'
 import { roomRouteResult, safeInternalPath } from '~/lib/navigation'
@@ -1099,7 +1074,6 @@ const actionDetail = ref<PlayableAction | null>(null)
 const eventExpanded = ref(false)
 const showSetupReveal = ref(false)
 const discardOpen = ref(false)
-const teachingOpen = ref(false)
 const activeDiscardOwner = ref<PlayerId | null>(null)
 const discardTrigger = ref<HTMLButtonElement | null>(null)
 const deckDraft = ref<PlayerDeckList>(preconstructedDeck())
@@ -1113,35 +1087,22 @@ const modes = [
   { id: 'duel', icon: '雙', label: '雙人對戰', description: '1 對 1 經典規則' },
   { id: 'team', icon: '隊', label: '團隊對戰', description: '2 對 2 交錯行動' },
 ]
-const ruleGroups = [
-  {
-    id: 'gameplay',
-    label: '牌局設定',
-    rules: [
-      { id: 'discard-retrieval', label: '棄牌回收' },
-      { id: 'personal-deck', label: '個人牌組' },
-    ],
-  },
-  {
-    id: 'advanced',
-    label: '進階規則',
-    rules: [
-      { id: 'star', label: '進階規則‧星辰圖記' },
-      { id: 'hero-schools', label: '進階規則‧英雄學派' },
-      { id: 'five-directions-legend', label: '進階規則‧五方傳說' },
-    ],
-  },
-  {
-    id: 'theme',
-    label: '主題規則',
-    rules: [
-      { id: 'spirit', label: '主題規則‧精靈' },
-    ],
-  },
-]
+const ruleGroupLabels = {
+  gameplay: '牌局設定',
+  advanced: '進階規則',
+  theme: '主題規則',
+}
+const ruleGroups = (['gameplay', 'advanced', 'theme'] as const).map(id => ({
+  id,
+  label: ruleGroupLabels[id],
+  rules: RULE_MODULE_SPECS
+    .filter(module => module.group === id)
+    .map(module => ({ id: module.id, label: module.label })),
+}))
 const ruleOptions = ruleGroups.flatMap(group => group.rules)
-const spiritDependencies = ['star', 'hero-schools', 'five-directions-legend']
-const ruleLabelById = new Map(ruleOptions.map(rule => [rule.id, rule.label]))
+const ruleLabelById = new Map<string, string>(
+  ruleOptions.map(rule => [rule.id, rule.label]),
+)
 const deckValidation = computed(() => validateDeck(deckDraft.value))
 
 const visibleEvents = computed(() => game.publicEvents.value)
@@ -1168,8 +1129,10 @@ const roomConnected = computed(() => game.connectionState.value === 'connected')
 const enabledRuleLabels = computed(() => [
   '基礎規則',
   ...(onlineMetadata.value?.enabledRuleModules ?? [])
-    .map(moduleId => ruleLabelById.get(moduleId))
-    .filter((label): label is string => Boolean(label)),
+    .flatMap(moduleId => {
+      const label = ruleLabelById.get(moduleId)
+      return label ? [label] : []
+    }),
 ])
 const canStartOnlineRoom = computed(() => {
   const metadata = onlineMetadata.value
@@ -1248,7 +1211,7 @@ const gameResultText = computed(() => {
   const aliveTeams = state.value.hp.filter((entry) => entry.hp > 0)
 
   if (aliveTeams.length === 1) {
-    return `${teamLabel(aliveTeams[0].team)} 勝利`
+    return `${teamLabel(aliveTeams[0]!.team)} 勝利`
   }
 
   return '戰局結束'
@@ -1541,19 +1504,10 @@ async function restartGame() {
 
 async function toggleWaitingRule(moduleId: string) {
   const current = onlineMetadata.value?.enabledRuleModules ?? []
-  const next = new Set(current)
-  if (next.has(moduleId)) {
-    next.delete(moduleId)
-    if (spiritDependencies.includes(moduleId)) {
-      next.delete('spirit')
-    }
-  } else {
-    next.add(moduleId)
-    if (moduleId === 'spirit') {
-      spiritDependencies.forEach(dependency => next.add(dependency))
-    }
-  }
-  await game.updateRuleModules([...next])
+  const next = current.includes(moduleId)
+    ? disableRuleModule(current, moduleId)
+    : enableRuleModule(current, moduleId)
+  await game.updateRuleModules(next)
 }
 
 async function createOnlineRoom() {
@@ -2024,6 +1978,8 @@ function spiritLabel(spirit: SpiritKind): string {
     Water: '水精靈',
     Fire: '火精靈',
     Earth: '土精靈',
+    Evil: '惡精靈',
+    Death: '死精靈',
   }[spirit]
 }
 
@@ -2036,7 +1992,49 @@ function preparedAbilitiesFor(player: PlayerId) {
 }
 
 function preparedAbilityLabel(abilityId: string): string {
-  return abilityId === 'illusion' ? '幻術' : abilityId === 'phantasm' ? '幻朧' : abilityId
+  const labels: Record<string, string> = {
+    illusion: '幻術',
+    phantasm: '幻朧',
+    'jianghu:blazing-yang-art': '烈陽訣',
+  }
+  return labels[abilityId] ?? abilityId
+}
+
+function jianghuStatesFor(player: PlayerId) {
+  return state.value.jianghuStates.filter(active => active.owner === player)
+}
+
+function jianghuStateLabel(
+  active: PublicGameState['jianghuStates'][number],
+): string {
+  const label = {
+    ThousandBlades: '千鋒',
+    SnowTreading: '踏雪',
+    Poison: '中毒',
+  }[active.kind]
+  return active.kind === 'Poison'
+    ? `${label}（${active.remainingTurns} 回合）`
+    : label
+}
+
+function limitedUsesFor(player: PlayerId) {
+  return state.value.limitedUses.filter(useCount => useCount.owner === player)
+}
+
+function limitedUseLabel(key: string): string {
+  const labels: Record<string, string> = {
+    'confluence:heavenly-resonance': '天響',
+    'confluence:imprisoning-array': '禁錮法陣',
+    'confluence:tailwind': '順風',
+    'confluence:void-realm': '虛空境界',
+  }
+  return labels[key] ?? key
+}
+
+function confluenceObligationsFor(player: PlayerId) {
+  return state.value.confluenceCardObligations.filter(
+    obligation => obligation.owner === player,
+  )
 }
 
 function elementLabel(element: Element): string {
@@ -2418,23 +2416,6 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .game-page { @apply flex h-[calc(100vh-84px)] flex-col overflow-hidden max-[900px]:h-auto max-[900px]:overflow-visible; }
 .back-button { @apply grid size-9 place-items-center border border-[#4a554e] bg-[rgba(17,23,19,.88)] text-base text-[#ddd7c9] hover:border-[#b99550] hover:text-gold-light; }
 .battlefield-back { @apply absolute top-4 left-4 z-20; }
-.teaching-button { @apply absolute top-4 right-4 z-20 border border-[#79633b] bg-[#18201b] px-3 py-1.5 text-xs text-gold-light; }
-.teaching-layer { @apply fixed inset-0 z-50 grid place-items-center bg-[rgba(7,10,8,.78)] p-4 backdrop-blur-[3px]; }
-.teaching-dialog { @apply grid max-h-[min(820px,calc(100vh-32px))] w-[min(1120px,calc(100vw-32px))] grid-rows-[auto_1fr] gap-4 overflow-hidden border border-[#79633b] bg-[#121915] p-5 shadow-[0_20px_70px_rgba(0,0,0,.55)]; }
-.teaching-dialog > header { @apply flex items-start justify-between gap-4 border-b border-line pb-3; }
-.teaching-dialog h2 { @apply font-serif text-xl text-gold-light; }
-.teaching-dialog header p { @apply mt-1 text-xs text-muted; }
-.teaching-dialog header button { @apply border border-line bg-transparent px-3 py-1 text-lg text-muted; }
-.profession-catalog { @apply grid grid-cols-1 gap-3 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3; }
-.profession-card { @apply content-start border border-[rgba(166,141,86,.25)] bg-[rgba(24,32,27,.72)] p-3 text-left; }
-.profession-card h3 { @apply font-serif text-base text-gold-light; }
-.profession-card h4 { @apply mt-3 text-xs text-[#d4c291]; }
-.profession-card p, .profession-card li, .profession-card dd { @apply text-[11px] leading-5 text-[#c5cbc7]; }
-.profession-card small, .profession-parent { @apply text-[10px]! text-muted!; }
-.profession-card ul { @apply mt-1 list-disc pl-4; }
-.profession-card dl { @apply mt-1 grid gap-1; }
-.profession-card dt { @apply text-xs text-[#e2d3a7]; }
-.profession-card dd { @apply mb-1; }
 .battle-layout { @apply grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px] max-[900px]:grid-cols-1 max-[900px]:overflow-auto; }
 .battlefield {
   --card-back-base: #232e28;
@@ -2524,18 +2505,6 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .discard-composition-layer { @apply absolute right-0 z-20; bottom: calc(50% + 48px); }
 .discard-composition {
   @apply w-[300px] border border-[#8e733d] bg-[#18201b] p-3.5 text-[#ece8dd] shadow-[0_18px_48px_rgba(0,0,0,.52)];
-}
-.discard-composition::after {
-  content: "";
-  position: absolute;
-  right: 20px;
-  bottom: -6px;
-  width: 11px;
-  height: 11px;
-  border-right: 1px solid #8e733d;
-  border-bottom: 1px solid #8e733d;
-  background: #18201b;
-  transform: rotate(45deg);
 }
 .discard-composition h2 { @apply mb-2.5 font-serif text-sm text-gold-light; }
 .discard-composition table { @apply w-full table-fixed border-collapse; }
@@ -2664,7 +2633,6 @@ fieldset { @apply mb-[26px] border-0 p-0; }
     @apply fixed inset-0 grid place-items-center bg-[rgba(7,10,8,.72)] p-4 backdrop-blur-[3px];
   }
   .discard-composition { width: min(330px, calc(100vw - 32px)); }
-  .discard-composition::after { display: none; }
   .game-sidebar { border-left: 0; }
   .event-panel .panel-title button { display: block; }
   .event-panel:not(.expanded) .event-feed li:nth-child(n+4) { display: none; }
@@ -2687,7 +2655,6 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   }
   .battlefield::before { inset: 8px; }
   .battlefield-back { top: 10px; left: 10px; }
-  .teaching-button { top: 10px; right: 10px; }
   .player-seat { gap: 7px; }
   .seat-top, .seat-bottom { flex-direction: column; }
   .seat-top .player-identity, .seat-bottom .player-identity { order: 2; }

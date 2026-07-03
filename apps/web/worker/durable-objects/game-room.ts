@@ -2,10 +2,12 @@ import { DurableObject } from 'cloudflare:workers'
 import {
   continuesPendingCommandDraft,
   emptyPublicState,
+  isOnlineGameAction,
   invitationCredentialMatches,
   normalizeRuleModules,
   normalizeGameRoomMetadata,
   requiresPendingCommandDraft,
+  resolvePendingRandomnessSequence,
   type GameRoomAccess,
   type GameRoomCapacity,
   type GameRoomInvitation,
@@ -40,9 +42,15 @@ interface NotificationEnvelope {
 interface PendingCommandDraft {
   actorUserId: string
   commandId: string
-  action: Extract<OnlineGameAction, { type: 'performFormation' }>
+  action: OnlineGameAction
   snapshot: GameRoomSnapshot
+  pendingRandomness?: boolean
 }
+
+type RulesEngineAction =
+  | OnlineGameAction
+  | { type: 'trustedRandomHandCandidates'; player: PlayerId }
+  | { type: 'resolveRandomness'; requestId: string; shuffledOrder: number[] }
 
 export class GameRoom extends DurableObject<GameRoomEnv> {
   private operationTail: Promise<void> = Promise.resolve()
@@ -826,8 +834,12 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         if (choice?.kind !== 'TurnDrawDiscard' || !choice.cards[0]) {
           return this.json({ error: 'test fixture cannot answer pending choice' }, 500)
         }
-        const preferredDiscard = choice.player === actor.player && spirit === 'Fire'
-          ? choice.cards.find(card => card.label.startsWith(`${elementLabel} `))
+        const preferredDiscard = choice.player === actor.player
+          ? choice.cards.find(card => (
+              spirit === 'Fire'
+                ? card.label.startsWith(`${elementLabel} `)
+                : !card.label.startsWith(`${elementLabel} `)
+            ))
           : undefined
         rules = await callRulesEngine({
           action: {
@@ -927,13 +939,16 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'only room players may submit commands' }, 403)
     }
 
-    const action = this.actionForPlayer(request.action, actor)
+    if (!isOnlineGameAction(request.action)) {
+      return this.json({ error: 'unsupported player action' }, 400)
+    }
+    const playerAction = this.actionForPlayer(request.action, actor)
     const viewer = actor
     const existingDraft = await this.pendingDraft()
 
     if (request.action.type === 'playableActions') {
       const snapshot = await this.requireSnapshot()
-      const rules = await this.callRules(action, viewer, snapshot)
+      const rules = await this.callRules(playerAction, viewer, snapshot)
 
       return this.json(await this.response(metadata, request.actorUserId, rules.playableActions))
     }
@@ -942,7 +957,15 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'another player decision is pending' }, 409)
     }
 
-    if (existingDraft && action.type !== 'answerEffectChoice') {
+    if (existingDraft?.pendingRandomness && existingDraft.commandId !== request.commandId) {
+      return this.json({ error: 'retry the pending command before submitting another command' }, 409)
+    }
+
+    if (
+      existingDraft
+      && !existingDraft.pendingRandomness
+      && playerAction.type !== 'answerEffectChoiceTyped'
+    ) {
       return this.json({ error: 'complete or cancel the pending effect choice first' }, 409)
     }
 
@@ -955,16 +978,32 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     const canonicalSnapshot = await this.requireSnapshot()
     const previousSnapshot = existingDraft?.snapshot ?? canonicalSnapshot
     const previousRules = await this.callRules({ type: 'refresh' }, 'observer', previousSnapshot)
-    const rules = await this.callRules(action, viewer, previousSnapshot)
+    let rules: RulesEngineResult
+    if (existingDraft?.pendingRandomness) {
+      rules = await this.callRules({ type: 'refresh' }, viewer, previousSnapshot)
+    } else {
+      const action = await this.withTrustedRandomness(playerAction, viewer, previousSnapshot)
+      rules = await this.callRules(action, viewer, previousSnapshot)
+    }
+
+    if (rules.pendingRandomnessRequest) {
+      const randomnessDraft: PendingCommandDraft = existingDraft ?? {
+        actorUserId: request.actorUserId,
+        commandId: request.commandId,
+        action: playerAction,
+        snapshot: previousSnapshot,
+      }
+      rules = await this.resolvePendingRandomness(rules, viewer, randomnessDraft)
+    }
 
     if (
       !existingDraft
-      && requiresPendingCommandDraft(action, rules.state.pendingChoice?.kind)
+      && requiresPendingCommandDraft(playerAction, rules.state.pendingChoice?.kind)
     ) {
       const draft: PendingCommandDraft = {
         actorUserId: request.actorUserId,
         commandId: request.commandId,
-        action,
+        action: playerAction,
         snapshot: {
           ...previousSnapshot,
           rulesRecord: rules.record,
@@ -983,6 +1022,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     ) {
       await this.ctx.storage.put('pendingCommandDraft', {
         ...existingDraft,
+        pendingRandomness: false,
         snapshot: {
           ...existingDraft.snapshot,
           rulesRecord: rules.record,
@@ -1001,11 +1041,12 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       commandId: existingDraft?.commandId ?? request.commandId,
       actor,
       payload: existingDraft
+        && existingDraft.action.type === 'performFormation'
         ? {
             type: 'performFormationWithChoices',
             formation: existingDraft.action,
           }
-        : action,
+        : (existingDraft?.action ?? playerAction),
       createdAt: now,
     }
     const snapshot: GameRoomSnapshot = {
@@ -1387,11 +1428,28 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private actionForPlayer(action: OnlineGameAction, player: PlayerId): OnlineGameAction {
     switch (action.type) {
       case 'performFormation':
-      case 'activateProfessionAbility':
+        return {
+          type: action.type,
+          player,
+          formationId: action.formationId,
+          cards: action.cards,
+          starSubstitutionCard: action.starSubstitutionCard,
+          matchOptionRole: action.matchOptionRole,
+          matchOptionCard: action.matchOptionCard,
+          matchOptionSlots: action.matchOptionSlots,
+        }
       case 'useSpiritSkill':
+        return {
+          type: action.type,
+          player,
+          skill: action.skill,
+          selectedCard: action.selectedCard,
+          declaredLevel: action.declaredLevel,
+        }
+      case 'activateProfessionAbility':
       case 'changeProfession':
       case 'chooseTurnDiscard':
-      case 'answerEffectChoice':
+      case 'answerEffectChoiceTyped':
       case 'retrievePreviousTurnDiscard':
       case 'playableActions':
         return { ...action, player }
@@ -1400,8 +1458,59 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
   }
 
-  private async callRules(
+  private async withTrustedRandomness(
     action: OnlineGameAction,
+    viewer: string,
+    snapshot: GameRoomSnapshot,
+  ): Promise<OnlineGameAction> {
+    if (
+      (action.type === 'performFormation' && action.formationId === 'dark:dark-chaos')
+      || (action.type === 'useSpiritSkill' && action.skill === 'EvilGaze')
+    ) {
+      const candidates = await this.callRules({
+        type: 'trustedRandomHandCandidates',
+        player: action.player,
+      }, viewer, snapshot)
+      return {
+        ...action,
+        trustedRandomCards: this.shuffle(candidates.trustedRandomCandidates ?? []).slice(0, 2),
+      }
+    }
+
+    return action
+  }
+
+  private async resolvePendingRandomness(
+    initialRules: RulesEngineResult,
+    viewer: string,
+    draft: PendingCommandDraft,
+  ): Promise<RulesEngineResult> {
+    return await resolvePendingRandomnessSequence(
+      initialRules,
+      cards => this.shuffle(cards),
+      async (rules) => {
+        const pendingSnapshot: GameRoomSnapshot = {
+          ...draft.snapshot,
+          rulesRecord: rules.record,
+        }
+        await this.ctx.storage.put('pendingCommandDraft', {
+          ...draft,
+          snapshot: pendingSnapshot,
+          pendingRandomness: true,
+        } satisfies PendingCommandDraft)
+      },
+      async (action, rules) => {
+        const pendingSnapshot: GameRoomSnapshot = {
+          ...draft.snapshot,
+          rulesRecord: rules.record,
+        }
+        return await this.callRules(action, viewer, pendingSnapshot)
+      },
+    )
+  }
+
+  private async callRules(
+    action: RulesEngineAction,
     viewer: string | undefined,
     snapshot: GameRoomSnapshot,
   ) {
@@ -1521,7 +1630,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         activateProfessionAbility: `${actor} 已發動職業能力。`,
         performFormationWithChoices: `${actor} 已完成陣法與效果選擇。`,
         chooseTurnDiscard: `${actor} 已完成捨棄。`,
-        answerEffectChoice: `${actor} 已完成效果選擇。`,
+        answerEffectChoiceTyped: `${actor} 已完成效果選擇。`,
         retrievePreviousTurnDiscard: `${actor} 已發動棄牌回收。`,
       }
       return summaries[action] ?? '戰局狀態已更新。'

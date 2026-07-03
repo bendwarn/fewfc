@@ -36,6 +36,21 @@ pub(crate) fn element(spirit: SpiritKind) -> Element {
         SpiritKind::Water => Element::Water,
         SpiritKind::Fire => Element::Fire,
         SpiritKind::Earth => Element::Earth,
+        SpiritKind::Evil | SpiritKind::Death => {
+            unreachable!("Dark Spirits have no elemental identity")
+        }
+    }
+}
+
+pub(crate) fn turn_discard_charges(
+    state: &GameState,
+    spirit: SpiritKind,
+    card: CardInstanceId,
+) -> bool {
+    match spirit {
+        SpiritKind::Evil => state.card_def(card).is_some_and(|card| card.level == 2),
+        SpiritKind::Death => state.card_def(card).is_some_and(|card| card.level == 4),
+        _ => state.card_element(card) == Some(element(spirit)),
     }
 }
 
@@ -148,7 +163,7 @@ pub(crate) fn void_spirit_shattering_event(
         let team = team_for_player(state, &owned.player)?;
         *owner_counts.entry(team).or_insert(0_i32) += 1;
     }
-    let hp_changes = state
+    let hp_changes: Vec<HpChangeDelta> = state
         .hp
         .iter()
         .filter_map(|team_hp| {
@@ -177,12 +192,85 @@ pub(crate) fn void_spirit_shattering_event(
         })
         .collect();
 
+    let broken_professions = broken_spirits
+        .iter()
+        .filter(|broken| matches!(broken.spirit, SpiritKind::Evil | SpiritKind::Death))
+        .filter_map(|broken| {
+            state
+                .professions
+                .iter()
+                .find(|owned| {
+                    owned.player == broken.player
+                        && owned.profession.as_str() == crate::rules::dark::DEMON_SPIRIT_MASTER_ID
+                })
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+    let revived_spirits = broken_spirits
+        .iter()
+        .filter(|broken| {
+            matches!(broken.spirit, SpiritKind::Evil | SpiritKind::Death)
+                && broken_professions
+                    .iter()
+                    .any(|profession| profession.player == broken.player)
+        })
+        .map(|broken| PlayerSpirit {
+            player: broken.player.clone(),
+            spirit: broken.spirit,
+            power: 2,
+        })
+        .collect::<Vec<_>>();
+
+    let mut hp_after_primary = state
+        .hp
+        .iter()
+        .map(|entry| (entry.team.clone(), entry.hp))
+        .collect::<std::collections::HashMap<_, _>>();
+    for change in &hp_changes {
+        hp_after_primary.insert(change.team.clone(), change.new_hp);
+    }
+    let mut shared_fate_counts = std::collections::HashMap::new();
+    for owned in state
+        .spirits
+        .iter()
+        .filter(|owned| owned.spirit == SpiritKind::Death && owned.power > 2)
+    {
+        let owner_team = team_for_player(state, &owned.player)?;
+        if !hp_changes
+            .iter()
+            .any(|change| change.team == owner_team && change.effective_delta < 0)
+        {
+            continue;
+        }
+        let target = next_player(state, &owned.player)?;
+        let team = team_for_player(state, &target)?;
+        *shared_fate_counts.entry(team).or_insert(0_i32) += 1;
+    }
+    let shared_fate_hp_changes = shared_fate_counts
+        .into_iter()
+        .map(|(team, count)| {
+            let old_hp = hp_after_primary.get(&team).copied().unwrap_or(0);
+            let delta = count.saturating_mul(-10);
+            let new_hp = (old_hp + delta).max(0);
+            HpChangeDelta {
+                team,
+                old_hp,
+                delta,
+                new_hp,
+                effective_delta: new_hp - old_hp,
+            }
+        })
+        .collect();
+
     Ok(GameEvent::VoidSpiritShatteringResolved {
         player: player.clone(),
         card_moves,
         spirit_changes,
         broken_spirits,
         hp_changes,
+        broken_professions,
+        revived_spirits,
+        shared_fate_hp_changes,
     })
 }
 
@@ -234,6 +322,7 @@ pub(crate) fn use_skill(
     skill: SpiritSkill,
     selected_card: Option<CardInstanceId>,
     declared_level: Option<u32>,
+    trusted_random_cards: Option<&[CardInstanceId]>,
 ) -> GameResult<Vec<GameEvent>> {
     if !state.has_rule_module(crate::domain::SPIRIT_MODULE_ID) {
         return Err(GameError::Validation(ValidationError::SpiritRuleDisabled));
@@ -286,8 +375,17 @@ pub(crate) fn use_skill(
         skill,
         selected_card,
         declared_level,
+        trusted_random_cards,
     )?);
-    if new_power == 0 {
+    crate::rules::dark::append_mischief_events(state, &mut events)?;
+    let mut projected = state.clone();
+    for event in &events {
+        crate::rules::projection::apply_event(&mut projected, event);
+    }
+    if projected
+        .spirit_for(player)
+        .is_some_and(|spirit| spirit.power == 0)
+    {
         events.push(GameEvent::SpiritBroken {
             player: player.clone(),
             spirit: owned.spirit,
@@ -367,16 +465,30 @@ fn skill_definition(skill: SpiritSkill) -> SkillDefinition {
             name: "岩壁",
             rule_text: "消耗６靈力，建構４０點防護罩",
         },
+        SpiritSkill::EvilGaze => SkillDefinition {
+            spirit: SpiritKind::Evil,
+            cost: 2,
+            name: "惡視",
+            rule_text: "消耗２靈力，隨機檢視下家兩張手牌",
+        },
+        SpiritSkill::DeathOmen => SkillDefinition {
+            spirit: SpiritKind::Death,
+            cost: 4,
+            name: "死兆",
+            rule_text: "消耗４靈力，捨棄下家牌堆頂四張並依最高等級扣除生命",
+        },
     }
 }
 
-fn skills_for(spirit: SpiritKind) -> [SpiritSkill; 2] {
+fn skills_for(spirit: SpiritKind) -> Vec<SpiritSkill> {
     match spirit {
-        SpiritKind::Metal => [SpiritSkill::FlyingBlade, SpiritSkill::SwordRain],
-        SpiritKind::Wood => [SpiritSkill::Fragrance, SpiritSkill::Bloom],
-        SpiritKind::Water => [SpiritSkill::Flow, SpiritSkill::Vastness],
-        SpiritKind::Fire => [SpiritSkill::Glimmer, SpiritSkill::Splendor],
-        SpiritKind::Earth => [SpiritSkill::StoneShield, SpiritSkill::RockWall],
+        SpiritKind::Metal => vec![SpiritSkill::FlyingBlade, SpiritSkill::SwordRain],
+        SpiritKind::Wood => vec![SpiritSkill::Fragrance, SpiritSkill::Bloom],
+        SpiritKind::Water => vec![SpiritSkill::Flow, SpiritSkill::Vastness],
+        SpiritKind::Fire => vec![SpiritSkill::Glimmer, SpiritSkill::Splendor],
+        SpiritKind::Earth => vec![SpiritSkill::StoneShield, SpiritSkill::RockWall],
+        SpiritKind::Evil => vec![SpiritSkill::EvilGaze],
+        SpiritKind::Death => vec![SpiritSkill::DeathOmen],
     }
 }
 
@@ -427,6 +539,7 @@ fn skill_effect_events(
     skill: SpiritSkill,
     selected_card: Option<CardInstanceId>,
     declared_level: Option<u32>,
+    trusted_random_cards: Option<&[CardInstanceId]>,
 ) -> GameResult<Vec<GameEvent>> {
     match skill {
         SpiritSkill::FlyingBlade => Ok(vec![hp_event(
@@ -514,6 +627,76 @@ fn skill_effect_events(
                 new_value: 40,
             }])
         }
+        SpiritSkill::EvilGaze => {
+            let target = next_player(state, player)?;
+            let inspected = crate::rules::dark::validate_trusted_random_hand_cards(
+                state,
+                &target,
+                trusted_random_cards,
+                "evil-gaze",
+            )?;
+            Ok(vec![GameEvent::HandInspected {
+                viewer: player.clone(),
+                target,
+                cards: inspected,
+            }])
+        }
+        SpiritSkill::DeathOmen => {
+            let target = next_player(state, player)?;
+            let cards = state
+                .deck_for(&target)
+                .ok_or_else(|| {
+                    GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
+                })?
+                .iter()
+                .take(4)
+                .copied()
+                .collect::<Vec<_>>();
+            let highest = cards
+                .iter()
+                .filter_map(|card| state.card_def(*card).map(|definition| definition.level))
+                .max()
+                .unwrap_or(0);
+            let mut events = vec![GameEvent::CardsMoved {
+                card_moves: cards
+                    .iter()
+                    .map(|card| CardMoveDelta {
+                        card: *card,
+                        from: if state.uses_personal_decks() {
+                            CardZone::PlayerDeckTop(target.clone())
+                        } else {
+                            CardZone::DeckTop
+                        },
+                        to: discard_zone_for_card(state, *card),
+                    })
+                    .collect(),
+            }];
+            events.push(hp_event(
+                state,
+                &team_for_player(state, &target)?,
+                -(highest as i32 * 4),
+            )?);
+            if cards.iter().any(|card| {
+                state
+                    .card_def(*card)
+                    .is_some_and(|definition| definition.level == 4)
+            }) {
+                let power_after_cost = state
+                    .spirit_for(player)
+                    .expect("validated Death Spirit")
+                    .power
+                    .saturating_sub(4);
+                events.push(GameEvent::SpiritPowerChanged {
+                    player: player.clone(),
+                    spirit: SpiritKind::Death,
+                    old_power: power_after_cost,
+                    delta: 1,
+                    new_power: (power_after_cost + 1).min(6),
+                    reason: crate::domain::SpiritPowerChangeReason::SkillEffect,
+                });
+            }
+            Ok(events)
+        }
     }
 }
 
@@ -594,6 +777,9 @@ fn summoning_id(spirit: SpiritKind) -> &'static str {
         SpiritKind::Water => "water-spirit-summoning",
         SpiritKind::Fire => "fire-spirit-summoning",
         SpiritKind::Earth => "earth-spirit-summoning",
+        SpiritKind::Evil | SpiritKind::Death => {
+            unreachable!("Dark Spirits use Profession Formations")
+        }
     }
 }
 
@@ -604,6 +790,9 @@ fn summoning_name(spirit: SpiritKind) -> &'static str {
         SpiritKind::Water => "水靈喚術",
         SpiritKind::Fire => "火靈喚術",
         SpiritKind::Earth => "土靈喚術",
+        SpiritKind::Evil | SpiritKind::Death => {
+            unreachable!("Dark Spirits use Profession Formations")
+        }
     }
 }
 
@@ -614,6 +803,9 @@ fn element_label(spirit: SpiritKind) -> &'static str {
         SpiritKind::Water => "水",
         SpiritKind::Fire => "火",
         SpiritKind::Earth => "土",
+        SpiritKind::Evil | SpiritKind::Death => {
+            unreachable!("Dark Spirits have no elemental summoning label")
+        }
     }
 }
 

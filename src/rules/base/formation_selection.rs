@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct FormationSelection {
+    enabled_rule_modules: Vec<crate::domain::RuleModuleId>,
     profession: Option<crate::domain::ProfessionId>,
     cards: Vec<CardInstanceId>,
     facts: Vec<SubmittedCardFacts>,
@@ -17,6 +18,9 @@ pub(super) struct FormationSelection {
     team_star: Option<crate::domain::StarKind>,
     prepared: Option<crate::domain::PreparedProfessionAbility>,
     spirit_level_interpretations: Vec<crate::domain::SpiritLevelInterpretation>,
+    residual_card_facts: Option<(crate::domain::Element, u32)>,
+    limited_uses: Vec<crate::domain::LimitedUse>,
+    confluence_card_obligation: Option<crate::domain::ConfluenceCardObligation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,6 +79,7 @@ impl FormationSelection {
             .flatten();
 
         Ok(Self {
+            enabled_rule_modules: state.enabled_rule_modules.clone(),
             profession: state.profession_for(player).cloned(),
             cards: selected_cards,
             facts,
@@ -96,6 +101,20 @@ impl FormationSelection {
                 })
                 .cloned()
                 .collect(),
+            residual_card_facts: crate::rules::confluence::residual_card_facts(state, player),
+            limited_uses: state
+                .limited_uses
+                .iter()
+                .filter(|use_count| &use_count.owner == player)
+                .cloned()
+                .collect(),
+            confluence_card_obligation: state
+                .confluence_card_obligations
+                .iter()
+                .find(|obligation| {
+                    &obligation.owner == player && obligation.applied_on_turn == state.turn_number
+                })
+                .cloned(),
         })
     }
 
@@ -106,11 +125,16 @@ impl FormationSelection {
             .formations()
             .into_iter()
             .flat_map(|formation| {
-                let role_options = crate::rules::hero::formation_role_options(
+                let mut role_options = crate::rules::hero::formation_role_options(
                     &formation.id,
                     &self.cards,
                     &self.facts,
                 );
+                role_options.extend(crate::rules::confluence::formation_role_options(
+                    &formation.id,
+                    self.residual_card_facts,
+                    &self.cards,
+                ));
                 let role_options = if role_options.is_empty() {
                     vec![(Vec::new(), None)]
                 } else {
@@ -238,8 +262,13 @@ impl FormationSelection {
                 },
             ));
         }
-        let role_options =
+        let mut role_options =
             crate::rules::hero::formation_role_options(&formation.id, &self.cards, &self.facts);
+        role_options.extend(crate::rules::confluence::formation_role_options(
+            &formation.id,
+            self.residual_card_facts,
+            &self.cards,
+        ));
         let mut declared_targets = declared_targets;
         if !role_options.is_empty() {
             let declared_role = declared_targets
@@ -337,13 +366,61 @@ impl FormationSelection {
         formation: &FormationDef,
         matcher: &crate::rules::FormationMatcher<'_>,
     ) -> Vec<Option<StarElementSubstitution>> {
+        if self.prepared.as_ref().is_some_and(|prepared| {
+            prepared.ability_id == "dark:dark-spirit" && self.cards.contains(&prepared.card)
+        }) {
+            return Vec::new();
+        }
+        if !crate::rules::confluence::formation_selection_satisfies_obligation(
+            self.confluence_card_obligation.as_ref(),
+            &formation.id,
+            &self.cards,
+        ) {
+            return Vec::new();
+        }
         if formation.id == "empty-city" && self.matches_passive_proficiency() {
             return Vec::new();
         }
 
         if crate::rules::hero::is_profession_formation(&formation.id)
             && !crate::rules::hero::can_use_profession_formation(
+                &self.enabled_rule_modules,
                 self.profession.as_ref(),
+                &formation.id,
+            )
+        {
+            return Vec::new();
+        }
+        if crate::rules::jianghu::is_profession_formation(&formation.id)
+            && !crate::rules::jianghu::can_use_profession_formation(
+                &self.enabled_rule_modules,
+                self.profession.as_ref(),
+                &formation.id,
+            )
+        {
+            return Vec::new();
+        }
+        if crate::rules::confluence::is_profession_formation(&formation.id)
+            && !crate::rules::confluence::can_use_profession_formation(
+                &self.enabled_rule_modules,
+                self.profession.as_ref(),
+                &formation.id,
+            )
+        {
+            return Vec::new();
+        }
+        if crate::rules::dark::is_profession_formation(&formation.id)
+            && !crate::rules::dark::can_use_profession_formation(
+                &self.enabled_rule_modules,
+                self.profession.as_ref(),
+                &formation.id,
+            )
+        {
+            return Vec::new();
+        }
+        if crate::rules::confluence::is_profession_formation(&formation.id)
+            && !crate::rules::confluence::formation_available_for_selection(
+                &self.limited_uses,
                 &formation.id,
             )
         {
@@ -357,11 +434,24 @@ impl FormationSelection {
         }
 
         let mut options = Vec::new();
-        if matcher.matches(&formation.pattern, &self.facts) {
+        let formation_matches = if crate::rules::confluence::is_profession_formation(&formation.id)
+        {
+            crate::rules::confluence::formation_matches(
+                &formation.id,
+                self.residual_card_facts,
+                &self.facts,
+            )
+        } else if crate::rules::dark::is_profession_formation(&formation.id) {
+            crate::rules::dark::formation_matches(&formation.id, &self.facts)
+        } else {
+            matcher.matches(&formation.pattern, &self.facts)
+        };
+        if formation_matches {
             options.push(None);
         }
 
         if crate::rules::hero::matches_proficiency(
+            &self.enabled_rule_modules,
             self.profession.as_ref(),
             &formation.id,
             &self.facts,
@@ -404,6 +494,7 @@ impl FormationSelection {
                     Some(EffectPlan::PassiveSpell(_))
                 )
                 && crate::rules::hero::matches_proficiency(
+                    &self.enabled_rule_modules,
                     self.profession.as_ref(),
                     &formation.id,
                     &self.facts,
@@ -419,11 +510,39 @@ impl FormationSelection {
         let Some(prepared) = &self.prepared else {
             return false;
         };
+        if crate::rules::hero::is_profession_formation(&formation.id)
+            && !crate::rules::hero::can_use_profession_formation(
+                &self.enabled_rule_modules,
+                self.profession.as_ref(),
+                &formation.id,
+            )
+            || crate::rules::jianghu::is_profession_formation(&formation.id)
+                && !crate::rules::jianghu::can_use_profession_formation(
+                    &self.enabled_rule_modules,
+                    self.profession.as_ref(),
+                    &formation.id,
+                )
+            || crate::rules::confluence::is_profession_formation(&formation.id)
+                && !crate::rules::confluence::can_use_profession_formation(
+                    &self.enabled_rule_modules,
+                    self.profession.as_ref(),
+                    &formation.id,
+                )
+            || crate::rules::dark::is_profession_formation(&formation.id)
+                && !crate::rules::dark::can_use_profession_formation(
+                    &self.enabled_rule_modules,
+                    self.profession.as_ref(),
+                    &formation.id,
+                )
+        {
+            return false;
+        }
         if !self.cards.contains(&prepared.card)
             || !prepared.allowed_formation_scope.iter().any(|scope| {
                 scope == &formation.id
                     || (scope == "base"
                         && base_formation_registry().formation(&formation.id).is_some())
+                    || scope == "all"
             })
         {
             return false;
@@ -446,7 +565,14 @@ impl FormationSelection {
             level: later_spirit_level.unwrap_or(prepared.level),
         };
         matcher.matches(&formation.pattern, &interpreted)
+            || crate::rules::confluence::formation_matches(
+                &formation.id,
+                self.residual_card_facts,
+                &interpreted,
+            )
+            || crate::rules::dark::formation_matches(&formation.id, &interpreted)
             || crate::rules::hero::matches_proficiency(
+                &self.enabled_rule_modules,
                 self.profession.as_ref(),
                 &formation.id,
                 &interpreted,
@@ -461,6 +587,7 @@ impl FormationSelection {
         if self.cards.len() != 3
             || base_formation_registry().formation(&formation.id).is_none()
             || !crate::rules::hero::profession_has_ability(
+                &self.enabled_rule_modules,
                 self.profession.as_ref(),
                 crate::rules::hero::ProfessionAbility::SacredArt,
             )

@@ -4,6 +4,7 @@ mod recorded_event_log;
 
 use crate::domain::{
     CardInstanceId, Command, CommandId, GameError, GameEvent, GameResult, GameSetup, GameState,
+    RandomnessDeck, TrustedRandomnessAnswer, ValidationError,
 };
 use crate::ports::DeckPreparation as DeckPreparationPort;
 use crate::public_view::{PublicGameEvent, PublicGameState, Viewer};
@@ -172,6 +173,18 @@ impl GameRecord {
         self.advance_until_decision().map(EventBatch::into_events)
     }
 
+    pub fn resolve_randomness(
+        &mut self,
+        answer: TrustedRandomnessAnswer,
+    ) -> GameResult<EventBatch> {
+        let events = resolve_trusted_randomness(self.state(), &answer)?;
+        self.event_log.append_randomness(answer, events.clone());
+        for event in &events {
+            apply_event(&mut self.current_state, event);
+        }
+        Ok(EventBatch::new(events))
+    }
+
     pub fn verify_replay(&self) -> Result<GameState, ReplayVerificationError> {
         verify_recorded_decisions(&self.setup, &self.recorded_decisions())
     }
@@ -218,6 +231,9 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         GameEvent::DiscardRecycledIntoDeck { .. }
         | GameEvent::PlayerDiscardRecycledIntoDeck { .. } => Some(AutomaticReason::DiscardRecycle),
         GameEvent::StatusExpired { .. } => Some(AutomaticReason::StatusExpired),
+        GameEvent::JianghuStateExpired { .. } => Some(AutomaticReason::StatusExpired),
+        GameEvent::JianghuPoisonTicked { .. } => Some(AutomaticReason::TurnEnd),
+        GameEvent::JianghuDelayedDamageResolved { .. } => Some(AutomaticReason::TurnEnd),
         GameEvent::TurnEnded { .. } => Some(AutomaticReason::TurnEnd),
         GameEvent::DeckPrepared { .. }
         | GameEvent::PlayerDeckPrepared { .. }
@@ -226,9 +242,11 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::CounterEffectResolved { .. }
         | GameEvent::ActionPassed { .. }
         | GameEvent::ProfessionChanged { .. }
+        | GameEvent::ProfessionTransformed { .. }
         | GameEvent::ProfessionBroken { .. }
         | GameEvent::ProfessionAbilityActivated { .. }
         | GameEvent::SpiritSummoned { .. }
+        | GameEvent::SpiritTransformed { .. }
         | GameEvent::SpiritPowerChanged { .. }
         | GameEvent::SpiritSkillUsed { .. }
         | GameEvent::SpiritLevelInterpreted { .. }
@@ -246,12 +264,16 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::FiveStarAlignmentAchieved { .. }
         | GameEvent::CardsMoved { .. }
         | GameEvent::EffectChoiceAnswered { .. }
+        | GameEvent::TypedEffectChoiceAnswered { .. }
         | GameEvent::EffectChoiceRequested { .. }
+        | GameEvent::RandomnessRequested { .. }
+        | GameEvent::RandomnessResolved { .. }
         | GameEvent::FormationEffectCopied { .. }
         | GameEvent::FormationEffectIgnored { .. }
         | GameEvent::FormationPerformed { .. }
         | GameEvent::FormationMatchOptionDeclared { .. }
         | GameEvent::HandInspected { .. }
+        | GameEvent::DeckTopRevealed { .. }
         | GameEvent::HpChanged { .. }
         | GameEvent::PassiveCovered { .. }
         | GameEvent::PassiveCoverRevealed { .. }
@@ -259,6 +281,10 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::ShieldChanged { .. }
         | GameEvent::StatusAdded { .. }
         | GameEvent::StatusRemoved { .. }
+        | GameEvent::JianghuStateApplied { .. }
+        | GameEvent::LimitedUseChanged { .. }
+        | GameEvent::ConfluenceCardObligationSet { .. }
+        | GameEvent::ConfluenceCardObligationCleared { .. }
         | GameEvent::TurnDrawBonusChanged { .. }
         | GameEvent::TurnDiscardChosen { .. }
         | GameEvent::DiscardRetrieved { .. } => None,
@@ -272,6 +298,11 @@ fn command_context(command: &Command) -> CommandContext {
             kind: CommandKind::PassAction,
         },
         Command::PerformFormation {
+            player,
+            formation_id,
+            ..
+        }
+        | Command::PerformFormationWithTrustedRandomness {
             player,
             formation_id,
             ..
@@ -297,7 +328,8 @@ fn command_context(command: &Command) -> CommandContext {
                 ability_id: ability_id.clone(),
             },
         },
-        Command::UseSpiritSkill { player, skill, .. } => CommandContext {
+        Command::UseSpiritSkill { player, skill, .. }
+        | Command::UseSpiritSkillWithTrustedRandomness { player, skill, .. } => CommandContext {
             player: player.clone(),
             kind: CommandKind::UseSpiritSkill { skill: *skill },
         },
@@ -305,7 +337,8 @@ fn command_context(command: &Command) -> CommandContext {
             player: player.clone(),
             kind: CommandKind::ChooseTurnDiscard,
         },
-        Command::AnswerEffectChoice { player, .. } => CommandContext {
+        Command::AnswerEffectChoice { player, .. }
+        | Command::AnswerEffectChoiceTyped { player, .. } => CommandContext {
             player: player.clone(),
             kind: CommandKind::AnswerEffectChoice,
         },
@@ -322,6 +355,51 @@ pub fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
 
 pub fn handle_command(state: &GameState, command: Command) -> GameResult<Vec<GameEvent>> {
     OfficialRules::new().decide_command(state, command)
+}
+
+pub fn resolve_trusted_randomness(
+    state: &GameState,
+    answer: &TrustedRandomnessAnswer,
+) -> GameResult<Vec<GameEvent>> {
+    let request = state
+        .pending_randomness
+        .as_ref()
+        .ok_or(GameError::Validation(
+            ValidationError::MissingPendingRandomness,
+        ))?;
+    if request.request_id != answer.request_id {
+        return Err(GameError::Validation(
+            ValidationError::MissingPendingRandomness,
+        ));
+    }
+
+    let current_order = match &request.deck {
+        RandomnessDeck::Shared => &state.deck,
+        RandomnessDeck::Player(player) => state
+            .deck_for(player)
+            .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?,
+    };
+    if current_order != request.current_order {
+        return Err(GameError::Validation(
+            ValidationError::StalePendingRandomness,
+        ));
+    }
+
+    let mut expected = request.current_order.clone();
+    let mut actual = answer.shuffled_order.clone();
+    expected.sort();
+    actual.sort();
+    if expected != actual {
+        return Err(GameError::Validation(
+            ValidationError::InvalidRandomnessPermutation,
+        ));
+    }
+
+    Ok(vec![GameEvent::RandomnessResolved {
+        request_id: request.request_id.clone(),
+        deck: request.deck.clone(),
+        shuffled_order: answer.shuffled_order.clone(),
+    }])
 }
 
 pub fn apply_event(state: &mut GameState, event: &GameEvent) {
@@ -389,6 +467,15 @@ pub fn verify_recorded_decisions(
                     error: Box::new(error),
                 }
             })?,
+            RecordedDecisionSource::Randomness { answer } => {
+                resolve_trusted_randomness(&state, answer).map_err(|error| {
+                    ReplayVerificationError::DecisionFailed {
+                        sequence,
+                        source: source.clone(),
+                        error: Box::new(error),
+                    }
+                })?
+            }
             RecordedDecisionSource::Command { command, .. } => {
                 handle_command(&state, command.clone()).map_err(|error| {
                     ReplayVerificationError::DecisionFailed {
@@ -426,6 +513,9 @@ fn source_for_recorded_decision(decision: &RecordedDecision) -> EventSource {
                 .first()
                 .and_then(automatic_reason)
                 .unwrap_or(AutomaticReason::TurnStart),
+        },
+        RecordedDecisionSource::Randomness { answer } => EventSource::Randomness {
+            request_id: answer.request_id.clone(),
         },
         RecordedDecisionSource::Command {
             command_id,

@@ -72,6 +72,51 @@ pub(crate) enum ProfessionAbility {
     Revelation,
 }
 
+impl ProfessionAbility {
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Self::PhysicalDamageResistance => "hero:physical-damage-resistance",
+            Self::WeaponProficiency => "hero:weapon-proficiency",
+            Self::DefenseProficiency => "hero:defense-proficiency",
+            Self::CountershockProficiency => "hero:countershock-proficiency",
+            Self::WeaponMastery => "hero:weapon-mastery",
+            Self::ShockBurstProficiency => "hero:shock-burst-proficiency",
+            Self::MetalResistance => "hero:metal-resistance",
+            Self::BattleSoul => "hero:battle-soul",
+            Self::SeekerDiscount => "hero:seeker-discount",
+            Self::GeneratingFormationProficiency => "hero:generating-formation-proficiency",
+            Self::OvercomingFormationProficiency => "hero:overcoming-formation-proficiency",
+            Self::ReturnToOriginProficiency => "hero:return-to-origin-proficiency",
+            Self::FiveElementsCycleProficiency => "hero:five-elements-cycle-proficiency",
+            Self::WoodResistance => "hero:wood-resistance",
+            Self::SpellProtection => "hero:spell-protection",
+            Self::Illusion => "hero:illusion",
+            Self::SealProficiency => "hero:seal-proficiency",
+            Self::IllusionRefinement => "hero:illusion-refinement",
+            Self::BarrierProficiency => "hero:barrier-proficiency",
+            Self::Phantasm => "hero:phantasm",
+            Self::WaterResistance => "hero:water-resistance",
+            Self::TripleElementProficiency => "hero:triple-element-proficiency",
+            Self::RadianceProficiency => "hero:radiance-proficiency",
+            Self::FiveStreamsUniteProficiency => "hero:five-streams-unite-proficiency",
+            Self::FireResistance => "hero:fire-resistance",
+            Self::ArcaneEssence => "hero:arcane-essence",
+            Self::Windwalking => "hero:windwalking",
+            Self::MetamorphosisProficiency => "hero:metamorphosis-proficiency",
+            Self::ShadowCut => "hero:shadow-cut",
+            Self::ChaosProficiency => "hero:chaos-proficiency",
+            Self::EarthResistance => "hero:earth-resistance",
+            Self::ShadowEscape => "hero:shadow-escape",
+            Self::Choice => "hero:choice",
+            Self::Breakthrough => "hero:breakthrough",
+            Self::ImmortalDrawBonus => "hero:immortal-draw-bonus",
+            Self::Meditation => "hero:meditation",
+            Self::SacredArt => "hero:sacred-art",
+            Self::Revelation => "hero:revelation",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum IncomingDamageModifier {
     None,
@@ -337,21 +382,47 @@ pub(crate) fn profession(id: &ProfessionId) -> Option<ProfessionDef> {
         .find(|profession| &profession.id == id)
 }
 
-pub(crate) fn effective_abilities(id: &ProfessionId) -> Vec<ProfessionAbility> {
-    let Some(profession) = profession(id) else {
-        return Vec::new();
-    };
-    let mut abilities = profession
-        .parent
-        .as_ref()
-        .map(effective_abilities)
-        .unwrap_or_default();
-    abilities.extend(profession.abilities);
-    abilities
+pub(crate) fn profession_catalog_entries() -> Vec<crate::rules::profession::ProfessionCatalogEntry>
+{
+    catalog()
+        .into_iter()
+        .map(
+            |profession| crate::rules::profession::ProfessionCatalogEntry {
+                id: profession.id,
+                module_id: HERO_SCHOOLS_MODULE_ID,
+                name: profession.name,
+                rule_text: profession.rule_text,
+                parents: profession.parent.into_iter().collect(),
+                ability_ids: profession
+                    .abilities
+                    .into_iter()
+                    .map(ProfessionAbility::id)
+                    .collect(),
+            },
+        )
+        .collect()
 }
 
-pub(crate) fn effective_ability_summaries(id: &ProfessionId) -> Vec<&'static str> {
-    effective_abilities(id)
+fn effective_abilities(
+    enabled_modules: &[crate::domain::RuleModuleId],
+    id: &ProfessionId,
+) -> Vec<ProfessionAbility> {
+    let known = catalog()
+        .into_iter()
+        .flat_map(|profession| profession.abilities)
+        .map(|ability| (ability.id(), ability))
+        .collect::<std::collections::HashMap<_, _>>();
+    crate::rules::profession::effective_ability_ids(enabled_modules, id)
+        .into_iter()
+        .filter_map(|id| known.get(id).copied())
+        .collect()
+}
+
+pub(crate) fn effective_ability_summaries(
+    enabled_modules: &[crate::domain::RuleModuleId],
+    id: &ProfessionId,
+) -> Vec<&'static str> {
+    effective_abilities(enabled_modules, id)
         .into_iter()
         .map(|ability| match ability {
             ProfessionAbility::PhysicalDamageResistance => "卸勁：受到的物理傷害減半",
@@ -402,12 +473,15 @@ pub(crate) fn effective_ability_summaries(id: &ProfessionId) -> Vec<&'static str
         .collect()
 }
 
-pub(crate) fn profession_formation_summaries(id: &ProfessionId) -> Vec<(String, String)> {
+pub(crate) fn profession_formation_summaries(
+    enabled_modules: &[crate::domain::RuleModuleId],
+    id: &ProfessionId,
+) -> Vec<(String, String)> {
     formation_specs()
         .into_iter()
         .filter(|formation| {
             formation.formation.id != "void-reversion"
-                && can_use_profession_formation(Some(id), &formation.formation.id)
+                && can_use_profession_formation(enabled_modules, Some(id), &formation.formation.id)
                 && is_profession_formation(&formation.formation.id)
         })
         .map(|formation| (formation.formation.name, formation.formation.rule_text))
@@ -588,6 +662,7 @@ fn submitted_card_facts(
 }
 
 pub(crate) fn matches_proficiency(
+    enabled_modules: &[crate::domain::RuleModuleId],
     profession: Option<&ProfessionId>,
     formation_id: &str,
     cards: &[SubmittedCardFacts],
@@ -595,7 +670,7 @@ pub(crate) fn matches_proficiency(
     let Some(profession) = profession else {
         return false;
     };
-    let abilities = effective_abilities(profession);
+    let abilities = effective_abilities(enabled_modules, profession);
     match formation_id {
         "weapon" if abilities.contains(&ProfessionAbility::WeaponProficiency) => {
             cards.len() == 2 && cards.iter().any(|card| card.element == Element::Metal)
@@ -729,6 +804,7 @@ fn overcomes(first: Element, second: Element) -> bool {
 }
 
 pub(crate) fn can_use_profession_formation(
+    enabled_modules: &[crate::domain::RuleModuleId],
     profession: Option<&ProfessionId>,
     formation_id: &str,
 ) -> bool {
@@ -738,16 +814,23 @@ pub(crate) fn can_use_profession_formation(
     let Some(profession) = profession else {
         return false;
     };
+    let inherits = |ancestor: &str| {
+        crate::rules::profession::inherits_from(
+            enabled_modules,
+            profession,
+            &ProfessionId::new(ancestor),
+        )
+    };
     match formation_id {
-        "divine-weapon" => matches!(profession.as_str(), WAR_GOD_ID | HERO_ID),
+        "divine-weapon" => inherits(WAR_GOD_ID),
         "falling-light-slash" => profession.as_str() == HERO_ID,
-        "dao-defense" => matches!(profession.as_str(), EXPOUNDER_ID | BENEVOLENT_ID),
+        "dao-defense" => inherits(EXPOUNDER_ID),
         "reincarnation" => profession.as_str() == BENEVOLENT_ID,
-        "magic-seal" => matches!(profession.as_str(), SPIRIT_MESMER_ID | HERMIT_ID),
+        "magic-seal" => inherits(SPIRIT_MESMER_ID),
         "purple-light-shield" => profession.as_str() == HERMIT_ID,
-        "magic-shock" => matches!(profession.as_str(), MAGE_GUIDE_ID | SAGE_ID),
+        "magic-shock" => inherits(MAGE_GUIDE_ID),
         "magic-reflection-flash" => profession.as_str() == SAGE_ID,
-        "shadow-assault" => matches!(profession.as_str(), SHADOW_WALKER_ID | MARTIAL_ARTIST_ID),
+        "shadow-assault" => inherits(SHADOW_WALKER_ID),
         "instant-shadow-death" => profession.as_str() == MARTIAL_ARTIST_ID,
         "condensed-void-arrow" | "sky-bow-roar" => profession.as_str() == IMMORTAL_ID,
         "holy-light-break" | "holy-wind" => profession.as_str() == SAINT_ID,
@@ -788,7 +871,7 @@ pub(crate) fn incoming_damage_modifier(
     let Some(profession) = state.profession_for(target) else {
         return IncomingDamageModifier::None;
     };
-    let abilities = effective_abilities(profession);
+    let abilities = effective_abilities(&state.enabled_rule_modules, profession);
     let resisted_element = match category {
         AttackCategory::Elemental(element) => Some(*element),
         AttackCategory::Physical | AttackCategory::Special => None,
@@ -829,7 +912,7 @@ pub(crate) fn modify_attack_points(
     let Some(profession) = state.profession_for(player) else {
         return points;
     };
-    let abilities = effective_abilities(profession);
+    let abilities = effective_abilities(&state.enabled_rule_modules, profession);
     if triple_formation_element(formation_id).is_some()
         && abilities.contains(&ProfessionAbility::TripleElementProficiency)
         && cards.len() == 3
@@ -877,10 +960,10 @@ pub(crate) fn star_summoning_allowed(
     if !used_mage_proficiency {
         return true;
     }
-    state
-        .profession_for(player)
-        .map(effective_abilities)
-        .is_some_and(|abilities| abilities.contains(&ProfessionAbility::ArcaneEssence))
+    state.profession_for(player).is_some_and(|profession| {
+        effective_abilities(&state.enabled_rule_modules, profession)
+            .contains(&ProfessionAbility::ArcaneEssence)
+    })
 }
 
 pub(crate) fn windwalking_applies(
@@ -889,26 +972,27 @@ pub(crate) fn windwalking_applies(
     attack_points: i32,
 ) -> bool {
     attack_points <= 15
-        && state
-            .profession_for(player)
-            .map(effective_abilities)
-            .is_some_and(|abilities| abilities.contains(&ProfessionAbility::Windwalking))
+        && state.profession_for(player).is_some_and(|profession| {
+            effective_abilities(&state.enabled_rule_modules, profession)
+                .contains(&ProfessionAbility::Windwalking)
+        })
 }
 
 pub(crate) fn spell_counter_immunity(state: &GameState, player: &PlayerId) -> bool {
-    state
-        .profession_for(player)
-        .map(effective_abilities)
-        .is_some_and(|abilities| abilities.contains(&ProfessionAbility::SpellProtection))
+    state.profession_for(player).is_some_and(|profession| {
+        effective_abilities(&state.enabled_rule_modules, profession)
+            .contains(&ProfessionAbility::SpellProtection)
+    })
 }
 
 pub(crate) fn profession_has_ability(
+    enabled_modules: &[crate::domain::RuleModuleId],
     profession: Option<&ProfessionId>,
     ability: ProfessionAbility,
 ) -> bool {
-    profession
-        .map(effective_abilities)
-        .is_some_and(|abilities| abilities.contains(&ability))
+    profession.is_some_and(|profession| {
+        effective_abilities(enabled_modules, profession).contains(&ability)
+    })
 }
 
 pub(crate) fn discard_retrieval_cost(
@@ -917,6 +1001,7 @@ pub(crate) fn discard_retrieval_cost(
     normal_cost: i32,
 ) -> i32 {
     if profession_has_ability(
+        &state.enabled_rule_modules,
         state.profession_for(player),
         ProfessionAbility::SeekerDiscount,
     ) {
@@ -931,12 +1016,16 @@ pub(crate) fn target_ignores_disruptive_spell(
     caster: &PlayerId,
     resolver_id: &str,
 ) -> GameResult<bool> {
-    if !matches!(resolver_id, "radiance" | "chaos") {
+    if !matches!(
+        resolver_id,
+        "radiance" | "chaos" | crate::rules::dark::DARK_RADIANCE | crate::rules::dark::DARK_CHAOS
+    ) {
         return Ok(false);
     }
     let target =
         TurnOrderTargets::new(state).player_target(caster, RulePlayerTarget::NextPlayer)?;
     Ok(profession_has_ability(
+        &state.enabled_rule_modules,
         state.profession_for(&target),
         ProfessionAbility::ShadowEscape,
     ))
@@ -1000,7 +1089,7 @@ pub(crate) fn playable_profession_abilities(
     let Some(profession) = state.profession_for(player) else {
         return Ok(Vec::new());
     };
-    let abilities = effective_abilities(profession);
+    let abilities = effective_abilities(&state.enabled_rule_modules, profession);
     let mut candidates = Vec::new();
     if cards.len() == 1 {
         let effective_level =
@@ -1135,7 +1224,7 @@ pub(crate) fn activate_profession_ability(
             ability_id.to_string(),
         ))
     })?;
-    let abilities = effective_abilities(profession);
+    let abilities = effective_abilities(&state.enabled_rule_modules, profession);
     let required_ability = match ability_id {
         "illusion" => ProfessionAbility::Illusion,
         "phantasm" => ProfessionAbility::Phantasm,
@@ -1453,7 +1542,7 @@ pub(crate) fn post_formation_intents(
     let Some(profession) = state.profession_for(player) else {
         return Ok(Vec::new());
     };
-    let abilities = effective_abilities(profession);
+    let abilities = effective_abilities(&state.enabled_rule_modules, profession);
     let mut intents = Vec::new();
     if formation_id == "weapon" && abilities.contains(&ProfessionAbility::WeaponMastery) {
         intents.push(PostFormationIntent::AddTurnDraw {

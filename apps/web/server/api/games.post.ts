@@ -34,7 +34,7 @@ export default defineEventHandler(async (event) => {
   if (!hasValidServerRuleModuleDependencies(body.enabledRuleModules)) {
     throw createError({
       statusCode: 400,
-      statusMessage: 'Spirit requires every Advanced Rule Module.',
+      statusMessage: 'Rule Module dependencies are incomplete.',
     })
   }
   const invitation = {

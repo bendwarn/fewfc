@@ -38,6 +38,10 @@ pub const PERSONAL_DECK_MODULE_ID: &str = "personal-deck";
 pub const STAR_MODULE_ID: &str = "star";
 pub const HERO_SCHOOLS_MODULE_ID: &str = "hero-schools";
 pub const SPIRIT_MODULE_ID: &str = "spirit";
+pub const JIANGHU_MODULE_ID: &str = "jianghu";
+pub const CONFLUENCE_GENERATION_MODULE_ID: &str = "confluence-generation";
+pub const DARK_GLIMMER_MODULE_ID: &str = "dark-glimmer";
+pub const ECHO_MODULE_ID: &str = "echo";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RulesetId(String);
@@ -158,6 +162,8 @@ pub enum SpiritKind {
     Water,
     Fire,
     Earth,
+    Evil,
+    Death,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -179,6 +185,8 @@ pub enum SpiritSkill {
     Splendor,
     StoneShield,
     RockWall,
+    EvilGaze,
+    DeathOmen,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -215,6 +223,7 @@ pub struct TeamBloomResolution {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum SpiritPowerChangeReason {
     TurnDrawDiscard { card: CardInstanceId },
+    SkillEffect,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -397,6 +406,42 @@ pub struct StatusEffect {
     pub kind: String,
     pub value: Option<i32>,
     pub duration: StatusDuration,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum JianghuStateKind {
+    ThousandBlades,
+    SnowTreading,
+    Poison,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct JianghuState {
+    pub owner: PlayerId,
+    pub kind: JianghuStateKind,
+    #[serde(default)]
+    pub remaining_turns: u32,
+    pub expires_on_turn: Option<u64>,
+    #[serde(default)]
+    pub last_resolved_turn: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct LimitedUse {
+    pub owner: PlayerId,
+    pub key: String,
+    pub remaining: u32,
+    pub maximum: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ConfluenceCardObligation {
+    pub owner: PlayerId,
+    pub card: CardInstanceId,
+    pub allow_profession_formation: bool,
+    pub applied_on_turn: u64,
+    pub residual_element: Option<Element>,
+    pub residual_level: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -588,6 +633,8 @@ pub struct GameState {
     #[serde(default)]
     pub last_turn_discard_by_player: HashMap<PlayerId, LastTurnDiscard>,
     pub pending_choice: Option<PendingChoice>,
+    #[serde(default)]
+    pub pending_randomness: Option<PendingRandomness>,
     pub shields: Vec<PlayerShield>,
     pub covered_passives: Vec<CoveredPassive>,
     #[serde(default)]
@@ -595,6 +642,12 @@ pub struct GameState {
     #[serde(default)]
     pub counter_effects: Vec<CounterEffect>,
     pub statuses: Vec<StatusEffect>,
+    #[serde(default)]
+    pub jianghu_states: Vec<JianghuState>,
+    #[serde(default)]
+    pub limited_uses: Vec<LimitedUse>,
+    #[serde(default)]
+    pub confluence_card_obligations: Vec<ConfluenceCardObligation>,
     #[serde(default)]
     pub environment: Option<Element>,
     #[serde(default)]
@@ -665,6 +718,7 @@ impl GameState {
             exposed_foreign_cards: Vec::new(),
             last_turn_discard_by_player: HashMap::new(),
             pending_choice: None,
+            pending_randomness: None,
             shields: setup
                 .players
                 .iter()
@@ -677,6 +731,9 @@ impl GameState {
             revealed_covered_passive_owners: Vec::new(),
             counter_effects: Vec::new(),
             statuses: Vec::new(),
+            jianghu_states: Vec::new(),
+            limited_uses: Vec::new(),
+            confluence_card_obligations: Vec::new(),
             environment: None,
             team_stars: Vec::new(),
             star_histories: setup
@@ -865,6 +922,43 @@ pub struct PendingChoice {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum EffectChoiceAnswer {
+    Cards {
+        cards: Vec<CardInstanceId>,
+    },
+    Player {
+        player: PlayerId,
+    },
+    Formation {
+        #[serde(rename = "formationId")]
+        formation_id: String,
+    },
+    Decline,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectChoiceOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cards: Option<CardChoiceOptions>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub players: Vec<PlayerId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formations: Vec<String>,
+    #[serde(default)]
+    pub can_decline: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CardChoiceOptions {
+    pub allowed_cards: Vec<CardInstanceId>,
+    pub minimum: usize,
+    pub maximum: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PendingChoiceKind {
     TurnDrawDiscard {
         drawn_cards: Vec<CardInstanceId>,
@@ -874,6 +968,18 @@ pub enum PendingChoiceKind {
         effect_id: String,
         continuation_id: String,
         allowed_cards: Vec<CardInstanceId>,
+    },
+    CardSetChoice {
+        effect_id: String,
+        continuation_id: String,
+        allowed_cards: Vec<CardInstanceId>,
+        minimum: usize,
+        maximum: usize,
+    },
+    TypedEffect {
+        effect_id: String,
+        continuation_id: String,
+        options: EffectChoiceOptions,
     },
 }
 
@@ -892,8 +998,51 @@ impl PendingChoiceKind {
                     allowed_cards.len().min(1)
                 }
             }
+            Self::CardSetChoice { minimum, .. } => *minimum,
+            Self::TypedEffect { options, .. } => {
+                options.cards.as_ref().map_or(0, |cards| cards.minimum)
+            }
         }
     }
+
+    pub fn selection_bounds(&self) -> (usize, usize) {
+        match self {
+            Self::TurnDrawDiscard { .. } => (1, 1),
+            Self::EffectGenerated { .. } => {
+                let required = self.required_count();
+                (required, required)
+            }
+            Self::CardSetChoice {
+                minimum, maximum, ..
+            } => (*minimum, *maximum),
+            Self::TypedEffect { options, .. } => options
+                .cards
+                .as_ref()
+                .map_or((0, 0), |cards| (cards.minimum, cards.maximum)),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRandomness {
+    pub request_id: String,
+    pub deck: RandomnessDeck,
+    pub continuation_id: String,
+    pub current_order: Vec<CardInstanceId>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum RandomnessDeck {
+    Shared,
+    Player(PlayerId),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustedRandomnessAnswer {
+    pub request_id: String,
+    pub shuffled_order: Vec<CardInstanceId>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -923,6 +1072,12 @@ pub enum GameEvent {
         profession: ProfessionId,
         card_moves: Vec<CardMoveDelta>,
     },
+    ProfessionTransformed {
+        player: PlayerId,
+        previous: Option<ProfessionId>,
+        profession: ProfessionId,
+        reason: String,
+    },
     ProfessionBroken {
         player: PlayerId,
         profession: ProfessionId,
@@ -936,6 +1091,12 @@ pub enum GameEvent {
         player: PlayerId,
         previous: Option<SpiritKind>,
         spirit: SpiritKind,
+    },
+    SpiritTransformed {
+        player: PlayerId,
+        previous: SpiritKind,
+        spirit: SpiritKind,
+        power: u32,
     },
     SpiritPowerChanged {
         player: PlayerId,
@@ -1022,6 +1183,10 @@ pub enum GameEvent {
         target: PlayerId,
         cards: Vec<CardInstanceId>,
     },
+    DeckTopRevealed {
+        player: PlayerId,
+        card: CardInstanceId,
+    },
     AttackResolved {
         attacker: PlayerId,
         target: PlayerId,
@@ -1072,6 +1237,12 @@ pub enum GameEvent {
         spirit_changes: Vec<SpiritPowerDelta>,
         broken_spirits: Vec<PlayerSpirit>,
         hp_changes: Vec<HpChangeDelta>,
+        #[serde(default)]
+        broken_professions: Vec<PlayerProfession>,
+        #[serde(default)]
+        revived_spirits: Vec<PlayerSpirit>,
+        #[serde(default)]
+        shared_fate_hp_changes: Vec<HpChangeDelta>,
     },
     FiveStarAlignmentAchieved {
         player: PlayerId,
@@ -1107,6 +1278,42 @@ pub enum GameEvent {
         status_id: String,
         owner: StatusOwner,
     },
+    JianghuStateApplied {
+        state: JianghuState,
+    },
+    JianghuStateExpired {
+        owner: PlayerId,
+        kind: JianghuStateKind,
+    },
+    JianghuPoisonTicked {
+        owner: PlayerId,
+        damage: i32,
+        remaining_turns: u32,
+        hp_change: HpChangeDelta,
+        #[serde(default)]
+        shared_fate_hp_change: Option<HpChangeDelta>,
+    },
+    JianghuDelayedDamageResolved {
+        owner: PlayerId,
+        status_id: String,
+        hp_change: HpChangeDelta,
+        #[serde(default)]
+        shared_fate_hp_change: Option<HpChangeDelta>,
+    },
+    LimitedUseChanged {
+        owner: PlayerId,
+        key: String,
+        old_remaining: u32,
+        new_remaining: u32,
+        maximum: u32,
+    },
+    ConfluenceCardObligationSet {
+        obligation: ConfluenceCardObligation,
+    },
+    ConfluenceCardObligationCleared {
+        owner: PlayerId,
+        card: CardInstanceId,
+    },
     EffectChoiceRequested {
         player: PlayerId,
         kind: PendingChoiceKind,
@@ -1116,6 +1323,20 @@ pub enum GameEvent {
         effect_id: String,
         continuation_id: String,
         selected_cards: Vec<CardInstanceId>,
+    },
+    TypedEffectChoiceAnswered {
+        player: PlayerId,
+        effect_id: String,
+        continuation_id: String,
+        answer: EffectChoiceAnswer,
+    },
+    RandomnessRequested {
+        request: PendingRandomness,
+    },
+    RandomnessResolved {
+        request_id: String,
+        deck: RandomnessDeck,
+        shuffled_order: Vec<CardInstanceId>,
     },
     PassiveCovered {
         player: PlayerId,
@@ -1179,6 +1400,13 @@ pub enum Command {
         cards: Vec<CardInstanceId>,
         declared_targets: Vec<TargetDecl>,
     },
+    PerformFormationWithTrustedRandomness {
+        player: PlayerId,
+        formation_id: String,
+        cards: Vec<CardInstanceId>,
+        declared_targets: Vec<TargetDecl>,
+        random_cards: Vec<CardInstanceId>,
+    },
     ChangeProfession {
         player: PlayerId,
         profession: ProfessionId,
@@ -1198,6 +1426,13 @@ pub enum Command {
         selected_card: Option<CardInstanceId>,
         declared_level: Option<u32>,
     },
+    UseSpiritSkillWithTrustedRandomness {
+        player: PlayerId,
+        skill: SpiritSkill,
+        selected_card: Option<CardInstanceId>,
+        declared_level: Option<u32>,
+        random_cards: Vec<CardInstanceId>,
+    },
     ChooseTurnDiscard {
         player: PlayerId,
         discard: CardInstanceId,
@@ -1205,6 +1440,10 @@ pub enum Command {
     AnswerEffectChoice {
         player: PlayerId,
         selected_cards: Vec<CardInstanceId>,
+    },
+    AnswerEffectChoiceTyped {
+        player: PlayerId,
+        answer: EffectChoiceAnswer,
     },
     RetrievePreviousTurnDiscard {
         player: PlayerId,
@@ -1388,9 +1627,16 @@ pub enum ValidationError {
         team: TeamId,
     },
     MissingPendingChoice,
+    InvalidEffectChoiceAnswer,
     PendingChoiceInProgress {
         player: PlayerId,
     },
+    PendingRandomnessInProgress {
+        request_id: String,
+    },
+    MissingPendingRandomness,
+    StalePendingRandomness,
+    InvalidRandomnessPermutation,
     IllegalDiscard(CardInstanceId),
     IllegalChoiceCard(CardInstanceId),
     DuplicateChoiceCard(CardInstanceId),
@@ -1430,6 +1676,9 @@ pub enum ValidationError {
     },
     SpiritSkillInputInvalid {
         skill: SpiritSkill,
+    },
+    TrustedRandomSelectionRequired {
+        effect_id: String,
     },
     UnexpectedDeclaredTargets {
         formation_id: String,

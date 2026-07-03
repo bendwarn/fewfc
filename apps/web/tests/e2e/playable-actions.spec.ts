@@ -63,13 +63,6 @@ test('selected cards expose rule-backed actions in vertically ordered control pa
     await expect(startButton).toBeEnabled()
     await startButton.click()
     await Promise.all(pages.map(page => expect(page.locator('.setup-reveal')).toBeHidden()))
-    await expect(host.getByRole('button', { name: '職業教學' })).toBeVisible()
-    await host.getByRole('button', { name: '職業教學' }).click()
-    const teaching = host.getByRole('dialog', { name: '英雄學派職業圖鑑' })
-    await expect(teaching.locator('.profession-card')).toHaveCount(18)
-    await expect(teaching).toContainText('升階後保留')
-    await expect(teaching).toContainText('轉職後不保留原學派能力')
-    await host.getByRole('button', { name: '關閉職業教學' }).click()
 
     const active = await activePlayerPage(pages)
     const ability = active.getByRole('region', { name: '能力' })
