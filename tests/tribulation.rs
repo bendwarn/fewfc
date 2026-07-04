@@ -1,0 +1,704 @@
+use fewfc::application::{apply_event, handle_command, resolve_trusted_randomness};
+use fewfc::domain::{
+    CardInstanceId, CardOrigin, Command, EffectChoiceAnswer, Element,
+    FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID,
+    PERSONAL_DECK_MODULE_ID, Phase, PlayerId, PlayerSpirit, RandomnessDeck, RuleModuleId,
+    STAR_MODULE_ID, SpiritKind, StatusDuration, StatusEffect, StatusOwner, TRIBULATION_MODULE_ID,
+    TeamId, TrustedRandomnessAnswer,
+};
+use fewfc::public_view::{PublicPendingChoiceKind, Viewer, state_for};
+use fewfc::rules::{OfficialRules, PlayableAction};
+
+fn card(id: u64) -> CardInstanceId {
+    CardInstanceId::new(id)
+}
+
+fn setup() -> GameSetup {
+    OfficialRules::new()
+        .configure_game(
+            GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30).players,
+            vec![PlayerId::new("p1"), PlayerId::new("p2")],
+            [
+                STAR_MODULE_ID,
+                FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+                HERO_SCHOOLS_MODULE_ID,
+                TRIBULATION_MODULE_ID,
+            ]
+            .into_iter()
+            .map(RuleModuleId::new)
+            .collect(),
+        )
+        .unwrap()
+}
+
+fn state() -> GameState {
+    let mut state = GameState::from_setup(&setup());
+    state.phase = Phase::Main;
+    state
+}
+
+fn personal_deck_state() -> GameState {
+    let shape = GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30);
+    let mut configured = setup().enabled_rule_modules.to_vec();
+    configured.push(RuleModuleId::new(PERSONAL_DECK_MODULE_ID));
+    let setup = OfficialRules::new()
+        .configure_game_with_decks(shape.players, shape.turn_order, configured, Vec::new())
+        .unwrap();
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state
+}
+
+fn personal_card(
+    state: &GameState,
+    player: &PlayerId,
+    element: Element,
+    level: u32,
+) -> CardInstanceId {
+    state
+        .card_instances
+        .iter()
+        .find(|instance| {
+            instance.origin == CardOrigin::Player(player.clone())
+                && state.card_def(instance.instance).is_some_and(|definition| {
+                    definition.element == element && definition.level == level
+                })
+        })
+        .expect("preconstructed personal deck has the requested card")
+        .instance
+}
+
+fn apply_all(state: &mut GameState, events: &[GameEvent]) {
+    for event in events {
+        apply_event(state, event);
+    }
+}
+
+#[test]
+fn tribulation_is_default_on_and_requires_all_advanced_modules() {
+    assert!(
+        OfficialRules::new()
+            .default_rule_modules()
+            .iter()
+            .any(|module| module.as_str() == TRIBULATION_MODULE_ID)
+    );
+    let error = OfficialRules::new()
+        .configure_game(
+            GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30).players,
+            vec![PlayerId::new("p1"), PlayerId::new("p2")],
+            vec![RuleModuleId::new(TRIBULATION_MODULE_ID)],
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        fewfc::domain::GameError::Validation(
+            fewfc::domain::ValidationError::MissingRuleModuleDependencies { .. }
+        )
+    ));
+}
+
+#[test]
+fn catalog_offers_thunder_fire_only_for_the_complete_variable_pattern() {
+    let mut state = state();
+    state.hands[0].cards = vec![card(13), card(16), card(67), card(70)];
+    let actions = OfficialRules::new()
+        .playable_actions(
+            &state,
+            &PlayerId::new("p1"),
+            &[card(13), card(16), card(67), card(70)],
+        )
+        .unwrap();
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        PlayableAction::PerformFormation(candidate)
+            if candidate.formation_id == "tribulation:thunder-fire"
+    )));
+}
+
+#[test]
+fn thunder_fire_deducts_each_team_then_resolves_its_special_attack() {
+    let mut state = state();
+    state.hands[0].cards = vec![card(13), card(16), card(67), card(70)];
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "tribulation:thunder-fire".to_string(),
+            cards: state.hands[0].cards.clone(),
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, GameEvent::HpChanged { .. }))
+            .count(),
+        2
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            point_breakdown,
+            hp_change,
+            ..
+        } if point_breakdown.base_points == 60 && hp_change.old_hp == 185
+    )));
+}
+
+#[test]
+fn thunder_fire_shared_fate_uses_every_player_on_losing_teams_but_not_a_protected_team() {
+    let shape = GameSetup::team_mode(
+        TeamId::new("a"),
+        vec![PlayerId::new("p1"), PlayerId::new("p3")],
+        TeamId::new("b"),
+        vec![PlayerId::new("p2"), PlayerId::new("p4")],
+        30,
+    );
+    let setup = OfficialRules::new()
+        .configure_game(
+            shape.players,
+            shape.turn_order,
+            setup().enabled_rule_modules,
+        )
+        .unwrap();
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.hands[0].cards = vec![card(13), card(16), card(67), card(70)];
+    state.spirits.extend([
+        PlayerSpirit {
+            player: PlayerId::new("p3"),
+            spirit: SpiritKind::Death,
+            power: 1,
+        },
+        PlayerSpirit {
+            player: PlayerId::new("p4"),
+            spirit: SpiritKind::Death,
+            power: 1,
+        },
+    ]);
+    state.statuses.push(StatusEffect {
+        id: "divine:p3".to_string(),
+        owner: StatusOwner::Player(PlayerId::new("p3")),
+        kind: "DivineCalculation".to_string(),
+        value: None,
+        duration: StatusDuration::Permanent,
+    });
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "tribulation:thunder-fire".to_string(),
+            cards: state.hands[0].cards.clone(),
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    let hp_changes = events
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::HpChanged { change } => Some(change),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(hp_changes.len(), 2);
+    assert!(
+        hp_changes
+            .iter()
+            .any(|change| { change.team == TeamId::new("b") && change.effective_delta == -15 })
+    );
+    assert!(
+        hp_changes
+            .iter()
+            .any(|change| { change.team == TeamId::new("a") && change.effective_delta == -10 })
+    );
+}
+
+#[test]
+fn divine_calculation_replaces_its_owner_and_protects_the_next_tribulation() {
+    let mut state = state();
+    state.hands[0].cards = vec![card(16)];
+    let divine = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "tribulation:divine-calculation".to_string(),
+            cards: vec![card(16)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    apply_all(&mut state, &divine);
+    assert!(state.statuses.iter().any(|status| {
+        status.kind == "DivineCalculation"
+            && status.owner == fewfc::domain::StatusOwner::Player(PlayerId::new("p1"))
+    }));
+
+    state.phase = Phase::Main;
+    state.hands[0].cards = vec![card(13), card(16), card(67), card(70)];
+    let tribulation = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "tribulation:thunder-fire".to_string(),
+            cards: state.hands[0].cards.clone(),
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        tribulation
+            .iter()
+            .filter(|event| matches!(event, GameEvent::HpChanged { .. }))
+            .count(),
+        1
+    );
+    assert!(tribulation.iter().any(|event| matches!(
+        event,
+        GameEvent::StatusRemoved { status_id, .. }
+            if status_id.starts_with("tribulation:divine-calculation:")
+    )));
+}
+
+#[test]
+fn ineffective_tribulation_still_consumes_divine_calculation() {
+    let mut state = state();
+    state.environment = Some(Element::Water);
+    state.hands[0].cards = vec![card(16)];
+    let divine = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "tribulation:divine-calculation".to_string(),
+            cards: vec![card(16)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    apply_all(&mut state, &divine);
+
+    state.phase = Phase::Main;
+    state.hands[0].cards = vec![card(13), card(16), card(67), card(70)];
+    let tribulation = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "tribulation:thunder-fire".to_string(),
+            cards: state.hands[0].cards.clone(),
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert!(tribulation.iter().any(|event| matches!(
+        event,
+        GameEvent::StatusRemoved { status_id, .. }
+            if status_id.starts_with("tribulation:divine-calculation:")
+    )));
+}
+
+#[test]
+fn mudslide_uses_eighty_points_only_after_effective_global_shield_loss() {
+    let mut state = state();
+    state.hands[0].cards = vec![card(49), card(52), card(85), card(88)];
+    state.shields[0].value = 30;
+    state.shields[1].value = 10;
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "tribulation:mudslide-torrent".to_string(),
+            cards: state.hands[0].cards.clone(),
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, GameEvent::ShieldChanged { .. }))
+            .count(),
+        2
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            point_breakdown,
+            shield_change: None,
+            ..
+        } if point_breakdown.base_points == 80
+    )));
+}
+
+#[test]
+fn gale_rain_tracks_each_player_and_blocks_only_its_owners_formation_recovery() {
+    let mut state = state();
+    state.hands[0].cards = vec![card(49), card(52), card(67), card(70)];
+    let gale = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "tribulation:gale-rain".to_string(),
+            cards: state.hands[0].cards.clone(),
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    apply_all(&mut state, &gale);
+    assert_eq!(
+        state
+            .statuses
+            .iter()
+            .filter(|status| status.kind == "GaleRain")
+            .count(),
+        2
+    );
+
+    state.phase = Phase::Main;
+    state.hp[0].hp = 100;
+    state.hands[0].cards = vec![card(37), card(38), card(73), card(19)];
+    let recovery = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "return-to-origin".to_string(),
+            cards: state.hands[0].cards.clone(),
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert!(recovery.iter().any(|event| matches!(
+        event,
+        GameEvent::HpChanged { change }
+            if change.old_hp == 100 && change.new_hp == 100 && change.effective_delta == 0
+    )));
+}
+
+#[test]
+fn earth_rending_waits_for_environment_and_player_answers_before_resolving() {
+    let mut state = state();
+    state.hands[0].cards = vec![card(31), card(34), card(85), card(88)];
+    state.hands[1].cards = vec![card(67), card(1)];
+    let started = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "tribulation:earth-rending".to_string(),
+            cards: state.hands[0].cards.clone(),
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert!(
+        started
+            .iter()
+            .any(|event| matches!(event, GameEvent::EarthRendingStarted { .. }))
+    );
+    assert!(
+        !started
+            .iter()
+            .any(|event| matches!(event, GameEvent::AttackResolved { .. }))
+    );
+    apply_all(&mut state, &started);
+
+    let environment = handle_command(
+        &state,
+        Command::AnswerEffectChoiceTyped {
+            player: PlayerId::new("p1"),
+            answer: EffectChoiceAnswer::Environment {
+                environment: Element::Fire,
+            },
+        },
+    )
+    .unwrap();
+    apply_all(&mut state, &environment);
+    assert_eq!(state.environment, None);
+    assert_eq!(state.hp[1].hp, 200);
+    assert!(state.hands[1].cards.contains(&card(67)));
+    assert!(matches!(
+        state_for(&state, Viewer::Player(PlayerId::new("p1")))
+            .pending_choice
+            .unwrap()
+            .kind,
+        PublicPendingChoiceKind::Hidden
+    ));
+    assert!(matches!(
+        state_for(&state, Viewer::Player(PlayerId::new("p2")))
+            .pending_choice
+            .unwrap()
+            .kind,
+        PublicPendingChoiceKind::Known(_)
+    ));
+
+    let recovered: GameState =
+        serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+    let answered = handle_command(
+        &state,
+        Command::AnswerEffectChoiceTyped {
+            player: PlayerId::new("p2"),
+            answer: EffectChoiceAnswer::Cards {
+                cards: vec![card(67)],
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        answered,
+        handle_command(
+            &recovered,
+            Command::AnswerEffectChoiceTyped {
+                player: PlayerId::new("p2"),
+                answer: EffectChoiceAnswer::Cards {
+                    cards: vec![card(67)],
+                },
+            },
+        )
+        .unwrap()
+    );
+    assert!(answered.iter().any(|event| matches!(
+        event,
+        GameEvent::HandRevealed { player, .. } if player == &PlayerId::new("p1")
+    )));
+    assert!(answered.iter().any(|event| matches!(
+        event,
+        GameEvent::EnvironmentTransferred {
+            to: Element::Fire,
+            ..
+        }
+    )));
+    assert!(
+        answered
+            .iter()
+            .any(|event| matches!(event, GameEvent::AttackResolved { .. }))
+    );
+    apply_all(&mut state, &answered);
+    assert_eq!(state.environment, Some(Element::Fire));
+    assert!(state.discard.contains(&card(67)));
+    assert!(state.active_earth_rending_resolution.is_none());
+}
+
+#[test]
+fn earth_rending_collects_four_player_answers_in_turn_order_and_performer_last() {
+    let shape = GameSetup::team_mode(
+        TeamId::new("a"),
+        vec![PlayerId::new("p1"), PlayerId::new("p3")],
+        TeamId::new("b"),
+        vec![PlayerId::new("p2"), PlayerId::new("p4")],
+        30,
+    );
+    let setup = OfficialRules::new()
+        .configure_game(
+            shape.players,
+            shape.turn_order,
+            setup().enabled_rule_modules,
+        )
+        .unwrap();
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::Main;
+    state.hands[0].cards = vec![card(31), card(34), card(85), card(88)];
+    state.hands[1].cards = vec![card(67)];
+    state.hands[2].cards = vec![card(1)];
+    state.hands[3].cards = vec![card(70)];
+
+    let started = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "tribulation:earth-rending".to_string(),
+            cards: state.hands[0].cards.clone(),
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    apply_all(&mut state, &started);
+    let environment = handle_command(
+        &state,
+        Command::AnswerEffectChoiceTyped {
+            player: PlayerId::new("p1"),
+            answer: EffectChoiceAnswer::Environment {
+                environment: Element::Fire,
+            },
+        },
+    )
+    .unwrap();
+    apply_all(&mut state, &environment);
+    assert_eq!(
+        state.pending_choice.as_ref().map(|choice| &choice.player),
+        Some(&PlayerId::new("p2"))
+    );
+
+    let p2 = handle_command(
+        &state,
+        Command::AnswerEffectChoiceTyped {
+            player: PlayerId::new("p2"),
+            answer: EffectChoiceAnswer::Cards {
+                cards: vec![card(67)],
+            },
+        },
+    )
+    .unwrap();
+    assert!(p2.iter().any(|event| matches!(
+        event,
+        GameEvent::HandRevealed { player, .. } if player == &PlayerId::new("p3")
+    )));
+    apply_all(&mut state, &p2);
+    assert_eq!(
+        state.pending_choice.as_ref().map(|choice| &choice.player),
+        Some(&PlayerId::new("p4"))
+    );
+
+    let p4 = handle_command(
+        &state,
+        Command::AnswerEffectChoiceTyped {
+            player: PlayerId::new("p4"),
+            answer: EffectChoiceAnswer::Cards {
+                cards: vec![card(70)],
+            },
+        },
+    )
+    .unwrap();
+    assert!(p4.iter().any(|event| matches!(
+        event,
+        GameEvent::HandRevealed { player, .. } if player == &PlayerId::new("p1")
+    )));
+    assert!(
+        p4.iter()
+            .any(|event| matches!(event, GameEvent::EarthRendingCompleted { .. }))
+    );
+}
+
+#[test]
+fn rusted_forest_reveals_discards_and_waits_for_the_trusted_shuffle() {
+    let mut state = state();
+    state.hands[0].cards = vec![card(13), card(16), card(31), card(34)];
+    state.deck = vec![
+        card(1),
+        card(9),
+        card(19),
+        card(27),
+        card(37),
+        card(45),
+        card(55),
+        card(63),
+        card(73),
+    ];
+    state.spirits.push(PlayerSpirit {
+        player: PlayerId::new("p2"),
+        spirit: SpiritKind::Death,
+        power: 1,
+    });
+    let started = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "tribulation:rusted-forest".to_string(),
+            cards: state.hands[0].cards.clone(),
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert!(started.iter().any(|event| matches!(
+        event,
+        GameEvent::RustedForestCardsRevealed { cards, .. } if cards.len() == 8
+    )));
+    assert!(
+        !started
+            .iter()
+            .any(|event| matches!(event, GameEvent::AttackResolved { .. }))
+    );
+    apply_all(&mut state, &started);
+    for discarded in [9, 27, 45, 63] {
+        assert!(state.discard.contains(&card(discarded)));
+    }
+    let request = state
+        .pending_randomness
+        .clone()
+        .expect("shuffle is pending");
+    let resolved = resolve_trusted_randomness(
+        &state,
+        &TrustedRandomnessAnswer {
+            request_id: request.request_id,
+            shuffled_order: request.current_order.into_iter().rev().collect(),
+        },
+    )
+    .unwrap();
+    assert!(
+        resolved
+            .iter()
+            .any(|event| matches!(event, GameEvent::AttackResolved { .. }))
+    );
+    assert!(resolved.iter().any(|event| matches!(
+        event,
+        GameEvent::HpChanged { change } if change.effective_delta == -10
+    )));
+    assert!(
+        resolved
+            .iter()
+            .any(|event| matches!(event, GameEvent::RustedForestCompleted { .. }))
+    );
+}
+
+#[test]
+fn rusted_forest_processes_each_personal_deck_and_skips_only_the_protected_owner() {
+    let mut state = personal_deck_state();
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let formation = vec![
+        personal_card(&state, &p1, Element::Wood, 4),
+        personal_card(&state, &p1, Element::Wood, 3),
+        personal_card(&state, &p1, Element::Metal, 4),
+        personal_card(&state, &p1, Element::Metal, 3),
+    ];
+    state
+        .deck_for_mut(&p1)
+        .unwrap()
+        .retain(|card| !formation.contains(card));
+    *state.hand_mut(&p1).unwrap() = formation.clone();
+    state.statuses.push(StatusEffect {
+        id: "divine:p2".to_string(),
+        owner: StatusOwner::Player(p2.clone()),
+        kind: "DivineCalculation".to_string(),
+        value: None,
+        duration: StatusDuration::Permanent,
+    });
+
+    let mut events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "tribulation:rusted-forest".to_string(),
+            cards: formation,
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    let mut processed_decks = events
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::RustedForestCardsRevealed { deck, .. } => Some(deck.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    apply_all(&mut state, &events);
+    while let Some(request) = state.pending_randomness.clone() {
+        events = resolve_trusted_randomness(
+            &state,
+            &TrustedRandomnessAnswer {
+                request_id: request.request_id,
+                shuffled_order: request.current_order.into_iter().rev().collect(),
+            },
+        )
+        .unwrap();
+        processed_decks.extend(events.iter().filter_map(|event| match event {
+            GameEvent::RustedForestCardsRevealed { deck, .. } => Some(deck.clone()),
+            _ => None,
+        }));
+        apply_all(&mut state, &events);
+    }
+
+    assert_eq!(processed_decks, vec![RandomnessDeck::Player(p1.clone())]);
+    assert!(!state.discard_for(&p1).unwrap().is_empty());
+    assert!(state.discard_for(&p2).unwrap().is_empty());
+    assert!(state.active_rusted_forest_resolution.is_none());
+    assert!(!state.statuses.iter().any(|status| status.id == "divine:p2"));
+}

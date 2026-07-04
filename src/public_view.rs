@@ -596,6 +596,15 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::PlantEarthScheduled { .. }
         | GameEvent::PlantEarthResolutionStarted { .. }
         | GameEvent::PlantEarthResolutionCompleted { .. }
+        | GameEvent::EarthRendingStarted { .. }
+        | GameEvent::EarthRendingEnvironmentChosen { .. }
+        | GameEvent::EarthRendingPlayerAnswered { .. }
+        | GameEvent::HandRevealed { .. }
+        | GameEvent::EarthRendingCompleted { .. }
+        | GameEvent::RustedForestStarted { .. }
+        | GameEvent::RustedForestCardsRevealed { .. }
+        | GameEvent::RustedForestDeckProcessed { .. }
+        | GameEvent::RustedForestCompleted { .. }
         | GameEvent::PassiveFlipped { .. }
         | GameEvent::DiscardRecycledIntoDeck { .. }
         | GameEvent::PlayerDiscardRecycledIntoDeck { .. }

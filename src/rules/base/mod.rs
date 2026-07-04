@@ -1,4 +1,4 @@
-mod attack_resolution;
+pub(crate) mod attack_resolution;
 mod covered_passive;
 mod effect_intent;
 mod formation_selection;
@@ -1186,6 +1186,10 @@ fn decide_command_with_base_ruleset(
                 &answer,
             )? {
                 events.extend(echo_events);
+            } else if let Some(tribulation_events) =
+                crate::rules::tribulation::answer_choice(state, &continuation_id, &answer)?
+            {
+                events.extend(tribulation_events);
             } else if let crate::domain::EffectChoiceAnswer::Cards { cards } = &answer {
                 events.extend(formation_use::answer_effect_choice(
                     state,
@@ -1407,6 +1411,9 @@ pub(crate) fn effect_choice_answer_is_valid(
         crate::domain::EffectChoiceAnswer::Player { player } => options.players.contains(player),
         crate::domain::EffectChoiceAnswer::Formation { formation_id } => {
             options.formations.contains(formation_id)
+        }
+        crate::domain::EffectChoiceAnswer::Environment { environment } => {
+            options.environments.contains(environment)
         }
         crate::domain::EffectChoiceAnswer::Decline => options.can_decline,
     }

@@ -65,6 +65,7 @@ export interface PublicPendingChoice {
   maximumCount: number
   players: PlayerId[]
   formations: string[]
+  environments: Element[]
   canDecline: boolean
 }
 
@@ -72,6 +73,7 @@ export type EffectChoiceAnswer =
   | { type: 'cards'; cards: CardInstanceId[] }
   | { type: 'player'; player: PlayerId }
   | { type: 'formation'; formationId: string }
+  | { type: 'environment'; environment: Element }
   | { type: 'decline' }
 
 export interface PublicPendingRandomness {

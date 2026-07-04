@@ -136,6 +136,28 @@ test('stored room module lists do not infer newly released Echo', () => {
   assert.equal(normalizeServerRuleModules(stored).includes('echo'), false)
 })
 
+test('Tribulation is default-on, depends on Advanced Rules, and is not inferred for stored rooms', () => {
+  const spec = RULE_MODULE_SPECS.find(module => module.id === 'tribulation')
+  assert.deepEqual(spec, {
+    id: 'tribulation',
+    label: '主題規則‧天劫',
+    group: 'theme',
+    defaultEnabled: true,
+    dependencies: ['star', 'five-directions-legend', 'hero-schools'],
+  })
+  assert.equal(normalizeRuleModules(undefined).includes('tribulation'), true)
+  assert.equal(normalizeRuleModules(['tribulation']).includes('tribulation'), false)
+  assert.deepEqual(enableRuleModule([], 'tribulation'), [
+    'star',
+    'hero-schools',
+    'five-directions-legend',
+    'tribulation',
+  ])
+  const stored = ['star', 'hero-schools', 'five-directions-legend', 'echo']
+  assert.equal(normalizeRuleModules(stored).includes('tribulation'), false)
+  assert.equal(normalizeServerRuleModules(stored).includes('tribulation'), false)
+})
+
 test('generic dependency operations add requirements and remove dependents', () => {
   assert.deepEqual(enableRuleModule([], 'spirit'), [
     'star',

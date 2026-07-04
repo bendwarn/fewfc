@@ -1,5 +1,6 @@
 import type {
   CardInstanceId,
+  Element,
   PlayableAction,
   PlayerId,
   PublicGameEvent,
@@ -143,6 +144,7 @@ export function useGameRoom(viewer: ViewerRef) {
           choice.cards.map(card => card.id).join(','),
           choice.players.join(','),
           choice.formations.join(','),
+          choice.environments.join(','),
           choice.canDecline,
         ].join(':')
       : ''
@@ -504,6 +506,23 @@ export function useGameRoom(viewer: ViewerRef) {
     })
   }
 
+  async function choosePendingEnvironment(environment: Element) {
+    const choice = state.value.pendingChoice
+    if (
+      !choice
+      || choice.kind !== 'TypedEffect'
+      || viewer.value !== choice.player
+      || !choice.environments.includes(environment)
+    ) {
+      return
+    }
+    await submitOnline({
+      type: 'answerEffectChoiceTyped',
+      player: choice.player,
+      answer: { type: 'environment', environment },
+    })
+  }
+
   function toggleCardSelection(player: PlayerId, card: CardInstanceId) {
     if (!canSelectCard(player)) {
       return
@@ -701,6 +720,7 @@ export function useGameRoom(viewer: ViewerRef) {
     choosePendingCard,
     choosePendingPlayer,
     choosePendingFormation,
+    choosePendingEnvironment,
     declinePendingChoice,
     togglePendingChoiceCard,
     submitPendingChoice,

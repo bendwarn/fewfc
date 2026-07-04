@@ -101,6 +101,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           return await this.seedSpiritFixture(body.actorUserId, body.spirit)
         case 'seedEchoFixture':
           return await this.seedEchoFixture(body.actorUserId)
+        case 'seedTribulationFixture':
+          return await this.seedTribulationFixture(body.actorUserId)
         case 'getState':
           return await this.getState(body.actorUserId)
         case 'submitCommand':
@@ -1008,6 +1010,122 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       || rules.state.pendingChoice.purpose !== 'echo:pure-fire'
     ) {
       return this.json({ error: 'test fixture did not reach Pure Fire target choice' }, 500)
+    }
+
+    await this.ctx.storage.put('snapshot', {
+      ...snapshot,
+      setup,
+      deckSeed,
+      rulesRecord: rules.record,
+    } satisfies GameRoomSnapshot)
+    await this.ctx.storage.delete('pendingCommandDraft')
+    this.ctx.waitUntil(this.broadcast(metadata))
+
+    return this.json(await this.response(metadata, actorUserId))
+  }
+
+  private async seedTribulationFixture(actorUserId: string): Promise<Response> {
+    const metadata = await this.requireMetadata()
+    const actor = this.memberFor(metadata, actorUserId)
+
+    if (!actor?.owner) {
+      return this.json({ error: 'only room owner may seed a test fixture' }, 403)
+    }
+    if (metadata.status !== 'Active') {
+      return this.json({ error: 'test fixture requires an active match' }, 409)
+    }
+
+    const snapshot = await this.requireSnapshot()
+    if (!snapshot.setup.enabledRuleModules.includes('tribulation')) {
+      return this.json({ error: 'test fixture requires Tribulation' }, 409)
+    }
+    const setup: RulesGameSetup = {
+      ...snapshot.setup,
+      turnOrder: [
+        actor.player,
+        ...snapshot.setup.turnOrder.filter(player => player !== actor.player),
+      ],
+    }
+    const combinations = <T>(values: T[], size: number): T[][] => {
+      if (size === 0) return [[]]
+      return values.flatMap((value, index) => (
+        combinations(values.slice(index + 1), size - 1)
+          .map(rest => [value, ...rest])
+      ))
+    }
+
+    let rules: RulesEngineResult | undefined
+    let deckSeed = ''
+    let earthRending: Extract<PlayableAction, { type: 'performFormation' }> | undefined
+    for (let attempt = 0; attempt < 500 && !earthRending; attempt += 1) {
+      deckSeed = `tribulation-earth-rending-e2e-${attempt}`
+      const candidate = await callRulesEngine({
+        action: { type: 'start' },
+        viewer: actor.player,
+        setup,
+        deckSeed,
+      })
+      const hand = candidate.state.hands.find(entry => entry.player === actor.player)
+      const cards = hand?.cards.kind === 'known' ? hand.cards.cards : []
+      const selected = [
+        ...combinations(cards, 4),
+        ...combinations(cards, 5),
+      ].find((combination) => {
+        const earth = combination.filter(card => card.label.startsWith('土 '))
+        const wood = combination.filter(card => card.label.startsWith('木 '))
+        const levelSum = (selectedCards: typeof combination) => selectedCards
+          .reduce((sum, card) => sum + Number(card.label.match(/\d+$/)?.[0] ?? 0), 0)
+        return earth.length + wood.length === combination.length
+          && earth.length > 0
+          && wood.length > 0
+          && levelSum(earth) >= 7
+          && levelSum(wood) >= 7
+      })
+      if (selected) {
+        const actions = await callRulesEngine({
+          action: {
+            type: 'playableActions',
+            player: actor.player,
+            cards: selected.map(card => card.id),
+          },
+          viewer: actor.player,
+          setup,
+          deckSeed,
+          record: candidate.record,
+        })
+        earthRending = actions.playableActions.find(
+          (action): action is Extract<PlayableAction, { type: 'performFormation' }> => (
+            action.type === 'performFormation'
+            && action.id === 'tribulation:earth-rending'
+          ),
+        )
+        if (earthRending) {
+          rules = candidate
+        }
+      }
+    }
+    if (!rules || !earthRending) {
+      return this.json({ error: 'test fixture could not find Earth Rending Cards' }, 500)
+    }
+
+    rules = await callRulesEngine({
+      action: {
+        type: 'performFormation',
+        player: actor.player,
+        formationId: earthRending.id,
+        cards: earthRending.cards,
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+    if (
+      rules.state.pendingChoice?.kind !== 'TypedEffect'
+      || rules.state.pendingChoice.purpose !== 'tribulation:earth-rending'
+      || rules.state.pendingChoice.environments.length !== 5
+    ) {
+      return this.json({ error: 'test fixture did not reach Environment choice' }, 500)
     }
 
     await this.ctx.storage.put('snapshot', {

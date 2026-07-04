@@ -199,6 +199,15 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::RingingMetalCardRevealed { .. }
         | GameEvent::RingingMetalCompleted { .. }
         | GameEvent::PlantEarthScheduled { .. }
+        | GameEvent::EarthRendingStarted { .. }
+        | GameEvent::EarthRendingEnvironmentChosen { .. }
+        | GameEvent::EarthRendingPlayerAnswered { .. }
+        | GameEvent::HandRevealed { .. }
+        | GameEvent::EarthRendingCompleted { .. }
+        | GameEvent::RustedForestStarted { .. }
+        | GameEvent::RustedForestCardsRevealed { .. }
+        | GameEvent::RustedForestDeckProcessed { .. }
+        | GameEvent::RustedForestCompleted { .. }
         | GameEvent::FormationEffectCopied { .. }
         | GameEvent::FormationEffectIgnored { .. }
         | GameEvent::FormationPerformed { .. }

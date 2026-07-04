@@ -564,7 +564,7 @@ The ten Secret Strategies use printed Pouch values:
 
 | Strategy | Condition | Resolution |
 |---|---|---|
-| 金蟬 | Metal | Ignore Cannot Act, Cannot Draw, Counter Effects, and other Players' Secret Strategy effects for this Turn |
+| 金蟬 | Metal | Give the triggering Player Player-Only Secret Protection from Cannot Act, Cannot Draw, Counter Effects, and other Players' Secret Strategy effects for this Turn |
 | 偷梁 | Wood | Cards in the triggering hand snapshot have level +1 until Turn End |
 | 混水 | Water | Turn Draw bonus +1 this Turn |
 | 觀火 | Fire | Protect the next Player's next Turn from attack damage and Formation-caused Team HP changes |
@@ -629,7 +629,11 @@ Skills ineffective for its duration rather than prohibiting their use.
 Activated Abilities and Skills may still be used, pay their costs, and consume
 their usage allowances, but their effects do not execute. Automatic,
 proficiency, and persistent abilities are suppressed. The affected Spirit also
-cannot gain Spirit Power during that duration.
+cannot gain Spirit Power during that duration, including after replacement.
+Return Soul may still replace or summon that Spirit at one initial power, but
+the old Spirit's additional power cannot be inherited. Golden Cicada can protect
+the Player-facing part of Lure the Tiger Away, but it does not restore Spirit
+Skills or Spirit Power gain.
 
 Steal the Beam snapshots the Card Instances in the triggering Player's hand and
 gives those Cards level +1 until Turn End. Cards that enter the hand after the
@@ -641,6 +645,8 @@ Golden Cicada does not prevent an eligible Covered Passive from reaching its
 ordinary trigger. The passive still flips, becomes public, and moves to its
 origin Discard Pile; only its Counter Effect is ineffective against the
 protected Player's action during that Turn.
+Its protection applies only to the Player, not their Spirit, Team, Team Star, or
+the shared Environment.
 
 Watch the Fire prevents all attack damage during the next Player's next Turn,
 including damage that a Shield would otherwise absorb. It also prevents Team HP
@@ -900,6 +906,17 @@ A known formation with legal cards but missing resolver is a rule implementation
   damage, and applies to Sacred Beast damage.
 - Simultaneous Bloom and Void Spirit-Shattering replay without transient
   winners or event-order-dependent outcomes.
+- Pouch requires Personal Deck and Spirit, with all three Advanced Rule Modules
+  inherited through Spirit.
+- Game Preparation records private initial Pouch choices, trusted per-Player
+  Deck shuffles, and the initial deal before the first Turn.
+- Every Secret Strategy and Chain branch has Rust conformance, replay, and
+  Public View coverage.
+- New multiword Pouch command and event fields retain exact camelCase Web DTO
+  serialization.
+- Brave Playwright covers initial Pouch selection, privacy, reconnect, and one
+  Chain-to-teammate strategy flow without duplicating all ten strategies in the
+  browser suite.
 
 [1]: https://www.cfecards.org/rule/latest/you-xi-gui-ze '五行戰鬥牌官方網站 - 遊戲規則（完整規則書）'
 [2]: https://www.cfecards.org/rule/latest/basicrule '五行戰鬥牌官方網站 - 基礎規則'

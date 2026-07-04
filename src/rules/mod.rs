@@ -12,6 +12,7 @@ pub(crate) mod projection;
 pub(crate) mod spirit;
 pub(crate) mod star;
 pub(crate) mod timed_effect;
+pub(crate) mod tribulation;
 
 pub use official::OfficialRules;
 
@@ -355,6 +356,12 @@ pub(crate) fn official_formation_registry(
     {
         specs.extend(echo::formation_specs());
     }
+    if modules
+        .iter()
+        .any(|module| module.as_str() == crate::domain::TRIBULATION_MODULE_ID)
+    {
+        specs.extend(tribulation::formation_specs());
+    }
     FormationRegistry::new(
         specs.iter().map(|spec| spec.formation.clone()).collect(),
         specs.into_iter().map(|spec| spec.effect).collect(),
@@ -424,6 +431,24 @@ pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
                 && submitted.iter().any(|card| card.element == Element::Earth)
                 && submitted.iter().any(|card| card.element == Element::Wood)
                 && submitted.iter().map(|card| card.level).sum::<u32>() >= 7
+        })
+        .with_custom("tribulation:thunder-fire", |submitted| {
+            matches_tribulation(submitted, Element::Metal, Element::Fire)
+        })
+        .with_custom("tribulation:gale-rain", |submitted| {
+            matches_tribulation(submitted, Element::Fire, Element::Water)
+        })
+        .with_custom("tribulation:mudslide-torrent", |submitted| {
+            matches_tribulation(submitted, Element::Water, Element::Earth)
+        })
+        .with_custom("tribulation:earth-rending", |submitted| {
+            matches_tribulation(submitted, Element::Earth, Element::Wood)
+        })
+        .with_custom("tribulation:rusted-forest", |submitted| {
+            matches_tribulation(submitted, Element::Wood, Element::Metal)
+        })
+        .with_custom("tribulation:divine-calculation", |submitted| {
+            submitted.len() == 1 && submitted[0].level >= 4
         })
         .with_custom("metal-and-same-level", |submitted| {
             submitted.len() == 2
@@ -561,6 +586,20 @@ pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
         })
         .with_custom("three-water", |submitted| {
             submitted.len() == 3 && submitted.iter().all(|card| card.element == Element::Water)
+        })
+}
+
+fn matches_tribulation(submitted: &[SubmittedCardFacts], first: Element, second: Element) -> bool {
+    submitted.len() >= 4
+        && submitted
+            .iter()
+            .all(|card| card.element == first || card.element == second)
+        && [first, second].into_iter().all(|element| {
+            let cards = submitted
+                .iter()
+                .filter(|card| card.element == element)
+                .collect::<Vec<_>>();
+            !cards.is_empty() && cards.into_iter().map(|card| card.level).sum::<u32>() >= 7
         })
 }
 

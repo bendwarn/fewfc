@@ -896,6 +896,8 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 "canonical randomness result must match the pending request"
             );
             let recycles_discard = pending.continuation_id == "echo:ringing-metal:recycle-discard";
+            let rusted_forest_shuffle =
+                pending.continuation_id == "tribulation:rusted-forest:shuffle";
             let recycled_cards = pending.current_order.clone();
             match deck {
                 crate::domain::RandomnessDeck::Shared => {
@@ -938,6 +940,14 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 }
             }
             state.pending_randomness = None;
+            if rusted_forest_shuffle {
+                match deck {
+                    crate::domain::RandomnessDeck::Shared => recover_tailwind_uses(state, None),
+                    crate::domain::RandomnessDeck::Player(player) => {
+                        recover_tailwind_uses(state, Some(player))
+                    }
+                }
+            }
         }
         GameEvent::EchoCostPaid { card_move, .. } => {
             apply_card_move(state, card_move);
@@ -1119,6 +1129,44 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
         }
         GameEvent::PlantEarthResolutionCompleted { .. } => {
             state.active_plant_earth_resolution = None;
+        }
+        GameEvent::EarthRendingStarted { resolution } => {
+            state.active_earth_rending_resolution = Some(resolution.clone());
+        }
+        GameEvent::EarthRendingEnvironmentChosen { environment } => {
+            state
+                .active_earth_rending_resolution
+                .as_mut()
+                .expect("Earth Rending environment choice requires an active resolution")
+                .environment = Some(*environment);
+        }
+        GameEvent::EarthRendingPlayerAnswered { answer } => {
+            let resolution = state
+                .active_earth_rending_resolution
+                .as_mut()
+                .expect("Earth Rending answer requires an active resolution");
+            assert_eq!(resolution.remaining_players.first(), Some(&answer.player));
+            resolution.remaining_players.remove(0);
+            resolution.answers.push(answer.clone());
+        }
+        GameEvent::HandRevealed { .. } => {}
+        GameEvent::EarthRendingCompleted { .. } => {
+            state.active_earth_rending_resolution = None;
+        }
+        GameEvent::RustedForestStarted { resolution } => {
+            state.active_rusted_forest_resolution = Some(resolution.clone());
+        }
+        GameEvent::RustedForestCardsRevealed { .. } => {}
+        GameEvent::RustedForestDeckProcessed { deck } => {
+            let resolution = state
+                .active_rusted_forest_resolution
+                .as_mut()
+                .expect("Rusted Forest deck completion requires active state");
+            assert_eq!(resolution.remaining_decks.first(), Some(deck));
+            resolution.remaining_decks.remove(0);
+        }
+        GameEvent::RustedForestCompleted { .. } => {
+            state.active_rusted_forest_resolution = None;
         }
         GameEvent::CardsDrawnForProfessionChoice { player, cards, .. } => {
             let hand = state

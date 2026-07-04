@@ -4,10 +4,11 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Open Local Issues
 
-- [#66 Release the Tribulation Rule Module](066-release-tribulation-rule-module.md)
+None.
 
 ## Completed Local Issues
 
+- [#66 Release the Tribulation Rule Module](066-release-tribulation-rule-module.md)
 - [#65 Release the Echo Rule Module](065-release-echo-rule-module.md)
 - [#64 Resolve Pure Fire and Plant Earth](064-resolve-pure-fire-and-plant-earth.md)
 - [#63 Resolve basic Melodies and Echo](063-resolve-basic-melodies-and-echo.md)

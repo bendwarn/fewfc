@@ -52,6 +52,15 @@ fn typed_effect_choices_accept_each_declared_answer_kind() {
         ),
         (
             EffectChoiceOptions {
+                environments: vec![fewfc::domain::Element::Fire],
+                ..Default::default()
+            },
+            EffectChoiceAnswer::Environment {
+                environment: fewfc::domain::Element::Fire,
+            },
+        ),
+        (
+            EffectChoiceOptions {
                 can_decline: true,
                 ..Default::default()
             },
@@ -295,6 +304,14 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
         })
         .unwrap(),
         serde_json::json!({"type": "formation", "formationId": "formation"})
+    );
+    assert_eq!(
+        serde_json::to_value(EffectChoiceOptions {
+            environments: vec![fewfc::domain::Element::Fire],
+            ..Default::default()
+        })
+        .unwrap(),
+        serde_json::json!({"environments": ["Fire"], "canDecline": false})
     );
     assert_eq!(
         serde_json::to_value(TrustedRandomnessAnswer {

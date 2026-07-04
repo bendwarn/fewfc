@@ -285,6 +285,15 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::RingingMetalCardRevealed { .. }
         | GameEvent::RingingMetalCompleted { .. }
         | GameEvent::PlantEarthScheduled { .. }
+        | GameEvent::EarthRendingStarted { .. }
+        | GameEvent::EarthRendingEnvironmentChosen { .. }
+        | GameEvent::EarthRendingPlayerAnswered { .. }
+        | GameEvent::HandRevealed { .. }
+        | GameEvent::EarthRendingCompleted { .. }
+        | GameEvent::RustedForestStarted { .. }
+        | GameEvent::RustedForestCardsRevealed { .. }
+        | GameEvent::RustedForestDeckProcessed { .. }
+        | GameEvent::RustedForestCompleted { .. }
         | GameEvent::FormationEffectCopied { .. }
         | GameEvent::FormationEffectIgnored { .. }
         | GameEvent::FormationPerformed { .. }
@@ -436,6 +445,10 @@ pub fn resolve_trusted_randomness(
     let mut projected = state.clone();
     apply_event(&mut projected, &events[0]);
     events.extend(crate::rules::echo::after_randomness_events(
+        &projected,
+        &request.continuation_id,
+    )?);
+    events.extend(crate::rules::tribulation::after_randomness_events(
         &projected,
         &request.continuation_id,
     )?);

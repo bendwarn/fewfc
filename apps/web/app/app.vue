@@ -858,6 +858,23 @@
                   {{ formationChoiceLabel(formationId) }}
                 </button>
               </div>
+              <div
+                v-if="state.pendingChoice.kind === 'TypedEffect'
+                  && state.pendingChoice.environments.length > 0"
+                class="choice-options"
+                aria-label="選擇環境"
+              >
+                <button
+                  v-for="environment in state.pendingChoice.environments"
+                  :key="`choice-environment-${environment}`"
+                  type="button"
+                  :disabled="game.isLoading.value || !roomConnected"
+                  :aria-label="`選擇環境 ${environmentLabel(environment)}`"
+                  @click="game.choosePendingEnvironment(environment)"
+                >
+                  {{ environmentLabel(environment) }}
+                </button>
+              </div>
               <button
                 v-if="state.pendingChoice.kind === 'TypedEffect'
                   && state.pendingChoice.canDecline"
@@ -2206,6 +2223,8 @@ function statusLabel(kind: string): string {
   return {
     CannotAct: '無法行動',
     CannotDraw: '無法抽牌',
+    DivineCalculation: '神算',
+    GaleRain: '烈風暴雨',
   }[kind] ?? kind
 }
 
@@ -2375,6 +2394,7 @@ function choiceLabel(value: string): string {
     'echo:split-earth': '裂土：選擇陣法',
     'echo:pure-fire': '淨火：選擇玩家',
     'echo:plant-earth': '植土：選擇曲調',
+    'tribulation:earth-rending': '裂地崩山：選擇環境或環行牌',
   }
   return labels[value] ?? value
 }

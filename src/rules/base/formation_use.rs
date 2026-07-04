@@ -4,7 +4,7 @@ use crate::domain::{
     targeting::{RulePlayerTarget, RuleTeamTarget, TurnOrderTargets},
 };
 use crate::rules::{
-    EffectPlan, base_formation_registry, environment_makes_formation_ineffective,
+    EffectPlan, PointFormula, base_formation_registry, environment_makes_formation_ineffective,
     sacred_beast_element,
 };
 
@@ -41,6 +41,7 @@ pub(super) fn resolve(
     let formation_id = request.formation_id.clone();
     let plan = BaseFormationPlanner::new().plan_use(state, request)?;
     let mut events = BaseEffectResolver::new().resolve(state, plan)?;
+    crate::rules::tribulation::suppress_formation_recovery(state, &player, &mut events);
     crate::rules::dark::append_shared_fate_events(state, &player, &formation_id, &mut events)?;
     crate::rules::dark::append_mischief_events(state, &mut events)?;
     Ok(events)
@@ -162,19 +163,79 @@ impl BaseEffectResolver {
                         &plan.formation_id,
                     ));
                 }
+                if plan.formation_id == crate::rules::tribulation::EARTH_RENDING
+                    && !environment_ineffective
+                    && !formation_suppressed
+                {
+                    events.extend(crate::rules::tribulation::earth_rending_start_events(
+                        state,
+                        &plan.player,
+                        &plan.cards,
+                        damage_prevented,
+                        split_attack_damage,
+                    ));
+                    return Ok(events);
+                }
+                if plan.formation_id == crate::rules::tribulation::RUSTED_FOREST
+                    && !environment_ineffective
+                    && !formation_suppressed
+                {
+                    events.extend(crate::rules::tribulation::rusted_forest_start_events(
+                        state,
+                        &plan.player,
+                        &plan.cards,
+                        damage_prevented,
+                        split_attack_damage,
+                    )?);
+                    return Ok(events);
+                }
+                let tribulation_pre_events = if environment_ineffective || formation_suppressed {
+                    Vec::new()
+                } else {
+                    crate::rules::tribulation::pre_attack_events(
+                        state,
+                        &plan.player,
+                        &plan.formation_id,
+                    )?
+                };
+                let point_formula = crate::rules::tribulation::attack_points(
+                    &plan.formation_id,
+                    &tribulation_pre_events,
+                )
+                .map(PointFormula::Fixed)
+                .unwrap_or_else(|| attack_plan.point_formula.clone());
+                events.extend(tribulation_pre_events);
+                let mut projected = state.clone();
+                for event in &events {
+                    crate::rules::projection::apply_event(&mut projected, event);
+                }
                 events.extend(attack_resolution::resolve(
-                    state,
+                    &projected,
                     AttackRequest {
-                        attacker: plan.player,
-                        formation_id: plan.formation_id,
+                        attacker: plan.player.clone(),
+                        formation_id: plan.formation_id.clone(),
                         category: attack_plan.category.clone(),
-                        point_formula: attack_plan.point_formula.clone(),
-                        used_cards: plan.cards,
+                        point_formula,
+                        used_cards: plan.cards.clone(),
                         damage_prevented,
                         split_attack_damage,
                         mode: AttackResolutionMode::FormationUse,
                     },
                 )?);
+                if !environment_ineffective && !formation_suppressed {
+                    events.extend(crate::rules::tribulation::post_attack_events(
+                        state,
+                        &plan.player,
+                        &plan.formation_id,
+                    )?);
+                } else {
+                    events.extend(
+                        crate::rules::tribulation::divine_calculation_consumption_events(
+                            state,
+                            &plan.formation_id,
+                        ),
+                    );
+                }
 
                 Ok(events)
             }
@@ -368,6 +429,16 @@ impl BaseEffectResolver {
                         )?
                     } {
                         events.append(&mut echo_events);
+                        return Ok(events);
+                    }
+                    if let Some(mut tribulation_events) =
+                        crate::rules::tribulation::active_spell_events(
+                            state,
+                            &plan.player,
+                            &spell.resolver_id,
+                        )
+                    {
+                        events.append(&mut tribulation_events);
                         return Ok(events);
                     }
                     if let Some(mut jianghu_events) = crate::rules::jianghu::active_spell_events(

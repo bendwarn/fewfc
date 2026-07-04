@@ -99,6 +99,11 @@ The Player who may inspect and trigger a Pouch. Pouch ownership does not change
 the Card's immutable Card Origin when Chain gives a Card to a teammate.
 _Avoid_: Card Origin, Pile Owner
 
+**Player-Only Secret Protection**:
+Golden Cicada's protection of its triggering Player. It does not extend to that
+Player's Spirit, Team, Team Star, or the shared Environment.
+_Avoid_: Team protection, Spirit protection, global Secret immunity
+
 **Initial Pouch Selection**:
 The pre-deal stage in which each Player privately chooses their starting
 Pouch from their unshuffled Personal Deck. After every Player has chosen, the

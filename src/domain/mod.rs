@@ -42,6 +42,7 @@ pub const JIANGHU_MODULE_ID: &str = "jianghu";
 pub const CONFLUENCE_GENERATION_MODULE_ID: &str = "confluence-generation";
 pub const DARK_GLIMMER_MODULE_ID: &str = "dark-glimmer";
 pub const ECHO_MODULE_ID: &str = "echo";
+pub const TRIBULATION_MODULE_ID: &str = "tribulation";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RulesetId(String);
@@ -701,6 +702,10 @@ pub struct GameState {
     #[serde(default)]
     pub active_plant_earth_resolution: Option<ScheduledPlantEarth>,
     #[serde(default)]
+    pub active_earth_rending_resolution: Option<EarthRendingResolution>,
+    #[serde(default)]
+    pub active_rusted_forest_resolution: Option<RustedForestResolution>,
+    #[serde(default)]
     pub environment: Option<Element>,
     #[serde(default)]
     pub team_stars: Vec<TeamStar>,
@@ -795,6 +800,8 @@ impl GameState {
             ringing_metal_selection: None,
             scheduled_plant_earth: Vec::new(),
             active_plant_earth_resolution: None,
+            active_earth_rending_resolution: None,
+            active_rusted_forest_resolution: None,
             environment: None,
             team_stars: Vec::new(),
             star_histories: setup
@@ -995,6 +1002,9 @@ pub enum EffectChoiceAnswer {
         #[serde(rename = "formationId")]
         formation_id: String,
     },
+    Environment {
+        environment: Element,
+    },
     Decline,
 }
 
@@ -1007,6 +1017,8 @@ pub struct EffectChoiceOptions {
     pub players: Vec<PlayerId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub formations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environments: Vec<Element>,
     #[serde(default)]
     pub can_decline: bool,
 }
@@ -1136,6 +1148,34 @@ pub struct RingingMetalSelection {
 pub struct ScheduledPlantEarth {
     pub player: PlayerId,
     pub due_turn_number: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct EarthRendingPlayerAnswer {
+    pub player: PlayerId,
+    pub card: Option<CardInstanceId>,
+    pub revealed_hand: Vec<CardInstanceId>,
+    pub protected: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct EarthRendingResolution {
+    pub attacker: PlayerId,
+    pub used_cards: Vec<CardInstanceId>,
+    pub environment: Option<Element>,
+    pub remaining_players: Vec<PlayerId>,
+    pub answers: Vec<EarthRendingPlayerAnswer>,
+    pub damage_prevented: bool,
+    pub split_attack_damage: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RustedForestResolution {
+    pub attacker: PlayerId,
+    pub used_cards: Vec<CardInstanceId>,
+    pub remaining_decks: Vec<RandomnessDeck>,
+    pub damage_prevented: bool,
+    pub split_attack_damage: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1492,6 +1532,35 @@ pub enum GameEvent {
         player: PlayerId,
         due_turn_number: u64,
         melody_id: String,
+    },
+    EarthRendingStarted {
+        resolution: EarthRendingResolution,
+    },
+    EarthRendingEnvironmentChosen {
+        environment: Element,
+    },
+    EarthRendingPlayerAnswered {
+        answer: EarthRendingPlayerAnswer,
+    },
+    HandRevealed {
+        player: PlayerId,
+        cards: Vec<CardInstanceId>,
+    },
+    EarthRendingCompleted {
+        player: PlayerId,
+    },
+    RustedForestStarted {
+        resolution: RustedForestResolution,
+    },
+    RustedForestCardsRevealed {
+        deck: RandomnessDeck,
+        cards: Vec<CardInstanceId>,
+    },
+    RustedForestDeckProcessed {
+        deck: RandomnessDeck,
+    },
+    RustedForestCompleted {
+        player: PlayerId,
     },
     PassiveCovered {
         player: PlayerId,

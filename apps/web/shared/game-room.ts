@@ -320,6 +320,10 @@ export type GameRoomRequest =
       actorUserId: string
     }
   | {
+      type: 'seedTribulationFixture'
+      actorUserId: string
+    }
+  | {
       type: 'getState'
       actorUserId: string
     }

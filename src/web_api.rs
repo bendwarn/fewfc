@@ -1355,6 +1355,7 @@ struct WebPendingChoice {
     maximum_count: usize,
     players: Vec<String>,
     formations: Vec<String>,
+    environments: Vec<String>,
     can_decline: bool,
 }
 
@@ -1425,6 +1426,7 @@ impl WebPendingChoice {
                     .collect(),
                 players: Vec::new(),
                 formations: Vec::new(),
+                environments: Vec::new(),
                 can_decline: false,
             },
             PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
@@ -1443,6 +1445,7 @@ impl WebPendingChoice {
                     .collect(),
                 players: Vec::new(),
                 formations: Vec::new(),
+                environments: Vec::new(),
                 can_decline: false,
             },
             PublicPendingChoiceKind::Known(PendingChoiceKind::CardSetChoice {
@@ -1461,6 +1464,7 @@ impl WebPendingChoice {
                     .collect(),
                 players: Vec::new(),
                 formations: Vec::new(),
+                environments: Vec::new(),
                 can_decline: false,
             },
             PublicPendingChoiceKind::Known(PendingChoiceKind::TypedEffect { options, .. }) => {
@@ -1487,6 +1491,11 @@ impl WebPendingChoice {
                         .map(|player| player.as_str().to_string())
                         .collect(),
                     formations: options.formations,
+                    environments: options
+                        .environments
+                        .into_iter()
+                        .map(|environment| format!("{environment:?}"))
+                        .collect(),
                     can_decline: options.can_decline,
                 }
             }
@@ -1500,6 +1509,7 @@ impl WebPendingChoice {
                 maximum_count: 0,
                 players: Vec::new(),
                 formations: Vec::new(),
+                environments: Vec::new(),
                 can_decline: false,
             },
         }
@@ -2334,6 +2344,9 @@ fn game_event_presentation(
                 crate::domain::EffectChoiceAnswer::Formation { formation_id } => {
                     format!("陣法 {}", formation_name(formation_names, formation_id))
                 }
+                crate::domain::EffectChoiceAnswer::Environment { environment } => {
+                    element_name(*environment).to_string()
+                }
                 crate::domain::EffectChoiceAnswer::Decline => "放棄".to_string(),
             };
             (
@@ -2611,6 +2624,52 @@ fn game_event_presentation(
         } => (
             "植土完成".to_string(),
             format!("{} 已執行曲調 {} 的主效果。", player.as_str(), melody_id),
+        ),
+        GameEvent::EarthRendingStarted { resolution } => (
+            "裂地崩山".to_string(),
+            format!("{} 開始選擇裂地崩山的環境。", resolution.attacker.as_str()),
+        ),
+        GameEvent::EarthRendingEnvironmentChosen { environment } => (
+            "選擇環境".to_string(),
+            format!("裂地崩山選擇了 {}。", element_name(*environment)),
+        ),
+        GameEvent::EarthRendingPlayerAnswered { answer } => (
+            "裂地崩山選擇".to_string(),
+            if answer.protected {
+                format!("{} 受神算保護。", answer.player.as_str())
+            } else if answer.card.is_some() {
+                format!("{} 選擇捨棄一張環行牌。", answer.player.as_str())
+            } else {
+                format!("{} 沒有環行牌並展示手牌。", answer.player.as_str())
+            },
+        ),
+        GameEvent::HandRevealed { player, cards } => (
+            "展示手牌".to_string(),
+            format!(
+                "{} 展示了 {}。",
+                player.as_str(),
+                cards_summary(cards, labels)
+            ),
+        ),
+        GameEvent::EarthRendingCompleted { player } => (
+            "裂地崩山完成".to_string(),
+            format!("{} 完成裂地崩山。", player.as_str()),
+        ),
+        GameEvent::RustedForestStarted { resolution } => (
+            "鏽鐵枯林".to_string(),
+            format!("{} 開始處理鏽鐵枯林。", resolution.attacker.as_str()),
+        ),
+        GameEvent::RustedForestCardsRevealed { cards, .. } => (
+            "鏽鐵枯林展示".to_string(),
+            format!("展示了 {}。", cards_summary(cards, labels)),
+        ),
+        GameEvent::RustedForestDeckProcessed { .. } => (
+            "鏽鐵枯林洗牌".to_string(),
+            "已完成一個牌組的處理。".to_string(),
+        ),
+        GameEvent::RustedForestCompleted { player } => (
+            "鏽鐵枯林完成".to_string(),
+            format!("{} 完成鏽鐵枯林。", player.as_str()),
         ),
         GameEvent::TurnEnded { player } => (
             "回合結束".to_string(),

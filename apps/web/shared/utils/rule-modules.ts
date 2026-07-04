@@ -69,6 +69,13 @@ export const RULE_MODULE_SPECS = [
     defaultEnabled: true,
     dependencies: ['star', 'five-directions-legend', 'hero-schools'],
   },
+  {
+    id: 'tribulation',
+    label: '主題規則‧天劫',
+    group: 'theme',
+    defaultEnabled: true,
+    dependencies: ['star', 'five-directions-legend', 'hero-schools'],
+  },
 ] as const
 
 export type RuleModuleId = typeof RULE_MODULE_SPECS[number]['id']

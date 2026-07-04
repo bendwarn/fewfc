@@ -12,24 +12,24 @@ use crate::rules::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum AttackResolutionMode {
+pub(crate) enum AttackResolutionMode {
     FormationUse,
     CopiedEffect,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct AttackRequest {
-    pub(super) attacker: PlayerId,
-    pub(super) formation_id: String,
-    pub(super) category: AttackCategory,
-    pub(super) point_formula: PointFormula,
-    pub(super) used_cards: Vec<CardInstanceId>,
-    pub(super) damage_prevented: bool,
-    pub(super) split_attack_damage: bool,
-    pub(super) mode: AttackResolutionMode,
+pub(crate) struct AttackRequest {
+    pub(crate) attacker: PlayerId,
+    pub(crate) formation_id: String,
+    pub(crate) category: AttackCategory,
+    pub(crate) point_formula: PointFormula,
+    pub(crate) used_cards: Vec<CardInstanceId>,
+    pub(crate) damage_prevented: bool,
+    pub(crate) split_attack_damage: bool,
+    pub(crate) mode: AttackResolutionMode,
 }
 
-pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<Vec<GameEvent>> {
+pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<Vec<GameEvent>> {
     let plan = AttackPlanDef {
         category: request.category.clone(),
         point_formula: request.point_formula.clone(),
@@ -106,6 +106,13 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
         (final_amount + 1) / 2
     } else {
         final_amount
+    };
+    let defender_amount = if !has_target_shield
+        && crate::rules::tribulation::reduces_attack_damage(state, &target, &request.formation_id)
+    {
+        (defender_amount - 20).max(0)
+    } else {
+        defender_amount
     };
     let shield_change = if request.damage_prevented {
         None
@@ -184,7 +191,14 @@ pub(super) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
         && !request.damage_prevented
     {
         let attacker_team = player_team(state, &request.attacker)?;
-        let attacker_amount = (final_amount + 1) / 2;
+        let mut attacker_amount = (final_amount + 1) / 2;
+        if crate::rules::tribulation::reduces_attack_damage(
+            state,
+            &request.attacker,
+            &request.formation_id,
+        ) {
+            attacker_amount = (attacker_amount - 20).max(0);
+        }
         if attacker_amount > 0 {
             events.push(GameEvent::HpChanged {
                 change: apply_attack_amount(
