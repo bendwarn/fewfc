@@ -1,8 +1,3 @@
-import {
-  hasValidServerRuleModuleDependencies,
-  normalizeServerRuleModules,
-} from '../../../utils/rule-modules'
-
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
   const gameId = getRouterParam(event, 'id')
@@ -14,17 +9,16 @@ export default defineEventHandler(async (event) => {
       statusMessage: 'Missing game id.',
     })
   }
-  if (!hasValidServerRuleModuleDependencies(body.enabledRuleModules)) {
-    throw createError({
-      statusCode: 400,
-      statusMessage: 'Rule Module dependencies are incomplete.',
-    })
+  let enabledRuleModules: string[]
+  try {
+    enabledRuleModules = await resolveServerRuleModules(body.enabledRuleModules)
+  } catch {
+    throw createError({ statusCode: 400, statusMessage: 'Invalid Rule Module configuration.' })
   }
-
   const response = await callGameRoom(event, gameId, {
     type: 'updateRuleModules',
     actorUserId: session.user.id,
-    enabledRuleModules: normalizeServerRuleModules(body.enabledRuleModules),
+    enabledRuleModules,
   })
 
   await updatePublicRoom(event, response)

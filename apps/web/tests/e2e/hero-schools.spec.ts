@@ -1,4 +1,11 @@
-import { createPublicRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
+import {
+  createPublicRoom,
+  expect,
+  joinListedRoom,
+  loginAsGuests,
+  seedDevelopmentScenario,
+  test,
+} from './fixtures'
 
 test('a Profession change and activated ability survive public reconnect', async ({ browser }) => {
   test.setTimeout(180_000)
@@ -23,15 +30,7 @@ test('a Profession change and activated ability survive public reconnect', async
     await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
 
     const roomId = new URL(host.url()).pathname.split('/').pop()
-    const seeded = await host.evaluate(async (id) => {
-      const response = await fetch(`/api/games/${id}/test-hero-schools`, { method: 'POST' })
-      return {
-        ok: response.ok,
-        status: response.status,
-        body: await response.text(),
-      }
-    }, roomId)
-    expect(seeded, seeded.body).toMatchObject({ ok: true })
+    await seedDevelopmentScenario(host, { name: 'hero-schools-transition' })
 
     await expect(host.locator('.profession-badge')).toContainText('幻術師')
     await expect(guest.locator('.profession-badge')).toContainText('幻術師')

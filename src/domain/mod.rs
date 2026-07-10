@@ -1190,8 +1190,36 @@ impl PendingChoiceKind {
 pub struct PendingRandomness {
     pub request_id: String,
     pub deck: RandomnessDeck,
-    pub continuation_id: String,
+    pub continuation: RandomnessContinuation,
     pub current_order: Vec<CardInstanceId>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "type", content = "kind", rename_all = "camelCase")]
+pub enum RandomnessContinuation {
+    Echo(EchoRandomnessContinuation),
+    Pouch(PouchRandomnessContinuation),
+    Tribulation(TribulationRandomnessContinuation),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EchoRandomnessContinuation {
+    RingingMetalRecycleDiscard,
+    RingingMetalPostSearch,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PouchRandomnessContinuation {
+    InitialShuffle,
+    SheepStealing,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TribulationRandomnessContinuation {
+    RustedForestShuffle,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

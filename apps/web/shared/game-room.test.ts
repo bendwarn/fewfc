@@ -5,10 +5,18 @@ import {
   isOnlineGameAction,
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
-  normalizeRuleModules,
   resolvePendingRandomnessSequence,
   requiresPendingCommandDraft,
 } from './game-room'
+import { isDevelopmentScenario } from './development-scenarios'
+
+test('development fixtures expose only the closed named scenario catalog', () => {
+  assert.equal(isDevelopmentScenario({ name: 'star-endgame' }), true)
+  assert.equal(isDevelopmentScenario({ name: 'tribulation-earth-rending' }), true)
+  assert.equal(isDevelopmentScenario({ name: 'star-endgame', state: {} }), false)
+  assert.equal(isDevelopmentScenario({ name: 'arbitrary-state', state: {} }), false)
+  assert.equal(isDevelopmentScenario({ record: [] }), false)
+})
 
 test('trusted randomness actions are not player-submittable', () => {
   assert.equal(isOnlineGameAction({
@@ -67,26 +75,6 @@ test('trusted randomness resolves sequential requests as distinct persisted deci
   assert.deepEqual(actions, [
     { type: 'resolveRandomness', requestId: 'discard-recycle', shuffledOrder: [3, 2, 1] },
     { type: 'resolveRandomness', requestId: 'post-search', shuffledOrder: [5, 4] },
-  ])
-})
-
-test('all released advanced rules are available default Rule Modules', () => {
-  assert.deepEqual(normalizeRuleModules(undefined), [
-    'star',
-    'hero-schools',
-    'discard-retrieval',
-    'personal-deck',
-    'five-directions-legend',
-    'spirit',
-    'jianghu',
-    'confluence-generation',
-    'dark-glimmer',
-    'echo',
-    'tribulation',
-  ])
-  assert.deepEqual(normalizeRuleModules(['star', 'five-directions-legend', 'unknown']), [
-    'star',
-    'five-directions-legend',
   ])
 })
 

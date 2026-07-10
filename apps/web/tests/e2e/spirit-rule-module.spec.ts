@@ -3,6 +3,7 @@ import {
   expect,
   joinListedRoom,
   loginAsGuests,
+  seedDevelopmentScenario,
   test,
 } from './fixtures'
 
@@ -97,15 +98,7 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
     expect(discardOverlapsFormation).toBe(false)
 
     const roomId = new URL(host.url()).pathname.split('/').pop()
-    const seeded = await host.evaluate(async (id) => {
-      const response = await fetch(`/api/games/${id}/test-spirit`, { method: 'POST' })
-      return {
-        ok: response.ok,
-        status: response.status,
-        body: await response.text(),
-      }
-    }, roomId)
-    expect(seeded, seeded.body).toMatchObject({ ok: true })
+    await seedDevelopmentScenario(host, { name: 'spirit-skill' })
 
     await host.reload()
     await expect(host.locator('.spirit-status')).toContainText('精靈 · 金精靈 · 靈力 2 / 6')
@@ -168,17 +161,10 @@ test('Splendor exposes its declared levels on hover and uses the chosen level', 
     await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
 
     const roomId = new URL(host.url()).pathname.split('/').pop()
-    const seeded = await host.evaluate(async (id) => {
-      const response = await fetch(`/api/games/${id}/test-spirit?spirit=Fire`, {
-        method: 'POST',
-      })
-      return {
-        ok: response.ok,
-        status: response.status,
-        body: await response.text(),
-      }
-    }, roomId)
-    expect(seeded, seeded.body).toMatchObject({ ok: true })
+    await seedDevelopmentScenario(host, {
+      name: 'spirit-skill',
+      options: { spirit: 'Fire' },
+    })
 
     await host.reload()
     await expect(host.locator('.spirit-status')).toContainText('精靈 · 火精靈 · 靈力 3 / 6')

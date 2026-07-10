@@ -3,7 +3,9 @@ use fewfc::domain::{
     GameError, GameSetup, GameState, Player, PlayerId, RuleModuleId, RulesetId, TeamId,
     ValidationError,
 };
-use fewfc::rules::OfficialRules;
+use fewfc::rules::{OfficialRuleModuleCategory, OfficialRules};
+mod support;
+use support::OfficialScenario;
 
 fn players() -> (Vec<Player>, Vec<PlayerId>) {
     (
@@ -77,43 +79,21 @@ fn official_rules_reject_an_unsupported_ruleset_before_starting() {
 
 #[test]
 fn base_only_game_runs_through_the_official_rules_interface() {
-    let rules = OfficialRules::new();
-    let (players, turn_order) = players();
-    let setup = rules
-        .configure_game(players, turn_order, Vec::new())
-        .expect("base setup should be supported");
-    let deck_order = rules
-        .official_deck_order(&setup)
-        .expect("base deck should be available");
-    let mut record = GameRecord::start(setup, deck_order).expect("base game should start");
-
-    record
-        .advance_until_decision()
+    let mut scenario = OfficialScenario::two_player(&[]).expect("base game should start");
+    scenario
+        .advance_to_decision()
         .expect("base game should advance to a decision");
+    let current_player = scenario.current_player();
+    let selected_card = scenario.first_hand_card(&current_player);
 
-    let current_player = record
-        .state()
-        .current_player()
-        .expect("turn order should have a current player")
-        .clone();
-    let selected_card = record
-        .state()
-        .hand(&current_player)
-        .and_then(|hand| hand.first())
-        .copied()
-        .expect("initial deal should give the current player a card");
-
-    assert_eq!(record.state().ruleset, RulesetId::base());
-    assert!(record.state().enabled_rule_modules.is_empty());
+    assert_eq!(scenario.state().ruleset, RulesetId::base());
+    assert!(scenario.state().enabled_rule_modules.is_empty());
     assert!(
-        record
+        scenario
             .playable_actions(&current_player, &[selected_card])
             .is_ok()
     );
-    assert_eq!(
-        record.replay().expect("record should replay"),
-        record.state().clone()
-    );
+    scenario.assert_replay_matches();
 }
 
 #[test]
@@ -134,4 +114,38 @@ fn official_setup_uses_rulebook_hp_for_base_and_advanced_games() {
         )
         .unwrap();
     assert!(advanced.hp.iter().all(|team_hp| team_hp.hp == 200));
+}
+
+#[test]
+fn official_rule_module_catalog_is_the_authoritative_configuration_contract() {
+    let catalog = OfficialRules::new().rule_module_catalog();
+    let spirit = catalog
+        .iter()
+        .find(|module| module.id.as_str() == "spirit")
+        .unwrap();
+    assert_eq!(spirit.category, OfficialRuleModuleCategory::Theme);
+    assert!(spirit.default_enabled);
+    assert_eq!(
+        spirit
+            .dependencies
+            .iter()
+            .map(|module| module.as_str())
+            .collect::<Vec<_>>(),
+        ["star", "five-directions-legend", "hero-schools"]
+    );
+
+    let pouch = catalog
+        .iter()
+        .find(|module| module.id.as_str() == "pouch")
+        .unwrap();
+    assert_eq!(pouch.category, OfficialRuleModuleCategory::Theme);
+    assert!(!pouch.default_enabled);
+    assert_eq!(
+        pouch
+            .dependencies
+            .iter()
+            .map(|module| module.as_str())
+            .collect::<Vec<_>>(),
+        ["personal-deck", "spirit"]
+    );
 }

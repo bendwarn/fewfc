@@ -21,10 +21,10 @@ describe('buildDiscardComposition', () => {
 
   test('groups matching card instances by element and level', () => {
     const rows = buildDiscardComposition([
-      { id: 1, label: '金 1' },
-      { id: 2, label: '金 1' },
-      { id: 3, label: '火 5' },
-      { id: 4, label: '無法辨識' },
+      { id: 1, label: '顯示名稱不參與判定', element: 'Metal', level: 1, secretStrategies: [] },
+      { id: 2, label: '另一個名稱', element: 'Metal', level: 1, secretStrategies: [] },
+      { id: 3, label: '無數字名稱', element: 'Fire', level: 5, secretStrategies: [] },
+      { id: 4, label: '無法辨識', element: null, level: null, secretStrategies: [] },
     ])
 
     const cells = rows.flatMap(row => row.cells)

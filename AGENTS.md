@@ -9,6 +9,10 @@
 
 ## Browser and E2E Validation
 
+- Tests and development scenarios must be deterministic. Do not scan seed ranges,
+  retry random outcomes, or rely on probability to reach the required state. When
+  a scenario needs specific Cards, use a fixed Rules Engine-owned deck order and
+  still reach the state through normal start, command, event, and replay paths.
 - Do not use manual visual inspection or screenshot comparison as acceptance
   validation. Prefer repeatable Playwright assertions against routes, DOM state,
   accessible roles and names, focus, and element geometry.

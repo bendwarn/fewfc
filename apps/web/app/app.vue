@@ -8,7 +8,7 @@
         <img class="brand-banner" src="/header-banner.svg" alt="五行戰鬥牌">
       </button>
 
-      <nav v-if="routeReady && screen !== 'login'" class="header-actions" aria-label="帳號選單">
+      <nav v-if="routeReady && !isAuthenticationScreen" class="header-actions" aria-label="帳號選單">
         <span class="connection" :class="{ offline: appConnectionText !== '已連線' }">
           <i /> {{ appConnectionText }}
         </span>
@@ -41,7 +41,7 @@
       </div>
     </main>
 
-    <main v-else-if="screen === 'login'" class="login-layout">
+    <main v-else-if="isAuthenticationScreen" class="login-layout">
       <section class="login-hero">
         <div class="hero-copy">
           <p class="kicker"><span /> 五行交鋒，陣法成局</p>
@@ -67,6 +67,7 @@
 
       <section class="login-panel">
         <div class="auth-card">
+          <template v-if="screen === 'login'">
           <div class="mobile-brand"><span class="brand-mark">五</span> 五行戰牌</div>
           <h2>{{ authMode === 'sign-in' ? '登入對戰' : '建立帳號' }}</h2>
           <p class="muted">
@@ -124,11 +125,82 @@
             {{ authMode === 'sign-in' ? '還沒有帳號？建立帳號' : '已經有帳號？返回登入' }}
           </button>
 
+          <button
+            v-if="localPasswordResetEnabled && authMode === 'sign-in'"
+            class="auth-mode-button"
+            type="button"
+            @click="openLocalPasswordReset"
+          >
+            重設本機密碼
+          </button>
+
           <div class="divider"><span>或使用訪客身份</span></div>
           <button class="ghost-button" type="button" :disabled="authBusy" @click="guestLogin">
             以訪客身份遊玩
           </button>
           <p class="terms">繼續即表示你同意遊戲規範與使用條款。</p>
+          </template>
+
+          <template v-else>
+            <div class="mobile-brand"><span class="brand-mark">五</span> 五行戰牌</div>
+            <h2>重設本機密碼</h2>
+            <p class="muted">
+              此入口僅適用於已啟用的本機開發環境，會直接更新既有的 Email 密碼登入憑證。
+            </p>
+
+            <form @submit.prevent="resetLocalPassword">
+              <label for="reset-password-email">Email</label>
+              <div class="input-wrap">
+                <span aria-hidden="true">@</span>
+                <input
+                  id="reset-password-email"
+                  v-model.trim="resetPasswordEmail"
+                  type="email"
+                  autocomplete="email"
+                  placeholder="you@example.com"
+                  autofocus
+                >
+              </div>
+
+              <label for="reset-password-new">新密碼</label>
+              <div class="input-wrap">
+                <span aria-hidden="true">密</span>
+                <input
+                  id="reset-password-new"
+                  v-model="resetPasswordInput"
+                  type="password"
+                  autocomplete="new-password"
+                  minlength="10"
+                  maxlength="128"
+                  placeholder="至少 10 個字元"
+                >
+              </div>
+
+              <label for="reset-password-confirm">確認新密碼</label>
+              <div class="input-wrap">
+                <span aria-hidden="true">密</span>
+                <input
+                  id="reset-password-confirm"
+                  v-model="resetPasswordConfirmation"
+                  type="password"
+                  autocomplete="new-password"
+                  minlength="10"
+                  maxlength="128"
+                  placeholder="再次輸入新密碼"
+                >
+              </div>
+
+              <p v-if="resetPasswordError" class="form-error" role="alert">{{ resetPasswordError }}</p>
+              <button class="primary-button login-button" type="submit" :disabled="resetPasswordBusy">
+                {{ resetPasswordBusy ? '重設中…' : '重設密碼並登入' }}
+                <span aria-hidden="true">→</span>
+              </button>
+            </form>
+
+            <button class="auth-mode-button" type="button" :disabled="resetPasswordBusy" @click="returnToLogin">
+              返回登入
+            </button>
+          </template>
         </div>
       </section>
     </main>
@@ -139,7 +211,7 @@
           <span class="step-number">牌</span>
           <div>
             <h1>個人牌組</h1>
-            <p>每種牌依屬性與等級調整張數；總數 60、等級總和最多 170。</p>
+            <p>每種牌依屬性與等級調整張數；總數 {{ deckRules?.exactCardCount ?? '—' }}、等級總和最多 {{ deckRules?.maximumLevelTotal ?? '—' }}。</p>
           </div>
         </div>
 
@@ -162,7 +234,7 @@
               <button
                 type="button"
                 :aria-label="`增加${deckElementLabel(element)}${level}級`"
-                :disabled="deckCardCount(element, level) >= (level <= 3 ? 4 : 3)"
+                :disabled="deckCardCount(element, level) >= deckCardLimit(element, level)"
                 @click="adjustDeckCard(element, level, 1)"
               >＋</button>
             </div>
@@ -170,8 +242,8 @@
         </div>
 
         <div class="deck-validation" :class="{ invalid: !deckValidation.valid }">
-          <strong>{{ deckValidation.cardCount }} / 60 張</strong>
-          <strong>{{ deckValidation.levelTotal }} / 170 級</strong>
+          <strong>{{ deckValidation.cardCount }} / {{ deckRules?.exactCardCount ?? '—' }} 張</strong>
+          <strong>{{ deckValidation.levelTotal }} / {{ deckRules?.maximumLevelTotal ?? '—' }} 級</strong>
           <span>{{ deckSource === 'custom' ? '目前使用自訂牌組' : '目前使用內建預組' }}</span>
         </div>
         <p v-if="deckError" class="form-error">{{ deckError }}</p>
@@ -551,15 +623,15 @@
                 class="playing-card"
                 :class="[
                   { hidden: card.hidden, selected: card.selected },
-                  elementClass(card.label),
+                  elementClass(card.element),
                 ]"
                 :data-card-id="card.cardId"
                 :disabled="!card.selectable || !roomConnected"
                 :aria-label="card.hidden ? '牌背' : card.label"
                 @click="game.toggleCardSelection(seat.player, card.cardId)"
               >
-                <span v-if="!card.hidden" class="card-level">{{ cardLevel(card.label) }}</span>
-                <span v-if="!card.hidden" class="card-element">{{ cardElement(card.label) }}</span>
+                <span v-if="!card.hidden" class="card-level">{{ cardLevel(card.level) }}</span>
+                <span v-if="!card.hidden" class="card-element">{{ cardElement(card.element) }}</span>
                 <span v-if="!card.hidden" class="card-name">{{ cardName(card.label) }}</span>
               </button>
             </div>
@@ -613,11 +685,11 @@
                       class="formation-card"
                       :class="[{
                         hidden: card.hidden,
-                      }, elementClass(card.label)]"
+                      }, elementClass(card.element)]"
                       :aria-label="card.hidden ? '牌背' : card.label"
                     >
-                      <i v-if="!card.hidden">{{ cardLevel(card.label) }}</i>
-                      <b v-if="!card.hidden">{{ cardElement(card.label) }}</b>
+                      <i v-if="!card.hidden">{{ cardLevel(card.level) }}</i>
+                      <b v-if="!card.hidden">{{ cardElement(card.element) }}</b>
                     </span>
                   </div>
                 </template>
@@ -834,31 +906,39 @@
               <p v-if="pouchChoiceKind === 'chain'">
                 依序選一張作為錦囊；可再選一張公開觸發秘計。
               </p>
-              <p v-else>選兩張牌組牌與兩張棄牌交換，之後洗牌。</p>
+              <p v-else>各選 {{ pouchSwapRequiredCount }} 張牌組牌與棄牌交換，之後洗牌。</p>
 
               <div class="choice-cards" aria-label="選擇牌組牌">
                 <button
-                  v-for="card in initialPouchCards"
+                  v-for="card in initialPouchCards.filter(candidate =>
+                    pouchChoiceKind !== 'sheep' || pouchSwapDeckCards.includes(candidate.id),
+                  )"
                   :key="`pouch-choice-deck-${card.id}`"
                   type="button"
                   :class="{ selected: pouchDeckSelection.includes(card.id) }"
                   :disabled="pouchChoiceKind === 'chain'
                     && strategyDeckSelection.includes(card.id)"
-                  @click="togglePouchCard('pouchDeck', card.id, 2)"
+                  @click="togglePouchCard(
+                    'pouchDeck',
+                    card.id,
+                    pouchChoiceKind === 'sheep' ? pouchSwapRequiredCount : 2,
+                  )"
                 >
                   {{ card.label }}
                 </button>
               </div>
 
               <template v-if="pouchChoiceKind === 'sheep'">
-                <h3>選擇兩張棄牌</h3>
+                <h3>選擇 {{ pouchSwapRequiredCount }} 張棄牌</h3>
                 <div class="choice-cards" aria-label="選擇棄牌">
                   <button
-                    v-for="card in ownDiscardCards"
+                    v-for="card in ownDiscardCards.filter(candidate =>
+                      pouchSwapDiscardCards.includes(candidate.id),
+                    )"
                     :key="`pouch-choice-discard-${card.id}`"
                     type="button"
                     :class="{ selected: pouchDiscardSelection.includes(card.id) }"
-                    @click="togglePouchCard('pouchDiscard', card.id, 2)"
+                    @click="togglePouchCard('pouchDiscard', card.id, pouchSwapRequiredCount)"
                   >
                     {{ card.label }}
                   </button>
@@ -883,23 +963,23 @@
                   <h3>觸發秘計</h3>
                   <div class="choice-options" aria-label="選擇秘計">
                     <button
-                      v-for="strategy in chainStrategyOptions"
-                      :key="`chain-strategy-${strategy}`"
+                      v-for="option in chainStrategyOptions"
+                      :key="`chain-strategy-${option.strategy}`"
                       type="button"
-                      :class="{ selected: chainStrategySelection === strategy }"
-                      @click="chainStrategySelection = strategy"
+                      :class="{ selected: chainStrategySelection === option.strategy }"
+                      @click="chainStrategySelection = option.strategy"
                     >
-                      {{ strategyLabel(strategy) }}
+                      {{ strategyLabel(option.strategy) }}
                     </button>
                   </div>
 
                   <div
-                    v-if="chainStrategySelection === 'LureTheTigerAway'"
+                    v-if="selectedChainStrategyAction?.input === 'targetPlayer'"
                     class="choice-options"
                     aria-label="離山目標"
                   >
                     <button
-                      v-for="player in state.turnOrder"
+                      v-for="player in selectedChainStrategyAction.targetPlayers"
                       :key="`strategy-target-${player}`"
                       type="button"
                       :class="{ selected: strategyTargetSelection === player }"
@@ -909,17 +989,20 @@
                     </button>
                   </div>
 
-                  <template v-if="chainStrategySelection === 'SheepStealing'">
+                  <template v-if="selectedChainStrategyAction?.input === 'deckDiscardSwap'">
                     <h3>牽羊：另選兩張牌組牌</h3>
                     <div class="choice-cards" aria-label="牽羊牌組牌">
                       <button
                         v-for="card in initialPouchCards.filter(
-                          candidate => !pouchDeckSelection.includes(candidate.id),
+                          candidate => selectedChainStrategyAction?.deckCards.includes(candidate.id)
+                            && !pouchDeckSelection.includes(candidate.id),
                         )"
                         :key="`strategy-deck-${card.id}`"
                         type="button"
                         :class="{ selected: strategyDeckSelection.includes(card.id) }"
-                        @click="togglePouchCard('strategyDeck', card.id, 2)"
+                        @click="togglePouchCard(
+                          'strategyDeck', card.id, selectedChainStrategyAction?.requiredCardCount ?? 0,
+                        )"
                       >
                         {{ card.label }}
                       </button>
@@ -927,22 +1010,26 @@
                     <h3>牽羊：選兩張棄牌</h3>
                     <div class="choice-cards" aria-label="牽羊棄牌">
                       <button
-                        v-for="card in ownDiscardCards"
+                        v-for="card in ownDiscardCards.filter(
+                          candidate => selectedChainStrategyAction?.discardCards.includes(candidate.id),
+                        )"
                         :key="`strategy-discard-${card.id}`"
                         type="button"
                         :class="{ selected: strategyDiscardSelection.includes(card.id) }"
-                        @click="togglePouchCard('strategyDiscard', card.id, 2)"
+                        @click="togglePouchCard(
+                          'strategyDiscard', card.id, selectedChainStrategyAction?.requiredCardCount ?? 0,
+                        )"
                       >
                         {{ card.label }}
                       </button>
                     </div>
                   </template>
 
-                  <template v-if="chainStrategySelection === 'DeceiveHeaven'">
+                  <template v-if="selectedChainStrategyAction?.input === 'star'">
                     <h3>瞞天：取得星辰效果或破除星辰</h3>
                     <div class="choice-options" aria-label="瞞天選擇">
                       <button
-                        v-for="star in STAR_KINDS"
+                        v-for="star in selectedChainStrategyAction.stars"
                         :key="`strategy-star-${star}`"
                         type="button"
                         :class="{ selected: strategyStarSelection === star && !strategyBreakStar }"
@@ -951,18 +1038,18 @@
                         取得 {{ starLabel(star) }}
                       </button>
                       <button
-                        v-for="owned in state.teamStars"
-                        :key="`strategy-break-star-${owned.team}-${owned.star}`"
+                        v-for="star in selectedChainStrategyAction.breakStars"
+                        :key="`strategy-break-star-${star}`"
                         type="button"
-                        :class="{ selected: strategyStarSelection === owned.star && strategyBreakStar }"
-                        @click="strategyStarSelection = owned.star; strategyBreakStar = true"
+                        :class="{ selected: strategyStarSelection === star && strategyBreakStar }"
+                        @click="strategyStarSelection = star; strategyBreakStar = true"
                       >
-                        破除 {{ starLabel(owned.star) }}
+                        破除 {{ starLabel(star) }}
                       </button>
                     </div>
                   </template>
 
-                  <template v-if="chainStrategySelection === 'Retreat'">
+                  <template v-if="selectedChainStrategyAction?.input === 'retreat'">
                     <h3>走為：破除環境或捨棄手牌</h3>
                     <div class="choice-options" aria-label="走為選擇">
                       <button
@@ -973,7 +1060,9 @@
                         破除環境
                       </button>
                       <button
-                        v-for="card in ownHandCards"
+                        v-for="card in ownHandCards.filter(
+                          candidate => selectedChainStrategyAction?.handCards.includes(candidate.id),
+                        )"
                         :key="`strategy-hand-${card.id}`"
                         type="button"
                         :class="{ selected: strategyDiscardCard === card.id }"
@@ -1330,6 +1419,7 @@ import type {
   PublicCard,
   PublicCardRefs,
   PublicGameState,
+  RulesCatalog,
   SecretStrategy,
   SpiritKind,
   StarKind,
@@ -1338,22 +1428,16 @@ import type {
 } from '~/types/fewfc'
 import type { GameRoomMember, GameRoomResponse } from '../shared/game-room'
 import {
-  disableRuleModule,
-  enableRuleModule,
-  RULE_MODULE_SPECS,
+  createRuleModulePolicy,
+  presentationForRuleModule,
 } from '#shared/utils/rule-modules'
 import { authClient } from '~/lib/auth-client'
 import { buildDiscardComposition, DISCARD_ELEMENTS } from '~/lib/discard-composition'
 import { roomRouteResult, safeInternalPath } from '~/lib/navigation'
-import {
-  DECK_ELEMENTS,
-  DECK_LEVELS,
-  preconstructedDeck,
-  validateDeck,
-  type PlayerDeckList,
-} from '~/lib/player-deck'
+import { createDeckCompositionPolicy, type PlayerDeckList } from '~/lib/player-deck'
+import type { LocalPasswordResetResult } from '#shared/local-password-reset'
 
-type Screen = 'login' | 'lobby' | 'deck' | 'game'
+type Screen = 'login' | 'password-reset' | 'lobby' | 'deck' | 'game'
 
 interface PublicRoomSummary {
   gameId: string
@@ -1372,12 +1456,20 @@ interface PublicRoomSummary {
 
 const route = useRoute()
 const router = useRouter()
+const rulesCatalog = ref<RulesCatalog | null>(null)
+const ruleModulePolicy = computed(() => createRuleModulePolicy(
+  rulesCatalog.value?.ruleModules ?? [],
+))
 const screen = computed<Screen>(() => {
   if (route.path === '/login') return 'login'
+  if (route.path === '/reset-password') return 'password-reset'
   if (route.path === '/deck') return 'deck'
   if (route.path.startsWith('/rooms/')) return 'game'
   return 'lobby'
 })
+const isAuthenticationScreen = computed(() => (
+  screen.value === 'login' || screen.value === 'password-reset'
+))
 const routeReady = ref(false)
 const roomRouteError = ref('')
 const displayName = ref('玩家')
@@ -1387,6 +1479,12 @@ const passwordInput = ref('')
 const authMode = ref<'sign-in' | 'sign-up'>('sign-in')
 const authBusy = ref(false)
 const loginError = ref('')
+const localPasswordResetEnabled = ref(false)
+const resetPasswordEmail = ref('')
+const resetPasswordInput = ref('')
+const resetPasswordConfirmation = ref('')
+const resetPasswordBusy = ref(false)
+const resetPasswordError = ref('')
 const currentUserId = ref('')
 const profileOpen = ref(false)
 const roomSettingsOpen = ref(false)
@@ -1429,70 +1527,67 @@ type PouchStrategyAction = {
   strategy: SecretStrategy
   options?: Parameters<typeof game.triggerSecretStrategy>[1]
   choice?: 'sheep'
+  requiredCardCount?: number
+  deckCards?: number[]
+  discardCards?: number[]
 }
 const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
   if (viewer.value === 'observer' || !game.interaction.value.canTriggerPouch) return []
   const pouch = state.value.pouches.find(entry => entry.owner === viewer.value)?.card
   if (!pouch) return []
   const actions: PouchStrategyAction[] = []
-  const element = cardElement(pouch.label)
-  const level = Number(cardLevel(pouch.label))
-  const elemental: Record<string, SecretStrategy> = {
-    金: 'GoldenCicada',
-    木: 'StealTheBeam',
-    水: 'MuddyWaters',
-    火: 'WatchTheFire',
-  }
-  if (elemental[element]) {
-    actions.push({ label: `秘計‧${strategyLabel(elemental[element])}`, strategy: elemental[element] })
-  } else if (element === '土') {
-    for (const player of state.value.turnOrder) {
-      actions.push({
-        label: `秘計‧離山 → ${playerLabel(player)}`,
-        strategy: 'LureTheTigerAway',
-        options: { targetPlayer: player },
-      })
-    }
-  }
-  if (level === 1) {
-    actions.push({ label: '秘計‧還魂', strategy: 'ReturnSoul' })
-  } else if (level === 2) {
-    const discard = state.value.playerDiscards
-      .find(entry => entry.player === viewer.value)?.cards ?? []
-    if (initialPouchCards.value.length >= 2 && discard.length >= 2) {
-      actions.push({
-        label: '秘計‧牽羊',
-        strategy: 'SheepStealing',
-        choice: 'sheep',
-      })
-    }
-  } else if (level === 3) {
-    actions.push({ label: '秘計‧暗渡', strategy: 'DarkCrossing' })
-  } else if (level === 4) {
-    for (const star of ['Metal', 'Wood', 'Water', 'Fire', 'Earth'] as StarKind[]) {
-      actions.push({
-        label: `秘計‧瞞天 → ${starLabel(star)}`,
-        strategy: 'DeceiveHeaven',
-        options: { star },
-      })
-    }
-    for (const owned of state.value.teamStars) {
-      actions.push({
-        label: `秘計‧瞞天 → 破除 ${starLabel(owned.star)}`,
-        strategy: 'DeceiveHeaven',
-        options: { star: owned.star, breakStar: true },
-      })
-    }
-  } else if (level === 5) {
-    actions.push({ label: '秘計‧走為 → 破除環境', strategy: 'Retreat' })
-    const hand = state.value.hands.find(entry => entry.player === viewer.value)?.cards
-    if (hand?.kind === 'known') {
-      for (const card of hand.cards) {
+  const requirements = game.interaction.value.secretStrategyActions
+    .filter(requirement => requirement.sourceCard === pouch.id)
+  for (const requirement of requirements) {
+    const { strategy } = requirement
+    if (requirement.input === 'none') {
+      actions.push({ label: `秘計‧${strategyLabel(strategy)}`, strategy })
+    } else if (requirement.input === 'targetPlayer') {
+      for (const player of requirement.targetPlayers) {
         actions.push({
-          label: `秘計‧走為 → 捨棄 ${card.label}`,
-          strategy: 'Retreat',
-          options: { discardCard: card.id },
+          label: `秘計‧${strategyLabel(strategy)} → ${playerLabel(player)}`,
+          strategy,
+          options: { targetPlayer: player },
         })
+      }
+    } else if (requirement.input === 'deckDiscardSwap') {
+      if (requirement.deckCards.length >= requirement.requiredCardCount
+        && requirement.discardCards.length >= requirement.requiredCardCount) {
+        actions.push({
+          label: `秘計‧${strategyLabel(strategy)}`,
+          strategy,
+          choice: 'sheep',
+          requiredCardCount: requirement.requiredCardCount,
+          deckCards: requirement.deckCards,
+          discardCards: requirement.discardCards,
+        })
+      }
+    } else if (requirement.input === 'star') {
+      for (const star of requirement.stars) {
+        actions.push({
+          label: `秘計‧${strategyLabel(strategy)} → ${starLabel(star)}`,
+          strategy,
+          options: { star },
+        })
+      }
+      for (const star of requirement.breakStars) {
+        actions.push({
+          label: `秘計‧${strategyLabel(strategy)} → 破除 ${starLabel(star)}`,
+          strategy,
+          options: { star, breakStar: true },
+        })
+      }
+    } else if (requirement.input === 'retreat') {
+      actions.push({ label: `秘計‧${strategyLabel(strategy)} → 破除環境`, strategy })
+      for (const cardId of requirement.handCards) {
+        const card = ownHandCards.value.find(candidate => candidate.id === cardId)
+        if (card) {
+          actions.push({
+            label: `秘計‧${strategyLabel(strategy)} → 捨棄 ${card.label}`,
+            strategy,
+            options: { discardCard: card.id },
+          })
+        }
       }
     }
   }
@@ -1510,6 +1605,9 @@ const strategyTargetSelection = ref<PlayerId | null>(null)
 const strategyStarSelection = ref<StarKind | null>(null)
 const strategyBreakStar = ref(false)
 const strategyDiscardCard = ref<number | null>(null)
+const pouchSwapRequiredCount = ref(0)
+const pouchSwapDeckCards = ref<number[]>([])
+const pouchSwapDiscardCards = ref<number[]>([])
 const ownDiscardCards = computed(() => {
   if (viewer.value === 'observer') return []
   return state.value.playerDiscards.find(entry => entry.player === viewer.value)?.cards ?? []
@@ -1519,7 +1617,6 @@ const ownHandCards = computed(() => {
   const hand = state.value.hands.find(entry => entry.player === viewer.value)?.cards
   return hand?.kind === 'known' ? hand.cards : []
 })
-const STAR_KINDS: StarKind[] = ['Metal', 'Wood', 'Water', 'Fire', 'Earth']
 const friendlyPouchOwners = computed(() => {
   if (viewer.value === 'observer') return []
   const team = state.value.players.find(player => player.id === viewer.value)?.team
@@ -1533,30 +1630,18 @@ const chainTriggerCard = computed(() => (
 const chainStrategyOptions = computed(() => {
   const card = chainTriggerCard.value
   if (!card) return []
-  const options: SecretStrategy[] = []
-  const byElement: Record<string, SecretStrategy> = {
-    金: 'GoldenCicada',
-    木: 'StealTheBeam',
-    水: 'MuddyWaters',
-    火: 'WatchTheFire',
-    土: 'LureTheTigerAway',
-  }
-  const elemental = byElement[cardElement(card.label)]
-  if (elemental) options.push(elemental)
-  const byLevel: Record<string, SecretStrategy> = {
-    '1': 'ReturnSoul',
-    '2': 'SheepStealing',
-    '3': 'DarkCrossing',
-    '4': 'DeceiveHeaven',
-    '5': 'Retreat',
-  }
-  const leveled = byLevel[cardLevel(card.label)]
-  if (leveled) options.push(leveled)
-  return options
+  return game.interaction.value.secretStrategyActions
+    .filter(option => option.sourceCard === card.id)
 })
+const selectedChainStrategyAction = computed(() => chainStrategyOptions.value.find(
+  option => option.strategy === chainStrategySelection.value,
+) ?? null)
 const canSubmitPouchChoice = computed(() => {
   if (pouchChoiceKind.value === 'sheep') {
-    return pouchDeckSelection.value.length === 2 && pouchDiscardSelection.value.length === 2
+    const count = pouchSwapRequiredCount.value
+    return count > 0
+      && pouchDeckSelection.value.length === count
+      && pouchDiscardSelection.value.length === count
   }
   if (pouchChoiceKind.value !== 'chain'
     || !pouchFormationAction.value
@@ -1564,12 +1649,13 @@ const canSubmitPouchChoice = computed(() => {
     || pouchDeckSelection.value.length < 1
     || pouchDeckSelection.value.length > 2) return false
   if (pouchDeckSelection.value.length === 1) return true
-  if (!chainStrategySelection.value) return false
-  if (chainStrategySelection.value === 'LureTheTigerAway') return !!strategyTargetSelection.value
-  if (chainStrategySelection.value === 'DeceiveHeaven') return !!strategyStarSelection.value
-  if (chainStrategySelection.value === 'SheepStealing') {
-    return strategyDeckSelection.value.length === 2
-      && strategyDiscardSelection.value.length === 2
+  const requirement = selectedChainStrategyAction.value
+  if (!requirement) return false
+  if (requirement.input === 'targetPlayer') return !!strategyTargetSelection.value
+  if (requirement.input === 'star') return !!strategyStarSelection.value
+  if (requirement.input === 'deckDiscardSwap') {
+    return strategyDeckSelection.value.length === requirement.requiredCardCount
+      && strategyDiscardSelection.value.length === requirement.requiredCardCount
   }
   return true
 })
@@ -1587,6 +1673,9 @@ function resetPouchChoice() {
   strategyStarSelection.value = null
   strategyBreakStar.value = false
   strategyDiscardCard.value = null
+  pouchSwapRequiredCount.value = 0
+  pouchSwapDeckCards.value = []
+  pouchSwapDiscardCards.value = []
 }
 
 function togglePouchCard(
@@ -1609,6 +1698,9 @@ function startPouchAction(action: PouchStrategyAction) {
   if (action.choice === 'sheep') {
     resetPouchChoice()
     pouchChoiceKind.value = 'sheep'
+    pouchSwapRequiredCount.value = action.requiredCardCount ?? 0
+    pouchSwapDeckCards.value = action.deckCards ?? []
+    pouchSwapDiscardCards.value = action.discardCards ?? []
     return
   }
   void game.triggerSecretStrategy(action.strategy, action.options)
@@ -1658,7 +1750,7 @@ const showSetupReveal = ref(false)
 const discardOpen = ref(false)
 const activeDiscardOwner = ref<PlayerId | null>(null)
 const discardTrigger = ref<HTMLButtonElement | null>(null)
-const deckDraft = ref<PlayerDeckList>(preconstructedDeck())
+const deckDraft = ref<PlayerDeckList>({ name: '', cards: [] })
 const deckSource = ref<'custom' | 'preconstructed'>('preconstructed')
 const deckBusy = ref(false)
 const deckError = ref('')
@@ -1674,18 +1766,31 @@ const ruleGroupLabels = {
   advanced: '進階規則',
   theme: '主題規則',
 }
-const ruleGroups = (['gameplay', 'advanced', 'theme'] as const).map(id => ({
+const ruleGroups = computed(() => (['gameplay', 'advanced', 'theme'] as const).map(id => ({
   id,
   label: ruleGroupLabels[id],
-  rules: RULE_MODULE_SPECS
-    .filter(module => module.group === id)
-    .map(module => ({ id: module.id, label: module.label })),
+  rules: ruleModulePolicy.value.modules
+    .map(module => ({
+      id: module.id,
+      ...presentationForRuleModule(module.id),
+      group: module.category === 'optional' ? 'gameplay' : module.category,
+    }))
+    .filter(module => module.group === id),
+})))
+const ruleLabelById = computed(() => new Map<string, string>(
+  ruleGroups.value.flatMap(group => group.rules).map(rule => [rule.id, rule.label]),
+))
+const deckRules = computed(() => rulesCatalog.value
+  ? createDeckCompositionPolicy(rulesCatalog.value.deckComposition)
+  : null)
+const DECK_ELEMENTS = computed(() => deckRules.value?.elements ?? [])
+const DECK_LEVELS = computed(() => deckRules.value?.levels ?? [])
+const deckValidation = computed(() => deckRules.value?.validate(deckDraft.value) ?? ({
+  valid: false,
+  cardCount: deckDraft.value.cards.length,
+  levelTotal: 0,
+  errors: [],
 }))
-const ruleOptions = ruleGroups.flatMap(group => group.rules)
-const ruleLabelById = new Map<string, string>(
-  ruleOptions.map(rule => [rule.id, rule.label]),
-)
-const deckValidation = computed(() => validateDeck(deckDraft.value))
 
 const visibleEvents = computed(() => game.publicEvents.value)
 const playerInitial = computed(() => displayName.value.trim().charAt(0).toUpperCase() || 'A')
@@ -1712,7 +1817,7 @@ const enabledRuleLabels = computed(() => [
   '基礎規則',
   ...(onlineMetadata.value?.enabledRuleModules ?? [])
     .flatMap(moduleId => {
-      const label = ruleLabelById.get(moduleId)
+      const label = ruleLabelById.value.get(moduleId)
       return label ? [label] : []
     }),
 ])
@@ -1802,6 +1907,8 @@ interface CardToken {
   id: string
   cardId: number
   label: string
+  element?: Element | null
+  level?: number | null
   hidden: boolean
   selectable: boolean
   selected: boolean
@@ -1852,6 +1959,98 @@ async function login() {
   }
 }
 
+async function refreshLocalPasswordResetAvailability() {
+  try {
+    const response = await $fetch<{ enabled: boolean }>('/api/local-password-reset')
+    localPasswordResetEnabled.value = response.enabled === true
+  } catch {
+    localPasswordResetEnabled.value = false
+  }
+
+  return localPasswordResetEnabled.value
+}
+
+function openLocalPasswordReset() {
+  const redirect = safeInternalPath(route.query.redirect)
+  void router.push({
+    path: '/reset-password',
+    query: redirect ? { redirect } : {},
+  })
+}
+
+function returnToLogin() {
+  const redirect = safeInternalPath(route.query.redirect)
+  resetPasswordError.value = ''
+  void router.push({
+    path: '/login',
+    query: redirect ? { redirect } : {},
+  })
+}
+
+async function resetLocalPassword() {
+  if (!resetPasswordEmail.value || !resetPasswordInput.value || !resetPasswordConfirmation.value) {
+    resetPasswordError.value = '請輸入 Email、新密碼與確認密碼'
+    return
+  }
+
+  if (resetPasswordInput.value !== resetPasswordConfirmation.value) {
+    resetPasswordError.value = '兩次輸入的新密碼不一致'
+    return
+  }
+
+  if (resetPasswordInput.value.length < 10) {
+    resetPasswordError.value = '密碼至少需要 10 個字元'
+    return
+  }
+
+  resetPasswordBusy.value = true
+  resetPasswordError.value = ''
+
+  try {
+    const response = await $fetch<{ status: LocalPasswordResetResult }>('/api/local-password-reset', {
+      method: 'POST',
+      body: {
+        email: resetPasswordEmail.value,
+        newPassword: resetPasswordInput.value,
+        confirmPassword: resetPasswordConfirmation.value,
+      },
+    })
+
+    if (response.status === 'user-not-found') {
+      resetPasswordError.value = '找不到這個 Email 的帳號'
+      return
+    }
+
+    if (response.status === 'no-credential') {
+      resetPasswordError.value = '此帳號沒有可重設的密碼登入憑證，且不會建立新憑證'
+      return
+    }
+
+    const result = await authClient.signIn.email({
+      email: resetPasswordEmail.value,
+      password: resetPasswordInput.value,
+      rememberMe: true,
+    })
+
+    if (result.error) {
+      resetPasswordError.value = result.error.message || '密碼已重設，但自動登入失敗'
+      return
+    }
+
+    const session = await authClient.getSession()
+    currentUserId.value = session.data?.user.id ?? ''
+    displayName.value = session.data?.user.name || '玩家'
+    notifications.connect()
+    roomName.value ||= `${displayName.value}的房間`
+    await router.replace(loginRedirect())
+  } catch (error) {
+    const message = (error as { data?: { statusMessage?: unknown } })?.data?.statusMessage
+    resetPasswordError.value = typeof message === 'string' ? message : '本機重設目前無法使用'
+  } finally {
+    resetPasswordBusy.value = false
+  }
+}
+
 async function guestLogin() {
   authBusy.value = true
   loginError.value = ''
@@ -1895,30 +2094,31 @@ function openDeckEditor() {
   void router.push('/deck')
 }
 
-function deckElementLabel(element: typeof DECK_ELEMENTS[number]) {
-  return {
-    metal: '金',
-    wood: '木',
-    water: '水',
-    fire: '火',
-    earth: '土',
-  }[element]
+function deckElementLabel(element: Element) {
+  return deckRules.value?.definitions.find(definition => definition.element === element)?.name
+    ?? element
 }
 
 function deckCardCount(
-  element: typeof DECK_ELEMENTS[number],
-  level: typeof DECK_LEVELS[number],
+  element: Element,
+  level: number,
 ) {
-  const id = `${element}-${level}`
+  const id = deckRules.value?.definition(element, level)?.id
+  if (!id) return 0
   return deckDraft.value.cards.filter(card => card === id).length
 }
 
+function deckCardLimit(element: Element, level: number) {
+  return deckRules.value?.definition(element, level)?.personalDeckCopyLimit ?? 0
+}
+
 function adjustDeckCard(
-  element: typeof DECK_ELEMENTS[number],
-  level: typeof DECK_LEVELS[number],
+  element: Element,
+  level: number,
   delta: number,
 ) {
-  const id = `${element}-${level}`
+  const id = deckRules.value?.definition(element, level)?.id
+  if (!id) return
   if (delta > 0) {
     deckDraft.value.cards.push(id)
     return
@@ -2087,8 +2287,8 @@ async function restartGame() {
 async function toggleWaitingRule(moduleId: string) {
   const current = onlineMetadata.value?.enabledRuleModules ?? []
   const next = current.includes(moduleId)
-    ? disableRuleModule(current, moduleId)
-    : enableRuleModule(current, moduleId)
+    ? ruleModulePolicy.value.disable(current, moduleId)
+    : ruleModulePolicy.value.enable(current, moduleId)
   await game.updateRuleModules(next)
 }
 
@@ -2277,7 +2477,13 @@ async function restoreCurrentRoute() {
     game.clearRoom()
     currentUserId.value = ''
 
-    if (route.path !== '/login') {
+    if (route.path === '/reset-password') {
+      if (!await refreshLocalPasswordResetAvailability()) {
+        await router.replace('/login')
+      }
+    } else if (route.path === '/login') {
+      void refreshLocalPasswordResetAvailability()
+    } else {
       const redirect = safeInternalPath(route.fullPath)
       await router.replace({
         path: '/login',
@@ -2294,7 +2500,7 @@ async function restoreCurrentRoute() {
   roomName.value ||= `${displayName.value}的房間`
   notifications.connect()
 
-  if (route.path === '/login') {
+  if (isAuthenticationScreen.value) {
     await router.replace(loginRedirect())
     return
   }
@@ -2320,7 +2526,13 @@ async function restoreCurrentRoute() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  try {
+    rulesCatalog.value = await $fetch<RulesCatalog>('/api/rules/catalog')
+    deckDraft.value = deckRules.value?.preconstructedDeck() ?? deckDraft.value
+  } catch {
+    // Plain Nuxt development has no Worker/WASM bridge; UI-only routes still remain usable.
+  }
   window.addEventListener('click', handlePageClick)
   window.addEventListener('keydown', handlePageKeydown)
 
@@ -2435,6 +2647,8 @@ function cardsFor(player: PlayerId): CardToken[] {
       id: `${player}-known-${index}-${card.id}`,
       cardId: card.id,
       label: card.label,
+      element: card.element,
+      level: card.level,
       hidden: false,
       selectable: game.canSelectCard(player),
       selected: game.selectedCards.value.includes(card.id),
@@ -2447,6 +2661,8 @@ function cardsFor(player: PlayerId): CardToken[] {
           id: `${player}-known-${index}-${card.id}`,
           cardId: card.id,
           label: card.label,
+          element: card.element,
+          level: card.level,
           hidden: false,
           selectable: false,
           selected: false,
@@ -2479,6 +2695,8 @@ function cardTokensForRefs(cards: PublicCardRefs | undefined, prefix: string): C
       id: `${prefix}-known-${index}-${card.id}`,
       cardId: card.id,
       label: card.label,
+      element: card.element,
+      level: card.level,
       hidden: false,
       selectable: false,
       selected: false,
@@ -2491,6 +2709,8 @@ function cardTokensForRefs(cards: PublicCardRefs | undefined, prefix: string): C
           id: `${prefix}-known-${index}-${card.id}`,
           cardId: card.id,
           label: card.label,
+          element: card.element,
+          level: card.level,
           hidden: false,
           selectable: false,
           selected: false,
@@ -2898,17 +3118,17 @@ function formationChoiceLabel(formationId: string): string {
   return labels[formationId] ?? formationId
 }
 
-function elementClass(label: string): string {
-  const value = cardElement(label)
+function elementClass(element: Element | null | undefined): string {
+  const value = cardElement(element)
   return value ? `element-${value}` : ''
 }
 
-function cardElement(label: string): string {
-  return ['金', '木', '水', '火', '土'].find((element) => label.includes(element)) ?? ''
+function cardElement(element: Element | null | undefined): string {
+  return element ? cardElementLabel(element) : ''
 }
 
-function cardLevel(label: string): string {
-  return label.match(/\d+/)?.[0] ?? '◆'
+function cardLevel(level: number | null | undefined): string {
+  return level === null || level === undefined ? '◆' : String(level)
 }
 
 function cardName(label: string): string {

@@ -96,6 +96,69 @@ export interface PublicPendingRandomness {
 export interface PublicCard {
   id: CardInstanceId
   label: string
+  element: Element | null
+  level: number | null
+  secretStrategies: Array<{
+    strategy: SecretStrategy
+    input: 'none' | 'targetPlayer' | 'deckDiscardSwap' | 'star' | 'retreat'
+  }>
+}
+
+export interface RuleModuleSpec {
+  id: string
+  category: 'advanced' | 'optional' | 'theme'
+  defaultEnabled: boolean
+  dependencies: string[]
+}
+
+export interface DeckCompositionCardDefinition {
+  id: string
+  name: string
+  element: Element
+  level: number
+  sharedDeckCopies: number
+  personalDeckCopyLimit: number
+  preconstructedCopies: number
+}
+
+export interface RulesCatalog {
+  version: 1
+  ruleModules: RuleModuleSpec[]
+  deckComposition: {
+    cardDefinitions: DeckCompositionCardDefinition[]
+    sharedDeck: {
+      exactCardCount: number
+    }
+    personalDeck: {
+      exactCardCount: number
+      maximumLevelTotal: number
+      preconstructed: {
+        name: string
+        cards: string[]
+      }
+    }
+  }
+}
+
+export interface PersonalDeckResolution {
+  candidateValidation: {
+    valid: boolean
+    cardCount: number
+    levelTotal: number
+    issues: Array<{ code: string } & Record<string, unknown>>
+  } | null
+  source: 'custom' | 'preconstructed'
+  effective: {
+    player: PlayerId
+    name: string
+    cards: string[]
+  }
+  effectiveValidation: {
+    valid: boolean
+    cardCount: number
+    levelTotal: number
+    issues: Array<{ code: string } & Record<string, unknown>>
+  }
 }
 
 export interface PublicGameState {
@@ -260,12 +323,38 @@ export interface LocalGameResponse {
     canRetrieveDiscard: boolean
     canChooseInitialPouch: boolean
     canTriggerPouch: boolean
+    pouchChainAction: {
+      formationId: string
+      ownerPlayers: PlayerId[]
+      cards: Array<{
+        pouchCard: CardInstanceId
+        triggerCards: CardInstanceId[]
+      }>
+      minimumCardCount: number
+      maximumCardCount: number
+    } | null
+    secretStrategyActions: Array<{
+      sourceCard: CardInstanceId
+      strategy: SecretStrategy
+      input: 'none' | 'targetPlayer' | 'deckDiscardSwap' | 'star' | 'retreat'
+      targetPlayers: PlayerId[]
+      stars: StarKind[]
+      breakStars: StarKind[]
+      deckCards: CardInstanceId[]
+      discardCards: CardInstanceId[]
+      handCards: CardInstanceId[]
+      requiredCardCount: number
+    }>
   }
   trustedRandomCandidates?: CardInstanceId[]
+  trustedRandomCandidateCount?: number
   pendingRandomnessRequest?: {
     requestId: string
     deck: 'Shared' | { Player: PlayerId }
-    continuationId: string
+    continuation:
+      | { type: 'echo', kind: 'ringingMetalRecycleDiscard' | 'ringingMetalPostSearch' }
+      | { type: 'pouch', kind: 'initialShuffle' | 'sheepStealing' }
+      | { type: 'tribulation', kind: 'rustedForestShuffle' }
     currentOrder: CardInstanceId[]
   }
 }

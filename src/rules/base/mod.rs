@@ -1,16 +1,16 @@
 pub(crate) mod attack_resolution;
 mod covered_passive;
+pub(crate) mod deck_composition;
 mod effect_intent;
 mod formation_selection;
 mod formation_use;
 
 use crate::domain::{
-    CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
-    CardMoveDelta, CardOrigin, CardZone, Command, DISCARD_RETRIEVAL_MODULE_ID, DeckPlacement,
-    Element, EngineInvariantError, GameError, GameEvent, GameResult, GameSetup, GameState,
-    GameStatus, HpChangeDelta, PERSONAL_DECK_MODULE_ID, PassActionReason, Phase, Player,
-    PlayerDeckList, PlayerId, RulesetId, TeamHp, TurnDrawSkipReason, ValidationError,
-    validate_setup,
+    CannotPerformFormationReason, CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Command,
+    DISCARD_RETRIEVAL_MODULE_ID, DeckPlacement, EngineInvariantError, GameError, GameEvent,
+    GameResult, GameSetup, GameState, GameStatus, HpChangeDelta, PERSONAL_DECK_MODULE_ID,
+    PassActionReason, Phase, Player, PlayerDeckList, PlayerId, RulesetId, TeamHp,
+    TurnDrawSkipReason, ValidationError, validate_setup,
 };
 use crate::rules::PlayableAction;
 use crate::rules::projection;
@@ -196,8 +196,8 @@ impl BaseRuleset {
             players,
             turn_order,
             hp,
-            card_defs: official_card_defs(),
-            card_instances: official_card_instances(),
+            card_defs: deck_composition::DeckComposition.official_card_defs(),
+            card_instances: deck_composition::DeckComposition.official_card_instances(),
             deck_lists: Vec::new(),
             hand_limit: 5,
             base_draw: 2,
@@ -213,12 +213,13 @@ impl BaseRuleset {
             .players
             .iter()
             .map(|player| {
-                requested_decks
+                let candidate = requested_decks
                     .iter()
                     .find(|deck| deck.player == player.id)
-                    .filter(|deck| valid_personal_deck(&setup.card_defs, deck))
-                    .cloned()
-                    .unwrap_or_else(|| preconstructed_deck(player.id.clone()))
+                    .cloned();
+                deck_composition::DeckComposition
+                    .resolve(player.id.clone(), candidate)
+                    .effective
             })
             .collect::<Vec<_>>();
 
@@ -226,10 +227,10 @@ impl BaseRuleset {
         let mut card_instances = Vec::new();
         for deck in &deck_lists {
             for definition in &deck.cards {
-                card_instances.push(CardInstanceDef {
+                card_instances.push(crate::domain::CardInstanceDef {
                     instance: CardInstanceId::new(next_instance),
                     definition: definition.clone(),
-                    origin: CardOrigin::Player(deck.player.clone()),
+                    origin: crate::domain::CardOrigin::Player(deck.player.clone()),
                 });
                 next_instance += 1;
             }
@@ -240,7 +241,7 @@ impl BaseRuleset {
     }
 
     pub(crate) fn preconstructed_deck(&self, player: PlayerId) -> PlayerDeckList {
-        preconstructed_deck(player)
+        deck_composition::DeckComposition.preconstructed_deck(player)
     }
 
     pub(crate) fn official_deck_order(&self, setup: &GameSetup) -> Vec<CardInstanceId> {
@@ -268,156 +269,6 @@ impl BaseRuleset {
                 ))
             })
             .collect()
-    }
-}
-
-fn official_card_defs() -> Vec<CardDef> {
-    elements()
-        .into_iter()
-        .flat_map(|element| {
-            (1..=5).map(move |level| {
-                card_def(
-                    &format!("{}-{}", element.id, level),
-                    element.name,
-                    element.element,
-                    level,
-                )
-            })
-        })
-        .collect()
-}
-
-fn official_card_instances() -> Vec<CardInstanceDef> {
-    let mut next_instance = 1;
-    let mut instances = Vec::new();
-
-    for element in elements() {
-        for level in 1..=5 {
-            let copies = official_copy_count(level);
-            for _ in 0..copies {
-                instances.push(CardInstanceDef {
-                    instance: CardInstanceId::new(next_instance),
-                    definition: CardDefId::new(format!("{}-{}", element.id, level)),
-                    origin: CardOrigin::Shared,
-                });
-                next_instance += 1;
-            }
-        }
-    }
-
-    instances
-}
-
-fn official_copy_count(level: u32) -> u64 {
-    match level {
-        1..=3 => 4,
-        4..=5 => 3,
-        _ => 0,
-    }
-}
-
-fn preconstructed_deck(player: PlayerId) -> PlayerDeckList {
-    let copies_by_level = [3, 2, 3, 2, 2];
-    let cards = elements()
-        .into_iter()
-        .flat_map(|element| {
-            copies_by_level
-                .into_iter()
-                .enumerate()
-                .flat_map(move |(index, copies)| {
-                    std::iter::repeat_n(
-                        CardDefId::new(format!("{}-{}", element.id, index + 1)),
-                        copies,
-                    )
-                })
-        })
-        .collect();
-
-    PlayerDeckList {
-        player,
-        name: "五行均衡預組".to_string(),
-        cards,
-    }
-}
-
-fn valid_personal_deck(card_defs: &[CardDef], deck: &PlayerDeckList) -> bool {
-    if deck.cards.len() != 60 {
-        return false;
-    }
-
-    let definitions = card_defs
-        .iter()
-        .map(|definition| (&definition.id, definition))
-        .collect::<HashMap<_, _>>();
-    let mut level_total = 0;
-    let mut counts = HashMap::<&CardDefId, usize>::new();
-
-    for card in &deck.cards {
-        let Some(definition) = definitions.get(card) else {
-            return false;
-        };
-        level_total += definition.level;
-        *counts.entry(card).or_default() += 1;
-    }
-
-    level_total <= 170
-        && counts.into_iter().all(|(card, actual)| {
-            let level = definitions
-                .get(card)
-                .expect("counted definitions must exist")
-                .level;
-            actual
-                <= match level {
-                    1..=3 => 4,
-                    4..=5 => 3,
-                    _ => 0,
-                }
-        })
-}
-
-fn elements() -> [ElementSpec; 5] {
-    [
-        ElementSpec {
-            id: "metal",
-            name: "金",
-            element: Element::Metal,
-        },
-        ElementSpec {
-            id: "wood",
-            name: "木",
-            element: Element::Wood,
-        },
-        ElementSpec {
-            id: "water",
-            name: "水",
-            element: Element::Water,
-        },
-        ElementSpec {
-            id: "fire",
-            name: "火",
-            element: Element::Fire,
-        },
-        ElementSpec {
-            id: "earth",
-            name: "土",
-            element: Element::Earth,
-        },
-    ]
-}
-
-#[derive(Clone, Copy)]
-struct ElementSpec {
-    id: &'static str,
-    name: &'static str,
-    element: Element,
-}
-
-fn card_def(id: &str, name: &str, element: Element, level: u32) -> CardDef {
-    CardDef {
-        id: CardDefId::new(id),
-        name: name.to_string(),
-        element,
-        level,
     }
 }
 
@@ -1657,7 +1508,7 @@ mod tests {
 
                 assert_eq!(
                     matching_instances,
-                    official_copy_count(level) as usize,
+                    if level <= 3 { 4 } else { 3 },
                     "unexpected copies for {element:?} level {level}"
                 );
             }

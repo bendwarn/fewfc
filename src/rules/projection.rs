@@ -990,9 +990,18 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 (request_id, deck),
                 "canonical randomness result must match the pending request"
             );
-            let recycles_discard = pending.continuation_id == "echo:ringing-metal:recycle-discard";
-            let rusted_forest_shuffle =
-                pending.continuation_id == "tribulation:rusted-forest:shuffle";
+            let recycles_discard = matches!(
+                pending.continuation,
+                crate::domain::RandomnessContinuation::Echo(
+                    crate::domain::EchoRandomnessContinuation::RingingMetalRecycleDiscard
+                )
+            );
+            let rusted_forest_shuffle = matches!(
+                pending.continuation,
+                crate::domain::RandomnessContinuation::Tribulation(
+                    crate::domain::TribulationRandomnessContinuation::RustedForestShuffle
+                )
+            );
             let recycled_cards = pending.current_order.clone();
             match deck {
                 crate::domain::RandomnessDeck::Shared => {

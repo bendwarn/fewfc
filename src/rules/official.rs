@@ -6,9 +6,13 @@ use crate::domain::{
     RulesetId, SPIRIT_MODULE_ID, STAR_MODULE_ID, TRIBULATION_MODULE_ID, ValidationError,
     validate_setup,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-use super::{PlayableAction, base::BaseRuleset, official_formation_registry};
+use super::{
+    DeckCompositionCatalog, PlayableAction, ResolvedPersonalDeck, base::BaseRuleset,
+    official_formation_registry,
+};
 
 const ADVANCED_RULE_MODULE_IDS: &[&str] = &[
     STAR_MODULE_ID,
@@ -19,68 +23,98 @@ const ADVANCED_RULE_MODULE_IDS: &[&str] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RuleModuleSpec {
     id: &'static str,
+    category: OfficialRuleModuleCategory,
     default_enabled: bool,
     dependencies: &'static [&'static str],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OfficialRuleModuleCategory {
+    Advanced,
+    Optional,
+    Theme,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialRuleModuleSpec {
+    pub id: RuleModuleId,
+    pub category: OfficialRuleModuleCategory,
+    pub default_enabled: bool,
+    pub dependencies: Vec<RuleModuleId>,
 }
 
 const OFFICIAL_RULE_MODULES: &[RuleModuleSpec] = &[
     RuleModuleSpec {
         id: DISCARD_RETRIEVAL_MODULE_ID,
+        category: OfficialRuleModuleCategory::Optional,
         default_enabled: true,
         dependencies: &[],
     },
     RuleModuleSpec {
         id: PERSONAL_DECK_MODULE_ID,
+        category: OfficialRuleModuleCategory::Optional,
         default_enabled: true,
         dependencies: &[],
     },
     RuleModuleSpec {
         id: FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+        category: OfficialRuleModuleCategory::Advanced,
         default_enabled: true,
         dependencies: &[],
     },
     RuleModuleSpec {
         id: STAR_MODULE_ID,
+        category: OfficialRuleModuleCategory::Advanced,
         default_enabled: true,
         dependencies: &[],
     },
     RuleModuleSpec {
         id: HERO_SCHOOLS_MODULE_ID,
+        category: OfficialRuleModuleCategory::Advanced,
         default_enabled: true,
         dependencies: &[],
     },
     RuleModuleSpec {
         id: SPIRIT_MODULE_ID,
+        category: OfficialRuleModuleCategory::Theme,
         default_enabled: true,
         dependencies: ADVANCED_RULE_MODULE_IDS,
     },
     RuleModuleSpec {
         id: JIANGHU_MODULE_ID,
+        category: OfficialRuleModuleCategory::Theme,
         default_enabled: true,
         dependencies: ADVANCED_RULE_MODULE_IDS,
     },
     RuleModuleSpec {
         id: CONFLUENCE_GENERATION_MODULE_ID,
+        category: OfficialRuleModuleCategory::Theme,
         default_enabled: true,
         dependencies: ADVANCED_RULE_MODULE_IDS,
     },
     RuleModuleSpec {
         id: DARK_GLIMMER_MODULE_ID,
+        category: OfficialRuleModuleCategory::Theme,
         default_enabled: true,
         dependencies: &[SPIRIT_MODULE_ID],
     },
     RuleModuleSpec {
         id: ECHO_MODULE_ID,
+        category: OfficialRuleModuleCategory::Theme,
         default_enabled: true,
         dependencies: ADVANCED_RULE_MODULE_IDS,
     },
     RuleModuleSpec {
         id: TRIBULATION_MODULE_ID,
+        category: OfficialRuleModuleCategory::Theme,
         default_enabled: true,
         dependencies: ADVANCED_RULE_MODULE_IDS,
     },
     RuleModuleSpec {
         id: POUCH_MODULE_ID,
+        category: OfficialRuleModuleCategory::Theme,
         default_enabled: false,
         dependencies: &[PERSONAL_DECK_MODULE_ID, SPIRIT_MODULE_ID],
     },
@@ -140,8 +174,45 @@ impl OfficialRules {
             .collect()
     }
 
+    pub fn rule_module_catalog(&self) -> Vec<OfficialRuleModuleSpec> {
+        OFFICIAL_RULE_MODULES
+            .iter()
+            .map(|module| OfficialRuleModuleSpec {
+                id: RuleModuleId::new(module.id),
+                category: module.category,
+                default_enabled: module.default_enabled,
+                dependencies: module
+                    .dependencies
+                    .iter()
+                    .map(|dependency| RuleModuleId::new(*dependency))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    pub fn resolve_rule_modules(
+        &self,
+        candidate: Option<Vec<RuleModuleId>>,
+    ) -> GameResult<Vec<RuleModuleId>> {
+        let modules = candidate.unwrap_or_else(|| self.default_rule_modules());
+        self.validate_modules(&modules)?;
+        Ok(modules)
+    }
+
     pub fn preconstructed_deck(&self, player: PlayerId) -> PlayerDeckList {
         BaseRuleset::new().preconstructed_deck(player)
+    }
+
+    pub fn deck_composition_catalog(&self) -> DeckCompositionCatalog {
+        super::base::deck_composition::DeckComposition.catalog()
+    }
+
+    pub fn resolve_personal_deck(
+        &self,
+        player: PlayerId,
+        candidate: Option<PlayerDeckList>,
+    ) -> ResolvedPersonalDeck {
+        super::base::deck_composition::DeckComposition.resolve(player, candidate)
     }
 
     pub fn start_game(

@@ -39,6 +39,42 @@ pub unsafe extern "C" fn fewfc_handle_request(ptr: *const u8, len: usize) -> u64
     pack_response(output)
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fewfc_rules_catalog() -> u64 {
+    let output = crate::web_api::rules_catalog_json()
+        .unwrap_or_else(|error| serde_json::json!({ "error": error }).to_string());
+
+    pack_response(output)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fewfc_resolve_personal_deck(ptr: *const u8, len: usize) -> u64 {
+    let input = if ptr.is_null() || len == 0 {
+        ""
+    } else {
+        let bytes = unsafe { slice::from_raw_parts(ptr, len) };
+        std::str::from_utf8(bytes).unwrap_or("")
+    };
+    let output = crate::web_api::resolve_personal_deck_json(input)
+        .unwrap_or_else(|error| serde_json::json!({ "error": error }).to_string());
+
+    pack_response(output)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fewfc_resolve_rule_modules(ptr: *const u8, len: usize) -> u64 {
+    let input = if ptr.is_null() || len == 0 {
+        ""
+    } else {
+        let bytes = unsafe { slice::from_raw_parts(ptr, len) };
+        std::str::from_utf8(bytes).unwrap_or("")
+    };
+    let output = crate::web_api::resolve_rule_modules_json(input)
+        .unwrap_or_else(|error| serde_json::json!({ "error": error }).to_string());
+
+    pack_response(output)
+}
+
 fn pack_response(output: String) -> u64 {
     let bytes = output.as_bytes();
     let len = bytes.len();

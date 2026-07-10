@@ -1,9 +1,9 @@
 use crate::domain::{
     CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Command, Element, GameError, GameEvent,
     GamePreparationStage, GameResult, GameState, GameStatus, POUCH_MODULE_ID, PlayerCardPile,
-    PlayerId, PouchLevelBonus, ProfessionId, RandomnessDeck, SecretStrategy, SpiritKind,
-    StarBreakReason, StarKind, StatusDuration, StatusEffect, StatusOwner, TemporaryStarEffect,
-    ValidationError,
+    PlayerId, PouchLevelBonus, PouchRandomnessContinuation, ProfessionId, RandomnessContinuation,
+    RandomnessDeck, SecretStrategy, SpiritKind, StarBreakReason, StarKind, StatusDuration,
+    StatusEffect, StatusOwner, TemporaryStarEffect, ValidationError,
 };
 use crate::rules::{
     BaseFormationSpec, EffectDef, EffectPlan, FormationCategory, FormationDef, FormationPattern,
@@ -15,6 +15,69 @@ pub(crate) const GOLDEN_CICADA_STATUS: &str = "PouchGoldenCicada";
 pub(crate) const WATCH_FIRE_STATUS: &str = "PouchWatchFire";
 pub(crate) const LURE_PLAYER_STATUS: &str = "PouchLurePlayer";
 pub(crate) const LURE_SPIRIT_STATUS: &str = "PouchLureSpirit";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ChainCardOption {
+    pub pouch_card: CardInstanceId,
+    pub trigger_cards: Vec<CardInstanceId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ChainActionOptions {
+    pub formation_id: &'static str,
+    pub owner_players: Vec<PlayerId>,
+    pub cards: Vec<ChainCardOption>,
+    pub minimum_card_count: usize,
+    pub maximum_card_count: usize,
+}
+
+pub(crate) fn chain_action_options(
+    state: &GameState,
+    player: &PlayerId,
+) -> Option<ChainActionOptions> {
+    if !state.has_rule_module(POUCH_MODULE_ID) {
+        return None;
+    }
+    let team = state
+        .players
+        .iter()
+        .find(|candidate| &candidate.id == player)?
+        .team
+        .clone();
+    let deck = state.deck_for(player)?;
+    let cards = deck
+        .iter()
+        .filter_map(|pouch_card| {
+            let pouch = state.card_def(*pouch_card)?;
+            Some(ChainCardOption {
+                pouch_card: *pouch_card,
+                trigger_cards: deck
+                    .iter()
+                    .filter(|trigger| {
+                        **trigger != *pouch_card
+                            && state.card_def(**trigger).is_some_and(|definition| {
+                                definition.element != pouch.element
+                                    && definition.level != pouch.level
+                            })
+                    })
+                    .copied()
+                    .collect(),
+            })
+        })
+        .collect();
+    Some(ChainActionOptions {
+        formation_id: CHAIN_ID,
+        owner_players: state
+            .players
+            .iter()
+            .filter(|candidate| candidate.team == team)
+            .map(|candidate| candidate.id.clone())
+            .collect(),
+        cards,
+        minimum_card_count: 1,
+        maximum_card_count: 2,
+    })
+}
 
 pub(crate) fn formation_specs() -> Vec<BaseFormationSpec> {
     vec![BaseFormationSpec {
@@ -170,7 +233,9 @@ fn choose_initial_pouch(
             request: crate::domain::PendingRandomness {
                 request_id: format!("pouch:initial-shuffle:{}", first.as_str()),
                 deck: RandomnessDeck::Player(first.clone()),
-                continuation_id: "pouch:initial-shuffle".to_string(),
+                continuation: RandomnessContinuation::Pouch(
+                    PouchRandomnessContinuation::InitialShuffle,
+                ),
                 current_order: remaining,
             },
         });
@@ -178,14 +243,10 @@ fn choose_initial_pouch(
     Ok(events)
 }
 
-pub(crate) fn after_randomness_events(
+pub(crate) fn after_initial_shuffle_randomness_events(
     state: &GameState,
-    continuation_id: &str,
     resolved_deck: &RandomnessDeck,
 ) -> GameResult<Vec<GameEvent>> {
-    if continuation_id != "pouch:initial-shuffle" {
-        return Ok(Vec::new());
-    }
     let next_index = match resolved_deck {
         RandomnessDeck::Player(player) => state
             .turn_order
@@ -204,7 +265,9 @@ pub(crate) fn after_randomness_events(
             request: crate::domain::PendingRandomness {
                 request_id: format!("pouch:initial-shuffle:{}", player.as_str()),
                 deck: RandomnessDeck::Player(player.clone()),
-                continuation_id: "pouch:initial-shuffle".to_string(),
+                continuation: RandomnessContinuation::Pouch(
+                    PouchRandomnessContinuation::InitialShuffle,
+                ),
                 current_order: order,
             },
         }]);
@@ -289,19 +352,137 @@ fn resolve_owned_pouch(
     Ok(events)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SecretStrategyInputRequirement {
+    None,
+    TargetPlayer,
+    DeckDiscardSwap,
+    Star,
+    Retreat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SecretStrategyCardOption {
+    pub strategy: SecretStrategy,
+    pub input: SecretStrategyInputRequirement,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SecretStrategyActionOption {
+    pub source_card: CardInstanceId,
+    pub strategy: SecretStrategy,
+    pub input: SecretStrategyInputRequirement,
+    pub target_players: Vec<PlayerId>,
+    pub stars: Vec<StarKind>,
+    pub break_stars: Vec<StarKind>,
+    pub deck_cards: Vec<CardInstanceId>,
+    pub discard_cards: Vec<CardInstanceId>,
+    pub hand_cards: Vec<CardInstanceId>,
+    pub required_card_count: usize,
+}
+
+pub(crate) fn strategy_options_for_card(
+    element: Element,
+    level: u32,
+) -> Vec<SecretStrategyCardOption> {
+    let elemental = match element {
+        Element::Metal => SecretStrategy::GoldenCicada,
+        Element::Wood => SecretStrategy::StealTheBeam,
+        Element::Water => SecretStrategy::MuddyWaters,
+        Element::Fire => SecretStrategy::WatchTheFire,
+        Element::Earth => SecretStrategy::LureTheTigerAway,
+    };
+    let leveled = match level {
+        1 => Some(SecretStrategy::ReturnSoul),
+        2 => Some(SecretStrategy::SheepStealing),
+        3 => Some(SecretStrategy::DarkCrossing),
+        4 => Some(SecretStrategy::DeceiveHeaven),
+        5 => Some(SecretStrategy::Retreat),
+        _ => None,
+    };
+    std::iter::once(elemental)
+        .chain(leveled)
+        .map(|strategy| SecretStrategyCardOption {
+            input: match strategy {
+                SecretStrategy::LureTheTigerAway => SecretStrategyInputRequirement::TargetPlayer,
+                SecretStrategy::SheepStealing => SecretStrategyInputRequirement::DeckDiscardSwap,
+                SecretStrategy::DeceiveHeaven => SecretStrategyInputRequirement::Star,
+                SecretStrategy::Retreat => SecretStrategyInputRequirement::Retreat,
+                _ => SecretStrategyInputRequirement::None,
+            },
+            strategy,
+        })
+        .collect()
+}
+
 pub(crate) fn strategy_matches(strategy: SecretStrategy, element: Element, level: u32) -> bool {
-    match strategy {
-        SecretStrategy::GoldenCicada => element == Element::Metal,
-        SecretStrategy::StealTheBeam => element == Element::Wood,
-        SecretStrategy::MuddyWaters => element == Element::Water,
-        SecretStrategy::WatchTheFire => element == Element::Fire,
-        SecretStrategy::LureTheTigerAway => element == Element::Earth,
-        SecretStrategy::ReturnSoul => level == 1,
-        SecretStrategy::SheepStealing => level == 2,
-        SecretStrategy::DarkCrossing => level == 3,
-        SecretStrategy::DeceiveHeaven => level == 4,
-        SecretStrategy::Retreat => level == 5,
-    }
+    strategy_options_for_card(element, level)
+        .iter()
+        .any(|option| option.strategy == strategy)
+}
+
+pub(crate) fn strategy_action_options(
+    state: &GameState,
+    player: &PlayerId,
+    source_card: CardInstanceId,
+) -> Vec<SecretStrategyActionOption> {
+    let Some(definition) = state.card_def(source_card) else {
+        return Vec::new();
+    };
+    strategy_options_for_card(definition.element, definition.level)
+        .into_iter()
+        .map(|option| SecretStrategyActionOption {
+            source_card,
+            strategy: option.strategy,
+            input: option.input,
+            target_players: matches!(option.input, SecretStrategyInputRequirement::TargetPlayer)
+                .then(|| state.turn_order.clone())
+                .unwrap_or_default(),
+            stars: matches!(option.input, SecretStrategyInputRequirement::Star)
+                .then(|| {
+                    vec![
+                        StarKind::Metal,
+                        StarKind::Wood,
+                        StarKind::Water,
+                        StarKind::Fire,
+                        StarKind::Earth,
+                    ]
+                })
+                .unwrap_or_default(),
+            break_stars: matches!(option.input, SecretStrategyInputRequirement::Star)
+                .then(|| state.team_stars.iter().map(|owned| owned.star).collect())
+                .unwrap_or_default(),
+            deck_cards: matches!(
+                option.input,
+                SecretStrategyInputRequirement::DeckDiscardSwap
+            )
+            .then(|| {
+                state
+                    .deck_for(player)
+                    .unwrap_or_default()
+                    .iter()
+                    .copied()
+                    .filter(|card| *card != source_card)
+                    .collect()
+            })
+            .unwrap_or_default(),
+            discard_cards: matches!(
+                option.input,
+                SecretStrategyInputRequirement::DeckDiscardSwap
+            )
+            .then(|| state.discard_for(player).unwrap_or_default().to_vec())
+            .unwrap_or_default(),
+            hand_cards: matches!(option.input, SecretStrategyInputRequirement::Retreat)
+                .then(|| state.hand(player).unwrap_or_default().to_vec())
+                .unwrap_or_default(),
+            required_card_count: matches!(
+                option.input,
+                SecretStrategyInputRequirement::DeckDiscardSwap
+            )
+            .then_some(2)
+            .unwrap_or_default(),
+        })
+        .collect()
 }
 
 pub(crate) fn chain_events(
@@ -712,7 +893,9 @@ fn sheep_stealing_events(
                     state.turn_number
                 ),
                 deck: RandomnessDeck::Player(player.clone()),
-                continuation_id: "pouch:sheep-stealing".to_string(),
+                continuation: RandomnessContinuation::Pouch(
+                    PouchRandomnessContinuation::SheepStealing,
+                ),
                 current_order: order,
             },
         },

@@ -340,6 +340,12 @@ An Optional Rule Module under which each Player prepares and draws from their
 own 60-card Deck instead of all Players sharing one Deck.
 _Avoid_: shared deck, team deck
 
+**Deck Composition (牌組構成)**:
+The rule-defined multiset of Card Definitions used to prepare a Deck before
+shuffling. The shared Deck has one fixed official 90-card composition, while a
+Personal Deck uses one valid 60-card Deck List.
+_Avoid_: shuffled Deck order, Card Instance sequence
+
 **Game Record**:
 The canonical persisted game history made from setup and accepted setup, command, and automatic advancement decisions.
 _Avoid_: save file, snapshot
@@ -464,6 +470,15 @@ _Avoid_: hidden-card label, element mark
 **Player**:
 A seat participant in turn order.
 _Avoid_: user, account
+
+**Local Password Reset**:
+A development-only password change available from a local Worker entry. It does
+not verify email ownership, requires an explicit local-reset enablement flag,
+reports whether the email is absent, has no resettable password credential, or
+was reset, creates a new session while preserving existing sessions, and is
+unavailable outside enabled local development. It will be replaced by an emailed
+reset flow outside local development.
+_Avoid_: production password reset, email password reset
 
 **Team**:
 The HP-owning side that one or more players belong to.
@@ -682,6 +697,12 @@ _Avoid_: prompt, callback
 A serialized waiting state requiring a trusted application adapter to supply a
 rule-authorized random result before deterministic resolution can continue.
 _Avoid_: Pending Choice, client-provided shuffle
+
+**Randomness Continuation**:
+The typed canonical instruction attached to Pending Randomness that tells the
+Rules Engine how to validate the supplied random result and resume deterministic
+resolution after the trusted application adapter answers.
+_Avoid_: continuation string, application callback
 
 **Choice Requested**:
 A game event moment that creates a pending choice for one player.

@@ -1,15 +1,19 @@
 use crate::application::{GameRecord, RecordedDecision};
 use crate::domain::targeting::{RulePlayerTarget, TurnOrderTargets};
 use crate::domain::{
-    CardDefId, CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, EffectChoiceAnswer, GameError,
-    GameEvent, GameSetup, PassActionReason, PendingChoiceKind, PendingRandomness, Phase, Player,
-    PlayerDeckList, PlayerId, ProfessionId, RuleModuleId, SecretStrategy, StarElementSubstitution,
-    StarKind, StatusOwner, TargetDecl, TeamHp, TeamId, TrustedRandomnessAnswer, TurnDrawSkipReason,
+    CardDefId, CardInstanceId, CardOrigin, Command, DISCARD_RETRIEVAL_MODULE_ID,
+    EffectChoiceAnswer, Element, GameError, GameEvent, GameSetup, PassActionReason,
+    PendingChoiceKind, PendingRandomness, Phase, Player, PlayerDeckList, PlayerId, ProfessionId,
+    RuleModuleId, SecretStrategy, SpiritKind, SpiritSkill, StarKind, StatusOwner, TargetDecl, TeamHp,
+    TeamId, TrustedRandomnessAnswer, TurnDrawSkipReason,
 };
 use crate::public_view::{
     PublicCardRefs, PublicGameEvent, PublicGameState, PublicPendingChoiceKind, Viewer,
 };
-use crate::rules::{FormationCategory, OfficialRules, PlayableAction};
+use crate::rules::{
+    DeckCompositionCatalog, FormationCategory, OfficialRuleModuleSpec, OfficialRules,
+    PlayableAction,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -20,10 +24,122 @@ pub fn handle_request_json(input: &str) -> Result<String, String> {
     serde_json::to_string(&response).map_err(|error| error.to_string())
 }
 
+pub fn rules_catalog_json() -> Result<String, String> {
+    let rules = OfficialRules::new();
+    serde_json::to_string(&WebRulesCatalog {
+        version: 1,
+        rule_modules: rules.rule_module_catalog(),
+        deck_composition: rules.deck_composition_catalog(),
+    })
+    .map_err(|error| error.to_string())
+}
+
+pub fn resolve_personal_deck_json(input: &str) -> Result<String, String> {
+    let request: WebPersonalDeckRequest =
+        serde_json::from_str(input).map_err(|error| error.to_string())?;
+    let candidate = request.candidate.map(|candidate| PlayerDeckList {
+        player: PlayerId::new(&request.player),
+        name: candidate.name,
+        cards: candidate.cards.into_iter().map(CardDefId::new).collect(),
+    });
+    let resolved =
+        OfficialRules::new().resolve_personal_deck(PlayerId::new(request.player), candidate);
+
+    serde_json::to_string(&resolved).map_err(|error| error.to_string())
+}
+
+pub fn resolve_rule_modules_json(input: &str) -> Result<String, String> {
+    let request: WebRuleModulesRequest =
+        serde_json::from_str(input).map_err(|error| error.to_string())?;
+    let candidate = request.candidate.map(|modules| {
+        modules
+            .into_iter()
+            .map(RuleModuleId::new)
+            .collect::<Vec<_>>()
+    });
+    let modules = OfficialRules::new()
+        .resolve_rule_modules(candidate)
+        .map_err(|error| format!("{error:?}"))?;
+    serde_json::to_string(&WebResolvedRuleModules { modules }).map_err(|error| error.to_string())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebRuleModulesRequest {
+    candidate: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebResolvedRuleModules {
+    modules: Vec<RuleModuleId>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPersonalDeckRequest {
+    player: String,
+    candidate: Option<WebPersonalDeckCandidate>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPersonalDeckCandidate {
+    name: String,
+    cards: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebRulesCatalog {
+    version: u32,
+    rule_modules: Vec<OfficialRuleModuleSpec>,
+    deck_composition: DeckCompositionCatalog,
+}
+
+#[derive(Clone)]
+struct WebCardFact {
+    element: Element,
+    level: u32,
+    secret_strategies: Vec<WebSecretStrategyCardOption>,
+}
+
+fn card_facts_for_setup(setup: &GameSetup) -> HashMap<CardInstanceId, WebCardFact> {
+    let definitions = setup
+        .card_defs
+        .iter()
+        .map(|definition| (definition.id.clone(), definition))
+        .collect::<HashMap<_, _>>();
+
+    setup
+        .card_instances
+        .iter()
+        .filter_map(|instance| {
+            definitions.get(&instance.definition).map(|definition| {
+                (
+                    instance.instance,
+                    WebCardFact {
+                        element: definition.element,
+                        level: definition.level,
+                        secret_strategies: crate::rules::pouch::strategy_options_for_card(
+                            definition.element,
+                            definition.level,
+                        )
+                        .into_iter()
+                        .map(WebSecretStrategyCardOption::from)
+                        .collect(),
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
 fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
     let rules = OfficialRules::new();
     let setup = setup_for_request(&rules, request.setup, request.first_player.as_deref())?;
     let card_labels = rules.card_labels(&setup).map_err(ApiError::Game)?;
+    let card_facts = card_facts_for_setup(&setup);
     let formation_names = rules.formation_names(&setup).map_err(ApiError::Game)?;
     let viewer = viewer_from_request(request.viewer.as_deref());
     let deck_seed = request.deck_seed.clone();
@@ -34,6 +150,15 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
             record = GameRecord::start(
                 setup.clone(),
                 deck_order_for_start(&rules, &setup, deck_seed.as_deref())?,
+            )
+            .map_err(ApiError::Game)?;
+            advance_to_interactive_decision(&mut record)?;
+        }
+        ApiAction::StartDevelopmentScenario { player, scenario } => {
+            let player = PlayerId::new(player);
+            record = GameRecord::start(
+                setup.clone(),
+                development_scenario_deck_order(&rules, &setup, &player, &scenario)?,
             )
             .map_err(ApiError::Game)?;
             advance_to_interactive_decision(&mut record)?;
@@ -92,22 +217,17 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                 &record,
                 viewer,
                 &card_labels,
+                &card_facts,
                 &formation_names,
                 candidates
                     .into_iter()
                     .map(|candidate| match candidate {
                         PlayableAction::PerformFormation(candidate) => {
-                            let summary = perform_formation_action_summary(
-                                &candidate.formation_id,
-                                &candidate.rule_text,
-                                candidate.star_substitution.as_ref(),
-                                &card_labels,
-                            );
                             WebPlayableAction::PerformFormation {
                                 id: candidate.formation_id,
                                 name: candidate.formation_name,
                                 category: WebFormationCategory::from(candidate.category),
-                                summary,
+                                summary: candidate.summary,
                                 cards: candidate.cards,
                                 star_substitution: candidate
                                     .star_substitution
@@ -170,7 +290,40 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                     .collect(),
             );
         }
-        ApiAction::TrustedRandomHandCandidates { player } => {
+        ApiAction::DevelopmentScenarioAction { player, scenario } => {
+            let player = PlayerId::new(player);
+            let candidate = development_scenario_action(&record, &player, &scenario)?;
+            let playable_actions = candidate
+                .into_iter()
+                .map(web_playable_action)
+                .collect::<Result<Vec<_>, _>>()?;
+            return response_for(
+                &record,
+                viewer,
+                &card_labels,
+                &card_facts,
+                &formation_names,
+                playable_actions,
+            );
+        }
+        ApiAction::PrepareDevelopmentScenario { player, scenario } => {
+            prepare_development_scenario(&mut record, &PlayerId::new(player), &scenario)?;
+        }
+        ApiAction::TrustedRandomHandCandidates {
+            player,
+            candidate_action,
+        } => {
+            let Some(selection_count) = trusted_random_hand_selection_count(&candidate_action)
+            else {
+                return response_for(
+                    &record,
+                    viewer,
+                    &card_labels,
+                    &card_facts,
+                    &formation_names,
+                    Vec::new(),
+                );
+            };
             let player = PlayerId::new(player);
             if record.state().current_player() != Some(&player) {
                 return Err(ApiError::Game(GameError::Validation(
@@ -196,9 +349,16 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                     ))
                 })?
                 .to_vec();
-            let mut response =
-                response_for(&record, viewer, &card_labels, &formation_names, Vec::new())?;
+            let mut response = response_for(
+                &record,
+                viewer,
+                &card_labels,
+                &card_facts,
+                &formation_names,
+                Vec::new(),
+            )?;
             response.trusted_random_candidates = Some(candidates);
+            response.trusted_random_candidate_count = Some(selection_count);
             return Ok(response);
         }
         ApiAction::PerformFormation {
@@ -386,7 +546,14 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
         }
     }
 
-    response_for(&record, viewer, &card_labels, &formation_names, Vec::new())
+    response_for(
+        &record,
+        viewer,
+        &card_labels,
+        &card_facts,
+        &formation_names,
+        Vec::new(),
+    )
 }
 
 fn advance_after_command(record: &mut GameRecord) -> Result<(), ApiError> {
@@ -454,6 +621,7 @@ fn response_for(
     record: &GameRecord,
     viewer: Viewer,
     card_labels: &HashMap<CardInstanceId, String>,
+    card_facts: &HashMap<CardInstanceId, WebCardFact>,
     formation_names: &HashMap<String, String>,
     mut playable_actions: Vec<WebPlayableAction>,
 ) -> Result<ApiResponse, ApiError> {
@@ -501,12 +669,38 @@ fn response_for(
             }
         }
     }
+    let secret_strategy_actions = viewer_player
+        .as_ref()
+        .filter(|player| {
+            record.state().current_player() == Some(*player) && record.state().phase == Phase::Main
+        })
+        .map(|player| {
+            let mut source_cards = record.state().deck_for(player).unwrap_or_default().to_vec();
+            if let Some(pouch) = record.state().pouch_for(player) {
+                source_cards.push(pouch.card);
+            }
+            source_cards.sort();
+            source_cards.dedup();
+            source_cards
+                .into_iter()
+                .flat_map(|card| {
+                    crate::rules::pouch::strategy_action_options(record.state(), player, card)
+                })
+                .map(WebSecretStrategyActionOption::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    let pouch_chain_action = viewer_player.as_ref().and_then(|player| {
+        crate::rules::pouch::chain_action_options(record.state(), player)
+            .map(WebPouchChainActionOptions::from)
+    });
 
     Ok(ApiResponse {
         record: record.recorded_decisions(),
         state: WebPublicGameState::from_public(
             record.public_view(viewer.clone()).map_err(ApiError::Game)?,
             card_labels,
+            card_facts,
             formation_names,
         ),
         events: record
@@ -548,8 +742,11 @@ fn response_for(
                     && record.state().phase == Phase::Main
                     && record.state().pouch_for(player).is_some()
             }),
+            pouch_chain_action,
+            secret_strategy_actions,
         },
         trusted_random_candidates: None,
+        trusted_random_candidate_count: None,
         pending_randomness_request: record.state().pending_randomness.clone(),
     })
 }
@@ -604,6 +801,10 @@ struct WebSetupDeckList {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ApiAction {
     Start,
+    StartDevelopmentScenario {
+        player: String,
+        scenario: String,
+    },
     Refresh,
     AdvanceAutomatic,
     ChooseInitialPouch {
@@ -631,8 +832,18 @@ enum ApiAction {
         player: String,
         cards: Vec<CardInstanceId>,
     },
+    DevelopmentScenarioAction {
+        player: String,
+        scenario: String,
+    },
+    PrepareDevelopmentScenario {
+        player: String,
+        scenario: String,
+    },
     TrustedRandomHandCandidates {
         player: String,
+        #[serde(rename = "candidateAction")]
+        candidate_action: Box<ApiAction>,
     },
     PerformFormation {
         player: String,
@@ -719,6 +930,437 @@ enum ApiAction {
     RetrievePreviousTurnDiscard {
         player: String,
     },
+}
+
+fn development_scenario_action(
+    record: &GameRecord,
+    player: &PlayerId,
+    scenario: &str,
+) -> Result<Option<PlayableAction>, ApiError> {
+    let hand = record
+        .state()
+        .hand(player)
+        .ok_or_else(|| ApiError::Message("development scenario player has no hand".to_string()))?;
+    if scenario == "tribulation-earth-rending" {
+        let cards = [4, 5]
+            .into_iter()
+            .flat_map(|size| card_combinations(hand, size))
+            .find(|cards| {
+                let facts = cards
+                    .iter()
+                    .filter_map(|card| {
+                        Some(crate::rules::SubmittedCardFacts {
+                            element: record.state().card_def(*card)?.element,
+                            level: record.state().card_level_for(player, *card)?,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                facts.len() == cards.len()
+                    && crate::rules::tribulation::matches_elements(
+                        &facts,
+                        Element::Earth,
+                        Element::Wood,
+                    )
+            });
+        let Some(cards) = cards else {
+            return Ok(None);
+        };
+        return record
+            .playable_actions(player, &cards)
+            .map_err(ApiError::Game)
+            .map(|actions| {
+                actions.into_iter().find(|action| {
+                    matches!(
+                        action,
+                        PlayableAction::PerformFormation(candidate)
+                            if candidate.formation_id == crate::rules::tribulation::EARTH_RENDING
+                    )
+                })
+            });
+    }
+    let candidate_sizes: &[usize] = match scenario {
+        "hero-schools-transition" => &[1],
+        "spirit-metal" | "spirit-fire" | "echo-pure-fire" => &[2],
+        _ => {
+            return Err(ApiError::Message(
+                "unknown development scenario".to_string(),
+            ));
+        }
+    };
+    for &size in candidate_sizes {
+        for cards in card_combinations(hand, size) {
+            let actions = record
+                .playable_actions(player, &cards)
+                .map_err(ApiError::Game)?;
+            if let Some(action) = actions.into_iter().find(|action| match (scenario, action) {
+                ("hero-schools-transition", PlayableAction::ChangeProfession(candidate)) => {
+                    candidate.profession_id.as_str() == "mesmer"
+                }
+                ("spirit-metal", PlayableAction::PerformFormation(candidate)) => {
+                    candidate.formation_id == "metal-spirit-summoning"
+                }
+                ("spirit-fire", PlayableAction::PerformFormation(candidate)) => {
+                    candidate.formation_id == "fire-spirit-summoning"
+                }
+                ("echo-pure-fire", PlayableAction::PerformFormation(candidate)) => {
+                    candidate.formation_id == crate::rules::echo::PURE_FIRE
+                }
+                _ => false,
+            }) {
+                return Ok(Some(action));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn prepare_development_scenario(
+    record: &mut GameRecord,
+    player: &PlayerId,
+    scenario: &str,
+) -> Result<(), ApiError> {
+    let skill = match scenario {
+        "spirit-metal" => SpiritSkill::FlyingBlade,
+        "spirit-fire" => SpiritSkill::Splendor,
+        _ => {
+            return Err(ApiError::Message(
+                "development scenario does not need preparation".to_string(),
+            ));
+        }
+    };
+    let desired_power = crate::rules::spirit::skill_cost(skill);
+
+    for _ in 0..80 {
+        if record.state().current_player() == Some(player)
+            && record.state().phase == Phase::Main
+            && development_skill_is_playable(record, player, skill)?
+        {
+            return Ok(());
+        }
+
+        if let Some(choice) = record.state().pending_choice.clone() {
+            let PendingChoiceKind::TurnDrawDiscard {
+                allowed_discards, ..
+            } = choice.kind
+            else {
+                return Err(ApiError::Message(
+                    "development scenario cannot answer pending choice".to_string(),
+                ));
+            };
+            let discard = allowed_discards
+                .iter()
+                .min_by_key(|discard| {
+                    let mut candidate = record.clone();
+                    if candidate
+                        .handle(Command::ChooseTurnDiscard {
+                            player: choice.player.clone(),
+                            discard: **discard,
+                        })
+                        .is_err()
+                    {
+                        return u32::MAX;
+                    }
+                    candidate
+                        .state()
+                        .spirit_for(player)
+                        .map_or(u32::MAX, |owned| owned.power.abs_diff(desired_power))
+                })
+                .copied()
+                .ok_or_else(|| {
+                    ApiError::Message(
+                        "development scenario discard choice has no Cards".to_string(),
+                    )
+                })?;
+            record
+                .handle(Command::ChooseTurnDiscard {
+                    player: choice.player,
+                    discard,
+                })
+                .map_err(ApiError::Game)?;
+            advance_after_command(record)?;
+            continue;
+        }
+
+        if record.state().phase != Phase::Main || record.state().current_player().is_none() {
+            advance_to_interactive_decision(record)?;
+            continue;
+        }
+
+        let current = record
+            .state()
+            .current_player()
+            .cloned()
+            .ok_or_else(|| ApiError::Message("development scenario has no player".to_string()))?;
+        let hand = record
+            .state()
+            .hand(&current)
+            .ok_or_else(|| ApiError::Message("development scenario player has no hand".to_string()))?
+            .to_vec();
+        let formation = hand.iter().find_map(|card| {
+            record
+                .playable_actions(&current, &[*card])
+                .ok()?
+                .into_iter()
+                .find_map(|action| match action {
+                    PlayableAction::PerformFormation(candidate) => Some(candidate),
+                    _ => None,
+                })
+        });
+        let Some(formation) = formation else {
+            return Err(ApiError::Message(
+                "development scenario player has no one-Card Formation".to_string(),
+            ));
+        };
+        record
+            .handle(Command::PerformFormation {
+                player: current,
+                formation_id: formation.formation_id,
+                cards: formation.cards,
+                declared_targets: formation.declared_targets,
+            })
+            .map_err(ApiError::Game)?;
+        advance_after_command(record)?;
+    }
+
+    Err(ApiError::Message(
+        "development scenario could not reach the requested Spirit Skill".to_string(),
+    ))
+}
+
+fn development_skill_is_playable(
+    record: &GameRecord,
+    player: &PlayerId,
+    skill: SpiritSkill,
+) -> Result<bool, ApiError> {
+    let mut selections = vec![Vec::new()];
+    selections.extend(
+        record
+            .state()
+            .hand(player)
+            .into_iter()
+            .flatten()
+            .map(|card| vec![*card]),
+    );
+    for cards in selections {
+        if record
+            .playable_actions(player, &cards)
+            .map_err(ApiError::Game)?
+            .into_iter()
+            .any(|action| {
+                matches!(action, PlayableAction::UseSpiritSkill(candidate) if candidate.skill == skill)
+            })
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn development_scenario_deck_order(
+    rules: &OfficialRules,
+    setup: &GameSetup,
+    player: &PlayerId,
+    scenario: &str,
+) -> Result<Vec<CardInstanceId>, ApiError> {
+    let deck_order = rules.official_deck_order(setup).map_err(ApiError::Game)?;
+    let uses_personal_decks = setup.has_rule_module(crate::domain::PERSONAL_DECK_MODULE_ID);
+    let pool = deck_order
+        .iter()
+        .copied()
+        .filter(|card| {
+            if !uses_personal_decks {
+                return true;
+            }
+            setup
+                .card_instances
+                .iter()
+                .find(|instance| instance.instance == *card)
+                .is_some_and(
+                    |instance| matches!(&instance.origin, CardOrigin::Player(owner) if owner == player),
+                )
+        })
+        .filter(|card| {
+            let element = setup.card_instances.iter().find_map(|instance| {
+                (instance.instance == *card).then(|| {
+                    setup
+                        .card_defs
+                        .iter()
+                        .find(|definition| definition.id == instance.definition)
+                        .map(|definition| definition.element)
+                })?
+            });
+            match (scenario, element) {
+                ("hero-schools-transition", Some(Element::Water)) => true,
+                ("spirit-metal", Some(element)) => {
+                    element == crate::rules::spirit::element(SpiritKind::Metal)
+                }
+                ("spirit-fire", Some(element)) => {
+                    element == crate::rules::spirit::element(SpiritKind::Fire)
+                }
+                ("echo-pure-fire", Some(Element::Fire | Element::Water)) => true,
+                ("tribulation-earth-rending", Some(Element::Earth | Element::Wood)) => true,
+                _ => false,
+            }
+        })
+        .collect::<Vec<_>>();
+    let candidate_sizes: &[usize] = match scenario {
+        "hero-schools-transition" => &[1],
+        "spirit-metal" | "spirit-fire" | "echo-pure-fire" => &[2],
+        "tribulation-earth-rending" => &[4, 5],
+        _ => {
+            return Err(ApiError::Message(
+                "unknown development scenario".to_string(),
+            ));
+        }
+    };
+    let selected = candidate_sizes
+        .iter()
+        .flat_map(|size| card_combinations(&pool, *size))
+        .find(|cards| {
+            let facts = cards
+                .iter()
+                .filter_map(|card| {
+                    let instance = setup
+                        .card_instances
+                        .iter()
+                        .find(|instance| instance.instance == *card)?;
+                    let definition = setup
+                        .card_defs
+                        .iter()
+                        .find(|definition| definition.id == instance.definition)?;
+                    Some(crate::rules::SubmittedCardFacts {
+                        element: definition.element,
+                        level: definition.level,
+                    })
+                })
+                .collect::<Vec<_>>();
+            if facts.len() != cards.len() {
+                return false;
+            }
+            match scenario {
+                "hero-schools-transition" => crate::rules::hero::matches_initial_profession(
+                    crate::rules::hero::MESMER_ID,
+                    &facts,
+                ),
+                "spirit-metal" => facts
+                    .iter()
+                    .all(|card| card.element == crate::rules::spirit::element(SpiritKind::Metal)),
+                "spirit-fire" => facts
+                    .iter()
+                    .all(|card| card.element == crate::rules::spirit::element(SpiritKind::Fire)),
+                "echo-pure-fire" => crate::rules::echo::matches_pure_fire(&facts),
+                "tribulation-earth-rending" => crate::rules::tribulation::matches_elements(
+                    &facts,
+                    Element::Earth,
+                    Element::Wood,
+                ),
+                _ => false,
+            }
+        })
+        .ok_or_else(|| {
+            ApiError::Message(format!(
+                "development scenario has no deterministic starting hand: {scenario}"
+            ))
+        })?;
+
+    let mut remaining = deck_order
+        .into_iter()
+        .filter(|card| !selected.contains(card))
+        .collect::<Vec<_>>();
+    match scenario {
+        "spirit-metal" => remaining.sort_by_key(|card| {
+            setup_card_element(setup, *card)
+                == Some(crate::rules::spirit::element(SpiritKind::Metal))
+        }),
+        "spirit-fire" => remaining.sort_by_key(|card| {
+            setup_card_element(setup, *card)
+                != Some(crate::rules::spirit::element(SpiritKind::Fire))
+        }),
+        _ => {}
+    }
+
+    Ok(selected.iter().copied().chain(remaining).collect())
+}
+
+fn setup_card_element(setup: &GameSetup, card: CardInstanceId) -> Option<Element> {
+    let instance = setup
+        .card_instances
+        .iter()
+        .find(|instance| instance.instance == card)?;
+    setup
+        .card_defs
+        .iter()
+        .find(|definition| definition.id == instance.definition)
+        .map(|definition| definition.element)
+}
+
+fn card_combinations(cards: &[CardInstanceId], size: usize) -> Vec<Vec<CardInstanceId>> {
+    if size == 0 {
+        return vec![Vec::new()];
+    }
+    cards
+        .iter()
+        .enumerate()
+        .flat_map(|(index, card)| {
+            card_combinations(&cards[index + 1..], size - 1)
+                .into_iter()
+                .map(move |rest| std::iter::once(*card).chain(rest).collect())
+        })
+        .collect()
+}
+
+fn web_playable_action(candidate: PlayableAction) -> Result<WebPlayableAction, ApiError> {
+    match candidate {
+        PlayableAction::PerformFormation(candidate) => Ok(WebPlayableAction::PerformFormation {
+            id: candidate.formation_id,
+            name: candidate.formation_name,
+            category: WebFormationCategory::from(candidate.category),
+            summary: candidate.summary,
+            cards: candidate.cards,
+            star_substitution: candidate
+                .star_substitution
+                .map(WebStarElementSubstitution::from),
+            match_option: candidate
+                .declared_targets
+                .iter()
+                .find_map(|target| match target {
+                    TargetDecl::FormationRole { role, card } => Some(WebFormationMatchOption {
+                        role: role.clone(),
+                        card: *card,
+                        slots: 1,
+                        preview: candidate.preview.clone(),
+                    }),
+                    TargetDecl::CardMultiplicity { card, slots } => Some(WebFormationMatchOption {
+                        role: "card-multiplicity".to_string(),
+                        card: *card,
+                        slots: *slots,
+                        preview: candidate.preview.clone(),
+                    }),
+                    _ => None,
+                }),
+        }),
+        PlayableAction::ChangeProfession(candidate) => Ok(WebPlayableAction::ChangeProfession {
+            id: candidate.profession_id.as_str().to_string(),
+            name: candidate.profession_name,
+            summary: candidate.rule_text,
+            cards: candidate.cards,
+        }),
+        _ => Err(ApiError::Message(
+            "development scenario selected an unsupported action".to_string(),
+        )),
+    }
+}
+
+fn trusted_random_hand_selection_count(action: &ApiAction) -> Option<usize> {
+    match action {
+        ApiAction::PerformFormation { formation_id, .. } => {
+            crate::rules::randomness::trusted_random_hand_count_for_formation(formation_id)
+        }
+        ApiAction::UseSpiritSkill { skill, .. } => {
+            crate::rules::randomness::trusted_random_hand_count_for_spirit_skill(*skill)
+        }
+        _ => None,
+    }
 }
 
 fn can_retrieve_discard(state: &crate::domain::GameState) -> bool {
@@ -898,6 +1540,8 @@ struct ApiResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     trusted_random_candidates: Option<Vec<CardInstanceId>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    trusted_random_candidate_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pending_randomness_request: Option<PendingRandomness>,
 }
 
@@ -909,6 +1553,8 @@ struct WebInteraction {
     can_retrieve_discard: bool,
     can_choose_initial_pouch: bool,
     can_trigger_pouch: bool,
+    pouch_chain_action: Option<WebPouchChainActionOptions>,
+    secret_strategy_actions: Vec<WebSecretStrategyActionOption>,
 }
 
 #[derive(Serialize)]
@@ -956,6 +1602,7 @@ impl WebPublicGameState {
     fn from_public(
         state: PublicGameState,
         labels: &HashMap<CardInstanceId, String>,
+        card_facts: &HashMap<CardInstanceId, WebCardFact>,
         formation_names: &HashMap<String, String>,
     ) -> Self {
         let enabled_rule_modules = state.enabled_rule_modules.clone();
@@ -1014,20 +1661,20 @@ impl WebPublicGameState {
                 .into_iter()
                 .map(|hand| WebPlayerHand {
                     player: hand.player.as_str().to_string(),
-                    cards: WebCardRefs::from_public(hand.cards, labels),
+                    cards: WebCardRefs::from_public(hand.cards, labels, card_facts),
                 })
                 .collect(),
             discard: state
                 .discard
                 .into_iter()
-                .map(|card| WebCard::from_id(card, labels))
+                .map(|card| WebCard::from_id(card, labels, card_facts))
                 .collect(),
             player_decks: state
                 .player_decks
                 .into_iter()
                 .map(|pile| WebPlayerDeck {
                     player: pile.player.as_str().to_string(),
-                    cards: WebCardRefs::from_public(pile.cards, labels),
+                    cards: WebCardRefs::from_public(pile.cards, labels, card_facts),
                 })
                 .collect(),
             player_discards: state
@@ -1038,7 +1685,7 @@ impl WebPublicGameState {
                     cards: pile
                         .cards
                         .into_iter()
-                        .map(|card| WebCard::from_id(card, labels))
+                        .map(|card| WebCard::from_id(card, labels, card_facts))
                         .collect(),
                 })
                 .collect(),
@@ -1047,7 +1694,9 @@ impl WebPublicGameState {
                 .into_iter()
                 .map(|pouch| WebPouch {
                     owner: pouch.owner.as_str().to_string(),
-                    card: pouch.card.map(|card| WebCard::from_id(card, labels)),
+                    card: pouch
+                        .card
+                        .map(|card| WebCard::from_id(card, labels, card_facts)),
                 })
                 .collect(),
             preparation_player,
@@ -1057,7 +1706,7 @@ impl WebPublicGameState {
                 .map(|passive| WebCoveredPassive {
                     owner: passive.owner.as_str().to_string(),
                     formation_id: passive.formation_id,
-                    cards: WebCardRefs::from_public(passive.cards, labels),
+                    cards: WebCardRefs::from_public(passive.cards, labels, card_facts),
                     star_substitution: passive
                         .star_substitution
                         .map(WebStarElementSubstitution::from),
@@ -1074,7 +1723,7 @@ impl WebPublicGameState {
                 .collect(),
             pending_choice: state
                 .pending_choice
-                .map(|choice| WebPendingChoice::from_public(choice, labels)),
+                .map(|choice| WebPendingChoice::from_public(choice, labels, card_facts)),
             pending_randomness: state
                 .pending_randomness
                 .map(|request| WebPendingRandomness {
@@ -1296,7 +1945,7 @@ impl WebPublicGameState {
                         .formation_id
                         .as_deref()
                         .map(|id| formation_name(formation_names, id)),
-                    cards: WebCardRefs::from_public(formation.cards, labels),
+                    cards: WebCardRefs::from_public(formation.cards, labels, card_facts),
                 }
             }),
         }
@@ -1465,8 +2114,8 @@ struct WebFormationMatchOption {
     preview: Option<String>,
 }
 
-impl From<StarElementSubstitution> for WebStarElementSubstitution {
-    fn from(substitution: StarElementSubstitution) -> Self {
+impl From<crate::domain::StarElementSubstitution> for WebStarElementSubstitution {
+    fn from(substitution: crate::domain::StarElementSubstitution) -> Self {
         Self {
             card: substitution.card,
             printed_element: substitution.printed_element,
@@ -1551,6 +2200,7 @@ impl WebPendingChoice {
     fn from_public(
         choice: crate::public_view::PublicPendingChoice,
         labels: &HashMap<CardInstanceId, String>,
+        card_facts: &HashMap<CardInstanceId, WebCardFact>,
     ) -> Self {
         let (minimum_count, maximum_count) = match &choice.kind {
             PublicPendingChoiceKind::Known(kind) => kind.selection_bounds(),
@@ -1571,7 +2221,7 @@ impl WebPendingChoice {
                 maximum_count,
                 cards: allowed_discards
                     .into_iter()
-                    .map(|card| WebCard::from_id(card, labels))
+                    .map(|card| WebCard::from_id(card, labels, card_facts))
                     .collect(),
                 players: Vec::new(),
                 formations: Vec::new(),
@@ -1590,7 +2240,7 @@ impl WebPendingChoice {
                 maximum_count,
                 cards: allowed_cards
                     .into_iter()
-                    .map(|card| WebCard::from_id(card, labels))
+                    .map(|card| WebCard::from_id(card, labels, card_facts))
                     .collect(),
                 players: Vec::new(),
                 formations: Vec::new(),
@@ -1609,7 +2259,7 @@ impl WebPendingChoice {
                 maximum_count,
                 cards: allowed_cards
                     .into_iter()
-                    .map(|card| WebCard::from_id(card, labels))
+                    .map(|card| WebCard::from_id(card, labels, card_facts))
                     .collect(),
                 players: Vec::new(),
                 formations: Vec::new(),
@@ -1630,7 +2280,7 @@ impl WebPendingChoice {
                             cards
                                 .allowed_cards
                                 .into_iter()
-                                .map(|card| WebCard::from_id(card, labels))
+                                .map(|card| WebCard::from_id(card, labels, card_facts))
                                 .collect()
                         })
                         .unwrap_or_default(),
@@ -1696,19 +2346,23 @@ enum WebCardRefs {
 }
 
 impl WebCardRefs {
-    fn from_public(cards: PublicCardRefs, labels: &HashMap<CardInstanceId, String>) -> Self {
+    fn from_public(
+        cards: PublicCardRefs,
+        labels: &HashMap<CardInstanceId, String>,
+        card_facts: &HashMap<CardInstanceId, WebCardFact>,
+    ) -> Self {
         match cards {
             PublicCardRefs::Known(cards) => Self::Known {
                 cards: cards
                     .into_iter()
-                    .map(|card| WebCard::from_id(card, labels))
+                    .map(|card| WebCard::from_id(card, labels, card_facts))
                     .collect(),
             },
             PublicCardRefs::Hidden { count } => Self::Hidden { count },
             PublicCardRefs::PartiallyKnown { cards } => Self::PartiallyKnown {
                 cards: cards
                     .into_iter()
-                    .map(|card| card.map(|card| WebCard::from_id(card, labels)))
+                    .map(|card| card.map(|card| WebCard::from_id(card, labels, card_facts)))
                     .collect(),
             },
         }
@@ -1720,16 +2374,137 @@ impl WebCardRefs {
 struct WebCard {
     id: CardInstanceId,
     label: String,
+    element: Option<Element>,
+    level: Option<u32>,
+    secret_strategies: Vec<WebSecretStrategyCardOption>,
 }
 
 impl WebCard {
-    fn from_id(id: CardInstanceId, labels: &HashMap<CardInstanceId, String>) -> Self {
+    fn from_id(
+        id: CardInstanceId,
+        labels: &HashMap<CardInstanceId, String>,
+        card_facts: &HashMap<CardInstanceId, WebCardFact>,
+    ) -> Self {
+        let facts = card_facts.get(&id);
         Self {
             id,
             label: labels
                 .get(&id)
                 .cloned()
                 .unwrap_or_else(|| format!("{id:?}")),
+            element: facts.map(|facts| facts.element),
+            level: facts.map(|facts| facts.level),
+            secret_strategies: facts
+                .map(|facts| facts.secret_strategies.clone())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebSecretStrategyCardOption {
+    strategy: SecretStrategy,
+    input: WebSecretStrategyInputRequirement,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebSecretStrategyActionOption {
+    source_card: CardInstanceId,
+    strategy: SecretStrategy,
+    input: WebSecretStrategyInputRequirement,
+    target_players: Vec<PlayerId>,
+    stars: Vec<StarKind>,
+    break_stars: Vec<StarKind>,
+    deck_cards: Vec<CardInstanceId>,
+    discard_cards: Vec<CardInstanceId>,
+    hand_cards: Vec<CardInstanceId>,
+    required_card_count: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPouchChainActionOptions {
+    formation_id: &'static str,
+    owner_players: Vec<PlayerId>,
+    cards: Vec<WebPouchChainCardOption>,
+    minimum_card_count: usize,
+    maximum_card_count: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPouchChainCardOption {
+    pouch_card: CardInstanceId,
+    trigger_cards: Vec<CardInstanceId>,
+}
+
+impl From<crate::rules::pouch::ChainActionOptions> for WebPouchChainActionOptions {
+    fn from(options: crate::rules::pouch::ChainActionOptions) -> Self {
+        Self {
+            formation_id: options.formation_id,
+            owner_players: options.owner_players,
+            cards: options
+                .cards
+                .into_iter()
+                .map(|card| WebPouchChainCardOption {
+                    pouch_card: card.pouch_card,
+                    trigger_cards: card.trigger_cards,
+                })
+                .collect(),
+            minimum_card_count: options.minimum_card_count,
+            maximum_card_count: options.maximum_card_count,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum WebSecretStrategyInputRequirement {
+    None,
+    TargetPlayer,
+    DeckDiscardSwap,
+    Star,
+    Retreat,
+}
+
+impl From<crate::rules::pouch::SecretStrategyCardOption> for WebSecretStrategyCardOption {
+    fn from(option: crate::rules::pouch::SecretStrategyCardOption) -> Self {
+        use crate::rules::pouch::SecretStrategyInputRequirement as Input;
+        Self {
+            strategy: option.strategy,
+            input: match option.input {
+                Input::None => WebSecretStrategyInputRequirement::None,
+                Input::TargetPlayer => WebSecretStrategyInputRequirement::TargetPlayer,
+                Input::DeckDiscardSwap => WebSecretStrategyInputRequirement::DeckDiscardSwap,
+                Input::Star => WebSecretStrategyInputRequirement::Star,
+                Input::Retreat => WebSecretStrategyInputRequirement::Retreat,
+            },
+        }
+    }
+}
+
+impl From<crate::rules::pouch::SecretStrategyActionOption> for WebSecretStrategyActionOption {
+    fn from(option: crate::rules::pouch::SecretStrategyActionOption) -> Self {
+        use crate::rules::pouch::SecretStrategyInputRequirement as Input;
+        Self {
+            source_card: option.source_card,
+            strategy: option.strategy,
+            input: match option.input {
+                Input::None => WebSecretStrategyInputRequirement::None,
+                Input::TargetPlayer => WebSecretStrategyInputRequirement::TargetPlayer,
+                Input::DeckDiscardSwap => WebSecretStrategyInputRequirement::DeckDiscardSwap,
+                Input::Star => WebSecretStrategyInputRequirement::Star,
+                Input::Retreat => WebSecretStrategyInputRequirement::Retreat,
+            },
+            target_players: option.target_players,
+            stars: option.stars,
+            break_stars: option.break_stars,
+            deck_cards: option.deck_cards,
+            discard_cards: option.discard_cards,
+            hand_cards: option.hand_cards,
+            required_card_count: option.required_card_count,
         }
     }
 }
@@ -2904,16 +3679,6 @@ fn element_name(element: crate::domain::Element) -> &'static str {
     }
 }
 
-fn card_element_name(element: crate::domain::Element) -> &'static str {
-    match element {
-        crate::domain::Element::Metal => "金行牌",
-        crate::domain::Element::Wood => "木行牌",
-        crate::domain::Element::Water => "水行牌",
-        crate::domain::Element::Fire => "火行牌",
-        crate::domain::Element::Earth => "土行牌",
-    }
-}
-
 fn spirit_name(spirit: crate::domain::SpiritKind) -> &'static str {
     match spirit {
         crate::domain::SpiritKind::Metal => "金",
@@ -2955,68 +3720,6 @@ fn card_summary(card: &CardInstanceId, labels: &HashMap<CardInstanceId, String>)
         .get(card)
         .cloned()
         .unwrap_or_else(|| "一張牌".to_string())
-}
-
-fn perform_formation_action_summary(
-    formation_id: &str,
-    rule_text: &str,
-    star_substitution: Option<&StarElementSubstitution>,
-    labels: &HashMap<CardInstanceId, String>,
-) -> String {
-    let base = echo_action_detail(formation_id, rule_text).unwrap_or_else(|| rule_text.to_string());
-    star_substitution.map_or(base.clone(), |substitution| {
-        format!(
-            "{} 星辰效果：將{}（{}）視為{}。",
-            base,
-            card_summary(&substitution.card, labels),
-            card_element_name(substitution.printed_element),
-            card_element_name(substitution.interpreted_element),
-        )
-    })
-}
-
-fn echo_action_detail(formation_id: &str, rule_text: &str) -> Option<String> {
-    let main_effect = punctuated_rule_text(rule_text);
-    let detail = match formation_id {
-        crate::rules::echo::RINGING_METAL => format!(
-            "{} 主效果完整結算後，可捨棄一張印刷行屬為金或土的手牌作為迴響代價；若支付，於自己下次回合開始只再次執行此曲調主效果，不視為新的陣法，不會再次排定迴響。",
-            main_effect
-        ),
-        crate::rules::echo::FALLING_WOOD => format!(
-            "{} 主效果完整結算後，可捨棄一張印刷行屬為木或水的手牌作為迴響代價；若支付，於自己下次回合開始只再次執行此曲調主效果，不視為新的陣法，不會再次排定迴響。",
-            main_effect
-        ),
-        crate::rules::echo::FLOWING_WATER => format!(
-            "{} 主效果完整結算後，可捨棄一張印刷行屬為水或金的手牌作為迴響代價；若支付，於自己下次回合開始只再次執行此曲調主效果，不視為新的陣法，不會再次排定迴響。",
-            main_effect
-        ),
-        crate::rules::echo::WAR_FIRE => format!(
-            "{} 主效果完整結算後，可捨棄一張印刷行屬為火或木的手牌作為迴響代價；若支付，於自己下次回合開始只再次執行此曲調主效果，不視為新的陣法，不會再次排定迴響。",
-            main_effect
-        ),
-        crate::rules::echo::SPLIT_EARTH => format!(
-            "{} 主效果完整結算後，可捨棄一張印刷行屬為土或火的手牌作為迴響代價；若支付，於自己下次回合開始只再次執行此曲調主效果，不視為新的陣法，不會再次排定迴響。",
-            main_effect
-        ),
-        crate::rules::echo::PURE_FIRE => format!(
-            "{} 主效果完整結算後，不需支付迴響代價並自動排定迴響；於自己下次回合開始重新選擇玩家，只再次執行此主效果，不視為新的陣法，不會再次排定迴響。",
-            main_effect
-        ),
-        crate::rules::echo::PLANT_EARTH => format!(
-            "{} 這不是迴響；排定自己下次回合開始選擇鳴金、落木、流水、戰火或裂土之一並只執行其主效果，不支付迴響代價、不排定迴響、不視為新的陣法。",
-            main_effect
-        ),
-        _ => return None,
-    };
-    Some(detail)
-}
-
-fn punctuated_rule_text(rule_text: &str) -> String {
-    if rule_text.ends_with('。') {
-        rule_text.to_string()
-    } else {
-        format!("{rule_text}。")
-    }
 }
 
 fn cards_summary(cards: &[CardInstanceId], labels: &HashMap<CardInstanceId, String>) -> String {
@@ -3069,6 +3772,153 @@ mod tests {
 
         assert!(response.contains(r#""turnNumber":1"#));
         assert!(response.contains(r#""record""#));
+    }
+
+    #[test]
+    fn tribulation_development_scenario_uses_a_deterministic_starting_hand() {
+        let rules = OfficialRules::new();
+        let alice = PlayerId::new("alice");
+        let bob = PlayerId::new("bob");
+        let setup = rules
+            .configure_game(
+                vec![
+                    Player {
+                        id: alice.clone(),
+                        team: TeamId::new("team:alice"),
+                    },
+                    Player {
+                        id: bob.clone(),
+                        team: TeamId::new("team:bob"),
+                    },
+                ],
+                vec![alice.clone(), bob],
+                rules.default_rule_modules(),
+            )
+            .unwrap();
+
+        let deck_order =
+            development_scenario_deck_order(&rules, &setup, &alice, "tribulation-earth-rending")
+                .unwrap();
+        let mut record = GameRecord::start(setup, deck_order).unwrap();
+        advance_to_interactive_decision(&mut record).unwrap();
+
+        let action =
+            development_scenario_action(&record, &alice, "tribulation-earth-rending").unwrap();
+
+        assert!(matches!(
+            action,
+            Some(PlayableAction::PerformFormation(candidate))
+                if candidate.formation_id == crate::rules::tribulation::EARTH_RENDING
+        ));
+    }
+
+    #[test]
+    fn every_named_action_scenario_has_a_repeatable_official_start() {
+        let rules = OfficialRules::new();
+        let alice = PlayerId::new("alice");
+        let bob = PlayerId::new("bob");
+        let setup = rules
+            .configure_game(
+                vec![
+                    Player {
+                        id: alice.clone(),
+                        team: TeamId::new("team:alice"),
+                    },
+                    Player {
+                        id: bob.clone(),
+                        team: TeamId::new("team:bob"),
+                    },
+                ],
+                vec![alice.clone(), bob],
+                rules.default_rule_modules(),
+            )
+            .unwrap();
+
+        for scenario in [
+            "hero-schools-transition",
+            "spirit-metal",
+            "spirit-fire",
+            "echo-pure-fire",
+            "tribulation-earth-rending",
+        ] {
+            let first = development_scenario_deck_order(&rules, &setup, &alice, scenario).unwrap();
+            let second = development_scenario_deck_order(&rules, &setup, &alice, scenario).unwrap();
+            assert_eq!(first, second, "{scenario} must have a fixed starting order");
+
+            let mut record = GameRecord::start(setup.clone(), first).unwrap();
+            advance_to_interactive_decision(&mut record).unwrap();
+            assert!(
+                development_scenario_action(&record, &alice, scenario)
+                    .unwrap()
+                    .is_some(),
+                "{scenario} must reach its official action"
+            );
+        }
+    }
+
+    #[test]
+    fn trusted_randomness_requirement_is_owned_by_the_rules_adapter() {
+        assert_eq!(
+            trusted_random_hand_selection_count(&ApiAction::PerformFormation {
+                player: "alice".to_string(),
+                formation_id: crate::rules::dark::DARK_CHAOS.to_string(),
+                cards: Vec::new(),
+                star_substitution_card: None,
+                match_option_role: None,
+                match_option_card: None,
+                match_option_slots: None,
+                pouch_owner: None,
+                pouch_card: None,
+                trigger_card: None,
+                secret_strategy: None,
+                secret_strategy_target_player: None,
+                secret_strategy_star: None,
+                secret_strategy_break_star: None,
+                secret_strategy_discard_card: None,
+                secret_strategy_deck_cards: None,
+                secret_strategy_discard_cards: None,
+                trusted_random_cards: None,
+            }),
+            Some(2)
+        );
+        assert_eq!(
+            trusted_random_hand_selection_count(&ApiAction::UseSpiritSkill {
+                player: "alice".to_string(),
+                skill: crate::domain::SpiritSkill::EvilGaze,
+                selected_card: None,
+                declared_level: None,
+                trusted_random_cards: None,
+            }),
+            Some(2)
+        );
+        assert_eq!(
+            trusted_random_hand_selection_count(&ApiAction::PassAction),
+            None
+        );
+    }
+
+    #[test]
+    fn public_cards_serialize_structured_rule_facts() {
+        let response = handle_request_json(
+            r#"{
+                "action":{"type":"start"},
+                "viewer":"alice",
+                "setup":{
+                    "players":[
+                        {"id":"alice","team":"team:alice"},
+                        {"id":"bob","team":"team:bob"}
+                    ],
+                    "turnOrder":["alice","bob"]
+                }
+            }"#,
+        )
+        .expect("start request should succeed");
+        let json: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let card = &json["state"]["hands"][0]["cards"]["cards"][0];
+
+        assert!(card["element"].as_str().is_some());
+        assert!(card["level"].as_u64().is_some());
+        assert_eq!(card["secretStrategies"].as_array().unwrap().len(), 2);
     }
 
     #[test]
@@ -3128,6 +3978,7 @@ mod tests {
         let web = WebPublicGameState::from_public(
             public,
             &rules.card_labels(&setup).unwrap(),
+            &card_facts_for_setup(&setup),
             &rules.formation_names(&setup).unwrap(),
         );
         let json = serde_json::to_value(web).unwrap();
@@ -3187,6 +4038,7 @@ mod tests {
         let web = WebPublicGameState::from_public(
             public,
             &rules.card_labels(&setup).unwrap(),
+            &card_facts_for_setup(&setup),
             &rules.formation_names(&setup).unwrap(),
         );
         let json = serde_json::to_value(web).unwrap();
@@ -3211,7 +4063,6 @@ mod tests {
 
     #[test]
     fn star_substitution_is_exposed_and_accepted_by_the_web_formation_flow() {
-        assert_eq!(card_element_name(crate::domain::Element::Water), "水行牌");
         let substitution = WebStarElementSubstitution {
             card: CardInstanceId::new(42),
             printed_element: crate::domain::Element::Water,
@@ -3283,6 +4134,7 @@ mod tests {
         let web_state = WebPublicGameState::from_public(
             crate::public_view::state_for(&state, Viewer::Player(setup.players[0].id.clone())),
             &rules.card_labels(&setup).unwrap(),
+            &card_facts_for_setup(&setup),
             &rules.formation_names(&setup).unwrap(),
         );
         let json = serde_json::to_value(web_state).expect("web state should serialize");
@@ -3299,6 +4151,7 @@ mod tests {
         let web_state = WebPublicGameState::from_public(
             crate::public_view::state_for(&state, Viewer::Observer),
             &rules.card_labels(&setup).unwrap(),
+            &card_facts_for_setup(&setup),
             &rules.formation_names(&setup).unwrap(),
         );
         let json = serde_json::to_value(web_state).expect("web state should serialize");
@@ -3321,6 +4174,7 @@ mod tests {
         let web_state = WebPublicGameState::from_public(
             crate::public_view::state_for(&state, Viewer::Player(PlayerId::new("alice"))),
             &rules.card_labels(&setup).unwrap(),
+            &card_facts_for_setup(&setup),
             &rules.formation_names(&setup).unwrap(),
         );
         let json = serde_json::to_value(web_state).expect("web state should serialize");
@@ -3356,6 +4210,7 @@ mod tests {
         let web_state = WebPublicGameState::from_public(
             crate::public_view::state_for(&state, Viewer::Observer),
             &rules.card_labels(&setup).unwrap(),
+            &card_facts_for_setup(&setup),
             &rules.formation_names(&setup).unwrap(),
         );
         let json = serde_json::to_value(web_state).expect("web state should serialize");
@@ -3390,6 +4245,7 @@ mod tests {
                 Viewer::Observer,
             ),
             &rules.card_labels(&setup).unwrap(),
+            &card_facts_for_setup(&setup),
             &rules.formation_names(&setup).unwrap(),
         );
         let json = serde_json::to_value(web_state).expect("web state should serialize");
@@ -3548,77 +4404,6 @@ mod tests {
     }
 
     #[test]
-    fn echo_playable_action_summaries_include_echo_policy() {
-        let falling_wood = perform_formation_action_summary(
-            crate::rules::echo::FALLING_WOOD,
-            "木木；自身隊伍回復１５點生命",
-            None,
-            &HashMap::new(),
-        );
-        let action = WebPlayableAction::PerformFormation {
-            id: crate::rules::echo::FALLING_WOOD.to_string(),
-            name: "角調‧落木".to_string(),
-            category: WebFormationCategory::Spell,
-            summary: falling_wood,
-            cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
-            star_substitution: None,
-            match_option: None,
-        };
-        let json = serde_json::to_value(action).expect("action should serialize");
-        let summary = json["summary"].as_str().expect("summary should serialize");
-
-        assert!(summary.contains("木木；自身隊伍回復１５點生命"));
-        assert!(summary.contains("印刷行屬為木或水"));
-        assert!(summary.contains("自己下次回合開始"));
-        assert!(summary.contains("只再次執行此曲調主效果"));
-        assert!(summary.contains("不視為新的陣法"));
-        assert!(summary.contains("不會再次排定迴響"));
-
-        let pure_fire = perform_formation_action_summary(
-            crate::rules::echo::PURE_FIRE,
-            "火水且等級合計７以上；指定玩家的合格時效效果減少１回合或１層",
-            None,
-            &HashMap::new(),
-        );
-        assert!(pure_fire.contains("不需支付迴響代價並自動排定迴響"));
-        assert!(pure_fire.contains("重新選擇玩家"));
-        assert!(pure_fire.contains("不視為新的陣法"));
-
-        let plant_earth = perform_formation_action_summary(
-            crate::rules::echo::PLANT_EARTH,
-            "土木且等級合計７以上；下次自己回合開始選擇一種基礎曲調主效果",
-            None,
-            &HashMap::new(),
-        );
-        assert!(plant_earth.contains("這不是迴響"));
-        assert!(plant_earth.contains("選擇鳴金、落木、流水、戰火或裂土"));
-        assert!(plant_earth.contains("不支付迴響代價"));
-        assert!(plant_earth.contains("不排定迴響"));
-        assert!(plant_earth.contains("不視為新的陣法"));
-    }
-
-    #[test]
-    fn echo_action_summary_composes_with_star_substitution_detail() {
-        let labels = HashMap::from([(CardInstanceId::new(7), "水 3".to_string())]);
-        let substitution = StarElementSubstitution {
-            card: CardInstanceId::new(7),
-            printed_element: crate::domain::Element::Water,
-            interpreted_element: crate::domain::Element::Wood,
-        };
-
-        let summary = perform_formation_action_summary(
-            crate::rules::echo::FALLING_WOOD,
-            "木木；自身隊伍回復１５點生命",
-            Some(&substitution),
-            &labels,
-        );
-
-        assert!(summary.contains("印刷行屬為木或水"));
-        assert!(summary.contains("不會再次排定迴響"));
-        assert!(summary.contains("星辰效果：將水 3（水行牌）視為木行牌。"));
-    }
-
-    #[test]
     fn pass_reason_is_derived_from_the_current_state() {
         let setup = fixture_setup(&OfficialRules::new(), None).unwrap();
         let mut state = crate::domain::GameState::from_setup(&setup);
@@ -3643,7 +4428,7 @@ mod tests {
                 allowed_cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
             }),
         };
-        let web_choice = WebPendingChoice::from_public(choice, &HashMap::new());
+        let web_choice = WebPendingChoice::from_public(choice, &HashMap::new(), &HashMap::new());
         let json = serde_json::to_value(web_choice).expect("choice should serialize");
 
         assert_eq!(json["requiredCount"], 2);
@@ -3819,7 +4604,12 @@ mod tests {
             });
 
         let public = crate::public_view::state_for(&state, Viewer::Observer);
-        let web = WebPublicGameState::from_public(public, &HashMap::new(), &HashMap::new());
+        let web = WebPublicGameState::from_public(
+            public,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         let json = serde_json::to_value(web).expect("Echo state should serialize");
 
         assert_eq!(json["scheduledEchoes"][0]["melodyId"], "echo:falling-wood");

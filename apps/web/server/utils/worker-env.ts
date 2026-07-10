@@ -14,6 +14,7 @@ export interface WorkerEnv {
   APP_ENV?: string
   BETTER_AUTH_SECRET?: string
   BETTER_AUTH_URL?: string
+  LOCAL_PASSWORD_RESET_ENABLED?: string
 }
 
 declare global {

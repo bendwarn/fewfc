@@ -1,11 +1,18 @@
 import { drizzleAdapter } from '@better-auth/drizzle-adapter'
 import { betterAuth } from 'better-auth'
+import { hashPassword, verifyPassword } from 'better-auth/crypto'
 import { anonymous } from 'better-auth/plugins'
 import { drizzle } from 'drizzle-orm/d1'
 import { eq } from 'drizzle-orm'
 import { createError, type H3Event } from 'h3'
 import { schema } from '../database/schema'
 import { workerEnv } from './worker-env'
+
+export const EMAIL_PASSWORD_MIN_LENGTH = 10
+export const EMAIL_PASSWORD_MAX_LENGTH = 128
+
+export const hashEmailPassword = hashPassword
+export const verifyEmailPassword = verifyPassword
 
 export function authForEvent(event: H3Event) {
   const env = workerEnv(event)
@@ -36,7 +43,12 @@ export function authForEvent(event: H3Event) {
     }),
     emailAndPassword: {
       enabled: true,
-      minPasswordLength: 10,
+      minPasswordLength: EMAIL_PASSWORD_MIN_LENGTH,
+      maxPasswordLength: EMAIL_PASSWORD_MAX_LENGTH,
+      password: {
+        hash: hashEmailPassword,
+        verify: verifyEmailPassword,
+      },
     },
     session: {
       expiresIn: 60 * 60 * 24 * 7,

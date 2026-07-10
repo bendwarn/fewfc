@@ -4,7 +4,8 @@ use fewfc::application::{
 use fewfc::domain::{
     CardChoiceOptions, CardInstanceId, Command, EffectChoiceAnswer, EffectChoiceOptions, GameError,
     GameEvent, GameSetup, GameState, PassActionReason, PendingChoice, PendingChoiceKind,
-    PendingRandomness, PlayerId, RandomnessDeck, TrustedRandomnessAnswer, ValidationError,
+    PendingRandomness, PlayerId, PouchRandomnessContinuation, RandomnessContinuation,
+    RandomnessDeck, TrustedRandomnessAnswer, ValidationError,
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, event_for, state_for};
 
@@ -171,7 +172,9 @@ fn state_with_pending_randomness() -> GameState {
             request: PendingRandomness {
                 request_id: "shuffle-1".to_string(),
                 deck: RandomnessDeck::Shared,
-                continuation_id: "echo:continue".to_string(),
+                continuation: RandomnessContinuation::Pouch(
+                    PouchRandomnessContinuation::SheepStealing,
+                ),
                 current_order: vec![card(1), card(2), card(3)],
             },
         },
@@ -262,7 +265,9 @@ fn accepted_shuffle_is_canonical_and_replay_uses_the_recorded_order() {
                 request: PendingRandomness {
                     request_id: "shuffle-1".to_string(),
                     deck: RandomnessDeck::Shared,
-                    continuation_id: "echo:continue".to_string(),
+                    continuation: RandomnessContinuation::Pouch(
+                        PouchRandomnessContinuation::SheepStealing,
+                    ),
                     current_order: vec![card(1), card(2), card(3)],
                 },
             },
@@ -325,14 +330,19 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
         serde_json::to_value(PendingRandomness {
             request_id: "request".to_string(),
             deck: RandomnessDeck::Shared,
-            continuation_id: "continue".to_string(),
+            continuation: RandomnessContinuation::Echo(
+                fewfc::domain::EchoRandomnessContinuation::RingingMetalPostSearch,
+            ),
             current_order: vec![card(1), card(2)],
         })
         .unwrap(),
         serde_json::json!({
             "requestId": "request",
             "deck": "Shared",
-            "continuationId": "continue",
+            "continuation": {
+                "type": "echo",
+                "kind": "ringingMetalPostSearch"
+            },
             "currentOrder": [1, 2],
         })
     );

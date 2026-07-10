@@ -1,12 +1,12 @@
 use crate::domain::targeting::{RulePlayerTarget, TurnOrderTargets};
 use crate::domain::{
-    CardMoveDelta, CardOrigin, CardZone, ECHO_MODULE_ID, EffectChoiceAnswer, Element, GameError,
-    GameEvent, GameResult, GameState, GameStatus, PendingChoiceKind, PlayerId, ScheduledEcho,
-    ValidationError,
+    CardMoveDelta, CardOrigin, CardZone, ECHO_MODULE_ID, EchoRandomnessContinuation,
+    EffectChoiceAnswer, Element, GameError, GameEvent, GameResult, GameState, GameStatus,
+    PendingChoiceKind, PlayerId, RandomnessContinuation, ScheduledEcho, ValidationError,
 };
 use crate::rules::{
     BaseFormationSpec, EffectDef, EffectPlan, FormationCategory, FormationDef, FormationPattern,
-    PointFormula, SpellPlanDef,
+    PointFormula, SpellPlanDef, SubmittedCardFacts,
 };
 
 pub(crate) const RINGING_METAL: &str = "echo:ringing-metal";
@@ -16,6 +16,13 @@ pub(crate) const WAR_FIRE: &str = "echo:war-fire";
 pub(crate) const SPLIT_EARTH: &str = "echo:split-earth";
 pub(crate) const PURE_FIRE: &str = "echo:pure-fire";
 pub(crate) const PLANT_EARTH: &str = "echo:plant-earth";
+
+pub(crate) fn matches_pure_fire(submitted: &[SubmittedCardFacts]) -> bool {
+    submitted.len() == 2
+        && submitted.iter().any(|card| card.element == Element::Fire)
+        && submitted.iter().any(|card| card.element == Element::Water)
+        && submitted.iter().map(|card| card.level).sum::<u32>() >= 7
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EchoPolicy {
@@ -358,7 +365,9 @@ pub(crate) fn answer_choice(
                         player.as_str()
                     ),
                     deck: deck_kind(state, player),
-                    continuation_id: "echo:ringing-metal:post-search".to_string(),
+                    continuation: RandomnessContinuation::Echo(
+                        EchoRandomnessContinuation::RingingMetalPostSearch,
+                    ),
                     current_order: remainder,
                 },
             });
@@ -618,11 +627,13 @@ fn echo_timed_effect_reductions(
 
 pub(crate) fn after_randomness_events(
     state: &GameState,
-    continuation_id: &str,
+    continuation: &EchoRandomnessContinuation,
 ) -> GameResult<Vec<GameEvent>> {
-    match continuation_id {
-        "echo:ringing-metal:recycle-discard" => ringing_metal_search_choice(state),
-        "echo:ringing-metal:post-search" => {
+    match continuation {
+        EchoRandomnessContinuation::RingingMetalRecycleDiscard => {
+            ringing_metal_search_choice(state)
+        }
+        EchoRandomnessContinuation::RingingMetalPostSearch => {
             let selection = state.ringing_metal_selection.clone().ok_or_else(|| {
                 GameError::RuleImplementation(
                     crate::domain::RuleImplementationError::EffectNotImplemented(
@@ -632,7 +643,6 @@ pub(crate) fn after_randomness_events(
             })?;
             ringing_metal_completion_events(state, selection)
         }
-        _ => Ok(Vec::new()),
     }
 }
 
@@ -657,7 +667,9 @@ fn ringing_metal_start_events(state: &GameState, player: &PlayerId) -> GameResul
                 player.as_str()
             ),
             deck: deck_kind(state, player),
-            continuation_id: "echo:ringing-metal:recycle-discard".to_string(),
+            continuation: RandomnessContinuation::Echo(
+                EchoRandomnessContinuation::RingingMetalRecycleDiscard,
+            ),
             current_order: discard.to_vec(),
         },
     }])

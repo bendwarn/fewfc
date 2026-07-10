@@ -1,16 +1,21 @@
+import { isDevelopmentScenario } from '../../../../shared/development-scenarios'
+
 export default defineEventHandler(async (event) => {
   requireDevelopment(event)
   const session = await requireSession(event)
   const gameId = getRouterParam(event, 'id')
+  const scenario = await readBody(event)
 
   if (!gameId) {
     throw createError({ statusCode: 400, statusMessage: 'Missing game id.' })
   }
+  if (!isDevelopmentScenario(scenario)) {
+    throw createError({ statusCode: 400, statusMessage: 'Unknown development scenario.' })
+  }
 
-  const spirit = getQuery(event).spirit === 'Fire' ? 'Fire' : 'Metal'
   return await callGameRoom(event, gameId, {
-    type: 'seedSpiritFixture',
+    type: 'seedDevelopmentScenario',
     actorUserId: session.user.id,
-    spirit,
+    scenario,
   })
 })

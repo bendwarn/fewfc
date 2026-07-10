@@ -4,7 +4,7 @@ mod recorded_event_log;
 
 use crate::domain::{
     CardInstanceId, Command, CommandId, GameError, GameEvent, GameResult, GameSetup, GameState,
-    RandomnessDeck, TrustedRandomnessAnswer, ValidationError,
+    TrustedRandomnessAnswer,
 };
 use crate::ports::DeckPreparation as DeckPreparationPort;
 use crate::public_view::{PublicGameEvent, PublicGameState, Viewer};
@@ -407,78 +407,7 @@ pub fn resolve_trusted_randomness(
     state: &GameState,
     answer: &TrustedRandomnessAnswer,
 ) -> GameResult<Vec<GameEvent>> {
-    let request = state
-        .pending_randomness
-        .as_ref()
-        .ok_or(GameError::Validation(
-            ValidationError::MissingPendingRandomness,
-        ))?;
-    if request.request_id != answer.request_id {
-        return Err(GameError::Validation(
-            ValidationError::MissingPendingRandomness,
-        ));
-    }
-
-    let recycles_discard = request.continuation_id == "echo:ringing-metal:recycle-discard";
-    let current_order = match (&request.deck, recycles_discard) {
-        (RandomnessDeck::Shared, false) => &state.deck,
-        (RandomnessDeck::Shared, true) => &state.discard,
-        (RandomnessDeck::Player(player), false) => state
-            .deck_for(player)
-            .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?,
-        (RandomnessDeck::Player(player), true) => state
-            .discard_for(player)
-            .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?,
-    };
-    let current_matches_request = if recycles_discard {
-        let mut available = current_order.to_vec();
-        request.current_order.iter().all(|card| {
-            available
-                .iter()
-                .position(|candidate| candidate == card)
-                .map(|position| available.remove(position))
-                .is_some()
-        })
-    } else {
-        current_order == request.current_order
-    };
-    if !current_matches_request {
-        return Err(GameError::Validation(
-            ValidationError::StalePendingRandomness,
-        ));
-    }
-
-    let mut expected = request.current_order.clone();
-    let mut actual = answer.shuffled_order.clone();
-    expected.sort();
-    actual.sort();
-    if expected != actual {
-        return Err(GameError::Validation(
-            ValidationError::InvalidRandomnessPermutation,
-        ));
-    }
-
-    let mut events = vec![GameEvent::RandomnessResolved {
-        request_id: request.request_id.clone(),
-        deck: request.deck.clone(),
-        shuffled_order: answer.shuffled_order.clone(),
-    }];
-    let mut projected = state.clone();
-    apply_event(&mut projected, &events[0]);
-    events.extend(crate::rules::echo::after_randomness_events(
-        &projected,
-        &request.continuation_id,
-    )?);
-    events.extend(crate::rules::tribulation::after_randomness_events(
-        &projected,
-        &request.continuation_id,
-    )?);
-    events.extend(crate::rules::pouch::after_randomness_events(
-        &projected,
-        &request.continuation_id,
-        &request.deck,
-    )?);
-    Ok(events)
+    crate::rules::randomness::resolve_trusted_randomness(state, answer)
 }
 
 pub fn apply_event(state: &mut GameState, event: &GameEvent) {

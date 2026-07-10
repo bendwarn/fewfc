@@ -1,5 +1,5 @@
 import type { PlayerDeckList } from '../../shared/game-room'
-import { validateDeck } from '../utils/player-deck'
+import { resolveDeck } from '../utils/player-deck'
 
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
@@ -11,9 +11,5 @@ export default defineEventHandler(async (event) => {
   })
 
   const custom = await customDeckForUser(event, session.user.id)
-  return {
-    deck: custom,
-    source: 'custom' as const,
-    validation: validateDeck(custom ?? { name: '', cards: [] }),
-  }
+  return await resolveDeck(session.user.id, custom)
 })

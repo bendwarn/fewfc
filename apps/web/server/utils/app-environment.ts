@@ -43,7 +43,11 @@ export function appEnvironment(event: H3Event): AppEnvironment {
 }
 
 export function requireDevelopment(event: H3Event) {
-  if (appEnvironment(event) !== 'development') {
+  assertDevelopmentEnvironment(appEnvironment(event))
+}
+
+export function assertDevelopmentEnvironment(environment: AppEnvironment) {
+  if (environment !== 'development') {
     throw createError({
       statusCode: 404,
       statusMessage: 'Not found.',

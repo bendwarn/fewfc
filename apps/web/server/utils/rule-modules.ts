@@ -1,12 +1,8 @@
-import {
-  hasValidRuleModuleDependencies,
-  normalizeRuleModules,
-} from '../../shared/utils/rule-modules'
+import { rulesEngine } from './rules-engine'
 
-export function normalizeServerRuleModules(modules: unknown): string[] {
-  return normalizeRuleModules(modules)
-}
-
-export function hasValidServerRuleModuleDependencies(modules: unknown): boolean {
-  return hasValidRuleModuleDependencies(modules)
+export async function resolveServerRuleModules(modules: unknown): Promise<string[]> {
+  const candidate = Array.isArray(modules)
+    ? modules.filter((module): module is string => typeof module === 'string')
+    : undefined
+  return (await rulesEngine().resolveRuleModules(candidate)).modules
 }

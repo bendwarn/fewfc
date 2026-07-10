@@ -1,9 +1,12 @@
 import type { Page } from '@playwright/test'
 import {
   createPublicRoom,
+  createPublicRoomViaApi,
   expect,
   joinListedRoom,
   loginAsGuests,
+  seedDevelopmentScenario,
+  startTwoPlayerMatch,
   test,
 } from './fixtures'
 
@@ -138,7 +141,7 @@ test('a four-player team room starts with one shared immutable Star configuratio
   try {
     await loginAsGuests(pages)
     const roomName = `星辰團隊測試 ${Date.now()}`
-    await createPublicRoom(host!, roomName, true)
+    await createPublicRoomViaApi(host!, roomName, true)
 
     for (const guest of guests) {
       await joinListedRoom(guest, roomName, '星辰圖記：啟用')
@@ -178,18 +181,8 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
   try {
     await loginAsGuests(pages)
     const roomName = `星辰殘局測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-    await joinListedRoom(guest, roomName, '星辰圖記：啟用')
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    await host.getByRole('button', { name: '開始遊戲 →' }).click()
-    await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
-
-    const roomId = new URL(host.url()).pathname.split('/').pop()
-    const seeded = await host.evaluate(async (id) => {
-      const response = await fetch(`/api/games/${id}/test-endgame`, { method: 'POST' })
-      return response.ok
-    }, roomId)
-    expect(seeded).toBe(true)
+    const roomId = await startTwoPlayerMatch(host, guest, roomName)
+    await seedDevelopmentScenario(host, { name: 'star-endgame' })
 
     await Promise.all(pages.map(page => (
       expect(page.locator('.player-identity')).toContainText(['1 HP', '1 HP'])
