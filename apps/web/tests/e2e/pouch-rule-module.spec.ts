@@ -1,24 +1,5 @@
-import { expect, test, type Page } from '@playwright/test'
-
-async function loginAsGuest(page: Page) {
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
-}
-
-async function createPublicRoom(host: Page, roomName: string) {
-  await host.getByRole('button', { name: '建立房間', exact: true }).click()
-  await host.getByLabel('房間名稱').fill(roomName)
-  await host.getByRole('button', { name: '公開房間', exact: true }).click()
-  await host.getByRole('button', { name: '建立房間 →' }).click()
-  await expect(host).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
-}
-
-async function joinListedRoom(page: Page, roomName: string) {
-  const room = page.locator('.public-room-list button').filter({ hasText: roomName })
-  await room.click()
-  await expect(page).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
-}
+import type { Page } from '@playwright/test'
+import { createPublicRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
 
 async function waitForCommand(page: Page, actionType: string) {
   return page.waitForResponse(response => (
@@ -58,7 +39,7 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
   const pages = [host, guest]
 
   try {
-    await Promise.all(pages.map(loginAsGuest))
+    await loginAsGuests(pages)
     const roomName = `錦囊規則測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
     await host.getByLabel('主題規則‧錦囊').check()

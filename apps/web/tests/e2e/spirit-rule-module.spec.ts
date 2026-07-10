@@ -1,25 +1,10 @@
-import { expect, test, type Page } from '@playwright/test'
-
-async function loginAsGuest(page: Page) {
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
-}
-
-async function createPublicRoom(host: Page, roomName: string) {
-  await host.getByRole('button', { name: '建立房間', exact: true }).click()
-  await host.getByLabel('房間名稱').fill(roomName)
-  await host.getByRole('button', { name: '公開房間', exact: true }).click()
-  await host.getByRole('button', { name: '建立房間 →' }).click()
-  await expect(host).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
-}
-
-async function joinListedRoom(page: Page, roomName: string) {
-  const room = page.locator('.public-room-list button').filter({ hasText: roomName })
-  await expect(room).toContainText('精靈：啟用')
-  await room.click()
-  await expect(page).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
-}
+import {
+  createPublicRoom,
+  expect,
+  joinListedRoom,
+  loginAsGuests,
+  test,
+} from './fixtures'
 
 test('Spirit defaults on and keeps its Advanced Rule dependencies coherent', async ({ browser }) => {
   test.setTimeout(180_000)
@@ -30,7 +15,7 @@ test('Spirit defaults on and keeps its Advanced Rule dependencies coherent', asy
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([loginAsGuest(host), loginAsGuest(guest)])
+    await loginAsGuests([host, guest])
     const roomName = `精靈規則測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
 
@@ -39,7 +24,7 @@ test('Spirit defaults on and keeps its Advanced Rule dependencies coherent', asy
     await expect(host.getByLabel('進階規則‧英雄學派')).toBeChecked()
     await expect(host.getByLabel('進階規則‧五方傳說')).toBeChecked()
 
-    await joinListedRoom(guest, roomName)
+    await joinListedRoom(guest, roomName, '精靈：啟用')
     await guest.getByRole('button', { name: '準備 →' }).click()
 
     await host.getByLabel('進階規則‧星辰圖記').uncheck()
@@ -89,10 +74,10 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([loginAsGuest(host), loginAsGuest(guest)])
+    await loginAsGuests([host, guest])
     const roomName = `精靈技能測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
-    await joinListedRoom(guest, roomName)
+    await joinListedRoom(guest, roomName, '精靈：啟用')
     await guest.getByRole('button', { name: '準備 →' }).click()
     await host.getByRole('button', { name: '開始遊戲 →' }).click()
     await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
@@ -174,10 +159,10 @@ test('Splendor exposes its declared levels on hover and uses the chosen level', 
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([loginAsGuest(host), loginAsGuest(guest)])
+    await loginAsGuests([host, guest])
     const roomName = `絢爛選級測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
-    await joinListedRoom(guest, roomName)
+    await joinListedRoom(guest, roomName, '精靈：啟用')
     await guest.getByRole('button', { name: '準備 →' }).click()
     await host.getByRole('button', { name: '開始遊戲 →' }).click()
     await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()

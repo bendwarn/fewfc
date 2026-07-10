@@ -1,28 +1,11 @@
-import { expect, test, type Page } from '@playwright/test'
-
-async function loginAsGuest(page: Page) {
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
-}
-
-async function createPublicRoom(host: Page, roomName: string, teamMode = false) {
-  await host.getByRole('button', { name: '建立房間', exact: true }).click()
-  await host.getByLabel('房間名稱').fill(roomName)
-  if (teamMode) {
-    await host.getByRole('button', { name: /團隊對戰/ }).click()
-  }
-  await host.getByRole('button', { name: '公開房間', exact: true }).click()
-  await host.getByRole('button', { name: '建立房間 →' }).click()
-  await expect(host).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
-}
-
-async function joinListedRoom(page: Page, roomName: string) {
-  const room = page.locator('.public-room-list button').filter({ hasText: roomName })
-  await expect(room).toContainText('星辰圖記：啟用')
-  await room.click()
-  await expect(page).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
-}
+import type { Page } from '@playwright/test'
+import {
+  createPublicRoom,
+  expect,
+  joinListedRoom,
+  loginAsGuests,
+  test,
+} from './fixtures'
 
 async function indexedModules(page: Page, roomName: string): Promise<string[]> {
   return await page.evaluate(async (name) => {
@@ -43,7 +26,7 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([loginAsGuest(host), loginAsGuest(guest)])
+    await loginAsGuests([host, guest])
     const roomName = `星辰預設測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
 
@@ -54,7 +37,7 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
     await expect(host.getByLabel('進階規則‧星辰圖記')).toBeEnabled()
     expect(await indexedModules(host, roomName)).toContain('star')
 
-    await joinListedRoom(guest, roomName)
+    await joinListedRoom(guest, roomName, '星辰圖記：啟用')
     await expect(guest.getByLabel('進階規則‧星辰圖記')).toBeChecked()
     await expect(guest.getByLabel('進階規則‧星辰圖記')).toBeDisabled()
     await guest.getByRole('button', { name: '準備 →' }).click()
@@ -97,10 +80,10 @@ test('disabling Star invalidates readiness and locked decks while preserving Bas
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([loginAsGuest(host), loginAsGuest(guest)])
+    await loginAsGuests([host, guest])
     const roomName = `星辰關閉測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
-    await joinListedRoom(guest, roomName)
+    await joinListedRoom(guest, roomName, '星辰圖記：啟用')
 
     await guest.getByRole('button', { name: '準備 →' }).click()
     await expect(guest.getByText('本局使用：五行均衡預組')).toBeVisible()
@@ -153,12 +136,12 @@ test('a four-player team room starts with one shared immutable Star configuratio
   const [host, ...guests] = pages
 
   try {
-    await Promise.all(pages.map(loginAsGuest))
+    await loginAsGuests(pages)
     const roomName = `星辰團隊測試 ${Date.now()}`
     await createPublicRoom(host!, roomName, true)
 
     for (const guest of guests) {
-      await joinListedRoom(guest, roomName)
+      await joinListedRoom(guest, roomName, '星辰圖記：啟用')
       await expect(guest.getByLabel('進階規則‧星辰圖記')).toBeChecked()
       await guest.getByRole('button', { name: '準備 →' }).click()
     }
@@ -193,10 +176,10 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
   const pages = [host, guest]
 
   try {
-    await Promise.all(pages.map(loginAsGuest))
+    await loginAsGuests(pages)
     const roomName = `星辰殘局測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
-    await joinListedRoom(guest, roomName)
+    await joinListedRoom(guest, roomName, '星辰圖記：啟用')
     await guest.getByRole('button', { name: '準備 →' }).click()
     await host.getByRole('button', { name: '開始遊戲 →' }).click()
     await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()

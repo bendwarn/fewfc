@@ -1,14 +1,6 @@
-import { expect, test } from '@playwright/test'
-
-async function loginAsGuest(page: import('@playwright/test').Page) {
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
-}
+import { createRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
 
 test('account menu opens the valid built-in personal deck editor', async ({ page }) => {
-  await loginAsGuest(page)
-
   await page.getByRole('button', { name: /旅人-/ }).click()
   await page.getByRole('button', { name: '個人牌組' }).click()
 
@@ -33,18 +25,14 @@ test('default room rules lock preconstructed decks and start personal piles', as
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([loginAsGuest(host), loginAsGuest(guest)])
+    await loginAsGuests([host, guest])
     const roomName = `個人牌組測試 ${Date.now()}`
 
-    await host.getByRole('button', { name: '建立房間', exact: true }).click()
-    await host.getByLabel('房間名稱').fill(roomName)
-    await host.getByRole('button', { name: '建立房間 →' }).click()
+    await createRoom(host, roomName)
     await expect(host.getByLabel('棄牌回收')).toBeChecked()
     await expect(host.getByLabel('個人牌組')).toBeChecked()
 
-    const listedRoom = guest.locator('.public-room-list button').filter({ hasText: roomName })
-    await expect(listedRoom).toBeVisible()
-    await listedRoom.click()
+    await joinListedRoom(guest, roomName)
 
     await expect(guest.getByLabel('棄牌回收')).toBeChecked()
     await expect(guest.getByLabel('個人牌組')).toBeChecked()

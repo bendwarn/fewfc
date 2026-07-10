@@ -1,17 +1,12 @@
-import { expect, test, type Page } from '@playwright/test'
-
-async function loginAsGuest(page: Page) {
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
-}
-
-async function createPublicRoom(host: Page, roomName: string) {
-  await host.getByRole('button', { name: '建立房間', exact: true }).click()
-  await host.getByLabel('房間名稱').fill(roomName)
-  await host.getByRole('button', { name: '公開房間', exact: true }).click()
-  await host.getByRole('button', { name: '建立房間 →' }).click()
-}
+import type { Page } from '@playwright/test'
+import {
+  createPublicRoom,
+  createRoom,
+  expect,
+  joinListedRoom,
+  loginAsGuests,
+  test,
+} from './fixtures'
 
 async function waitForPlayableActions(page: Page) {
   return page.waitForResponse(response => (
@@ -24,11 +19,7 @@ async function waitForPlayableActions(page: Page) {
 
 test('Echo defaults on and normalizes every Advanced Rule dependency', async ({ page }) => {
   test.setTimeout(180_000)
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await page.getByRole('button', { name: '建立房間', exact: true }).click()
-  await page.getByLabel('房間名稱').fill(`迴響測試 ${Date.now()}`)
-  await page.getByRole('button', { name: '建立房間 →' }).click()
+  await createRoom(page, `迴響測試 ${Date.now()}`)
 
   await expect(page.getByLabel('主題規則‧迴響')).toBeChecked()
 
@@ -49,10 +40,10 @@ test('Pure Fire target choice is private, accessible, and reconnectable', async 
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([loginAsGuest(host), loginAsGuest(guest)])
+    await loginAsGuests([host, guest])
     const roomName = `淨火選擇測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
-    await guest.locator('.public-room-list button').filter({ hasText: roomName }).click()
+    await joinListedRoom(guest, roomName)
     await guest.getByRole('button', { name: '準備 →' }).click()
     await host.getByRole('button', { name: '開始遊戲 →' }).click()
     await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
@@ -100,10 +91,10 @@ test('Echo action detail shows the delayed Echo policy on the battlefield', asyn
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([loginAsGuest(page), loginAsGuest(guest)])
+    await loginAsGuests([page, guest])
     const roomName = `迴響行動詳情 ${Date.now()}`
     await createPublicRoom(page, roomName)
-    await guest.locator('.public-room-list button').filter({ hasText: roomName }).click()
+    await joinListedRoom(guest, roomName)
     await guest.getByRole('button', { name: '準備 →' }).click()
     await page.getByRole('button', { name: '開始遊戲 →' }).click()
     await expect(page.getByRole('region', { name: '啟用規則' })).toBeVisible()
