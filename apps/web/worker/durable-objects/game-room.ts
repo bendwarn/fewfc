@@ -4,7 +4,6 @@ import {
   emptyPublicState,
   isOnlineGameAction,
   invitationCredentialMatches,
-  normalizeRuleModules,
   normalizeGameRoomMetadata,
   requiresPendingCommandDraft,
   resolvePendingRandomnessSequence,
@@ -24,7 +23,7 @@ import {
   type StoredGameEvent,
 } from '../../shared/game-room'
 import type { PlayableAction, PlayerId } from '../../app/types/fewfc'
-import { callRulesEngine } from '../rules-engine'
+import { callRuleModuleResolution, callRulesEngine } from '../rules-engine'
 
 interface GameRoomEnv {
   PLAYER_NOTIFICATIONS: DurableObjectNamespace
@@ -49,7 +48,14 @@ interface PendingCommandDraft {
 
 type RulesEngineAction =
   | OnlineGameAction
-  | { type: 'trustedRandomHandCandidates'; player: PlayerId }
+  | { type: 'startDevelopmentScenario'; player: PlayerId; scenario: string }
+  | { type: 'developmentScenarioAction'; player: PlayerId; scenario: string }
+  | { type: 'prepareDevelopmentScenario'; player: PlayerId; scenario: string }
+  | {
+      type: 'trustedRandomHandCandidates'
+      player: PlayerId
+      candidateAction: OnlineGameAction
+    }
   | { type: 'resolveRandomness'; requestId: string; shuffledOrder: number[] }
 
 export class GameRoom extends DurableObject<GameRoomEnv> {
@@ -93,16 +99,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           return await this.startGame(body.actorUserId, body.deckList)
         case 'resetGame':
           return await this.resetGame(body.actorUserId)
-        case 'seedEndgameFixture':
-          return await this.seedEndgameFixture(body.actorUserId)
-        case 'seedHeroSchoolsFixture':
-          return await this.seedHeroSchoolsFixture(body.actorUserId)
-        case 'seedSpiritFixture':
-          return await this.seedSpiritFixture(body.actorUserId, body.spirit)
-        case 'seedEchoFixture':
-          return await this.seedEchoFixture(body.actorUserId, body.mode)
-        case 'seedTribulationFixture':
-          return await this.seedTribulationFixture(body.actorUserId)
+        case 'seedDevelopmentScenario':
+          return await this.seedDevelopmentScenario(body.actorUserId, body.scenario)
         case 'getState':
           return await this.getState(body.actorUserId)
         case 'submitCommand':
@@ -168,7 +166,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       access: request.access ?? 'private',
       capacity,
       ruleset: 'fewfc-base',
-      enabledRuleModules: normalizeRuleModules(request.enabledRuleModules),
+      enabledRuleModules: (await callRuleModuleResolution(request.enabledRuleModules)).modules,
       players,
       members: [{
         userId: request.actorUserId,
@@ -337,7 +335,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'room has already started' }, 409)
     }
 
-    const modules = normalizeRuleModules(enabledRuleModules)
+    const modules = (await callRuleModuleResolution(enabledRuleModules)).modules
     for (const member of metadata.members) {
       await this.ctx.storage.delete(this.lockedDeckKey(member.userId))
     }
@@ -564,6 +562,24 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return this.json(await this.response(updatedMetadata, actorUserId))
   }
 
+  private async seedDevelopmentScenario(
+    actorUserId: string,
+    scenario: import('../../shared/development-scenarios').DevelopmentScenario,
+  ): Promise<Response> {
+    switch (scenario.name) {
+      case 'star-endgame':
+        return await this.seedEndgameFixture(actorUserId)
+      case 'hero-schools-transition':
+        return await this.seedHeroSchoolsFixture(actorUserId)
+      case 'spirit-skill':
+        return await this.seedSpiritFixture(actorUserId, scenario.options?.spirit)
+      case 'echo-pure-fire':
+        return await this.seedEchoFixture(actorUserId, scenario.options?.mode)
+      case 'tribulation-earth-rending':
+        return await this.seedTribulationFixture(actorUserId)
+    }
+  }
+
   private async seedEndgameFixture(actorUserId: string): Promise<Response> {
     const metadata = await this.requireMetadata()
     const actor = this.memberFor(metadata, actorUserId)
@@ -621,26 +637,40 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         ...snapshot.setup.turnOrder.filter(player => player !== actor.player),
       ],
     }
-    const deckSeed = 'hero-e2e'
+    const deckSeed = 'development:hero-schools-transition'
     let rules = await callRulesEngine({
-      action: { type: 'start' },
+      action: {
+        type: 'startDevelopmentScenario',
+        player: actor.player,
+        scenario: 'hero-schools-transition',
+      },
       viewer: actor.player,
       setup,
       deckSeed,
     })
-    const hand = rules.state.hands.find(entry => entry.player === actor.player)
-    const qualifyingWaterCard = hand?.cards.kind === 'known'
-      ? hand.cards.cards.find(card => /^水 [3-5]$/.test(card.label))
-      : undefined
-    if (!qualifyingWaterCard) {
+    const transition = await callRulesEngine({
+      action: {
+        type: 'developmentScenarioAction',
+        player: actor.player,
+        scenario: 'hero-schools-transition',
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+    const profession = transition.playableActions.find(
+      action => action.type === 'changeProfession',
+    )
+    if (!profession || profession.type !== 'changeProfession') {
       return this.json({ error: 'test fixture could not find a Mesmer transition Card' }, 500)
     }
     rules = await callRulesEngine({
       action: {
         type: 'changeProfession',
         player: actor.player,
-        professionId: 'mesmer',
-        cards: [qualifyingWaterCard.id],
+        professionId: profession.id,
+        cards: profession.cards,
       },
       viewer: actor.player,
       setup,
@@ -764,34 +794,35 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       ],
     }
 
-    let rules: RulesEngineResult | undefined
-    let deckSeed = ''
-    const elementLabel = spirit === 'Fire' ? '火' : '金'
-    const summoningFormation = spirit === 'Fire'
-      ? 'fire-spirit-summoning'
-      : 'metal-spirit-summoning'
-    let spiritCards: number[] = []
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      deckSeed = `spirit-${spirit.toLowerCase()}-e2e-${attempt}`
-      const candidate = await callRulesEngine({
-        action: { type: 'start' },
-        viewer: actor.player,
-        setup,
-        deckSeed,
-      })
-      const hand = candidate.state.hands.find(entry => entry.player === actor.player)
-      spiritCards = hand?.cards.kind === 'known'
-        ? hand.cards.cards
-            .filter(card => card.label.startsWith(`${elementLabel} `))
-            .slice(0, 2)
-            .map(card => card.id)
-        : []
-      if (spiritCards.length === 2) {
-        rules = candidate
-        break
-      }
-    }
-    if (!rules) {
+    const scenarioName = spirit === 'Fire' ? 'spirit-fire' : 'spirit-metal'
+    const deckSeed = `development:${scenarioName}`
+    let rules = await callRulesEngine({
+      action: {
+        type: 'startDevelopmentScenario',
+        player: actor.player,
+        scenario: scenarioName,
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+    })
+    const scenario = await callRulesEngine({
+      action: {
+        type: 'developmentScenarioAction',
+        player: actor.player,
+        scenario: scenarioName,
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+    const summoningAction = scenario.playableActions.find(
+      (action): action is Extract<PlayableAction, { type: 'performFormation' }> => (
+        action.type === 'performFormation'
+      ),
+    )
+    if (!summoningAction) {
       return this.json({ error: `test fixture could not find two ${spirit} Cards` }, 500)
     }
 
@@ -799,8 +830,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       action: {
         type: 'performFormation',
         player: actor.player,
-        formationId: summoningFormation,
-        cards: spiritCards,
+        formationId: summoningAction.id,
+        cards: summoningAction.cards,
       },
       viewer: actor.player,
       setup,
@@ -808,114 +839,17 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       record: rules.record,
     })
 
-    for (let guard = 0; ; guard += 1) {
-      const actorSpirit = rules.state.spirits.find(owned => owned.player === actor.player)
-      if (
-        rules.state.currentPlayer === actor.player
-        && rules.state.phase === 'Main'
-        && (spirit === 'Metal' || (actorSpirit?.power ?? 0) >= 3)
-      ) {
-        break
-      }
-      if (guard >= 80) {
-        return this.json({
-          error: 'test fixture could not prepare the requested Spirit Skill',
-          currentPlayer: rules.state.currentPlayer,
-          phase: rules.state.phase,
-          pendingChoice: rules.state.pendingChoice,
-          spirit: actorSpirit,
-        }, 500)
-      }
-      if (rules.state.pendingChoice) {
-        const choiceView = await callRulesEngine({
-          action: { type: 'refresh' },
-          viewer: rules.state.pendingChoice.player,
-          setup,
-          deckSeed,
-          record: rules.record,
-        })
-        const choice = choiceView.state.pendingChoice
-        if (choice?.kind !== 'TurnDrawDiscard' || !choice.cards[0]) {
-          return this.json({ error: 'test fixture cannot answer pending choice' }, 500)
-        }
-        const preferredDiscard = choice.player === actor.player
-          ? choice.cards.find(card => (
-              spirit === 'Fire'
-                ? card.label.startsWith(`${elementLabel} `)
-                : !card.label.startsWith(`${elementLabel} `)
-            ))
-          : undefined
-        rules = await callRulesEngine({
-          action: {
-            type: 'chooseTurnDiscard',
-            player: choice.player,
-            card: (preferredDiscard ?? choice.cards[0]).id,
-          },
-          viewer: actor.player,
-          setup,
-          deckSeed,
-          record: rules.record,
-        })
-        continue
-      }
-      if (rules.state.phase !== 'Main' || !rules.state.currentPlayer) {
-        rules = await callRulesEngine({
-          action: { type: 'advanceAutomatic' },
-          viewer: actor.player,
-          setup,
-          deckSeed,
-          record: rules.record,
-        })
-        continue
-      }
-
-      const currentPlayer = rules.state.currentPlayer
-      const currentView = await callRulesEngine({
-        action: { type: 'refresh' },
-        viewer: currentPlayer,
-        setup,
-        deckSeed,
-        record: rules.record,
-      })
-      const hand = currentView.state.hands.find(entry => entry.player === currentPlayer)
-      const firstCard = hand?.cards.kind === 'known' ? hand.cards.cards[0] : undefined
-      if (!firstCard) {
-        return this.json({ error: 'test fixture opponent has no playable Card' }, 500)
-      }
-      const candidates = await callRulesEngine({
-        action: {
-          type: 'playableActions',
-          player: currentPlayer,
-          cards: [firstCard.id],
-        },
-        viewer: currentPlayer,
-        setup,
-        deckSeed,
-        record: rules.record,
-      })
-      const formation = candidates.playableActions.find(
-        action => action.type === 'performFormation',
-      )
-      if (!formation || formation.type !== 'performFormation') {
-        return this.json({ error: 'test fixture opponent has no one-Card Formation' }, 500)
-      }
-      rules = await callRulesEngine({
-        action: {
-          type: 'performFormation',
-          player: currentPlayer,
-          formationId: formation.id,
-          cards: formation.cards,
-          starSubstitutionCard: formation.starSubstitution?.card,
-          matchOptionRole: formation.matchOption?.role,
-          matchOptionCard: formation.matchOption?.card,
-          matchOptionSlots: formation.matchOption?.slots,
-        },
-        viewer: actor.player,
-        setup,
-        deckSeed,
-        record: rules.record,
-      })
-    }
+    rules = await callRulesEngine({
+      action: {
+        type: 'prepareDevelopmentScenario',
+        player: actor.player,
+        scenario: scenarioName,
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
 
     await this.ctx.storage.put('snapshot', {
       ...snapshot,
@@ -955,44 +889,34 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       ],
     }
 
-    let rules: RulesEngineResult | undefined
-    let deckSeed = ''
-    let pureFire: Extract<PlayableAction, { type: 'performFormation' }> | undefined
-    for (let attempt = 0; attempt < 300 && !pureFire; attempt += 1) {
-      deckSeed = `echo-pure-fire-e2e-${attempt}`
-      const candidate = await callRulesEngine({
-        action: { type: 'start' },
-        viewer: actor.player,
-        setup,
-        deckSeed,
-      })
-      const hand = candidate.state.hands.find(entry => entry.player === actor.player)
-      const cards = hand?.cards.kind === 'known' ? hand.cards.cards : []
-      for (let left = 0; left < cards.length && !pureFire; left += 1) {
-        for (let right = left + 1; right < cards.length && !pureFire; right += 1) {
-          const actions = await callRulesEngine({
-            action: {
-              type: 'playableActions',
-              player: actor.player,
-              cards: [cards[left]!.id, cards[right]!.id],
-            },
-            viewer: actor.player,
-            setup,
-            deckSeed,
-            record: candidate.record,
-          })
-          pureFire = actions.playableActions.find(
-            (action): action is Extract<PlayableAction, { type: 'performFormation' }> => (
-              action.type === 'performFormation' && action.id === 'echo:pure-fire'
-            ),
-          )
-          if (pureFire) {
-            rules = candidate
-          }
-        }
-      }
-    }
-    if (!rules || !pureFire) {
+    const deckSeed = 'development:echo-pure-fire'
+    let rules = await callRulesEngine({
+      action: {
+        type: 'startDevelopmentScenario',
+        player: actor.player,
+        scenario: 'echo-pure-fire',
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+    })
+    const actions = await callRulesEngine({
+      action: {
+        type: 'developmentScenarioAction',
+        player: actor.player,
+        scenario: 'echo-pure-fire',
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+    const pureFire = actions.playableActions.find(
+      (action): action is Extract<PlayableAction, { type: 'performFormation' }> => (
+        action.type === 'performFormation'
+      ),
+    )
+    if (!pureFire) {
       return this.json({ error: 'test fixture could not find Pure Fire Cards' }, 500)
     }
 
@@ -1026,7 +950,6 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     })
     if (
       rules.state.pendingChoice?.kind !== 'TypedEffect'
-      || rules.state.pendingChoice.purpose !== 'echo:pure-fire'
     ) {
       return this.json({ error: 'test fixture did not reach Pure Fire target choice' }, 500)
     }
@@ -1065,65 +988,34 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         ...snapshot.setup.turnOrder.filter(player => player !== actor.player),
       ],
     }
-    const combinations = <T>(values: T[], size: number): T[][] => {
-      if (size === 0) return [[]]
-      return values.flatMap((value, index) => (
-        combinations(values.slice(index + 1), size - 1)
-          .map(rest => [value, ...rest])
-      ))
-    }
-
-    let rules: RulesEngineResult | undefined
-    let deckSeed = ''
-    let earthRending: Extract<PlayableAction, { type: 'performFormation' }> | undefined
-    for (let attempt = 0; attempt < 500 && !earthRending; attempt += 1) {
-      deckSeed = `tribulation-earth-rending-e2e-${attempt}`
-      const candidate = await callRulesEngine({
-        action: { type: 'start' },
-        viewer: actor.player,
-        setup,
-        deckSeed,
-      })
-      const hand = candidate.state.hands.find(entry => entry.player === actor.player)
-      const cards = hand?.cards.kind === 'known' ? hand.cards.cards : []
-      const selected = [
-        ...combinations(cards, 4),
-        ...combinations(cards, 5),
-      ].find((combination) => {
-        const earth = combination.filter(card => card.label.startsWith('土 '))
-        const wood = combination.filter(card => card.label.startsWith('木 '))
-        const levelSum = (selectedCards: typeof combination) => selectedCards
-          .reduce((sum, card) => sum + Number(card.label.match(/\d+$/)?.[0] ?? 0), 0)
-        return earth.length + wood.length === combination.length
-          && earth.length > 0
-          && wood.length > 0
-          && levelSum(earth) >= 7
-          && levelSum(wood) >= 7
-      })
-      if (selected) {
-        const actions = await callRulesEngine({
-          action: {
-            type: 'playableActions',
-            player: actor.player,
-            cards: selected.map(card => card.id),
-          },
-          viewer: actor.player,
-          setup,
-          deckSeed,
-          record: candidate.record,
-        })
-        earthRending = actions.playableActions.find(
-          (action): action is Extract<PlayableAction, { type: 'performFormation' }> => (
-            action.type === 'performFormation'
-            && action.id === 'tribulation:earth-rending'
-          ),
-        )
-        if (earthRending) {
-          rules = candidate
-        }
-      }
-    }
-    if (!rules || !earthRending) {
+    const deckSeed = 'development:tribulation-earth-rending'
+    let rules = await callRulesEngine({
+      action: {
+        type: 'startDevelopmentScenario',
+        player: actor.player,
+        scenario: 'tribulation-earth-rending',
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+    })
+    const actions = await callRulesEngine({
+      action: {
+        type: 'developmentScenarioAction',
+        player: actor.player,
+        scenario: 'tribulation-earth-rending',
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+    const earthRending = actions.playableActions.find(
+      (action): action is Extract<PlayableAction, { type: 'performFormation' }> => (
+        action.type === 'performFormation'
+      ),
+    )
+    if (!earthRending) {
       return this.json({ error: 'test fixture could not find Earth Rending Cards' }, 500)
     }
 
@@ -1141,7 +1033,6 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     })
     if (
       rules.state.pendingChoice?.kind !== 'TypedEffect'
-      || rules.state.pendingChoice.purpose !== 'tribulation:earth-rending'
       || rules.state.pendingChoice.environments.length !== 5
     ) {
       return this.json({ error: 'test fixture did not reach Environment choice' }, 500)
@@ -1708,18 +1599,19 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     viewer: string,
     snapshot: GameRoomSnapshot,
   ): Promise<OnlineGameAction> {
-    if (
-      (action.type === 'performFormation' && action.formationId === 'dark:dark-chaos')
-      || (action.type === 'useSpiritSkill' && action.skill === 'EvilGaze')
-    ) {
-      const candidates = await this.callRules({
-        type: 'trustedRandomHandCandidates',
-        player: action.player,
-      }, viewer, snapshot)
+    if (!('player' in action)) return action
+
+    const candidates = await this.callRules({
+      type: 'trustedRandomHandCandidates',
+      player: action.player,
+      candidateAction: action,
+    }, viewer, snapshot)
+    if (candidates.trustedRandomCandidates) {
       return {
         ...action,
-        trustedRandomCards: this.shuffle(candidates.trustedRandomCandidates ?? []).slice(0, 2),
-      }
+        trustedRandomCards: this.shuffle(candidates.trustedRandomCandidates)
+          .slice(0, candidates.trustedRandomCandidateCount ?? 0),
+      } as OnlineGameAction
     }
 
     return action

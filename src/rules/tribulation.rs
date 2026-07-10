@@ -2,12 +2,14 @@ use crate::domain::{
     CardInstanceId, CardMoveDelta, CardOrigin, CardZone, EarthRendingPlayerAnswer,
     EarthRendingResolution, EffectChoiceAnswer, EffectChoiceOptions, Element, GameError, GameEvent,
     GameResult, GameState, HpChangeDelta, PendingChoiceKind, PendingRandomness, PlayerId,
-    RandomnessDeck, RustedForestResolution, StatusDuration, StatusEffect, StatusOwner, TeamId,
-    ValidationError, targeting::TurnOrderTargets,
+    RandomnessContinuation, RandomnessDeck, RustedForestResolution, StatusDuration, StatusEffect,
+    StatusOwner, TeamId, TribulationRandomnessContinuation, ValidationError,
+    targeting::TurnOrderTargets,
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget, EffectDef, EffectPlan,
     FormationCategory, FormationDef, FormationPattern, PointFormula, SpellPlanDef,
+    SubmittedCardFacts,
 };
 
 pub(crate) const THUNDER_FIRE: &str = "tribulation:thunder-fire";
@@ -16,6 +18,24 @@ pub(crate) const MUDSLIDE_TORRENT: &str = "tribulation:mudslide-torrent";
 pub(crate) const EARTH_RENDING: &str = "tribulation:earth-rending";
 pub(crate) const RUSTED_FOREST: &str = "tribulation:rusted-forest";
 pub(crate) const DIVINE_CALCULATION: &str = "tribulation:divine-calculation";
+
+pub(crate) fn matches_elements(
+    submitted: &[SubmittedCardFacts],
+    first: Element,
+    second: Element,
+) -> bool {
+    submitted.len() >= 4
+        && submitted
+            .iter()
+            .all(|card| card.element == first || card.element == second)
+        && [first, second].into_iter().all(|element| {
+            let cards = submitted
+                .iter()
+                .filter(|card| card.element == element)
+                .collect::<Vec<_>>();
+            !cards.is_empty() && cards.into_iter().map(|card| card.level).sum::<u32>() >= 7
+        })
+}
 
 pub(crate) fn formation_specs() -> Vec<BaseFormationSpec> {
     vec![
@@ -565,13 +585,9 @@ pub(crate) fn rusted_forest_start_events(
     Ok(events)
 }
 
-pub(crate) fn after_randomness_events(
+pub(crate) fn after_rusted_forest_randomness_events(
     state: &GameState,
-    continuation_id: &str,
 ) -> GameResult<Vec<GameEvent>> {
-    if continuation_id != "tribulation:rusted-forest:shuffle" {
-        return Ok(Vec::new());
-    }
     let deck = state
         .active_rusted_forest_resolution
         .as_ref()
@@ -661,7 +677,9 @@ fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
                         }
                     ),
                     deck: deck_kind,
-                    continuation_id: "tribulation:rusted-forest:shuffle".to_string(),
+                    continuation: RandomnessContinuation::Tribulation(
+                        TribulationRandomnessContinuation::RustedForestShuffle,
+                    ),
                     current_order,
                 },
             });

@@ -19,6 +19,7 @@ import type {
 import {
   togglePendingChoiceSelection,
 } from '~/lib/pending-choice-selection'
+import { reconcileActionDraft, toggleActionDraftCard } from '~/lib/action-draft'
 
 type ViewerRef = Ref<ViewerId>
 
@@ -88,12 +89,13 @@ export function useGameRoom(viewer: ViewerRef) {
   ))
   const errorMessage = ref<string | null>(null)
   const isLoading = ref(false)
-  const interaction = ref({
+  const interaction = ref<GameRoomResponse['interaction']>({
     canPass: false,
     hasOptionalEffect: false,
     canRetrieveDiscard: false,
     canChooseInitialPouch: false,
     canTriggerPouch: false,
+    secretStrategyActions: [],
   })
   const connectionState = ref<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle')
   const roomDissolved = ref(false)
@@ -170,12 +172,21 @@ export function useGameRoom(viewer: ViewerRef) {
         isLoading.value = false
       }
     }
-    const previousChoiceKey = pendingChoiceKey(state.value.pendingChoice)
+    const previousState = state.value
+    const previousChoiceKey = pendingChoiceKey(previousState.pendingChoice)
     metadata.value = response.metadata
     invitation.value = response.invitation ?? null
     lockedDeckName.value = response.lockedDeckName ?? null
     onlineGameId.value = response.gameId
     state.value = response.state
+    const reconciledDraft = reconcileActionDraft(
+      selectedCards.value,
+      previousState,
+      response.state,
+    )
+    if (reconciledDraft.length !== selectedCards.value.length) {
+      selectedCards.value = reconciledDraft
+    }
     publicEvents.value = response.events
     if (!preservePlayableActions) {
       playableActions.value = response.playableActions
@@ -563,9 +574,7 @@ export function useGameRoom(viewer: ViewerRef) {
       return
     }
 
-    selectedCards.value = selectedCards.value.includes(card)
-      ? selectedCards.value.filter((selected) => selected !== card)
-      : [...selectedCards.value, card]
+    selectedCards.value = toggleActionDraftCard(selectedCards.value, card)
   }
 
   async function performPlayableAction(

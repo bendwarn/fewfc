@@ -564,6 +564,17 @@ fn requirement_matches(profession: &ProfessionDef, facts: &[SubmittedCardFacts])
         && facts.iter().map(|card| card.level).sum::<u32>() >= profession.minimum_level_sum
 }
 
+pub(crate) fn matches_initial_profession(
+    profession_id: &str,
+    facts: &[SubmittedCardFacts],
+) -> bool {
+    catalog().into_iter().any(|profession| {
+        profession.id.as_str() == profession_id
+            && profession.prerequisite.is_none()
+            && requirement_matches(&profession, facts)
+    })
+}
+
 fn profession_change_matches(
     state: &GameState,
     player: &PlayerId,

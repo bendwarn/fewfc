@@ -2,8 +2,10 @@ import { drizzle } from 'drizzle-orm/d1'
 import { eq } from 'drizzle-orm'
 import { createError, type H3Event } from 'h3'
 import type { PlayerDeckList } from '../../shared/game-room'
+import type { PersonalDeckResolution } from '../../app/types/fewfc'
 import { schema } from '../database/schema'
 import { workerEnv } from './worker-env'
+import { rulesEngine } from './rules-engine'
 
 interface PlayerDeckStatement {
   run(): Promise<unknown>
@@ -36,51 +38,28 @@ async function ensurePlayerDeckTable(event: H3Event) {
     .run()
 }
 
-const elements = ['metal', 'wood', 'water', 'fire', 'earth']
-const levels = [1, 2, 3, 4, 5]
-
-export function preconstructedDeck(): PlayerDeckList {
-  const copies = [3, 2, 3, 2, 2]
+function validationPresentation(validation: PersonalDeckResolution['effectiveValidation']) {
   return {
-    name: '五行均衡預組',
-    cards: elements.flatMap(element => levels.flatMap(
-      (level, index) => Array.from({ length: copies[index] ?? 0 }, () => `${element}-${level}`),
-    )),
+    valid: validation.valid,
+    cardCount: validation.cardCount,
+    levelTotal: validation.levelTotal,
+    errors: validation.issues.map(issue => issue.code),
   }
 }
 
-export function validateDeck(deck: PlayerDeckList) {
-  const errors: string[] = []
-  const counts = new Map<string, number>()
-  let levelTotal = 0
-  for (const card of deck.cards) {
-    const match = /^(metal|wood|water|fire|earth)-([1-5])$/.exec(card)
-    if (!match) {
-      errors.push(`未知卡牌：${card}`)
-      continue
-    }
-    const level = Number(match[2])
-    levelTotal += level
-    counts.set(card, (counts.get(card) ?? 0) + 1)
-  }
-  if (deck.cards.length !== 60) errors.push(`牌組必須正好 60 張，目前為 ${deck.cards.length} 張`)
-  if (levelTotal > 170) errors.push(`等級總和不得超過 170，目前為 ${levelTotal}`)
-  for (const [card, count] of counts) {
-    const maximum = Number(card.at(-1)) <= 3 ? 4 : 3
-    if (count > maximum) errors.push(`${card} 最多 ${maximum} 張，目前為 ${count} 張`)
-  }
+export async function resolveDeck(
+  userId: string,
+  candidate?: PlayerDeckList,
+) {
+  const resolved = await rulesEngine().resolvePersonalDeck(userId, candidate)
   return {
-    valid: errors.length === 0,
-    cardCount: deck.cards.length,
-    levelTotal,
-    errors,
+    deck: {
+      name: resolved.effective.name,
+      cards: resolved.effective.cards,
+    },
+    source: resolved.source,
+    validation: validationPresentation(resolved.effectiveValidation),
   }
-}
-
-export function effectiveDeck(deck: PlayerDeckList | undefined) {
-  return deck && validateDeck(deck).valid
-    ? { deck, source: 'custom' as const }
-    : { deck: preconstructedDeck(), source: 'preconstructed' as const }
 }
 
 export async function customDeckForUser(
@@ -108,7 +87,7 @@ export async function customDeckForUser(
 }
 
 export async function effectiveDeckForUser(event: H3Event, userId: string) {
-  return effectiveDeck(await customDeckForUser(event, userId))
+  return await resolveDeck(userId, await customDeckForUser(event, userId))
 }
 
 export async function saveCustomDeck(
@@ -116,11 +95,12 @@ export async function saveCustomDeck(
   userId: string,
   deck: PlayerDeckList,
 ) {
-  const validation = validateDeck(deck)
-  if (!validation.valid) {
+  const resolved = await rulesEngine().resolvePersonalDeck(userId, deck)
+  if (!resolved.candidateValidation?.valid) {
     throw createError({
       statusCode: 400,
-      statusMessage: validation.errors.join('；'),
+      statusMessage: resolved.candidateValidation?.issues.map(issue => issue.code).join('；')
+        || 'Invalid deck list.',
     })
   }
 

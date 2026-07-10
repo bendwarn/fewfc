@@ -3,13 +3,14 @@ use fewfc::application::{
 };
 use fewfc::domain::{
     CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, Command, CounterEffect, CoveredPassive,
-    DARK_GLIMMER_MODULE_ID, ECHO_MODULE_ID, EffectChoiceAnswer, Element,
-    FIVE_DIRECTIONS_LEGEND_MODULE_ID, FormationSuppression, GameError, GameEvent, GameSetup,
-    GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind,
-    PERSONAL_DECK_MODULE_ID, PassiveFlipOutcome, PassiveNoEffectReason, PassiveTriggerTiming,
-    Phase, PlayerId, PreparedProfessionAbility, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID,
-    ScheduledEcho, StarKind, StatusDuration, StatusEffect, StatusOwner, TeamId, TeamStar,
-    TimedEffectReduction, TrustedRandomnessAnswer, ValidationError,
+    DARK_GLIMMER_MODULE_ID, ECHO_MODULE_ID, EchoRandomnessContinuation, EffectChoiceAnswer,
+    Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, FormationSuppression, GameError, GameEvent,
+    GameSetup, GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState,
+    JianghuStateKind, PERSONAL_DECK_MODULE_ID, PassiveFlipOutcome, PassiveNoEffectReason,
+    PassiveTriggerTiming, Phase, PlayerId, PreparedProfessionAbility, RandomnessContinuation,
+    RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, ScheduledEcho, StarKind, StatusDuration,
+    StatusEffect, StatusOwner, TeamId, TeamStar, TimedEffectReduction, TrustedRandomnessAnswer,
+    ValidationError,
 };
 use fewfc::public_view::{PublicPendingChoiceKind, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -518,8 +519,8 @@ fn ringing_metal_empty_deck_recycles_before_an_independent_post_search_shuffle()
     apply_all(&mut state, &selected);
     let post_search = state.pending_randomness.as_ref().unwrap();
     assert_eq!(
-        post_search.continuation_id,
-        "echo:ringing-metal:post-search"
+        post_search.continuation,
+        RandomnessContinuation::Echo(EchoRandomnessContinuation::RingingMetalPostSearch)
     );
     assert_eq!(post_search.current_order, vec![card(3)]);
 }

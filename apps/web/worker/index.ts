@@ -1,6 +1,11 @@
 import nuxtWorker from '../.output/server/index.mjs'
 import { GameRoom } from './durable-objects/game-room'
 import { PlayerNotifications } from './durable-objects/player-notifications'
+import {
+  callPersonalDeckResolution,
+  callRuleModuleResolution,
+  callRulesCatalog,
+} from './rules-engine'
 
 interface WorkerEnv {
   GAME_ROOM: DurableObjectNamespace
@@ -105,10 +110,21 @@ export default {
       )
     }
 
+    globalThis.__fewfcRulesEngine__ = {
+      catalog: callRulesCatalog,
+      resolvePersonalDeck: callPersonalDeckResolution,
+      resolveRuleModules: callRuleModuleResolution,
+    }
+
     const socket = await websocketResponse(request, env, context, new URL(request.url))
 
     if (socket) {
       return socket
+    }
+
+    const url = new URL(request.url)
+    if (request.method === 'GET' && url.pathname === '/api/rules/catalog') {
+      return Response.json(await callRulesCatalog())
     }
 
     return await nuxtWorker.fetch(request, env, context)

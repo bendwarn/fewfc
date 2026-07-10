@@ -1,17 +1,14 @@
-import { expect, test, type Page } from '@playwright/test'
-
-async function loginAsGuest(page: Page) {
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
-}
-
-async function createPublicRoom(host: Page, roomName: string) {
-  await host.getByRole('button', { name: '建立房間', exact: true }).click()
-  await host.getByLabel('房間名稱').fill(roomName)
-  await host.getByRole('button', { name: '公開房間', exact: true }).click()
-  await host.getByRole('button', { name: '建立房間 →' }).click()
-}
+import type { Page } from '@playwright/test'
+import {
+  createPublicRoom,
+  createRoom,
+  expect,
+  joinListedRoom,
+  loginAsGuests,
+  seedDevelopmentScenario,
+  startTwoPlayerMatch,
+  test,
+} from './fixtures'
 
 async function waitForPlayableActions(page: Page) {
   return page.waitForResponse(response => (
@@ -24,11 +21,7 @@ async function waitForPlayableActions(page: Page) {
 
 test('Echo defaults on and normalizes every Advanced Rule dependency', async ({ page }) => {
   test.setTimeout(180_000)
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await page.getByRole('button', { name: '建立房間', exact: true }).click()
-  await page.getByLabel('房間名稱').fill(`迴響測試 ${Date.now()}`)
-  await page.getByRole('button', { name: '建立房間 →' }).click()
+  await createRoom(page, `迴響測試 ${Date.now()}`)
 
   await expect(page.getByLabel('主題規則‧迴響')).toBeChecked()
 
@@ -49,23 +42,10 @@ test('Pure Fire target choice is private, accessible, and reconnectable', async 
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([loginAsGuest(host), loginAsGuest(guest)])
+    await loginAsGuests([host, guest])
     const roomName = `淨火選擇測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-    await guest.locator('.public-room-list button').filter({ hasText: roomName }).click()
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    await host.getByRole('button', { name: '開始遊戲 →' }).click()
-    await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
-
-    const roomId = new URL(host.url()).pathname.split('/').pop()
-    const seeded = await host.evaluate(async (id) => {
-      const response = await fetch(`/api/games/${id}/test-echo`, { method: 'POST' })
-      return {
-        ok: response.ok,
-        body: await response.text(),
-      }
-    }, roomId)
-    expect(seeded, seeded.body).toMatchObject({ ok: true })
+    const roomId = await startTwoPlayerMatch(host, guest, roomName)
+    await seedDevelopmentScenario(host, { name: 'echo-pure-fire' })
 
     await host.reload()
     await expect(host.getByRole('heading', { name: '淨火：選擇玩家' })).toBeVisible()
@@ -100,33 +80,19 @@ test('Echo action detail shows the delayed Echo policy on the battlefield', asyn
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([loginAsGuest(page), loginAsGuest(guest)])
+    await loginAsGuests([page, guest])
     const roomName = `迴響行動詳情 ${Date.now()}`
-    await createPublicRoom(page, roomName)
-    await guest.locator('.public-room-list button').filter({ hasText: roomName }).click()
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    await page.getByRole('button', { name: '開始遊戲 →' }).click()
-    await expect(page.getByRole('region', { name: '啟用規則' })).toBeVisible()
-
-    const roomId = new URL(page.url()).pathname.split('/').pop()
-    const seeded = await page.evaluate(async (id) => {
-      const response = await fetch(`/api/games/${id}/test-echo`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode: 'actionDetail' }),
-      })
-      return {
-        ok: response.ok,
-        body: await response.json() as { fixtureCards?: number[], error?: string },
-      }
-    }, roomId)
-    expect(seeded.ok, JSON.stringify(seeded.body)).toBe(true)
-    expect(seeded.body.fixtureCards?.length).toBe(2)
+    const roomId = await startTwoPlayerMatch(page, guest, roomName)
+    const seeded = await seedDevelopmentScenario<{ fixtureCards?: number[] }>(page, {
+      name: 'echo-pure-fire',
+      options: { mode: 'actionDetail' },
+    })
+    expect(seeded.fixtureCards?.length).toBe(2)
 
     await page.reload()
     await expect(page.getByRole('region', { name: '啟用規則' })).toBeVisible()
 
-    for (const cardId of seeded.body.fixtureCards ?? []) {
+    for (const cardId of seeded.fixtureCards ?? []) {
       const response = waitForPlayableActions(page)
       await page.locator(`[data-card-id="${cardId}"]`).click()
       await response

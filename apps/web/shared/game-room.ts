@@ -9,12 +9,7 @@ import type {
   SecretStrategy,
   StarKind,
 } from '../app/types/fewfc'
-export {
-  AVAILABLE_RULE_MODULES,
-  DEFAULT_RULE_MODULES,
-  normalizeRuleModules,
-} from './utils/rule-modules'
-import { normalizeRuleModules } from './utils/rule-modules'
+import type { DevelopmentScenario } from './development-scenarios'
 export interface PlayerDeckList {
   name: string
   cards: string[]
@@ -329,26 +324,9 @@ export type GameRoomRequest =
       actorUserId: string
     }
   | {
-      type: 'seedEndgameFixture'
+      type: 'seedDevelopmentScenario'
       actorUserId: string
-    }
-  | {
-      type: 'seedHeroSchoolsFixture'
-      actorUserId: string
-    }
-  | {
-      type: 'seedSpiritFixture'
-      actorUserId: string
-      spirit?: 'Metal' | 'Fire'
-    }
-  | {
-      type: 'seedEchoFixture'
-      actorUserId: string
-      mode?: 'actionDetail'
-    }
-  | {
-      type: 'seedTribulationFixture'
-      actorUserId: string
+      scenario: DevelopmentScenario
     }
   | {
       type: 'getState'

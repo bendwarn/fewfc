@@ -1,15 +1,17 @@
-import { expect, test, type Page } from '@playwright/test'
+import { type Page } from '@playwright/test'
+import {
+  createPublicRoom,
+  createRoom,
+  expect,
+  joinListedRoom,
+  loginAsGuests,
+  test,
+} from './fixtures'
 
 const discardDialog = (page: Page) => page.getByRole('dialog', { name: '棄牌內容' })
 const discardTrigger = (page: Page, count: number) => page.getByRole('button', {
   name: `查看棄牌內容，共 ${count} 張`,
 })
-
-async function loginAsGuest(page: Page) {
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
-}
 
 async function activePlayerPage(pages: Page[]) {
   await expect.poll(async () => {
@@ -90,12 +92,7 @@ async function expectStableComposition(page: Page, total: number) {
 }
 
 test('an empty discard pile reports zero cards and cannot be opened', async ({ page }) => {
-  await loginAsGuest(page)
-
-  await page.getByRole('button', { name: '建立房間', exact: true }).click()
-  await expect(page.getByRole('dialog', { name: '建立房間' })).toBeVisible()
-  await page.getByLabel('房間名稱').fill(`棄牌測試 ${Date.now()}`)
-  await page.getByRole('button', { name: '建立房間 →' }).click()
+  await createRoom(page, `棄牌測試 ${Date.now()}`)
   await expect(page).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
   await page.getByLabel('個人牌組').uncheck()
 
@@ -115,22 +112,16 @@ test('players can inspect a synchronized discard composition throughout a match'
   const pages = [host, guest]
 
   try {
-    await Promise.all(pages.map(loginAsGuest))
+    await loginAsGuests(pages)
 
     const roomName = `同步棄牌測試 ${Date.now()}`
-    await host.getByRole('button', { name: '建立房間', exact: true }).click()
-    await expect(host.getByRole('dialog', { name: '建立房間' })).toBeVisible()
-    await host.getByLabel('房間名稱').fill(roomName)
-    await host.getByRole('button', { name: '公開房間', exact: true }).click()
-    await host.getByRole('button', { name: '建立房間 →' }).click()
+    await createPublicRoom(host, roomName)
     await expect(host).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
     await expect(host.getByLabel('進階規則‧星辰圖記')).toBeChecked()
     await host.getByLabel('進階規則‧五方傳說').uncheck()
     await host.getByLabel('個人牌組').uncheck()
 
-    const listedRoom = guest.locator('.public-room-list button').filter({ hasText: roomName })
-    await expect(listedRoom).toBeVisible()
-    await listedRoom.click()
+    await joinListedRoom(guest, roomName)
     await expect(guest).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
     expect(new URL(host.url()).pathname).toBe(new URL(guest.url()).pathname)
 

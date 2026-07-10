@@ -483,6 +483,10 @@ fn skill_definition(skill: SpiritSkill) -> SkillDefinition {
     }
 }
 
+pub(crate) fn skill_cost(skill: SpiritSkill) -> u32 {
+    skill_definition(skill).cost
+}
+
 fn skills_for(spirit: SpiritKind) -> Vec<SpiritSkill> {
     match spirit {
         SpiritKind::Metal => vec![SpiritSkill::FlyingBlade, SpiritSkill::SwordRain],

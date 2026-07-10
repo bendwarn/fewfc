@@ -1,10 +1,11 @@
-import { expect, test, type Page } from '@playwright/test'
-
-async function loginAsGuest(page: Page) {
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
-}
+import {
+  createPublicRoom,
+  expect,
+  joinListedRoom,
+  loginAsGuests,
+  seedDevelopmentScenario,
+  test,
+} from './fixtures'
 
 test('a Profession change and activated ability survive public reconnect', async ({ browser }) => {
   test.setTimeout(180_000)
@@ -15,34 +16,21 @@ test('a Profession change and activated ability survive public reconnect', async
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([host, guest].map(loginAsGuest))
+    await loginAsGuests([host, guest])
     const roomName = `英雄學派測試 ${Date.now()}`
-    await host.getByRole('button', { name: '建立房間', exact: true }).click()
-    await host.getByLabel('房間名稱').fill(roomName)
-    await host.getByRole('button', { name: '公開房間', exact: true }).click()
-    await host.getByRole('button', { name: '建立房間 →' }).click()
+    await createPublicRoom(host, roomName)
     await host.getByLabel('進階規則‧星辰圖記').uncheck()
     await host.getByLabel('進階規則‧五方傳說').uncheck()
     await host.getByLabel('棄牌回收').uncheck()
     await host.getByLabel('個人牌組').uncheck()
 
-    const listedRoom = guest.locator('.public-room-list button').filter({ hasText: roomName })
-    await expect(listedRoom).toBeVisible()
-    await listedRoom.click()
+    await joinListedRoom(guest, roomName)
     await guest.getByRole('button', { name: '準備 →' }).click()
     await host.getByRole('button', { name: '開始遊戲 →' }).click()
     await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
 
     const roomId = new URL(host.url()).pathname.split('/').pop()
-    const seeded = await host.evaluate(async (id) => {
-      const response = await fetch(`/api/games/${id}/test-hero-schools`, { method: 'POST' })
-      return {
-        ok: response.ok,
-        status: response.status,
-        body: await response.text(),
-      }
-    }, roomId)
-    expect(seeded, seeded.body).toMatchObject({ ok: true })
+    await seedDevelopmentScenario(host, { name: 'hero-schools-transition' })
 
     await expect(host.locator('.profession-badge')).toContainText('幻術師')
     await expect(guest.locator('.profession-badge')).toContainText('幻術師')

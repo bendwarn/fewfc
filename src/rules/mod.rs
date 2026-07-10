@@ -1,5 +1,6 @@
 //! Rule registries: formations, effects, matchers, and formula resolvers.
 
+pub(crate) mod action_detail;
 pub(crate) mod base;
 pub(crate) mod confluence;
 pub(crate) mod dark;
@@ -10,12 +11,18 @@ mod official;
 pub(crate) mod pouch;
 pub(crate) mod profession;
 pub(crate) mod projection;
+pub(crate) mod randomness;
 pub(crate) mod spirit;
 pub(crate) mod star;
 pub(crate) mod timed_effect;
 pub(crate) mod tribulation;
 
-pub use official::OfficialRules;
+pub use base::deck_composition::{
+    DeckCompositionCardDefinition, DeckCompositionCatalog, DeckListIssue, DeckListSource,
+    DeckListTemplate, DeckListValidation, PersonalDeckComposition, ResolvedPersonalDeck,
+    SharedDeckComposition,
+};
+pub use official::{OfficialRuleModuleCategory, OfficialRuleModuleSpec, OfficialRules};
 
 pub use crate::domain::Element;
 use std::collections::HashMap;
@@ -63,6 +70,7 @@ pub struct FormationCandidate {
     pub formation_id: String,
     pub formation_name: String,
     pub rule_text: String,
+    pub summary: String,
     pub category: FormationCategory,
     pub cards: Vec<crate::domain::CardInstanceId>,
     pub star_substitution: Option<crate::domain::StarElementSubstitution>,
@@ -427,12 +435,7 @@ pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
             };
             submitted.len() == 3 && submitted.iter().all(|card| card.level == first_card.level)
         })
-        .with_custom("echo:pure-fire", |submitted| {
-            submitted.len() == 2
-                && submitted.iter().any(|card| card.element == Element::Fire)
-                && submitted.iter().any(|card| card.element == Element::Water)
-                && submitted.iter().map(|card| card.level).sum::<u32>() >= 7
-        })
+        .with_custom("echo:pure-fire", echo::matches_pure_fire)
         .with_custom("echo:plant-earth", |submitted| {
             submitted.len() == 2
                 && submitted.iter().any(|card| card.element == Element::Earth)
@@ -440,19 +443,19 @@ pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
                 && submitted.iter().map(|card| card.level).sum::<u32>() >= 7
         })
         .with_custom("tribulation:thunder-fire", |submitted| {
-            matches_tribulation(submitted, Element::Metal, Element::Fire)
+            tribulation::matches_elements(submitted, Element::Metal, Element::Fire)
         })
         .with_custom("tribulation:gale-rain", |submitted| {
-            matches_tribulation(submitted, Element::Fire, Element::Water)
+            tribulation::matches_elements(submitted, Element::Fire, Element::Water)
         })
         .with_custom("tribulation:mudslide-torrent", |submitted| {
-            matches_tribulation(submitted, Element::Water, Element::Earth)
+            tribulation::matches_elements(submitted, Element::Water, Element::Earth)
         })
         .with_custom("tribulation:earth-rending", |submitted| {
-            matches_tribulation(submitted, Element::Earth, Element::Wood)
+            tribulation::matches_elements(submitted, Element::Earth, Element::Wood)
         })
         .with_custom("tribulation:rusted-forest", |submitted| {
-            matches_tribulation(submitted, Element::Wood, Element::Metal)
+            tribulation::matches_elements(submitted, Element::Wood, Element::Metal)
         })
         .with_custom("tribulation:divine-calculation", |submitted| {
             submitted.len() == 1 && submitted[0].level >= 4
@@ -594,20 +597,6 @@ pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
         })
         .with_custom("three-water", |submitted| {
             submitted.len() == 3 && submitted.iter().all(|card| card.element == Element::Water)
-        })
-}
-
-fn matches_tribulation(submitted: &[SubmittedCardFacts], first: Element, second: Element) -> bool {
-    submitted.len() >= 4
-        && submitted
-            .iter()
-            .all(|card| card.element == first || card.element == second)
-        && [first, second].into_iter().all(|element| {
-            let cards = submitted
-                .iter()
-                .filter(|card| card.element == element)
-                .collect::<Vec<_>>();
-            !cards.is_empty() && cards.into_iter().map(|card| card.level).sum::<u32>() >= 7
         })
 }
 

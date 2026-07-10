@@ -19,10 +19,17 @@ export interface DiscardCompositionRow {
 
 export function buildDiscardComposition(cards: PublicCard[]): DiscardCompositionRow[] {
   const counts = new Map<string, number>()
+  const elementLabels: Record<string, DiscardElement> = {
+    Metal: '金',
+    Wood: '木',
+    Water: '水',
+    Fire: '火',
+    Earth: '土',
+  }
 
   for (const card of cards) {
-    const element = DISCARD_ELEMENTS.find(candidate => card.label.includes(candidate))
-    const level = Number(card.label.match(/\d+/)?.[0])
+    const element = card.element ? elementLabels[card.element] : undefined
+    const level = card.level
 
     if (!element || !DISCARD_LEVELS.includes(level as DiscardLevel)) {
       continue

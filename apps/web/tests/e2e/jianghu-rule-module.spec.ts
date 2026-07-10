@@ -1,18 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
-
-async function loginAsGuest(page: Page) {
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
-}
-
-async function createPublicRoom(host: Page, roomName: string) {
-  await host.getByRole('button', { name: '建立房間', exact: true }).click()
-  await host.getByLabel('房間名稱').fill(roomName)
-  await host.getByRole('button', { name: '公開房間', exact: true }).click()
-  await host.getByRole('button', { name: '建立房間 →' }).click()
-  await expect(host).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
-}
+import { createPublicRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
 
 test('Jianghu defaults on, preserves dependencies, and survives reconnect', async ({ browser }) => {
   test.setTimeout(180_000)
@@ -23,7 +9,7 @@ test('Jianghu defaults on, preserves dependencies, and survives reconnect', asyn
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([loginAsGuest(host), loginAsGuest(guest)])
+    await loginAsGuests([host, guest])
     const roomName = `江湖規則測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
 
@@ -32,8 +18,7 @@ test('Jianghu defaults on, preserves dependencies, and survives reconnect', asyn
     await expect(host.getByLabel('進階規則‧英雄學派')).toBeChecked()
     await expect(host.getByLabel('進階規則‧五方傳說')).toBeChecked()
 
-    const room = guest.locator('.public-room-list button').filter({ hasText: roomName })
-    await room.click()
+    await joinListedRoom(guest, roomName)
     await guest.getByRole('button', { name: '準備 →' }).click()
 
     await host.getByLabel('進階規則‧英雄學派').uncheck()

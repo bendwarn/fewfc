@@ -1,24 +1,17 @@
-import { expect, test, type Page } from '@playwright/test'
-
-async function loginAsGuest(page: Page) {
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
-}
-
-async function createPublicRoom(host: Page, roomName: string) {
-  await host.getByRole('button', { name: '建立房間', exact: true }).click()
-  await host.getByLabel('房間名稱').fill(roomName)
-  await host.getByRole('button', { name: '公開房間', exact: true }).click()
-  await host.getByRole('button', { name: '建立房間 →' }).click()
-}
+import {
+  createPublicRoom,
+  createRoom,
+  expect,
+  joinListedRoom,
+  loginAsGuests,
+  seedDevelopmentScenario,
+  startTwoPlayerMatch,
+  test,
+} from './fixtures'
 
 test('Tribulation defaults on and normalizes every Advanced Rule dependency', async ({ page }) => {
   test.setTimeout(180_000)
-  await loginAsGuest(page)
-  await page.getByRole('button', { name: '建立房間', exact: true }).click()
-  await page.getByLabel('房間名稱').fill(`天劫測試 ${Date.now()}`)
-  await page.getByRole('button', { name: '建立房間 →' }).click()
+  await createRoom(page, `天劫測試 ${Date.now()}`)
 
   await expect(page.getByLabel('主題規則‧天劫')).toBeChecked()
   await page.getByLabel('進階規則‧英雄學派').uncheck()
@@ -38,23 +31,10 @@ test('Earth Rending Environment choice is private, accessible, and reconnectable
   const guest = await guestContext.newPage()
 
   try {
-    await Promise.all([loginAsGuest(host), loginAsGuest(guest)])
+    await loginAsGuests([host, guest])
     const roomName = `裂地崩山選擇測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-    await guest.locator('.public-room-list button').filter({ hasText: roomName }).click()
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    await host.getByRole('button', { name: '開始遊戲 →' }).click()
-    await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
-
-    const roomId = new URL(host.url()).pathname.split('/').pop()
-    const seeded = await host.evaluate(async (id) => {
-      const response = await fetch(`/api/games/${id}/test-tribulation`, { method: 'POST' })
-      return {
-        ok: response.ok,
-        body: await response.text(),
-      }
-    }, roomId)
-    expect(seeded, seeded.body).toMatchObject({ ok: true })
+    const roomId = await startTwoPlayerMatch(host, guest, roomName)
+    await seedDevelopmentScenario(host, { name: 'tribulation-earth-rending' })
 
     await host.reload()
     await expect(host.getByRole('heading', {

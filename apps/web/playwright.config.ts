@@ -25,6 +25,6 @@ export default defineConfig({
     command: 'bun run test:e2e:server',
     url: 'http://localhost:8787/login',
     reuseExistingServer: process.env.PLAYWRIGHT_REUSE_SERVER === '1',
-    timeout: 180_000,
+    timeout: 360_000,
   },
 })

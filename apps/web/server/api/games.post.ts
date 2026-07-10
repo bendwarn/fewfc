@@ -1,8 +1,4 @@
 import type { GameRoomAccess, GameRoomCapacity } from '../../shared/game-room'
-import {
-  hasValidServerRuleModuleDependencies,
-  normalizeServerRuleModules,
-} from '../utils/rule-modules'
 
 function roomAccess(value: unknown): GameRoomAccess {
   return value === 'public' ? 'public' : 'private'
@@ -31,11 +27,11 @@ export default defineEventHandler(async (event) => {
     enabledRuleModules?: unknown
   }>(event)
   const gameId = crypto.randomUUID()
-  if (!hasValidServerRuleModuleDependencies(body.enabledRuleModules)) {
-    throw createError({
-      statusCode: 400,
-      statusMessage: 'Rule Module dependencies are incomplete.',
-    })
+  let enabledRuleModules: string[]
+  try {
+    enabledRuleModules = await resolveServerRuleModules(body.enabledRuleModules)
+  } catch {
+    throw createError({ statusCode: 400, statusMessage: 'Invalid Rule Module configuration.' })
   }
   const invitation = {
     roomCode: roomCode(),
@@ -50,7 +46,7 @@ export default defineEventHandler(async (event) => {
     access: roomAccess(body.access),
     capacity: roomCapacity(body.capacity),
     name,
-    enabledRuleModules: normalizeServerRuleModules(body.enabledRuleModules),
+    enabledRuleModules,
     invitation,
   })
 

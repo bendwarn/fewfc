@@ -1,12 +1,8 @@
-import { expect, test } from '@playwright/test'
+import { createRoom, expect, test } from './fixtures'
 
 test('Dark Glimmer defaults on and enables Spirit transitively', async ({ page }) => {
   test.setTimeout(180_000)
-  await page.goto('/login')
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  await page.getByRole('button', { name: '建立房間', exact: true }).click()
-  await page.getByLabel('房間名稱').fill(`黑暗微光測試 ${Date.now()}`)
-  await page.getByRole('button', { name: '建立房間 →' }).click()
+  await createRoom(page, `黑暗微光測試 ${Date.now()}`)
 
   await expect(page.getByLabel('主題規則‧黑暗微光')).toBeChecked()
   await expect(page.getByLabel('主題規則‧精靈')).toBeChecked()
