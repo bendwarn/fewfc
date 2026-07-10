@@ -418,6 +418,10 @@
                   精靈 · {{ spiritLabel(spiritFor(seat.player)!.spirit) }}
                   · 靈力 {{ spiritFor(seat.player)!.power }} / 6
                 </small>
+                <small v-if="state.pouches.some(pouch => pouch.owner === seat.player)">
+                  錦囊 ·
+                  {{ state.pouches.find(pouch => pouch.owner === seat.player)?.card?.label ?? '覆蓋牌' }}
+                </small>
                 <span
                   v-if="professionFor(seat.player)"
                   class="profession-badge"
@@ -549,6 +553,7 @@
                   { hidden: card.hidden, selected: card.selected },
                   elementClass(card.label),
                 ]"
+                :data-card-id="card.cardId"
                 :disabled="!card.selectable || !roomConnected"
                 :aria-label="card.hidden ? '牌背' : card.label"
                 @click="game.toggleCardSelection(seat.player, card.cardId)"
@@ -635,6 +640,15 @@
                   </header>
                   <div class="action-candidates">
                     <button
+                      v-for="pouchAction in pouchStrategyActions"
+                      :key="`pouch-${pouchAction.label}`"
+                      type="button"
+                      :disabled="!roomConnected || game.isLoading.value"
+                      @click="startPouchAction(pouchAction)"
+                    >
+                      {{ pouchAction.label }}
+                    </button>
+                    <button
                       v-for="ability in directPlayableAbilities"
                       :key="playableAbilityKey(ability)"
                       type="button"
@@ -699,7 +713,7 @@
                       @pointerdown="startActionDetail(action)"
                       @pointerup="cancelActionDetail"
                       @pointercancel="cancelActionDetail"
-                      @click="game.performPlayableAction(action)"
+                      @click="startPlayableAction(action)"
                     >
                       {{ playableActionName(action) }}
                     </button>
@@ -767,6 +781,221 @@
                     </tbody>
                   </table>
                 </section>
+            </div>
+          </div>
+
+          <div
+            v-if="state.status === 'Preparing' && game.interaction.value.canChooseInitialPouch"
+            class="choice-overlay"
+            role="dialog"
+            aria-label="選擇初始錦囊"
+          >
+            <div>
+              <h2>選擇初始錦囊</h2>
+              <p>先從個人牌組選一張牌；所有玩家完成後才洗牌發牌。</p>
+              <div class="choice-cards">
+                <button
+                  v-for="card in initialPouchCards"
+                  :key="`initial-pouch-${card.id}`"
+                  type="button"
+                  :disabled="game.isLoading.value || !roomConnected"
+                  :aria-label="`選擇 ${card.label} 作為初始錦囊`"
+                  @click="game.chooseInitialPouch(card.id)"
+                >
+                  {{ card.label }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div
+            v-else-if="state.status === 'Preparing'"
+            class="choice-waiting-overlay"
+            role="status"
+            aria-live="polite"
+          >
+            <div>
+              <h2>等待選擇錦囊</h2>
+              <p v-if="state.preparationPlayer">
+                等待 {{ playerLabel(state.preparationPlayer) }} 完成選擇。
+              </p>
+              <p v-else>伺服器正在洗牌與發牌。</p>
+            </div>
+          </div>
+
+          <div
+            v-if="pouchChoiceKind"
+            class="choice-overlay"
+            role="dialog"
+            aria-label="錦囊選擇"
+          >
+            <div>
+              <h2>{{ pouchChoiceKind === 'chain' ? '連環：選擇牌組牌' : '牽羊：交換牌' }}</h2>
+              <p v-if="pouchChoiceKind === 'chain'">
+                依序選一張作為錦囊；可再選一張公開觸發秘計。
+              </p>
+              <p v-else>選兩張牌組牌與兩張棄牌交換，之後洗牌。</p>
+
+              <div class="choice-cards" aria-label="選擇牌組牌">
+                <button
+                  v-for="card in initialPouchCards"
+                  :key="`pouch-choice-deck-${card.id}`"
+                  type="button"
+                  :class="{ selected: pouchDeckSelection.includes(card.id) }"
+                  :disabled="pouchChoiceKind === 'chain'
+                    && strategyDeckSelection.includes(card.id)"
+                  @click="togglePouchCard('pouchDeck', card.id, 2)"
+                >
+                  {{ card.label }}
+                </button>
+              </div>
+
+              <template v-if="pouchChoiceKind === 'sheep'">
+                <h3>選擇兩張棄牌</h3>
+                <div class="choice-cards" aria-label="選擇棄牌">
+                  <button
+                    v-for="card in ownDiscardCards"
+                    :key="`pouch-choice-discard-${card.id}`"
+                    type="button"
+                    :class="{ selected: pouchDiscardSelection.includes(card.id) }"
+                    @click="togglePouchCard('pouchDiscard', card.id, 2)"
+                  >
+                    {{ card.label }}
+                  </button>
+                </div>
+              </template>
+
+              <template v-else>
+                <h3>錦囊持有者</h3>
+                <div class="choice-options" aria-label="選擇錦囊持有者">
+                  <button
+                    v-for="player in friendlyPouchOwners"
+                    :key="`pouch-owner-${player}`"
+                    type="button"
+                    :class="{ selected: pouchOwnerSelection === player }"
+                    @click="pouchOwnerSelection = player"
+                  >
+                    {{ playerLabel(player) }}
+                  </button>
+                </div>
+
+                <template v-if="chainTriggerCard">
+                  <h3>觸發秘計</h3>
+                  <div class="choice-options" aria-label="選擇秘計">
+                    <button
+                      v-for="strategy in chainStrategyOptions"
+                      :key="`chain-strategy-${strategy}`"
+                      type="button"
+                      :class="{ selected: chainStrategySelection === strategy }"
+                      @click="chainStrategySelection = strategy"
+                    >
+                      {{ strategyLabel(strategy) }}
+                    </button>
+                  </div>
+
+                  <div
+                    v-if="chainStrategySelection === 'LureTheTigerAway'"
+                    class="choice-options"
+                    aria-label="離山目標"
+                  >
+                    <button
+                      v-for="player in state.turnOrder"
+                      :key="`strategy-target-${player}`"
+                      type="button"
+                      :class="{ selected: strategyTargetSelection === player }"
+                      @click="strategyTargetSelection = player"
+                    >
+                      {{ playerLabel(player) }}
+                    </button>
+                  </div>
+
+                  <template v-if="chainStrategySelection === 'SheepStealing'">
+                    <h3>牽羊：另選兩張牌組牌</h3>
+                    <div class="choice-cards" aria-label="牽羊牌組牌">
+                      <button
+                        v-for="card in initialPouchCards.filter(
+                          candidate => !pouchDeckSelection.includes(candidate.id),
+                        )"
+                        :key="`strategy-deck-${card.id}`"
+                        type="button"
+                        :class="{ selected: strategyDeckSelection.includes(card.id) }"
+                        @click="togglePouchCard('strategyDeck', card.id, 2)"
+                      >
+                        {{ card.label }}
+                      </button>
+                    </div>
+                    <h3>牽羊：選兩張棄牌</h3>
+                    <div class="choice-cards" aria-label="牽羊棄牌">
+                      <button
+                        v-for="card in ownDiscardCards"
+                        :key="`strategy-discard-${card.id}`"
+                        type="button"
+                        :class="{ selected: strategyDiscardSelection.includes(card.id) }"
+                        @click="togglePouchCard('strategyDiscard', card.id, 2)"
+                      >
+                        {{ card.label }}
+                      </button>
+                    </div>
+                  </template>
+
+                  <template v-if="chainStrategySelection === 'DeceiveHeaven'">
+                    <h3>瞞天：取得星辰效果或破除星辰</h3>
+                    <div class="choice-options" aria-label="瞞天選擇">
+                      <button
+                        v-for="star in STAR_KINDS"
+                        :key="`strategy-star-${star}`"
+                        type="button"
+                        :class="{ selected: strategyStarSelection === star && !strategyBreakStar }"
+                        @click="strategyStarSelection = star; strategyBreakStar = false"
+                      >
+                        取得 {{ starLabel(star) }}
+                      </button>
+                      <button
+                        v-for="owned in state.teamStars"
+                        :key="`strategy-break-star-${owned.team}-${owned.star}`"
+                        type="button"
+                        :class="{ selected: strategyStarSelection === owned.star && strategyBreakStar }"
+                        @click="strategyStarSelection = owned.star; strategyBreakStar = true"
+                      >
+                        破除 {{ starLabel(owned.star) }}
+                      </button>
+                    </div>
+                  </template>
+
+                  <template v-if="chainStrategySelection === 'Retreat'">
+                    <h3>走為：破除環境或捨棄手牌</h3>
+                    <div class="choice-options" aria-label="走為選擇">
+                      <button
+                        type="button"
+                        :class="{ selected: strategyDiscardCard === null }"
+                        @click="strategyDiscardCard = null"
+                      >
+                        破除環境
+                      </button>
+                      <button
+                        v-for="card in ownHandCards"
+                        :key="`strategy-hand-${card.id}`"
+                        type="button"
+                        :class="{ selected: strategyDiscardCard === card.id }"
+                        @click="strategyDiscardCard = card.id"
+                      >
+                        捨棄 {{ card.label }}
+                      </button>
+                    </div>
+                  </template>
+                </template>
+              </template>
+
+              <div class="choice-options">
+                <button
+                  type="button"
+                  :disabled="!canSubmitPouchChoice || game.isLoading.value || !roomConnected"
+                  @click="submitPouchChoice"
+                >
+                  確認
+                </button>
+                <button type="button" @click="resetPouchChoice">取消</button>
+              </div>
             </div>
           </div>
 
@@ -890,7 +1119,7 @@
 
           <div
             v-else-if="state.pendingChoice"
-            class="choice-overlay"
+            class="choice-waiting-overlay"
             role="status"
             aria-live="polite"
           >
@@ -1098,9 +1327,12 @@ import type {
   Element,
   PlayableAction,
   PlayerId,
+  PublicCard,
   PublicCardRefs,
   PublicGameState,
+  SecretStrategy,
   SpiritKind,
+  StarKind,
   TeamId,
   ViewerId,
 } from '~/types/fewfc'
@@ -1187,6 +1419,239 @@ const directPlayableAbilities = computed(() => (
     ability => ability.type !== 'useSpiritSkill' || ability.id !== 'Splendor',
   )
 ))
+const initialPouchCards = computed<PublicCard[]>(() => {
+  if (viewer.value === 'observer') return []
+  const cards = state.value.playerDecks.find(entry => entry.player === viewer.value)?.cards
+  return cards?.kind === 'known' ? cards.cards : []
+})
+type PouchStrategyAction = {
+  label: string
+  strategy: SecretStrategy
+  options?: Parameters<typeof game.triggerSecretStrategy>[1]
+  choice?: 'sheep'
+}
+const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
+  if (viewer.value === 'observer' || !game.interaction.value.canTriggerPouch) return []
+  const pouch = state.value.pouches.find(entry => entry.owner === viewer.value)?.card
+  if (!pouch) return []
+  const actions: PouchStrategyAction[] = []
+  const element = cardElement(pouch.label)
+  const level = Number(cardLevel(pouch.label))
+  const elemental: Record<string, SecretStrategy> = {
+    金: 'GoldenCicada',
+    木: 'StealTheBeam',
+    水: 'MuddyWaters',
+    火: 'WatchTheFire',
+  }
+  if (elemental[element]) {
+    actions.push({ label: `秘計‧${strategyLabel(elemental[element])}`, strategy: elemental[element] })
+  } else if (element === '土') {
+    for (const player of state.value.turnOrder) {
+      actions.push({
+        label: `秘計‧離山 → ${playerLabel(player)}`,
+        strategy: 'LureTheTigerAway',
+        options: { targetPlayer: player },
+      })
+    }
+  }
+  if (level === 1) {
+    actions.push({ label: '秘計‧還魂', strategy: 'ReturnSoul' })
+  } else if (level === 2) {
+    const discard = state.value.playerDiscards
+      .find(entry => entry.player === viewer.value)?.cards ?? []
+    if (initialPouchCards.value.length >= 2 && discard.length >= 2) {
+      actions.push({
+        label: '秘計‧牽羊',
+        strategy: 'SheepStealing',
+        choice: 'sheep',
+      })
+    }
+  } else if (level === 3) {
+    actions.push({ label: '秘計‧暗渡', strategy: 'DarkCrossing' })
+  } else if (level === 4) {
+    for (const star of ['Metal', 'Wood', 'Water', 'Fire', 'Earth'] as StarKind[]) {
+      actions.push({
+        label: `秘計‧瞞天 → ${starLabel(star)}`,
+        strategy: 'DeceiveHeaven',
+        options: { star },
+      })
+    }
+    for (const owned of state.value.teamStars) {
+      actions.push({
+        label: `秘計‧瞞天 → 破除 ${starLabel(owned.star)}`,
+        strategy: 'DeceiveHeaven',
+        options: { star: owned.star, breakStar: true },
+      })
+    }
+  } else if (level === 5) {
+    actions.push({ label: '秘計‧走為 → 破除環境', strategy: 'Retreat' })
+    const hand = state.value.hands.find(entry => entry.player === viewer.value)?.cards
+    if (hand?.kind === 'known') {
+      for (const card of hand.cards) {
+        actions.push({
+          label: `秘計‧走為 → 捨棄 ${card.label}`,
+          strategy: 'Retreat',
+          options: { discardCard: card.id },
+        })
+      }
+    }
+  }
+  return actions
+})
+const pouchChoiceKind = ref<'chain' | 'sheep' | null>(null)
+const pouchFormationAction = ref<PlayableAction | null>(null)
+const pouchDeckSelection = ref<number[]>([])
+const pouchDiscardSelection = ref<number[]>([])
+const strategyDeckSelection = ref<number[]>([])
+const strategyDiscardSelection = ref<number[]>([])
+const pouchOwnerSelection = ref<PlayerId | null>(null)
+const chainStrategySelection = ref<SecretStrategy | null>(null)
+const strategyTargetSelection = ref<PlayerId | null>(null)
+const strategyStarSelection = ref<StarKind | null>(null)
+const strategyBreakStar = ref(false)
+const strategyDiscardCard = ref<number | null>(null)
+const ownDiscardCards = computed(() => {
+  if (viewer.value === 'observer') return []
+  return state.value.playerDiscards.find(entry => entry.player === viewer.value)?.cards ?? []
+})
+const ownHandCards = computed(() => {
+  if (viewer.value === 'observer') return []
+  const hand = state.value.hands.find(entry => entry.player === viewer.value)?.cards
+  return hand?.kind === 'known' ? hand.cards : []
+})
+const STAR_KINDS: StarKind[] = ['Metal', 'Wood', 'Water', 'Fire', 'Earth']
+const friendlyPouchOwners = computed(() => {
+  if (viewer.value === 'observer') return []
+  const team = state.value.players.find(player => player.id === viewer.value)?.team
+  return state.value.players.filter(player => player.team === team).map(player => player.id)
+})
+const chainTriggerCard = computed(() => (
+  pouchChoiceKind.value === 'chain' && pouchDeckSelection.value.length === 2
+    ? initialPouchCards.value.find(card => card.id === pouchDeckSelection.value[1]) ?? null
+    : null
+))
+const chainStrategyOptions = computed(() => {
+  const card = chainTriggerCard.value
+  if (!card) return []
+  const options: SecretStrategy[] = []
+  const byElement: Record<string, SecretStrategy> = {
+    金: 'GoldenCicada',
+    木: 'StealTheBeam',
+    水: 'MuddyWaters',
+    火: 'WatchTheFire',
+    土: 'LureTheTigerAway',
+  }
+  const elemental = byElement[cardElement(card.label)]
+  if (elemental) options.push(elemental)
+  const byLevel: Record<string, SecretStrategy> = {
+    '1': 'ReturnSoul',
+    '2': 'SheepStealing',
+    '3': 'DarkCrossing',
+    '4': 'DeceiveHeaven',
+    '5': 'Retreat',
+  }
+  const leveled = byLevel[cardLevel(card.label)]
+  if (leveled) options.push(leveled)
+  return options
+})
+const canSubmitPouchChoice = computed(() => {
+  if (pouchChoiceKind.value === 'sheep') {
+    return pouchDeckSelection.value.length === 2 && pouchDiscardSelection.value.length === 2
+  }
+  if (pouchChoiceKind.value !== 'chain'
+    || !pouchFormationAction.value
+    || !pouchOwnerSelection.value
+    || pouchDeckSelection.value.length < 1
+    || pouchDeckSelection.value.length > 2) return false
+  if (pouchDeckSelection.value.length === 1) return true
+  if (!chainStrategySelection.value) return false
+  if (chainStrategySelection.value === 'LureTheTigerAway') return !!strategyTargetSelection.value
+  if (chainStrategySelection.value === 'DeceiveHeaven') return !!strategyStarSelection.value
+  if (chainStrategySelection.value === 'SheepStealing') {
+    return strategyDeckSelection.value.length === 2
+      && strategyDiscardSelection.value.length === 2
+  }
+  return true
+})
+
+function resetPouchChoice() {
+  pouchChoiceKind.value = null
+  pouchFormationAction.value = null
+  pouchDeckSelection.value = []
+  pouchDiscardSelection.value = []
+  strategyDeckSelection.value = []
+  strategyDiscardSelection.value = []
+  pouchOwnerSelection.value = null
+  chainStrategySelection.value = null
+  strategyTargetSelection.value = null
+  strategyStarSelection.value = null
+  strategyBreakStar.value = false
+  strategyDiscardCard.value = null
+}
+
+function togglePouchCard(
+  kind: 'pouchDeck' | 'pouchDiscard' | 'strategyDeck' | 'strategyDiscard',
+  card: number,
+  maximum: number,
+) {
+  const selection = {
+    pouchDeck: pouchDeckSelection,
+    pouchDiscard: pouchDiscardSelection,
+    strategyDeck: strategyDeckSelection,
+    strategyDiscard: strategyDiscardSelection,
+  }[kind]
+  selection.value = selection.value.includes(card)
+    ? selection.value.filter(selected => selected !== card)
+    : selection.value.length < maximum ? [...selection.value, card] : selection.value
+}
+
+function startPouchAction(action: PouchStrategyAction) {
+  if (action.choice === 'sheep') {
+    resetPouchChoice()
+    pouchChoiceKind.value = 'sheep'
+    return
+  }
+  void game.triggerSecretStrategy(action.strategy, action.options)
+}
+
+function startPlayableAction(action: PlayableAction) {
+  if (action.type === 'performFormation' && action.id === 'pouch:chain') {
+    resetPouchChoice()
+    pouchChoiceKind.value = 'chain'
+    pouchFormationAction.value = action
+    pouchOwnerSelection.value = viewer.value === 'observer' ? null : viewer.value
+    return
+  }
+  void game.performPlayableAction(action)
+}
+
+async function submitPouchChoice() {
+  if (!canSubmitPouchChoice.value) return
+  if (pouchChoiceKind.value === 'sheep') {
+    const submitted = await game.triggerSecretStrategy('SheepStealing', {
+      deckCards: pouchDeckSelection.value,
+      discardCards: pouchDiscardSelection.value,
+    })
+    if (submitted !== false) resetPouchChoice()
+    return
+  }
+  const action = pouchFormationAction.value
+  const owner = pouchOwnerSelection.value
+  if (!action || !owner) return
+  await game.performPlayableAction(action, {
+    pouchOwner: owner,
+    pouchCard: pouchDeckSelection.value[0],
+    triggerCard: pouchDeckSelection.value[1],
+    secretStrategy: chainStrategySelection.value ?? undefined,
+    secretStrategyTargetPlayer: strategyTargetSelection.value ?? undefined,
+    secretStrategyStar: strategyStarSelection.value ?? undefined,
+    secretStrategyBreakStar: strategyBreakStar.value,
+    secretStrategyDiscardCard: strategyDiscardCard.value ?? undefined,
+    secretStrategyDeckCards: strategyDeckSelection.value,
+    secretStrategyDiscardCards: strategyDiscardSelection.value,
+  })
+  resetPouchChoice()
+}
 const actionDetail = ref<PlayableAction | null>(null)
 const eventExpanded = ref(false)
 const showSetupReveal = ref(false)
@@ -2181,6 +2646,21 @@ function starLabel(star: import('~/types/fewfc').StarKind): string {
   }[star]
 }
 
+function strategyLabel(strategy: SecretStrategy): string {
+  return {
+    GoldenCicada: '金蟬',
+    StealTheBeam: '偷梁',
+    MuddyWaters: '混水',
+    WatchTheFire: '觀火',
+    LureTheTigerAway: '離山',
+    ReturnSoul: '還魂',
+    SheepStealing: '牽羊',
+    DarkCrossing: '暗渡',
+    DeceiveHeaven: '瞞天',
+    Retreat: '走為',
+  }[strategy]
+}
+
 function exposedDeckCards(player: PlayerId) {
   const cards = state.value.playerDecks.find(entry => entry.player === player)?.cards
   return cards?.kind === 'partiallyKnown' ? cards.cards.filter(card => card !== null) : []
@@ -2714,9 +3194,12 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .action-prompt { @apply text-[#68726b]; }
 .action-detail { @apply absolute right-0 bottom-[calc(100%+8px)] left-0 z-8 border border-[#64583f] bg-[#1c241f] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
 .action-detail strong { @apply mr-2 text-gold-light; }
-.choice-overlay { @apply absolute inset-0 z-12 grid place-items-center bg-[rgba(7,10,8,.28)] text-center; }
-.choice-overlay > div { @apply min-w-90 border border-[#8e733d] bg-[rgba(24,32,27,.94)] p-[30px] shadow-[0_18px_48px_rgba(0,0,0,.42)]; }
-.choice-overlay h2 { @apply mt-2.5 mb-5 font-serif; }
+.choice-overlay,
+.choice-waiting-overlay { @apply absolute inset-0 z-12 grid place-items-center bg-[rgba(7,10,8,.28)] text-center; }
+.choice-overlay > div,
+.choice-waiting-overlay > div { @apply min-w-90 border border-[#8e733d] bg-[rgba(24,32,27,.94)] p-[30px] shadow-[0_18px_48px_rgba(0,0,0,.42)]; }
+.choice-overlay h2,
+.choice-waiting-overlay h2 { @apply mt-2.5 mb-5 font-serif; }
 .choice-cards { @apply flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
 .choice-cards button { @apply border border-[#ae8b47] bg-[#ede6d4] p-2.5 text-[#18201c]; }
 .choice-cards button.selected { @apply bg-[#c9a451] font-bold shadow-[0_0_0_2px_#f0d99e]; }

@@ -8,6 +8,8 @@ None.
 
 ## Completed Local Issues
 
+- [#67 Align Echo action detail with rule consequences](067-align-echo-action-detail-with-rule-text.md)
+- [#68 Align Tuner obligation and residual semantics](068-align-tuner-obligation-and-residual-semantics.md)
 - [#66 Release the Tribulation Rule Module](066-release-tribulation-rule-module.md)
 - [#65 Release the Echo Rule Module](065-release-echo-rule-module.md)
 - [#64 Resolve Pure Fire and Plant Earth](064-resolve-pure-fire-and-plant-earth.md)

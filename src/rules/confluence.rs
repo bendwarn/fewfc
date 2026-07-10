@@ -182,8 +182,12 @@ pub(crate) fn formation_matches(
         return residual.is_some_and(|(element, level)| {
             element == required_element
                 && cards.len() == 2
-                && cards.iter().any(|card| card.element == required_element)
-                && cards.iter().any(|card| card.level == level)
+                && cards.iter().enumerate().any(|(element_index, card)| {
+                    card.element == required_element
+                        && cards.iter().enumerate().any(|(level_index, card)| {
+                            level_index != element_index && card.level == level
+                        })
+                })
         });
     }
     match id {
@@ -453,13 +457,29 @@ pub(crate) fn active_spell_events(
                 .collect::<GameResult<Vec<_>>>()?
         }
         THOUSAND_RESONANCE => {
-            let mut events = resonance_primary_events(state, player)?;
             let selected = declared_targets.iter().find_map(|target| match target {
                 crate::domain::TargetDecl::FormationRole { role, .. } => {
                     role.strip_prefix("confluence:thousand-resonance:")
                 }
                 _ => None,
             });
+            if residual_card_facts(state, player)
+                .is_some_and(|(element, _)| element == Element::Metal)
+            {
+                let previous = TurnOrderTargets::new(state)
+                    .player_target(player, RulePlayerTarget::PreviousPlayer)?;
+                let continuation_id = selected
+                    .map(|element| format!("confluence:thousand-resonance-after:{element}"))
+                    .unwrap_or_else(|| "confluence:discard-inspected-card".to_string());
+                return Ok(Some(inspect_and_discard_events_with_continuation(
+                    state,
+                    player,
+                    &previous,
+                    resolver_id,
+                    &continuation_id,
+                )?));
+            }
+            let mut events = resonance_primary_events(state, player)?;
             if let Some(selected) = selected {
                 events.extend(resonance_element_events(state, player, selected)?);
             }
@@ -508,6 +528,22 @@ fn inspect_and_discard_events(
     target: &PlayerId,
     effect_id: &str,
 ) -> GameResult<Vec<GameEvent>> {
+    inspect_and_discard_events_with_continuation(
+        state,
+        player,
+        target,
+        effect_id,
+        "confluence:discard-inspected-card",
+    )
+}
+
+fn inspect_and_discard_events_with_continuation(
+    state: &GameState,
+    player: &PlayerId,
+    target: &PlayerId,
+    effect_id: &str,
+    continuation_id: &str,
+) -> GameResult<Vec<GameEvent>> {
     let cards = state
         .hand(target)
         .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(target.clone())))?
@@ -522,12 +558,28 @@ fn inspect_and_discard_events(
             player: player.clone(),
             kind: crate::domain::PendingChoiceKind::EffectGenerated {
                 effect_id: effect_id.to_string(),
-                continuation_id: "confluence:discard-inspected-card".to_string(),
+                continuation_id: continuation_id.to_string(),
                 allowed_cards: cards,
             },
         });
     }
     Ok(events)
+}
+
+pub(crate) fn after_effect_choice_events(
+    state: &GameState,
+    player: &PlayerId,
+    effect_id: &str,
+    continuation_id: &str,
+) -> GameResult<Vec<GameEvent>> {
+    if effect_id != THOUSAND_RESONANCE {
+        return Ok(Vec::new());
+    }
+    let Some(selected) = continuation_id.strip_prefix("confluence:thousand-resonance-after:")
+    else {
+        return Ok(Vec::new());
+    };
+    resonance_element_events(state, player, selected)
 }
 
 fn change_hp_event(state: &GameState, player: &PlayerId, delta: i32) -> GameResult<GameEvent> {
@@ -539,7 +591,7 @@ fn change_hp_event(state: &GameState, player: &PlayerId, delta: i32) -> GameResu
         .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?
         .hp;
     let initial = state.initial_hp(&team).unwrap_or(old_hp.max(0));
-    let effective_delta = if delta > 0 && crate::rules::jianghu::team_has_poison(state, &team) {
+    let effective_delta = if delta > 0 && crate::rules::jianghu::player_has_poison(state, player) {
         0
     } else {
         delta
@@ -794,9 +846,6 @@ pub(crate) fn residual_card_facts(state: &GameState, player: &PlayerId) -> Optio
         .last_turn_discard_by_player
         .get(&previous)
         .filter(|discard| discard.turn_number + 1 == state.turn_number)?;
-    state
-        .discard_for(&previous)
-        .filter(|pile| pile.contains(&discard.card))?;
     let definition = state.card_def(discard.card)?;
     Some((definition.element, definition.level))
 }
@@ -815,15 +864,112 @@ pub(crate) fn profession_change_satisfies_obligation(
         .is_none_or(|obligation| cards.contains(&obligation.card))
 }
 
+pub(crate) fn active_tuning_obligation<'a>(
+    state: &'a GameState,
+    player: &PlayerId,
+) -> Option<&'a crate::domain::ConfluenceCardObligation> {
+    state.confluence_card_obligations.iter().find(|obligation| {
+        &obligation.owner == player && obligation.applied_on_turn == state.turn_number
+    })
+}
+
 pub(crate) fn formation_selection_satisfies_obligation(
     obligation: Option<&crate::domain::ConfluenceCardObligation>,
     formation_id: &str,
     cards: &[CardInstanceId],
 ) -> bool {
     obligation.is_none_or(|obligation| {
-        !cards.contains(&obligation.card)
-            || (obligation.allow_profession_formation && is_profession_formation(formation_id))
+        cards.contains(&obligation.card)
+            && obligation.allow_profession_formation
+            && is_profession_formation(formation_id)
     })
+}
+
+pub(crate) fn tuning_completion_available(
+    state: &GameState,
+    player: &PlayerId,
+) -> GameResult<bool> {
+    let Some(obligation) = active_tuning_obligation(state, player).cloned() else {
+        return Ok(true);
+    };
+    let Some(hand) = state.hand(player) else {
+        return Ok(false);
+    };
+    if !hand.contains(&obligation.card) || hand.len() >= usize::BITS as usize {
+        return Ok(false);
+    }
+    for mask in 1usize..(1usize << hand.len()) {
+        let selected = hand
+            .iter()
+            .enumerate()
+            .filter_map(|(index, card)| ((mask >> index) & 1 == 1).then_some(*card))
+            .collect::<Vec<_>>();
+        if !selected.contains(&obligation.card) {
+            continue;
+        }
+        if !crate::rules::profession::playable_profession_changes(state, player, &selected)?
+            .is_empty()
+        {
+            return Ok(true);
+        }
+        if obligation.allow_profession_formation
+            && tuning_profession_formation_available(state, player, &selected)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub(crate) fn obligation_completion_event(
+    state: &GameState,
+    player: &PlayerId,
+    cards: &[CardInstanceId],
+) -> Option<GameEvent> {
+    active_tuning_obligation(state, player)
+        .filter(|obligation| cards.contains(&obligation.card))
+        .map(|obligation| GameEvent::ConfluenceCardObligationCleared {
+            owner: player.clone(),
+            card: obligation.card,
+        })
+}
+
+pub(crate) fn events_preserve_tuning_completion(
+    state: &GameState,
+    player: &PlayerId,
+    events: &[GameEvent],
+) -> GameResult<bool> {
+    if active_tuning_obligation(state, player).is_none() {
+        return Ok(true);
+    }
+    let mut projected = state.clone();
+    for event in events {
+        crate::rules::projection::apply_event(&mut projected, event);
+    }
+    tuning_completion_available(&projected, player)
+}
+
+fn tuning_profession_formation_available(
+    state: &GameState,
+    player: &PlayerId,
+    cards: &[CardInstanceId],
+) -> GameResult<bool> {
+    let facts = submitted_card_facts(state, player, cards)?;
+    let residual = residual_card_facts(state, player);
+    let limited_uses = state
+        .limited_uses
+        .iter()
+        .filter(|use_count| &use_count.owner == player)
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok(formation_specs().into_iter().any(|spec| {
+        can_use_profession_formation(
+            &state.enabled_rule_modules,
+            state.profession_for(player),
+            &spec.formation.id,
+        ) && formation_available_for_selection(&limited_uses, &spec.formation.id)
+            && formation_matches(&spec.formation.id, residual, &facts)
+    }))
 }
 
 pub(crate) fn profession_acquired_events(
@@ -863,6 +1009,9 @@ pub(crate) fn void_transcendence_events(
     player: &PlayerId,
     cards: &[CardInstanceId],
 ) -> GameResult<Vec<GameEvent>> {
+    if crate::rules::pouch::profession_is_suppressed(state, player) {
+        return Ok(Vec::new());
+    }
     let is_void_profession = state.profession_for(player).is_some_and(|profession| {
         crate::rules::profession::inherits_from(
             &state.enabled_rule_modules,
@@ -900,9 +1049,10 @@ pub(crate) fn void_transcendence_events(
 }
 
 pub(crate) fn void_realm_protects(state: &GameState, player: &PlayerId) -> bool {
-    state
-        .profession_for(player)
-        .is_some_and(|profession| profession.as_str() == VOID_DESTROYER_ID)
+    !crate::rules::pouch::profession_is_suppressed(state, player)
+        && state
+            .profession_for(player)
+            .is_some_and(|profession| profession.as_str() == VOID_DESTROYER_ID)
         && limited_use(state, player, VOID_REALM_USE)
             .is_some_and(|use_count| use_count.remaining > 0)
 }
@@ -1184,37 +1334,15 @@ fn tuning_card_can_be_used(
         .push(crate::domain::ConfluenceCardObligation {
             owner: player.clone(),
             card: retrieved,
-            allow_profession_formation: state.profession_for(player).is_some_and(|profession| {
-                crate::rules::profession::effective_ability_ids(
-                    &state.enabled_rule_modules,
-                    profession,
-                )
-                .contains(&"confluence:string-changing")
-            }),
+            allow_profession_formation: crate::rules::profession::ability_ids_in_effect(
+                state, player,
+            )
+            .contains(&"confluence:string-changing"),
             applied_on_turn: state.turn_number,
             residual_element: Some(definition.element),
             residual_level: Some(definition.level),
         });
-    let hand = projected.hand(player).unwrap().to_vec();
-    if hand.len() >= usize::BITS as usize {
-        return Ok(false);
-    }
-    for mask in 1usize..(1usize << hand.len()) {
-        let selected = hand
-            .iter()
-            .enumerate()
-            .filter_map(|(index, card)| ((mask >> index) & 1 == 1).then_some(*card))
-            .collect::<Vec<_>>();
-        if !selected.contains(&retrieved) {
-            continue;
-        }
-        if !crate::rules::profession::playable_profession_changes(&projected, player, &selected)?
-            .is_empty()
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    tuning_completion_available(&projected, player)
 }
 
 pub(crate) fn activate_profession_ability(
@@ -1256,13 +1384,8 @@ pub(crate) fn activate_profession_ability(
                 ],
             });
             let allow_profession_formation =
-                state.profession_for(player).is_some_and(|profession| {
-                    crate::rules::profession::effective_ability_ids(
-                        &state.enabled_rule_modules,
-                        profession,
-                    )
-                    .contains(&"confluence:string-changing")
-                });
+                crate::rules::profession::ability_ids_in_effect(state, player)
+                    .contains(&"confluence:string-changing");
             events.push(GameEvent::ConfluenceCardObligationSet {
                 obligation: crate::domain::ConfluenceCardObligation {
                     owner: player.clone(),

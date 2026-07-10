@@ -1,6 +1,6 @@
 use crate::domain::{
-    CONFLUENCE_GENERATION_MODULE_ID, DARK_GLIMMER_MODULE_ID, HERO_SCHOOLS_MODULE_ID,
-    JIANGHU_MODULE_ID, ProfessionId, RuleModuleId,
+    CONFLUENCE_GENERATION_MODULE_ID, DARK_GLIMMER_MODULE_ID, GameState, HERO_SCHOOLS_MODULE_ID,
+    JIANGHU_MODULE_ID, PlayerId, ProfessionId, RuleModuleId,
 };
 use std::collections::HashSet;
 
@@ -41,6 +41,16 @@ pub(crate) fn catalog(enabled_modules: &[RuleModuleId]) -> Vec<ProfessionCatalog
         entries.extend(crate::rules::dark::profession_catalog_entries());
     }
     entries
+}
+
+pub(crate) fn ability_ids_in_effect(state: &GameState, player: &PlayerId) -> Vec<&'static str> {
+    if crate::rules::pouch::profession_is_suppressed(state, player) {
+        return Vec::new();
+    }
+    state
+        .profession_for(player)
+        .map(|profession| effective_ability_ids(&state.enabled_rule_modules, profession))
+        .unwrap_or_default()
 }
 
 pub(crate) fn playable_profession_changes(

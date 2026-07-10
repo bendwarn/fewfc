@@ -877,7 +877,10 @@ pub(crate) fn incoming_damage_modifier(
     category: &AttackCategory,
     is_damage: bool,
 ) -> IncomingDamageModifier {
-    if !state.has_rule_module(HERO_SCHOOLS_MODULE_ID) || !is_damage {
+    if !state.has_rule_module(HERO_SCHOOLS_MODULE_ID)
+        || !is_damage
+        || crate::rules::pouch::profession_is_suppressed(state, target)
+    {
         return IncomingDamageModifier::None;
     }
     let Some(profession) = state.profession_for(target) else {
@@ -921,6 +924,9 @@ pub(crate) fn modify_attack_points(
     cards: &[CardInstanceId],
     points: i32,
 ) -> i32 {
+    if crate::rules::pouch::profession_is_suppressed(state, player) {
+        return points;
+    }
     let Some(profession) = state.profession_for(player) else {
         return points;
     };
@@ -972,6 +978,9 @@ pub(crate) fn star_summoning_allowed(
     if !used_mage_proficiency {
         return true;
     }
+    if crate::rules::pouch::profession_is_suppressed(state, player) {
+        return false;
+    }
     state.profession_for(player).is_some_and(|profession| {
         effective_abilities(&state.enabled_rule_modules, profession)
             .contains(&ProfessionAbility::ArcaneEssence)
@@ -983,7 +992,8 @@ pub(crate) fn windwalking_applies(
     player: &PlayerId,
     attack_points: i32,
 ) -> bool {
-    attack_points <= 15
+    !crate::rules::pouch::profession_is_suppressed(state, player)
+        && attack_points <= 15
         && state.profession_for(player).is_some_and(|profession| {
             effective_abilities(&state.enabled_rule_modules, profession)
                 .contains(&ProfessionAbility::Windwalking)
@@ -991,10 +1001,11 @@ pub(crate) fn windwalking_applies(
 }
 
 pub(crate) fn spell_counter_immunity(state: &GameState, player: &PlayerId) -> bool {
-    state.profession_for(player).is_some_and(|profession| {
-        effective_abilities(&state.enabled_rule_modules, profession)
-            .contains(&ProfessionAbility::SpellProtection)
-    })
+    !crate::rules::pouch::profession_is_suppressed(state, player)
+        && state.profession_for(player).is_some_and(|profession| {
+            effective_abilities(&state.enabled_rule_modules, profession)
+                .contains(&ProfessionAbility::SpellProtection)
+        })
 }
 
 pub(crate) fn profession_has_ability(
@@ -1012,11 +1023,13 @@ pub(crate) fn discard_retrieval_cost(
     player: &PlayerId,
     normal_cost: i32,
 ) -> i32 {
-    if profession_has_ability(
-        &state.enabled_rule_modules,
-        state.profession_for(player),
-        ProfessionAbility::SeekerDiscount,
-    ) {
+    if !crate::rules::pouch::profession_is_suppressed(state, player)
+        && profession_has_ability(
+            &state.enabled_rule_modules,
+            state.profession_for(player),
+            ProfessionAbility::SeekerDiscount,
+        )
+    {
         (normal_cost + 1) / 2
     } else {
         normal_cost
@@ -1036,6 +1049,9 @@ pub(crate) fn target_ignores_disruptive_spell(
     }
     let target =
         TurnOrderTargets::new(state).player_target(caster, RulePlayerTarget::NextPlayer)?;
+    if crate::rules::pouch::profession_is_suppressed(state, &target) {
+        return Ok(false);
+    }
     Ok(profession_has_ability(
         &state.enabled_rule_modules,
         state.profession_for(&target),
@@ -1554,7 +1570,11 @@ pub(crate) fn post_formation_intents(
     let Some(profession) = state.profession_for(player) else {
         return Ok(Vec::new());
     };
-    let abilities = effective_abilities(&state.enabled_rule_modules, profession);
+    let abilities = if crate::rules::pouch::profession_is_suppressed(state, player) {
+        Vec::new()
+    } else {
+        effective_abilities(&state.enabled_rule_modules, profession)
+    };
     let mut intents = Vec::new();
     if formation_id == "weapon" && abilities.contains(&ProfessionAbility::WeaponMastery) {
         intents.push(PostFormationIntent::AddTurnDraw {

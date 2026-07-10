@@ -14,6 +14,96 @@ pub(crate) fn project(setup: &GameSetup, events: &[GameEvent]) -> GameResult<Gam
 
 pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
     match event {
+        GameEvent::GamePreparationStarted { player_decks } => {
+            state.player_decks = player_decks.clone();
+        }
+        GameEvent::InitialPouchChosen { next_player, .. } => {
+            state.status = if let Some(player) = next_player {
+                GameStatus::Preparing {
+                    stage: crate::domain::GamePreparationStage::InitialPouchSelection {
+                        player: player.clone(),
+                    },
+                }
+            } else {
+                GameStatus::Preparing {
+                    stage: crate::domain::GamePreparationStage::PendingDeckShuffle,
+                }
+            };
+        }
+        GameEvent::GamePreparationCompleted => {
+            state.status = GameStatus::InProgress;
+        }
+        GameEvent::PouchPlaced {
+            source,
+            owner,
+            card,
+            known_by,
+            previous,
+        } => {
+            if let Some(previous) = previous {
+                let position = state
+                    .pouches
+                    .iter()
+                    .position(|pouch| &pouch.owner == owner && pouch.card == *previous)
+                    .expect("canonical Pouch replacement must target an owned Pouch");
+                state.pouches.remove(position);
+                push_to_origin_discard(state, *previous);
+            }
+            let deck = state
+                .deck_for_mut(source)
+                .expect("canonical Pouch placement must target an owned Deck");
+            let position = deck
+                .iter()
+                .position(|candidate| candidate == card)
+                .expect("canonical Pouch placement must select a Deck Card");
+            deck.remove(position);
+            state.pouches.push(crate::domain::PlayerPouch {
+                owner: owner.clone(),
+                card: *card,
+                known_by: known_by.clone(),
+            });
+        }
+        GameEvent::PouchRevealed { .. } => {}
+        GameEvent::PouchConsumed { owner, card } => {
+            if let Some(owner) = owner {
+                let position = state
+                    .pouches
+                    .iter()
+                    .position(|pouch| &pouch.owner == owner && pouch.card == *card)
+                    .expect("canonical Pouch consumption must target an owned Pouch");
+                state.pouches.remove(position);
+            } else {
+                for pile in &mut state.player_decks {
+                    if let Some(position) =
+                        pile.cards.iter().position(|candidate| candidate == card)
+                    {
+                        pile.cards.remove(position);
+                        break;
+                    }
+                }
+            }
+            push_to_origin_discard(state, *card);
+        }
+        GameEvent::PouchLevelBonusGranted { bonus } => {
+            state.pouch_level_bonuses.push(bonus.clone());
+        }
+        GameEvent::TemporaryStarEffectGranted { effect } => {
+            state.temporary_star_effects.push(effect.clone());
+        }
+        GameEvent::SpiritRevived {
+            player,
+            spirit,
+            power,
+            ..
+        } => {
+            state.spirits.retain(|owned| &owned.player != player);
+            state.spirits.push(crate::domain::PlayerSpirit {
+                player: player.clone(),
+                spirit: *spirit,
+                power: *power,
+            });
+            state.spirit_skill_use_turns.remove(player);
+        }
         GameEvent::DeckPrepared { deck_order } => {
             state.deck = deck_order.clone();
         }
@@ -773,6 +863,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .retain(|active| &active.owner != owner || active.card != *card);
         }
         GameEvent::EffectChoiceRequested { player, kind } => {
+            if matches!(state.status, GameStatus::Finished { .. }) {
+                state.status = GameStatus::InProgress;
+            }
             state.pending_choice = Some(crate::domain::PendingChoice {
                 player: player.clone(),
                 kind: kind.clone(),
@@ -817,6 +910,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             }
 
             state.pending_choice = None;
+            finish_game_if_needed(state);
         }
         GameEvent::TypedEffectChoiceAnswered { player, answer, .. } => {
             let matches = match (&state.pending_choice, answer) {
@@ -873,6 +967,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 "canonical typed effect choice answer must match the pending choice"
             );
             state.pending_choice = None;
+            finish_game_if_needed(state);
         }
         GameEvent::RandomnessRequested { request } => {
             assert!(
@@ -1318,6 +1413,12 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             state
                 .spirit_level_interpretations
                 .retain(|interpretation| &interpretation.player != player);
+            state
+                .pouch_level_bonuses
+                .retain(|bonus| &bonus.player != player);
+            state
+                .temporary_star_effects
+                .retain(|effect| &effect.player != player);
             state.current_turn_index = (state.current_turn_index + 1) % state.turn_order.len();
             state.turn_number += 1;
             state.phase = crate::domain::Phase::TurnStart;
@@ -1404,6 +1505,14 @@ fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {
                 .expect("canonical card move must move an existing player discard card");
             discard.remove(position)
         }
+        CardZone::Pouch(player) => {
+            let position = state
+                .pouches
+                .iter()
+                .position(|pouch| &pouch.owner == player && pouch.card == card_move.card)
+                .expect("canonical card move must move an owned Pouch");
+            state.pouches.remove(position).card
+        }
     };
 
     match &card_move.to {
@@ -1436,6 +1545,14 @@ fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {
             state
                 .exposed_foreign_cards
                 .retain(|exposed| *exposed != removed);
+        }
+        CardZone::Pouch(player) => {
+            state.pouches.retain(|pouch| &pouch.owner != player);
+            state.pouches.push(crate::domain::PlayerPouch {
+                owner: player.clone(),
+                card: removed,
+                known_by: vec![player.clone()],
+            });
         }
     }
 }

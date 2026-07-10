@@ -43,6 +43,7 @@ pub const CONFLUENCE_GENERATION_MODULE_ID: &str = "confluence-generation";
 pub const DARK_GLIMMER_MODULE_ID: &str = "dark-glimmer";
 pub const ECHO_MODULE_ID: &str = "echo";
 pub const TRIBULATION_MODULE_ID: &str = "tribulation";
+pub const POUCH_MODULE_ID: &str = "pouch";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RulesetId(String);
@@ -156,6 +157,18 @@ pub enum StarKind {
     Earth,
 }
 
+impl From<Element> for StarKind {
+    fn from(element: Element) -> Self {
+        match element {
+            Element::Metal => Self::Metal,
+            Element::Wood => Self::Wood,
+            Element::Water => Self::Water,
+            Element::Fire => Self::Fire,
+            Element::Earth => Self::Earth,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SpiritKind {
     Metal,
@@ -240,6 +253,41 @@ pub struct TeamStar {
     pub star: StarKind,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecretStrategy {
+    GoldenCicada,
+    StealTheBeam,
+    MuddyWaters,
+    WatchTheFire,
+    LureTheTigerAway,
+    ReturnSoul,
+    SheepStealing,
+    DarkCrossing,
+    DeceiveHeaven,
+    Retreat,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PlayerPouch {
+    pub owner: PlayerId,
+    pub card: CardInstanceId,
+    pub known_by: Vec<PlayerId>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PouchLevelBonus {
+    pub player: PlayerId,
+    pub cards: Vec<CardInstanceId>,
+    pub applied_on_turn: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct TemporaryStarEffect {
+    pub player: PlayerId,
+    pub star: StarKind,
+    pub applied_on_turn: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PlayerStarHistory {
     pub player: PlayerId,
@@ -258,6 +306,7 @@ pub enum StarBreakReason {
     OpposedBy(StarKind),
     StarFormationUsed { formation_id: String },
     VoidStarBreaking,
+    SecretStrategy,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -341,8 +390,16 @@ pub struct TeamHp {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum GameStatus {
+    Preparing { stage: GamePreparationStage },
     InProgress,
     Finished { outcome: GameOutcome },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum GamePreparationStage {
+    InitialPouchSelection { player: PlayerId },
+    PendingDeckShuffle,
+    InitialDeal,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -664,6 +721,12 @@ pub struct GameState {
     #[serde(default)]
     pub player_discards: Vec<PlayerCardPile>,
     #[serde(default)]
+    pub pouches: Vec<PlayerPouch>,
+    #[serde(default)]
+    pub pouch_level_bonuses: Vec<PouchLevelBonus>,
+    #[serde(default)]
+    pub temporary_star_effects: Vec<TemporaryStarEffect>,
+    #[serde(default)]
     pub exposed_foreign_cards: Vec<CardInstanceId>,
     #[serde(default)]
     pub last_turn_discard_by_player: HashMap<PlayerId, LastTurnDiscard>,
@@ -736,10 +799,23 @@ pub struct GameState {
 
 impl GameState {
     pub fn from_setup(setup: &GameSetup) -> Self {
+        let status = if setup.has_rule_module(POUCH_MODULE_ID) {
+            GameStatus::Preparing {
+                stage: GamePreparationStage::InitialPouchSelection {
+                    player: setup
+                        .turn_order
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| PlayerId::new("missing-player")),
+                },
+            }
+        } else {
+            GameStatus::InProgress
+        };
         Self {
             ruleset: setup.ruleset.clone(),
             enabled_rule_modules: setup.enabled_rule_modules.clone(),
-            status: GameStatus::InProgress,
+            status,
             turn_number: 1,
             phase: Phase::TurnStart,
             current_turn_index: 0,
@@ -772,6 +848,9 @@ impl GameState {
                     cards: Vec::new(),
                 })
                 .collect(),
+            pouches: Vec::new(),
+            pouch_level_bonuses: Vec::new(),
+            temporary_star_effects: Vec::new(),
             exposed_foreign_cards: Vec::new(),
             last_turn_discard_by_player: HashMap::new(),
             pending_choice: None,
@@ -970,6 +1049,11 @@ impl GameState {
     }
 
     pub fn card_level_for(&self, player: &PlayerId, card: CardInstanceId) -> Option<u32> {
+        let pouch_bonus = self.pouch_level_bonuses.iter().any(|bonus| {
+            &bonus.player == player
+                && bonus.applied_on_turn == self.turn_number
+                && bonus.cards.contains(&card)
+        });
         self.spirit_level_interpretations
             .iter()
             .rev()
@@ -980,6 +1064,11 @@ impl GameState {
             })
             .map(|interpretation| interpretation.level)
             .or_else(|| self.card_def(card).map(|definition| definition.level))
+            .map(|level| if pouch_bonus { level + 1 } else { level })
+    }
+
+    pub fn pouch_for(&self, player: &PlayerId) -> Option<&PlayerPouch> {
+        self.pouches.iter().find(|pouch| &pouch.owner == player)
     }
 }
 
@@ -1180,6 +1269,44 @@ pub struct RustedForestResolution {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum GameEvent {
+    GamePreparationStarted {
+        player_decks: Vec<PlayerCardPile>,
+    },
+    InitialPouchChosen {
+        player: PlayerId,
+        card: CardInstanceId,
+        next_player: Option<PlayerId>,
+    },
+    GamePreparationCompleted,
+    PouchPlaced {
+        source: PlayerId,
+        owner: PlayerId,
+        card: CardInstanceId,
+        known_by: Vec<PlayerId>,
+        previous: Option<CardInstanceId>,
+    },
+    PouchRevealed {
+        player: PlayerId,
+        owner: Option<PlayerId>,
+        card: CardInstanceId,
+        strategy: SecretStrategy,
+    },
+    PouchConsumed {
+        owner: Option<PlayerId>,
+        card: CardInstanceId,
+    },
+    PouchLevelBonusGranted {
+        bonus: PouchLevelBonus,
+    },
+    TemporaryStarEffectGranted {
+        effect: TemporaryStarEffect,
+    },
+    SpiritRevived {
+        player: PlayerId,
+        previous: Option<SpiritKind>,
+        spirit: SpiritKind,
+        power: u32,
+    },
     DeckPrepared {
         deck_order: Vec<CardInstanceId>,
     },
@@ -1614,6 +1741,20 @@ pub enum DeckPlacement {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum Command {
+    ChooseInitialPouch {
+        player: PlayerId,
+        card: CardInstanceId,
+    },
+    TriggerSecretStrategy {
+        player: PlayerId,
+        strategy: SecretStrategy,
+        target_player: Option<PlayerId>,
+        star: Option<StarKind>,
+        break_star: bool,
+        discard_card: Option<CardInstanceId>,
+        deck_cards: Vec<CardInstanceId>,
+        discard_cards: Vec<CardInstanceId>,
+    },
     PassAction {
         player: PlayerId,
         reason: PassActionReason,
@@ -1679,8 +1820,23 @@ pub enum TargetDecl {
     Player(PlayerId),
     Team(TeamId),
     Card(CardInstanceId),
-    FormationRole { role: String, card: CardInstanceId },
-    CardMultiplicity { card: CardInstanceId, slots: usize },
+    FormationRole {
+        role: String,
+        card: CardInstanceId,
+    },
+    CardMultiplicity {
+        card: CardInstanceId,
+        slots: usize,
+    },
+    SecretStrategy(SecretStrategy),
+    SecretStrategyOptions {
+        target_player: Option<PlayerId>,
+        star: Option<StarKind>,
+        break_star: bool,
+        discard_card: Option<CardInstanceId>,
+        deck_cards: Vec<CardInstanceId>,
+        discard_cards: Vec<CardInstanceId>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1802,6 +1958,7 @@ pub enum CardZone {
     Discard,
     PlayerDeckTop(PlayerId),
     PlayerDiscard(PlayerId),
+    Pouch(PlayerId),
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1820,6 +1977,15 @@ pub enum GameError {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum ValidationError {
     GameFinished,
+    GamePreparationInProgress,
+    InitialPouchSelectionUnavailable,
+    InvalidInitialPouch(CardInstanceId),
+    PouchRuleDisabled,
+    NoPouch {
+        player: PlayerId,
+    },
+    SecretStrategyConditionMismatch,
+    SecretStrategyInputInvalid,
     EmptyTurnOrder,
     DuplicatePlayer(PlayerId),
     DuplicateTurnOrderPlayer(PlayerId),

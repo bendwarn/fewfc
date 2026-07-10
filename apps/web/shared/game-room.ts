@@ -6,6 +6,8 @@ import type {
   PlayableAction,
   PublicGameState,
   RecordedDecision,
+  SecretStrategy,
+  StarKind,
 } from '../app/types/fewfc'
 export {
   AVAILABLE_RULE_MODULES,
@@ -152,6 +154,18 @@ export type OnlineGameAction =
   | { type: 'refresh' }
   | { type: 'advanceAutomatic' }
   | { type: 'passAction' }
+  | { type: 'chooseInitialPouch'; player: PlayerId; card: number }
+  | {
+      type: 'triggerSecretStrategy'
+      player: PlayerId
+      strategy: SecretStrategy
+      targetPlayer?: PlayerId
+      star?: StarKind
+      breakStar?: boolean
+      discardCard?: number
+      deckCards?: number[]
+      discardCards?: number[]
+    }
   | {
       type: 'performFormation'
       player: PlayerId
@@ -161,6 +175,16 @@ export type OnlineGameAction =
       matchOptionRole?: string
       matchOptionCard?: number
       matchOptionSlots?: number
+      pouchOwner?: PlayerId
+      pouchCard?: number
+      triggerCard?: number
+      secretStrategy?: SecretStrategy
+      secretStrategyTargetPlayer?: PlayerId
+      secretStrategyStar?: StarKind
+      secretStrategyBreakStar?: boolean
+      secretStrategyDiscardCard?: number
+      secretStrategyDeckCards?: number[]
+      secretStrategyDiscardCards?: number[]
     }
   | { type: 'changeProfession'; player: PlayerId; professionId: string; cards: number[] }
   | {
@@ -193,6 +217,8 @@ export function isOnlineGameAction(value: unknown): value is OnlineGameAction {
     'refresh',
     'advanceAutomatic',
     'passAction',
+    'chooseInitialPouch',
+    'triggerSecretStrategy',
     'performFormation',
     'changeProfession',
     'activateProfessionAbility',
@@ -318,6 +344,7 @@ export type GameRoomRequest =
   | {
       type: 'seedEchoFixture'
       actorUserId: string
+      mode?: 'actionDetail'
     }
   | {
       type: 'seedTribulationFixture'
@@ -401,6 +428,8 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     discard: [],
     playerDecks: [],
     playerDiscards: [],
+    pouches: [],
+    preparationPlayer: null,
     coveredPassives: [],
     counterEffects: [],
     pendingChoice: null,

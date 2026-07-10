@@ -28,6 +28,7 @@ pub struct PublicGameState {
     pub discard: Vec<CardInstanceId>,
     pub player_decks: Vec<PublicPlayerDeck>,
     pub player_discards: Vec<PublicPlayerDiscard>,
+    pub pouches: Vec<PublicPouch>,
     pub covered_passives: Vec<PublicCoveredPassive>,
     pub counter_effects: Vec<CounterEffect>,
     pub pending_choice: Option<PublicPendingChoice>,
@@ -83,6 +84,12 @@ pub struct PublicPlayerDiscard {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicPouch {
+    pub owner: PlayerId,
+    pub card: Option<CardInstanceId>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicCoveredPassive {
     pub owner: PlayerId,
     pub formation_id: Option<String>,
@@ -127,6 +134,14 @@ pub struct PublicPendingRandomness {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PublicGameEvent {
     Public(GameEvent),
+    GamePreparationStarted,
+    InitialPouchChosen {
+        player: PlayerId,
+    },
+    PouchPlaced {
+        owner: PlayerId,
+        card: Option<CardInstanceId>,
+    },
     DeckPrepared {
         deck: PublicCardRefs,
     },
@@ -252,9 +267,20 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .player_decks
             .iter()
             .filter(|_| uses_personal_decks)
-            .map(|pile| PublicPlayerDeck {
-                player: pile.player.clone(),
-                cards: public_cards(&pile.cards, false, &state.exposed_foreign_cards),
+            .map(|pile| {
+                let visible = state.has_rule_module(crate::domain::POUCH_MODULE_ID)
+                    && policy.can_see_player_hidden_cards(&pile.player);
+                let cards = if visible {
+                    let mut cards = pile.cards.clone();
+                    cards.sort();
+                    PublicCardRefs::Known(cards)
+                } else {
+                    public_cards(&pile.cards, false, &state.exposed_foreign_cards)
+                };
+                PublicPlayerDeck {
+                    player: pile.player.clone(),
+                    cards,
+                }
             })
             .collect(),
         player_discards: state
@@ -264,6 +290,17 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .map(|pile| PublicPlayerDiscard {
                 player: pile.player.clone(),
                 cards: pile.cards.clone(),
+            })
+            .collect(),
+        pouches: state
+            .pouches
+            .iter()
+            .map(|pouch| PublicPouch {
+                owner: pouch.owner.clone(),
+                card: match &policy.viewer {
+                    Viewer::Player(viewer) if pouch.known_by.contains(viewer) => Some(pouch.card),
+                    _ => None,
+                },
             })
             .collect(),
         covered_passives: state
@@ -389,6 +426,22 @@ fn public_flow_states(state: &GameState) -> Vec<PublicFlowState> {
 pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
     let policy = RedactionPolicy::new(viewer);
     match event {
+        GameEvent::GamePreparationStarted { .. } => PublicGameEvent::GamePreparationStarted,
+        GameEvent::InitialPouchChosen { player, .. } => PublicGameEvent::InitialPouchChosen {
+            player: player.clone(),
+        },
+        GameEvent::PouchPlaced {
+            owner,
+            card,
+            known_by,
+            ..
+        } => PublicGameEvent::PouchPlaced {
+            owner: owner.clone(),
+            card: match &policy.viewer {
+                Viewer::Player(viewer) if known_by.contains(viewer) => Some(*card),
+                _ => None,
+            },
+        },
         GameEvent::DeckPrepared { deck_order } => PublicGameEvent::DeckPrepared {
             deck: PublicCardRefs::Hidden {
                 count: deck_order.len(),
@@ -536,6 +589,12 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
             applied_on_turn: *applied_on_turn,
         },
         GameEvent::TurnStarted { .. }
+        | GameEvent::GamePreparationCompleted
+        | GameEvent::PouchRevealed { .. }
+        | GameEvent::PouchConsumed { .. }
+        | GameEvent::PouchLevelBonusGranted { .. }
+        | GameEvent::TemporaryStarEffectGranted { .. }
+        | GameEvent::SpiritRevived { .. }
         | GameEvent::ActionPassed { .. }
         | GameEvent::ProfessionChanged { .. }
         | GameEvent::ProfessionTransformed { .. }

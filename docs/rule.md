@@ -728,9 +728,10 @@ The additional-effect immunity applies by affected resource:
 
 ### 5.8 Web setup
 
-New official rooms enable every available Rule Module by default; the Base
-Ruleset cannot be disabled. Existing rooms retain their stored module
-configuration when a new module becomes available.
+New official rooms enable the established Rule Modules by default; Pouch is
+opt-in because it adds an interactive Game Preparation stage. The Base Ruleset
+cannot be disabled. Existing rooms retain their stored module configuration
+when a new module becomes available.
 
 The room owner may change Rule Modules subject to declared dependencies.
 Enabling a Rule Module automatically enables its transitive dependencies;

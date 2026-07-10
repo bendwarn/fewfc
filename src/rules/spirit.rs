@@ -369,6 +369,9 @@ pub(crate) fn use_skill(
         selected_card,
         declared_level,
     }];
+    if crate::rules::pouch::spirit_is_suppressed(state, player) {
+        return Ok(events);
+    }
     events.extend(skill_effect_events(
         state,
         player,

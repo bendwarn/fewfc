@@ -72,7 +72,9 @@ impl BaseRuleset {
         deck_order: Vec<CardInstanceId>,
     ) -> GameResult<Vec<GameEvent>> {
         validate_setup(setup)?;
-        validate_card_instances(setup, &deck_order)?;
+        if !setup.has_rule_module(crate::domain::POUCH_MODULE_ID) {
+            validate_card_instances(setup, &deck_order)?;
+        }
         initial_events(setup, deck_order)
     }
 
@@ -117,23 +119,58 @@ impl BaseRuleset {
                     selected_cards,
                 )?
                 .into_iter()
+                .filter(|candidate| {
+                    crate::rules::confluence::profession_change_satisfies_obligation(
+                        state,
+                        player,
+                        &candidate.cards,
+                    )
+                })
                 .map(PlayableAction::ChangeProfession),
             );
-            actions.extend(
-                crate::rules::profession::playable_profession_abilities(
+            let profession_abilities = crate::rules::profession::playable_profession_abilities(
+                state,
+                player,
+                selected_cards,
+            )?;
+            for candidate in profession_abilities {
+                let preserves = crate::rules::profession::activate_profession_ability(
                     state,
                     player,
-                    selected_cards,
-                )?
-                .into_iter()
-                .map(PlayableAction::ActivateProfessionAbility),
-            );
+                    &candidate.ability_id,
+                    &candidate.cards,
+                    candidate.target_card,
+                    candidate.declared_element,
+                    candidate.declared_level,
+                )
+                .and_then(|events| {
+                    crate::rules::confluence::events_preserve_tuning_completion(
+                        state, player, &events,
+                    )
+                })
+                .unwrap_or(true);
+                if preserves {
+                    actions.push(PlayableAction::ActivateProfessionAbility(candidate));
+                }
+            }
         }
-        actions.extend(
-            crate::rules::spirit::playable_skills(state, player, selected_cards)
-                .into_iter()
-                .map(PlayableAction::UseSpiritSkill),
-        );
+        for candidate in crate::rules::spirit::playable_skills(state, player, selected_cards) {
+            let preserves = crate::rules::spirit::use_skill(
+                state,
+                player,
+                candidate.skill,
+                candidate.selected_card,
+                candidate.declared_level,
+                None,
+            )
+            .and_then(|events| {
+                crate::rules::confluence::events_preserve_tuning_completion(state, player, &events)
+            })
+            .unwrap_or(true);
+            if preserves {
+                actions.push(PlayableAction::UseSpiritSkill(candidate));
+            }
+        }
         Ok(actions)
     }
 
@@ -411,6 +448,9 @@ fn initial_events(
     setup: &GameSetup,
     deck_order: Vec<CardInstanceId>,
 ) -> GameResult<Vec<GameEvent>> {
+    if let Some(events) = crate::rules::pouch::initial_events(setup)? {
+        return Ok(events);
+    }
     if setup.has_rule_module(PERSONAL_DECK_MODULE_ID) {
         let mut events = Vec::new();
         for (turn_index, player) in setup.turn_order.iter().enumerate() {
@@ -490,6 +530,9 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
     ensure_engine_invariants(state)?;
 
     if matches!(state.status, GameStatus::Finished { .. }) {
+        return Ok(Vec::new());
+    }
+    if matches!(state.status, GameStatus::Preparing { .. }) {
         return Ok(Vec::new());
     }
     if state.pending_choice.is_some() || state.pending_randomness.is_some() {
@@ -715,6 +758,14 @@ fn decide_command_with_base_ruleset(
     if matches!(state.status, GameStatus::Finished { .. }) {
         return Err(GameError::Validation(ValidationError::GameFinished));
     }
+    if let Some(events) = crate::rules::pouch::decide_command(state, &command)? {
+        return Ok(events);
+    }
+    if matches!(state.status, GameStatus::Preparing { .. }) {
+        return Err(GameError::Validation(
+            ValidationError::GamePreparationInProgress,
+        ));
+    }
     if let Some(request) = &state.pending_randomness {
         return Err(GameError::Validation(
             ValidationError::PendingRandomnessInProgress {
@@ -750,6 +801,9 @@ fn decide_command_with_base_ruleset(
     }
 
     match command {
+        Command::ChooseInitialPouch { .. } | Command::TriggerSecretStrategy { .. } => {
+            unreachable!("Pouch commands are handled before base command dispatch")
+        }
         Command::PassAction { player, reason } => {
             ensure_current_player(state, &player)?;
             ensure_phase(state, Phase::Main)?;
@@ -789,7 +843,9 @@ fn decide_command_with_base_ruleset(
                     incoming_player: player.clone(),
                     incoming_kind: covered_passive::IncomingActionKind::Pass,
                     ignores_formation_effects: false,
-                    ignores_counter_effects: false,
+                    ignores_counter_effects: crate::rules::pouch::player_is_protected(
+                        state, &player,
+                    ),
                     attack_points: None,
                 },
             );
@@ -875,7 +931,9 @@ fn decide_command_with_base_ruleset(
                     incoming_player: player.clone(),
                     incoming_kind: covered_passive::IncomingActionKind::ProfessionChange,
                     ignores_formation_effects: false,
-                    ignores_counter_effects: false,
+                    ignores_counter_effects: crate::rules::pouch::player_is_protected(
+                        state, &player,
+                    ),
                     attack_points: None,
                 },
             );
@@ -908,6 +966,13 @@ fn decide_command_with_base_ruleset(
                 &profession,
                 &submitted_cards,
             ));
+            if let Some(event) = crate::rules::confluence::obligation_completion_event(
+                state,
+                &player,
+                &submitted_cards,
+            ) {
+                events.push(event);
+            }
             Ok(events)
         }
         Command::ActivateProfessionAbility {
@@ -925,7 +990,7 @@ fn decide_command_with_base_ruleset(
                     ValidationError::ProfessionAbilityCannotResolve(ability_id),
                 ));
             }
-            crate::rules::profession::activate_profession_ability(
+            let mut events = crate::rules::profession::activate_profession_ability(
                 state,
                 &player,
                 &ability_id,
@@ -933,7 +998,48 @@ fn decide_command_with_base_ruleset(
                 target_card,
                 declared_element,
                 declared_level,
-            )
+            )?;
+            if crate::rules::pouch::profession_is_suppressed(state, &player) {
+                for event in &mut events {
+                    match event {
+                        GameEvent::ProfessionAbilityActivated { prepared, .. } => {
+                            *prepared = None;
+                        }
+                        GameEvent::CardsMoved { card_moves } => {
+                            card_moves.retain(|movement| {
+                                cards.contains(&movement.card)
+                                    && movement.from == CardZone::Hand(player.clone())
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                events.retain(|event| {
+                    matches!(event, GameEvent::ProfessionAbilityActivated { .. })
+                        || matches!(
+                            event,
+                            GameEvent::CardsMoved { card_moves } if !card_moves.is_empty()
+                        )
+                        || matches!(
+                        event,
+                        GameEvent::LimitedUseChanged {
+                            old_remaining,
+                            new_remaining,
+                            ..
+                        } if new_remaining < old_remaining
+                        )
+                });
+            }
+            if !crate::rules::confluence::events_preserve_tuning_completion(
+                state, &player, &events,
+            )? {
+                return Err(GameError::Validation(
+                    ValidationError::ProfessionAbilityCannotResolve(
+                        "confluence:tuning-obligation".to_string(),
+                    ),
+                ));
+            }
+            Ok(events)
         }
         Command::UseSpiritSkill {
             player,
@@ -943,14 +1049,24 @@ fn decide_command_with_base_ruleset(
         } => {
             ensure_current_player(state, &player)?;
             ensure_phase(state, Phase::Main)?;
-            crate::rules::spirit::use_skill(
+            let events = crate::rules::spirit::use_skill(
                 state,
                 &player,
                 skill,
                 selected_card,
                 declared_level,
                 None,
-            )
+            )?;
+            if !crate::rules::confluence::events_preserve_tuning_completion(
+                state, &player, &events,
+            )? {
+                return Err(GameError::Validation(
+                    ValidationError::ProfessionAbilityCannotResolve(
+                        "confluence:tuning-obligation".to_string(),
+                    ),
+                ));
+            }
+            Ok(events)
         }
         Command::UseSpiritSkillWithTrustedRandomness {
             player,
@@ -961,14 +1077,24 @@ fn decide_command_with_base_ruleset(
         } => {
             ensure_current_player(state, &player)?;
             ensure_phase(state, Phase::Main)?;
-            crate::rules::spirit::use_skill(
+            let events = crate::rules::spirit::use_skill(
                 state,
                 &player,
                 skill,
                 selected_card,
                 declared_level,
                 Some(&random_cards),
-            )
+            )?;
+            if !crate::rules::confluence::events_preserve_tuning_completion(
+                state, &player, &events,
+            )? {
+                return Err(GameError::Validation(
+                    ValidationError::ProfessionAbilityCannotResolve(
+                        "confluence:tuning-obligation".to_string(),
+                    ),
+                ));
+            }
+            Ok(events)
         }
         Command::ChooseTurnDiscard { player, discard } => {
             ensure_current_player(state, &player)?;
@@ -997,6 +1123,7 @@ fn decide_command_with_base_ruleset(
             }];
             if let Some(owned) = state.spirit_for(&player)
                 && owned.power < 6
+                && !crate::rules::pouch::spirit_is_suppressed(state, &player)
                 && crate::rules::spirit::turn_discard_charges(state, owned.spirit, discard)
             {
                 events.push(GameEvent::SpiritPowerChanged {
@@ -1456,6 +1583,11 @@ fn ensure_phase(state: &GameState, expected: Phase) -> GameResult<()> {
 }
 
 fn player_has_status(state: &GameState, player: &crate::domain::PlayerId, kind: &str) -> bool {
+    if matches!(kind, "CannotAct" | "CannotDraw")
+        && crate::rules::pouch::player_is_protected(state, player)
+    {
+        return false;
+    }
     state.statuses.iter().any(|status| {
         matches!(&status.owner, crate::domain::StatusOwner::Player(owner) if owner == player)
             && status.kind == kind

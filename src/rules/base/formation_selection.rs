@@ -12,10 +12,12 @@ use std::collections::HashSet;
 pub(super) struct FormationSelection {
     enabled_rule_modules: Vec<crate::domain::RuleModuleId>,
     profession: Option<crate::domain::ProfessionId>,
+    profession_abilities_suppressed: bool,
     cards: Vec<CardInstanceId>,
     facts: Vec<SubmittedCardFacts>,
     registry: FormationRegistry,
     team_star: Option<crate::domain::StarKind>,
+    available_stars: Vec<crate::domain::StarKind>,
     prepared: Option<crate::domain::PreparedProfessionAbility>,
     spirit_level_interpretations: Vec<crate::domain::SpiritLevelInterpretation>,
     residual_card_facts: Option<(crate::domain::Element, u32)>,
@@ -77,21 +79,40 @@ impl FormationSelection {
                     .and_then(|candidate| state.star_for_team(&candidate.team))
             })
             .flatten();
+        let mut available_stars = team_star.into_iter().collect::<Vec<_>>();
+        available_stars.extend(
+            state
+                .temporary_star_effects
+                .iter()
+                .filter(|effect| {
+                    &effect.player == player && effect.applied_on_turn == state.turn_number
+                })
+                .map(|effect| effect.star),
+        );
 
         Ok(Self {
             enabled_rule_modules: state.enabled_rule_modules.clone(),
             profession: state.profession_for(player).cloned(),
+            profession_abilities_suppressed: crate::rules::pouch::profession_is_suppressed(
+                state, player,
+            ),
             cards: selected_cards,
             facts,
             registry: official_formation_registry(&state.enabled_rule_modules),
             team_star,
-            prepared: state
-                .prepared_profession_abilities
-                .iter()
-                .find(|prepared| {
-                    &prepared.player == player && prepared.prepared_on_turn == state.turn_number
+            available_stars,
+            prepared: (!crate::rules::pouch::profession_is_suppressed(state, player))
+                .then(|| {
+                    state
+                        .prepared_profession_abilities
+                        .iter()
+                        .find(|prepared| {
+                            &prepared.player == player
+                                && prepared.prepared_on_turn == state.turn_number
+                        })
+                        .cloned()
                 })
-                .cloned(),
+                .flatten(),
             spirit_level_interpretations: state
                 .spirit_level_interpretations
                 .iter()
@@ -300,7 +321,9 @@ impl FormationSelection {
             TargetDecl::Player(_)
             | TargetDecl::Team(_)
             | TargetDecl::FormationRole { .. }
-            | TargetDecl::CardMultiplicity { .. } => None,
+            | TargetDecl::CardMultiplicity { .. }
+            | TargetDecl::SecretStrategy(_)
+            | TargetDecl::SecretStrategyOptions { .. } => None,
         });
         let star_substitution = match declared_substitution {
             Some(card) => options
@@ -428,7 +451,7 @@ impl FormationSelection {
         }
 
         if let Some(required_star) = star::required_star(&formation.id)
-            && self.team_star != Some(required_star)
+            && !self.available_stars.contains(&required_star)
         {
             return Vec::new();
         }
@@ -450,37 +473,38 @@ impl FormationSelection {
             options.push(None);
         }
 
-        if crate::rules::hero::matches_proficiency(
-            &self.enabled_rule_modules,
-            self.profession.as_ref(),
-            &formation.id,
-            &self.facts,
-        ) && !options.contains(&None)
+        if !self.profession_abilities_suppressed
+            && crate::rules::hero::matches_proficiency(
+                &self.enabled_rule_modules,
+                self.profession.as_ref(),
+                &formation.id,
+                &self.facts,
+            )
+            && !options.contains(&None)
         {
             options.push(None);
         }
 
-        let Some(owned_star) = self.team_star else {
-            return options;
-        };
         if base_formation_registry().formation(&formation.id).is_none() {
             return options;
         }
 
-        options.extend(self.facts.iter().enumerate().filter_map(|(index, card)| {
-            if card.element != star::companion_element(owned_star) {
-                return None;
-            }
-            let mut interpreted = self.facts.clone();
-            interpreted[index].element = star::element(owned_star);
-            matcher.matches(&formation.pattern, &interpreted).then(|| {
-                Some(StarElementSubstitution {
-                    card: self.cards[index],
-                    printed_element: card.element,
-                    interpreted_element: star::element(owned_star),
+        for available_star in &self.available_stars {
+            options.extend(self.facts.iter().enumerate().filter_map(|(index, card)| {
+                if card.element != star::companion_element(*available_star) {
+                    return None;
+                }
+                let mut interpreted = self.facts.clone();
+                interpreted[index].element = star::element(*available_star);
+                matcher.matches(&formation.pattern, &interpreted).then(|| {
+                    Some(StarElementSubstitution {
+                        card: self.cards[index],
+                        printed_element: card.element,
+                        interpreted_element: star::element(*available_star),
+                    })
                 })
-            })
-        }));
+            }));
+        }
         options
     }
 
@@ -493,6 +517,7 @@ impl FormationSelection {
                         .map(|effect| &effect.plan),
                     Some(EffectPlan::PassiveSpell(_))
                 )
+                && !self.profession_abilities_suppressed
                 && crate::rules::hero::matches_proficiency(
                     &self.enabled_rule_modules,
                     self.profession.as_ref(),
@@ -571,12 +596,13 @@ impl FormationSelection {
                 &interpreted,
             )
             || crate::rules::dark::formation_matches(&formation.id, &interpreted)
-            || crate::rules::hero::matches_proficiency(
-                &self.enabled_rule_modules,
-                self.profession.as_ref(),
-                &formation.id,
-                &interpreted,
-            )
+            || !self.profession_abilities_suppressed
+                && crate::rules::hero::matches_proficiency(
+                    &self.enabled_rule_modules,
+                    self.profession.as_ref(),
+                    &formation.id,
+                    &interpreted,
+                )
     }
 
     fn sacred_art_options(
@@ -584,7 +610,8 @@ impl FormationSelection {
         formation: &FormationDef,
         matcher: &crate::rules::FormationMatcher<'_>,
     ) -> Vec<CardInstanceId> {
-        if self.cards.len() != 3
+        if self.profession_abilities_suppressed
+            || self.cards.len() != 3
             || base_formation_registry().formation(&formation.id).is_none()
             || !crate::rules::hero::profession_has_ability(
                 &self.enabled_rule_modules,

@@ -5,6 +5,8 @@ import type {
   PlayerId,
   PublicGameEvent,
   PublicGameState,
+  SecretStrategy,
+  StarKind,
   ViewerId,
 } from '~/types/fewfc'
 import type {
@@ -34,6 +36,8 @@ function emptyState(): PublicGameState {
     discard: [],
     playerDecks: [],
     playerDiscards: [],
+    pouches: [],
+    preparationPlayer: null,
     coveredPassives: [],
     counterEffects: [],
     pendingChoice: null,
@@ -88,6 +92,8 @@ export function useGameRoom(viewer: ViewerRef) {
     canPass: false,
     hasOptionalEffect: false,
     canRetrieveDiscard: false,
+    canChooseInitialPouch: false,
+    canTriggerPouch: false,
   })
   const connectionState = ref<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle')
   const roomDissolved = ref(false)
@@ -345,6 +351,35 @@ export function useGameRoom(viewer: ViewerRef) {
     })
   }
 
+  async function chooseInitialPouch(card: CardInstanceId) {
+    if (viewer.value === 'observer') return
+    await submitOnline({
+      type: 'chooseInitialPouch',
+      player: viewer.value,
+      card,
+    })
+  }
+
+  async function triggerSecretStrategy(
+    strategy: SecretStrategy,
+    options: {
+      targetPlayer?: PlayerId
+      star?: StarKind
+      breakStar?: boolean
+      discardCard?: CardInstanceId
+      deckCards?: CardInstanceId[]
+      discardCards?: CardInstanceId[]
+    } = {},
+  ) {
+    if (viewer.value === 'observer') return false
+    return await submitOnline({
+      type: 'triggerSecretStrategy',
+      player: viewer.value,
+      strategy,
+      ...options,
+    })
+  }
+
   async function queryPlayableActions(revision: number, cards: CardInstanceId[]) {
     const player = state.value.currentPlayer
 
@@ -533,7 +568,21 @@ export function useGameRoom(viewer: ViewerRef) {
       : [...selectedCards.value, card]
   }
 
-  async function performPlayableAction(action: PlayableAction) {
+  async function performPlayableAction(
+    action: PlayableAction,
+    pouchOptions: {
+      pouchOwner?: PlayerId
+      pouchCard?: CardInstanceId
+      triggerCard?: CardInstanceId
+      secretStrategy?: SecretStrategy
+      secretStrategyTargetPlayer?: PlayerId
+      secretStrategyStar?: StarKind
+      secretStrategyBreakStar?: boolean
+      secretStrategyDiscardCard?: CardInstanceId
+      secretStrategyDeckCards?: CardInstanceId[]
+      secretStrategyDiscardCards?: CardInstanceId[]
+    } = {},
+  ) {
     const player = state.value.currentPlayer
 
     if (viewer.value !== player) {
@@ -551,6 +600,7 @@ export function useGameRoom(viewer: ViewerRef) {
           matchOptionRole: action.matchOption?.role,
           matchOptionCard: action.matchOption?.card,
           matchOptionSlots: action.matchOption?.slots,
+          ...pouchOptions,
         })) {
           selectedCards.value = []
         }
@@ -714,6 +764,8 @@ export function useGameRoom(viewer: ViewerRef) {
     disconnectRoomSocket,
     passAction,
     retrievePreviousTurnDiscard,
+    chooseInitialPouch,
+    triggerSecretStrategy,
     canSelectCard,
     toggleCardSelection,
     performPlayableAction,

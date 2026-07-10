@@ -158,6 +158,27 @@ test('Tribulation is default-on, depends on Advanced Rules, and is not inferred 
   assert.equal(normalizeServerRuleModules(stored).includes('tribulation'), false)
 })
 
+test('Pouch is opt-in and requires Personal Deck plus Spirit', () => {
+  const spec = RULE_MODULE_SPECS.find(module => module.id === 'pouch')
+  assert.deepEqual(spec, {
+    id: 'pouch',
+    label: '主題規則‧錦囊',
+    group: 'theme',
+    defaultEnabled: false,
+    dependencies: ['personal-deck', 'spirit'],
+  })
+  assert.equal(normalizeRuleModules(undefined).includes('pouch'), false)
+  assert.equal(normalizeRuleModules(['pouch']).includes('pouch'), false)
+  assert.deepEqual(enableRuleModule([], 'pouch'), [
+    'star',
+    'hero-schools',
+    'personal-deck',
+    'five-directions-legend',
+    'spirit',
+    'pouch',
+  ])
+})
+
 test('generic dependency operations add requirements and remove dependents', () => {
   assert.deepEqual(enableRuleModule([], 'spirit'), [
     'star',

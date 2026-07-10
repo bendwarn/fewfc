@@ -76,6 +76,13 @@ export const RULE_MODULE_SPECS = [
     defaultEnabled: true,
     dependencies: ['star', 'five-directions-legend', 'hero-schools'],
   },
+  {
+    id: 'pouch',
+    label: '主題規則‧錦囊',
+    group: 'theme',
+    defaultEnabled: false,
+    dependencies: ['personal-deck', 'spirit'],
+  },
 ] as const
 
 export type RuleModuleId = typeof RULE_MODULE_SPECS[number]['id']

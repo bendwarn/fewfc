@@ -82,6 +82,20 @@ The official Theme Rule Module that adds the 調律師, 道法師, 晴風士, an
 have limited uses that can be recovered or reset.
 _Avoid_: Confluence Ruleset, Hero Schools extension
 
+**Tuner Profession System (調律師系統)**:
+The Confluence Generation Profession chain comprising 調律師, 易弦師, and
+天響師, whose transitions, Formations, and abilities derive from the
+Retrievable Discard's Residual Element and Residual Level.
+_Avoid_: Confluence Generation system, 調律 ability
+
+**Tuning Card Obligation (調律牌義務)**:
+The turn-scoped requirement attached to the Card obtained through 調律. That
+Card must participate in an allowed Profession Change or, while 易弦 applies,
+one of the Player's currently available Profession Formations, including
+inherited Formations. No other voluntary ability may move or consume that Card,
+or consume other Cards in a way that removes every remaining completion path.
+_Avoid_: optional Tuning bonus, generic Card-use restriction
+
 **Pouch Rule Module (錦囊規則)**:
 The official Theme Rule Module that adds player-owned Pouches, ten Secret
 Strategies, and the Chain Formation. In this product it requires the Personal
@@ -428,13 +442,15 @@ Retrieval.
 _Avoid_: top discarded card, formation cards
 
 **Residual Element (餘行)**:
-The printed element of the Retrievable Discard. It does not exist when there is
-no Retrievable Discard.
+The turn-scoped fact fixed from the printed element of the Previous Player's
+Turn Draw Discarded Card when that Card is Discarded. It remains unchanged
+until the current Player reaches Turn Draw, even if the Card moves.
 _Avoid_: Previous Formation element, interpreted element
 
 **Residual Level (餘級)**:
-The printed level of the Retrievable Discard. It does not exist when there is no
-Retrievable Discard.
+The turn-scoped fact fixed from the printed level of the Previous Player's Turn
+Draw Discarded Card when that Card is Discarded. It remains unchanged until the
+current Player reaches Turn Draw, even if the Card moves.
 _Avoid_: Previous Formation level, interpreted level
 
 **Card Definition**:
@@ -535,6 +551,14 @@ _Avoid_: combo, hand pattern
 The complete set of Formations contributed by the Base Ruleset and enabled Rule
 Modules, independent of whether a Player can currently perform them.
 _Avoid_: playable actions, current hand matches
+
+**Player-Facing Action Detail**:
+The Web-visible explanation attached to a currently playable action before the
+Player commits it. It must describe every rule consequence the Player needs to
+understand at that decision point, including follow-up choices, delayed effects,
+and rule-module exceptions. It may reuse canonical rule text, but is not the
+same artifact as a Formation Catalog rule description.
+_Avoid_: raw rule_text, tooltip copy
 
 **Formation Use**:
 The accepted use of a declared formation, including its semantic resolution and explicit card movement.
@@ -707,6 +731,59 @@ _Avoid_: callback response
   **Discard Pile**
 - **Discard Retrieval** derives exactly one **Retrievable Discard** from
   canonical turn history rather than a Player-submitted card choice
+- Residual Element and Residual Level remain available for Tuner transitions
+  and Formations even after their source Card stops being a Retrievable Discard;
+  調律 and 天響 additionally require that physical Card to remain retrievable
+- 天響 moves the Retrievable Discard into its Player's hand without creating a
+  Tuning Card Obligation or changing the active Residual Element and Residual
+  Level; the Card may be freely kept or used
+- 調律 and 天響 are both Activated Profession Abilities and compete for the
+  same once-per-turn Activated Profession Ability allowance
+- 天響 has one use per acquisition of 天響師; reacquiring 天響師 resets that
+  use, while Turn changes and shuffles do not
+- Residual Element and Residual Level expire when their Player reaches Turn
+  Draw; if that Turn Draw produces no Turn Draw Discard, the Next Player
+  receives no new residual facts
+- A **Tuning Card Obligation** permits non-action-ending abilities beforehand,
+  but no action may end the Main Phase without consuming the Tuning Card through
+  an allowed action
+- 調律 is available when at least one legal sequence of the Player's remaining
+  non-action-ending abilities can lead to an action that fulfills the resulting
+  Tuning Card Obligation; immediate post-調律 legality is not required
+- While a Tuning Card Obligation is active, a voluntary non-action-ending
+  option is available only when its projected result retains at least one legal
+  completion path; consuming one of several alternatives remains legal
+- The Rules Engine, not the UI, authoritatively rejects any command that would
+  remove every completion path for an active Tuning Card Obligation
+- A Tuning Card Obligation is fulfilled when the Card participates in an
+  accepted allowed action, even if that Profession Change or Profession
+  Formation is later ineffective or cancelled
+- The Tuner Profession System's Residual-Element transition values 3, 6, and 9
+  are minimum total levels, not exact totals
+- Residual Level is fixed from the Retrievable Discard's printed level, while a
+  submitted Card satisfies a Residual-Level-Card slot using its effective level
+  after every applicable Card Interpretation Layer
+- 調律 compares its Discarded cost Card's effective level against the printed
+  Residual Level
+- A physical Card fills only one Formation match slot unless a rule explicitly
+  grants multiplicity; the element-Card and Residual-Level-Card slots of a
+  five-resonance Formation must therefore use different Card Instances
+- 千鳴 normally resolves its Residual-Element resonance and selected resonance
+  simultaneously; when a choice prevents simultaneous handling, the complete
+  Residual-Element resonance continuation finishes before the selected
+  resonance begins
+- Game Outcome evaluation waits until every 千鳴 resonance and pending choice
+  has completed; a lethal earlier resonance does not cancel the later resonance
+- 萬鳴 applies its deterministic HP, Shield, and Turn Draw effects before
+  entering the 鏡鳴 hand-inspection and Discard choice continuation
+- A lethal deterministic 萬鳴 effect does not finalize Game Outcome or block
+  commands until its 鏡鳴 continuation has completed
+- 煌鳴 and every composite resonance that includes it affect only the Previous
+  Player; that Player's teammates share the Team HP loss but do not join the
+  Affected Player Set
+- 森鳴 and 萬鳴 recover their performing Player's Team HP, but Formation
+  recovery restrictions are evaluated only on that performing Player; an
+  affected teammate does not block the recovery
 - An **Echo Cost** is an ordinary **Discard**, not a Turn Draw Discard, and
   therefore neither charges a Spirit nor becomes a **Retrievable Discard**
 - An **Echo Cost** reads a Card's printed element unless the granting rule

@@ -5,6 +5,17 @@ export type CardInstanceId = number
 export type StarKind = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
 export type SpiritKind = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth' | 'Evil' | 'Death'
 export type Element = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
+export type SecretStrategy =
+  | 'GoldenCicada'
+  | 'StealTheBeam'
+  | 'MuddyWaters'
+  | 'WatchTheFire'
+  | 'LureTheTigerAway'
+  | 'ReturnSoul'
+  | 'SheepStealing'
+  | 'DarkCrossing'
+  | 'DeceiveHeaven'
+  | 'Retreat'
 
 export interface StarElementSubstitution {
   card: CardInstanceId
@@ -89,7 +100,7 @@ export interface PublicCard {
 
 export interface PublicGameState {
   enabledRuleModules: string[]
-  status: 'InProgress' | 'Finished'
+  status: 'Preparing' | 'InProgress' | 'Finished'
   turnNumber: number
   phase: 'TurnStart' | 'Main' | 'TurnDraw' | 'TurnDrawDiscardChoice' | 'TurnEnd'
   currentPlayer: PlayerId | null
@@ -100,6 +111,8 @@ export interface PublicGameState {
   discard: PublicCard[]
   playerDecks: Array<{ player: PlayerId; cards: PublicCardRefs }>
   playerDiscards: Array<{ player: PlayerId; cards: PublicCard[] }>
+  pouches: Array<{ owner: PlayerId; card: PublicCard | null }>
+  preparationPlayer: PlayerId | null
   coveredPassives: PublicCoveredPassive[]
   counterEffects: Array<{ owner: PlayerId; effectId: string; effectName: string }>
   pendingChoice: PublicPendingChoice | null
@@ -245,6 +258,8 @@ export interface LocalGameResponse {
     canPass: boolean
     hasOptionalEffect: boolean
     canRetrieveDiscard: boolean
+    canChooseInitialPouch: boolean
+    canTriggerPouch: boolean
   }
   trustedRandomCandidates?: CardInstanceId[]
   pendingRandomnessRequest?: {

@@ -3,8 +3,8 @@ use crate::domain::targeting::{RulePlayerTarget, TurnOrderTargets};
 use crate::domain::{
     CardDefId, CardInstanceId, Command, DISCARD_RETRIEVAL_MODULE_ID, EffectChoiceAnswer, GameError,
     GameEvent, GameSetup, PassActionReason, PendingChoiceKind, PendingRandomness, Phase, Player,
-    PlayerDeckList, PlayerId, ProfessionId, RuleModuleId, StarElementSubstitution, StatusOwner,
-    TargetDecl, TeamHp, TeamId, TrustedRandomnessAnswer, TurnDrawSkipReason,
+    PlayerDeckList, PlayerId, ProfessionId, RuleModuleId, SecretStrategy, StarElementSubstitution,
+    StarKind, StatusOwner, TargetDecl, TeamHp, TeamId, TrustedRandomnessAnswer, TurnDrawSkipReason,
 };
 use crate::public_view::{
     PublicCardRefs, PublicGameEvent, PublicGameState, PublicPendingChoiceKind, Viewer,
@@ -38,6 +38,37 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
             .map_err(ApiError::Game)?;
             advance_to_interactive_decision(&mut record)?;
         }
+        ApiAction::ChooseInitialPouch { player, card } => {
+            let _ = record
+                .handle(Command::ChooseInitialPouch {
+                    player: PlayerId::new(player),
+                    card,
+                })
+                .map_err(ApiError::Game)?;
+        }
+        ApiAction::TriggerSecretStrategy {
+            player,
+            strategy,
+            target_player,
+            star,
+            break_star,
+            discard_card,
+            deck_cards,
+            discard_cards,
+        } => {
+            let _ = record
+                .handle(Command::TriggerSecretStrategy {
+                    player: PlayerId::new(player),
+                    strategy,
+                    target_player: target_player.map(PlayerId::new),
+                    star,
+                    break_star,
+                    discard_card,
+                    deck_cards,
+                    discard_cards,
+                })
+                .map_err(ApiError::Game)?;
+        }
         ApiAction::Refresh => {}
         ApiAction::AdvanceAutomatic => {
             advance_to_interactive_decision(&mut record)?;
@@ -66,17 +97,11 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                     .into_iter()
                     .map(|candidate| match candidate {
                         PlayableAction::PerformFormation(candidate) => {
-                            let summary = candidate.star_substitution.as_ref().map_or_else(
-                                || candidate.rule_text.clone(),
-                                |substitution| {
-                                    format!(
-                                        "{} 星辰效果：將{}（{}）視為{}。",
-                                        candidate.rule_text,
-                                        card_summary(&substitution.card, &card_labels),
-                                        card_element_name(substitution.printed_element),
-                                        card_element_name(substitution.interpreted_element),
-                                    )
-                                },
+                            let summary = perform_formation_action_summary(
+                                &candidate.formation_id,
+                                &candidate.rule_text,
+                                candidate.star_substitution.as_ref(),
+                                &card_labels,
                             );
                             WebPlayableAction::PerformFormation {
                                 id: candidate.formation_id,
@@ -184,6 +209,16 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
             match_option_role,
             match_option_card,
             match_option_slots,
+            pouch_owner,
+            pouch_card,
+            trigger_card,
+            secret_strategy,
+            secret_strategy_target_player,
+            secret_strategy_star,
+            secret_strategy_break_star,
+            secret_strategy_discard_card,
+            secret_strategy_deck_cards,
+            secret_strategy_discard_cards,
             trusted_random_cards,
         } => {
             let mut declared_targets = star_substitution_card
@@ -199,6 +234,32 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                 } else {
                     declared_targets.push(TargetDecl::FormationRole { role, card });
                 }
+            }
+            if let Some(owner) = pouch_owner {
+                declared_targets.push(TargetDecl::Player(PlayerId::new(owner)));
+            }
+            if let Some(card) = pouch_card {
+                declared_targets.push(TargetDecl::FormationRole {
+                    role: "pouch".to_string(),
+                    card,
+                });
+            }
+            if let Some(card) = trigger_card {
+                declared_targets.push(TargetDecl::FormationRole {
+                    role: "trigger".to_string(),
+                    card,
+                });
+            }
+            if let Some(strategy) = secret_strategy {
+                declared_targets.push(TargetDecl::SecretStrategy(strategy));
+                declared_targets.push(TargetDecl::SecretStrategyOptions {
+                    target_player: secret_strategy_target_player.map(PlayerId::new),
+                    star: secret_strategy_star,
+                    break_star: secret_strategy_break_star.unwrap_or(false),
+                    discard_card: secret_strategy_discard_card,
+                    deck_cards: secret_strategy_deck_cards.unwrap_or_default(),
+                    discard_cards: secret_strategy_discard_cards.unwrap_or_default(),
+                });
             }
             let command = if let Some(random_cards) = trusted_random_cards {
                 Command::PerformFormationWithTrustedRandomness {
@@ -396,6 +457,10 @@ fn response_for(
     formation_names: &HashMap<String, String>,
     mut playable_actions: Vec<WebPlayableAction>,
 ) -> Result<ApiResponse, ApiError> {
+    let viewer_player = match &viewer {
+        Viewer::Player(player) => Some(player.clone()),
+        Viewer::Observer => None,
+    };
     let can_pass = pass_action_for_state(record.state()).is_some();
     let can_retrieve_discard = can_retrieve_discard(record.state());
     if let Viewer::Player(player) = &viewer
@@ -466,6 +531,23 @@ fn response_for(
             can_pass,
             has_optional_effect: can_retrieve_discard,
             can_retrieve_discard,
+            can_choose_initial_pouch: viewer_player.as_ref().is_some_and(|player| {
+                matches!(
+                    &record.state().status,
+                    crate::domain::GameStatus::Preparing {
+                        stage:
+                            crate::domain::GamePreparationStage::InitialPouchSelection {
+                                player: expected,
+                            },
+                    } if expected == player
+                )
+            }),
+            can_trigger_pouch: viewer_player.as_ref().is_some_and(|player| {
+                matches!(record.state().status, crate::domain::GameStatus::InProgress)
+                    && record.state().current_player() == Some(player)
+                    && record.state().phase == Phase::Main
+                    && record.state().pouch_for(player).is_some()
+            }),
         },
         trusted_random_candidates: None,
         pending_randomness_request: record.state().pending_randomness.clone(),
@@ -524,6 +606,26 @@ enum ApiAction {
     Start,
     Refresh,
     AdvanceAutomatic,
+    ChooseInitialPouch {
+        player: String,
+        card: CardInstanceId,
+    },
+    TriggerSecretStrategy {
+        player: String,
+        strategy: SecretStrategy,
+        #[serde(default, rename = "targetPlayer")]
+        target_player: Option<String>,
+        #[serde(default)]
+        star: Option<StarKind>,
+        #[serde(default, rename = "breakStar")]
+        break_star: bool,
+        #[serde(default, rename = "discardCard")]
+        discard_card: Option<CardInstanceId>,
+        #[serde(default, rename = "deckCards")]
+        deck_cards: Vec<CardInstanceId>,
+        #[serde(default, rename = "discardCards")]
+        discard_cards: Vec<CardInstanceId>,
+    },
     PassAction,
     PlayableActions {
         player: String,
@@ -545,6 +647,26 @@ enum ApiAction {
         match_option_card: Option<CardInstanceId>,
         #[serde(default, rename = "matchOptionSlots")]
         match_option_slots: Option<usize>,
+        #[serde(default, rename = "pouchOwner")]
+        pouch_owner: Option<String>,
+        #[serde(default, rename = "pouchCard")]
+        pouch_card: Option<CardInstanceId>,
+        #[serde(default, rename = "triggerCard")]
+        trigger_card: Option<CardInstanceId>,
+        #[serde(default, rename = "secretStrategy")]
+        secret_strategy: Option<SecretStrategy>,
+        #[serde(default, rename = "secretStrategyTargetPlayer")]
+        secret_strategy_target_player: Option<String>,
+        #[serde(default, rename = "secretStrategyStar")]
+        secret_strategy_star: Option<StarKind>,
+        #[serde(default, rename = "secretStrategyBreakStar")]
+        secret_strategy_break_star: Option<bool>,
+        #[serde(default, rename = "secretStrategyDiscardCard")]
+        secret_strategy_discard_card: Option<CardInstanceId>,
+        #[serde(default, rename = "secretStrategyDeckCards")]
+        secret_strategy_deck_cards: Option<Vec<CardInstanceId>>,
+        #[serde(default, rename = "secretStrategyDiscardCards")]
+        secret_strategy_discard_cards: Option<Vec<CardInstanceId>>,
         #[serde(default, rename = "trustedRandomCards")]
         trusted_random_cards: Option<Vec<CardInstanceId>>,
     },
@@ -785,6 +907,8 @@ struct WebInteraction {
     can_pass: bool,
     has_optional_effect: bool,
     can_retrieve_discard: bool,
+    can_choose_initial_pouch: bool,
+    can_trigger_pouch: bool,
 }
 
 #[derive(Serialize)]
@@ -802,6 +926,8 @@ struct WebPublicGameState {
     discard: Vec<WebCard>,
     player_decks: Vec<WebPlayerDeck>,
     player_discards: Vec<WebPlayerDiscard>,
+    pouches: Vec<WebPouch>,
+    preparation_player: Option<String>,
     covered_passives: Vec<WebCoveredPassive>,
     counter_effects: Vec<WebCounterEffect>,
     pending_choice: Option<WebPendingChoice>,
@@ -833,12 +959,19 @@ impl WebPublicGameState {
         formation_names: &HashMap<String, String>,
     ) -> Self {
         let enabled_rule_modules = state.enabled_rule_modules.clone();
+        let preparation_player = match &state.status {
+            crate::domain::GameStatus::Preparing {
+                stage: crate::domain::GamePreparationStage::InitialPouchSelection { player },
+            } => Some(player.as_str().to_string()),
+            _ => None,
+        };
         Self {
             enabled_rule_modules: enabled_rule_modules
                 .iter()
                 .map(|module| module.as_str().to_string())
                 .collect(),
             status: match &state.status {
+                crate::domain::GameStatus::Preparing { .. } => "Preparing".to_string(),
                 crate::domain::GameStatus::InProgress => "InProgress".to_string(),
                 crate::domain::GameStatus::Finished { .. } => "Finished".to_string(),
             },
@@ -909,6 +1042,15 @@ impl WebPublicGameState {
                         .collect(),
                 })
                 .collect(),
+            pouches: state
+                .pouches
+                .into_iter()
+                .map(|pouch| WebPouch {
+                    owner: pouch.owner.as_str().to_string(),
+                    card: pouch.card.map(|card| WebCard::from_id(card, labels)),
+                })
+                .collect(),
+            preparation_player,
             covered_passives: state
                 .covered_passives
                 .into_iter()
@@ -1288,6 +1430,13 @@ struct WebPlayerDeck {
 struct WebPlayerDiscard {
     player: String,
     cards: Vec<WebCard>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPouch {
+    owner: String,
+    card: Option<WebCard>,
 }
 
 #[derive(Serialize)]
@@ -1672,6 +1821,9 @@ impl From<FormationCategory> for WebFormationCategory {
 
 fn event_type(event: &PublicGameEvent) -> String {
     match event {
+        PublicGameEvent::GamePreparationStarted => "GamePreparationStarted".to_string(),
+        PublicGameEvent::InitialPouchChosen { .. } => "InitialPouchChosen".to_string(),
+        PublicGameEvent::PouchPlaced { .. } => "PouchPlaced".to_string(),
         PublicGameEvent::Public(event) => format!("{event:?}")
             .split_whitespace()
             .next()
@@ -1703,6 +1855,26 @@ fn event_presentation(
     formation_names: &HashMap<String, String>,
 ) -> (String, String) {
     match event {
+        PublicGameEvent::GamePreparationStarted => {
+            ("錦囊準備".to_string(), "玩家開始選擇初始錦囊。".to_string())
+        }
+        PublicGameEvent::InitialPouchChosen { player } => (
+            "選擇錦囊".to_string(),
+            format!("{} 已完成錦囊選擇。", player.as_str()),
+        ),
+        PublicGameEvent::PouchPlaced { owner, card } => (
+            "覆蓋錦囊".to_string(),
+            card.map_or_else(
+                || format!("{} 獲得一個覆蓋錦囊。", owner.as_str()),
+                |card| {
+                    format!(
+                        "{} 的錦囊為 {}。",
+                        owner.as_str(),
+                        card_summary(&card, labels)
+                    )
+                },
+            ),
+        ),
         PublicGameEvent::CardsDealt { player, cards } => (
             "初始發牌".to_string(),
             format!(
@@ -1866,6 +2038,46 @@ fn game_event_presentation(
     formation_names: &HashMap<String, String>,
 ) -> (String, String) {
     match event {
+        GameEvent::GamePreparationStarted { .. } => {
+            ("錦囊準備".to_string(), "玩家開始選擇初始錦囊。".to_string())
+        }
+        GameEvent::InitialPouchChosen { player, .. } => (
+            "選擇錦囊".to_string(),
+            format!("{} 已選擇初始錦囊。", player.as_str()),
+        ),
+        GameEvent::GamePreparationCompleted => (
+            "準備完成".to_string(),
+            "錦囊、洗牌與初始發牌已完成。".to_string(),
+        ),
+        GameEvent::PouchPlaced { owner, .. } => (
+            "覆蓋錦囊".to_string(),
+            format!("{} 獲得一個錦囊。", owner.as_str()),
+        ),
+        GameEvent::PouchRevealed {
+            player, strategy, ..
+        } => (
+            "觸發秘計".to_string(),
+            format!("{} 觸發 {:?}。", player.as_str(), strategy),
+        ),
+        GameEvent::PouchConsumed { .. } => {
+            ("錦囊捨棄".to_string(), "秘計來源牌已捨棄。".to_string())
+        }
+        GameEvent::PouchLevelBonusGranted { bonus } => (
+            "秘計‧偷梁".to_string(),
+            format!("{} 的既有手牌等級提升。", bonus.player.as_str()),
+        ),
+        GameEvent::TemporaryStarEffectGranted { effect } => (
+            "秘計‧瞞天".to_string(),
+            format!(
+                "{} 暫時獲得 {:?} 效果。",
+                effect.player.as_str(),
+                effect.star
+            ),
+        ),
+        GameEvent::SpiritRevived { player, spirit, .. } => (
+            "秘計‧還魂".to_string(),
+            format!("{} 召喚 {:?} 精靈。", player.as_str(), spirit),
+        ),
         GameEvent::DeckPrepared { deck_order } => (
             "準備牌庫".to_string(),
             format!("已準備 {} 張牌。", deck_order.len()),
@@ -2745,6 +2957,68 @@ fn card_summary(card: &CardInstanceId, labels: &HashMap<CardInstanceId, String>)
         .unwrap_or_else(|| "一張牌".to_string())
 }
 
+fn perform_formation_action_summary(
+    formation_id: &str,
+    rule_text: &str,
+    star_substitution: Option<&StarElementSubstitution>,
+    labels: &HashMap<CardInstanceId, String>,
+) -> String {
+    let base = echo_action_detail(formation_id, rule_text).unwrap_or_else(|| rule_text.to_string());
+    star_substitution.map_or(base.clone(), |substitution| {
+        format!(
+            "{} 星辰效果：將{}（{}）視為{}。",
+            base,
+            card_summary(&substitution.card, labels),
+            card_element_name(substitution.printed_element),
+            card_element_name(substitution.interpreted_element),
+        )
+    })
+}
+
+fn echo_action_detail(formation_id: &str, rule_text: &str) -> Option<String> {
+    let main_effect = punctuated_rule_text(rule_text);
+    let detail = match formation_id {
+        crate::rules::echo::RINGING_METAL => format!(
+            "{} 主效果完整結算後，可捨棄一張印刷行屬為金或土的手牌作為迴響代價；若支付，於自己下次回合開始只再次執行此曲調主效果，不視為新的陣法，不會再次排定迴響。",
+            main_effect
+        ),
+        crate::rules::echo::FALLING_WOOD => format!(
+            "{} 主效果完整結算後，可捨棄一張印刷行屬為木或水的手牌作為迴響代價；若支付，於自己下次回合開始只再次執行此曲調主效果，不視為新的陣法，不會再次排定迴響。",
+            main_effect
+        ),
+        crate::rules::echo::FLOWING_WATER => format!(
+            "{} 主效果完整結算後，可捨棄一張印刷行屬為水或金的手牌作為迴響代價；若支付，於自己下次回合開始只再次執行此曲調主效果，不視為新的陣法，不會再次排定迴響。",
+            main_effect
+        ),
+        crate::rules::echo::WAR_FIRE => format!(
+            "{} 主效果完整結算後，可捨棄一張印刷行屬為火或木的手牌作為迴響代價；若支付，於自己下次回合開始只再次執行此曲調主效果，不視為新的陣法，不會再次排定迴響。",
+            main_effect
+        ),
+        crate::rules::echo::SPLIT_EARTH => format!(
+            "{} 主效果完整結算後，可捨棄一張印刷行屬為土或火的手牌作為迴響代價；若支付，於自己下次回合開始只再次執行此曲調主效果，不視為新的陣法，不會再次排定迴響。",
+            main_effect
+        ),
+        crate::rules::echo::PURE_FIRE => format!(
+            "{} 主效果完整結算後，不需支付迴響代價並自動排定迴響；於自己下次回合開始重新選擇玩家，只再次執行此主效果，不視為新的陣法，不會再次排定迴響。",
+            main_effect
+        ),
+        crate::rules::echo::PLANT_EARTH => format!(
+            "{} 這不是迴響；排定自己下次回合開始選擇鳴金、落木、流水、戰火或裂土之一並只執行其主效果，不支付迴響代價、不排定迴響、不視為新的陣法。",
+            main_effect
+        ),
+        _ => return None,
+    };
+    Some(detail)
+}
+
+fn punctuated_rule_text(rule_text: &str) -> String {
+    if rule_text.ends_with('。') {
+        rule_text.to_string()
+    } else {
+        format!("{rule_text}。")
+    }
+}
+
 fn cards_summary(cards: &[CardInstanceId], labels: &HashMap<CardInstanceId, String>) -> String {
     if cards.is_empty() {
         return "0 張牌".to_string();
@@ -3274,6 +3548,77 @@ mod tests {
     }
 
     #[test]
+    fn echo_playable_action_summaries_include_echo_policy() {
+        let falling_wood = perform_formation_action_summary(
+            crate::rules::echo::FALLING_WOOD,
+            "木木；自身隊伍回復１５點生命",
+            None,
+            &HashMap::new(),
+        );
+        let action = WebPlayableAction::PerformFormation {
+            id: crate::rules::echo::FALLING_WOOD.to_string(),
+            name: "角調‧落木".to_string(),
+            category: WebFormationCategory::Spell,
+            summary: falling_wood,
+            cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
+            star_substitution: None,
+            match_option: None,
+        };
+        let json = serde_json::to_value(action).expect("action should serialize");
+        let summary = json["summary"].as_str().expect("summary should serialize");
+
+        assert!(summary.contains("木木；自身隊伍回復１５點生命"));
+        assert!(summary.contains("印刷行屬為木或水"));
+        assert!(summary.contains("自己下次回合開始"));
+        assert!(summary.contains("只再次執行此曲調主效果"));
+        assert!(summary.contains("不視為新的陣法"));
+        assert!(summary.contains("不會再次排定迴響"));
+
+        let pure_fire = perform_formation_action_summary(
+            crate::rules::echo::PURE_FIRE,
+            "火水且等級合計７以上；指定玩家的合格時效效果減少１回合或１層",
+            None,
+            &HashMap::new(),
+        );
+        assert!(pure_fire.contains("不需支付迴響代價並自動排定迴響"));
+        assert!(pure_fire.contains("重新選擇玩家"));
+        assert!(pure_fire.contains("不視為新的陣法"));
+
+        let plant_earth = perform_formation_action_summary(
+            crate::rules::echo::PLANT_EARTH,
+            "土木且等級合計７以上；下次自己回合開始選擇一種基礎曲調主效果",
+            None,
+            &HashMap::new(),
+        );
+        assert!(plant_earth.contains("這不是迴響"));
+        assert!(plant_earth.contains("選擇鳴金、落木、流水、戰火或裂土"));
+        assert!(plant_earth.contains("不支付迴響代價"));
+        assert!(plant_earth.contains("不排定迴響"));
+        assert!(plant_earth.contains("不視為新的陣法"));
+    }
+
+    #[test]
+    fn echo_action_summary_composes_with_star_substitution_detail() {
+        let labels = HashMap::from([(CardInstanceId::new(7), "水 3".to_string())]);
+        let substitution = StarElementSubstitution {
+            card: CardInstanceId::new(7),
+            printed_element: crate::domain::Element::Water,
+            interpreted_element: crate::domain::Element::Wood,
+        };
+
+        let summary = perform_formation_action_summary(
+            crate::rules::echo::FALLING_WOOD,
+            "木木；自身隊伍回復１５點生命",
+            Some(&substitution),
+            &labels,
+        );
+
+        assert!(summary.contains("印刷行屬為木或水"));
+        assert!(summary.contains("不會再次排定迴響"));
+        assert!(summary.contains("星辰效果：將水 3（水行牌）視為木行牌。"));
+    }
+
+    #[test]
     fn pass_reason_is_derived_from_the_current_state() {
         let setup = fixture_setup(&OfficialRules::new(), None).unwrap();
         let mut state = crate::domain::GameState::from_setup(&setup);
@@ -3515,5 +3860,61 @@ mod tests {
                 .1
                 .contains("商調‧鳴金")
         );
+    }
+
+    #[test]
+    fn pouch_actions_use_the_web_camel_case_contract() {
+        let action: ApiAction = serde_json::from_value(serde_json::json!({
+            "type": "triggerSecretStrategy",
+            "player": "alice",
+            "strategy": "DeceiveHeaven",
+            "targetPlayer": "bob",
+            "star": "Fire",
+            "breakStar": true,
+            "discardCard": 7,
+            "deckCards": [8, 9],
+            "discardCards": [10, 11]
+        }))
+        .unwrap();
+        assert!(matches!(
+            action,
+            ApiAction::TriggerSecretStrategy {
+                target_player: Some(player),
+                star: Some(crate::domain::StarKind::Fire),
+                break_star: true,
+                discard_card: Some(_),
+                ref deck_cards,
+                ref discard_cards,
+                ..
+            } if player == "bob" && deck_cards.len() == 2 && discard_cards.len() == 2
+        ));
+
+        let chain: ApiAction = serde_json::from_value(serde_json::json!({
+            "type": "performFormation",
+            "player": "alice",
+            "formationId": "pouch:chain",
+            "cards": [1, 2, 3],
+            "pouchOwner": "bob",
+            "pouchCard": 7,
+            "triggerCard": 8,
+            "secretStrategy": "DeceiveHeaven",
+            "secretStrategyStar": "Fire",
+            "secretStrategyBreakStar": true,
+            "secretStrategyDeckCards": [9, 10],
+            "secretStrategyDiscardCards": [11, 12]
+        }))
+        .unwrap();
+        assert!(matches!(
+            chain,
+            ApiAction::PerformFormation {
+                secret_strategy: Some(SecretStrategy::DeceiveHeaven),
+                secret_strategy_star: Some(StarKind::Fire),
+                secret_strategy_break_star: Some(true),
+                ref secret_strategy_deck_cards,
+                ref secret_strategy_discard_cards,
+                ..
+            } if secret_strategy_deck_cards.as_ref().is_some_and(|cards| cards.len() == 2)
+                && secret_strategy_discard_cards.as_ref().is_some_and(|cards| cards.len() == 2)
+        ));
     }
 }

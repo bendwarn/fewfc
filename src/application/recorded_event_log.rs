@@ -160,6 +160,15 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         GameEvent::FlowStateTriggered { .. } => Some(AutomaticReason::TurnDraw),
         GameEvent::DeckPrepared { .. }
         | GameEvent::PlayerDeckPrepared { .. }
+        | GameEvent::GamePreparationStarted { .. }
+        | GameEvent::InitialPouchChosen { .. }
+        | GameEvent::GamePreparationCompleted
+        | GameEvent::PouchPlaced { .. }
+        | GameEvent::PouchRevealed { .. }
+        | GameEvent::PouchConsumed { .. }
+        | GameEvent::PouchLevelBonusGranted { .. }
+        | GameEvent::TemporaryStarEffectGranted { .. }
+        | GameEvent::SpiritRevived { .. }
         | GameEvent::CardsDealt { .. }
         | GameEvent::CounterEffectEstablished { .. }
         | GameEvent::CounterEffectResolved { .. }
@@ -232,6 +241,18 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
 
 fn command_context(command: &Command) -> CommandContext {
     match command {
+        Command::ChooseInitialPouch { player, .. } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::ChooseInitialPouch,
+        },
+        Command::TriggerSecretStrategy {
+            player, strategy, ..
+        } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::TriggerSecretStrategy {
+                strategy: *strategy,
+            },
+        },
         Command::PassAction { player, .. } => CommandContext {
             player: player.clone(),
             kind: CommandKind::PassAction,
@@ -353,6 +374,10 @@ pub struct CommandContext {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum CommandKind {
+    ChooseInitialPouch,
+    TriggerSecretStrategy {
+        strategy: crate::domain::SecretStrategy,
+    },
     PassAction,
     PerformFormation {
         formation_id: String,

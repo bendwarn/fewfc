@@ -260,14 +260,16 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
                 new_value: old_value + 1,
             });
             let team = player_team(state, &request.attacker)?;
-            events.push(GameEvent::StarBroken {
-                team,
-                star,
-                reason: StarBreakReason::StarFormationUsed {
-                    formation_id: request.formation_id.clone(),
-                },
-                hp_change: None,
-            });
+            if state.star_for_team(&team) == Some(star) {
+                events.push(GameEvent::StarBroken {
+                    team,
+                    star,
+                    reason: StarBreakReason::StarFormationUsed {
+                        formation_id: request.formation_id.clone(),
+                    },
+                    hp_change: None,
+                });
+            }
         }
     }
 

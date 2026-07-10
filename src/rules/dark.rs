@@ -396,7 +396,8 @@ pub(crate) fn pre_formation_events(
     player: &PlayerId,
     formation_id: &str,
 ) -> Vec<GameEvent> {
-    if is_dark_formation(formation_id)
+    if !crate::rules::pouch::profession_is_suppressed(state, player)
+        && is_dark_formation(formation_id)
         && state
             .profession_for(player)
             .is_some_and(|profession| profession.as_str() == DARK_WALKER_ID)
@@ -429,7 +430,8 @@ pub(crate) fn ignores_environment(
     player: &PlayerId,
     formation_id: &str,
 ) -> bool {
-    is_dark_formation(formation_id)
+    !crate::rules::pouch::profession_is_suppressed(state, player)
+        && is_dark_formation(formation_id)
         && state.profession_for(player).is_some_and(|profession| {
             matches!(profession.as_str(), DARK_WALKER_ID | DARK_SPIRIT_ENVOY_ID)
         })
@@ -442,10 +444,8 @@ pub(crate) fn modify_attack_points(
     cards: &[CardInstanceId],
     points: i32,
 ) -> i32 {
-    let berserk = state.profession_for(player).is_some_and(|profession| {
-        crate::rules::profession::effective_ability_ids(&state.enabled_rule_modules, profession)
-            .contains(&"dark:berserk-shadow")
-    });
+    let berserk = crate::rules::profession::ability_ids_in_effect(state, player)
+        .contains(&"dark:berserk-shadow");
     if !berserk {
         return points;
     }
@@ -758,6 +758,9 @@ fn affected_players_for_hp_change(
             | crate::rules::jianghu::THOUSAND_BLADES_FLYING_FEATHER
             | crate::rules::jianghu::FLOWING_SHADOW_CLOUD_BREAKING
             | crate::rules::jianghu::FAN_BEYOND_HEAVEN
+            | crate::rules::confluence::BLAZE_RESONANCE
+            | crate::rules::confluence::THOUSAND_RESONANCE
+            | crate::rules::confluence::MYRIAD_RESONANCE
             | "shadow-assault"
             | "instant-shadow-death"
     ) {

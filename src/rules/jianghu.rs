@@ -313,6 +313,13 @@ pub(crate) fn team_has_poison(state: &GameState, team: &crate::domain::TeamId) -
     })
 }
 
+pub(crate) fn player_has_poison(state: &GameState, player: &PlayerId) -> bool {
+    state
+        .jianghu_states
+        .iter()
+        .any(|active| active.kind == JianghuStateKind::Poison && active.owner == *player)
+}
+
 pub(crate) fn ignores_other_formation_effects(state: &GameState, player: &PlayerId) -> bool {
     has_state(state, player, JianghuStateKind::SnowTreading)
 }
@@ -325,12 +332,7 @@ pub(crate) fn modify_attack_points(
     cards: &[CardInstanceId],
     points: i32,
 ) -> i32 {
-    let abilities = state
-        .profession_for(player)
-        .map(|profession| {
-            crate::rules::profession::effective_ability_ids(&state.enabled_rule_modules, profession)
-        })
-        .unwrap_or_default();
+    let abilities = crate::rules::profession::ability_ids_in_effect(state, player);
     let points = if formation_id == "five-streams-unite"
         && (abilities.contains(&"jianghu:pure-yang-force")
             || abilities.contains(&"jianghu:extreme-yang-force"))
@@ -378,10 +380,12 @@ pub(crate) fn halves_incoming_damage(
     player: &PlayerId,
     category: &AttackCategory,
 ) -> bool {
-    if !matches!(
-        category,
-        AttackCategory::Elemental(Element::Wood | Element::Fire)
-    ) {
+    if crate::rules::pouch::profession_is_suppressed(state, player)
+        || !matches!(
+            category,
+            AttackCategory::Elemental(Element::Wood | Element::Fire)
+        )
+    {
         return false;
     }
     state.statuses.iter().any(|status| {
@@ -395,10 +399,8 @@ pub(crate) fn extreme_yang_applies(
     formation_id: &str,
 ) -> bool {
     formation_id == "five-streams-unite"
-        && state.profession_for(player).is_some_and(|profession| {
-            crate::rules::profession::effective_ability_ids(&state.enabled_rule_modules, profession)
-                .contains(&"jianghu:extreme-yang-force")
-        })
+        && crate::rules::profession::ability_ids_in_effect(state, player)
+            .contains(&"jianghu:extreme-yang-force")
 }
 
 pub(crate) fn post_attack_events(
@@ -457,12 +459,7 @@ pub(crate) fn post_attack_events(
             )?);
         }
     }
-    let abilities = state
-        .profession_for(player)
-        .map(|profession| {
-            crate::rules::profession::effective_ability_ids(&state.enabled_rule_modules, profession)
-        })
-        .unwrap_or_default();
+    let abilities = crate::rules::profession::ability_ids_in_effect(state, player);
     if formation_id == "five-streams-unite" && abilities.contains(&"jianghu:extreme-yang-force") {
         for target in state
             .players
@@ -546,10 +543,8 @@ pub(crate) fn shorten_enemy_status(state: &GameState, mut status: StatusEffect) 
     if current == owner {
         return status;
     }
-    let has_righteous_spirit = state.profession_for(owner).is_some_and(|profession| {
-        crate::rules::profession::effective_ability_ids(&state.enabled_rule_modules, profession)
-            .contains(&"jianghu:righteous-spirit")
-    });
+    let has_righteous_spirit = crate::rules::profession::ability_ids_in_effect(state, owner)
+        .contains(&"jianghu:righteous-spirit");
     if !has_righteous_spirit {
         return status;
     }

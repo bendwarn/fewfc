@@ -2,8 +2,9 @@ use crate::domain::{
     CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, Command, DARK_GLIMMER_MODULE_ID,
     DISCARD_RETRIEVAL_MODULE_ID, ECHO_MODULE_ID, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
     GameEvent, GameResult, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID,
-    PERSONAL_DECK_MODULE_ID, Player, PlayerDeckList, PlayerId, RuleModuleId, RulesetId,
-    SPIRIT_MODULE_ID, STAR_MODULE_ID, TRIBULATION_MODULE_ID, ValidationError, validate_setup,
+    PERSONAL_DECK_MODULE_ID, POUCH_MODULE_ID, Player, PlayerDeckList, PlayerId, RuleModuleId,
+    RulesetId, SPIRIT_MODULE_ID, STAR_MODULE_ID, TRIBULATION_MODULE_ID, ValidationError,
+    validate_setup,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -77,6 +78,11 @@ const OFFICIAL_RULE_MODULES: &[RuleModuleSpec] = &[
         id: TRIBULATION_MODULE_ID,
         default_enabled: true,
         dependencies: ADVANCED_RULE_MODULE_IDS,
+    },
+    RuleModuleSpec {
+        id: POUCH_MODULE_ID,
+        default_enabled: false,
+        dependencies: &[PERSONAL_DECK_MODULE_ID, SPIRIT_MODULE_ID],
     },
 ];
 

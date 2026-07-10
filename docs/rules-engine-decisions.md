@@ -1622,10 +1622,11 @@ Star or Environment does not exist, no Card qualifies.
 
 Confluence Generation's `上家棄牌` is the existing Retrievable Discard: the
 Previous Player's Turn Draw Discarded Card from the immediately completed
-Previous Turn, provided that Card remains in its Discard Pile. Residual Element
-(`餘行`) and Residual Level (`餘級`) read that Card's printed definition. If no
-Retrievable Discard exists, neither residual fact exists, and 調律 or 天響 has
-no Card to retrieve.
+Previous Turn, provided that Card remains available to retrieve. Residual
+Element (`餘行`) and Residual Level (`餘級`) are instead fixed from that Card's
+printed definition when it is Discarded. They remain unchanged until the
+current Player reaches Turn Draw even if the Card moves; moving it only makes
+調律 or 天響 unable to retrieve that physical Card.
 
 Dark Glimmer's Mischief (`戲鬧`) calculates its HP deduction from the highest
 printed level among the Card Instances actually inspected by the triggering
@@ -1688,6 +1689,37 @@ least one such action can be completed. 天響 retrieves the same Card without
 that restriction. Choices that inspect a Deck, retain Cards, select a 五鳴術, or
 decide 晴風's revealed top Card use typed Pending Choices and replayable
 continuations.
+
+The 調律 legality check is reachability-based rather than an immediate
+post-ability check. It includes remaining non-action-ending abilities and
+allows only intermediate choices whose projected result preserves at least one
+legal completion path. The Rules Engine applies this rule to both action
+queries and command validation. The obligation is fulfilled when the 調律 Card
+participates in an accepted allowed action even if that action's effect is
+later ineffective or cancelled; no other voluntary effect may consume that
+Card.
+
+The 調律師 system's Residual-Element transition totals 3, 6, and 9 are minimum
+totals. Residual Level is a printed baseline, while submitted Cards and 調律's
+Discard cost compare their effective levels after applicable interpretations.
+Each Formation role requires a distinct physical Card unless a rule explicitly
+grants multiplicity, so a five-resonance Formation's element-Card and
+Residual-Level-Card roles cannot be filled by the same Card Instance. 易弦's
+permission covers every currently available Profession Formation, including
+inherited 調律師 Formations.
+
+千鳴 normally resolves both resonances simultaneously. When 鏡鳴 requires a
+choice, fully resolve the Residual-Element resonance continuation before the
+selected resonance; a lethal earlier resonance does not truncate the later
+one, and Game Outcome waits for the complete Formation. 萬鳴 instead applies
+its deterministic HP, Shield, and Turn Draw changes before entering its 鏡鳴
+choice, while still deferring final Game Outcome until that choice completes.
+
+煌鳴 and composite resonances containing it affect only the Previous Player;
+their teammate shares the Team HP change but is not added to the Affected
+Player Set. 森鳴 and 萬鳴 recover the performing Player's Team HP, but 中毒 or
+other performer-scoped recovery restrictions are checked only on that
+performing Player, not their teammates.
 
 #### Dark Glimmer execution model
 
@@ -1797,3 +1829,12 @@ Tribulation's `both Teams` HP deduction expands through the existing Affected
 Player Set rule, so Shared Fate triggers once for each included Death Spirit
 owner only when that Team actually loses HP. A Team protected by Divine
 Calculation has no such HP deduction or Shared Fate trigger.
+
+Playable action detail is a player-facing decision contract, not merely the
+Formation Catalog's raw `rule_text`. For Echo Melodies, the action detail must
+include the relevant Echo policy because the Player is choosing an action whose
+visible consequences extend past the immediate main effect. The five
+optional-cost Melodies need their allowed printed-element Echo Cost, 變徵‧淨火
+needs its automatic no-cost Echo, and 變宮‧植土 needs its distinct
+next-Turn-Start Melody-main-effect schedule with no Echo. The detail must not
+imply that delayed Echo or 植土 is a new Formation Use.

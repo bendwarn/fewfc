@@ -100,7 +100,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         case 'seedSpiritFixture':
           return await this.seedSpiritFixture(body.actorUserId, body.spirit)
         case 'seedEchoFixture':
-          return await this.seedEchoFixture(body.actorUserId)
+          return await this.seedEchoFixture(body.actorUserId, body.mode)
         case 'seedTribulationFixture':
           return await this.seedTribulationFixture(body.actorUserId)
         case 'getState':
@@ -929,7 +929,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return this.json(await this.response(metadata, actorUserId))
   }
 
-  private async seedEchoFixture(actorUserId: string): Promise<Response> {
+  private async seedEchoFixture(
+    actorUserId: string,
+    mode?: 'actionDetail',
+  ): Promise<Response> {
     const metadata = await this.requireMetadata()
     const actor = this.memberFor(metadata, actorUserId)
 
@@ -991,6 +994,22 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
     if (!rules || !pureFire) {
       return this.json({ error: 'test fixture could not find Pure Fire Cards' }, 500)
+    }
+
+    if (mode === 'actionDetail') {
+      await this.ctx.storage.put('snapshot', {
+        ...snapshot,
+        setup,
+        deckSeed,
+        rulesRecord: rules.record,
+      } satisfies GameRoomSnapshot)
+      await this.ctx.storage.delete('pendingCommandDraft')
+      this.ctx.waitUntil(this.broadcast(metadata))
+
+      return this.json({
+        ...await this.response(metadata, actorUserId),
+        fixtureCards: pureFire.cards,
+      })
     }
 
     rules = await callRulesEngine({
@@ -1651,6 +1670,16 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           matchOptionRole: action.matchOptionRole,
           matchOptionCard: action.matchOptionCard,
           matchOptionSlots: action.matchOptionSlots,
+          pouchOwner: action.pouchOwner,
+          pouchCard: action.pouchCard,
+          triggerCard: action.triggerCard,
+          secretStrategy: action.secretStrategy,
+          secretStrategyTargetPlayer: action.secretStrategyTargetPlayer,
+          secretStrategyStar: action.secretStrategyStar,
+          secretStrategyBreakStar: action.secretStrategyBreakStar,
+          secretStrategyDiscardCard: action.secretStrategyDiscardCard,
+          secretStrategyDeckCards: action.secretStrategyDeckCards,
+          secretStrategyDiscardCards: action.secretStrategyDiscardCards,
         }
       case 'useSpiritSkill':
         return {
@@ -1662,6 +1691,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         }
       case 'activateProfessionAbility':
       case 'changeProfession':
+      case 'chooseInitialPouch':
+      case 'triggerSecretStrategy':
       case 'chooseTurnDiscard':
       case 'answerEffectChoiceTyped':
       case 'retrievePreviousTurnDiscard':

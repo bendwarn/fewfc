@@ -39,11 +39,18 @@ pub(super) fn resolve(
 ) -> GameResult<Vec<GameEvent>> {
     let player = request.player.clone();
     let formation_id = request.formation_id.clone();
+    let cards = request.cards.clone();
     let plan = BaseFormationPlanner::new().plan_use(state, request)?;
     let mut events = BaseEffectResolver::new().resolve(state, plan)?;
+    if let Some(event) =
+        crate::rules::confluence::obligation_completion_event(state, &player, &cards)
+    {
+        events.push(event);
+    }
     crate::rules::tribulation::suppress_formation_recovery(state, &player, &mut events);
     crate::rules::dark::append_shared_fate_events(state, &player, &formation_id, &mut events)?;
     crate::rules::dark::append_mischief_events(state, &mut events)?;
+    crate::rules::pouch::suppress_watch_fire_formation_hp_changes(state, &player, &mut events);
     Ok(events)
 }
 
@@ -56,7 +63,14 @@ pub(super) fn answer_effect_choice(
 ) -> GameResult<Vec<GameEvent>> {
     let intents =
         resume_effect_choice_intents(state, player, effect_id, continuation_id, selected_cards)?;
-    effect_intent_events(state, intents)
+    let mut events = effect_intent_events(state, intents)?;
+    events.extend(crate::rules::confluence::after_effect_choice_events(
+        state,
+        player,
+        effect_id,
+        continuation_id,
+    )?);
+    Ok(events)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -125,6 +139,9 @@ impl BaseEffectResolver {
                             state,
                             &plan.player,
                             attack_points,
+                        ) || crate::rules::pouch::player_is_protected(
+                            state,
+                            &plan.player,
                         ),
                         attack_points: Some(attack_points),
                     },
@@ -144,7 +161,12 @@ impl BaseEffectResolver {
                 let damage_prevented = passive_trigger.prevents_damage()
                     || environment_ineffective
                     || formation_suppressed
-                    || crate::rules::spirit::stone_shield_prevents_attack(state, &plan.player);
+                    || crate::rules::spirit::stone_shield_prevents_attack(state, &plan.player)
+                    || crate::rules::pouch::has_status(
+                        state,
+                        &plan.player,
+                        crate::rules::pouch::WATCH_FIRE_STATUS,
+                    );
                 let split_attack_damage = passive_trigger.splits_attack_damage();
                 let mut events = crate::rules::dark::pre_formation_events(
                     state,
@@ -269,6 +291,9 @@ impl BaseEffectResolver {
                         ignores_counter_effects: crate::rules::hero::spell_counter_immunity(
                             state,
                             &plan.player,
+                        ) || crate::rules::pouch::player_is_protected(
+                            state,
+                            &plan.player,
                         ),
                         attack_points: None,
                     },
@@ -316,7 +341,9 @@ impl BaseEffectResolver {
                 Ok(events)
             }
             EffectPlan::ActiveSpell(spell) => {
-                if has_effect_targets(&plan.declared_targets) {
+                if spell.resolver_id != crate::rules::pouch::CHAIN_ID
+                    && has_effect_targets(&plan.declared_targets)
+                {
                     return Err(GameError::Validation(
                         ValidationError::UnexpectedDeclaredTargets {
                             formation_id: plan.formation_id,
@@ -331,6 +358,9 @@ impl BaseEffectResolver {
                         incoming_kind: IncomingActionKind::ActiveSpell,
                         ignores_formation_effects: false,
                         ignores_counter_effects: crate::rules::hero::spell_counter_immunity(
+                            state,
+                            &plan.player,
+                        ) || crate::rules::pouch::player_is_protected(
                             state,
                             &plan.player,
                         ),
@@ -380,6 +410,14 @@ impl BaseEffectResolver {
                     ));
                 }
                 if !spell_cancelled && !spell_ineffective {
+                    if spell.resolver_id == crate::rules::pouch::CHAIN_ID {
+                        events.extend(crate::rules::pouch::chain_events(
+                            state,
+                            &plan.player,
+                            &plan.declared_targets,
+                        )?);
+                        return Ok(events);
+                    }
                     if spell.resolver_id == "void-reversion" {
                         events.extend(crate::rules::confluence::void_transcendence_events(
                             state,
@@ -1125,12 +1163,15 @@ fn resume_effect_choice_intents(
                     .collect(),
             }])
         }
-        (
-            "confluence:mirror-resonance"
-            | "confluence:myriad-resonance"
-            | "confluence:thousand-resonance",
-            "confluence:discard-inspected-card",
-        ) => {
+        (effect, continuation)
+            if matches!(
+                effect,
+                "confluence:mirror-resonance"
+                    | "confluence:myriad-resonance"
+                    | "confluence:thousand-resonance"
+            ) && (continuation == "confluence:discard-inspected-card"
+                || continuation.starts_with("confluence:thousand-resonance-after:")) =>
+        {
             let target =
                 resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)?;
             let card = *selected_cards

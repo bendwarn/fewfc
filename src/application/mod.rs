@@ -246,6 +246,15 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         GameEvent::FlowStateTriggered { .. } => Some(AutomaticReason::TurnDraw),
         GameEvent::DeckPrepared { .. }
         | GameEvent::PlayerDeckPrepared { .. }
+        | GameEvent::GamePreparationStarted { .. }
+        | GameEvent::InitialPouchChosen { .. }
+        | GameEvent::GamePreparationCompleted
+        | GameEvent::PouchPlaced { .. }
+        | GameEvent::PouchRevealed { .. }
+        | GameEvent::PouchConsumed { .. }
+        | GameEvent::PouchLevelBonusGranted { .. }
+        | GameEvent::TemporaryStarEffectGranted { .. }
+        | GameEvent::SpiritRevived { .. }
         | GameEvent::CardsDealt { .. }
         | GameEvent::CounterEffectEstablished { .. }
         | GameEvent::CounterEffectResolved { .. }
@@ -318,6 +327,18 @@ fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
 
 fn command_context(command: &Command) -> CommandContext {
     match command {
+        Command::ChooseInitialPouch { player, .. } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::ChooseInitialPouch,
+        },
+        Command::TriggerSecretStrategy {
+            player, strategy, ..
+        } => CommandContext {
+            player: player.clone(),
+            kind: CommandKind::TriggerSecretStrategy {
+                strategy: *strategy,
+            },
+        },
         Command::PassAction { player, .. } => CommandContext {
             player: player.clone(),
             kind: CommandKind::PassAction,
@@ -452,6 +473,11 @@ pub fn resolve_trusted_randomness(
         &projected,
         &request.continuation_id,
     )?);
+    events.extend(crate::rules::pouch::after_randomness_events(
+        &projected,
+        &request.continuation_id,
+        &request.deck,
+    )?);
     Ok(events)
 }
 
@@ -503,7 +529,9 @@ pub fn verify_recorded_decisions(
                             .collect()
                     });
                 if deck_order.is_empty() {
-                    return Err(ReplayVerificationError::MissingSetupDeck { sequence });
+                    if !setup.has_rule_module(crate::domain::POUCH_MODULE_ID) {
+                        return Err(ReplayVerificationError::MissingSetupDeck { sequence });
+                    }
                 }
                 OfficialRules::new()
                     .start_game(setup, deck_order)

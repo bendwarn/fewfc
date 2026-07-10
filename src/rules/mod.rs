@@ -7,6 +7,7 @@ pub(crate) mod echo;
 pub(crate) mod hero;
 pub(crate) mod jianghu;
 mod official;
+pub(crate) mod pouch;
 pub(crate) mod profession;
 pub(crate) mod projection;
 pub(crate) mod spirit;
@@ -362,6 +363,12 @@ pub(crate) fn official_formation_registry(
     {
         specs.extend(tribulation::formation_specs());
     }
+    if modules
+        .iter()
+        .any(|module| module.as_str() == crate::domain::POUCH_MODULE_ID)
+    {
+        specs.extend(pouch::formation_specs());
+    }
     FormationRegistry::new(
         specs.iter().map(|spec| spec.formation.clone()).collect(),
         specs.into_iter().map(|spec| spec.effect).collect(),
@@ -450,6 +457,7 @@ pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
         .with_custom("tribulation:divine-calculation", |submitted| {
             submitted.len() == 1 && submitted[0].level >= 4
         })
+        .with_custom(pouch::CHAIN_ID, pouch::matches_chain)
         .with_custom("metal-and-same-level", |submitted| {
             submitted.len() == 2
                 && submitted.iter().any(|card| card.element == Element::Metal)
