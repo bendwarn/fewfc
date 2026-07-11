@@ -580,7 +580,6 @@
               >
                 <span v-if="!card.hidden" class="card-level">{{ cardLevel(card.level) }}</span>
                 <span v-if="!card.hidden" class="card-element">{{ cardElement(card.element) }}</span>
-                <span v-if="!card.hidden" class="card-name">{{ cardName(card.label) }}</span>
               </button>
             </div>
           </div>
@@ -1393,6 +1392,7 @@ import {
 } from '#shared/utils/rule-modules'
 import { authClient } from '~/lib/auth-client'
 import { buildDiscardComposition, DISCARD_ELEMENTS } from '~/lib/discard-composition'
+import { cardElementClass, cardElementGlyph } from '~/lib/card-face-presentation'
 import { presentCardInterpretation } from '~/lib/card-interpretation-presentation'
 import { presentPendingChoice } from '~/lib/pending-choice-presentation'
 import { presentPersistentEffects } from '~/lib/persistent-effect-presentation'
@@ -2746,14 +2746,7 @@ function starHistoryLabel(player: PlayerId): string {
   const stars = state.value.starHistories.find(history => history.player === player)?.stars ?? []
   if (!stars.length) return ''
 
-  const labels = {
-    Metal: '金',
-    Wood: '木',
-    Water: '水',
-    Fire: '火',
-    Earth: '土',
-  }
-  return stars.map(star => labels[star]).join('、')
+  return stars.map(star => cardElementGlyph(star)).join('、')
 }
 
 function spiritFor(player: PlayerId) {
@@ -2782,16 +2775,6 @@ function cardInterpretationsFor(player: PlayerId) {
 
 function persistentEffectsFor(player: PlayerId) {
   return presentPersistentEffects(state.value, player, teamForPlayer(player))
-}
-
-function elementLabel(element: Element): string {
-  return {
-    Metal: '金',
-    Wood: '木',
-    Water: '水',
-    Fire: '火',
-    Earth: '土',
-  }[element]
 }
 
 function professionSummaryLabel(player: PlayerId): string {
@@ -3026,21 +3009,17 @@ function formationChoiceLabel(formationId: string): string {
 }
 
 function elementClass(element: Element | null | undefined): string {
-  const value = cardElement(element)
-  return value ? `element-${value}` : ''
+  return cardElementClass(element)
 }
 
 function cardElement(element: Element | null | undefined): string {
-  return element ? cardElementLabel(element) : ''
+  return cardElementGlyph(element)
 }
 
 function cardLevel(level: number | null | undefined): string {
   return level === null || level === undefined ? '◆' : String(level)
 }
 
-function cardName(label: string): string {
-  return label.replace(/\d+/g, '').replace(/[金木水火土]/g, '').trim() || label
-}
 </script>
 
 <style>
@@ -3234,7 +3213,14 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .hand { @apply flex min-w-0 items-center justify-center gap-2; }
 .playing-card {
   width: clamp(62px, 7vw, 92px); aspect-ratio: 5 / 7; border: 1px solid #79715e; border-radius: 5px;
-  background: linear-gradient(145deg, #e9e1ce, #bcb39e); color: #18201c;
+  --card-face: #ded8c8;
+  --card-face-light: #f0eadc;
+  --card-border: #79715e;
+  --card-ink: #18201c;
+  border-color: var(--card-border);
+  background-color: var(--card-face);
+  background-image: linear-gradient(145deg, var(--card-face-light), var(--card-face));
+  color: var(--card-ink);
   @apply relative flex flex-col items-center justify-center p-2 transition-[.18s] max-[600px]:w-[58px];
   box-shadow: 0 5px 15px rgba(0,0,0,.35);
 }
@@ -3250,14 +3236,19 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   border: 1px solid rgba(198, 163, 94, .58);
   transform: rotate(45deg);
 }
-.card-level { @apply absolute top-[5px] left-[7px] font-serif text-base font-extrabold; }
-.card-element { @apply grid size-[35px] place-items-center rounded-full border border-current font-serif text-lg; }
-.card-name { @apply mt-2 max-w-full overflow-hidden text-[9px] font-bold; }
-.element-火 .card-element { color: #a43d32; }.element-水 .card-element { color: #357a99; }
-.element-木 .card-element { color: #467d51; }.element-金 .card-element { color: #887b55; }.element-土 .card-element { color: #9b6e35; }
+.card-level { @apply absolute top-1 left-1/2 -translate-x-1/2 font-serif text-xs leading-none font-extrabold; }
+.card-element { @apply grid size-[35px] place-items-center rounded-full border border-current font-serif text-lg; color: var(--card-ink); }
+.playing-card.element-Metal { --card-face: #ddd5b5; --card-face-light: #f3eed8; --card-border: #89783e; --card-ink: #67571e; }
+.playing-card.element-Wood { --card-face: #cfe0ce; --card-face-light: #e8f1e5; --card-border: #52765a; --card-ink: #315f3d; }
+.playing-card.element-Water { --card-face: #cbdfe8; --card-face-light: #e7f1f5; --card-border: #4d7890; --card-ink: #245d78; }
+.playing-card.element-Fire { --card-face: #ead0c9; --card-face-light: #f6e7e2; --card-border: #985448; --card-ink: #8d3026; }
+.playing-card.element-Earth { --card-face: #e4d5ba; --card-face-light: #f3ead8; --card-border: #936d3b; --card-ink: #785027; }
 .seat-top .playing-card { width: clamp(48px, 5vw, 68px); }
+.seat-top .card-element { @apply size-7 text-sm; }
 .seat-left .seat-hand, .seat-right .seat-hand { @apply flex-col gap-1; }
 .seat-left .playing-card, .seat-right .playing-card { width: 30px; }
+.seat-left .card-level, .seat-right .card-level { @apply top-0.5 text-[8px]; }
+.seat-left .card-element, .seat-right .card-element { @apply size-4 text-[10px]; }
 .board-center { grid-area: center; @apply relative z-1 grid min-w-0 grid-cols-[90px_minmax(220px,1fr)_90px] items-center justify-items-center; }
 .battlefield.discard-open { z-index: 25; overflow: visible; }
 .battlefield.discard-open .board-center { z-index: 16; }

@@ -1041,6 +1041,22 @@ fn resume_effect_choice_intents(
     selected_cards: &[CardInstanceId],
 ) -> GameResult<Vec<EffectIntent>> {
     match (effect_id, continuation_id) {
+        ("confluence:clear-wind", "confluence:clear-wind:discard-top") => {
+            let Some(card) = selected_cards.first().copied() else {
+                return Ok(Vec::new());
+            };
+            Ok(vec![EffectIntent::MoveCards {
+                card_moves: vec![CardMoveDelta {
+                    card,
+                    from: if state.uses_personal_decks() {
+                        CardZone::PlayerDeckTop(player.clone())
+                    } else {
+                        CardZone::DeckTop
+                    },
+                    to: super::discard_zone_for_card(state, card),
+                }],
+            }])
+        }
         ("metamorphosis", "metamorphosis:choose-card") => {
             let selected_card = selected_cards
                 .first()

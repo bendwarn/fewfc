@@ -1,4 +1,5 @@
 import type { PublicCard } from '../types/fewfc'
+import { cardElementGlyph } from './card-face-presentation'
 
 export const DISCARD_ELEMENTS = ['金', '木', '水', '火', '土'] as const
 export const DISCARD_LEVELS = [1, 2, 3, 4, 5] as const
@@ -19,16 +20,9 @@ export interface DiscardCompositionRow {
 
 export function buildDiscardComposition(cards: PublicCard[]): DiscardCompositionRow[] {
   const counts = new Map<string, number>()
-  const elementLabels: Record<string, DiscardElement> = {
-    Metal: '金',
-    Wood: '木',
-    Water: '水',
-    Fire: '火',
-    Earth: '土',
-  }
 
   for (const card of cards) {
-    const element = card.element ? elementLabels[card.element] : undefined
+    const element = card.element ? cardElementGlyph(card.element) : undefined
     const level = card.level
 
     if (!element || !DISCARD_LEVELS.includes(level as DiscardLevel)) {

@@ -10,6 +10,7 @@ test('presents every Pending Choice by semantic continuation instead of internal
     { type: 'chaos' },
     { type: 'revelation' },
     { type: 'azureCloudStep' },
+    { type: 'clearWind' },
     { type: 'clearWindTenThousandMiles' },
     { type: 'mirrorResonance' },
     { type: 'myriadResonance' },
@@ -27,10 +28,15 @@ test('presents every Pending Choice by semantic continuation instead of internal
     { type: 'unclassified' },
   ]
 
-  assert.equal(cases.length, 23)
+  assert.equal(cases.length, 24)
   for (const presentation of cases) {
     const label = presentPendingChoice(presentation)
     assert.ok(label.length > 0)
     assert.doesNotMatch(label, /echo:|jianghu:|confluence:|tribulation:/)
   }
+
+  assert.equal(
+    presentPendingChoice({ type: 'clearWind' }),
+    '晴風：選取此牌捨棄；不選則放回牌組頂',
+  )
 })

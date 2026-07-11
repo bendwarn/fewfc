@@ -94,6 +94,7 @@ export type PendingChoicePresentation =
   | { type: 'chaos' }
   | { type: 'revelation' }
   | { type: 'azureCloudStep' }
+  | { type: 'clearWind' }
   | { type: 'clearWindTenThousandMiles' }
   | { type: 'mirrorResonance' }
   | { type: 'myriadResonance' }

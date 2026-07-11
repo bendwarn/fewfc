@@ -1266,26 +1266,18 @@ pub(crate) fn playable_profession_abilities(
             ));
         }
         if abilities.contains(&"confluence:clear-wind")
-            && let Some(card) = state
+            && state
                 .deck_for(player)
                 .and_then(|deck| deck.first())
-                .copied()
+                .is_some()
         {
             candidates.push(ability_candidate(
                 "confluence:clear-wind",
                 "晴風",
-                "展示牌堆最上方牌並放回",
+                "展示牌堆最上方牌，再選擇捨棄或放回",
                 cards,
-                Some(card),
-                Some(1),
-            ));
-            candidates.push(ability_candidate(
-                "confluence:clear-wind",
-                "晴風",
-                "展示牌堆最上方牌並捨棄",
-                cards,
-                Some(card),
-                Some(0),
+                None,
+                None,
             ));
         }
         if abilities.contains(&"confluence:tailwind")
@@ -1417,23 +1409,25 @@ pub(crate) fn activate_profession_ability(
             });
         }
         "confluence:clear-wind" => {
+            let top = state
+                .deck_for(player)
+                .and_then(|deck| deck.first())
+                .copied()
+                .expect("playable Clear Wind requires a top Card");
             events.push(GameEvent::DeckTopRevealed {
                 player: player.clone(),
-                card: target_card.expect("playable Clear Wind has top Card"),
+                card: top,
             });
-            if declared_level == Some(0) {
-                events.push(GameEvent::CardsMoved {
-                    card_moves: vec![crate::domain::CardMoveDelta {
-                        card: target_card.expect("playable Clear Wind has top Card"),
-                        from: if state.uses_personal_decks() {
-                            crate::domain::CardZone::PlayerDeckTop(player.clone())
-                        } else {
-                            crate::domain::CardZone::DeckTop
-                        },
-                        to: discard_zone_for_card(state, target_card.unwrap()),
-                    }],
-                });
-            }
+            events.push(GameEvent::EffectChoiceRequested {
+                player: player.clone(),
+                kind: crate::domain::PendingChoiceKind::CardSetChoice {
+                    effect_id: "confluence:clear-wind".to_string(),
+                    continuation_id: "confluence:clear-wind:discard-top".to_string(),
+                    allowed_cards: vec![top],
+                    minimum: 0,
+                    maximum: 1,
+                },
+            });
         }
         "confluence:tailwind" => {
             let use_count = limited_use(state, player, TAILWIND_USE).unwrap();

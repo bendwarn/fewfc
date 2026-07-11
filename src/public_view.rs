@@ -144,6 +144,7 @@ pub enum PublicPendingChoicePresentation {
     Chaos,
     Revelation,
     AzureCloudStep,
+    ClearWind,
     ClearWindTenThousandMiles,
     MirrorResonance,
     MyriadResonance,
@@ -841,6 +842,7 @@ fn pending_choice_presentation(kind: &PendingChoiceKind) -> PublicPendingChoiceP
         ("chaos", _) => Presentation::Chaos,
         ("revelation", _) => Presentation::Revelation,
         ("jianghu:azure-cloud-step", _) => Presentation::AzureCloudStep,
+        ("confluence:clear-wind", _) => Presentation::ClearWind,
         ("confluence:clear-wind-ten-thousand-miles", _) => Presentation::ClearWindTenThousandMiles,
         ("confluence:mirror-resonance", _) => Presentation::MirrorResonance,
         ("confluence:myriad-resonance", _) => Presentation::MyriadResonance,
@@ -973,6 +975,7 @@ mod tests {
             ("chaos", "chaos:return-two"),
             ("revelation", "any"),
             ("jianghu:azure-cloud-step", "any"),
+            ("confluence:clear-wind", "confluence:clear-wind:discard-top"),
             ("confluence:clear-wind-ten-thousand-miles", "any"),
             ("confluence:mirror-resonance", "any"),
             ("confluence:myriad-resonance", "any"),
@@ -998,7 +1001,7 @@ mod tests {
             ("seal", "any"),
         ];
 
-        assert_eq!(paths.len() + 1, 22);
+        assert_eq!(paths.len() + 1, 23);
         assert_eq!(
             pending_choice_presentation(&PendingChoiceKind::TurnDrawDiscard {
                 drawn_cards: vec![],

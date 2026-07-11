@@ -1,10 +1,11 @@
 use fewfc::application::{apply_event, handle_command};
 use fewfc::domain::{
     CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, Command, DARK_GLIMMER_MODULE_ID,
-    DeckPlacement, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameState, GameStatus,
-    HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind, LastTurnDiscard,
-    LimitedUse, Phase, Player, PlayerId, PlayerProfession, PlayerSpirit, ProfessionId,
-    RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind, SpiritSkill, TargetDecl, TeamId,
+    DeckPlacement, EffectChoiceAnswer, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent,
+    GameState, GameStatus, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState,
+    JianghuStateKind, LastTurnDiscard, LimitedUse, Phase, Player, PlayerId, PlayerProfession,
+    PlayerSpirit, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind,
+    SpiritSkill, TargetDecl, TeamId,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -144,6 +145,102 @@ fn set_residual(state: &mut GameState, card: CardInstanceId) {
             turn_number: 1,
         },
     );
+}
+
+#[test]
+fn clear_wind_reveals_once_then_waits_for_a_destination_choice() {
+    let mut game = state(false);
+    let player = PlayerId::new("p2");
+    game.professions.push(PlayerProfession {
+        player: player.clone(),
+        profession: ProfessionId::new("confluence:clear-wind-adept"),
+    });
+    let top = cards(&game, &[(Element::Metal, 1)])[0];
+    let deck = game.deck_for_mut(&player).unwrap();
+    deck.clear();
+    deck.push(top);
+
+    let candidates = OfficialRules::new()
+        .playable_actions(&game, &player, &[])
+        .unwrap()
+        .into_iter()
+        .filter_map(|action| match action {
+            PlayableAction::ActivateProfessionAbility(candidate)
+                if candidate.ability_id == "confluence:clear-wind" =>
+            {
+                Some(candidate)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].target_card, None);
+    assert_eq!(candidates[0].declared_level, None);
+
+    let events = handle_command(
+        &game,
+        Command::ActivateProfessionAbility {
+            player: player.clone(),
+            ability_id: "confluence:clear-wind".to_string(),
+            cards: Vec::new(),
+            target_card: None,
+            declared_element: None,
+            declared_level: None,
+        },
+    )
+    .unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::DeckTopRevealed { player: owner, card }
+            if owner == &player && card == &top
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::EffectChoiceRequested { player: owner, kind }
+            if owner == &player
+                && matches!(kind, fewfc::domain::PendingChoiceKind::CardSetChoice {
+                    effect_id,
+                    continuation_id,
+                    allowed_cards,
+                    minimum: 0,
+                    maximum: 1,
+                } if effect_id == "confluence:clear-wind"
+                    && continuation_id == "confluence:clear-wind:discard-top"
+                    && allowed_cards == &vec![top])
+    )));
+
+    for event in &events {
+        apply_event(&mut game, event);
+    }
+    let return_events = handle_command(
+        &game,
+        Command::AnswerEffectChoiceTyped {
+            player: player.clone(),
+            answer: EffectChoiceAnswer::Cards { cards: Vec::new() },
+        },
+    )
+    .unwrap();
+    assert!(
+        !return_events
+            .iter()
+            .any(|event| matches!(event, GameEvent::CardsMoved { .. }))
+    );
+
+    let discard_events = handle_command(
+        &game,
+        Command::AnswerEffectChoiceTyped {
+            player,
+            answer: EffectChoiceAnswer::Cards { cards: vec![top] },
+        },
+    )
+    .unwrap();
+    assert!(discard_events.iter().any(|event| matches!(
+        event,
+        GameEvent::CardsMoved { card_moves }
+            if card_moves.len() == 1
+                && card_moves[0].card == top
+                && matches!(card_moves[0].to, fewfc::domain::CardZone::Discard)
+    )));
 }
 
 #[test]
