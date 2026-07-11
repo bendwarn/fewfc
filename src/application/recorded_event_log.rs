@@ -82,6 +82,7 @@ impl RecordedEventLog {
 
     fn append_decision(&mut self, source: RecordedDecisionSource, events: Vec<GameEvent>) {
         let first_sequence = self.recorded_events.len() as u64 + 1;
+        let mut inherited_automatic_reason = None;
         self.recorded_events
             .extend(
                 events
@@ -90,7 +91,7 @@ impl RecordedEventLog {
                     .map(|(index, event)| RecordedEvent {
                         metadata: EventMetadata {
                             sequence: first_sequence + index as u64,
-                            source: event_source(&source, event),
+                            source: event_source(&source, event, &mut inherited_automatic_reason),
                         },
                         event: event.clone(),
                     }),
@@ -117,12 +118,18 @@ impl RecordedEventLog {
     }
 }
 
-fn event_source(source: &RecordedDecisionSource, event: &GameEvent) -> EventSource {
+fn event_source(
+    source: &RecordedDecisionSource,
+    event: &GameEvent,
+    inherited_automatic_reason: &mut Option<AutomaticReason>,
+) -> EventSource {
     match source {
         RecordedDecisionSource::Setup => EventSource::Setup,
         RecordedDecisionSource::Automatic => EventSource::Automatic {
             reason: automatic_reason(event)
-                .expect("automatic advancement must only emit automatic events"),
+                .or_else(|| inherited_automatic_reason.clone())
+                .inspect(|reason| *inherited_automatic_reason = Some(reason.clone()))
+                .expect("automatic advancement must begin with an automatic event"),
         },
         RecordedDecisionSource::Randomness { answer } => EventSource::Randomness {
             request_id: answer.request_id.clone(),
@@ -137,7 +144,7 @@ fn event_source(source: &RecordedDecisionSource, event: &GameEvent) -> EventSour
     }
 }
 
-fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
+pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
     match event {
         GameEvent::TurnStarted { .. } => Some(AutomaticReason::TurnStart),
         GameEvent::CardsDrawnForTurnDiscardChoice { .. } => Some(AutomaticReason::TurnDraw),

@@ -9,7 +9,7 @@ use crate::domain::{
 use crate::ports::DeckPreparation as DeckPreparationPort;
 use crate::public_view::{PublicGameEvent, PublicGameState, Viewer};
 use crate::rules::{OfficialRules, PlayableAction};
-use recorded_event_log::RecordedEventLog;
+use recorded_event_log::{RecordedEventLog, automatic_reason};
 
 pub use recorded_event_log::{
     AutomaticReason, CommandContext, CommandKind, EventMetadata, EventSource, RecordedDecision,
@@ -226,108 +226,6 @@ pub enum ReplayVerificationError {
         sequence: u64,
         source: EventSource,
     },
-}
-
-fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
-    match event {
-        GameEvent::TurnStarted { .. } => Some(AutomaticReason::TurnStart),
-        GameEvent::CardsDrawnForTurnDiscardChoice { .. } => Some(AutomaticReason::TurnDraw),
-        GameEvent::TurnDrawSkipped { .. } => Some(AutomaticReason::TurnDrawSkipped),
-        GameEvent::DiscardRecycledIntoDeck { .. }
-        | GameEvent::PlayerDiscardRecycledIntoDeck { .. } => Some(AutomaticReason::DiscardRecycle),
-        GameEvent::StatusExpired { .. } => Some(AutomaticReason::StatusExpired),
-        GameEvent::JianghuStateExpired { .. } => Some(AutomaticReason::StatusExpired),
-        GameEvent::JianghuPoisonTicked { .. } => Some(AutomaticReason::TurnEnd),
-        GameEvent::JianghuDelayedDamageResolved { .. } => Some(AutomaticReason::TurnEnd),
-        GameEvent::TurnEnded { .. } | GameEvent::FormationSuppressionExpired { .. } => {
-            Some(AutomaticReason::TurnEnd)
-        }
-        GameEvent::EchoResolutionStarted { .. }
-        | GameEvent::EchoResolutionCompleted { .. }
-        | GameEvent::FlowStateChanged { .. }
-        | GameEvent::HpChanged { .. } => Some(AutomaticReason::EchoResolution),
-        GameEvent::PlantEarthResolutionStarted { .. }
-        | GameEvent::PlantEarthResolutionCompleted { .. } => Some(AutomaticReason::EchoResolution),
-        GameEvent::FlowStateTriggered { .. } => Some(AutomaticReason::TurnDraw),
-        GameEvent::DeckPrepared { .. }
-        | GameEvent::PlayerDeckPrepared { .. }
-        | GameEvent::GamePreparationStarted { .. }
-        | GameEvent::InitialPouchChosen { .. }
-        | GameEvent::GamePreparationCompleted
-        | GameEvent::PouchPlaced { .. }
-        | GameEvent::PouchRevealed { .. }
-        | GameEvent::PouchConsumed { .. }
-        | GameEvent::PouchLevelBonusGranted { .. }
-        | GameEvent::TemporaryStarEffectGranted { .. }
-        | GameEvent::SpiritRevived { .. }
-        | GameEvent::CardsDealt { .. }
-        | GameEvent::CounterEffectEstablished { .. }
-        | GameEvent::CounterEffectResolved { .. }
-        | GameEvent::ActionPassed { .. }
-        | GameEvent::ProfessionChanged { .. }
-        | GameEvent::ProfessionTransformed { .. }
-        | GameEvent::ProfessionBroken { .. }
-        | GameEvent::ProfessionAbilityActivated { .. }
-        | GameEvent::SpiritSummoned { .. }
-        | GameEvent::SpiritTransformed { .. }
-        | GameEvent::SpiritPowerChanged { .. }
-        | GameEvent::SpiritSkillUsed { .. }
-        | GameEvent::SpiritLevelInterpreted { .. }
-        | GameEvent::SpiritBroken { .. }
-        | GameEvent::AutomaticBloomsResolved { .. }
-        | GameEvent::CardsDrawnForProfessionChoice { .. }
-        | GameEvent::AttackResolved { .. }
-        | GameEvent::EnvironmentTransferred { .. }
-        | GameEvent::EnvironmentCleared { .. }
-        | GameEvent::StarBroken { .. }
-        | GameEvent::StarSummoned { .. }
-        | GameEvent::VoidStarBreakingCompleted { .. }
-        | GameEvent::VoidReversionResolved { .. }
-        | GameEvent::VoidSpiritShatteringResolved { .. }
-        | GameEvent::FiveStarAlignmentAchieved { .. }
-        | GameEvent::CardsMoved { .. }
-        | GameEvent::EffectChoiceAnswered { .. }
-        | GameEvent::TypedEffectChoiceAnswered { .. }
-        | GameEvent::EffectChoiceRequested { .. }
-        | GameEvent::RandomnessRequested { .. }
-        | GameEvent::RandomnessResolved { .. }
-        | GameEvent::EchoCostPaid { .. }
-        | GameEvent::EchoDeclined { .. }
-        | GameEvent::EchoScheduled { .. }
-        | GameEvent::TimedEffectsReduced { .. }
-        | GameEvent::FormationSuppressionSet { .. }
-        | GameEvent::RingingMetalCardRevealed { .. }
-        | GameEvent::RingingMetalCompleted { .. }
-        | GameEvent::PlantEarthScheduled { .. }
-        | GameEvent::EarthRendingStarted { .. }
-        | GameEvent::EarthRendingEnvironmentChosen { .. }
-        | GameEvent::EarthRendingPlayerAnswered { .. }
-        | GameEvent::HandRevealed { .. }
-        | GameEvent::EarthRendingCompleted { .. }
-        | GameEvent::RustedForestStarted { .. }
-        | GameEvent::RustedForestCardsRevealed { .. }
-        | GameEvent::RustedForestDeckProcessed { .. }
-        | GameEvent::RustedForestCompleted { .. }
-        | GameEvent::FormationEffectCopied { .. }
-        | GameEvent::FormationEffectIgnored { .. }
-        | GameEvent::FormationPerformed { .. }
-        | GameEvent::FormationMatchOptionDeclared { .. }
-        | GameEvent::HandInspected { .. }
-        | GameEvent::DeckTopRevealed { .. }
-        | GameEvent::PassiveCovered { .. }
-        | GameEvent::PassiveCoverRevealed { .. }
-        | GameEvent::PassiveFlipped { .. }
-        | GameEvent::ShieldChanged { .. }
-        | GameEvent::StatusAdded { .. }
-        | GameEvent::StatusRemoved { .. }
-        | GameEvent::JianghuStateApplied { .. }
-        | GameEvent::LimitedUseChanged { .. }
-        | GameEvent::ConfluenceCardObligationSet { .. }
-        | GameEvent::ConfluenceCardObligationCleared { .. }
-        | GameEvent::TurnDrawBonusChanged { .. }
-        | GameEvent::TurnDiscardChosen { .. }
-        | GameEvent::DiscardRetrieved { .. } => None,
-    }
 }
 
 fn command_context(command: &Command) -> CommandContext {

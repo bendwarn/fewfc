@@ -1,5 +1,6 @@
 use fewfc::application::{
-    GameRecord, advance_automatic, apply_event, handle_command, resolve_trusted_randomness,
+    AutomaticReason, EventSource, GameRecord, advance_automatic, apply_event, handle_command,
+    resolve_trusted_randomness,
 };
 use fewfc::domain::{
     CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, Command, CounterEffect, CoveredPassive,
@@ -1343,4 +1344,102 @@ fn plant_earth_schedules_a_fresh_turn_start_melody_without_echo() {
             .iter()
             .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
     );
+}
+
+#[test]
+fn plant_earth_turn_start_choice_records_automatic_metadata_without_panicking() {
+    let setup = configured_setup();
+    let leading = [1, 2, 8, 9, 27, 85, 3, 4, 5];
+    let mut deck = leading.into_iter().map(card).collect::<Vec<_>>();
+    deck.extend((1..=90).filter(|id| !leading.contains(id)).map(card));
+    let mut record = GameRecord::start(setup, deck).unwrap();
+
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    choose_first_turn_draw_discard(&mut record);
+    record.advance_automatic().unwrap();
+
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p2"),
+            formation_id: "echo:plant-earth".to_string(),
+            cards: vec![card(27), card(85)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    choose_first_turn_draw_discard(&mut record);
+    record.advance_automatic().unwrap();
+
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(2)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    choose_first_turn_draw_discard(&mut record);
+
+    let started = record.advance_automatic().unwrap();
+    assert!(
+        started
+            .iter()
+            .any(|event| matches!(event, GameEvent::PlantEarthResolutionStarted { .. }))
+    );
+    assert!(
+        started
+            .iter()
+            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+    );
+    assert!(record.state().pending_choice.is_some());
+    let public_choice = record
+        .public_view(Viewer::Player(PlayerId::new("p1")))
+        .unwrap()
+        .pending_choice
+        .expect("Plant Earth choice must be visible as a pending decision");
+    assert_eq!(public_choice.player, PlayerId::new("p2"));
+    assert_eq!(public_choice.purpose, "echo:plant-earth");
+    assert!(matches!(
+        public_choice.kind,
+        PublicPendingChoiceKind::Hidden
+    ));
+    assert!(
+        record
+            .recorded_events()
+            .iter()
+            .rev()
+            .take(2)
+            .all(|recorded| {
+                recorded.metadata.source
+                    == EventSource::Automatic {
+                        reason: AutomaticReason::EchoResolution,
+                    }
+            })
+    );
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
+}
+
+fn choose_first_turn_draw_discard(record: &mut GameRecord) {
+    let events = record.advance_automatic().unwrap();
+    let (player, discard) = events
+        .iter()
+        .find_map(|event| match event {
+            GameEvent::CardsDrawnForTurnDiscardChoice {
+                player,
+                allowed_discards,
+                ..
+            } => Some((player.clone(), allowed_discards[0])),
+            _ => None,
+        })
+        .expect("turn draw must request a discard");
+    record
+        .handle(Command::ChooseTurnDiscard { player, discard })
+        .unwrap();
 }
