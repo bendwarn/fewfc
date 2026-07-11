@@ -51,19 +51,45 @@ test('all-enabled rooms omit a rule summary and list only disabled differences',
   await expect(room).toContainText('停用：錦囊')
 })
 
-test('desktop waiting controls remain inside the scrollable battlefield', async ({ page }) => {
+test('desktop waiting room uses a compact two-column layout inside the battlefield', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 })
   await createPublicRoom(page, `桌面等待層 ${Date.now()}`)
 
   const waitingOverlay = page.locator('.waiting-overlay')
+  const waitingPanel = page.locator('.waiting-panel')
+  const waitingMain = page.locator('.waiting-main')
+  const waitingSide = page.locator('.waiting-side')
   const startButton = page.getByRole('button', { name: '開始遊戲 →' })
   await expect(waitingOverlay).toHaveCSS('overflow-y', 'auto')
   await startButton.scrollIntoViewIfNeeded()
 
-  const buttonBox = await startButton.boundingBox()
+  const [panelBox, mainBox, sideBox, buttonBox] = await Promise.all([
+    waitingPanel.boundingBox(),
+    waitingMain.boundingBox(),
+    waitingSide.boundingBox(),
+    startButton.boundingBox(),
+  ])
+  expect(panelBox).not.toBeNull()
+  expect(mainBox).not.toBeNull()
+  expect(sideBox).not.toBeNull()
   expect(buttonBox).not.toBeNull()
+  expect(panelBox!.width).toBeGreaterThanOrEqual(800)
+  expect(sideBox!.x).toBeGreaterThanOrEqual(mainBox!.x + mainBox!.width)
+  expect(buttonBox!.x).toBeGreaterThanOrEqual(sideBox!.x)
   expect(buttonBox!.y).toBeGreaterThanOrEqual(0)
   expect(buttonBox!.y + buttonBox!.height).toBeLessThanOrEqual(720)
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  const [mobilePanelBox, mobileMainBox, mobileSideBox] = await Promise.all([
+    waitingPanel.boundingBox(),
+    waitingMain.boundingBox(),
+    waitingSide.boundingBox(),
+  ])
+  expect(mobilePanelBox).not.toBeNull()
+  expect(mobileMainBox).not.toBeNull()
+  expect(mobileSideBox).not.toBeNull()
+  expect(mobilePanelBox!.width).toBeLessThanOrEqual(390 - 32)
+  expect(mobileSideBox!.y).toBeGreaterThanOrEqual(mobileMainBox!.y + mobileMainBox!.height)
 })
 
 test('enabled rules flows downward as newer battle records arrive', async ({ browser }) => {

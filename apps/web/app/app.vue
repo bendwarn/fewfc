@@ -1209,99 +1209,104 @@
           </div>
 
           <div v-if="roomWaiting" class="waiting-overlay">
-            <div>
-              <h2>{{ activeRoomName }}</h2>
-              <p>{{ waitingRoomSummary }}</p>
-              <p v-if="game.lockedDeckName.value" class="muted">
-                本局使用：{{ game.lockedDeckName.value }}
-              </p>
-              <fieldset class="waiting-rules">
-                <legend>{{ isRoomOwner ? '規則模組' : '啟用規則' }}</legend>
-                <section
-                  v-for="group in ruleGroups"
-                  :key="group.id"
-                  class="waiting-rule-group"
-                  :aria-labelledby="`waiting-rule-group-${group.id}`"
-                >
-                  <h3 :id="`waiting-rule-group-${group.id}`">{{ group.label }}</h3>
-                  <label v-for="rule in group.rules" :key="rule.id" class="rule-toggle">
-                    <input
-                      type="checkbox"
-                      :checked="onlineMetadata?.enabledRuleModules.includes(rule.id)"
-                      :disabled="game.isLoading.value || !isRoomOwner"
-                      @change="toggleWaitingRule(rule.id)"
+            <div class="waiting-panel">
+              <section class="waiting-main">
+                <h2>{{ activeRoomName }}</h2>
+                <p>{{ waitingRoomSummary }}</p>
+                <p v-if="game.lockedDeckName.value" class="muted">
+                  本局使用：{{ game.lockedDeckName.value }}
+                </p>
+                <fieldset class="waiting-rules">
+                  <legend>{{ isRoomOwner ? '規則模組' : '啟用規則' }}</legend>
+                  <section
+                    v-for="group in ruleGroups"
+                    :key="group.id"
+                    class="waiting-rule-group"
+                    :aria-labelledby="`waiting-rule-group-${group.id}`"
+                  >
+                    <h3 :id="`waiting-rule-group-${group.id}`">{{ group.label }}</h3>
+                    <label v-for="rule in group.rules" :key="rule.id" class="rule-toggle">
+                      <input
+                        type="checkbox"
+                        :checked="onlineMetadata?.enabledRuleModules.includes(rule.id)"
+                        :disabled="game.isLoading.value || !isRoomOwner"
+                        @change="toggleWaitingRule(rule.id)"
+                      >
+                      {{ rule.label }}
+                    </label>
+                  </section>
+                </fieldset>
+                <p v-if="game.errorMessage.value" class="form-error" role="alert">
+                  {{ game.errorMessage.value }}
+                </p>
+              </section>
+
+              <aside class="waiting-side" aria-label="房間成員與操作">
+                <div class="waiting-members">
+                  <span
+                    v-for="player in onlinePlayers"
+                    :key="player"
+                    :class="{ joined: Boolean(memberForPlayer(player)) }"
+                  >
+                    {{ playerLabel(player) }}
+                    <small>{{ waitingMemberStatus(memberForPlayer(player)) }}</small>
+                    <button
+                      v-if="isRoomOwner && memberForPlayer(player) && !memberForPlayer(player)?.owner"
+                      type="button"
+                      :disabled="game.isLoading.value"
+                      @click="removeWaitingPlayer(memberForPlayer(player)!.userId)"
                     >
-                    {{ rule.label }}
-                  </label>
-                </section>
-              </fieldset>
-              <p v-if="game.errorMessage.value" class="form-error" role="alert">
-                {{ game.errorMessage.value }}
-              </p>
-              <div class="waiting-members">
-                <span
-                  v-for="player in onlinePlayers"
-                  :key="player"
-                  :class="{ joined: Boolean(memberForPlayer(player)) }"
-                >
-                  {{ playerLabel(player) }}
-                  <small>{{ waitingMemberStatus(memberForPlayer(player)) }}</small>
+                      移除
+                    </button>
+                  </span>
+                </div>
+                <div class="result-actions">
                   <button
-                    v-if="isRoomOwner && memberForPlayer(player) && !memberForPlayer(player)?.owner"
+                    v-if="isRoomOwner"
+                    class="ghost-button"
                     type="button"
                     :disabled="game.isLoading.value"
-                    @click="removeWaitingPlayer(memberForPlayer(player)!.userId)"
+                    @click="dissolveWaitingRoom"
                   >
-                    移除
+                    解散
                   </button>
-                </span>
-              </div>
-              <div class="result-actions">
+                  <button
+                    v-else
+                    class="ghost-button"
+                    type="button"
+                    :disabled="game.isLoading.value"
+                    @click="leaveWaitingRoom"
+                  >
+                    離開
+                  </button>
+                  <button
+                    v-if="isRoomOwner"
+                    class="primary-button"
+                    type="button"
+                    :disabled="game.isLoading.value || !canStartOnlineRoom"
+                    @click="startOnlineRoom"
+                  >
+                    開始遊戲 <span>→</span>
+                  </button>
+                  <button
+                    v-else
+                    class="primary-button"
+                    type="button"
+                    :disabled="game.isLoading.value || !roomConnected"
+                    @click="game.toggleReady()"
+                  >
+                    {{ currentMember?.ready ? '取消準備' : '準備' }} <span>→</span>
+                  </button>
+                </div>
                 <button
-                  v-if="isRoomOwner"
-                  class="ghost-button"
+                  v-if="onlineMetadata?.access === 'private' && isRoomOwner && game.invitation.value"
+                  class="invite-link"
                   type="button"
-                  :disabled="game.isLoading.value"
-                  @click="dissolveWaitingRoom"
+                  @click="copyInviteLink"
                 >
-                  解散
+                  複製邀請連結
                 </button>
-                <button
-                  v-else
-                  class="ghost-button"
-                  type="button"
-                  :disabled="game.isLoading.value"
-                  @click="leaveWaitingRoom"
-                >
-                  離開
-                </button>
-                <button
-                  v-if="isRoomOwner"
-                  class="primary-button"
-                  type="button"
-                  :disabled="game.isLoading.value || !canStartOnlineRoom"
-                  @click="startOnlineRoom"
-                >
-                  開始遊戲 <span>→</span>
-                </button>
-                <button
-                  v-else
-                  class="primary-button"
-                  type="button"
-                  :disabled="game.isLoading.value || !roomConnected"
-                  @click="game.toggleReady()"
-                >
-                  {{ currentMember?.ready ? '取消準備' : '準備' }} <span>→</span>
-                </button>
-              </div>
-              <button
-                v-if="onlineMetadata?.access === 'private' && isRoomOwner && game.invitation.value"
-                class="invite-link"
-                type="button"
-                @click="copyInviteLink"
-              >
-                複製邀請連結
-              </button>
+              </aside>
             </div>
           </div>
 
@@ -3332,8 +3337,10 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .revealed-teams { @apply grid grid-cols-2 gap-3; }
 .revealed-teams span { @apply grid gap-1 border border-[#39443d] p-3 text-xs text-muted; }
 .revealed-teams strong { @apply text-gold-light; }
-.waiting-overlay { @apply absolute inset-0 flex items-start justify-center overflow-y-auto bg-[rgba(7,10,8,.78)] py-4 text-center backdrop-blur-[4px]; z-index: 13; }
-.waiting-overlay > div { @apply my-auto grid min-w-[360px] max-w-[min(90vw,520px)] gap-4 border border-[#8e733d] bg-[#18201b] p-8 shadow-[0_24px_80px_rgba(0,0,0,.42)]; }
+.waiting-overlay { @apply absolute inset-0 flex items-start justify-center overflow-y-auto bg-[rgba(7,10,8,.78)] py-4 backdrop-blur-[4px]; z-index: 13; }
+.waiting-panel { width: min(860px, calc(100% - 64px)); @apply my-auto grid grid-cols-[minmax(0,1.45fr)_minmax(240px,.75fr)] gap-6 border border-[#8e733d] bg-[#18201b] p-7 text-left shadow-[0_24px_80px_rgba(0,0,0,.42)]; }
+.waiting-main { @apply min-w-0; }
+.waiting-side { @apply grid min-w-0 content-start gap-4 border-l border-[#354039] pl-6; }
 .waiting-overlay h2 { @apply font-serif text-3xl text-gold-light; }
 .waiting-overlay p:not(.section-kicker) { @apply text-sm text-muted; }
 .waiting-members { @apply grid grid-cols-2 gap-3; }
@@ -3341,7 +3348,8 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .waiting-members span.joined { @apply border-[#b99550] text-[#ece8dd]; }
 .waiting-members small { @apply text-[10px] text-muted; }
 .waiting-members button { @apply mt-1 border-0 bg-transparent text-[9px] text-[#c98e82]; }
-.invite-link { @apply justify-self-center border-0 bg-transparent text-xs text-gold-light; }
+.waiting-side .result-actions { @apply mt-0; }
+.invite-link { @apply justify-self-start border-0 bg-transparent text-xs text-gold-light; }
 .result-actions { @apply mt-2 grid grid-cols-2 gap-3; }
 .result-actions .ghost-button { @apply border-[#59635c] text-[#ece8dd]; }
 .result-actions .primary-button { @apply justify-between; }
@@ -3435,7 +3443,8 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   .player-identity strong { max-width: 110px; }
   .turn-badge { font-size: 8px!important; }
   .action-candidates button { min-height: 30px; padding: 4px 7px; }
-  .waiting-overlay > div { min-width: 0; width: calc(100vw - 32px); padding: 22px 16px; }
+  .waiting-panel { min-width: 0; width: calc(100vw - 32px); grid-template-columns: 1fr; gap: 18px; padding: 22px 16px; }
+  .waiting-side { @apply border-t border-l-0 pt-4 pl-0; }
   .waiting-members { grid-template-columns: 1fr 1fr; }
   .notification-stack { top: 76px; right: 16px; }
 }
