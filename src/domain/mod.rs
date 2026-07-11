@@ -206,6 +206,8 @@ pub enum SpiritSkill {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SpiritLevelInterpretation {
     pub player: PlayerId,
+    #[serde(default)]
+    pub skill: Option<SpiritSkill>,
     pub card: CardInstanceId,
     pub level: u32,
     pub applied_on_turn: u64,
@@ -1405,6 +1407,8 @@ pub enum GameEvent {
     },
     SpiritLevelInterpreted {
         player: PlayerId,
+        #[serde(default)]
+        skill: Option<SpiritSkill>,
         card: CardInstanceId,
         level: u32,
         applied_on_turn: u64,

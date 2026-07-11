@@ -15,7 +15,8 @@ use fewfc::domain::{
 };
 use fewfc::public_view::{
     self, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
-    PublicPendingChoiceKind, PublicPlayerHand, PublicPreviousTurnFormation, Viewer,
+    PublicPendingChoiceKind, PublicPendingChoicePresentation, PublicPlayerHand,
+    PublicPreviousTurnFormation, Viewer,
 };
 use fewfc::rules::Element;
 
@@ -4644,6 +4645,7 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
         Some(PublicPendingChoice {
             player: PlayerId::new("p1"),
             purpose: "chaos".to_string(),
+            presentation: PublicPendingChoicePresentation::Chaos,
             kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
                 effect_id: "chaos".to_string(),
                 continuation_id: "chaos:return-two".to_string(),
@@ -4656,6 +4658,7 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
         Some(PublicPendingChoice {
             player: PlayerId::new("p1"),
             purpose: "chaos".to_string(),
+            presentation: PublicPendingChoicePresentation::Chaos,
             kind: PublicPendingChoiceKind::Hidden,
         })
     );
@@ -4664,6 +4667,7 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
         Some(PublicPendingChoice {
             player: PlayerId::new("p1"),
             purpose: "chaos".to_string(),
+            presentation: PublicPendingChoicePresentation::Chaos,
             kind: PublicPendingChoiceKind::Hidden,
         })
     );

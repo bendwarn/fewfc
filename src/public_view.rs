@@ -47,9 +47,26 @@ pub struct PublicGameState {
     pub star_histories: Vec<PlayerStarHistory>,
     pub five_star_alignment: Option<crate::domain::FiveStarAlignment>,
     pub professions: Vec<PlayerProfession>,
-    pub prepared_profession_abilities: Vec<crate::domain::PreparedProfessionAbility>,
+    pub card_interpretations: Vec<PublicCardInterpretation>,
     pub spirits: Vec<crate::domain::PlayerSpirit>,
     pub previous_turn_formation: Option<PublicPreviousTurnFormation>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum PublicCardInterpretation {
+    ProfessionAbility {
+        player: PlayerId,
+        ability_id: String,
+        card: Option<CardInstanceId>,
+        element: Element,
+        level: u32,
+    },
+    SpiritSkill {
+        player: PlayerId,
+        skill: Option<crate::domain::SpiritSkill>,
+        card: Option<CardInstanceId>,
+        level: u32,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -115,7 +132,44 @@ pub enum PublicCardRefs {
 pub struct PublicPendingChoice {
     pub player: PlayerId,
     pub purpose: String,
+    pub presentation: PublicPendingChoicePresentation,
     pub kind: PublicPendingChoiceKind,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PublicPendingChoicePresentation {
+    TurnDrawDiscard,
+    HolyWind,
+    Chaos,
+    Revelation,
+    AzureCloudStep,
+    ClearWindTenThousandMiles,
+    MirrorResonance,
+    MyriadResonance,
+    ThousandResonance,
+    EchoRingingMetalDeckCard,
+    EchoCost {
+        melody: PublicEchoMelodyPresentation,
+    },
+    EchoSplitEarthFormation,
+    EchoPureFirePlayer,
+    EchoPlantEarthMelody,
+    EarthRendingEnvironment,
+    EarthRendingCard,
+    Metamorphosis,
+    SealCard,
+    Unclassified,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PublicEchoMelodyPresentation {
+    RingingMetal,
+    FallingWood,
+    FlowingWater,
+    WarFire,
+    SplitEarth,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -180,6 +234,7 @@ pub enum PublicGameEvent {
     },
     SpiritLevelInterpreted {
         player: PlayerId,
+        skill: Option<crate::domain::SpiritSkill>,
         card: Option<CardInstanceId>,
         level: u32,
         applied_on_turn: u64,
@@ -332,6 +387,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .map(|choice| PublicPendingChoice {
                 player: choice.player.clone(),
                 purpose: pending_choice_purpose(&choice.kind),
+                presentation: pending_choice_presentation(&choice.kind),
                 kind: if policy.can_see_player_hidden_cards(&choice.player) {
                     PublicPendingChoiceKind::Known(choice.kind.clone())
                 } else {
@@ -394,13 +450,32 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
         } else {
             Vec::new()
         },
-        prepared_profession_abilities: if state
-            .has_rule_module(crate::domain::HERO_SCHOOLS_MODULE_ID)
-        {
-            state.prepared_profession_abilities.clone()
-        } else {
-            Vec::new()
-        },
+        card_interpretations: state
+            .prepared_profession_abilities
+            .iter()
+            .map(|prepared| PublicCardInterpretation::ProfessionAbility {
+                player: prepared.player.clone(),
+                ability_id: prepared.ability_id.clone(),
+                card: policy
+                    .can_see_player_hidden_cards(&prepared.player)
+                    .then_some(prepared.card),
+                element: prepared.element,
+                level: prepared.level,
+            })
+            .chain(
+                state
+                    .spirit_level_interpretations
+                    .iter()
+                    .map(|interpretation| PublicCardInterpretation::SpiritSkill {
+                        player: interpretation.player.clone(),
+                        skill: interpretation.skill,
+                        card: policy
+                            .can_see_player_hidden_cards(&interpretation.player)
+                            .then_some(interpretation.card),
+                        level: interpretation.level,
+                    }),
+            )
+            .collect(),
         spirits: if state.has_rule_module(crate::domain::SPIRIT_MODULE_ID) {
             state.spirits.clone()
         } else {
@@ -578,12 +653,14 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         },
         GameEvent::SpiritLevelInterpreted {
             player,
+            skill,
             card,
             level,
             applied_on_turn,
             ..
         } => PublicGameEvent::SpiritLevelInterpreted {
             player: player.clone(),
+            skill: *skill,
             card: policy.can_see_player_hidden_cards(player).then_some(*card),
             level: *level,
             applied_on_turn: *applied_on_turn,
@@ -681,6 +758,72 @@ fn pending_choice_purpose(kind: &PendingChoiceKind) -> String {
     }
 }
 
+fn pending_choice_presentation(kind: &PendingChoiceKind) -> PublicPendingChoicePresentation {
+    let (effect_id, continuation_id) = match kind {
+        PendingChoiceKind::TurnDrawDiscard { .. } => {
+            return PublicPendingChoicePresentation::TurnDrawDiscard;
+        }
+        PendingChoiceKind::EffectGenerated {
+            effect_id,
+            continuation_id,
+            ..
+        }
+        | PendingChoiceKind::CardSetChoice {
+            effect_id,
+            continuation_id,
+            ..
+        }
+        | PendingChoiceKind::TypedEffect {
+            effect_id,
+            continuation_id,
+            ..
+        } => (effect_id.as_str(), continuation_id.as_str()),
+    };
+
+    use PublicEchoMelodyPresentation as Melody;
+    use PublicPendingChoicePresentation as Presentation;
+    match (effect_id, continuation_id) {
+        ("holy-wind", _) => Presentation::HolyWind,
+        ("chaos", _) => Presentation::Chaos,
+        ("revelation", _) => Presentation::Revelation,
+        ("jianghu:azure-cloud-step", _) => Presentation::AzureCloudStep,
+        ("confluence:clear-wind-ten-thousand-miles", _) => Presentation::ClearWindTenThousandMiles,
+        ("confluence:mirror-resonance", _) => Presentation::MirrorResonance,
+        ("confluence:myriad-resonance", _) => Presentation::MyriadResonance,
+        ("confluence:thousand-resonance", _) => Presentation::ThousandResonance,
+        ("echo:ringing-metal", "echo:ringing-metal:select-card") => {
+            Presentation::EchoRingingMetalDeckCard
+        }
+        ("echo:ringing-metal", "echo:cost") => Presentation::EchoCost {
+            melody: Melody::RingingMetal,
+        },
+        ("echo:falling-wood", "echo:cost") => Presentation::EchoCost {
+            melody: Melody::FallingWood,
+        },
+        ("echo:flowing-water", "echo:cost") => Presentation::EchoCost {
+            melody: Melody::FlowingWater,
+        },
+        ("echo:war-fire", "echo:cost") => Presentation::EchoCost {
+            melody: Melody::WarFire,
+        },
+        ("echo:split-earth", "echo:cost") => Presentation::EchoCost {
+            melody: Melody::SplitEarth,
+        },
+        ("echo:split-earth", "echo:split-earth:formation") => Presentation::EchoSplitEarthFormation,
+        ("echo:pure-fire", _) => Presentation::EchoPureFirePlayer,
+        ("echo:plant-earth", _) => Presentation::EchoPlantEarthMelody,
+        ("tribulation:earth-rending", "tribulation:earth-rending:environment") => {
+            Presentation::EarthRendingEnvironment
+        }
+        ("tribulation:earth-rending", "tribulation:earth-rending:card") => {
+            Presentation::EarthRendingCard
+        }
+        ("metamorphosis", _) => Presentation::Metamorphosis,
+        ("choose-card-to-seal" | "seal", _) => Presentation::SealCard,
+        _ => Presentation::Unclassified,
+    }
+}
+
 fn public_cards(
     cards: &[CardInstanceId],
     can_see_all: bool,
@@ -724,5 +867,61 @@ impl RedactionPolicy {
 
     fn can_see_player_hidden_cards(&self, player: &PlayerId) -> bool {
         matches!(&self.viewer, Viewer::Player(viewer) if viewer == player)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_official_pending_choice_path_has_a_typed_presentation() {
+        let paths = [
+            ("holy-wind", "any"),
+            ("chaos", "chaos:return-two"),
+            ("revelation", "any"),
+            ("jianghu:azure-cloud-step", "any"),
+            ("confluence:clear-wind-ten-thousand-miles", "any"),
+            ("confluence:mirror-resonance", "any"),
+            ("confluence:myriad-resonance", "any"),
+            ("confluence:thousand-resonance", "any"),
+            ("echo:ringing-metal", "echo:ringing-metal:select-card"),
+            ("echo:ringing-metal", "echo:cost"),
+            ("echo:falling-wood", "echo:cost"),
+            ("echo:flowing-water", "echo:cost"),
+            ("echo:war-fire", "echo:cost"),
+            ("echo:split-earth", "echo:cost"),
+            ("echo:split-earth", "echo:split-earth:formation"),
+            ("echo:pure-fire", "any"),
+            ("echo:plant-earth", "any"),
+            (
+                "tribulation:earth-rending",
+                "tribulation:earth-rending:environment",
+            ),
+            (
+                "tribulation:earth-rending",
+                "tribulation:earth-rending:card",
+            ),
+            ("metamorphosis", "any"),
+            ("seal", "any"),
+        ];
+
+        assert_eq!(paths.len() + 1, 22);
+        assert_eq!(
+            pending_choice_presentation(&PendingChoiceKind::TurnDrawDiscard {
+                drawn_cards: vec![],
+                allowed_discards: vec![],
+            }),
+            PublicPendingChoicePresentation::TurnDrawDiscard
+        );
+        for (effect_id, continuation_id) in paths {
+            let presentation = pending_choice_presentation(&PendingChoiceKind::EffectGenerated {
+                effect_id: effect_id.to_string(),
+                continuation_id: continuation_id.to_string(),
+                allowed_cards: vec![],
+            });
+            assert_ne!(presentation, PublicPendingChoicePresentation::Unclassified);
+            assert!(!serde_json::to_string(&presentation).unwrap().is_empty());
+        }
     }
 }

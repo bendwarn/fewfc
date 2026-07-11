@@ -115,7 +115,7 @@ const OFFICIAL_RULE_MODULES: &[RuleModuleSpec] = &[
     RuleModuleSpec {
         id: POUCH_MODULE_ID,
         category: OfficialRuleModuleCategory::Theme,
-        default_enabled: false,
+        default_enabled: true,
         dependencies: &[PERSONAL_DECK_MODULE_ID, SPIRIT_MODULE_ID],
     },
 ];

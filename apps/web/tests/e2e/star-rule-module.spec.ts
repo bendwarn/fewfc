@@ -33,23 +33,23 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
     const roomName = `星辰預設測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
 
-    await expect(host.getByRole('heading', { name: '牌局設定' })).toBeVisible()
+    await expect(host.getByRole('heading', { name: '選用規則' })).toBeVisible()
     await expect(host.getByRole('heading', { name: '進階規則' })).toBeVisible()
     await expect(host.getByRole('heading', { name: '主題規則' })).toBeVisible()
-    await expect(host.getByLabel('進階規則‧星辰圖記')).toBeChecked()
-    await expect(host.getByLabel('進階規則‧星辰圖記')).toBeEnabled()
+    await expect(host.getByLabel('星辰圖記')).toBeChecked()
+    await expect(host.getByLabel('星辰圖記')).toBeEnabled()
     expect(await indexedModules(host, roomName)).toContain('star')
 
-    await joinListedRoom(guest, roomName, '星辰圖記：啟用')
-    await expect(guest.getByLabel('進階規則‧星辰圖記')).toBeChecked()
-    await expect(guest.getByLabel('進階規則‧星辰圖記')).toBeDisabled()
+    await joinListedRoom(guest, roomName, '停用：錦囊')
+    await expect(guest.getByLabel('星辰圖記')).toBeChecked()
+    await expect(guest.getByLabel('星辰圖記')).toBeDisabled()
     await guest.getByRole('button', { name: '準備 →' }).click()
     await host.getByRole('button', { name: '開始遊戲 →' }).click()
 
     await Promise.all([host, guest].map(async (page) => {
       const rules = page.getByRole('region', { name: '啟用規則' })
       await expect(rules).toContainText('基礎規則')
-      await expect(rules).toContainText('進階規則‧星辰圖記')
+      await expect(rules).toContainText('星辰圖記')
       await expect(page.locator('.event-panel .enabled-rules-panel')).toBeVisible()
       await expect(page.locator('.player-identity').filter({ hasText: '召星' })).toHaveCount(0)
     }))
@@ -67,7 +67,7 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
 
     await guest.reload()
     await expect(guest.getByRole('region', { name: '啟用規則' }))
-      .toContainText('進階規則‧星辰圖記')
+      .toContainText('星辰圖記')
   } finally {
     await hostContext.close()
     await guestContext.close()
@@ -86,19 +86,19 @@ test('disabling Star invalidates readiness and locked decks while preserving Bas
     await loginAsGuests([host, guest])
     const roomName = `星辰關閉測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
-    await joinListedRoom(guest, roomName, '星辰圖記：啟用')
+    await joinListedRoom(guest, roomName, '停用：錦囊')
 
     await guest.getByRole('button', { name: '準備 →' }).click()
     await expect(guest.getByText('本局使用：五行均衡預組')).toBeVisible()
-    await host.getByLabel('進階規則‧星辰圖記').uncheck()
+    await host.getByLabel('星辰圖記').uncheck()
 
-    await expect(guest.getByLabel('進階規則‧星辰圖記')).not.toBeChecked()
+    await expect(guest.getByLabel('星辰圖記')).not.toBeChecked()
     await expect(guest.getByRole('button', { name: '準備 →' })).toBeVisible()
     await expect(guest.getByText('本局使用：五行均衡預組')).toHaveCount(0)
     expect(await indexedModules(host, roomName)).not.toContain('star')
 
     await guest.reload()
-    await expect(guest.getByLabel('進階規則‧星辰圖記')).not.toBeChecked()
+    await expect(guest.getByLabel('星辰圖記')).not.toBeChecked()
     await guest.getByRole('button', { name: '準備 →' }).click()
     await host.getByRole('button', { name: '開始遊戲 →' }).click()
 
@@ -144,8 +144,8 @@ test('a four-player team room starts with one shared immutable Star configuratio
     await createPublicRoomViaApi(host!, roomName, true)
 
     for (const guest of guests) {
-      await joinListedRoom(guest, roomName, '星辰圖記：啟用')
-      await expect(guest.getByLabel('進階規則‧星辰圖記')).toBeChecked()
+      await joinListedRoom(guest, roomName, '停用：錦囊')
+      await expect(guest.getByLabel('星辰圖記')).toBeChecked()
       await guest.getByRole('button', { name: '準備 →' }).click()
     }
 
@@ -155,7 +155,7 @@ test('a four-player team room starts with one shared immutable Star configuratio
 
     await Promise.all(pages.map(async (page) => {
       await expect(page.getByRole('region', { name: '啟用規則' }))
-        .toContainText('進階規則‧星辰圖記')
+        .toContainText('星辰圖記')
       await expect(page.locator('.player-seat')).toHaveCount(4)
       await expect(page.getByLabel('棄牌堆').locator('.discard-pile')).toHaveCount(4)
       await expect(page.locator('.discard-position-top')).toHaveCount(1)
@@ -196,12 +196,12 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
     await Promise.all(pages.map(async (page) => {
       await expect(page.locator('.result-panel')).toBeVisible()
       await expect(page.getByRole('region', { name: '啟用規則' }))
-        .toContainText('進階規則‧星辰圖記')
+        .toContainText('星辰圖記')
     }))
 
     await host.getByRole('button', { name: '返回房間 →' }).click()
     await Promise.all(pages.map(async (page) => {
-      await expect(page.getByLabel('進階規則‧星辰圖記')).toBeChecked()
+      await expect(page.getByLabel('星辰圖記')).toBeChecked()
       await expect(page.getByRole('heading', { name: '進階規則' })).toBeVisible()
     }))
   } finally {

@@ -1378,11 +1378,11 @@ level, and allowed Formation scope without mutating the Card Instance or Card
 Definition. The preparation is available only during the current Player's turn
 and clears after their action or at Turn End.
 
-Prepared Profession Ability details are public immediately, including the
-target Card Instance and its declared interpretation. Activation cannot be
-rolled back and no other Player decision occurs between preparation and the
-current Player's action, so the Public State View and Public Event Feed do not
-hide these details.
+Prepared Profession Ability identity and its declared interpretation are public
+immediately. The target Card Instance remains visible only to its owner until
+ordinary Card movement makes it public, matching Spirit Card Interpretation
+presentation. Activation cannot be rolled back and no other Player decision
+occurs between preparation and the current Player's action.
 
 Preparing an ability does not force the Player's next Action to use it. At
 activation time, validation requires at least one legal Formation that could
@@ -1588,6 +1588,10 @@ New games and Online Game Rooms enable every available Rule Module by default,
 including Spirit, Jianghu, Confluence Generation, and Dark Glimmer. Persisted
 rooms retain their explicitly stored Rule Module list rather than gaining newly
 released modules implicitly.
+
+Pouch follows the same default after its release despite adding Initial Pouch
+Selection to Game Preparation. Existing rooms retain their stored module list;
+only newly created rooms receive Pouch by default.
 
 The Jianghu term **State (狀態)** is narrower than the engine's established
 generic `StatusEffect` concept. Define a separate typed Jianghu State collection
@@ -1838,3 +1842,9 @@ optional-cost Melodies need their allowed printed-element Echo Cost, 變徵‧�
 needs its automatic no-cost Echo, and 變宮‧植土 needs its distinct
 next-Turn-Start Melody-main-effect schedule with no Echo. The detail must not
 imply that delayed Echo or 植土 is a new Formation Use.
+
+`SpiritLevelInterpreted.skill` is an optional canonical semantic field. New
+records write the Fire Spirit Skill that created the Card Interpretation;
+records created before this field existed deserialize it as absent. Replay
+preserves those records and the Public View presents the absent value as a
+legacy Fire Skill interpretation instead of guessing between 螢光 and 絢爛.

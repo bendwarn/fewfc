@@ -117,8 +117,8 @@ test('players can inspect a synchronized discard composition throughout a match'
     const roomName = `同步棄牌測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
     await expect(host).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
-    await expect(host.getByLabel('進階規則‧星辰圖記')).toBeChecked()
-    await host.getByLabel('進階規則‧五方傳說').uncheck()
+    await expect(host.getByLabel('星辰圖記')).toBeChecked()
+    await host.getByLabel('五方傳說').uncheck()
     await host.getByLabel('個人牌組').uncheck()
 
     await joinListedRoom(guest, roomName)

@@ -427,7 +427,7 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     fiveStarAlignment: null,
     professions: [],
     professionCatalog: [],
-    preparedProfessionAbilities: [],
+    cardInterpretations: [],
     spirits: [],
     previousTurnFormation: null,
   }

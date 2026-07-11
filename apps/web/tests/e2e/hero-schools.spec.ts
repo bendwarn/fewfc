@@ -19,8 +19,8 @@ test('a Profession change and activated ability survive public reconnect', async
     await loginAsGuests([host, guest])
     const roomName = `英雄學派測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
-    await host.getByLabel('進階規則‧星辰圖記').uncheck()
-    await host.getByLabel('進階規則‧五方傳說').uncheck()
+    await host.getByLabel('星辰圖記').uncheck()
+    await host.getByLabel('五方傳說').uncheck()
     await host.getByLabel('棄牌回收').uncheck()
     await host.getByLabel('個人牌組').uncheck()
 
@@ -54,9 +54,9 @@ test('a Profession change and activated ability survive public reconnect', async
     expect(activationResponse.ok()).toBe(true)
 
     await host.reload()
-    await expect(host.locator('.prepared-ability')).toContainText('已準備 · 幻術')
+    await expect(host.locator('.card-interpretation')).toContainText('已準備 · 幻術')
     await guest.reload()
-    await expect(guest.locator('.prepared-ability')).toContainText('已準備 · 幻術')
+    await expect(guest.locator('.card-interpretation')).toContainText('已準備 · 幻術')
   } finally {
     await hostContext.close()
     await guestContext.close()

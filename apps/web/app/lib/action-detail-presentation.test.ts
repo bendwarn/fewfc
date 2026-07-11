@@ -1,0 +1,86 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import type { PlayableAction, SecretStrategyAction } from '../types/fewfc'
+import {
+  presentDiscardRetrievalAction,
+  presentPlayableAction,
+  presentSecretStrategyAction,
+} from './action-detail-presentation'
+
+test('composes Formation consequences in Web without changing catalog rule text', () => {
+  const chain: PlayableAction = {
+    type: 'performFormation',
+    id: 'pouch:chain',
+    name: '連環',
+    category: 'Spell',
+    policy: 'pouchChain',
+    summary: '三張不同行、不同級牌；從自身牌組選擇一或兩張牌',
+    cards: [1, 2, 3],
+    starSubstitution: null,
+    matchOption: null,
+  }
+
+  assert.equal(
+    presentPlayableAction(chain),
+    '三張不同行、不同級牌；從自身牌組選擇一或兩張牌。第一張成為友方玩家的錦囊；若選擇第二張，公開並立即觸發一個符合條件的秘計。',
+  )
+
+  const policies = [
+    'standard',
+    'pouchChain',
+    'echoRingingMetal',
+    'echoFallingWood',
+    'echoFlowingWater',
+    'echoWarFire',
+    'echoSplitEarth',
+    'echoPureFire',
+    'echoPlantEarth',
+  ] as const
+  for (const policy of policies) {
+    assert.ok(presentPlayableAction({ ...chain, policy }).length > 0)
+  }
+})
+
+test('presents Pouch and Discard Retrieval active effects before commit', () => {
+  const baseStrategy: Omit<SecretStrategyAction, 'strategy'> = {
+    sourceCard: 8,
+    input: 'none',
+    targetPlayers: [],
+    stars: [],
+    breakStars: [],
+    deckCards: [],
+    discardCards: [],
+    handCards: [],
+    requiredCardCount: 0,
+  }
+
+  const strategies: SecretStrategyAction['strategy'][] = [
+    'GoldenCicada',
+    'StealTheBeam',
+    'MuddyWaters',
+    'WatchTheFire',
+    'LureTheTigerAway',
+    'ReturnSoul',
+    'SheepStealing',
+    'DarkCrossing',
+    'DeceiveHeaven',
+    'Retreat',
+  ]
+
+  assert.equal(strategies.length, 10)
+  for (const strategy of strategies) {
+    assert.ok(presentSecretStrategyAction({ ...baseStrategy, strategy }).length > 0)
+  }
+  assert.match(presentSecretStrategyAction({ ...baseStrategy, strategy: 'GoldenCicada' }), /本回合/)
+  assert.equal(
+    presentDiscardRetrievalAction(
+      {
+        card: { id: 3, label: '火 3', element: 'Fire', level: 3, secretStrategies: [] },
+        previousPlayer: 'p2',
+        hpCost: 6,
+      },
+      player => ({ p2: '對手' })[player] ?? player,
+    ),
+    '支付 6 點生命，將 對手 上回合捨棄的火 3 放到自己的牌組頂；不結束行動。',
+  )
+})

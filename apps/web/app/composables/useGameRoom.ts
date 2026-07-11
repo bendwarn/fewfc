@@ -58,7 +58,7 @@ function emptyState(): PublicGameState {
     fiveStarAlignment: null,
     professions: [],
     professionCatalog: [],
-    preparedProfessionAbilities: [],
+    cardInterpretations: [],
     spirits: [],
     previousTurnFormation: null,
   }
@@ -93,8 +93,10 @@ export function useGameRoom(viewer: ViewerRef) {
     canPass: false,
     hasOptionalEffect: false,
     canRetrieveDiscard: false,
+    discardRetrievalAction: null,
     canChooseInitialPouch: false,
     canTriggerPouch: false,
+    pouchChainAction: null,
     secretStrategyActions: [],
   })
   const connectionState = ref<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle')

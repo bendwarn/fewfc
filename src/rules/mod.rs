@@ -1,6 +1,5 @@
 //! Rule registries: formations, effects, matchers, and formula resolvers.
 
-pub(crate) mod action_detail;
 pub(crate) mod base;
 pub(crate) mod confluence;
 pub(crate) mod dark;

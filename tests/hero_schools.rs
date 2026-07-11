@@ -5,7 +5,7 @@ use fewfc::domain::{
     Phase, Player, PlayerId, PlayerProfession, ProfessionId, RuleModuleId, STAR_MODULE_ID,
     TargetDecl, TeamId, ValidationError,
 };
-use fewfc::public_view::{Viewer, state_for};
+use fewfc::public_view::{PublicCardInterpretation, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
 
 fn game_state(modules: &[&str]) -> GameState {
@@ -398,12 +398,12 @@ fn mesmer_preparation_is_public_shared_and_clears_after_action() {
             .any(|event| matches!(event, GameEvent::TurnDrawBonusChanged { delta: 1, .. }))
     );
     apply_all(&mut state, &events);
-    assert_eq!(
+    assert!(matches!(
         state_for(&state, Viewer::Observer)
-            .prepared_profession_abilities
-            .len(),
-        1
-    );
+            .card_interpretations
+            .as_slice(),
+        [PublicCardInterpretation::ProfessionAbility { card: None, .. }]
+    ));
     assert!(matches!(
         handle_command(
             &state,

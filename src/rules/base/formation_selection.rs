@@ -171,24 +171,16 @@ impl<'a> FormationSelection<'a> {
                         .into_iter()
                         .flat_map(move |star_substitution| {
                             role_options.clone().into_iter().map(
-                                move |(declared_targets, preview)| {
-                                    let summary = crate::rules::action_detail::formation_summary(
-                                        self.state,
-                                        &formation.id,
-                                        &formation.rule_text,
-                                        star_substitution.as_ref(),
-                                    );
-                                    FormationCandidate {
-                                        formation_id: formation.id.clone(),
-                                        formation_name: formation.name.clone(),
-                                        rule_text: formation.rule_text.clone(),
-                                        summary,
-                                        category: formation.category.clone(),
-                                        cards: self.cards.clone(),
-                                        star_substitution: star_substitution.clone(),
-                                        declared_targets,
-                                        preview,
-                                    }
+                                move |(declared_targets, preview)| FormationCandidate {
+                                    formation_id: formation.id.clone(),
+                                    formation_name: formation.name.clone(),
+                                    rule_text: formation.rule_text.clone(),
+                                    summary: formation.rule_text.clone(),
+                                    category: formation.category.clone(),
+                                    cards: self.cards.clone(),
+                                    star_substitution: star_substitution.clone(),
+                                    declared_targets,
+                                    preview,
                                 },
                             )
                         })
@@ -200,12 +192,7 @@ impl<'a> FormationSelection<'a> {
                         formation_id: formation.id.clone(),
                         formation_name: formation.name.clone(),
                         rule_text: formation.rule_text.clone(),
-                        summary: crate::rules::action_detail::formation_summary(
-                            self.state,
-                            &formation.id,
-                            &formation.rule_text,
-                            None,
-                        ),
+                        summary: formation.rule_text.clone(),
                         category: formation.category.clone(),
                         cards: self.cards.clone(),
                         star_substitution: None,
@@ -224,12 +211,7 @@ impl<'a> FormationSelection<'a> {
                         formation_id: formation.id.clone(),
                         formation_name: formation.name.clone(),
                         rule_text: formation.rule_text.clone(),
-                        summary: crate::rules::action_detail::formation_summary(
-                            self.state,
-                            &formation.id,
-                            &formation.rule_text,
-                            None,
-                        ),
+                        summary: formation.rule_text.clone(),
                         category: formation.category.clone(),
                         cards: self.cards.clone(),
                         star_substitution: None,

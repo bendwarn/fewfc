@@ -43,8 +43,8 @@ test('selected cards expose rule-backed actions in vertically ordered control pa
 
     const roomName = `可用行動測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
-    await expect(host.getByLabel('進階規則‧英雄學派')).toBeChecked()
-    await host.getByLabel('進階規則‧五方傳說').uncheck()
+    await expect(host.getByLabel('英雄學派')).toBeChecked()
+    await host.getByLabel('五方傳說').uncheck()
     await host.getByLabel('個人牌組').uncheck()
 
     await joinListedRoom(guest, roomName)

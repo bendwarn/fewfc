@@ -23,15 +23,15 @@ test('Echo defaults on and normalizes every Advanced Rule dependency', async ({ 
   test.setTimeout(180_000)
   await createRoom(page, `迴響測試 ${Date.now()}`)
 
-  await expect(page.getByLabel('主題規則‧迴響')).toBeChecked()
+  await expect(page.getByLabel('迴響')).toBeChecked()
 
-  await page.getByLabel('進階規則‧英雄學派').uncheck()
-  await expect(page.getByLabel('主題規則‧迴響')).not.toBeChecked()
+  await page.getByLabel('英雄學派').uncheck()
+  await expect(page.getByLabel('迴響')).not.toBeChecked()
 
-  await page.getByLabel('主題規則‧迴響').check()
-  await expect(page.getByLabel('進階規則‧星辰圖記')).toBeChecked()
-  await expect(page.getByLabel('進階規則‧英雄學派')).toBeChecked()
-  await expect(page.getByLabel('進階規則‧五方傳說')).toBeChecked()
+  await page.getByLabel('迴響').check()
+  await expect(page.getByLabel('星辰圖記')).toBeChecked()
+  await expect(page.getByLabel('英雄學派')).toBeChecked()
+  await expect(page.getByLabel('五方傳說')).toBeChecked()
 })
 
 test('Pure Fire target choice is private, accessible, and reconnectable', async ({ browser }) => {
@@ -48,12 +48,12 @@ test('Pure Fire target choice is private, accessible, and reconnectable', async 
     await seedDevelopmentScenario(host, { name: 'echo-pure-fire' })
 
     await host.reload()
-    await expect(host.getByRole('heading', { name: '淨火：選擇玩家' })).toBeVisible()
+    await expect(host.getByRole('heading', { name: '變徵‧淨火：選擇受影響玩家' })).toBeVisible()
     const targets = host.getByLabel('選擇玩家').getByRole('button')
     await expect(targets).toHaveCount(2)
 
     await guest.reload()
-    await expect(guest.getByText('淨火：選擇玩家', { exact: true })).toBeVisible()
+    await expect(guest.getByText('變徵‧淨火：選擇受影響玩家', { exact: true })).toBeVisible()
     await expect(guest.getByLabel('選擇玩家')).toHaveCount(0)
 
     const [answer] = await Promise.all([
@@ -65,7 +65,7 @@ test('Pure Fire target choice is private, accessible, and reconnectable', async 
     ])
     expect(answer.ok()).toBe(true)
     await expect(host.getByText('淨火', { exact: true })).toBeVisible()
-    await expect(host.getByText(/迴響 · 第 \d+ 回合/)).toBeVisible()
+    await expect(host.getByText(/迴響 · .* · 第 \d+ 回合/)).toBeVisible()
   } finally {
     await hostContext.close()
     await guestContext.close()

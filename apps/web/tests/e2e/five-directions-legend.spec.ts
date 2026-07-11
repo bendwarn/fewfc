@@ -13,7 +13,7 @@ test('new rooms enable Five Directions Legend and hide the environment until one
 
     const roomName = `五方傳說測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
-    await expect(host.getByLabel('進階規則‧五方傳說')).toBeChecked()
+    await expect(host.getByLabel('五方傳說')).toBeChecked()
 
     await joinListedRoom(guest, roomName)
     await guest.getByRole('button', { name: '準備 →' }).click()

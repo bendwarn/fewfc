@@ -1480,6 +1480,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           canPass: false,
           hasOptionalEffect: false,
           canRetrieveDiscard: false,
+          discardRetrievalAction: null,
         },
       }
     }

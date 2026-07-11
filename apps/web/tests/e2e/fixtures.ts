@@ -37,6 +37,10 @@ export async function createRoom(
 
   await page.getByRole('button', { name: '建立房間 →' }).click()
   await expect(page).toHaveURL(roomUrl)
+  const pouch = page.getByLabel('錦囊')
+  if (await pouch.isChecked()) {
+    await pouch.uncheck()
+  }
 }
 
 export async function createPublicRoom(page: Page, roomName: string, teamMode = false) {
@@ -60,7 +64,17 @@ export async function createPublicRoomViaApi(
         timeout: 15_000,
       })
       if (response.ok()) {
-        const body = await response.json() as { gameId: string }
+        const body = await response.json() as {
+          gameId: string
+          metadata: { enabledRuleModules: string[] }
+        }
+        const withoutPouch = body.metadata.enabledRuleModules.filter(module => module !== 'pouch')
+        const updated = await page.context().request.put(`/api/games/${body.gameId}/rules`, {
+          data: { enabledRuleModules: withoutPouch },
+        })
+        if (!updated.ok()) {
+          throw new Error(`Could not disable Pouch for E2E fixture: ${updated.status()}`)
+        }
         await page.goto(`/rooms/${body.gameId}`)
         await expect(page).toHaveURL(roomUrl)
         return body.gameId

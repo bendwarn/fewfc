@@ -1,18 +1,18 @@
 import type { RuleModuleSpec } from '../../app/types/fewfc'
 
 export const RULE_MODULE_PRESENTATION = {
-  star: { label: '進階規則‧星辰圖記' },
-  'hero-schools': { label: '進階規則‧英雄學派' },
+  star: { label: '星辰圖記' },
+  'hero-schools': { label: '英雄學派' },
   'discard-retrieval': { label: '棄牌回收' },
   'personal-deck': { label: '個人牌組' },
-  'five-directions-legend': { label: '進階規則‧五方傳說' },
-  spirit: { label: '主題規則‧精靈' },
-  jianghu: { label: '主題規則‧江湖' },
-  'confluence-generation': { label: '主題規則‧匯流世代' },
-  'dark-glimmer': { label: '主題規則‧黑暗微光' },
-  echo: { label: '主題規則‧迴響' },
-  tribulation: { label: '主題規則‧天劫' },
-  pouch: { label: '主題規則‧錦囊' },
+  'five-directions-legend': { label: '五方傳說' },
+  spirit: { label: '精靈' },
+  jianghu: { label: '江湖' },
+  'confluence-generation': { label: '匯流世代' },
+  'dark-glimmer': { label: '黑暗微光' },
+  echo: { label: '迴響' },
+  tribulation: { label: '天劫' },
+  pouch: { label: '錦囊' },
 } as const
 
 export interface RuleModulePolicy {

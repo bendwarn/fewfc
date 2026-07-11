@@ -69,6 +69,7 @@ export interface PublicPreviousTurnFormation {
 export interface PublicPendingChoice {
   player: PlayerId
   purpose: string
+  presentation: PendingChoicePresentation
   kind: string
   cards: PublicCard[]
   requiredCount: number
@@ -79,6 +80,34 @@ export interface PublicPendingChoice {
   environments: Element[]
   canDecline: boolean
 }
+
+export type EchoMelodyPresentation =
+  | 'ringingMetal'
+  | 'fallingWood'
+  | 'flowingWater'
+  | 'warFire'
+  | 'splitEarth'
+
+export type PendingChoicePresentation =
+  | { type: 'turnDrawDiscard' }
+  | { type: 'holyWind' }
+  | { type: 'chaos' }
+  | { type: 'revelation' }
+  | { type: 'azureCloudStep' }
+  | { type: 'clearWindTenThousandMiles' }
+  | { type: 'mirrorResonance' }
+  | { type: 'myriadResonance' }
+  | { type: 'thousandResonance' }
+  | { type: 'echoRingingMetalDeckCard' }
+  | { type: 'echoCost'; melody: EchoMelodyPresentation }
+  | { type: 'echoSplitEarthFormation' }
+  | { type: 'echoPureFirePlayer' }
+  | { type: 'echoPlantEarthMelody' }
+  | { type: 'earthRendingEnvironment' }
+  | { type: 'earthRendingCard' }
+  | { type: 'metamorphosis' }
+  | { type: 'sealCard' }
+  | { type: 'unclassified' }
 
 export type EffectChoiceAnswer =
   | { type: 'cards'; cards: CardInstanceId[] }
@@ -185,6 +214,8 @@ export interface PublicGameState {
     id: string
     owner: { kind: 'player' | 'team'; id: string }
     kind: string
+    presentation: StatusPresentation
+    duration: StatusDurationPresentation
   }>
   jianghuStates: Array<{
     owner: PlayerId
@@ -195,6 +226,7 @@ export interface PublicGameState {
   limitedUses: Array<{
     owner: PlayerId
     key: string
+    presentation: LimitedUsePresentation
     remaining: number
     maximum: number
   }>
@@ -205,7 +237,7 @@ export interface PublicGameState {
   }>
   scheduledEchoes: Array<{
     player: PlayerId
-    melodyId: string
+    melody: 'ringingMetal' | 'fallingWood' | 'flowingWater' | 'warFire' | 'splitEarth' | 'pureFire' | 'unclassified'
     dueTurnNumber: number
   }>
   flowStates: Array<{
@@ -215,7 +247,7 @@ export interface PublicGameState {
   formationSuppressions: Array<{
     source: PlayerId
     target: PlayerId
-    formationId: string
+    formationName: string
     expiresOnTurnNumber: number
   }>
   scheduledPlantEarth: Array<{
@@ -244,14 +276,7 @@ export interface PublicGameState {
       summary: string
     }>
   }>
-  preparedProfessionAbilities: Array<{
-    player: PlayerId
-    abilityId: string
-    card: CardInstanceId
-    element: Element
-    level: number
-    allowedFormationScope: string[]
-  }>
+  cardInterpretations: CardInterpretationPresentation[]
   spirits: Array<{
     player: PlayerId
     spirit: SpiritKind
@@ -259,6 +284,52 @@ export interface PublicGameState {
   }>
   previousTurnFormation: PublicPreviousTurnFormation | null
 }
+
+export type StatusPresentation =
+  | 'cannotAct'
+  | 'cannotDraw'
+  | 'divineCalculation'
+  | 'galeRain'
+  | 'goldenCicada'
+  | 'watchFire'
+  | 'lurePlayer'
+  | 'lureSpirit'
+  | 'spiritStoneShield'
+  | 'jianghuFanBeyondHeaven'
+  | 'jianghuYangAura'
+  | 'jianghuDancingYang'
+  | 'jianghuMeteor'
+  | 'unclassified'
+
+export type StatusDurationPresentation =
+  | { type: 'untilTurnStart'; player: PlayerId }
+  | { type: 'untilTurnEnd'; player: PlayerId }
+  | { type: 'untilTurnEndNumber'; player: PlayerId; turnNumber: number }
+  | { type: 'permanent' }
+
+export type LimitedUsePresentation =
+  | 'heavenlyResonance'
+  | 'imprisoningArray'
+  | 'tailwind'
+  | 'voidRealm'
+  | 'unclassified'
+
+export type CardInterpretationPresentation =
+  | {
+      type: 'professionAbility'
+      player: PlayerId
+      ability: 'illusion' | 'phantasm' | 'blazingYangArt' | 'darkSpirit' | 'unclassified'
+      card: PublicCard | null
+      element: Element
+      level: number
+    }
+  | {
+      type: 'spiritSkill'
+      player: PlayerId
+      skill: 'Glimmer' | 'Splendor' | 'LegacyFireLevel' | 'Unclassified'
+      card: PublicCard | null
+      level: number
+    }
 
 export interface PublicGameEvent {
   id: string
@@ -273,6 +344,16 @@ export type PlayableAction =
       id: string
       name: string
       category: 'Attack' | 'Spell'
+      policy:
+        | 'standard'
+        | 'pouchChain'
+        | 'echoRingingMetal'
+        | 'echoFallingWood'
+        | 'echoFlowingWater'
+        | 'echoWarFire'
+        | 'echoSplitEarth'
+        | 'echoPureFire'
+        | 'echoPlantEarth'
       summary: string
       cards: CardInstanceId[]
       starSubstitution: StarElementSubstitution | null
@@ -312,6 +393,25 @@ export type PlayableAction =
 
 export type RecordedDecision = unknown
 
+export interface SecretStrategyAction {
+  sourceCard: CardInstanceId
+  strategy: SecretStrategy
+  input: 'none' | 'targetPlayer' | 'deckDiscardSwap' | 'star' | 'retreat'
+  targetPlayers: PlayerId[]
+  stars: StarKind[]
+  breakStars: StarKind[]
+  deckCards: CardInstanceId[]
+  discardCards: CardInstanceId[]
+  handCards: CardInstanceId[]
+  requiredCardCount: number
+}
+
+export interface DiscardRetrievalActionDetail {
+  card: PublicCard
+  previousPlayer: PlayerId
+  hpCost: number
+}
+
 export interface LocalGameResponse {
   record: RecordedDecision[]
   state: PublicGameState
@@ -321,6 +421,7 @@ export interface LocalGameResponse {
     canPass: boolean
     hasOptionalEffect: boolean
     canRetrieveDiscard: boolean
+    discardRetrievalAction: DiscardRetrievalActionDetail | null
     canChooseInitialPouch: boolean
     canTriggerPouch: boolean
     pouchChainAction: {
@@ -333,18 +434,7 @@ export interface LocalGameResponse {
       minimumCardCount: number
       maximumCardCount: number
     } | null
-    secretStrategyActions: Array<{
-      sourceCard: CardInstanceId
-      strategy: SecretStrategy
-      input: 'none' | 'targetPlayer' | 'deckDiscardSwap' | 'star' | 'retreat'
-      targetPlayers: PlayerId[]
-      stars: StarKind[]
-      breakStars: StarKind[]
-      deckCards: CardInstanceId[]
-      discardCards: CardInstanceId[]
-      handCards: CardInstanceId[]
-      requiredCardCount: number
-    }>
+    secretStrategyActions: SecretStrategyAction[]
   }
   trustedRandomCandidates?: CardInstanceId[]
   trustedRandomCandidateCount?: number

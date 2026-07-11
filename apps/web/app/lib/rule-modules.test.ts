@@ -43,7 +43,7 @@ test('generic operations add transitive requirements and remove dependents', () 
 
 test('presentation metadata is separate from authoritative rule policy', () => {
   assert.deepEqual(presentationForRuleModule('spirit'), {
-    label: '主題規則‧精靈',
+    label: '精靈',
   })
   assert.deepEqual(presentationForRuleModule('future-module'), {
     label: 'future-module',

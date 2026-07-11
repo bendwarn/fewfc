@@ -282,6 +282,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
         }
         GameEvent::SpiritLevelInterpreted {
             player,
+            skill,
             card,
             level,
             applied_on_turn,
@@ -294,6 +295,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .spirit_level_interpretations
                 .push(crate::domain::SpiritLevelInterpretation {
                     player: player.clone(),
+                    skill: *skill,
                     card: *card,
                     level: *level,
                     applied_on_turn: *applied_on_turn,

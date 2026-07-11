@@ -139,7 +139,7 @@ fn official_rule_module_catalog_is_the_authoritative_configuration_contract() {
         .find(|module| module.id.as_str() == "pouch")
         .unwrap();
     assert_eq!(pouch.category, OfficialRuleModuleCategory::Theme);
-    assert!(!pouch.default_enabled);
+    assert!(pouch.default_enabled);
     assert_eq!(
         pouch
             .dependencies

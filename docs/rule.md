@@ -428,8 +428,10 @@ require a separate rule-upgrade decision.
 - When one Card selection has multiple result-changing interpretations, the
   Player explicitly chooses a Formation Match Option.
 - Prepared Profession Abilities record turn-scoped Card interpretations without
-  mutating Card Instances or Card Definitions. Their declared details are
-  public and clear after the Player takes any Action.
+  mutating Card Instances or Card Definitions. Their ability identity and
+  declared interpretation are public, while the target Card Instance remains
+  visible only to its owner until ordinary Card movement makes it public. They
+  clear after the Player takes any Action.
 - Sacred Art may let one physical Card fill two Formation match slots, while
   Card movement and ordinary level-sum formulas count that Card only once.
 
@@ -728,10 +730,10 @@ The additional-effect immunity applies by affected resource:
 
 ### 5.8 Web setup
 
-New official rooms enable the established Rule Modules by default; Pouch is
-opt-in because it adds an interactive Game Preparation stage. The Base Ruleset
-cannot be disabled. Existing rooms retain their stored module configuration
-when a new module becomes available.
+New official rooms enable every available Rule Module by default, including
+Pouch and its interactive Game Preparation stage. The Base Ruleset cannot be
+disabled. Existing rooms retain their stored module configuration when a new
+module becomes available.
 
 The room owner may change Rule Modules subject to declared dependencies.
 Enabling a Rule Module automatically enables its transitive dependencies;

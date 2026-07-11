@@ -4,11 +4,12 @@ use crate::domain::{
     CardDefId, CardInstanceId, CardOrigin, Command, DISCARD_RETRIEVAL_MODULE_ID,
     EffectChoiceAnswer, Element, GameError, GameEvent, GameSetup, PassActionReason,
     PendingChoiceKind, PendingRandomness, Phase, Player, PlayerDeckList, PlayerId, ProfessionId,
-    RuleModuleId, SecretStrategy, SpiritKind, SpiritSkill, StarKind, StatusOwner, TargetDecl, TeamHp,
-    TeamId, TrustedRandomnessAnswer, TurnDrawSkipReason,
+    RuleModuleId, SecretStrategy, SpiritKind, SpiritSkill, StarKind, StatusDuration, StatusOwner,
+    TargetDecl, TeamHp, TeamId, TrustedRandomnessAnswer, TurnDrawSkipReason,
 };
 use crate::public_view::{
-    PublicCardRefs, PublicGameEvent, PublicGameState, PublicPendingChoiceKind, Viewer,
+    PublicCardInterpretation, PublicCardRefs, PublicGameEvent, PublicGameState,
+    PublicPendingChoiceKind, PublicPendingChoicePresentation, Viewer,
 };
 use crate::rules::{
     DeckCompositionCatalog, FormationCategory, OfficialRuleModuleSpec, OfficialRules,
@@ -224,9 +225,10 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                     .map(|candidate| match candidate {
                         PlayableAction::PerformFormation(candidate) => {
                             WebPlayableAction::PerformFormation {
-                                id: candidate.formation_id,
+                                id: candidate.formation_id.clone(),
                                 name: candidate.formation_name,
                                 category: WebFormationCategory::from(candidate.category),
+                                policy: WebFormationActionPolicy::from_id(&candidate.formation_id),
                                 summary: candidate.summary,
                                 cards: candidate.cards,
                                 star_substitution: candidate
@@ -631,6 +633,8 @@ fn response_for(
     };
     let can_pass = pass_action_for_state(record.state()).is_some();
     let can_retrieve_discard = can_retrieve_discard(record.state());
+    let discard_retrieval_action =
+        discard_retrieval_action(record.state(), card_labels, card_facts);
     if let Viewer::Player(player) = &viewer
         && record.state().current_player() == Some(player)
         && record.state().phase == Phase::Main
@@ -725,6 +729,7 @@ fn response_for(
             can_pass,
             has_optional_effect: can_retrieve_discard,
             can_retrieve_discard,
+            discard_retrieval_action,
             can_choose_initial_pouch: viewer_player.as_ref().is_some_and(|player| {
                 matches!(
                     &record.state().status,
@@ -1086,15 +1091,16 @@ fn prepare_development_scenario(
             continue;
         }
 
-        let current = record
-            .state()
-            .current_player()
-            .cloned()
-            .ok_or_else(|| ApiError::Message("development scenario has no player".to_string()))?;
+        let current =
+            record.state().current_player().cloned().ok_or_else(|| {
+                ApiError::Message("development scenario has no player".to_string())
+            })?;
         let hand = record
             .state()
             .hand(&current)
-            .ok_or_else(|| ApiError::Message("development scenario player has no hand".to_string()))?
+            .ok_or_else(|| {
+                ApiError::Message("development scenario player has no hand".to_string())
+            })?
             .to_vec();
         let formation = hand.iter().find_map(|card| {
             record
@@ -1312,9 +1318,10 @@ fn card_combinations(cards: &[CardInstanceId], size: usize) -> Vec<Vec<CardInsta
 fn web_playable_action(candidate: PlayableAction) -> Result<WebPlayableAction, ApiError> {
     match candidate {
         PlayableAction::PerformFormation(candidate) => Ok(WebPlayableAction::PerformFormation {
-            id: candidate.formation_id,
+            id: candidate.formation_id.clone(),
             name: candidate.formation_name,
             category: WebFormationCategory::from(candidate.category),
+            policy: WebFormationActionPolicy::from_id(&candidate.formation_id),
             summary: candidate.summary,
             cards: candidate.cards,
             star_substitution: candidate
@@ -1398,6 +1405,34 @@ fn can_retrieve_discard(state: &crate::domain::GameState) -> bool {
                 .discard_for(previous_player)
                 .is_some_and(|discard| discard.contains(&turn_discard.card))
         })
+}
+
+fn discard_retrieval_action(
+    state: &crate::domain::GameState,
+    labels: &HashMap<CardInstanceId, String>,
+    card_facts: &HashMap<CardInstanceId, WebCardFact>,
+) -> Option<WebDiscardRetrievalActionDetail> {
+    if !can_retrieve_discard(state) {
+        return None;
+    }
+    let player = state.current_player()?;
+    let player_index = state
+        .turn_order
+        .iter()
+        .position(|candidate| candidate == player)?;
+    let previous_index = if player_index == 0 {
+        state.turn_order.len().checked_sub(1)?
+    } else {
+        player_index - 1
+    };
+    let previous = state.turn_order.get(previous_index)?;
+    let card = state.last_turn_discard_by_player.get(previous)?.card;
+    let level = state.card_def(card)?.level as i32;
+    Some(WebDiscardRetrievalActionDetail {
+        card: WebCard::from_id(card, labels, card_facts),
+        previous_player: previous.clone(),
+        hp_cost: crate::rules::hero::discard_retrieval_cost(state, player, level * 2),
+    })
 }
 
 fn fixture_setup(rules: &OfficialRules, first_player: Option<&str>) -> Result<GameSetup, ApiError> {
@@ -1551,10 +1586,19 @@ struct WebInteraction {
     can_pass: bool,
     has_optional_effect: bool,
     can_retrieve_discard: bool,
+    discard_retrieval_action: Option<WebDiscardRetrievalActionDetail>,
     can_choose_initial_pouch: bool,
     can_trigger_pouch: bool,
     pouch_chain_action: Option<WebPouchChainActionOptions>,
     secret_strategy_actions: Vec<WebSecretStrategyActionOption>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebDiscardRetrievalActionDetail {
+    card: WebCard,
+    previous_player: PlayerId,
+    hp_cost: i32,
 }
 
 #[derive(Serialize)]
@@ -1593,7 +1637,7 @@ struct WebPublicGameState {
     five_star_alignment: Option<WebFiveStarAlignment>,
     professions: Vec<WebPlayerProfession>,
     profession_catalog: Vec<WebProfessionCatalogEntry>,
-    prepared_profession_abilities: Vec<WebPreparedProfessionAbility>,
+    card_interpretations: Vec<WebCardInterpretationPresentation>,
     spirits: Vec<WebPlayerSpirit>,
     previous_turn_formation: Option<WebPreviousTurnFormation>,
 }
@@ -1747,9 +1791,9 @@ impl WebPublicGameState {
             statuses: state
                 .statuses
                 .into_iter()
-                .map(|status| WebStatus {
-                    id: status.id,
-                    owner: match status.owner {
+                .map(|status| {
+                    let presentation = WebStatusPresentation::from_kind(&status.kind);
+                    let owner = match status.owner {
                         StatusOwner::Player(player) => WebStatusOwner::Player {
                             id: player.as_str().to_string(),
                         },
@@ -1760,8 +1804,14 @@ impl WebPublicGameState {
                                 .expect("team id should serialize as a string")
                                 .to_string(),
                         },
-                    },
-                    kind: status.kind,
+                    };
+                    WebStatus {
+                        id: status.id,
+                        owner,
+                        kind: status.kind,
+                        presentation,
+                        duration: WebStatusDuration::from(status.duration),
+                    }
                 })
                 .collect(),
             jianghu_states: state
@@ -1777,11 +1827,15 @@ impl WebPublicGameState {
             limited_uses: state
                 .limited_uses
                 .into_iter()
-                .map(|use_count| WebLimitedUse {
-                    owner: use_count.owner.as_str().to_string(),
-                    key: use_count.key,
-                    remaining: use_count.remaining,
-                    maximum: use_count.maximum,
+                .map(|use_count| {
+                    let presentation = WebLimitedUsePresentation::from_key(&use_count.key);
+                    WebLimitedUse {
+                        owner: use_count.owner.as_str().to_string(),
+                        key: use_count.key,
+                        presentation,
+                        remaining: use_count.remaining,
+                        maximum: use_count.maximum,
+                    }
                 })
                 .collect(),
             confluence_card_obligations: state
@@ -1798,7 +1852,7 @@ impl WebPublicGameState {
                 .into_iter()
                 .map(|schedule| WebScheduledEcho {
                     player: schedule.player.as_str().to_string(),
-                    melody_id: schedule.melody_id,
+                    melody: WebEchoSchedulePresentation::from_id(&schedule.melody_id),
                     due_turn_number: schedule.due_turn_number,
                 })
                 .collect(),
@@ -1816,7 +1870,7 @@ impl WebPublicGameState {
                 .map(|suppression| WebFormationSuppression {
                     source: suppression.source.as_str().to_string(),
                     target: suppression.target.as_str().to_string(),
-                    formation_id: suppression.formation_id,
+                    formation_name: formation_name(formation_names, &suppression.formation_id),
                     expires_on_turn_number: suppression.expires_on_turn_number,
                 })
                 .collect(),
@@ -1916,16 +1970,51 @@ impl WebPublicGameState {
                     }
                 })
                 .collect(),
-            prepared_profession_abilities: state
-                .prepared_profession_abilities
+            card_interpretations: state
+                .card_interpretations
                 .into_iter()
-                .map(|prepared| WebPreparedProfessionAbility {
-                    player: prepared.player.as_str().to_string(),
-                    ability_id: prepared.ability_id,
-                    card: prepared.card,
-                    element: format!("{:?}", prepared.element),
-                    level: prepared.level,
-                    allowed_formation_scope: prepared.allowed_formation_scope,
+                .map(|interpretation| match interpretation {
+                    PublicCardInterpretation::ProfessionAbility {
+                        player,
+                        ability_id,
+                        card,
+                        element,
+                        level,
+                    } => WebCardInterpretationPresentation::ProfessionAbility {
+                        player: player.as_str().to_string(),
+                        ability: match ability_id.as_str() {
+                            "illusion" => WebProfessionInterpretationAbility::Illusion,
+                            "phantasm" => WebProfessionInterpretationAbility::Phantasm,
+                            "jianghu:blazing-yang-art" => {
+                                WebProfessionInterpretationAbility::BlazingYangArt
+                            }
+                            "dark:dark-spirit" => WebProfessionInterpretationAbility::DarkSpirit,
+                            _ => WebProfessionInterpretationAbility::Unclassified,
+                        },
+                        card: card.map(|card| WebCard::from_id(card, labels, card_facts)),
+                        element,
+                        level,
+                    },
+                    PublicCardInterpretation::SpiritSkill {
+                        player,
+                        skill,
+                        card,
+                        level,
+                    } => WebCardInterpretationPresentation::SpiritSkill {
+                        player: player.as_str().to_string(),
+                        skill: match skill {
+                            Some(crate::domain::SpiritSkill::Glimmer) => {
+                                WebSpiritInterpretationSkill::Glimmer
+                            }
+                            Some(crate::domain::SpiritSkill::Splendor) => {
+                                WebSpiritInterpretationSkill::Splendor
+                            }
+                            None => WebSpiritInterpretationSkill::LegacyFireLevel,
+                            Some(_) => WebSpiritInterpretationSkill::Unclassified,
+                        },
+                        card: card.map(|card| WebCard::from_id(card, labels, card_facts)),
+                        level,
+                    },
                 })
                 .collect(),
             spirits: state
@@ -2002,8 +2091,31 @@ struct WebJianghuState {
 struct WebLimitedUse {
     owner: String,
     key: String,
+    presentation: WebLimitedUsePresentation,
     remaining: u32,
     maximum: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+enum WebLimitedUsePresentation {
+    HeavenlyResonance,
+    ImprisoningArray,
+    Tailwind,
+    VoidRealm,
+    Unclassified,
+}
+
+impl WebLimitedUsePresentation {
+    fn from_key(key: &str) -> Self {
+        match key {
+            "confluence:heavenly-resonance" => Self::HeavenlyResonance,
+            "confluence:imprisoning-array" => Self::ImprisoningArray,
+            "confluence:tailwind" => Self::Tailwind,
+            "confluence:void-realm" => Self::VoidRealm,
+            _ => Self::Unclassified,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -2050,14 +2162,39 @@ struct WebProfessionFormationSummary {
 }
 
 #[derive(Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum WebCardInterpretationPresentation {
+    ProfessionAbility {
+        player: String,
+        ability: WebProfessionInterpretationAbility,
+        card: Option<WebCard>,
+        element: Element,
+        level: u32,
+    },
+    SpiritSkill {
+        player: String,
+        skill: WebSpiritInterpretationSkill,
+        card: Option<WebCard>,
+        level: u32,
+    },
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WebPreparedProfessionAbility {
-    player: String,
-    ability_id: String,
-    card: CardInstanceId,
-    element: String,
-    level: u32,
-    allowed_formation_scope: Vec<String>,
+enum WebProfessionInterpretationAbility {
+    Illusion,
+    Phantasm,
+    BlazingYangArt,
+    DarkSpirit,
+    Unclassified,
+}
+
+#[derive(Serialize)]
+enum WebSpiritInterpretationSkill {
+    Glimmer,
+    Splendor,
+    LegacyFireLevel,
+    Unclassified,
 }
 
 #[derive(Serialize)]
@@ -2146,6 +2283,7 @@ struct WebPreviousTurnFormation {
 struct WebPendingChoice {
     player: String,
     purpose: String,
+    presentation: PublicPendingChoicePresentation,
     kind: String,
     cards: Vec<WebCard>,
     required_count: usize,
@@ -2169,8 +2307,34 @@ struct WebPendingRandomness {
 #[serde(rename_all = "camelCase")]
 struct WebScheduledEcho {
     player: String,
-    melody_id: String,
+    melody: WebEchoSchedulePresentation,
     due_turn_number: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+enum WebEchoSchedulePresentation {
+    RingingMetal,
+    FallingWood,
+    FlowingWater,
+    WarFire,
+    SplitEarth,
+    PureFire,
+    Unclassified,
+}
+
+impl WebEchoSchedulePresentation {
+    fn from_id(id: &str) -> Self {
+        match id {
+            "echo:ringing-metal" => Self::RingingMetal,
+            "echo:falling-wood" => Self::FallingWood,
+            "echo:flowing-water" => Self::FlowingWater,
+            "echo:war-fire" => Self::WarFire,
+            "echo:split-earth" => Self::SplitEarth,
+            "echo:pure-fire" => Self::PureFire,
+            _ => Self::Unclassified,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -2185,7 +2349,7 @@ struct WebFlowState {
 struct WebFormationSuppression {
     source: String,
     target: String,
-    formation_id: String,
+    formation_name: String,
     expires_on_turn_number: u64,
 }
 
@@ -2208,6 +2372,7 @@ impl WebPendingChoice {
         };
         let required_count = minimum_count;
 
+        let presentation = choice.presentation;
         match choice.kind {
             PublicPendingChoiceKind::Known(PendingChoiceKind::TurnDrawDiscard {
                 allowed_discards,
@@ -2215,6 +2380,7 @@ impl WebPendingChoice {
             }) => Self {
                 player: choice.player.as_str().to_string(),
                 purpose: choice.purpose,
+                presentation,
                 kind: "TurnDrawDiscard".to_string(),
                 required_count,
                 minimum_count,
@@ -2234,6 +2400,7 @@ impl WebPendingChoice {
             }) => Self {
                 player: choice.player.as_str().to_string(),
                 purpose: choice.purpose,
+                presentation,
                 kind: "EffectGenerated".to_string(),
                 required_count,
                 minimum_count,
@@ -2253,6 +2420,7 @@ impl WebPendingChoice {
             }) => Self {
                 player: choice.player.as_str().to_string(),
                 purpose: choice.purpose,
+                presentation,
                 kind: "EffectGenerated".to_string(),
                 required_count,
                 minimum_count,
@@ -2270,6 +2438,7 @@ impl WebPendingChoice {
                 Self {
                     player: choice.player.as_str().to_string(),
                     purpose: choice.purpose,
+                    presentation,
                     kind: "TypedEffect".to_string(),
                     required_count,
                     minimum_count,
@@ -2301,6 +2470,7 @@ impl WebPendingChoice {
             PublicPendingChoiceKind::Hidden => Self {
                 player: choice.player.as_str().to_string(),
                 purpose: choice.purpose,
+                presentation,
                 kind: "Hidden".to_string(),
                 cards: Vec::new(),
                 required_count: 0,
@@ -2328,6 +2498,74 @@ struct WebStatus {
     id: String,
     owner: WebStatusOwner,
     kind: String,
+    presentation: WebStatusPresentation,
+    duration: WebStatusDuration,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+enum WebStatusPresentation {
+    CannotAct,
+    CannotDraw,
+    DivineCalculation,
+    GaleRain,
+    GoldenCicada,
+    WatchFire,
+    LurePlayer,
+    LureSpirit,
+    SpiritStoneShield,
+    JianghuFanBeyondHeaven,
+    JianghuYangAura,
+    JianghuDancingYang,
+    JianghuMeteor,
+    Unclassified,
+}
+
+impl WebStatusPresentation {
+    fn from_kind(kind: &str) -> Self {
+        match kind {
+            "CannotAct" => Self::CannotAct,
+            "CannotDraw" => Self::CannotDraw,
+            "DivineCalculation" => Self::DivineCalculation,
+            "GaleRain" => Self::GaleRain,
+            "PouchGoldenCicada" => Self::GoldenCicada,
+            "PouchWatchFire" => Self::WatchFire,
+            "PouchLurePlayer" => Self::LurePlayer,
+            "PouchLureSpirit" => Self::LureSpirit,
+            "SpiritStoneShield" => Self::SpiritStoneShield,
+            "JianghuFanBeyondHeaven" => Self::JianghuFanBeyondHeaven,
+            "JianghuYangAura" => Self::JianghuYangAura,
+            "JianghuDancingYang" => Self::JianghuDancingYang,
+            "JianghuMeteor" => Self::JianghuMeteor,
+            _ => Self::Unclassified,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum WebStatusDuration {
+    UntilTurnStart { player: PlayerId },
+    UntilTurnEnd { player: PlayerId },
+    UntilTurnEndNumber { player: PlayerId, turn_number: u64 },
+    Permanent,
+}
+
+impl From<StatusDuration> for WebStatusDuration {
+    fn from(duration: StatusDuration) -> Self {
+        match duration {
+            StatusDuration::UntilTurnStart { player } => Self::UntilTurnStart { player },
+            StatusDuration::UntilTurnEnd { player } => Self::UntilTurnEnd { player },
+            StatusDuration::UntilTurnEndNumber {
+                player,
+                turn_number,
+            } => Self::UntilTurnEndNumber {
+                player,
+                turn_number,
+            },
+            StatusDuration::Permanent => Self::Permanent,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -2542,6 +2780,7 @@ enum WebPlayableAction {
         id: String,
         name: String,
         category: WebFormationCategory,
+        policy: WebFormationActionPolicy,
         summary: String,
         cards: Vec<CardInstanceId>,
         #[serde(rename = "starSubstitution")]
@@ -2583,6 +2822,36 @@ enum WebPlayableAction {
 enum WebFormationCategory {
     Attack,
     Spell,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+enum WebFormationActionPolicy {
+    Standard,
+    PouchChain,
+    EchoRingingMetal,
+    EchoFallingWood,
+    EchoFlowingWater,
+    EchoWarFire,
+    EchoSplitEarth,
+    EchoPureFire,
+    EchoPlantEarth,
+}
+
+impl WebFormationActionPolicy {
+    fn from_id(id: &str) -> Self {
+        match id {
+            "pouch:chain" => Self::PouchChain,
+            "echo:ringing-metal" => Self::EchoRingingMetal,
+            "echo:falling-wood" => Self::EchoFallingWood,
+            "echo:flowing-water" => Self::EchoFlowingWater,
+            "echo:war-fire" => Self::EchoWarFire,
+            "echo:split-earth" => Self::EchoSplitEarth,
+            "echo:pure-fire" => Self::EchoPureFire,
+            "echo:plant-earth" => Self::EchoPlantEarth,
+            _ => Self::Standard,
+        }
+    }
 }
 
 impl From<FormationCategory> for WebFormationCategory {
@@ -3792,7 +4061,11 @@ mod tests {
                     },
                 ],
                 vec![alice.clone(), bob],
-                rules.default_rule_modules(),
+                rules
+                    .default_rule_modules()
+                    .into_iter()
+                    .filter(|module| module.as_str() != crate::domain::POUCH_MODULE_ID)
+                    .collect(),
             )
             .unwrap();
 
@@ -3830,7 +4103,11 @@ mod tests {
                     },
                 ],
                 vec![alice.clone(), bob],
-                rules.default_rule_modules(),
+                rules
+                    .default_rule_modules()
+                    .into_iter()
+                    .filter(|module| module.as_str() != crate::domain::POUCH_MODULE_ID)
+                    .collect(),
             )
             .unwrap();
 
@@ -4034,6 +4311,17 @@ mod tests {
             spirit: crate::domain::SpiritKind::Fire,
             power: 4,
         });
+        let interpreted_card = setup.card_instances[0].instance;
+        state
+            .spirit_level_interpretations
+            .push(crate::domain::SpiritLevelInterpretation {
+                player: PlayerId::new("alice"),
+                skill: Some(crate::domain::SpiritSkill::Glimmer),
+                card: interpreted_card,
+                level: 3,
+                applied_on_turn: state.turn_number,
+                interpretation_revision: 1,
+            });
         let public = crate::public_view::state_for(&state, Viewer::Observer);
         let web = WebPublicGameState::from_public(
             public,
@@ -4046,6 +4334,22 @@ mod tests {
         assert_eq!(json["spirits"][0]["player"], "alice");
         assert_eq!(json["spirits"][0]["spirit"], "Fire");
         assert_eq!(json["spirits"][0]["power"], 4);
+        assert_eq!(json["cardInterpretations"][0]["type"], "spiritSkill");
+        assert_eq!(json["cardInterpretations"][0]["skill"], "Glimmer");
+        assert!(json["cardInterpretations"][0]["card"].is_null());
+        assert_eq!(json["cardInterpretations"][0]["level"], 3);
+
+        let owner_web = WebPublicGameState::from_public(
+            crate::public_view::state_for(&state, Viewer::Player(PlayerId::new("alice"))),
+            &rules.card_labels(&setup).unwrap(),
+            &card_facts_for_setup(&setup),
+            &rules.formation_names(&setup).unwrap(),
+        );
+        let owner_json = serde_json::to_value(owner_web).unwrap();
+        assert_eq!(
+            owner_json["cardInterpretations"][0]["card"]["id"],
+            serde_json::to_value(interpreted_card).unwrap()
+        );
 
         let event = GameEvent::SpiritSummoned {
             player: PlayerId::new("alice"),
@@ -4072,6 +4376,7 @@ mod tests {
             id: "defense".to_string(),
             name: "防禦".to_string(),
             category: WebFormationCategory::Spell,
+            policy: WebFormationActionPolicy::Standard,
             summary: "星辰替代".to_string(),
             cards: vec![CardInstanceId::new(7), CardInstanceId::new(42)],
             star_substitution: Some(substitution),
@@ -4181,6 +4486,8 @@ mod tests {
 
         assert_eq!(json["statuses"][0]["owner"]["kind"], "player");
         assert_eq!(json["statuses"][0]["owner"]["id"], "alice");
+        assert_eq!(json["statuses"][0]["presentation"], "cannotAct");
+        assert_eq!(json["statuses"][0]["duration"]["type"], "permanent");
     }
 
     #[test]
@@ -4422,6 +4729,7 @@ mod tests {
         let choice = crate::public_view::PublicPendingChoice {
             player: PlayerId::new("alice"),
             purpose: "chaos".to_string(),
+            presentation: PublicPendingChoicePresentation::Chaos,
             kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
                 effect_id: "chaos".to_string(),
                 continuation_id: "chaos:return-two".to_string(),
@@ -4433,6 +4741,7 @@ mod tests {
 
         assert_eq!(json["requiredCount"], 2);
         assert_eq!(json["purpose"], "chaos");
+        assert_eq!(json["presentation"]["type"], "chaos");
     }
 
     #[test]
@@ -4608,14 +4917,15 @@ mod tests {
             public,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            &HashMap::from([("weapon".to_string(), "兵器".to_string())]),
         );
         let json = serde_json::to_value(web).expect("Echo state should serialize");
 
-        assert_eq!(json["scheduledEchoes"][0]["melodyId"], "echo:falling-wood");
+        assert_eq!(json["scheduledEchoes"][0]["melody"], "fallingWood");
         assert_eq!(json["scheduledEchoes"][0]["dueTurnNumber"], 3);
         assert_eq!(json["flowStates"][0]["layers"], 2);
         assert_eq!(json["formationSuppressions"][0]["expiresOnTurnNumber"], 2);
+        assert_eq!(json["formationSuppressions"][0]["formationName"], "兵器");
         assert_eq!(json["scheduledPlantEarth"][0]["dueTurnNumber"], 3);
         assert!(json.get("scheduled_echoes").is_none());
     }
@@ -4705,6 +5015,94 @@ mod tests {
                 ..
             } if secret_strategy_deck_cards.as_ref().is_some_and(|cards| cards.len() == 2)
                 && secret_strategy_discard_cards.as_ref().is_some_and(|cards| cards.len() == 2)
+        ));
+    }
+
+    #[test]
+    fn closed_web_presentation_mappings_cover_every_current_domain_value() {
+        let statuses = [
+            "CannotAct",
+            "CannotDraw",
+            "DivineCalculation",
+            "GaleRain",
+            "PouchGoldenCicada",
+            "PouchWatchFire",
+            "PouchLurePlayer",
+            "PouchLureSpirit",
+            "SpiritStoneShield",
+            "JianghuFanBeyondHeaven",
+            "JianghuYangAura",
+            "JianghuDancingYang",
+            "JianghuMeteor",
+        ];
+        let limited_uses = [
+            "confluence:heavenly-resonance",
+            "confluence:imprisoning-array",
+            "confluence:tailwind",
+            "confluence:void-realm",
+        ];
+        let echo_schedules = [
+            "echo:ringing-metal",
+            "echo:falling-wood",
+            "echo:flowing-water",
+            "echo:war-fire",
+            "echo:split-earth",
+            "echo:pure-fire",
+        ];
+        let formation_policies = [
+            "base:weapon",
+            "pouch:chain",
+            "echo:ringing-metal",
+            "echo:falling-wood",
+            "echo:flowing-water",
+            "echo:war-fire",
+            "echo:split-earth",
+            "echo:pure-fire",
+            "echo:plant-earth",
+        ];
+
+        for status in statuses {
+            assert_ne!(
+                serde_json::to_value(WebStatusPresentation::from_kind(status)).unwrap(),
+                serde_json::json!("unclassified")
+            );
+        }
+        for key in limited_uses {
+            assert_ne!(
+                serde_json::to_value(WebLimitedUsePresentation::from_key(key)).unwrap(),
+                serde_json::json!("unclassified")
+            );
+        }
+        for melody in echo_schedules {
+            assert_ne!(
+                serde_json::to_value(WebEchoSchedulePresentation::from_id(melody)).unwrap(),
+                serde_json::json!("unclassified")
+            );
+        }
+        for formation in formation_policies {
+            serde_json::to_value(WebFormationActionPolicy::from_id(formation)).unwrap();
+        }
+    }
+
+    #[test]
+    fn legacy_spirit_level_event_without_skill_still_deserializes() {
+        let event = GameEvent::SpiritLevelInterpreted {
+            player: PlayerId::new("alice"),
+            skill: Some(crate::domain::SpiritSkill::Glimmer),
+            card: CardInstanceId::new(7),
+            level: 3,
+            applied_on_turn: 1,
+            interpretation_revision: 1,
+        };
+        let mut json = serde_json::to_value(event).unwrap();
+        json["SpiritLevelInterpreted"]
+            .as_object_mut()
+            .unwrap()
+            .remove("skill");
+
+        assert!(matches!(
+            serde_json::from_value::<GameEvent>(json).unwrap(),
+            GameEvent::SpiritLevelInterpreted { skill: None, .. }
         ));
     }
 }

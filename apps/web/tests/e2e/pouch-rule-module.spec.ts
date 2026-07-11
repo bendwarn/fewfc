@@ -42,9 +42,9 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     await loginAsGuests(pages)
     const roomName = `錦囊規則測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
-    await host.getByLabel('主題規則‧錦囊').check()
+    await host.getByLabel('錦囊').check()
     await expect(host.getByLabel('個人牌組')).toBeChecked()
-    await expect(host.getByLabel('主題規則‧精靈')).toBeChecked()
+    await expect(host.getByLabel('精靈')).toBeChecked()
 
     await joinListedRoom(guest, roomName)
     await guest.getByRole('button', { name: '準備 →' }).click()
@@ -56,7 +56,7 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
 
     await Promise.all(pages.map(async (page) => {
       await expect(page.getByRole('region', { name: '啟用規則' }))
-        .toContainText('主題規則‧錦囊')
+        .toContainText('錦囊')
       await expect(page.getByRole('dialog', { name: '選擇初始錦囊' })).toHaveCount(0)
     }))
 
@@ -64,11 +64,15 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
       ? host
       : guest
     await active.reload()
-    await expect(active.getByRole('button', { name: /秘計‧金蟬/ })).toBeVisible()
+    const goldenCicada = active.getByRole('button', { name: /秘計‧金蟬/ })
+    await expect(goldenCicada).toBeVisible()
+    await goldenCicada.hover()
+    await expect(active.locator('.action-detail')).toContainText('本回合保護自己')
     const command = waitForCommand(active, 'triggerSecretStrategy')
-    await active.getByRole('button', { name: /秘計‧金蟬/ }).click()
+    await goldenCicada.click()
     await command
     await expect(active.getByRole('button', { name: /秘計‧金蟬/ })).toHaveCount(0)
+    await expect(active.locator('.persistent-effect')).toContainText('金蟬 · 至指定玩家回合結束')
   } finally {
     await hostContext.close()
     await guestContext.close()

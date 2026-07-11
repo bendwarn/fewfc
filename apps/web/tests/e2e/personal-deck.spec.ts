@@ -2,7 +2,7 @@ import { createRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtu
 
 test('account menu opens the valid built-in personal deck editor', async ({ page }) => {
   await page.getByRole('button', { name: /旅人-/ }).click()
-  await page.getByRole('button', { name: '個人牌組' }).click()
+  await page.getByRole('button', { name: '個人牌組', exact: true }).click()
 
   await expect(page).toHaveURL('/deck')
   await expect(page.getByRole('heading', { name: '個人牌組' })).toBeVisible()
@@ -36,7 +36,7 @@ test('default room rules lock preconstructed decks and start personal piles', as
 
     await expect(guest.getByLabel('棄牌回收')).toBeChecked()
     await expect(guest.getByLabel('個人牌組')).toBeChecked()
-    await expect(guest.getByLabel('進階規則‧五方傳說')).toBeChecked()
+    await expect(guest.getByLabel('五方傳說')).toBeChecked()
     await expect(guest.getByLabel('個人牌組')).toBeDisabled()
 
     await guest.getByRole('button', { name: '準備 →' }).click()

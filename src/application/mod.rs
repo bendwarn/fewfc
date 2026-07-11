@@ -457,10 +457,8 @@ pub fn verify_recorded_decisions(
                             .flatten()
                             .collect()
                     });
-                if deck_order.is_empty() {
-                    if !setup.has_rule_module(crate::domain::POUCH_MODULE_ID) {
-                        return Err(ReplayVerificationError::MissingSetupDeck { sequence });
-                    }
+                if deck_order.is_empty() && !setup.has_rule_module(crate::domain::POUCH_MODULE_ID) {
+                    return Err(ReplayVerificationError::MissingSetupDeck { sequence });
                 }
                 OfficialRules::new()
                     .start_game(setup, deck_order)

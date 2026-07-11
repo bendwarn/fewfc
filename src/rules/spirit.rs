@@ -600,6 +600,7 @@ fn skill_effect_events(
         SpiritSkill::Glimmer | SpiritSkill::Splendor => {
             Ok(vec![GameEvent::SpiritLevelInterpreted {
                 player: player.clone(),
+                skill: Some(skill),
                 card: selected_card.expect("validated Fire Skill must select one Card"),
                 level: declared_level.expect("validated Fire Skill must declare a level"),
                 applied_on_turn: state.turn_number,

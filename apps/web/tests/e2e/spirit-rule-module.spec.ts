@@ -20,23 +20,23 @@ test('Spirit defaults on and keeps its Advanced Rule dependencies coherent', asy
     const roomName = `精靈規則測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
 
-    await expect(host.getByLabel('主題規則‧精靈')).toBeChecked()
-    await expect(host.getByLabel('進階規則‧星辰圖記')).toBeChecked()
-    await expect(host.getByLabel('進階規則‧英雄學派')).toBeChecked()
-    await expect(host.getByLabel('進階規則‧五方傳說')).toBeChecked()
+    await expect(host.getByLabel('精靈')).toBeChecked()
+    await expect(host.getByLabel('星辰圖記')).toBeChecked()
+    await expect(host.getByLabel('英雄學派')).toBeChecked()
+    await expect(host.getByLabel('五方傳說')).toBeChecked()
 
-    await joinListedRoom(guest, roomName, '精靈：啟用')
+    await joinListedRoom(guest, roomName, '停用：錦囊')
     await guest.getByRole('button', { name: '準備 →' }).click()
 
-    await host.getByLabel('進階規則‧星辰圖記').uncheck()
-    await expect(host.getByLabel('主題規則‧精靈')).not.toBeChecked()
-    await expect(guest.getByLabel('主題規則‧精靈')).not.toBeChecked()
+    await host.getByLabel('星辰圖記').uncheck()
+    await expect(host.getByLabel('精靈')).not.toBeChecked()
+    await expect(guest.getByLabel('精靈')).not.toBeChecked()
     await expect(guest.getByRole('button', { name: '準備 →' })).toBeVisible()
 
-    await host.getByLabel('主題規則‧精靈').check()
-    await expect(host.getByLabel('進階規則‧星辰圖記')).toBeChecked()
-    await expect(host.getByLabel('進階規則‧英雄學派')).toBeChecked()
-    await expect(host.getByLabel('進階規則‧五方傳說')).toBeChecked()
+    await host.getByLabel('精靈').check()
+    await expect(host.getByLabel('星辰圖記')).toBeChecked()
+    await expect(host.getByLabel('英雄學派')).toBeChecked()
+    await expect(host.getByLabel('五方傳說')).toBeChecked()
 
     const roomId = new URL(host.url()).pathname.split('/').pop()
     const invalidStatus = await host.evaluate(async (id) => {
@@ -54,12 +54,12 @@ test('Spirit defaults on and keeps its Advanced Rule dependencies coherent', asy
 
     await Promise.all([host, guest].map(async (page) => {
       await expect(page.getByRole('region', { name: '啟用規則' }))
-        .toContainText('主題規則‧精靈')
+        .toContainText('精靈')
     }))
 
     await guest.reload()
     await expect(guest.getByRole('region', { name: '啟用規則' }))
-      .toContainText('主題規則‧精靈')
+      .toContainText('精靈')
   } finally {
     await hostContext.close()
     await guestContext.close()
@@ -78,7 +78,7 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
     await loginAsGuests([host, guest])
     const roomName = `精靈技能測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
-    await joinListedRoom(guest, roomName, '精靈：啟用')
+    await joinListedRoom(guest, roomName, '停用：錦囊')
     await guest.getByRole('button', { name: '準備 →' }).click()
     await host.getByRole('button', { name: '開始遊戲 →' }).click()
     await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
@@ -155,7 +155,7 @@ test('Splendor exposes its declared levels on hover and uses the chosen level', 
     await loginAsGuests([host, guest])
     const roomName = `絢爛選級測試 ${Date.now()}`
     await createPublicRoom(host, roomName)
-    await joinListedRoom(guest, roomName, '精靈：啟用')
+    await joinListedRoom(guest, roomName, '停用：錦囊')
     await guest.getByRole('button', { name: '準備 →' }).click()
     await host.getByRole('button', { name: '開始遊戲 →' }).click()
     await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
@@ -193,6 +193,11 @@ test('Splendor exposes its declared levels on hover and uses the chosen level', 
     ])
     expect(skillResponse.ok()).toBe(true)
     await expect(host.getByText(/使用「絢爛」.*宣告 4 級/)).toBeVisible()
+    await host.reload()
+    await expect(host.locator('.card-interpretation')).toContainText('已生效 · 絢爛')
+    await expect(host.locator('.card-interpretation')).toContainText('視為 4 級')
+    await guest.reload()
+    await expect(guest.locator('.card-interpretation')).toContainText('一張手牌視為 4 級')
   } finally {
     await hostContext.close()
     await guestContext.close()

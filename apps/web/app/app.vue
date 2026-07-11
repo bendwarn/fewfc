@@ -406,7 +406,7 @@
             <div>
               <strong>{{ room.name }}</strong>
               <small>{{ room.members.length }} / {{ room.capacity }} 玩家 · 等待開始</small>
-              <small>{{ roomRuleSummary(room) }}</small>
+              <small v-if="roomRuleSummary(room)">{{ roomRuleSummary(room) }}</small>
             </div>
             <i>{{ room.members.some((member) => member.userId === currentUserId) ? '已加入' : '加入' }}</i>
           </button>
@@ -431,7 +431,7 @@
             <div>
               <strong>{{ room.name }}</strong>
               <small>{{ roomStatusLabel(room) }}</small>
-              <small>{{ roomRuleSummary(room) }}</small>
+              <small v-if="roomRuleSummary(room)">{{ roomRuleSummary(room) }}</small>
             </div>
             <i>{{ roomNeedsAttention(room) ? '輪到你' : '進入' }}</i>
           </button>
@@ -512,36 +512,11 @@
                   </span>
                 </span>
                 <small
-                  v-for="prepared in preparedAbilitiesFor(seat.player)"
-                  :key="`${seat.player}-${prepared.abilityId}-${prepared.card}`"
-                  class="prepared-ability"
+                  v-for="(interpretation, index) in cardInterpretationsFor(seat.player)"
+                  :key="`${seat.player}-interpretation-${index}`"
+                  class="card-interpretation"
                 >
-                  已準備 · {{ preparedAbilityLabel(prepared.abilityId) }}
-                  {{ elementLabel(prepared.element) }}{{ prepared.level }}
-                  （牌 {{ prepared.card }}）
-                </small>
-                <small
-                  v-for="jianghuState in jianghuStatesFor(seat.player)"
-                  :key="`${seat.player}-${jianghuState.kind}`"
-                  class="jianghu-state"
-                >
-                  江湖狀態 · {{ jianghuStateLabel(jianghuState) }}
-                </small>
-                <small
-                  v-for="limitedUse in limitedUsesFor(seat.player)"
-                  :key="`${seat.player}-${limitedUse.key}`"
-                  class="limited-use"
-                >
-                  {{ limitedUseLabel(limitedUse.key) }} ·
-                  {{ limitedUse.remaining }}/{{ limitedUse.maximum }}
-                </small>
-                <small
-                  v-for="obligation in confluenceObligationsFor(seat.player)"
-                  :key="`${seat.player}-tuning-${obligation.card ?? 'hidden'}`"
-                >
-                  調律牌 ·
-                  {{ obligation.card === null ? '隱藏' : `牌 ${obligation.card}` }}
-                  （{{ obligation.allowProfessionFormation ? '可用於職業陣法' : '僅可轉職' }}）
+                  {{ presentCardInterpretation(interpretation) }}
                 </small>
                 <small v-if="state.enabledRuleModules.includes('personal-deck')">
                   牌庫 {{ playerDeckCount(seat.player) }} · 棄牌 {{ playerDiscardCount(seat.player) }}
@@ -579,38 +554,11 @@
                 防護罩 · {{ shieldFor(seat.player) }}
               </span>
               <span
-                v-for="status in statusesFor(seat.player)"
-                :key="status.id"
-                class="status-badge"
+                v-for="effect in persistentEffectsFor(seat.player)"
+                :key="`${seat.player}-${effect.key}`"
+                class="status-badge persistent-effect"
               >
-                {{ statusLabel(status.kind) }}
-              </span>
-              <span
-                v-if="flowLayersFor(seat.player) > 0"
-                class="status-badge"
-              >
-                流水 · {{ flowLayersFor(seat.player) }} 層
-              </span>
-              <span
-                v-for="schedule in echoSchedulesFor(seat.player)"
-                :key="`echo-${seat.player}-${schedule.melodyId}-${schedule.dueTurnNumber}`"
-                class="status-badge"
-              >
-                迴響 · 第 {{ schedule.dueTurnNumber }} 回合
-              </span>
-              <span
-                v-for="schedule in plantEarthSchedulesFor(seat.player)"
-                :key="`plant-earth-${seat.player}-${schedule.dueTurnNumber}`"
-                class="status-badge"
-              >
-                植土 · 第 {{ schedule.dueTurnNumber }} 回合
-              </span>
-              <span
-                v-for="suppression in formationSuppressionsFor(seat.player)"
-                :key="`split-earth-${seat.player}-${suppression.formationId}`"
-                class="status-badge"
-              >
-                裂土 · {{ formationChoiceLabel(suppression.formationId) }}
+                {{ effect.label }}
               </span>
               <span class="side-hand-count">{{ handCount(seat.player) }} 張</span>
             </div>
@@ -715,7 +663,13 @@
                       v-for="pouchAction in pouchStrategyActions"
                       :key="`pouch-${pouchAction.label}`"
                       type="button"
+                      :title="pouchAction.detail"
+                      :aria-label="`${pouchAction.label}：${pouchAction.detail}`"
                       :disabled="!roomConnected || game.isLoading.value"
+                      @mouseenter="showTextActionDetail(pouchAction.label, pouchAction.detail)"
+                      @mouseleave="hideActionDetail"
+                      @focus="showTextActionDetail(pouchAction.label, pouchAction.detail)"
+                      @blur="hideActionDetail"
                       @click="startPouchAction(pouchAction)"
                     >
                       {{ pouchAction.label }}
@@ -724,8 +678,12 @@
                       v-for="ability in directPlayableAbilities"
                       :key="playableAbilityKey(ability)"
                       type="button"
-                      :title="ability.summary"
-                      :aria-label="`${ability.name}：${ability.summary}`"
+                      :title="playableActionDetail(ability)"
+                      :aria-label="`${ability.name}：${playableActionDetail(ability)}`"
+                      @mouseenter="showActionDetail(ability)"
+                      @mouseleave="hideActionDetail"
+                      @focus="showActionDetail(ability)"
+                      @blur="hideActionDetail"
                       @click="game.performPlayableAction(ability)"
                     >
                       {{ ability.name }}
@@ -744,7 +702,7 @@
                           :key="playableAbilityKey(ability)"
                           type="button"
                           role="menuitem"
-                          :title="ability.summary"
+                          :title="playableActionDetail(ability)"
                           :aria-label="`絢爛：指定為 ${ability.declaredLevel} 級`"
                           @click="game.performPlayableAction(ability)"
                         >
@@ -756,7 +714,13 @@
                       v-if="game.interaction.value.canRetrieveDiscard"
                       class="retrieve-action"
                       type="button"
+                      :title="discardRetrievalDetail"
+                      :aria-label="`棄牌回收：${discardRetrievalDetail}`"
                       :disabled="!roomConnected"
+                      @mouseenter="showTextActionDetail('棄牌回收', discardRetrievalDetail)"
+                      @mouseleave="hideActionDetail"
+                      @focus="showTextActionDetail('棄牌回收', discardRetrievalDetail)"
+                      @blur="hideActionDetail"
                       @click="game.retrievePreviousTurnDiscard()"
                     >
                       棄牌回收
@@ -777,7 +741,7 @@
                       v-for="action in game.playableMainActions.value"
                       :key="`${action.type}:${action.id}:${action.cards.join('-')}:${action.type === 'performFormation' ? `${action.starSubstitution?.card ?? 'printed'}:${action.matchOption?.role ?? 'default'}:${action.matchOption?.card ?? ''}` : 'profession'}`"
                       type="button"
-                      :title="action.summary"
+                      :title="playableActionDetail(action)"
                       @mouseenter="showActionDetail(action)"
                       @mouseleave="hideActionDetail"
                       @focus="showActionDetail(action)"
@@ -1433,6 +1397,15 @@ import {
 } from '#shared/utils/rule-modules'
 import { authClient } from '~/lib/auth-client'
 import { buildDiscardComposition, DISCARD_ELEMENTS } from '~/lib/discard-composition'
+import { presentCardInterpretation } from '~/lib/card-interpretation-presentation'
+import { presentPendingChoice } from '~/lib/pending-choice-presentation'
+import { presentPersistentEffects } from '~/lib/persistent-effect-presentation'
+import {
+  presentDiscardRetrievalAction,
+  presentPlayableAction,
+  presentSecretStrategyAction,
+} from '~/lib/action-detail-presentation'
+import { presentRoomRuleDifferences } from '#shared/utils/ruleset-presentation'
 import { roomRouteResult, safeInternalPath } from '~/lib/navigation'
 import { createDeckCompositionPolicy, type PlayerDeckList } from '~/lib/player-deck'
 import type { LocalPasswordResetResult } from '#shared/local-password-reset'
@@ -1524,6 +1497,7 @@ const initialPouchCards = computed<PublicCard[]>(() => {
 })
 type PouchStrategyAction = {
   label: string
+  detail: string
   strategy: SecretStrategy
   options?: Parameters<typeof game.triggerSecretStrategy>[1]
   choice?: 'sheep'
@@ -1540,12 +1514,14 @@ const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
     .filter(requirement => requirement.sourceCard === pouch.id)
   for (const requirement of requirements) {
     const { strategy } = requirement
+    const detail = presentSecretStrategyAction(requirement)
     if (requirement.input === 'none') {
-      actions.push({ label: `秘計‧${strategyLabel(strategy)}`, strategy })
+      actions.push({ label: `秘計‧${strategyLabel(strategy)}`, detail, strategy })
     } else if (requirement.input === 'targetPlayer') {
       for (const player of requirement.targetPlayers) {
         actions.push({
           label: `秘計‧${strategyLabel(strategy)} → ${playerLabel(player)}`,
+          detail,
           strategy,
           options: { targetPlayer: player },
         })
@@ -1555,6 +1531,7 @@ const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
         && requirement.discardCards.length >= requirement.requiredCardCount) {
         actions.push({
           label: `秘計‧${strategyLabel(strategy)}`,
+          detail,
           strategy,
           choice: 'sheep',
           requiredCardCount: requirement.requiredCardCount,
@@ -1566,6 +1543,7 @@ const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
       for (const star of requirement.stars) {
         actions.push({
           label: `秘計‧${strategyLabel(strategy)} → ${starLabel(star)}`,
+          detail,
           strategy,
           options: { star },
         })
@@ -1573,17 +1551,19 @@ const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
       for (const star of requirement.breakStars) {
         actions.push({
           label: `秘計‧${strategyLabel(strategy)} → 破除 ${starLabel(star)}`,
+          detail,
           strategy,
           options: { star, breakStar: true },
         })
       }
     } else if (requirement.input === 'retreat') {
-      actions.push({ label: `秘計‧${strategyLabel(strategy)} → 破除環境`, strategy })
+      actions.push({ label: `秘計‧${strategyLabel(strategy)} → 破除環境`, detail, strategy })
       for (const cardId of requirement.handCards) {
         const card = ownHandCards.value.find(candidate => candidate.id === cardId)
         if (card) {
           actions.push({
             label: `秘計‧${strategyLabel(strategy)} → 捨棄 ${card.label}`,
+            detail,
             strategy,
             options: { discardCard: card.id },
           })
@@ -1744,7 +1724,11 @@ async function submitPouchChoice() {
   })
   resetPouchChoice()
 }
-const actionDetail = ref<PlayableAction | null>(null)
+const actionDetail = ref<{ name: string; summary: string } | null>(null)
+const discardRetrievalDetail = computed(() => {
+  const detail = game.interaction.value.discardRetrievalAction
+  return detail ? presentDiscardRetrievalAction(detail, playerLabel) : ''
+})
 const eventExpanded = ref(false)
 const showSetupReveal = ref(false)
 const discardOpen = ref(false)
@@ -1762,18 +1746,18 @@ const modes = [
   { id: 'team', icon: '隊', label: '團隊對戰', description: '2 對 2 交錯行動' },
 ]
 const ruleGroupLabels = {
-  gameplay: '牌局設定',
+  optional: '選用規則',
   advanced: '進階規則',
   theme: '主題規則',
 }
-const ruleGroups = computed(() => (['gameplay', 'advanced', 'theme'] as const).map(id => ({
+const ruleGroups = computed(() => (['optional', 'advanced', 'theme'] as const).map(id => ({
   id,
   label: ruleGroupLabels[id],
   rules: ruleModulePolicy.value.modules
     .map(module => ({
       id: module.id,
       ...presentationForRuleModule(module.id),
-      group: module.category === 'optional' ? 'gameplay' : module.category,
+      group: module.category,
     }))
     .filter(module => module.group === id),
 })))
@@ -2789,54 +2773,12 @@ function professionFor(player: PlayerId) {
   return state.value.professions.find(profession => profession.player === player)
 }
 
-function preparedAbilitiesFor(player: PlayerId) {
-  return state.value.preparedProfessionAbilities.filter(prepared => prepared.player === player)
+function cardInterpretationsFor(player: PlayerId) {
+  return state.value.cardInterpretations.filter(interpretation => interpretation.player === player)
 }
 
-function preparedAbilityLabel(abilityId: string): string {
-  const labels: Record<string, string> = {
-    illusion: '幻術',
-    phantasm: '幻朧',
-    'jianghu:blazing-yang-art': '烈陽訣',
-  }
-  return labels[abilityId] ?? abilityId
-}
-
-function jianghuStatesFor(player: PlayerId) {
-  return state.value.jianghuStates.filter(active => active.owner === player)
-}
-
-function jianghuStateLabel(
-  active: PublicGameState['jianghuStates'][number],
-): string {
-  const label = {
-    ThousandBlades: '千鋒',
-    SnowTreading: '踏雪',
-    Poison: '中毒',
-  }[active.kind]
-  return active.kind === 'Poison'
-    ? `${label}（${active.remainingTurns} 回合）`
-    : label
-}
-
-function limitedUsesFor(player: PlayerId) {
-  return state.value.limitedUses.filter(useCount => useCount.owner === player)
-}
-
-function limitedUseLabel(key: string): string {
-  const labels: Record<string, string> = {
-    'confluence:heavenly-resonance': '天響',
-    'confluence:imprisoning-array': '禁錮法陣',
-    'confluence:tailwind': '順風',
-    'confluence:void-realm': '虛空境界',
-  }
-  return labels[key] ?? key
-}
-
-function confluenceObligationsFor(player: PlayerId) {
-  return state.value.confluenceCardObligations.filter(
-    obligation => obligation.owner === player,
-  )
+function persistentEffectsFor(player: PlayerId) {
+  return presentPersistentEffects(state.value, player, teamForPlayer(player))
 }
 
 function elementLabel(element: Element): string {
@@ -2892,40 +2834,6 @@ function counterEffectsFor(player: PlayerId) {
 
 function shieldFor(player: PlayerId): number {
   return state.value.shields.find((shield) => shield.player === player)?.value ?? 0
-}
-
-function statusesFor(player: PlayerId) {
-  const team = teamForPlayer(player)
-  return state.value.statuses.filter((status) => (
-    status.owner.kind === 'player'
-      ? status.owner.id === player
-      : status.owner.id === team
-  ))
-}
-
-function flowLayersFor(player: PlayerId): number {
-  return state.value.flowStates.find(flow => flow.player === player)?.layers ?? 0
-}
-
-function echoSchedulesFor(player: PlayerId) {
-  return state.value.scheduledEchoes.filter(schedule => schedule.player === player)
-}
-
-function plantEarthSchedulesFor(player: PlayerId) {
-  return state.value.scheduledPlantEarth.filter(schedule => schedule.player === player)
-}
-
-function formationSuppressionsFor(player: PlayerId) {
-  return state.value.formationSuppressions.filter(suppression => suppression.target === player)
-}
-
-function statusLabel(kind: string): string {
-  return {
-    CannotAct: '無法行動',
-    CannotDraw: '無法抽牌',
-    DivineCalculation: '神算',
-    GaleRain: '烈風暴雨',
-  }[kind] ?? kind
 }
 
 function playerConnected(player: PlayerId): boolean {
@@ -2990,9 +2898,10 @@ function roomStatusLabel(room: PublicRoomSummary): string {
 }
 
 function roomRuleSummary(room: PublicRoomSummary): string {
-  const spirit = room.enabledRuleModules.includes('spirit') ? '精靈：啟用' : '精靈：停用'
-  const star = room.enabledRuleModules.includes('star') ? '星辰圖記：啟用' : '星辰圖記：停用'
-  return `${spirit} · ${star}`
+  return presentRoomRuleDifferences(
+    rulesCatalog.value?.ruleModules ?? [],
+    room.enabledRuleModules,
+  )
 }
 
 function roomNeedsAttention(room: PublicRoomSummary): boolean {
@@ -3035,9 +2944,25 @@ function playableAbilityKey(
   return `profession:${ability.id}:${ability.cards.join('-')}:${ability.targetCard ?? ''}:${ability.declaredElement ?? ''}:${ability.declaredLevel ?? ''}`
 }
 
+function knownCardLabel(cardId: number): string {
+  const card = state.value.hands
+    .flatMap(hand => hand.cards.kind === 'known' ? hand.cards.cards : [])
+    .find(candidate => candidate.id === cardId)
+  return card?.label ?? `牌 ${cardId}`
+}
+
+function playableActionDetail(action: PlayableAction): string {
+  return presentPlayableAction(action, knownCardLabel)
+}
+
 function showActionDetail(action: PlayableAction) {
   clearTimeout(actionDetailTimer)
-  actionDetail.value = action
+  actionDetail.value = { name: action.name, summary: playableActionDetail(action) }
+}
+
+function showTextActionDetail(name: string, summary: string) {
+  clearTimeout(actionDetailTimer)
+  actionDetail.value = { name, summary }
 }
 
 function hideActionDetail() {
@@ -3048,7 +2973,7 @@ function hideActionDetail() {
 function startActionDetail(action: PlayableAction) {
   clearTimeout(actionDetailTimer)
   actionDetailTimer = setTimeout(() => {
-    actionDetail.value = action
+    actionDetail.value = { name: action.name, summary: playableActionDetail(action) }
   }, 450)
 }
 
@@ -3079,30 +3004,9 @@ function environmentLabel(value: PublicGameState['environment']): string {
   }[value]
 }
 
-function choiceLabel(value: string): string {
-  const labels: Record<string, string> = {
-    'Choose one drawn card to discard': '選擇一張本回合抽到的牌捨棄',
-    'turn-draw-discard': '選擇一張本回合抽到的牌捨棄',
-    TurnDrawDiscard: '選擇一張本回合抽到的牌捨棄',
-    EffectGenerated: '選擇效果指定的牌',
-    TypedEffect: '選擇效果',
-    Hidden: '等待選擇',
-    'echo:ringing-metal': '鳴金：選擇牌組中的一張牌',
-    'echo:falling-wood': '落木：選擇迴響代價',
-    'echo:flowing-water': '流水：選擇迴響代價',
-    'echo:war-fire': '戰火：選擇迴響代價',
-    'echo:split-earth': '裂土：選擇陣法',
-    'echo:pure-fire': '淨火：選擇玩家',
-    'echo:plant-earth': '植土：選擇曲調',
-    'tribulation:earth-rending': '裂地崩山：選擇環境或環行牌',
-  }
-  return labels[value] ?? value
-}
-
 function pendingChoiceLabel(choice: PublicGameState['pendingChoice']): string {
   if (!choice) return '等待選擇'
-  const purpose = choiceLabel(choice.purpose)
-  return purpose === choice.purpose ? choiceLabel(choice.kind) : purpose
+  return presentPendingChoice(choice.presentation)
 }
 
 function formationChoiceLabel(formationId: string): string {
@@ -3314,7 +3218,7 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .profession-summary { @apply invisible absolute top-[calc(100%+6px)] left-0 z-20 grid w-64 gap-1 border border-[#64583f] bg-[#18201b] p-2.5 text-left opacity-0 shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
 .profession-summary b { @apply font-serif text-xs text-gold-light; }
 .profession-summary small { @apply whitespace-normal text-[10px]! leading-4 text-muted!; }
-.prepared-ability { @apply border border-[#526c7c] bg-[#17232b] px-1.5 py-0.5 text-[9px]! text-[#b9d5e5]!; }
+.card-interpretation { @apply border border-[#526c7c] bg-[#17232b] px-1.5 py-0.5 text-[9px]! text-[#b9d5e5]!; }
 .profession-badge:hover .profession-summary, .profession-badge:focus .profession-summary, .profession-badge:focus-within .profession-summary { @apply visible opacity-100; }
 .connection-dot { @apply size-2 shrink-0 rounded-full border border-[#76524b] bg-[#6f3c34]; }
 .connection-dot.connected { @apply border-[#477557] bg-[#63a979]; }
