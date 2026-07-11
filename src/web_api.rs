@@ -220,85 +220,13 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                 &card_labels,
                 &card_facts,
                 &formation_names,
-                candidates
-                    .into_iter()
-                    .map(|candidate| match candidate {
-                        PlayableAction::PerformFormation(candidate) => {
-                            WebPlayableAction::PerformFormation {
-                                id: candidate.formation_id.clone(),
-                                name: candidate.formation_name,
-                                category: WebFormationCategory::from(candidate.category),
-                                policy: WebFormationActionPolicy::from_id(&candidate.formation_id),
-                                summary: candidate.summary,
-                                cards: candidate.cards,
-                                star_substitution: candidate
-                                    .star_substitution
-                                    .map(WebStarElementSubstitution::from),
-                                match_option: candidate.declared_targets.iter().find_map(
-                                    |target| match target {
-                                        TargetDecl::FormationRole { role, card } => {
-                                            Some(WebFormationMatchOption {
-                                                role: role.clone(),
-                                                card: *card,
-                                                slots: 1,
-                                                preview: candidate.preview.clone(),
-                                            })
-                                        }
-                                        TargetDecl::CardMultiplicity { card, slots } => {
-                                            Some(WebFormationMatchOption {
-                                                role: "card-multiplicity".to_string(),
-                                                card: *card,
-                                                slots: *slots,
-                                                preview: candidate.preview.clone(),
-                                            })
-                                        }
-                                        _ => None,
-                                    },
-                                ),
-                            }
-                        }
-                        PlayableAction::ChangeProfession(candidate) => {
-                            WebPlayableAction::ChangeProfession {
-                                id: candidate.profession_id.as_str().to_string(),
-                                name: candidate.profession_name,
-                                summary: candidate.rule_text,
-                                cards: candidate.cards,
-                            }
-                        }
-                        PlayableAction::ActivateProfessionAbility(candidate) => {
-                            WebPlayableAction::ActivateProfessionAbility {
-                                id: candidate.ability_id,
-                                name: candidate.ability_name,
-                                summary: candidate.rule_text,
-                                cards: candidate.cards,
-                                target_card: candidate.target_card,
-                                declared_element: candidate
-                                    .declared_element
-                                    .map(|element| format!("{element:?}")),
-                                declared_level: candidate.declared_level,
-                            }
-                        }
-                        PlayableAction::UseSpiritSkill(candidate) => {
-                            WebPlayableAction::UseSpiritSkill {
-                                id: format!("{:?}", candidate.skill),
-                                name: candidate.skill_name,
-                                summary: candidate.rule_text,
-                                cards: candidate.selected_card.into_iter().collect(),
-                                selected_card: candidate.selected_card,
-                                declared_level: candidate.declared_level,
-                            }
-                        }
-                    })
-                    .collect(),
+                candidates.into_iter().map(web_playable_action).collect(),
             );
         }
         ApiAction::DevelopmentScenarioAction { player, scenario } => {
             let player = PlayerId::new(player);
             let candidate = development_scenario_action(&record, &player, &scenario)?;
-            let playable_actions = candidate
-                .into_iter()
-                .map(web_playable_action)
-                .collect::<Result<Vec<_>, _>>()?;
+            let playable_actions = candidate.into_iter().map(web_playable_action).collect();
             return response_for(
                 &record,
                 viewer,
@@ -644,67 +572,14 @@ fn response_for(
             .playable_actions(player, &[])
             .map_err(ApiError::Game)?
         {
-            match action {
-                PlayableAction::ActivateProfessionAbility(candidate) => {
-                    let duplicate = playable_actions.iter().any(|action| {
-                        matches!(
-                            action,
-                            WebPlayableAction::ActivateProfessionAbility {
-                                id,
-                                cards,
-                                target_card,
-                                declared_element,
-                                declared_level,
-                                ..
-                            } if id == &candidate.ability_id
-                                && cards == &candidate.cards
-                                && target_card == &candidate.target_card
-                                && declared_element.as_deref()
-                                    == candidate.declared_element
-                                        .map(|element| format!("{element:?}"))
-                                        .as_deref()
-                                && declared_level == &candidate.declared_level
-                        )
-                    });
-                    if !duplicate {
-                        playable_actions.push(WebPlayableAction::ActivateProfessionAbility {
-                            id: candidate.ability_id,
-                            name: candidate.ability_name,
-                            summary: candidate.rule_text,
-                            cards: candidate.cards,
-                            target_card: candidate.target_card,
-                            declared_element: candidate
-                                .declared_element
-                                .map(|element| format!("{element:?}")),
-                            declared_level: candidate.declared_level,
-                        });
-                    }
+            if matches!(
+                action,
+                PlayableAction::ActivateProfessionAbility(_) | PlayableAction::UseSpiritSkill(_)
+            ) {
+                let action = web_playable_action(action);
+                if !playable_actions.contains(&action) {
+                    playable_actions.push(action);
                 }
-                PlayableAction::UseSpiritSkill(candidate) => {
-                    let id = format!("{:?}", candidate.skill);
-                    let duplicate = playable_actions.iter().any(|action| {
-                        matches!(
-                            action,
-                            WebPlayableAction::UseSpiritSkill {
-                                id: existing,
-                                selected_card: None,
-                                declared_level: None,
-                                ..
-                            } if existing == &id
-                        )
-                    });
-                    if !duplicate {
-                        playable_actions.push(WebPlayableAction::UseSpiritSkill {
-                            id,
-                            name: candidate.skill_name,
-                            summary: candidate.rule_text,
-                            cards: Vec::new(),
-                            selected_card: None,
-                            declared_level: None,
-                        });
-                    }
-                }
-                _ => {}
             }
         }
     }
@@ -1350,9 +1225,9 @@ fn card_combinations(cards: &[CardInstanceId], size: usize) -> Vec<Vec<CardInsta
         .collect()
 }
 
-fn web_playable_action(candidate: PlayableAction) -> Result<WebPlayableAction, ApiError> {
+fn web_playable_action(candidate: PlayableAction) -> WebPlayableAction {
     match candidate {
-        PlayableAction::PerformFormation(candidate) => Ok(WebPlayableAction::PerformFormation {
+        PlayableAction::PerformFormation(candidate) => WebPlayableAction::PerformFormation {
             id: candidate.formation_id.clone(),
             name: candidate.formation_name,
             category: WebFormationCategory::from(candidate.category),
@@ -1380,16 +1255,34 @@ fn web_playable_action(candidate: PlayableAction) -> Result<WebPlayableAction, A
                     }),
                     _ => None,
                 }),
-        }),
-        PlayableAction::ChangeProfession(candidate) => Ok(WebPlayableAction::ChangeProfession {
+        },
+        PlayableAction::ChangeProfession(candidate) => WebPlayableAction::ChangeProfession {
             id: candidate.profession_id.as_str().to_string(),
             name: candidate.profession_name,
             summary: candidate.rule_text,
             cards: candidate.cards,
-        }),
-        _ => Err(ApiError::Message(
-            "development scenario selected an unsupported action".to_string(),
-        )),
+        },
+        PlayableAction::ActivateProfessionAbility(candidate) => {
+            WebPlayableAction::ActivateProfessionAbility {
+                id: candidate.ability_id,
+                name: candidate.ability_name,
+                summary: candidate.rule_text,
+                cards: candidate.cards,
+                target_card: candidate.target_card,
+                declared_element: candidate
+                    .declared_element
+                    .map(|element| format!("{element:?}")),
+                declared_level: candidate.declared_level,
+            }
+        }
+        PlayableAction::UseSpiritSkill(candidate) => WebPlayableAction::UseSpiritSkill {
+            id: format!("{:?}", candidate.skill),
+            name: candidate.skill_name,
+            summary: candidate.rule_text,
+            cards: candidate.selected_card.into_iter().collect(),
+            selected_card: candidate.selected_card,
+            declared_level: candidate.declared_level,
+        },
     }
 }
 
@@ -2269,7 +2162,7 @@ struct WebCoveredPassive {
     star_substitution: Option<WebStarElementSubstitution>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct WebStarElementSubstitution {
     card: CardInstanceId,
@@ -2277,7 +2170,7 @@ struct WebStarElementSubstitution {
     interpreted_element: crate::domain::Element,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct WebFormationMatchOption {
     role: String,
@@ -2812,7 +2705,7 @@ impl WebPublicGameEvent {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum WebPlayableAction {
     PerformFormation {
@@ -2857,13 +2750,13 @@ enum WebPlayableAction {
     },
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq, Eq)]
 enum WebFormationCategory {
     Attack,
     Spell,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 enum WebFormationActionPolicy {
     Standard,

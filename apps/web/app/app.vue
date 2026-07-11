@@ -1802,12 +1802,12 @@ const enabledRuleLabels = computed(() => [
 ])
 const visibleEvents = computed<PublicGameEvent[]>(() => roomWaiting.value
   ? game.publicEvents.value
-  : [{
+  : [...game.publicEvents.value, {
       id: 'enabled-rules',
       eventType: 'EnabledRules',
       title: '啟用規則',
       summary: enabledRuleLabels.value.join(' · '),
-    }, ...game.publicEvents.value])
+    }])
 const canStartOnlineRoom = computed(() => {
   const metadata = onlineMetadata.value
 

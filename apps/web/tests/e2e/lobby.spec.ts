@@ -1,4 +1,11 @@
-import { createPublicRoom, expect, loginAsGuests, startTwoPlayerMatch, test } from './fixtures'
+import {
+  createPublicRoom,
+  expect,
+  loginAsGuests,
+  seedDevelopmentScenario,
+  startTwoPlayerMatch,
+  test,
+} from './fixtures'
 
 test('the lobby lists rooms before showing room settings', async ({ page }) => {
   await expect(page.getByRole('heading', { name: '公開房間' })).toBeVisible()
@@ -59,7 +66,7 @@ test('desktop waiting controls remain inside the scrollable battlefield', async 
   expect(buttonBox!.y + buttonBox!.height).toBeLessThanOrEqual(720)
 })
 
-test('enabled rules is the first chronological battle record', async ({ browser }) => {
+test('enabled rules flows downward as newer battle records arrive', async ({ browser }) => {
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
   const host = await hostContext.newPage()
@@ -70,9 +77,16 @@ test('enabled rules is the first chronological battle record', async ({ browser 
     await startTwoPlayerMatch(host, guest, `啟用規則紀錄 ${Date.now()}`)
 
     const records = host.locator('.event-feed li')
-    await expect(records.first()).toContainText('啟用規則')
-    await expect(records.first()).toContainText('基礎規則')
-    await expect(records.nth(1)).toContainText('對局開始')
+    const initialCount = await records.count()
+    await expect(records.first()).toContainText('對局開始')
+    await expect(records.last()).toContainText('啟用規則')
+    await expect(records.last()).toContainText('基礎規則')
+
+    await seedDevelopmentScenario(host, { name: 'hero-schools-transition' })
+    await host.reload()
+
+    await expect.poll(() => records.count()).toBeGreaterThan(initialCount)
+    await expect(records.last()).toContainText('啟用規則')
   } finally {
     await hostContext.close()
     await guestContext.close()
