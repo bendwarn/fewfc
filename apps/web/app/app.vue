@@ -1326,18 +1326,13 @@
                 {{ eventExpanded ? '收合' : '完整紀錄' }}
               </button>
             </div>
-            <section
-              v-if="!roomWaiting"
-              class="enabled-rules-panel"
-              aria-labelledby="enabled-rules-title"
-            >
-              <h2 id="enabled-rules-title">啟用規則</h2>
-              <p>{{ enabledRuleLabels.join(' · ') }}</p>
-            </section>
             <ol class="event-feed">
               <li v-for="event in visibleEvents" :key="event.id">
                 <i />
-                <div>
+                <div
+                  :role="event.eventType === 'EnabledRules' ? 'region' : undefined"
+                  :aria-label="event.eventType === 'EnabledRules' ? '啟用規則' : undefined"
+                >
                   <span>{{ event.title }}</span>
                   <p>{{ event.summary }}</p>
                 </div>
@@ -1382,6 +1377,7 @@ import type {
   PlayerId,
   PublicCard,
   PublicCardRefs,
+  PublicGameEvent,
   PublicGameState,
   RulesCatalog,
   SecretStrategy,
@@ -1776,7 +1772,6 @@ const deckValidation = computed(() => deckRules.value?.validate(deckDraft.value)
   errors: [],
 }))
 
-const visibleEvents = computed(() => game.publicEvents.value)
 const playerInitial = computed(() => displayName.value.trim().charAt(0).toUpperCase() || 'A')
 const roomModeLabel = computed(() => modes.find((mode) => mode.id === roomMode.value)?.label ?? '')
 const onlineMetadata = computed(() => game.metadata.value)
@@ -1805,6 +1800,14 @@ const enabledRuleLabels = computed(() => [
       return label ? [label] : []
     }),
 ])
+const visibleEvents = computed<PublicGameEvent[]>(() => roomWaiting.value
+  ? game.publicEvents.value
+  : [{
+      id: 'enabled-rules',
+      eventType: 'EnabledRules',
+      title: '啟用規則',
+      summary: enabledRuleLabels.value.join(' · '),
+    }, ...game.publicEvents.value])
 const canStartOnlineRoom = computed(() => {
   const metadata = onlineMetadata.value
 
@@ -3338,8 +3341,8 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .revealed-teams { @apply grid grid-cols-2 gap-3; }
 .revealed-teams span { @apply grid gap-1 border border-[#39443d] p-3 text-xs text-muted; }
 .revealed-teams strong { @apply text-gold-light; }
-.waiting-overlay { @apply absolute inset-0 grid place-items-center bg-[rgba(7,10,8,.78)] text-center backdrop-blur-[4px]; z-index: 13; }
-.waiting-overlay > div { @apply grid min-w-[360px] max-w-[min(90vw,520px)] gap-4 border border-[#8e733d] bg-[#18201b] p-8 shadow-[0_24px_80px_rgba(0,0,0,.42)]; }
+.waiting-overlay { @apply absolute inset-0 flex items-start justify-center overflow-y-auto bg-[rgba(7,10,8,.78)] py-4 text-center backdrop-blur-[4px]; z-index: 13; }
+.waiting-overlay > div { @apply my-auto grid min-w-[360px] max-w-[min(90vw,520px)] gap-4 border border-[#8e733d] bg-[#18201b] p-8 shadow-[0_24px_80px_rgba(0,0,0,.42)]; }
 .waiting-overlay h2 { @apply font-serif text-3xl text-gold-light; }
 .waiting-overlay p:not(.section-kicker) { @apply text-sm text-muted; }
 .waiting-members { @apply grid grid-cols-2 gap-3; }
@@ -3354,9 +3357,6 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 
 .game-sidebar { @apply grid min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
 .game-sidebar.finished { grid-template-rows: auto minmax(0, 1fr); }
-.enabled-rules-panel { @apply mt-4 border border-line bg-[#151c18] p-3; }
-.enabled-rules-panel h2 { @apply font-serif text-sm text-gold-light; }
-.enabled-rules-panel p { @apply mt-1 text-[10px] leading-5 text-muted; }
 .result-panel { @apply border-b border-[#8e733d] bg-[#18201b] p-5; }
 .result-panel h2 { @apply font-serif text-2xl text-gold-light; }
 .result-panel p { @apply mt-1 text-xs text-muted; }

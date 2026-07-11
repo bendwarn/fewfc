@@ -50,7 +50,6 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
       const rules = page.getByRole('region', { name: '啟用規則' })
       await expect(rules).toContainText('基礎規則')
       await expect(rules).toContainText('星辰圖記')
-      await expect(page.locator('.event-panel .enabled-rules-panel')).toBeVisible()
       await expect(page.locator('.player-identity').filter({ hasText: '召星' })).toHaveCount(0)
     }))
 

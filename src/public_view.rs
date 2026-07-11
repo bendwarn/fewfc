@@ -239,6 +239,9 @@ pub enum PublicGameEvent {
         level: u32,
         applied_on_turn: u64,
     },
+    CardsMoved {
+        cards: PublicCardRefs,
+    },
     EffectChoiceRequested {
         player: PlayerId,
         purpose: String,
@@ -665,6 +668,9 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
             level: *level,
             applied_on_turn: *applied_on_turn,
         },
+        GameEvent::CardsMoved { card_moves } => PublicGameEvent::CardsMoved {
+            cards: public_moved_cards(card_moves, &policy),
+        },
         GameEvent::TurnStarted { .. }
         | GameEvent::GamePreparationCompleted
         | GameEvent::PouchRevealed { .. }
@@ -703,7 +709,6 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::TurnDrawBonusChanged { .. }
         | GameEvent::ShieldChanged { .. }
         | GameEvent::HpChanged { .. }
-        | GameEvent::CardsMoved { .. }
         | GameEvent::DeckTopRevealed { .. }
         | GameEvent::StatusAdded { .. }
         | GameEvent::StatusExpired { .. }
@@ -746,6 +751,55 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::PlayerDiscardRecycledIntoDeck { .. }
         | GameEvent::DiscardRetrieved { .. }
         | GameEvent::TurnEnded { .. } => PublicGameEvent::Public(event.clone()),
+    }
+}
+
+fn public_moved_cards(
+    card_moves: &[crate::domain::CardMoveDelta],
+    policy: &RedactionPolicy,
+) -> PublicCardRefs {
+    let cards = card_moves
+        .iter()
+        .map(|movement| {
+            movement_card_is_public(movement)
+                .then_some(movement.card)
+                .or_else(|| {
+                    movement_zone_owner(&movement.from)
+                        .into_iter()
+                        .chain(movement_zone_owner(&movement.to))
+                        .any(|player| policy.can_see_player_hidden_cards(player))
+                        .then_some(movement.card)
+                })
+        })
+        .collect::<Vec<_>>();
+    let known = cards.iter().flatten().count();
+    if known == cards.len() {
+        PublicCardRefs::Known(cards.into_iter().flatten().collect())
+    } else if known == 0 {
+        PublicCardRefs::Hidden { count: cards.len() }
+    } else {
+        PublicCardRefs::PartiallyKnown { cards }
+    }
+}
+
+fn movement_card_is_public(movement: &crate::domain::CardMoveDelta) -> bool {
+    matches!(
+        movement.from,
+        crate::domain::CardZone::Discard | crate::domain::CardZone::PlayerDiscard(_)
+    ) || matches!(
+        movement.to,
+        crate::domain::CardZone::Discard | crate::domain::CardZone::PlayerDiscard(_)
+    )
+}
+
+fn movement_zone_owner(zone: &crate::domain::CardZone) -> Option<&PlayerId> {
+    match zone {
+        crate::domain::CardZone::Hand(player)
+        | crate::domain::CardZone::PlayerDeckTop(player)
+        | crate::domain::CardZone::Pouch(player) => Some(player),
+        crate::domain::CardZone::DeckTop
+        | crate::domain::CardZone::Discard
+        | crate::domain::CardZone::PlayerDiscard(_) => None,
     }
 }
 
@@ -873,6 +927,44 @@ impl RedactionPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_movements_reveal_public_discards_without_leaking_hidden_returns() {
+        let revealed = GameEvent::CardsMoved {
+            card_moves: vec![crate::domain::CardMoveDelta {
+                card: CardInstanceId::new(7),
+                from: crate::domain::CardZone::DeckTop,
+                to: crate::domain::CardZone::Discard,
+            }],
+        };
+        assert_eq!(
+            event_for(&revealed, Viewer::Observer),
+            PublicGameEvent::CardsMoved {
+                cards: PublicCardRefs::Known(vec![CardInstanceId::new(7)]),
+            }
+        );
+
+        let alice = PlayerId::new("alice");
+        let hidden = GameEvent::CardsMoved {
+            card_moves: vec![crate::domain::CardMoveDelta {
+                card: CardInstanceId::new(8),
+                from: crate::domain::CardZone::Hand(alice.clone()),
+                to: crate::domain::CardZone::DeckTop,
+            }],
+        };
+        assert_eq!(
+            event_for(&hidden, Viewer::Observer),
+            PublicGameEvent::CardsMoved {
+                cards: PublicCardRefs::Hidden { count: 1 },
+            }
+        );
+        assert_eq!(
+            event_for(&hidden, Viewer::Player(alice)),
+            PublicGameEvent::CardsMoved {
+                cards: PublicCardRefs::Known(vec![CardInstanceId::new(8)]),
+            }
+        );
+    }
 
     #[test]
     fn every_official_pending_choice_path_has_a_typed_presentation() {

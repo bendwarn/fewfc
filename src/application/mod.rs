@@ -141,6 +141,11 @@ impl GameRecord {
         &self.current_state
     }
 
+    #[cfg(test)]
+    pub(crate) fn fixture_state_mut(&mut self) -> &mut GameState {
+        &mut self.current_state
+    }
+
     pub fn replay(&self) -> GameResult<GameState> {
         replay(&self.setup, self.event_log.events())
     }

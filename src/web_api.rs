@@ -640,36 +640,71 @@ fn response_for(
         && record.state().phase == Phase::Main
         && record.state().pending_choice.is_none()
     {
-        for candidate in record
+        for action in record
             .playable_actions(player, &[])
             .map_err(ApiError::Game)?
-            .into_iter()
-            .filter_map(|action| match action {
-                PlayableAction::UseSpiritSkill(candidate) => Some(candidate),
-                _ => None,
-            })
         {
-            let id = format!("{:?}", candidate.skill);
-            let duplicate = playable_actions.iter().any(|action| {
-                matches!(
-                    action,
-                    WebPlayableAction::UseSpiritSkill {
-                        id: existing,
-                        selected_card: None,
-                        declared_level: None,
-                        ..
-                    } if existing == &id
-                )
-            });
-            if !duplicate {
-                playable_actions.push(WebPlayableAction::UseSpiritSkill {
-                    id,
-                    name: candidate.skill_name,
-                    summary: candidate.rule_text,
-                    cards: Vec::new(),
-                    selected_card: None,
-                    declared_level: None,
-                });
+            match action {
+                PlayableAction::ActivateProfessionAbility(candidate) => {
+                    let duplicate = playable_actions.iter().any(|action| {
+                        matches!(
+                            action,
+                            WebPlayableAction::ActivateProfessionAbility {
+                                id,
+                                cards,
+                                target_card,
+                                declared_element,
+                                declared_level,
+                                ..
+                            } if id == &candidate.ability_id
+                                && cards == &candidate.cards
+                                && target_card == &candidate.target_card
+                                && declared_element.as_deref()
+                                    == candidate.declared_element
+                                        .map(|element| format!("{element:?}"))
+                                        .as_deref()
+                                && declared_level == &candidate.declared_level
+                        )
+                    });
+                    if !duplicate {
+                        playable_actions.push(WebPlayableAction::ActivateProfessionAbility {
+                            id: candidate.ability_id,
+                            name: candidate.ability_name,
+                            summary: candidate.rule_text,
+                            cards: candidate.cards,
+                            target_card: candidate.target_card,
+                            declared_element: candidate
+                                .declared_element
+                                .map(|element| format!("{element:?}")),
+                            declared_level: candidate.declared_level,
+                        });
+                    }
+                }
+                PlayableAction::UseSpiritSkill(candidate) => {
+                    let id = format!("{:?}", candidate.skill);
+                    let duplicate = playable_actions.iter().any(|action| {
+                        matches!(
+                            action,
+                            WebPlayableAction::UseSpiritSkill {
+                                id: existing,
+                                selected_card: None,
+                                declared_level: None,
+                                ..
+                            } if existing == &id
+                        )
+                    });
+                    if !duplicate {
+                        playable_actions.push(WebPlayableAction::UseSpiritSkill {
+                            id,
+                            name: candidate.skill_name,
+                            summary: candidate.rule_text,
+                            cards: Vec::new(),
+                            selected_card: None,
+                            declared_level: None,
+                        });
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -2543,7 +2578,11 @@ impl WebStatusPresentation {
 }
 
 #[derive(Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 enum WebStatusDuration {
     UntilTurnStart { player: PlayerId },
     UntilTurnEnd { player: PlayerId },
@@ -2890,6 +2929,7 @@ fn event_type(event: &PublicGameEvent) -> String {
         PublicGameEvent::HandInspected { .. } => "HandInspected".to_string(),
         PublicGameEvent::SpiritSkillUsed { .. } => "SpiritSkillUsed".to_string(),
         PublicGameEvent::SpiritLevelInterpreted { .. } => "SpiritLevelInterpreted".to_string(),
+        PublicGameEvent::CardsMoved { .. } => "CardsMoved".to_string(),
     }
 }
 
@@ -3073,6 +3113,9 @@ fn event_presentation(
                 },
             ),
         ),
+        PublicGameEvent::CardsMoved { cards } => {
+            ("卡牌移動".to_string(), card_movement_summary(cards, labels))
+        }
     }
 }
 
@@ -4023,6 +4066,28 @@ fn card_refs_summary(cards: &PublicCardRefs, labels: &HashMap<CardInstanceId, St
     }
 }
 
+fn card_movement_summary(
+    cards: &PublicCardRefs,
+    labels: &HashMap<CardInstanceId, String>,
+) -> String {
+    match cards {
+        PublicCardRefs::Known(cards) => {
+            format!("{} 移動到新的區域。", cards_summary(cards, labels))
+        }
+        PublicCardRefs::Hidden { count } => {
+            format!("有 {count} 張牌移動到新的區域。")
+        }
+        PublicCardRefs::PartiallyKnown { cards } => {
+            let known = cards.iter().flatten().copied().collect::<Vec<_>>();
+            let hidden = cards.len() - known.len();
+            format!(
+                "{} 與 {hidden} 張未公開牌移動到新的區域。",
+                cards_summary(&known, labels)
+            )
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum ApiError {
@@ -4465,7 +4530,7 @@ mod tests {
     }
 
     #[test]
-    fn status_owner_is_projected_as_structured_player_data() {
+    fn status_owner_and_numbered_duration_use_the_web_contract() {
         let rules = OfficialRules::new();
         let setup = fixture_setup(&rules, None).unwrap();
         let mut state = crate::domain::GameState::from_setup(&setup);
@@ -4475,6 +4540,16 @@ mod tests {
             kind: "CannotAct".to_string(),
             value: None,
             duration: crate::domain::StatusDuration::Permanent,
+        });
+        state.statuses.push(crate::domain::StatusEffect {
+            id: "cannot-act-bob".to_string(),
+            owner: StatusOwner::Player(PlayerId::new("bob")),
+            kind: "CannotAct".to_string(),
+            value: None,
+            duration: crate::domain::StatusDuration::UntilTurnEndNumber {
+                player: PlayerId::new("bob"),
+                turn_number: 9,
+            },
         });
         let web_state = WebPublicGameState::from_public(
             crate::public_view::state_for(&state, Viewer::Player(PlayerId::new("alice"))),
@@ -4488,6 +4563,13 @@ mod tests {
         assert_eq!(json["statuses"][0]["owner"]["id"], "alice");
         assert_eq!(json["statuses"][0]["presentation"], "cannotAct");
         assert_eq!(json["statuses"][0]["duration"]["type"], "permanent");
+        assert_eq!(
+            json["statuses"][1]["duration"]["type"],
+            "untilTurnEndNumber"
+        );
+        assert_eq!(json["statuses"][1]["duration"]["player"], "bob");
+        assert_eq!(json["statuses"][1]["duration"]["turnNumber"], 9);
+        assert!(json["statuses"][1]["duration"].get("turn_number").is_none());
     }
 
     #[test]
@@ -4577,6 +4659,93 @@ mod tests {
         assert_eq!(json["declaredElement"], "Water");
         assert_eq!(json["declaredLevel"], 4);
         assert!(json.get("target_card").is_none());
+    }
+
+    #[test]
+    fn card_movement_summary_names_only_cards_visible_to_the_viewer() {
+        let labels = HashMap::from([
+            (CardInstanceId::new(7), "火 5".to_string()),
+            (CardInstanceId::new(8), "水 3".to_string()),
+        ]);
+        let known = PublicGameEvent::CardsMoved {
+            cards: PublicCardRefs::Known(vec![CardInstanceId::new(7), CardInstanceId::new(8)]),
+        };
+        assert_eq!(
+            event_presentation(&known, &labels, &HashMap::new()).1,
+            "火 5、水 3 移動到新的區域。"
+        );
+
+        let partially_known = PublicGameEvent::CardsMoved {
+            cards: PublicCardRefs::PartiallyKnown {
+                cards: vec![Some(CardInstanceId::new(7)), None],
+            },
+        };
+        assert_eq!(
+            event_presentation(&partially_known, &labels, &HashMap::new()).1,
+            "火 5 與 1 張未公開牌移動到新的區域。"
+        );
+
+        let hidden = PublicGameEvent::CardsMoved {
+            cards: PublicCardRefs::Hidden { count: 2 },
+        };
+        let hidden_summary = event_presentation(&hidden, &labels, &HashMap::new()).1;
+        assert_eq!(hidden_summary, "有 2 張牌移動到新的區域。");
+        assert!(!hidden_summary.contains("火 5"));
+        assert!(!hidden_summary.contains("水 3"));
+    }
+
+    #[test]
+    fn response_includes_zero_card_profession_abilities() {
+        let rules = OfficialRules::new();
+        let alice = PlayerId::new("alice");
+        let bob = PlayerId::new("bob");
+        let setup = rules
+            .configure_game(
+                vec![
+                    Player {
+                        id: alice.clone(),
+                        team: TeamId::new("team:alice"),
+                    },
+                    Player {
+                        id: bob.clone(),
+                        team: TeamId::new("team:bob"),
+                    },
+                ],
+                vec![alice.clone(), bob],
+                rules.default_rule_modules(),
+            )
+            .unwrap();
+        let deck_order = rules.official_deck_order(&setup).unwrap();
+        let mut record = GameRecord::start(setup.clone(), deck_order).unwrap();
+        record.fixture_state_mut().phase = Phase::Main;
+        record
+            .fixture_state_mut()
+            .professions
+            .push(crate::domain::PlayerProfession {
+                player: alice.clone(),
+                profession: ProfessionId::new(crate::rules::jianghu::QI_GRANDMASTER_ID),
+            });
+
+        let response = response_for(
+            &record,
+            Viewer::Player(alice),
+            &rules.card_labels(&setup).unwrap(),
+            &card_facts_for_setup(&setup),
+            &rules.formation_names(&setup).unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        let json = serde_json::to_value(response).unwrap();
+
+        assert!(
+            json["playableActions"]
+                .as_array()
+                .is_some_and(|actions| actions.iter().any(|action| {
+                    action["type"] == "activateProfessionAbility"
+                        && action["id"] == "jianghu:dancing-yang-art"
+                        && action["cards"] == serde_json::json!([])
+                }))
+        );
     }
 
     #[test]
