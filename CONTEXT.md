@@ -558,6 +558,14 @@ _Avoid_: opponent, enemy
 The immediately completed Player turn before the current turn. It is not the previous round or the Previous Player's older history.
 _Avoid_: previous round, previous formation history
 
+**Previous-Turn Formation**:
+The Formation performed by the Previous Player during the immediately completed Previous Turn. It does not exist when that Player passed or performed no Formation during that turn. A Passive Spell belongs to the turn when it was covered, not the later turn when it is revealed. Triggering an existing Formation's effect, such as Echo or Plant Earth at Turn Start, does not perform that Formation again.
+_Avoid_: latest formation, last known formation, formation history
+
+**Previous-Turn Elemental Attack**:
+The Previous-Turn Formation when that Formation is a Five-Element Attack. It does not exist when the Previous-Turn Formation is absent or belongs to another category.
+_Avoid_: latest elemental attack, last known element, elemental history
+
 **Formation**:
 A declared combination of card instances that matches a formation pattern and resolves through an effect definition.
 _Avoid_: combo, hand pattern

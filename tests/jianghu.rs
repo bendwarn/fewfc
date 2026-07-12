@@ -1,8 +1,8 @@
 use fewfc::application::{advance_automatic, apply_event, handle_command};
 use fewfc::domain::{
     CardInstanceId, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameState,
-    HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind, Phase, Player,
-    PlayerId, PlayerProfession, ProfessionId, RuleModuleId, STAR_MODULE_ID, TeamId,
+    HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind, LastFormationUse,
+    Phase, Player, PlayerId, PlayerProfession, ProfessionId, RuleModuleId, STAR_MODULE_ID, TeamId,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -194,6 +194,62 @@ fn poison_stacks_ticks_at_affected_players_turn_end_and_uses_poison_mastery() {
             .find(|active| active.kind == JianghuStateKind::Poison)
             .unwrap()
             .remaining_turns,
+        2
+    );
+}
+
+#[test]
+fn water_dotting_fan_only_reads_the_immediately_previous_turns_formation() {
+    let mut stale = state();
+    stale.turn_number = 3;
+    set_profession(&mut stale, "p1", "jianghu:ink-seeker");
+    let fan = cards(&stale, &[(Element::Metal, 1)]);
+    set_hand(&mut stale, "p1", fan.clone());
+    stale.last_formation_by_player.insert(
+        PlayerId::new("p2"),
+        LastFormationUse {
+            formation_id: "five-streams-unite".to_string(),
+            resolved_effect_id: "five-streams-unite".to_string(),
+            used_cards: (1..=4).map(CardInstanceId::new).collect(),
+            resolved_turn: 1,
+        },
+    );
+    let mut fresh = stale.clone();
+    fresh
+        .last_formation_by_player
+        .get_mut(&PlayerId::new("p2"))
+        .unwrap()
+        .resolved_turn = 2;
+
+    let perform = |game: &GameState| {
+        handle_command(
+            game,
+            Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "jianghu:water-dotting-fan".to_string(),
+                cards: fan.clone(),
+                declared_targets: Vec::new(),
+            },
+        )
+        .unwrap()
+    };
+    let stale_events = perform(&stale);
+    let fresh_events = perform(&fresh);
+
+    assert!(!stale_events.iter().any(|event| matches!(
+        event,
+        GameEvent::StatusAdded { status }
+            if matches!(status.kind.as_str(), "CannotAct" | "CannotDraw")
+    )));
+    assert_eq!(
+        fresh_events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                GameEvent::StatusAdded { status }
+                    if matches!(status.kind.as_str(), "CannotAct" | "CannotDraw")
+            ))
+            .count(),
         2
     );
 }

@@ -7,6 +7,7 @@ use crate::domain::{
 use crate::rules::{
     AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget, EffectDef, EffectPlan,
     FormationCategory, FormationDef, FormationPattern, PointFormula, SpellPlanDef,
+    formation_resolved_on_previous_turn,
 };
 use crate::rules::{ProfessionAbilityCandidate, ProfessionChangeCandidate, SubmittedCardFacts};
 
@@ -517,9 +518,7 @@ pub(crate) fn post_attack_events(
         } else {
             4
         };
-        if state
-            .last_formation_by_player
-            .get(&previous)
+        if formation_resolved_on_previous_turn(state, &previous)
             .is_some_and(|last| last.used_cards.len() >= threshold)
         {
             events.extend(cannot_act_or_draw_events(

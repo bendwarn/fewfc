@@ -26,6 +26,17 @@ pub use official::{OfficialRuleModuleCategory, OfficialRuleModuleSpec, OfficialR
 pub use crate::domain::Element;
 use std::collections::HashMap;
 
+pub(crate) fn formation_resolved_on_previous_turn<'a>(
+    state: &'a crate::domain::GameState,
+    player: &crate::domain::PlayerId,
+) -> Option<&'a crate::domain::LastFormationUse> {
+    let previous_turn = state.turn_number.checked_sub(1)?;
+    state
+        .last_formation_by_player
+        .get(player)
+        .filter(|formation| formation.resolved_turn == previous_turn)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FormationDef {
     pub id: String,

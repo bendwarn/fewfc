@@ -252,6 +252,51 @@ fn sacred_beast_attacks_then_transfers_the_environment() {
 }
 
 #[test]
+fn elemental_interaction_ignores_an_elemental_attack_from_an_older_turn() {
+    let mut state = GameState::from_setup(&two_player_setup_with_hp(100));
+    state.phase = Phase::Main;
+    state.turn_number = 3;
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), vec![card(5)]),
+        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
+    ];
+    state.last_formation_by_player.insert(
+        PlayerId::new("p2"),
+        LastFormationUse {
+            formation_id: "metal-strike".to_string(),
+            resolved_effect_id: "metal-strike".to_string(),
+            used_cards: vec![card(1)],
+            resolved_turn: 1,
+        },
+    );
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "earth-strike".to_string(),
+            cards: vec![card(5)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [GameEvent::AttackResolved {
+            point_breakdown: AttackPointBreakdown {
+                interaction: ElementInteraction::None,
+                damage_transform: DamageTransform::NormalDamage,
+                final_amount: 9,
+                ..
+            },
+            hp_change: HpChangeDelta { new_hp: 91, .. },
+            ..
+        }]
+    ));
+}
+
+#[test]
 fn matching_environment_damage_stacks_with_overcoming_interaction() {
     let setup = two_player_setup_with_hp(100)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
@@ -2865,6 +2910,48 @@ fn radiance_records_a_private_snapshot_of_the_next_players_hand() {
         );
     }
     assert_eq!(record.replay().unwrap(), record.state().clone());
+}
+
+#[test]
+fn metamorphosis_ignores_a_base_formation_from_an_older_turn() {
+    let mut state = GameState::from_setup(&two_player_setup());
+    state.phase = Phase::Main;
+    state.current_turn_index = 1;
+    state.turn_number = 4;
+    state.hands = vec![
+        PlayerHand::new(PlayerId::new("p1"), Vec::new()),
+        PlayerHand::new(PlayerId::new("p2"), vec![card(5), card(10)]),
+    ];
+    state.last_formation_by_player.insert(
+        PlayerId::new("p1"),
+        LastFormationUse {
+            formation_id: "barrier".to_string(),
+            resolved_effect_id: "barrier".to_string(),
+            used_cards: vec![card(1), card(6)],
+            resolved_turn: 2,
+        },
+    );
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p2"),
+            formation_id: "metamorphosis".to_string(),
+            cards: vec![card(5), card(10)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, GameEvent::FormationEffectCopied { .. }))
+    );
+    for event in &events {
+        apply_event(&mut state, event);
+    }
+    assert_eq!(state.shield(&PlayerId::new("p2")), Some(0));
 }
 
 #[test]

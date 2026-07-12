@@ -5,7 +5,7 @@ use crate::domain::{
 };
 use crate::rules::{
     EffectPlan, PointFormula, base_formation_registry, environment_makes_formation_ineffective,
-    sacred_beast_element,
+    formation_resolved_on_previous_turn, sacred_beast_element,
 };
 
 use super::attack_resolution::{self, AttackRequest, AttackResolutionMode};
@@ -965,7 +965,7 @@ fn metamorphosis_intents(
 ) -> GameResult<(Option<String>, Vec<EffectIntent>)> {
     let previous_player =
         resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)?;
-    let Some(last_formation) = state.last_formation_by_player.get(&previous_player) else {
+    let Some(last_formation) = formation_resolved_on_previous_turn(state, &previous_player) else {
         return Ok((None, Vec::new()));
     };
 

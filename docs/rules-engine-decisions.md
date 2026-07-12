@@ -466,25 +466,23 @@ Rule-derived semantic targets such as previous player, next player, self, own si
 
 This keeps the event log focused on actual player choices while allowing rule-defined targets to remain deterministic projections of state.
 
-### 21. Previous-Formation Elemental Context
+### 21. Previous-Turn Formation Query
 
-Five-element interaction applies only when the previous player's immediately
-preceding formation resolved as a five-element attack. An older elemental attack
-does not remain eligible after that player performs a physical attack, special
-attack, or spell.
+Source basis: rule 5-2.4b conditions Five-Element interaction on the Previous
+Player having performed a Five-Element Attack during the immediately completed
+Previous Turn. Basic rule 2-2.2 and 2-2.4 give Metamorphosis the same turn scope
+for its copy target. Jianghu rule 4-7 uses that scope for Water-Dotting Fan.
 
-```rust
-struct LastElementalAttack {
-    element: Element,
-    resolved_turn: u64,
-}
-```
+Implementation interpretation: `last_formation_by_player` is retained as replay
+state, but these three rules query it only when `resolved_turn == turn_number - 1`.
+No record qualifies after Pass, Profession Change, or a turn without a Formation.
+Triggering an existing Formation's effect at Turn Start does not create a new
+Formation use. A covered Passive belongs to the turn when it was covered.
 
 The last-formation state stores the performed formation identity and its resolved
-category/effect separately. Five-element interaction reads the resolved category
-of the previous player's latest formation. Class change that copies a five-element
-attack therefore counts as that copied element, while still retaining `幻化` as
-its formation identity.
+category/effect separately. When Metamorphosis performed during the immediately
+completed Previous Turn copied a Five-Element Attack, Five-Element interaction
+reads that copied element while the Formation identity remains `幻化`.
 
 Five-element attack attributes are not sealed. If a legal five-element attack is performed, its element remains available for five-element interaction tracking even if other parts of the action are affected by defensive effects.
 
@@ -536,8 +534,8 @@ This supports deterministic replay, focused tests, and UI/debug display of how f
 ### 23. Five-Element Interaction Rules
 
 Five-element interaction is resolved from the current attack element against the
-element of the previous player's immediately preceding formation, when that
-formation resolved as a five-element attack.
+element of the Five-Element Attack performed by the Previous Player during the
+immediately completed Previous Turn.
 
 Official relationships:
 
@@ -663,7 +661,7 @@ If seal applies to an incoming passive spell cover action, it does not immediate
 
 Instead, the incoming passive remains covered and is marked sealed. When that covered passive later flips at its own trigger timing, it resolves as no effect and is then discarded normally.
 
-This prevents a covered passive from being revealed early and preserves the next player's ability to make decisions, such as choosing class change (`幻化`), without knowing the covered card identity.
+This prevents a covered passive from being revealed early and preserves the next player's ability to make decisions, such as choosing Metamorphosis (`幻化`), without knowing the covered card identity.
 
 The sealed covered passive uses the same public view behavior as a normal covered passive. The engine stores the sealed marker internally for later resolution, but public/player views do not expose a separate sealed marker beyond the normal covered-card visibility rules.
 
@@ -679,24 +677,24 @@ fallback. Represent that outcome explicitly as
 `PassiveNoEffectReason::EmptyCity`. User-facing records should say only
 `空城翻開`; they must not add redundant wording about producing no effect.
 
-Class change (`幻化`) is a basic formation, not a special standalone action command and not a special formation category/tag.
+Metamorphosis (`幻化`) is a basic formation, not a special standalone action command and not a special formation category/tag.
 
 It should be handled through the normal `PerformFormation` pipeline like other formations. It consumes the turn action, triggers covered passives at the usual next-player action timing, and uses formation category/effect rules to determine whether any passive applies.
 
-A player with a covered passive necessarily used that passive as their latest
-formation. Therefore, a next-player class change cannot both trigger that passive
-and copy an older attack from the same player. Treat that combination as
-unreachable rather than adding an interaction rule or test for it.
+A player with a covered passive necessarily used that passive as their
+Previous-Turn Formation. Therefore, a next-player Metamorphosis cannot both
+trigger that passive and copy an older attack from the same player. Treat that
+combination as unreachable rather than adding an interaction rule or test for it.
 
-Class change preserves its own formation identity and name while copying the
-previous formation's resolved category and effect. The last-formation state must
-therefore store formation identity separately from the resolved effect plan. A
-later class change copies that resolved category and effect, so class-change
-chains continue to reproduce the original copied behavior even though every link
-is still displayed and recorded as `幻化`.
+Metamorphosis preserves its own formation identity and name while copying the
+Previous-Turn Formation's resolved category and effect. The last-formation state
+must therefore store formation identity separately from the resolved effect plan.
+A later Metamorphosis copies that resolved category and effect, so Metamorphosis
+chains continue to reproduce the original copied behavior even though every
+link is still displayed and recorded as `幻化`.
 
-Class change does not copy a spell's active/passive type because that type controls
-how the formation is performed. Class change remains an active spell: its two
+Metamorphosis does not copy a spell's active/passive type because that type controls
+how the formation is performed. Metamorphosis remains an active spell: its two
 Earth cards are shown face up and discarded through the active-spell procedure.
 When it copies Defense, Seal, Countershock, or another delayed counter effect, the
 copied effect still waits for and modifies the next player's action, but it is
@@ -706,18 +704,20 @@ separately from covered-passive card state.
 Copying Empty City records Empty City as the resolved effect but creates no
 delayed counter because Empty City has no effect to establish.
 
-When the copied effect uses a card-based formula, each class change evaluates that
+When the copied effect uses a card-based formula, each Metamorphosis evaluates that
 formula from its own two submitted Earth cards. It copies the formula, category,
-and effect behavior, not the previous formation's already calculated amount.
-For a copied single-card elemental strike, `level + 4` means the submitted class
-change cards' level sum plus 4; it must not read only one of the two Earth cards.
+and effect behavior, not the Previous-Turn Formation's already calculated amount.
+For a copied single-card elemental strike, `level + 4` means the submitted
+Metamorphosis cards' level sum plus 4; it must not read only one of the two
+Earth cards.
 
 Copying Five Streams Unite (`五流歸一`) includes its complete effect. Resolve its
-damage from the target's current hand count and grant the class-change player the
+damage from the target's current hand count and grant the Metamorphosis player the
 formation's next-draw bonus. The bonus is not limited to directly submitting the
 original five-card formation.
 
-Do not add a separate `ChangeClass` command unless a future rule module introduces a genuinely non-formation class-change action.
+Do not add a separate `ChangeClass` command for Metamorphosis. Profession Change
+is a distinct Action introduced by the corresponding rule modules.
 
 Formation category is limited to the official two categories:
 
@@ -730,7 +730,7 @@ enum FormationCategory {
 
 Passive spells are represented as spells whose `effect_id` points to an `EffectDef` with a delayed/covered plan, not as a separate top-level category.
 
-Do not add separate categories or tags such as `ClassChange`, `PhysicalAttack`, or `ElementalAttack` unless they are needed by a concrete rule. Differences such as elemental attack interactions, passive spell covering, or class-change behavior should be represented by effect definitions under the official `Attack`/`Spell` category model.
+Do not add separate categories or tags such as `ClassChange`, `PhysicalAttack`, or `ElementalAttack` unless they are needed by a concrete rule. Differences such as elemental attack interactions, passive spell covering, or Metamorphosis behavior should be represented by effect definitions under the official `Attack`/`Spell` category model.
 
 Use `effect_id + EffectDef.plan` rather than `FormationBehavior`:
 

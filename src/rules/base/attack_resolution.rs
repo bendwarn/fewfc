@@ -8,7 +8,7 @@ use crate::domain::{
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, DamageTarget, EffectPlan, PointFormula,
-    official_formation_registry, sacred_beast_element, star,
+    formation_resolved_on_previous_turn, official_formation_registry, sacred_beast_element, star,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -596,10 +596,7 @@ fn attack_point_breakdown(
 }
 
 fn previous_formation_element(state: &GameState, player: &PlayerId) -> Option<Element> {
-    let formation_id = state
-        .last_formation_by_player
-        .get(player)?
-        .effective_effect_id();
+    let formation_id = formation_resolved_on_previous_turn(state, player)?.effective_effect_id();
     let registry = official_formation_registry(&state.enabled_rule_modules);
     let formation = registry.formation(formation_id)?;
     let effect = registry.effect_for(formation)?;

@@ -1027,6 +1027,7 @@
                     :key="`pouch-owner-${player}`"
                     type="button"
                     :class="{ selected: pouchOwnerSelection === player }"
+                    :aria-pressed="pouchOwnerSelection === player"
                     @click="pouchOwnerSelection = player"
                   >
                     {{ playerLabel(player) }}
@@ -1041,6 +1042,7 @@
                       :key="`chain-strategy-${option.strategy}`"
                       type="button"
                       :class="{ selected: chainStrategySelection === option.strategy }"
+                      :aria-pressed="chainStrategySelection === option.strategy"
                       @click="chainStrategySelection = option.strategy"
                     >
                       {{ strategyLabel(option.strategy) }}
@@ -1057,6 +1059,7 @@
                       :key="`strategy-target-${player}`"
                       type="button"
                       :class="{ selected: strategyTargetSelection === player }"
+                      :aria-pressed="strategyTargetSelection === player"
                       @click="strategyTargetSelection = player"
                     >
                       {{ playerLabel(player) }}
@@ -1107,6 +1110,7 @@
                         :key="`strategy-star-${star}`"
                         type="button"
                         :class="{ selected: strategyStarSelection === star && !strategyBreakStar }"
+                        :aria-pressed="strategyStarSelection === star && !strategyBreakStar"
                         @click="strategyStarSelection = star; strategyBreakStar = false"
                       >
                         取得 {{ starLabel(star) }}
@@ -1116,6 +1120,7 @@
                         :key="`strategy-break-star-${star}`"
                         type="button"
                         :class="{ selected: strategyStarSelection === star && strategyBreakStar }"
+                        :aria-pressed="strategyStarSelection === star && strategyBreakStar"
                         @click="strategyStarSelection = star; strategyBreakStar = true"
                       >
                         破除 {{ starLabel(star) }}
@@ -1129,6 +1134,7 @@
                       <button
                         type="button"
                         :class="{ selected: strategyDiscardCard === null }"
+                        :aria-pressed="strategyDiscardCard === null"
                         @click="strategyDiscardCard = null"
                       >
                         破除環境
@@ -1140,6 +1146,7 @@
                         :key="`strategy-hand-${card.id}`"
                         type="button"
                         :class="{ selected: strategyDiscardCard === card.id }"
+                        :aria-pressed="strategyDiscardCard === card.id"
                         @click="strategyDiscardCard = card.id"
                       >
                         捨棄 {{ card.label }}
@@ -1149,8 +1156,9 @@
                 </template>
               </template>
 
-              <div class="choice-options">
+              <div class="choice-options choice-actions">
                 <button
+                  class="choice-confirm"
                   type="button"
                   :disabled="!canSubmitPouchChoice || game.isLoading.value || !roomConnected"
                   @click="submitPouchChoice"
@@ -3505,6 +3513,13 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .choice-cards { @apply flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
 .choice-cards button { @apply border border-[#ae8b47] bg-[#ede6d4] p-2.5 text-[#18201c]; }
 .choice-cards button.selected { @apply bg-[#c9a451] font-bold shadow-[0_0_0_2px_#f0d99e]; }
+.choice-options { @apply mt-3 flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
+.choice-options button { @apply min-h-10 border border-[#59635c] bg-[#18201b] px-3 py-2 text-xs text-[#d5d8d4] hover:border-[#b99550] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
+.choice-options button:focus-visible { @apply border-[#d1ad62] outline-2 outline-offset-2 outline-[#d1ad62]; }
+.choice-options button.selected,
+.choice-options button[aria-pressed="true"] { @apply border-[#d1ad62] bg-[#c9a451] font-bold text-[#121713] shadow-[0_0_0_2px_#f0d99e]; }
+.choice-actions { @apply mt-5; }
+.choice-actions .choice-confirm { @apply border-[#b99550] bg-[#b99550] font-bold text-[#121713] hover:bg-[#c9a451] hover:text-[#121713]; }
 .choice-count { @apply mt-4 text-xs text-muted; }
 .choice-submit { @apply mt-3 border border-[#b99550] bg-[#b99550] px-5 py-2 text-xs font-bold text-[#121713] disabled:cursor-not-allowed disabled:opacity-45; }
 .setup-reveal { @apply absolute inset-0 z-15 grid place-items-center bg-[rgba(7,10,8,.88)] text-center backdrop-blur-[5px]; }

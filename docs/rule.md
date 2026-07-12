@@ -8,6 +8,13 @@ This document is a rulebook-oriented reference for the Rust rules engine. Domain
 
 When this document describes implementation shape, it follows those two documents.
 
+Rule statements in this document must be directly traceable to a cited official
+rule clause. Do not restate an implementation inference as though it appeared in
+the official text. Necessary interpretations belong in
+[`rules-engine-decisions.md`](./rules-engine-decisions.md), explicitly labeled
+with their source basis and as an implementation interpretation. An ambiguous
+case must be confirmed before either document narrows or broadens the source.
+
 ## 0) Goal
 
 Build a deterministic CFECards rules engine that:
@@ -15,7 +22,7 @@ Build a deterministic CFECards rules engine that:
 - Enforces fixed turn flow with a public phase model: `TurnStart -> Main -> TurnDraw -> TurnDrawDiscardChoice? -> TurnEnd`.
 - Supports `Main` as the public input phase where a player may use zero or more active-effect commands before exactly one action command closes the phase.
 - Supports action commands such as `PerformFormation` and `PassAction`; future rulesets may add more action commands.
-- Treats class change (`幻化`) as a formation use, not as a standalone `ChangeClass` command.
+- Treats Metamorphosis (`幻化`) as a formation use, not as a standalone `ChangeClass` command.
 - Implements formation resolution through effect plans:
   - attack resolution
   - immediate spell resolution
@@ -68,13 +75,13 @@ Formation category has only two official top-level values:
 - `Attack`
 - `Spell`
 
-Do not model elemental attack, physical attack, special attack, active spell, passive spell, or class change as separate formation categories.
+Do not model elemental attack, physical attack, special attack, active spell, passive spell, or Metamorphosis as separate formation categories.
 
 Execution details belong to effect plans:
 
 - an attack effect plan may be elemental, physical, or special
 - a spell effect plan may resolve immediately or be covered as a passive
-- class change (`幻化`) is a basic formation handled through the normal `PerformFormation` pipeline
+- Metamorphosis (`幻化`) is a basic formation handled through the normal `PerformFormation` pipeline
 
 ### 1.5 Card Instances And Card Definitions
 
@@ -193,7 +200,7 @@ Optional future command types:
 Do not add:
 
 - `EndActiveWindow`
-- a standalone `ChangeClass` command for base class change (`幻化`)
+- a standalone `ChangeClass` command for Metamorphosis (`幻化`)
 
 Validation rules:
 
@@ -239,17 +246,24 @@ On `PerformFormation` whose effect plan is attack:
 
 Five-element interaction:
 
-- current attack generates the previous player's immediately preceding elemental formation: heal target team
-- current attack overcomes the previous player's immediately preceding elemental formation: double damage
-- same element: halve damage and round up
+- compare against the Five-Element Attack performed by the Previous Player during the immediately completed Previous Turn (rule 5-2.4b)
+- current attack generates that previous-turn attack's element: heal target team (rule 5-2.4c)
+- current attack overcomes that previous-turn attack's element: double damage (rule 5-2.4d)
+- same element: halve damage and round up (rule 5-2.4e)
 - unrelated element: normal damage
-- if the target player has shield, skip five-element interaction entirely
+- if the target player has shield, skip five-element interaction entirely (rule 5-2.4b)
 
 Physical attacks deal double damage to a player shield. Shield damage does not
 pierce through to team HP.
 
-Physical attacks, special attacks, and spells break the previous-turn elemental
-context. Older elemental attacks do not remain eligible for interaction.
+If the Previous Player did not perform a Five-Element Attack during the
+immediately completed Previous Turn, there is no Five-Element interaction to
+resolve. Older attacks are outside the condition in rule 5-2.4b.
+
+Water-Dotting Fan applies its Cannot Act and Cannot Draw effect only when the
+Previous Player performed a Formation with at least four Cards during the
+immediately completed Previous Turn. Profession Change is not a Formation and
+does not satisfy this condition (Jianghu rule 4-7).
 
 ### 4.3 Immediate Spell Resolution
 
@@ -261,10 +275,15 @@ On `PerformFormation` whose effect plan is immediate spell:
 - request a pending choice when a spell needs player input
 - record formation-use card movement explicitly through card move deltas or equivalent replayable deltas
 
-Class change keeps `metamorphosis` as the performed formation identity while
+Metamorphosis keeps `metamorphosis` as the performed formation identity while
 storing the copied category and effect separately. It keeps its active Spell Type,
 recomputes point formulas from its own two Earth cards, and may establish a copied
 counter effect publicly without covered cards.
+
+Metamorphosis copies the category and rules text of the Formation performed by
+the Previous Player during the immediately completed Previous Turn (basic rule
+2-2.2). If that Player performed no Formation or performed a non-basic Formation,
+there is no copy target (basic rule 2-2.4).
 
 Radiance records the next player's hand as a canonical snapshot. Public event
 filtering exposes the cards only to the formation player.
@@ -868,13 +887,13 @@ A known formation with legal cards but missing resolver is a rule implementation
 - Discard recycling records shuffled order and does not rerun RNG on replay.
 - Attack base damage targets previous player and resolves HP to that player's team.
 - Two-player mode still uses team-owned HP.
-- Five-element interaction uses only the previous player's immediately preceding formation and is disabled by target shield.
+- Five-element interaction uses only a Five-Element Attack performed by the Previous Player during the immediately completed Previous Turn and is disabled by target shield.
 - Physical attacks deal double damage to shields.
 - Covered passive flips at next player's action start and is discarded whether it applies or not.
 - Covered passive also flips when that action is passed.
 - `Defense` applies only to attacks.
 - `Seal` applies only to spells, and seals incoming covered passives without revealing them early.
-- Class change preserves its name, stores the copied resolved effect, and copies counter effects without copying passive performance procedure.
+- Metamorphosis preserves its name, stores the copied resolved effect, and copies counter effects without copying passive performance procedure.
 - Recovery is capped at the match's initial HP.
 - Radiance hand snapshots are visible only to the formation player.
 - Public state views and public event feeds do not leak hidden hands, covered cards, draw choices, or effect-choice options.
