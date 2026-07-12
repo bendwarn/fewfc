@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict'
-import { test } from 'bun:test'
+import { expect, test } from 'bun:test'
 import type { PublicGameState } from '../types/fewfc'
 import { reconcileActionDraft, toggleActionDraftCard } from './action-draft'
 
@@ -46,12 +45,12 @@ function state(overrides: Partial<PublicGameState> = {}): PublicGameState {
 }
 
 test('Action Draft selection is local and toggles independently of Pending Choice', () => {
-  assert.deepEqual(toggleActionDraftCard([], 7), [7])
-  assert.deepEqual(toggleActionDraftCard([7], 7), [])
+  expect(toggleActionDraftCard([], 7)).toEqual([7])
+  expect(toggleActionDraftCard([7], 7)).toEqual([])
 })
 
 test('Action Draft survives equivalent refreshes but clears when canonical context advances', () => {
-  assert.deepEqual(reconcileActionDraft([7], state(), state()), [7])
-  assert.deepEqual(reconcileActionDraft([7], state(), state({ turnNumber: 2 })), [])
-  assert.deepEqual(reconcileActionDraft([7], state(), state({ currentPlayer: 'bob' })), [])
+  expect(reconcileActionDraft([7], state(), state())).toEqual([7])
+  expect(reconcileActionDraft([7], state(), state({ turnNumber: 2 }))).toEqual([])
+  expect(reconcileActionDraft([7], state(), state({ currentPlayer: 'bob' }))).toEqual([])
 })

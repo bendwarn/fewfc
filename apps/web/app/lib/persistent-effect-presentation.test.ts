@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict'
-import { test } from 'bun:test'
+import { expect, test } from 'bun:test'
 import type { PublicGameState } from '../types/fewfc'
 import { presentPersistentEffects } from './persistent-effect-presentation'
 
@@ -57,17 +56,14 @@ test('presents typed persistent effects without leaking internal IDs', () => {
     | 'formationSuppressions'
     | 'scheduledPlantEarth'>
 
-  assert.deepEqual(
-    presentPersistentEffects(state, 'p1', 'team-a').map(effect => effect.label),
-    [
+  expect(presentPersistentEffects(state, 'p1', 'team-a').map(effect => effect.label)).toEqual([
       '本回合結束 · 金蟬、觀火',
       '再 2 回合結束 · 江湖狀態：中毒、裂土：壓制 兵器',
       '天響 · 0/1',
       '迴響 · 角調‧落木 · 第 8 回合',
       '流水 · 2 層',
       '植土 · 第 8 回合',
-    ],
-  )
+    ])
 })
 
 test('exhaustively presents every closed status, duration, limited use, and Echo melody', () => {
@@ -158,18 +154,18 @@ test('exhaustively presents every closed status, duration, limited use, and Echo
     | 'scheduledPlantEarth'>
 
   const labels = presentPersistentEffects(state, 'p1', 'team-a').map(effect => effect.label)
-  assert.equal(labels.length, 5 + 5 + 2 + 7 + 1 + 1)
-  assert.ok(labels.every(label => !label.includes('internal-')))
-  assert.ok(labels.some(label => (
+  expect(labels.length).toBe(5 + 5 + 2 + 7 + 1 + 1)
+  expect(labels.every(label => !label.includes('internal-'))).toBeTruthy()
+  expect(labels.some(label => (
     label.startsWith('本回合結束 · ')
     && label.includes('江湖狀態：千鋒')
     && label.includes('江湖狀態：中毒')
-  )))
-  assert.ok(labels.some(label => label === '再 1 回合結束 · 江湖狀態：踏雪'))
-  assert.ok(labels.some(label => label.startsWith('再 2 回合開始時結束 · ')))
-  assert.ok(labels.some(label => (
+  ))).toBeTruthy()
+  expect(labels.some(label => label === '再 1 回合結束 · 江湖狀態：踏雪')).toBeTruthy()
+  expect(labels.some(label => label.startsWith('再 2 回合開始時結束 · '))).toBeTruthy()
+  expect(labels.some(label => (
     label.startsWith('再 3 回合結束 · ')
     && label.includes('裂土：壓制 防禦')
-  )))
-  assert.ok(labels.some(label => label.startsWith('持續生效 · ')))
+  ))).toBeTruthy()
+  expect(labels.some(label => label.startsWith('持續生效 · '))).toBeTruthy()
 })

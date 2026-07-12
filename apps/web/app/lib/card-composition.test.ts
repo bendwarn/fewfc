@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict'
-import { describe, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import {
   buildCardComposition,
   CARD_ELEMENTS,
@@ -10,14 +9,14 @@ describe('buildCardComposition', () => {
   test('returns all 25 definitions in stable row and column order', () => {
     const rows = buildCardComposition([])
 
-    assert.deepEqual(rows.map(row => row.level), CARD_LEVELS)
-    assert.equal(rows.flatMap(row => row.cells).length, 25)
+    expect(rows.map(row => row.level)).toEqual(CARD_LEVELS)
+    expect(rows.flatMap(row => row.cells).length).toBe(25)
 
     for (const row of rows) {
-      assert.deepEqual(row.cells.map(cell => cell.element), CARD_ELEMENTS)
-      assert.ok(row.cells.every(cell => (
+      expect(row.cells.map(cell => cell.element)).toEqual(CARD_ELEMENTS)
+      expect(row.cells.every(cell => (
         cell.level === row.level && cell.count === 0 && cell.cardIds.length === 0
-      )))
+      ))).toBeTruthy()
     }
   })
 
@@ -30,9 +29,9 @@ describe('buildCardComposition', () => {
     ])
 
     const cells = rows.flatMap(row => row.cells)
-    assert.equal(cells.find(cell => cell.element === '金' && cell.level === 1)?.count, 2)
-    assert.deepEqual(cells.find(cell => cell.element === '金' && cell.level === 1)?.cardIds, [1, 2])
-    assert.equal(cells.find(cell => cell.element === '火' && cell.level === 5)?.count, 1)
-    assert.equal(cells.reduce((total, cell) => total + cell.count, 0), 3)
+    expect(cells.find(cell => cell.element === '金' && cell.level === 1)?.count).toBe(2)
+    expect(cells.find(cell => cell.element === '金' && cell.level === 1)?.cardIds).toEqual([1, 2])
+    expect(cells.find(cell => cell.element === '火' && cell.level === 5)?.count).toBe(1)
+    expect(cells.reduce((total, cell) => total + cell.count, 0)).toBe(3)
   })
 })

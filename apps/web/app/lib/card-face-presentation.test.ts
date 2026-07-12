@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict'
-import { test } from 'bun:test'
+import { expect, test } from 'bun:test'
 import type { Element } from '../types/fewfc'
 import { cardElementClass, cardElementGlyph } from './card-face-presentation'
 
@@ -13,9 +12,9 @@ test('card faces use stable element classes and concise glyphs', () => {
   ]
 
   for (const [element, glyph] of expected) {
-    assert.equal(cardElementClass(element), `element-${element}`)
-    assert.equal(cardElementGlyph(element), glyph)
+    expect(cardElementClass(element)).toBe(`element-${element}`)
+    expect(cardElementGlyph(element)).toBe(glyph)
   }
-  assert.equal(cardElementClass(null), '')
-  assert.equal(cardElementGlyph(null), '')
+  expect(cardElementClass(null)).toBe('')
+  expect(cardElementGlyph(null)).toBe('')
 })

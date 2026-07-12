@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict'
-import { describe, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import {
   completedPendingChoiceSelection,
   isPendingChoiceComplete,
@@ -11,16 +10,16 @@ describe('pending choice selection', () => {
     const first = togglePendingChoiceSelection([], 11, 2)
     const second = togglePendingChoiceSelection(first, 12, 2)
 
-    assert.deepEqual(first, [11])
-    assert.equal(isPendingChoiceComplete(first, 2), false)
-    assert.deepEqual(second, [11, 12])
-    assert.equal(isPendingChoiceComplete(second, 2), true)
-    assert.equal(completedPendingChoiceSelection(first, 2), undefined)
-    assert.deepEqual(completedPendingChoiceSelection(second, 2), [11, 12])
+    expect(first).toEqual([11])
+    expect(isPendingChoiceComplete(first, 2)).toBe(false)
+    expect(second).toEqual([11, 12])
+    expect(isPendingChoiceComplete(second, 2)).toBe(true)
+    expect(completedPendingChoiceSelection(first, 2)).toBe(undefined)
+    expect(completedPendingChoiceSelection(second, 2)).toEqual([11, 12])
   })
 
   test('toggles selected cards without exceeding the required count', () => {
-    assert.deepEqual(togglePendingChoiceSelection([11], 11, 2), [])
-    assert.deepEqual(togglePendingChoiceSelection([11, 12], 13, 2), [11, 12])
+    expect(togglePendingChoiceSelection([11], 11, 2)).toEqual([])
+    expect(togglePendingChoiceSelection([11, 12], 13, 2)).toEqual([11, 12])
   })
 })

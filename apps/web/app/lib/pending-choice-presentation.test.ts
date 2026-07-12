@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict'
-import { test } from 'bun:test'
+import { expect, test } from 'bun:test'
 import type { PendingChoicePresentation } from '../types/fewfc'
 import { presentPendingChoice } from './pending-choice-presentation'
 
@@ -28,15 +27,12 @@ test('presents every Pending Choice by semantic continuation instead of internal
     { type: 'unclassified' },
   ]
 
-  assert.equal(cases.length, 24)
+  expect(cases.length).toBe(24)
   for (const presentation of cases) {
     const label = presentPendingChoice(presentation)
-    assert.ok(label.length > 0)
-    assert.doesNotMatch(label, /echo:|jianghu:|confluence:|tribulation:/)
+    expect(label.length > 0).toBeTruthy()
+    expect(label).not.toMatch(/echo:|jianghu:|confluence:|tribulation:/)
   }
 
-  assert.equal(
-    presentPendingChoice({ type: 'clearWind' }),
-    '晴風：選取此牌捨棄；不選則放回牌組頂',
-  )
+  expect(presentPendingChoice({ type: 'clearWind' })).toBe('晴風：選取此牌捨棄；不選則放回牌組頂')
 })

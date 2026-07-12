@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict'
-import { test } from 'bun:test'
+import { expect, test } from 'bun:test'
 import type { RulesCatalog } from '../types/fewfc'
 import { createDeckCompositionPolicy } from './player-deck'
 
@@ -36,20 +35,20 @@ test('deck policy interprets the supplied composition instead of hard-coding lim
   const policy = createDeckCompositionPolicy(composition)
   const deck = policy.preconstructedDeck()
 
-  assert.deepEqual(deck, { name: '測試預組', cards: ['metal-1', 'fire-2'] })
-  assert.deepEqual(policy.validate(deck), {
+  expect(deck).toEqual({ name: '測試預組', cards: ['metal-1', 'fire-2'] })
+  expect(policy.validate(deck)).toEqual({
     valid: true,
     cardCount: 2,
     levelTotal: 3,
     errors: [],
   })
-  assert.equal(policy.validate({ name: 'too many', cards: ['fire-2', 'fire-2'] }).valid, false)
+  expect(policy.validate({ name: 'too many', cards: ['fire-2', 'fire-2'] }).valid).toBe(false)
 })
 
 test('invalid custom decks fall back to the catalog preconstructed deck', () => {
   const policy = createDeckCompositionPolicy(composition)
   const result = policy.effectiveDeck({ name: '無效牌組', cards: [] })
 
-  assert.equal(result.source, 'preconstructed')
-  assert.equal(result.deck.name, '測試預組')
+  expect(result.source).toBe('preconstructed')
+  expect(result.deck.name).toBe('測試預組')
 })

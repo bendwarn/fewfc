@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict'
-import { describe, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import {
   continuesPendingCommandDraft,
   isOnlineGameAction,
@@ -11,24 +10,24 @@ import {
 import { isDevelopmentScenario } from './development-scenarios'
 
 test('development fixtures expose only the closed named scenario catalog', () => {
-  assert.equal(isDevelopmentScenario({ name: 'star-endgame' }), true)
-  assert.equal(isDevelopmentScenario({ name: 'tribulation-earth-rending' }), true)
-  assert.equal(isDevelopmentScenario({ name: 'star-endgame', state: {} }), false)
-  assert.equal(isDevelopmentScenario({ name: 'arbitrary-state', state: {} }), false)
-  assert.equal(isDevelopmentScenario({ record: [] }), false)
+  expect(isDevelopmentScenario({ name: 'star-endgame' })).toBe(true)
+  expect(isDevelopmentScenario({ name: 'tribulation-earth-rending' })).toBe(true)
+  expect(isDevelopmentScenario({ name: 'star-endgame', state: {} })).toBe(false)
+  expect(isDevelopmentScenario({ name: 'arbitrary-state', state: {} })).toBe(false)
+  expect(isDevelopmentScenario({ record: [] })).toBe(false)
 })
 
 test('trusted randomness actions are not player-submittable', () => {
-  assert.equal(isOnlineGameAction({
+  expect(isOnlineGameAction({
     type: 'resolveRandomness',
     requestId: 'request',
     shuffledOrder: [3, 1, 2],
-  }), false)
-  assert.equal(isOnlineGameAction({
+  })).toBe(false)
+  expect(isOnlineGameAction({
     type: 'answerEffectChoiceTyped',
     player: 'alice',
     answer: { type: 'decline' },
-  }), true)
+  })).toBe(true)
 })
 
 test('trusted randomness resolves sequential requests as distinct persisted decisions', async () => {
@@ -70,9 +69,9 @@ test('trusted randomness resolves sequential requests as distinct persisted deci
     },
   )
 
-  assert.equal(result.marker, 'complete')
-  assert.deepEqual(persisted, ['discard-recycle', 'post-search'])
-  assert.deepEqual(actions, [
+  expect(result.marker).toBe('complete')
+  expect(persisted).toEqual(['discard-recycle', 'post-search'])
+  expect(actions).toEqual([
     { type: 'resolveRandomness', requestId: 'discard-recycle', shuffledOrder: [3, 2, 1] },
     { type: 'resolveRandomness', requestId: 'post-search', shuffledOrder: [5, 4] },
   ])
@@ -111,7 +110,7 @@ describe('normalizeGameRoomMetadata', () => {
       updatedAt: '2026-06-28T00:00:00.000Z',
     })
 
-    assert.deepEqual(metadata.members, [
+    expect(metadata.members).toEqual([
       {
         userId: 'bob-user',
         displayName: 'Bob',
@@ -150,11 +149,11 @@ describe('normalizeGameRoomMetadata', () => {
       updatedAt: '2026-06-28T00:00:00.000Z',
     })
 
-    assert.equal(metadata.schemaVersion, 3)
-    assert.deepEqual(metadata.enabledRuleModules, [])
-    assert.equal(metadata.name, 'version-one-room')
-    assert.equal(metadata.capacity, 2)
-    assert.deepEqual(metadata.members, [{
+    expect(metadata.schemaVersion).toBe(3)
+    expect(metadata.enabledRuleModules).toEqual([])
+    expect(metadata.name).toBe('version-one-room')
+    expect(metadata.capacity).toBe(2)
+    expect(metadata.members).toEqual([{
       userId: 'alice-user',
       displayName: 'alice',
       player: 'alice',
@@ -186,7 +185,7 @@ describe('normalizeGameRoomMetadata', () => {
       updatedAt: '2026-06-28T00:00:00.000Z',
     })
 
-    assert.equal(metadata.enabledRuleModules.includes('spirit'), false)
+    expect(metadata.enabledRuleModules.includes('spirit')).toBe(false)
   })
 })
 
@@ -197,22 +196,22 @@ describe('invitationCredentialMatches', () => {
   }
 
   test('accepts the matching token or case-insensitive room code', () => {
-    assert.equal(invitationCredentialMatches(invitation, {
+    expect(invitationCredentialMatches(invitation, {
       type: 'token',
       value: 'token-value',
-    }), true)
-    assert.equal(invitationCredentialMatches(invitation, {
+    })).toBe(true)
+    expect(invitationCredentialMatches(invitation, {
       type: 'code',
       value: 'abcd234',
-    }), true)
+    })).toBe(true)
   })
 
   test('rejects absent and incorrect credentials', () => {
-    assert.equal(invitationCredentialMatches(invitation, undefined), false)
-    assert.equal(invitationCredentialMatches(invitation, {
+    expect(invitationCredentialMatches(invitation, undefined)).toBe(false)
+    expect(invitationCredentialMatches(invitation, {
       type: 'token',
       value: 'wrong',
-    }), false)
+    })).toBe(false)
   })
 })
 
@@ -225,16 +224,16 @@ describe('requiresPendingCommandDraft', () => {
   }
 
   test('creates drafts only for effect-generated formation choices', () => {
-    assert.equal(requiresPendingCommandDraft(formation, 'EffectGenerated'), true)
-    assert.equal(requiresPendingCommandDraft(formation, 'TurnDrawDiscard'), false)
-    assert.equal(requiresPendingCommandDraft({ type: 'passAction' }, 'EffectGenerated'), false)
+    expect(requiresPendingCommandDraft(formation, 'EffectGenerated')).toBe(true)
+    expect(requiresPendingCommandDraft(formation, 'TurnDrawDiscard')).toBe(false)
+    expect(requiresPendingCommandDraft({ type: 'passAction' }, 'EffectGenerated')).toBe(false)
   })
 })
 
 describe('continuesPendingCommandDraft', () => {
   test('continues only for another effect-generated choice', () => {
-    assert.equal(continuesPendingCommandDraft('EffectGenerated'), true)
-    assert.equal(continuesPendingCommandDraft('TurnDrawDiscard'), false)
-    assert.equal(continuesPendingCommandDraft(undefined), false)
+    expect(continuesPendingCommandDraft('EffectGenerated')).toBe(true)
+    expect(continuesPendingCommandDraft('TurnDrawDiscard')).toBe(false)
+    expect(continuesPendingCommandDraft(undefined)).toBe(false)
   })
 })
