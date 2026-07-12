@@ -9,11 +9,11 @@ describe('buildCardComposition', () => {
   test('returns all 25 definitions in stable row and column order', () => {
     const rows = buildCardComposition([])
 
-    expect(rows.map(row => row.level)).toEqual(CARD_LEVELS)
+    expect(rows.map(row => row.level)).toStrictEqual(CARD_LEVELS)
     expect(rows.flatMap(row => row.cells).length).toBe(25)
 
     for (const row of rows) {
-      expect(row.cells.map(cell => cell.element)).toEqual(CARD_ELEMENTS)
+      expect(row.cells.map(cell => cell.element)).toStrictEqual(CARD_ELEMENTS)
       expect(row.cells.every(cell => (
         cell.level === row.level && cell.count === 0 && cell.cardIds.length === 0
       ))).toBeTruthy()
@@ -30,7 +30,7 @@ describe('buildCardComposition', () => {
 
     const cells = rows.flatMap(row => row.cells)
     expect(cells.find(cell => cell.element === '金' && cell.level === 1)?.count).toBe(2)
-    expect(cells.find(cell => cell.element === '金' && cell.level === 1)?.cardIds).toEqual([1, 2])
+    expect(cells.find(cell => cell.element === '金' && cell.level === 1)?.cardIds).toStrictEqual([1, 2])
     expect(cells.find(cell => cell.element === '火' && cell.level === 5)?.count).toBe(1)
     expect(cells.reduce((total, cell) => total + cell.count, 0)).toBe(3)
   })

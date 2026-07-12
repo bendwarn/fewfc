@@ -56,7 +56,7 @@ test('presents typed persistent effects without leaking internal IDs', () => {
     | 'formationSuppressions'
     | 'scheduledPlantEarth'>
 
-  expect(presentPersistentEffects(state, 'p1', 'team-a').map(effect => effect.label)).toEqual([
+  expect(presentPersistentEffects(state, 'p1', 'team-a').map(effect => effect.label)).toStrictEqual([
       '本回合結束 · 金蟬、觀火',
       '再 2 回合結束 · 江湖狀態：中毒、裂土：壓制 兵器',
       '天響 · 0/1',

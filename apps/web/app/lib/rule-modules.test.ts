@@ -20,9 +20,9 @@ const catalog: RuleModuleSpec[] = [
 test('policy interprets defaults and dependencies from the supplied Rust catalog', () => {
   const policy = createRuleModulePolicy(catalog)
 
-  expect(policy.defaults).toEqual(['base-a', 'base-b', 'theme-a'])
-  expect(policy.normalize(['theme-a'])).toEqual([])
-  expect(policy.normalize(['base-a', 'base-b', 'theme-a', 'unknown'])).toEqual([
+  expect(policy.defaults).toStrictEqual(['base-a', 'base-b', 'theme-a'])
+  expect(policy.normalize(['theme-a'])).toStrictEqual([])
+  expect(policy.normalize(['base-a', 'base-b', 'theme-a', 'unknown'])).toStrictEqual([
     'base-a',
     'base-b',
     'theme-a',
@@ -33,15 +33,15 @@ test('policy interprets defaults and dependencies from the supplied Rust catalog
 test('generic operations add transitive requirements and remove dependents', () => {
   const policy = createRuleModulePolicy(catalog)
 
-  expect(policy.enable([], 'theme-b')).toEqual(['base-a', 'base-b', 'theme-a', 'theme-b'])
-  expect(policy.disable(['base-a', 'base-b', 'theme-a', 'theme-b'], 'base-b')).toEqual(['base-a'])
+  expect(policy.enable([], 'theme-b')).toStrictEqual(['base-a', 'base-b', 'theme-a', 'theme-b'])
+  expect(policy.disable(['base-a', 'base-b', 'theme-a', 'theme-b'], 'base-b')).toStrictEqual(['base-a'])
 })
 
 test('presentation metadata is separate from authoritative rule policy', () => {
-  expect(presentationForRuleModule('spirit')).toEqual({
+  expect(presentationForRuleModule('spirit')).toStrictEqual({
     label: '精靈',
   })
-  expect(presentationForRuleModule('future-module')).toEqual({
+  expect(presentationForRuleModule('future-module')).toStrictEqual({
     label: 'future-module',
   })
 })

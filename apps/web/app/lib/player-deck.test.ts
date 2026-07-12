@@ -35,8 +35,8 @@ test('deck policy interprets the supplied composition instead of hard-coding lim
   const policy = createDeckCompositionPolicy(composition)
   const deck = policy.preconstructedDeck()
 
-  expect(deck).toEqual({ name: '測試預組', cards: ['metal-1', 'fire-2'] })
-  expect(policy.validate(deck)).toEqual({
+  expect(deck).toStrictEqual({ name: '測試預組', cards: ['metal-1', 'fire-2'] })
+  expect(policy.validate(deck)).toStrictEqual({
     valid: true,
     cardCount: 2,
     levelTotal: 3,

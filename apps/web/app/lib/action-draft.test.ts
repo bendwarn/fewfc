@@ -45,12 +45,12 @@ function state(overrides: Partial<PublicGameState> = {}): PublicGameState {
 }
 
 test('Action Draft selection is local and toggles independently of Pending Choice', () => {
-  expect(toggleActionDraftCard([], 7)).toEqual([7])
-  expect(toggleActionDraftCard([7], 7)).toEqual([])
+  expect(toggleActionDraftCard([], 7)).toStrictEqual([7])
+  expect(toggleActionDraftCard([7], 7)).toStrictEqual([])
 })
 
 test('Action Draft survives equivalent refreshes but clears when canonical context advances', () => {
-  expect(reconcileActionDraft([7], state(), state())).toEqual([7])
-  expect(reconcileActionDraft([7], state(), state({ turnNumber: 2 }))).toEqual([])
-  expect(reconcileActionDraft([7], state(), state({ currentPlayer: 'bob' }))).toEqual([])
+  expect(reconcileActionDraft([7], state(), state())).toStrictEqual([7])
+  expect(reconcileActionDraft([7], state(), state({ turnNumber: 2 }))).toStrictEqual([])
+  expect(reconcileActionDraft([7], state(), state({ currentPlayer: 'bob' }))).toStrictEqual([])
 })

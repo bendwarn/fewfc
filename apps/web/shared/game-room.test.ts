@@ -70,8 +70,8 @@ test('trusted randomness resolves sequential requests as distinct persisted deci
   )
 
   expect(result.marker).toBe('complete')
-  expect(persisted).toEqual(['discard-recycle', 'post-search'])
-  expect(actions).toEqual([
+  expect(persisted).toStrictEqual(['discard-recycle', 'post-search'])
+  expect(actions).toStrictEqual([
     { type: 'resolveRandomness', requestId: 'discard-recycle', shuffledOrder: [3, 2, 1] },
     { type: 'resolveRandomness', requestId: 'post-search', shuffledOrder: [5, 4] },
   ])
@@ -110,7 +110,7 @@ describe('normalizeGameRoomMetadata', () => {
       updatedAt: '2026-06-28T00:00:00.000Z',
     })
 
-    expect(metadata.members).toEqual([
+    expect(metadata.members).toStrictEqual([
       {
         userId: 'bob-user',
         displayName: 'Bob',
@@ -150,10 +150,10 @@ describe('normalizeGameRoomMetadata', () => {
     })
 
     expect(metadata.schemaVersion).toBe(3)
-    expect(metadata.enabledRuleModules).toEqual([])
+    expect(metadata.enabledRuleModules).toStrictEqual([])
     expect(metadata.name).toBe('version-one-room')
     expect(metadata.capacity).toBe(2)
-    expect(metadata.members).toEqual([{
+    expect(metadata.members).toStrictEqual([{
       userId: 'alice-user',
       displayName: 'alice',
       player: 'alice',
