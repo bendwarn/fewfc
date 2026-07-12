@@ -20,6 +20,7 @@ import {
   togglePendingChoiceSelection,
 } from '~/lib/pending-choice-selection'
 import { reconcileActionDraft, toggleActionDraftCard } from '~/lib/action-draft'
+import { presentApiError } from '~/lib/api-error-presentation'
 
 type ViewerRef = Ref<ViewerId>
 
@@ -224,7 +225,7 @@ export function useGameRoom(viewer: ViewerRef) {
       }))
       return true
     } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : '線上房間呼叫失敗'
+      errorMessage.value = presentApiError(error, '無法完成遊戲操作，請稍後再試。')
       return false
     } finally {
       isLoading.value = false
@@ -242,7 +243,7 @@ export function useGameRoom(viewer: ViewerRef) {
     try {
       applyRoomResponse(await $fetch<GameRoomResponse>(`/api/games/${onlineGameId.value}`))
     } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : '無法更新線上房間'
+      errorMessage.value = presentApiError(error, '無法更新線上房間')
     } finally {
       isLoading.value = false
     }
@@ -261,7 +262,7 @@ export function useGameRoom(viewer: ViewerRef) {
         method: 'POST',
       }))
     } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : '無法開始線上遊戲'
+      errorMessage.value = presentApiError(error, '無法開始線上遊戲')
     } finally {
       isLoading.value = false
     }
@@ -315,7 +316,7 @@ export function useGameRoom(viewer: ViewerRef) {
       ))
       return true
     } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : '無法更新規則'
+      errorMessage.value = presentApiError(error, '無法更新規則')
       return false
     } finally {
       isLoading.value = false
@@ -341,7 +342,7 @@ export function useGameRoom(viewer: ViewerRef) {
       applyRoomResponse(response)
       return true
     } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : '房間操作失敗'
+      errorMessage.value = presentApiError(error, '房間操作失敗')
       return false
     } finally {
       isLoading.value = false
@@ -423,7 +424,7 @@ export function useGameRoom(viewer: ViewerRef) {
       interaction.value = response.interaction
     } catch (error) {
       if (revision === playableQueryRevision) {
-        errorMessage.value = error instanceof Error ? error.message : '線上房間呼叫失敗'
+        errorMessage.value = presentApiError(error, '無法取得可用行動，請稍後再試。')
       }
     } finally {
       if (revision === playableQueryRevision) {
@@ -593,16 +594,16 @@ export function useGameRoom(viewer: ViewerRef) {
       secretStrategyDeckCards?: CardInstanceId[]
       secretStrategyDiscardCards?: CardInstanceId[]
     } = {},
-  ) {
+  ): Promise<boolean> {
     const player = state.value.currentPlayer
 
     if (viewer.value !== player) {
-      return
+      return false
     }
 
     switch (action.type) {
-      case 'performFormation':
-        if (await submitOnline({
+      case 'performFormation': {
+        const submitted = await submitOnline({
           type: 'performFormation',
           player,
           formationId: action.id,
@@ -612,22 +613,26 @@ export function useGameRoom(viewer: ViewerRef) {
           matchOptionCard: action.matchOption?.card,
           matchOptionSlots: action.matchOption?.slots,
           ...pouchOptions,
-        })) {
+        })
+        if (submitted) {
           selectedCards.value = []
         }
-        break
-      case 'changeProfession':
-        if (await submitOnline({
+        return submitted
+      }
+      case 'changeProfession': {
+        const submitted = await submitOnline({
           type: 'changeProfession',
           player,
           professionId: action.id,
           cards: action.cards,
-        })) {
+        })
+        if (submitted) {
           selectedCards.value = []
         }
-        break
-      case 'activateProfessionAbility':
-        if (await submitOnline({
+        return submitted
+      }
+      case 'activateProfessionAbility': {
+        const submitted = await submitOnline({
           type: 'activateProfessionAbility',
           player,
           abilityId: action.id,
@@ -635,21 +640,25 @@ export function useGameRoom(viewer: ViewerRef) {
           targetCard: action.targetCard ?? undefined,
           declaredElement: action.declaredElement ?? undefined,
           declaredLevel: action.declaredLevel ?? undefined,
-        })) {
+        })
+        if (submitted) {
           selectedCards.value = []
         }
-        break
-      case 'useSpiritSkill':
-        if (await submitOnline({
+        return submitted
+      }
+      case 'useSpiritSkill': {
+        const submitted = await submitOnline({
           type: 'useSpiritSkill',
           player,
           skill: action.id,
           selectedCard: action.selectedCard ?? undefined,
           declaredLevel: action.declaredLevel ?? undefined,
-        })) {
+        })
+        if (submitted) {
           selectedCards.value = []
         }
-        break
+        return submitted
+      }
     }
   }
 

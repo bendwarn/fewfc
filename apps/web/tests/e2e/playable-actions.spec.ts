@@ -101,7 +101,10 @@ test('selected cards expose rule-backed actions in vertically ordered control pa
       await route.continue()
     })
     await card.click()
-    await expect(active.locator('.action-error')).toBeVisible()
+    await expect(active.locator('.action-error'))
+      .toHaveText('無法取得可用行動，請稍後再試。')
+    await expect(active.locator('.action-error')).not.toContainText('500')
+    await expect(active.locator('.action-error')).not.toContainText('Internal Server Error')
   } finally {
     await hostContext.close()
     await guestContext.close()

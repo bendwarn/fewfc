@@ -8,6 +8,7 @@ import {
   requiresPendingCommandDraft,
 } from './game-room'
 import { isDevelopmentScenario } from './development-scenarios'
+import type { TrustedRandomnessAction } from './game-room'
 
 test('development fixtures expose only the closed named scenario catalog', () => {
   expect(isDevelopmentScenario({ name: 'star-endgame' })).toBe(true)
@@ -39,7 +40,7 @@ test('trusted randomness resolves sequential requests as distinct persisted deci
     }
   }
   const persisted: string[] = []
-  const actions: Array<{ requestId: string; shuffledOrder: number[] }> = []
+  const actions: TrustedRandomnessAction[] = []
   const responses: Result[] = [
     {
       marker: 'after-first',

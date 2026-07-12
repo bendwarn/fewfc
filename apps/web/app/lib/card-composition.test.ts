@@ -9,11 +9,11 @@ describe('buildCardComposition', () => {
   test('returns all 25 definitions in stable row and column order', () => {
     const rows = buildCardComposition([])
 
-    expect(rows.map(row => row.level)).toStrictEqual(CARD_LEVELS)
+    expect(rows.map(row => row.level)).toStrictEqual([...CARD_LEVELS])
     expect(rows.flatMap(row => row.cells).length).toBe(25)
 
     for (const row of rows) {
-      expect(row.cells.map(cell => cell.element)).toStrictEqual(CARD_ELEMENTS)
+      expect(row.cells.map(cell => cell.element)).toStrictEqual([...CARD_ELEMENTS])
       expect(row.cells.every(cell => (
         cell.level === row.level && cell.count === 0 && cell.cardIds.length === 0
       ))).toBeTruthy()

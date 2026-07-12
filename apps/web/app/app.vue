@@ -888,36 +888,121 @@
             v-if="pouchChoiceKind"
             class="choice-overlay"
             role="dialog"
-            aria-label="錦囊選擇"
+            :aria-label="pouchChoiceKind === 'chain' ? '連環：選擇錦囊' : '牽羊：交換牌'"
           >
             <div>
               <h2>{{ pouchChoiceKind === 'chain' ? '連環：選擇牌組牌' : '牽羊：交換牌' }}</h2>
               <p v-if="pouchChoiceKind === 'chain'">
-                依序選一張作為錦囊；可再選一張公開觸發秘計。
+                先依五行與等級選一張作為錦囊；也可再選一張公開觸發秘計。
               </p>
               <p v-else>各選 {{ pouchSwapRequiredCount }} 張牌組牌與棄牌交換，之後洗牌。</p>
 
-              <div class="choice-cards" aria-label="選擇牌組牌">
-                <button
-                  v-for="card in initialPouchCards.filter(candidate =>
-                    pouchChoiceKind !== 'sheep' || pouchSwapDeckCards.includes(candidate.id),
-                  )"
-                  :key="`pouch-choice-deck-${card.id}`"
-                  type="button"
-                  :class="{ selected: pouchDeckSelection.includes(card.id) }"
-                  :disabled="pouchChoiceKind === 'chain'
-                    && strategyDeckSelection.includes(card.id)"
-                  @click="togglePouchCard(
-                    'pouchDeck',
-                    card.id,
-                    pouchChoiceKind === 'sheep' ? pouchSwapRequiredCount : 2,
-                  )"
-                >
-                  {{ card.label }}
-                </button>
-              </div>
+              <template v-if="pouchChoiceKind === 'chain'">
+                <h3>選擇錦囊牌</h3>
+                <p v-if="chainPouchCard" class="choice-selection-summary">
+                  已選：{{ chainPouchCard.label }}
+                  <button type="button" @click="clearChainPouchCard">重新選擇</button>
+                </p>
+                <div class="card-composition pouch-composition chain-composition">
+                  <table>
+                    <caption class="sr-only">依五行與等級選擇連環錦囊牌</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col"><span class="sr-only">等級</span></th>
+                        <th
+                          v-for="element in CARD_ELEMENTS"
+                          :key="`chain-pouch-heading-${element}`"
+                          scope="col"
+                        >
+                          {{ element }}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in chainPouchComposition" :key="`chain-pouch-level-${row.level}`">
+                        <th scope="row">{{ row.level }}</th>
+                        <td
+                          v-for="cell in row.cells"
+                          :key="`chain-pouch-${cell.element}-${cell.level}`"
+                          :class="{ empty: cell.count === 0 }"
+                        >
+                          <button
+                            v-if="cell.count > 0"
+                            type="button"
+                            :aria-pressed="cell.cardIds.includes(chainPouchCard?.id ?? -1)"
+                            :aria-label="`選擇 ${cell.element} ${cell.level} 作為連環錦囊，共 ${cell.count} 張`"
+                            @click="chooseChainPouchCard(cell.cardIds)"
+                          >
+                            <strong aria-hidden="true">{{ cell.count }}</strong>
+                          </button>
+                          <strong v-else aria-hidden="true">0</strong>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
 
-              <template v-if="pouchChoiceKind === 'sheep'">
+                <template v-if="chainPouchCard">
+                  <h3>選擇觸發牌（可選）</h3>
+                  <p v-if="chainTriggerCard" class="choice-selection-summary">
+                    已選：{{ chainTriggerCard.label }}
+                    <button type="button" @click="clearChainTriggerCard">不觸發秘計</button>
+                  </p>
+                  <div class="card-composition pouch-composition chain-composition">
+                    <table>
+                      <caption class="sr-only">依五行與等級選擇連環觸發牌</caption>
+                      <thead>
+                        <tr>
+                          <th scope="col"><span class="sr-only">等級</span></th>
+                          <th
+                            v-for="element in CARD_ELEMENTS"
+                            :key="`chain-trigger-heading-${element}`"
+                            scope="col"
+                          >
+                            {{ element }}
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in chainTriggerComposition" :key="`chain-trigger-level-${row.level}`">
+                          <th scope="row">{{ row.level }}</th>
+                          <td
+                            v-for="cell in row.cells"
+                            :key="`chain-trigger-${cell.element}-${cell.level}`"
+                            :class="{ empty: cell.count === 0 }"
+                          >
+                            <button
+                              v-if="cell.count > 0"
+                              type="button"
+                              :aria-pressed="cell.cardIds.includes(chainTriggerCard?.id ?? -1)"
+                              :aria-label="`選擇 ${cell.element} ${cell.level} 作為連環觸發牌，共 ${cell.count} 張`"
+                              @click="chooseChainTriggerCard(cell.cardIds)"
+                            >
+                              <strong aria-hidden="true">{{ cell.count }}</strong>
+                            </button>
+                            <strong v-else aria-hidden="true">0</strong>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </template>
+              </template>
+
+              <template v-else>
+                <div class="choice-cards" aria-label="選擇牌組牌">
+                  <button
+                    v-for="card in initialPouchCards.filter(candidate =>
+                      pouchSwapDeckCards.includes(candidate.id),
+                    )"
+                    :key="`pouch-choice-deck-${card.id}`"
+                    type="button"
+                    :class="{ selected: pouchDeckSelection.includes(card.id) }"
+                    @click="togglePouchCard('pouchDeck', card.id, pouchSwapRequiredCount)"
+                  >
+                    {{ card.label }}
+                  </button>
+                </div>
                 <h3>選擇 {{ pouchSwapRequiredCount }} 張棄牌</h3>
                 <div class="choice-cards" aria-label="選擇棄牌">
                   <button
@@ -934,7 +1019,7 @@
                 </div>
               </template>
 
-              <template v-else>
+              <template v-if="pouchChoiceKind === 'chain'">
                 <h3>錦囊持有者</h3>
                 <div class="choice-options" aria-label="選擇錦囊持有者">
                   <button
@@ -1436,6 +1521,8 @@ import {
 import { presentRoomRuleDifferences } from '#shared/utils/ruleset-presentation'
 import { roomRouteResult, safeInternalPath } from '~/lib/navigation'
 import { createDeckCompositionPolicy, type PlayerDeckList } from '~/lib/player-deck'
+import { presentApiError } from '~/lib/api-error-presentation'
+import { isLegalChainTrigger } from '~/lib/pouch-choice'
 import type { LocalPasswordResetResult } from '#shared/local-password-reset'
 
 type Screen = 'login' | 'password-reset' | 'lobby' | 'deck' | 'game'
@@ -1635,10 +1722,24 @@ const friendlyPouchOwners = computed(() => {
   const team = state.value.players.find(player => player.id === viewer.value)?.team
   return state.value.players.filter(player => player.team === team).map(player => player.id)
 })
+const chainPouchCard = computed(() => (
+  pouchChoiceKind.value === 'chain' && pouchDeckSelection.value.length >= 1
+    ? initialPouchCards.value.find(card => card.id === pouchDeckSelection.value[0]) ?? null
+    : null
+))
 const chainTriggerCard = computed(() => (
   pouchChoiceKind.value === 'chain' && pouchDeckSelection.value.length === 2
     ? initialPouchCards.value.find(card => card.id === pouchDeckSelection.value[1]) ?? null
     : null
+))
+const chainPouchComposition = computed(() => buildCardComposition(
+  initialPouchCards.value.filter(card => !strategyDeckSelection.value.includes(card.id)),
+))
+const chainTriggerComposition = computed(() => buildCardComposition(
+  initialPouchCards.value.filter(card => (
+    isLegalChainTrigger(chainPouchCard.value, card)
+    && !strategyDeckSelection.value.includes(card.id)
+  )),
 ))
 const chainStrategyOptions = computed(() => {
   const card = chainTriggerCard.value
@@ -1707,6 +1808,45 @@ function togglePouchCard(
     : selection.value.length < maximum ? [...selection.value, card] : selection.value
 }
 
+function chooseChainPouchCard(cardIds: CardInstanceId[]) {
+  const card = cardIds.find(candidate => !strategyDeckSelection.value.includes(candidate))
+  if (card === undefined) return
+
+  pouchDeckSelection.value = [card]
+  resetChainStrategyChoice()
+}
+
+function chooseChainTriggerCard(cardIds: CardInstanceId[]) {
+  const pouch = pouchDeckSelection.value[0]
+  const card = cardIds.find(candidate => (
+    candidate !== pouch && !strategyDeckSelection.value.includes(candidate)
+  ))
+  if (pouch === undefined || card === undefined) return
+
+  pouchDeckSelection.value = [pouch, card]
+  resetChainStrategyChoice()
+}
+
+function clearChainPouchCard() {
+  pouchDeckSelection.value = []
+  resetChainStrategyChoice()
+}
+
+function clearChainTriggerCard() {
+  pouchDeckSelection.value = pouchDeckSelection.value.slice(0, 1)
+  resetChainStrategyChoice()
+}
+
+function resetChainStrategyChoice() {
+  strategyDeckSelection.value = []
+  strategyDiscardSelection.value = []
+  chainStrategySelection.value = null
+  strategyTargetSelection.value = null
+  strategyStarSelection.value = null
+  strategyBreakStar.value = false
+  strategyDiscardCard.value = null
+}
+
 function startPouchAction(action: PouchStrategyAction) {
   if (action.choice === 'sheep') {
     resetPouchChoice()
@@ -1743,7 +1883,7 @@ async function submitPouchChoice() {
   const action = pouchFormationAction.value
   const owner = pouchOwnerSelection.value
   if (!action || !owner) return
-  await game.performPlayableAction(action, {
+  const submitted = await game.performPlayableAction(action, {
     pouchOwner: owner,
     pouchCard: pouchDeckSelection.value[0],
     triggerCard: pouchDeckSelection.value[1],
@@ -1755,7 +1895,7 @@ async function submitPouchChoice() {
     secretStrategyDeckCards: strategyDeckSelection.value,
     secretStrategyDiscardCards: strategyDiscardSelection.value,
   })
-  resetPouchChoice()
+  if (submitted) resetPouchChoice()
 }
 const actionDetail = ref<{ name: string; summary: string } | null>(null)
 const discardRetrievalDetail = computed(() => {
@@ -2165,7 +2305,7 @@ async function loadDeck() {
     }
     deckSource.value = response.source
   } catch (error) {
-    deckError.value = error instanceof Error ? error.message : '無法載入牌組'
+    deckError.value = presentApiError(error, '無法載入牌組')
   } finally {
     deckBusy.value = false
   }
@@ -2186,7 +2326,7 @@ async function saveDeck() {
     }
     deckSource.value = 'custom'
   } catch (error) {
-    deckError.value = error instanceof Error ? error.message : '無法儲存牌組'
+    deckError.value = presentApiError(error, '無法儲存牌組')
   } finally {
     deckBusy.value = false
   }
@@ -2205,7 +2345,7 @@ async function resetDeck() {
     }
     deckSource.value = 'preconstructed'
   } catch (error) {
-    deckError.value = error instanceof Error ? error.message : '無法重設牌組'
+    deckError.value = presentApiError(error, '無法重設牌組')
   } finally {
     deckBusy.value = false
   }
@@ -2333,7 +2473,7 @@ async function createOnlineRoom() {
     enterOnlineRoom(response)
     await router.push(`/rooms/${encodeURIComponent(response.gameId)}`)
   } catch (error) {
-    lobbyError.value = error instanceof Error ? error.message : '無法建立房間'
+    lobbyError.value = presentApiError(error, '無法建立房間')
   } finally {
     lobbyBusy.value = false
   }
@@ -2354,7 +2494,7 @@ async function refreshRoomLists() {
     publicRooms.value = response.rooms
     myRooms.value = response.myRooms
   } catch (error) {
-    lobbyError.value = error instanceof Error ? error.message : '無法取得公開房間'
+    lobbyError.value = presentApiError(error, '無法取得公開房間')
   }
 }
 
@@ -2377,7 +2517,7 @@ async function joinRoomByCode() {
     enterOnlineRoom(response)
     await router.push(`/rooms/${encodeURIComponent(response.gameId)}`)
   } catch (error) {
-    lobbyError.value = error instanceof Error ? error.message : '無法加入房間'
+    lobbyError.value = presentApiError(error, '無法加入房間')
   } finally {
     lobbyBusy.value = false
   }
@@ -3320,6 +3460,10 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .pouch-composition { @apply mx-auto mt-5 w-[min(390px,calc(100vw-64px))] border border-[#8e733d] bg-[#18201b] p-3.5 text-[#ece8dd] shadow-[0_18px_48px_rgba(0,0,0,.52)]; }
 .pouch-composition td { @apply p-0; }
 .pouch-composition td button { @apply grid size-full min-h-8 place-items-center border-0 bg-transparent text-[#e4c47d] hover:bg-[rgba(185,149,80,.16)] disabled:cursor-not-allowed disabled:opacity-45; }
+.pouch-composition td button[aria-pressed="true"] { @apply bg-[rgba(185,149,80,.3)] shadow-[inset_0_0_0_2px_#d1ad62]; }
+.chain-composition { @apply mt-2; }
+.choice-selection-summary { @apply mx-auto mb-1 flex max-w-[390px] items-center justify-between gap-3 text-xs text-gold-light; }
+.choice-selection-summary button { @apply border border-[#665b44] bg-[#18201b] px-2 py-1 text-[10px] text-[#d5d8d4] hover:border-[#b99550]; }
 .formation-field { @apply relative z-3 grid min-h-48 w-full min-w-0 grid-rows-[auto_1fr_auto] items-center border-x border-[rgba(166,141,86,.14)] px-3 py-2 text-center text-[10px] text-[#69736c]; grid-column: 2; grid-row: 1; }
 .formation-field-heading { @apply flex flex-wrap items-center justify-center gap-2; }
 .formation-field-label { @apply text-[#9a8251]; letter-spacing: .2em; }
@@ -3355,7 +3499,7 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .choice-overlay,
 .choice-waiting-overlay { @apply absolute inset-0 z-12 grid place-items-center bg-[rgba(7,10,8,.28)] text-center; }
 .choice-overlay > div,
-.choice-waiting-overlay > div { @apply min-w-90 border border-[#8e733d] bg-[rgba(24,32,27,.94)] p-[30px] shadow-[0_18px_48px_rgba(0,0,0,.42)]; }
+.choice-waiting-overlay > div { @apply max-h-[calc(100%-32px)] min-w-90 overflow-y-auto border border-[#8e733d] bg-[rgba(24,32,27,.94)] p-[30px] shadow-[0_18px_48px_rgba(0,0,0,.42)]; }
 .choice-overlay h2,
 .choice-waiting-overlay h2 { @apply mt-2.5 mb-5 font-serif; }
 .choice-cards { @apply flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }

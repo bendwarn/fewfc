@@ -24,6 +24,7 @@ import {
 } from '../../shared/game-room'
 import type { PlayableAction, PlayerId } from '../../app/types/fewfc'
 import { callRuleModuleResolution, callRulesEngine } from '../rules-engine'
+import { RulesEngineError } from '../rules-engine-error'
 
 interface GameRoomEnv {
   PLAYER_NOTIFICATIONS: DurableObjectNamespace
@@ -109,10 +110,20 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           return this.json({ error: 'unknown game-room request' }, 400)
       }
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'game room request failed'
+        if (error instanceof RulesEngineError) {
+          if (error.statusCode === 500) console.error('Rules Engine request failed', error.detail)
+          return this.json({ error: error.message, code: error.code }, error.statusCode)
+        }
+
+        if (error instanceof Error && error.message === 'game room has not been created') {
+          return this.json({ error: '找不到遊戲房間。', code: 'roomNotFound' }, 404)
+        }
+
+        console.error('Game Room request failed', error)
         return this.json({
-          error: message,
-        }, message === 'game room has not been created' ? 404 : 500)
+          error: '房間服務暫時無法處理要求，請稍後再試。',
+          code: 'gameRoomFailure',
+        }, 500)
       }
     })
   }

@@ -4,6 +4,7 @@ import type {
   RulesCatalog,
 } from '../app/types/fewfc'
 import type { PlayerDeckList } from '../shared/game-room'
+import { rulesEngineError } from './rules-engine-error'
 import rulesModule from './wasm/fewfc.wasm'
 
 interface FewfcWasmExports extends WebAssembly.Exports {
@@ -78,10 +79,10 @@ function readPackedJson<T>(wasm: FewfcWasmExports, packed: bigint): T {
   const output = new TextDecoder().decode(outputBytes)
   wasm.fewfc_dealloc(outputPtr, outputLen)
 
-  const parsed = JSON.parse(output) as T | { error: string }
+  const parsed = JSON.parse(output) as T | { error: unknown }
 
   if ('error' in parsed) {
-    throw new Error(parsed.error)
+    throw rulesEngineError(parsed.error)
   }
 
   return parsed as T

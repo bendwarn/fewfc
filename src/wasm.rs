@@ -33,8 +33,7 @@ pub unsafe extern "C" fn fewfc_handle_request(ptr: *const u8, len: usize) -> u64
         let bytes = unsafe { slice::from_raw_parts(ptr, len) };
         std::str::from_utf8(bytes).unwrap_or("")
     };
-    let output = crate::web_api::handle_request_json(input)
-        .unwrap_or_else(|error| serde_json::json!({ "error": error }).to_string());
+    let output = crate::web_api::handle_request_json(input).unwrap_or_else(wasm_error_response);
 
     pack_response(output)
 }
@@ -87,4 +86,10 @@ fn pack_response(output: String) -> u64 {
     }
 
     ((ptr as u64) << 32) | (len as u64)
+}
+
+fn wasm_error_response(error: String) -> String {
+    let detail = serde_json::from_str::<serde_json::Value>(&error)
+        .unwrap_or(serde_json::Value::String(error));
+    serde_json::json!({ "error": detail }).to_string()
 }

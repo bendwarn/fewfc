@@ -32,11 +32,29 @@ export async function callGameRoom(
   })
 
   if (!response.ok) {
+    const error = await readGameRoomError(response)
     throw createError({
       statusCode: response.status,
-      statusMessage: await response.text(),
+      statusMessage: error.message,
+      data: { code: error.code },
     })
   }
 
   return (await response.json()) as GameRoomResponse
+}
+
+async function readGameRoomError(response: Response): Promise<{ message: string, code?: string }> {
+  try {
+    const body = await response.json() as { error?: unknown, code?: unknown }
+    if (typeof body.error === 'string' && body.error.trim()) {
+      return {
+        message: body.error.trim(),
+        code: typeof body.code === 'string' ? body.code : undefined,
+      }
+    }
+  } catch {
+    // A malformed internal response must not be copied into a public error message.
+  }
+
+  return { message: '房間服務暫時無法處理要求，請稍後再試。' }
 }

@@ -1,9 +1,13 @@
 import { expect, test } from 'bun:test'
 import type { Element } from '../types/fewfc'
-import { cardElementClass, cardElementGlyph } from './card-face-presentation'
+import {
+  cardElementClass,
+  cardElementGlyph,
+  type ElementGlyph,
+} from './card-face-presentation'
 
 test('card faces use stable element classes and concise glyphs', () => {
-  const expected: Array<[Element, string]> = [
+  const expected: Array<[Element, ElementGlyph]> = [
     ['Metal', '金'],
     ['Wood', '木'],
     ['Water', '水'],
