@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'bun:test'
 import type { Element } from '../types/fewfc'
 import { cardElementClass, cardElementGlyph } from './card-face-presentation'
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'bun:test'
 import { assertDevelopmentEnvironment } from '../../server/utils/app-environment'
 
 test('development-only routes remain hidden in staging and production', () => {

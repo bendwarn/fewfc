@@ -24,6 +24,9 @@ async function chooseVisibleInitialPouch(host: Page, guest: Page) {
 
   const page = await hostChoice.isVisible() ? host : guest
   const choice = page === host ? hostChoice : guestChoice
+  const dialog = page.getByRole('dialog', { name: '選擇初始錦囊' })
+  await expect(dialog.locator('.pouch-composition')).toBeVisible()
+  await expect(dialog.locator('tbody td')).toHaveCount(25)
   const command = waitForCommand(page, 'chooseInitialPouch')
   await choice.click()
   await command
@@ -72,7 +75,7 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     await goldenCicada.click()
     await command
     await expect(active.getByRole('button', { name: /秘計‧金蟬/ })).toHaveCount(0)
-    await expect(active.locator('.persistent-effect')).toContainText('金蟬 · 至指定玩家回合結束')
+    await expect(active.locator('.persistent-effect')).toContainText('本回合結束 · 金蟬')
   } finally {
     await hostContext.close()
     await guestContext.close()

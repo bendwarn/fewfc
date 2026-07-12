@@ -782,7 +782,7 @@
             >
                 <section
                   id="discard-composition"
-                  class="discard-composition"
+                  class="card-composition discard-composition"
                   role="dialog"
                   aria-labelledby="discard-composition-title"
                 >
@@ -793,7 +793,7 @@
                       <tr>
                         <th scope="col"><span class="sr-only">等級</span></th>
                         <th
-                          v-for="element in DISCARD_ELEMENTS"
+                          v-for="element in CARD_ELEMENTS"
                           :key="`discard-heading-${element}`"
                           scope="col"
                         >
@@ -828,17 +828,43 @@
             <div>
               <h2>選擇初始錦囊</h2>
               <p>先從個人牌組選一張牌；所有玩家完成後才洗牌發牌。</p>
-              <div class="choice-cards">
-                <button
-                  v-for="card in initialPouchCards"
-                  :key="`initial-pouch-${card.id}`"
-                  type="button"
-                  :disabled="game.isLoading.value || !roomConnected"
-                  :aria-label="`選擇 ${card.label} 作為初始錦囊`"
-                  @click="game.chooseInitialPouch(card.id)"
-                >
-                  {{ card.label }}
-                </button>
+              <div class="card-composition pouch-composition">
+                <table>
+                  <caption class="sr-only">依五行與等級選擇初始錦囊</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col"><span class="sr-only">等級</span></th>
+                      <th
+                        v-for="element in CARD_ELEMENTS"
+                        :key="`pouch-heading-${element}`"
+                        scope="col"
+                      >
+                        {{ element }}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in initialPouchComposition" :key="`pouch-level-${row.level}`">
+                      <th scope="row">{{ row.level }}</th>
+                      <td
+                        v-for="cell in row.cells"
+                        :key="`pouch-${cell.element}-${cell.level}`"
+                        :class="{ empty: cell.count === 0 }"
+                      >
+                        <button
+                          v-if="cell.count > 0"
+                          type="button"
+                          :disabled="game.isLoading.value || !roomConnected"
+                          :aria-label="`選擇 ${cell.element} ${cell.level} 作為初始錦囊，共 ${cell.count} 張`"
+                          @click="chooseInitialPouchCard(cell.cardIds[0])"
+                        >
+                          <strong aria-hidden="true">{{ cell.count }}</strong>
+                        </button>
+                        <strong v-else aria-hidden="true">0</strong>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -1376,6 +1402,7 @@
 
 <script setup lang="ts">
 import type {
+  CardInstanceId,
   Element,
   PlayableAction,
   PlayerId,
@@ -1396,7 +1423,7 @@ import {
   presentationForRuleModule,
 } from '#shared/utils/rule-modules'
 import { authClient } from '~/lib/auth-client'
-import { buildDiscardComposition, DISCARD_ELEMENTS } from '~/lib/discard-composition'
+import { buildCardComposition, CARD_ELEMENTS } from '~/lib/card-composition'
 import { cardElementClass, cardElementGlyph } from '~/lib/card-face-presentation'
 import { presentCardInterpretation } from '~/lib/card-interpretation-presentation'
 import { presentPendingChoice } from '~/lib/pending-choice-presentation'
@@ -1496,6 +1523,11 @@ const initialPouchCards = computed<PublicCard[]>(() => {
   const cards = state.value.playerDecks.find(entry => entry.player === viewer.value)?.cards
   return cards?.kind === 'known' ? cards.cards : []
 })
+const initialPouchComposition = computed(() => buildCardComposition(initialPouchCards.value))
+
+function chooseInitialPouchCard(card: CardInstanceId | undefined) {
+  if (card !== undefined) game.chooseInitialPouch(card)
+}
 type PouchStrategyAction = {
   label: string
   detail: string
@@ -1865,7 +1897,7 @@ const visibleDiscardPiles = computed(() => (
       }))
     : [{ owner: null, cards: state.value.discard, position: null }]
 ))
-const discardComposition = computed(() => buildDiscardComposition(activeDiscardCards.value))
+const discardComposition = computed(() => buildCardComposition(activeDiscardCards.value))
 const activeTeams = computed(() => [...new Set(state.value.players.map((player) => player.team))])
 const showSkip = computed(() => (
   roomConnected.value
@@ -3274,17 +3306,20 @@ fieldset { @apply mb-[26px] border-0 p-0; }
   @apply w-[300px] border border-[#8e733d] bg-[#18201b] p-3.5 text-[#ece8dd] shadow-[0_18px_48px_rgba(0,0,0,.52)];
 }
 .discard-composition h2 { @apply mb-2.5 font-serif text-sm text-gold-light; }
-.discard-composition table { @apply w-full table-fixed border-collapse; }
-.discard-composition th, .discard-composition td { @apply h-8 border border-[#354039] text-center; }
-.discard-composition thead th { @apply text-[10px] font-bold text-[#d5d8d4]; }
-.discard-composition tbody th { @apply w-7 text-[10px] font-normal text-muted; }
-.discard-composition td strong { @apply font-serif text-sm text-[#e4c47d]; }
-.discard-composition td.empty strong { @apply text-[#59635c]; }
-.discard-composition thead th:nth-child(2) { color: #ded5ba; }
-.discard-composition thead th:nth-child(3) { color: #77a980; }
-.discard-composition thead th:nth-child(4) { color: #75a8bd; }
-.discard-composition thead th:nth-child(5) { color: #d17a6c; }
-.discard-composition thead th:nth-child(6) { color: #c8a265; }
+.card-composition table { @apply w-full table-fixed border-collapse; }
+.card-composition th, .card-composition td { @apply h-8 border border-[#354039] text-center; }
+.card-composition thead th { @apply text-[10px] font-bold text-[#d5d8d4]; }
+.card-composition tbody th { @apply w-7 text-[10px] font-normal text-muted; }
+.card-composition td strong { @apply font-serif text-sm text-[#e4c47d]; }
+.card-composition td.empty strong { @apply text-[#59635c]; }
+.card-composition thead th:nth-child(2) { color: #ded5ba; }
+.card-composition thead th:nth-child(3) { color: #77a980; }
+.card-composition thead th:nth-child(4) { color: #75a8bd; }
+.card-composition thead th:nth-child(5) { color: #d17a6c; }
+.card-composition thead th:nth-child(6) { color: #c8a265; }
+.pouch-composition { @apply mx-auto mt-5 w-[min(390px,calc(100vw-64px))] border border-[#8e733d] bg-[#18201b] p-3.5 text-[#ece8dd] shadow-[0_18px_48px_rgba(0,0,0,.52)]; }
+.pouch-composition td { @apply p-0; }
+.pouch-composition td button { @apply grid size-full min-h-8 place-items-center border-0 bg-transparent text-[#e4c47d] hover:bg-[rgba(185,149,80,.16)] disabled:cursor-not-allowed disabled:opacity-45; }
 .formation-field { @apply relative z-3 grid min-h-48 w-full min-w-0 grid-rows-[auto_1fr_auto] items-center border-x border-[rgba(166,141,86,.14)] px-3 py-2 text-center text-[10px] text-[#69736c]; grid-column: 2; grid-row: 1; }
 .formation-field-heading { @apply flex flex-wrap items-center justify-center gap-2; }
 .formation-field-label { @apply text-[#9a8251]; letter-spacing: .2em; }

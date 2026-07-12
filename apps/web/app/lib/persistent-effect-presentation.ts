@@ -9,6 +9,9 @@ import type {
 import { echoMelodyLabels } from './echo-presentation'
 
 type PersistentEffectState = Pick<PublicGameState,
+  | 'turnNumber'
+  | 'currentPlayer'
+  | 'turnOrder'
   | 'statuses'
   | 'jianghuStates'
   | 'limitedUses'
@@ -19,6 +22,11 @@ type PersistentEffectState = Pick<PublicGameState,
   | 'scheduledPlantEarth'>
 
 export interface PresentedPersistentEffect {
+  key: string
+  label: string
+}
+
+interface PresentedExpiry {
   key: string
   label: string
 }
@@ -48,12 +56,50 @@ const limitedUseLabels: Record<LimitedUsePresentation, string> = {
   unclassified: '限次效果',
 }
 
-function presentDuration(duration: StatusDurationPresentation): string {
+function turnsUntilPlayer(
+  state: PersistentEffectState,
+  player: PlayerId,
+  nextOccurrence: boolean,
+): number | null {
+  if (!state.currentPlayer || state.turnOrder.length === 0) return null
+  const currentIndex = state.turnOrder.indexOf(state.currentPlayer)
+  const targetIndex = state.turnOrder.indexOf(player)
+  if (currentIndex < 0 || targetIndex < 0) return null
+
+  const distance = (targetIndex - currentIndex + state.turnOrder.length) % state.turnOrder.length
+  return nextOccurrence && distance === 0 ? state.turnOrder.length : distance
+}
+
+function turnEndExpiry(state: PersistentEffectState, turnNumber: number): PresentedExpiry {
+  const turns = Math.max(0, turnNumber - state.turnNumber)
+  return {
+    key: `turn-end:${turnNumber}`,
+    label: turns === 0 ? '本回合結束' : `再 ${turns} 回合結束`,
+  }
+}
+
+function presentDuration(
+  state: PersistentEffectState,
+  duration: StatusDurationPresentation,
+): PresentedExpiry {
   switch (duration.type) {
-    case 'untilTurnStart': return '至指定玩家回合開始'
-    case 'untilTurnEnd': return '至指定玩家回合結束'
-    case 'untilTurnEndNumber': return `至指定玩家第 ${duration.turnNumber} 回合結束`
-    case 'permanent': return '持續生效'
+    case 'untilTurnStart': {
+      const turns = turnsUntilPlayer(state, duration.player, true)
+      return {
+        key: turns === null
+          ? `next-turn-start:${duration.player}`
+          : `turn-start:${state.turnNumber + turns}`,
+        label: turns === null ? '下次回合開始時結束' : `再 ${turns} 回合開始時結束`,
+      }
+    }
+    case 'untilTurnEnd': {
+      const turns = turnsUntilPlayer(state, duration.player, false)
+      return turns === null
+        ? { key: `next-turn-end:${duration.player}`, label: '下次回合結束' }
+        : turnEndExpiry(state, state.turnNumber + turns)
+    }
+    case 'untilTurnEndNumber': return turnEndExpiry(state, duration.turnNumber)
+    case 'permanent': return { key: 'permanent', label: '持續生效' }
   }
   const exhaustive: never = duration
   return exhaustive
@@ -65,24 +111,67 @@ export function presentPersistentEffects(
   team: TeamId,
 ): PresentedPersistentEffect[] {
   const effects: PresentedPersistentEffect[] = []
+  const expiryGroups = new Map<string, {
+    expiry: PresentedExpiry
+    labels: string[]
+    itemKeys: string[]
+  }>()
+  const addExpiringEffect = (expiry: PresentedExpiry, label: string, itemKey: string) => {
+    const group = expiryGroups.get(expiry.key) ?? { expiry, labels: [], itemKeys: [] }
+    group.labels.push(label)
+    group.itemKeys.push(itemKey)
+    expiryGroups.set(expiry.key, group)
+  }
+
   for (const status of state.statuses) {
     const applies = status.owner.kind === 'player'
       ? status.owner.id === player
       : status.owner.id === team
     if (applies) {
-      effects.push({
-        key: `status:${status.id}`,
-        label: `${statusLabels[status.presentation]} · ${presentDuration(status.duration)}`,
-      })
+      const expiry = presentDuration(state, status.duration)
+      addExpiringEffect(expiry, statusLabels[status.presentation], `status:${status.id}`)
     }
   }
   for (const active of state.jianghuStates.filter(active => active.owner === player)) {
     const label = {
       ThousandBlades: '千鋒',
       SnowTreading: '踏雪',
-      Poison: `中毒（${active.remainingTurns} 回合）`,
+      Poison: '中毒',
     }[active.kind]
-    effects.push({ key: `jianghu:${active.kind}`, label: `江湖狀態 · ${label}` })
+    let dueTurn = active.expiresOnTurn
+    if (active.kind === 'Poison') {
+      const firstTurn = turnsUntilPlayer(state, active.owner, false)
+      dueTurn = firstTurn === null
+        ? null
+        : state.turnNumber
+          + firstTurn
+          + Math.max(0, active.remainingTurns - 1) * state.turnOrder.length
+    }
+    if (dueTurn === null) {
+      effects.push({
+        key: `jianghu:${active.kind}`,
+        label: `剩餘 ${active.remainingTurns} 回合 · 江湖狀態：${label}`,
+      })
+    } else {
+      addExpiringEffect(
+        turnEndExpiry(state, dueTurn),
+        `江湖狀態：${label}`,
+        `jianghu:${active.kind}`,
+      )
+    }
+  }
+  for (const suppression of state.formationSuppressions.filter(active => active.target === player)) {
+    addExpiringEffect(
+      turnEndExpiry(state, suppression.expiresOnTurnNumber),
+      `裂土：壓制 ${suppression.formationName}`,
+      `suppression:${suppression.formationName}`,
+    )
+  }
+  for (const group of expiryGroups.values()) {
+    effects.push({
+      key: `expiry:${group.itemKeys.join(':')}`,
+      label: `${group.expiry.label} · ${group.labels.join('、')}`,
+    })
   }
   for (const useCount of state.limitedUses.filter(useCount => useCount.owner === player)) {
     effects.push({
@@ -104,12 +193,6 @@ export function presentPersistentEffects(
   }
   const flow = state.flowStates.find(active => active.player === player)
   if (flow?.layers) effects.push({ key: 'flow', label: `流水 · ${flow.layers} 層` })
-  for (const suppression of state.formationSuppressions.filter(active => active.target === player)) {
-    effects.push({
-      key: `suppression:${suppression.formationName}`,
-      label: `裂土 · 壓制 ${suppression.formationName}`,
-    })
-  }
   for (const schedule of state.scheduledPlantEarth.filter(active => active.player === player)) {
     effects.push({
       key: `plant-earth:${schedule.dueTurnNumber}`,

@@ -16,7 +16,7 @@ const formationPolicyDetails: Record<FormationPolicy, string> = {
   echoWarFire: '主效果完整結算後，可捨棄一張印刷行屬為火或木的手牌作為迴響代價；若支付，於自己下次回合開始只再次執行此曲調主效果，不視為新的陣法，也不會再次排定迴響。',
   echoSplitEarth: '主效果完整結算後，可捨棄一張印刷行屬為土或火的手牌作為迴響代價；若支付，於自己下次回合開始只再次執行此曲調主效果，不視為新的陣法，也不會再次排定迴響。',
   echoPureFire: '主效果完整結算後，不需支付迴響代價並自動排定迴響；於自己下次回合開始重新選擇玩家，只再次執行此主效果，不視為新的陣法，也不會再次排定迴響。',
-  echoPlantEarth: '這不是迴響；排定自己下次回合開始選擇鳴金、落木、流水、戰火或裂土之一並只執行其主效果，不支付迴響代價、不排定迴響，也不視為新的陣法。',
+  echoPlantEarth: '於自己下次回合開始，選擇鳴金、落木、流水、戰火或裂土之一並執行其主效果。',
 }
 
 const elementLabels: Record<Element, string> = {
@@ -51,7 +51,7 @@ const secretStrategyDetails: Record<SecretStrategyAction['strategy'], string> = 
   GoldenCicada: '本回合保護自己不受無法行動、無法抽牌、反制效果與其他玩家的秘計影響。',
   StealTheBeam: '觸發時手牌快照中的每張牌本回合等級＋1。',
   MuddyWaters: '本回合抽牌＋1。',
-  WatchTheFire: '保護下家下一回合，不受攻擊傷害與陣法造成的隊伍生命變化。',
+  WatchTheFire: '下家的下個回合內，由下家陣法造成的所有隊伍生命變化無效（包含攻擊傷害）。',
   LureTheTigerAway: '指定玩家一回合內無法使用職業能力與精靈技能，且精靈無法增加靈力。',
   ReturnSoul: '召喚錦囊印刷行屬的精靈；靈力為1加上被替換精靈的靈力，最高6。',
   SheepStealing: '從牌組與棄牌堆各選兩張交換，之後洗牌。',

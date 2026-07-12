@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'bun:test'
 import type { PlayableAction, SecretStrategyAction } from '../types/fewfc'
 import {
   presentDiscardRetrievalAction,
@@ -39,6 +39,17 @@ test('composes Formation consequences in Web without changing catalog rule text'
   for (const policy of policies) {
     assert.ok(presentPlayableAction({ ...chain, policy }).length > 0)
   }
+
+  assert.equal(
+    presentPlayableAction({
+      ...chain,
+      id: 'echo:plant-earth',
+      name: '變宮‧植土',
+      policy: 'echoPlantEarth',
+      summary: '一張土行牌和一張木行牌，等級合計至少 7',
+    }),
+    '一張土行牌和一張木行牌，等級合計至少 7。於自己下次回合開始，選擇鳴金、落木、流水、戰火或裂土之一並執行其主效果。',
+  )
 })
 
 test('presents Pouch and Discard Retrieval active effects before commit', () => {
@@ -72,6 +83,10 @@ test('presents Pouch and Discard Retrieval active effects before commit', () => 
     assert.ok(presentSecretStrategyAction({ ...baseStrategy, strategy }).length > 0)
   }
   assert.match(presentSecretStrategyAction({ ...baseStrategy, strategy: 'GoldenCicada' }), /本回合/)
+  assert.equal(
+    presentSecretStrategyAction({ ...baseStrategy, strategy: 'WatchTheFire' }),
+    '下家的下個回合內，由下家陣法造成的所有隊伍生命變化無效（包含攻擊傷害）。',
+  )
   assert.equal(
     presentDiscardRetrievalAction(
       {

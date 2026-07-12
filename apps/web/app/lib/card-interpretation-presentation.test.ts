@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'bun:test'
 import type { CardInterpretationPresentation } from '../types/fewfc'
 import { presentCardInterpretation } from './card-interpretation-presentation'
 
