@@ -143,7 +143,7 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
   }
 })
 
-test('Splendor exposes its declared levels on hover and uses the chosen level', async ({ browser }) => {
+test('Splendor exposes its declared levels on click and uses the chosen level', async ({ browser }) => {
   test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
@@ -179,8 +179,12 @@ test('Splendor exposes its declared levels on hover and uses the chosen level', 
 
     const picker = host.getByRole('group', { name: '絢爛：選擇指定等級' })
     await expect(picker).toBeVisible()
-    await picker.hover()
     const levelOptions = picker.getByRole('menuitem')
+    await expect(levelOptions).toHaveCount(0)
+    const trigger = picker.getByRole('button', { name: '絢爛', exact: true })
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    await trigger.click()
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
     await expect(levelOptions).toHaveCount(5)
     await expect(picker.getByRole('menuitem', { name: '絢爛：指定為 4 級' })).toBeVisible()
 

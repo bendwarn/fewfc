@@ -692,10 +692,19 @@
                       class="spirit-level-picker"
                       role="group"
                       aria-label="絢爛：選擇指定等級"
-                      tabindex="0"
+                      @click.stop
                     >
-                      <span>絢爛</span>
-                      <div class="spirit-level-options" role="menu">
+                      <button
+                        ref="splendorMenuTrigger"
+                        class="spirit-level-trigger"
+                        type="button"
+                        aria-haspopup="menu"
+                        :aria-expanded="splendorMenuOpen"
+                        @click="splendorMenuOpen = !splendorMenuOpen"
+                      >
+                        絢爛
+                      </button>
+                      <div v-if="splendorMenuOpen" class="spirit-level-options" role="menu">
                         <button
                           v-for="ability in splendorAbilities"
                           :key="playableAbilityKey(ability)"
@@ -703,7 +712,7 @@
                           role="menuitem"
                           :title="playableActionDetail(ability)"
                           :aria-label="`絢爛：指定為 ${ability.declaredLevel} 級`"
-                          @click="game.performPlayableAction(ability)"
+                          @click="startSplendorAction(ability)"
                         >
                           {{ ability.declaredLevel }} 級
                         </button>
@@ -1910,6 +1919,8 @@ const discardRetrievalDetail = computed(() => {
   const detail = game.interaction.value.discardRetrievalAction
   return detail ? presentDiscardRetrievalAction(detail, playerLabel) : ''
 })
+const splendorMenuOpen = ref(false)
+const splendorMenuTrigger = ref<HTMLButtonElement | null>(null)
 const eventExpanded = ref(false)
 const showSetupReveal = ref(false)
 const discardOpen = ref(false)
@@ -2429,8 +2440,25 @@ function closeDiscardComposition() {
   void nextTick(() => discardTrigger.value?.focus())
 }
 
+function closeSplendorMenu(returnFocus = false) {
+  if (!splendorMenuOpen.value) {
+    return
+  }
+
+  splendorMenuOpen.value = false
+  if (returnFocus) {
+    void nextTick(() => splendorMenuTrigger.value?.focus())
+  }
+}
+
+function startSplendorAction(ability: PlayableAction) {
+  closeSplendorMenu(true)
+  void game.performPlayableAction(ability)
+}
+
 function handlePageClick() {
   closeDiscardComposition()
+  closeSplendorMenu()
 }
 
 function targetsEditableControl(target: EventTarget | null) {
@@ -2462,6 +2490,12 @@ function handlePageKeydown(event: KeyboardEvent) {
   }
 
   if (event.key !== 'Escape') {
+    return
+  }
+
+  if (splendorMenuOpen.value) {
+    event.preventDefault()
+    closeSplendorMenu(true)
     return
   }
 
@@ -2806,6 +2840,7 @@ watch(
 watch(screen, (value) => {
   if (value !== 'game') {
     closeDiscardComposition()
+    closeSplendorMenu()
   }
 
   if (value !== 'lobby') {
@@ -3519,11 +3554,10 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .action-candidates { @apply flex max-w-full flex-wrap justify-center gap-1.5; }
 .action-candidates button { @apply min-h-8 border border-[#4c554f] bg-[#18201b] px-2.5 py-1.5 text-[10px] text-[#e1ddd2] hover:border-[#b99550]; }
 .action-candidates p { @apply text-[9px] text-[#68726b]; }
-.spirit-level-picker { @apply relative min-h-8 border border-[#4c554f] bg-[#18201b] px-2.5 py-1.5 text-[10px] text-[#e1ddd2]; }
-.spirit-level-picker > span { @apply grid min-h-4 place-items-center; }
-.spirit-level-picker:focus-visible { outline: 2px solid #d1ad62; outline-offset: 2px; }
-.spirit-level-options { @apply invisible absolute bottom-[calc(100%+5px)] left-1/2 z-10 grid min-w-20 -translate-x-1/2 gap-1 border border-[#64583f] bg-[#121915] p-1 opacity-0 shadow-[0_10px_24px_rgba(0,0,0,.45)]; }
-.spirit-level-picker:hover .spirit-level-options, .spirit-level-picker:focus-within .spirit-level-options { @apply visible opacity-100; }
+.spirit-level-picker { @apply relative; }
+.spirit-level-trigger { @apply grid min-h-8 min-w-12 place-items-center border border-[#4c554f] bg-[#18201b] px-2.5 py-1.5 text-[10px] text-[#e1ddd2] hover:border-[#b99550]; }
+.spirit-level-trigger:focus-visible { outline: 2px solid #d1ad62; outline-offset: 2px; }
+.spirit-level-options { @apply absolute bottom-[calc(100%+5px)] left-1/2 z-10 grid min-w-20 -translate-x-1/2 gap-1 border border-[#64583f] bg-[#121915] p-1 shadow-[0_10px_24px_rgba(0,0,0,.45)]; }
 .action-candidates .spirit-level-options button { @apply min-h-7 whitespace-nowrap px-2 py-1; }
 .action-candidates .skip-action { @apply border-[#79633b] text-gold-light; }
 .action-processing { @apply text-[#d0aa5e]; }
