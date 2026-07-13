@@ -473,6 +473,7 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                     player: PlayerId::new(player),
                 })
                 .map_err(ApiError::Game)?;
+            advance_after_command(&mut record)?;
         }
     }
 
@@ -3999,6 +4000,212 @@ mod tests {
 
         assert!(response.contains(r#""turnNumber":1"#));
         assert!(response.contains(r#""record""#));
+    }
+
+    #[test]
+    fn retrieving_the_only_discard_auto_passes_a_cannot_act_player() {
+        let rules = OfficialRules::new();
+        let alice = PlayerId::new("alice");
+        let bob = PlayerId::new("bob");
+        let enabled_rule_modules = [DISCARD_RETRIEVAL_MODULE_ID];
+        let setup = rules
+            .configure_game(
+                vec![
+                    Player {
+                        id: alice.clone(),
+                        team: TeamId::new("team:alice"),
+                    },
+                    Player {
+                        id: bob.clone(),
+                        team: TeamId::new("team:bob"),
+                    },
+                ],
+                vec![alice.clone(), bob.clone()],
+                enabled_rule_modules
+                    .iter()
+                    .map(|module| RuleModuleId::new(*module))
+                    .collect(),
+            )
+            .unwrap();
+        let web_setup = || WebGameSetup {
+            players: vec![
+                WebSetupPlayer {
+                    id: "alice".to_string(),
+                    team: "team:alice".to_string(),
+                },
+                WebSetupPlayer {
+                    id: "bob".to_string(),
+                    team: "team:bob".to_string(),
+                },
+            ],
+            turn_order: vec!["alice".to_string(), "bob".to_string()],
+            enabled_rule_modules: enabled_rule_modules
+                .iter()
+                .map(|module| (*module).to_string())
+                .collect(),
+            deck_lists: Vec::new(),
+            initial_hp: Vec::new(),
+        };
+        let mut used = Vec::new();
+        let radiance_cards = [
+            (Element::Metal, 1),
+            (Element::Metal, 2),
+            (Element::Fire, 1),
+            (Element::Water, 1),
+        ]
+        .into_iter()
+        .map(|(element, level)| {
+            let card = setup
+                .card_instances
+                .iter()
+                .map(|instance| instance.instance)
+                .find(|card| {
+                    !used.contains(card)
+                        && setup
+                            .card_instances
+                            .iter()
+                            .find(|instance| instance.instance == *card)
+                            .and_then(|instance| {
+                                setup
+                                    .card_defs
+                                    .iter()
+                                    .find(|definition| definition.id == instance.definition)
+                            })
+                            .is_some_and(|definition| {
+                                definition.element == element && definition.level == level
+                            })
+                })
+                .expect("official deck must contain the Radiance cards");
+            used.push(card);
+            card
+        })
+        .collect::<Vec<_>>();
+        let mut deck_order = radiance_cards.clone();
+        deck_order.extend(
+            rules
+                .official_deck_order(&setup)
+                .unwrap()
+                .into_iter()
+                .filter(|card| !radiance_cards.contains(card)),
+        );
+        let mut record = GameRecord::start(setup, deck_order).unwrap();
+        advance_to_interactive_decision(&mut record).unwrap();
+        assert_eq!(record.state().hand(&alice), Some(radiance_cards.as_slice()));
+
+        let after_formation = handle(ApiRequest {
+            action: ApiAction::PerformFormation {
+                player: "alice".to_string(),
+                formation_id: "radiance".to_string(),
+                cards: radiance_cards,
+                star_substitution_card: None,
+                match_option_role: None,
+                match_option_card: None,
+                match_option_slots: None,
+                pouch_owner: None,
+                pouch_card: None,
+                trigger_card: None,
+                secret_strategy: None,
+                secret_strategy_target_player: None,
+                secret_strategy_star: None,
+                secret_strategy_break_star: None,
+                secret_strategy_discard_card: None,
+                secret_strategy_deck_cards: None,
+                secret_strategy_discard_cards: None,
+                trusted_random_cards: None,
+            },
+            viewer: Some("alice".to_string()),
+            record: Some(record.recorded_decisions()),
+            setup: Some(web_setup()),
+            first_player: None,
+            deck_seed: None,
+        })
+        .unwrap();
+        let discarded_card = after_formation
+            .state
+            .pending_choice
+            .as_ref()
+            .expect("turn draw should await a discard choice")
+            .cards[0]
+            .id;
+
+        let before_retrieval = handle(ApiRequest {
+            action: ApiAction::ChooseTurnDiscard {
+                player: "alice".to_string(),
+                card: discarded_card,
+            },
+            viewer: Some("bob".to_string()),
+            record: Some(after_formation.record),
+            setup: Some(web_setup()),
+            first_player: None,
+            deck_seed: None,
+        })
+        .unwrap();
+
+        assert_eq!(before_retrieval.state.phase, "Main");
+        assert_eq!(
+            before_retrieval.state.current_player.as_deref(),
+            Some("bob")
+        );
+        assert!(
+            before_retrieval
+                .state
+                .statuses
+                .iter()
+                .any(|status| status.kind == "CannotAct")
+        );
+        assert!(
+            before_retrieval
+                .state
+                .statuses
+                .iter()
+                .any(|status| status.kind == "CannotDraw")
+        );
+        assert!(before_retrieval.interaction.can_pass);
+        assert!(before_retrieval.interaction.can_retrieve_discard);
+
+        let after_retrieval = handle(ApiRequest {
+            action: ApiAction::RetrievePreviousTurnDiscard {
+                player: "bob".to_string(),
+            },
+            viewer: Some("bob".to_string()),
+            record: Some(before_retrieval.record),
+            setup: Some(web_setup()),
+            first_player: None,
+            deck_seed: None,
+        })
+        .unwrap();
+        let events = after_retrieval
+            .record
+            .iter()
+            .flat_map(|decision| &decision.events)
+            .collect::<Vec<_>>();
+
+        assert!(after_retrieval.record.iter().any(|decision| matches!(
+            &decision.source,
+            crate::application::RecordedDecisionSource::Command {
+                command: Command::PassAction { player, .. },
+                ..
+            } if player == &bob
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            GameEvent::DiscardRetrieved { player, .. } if player == &bob
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            GameEvent::ActionPassed {
+                player,
+                reason: PassActionReason::CannotActByStatus,
+            } if player == &bob
+        )));
+        assert_ne!(after_retrieval.state.current_player.as_deref(), Some("bob"));
+        assert_ne!(
+            (
+                after_retrieval.state.current_player.as_deref(),
+                after_retrieval.state.phase.as_str(),
+            ),
+            (Some("bob"), "Main")
+        );
     }
 
     #[test]
