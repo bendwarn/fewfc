@@ -903,7 +903,7 @@ fn development_scenario_action(
     }
     let candidate_sizes: &[usize] = match scenario {
         "hero-schools-transition" => &[1],
-        "spirit-metal" | "spirit-fire" | "echo-pure-fire" => &[2],
+        "spirit-metal" | "spirit-fire" | "echo-pure-fire" | "echo-split-earth" => &[2],
         _ => {
             return Err(ApiError::Message(
                 "unknown development scenario".to_string(),
@@ -927,6 +927,9 @@ fn development_scenario_action(
                 }
                 ("echo-pure-fire", PlayableAction::PerformFormation(candidate)) => {
                     candidate.formation_id == crate::rules::echo::PURE_FIRE
+                }
+                ("echo-split-earth", PlayableAction::PerformFormation(candidate)) => {
+                    candidate.formation_id == crate::rules::echo::SPLIT_EARTH
                 }
                 _ => false,
             }) {
@@ -1122,6 +1125,7 @@ fn development_scenario_deck_order(
                     element == crate::rules::spirit::element(SpiritKind::Fire)
                 }
                 ("echo-pure-fire", Some(Element::Fire | Element::Water)) => true,
+                ("echo-split-earth", Some(Element::Earth)) => true,
                 ("tribulation-earth-rending", Some(Element::Earth | Element::Wood)) => true,
                 _ => false,
             }
@@ -1129,7 +1133,7 @@ fn development_scenario_deck_order(
         .collect::<Vec<_>>();
     let candidate_sizes: &[usize] = match scenario {
         "hero-schools-transition" => &[1],
-        "spirit-metal" | "spirit-fire" | "echo-pure-fire" => &[2],
+        "spirit-metal" | "spirit-fire" | "echo-pure-fire" | "echo-split-earth" => &[2],
         "tribulation-earth-rending" => &[4, 5],
         _ => {
             return Err(ApiError::Message(
@@ -1173,6 +1177,9 @@ fn development_scenario_deck_order(
                     .iter()
                     .all(|card| card.element == crate::rules::spirit::element(SpiritKind::Fire)),
                 "echo-pure-fire" => crate::rules::echo::matches_pure_fire(&facts),
+                "echo-split-earth" => {
+                    facts.len() == 2 && facts.iter().all(|card| card.element == Element::Earth)
+                }
                 "tribulation-earth-rending" => crate::rules::tribulation::matches_elements(
                     &facts,
                     Element::Earth,
@@ -1701,9 +1708,9 @@ impl WebPublicGameState {
                     effect_name: formation_name(formation_names, &counter.effect_id),
                 })
                 .collect(),
-            pending_choice: state
-                .pending_choice
-                .map(|choice| WebPendingChoice::from_public(choice, labels, card_facts)),
+            pending_choice: state.pending_choice.map(|choice| {
+                WebPendingChoice::from_public(choice, labels, card_facts, &enabled_rule_modules)
+            }),
             pending_randomness: state
                 .pending_randomness
                 .map(|request| WebPendingRandomness {
@@ -2227,8 +2234,22 @@ struct WebPendingChoice {
     maximum_count: usize,
     players: Vec<String>,
     formations: Vec<String>,
+    formation_groups: Vec<WebFormationChoiceGroup>,
     environments: Vec<String>,
     can_decline: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebFormationChoiceGroup {
+    rule_module_id: Option<String>,
+    formations: Vec<WebFormationChoice>,
+}
+
+#[derive(Serialize)]
+struct WebFormationChoice {
+    id: String,
+    name: String,
 }
 
 #[derive(Serialize)]
@@ -2301,6 +2322,7 @@ impl WebPendingChoice {
         choice: crate::public_view::PublicPendingChoice,
         labels: &HashMap<CardInstanceId, String>,
         card_facts: &HashMap<CardInstanceId, WebCardFact>,
+        enabled_rule_modules: &[RuleModuleId],
     ) -> Self {
         let (minimum_count, maximum_count) = match &choice.kind {
             PublicPendingChoiceKind::Known(kind) => kind.selection_bounds(),
@@ -2309,6 +2331,10 @@ impl WebPendingChoice {
         let required_count = minimum_count;
 
         let presentation = choice.presentation;
+        let is_split_earth_formation_choice = matches!(
+            presentation,
+            PublicPendingChoicePresentation::EchoSplitEarthFormation
+        );
         match choice.kind {
             PublicPendingChoiceKind::Known(PendingChoiceKind::TurnDrawDiscard {
                 allowed_discards,
@@ -2327,6 +2353,7 @@ impl WebPendingChoice {
                     .collect(),
                 players: Vec::new(),
                 formations: Vec::new(),
+                formation_groups: Vec::new(),
                 environments: Vec::new(),
                 can_decline: false,
             },
@@ -2347,6 +2374,7 @@ impl WebPendingChoice {
                     .collect(),
                 players: Vec::new(),
                 formations: Vec::new(),
+                formation_groups: Vec::new(),
                 environments: Vec::new(),
                 can_decline: false,
             },
@@ -2367,6 +2395,7 @@ impl WebPendingChoice {
                     .collect(),
                 players: Vec::new(),
                 formations: Vec::new(),
+                formation_groups: Vec::new(),
                 environments: Vec::new(),
                 can_decline: false,
             },
@@ -2394,6 +2423,11 @@ impl WebPendingChoice {
                         .into_iter()
                         .map(|player| player.as_str().to_string())
                         .collect(),
+                    formation_groups: is_split_earth_formation_choice
+                        .then(|| {
+                            web_formation_choice_groups(&options.formations, enabled_rule_modules)
+                        })
+                        .unwrap_or_default(),
                     formations: options.formations,
                     environments: options
                         .environments
@@ -2414,11 +2448,43 @@ impl WebPendingChoice {
                 maximum_count: 0,
                 players: Vec::new(),
                 formations: Vec::new(),
+                formation_groups: Vec::new(),
                 environments: Vec::new(),
                 can_decline: false,
             },
         }
     }
+}
+
+fn web_formation_choice_groups(
+    allowed_formations: &[String],
+    enabled_rule_modules: &[RuleModuleId],
+) -> Vec<WebFormationChoiceGroup> {
+    let allowed = allowed_formations
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+
+    crate::rules::official_formation_groups(enabled_rule_modules)
+        .into_iter()
+        .filter_map(|group| {
+            let formations = group
+                .formations
+                .into_iter()
+                .filter(|formation| allowed.contains(formation.id.as_str()))
+                .map(|formation| WebFormationChoice {
+                    id: formation.id,
+                    name: formation.name,
+                })
+                .collect::<Vec<_>>();
+            (!formations.is_empty()).then(|| WebFormationChoiceGroup {
+                rule_module_id: group
+                    .rule_module_id
+                    .map(|module| module.as_str().to_string()),
+                formations,
+            })
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -4506,6 +4572,7 @@ mod tests {
             "spirit-metal",
             "spirit-fire",
             "echo-pure-fire",
+            "echo-split-earth",
             "tribulation-earth-rending",
         ] {
             let first = development_scenario_deck_order(&rules, &setup, &alice, scenario).unwrap();
@@ -5230,12 +5297,54 @@ mod tests {
                 allowed_cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
             }),
         };
-        let web_choice = WebPendingChoice::from_public(choice, &HashMap::new(), &HashMap::new());
+        let web_choice =
+            WebPendingChoice::from_public(choice, &HashMap::new(), &HashMap::new(), &[]);
         let json = serde_json::to_value(web_choice).expect("choice should serialize");
 
         assert_eq!(json["requiredCount"], 2);
         assert_eq!(json["purpose"], "chaos");
         assert_eq!(json["presentation"]["type"], "chaos");
+        assert_eq!(json["formationGroups"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn split_earth_choice_serializes_camel_case_formation_groups() {
+        let choice = crate::public_view::PublicPendingChoice {
+            player: PlayerId::new("alice"),
+            purpose: "裂土指定".to_string(),
+            presentation: PublicPendingChoicePresentation::EchoSplitEarthFormation,
+            kind: PublicPendingChoiceKind::Known(PendingChoiceKind::TypedEffect {
+                effect_id: "echo:split-earth".to_string(),
+                continuation_id: "echo:split-earth:formation".to_string(),
+                options: crate::domain::EffectChoiceOptions {
+                    formations: vec!["weapon".to_string(), "echo:split-earth".to_string()],
+                    ..Default::default()
+                },
+            }),
+        };
+        let web_choice = WebPendingChoice::from_public(
+            choice,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[RuleModuleId::new(crate::domain::ECHO_MODULE_ID)],
+        );
+        let json = serde_json::to_value(web_choice).expect("choice should serialize");
+
+        assert_eq!(
+            json["formationGroups"],
+            serde_json::json!([
+                {
+                    "ruleModuleId": null,
+                    "formations": [{ "id": "weapon", "name": "武器" }]
+                },
+                {
+                    "ruleModuleId": "echo",
+                    "formations": [{ "id": "echo:split-earth", "name": "宮調‧裂土" }]
+                }
+            ])
+        );
+        assert!(json.get("formation_groups").is_none());
+        assert!(json["formationGroups"][0].get("rule_module_id").is_none());
     }
 
     #[test]

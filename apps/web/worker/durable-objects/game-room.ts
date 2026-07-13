@@ -585,7 +585,9 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       case 'spirit-skill':
         return await this.seedSpiritFixture(actorUserId, scenario.options?.spirit)
       case 'echo-pure-fire':
-        return await this.seedEchoFixture(actorUserId, scenario.options?.mode)
+        return await this.seedEchoFixture(actorUserId, 'pureFire', scenario.options?.mode)
+      case 'echo-split-earth':
+        return await this.seedEchoFixture(actorUserId, 'splitEarth')
       case 'tribulation-earth-rending':
         return await this.seedTribulationFixture(actorUserId)
     }
@@ -876,6 +878,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
   private async seedEchoFixture(
     actorUserId: string,
+    melody: 'pureFire' | 'splitEarth',
     mode?: 'actionDetail',
   ): Promise<Response> {
     const metadata = await this.requireMetadata()
@@ -900,12 +903,15 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       ],
     }
 
-    const deckSeed = 'development:echo-pure-fire'
+    const scenario = melody === 'pureFire' ? 'echo-pure-fire' : 'echo-split-earth'
+    const formationId = melody === 'pureFire' ? 'echo:pure-fire' : 'echo:split-earth'
+    const formationName = melody === 'pureFire' ? 'Pure Fire' : 'Split Earth'
+    const deckSeed = `development:${scenario}`
     let rules = await callRulesEngine({
       action: {
         type: 'startDevelopmentScenario',
         player: actor.player,
-        scenario: 'echo-pure-fire',
+        scenario,
       },
       viewer: actor.player,
       setup,
@@ -915,20 +921,20 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       action: {
         type: 'developmentScenarioAction',
         player: actor.player,
-        scenario: 'echo-pure-fire',
+        scenario,
       },
       viewer: actor.player,
       setup,
       deckSeed,
       record: rules.record,
     })
-    const pureFire = actions.playableActions.find(
+    const formation = actions.playableActions.find(
       (action): action is Extract<PlayableAction, { type: 'performFormation' }> => (
-        action.type === 'performFormation'
+        action.type === 'performFormation' && action.id === formationId
       ),
     )
-    if (!pureFire) {
-      return this.json({ error: 'test fixture could not find Pure Fire Cards' }, 500)
+    if (!formation) {
+      return this.json({ error: `test fixture could not find ${formationName} Cards` }, 500)
     }
 
     if (mode === 'actionDetail') {
@@ -943,7 +949,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
       return this.json({
         ...await this.response(metadata, actorUserId),
-        fixtureCards: pureFire.cards,
+        fixtureCards: formation.cards,
       })
     }
 
@@ -951,8 +957,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       action: {
         type: 'performFormation',
         player: actor.player,
-        formationId: pureFire.id,
-        cards: pureFire.cards,
+        formationId: formation.id,
+        cards: formation.cards,
       },
       viewer: actor.player,
       setup,
@@ -962,7 +968,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     if (
       rules.state.pendingChoice?.kind !== 'TypedEffect'
     ) {
-      return this.json({ error: 'test fixture did not reach Pure Fire target choice' }, 500)
+      return this.json({ error: `test fixture did not reach ${formationName} choice` }, 500)
     }
 
     await this.ctx.storage.put('snapshot', {

@@ -77,8 +77,17 @@ export interface PublicPendingChoice {
   maximumCount: number
   players: PlayerId[]
   formations: string[]
+  formationGroups: FormationChoiceGroup[]
   environments: Element[]
   canDecline: boolean
+}
+
+export interface FormationChoiceGroup {
+  ruleModuleId: string | null
+  formations: Array<{
+    id: string
+    name: string
+  }>
 }
 
 export type EchoMelodyPresentation =

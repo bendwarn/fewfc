@@ -72,6 +72,55 @@ test('Pure Fire target choice is private, accessible, and reconnectable', async 
   }
 })
 
+test('Split Earth selects a Formation through its providing rules', async ({ browser }) => {
+  test.setTimeout(180_000)
+  const hostContext = await browser.newContext()
+  const guestContext = await browser.newContext()
+  const host = await hostContext.newPage()
+  const guest = await guestContext.newPage()
+
+  try {
+    await loginAsGuests([host, guest])
+    const roomName = `裂土選擇測試 ${Date.now()}`
+    const roomId = await startTwoPlayerMatch(host, guest, roomName)
+    await seedDevelopmentScenario(host, { name: 'echo-split-earth' })
+
+    await host.reload()
+    await expect(host.getByRole('heading', { name: '宮調‧裂土：選擇要壓制的陣法' })).toBeVisible()
+    await expect(host.getByLabel('選擇提供陣法的規則')).toBeVisible()
+    await expect(host.getByLabel('選擇陣法', { exact: true })).toHaveCount(0)
+
+    await host.getByRole('button', { name: '選擇規則 五方傳說' }).click()
+    await expect(host.getByLabel('選擇提供陣法的規則')).toHaveCount(0)
+    await expect(host.getByLabel('選擇陣法', { exact: true })).toContainText('東‧青龍')
+    await host.getByRole('button', { name: '重新選擇規則' }).click()
+    await expect(host.getByLabel('選擇提供陣法的規則')).toBeVisible()
+
+    await host.getByRole('button', { name: '選擇規則 五方傳說' }).click()
+    await host.reload()
+    await expect(host.getByLabel('選擇提供陣法的規則')).toBeVisible()
+    await expect(host.getByLabel('選擇陣法', { exact: true })).toHaveCount(0)
+
+    await guest.reload()
+    await expect(guest.getByText('宮調‧裂土：選擇要壓制的陣法', { exact: true })).toBeVisible()
+    await expect(guest.getByLabel('選擇提供陣法的規則')).toHaveCount(0)
+
+    await host.getByRole('button', { name: '選擇規則 基礎規則' }).click()
+    const [answer] = await Promise.all([
+      host.waitForResponse(response => (
+        response.url().endsWith(`/api/games/${roomId}/commands`)
+        && response.request().postDataJSON()?.action?.type === 'answerEffectChoiceTyped'
+      )),
+      host.getByRole('button', { name: '選擇陣法 武器' }).click(),
+    ])
+    expect(answer.ok()).toBe(true)
+    await expect(host.getByText(/裂土：壓制 武器/)).toBeVisible()
+  } finally {
+    await hostContext.close()
+    await guestContext.close()
+  }
+})
+
 test('Echo action detail shows the delayed Echo policy on the battlefield', async ({ browser }) => {
   test.setTimeout(180_000)
   const hostContext = await browser.newContext()

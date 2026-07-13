@@ -323,70 +323,68 @@ pub(crate) fn base_formation_registry() -> FormationRegistry {
         .expect("base formation registry must be internally consistent")
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OfficialFormationSummary {
+    pub(crate) id: String,
+    pub(crate) name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OfficialFormationGroup {
+    pub(crate) rule_module_id: Option<crate::domain::RuleModuleId>,
+    pub(crate) formations: Vec<OfficialFormationSummary>,
+}
+
+fn official_formation_spec_groups(
+    modules: &[crate::domain::RuleModuleId],
+) -> Vec<(Option<crate::domain::RuleModuleId>, Vec<BaseFormationSpec>)> {
+    let mut groups = vec![(None, base_specs())];
+    for module in modules {
+        let specs = match module.as_str() {
+            crate::domain::FIVE_DIRECTIONS_LEGEND_MODULE_ID => Some(five_directions_legend_specs()),
+            crate::domain::STAR_MODULE_ID => Some(star::specs()),
+            crate::domain::HERO_SCHOOLS_MODULE_ID => Some(hero::formation_specs()),
+            crate::domain::SPIRIT_MODULE_ID => Some(spirit::specs()),
+            crate::domain::JIANGHU_MODULE_ID => Some(jianghu::formation_specs()),
+            crate::domain::CONFLUENCE_GENERATION_MODULE_ID => Some(confluence::formation_specs()),
+            crate::domain::DARK_GLIMMER_MODULE_ID => Some(dark::formation_specs()),
+            crate::domain::ECHO_MODULE_ID => Some(echo::formation_specs()),
+            crate::domain::TRIBULATION_MODULE_ID => Some(tribulation::formation_specs()),
+            crate::domain::POUCH_MODULE_ID => Some(pouch::formation_specs()),
+            _ => None,
+        };
+        if let Some(specs) = specs {
+            groups.push((Some(module.clone()), specs));
+        }
+    }
+    groups
+}
+
+pub(crate) fn official_formation_groups(
+    modules: &[crate::domain::RuleModuleId],
+) -> Vec<OfficialFormationGroup> {
+    official_formation_spec_groups(modules)
+        .into_iter()
+        .map(|(rule_module_id, specs)| OfficialFormationGroup {
+            rule_module_id,
+            formations: specs
+                .into_iter()
+                .map(|spec| OfficialFormationSummary {
+                    id: spec.formation.id,
+                    name: spec.formation.name,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 pub(crate) fn official_formation_registry(
     modules: &[crate::domain::RuleModuleId],
 ) -> FormationRegistry {
-    let mut specs = base_specs();
-    if modules
-        .iter()
-        .any(|module| module.as_str() == crate::domain::FIVE_DIRECTIONS_LEGEND_MODULE_ID)
-    {
-        specs.extend(five_directions_legend_specs());
-    }
-    if modules
-        .iter()
-        .any(|module| module.as_str() == crate::domain::STAR_MODULE_ID)
-    {
-        specs.extend(star::specs());
-    }
-    if modules
-        .iter()
-        .any(|module| module.as_str() == crate::domain::HERO_SCHOOLS_MODULE_ID)
-    {
-        specs.extend(hero::formation_specs());
-    }
-    if modules
-        .iter()
-        .any(|module| module.as_str() == crate::domain::SPIRIT_MODULE_ID)
-    {
-        specs.extend(spirit::specs());
-    }
-    if modules
-        .iter()
-        .any(|module| module.as_str() == crate::domain::JIANGHU_MODULE_ID)
-    {
-        specs.extend(jianghu::formation_specs());
-    }
-    if modules
-        .iter()
-        .any(|module| module.as_str() == crate::domain::CONFLUENCE_GENERATION_MODULE_ID)
-    {
-        specs.extend(confluence::formation_specs());
-    }
-    if modules
-        .iter()
-        .any(|module| module.as_str() == crate::domain::DARK_GLIMMER_MODULE_ID)
-    {
-        specs.extend(dark::formation_specs());
-    }
-    if modules
-        .iter()
-        .any(|module| module.as_str() == crate::domain::ECHO_MODULE_ID)
-    {
-        specs.extend(echo::formation_specs());
-    }
-    if modules
-        .iter()
-        .any(|module| module.as_str() == crate::domain::TRIBULATION_MODULE_ID)
-    {
-        specs.extend(tribulation::formation_specs());
-    }
-    if modules
-        .iter()
-        .any(|module| module.as_str() == crate::domain::POUCH_MODULE_ID)
-    {
-        specs.extend(pouch::formation_specs());
-    }
+    let specs = official_formation_spec_groups(modules)
+        .into_iter()
+        .flat_map(|(_, specs)| specs)
+        .collect::<Vec<_>>();
     FormationRegistry::new(
         specs.iter().map(|spec| spec.formation.clone()).collect(),
         specs.into_iter().map(|spec| spec.effect).collect(),
@@ -1006,6 +1004,76 @@ mod tests {
 
     fn leveled_card(element: Element, level: u32) -> SubmittedCardFacts {
         SubmittedCardFacts { element, level }
+    }
+
+    #[test]
+    fn official_formation_groups_include_only_rules_that_provide_formations() {
+        let modules = OfficialRules::new().default_rule_modules();
+        let groups = official_formation_groups(&modules);
+
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.rule_module_id.as_ref().map(|module| module.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                None,
+                Some("five-directions-legend"),
+                Some("star"),
+                Some("hero-schools"),
+                Some("spirit"),
+                Some("jianghu"),
+                Some("confluence-generation"),
+                Some("dark-glimmer"),
+                Some("echo"),
+                Some("tribulation"),
+                Some("pouch"),
+            ]
+        );
+        assert_eq!(groups[0].formations[0].id, "metal-strike");
+        assert_eq!(groups[0].formations[0].name, "金擊術");
+        assert!(groups[8].formations.iter().any(|formation| {
+            formation.id == "echo:split-earth" && formation.name == "宮調‧裂土"
+        }));
+
+        let grouped_ids = groups
+            .iter()
+            .flat_map(|group| {
+                group
+                    .formations
+                    .iter()
+                    .map(|formation| formation.id.clone())
+            })
+            .collect::<Vec<_>>();
+        let mut registry_ids = official_formation_registry(&modules)
+            .formations()
+            .into_iter()
+            .map(|formation| formation.id.clone())
+            .collect::<Vec<_>>();
+        registry_ids.sort();
+        let mut sorted_grouped_ids = grouped_ids.clone();
+        sorted_grouped_ids.sort();
+
+        assert_eq!(sorted_grouped_ids, registry_ids);
+        sorted_grouped_ids.dedup();
+        assert_eq!(sorted_grouped_ids.len(), grouped_ids.len());
+    }
+
+    #[test]
+    fn official_formation_groups_follow_the_enabled_rule_module_order() {
+        let groups = official_formation_groups(&[
+            crate::domain::RuleModuleId::new(crate::domain::ECHO_MODULE_ID),
+            crate::domain::RuleModuleId::new(crate::domain::DISCARD_RETRIEVAL_MODULE_ID),
+            crate::domain::RuleModuleId::new(crate::domain::FIVE_DIRECTIONS_LEGEND_MODULE_ID),
+        ]);
+
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.rule_module_id.as_ref().map(|module| module.as_str()))
+                .collect::<Vec<_>>(),
+            vec![None, Some("echo"), Some("five-directions-legend")]
+        );
     }
 
     #[test]

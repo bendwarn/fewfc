@@ -1250,8 +1250,20 @@
                   {{ playerLabel(player) }}
                 </button>
               </div>
-              <div
+              <SplitEarthFormationChoice
                 v-if="state.pendingChoice.kind === 'TypedEffect'
+                  && usesSplitEarthFormationGroups(state.pendingChoice)"
+                :key="splitEarthChoiceKey(
+                  state.pendingChoice,
+                  state.turnNumber,
+                  roomConnected,
+                )"
+                :groups="state.pendingChoice.formationGroups"
+                :disabled="game.isLoading.value || !roomConnected"
+                @select="game.choosePendingFormation"
+              />
+              <div
+                v-else-if="state.pendingChoice.kind === 'TypedEffect'
                   && state.pendingChoice.formations.length > 0"
                 class="choice-options"
                 aria-label="選擇陣法"
@@ -1536,6 +1548,10 @@ import {
   presentSecretStrategyAction,
 } from '~/lib/action-detail-presentation'
 import { presentRoomRuleDifferences } from '#shared/utils/ruleset-presentation'
+import {
+  splitEarthChoiceKey,
+  usesSplitEarthFormationGroups,
+} from '#shared/utils/split-earth-formation-choice'
 import { roomRouteResult, safeInternalPath } from '~/lib/navigation'
 import { createDeckCompositionPolicy, type PlayerDeckList } from '~/lib/player-deck'
 import { presentApiError } from '~/lib/api-error-presentation'

@@ -12,6 +12,7 @@ import type { TrustedRandomnessAction } from './game-room'
 
 test('development fixtures expose only the closed named scenario catalog', () => {
   expect(isDevelopmentScenario({ name: 'star-endgame' })).toBe(true)
+  expect(isDevelopmentScenario({ name: 'echo-split-earth' })).toBe(true)
   expect(isDevelopmentScenario({ name: 'tribulation-earth-rending' })).toBe(true)
   expect(isDevelopmentScenario({ name: 'star-endgame', state: {} })).toBe(false)
   expect(isDevelopmentScenario({ name: 'arbitrary-state', state: {} })).toBe(false)
