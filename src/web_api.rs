@@ -556,6 +556,7 @@ fn response_for(
     formation_names: &HashMap<String, String>,
     mut playable_actions: Vec<WebPlayableAction>,
 ) -> Result<ApiResponse, ApiError> {
+    let vocabulary = PlayerVocabulary::for_modules(&record.state().enabled_rule_modules);
     let viewer_player = match &viewer {
         Viewer::Player(player) => Some(player.clone()),
         Viewer::Observer => None,
@@ -632,7 +633,13 @@ fn response_for(
             })
             .rev()
             .map(|(index, event)| {
-                WebPublicGameEvent::from_public(index + 1, event, card_labels, formation_names)
+                WebPublicGameEvent::from_public(
+                    index + 1,
+                    event,
+                    card_labels,
+                    formation_names,
+                    &vocabulary,
+                )
             })
             .collect(),
         playable_actions,
@@ -2562,7 +2569,7 @@ impl WebCard {
             label: labels
                 .get(&id)
                 .cloned()
-                .unwrap_or_else(|| format!("{id:?}")),
+                .unwrap_or_else(|| "一張牌".to_string()),
             element: facts.map(|facts| facts.element),
             level: facts.map(|facts| facts.level),
             secret_strategies: facts
@@ -2695,13 +2702,154 @@ impl WebPublicGameEvent {
         event: PublicGameEvent,
         labels: &HashMap<CardInstanceId, String>,
         formation_names: &HashMap<String, String>,
+        vocabulary: &PlayerVocabulary,
     ) -> Self {
-        let (title, summary) = event_presentation(&event, labels, formation_names);
+        let (title, summary) =
+            event_presentation_with_vocabulary(&event, labels, formation_names, vocabulary);
         Self {
             id: format!("event-{sequence}"),
             event_type: event_type(&event),
             title,
             summary,
+        }
+    }
+}
+
+/// The only boundary where stable rule identities become player-facing language.
+/// Canonical events deliberately retain IDs for deterministic replay.
+struct PlayerVocabulary {
+    professions: HashMap<ProfessionId, String>,
+}
+
+impl PlayerVocabulary {
+    fn for_modules(enabled_modules: &[RuleModuleId]) -> Self {
+        Self {
+            professions: crate::rules::profession::catalog(enabled_modules)
+                .into_iter()
+                .map(|profession| (profession.id, profession.name.to_string()))
+                .collect(),
+        }
+    }
+
+    #[cfg(test)]
+    fn all_official() -> Self {
+        Self::for_modules(
+            &[
+                crate::domain::HERO_SCHOOLS_MODULE_ID,
+                crate::domain::JIANGHU_MODULE_ID,
+                crate::domain::CONFLUENCE_GENERATION_MODULE_ID,
+                crate::domain::DARK_GLIMMER_MODULE_ID,
+            ]
+            .into_iter()
+            .map(RuleModuleId::new)
+            .collect::<Vec<_>>(),
+        )
+    }
+
+    fn profession(&self, profession: &ProfessionId) -> String {
+        self.professions
+            .get(profession)
+            .cloned()
+            .unwrap_or_else(|| "未知職業".to_string())
+    }
+
+    fn previous_profession(&self, profession: Option<&ProfessionId>) -> String {
+        profession.map_or_else(
+            || "無職業".to_string(),
+            |profession| self.profession(profession),
+        )
+    }
+
+    fn ability(&self, id: &str) -> &'static str {
+        match id {
+            "shadow-cut" => "影切",
+            "meditation" => "冥思",
+            "revelation" => "啟示",
+            "illusion" => "幻術",
+            "phantasm" => "幻朧",
+            "hero:physical-damage-resistance" => "卸勁",
+            "hero:weapon-proficiency" => "武器專精",
+            "hero:defense-proficiency" => "防禦專精",
+            "hero:countershock-proficiency" => "反震專精",
+            "hero:weapon-mastery" => "武器精研",
+            "hero:shock-burst-proficiency" => "震暴專精",
+            "hero:metal-resistance" => "金行抗性",
+            "hero:battle-soul" => "戰魄",
+            "hero:seeker-discount" => "尋道術",
+            "hero:generating-formation-proficiency" => "生陣專精",
+            "hero:overcoming-formation-proficiency" => "剋陣專精",
+            "hero:return-to-origin-proficiency" => "歸元專精",
+            "hero:five-elements-cycle-proficiency" => "五行輪迴專精",
+            "hero:wood-resistance" => "木行抗性",
+            "hero:spell-protection" => "道源",
+            "hero:illusion" => "幻術",
+            "hero:seal-proficiency" => "封印專精",
+            "hero:illusion-refinement" => "幻術精研",
+            "hero:barrier-proficiency" => "氣壁專精",
+            "hero:phantasm" => "幻朧",
+            "hero:water-resistance" => "水行抗性",
+            "hero:triple-element-proficiency" => "五行三張攻擊專精",
+            "hero:radiance-proficiency" => "光芒專精",
+            "hero:five-streams-unite-proficiency" => "五流歸一專精",
+            "hero:fire-resistance" => "火行抗性",
+            "hero:arcane-essence" => "法粹",
+            "hero:windwalking" => "風行術",
+            "hero:metamorphosis-proficiency" => "幻化專精",
+            "hero:shadow-cut" => "影切",
+            "hero:chaos-proficiency" => "混沌專精",
+            "hero:earth-resistance" => "土行抗性",
+            "hero:shadow-escape" => "影遁",
+            "hero:choice" => "抉擇",
+            "hero:breakthrough" => "突破",
+            "hero:immortal-draw-bonus" => "仙術",
+            "hero:meditation" => "冥思",
+            "hero:sacred-art" => "聖術",
+            "hero:revelation" => "啟示",
+            "jianghu:heavenly-yang-aura" => "天陽罡",
+            "jianghu:blazing-yang-art" => "烈陽訣",
+            "jianghu:pure-yang-force" => "純陽勁",
+            "jianghu:divine-yang-aura" => "神陽罡",
+            "jianghu:dancing-yang-art" => "舞陽訣",
+            "jianghu:extreme-yang-force" => "極陽勁",
+            "jianghu:azure-cloud-step" => "青雲步",
+            "jianghu:righteous-spirit" => "浩然正氣",
+            "jianghu:meteor-step" => "流星步",
+            "jianghu:poison-mastery" => "毒絕",
+            "confluence:tuning" => "調律",
+            "confluence:string-changing" => "易弦",
+            "confluence:heavenly-resonance" => "天響",
+            "confluence:living-dao" => "道法心生",
+            "confluence:clear-wind" => "晴風",
+            "confluence:tailwind" => "順風",
+            "confluence:void-seeking" => "虛空追尋",
+            "confluence:void-destruction" => "虛空破滅",
+            "confluence:void-realm" => "虛空境界",
+            "dark:dark-walking" => "暗行",
+            "dark:dark-spirit" => "暗靈",
+            "dark:dark-realm" => "暗境",
+            "dark:berserk-shadow" => "狂影",
+            "dark:demon-spirit-possession" => "魔靈附體",
+            "dark:demon-spirit-revival" => "魔靈復甦",
+            _ => "未知能力",
+        }
+    }
+
+    fn limited_use(&self, key: &str) -> &'static str {
+        match key {
+            "confluence:heavenly-resonance" => "天響",
+            "confluence:imprisoning-array" => "禁錮法陣",
+            "confluence:tailwind" => "順風",
+            "confluence:void-realm" => "虛空境界",
+            _ => "未知能力",
+        }
+    }
+
+    fn reason(&self, id: &str) -> &'static str {
+        match id {
+            "pouch:dark-crossing" => "暗渡陳倉",
+            "confluence:void-seeking" => "虛空追尋",
+            "dark:dark-walking" => "暗行",
+            _ => "未知原因",
         }
     }
 }
@@ -2827,10 +2975,25 @@ fn event_type(event: &PublicGameEvent) -> String {
     }
 }
 
+#[cfg(test)]
 fn event_presentation(
     event: &PublicGameEvent,
     labels: &HashMap<CardInstanceId, String>,
     formation_names: &HashMap<String, String>,
+) -> (String, String) {
+    event_presentation_with_vocabulary(
+        event,
+        labels,
+        formation_names,
+        &PlayerVocabulary::all_official(),
+    )
+}
+
+fn event_presentation_with_vocabulary(
+    event: &PublicGameEvent,
+    labels: &HashMap<CardInstanceId, String>,
+    formation_names: &HashMap<String, String>,
+    vocabulary: &PlayerVocabulary,
 ) -> (String, String) {
     match event {
         PublicGameEvent::GamePreparationStarted => {
@@ -2885,7 +3048,9 @@ fn event_presentation(
                 card_refs_summary(deck, labels)
             ),
         ),
-        PublicGameEvent::Public(event) => game_event_presentation(event, labels, formation_names),
+        PublicGameEvent::Public(event) => {
+            game_event_presentation_with_vocabulary(event, labels, formation_names, vocabulary)
+        }
         PublicGameEvent::PassiveCovered {
             player,
             formation_id,
@@ -2981,7 +3146,7 @@ fn event_presentation(
                 old_power,
                 new_power,
                 selected_card
-                    .map(|card| format!("，指定牌 {}", card.as_u64()))
+                    .map(|card| format!("，指定牌 {}", card_summary(&card, labels)))
                     .unwrap_or_default(),
                 declared_level
                     .map(|level| format!("，宣告 {level} 級"))
@@ -3001,7 +3166,7 @@ fn event_presentation(
                     format!(
                         "{} 指定牌 {} 本回合視為 {} 級。",
                         player.as_str(),
-                        card.as_u64(),
+                        card_summary(&card, labels),
                         level
                     )
                 },
@@ -3013,10 +3178,25 @@ fn event_presentation(
     }
 }
 
+#[cfg(test)]
 fn game_event_presentation(
     event: &GameEvent,
     labels: &HashMap<CardInstanceId, String>,
     formation_names: &HashMap<String, String>,
+) -> (String, String) {
+    game_event_presentation_with_vocabulary(
+        event,
+        labels,
+        formation_names,
+        &PlayerVocabulary::all_official(),
+    )
+}
+
+fn game_event_presentation_with_vocabulary(
+    event: &GameEvent,
+    labels: &HashMap<CardInstanceId, String>,
+    formation_names: &HashMap<String, String>,
+    vocabulary: &PlayerVocabulary,
 ) -> (String, String) {
     match event {
         GameEvent::GamePreparationStarted { .. } => {
@@ -3038,7 +3218,11 @@ fn game_event_presentation(
             player, strategy, ..
         } => (
             "觸發秘計".to_string(),
-            format!("{} 觸發 {:?}。", player.as_str(), strategy),
+            format!(
+                "{} 觸發「{}」。",
+                player.as_str(),
+                secret_strategy_name(*strategy)
+            ),
         ),
         GameEvent::PouchConsumed { .. } => {
             ("錦囊捨棄".to_string(), "秘計來源牌已捨棄。".to_string())
@@ -3050,14 +3234,14 @@ fn game_event_presentation(
         GameEvent::TemporaryStarEffectGranted { effect } => (
             "秘計‧瞞天".to_string(),
             format!(
-                "{} 暫時獲得 {:?} 效果。",
+                "{} 暫時獲得{}效果。",
                 effect.player.as_str(),
-                effect.star
+                star_name(effect.star)
             ),
         ),
         GameEvent::SpiritRevived { player, spirit, .. } => (
             "秘計‧還魂".to_string(),
-            format!("{} 召喚 {:?} 精靈。", player.as_str(), spirit),
+            format!("{} 召喚{}精靈。", player.as_str(), spirit_name(*spirit)),
         ),
         GameEvent::DeckPrepared { deck_order } => (
             "準備牌庫".to_string(),
@@ -3106,28 +3290,24 @@ fn game_event_presentation(
             format!(
                 "{} 由{}轉職為{}。",
                 player.as_str(),
-                previous
-                    .as_ref()
-                    .and_then(crate::rules::hero::profession)
-                    .map(|profession| profession.name)
-                    .unwrap_or("無職業"),
-                crate::rules::hero::profession(profession)
-                    .map(|profession| profession.name)
-                    .unwrap_or(profession.as_str())
+                vocabulary.previous_profession(previous.as_ref()),
+                vocabulary.profession(profession)
             ),
         ),
         GameEvent::ProfessionTransformed {
             player,
+            previous,
             profession,
             reason,
             ..
         } => (
             "職業轉化".to_string(),
             format!(
-                "{} 因 {} 轉化為 {}。",
+                "{} 因「{}」由{}轉化為{}。",
                 player.as_str(),
-                reason,
-                profession.as_str()
+                vocabulary.reason(reason),
+                vocabulary.previous_profession(previous.as_ref()),
+                vocabulary.profession(profession)
             ),
         ),
         GameEvent::ProfessionBroken { player, profession } => (
@@ -3135,9 +3315,7 @@ fn game_event_presentation(
             format!(
                 "{} 的{}已被破除。",
                 player.as_str(),
-                crate::rules::hero::profession(profession)
-                    .map(|profession| profession.name)
-                    .unwrap_or(profession.as_str())
+                vocabulary.profession(profession)
             ),
         ),
         GameEvent::ProfessionAbilityActivated {
@@ -3147,14 +3325,20 @@ fn game_event_presentation(
         } => (
             "發動職業能力".to_string(),
             prepared.as_ref().map_or_else(
-                || format!("{} 發動了「{}」。", player.as_str(), ability_id),
+                || {
+                    format!(
+                        "{} 發動了「{}」。",
+                        player.as_str(),
+                        vocabulary.ability(ability_id)
+                    )
+                },
                 |prepared| {
                     format!(
-                        "{} 發動「{}」，將牌 {} 準備為 {:?} {} 級。",
+                        "{} 發動「{}」，將牌 {} 準備為 {} {} 級。",
                         player.as_str(),
-                        ability_id,
-                        prepared.card.as_u64(),
-                        prepared.element,
+                        vocabulary.ability(ability_id),
+                        card_summary(&prepared.card, labels),
+                        element_short_name(prepared.element),
                         prepared.level
                     )
                 },
@@ -3189,10 +3373,10 @@ fn game_event_presentation(
         } => (
             "魔靈附體".to_string(),
             format!(
-                "{} 的 {:?} 轉化為 {:?}，保留 {power} 點靈力。",
+                "{} 的{}精靈轉化為{}精靈，保留 {power} 點靈力。",
                 player.as_str(),
-                previous,
-                spirit
+                spirit_name(*previous),
+                spirit_name(*spirit)
             ),
         ),
         GameEvent::SpiritPowerChanged {
@@ -3237,7 +3421,7 @@ fn game_event_presentation(
             format!(
                 "{} 指定牌 {} 本回合視為 {} 級。",
                 player.as_str(),
-                card.as_u64(),
+                card_summary(card, labels),
                 level
             ),
         ),
@@ -3460,11 +3644,19 @@ fn game_event_presentation(
         }
         GameEvent::JianghuStateApplied { state } => (
             "江湖狀態生效".to_string(),
-            format!("{} 進入 {:?}。", state.owner.as_str(), state.kind),
+            format!(
+                "{} 進入{}狀態。",
+                state.owner.as_str(),
+                jianghu_state_name(state.kind)
+            ),
         ),
         GameEvent::JianghuStateExpired { owner, kind } => (
             "江湖狀態結束".to_string(),
-            format!("{} 的 {:?} 已結束。", owner.as_str(), kind),
+            format!(
+                "{} 的{}狀態已結束。",
+                owner.as_str(),
+                jianghu_state_name(*kind)
+            ),
         ),
         GameEvent::JianghuPoisonTicked {
             owner,
@@ -3497,8 +3689,9 @@ fn game_event_presentation(
         } => (
             "次數限制".to_string(),
             format!(
-                "{} 的 {key} 剩餘 {new_remaining}/{maximum} 次。",
-                owner.as_str()
+                "{} 的{}剩餘 {new_remaining}/{maximum} 次。",
+                owner.as_str(),
+                vocabulary.limited_use(key)
             ),
         ),
         GameEvent::ConfluenceCardObligationSet { obligation } => (
@@ -3770,10 +3963,10 @@ fn game_event_presentation(
         GameEvent::FormationSuppressionSet { suppression } => (
             "裂土指定".to_string(),
             format!(
-                "{} 指定 {} 的陣法 {} 於下回合無效。",
+                "{} 指定 {} 的陣法「{}」於下回合無效。",
                 suppression.source.as_str(),
                 suppression.target.as_str(),
-                suppression.formation_id
+                formation_name(formation_names, &suppression.formation_id)
             ),
         ),
         GameEvent::FormationSuppressionExpired {
@@ -3783,9 +3976,9 @@ fn game_event_presentation(
         } => (
             "裂土結束".to_string(),
             format!(
-                "{} 的陣法 {} 不再受裂土影響。",
+                "{} 的陣法「{}」不再受裂土影響。",
                 target.as_str(),
-                formation_id
+                formation_name(formation_names, formation_id)
             ),
         ),
         GameEvent::RingingMetalCardRevealed { selection } => (
@@ -3793,7 +3986,7 @@ fn game_event_presentation(
             format!(
                 "{} 展示了牌 {}。",
                 selection.player.as_str(),
-                selection.card.as_u64()
+                card_summary(&selection.card, labels)
             ),
         ),
         GameEvent::RingingMetalCompleted { selection } => (
@@ -3816,7 +4009,11 @@ fn game_event_presentation(
             player, melody_id, ..
         } => (
             "植土完成".to_string(),
-            format!("{} 已執行曲調 {} 的主效果。", player.as_str(), melody_id),
+            format!(
+                "{} 已執行曲調「{}」的主效果。",
+                player.as_str(),
+                formation_name(formation_names, melody_id)
+            ),
         ),
         GameEvent::EarthRendingStarted { resolution } => (
             "裂地崩山".to_string(),
@@ -3885,6 +4082,16 @@ fn element_name(element: crate::domain::Element) -> &'static str {
     }
 }
 
+fn element_short_name(element: crate::domain::Element) -> &'static str {
+    match element {
+        crate::domain::Element::Metal => "金",
+        crate::domain::Element::Wood => "木",
+        crate::domain::Element::Water => "水",
+        crate::domain::Element::Fire => "火",
+        crate::domain::Element::Earth => "土",
+    }
+}
+
 fn spirit_name(spirit: crate::domain::SpiritKind) -> &'static str {
     match spirit {
         crate::domain::SpiritKind::Metal => "金",
@@ -3911,6 +4118,29 @@ fn spirit_skill_name(skill: crate::domain::SpiritSkill) -> &'static str {
         crate::domain::SpiritSkill::RockWall => "岩壁",
         crate::domain::SpiritSkill::EvilGaze => "惡視",
         crate::domain::SpiritSkill::DeathOmen => "死兆",
+    }
+}
+
+fn secret_strategy_name(strategy: SecretStrategy) -> &'static str {
+    match strategy {
+        SecretStrategy::GoldenCicada => "金蟬脫殼",
+        SecretStrategy::StealTheBeam => "偷梁換柱",
+        SecretStrategy::MuddyWaters => "混水摸魚",
+        SecretStrategy::WatchTheFire => "隔岸觀火",
+        SecretStrategy::LureTheTigerAway => "調虎離山",
+        SecretStrategy::ReturnSoul => "借屍還魂",
+        SecretStrategy::SheepStealing => "順手牽羊",
+        SecretStrategy::DarkCrossing => "暗渡陳倉",
+        SecretStrategy::DeceiveHeaven => "瞞天過海",
+        SecretStrategy::Retreat => "急流勇退",
+    }
+}
+
+fn jianghu_state_name(kind: crate::domain::JianghuStateKind) -> &'static str {
+    match kind {
+        crate::domain::JianghuStateKind::ThousandBlades => "千鋒",
+        crate::domain::JianghuStateKind::SnowTreading => "踏雪",
+        crate::domain::JianghuStateKind::Poison => "中毒",
     }
 }
 
@@ -3944,12 +4174,7 @@ fn card_refs_summary(cards: &PublicCardRefs, labels: &HashMap<CardInstanceId, St
     match cards {
         PublicCardRefs::Known(cards) => cards
             .iter()
-            .map(|card| {
-                labels
-                    .get(card)
-                    .cloned()
-                    .unwrap_or_else(|| format!("{card:?}"))
-            })
+            .map(|card| card_summary(card, labels))
             .collect::<Vec<_>>()
             .join("、"),
         PublicCardRefs::Hidden { count } => format!("{count} 張牌"),
@@ -5229,6 +5454,211 @@ mod tests {
                 .1
                 .contains("商調‧鳴金")
         );
+    }
+
+    #[test]
+    fn player_event_summaries_never_expose_canonical_ids_or_debug_names() {
+        let labels = HashMap::from([(CardInstanceId::new(42), "火 3".to_string())]);
+        let formations = HashMap::from([
+            ("echo:ringing-metal".to_string(), "商調‧鳴金".to_string()),
+            ("echo:plant-earth".to_string(), "變宮‧植土".to_string()),
+        ]);
+        let vocabulary = PlayerVocabulary::for_modules(
+            &[
+                crate::domain::JIANGHU_MODULE_ID,
+                crate::domain::CONFLUENCE_GENERATION_MODULE_ID,
+                crate::domain::DARK_GLIMMER_MODULE_ID,
+            ]
+            .into_iter()
+            .map(RuleModuleId::new)
+            .collect::<Vec<_>>(),
+        );
+        let alice = PlayerId::new("alice");
+        let bob = PlayerId::new("bob");
+        let events = vec![
+            GameEvent::ProfessionChanged {
+                player: alice.clone(),
+                previous: Some(ProfessionId::new(crate::rules::confluence::DAO_MAGE_ID)),
+                profession: ProfessionId::new(crate::rules::confluence::DAO_SAINT_ID),
+                card_moves: Vec::new(),
+            },
+            GameEvent::JianghuStateApplied {
+                state: crate::domain::JianghuState {
+                    owner: alice.clone(),
+                    kind: crate::domain::JianghuStateKind::ThousandBlades,
+                    remaining_turns: 1,
+                    expires_on_turn: None,
+                    last_resolved_turn: None,
+                },
+            },
+            GameEvent::LimitedUseChanged {
+                owner: alice.clone(),
+                key: crate::rules::confluence::IMPRISONING_ARRAY_USE.to_string(),
+                old_remaining: 1,
+                new_remaining: 0,
+                maximum: 1,
+            },
+            GameEvent::ProfessionChanged {
+                player: alice.clone(),
+                previous: Some(ProfessionId::new(crate::rules::dark::DARK_WALKER_ID)),
+                profession: ProfessionId::new(crate::rules::dark::DARK_SPIRIT_ENVOY_ID),
+                card_moves: Vec::new(),
+            },
+            GameEvent::SpiritTransformed {
+                player: alice.clone(),
+                previous: SpiritKind::Metal,
+                spirit: SpiritKind::Evil,
+                power: 2,
+            },
+            GameEvent::SpiritTransformed {
+                player: alice.clone(),
+                previous: SpiritKind::Evil,
+                spirit: SpiritKind::Death,
+                power: 2,
+            },
+            GameEvent::PouchRevealed {
+                player: alice.clone(),
+                owner: None,
+                card: CardInstanceId::new(42),
+                strategy: SecretStrategy::DarkCrossing,
+            },
+            GameEvent::ProfessionTransformed {
+                player: alice.clone(),
+                previous: Some(ProfessionId::new(crate::rules::confluence::DAO_MAGE_ID)),
+                profession: ProfessionId::new(crate::rules::jianghu::LONE_WANDERER_ID),
+                reason: "pouch:dark-crossing".to_string(),
+            },
+            GameEvent::FormationSuppressionSet {
+                suppression: crate::domain::FormationSuppression {
+                    source: alice.clone(),
+                    target: bob,
+                    formation_id: "echo:ringing-metal".to_string(),
+                    expires_on_turn_number: 2,
+                },
+            },
+            GameEvent::PlantEarthResolutionCompleted {
+                player: alice.clone(),
+                due_turn_number: 2,
+                melody_id: "echo:plant-earth".to_string(),
+            },
+            GameEvent::RingingMetalCardRevealed {
+                selection: crate::domain::RingingMetalSelection {
+                    player: alice,
+                    card: CardInstanceId::new(42),
+                    deck: crate::domain::RandomnessDeck::Shared,
+                },
+            },
+        ];
+
+        let summaries = events
+            .iter()
+            .map(|event| {
+                game_event_presentation_with_vocabulary(event, &labels, &formations, &vocabulary).1
+            })
+            .collect::<Vec<_>>();
+        let joined = summaries.join("\n");
+        for forbidden in [
+            "jianghu:",
+            "confluence:",
+            "dark:",
+            "echo:",
+            "pouch:",
+            "ThousandBlades",
+            "Metal",
+            "Evil",
+            "Death",
+            "CardInstanceId",
+            " 42",
+        ] {
+            assert!(!joined.contains(forbidden), "leaked {forbidden}: {joined}");
+        }
+        assert!(!summaries[0].contains("無職業"));
+        assert!(summaries[0].contains("道法師") && summaries[0].contains("道法聖"));
+        assert!(summaries[1].contains("千鋒"));
+        assert!(summaries[2].contains("禁錮法陣"));
+        assert!(summaries[4].contains("金") && summaries[4].contains("惡"));
+        assert!(summaries[5].contains("惡") && summaries[5].contains("死"));
+        assert!(summaries[6].contains("暗渡陳倉"));
+        assert!(summaries[7].contains("暗渡陳倉"));
+        assert!(summaries[8].contains("商調‧鳴金"));
+        assert!(summaries[9].contains("變宮‧植土"));
+        assert!(summaries[10].contains("火 3"));
+
+        let public_event = WebPublicGameEvent::from_public(
+            1,
+            PublicGameEvent::SpiritLevelInterpreted {
+                player: PlayerId::new("alice"),
+                skill: Some(SpiritSkill::EvilGaze),
+                card: Some(CardInstanceId::new(42)),
+                level: 1,
+                applied_on_turn: 1,
+            },
+            &labels,
+            &formations,
+            &vocabulary,
+        );
+        assert!(public_event.summary.contains("火 3"));
+        assert!(!public_event.summary.contains("42"));
+    }
+
+    #[test]
+    fn player_event_unknown_name_fallbacks_are_safe_and_not_no_profession() {
+        let vocabulary = PlayerVocabulary::for_modules(&[]);
+        let summary = game_event_presentation_with_vocabulary(
+            &GameEvent::ProfessionChanged {
+                player: PlayerId::new("alice"),
+                previous: Some(ProfessionId::new("future:previous")),
+                profession: ProfessionId::new("future:profession"),
+                card_moves: Vec::new(),
+            },
+            &HashMap::new(),
+            &HashMap::new(),
+            &vocabulary,
+        )
+        .1;
+
+        assert!(summary.contains("未知職業"));
+        assert!(!summary.contains("無職業"));
+        assert!(!summary.contains("future:"));
+    }
+
+    #[test]
+    fn player_vocabulary_covers_catalog_and_activated_profession_ability_ids() {
+        let vocabulary = PlayerVocabulary::all_official();
+        let catalog_ability_ids = crate::rules::profession::catalog(
+            &[
+                crate::domain::HERO_SCHOOLS_MODULE_ID,
+                crate::domain::JIANGHU_MODULE_ID,
+                crate::domain::CONFLUENCE_GENERATION_MODULE_ID,
+                crate::domain::DARK_GLIMMER_MODULE_ID,
+            ]
+            .into_iter()
+            .map(RuleModuleId::new)
+            .collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .flat_map(|profession| profession.ability_ids)
+        .chain([
+            "shadow-cut",
+            "meditation",
+            "revelation",
+            "illusion",
+            "phantasm",
+        ])
+        .collect::<Vec<_>>();
+
+        for id in catalog_ability_ids {
+            assert_ne!(vocabulary.ability(id), "未知能力", "missing {id}");
+        }
+    }
+
+    #[test]
+    fn public_card_label_fallback_never_uses_the_card_instance_debug_value() {
+        let card = WebCard::from_id(CardInstanceId::new(42), &HashMap::new(), &HashMap::new());
+
+        assert_eq!(card.label, "一張牌");
+        assert!(!card.label.contains("42"));
+        assert!(!card.label.contains("CardInstanceId"));
     }
 
     #[test]
