@@ -13,6 +13,23 @@ export async function loginAsGuests(pages: Page[]) {
   await Promise.all(pages.map(loginAsGuest))
 }
 
+export async function activePlayerPage(pages: Page[]) {
+  await expect.poll(async () => {
+    const counts = await Promise.all(pages.map(page => (
+      page.locator('.playing-card:enabled:not(.hidden)').count()
+    )))
+    return Math.max(...counts)
+  }).toBeGreaterThan(0)
+
+  for (const page of pages) {
+    if (await page.locator('.playing-card:enabled:not(.hidden)').count()) {
+      return page
+    }
+  }
+
+  throw new Error('No active player page')
+}
+
 type CreateRoomOptions = {
   access?: 'private' | 'public'
   teamMode?: boolean

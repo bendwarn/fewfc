@@ -355,6 +355,10 @@ export function useGameRoom(viewer: ViewerRef) {
     }
   }
 
+  async function advanceAutomatic() {
+    return await submitOnline({ type: 'advanceAutomatic' })
+  }
+
   async function retrievePreviousTurnDiscard() {
     const player = state.value.currentPlayer
     if (!player) return
@@ -782,6 +786,7 @@ export function useGameRoom(viewer: ViewerRef) {
     updateRuleModules,
     clearRoom,
     disconnectRoomSocket,
+    advanceAutomatic,
     passAction,
     retrievePreviousTurnDiscard,
     chooseInitialPouch,

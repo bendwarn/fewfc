@@ -2433,7 +2433,34 @@ function handlePageClick() {
   closeDiscardComposition()
 }
 
+function targetsEditableControl(target: EventTarget | null) {
+  return target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || target instanceof HTMLSelectElement
+    || (target instanceof HTMLElement && target.isContentEditable)
+}
+
 function handlePageKeydown(event: KeyboardEvent) {
+  if (
+    event.metaKey
+    && !event.ctrlKey
+    && !event.altKey
+    && !event.shiftKey
+    && !event.repeat
+    && event.key.toLowerCase() === 'k'
+    && !targetsEditableControl(event.target)
+    && screen.value === 'game'
+    && onlineMetadata.value?.status === 'Active'
+    && state.value.status === 'InProgress'
+    && viewer.value === state.value.currentPlayer
+    && !state.value.pendingChoice
+    && !game.isLoading.value
+  ) {
+    event.preventDefault()
+    void game.advanceAutomatic()
+    return
+  }
+
   if (event.key !== 'Escape') {
     return
   }

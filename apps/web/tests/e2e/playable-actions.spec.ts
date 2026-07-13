@@ -1,22 +1,5 @@
 import type { Page } from '@playwright/test'
-import { createPublicRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
-
-async function activePlayerPage(pages: Page[]) {
-  await expect.poll(async () => {
-    const counts = await Promise.all(pages.map(page => (
-      page.locator('.playing-card:enabled:not(.hidden)').count()
-    )))
-    return Math.max(...counts)
-  }).toBeGreaterThan(0)
-
-  for (const page of pages) {
-    if (await page.locator('.playing-card:enabled:not(.hidden)').count()) {
-      return page
-    }
-  }
-
-  throw new Error('No active player page')
-}
+import { activePlayerPage, createPublicRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
 
 async function expectVerticalPanels(page: Page) {
   const ability = page.getByRole('region', { name: '能力' })
