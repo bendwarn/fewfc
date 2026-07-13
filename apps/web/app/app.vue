@@ -837,44 +837,14 @@
             <div>
               <h2>選擇初始錦囊</h2>
               <p>先從個人牌組選一張牌；所有玩家完成後才洗牌發牌。</p>
-              <div class="card-composition pouch-composition">
-                <table>
-                  <caption class="sr-only">依五行與等級選擇初始錦囊</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col"><span class="sr-only">等級</span></th>
-                      <th
-                        v-for="element in CARD_ELEMENTS"
-                        :key="`pouch-heading-${element}`"
-                        scope="col"
-                      >
-                        {{ element }}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="row in initialPouchComposition" :key="`pouch-level-${row.level}`">
-                      <th scope="row">{{ row.level }}</th>
-                      <td
-                        v-for="cell in row.cells"
-                        :key="`pouch-${cell.element}-${cell.level}`"
-                        :class="{ empty: cell.count === 0 }"
-                      >
-                        <button
-                          v-if="cell.count > 0"
-                          type="button"
-                          :disabled="game.isLoading.value || !roomConnected"
-                          :aria-label="`選擇 ${cell.element} ${cell.level} 作為初始錦囊，共 ${cell.count} 張`"
-                          @click="chooseInitialPouchCard(cell.cardIds[0])"
-                        >
-                          <strong aria-hidden="true">{{ cell.count }}</strong>
-                        </button>
-                        <strong v-else aria-hidden="true">0</strong>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+              <CardChoiceMatrix
+                :cards="initialPouchCards"
+                :disabled="game.isLoading.value || !roomConnected"
+                label="初始錦囊牌組矩陣"
+                caption="依五行與等級選擇初始錦囊"
+                action-label="選擇作為初始錦囊"
+                @select="chooseInitialPouchCard"
+              />
             </div>
           </div>
 
@@ -912,44 +882,15 @@
                   已選：{{ chainPouchCard.label }}
                   <button type="button" @click="clearChainPouchCard">重新選擇</button>
                 </p>
-                <div class="card-composition pouch-composition chain-composition">
-                  <table>
-                    <caption class="sr-only">依五行與等級選擇連環錦囊牌</caption>
-                    <thead>
-                      <tr>
-                        <th scope="col"><span class="sr-only">等級</span></th>
-                        <th
-                          v-for="element in CARD_ELEMENTS"
-                          :key="`chain-pouch-heading-${element}`"
-                          scope="col"
-                        >
-                          {{ element }}
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="row in chainPouchComposition" :key="`chain-pouch-level-${row.level}`">
-                        <th scope="row">{{ row.level }}</th>
-                        <td
-                          v-for="cell in row.cells"
-                          :key="`chain-pouch-${cell.element}-${cell.level}`"
-                          :class="{ empty: cell.count === 0 }"
-                        >
-                          <button
-                            v-if="cell.count > 0"
-                            type="button"
-                            :aria-pressed="cell.cardIds.includes(chainPouchCard?.id ?? -1)"
-                            :aria-label="`選擇 ${cell.element} ${cell.level} 作為連環錦囊，共 ${cell.count} 張`"
-                            @click="chooseChainPouchCard(cell.cardIds)"
-                          >
-                            <strong aria-hidden="true">{{ cell.count }}</strong>
-                          </button>
-                          <strong v-else aria-hidden="true">0</strong>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
+                <CardChoiceMatrix
+                  class="chain-composition"
+                  :cards="chainPouchCards"
+                  :selected-cards="pouchDeckSelection.slice(0, 1)"
+                  label="連環錦囊牌組矩陣"
+                  caption="依五行與等級選擇連環錦囊牌"
+                  action-label="選擇作為連環錦囊"
+                  @select="chooseChainPouchCard"
+                />
 
                 <template v-if="chainPouchCard">
                   <h3>選擇觸發牌（可選）</h3>
@@ -957,61 +898,29 @@
                     已選：{{ chainTriggerCard.label }}
                     <button type="button" @click="clearChainTriggerCard">不觸發秘計</button>
                   </p>
-                  <div class="card-composition pouch-composition chain-composition">
-                    <table>
-                      <caption class="sr-only">依五行與等級選擇連環觸發牌</caption>
-                      <thead>
-                        <tr>
-                          <th scope="col"><span class="sr-only">等級</span></th>
-                          <th
-                            v-for="element in CARD_ELEMENTS"
-                            :key="`chain-trigger-heading-${element}`"
-                            scope="col"
-                          >
-                            {{ element }}
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr v-for="row in chainTriggerComposition" :key="`chain-trigger-level-${row.level}`">
-                          <th scope="row">{{ row.level }}</th>
-                          <td
-                            v-for="cell in row.cells"
-                            :key="`chain-trigger-${cell.element}-${cell.level}`"
-                            :class="{ empty: cell.count === 0 }"
-                          >
-                            <button
-                              v-if="cell.count > 0"
-                              type="button"
-                              :aria-pressed="cell.cardIds.includes(chainTriggerCard?.id ?? -1)"
-                              :aria-label="`選擇 ${cell.element} ${cell.level} 作為連環觸發牌，共 ${cell.count} 張`"
-                              @click="chooseChainTriggerCard(cell.cardIds)"
-                            >
-                              <strong aria-hidden="true">{{ cell.count }}</strong>
-                            </button>
-                            <strong v-else aria-hidden="true">0</strong>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
+                  <CardChoiceMatrix
+                    class="chain-composition"
+                    :cards="chainTriggerCards"
+                    :selected-cards="pouchDeckSelection.slice(1, 2)"
+                    label="連環觸發牌組矩陣"
+                    caption="依五行與等級選擇連環觸發牌"
+                    action-label="選擇作為連環觸發牌"
+                    @select="chooseChainTriggerCard"
+                  />
                 </template>
               </template>
 
               <template v-else>
-                <div class="choice-cards" aria-label="選擇牌組牌">
-                  <button
-                    v-for="card in initialPouchCards.filter(candidate =>
-                      pouchSwapDeckCards.includes(candidate.id),
-                    )"
-                    :key="`pouch-choice-deck-${card.id}`"
-                    type="button"
-                    :class="{ selected: pouchDeckSelection.includes(card.id) }"
-                    @click="togglePouchCard('pouchDeck', card.id, pouchSwapRequiredCount)"
-                  >
-                    {{ card.label }}
-                  </button>
-                </div>
+                <CardChoiceMatrix
+                  :cards="pouchSwapSelectableDeckCards"
+                  :selected-cards="pouchDeckSelection"
+                  :maximum="pouchSwapRequiredCount"
+                  mode="toggle"
+                  label="牽羊牌組矩陣"
+                  caption="依五行與等級選擇牽羊交換的牌組牌"
+                  action-label="選擇牽羊牌組牌"
+                  @select="togglePouchCard('pouchDeck', $event, pouchSwapRequiredCount)"
+                />
                 <h3>選擇 {{ pouchSwapRequiredCount }} 張棄牌</h3>
                 <div class="choice-cards" aria-label="選擇棄牌">
                   <button
@@ -1077,22 +986,18 @@
 
                   <template v-if="selectedChainStrategyAction?.input === 'deckDiscardSwap'">
                     <h3>牽羊：另選兩張牌組牌</h3>
-                    <div class="choice-cards" aria-label="牽羊牌組牌">
-                      <button
-                        v-for="card in initialPouchCards.filter(
-                          candidate => selectedChainStrategyAction?.deckCards.includes(candidate.id)
-                            && !pouchDeckSelection.includes(candidate.id),
-                        )"
-                        :key="`strategy-deck-${card.id}`"
-                        type="button"
-                        :class="{ selected: strategyDeckSelection.includes(card.id) }"
-                        @click="togglePouchCard(
-                          'strategyDeck', card.id, selectedChainStrategyAction?.requiredCardCount ?? 0,
-                        )"
-                      >
-                        {{ card.label }}
-                      </button>
-                    </div>
+                    <CardChoiceMatrix
+                      :cards="chainStrategySelectableDeckCards"
+                      :selected-cards="strategyDeckSelection"
+                      :maximum="selectedChainStrategyAction?.requiredCardCount ?? 0"
+                      mode="toggle"
+                      label="連環牽羊牌組矩陣"
+                      caption="依五行與等級選擇連環牽羊交換的牌組牌"
+                      action-label="選擇連環牽羊牌組牌"
+                      @select="togglePouchCard(
+                        'strategyDeck', $event, selectedChainStrategyAction?.requiredCardCount ?? 0,
+                      )"
+                    />
                     <h3>牽羊：選兩張棄牌</h3>
                     <div class="choice-cards" aria-label="牽羊棄牌">
                       <button
@@ -1185,7 +1090,19 @@
           >
             <div>
               <h2>{{ pendingChoiceLabel(state.pendingChoice) }}</h2>
-              <div class="choice-cards">
+              <CardChoiceMatrix
+                v-if="state.pendingChoice.presentation.type === 'echoRingingMetalDeckCard'"
+                :cards="state.pendingChoice.cards"
+                :selected-cards="game.selectedChoiceCards.value"
+                :maximum="state.pendingChoice.maximumCount"
+                :disabled="game.isLoading.value || !roomConnected"
+                mode="toggle"
+                label="商調‧鳴金牌組矩陣"
+                caption="依五行與等級選擇商調‧鳴金檢索的牌組牌"
+                action-label="選擇商調‧鳴金牌組牌"
+                @select="game.togglePendingChoiceCard"
+              />
+              <div v-else class="choice-cards">
                 <button
                   v-for="card in state.pendingChoice.cards"
                   :key="card.id"
@@ -1643,7 +1560,6 @@ const initialPouchCards = computed<PublicCard[]>(() => {
   const cards = state.value.playerDecks.find(entry => entry.player === viewer.value)?.cards
   return cards?.kind === 'known' ? cards.cards : []
 })
-const initialPouchComposition = computed(() => buildCardComposition(initialPouchCards.value))
 
 function chooseInitialPouchCard(card: CardInstanceId | undefined) {
   if (card !== undefined) game.chooseInitialPouch(card)
@@ -1765,14 +1681,17 @@ const chainTriggerCard = computed(() => (
     ? initialPouchCards.value.find(card => card.id === pouchDeckSelection.value[1]) ?? null
     : null
 ))
-const chainPouchComposition = computed(() => buildCardComposition(
-  initialPouchCards.value.filter(card => !strategyDeckSelection.value.includes(card.id)),
+const chainPouchCards = computed(() => (
+  initialPouchCards.value.filter(card => !strategyDeckSelection.value.includes(card.id))
 ))
-const chainTriggerComposition = computed(() => buildCardComposition(
+const chainTriggerCards = computed(() => (
   initialPouchCards.value.filter(card => (
     isLegalChainTrigger(chainPouchCard.value, card)
     && !strategyDeckSelection.value.includes(card.id)
-  )),
+  ))
+))
+const pouchSwapSelectableDeckCards = computed(() => initialPouchCards.value.filter(
+  card => pouchSwapDeckCards.value.includes(card.id),
 ))
 const chainStrategyOptions = computed(() => {
   const card = chainTriggerCard.value
@@ -1783,6 +1702,10 @@ const chainStrategyOptions = computed(() => {
 const selectedChainStrategyAction = computed(() => chainStrategyOptions.value.find(
   option => option.strategy === chainStrategySelection.value,
 ) ?? null)
+const chainStrategySelectableDeckCards = computed(() => initialPouchCards.value.filter(
+  card => selectedChainStrategyAction.value?.deckCards.includes(card.id)
+    && !pouchDeckSelection.value.includes(card.id),
+))
 const canSubmitPouchChoice = computed(() => {
   if (pouchChoiceKind.value === 'sheep') {
     const count = pouchSwapRequiredCount.value
@@ -1841,20 +1764,14 @@ function togglePouchCard(
     : selection.value.length < maximum ? [...selection.value, card] : selection.value
 }
 
-function chooseChainPouchCard(cardIds: CardInstanceId[]) {
-  const card = cardIds.find(candidate => !strategyDeckSelection.value.includes(candidate))
-  if (card === undefined) return
-
+function chooseChainPouchCard(card: CardInstanceId) {
   pouchDeckSelection.value = [card]
   resetChainStrategyChoice()
 }
 
-function chooseChainTriggerCard(cardIds: CardInstanceId[]) {
+function chooseChainTriggerCard(card: CardInstanceId) {
   const pouch = pouchDeckSelection.value[0]
-  const card = cardIds.find(candidate => (
-    candidate !== pouch && !strategyDeckSelection.value.includes(candidate)
-  ))
-  if (pouch === undefined || card === undefined) return
+  if (pouch === undefined) return
 
   pouchDeckSelection.value = [pouch, card]
   resetChainStrategyChoice()
@@ -3547,6 +3464,7 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .pouch-composition td { @apply p-0; }
 .pouch-composition td button { @apply grid size-full min-h-8 place-items-center border-0 bg-transparent text-[#e4c47d] hover:bg-[rgba(185,149,80,.16)] disabled:cursor-not-allowed disabled:opacity-45; }
 .pouch-composition td button[aria-pressed="true"] { @apply bg-[rgba(185,149,80,.3)] shadow-[inset_0_0_0_2px_#d1ad62]; }
+.choice-card-matrix td button small { @apply text-[8px] font-normal text-[#f0d99e]; }
 .chain-composition { @apply mt-2; }
 .choice-selection-summary { @apply mx-auto mb-1 flex max-w-[390px] items-center justify-between gap-3 text-xs text-gold-light; }
 .choice-selection-summary button { @apply border border-[#665b44] bg-[#18201b] px-2 py-1 text-[10px] text-[#d5d8d4] hover:border-[#b99550]; }

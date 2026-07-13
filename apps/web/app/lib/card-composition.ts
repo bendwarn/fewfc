@@ -19,6 +19,8 @@ export interface CardCompositionRow {
   cells: CardCompositionCell[]
 }
 
+export type CardCompositionSelectionMode = 'replace' | 'toggle'
+
 export function buildCardComposition(cards: PublicCard[]): CardCompositionRow[] {
   const cardIds = new Map<string, CardInstanceId[]>()
 
@@ -46,6 +48,25 @@ export function buildCardComposition(cards: PublicCard[]): CardCompositionRow[] 
       }
     }),
   }))
+}
+
+export function cardForCompositionSelection(
+  cardIds: CardInstanceId[],
+  selectedCards: CardInstanceId[],
+  maximum: number,
+  mode: CardCompositionSelectionMode,
+): CardInstanceId | undefined {
+  const selectedInCell = cardIds.filter(card => selectedCards.includes(card))
+
+  if (mode === 'replace') {
+    return selectedInCell[0] ?? cardIds[0]
+  }
+
+  if (selectedCards.length < maximum) {
+    return cardIds.find(card => !selectedCards.includes(card))
+  }
+
+  return selectedInCell.at(-1)
 }
 
 function compositionKey(element: CardElement, level: CardLevel): string {

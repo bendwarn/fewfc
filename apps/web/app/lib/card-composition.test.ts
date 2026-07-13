@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   buildCardComposition,
+  cardForCompositionSelection,
   CARD_ELEMENTS,
   CARD_LEVELS,
 } from './card-composition'
@@ -33,5 +34,17 @@ describe('buildCardComposition', () => {
     expect(cells.find(cell => cell.element === '金' && cell.level === 1)?.cardIds).toStrictEqual([1, 2])
     expect(cells.find(cell => cell.element === '火' && cell.level === 5)?.count).toBe(1)
     expect(cells.reduce((total, cell) => total + cell.count, 0)).toBe(3)
+  })
+
+  test('selects repeated instances from one matrix cell up to the limit', () => {
+    expect(cardForCompositionSelection([1, 2, 3], [], 2, 'toggle')).toBe(1)
+    expect(cardForCompositionSelection([1, 2, 3], [1], 2, 'toggle')).toBe(2)
+    expect(cardForCompositionSelection([1, 2, 3], [1, 2], 2, 'toggle')).toBe(2)
+    expect(cardForCompositionSelection([3], [1, 2], 2, 'toggle')).toBeUndefined()
+  })
+
+  test('reuses the selected instance for a replace-style matrix cell', () => {
+    expect(cardForCompositionSelection([1, 2], [2], 1, 'replace')).toBe(2)
+    expect(cardForCompositionSelection([1, 2], [], 1, 'replace')).toBe(1)
   })
 })
