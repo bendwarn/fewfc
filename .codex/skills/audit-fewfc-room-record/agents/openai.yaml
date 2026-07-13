@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit FEWFC Room Record"
+  short_description: "Inspect and verify FEWFC room event records"
+  default_prompt: "Use $audit-fewfc-room-record to inspect this FEWFC room UUID and verify the requested rules interaction."

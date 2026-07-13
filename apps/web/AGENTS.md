@@ -2,8 +2,6 @@
 
 ## Development Environment
 
-- Use Brave as the default browser.
-- Auth and online room APIs need Wrangler/Cloudflare bindings; plain `bun run dev` is only for Nuxt-only UI work.
 - For Worker/Durable Object local development, ensure `.dev.vars` exists and `BETTER_AUTH_SECRET` is at least 32 characters, otherwise Better Auth routes fail with `500 BETTER_AUTH_SECRET must contain at least 32 characters`.
 - Local development servers may need sandbox escalation to bind localhost ports. If a server reports no available port while nothing is reachable, rerun with escalated permissions.
 
@@ -56,4 +54,3 @@
   `啟用規則` region before invoking fixture or command APIs. The click handler is
   asynchronous; issuing the next request immediately can race the room update
   and receive `409 test fixture requires an active match`.
-- E2E tests may run outside the sandbox.
