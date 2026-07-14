@@ -28,9 +28,11 @@ cp .dev.vars.example .dev.vars
 bun run cf:dev
 ```
 
-`APP_ENV` is the environment policy input. The default Wrangler environment sets it
-to `development`; the explicit `staging` and `production` environments set their
-matching values. A missing or unsupported value fails the build or request.
+`APP_ENV` is the shared environment policy input for the Nuxt build and Worker
+runtime. Nuxt build scripts load it through `.env.development`, `.env.staging`,
+or `.env.production`; Wrangler injects the matching value through `vars` in the
+default, `staging`, or `production` configuration. A missing or unsupported
+value fails the build or request.
 
 `BETTER_AUTH_SECRET` must contain at least 32 random characters. Keep it in `.dev.vars` locally and store it as a Worker secret in deployed environments:
 

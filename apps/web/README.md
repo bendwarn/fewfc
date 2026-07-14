@@ -50,7 +50,7 @@ Online rooms support:
 Build the application for production:
 
 ```bash
-APP_ENV=production bun run build
+bun run build:production
 ```
 
 Locally preview production build:

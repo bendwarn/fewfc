@@ -8,6 +8,8 @@ describe('deck card choice presentation', () => {
     const listBasedDeckChoices = [
       'aria-label="選擇牌組牌"',
       'aria-label="牽羊牌組牌"',
+      'aria-label="選擇棄牌"',
+      'aria-label="牽羊棄牌"',
     ]
 
     for (const ariaLabel of listBasedDeckChoices) {
@@ -19,7 +21,9 @@ describe('deck card choice presentation', () => {
       '連環錦囊牌組矩陣',
       '連環觸發牌組矩陣',
       '牽羊牌組矩陣',
+      '牽羊回收矩陣',
       '連環牽羊牌組矩陣',
+      '連環牽羊回收矩陣',
       '商調‧鳴金牌組矩陣',
     ]
 

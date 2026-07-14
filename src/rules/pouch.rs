@@ -421,6 +421,36 @@ pub(crate) fn strategy_matches(strategy: SecretStrategy, element: Element, level
         .any(|option| option.strategy == strategy)
 }
 
+fn sheep_deck_card_options(
+    state: &GameState,
+    player: &PlayerId,
+    source_card: CardInstanceId,
+) -> Vec<CardInstanceId> {
+    state
+        .deck_for(player)
+        .unwrap_or_default()
+        .iter()
+        .copied()
+        .filter(|card| *card != source_card)
+        .collect()
+}
+
+fn sheep_return_card_options(
+    state: &GameState,
+    player: &PlayerId,
+    source_card: CardInstanceId,
+) -> Vec<CardInstanceId> {
+    let mut cards = state.discard_for(player).unwrap_or_default().to_vec();
+    cards.extend(
+        sheep_deck_card_options(state, player, source_card)
+            .into_iter()
+            .filter(|card| {
+                matches!(state.card_origin(*card), Some(CardOrigin::Player(owner)) if owner == player)
+            }),
+    );
+    cards
+}
+
 pub(crate) fn strategy_action_options(
     state: &GameState,
     player: &PlayerId,
@@ -456,21 +486,13 @@ pub(crate) fn strategy_action_options(
                 option.input,
                 SecretStrategyInputRequirement::DeckDiscardSwap
             )
-            .then(|| {
-                state
-                    .deck_for(player)
-                    .unwrap_or_default()
-                    .iter()
-                    .copied()
-                    .filter(|card| *card != source_card)
-                    .collect()
-            })
+            .then(|| sheep_deck_card_options(state, player, source_card))
             .unwrap_or_default(),
             discard_cards: matches!(
                 option.input,
                 SecretStrategyInputRequirement::DeckDiscardSwap
             )
-            .then(|| state.discard_for(player).unwrap_or_default().to_vec())
+            .then(|| sheep_return_card_options(state, player, source_card))
             .unwrap_or_default(),
             hand_cards: matches!(option.input, SecretStrategyInputRequirement::Retreat)
                 .then(|| state.hand(player).unwrap_or_default().to_vec())
@@ -610,12 +632,14 @@ pub(crate) fn chain_events(
                 _ => None,
             })
             .unwrap_or((None, None, false, None, &[], &[]));
-        events.push(GameEvent::PouchRevealed {
+        let revealed = GameEvent::PouchRevealed {
             player: player.clone(),
             owner: None,
             card: source_card,
             strategy,
-        });
+        };
+        crate::rules::projection::apply_event(&mut projected, &revealed);
+        events.push(revealed);
         events.extend(strategy_events(
             &projected,
             player,
@@ -853,11 +877,6 @@ fn sheep_stealing_events(
                 .deck_for(player)
                 .is_some_and(|deck| deck.contains(card))
         })
-        || !discard_cards.iter().all(|card| {
-            state
-                .discard_for(player)
-                .is_some_and(|discard| discard.contains(card))
-        })
     {
         return Err(GameError::Validation(
             ValidationError::SecretStrategyInputInvalid,
@@ -871,6 +890,22 @@ fn sheep_stealing_events(
             to: discard_zone(state, *card),
         })
         .collect::<Vec<_>>();
+    let mut projected = state.clone();
+    crate::rules::projection::apply_event(
+        &mut projected,
+        &GameEvent::CardsMoved {
+            card_moves: moves.clone(),
+        },
+    );
+    if !discard_cards.iter().all(|card| {
+        projected
+            .discard_for(player)
+            .is_some_and(|discard| discard.contains(card))
+    }) {
+        return Err(GameError::Validation(
+            ValidationError::SecretStrategyInputInvalid,
+        ));
+    }
     moves.extend(discard_cards.iter().map(|card| CardMoveDelta {
         card: *card,
         from: discard_zone(state, *card),
@@ -1150,6 +1185,165 @@ mod tests {
                 .unwrap();
         apply(&mut state, &events);
         assert_eq!(state.pouch_level_bonuses[0].cards, cards[..2]);
+    }
+
+    #[test]
+    fn sheep_stealing_can_return_cards_it_just_discarded() {
+        let mut state = GameState::from_setup(&setup());
+        let player = PlayerId::new("alice");
+        let cards = state
+            .card_instances
+            .iter()
+            .filter(|card| matches!(&card.origin, CardOrigin::Player(owner) if owner == &player))
+            .take(3)
+            .map(|card| card.instance)
+            .collect::<Vec<_>>();
+        state
+            .deck_for_mut(&player)
+            .unwrap()
+            .extend(cards[..2].iter().copied());
+
+        let events =
+            sheep_stealing_events(&state, &player, cards[2], &cards[..2], &cards[..2]).unwrap();
+
+        let GameEvent::CardsMoved { card_moves } = &events[0] else {
+            panic!("Sheep Stealing must move Cards before shuffling");
+        };
+        assert_eq!(card_moves.len(), 4);
+        assert_eq!(card_moves[0].card, cards[0]);
+        assert_eq!(card_moves[2].card, cards[0]);
+
+        let mut projected = state.clone();
+        apply(&mut projected, &events);
+        assert!(projected.deck_for(&player).unwrap().contains(&cards[0]));
+        assert!(!projected.discard_for(&player).unwrap().contains(&cards[0]));
+    }
+
+    #[test]
+    fn sheep_stealing_options_include_deck_cards_that_can_be_returned() {
+        let mut state = GameState::from_setup(&setup());
+        let player = PlayerId::new("alice");
+        let source = state
+            .card_instances
+            .iter()
+            .find(|card| {
+                matches!(&card.origin, CardOrigin::Player(owner) if owner == &player)
+                    && state.card_def(card.instance).unwrap().level == 2
+            })
+            .unwrap()
+            .instance;
+        let deck_cards = state
+            .card_instances
+            .iter()
+            .filter(|card| {
+                card.instance != source
+                    && matches!(&card.origin, CardOrigin::Player(owner) if owner == &player)
+            })
+            .take(2)
+            .map(|card| card.instance)
+            .collect::<Vec<_>>();
+        state.deck_for_mut(&player).unwrap().clear();
+        state
+            .deck_for_mut(&player)
+            .unwrap()
+            .extend(deck_cards.iter().copied());
+        state.discard_for_mut(&player).unwrap().clear();
+
+        let action = strategy_action_options(&state, &player, source)
+            .into_iter()
+            .find(|action| action.strategy == SecretStrategy::SheepStealing)
+            .unwrap();
+
+        assert_eq!(action.deck_cards, deck_cards);
+        assert_eq!(action.discard_cards, deck_cards);
+    }
+
+    #[test]
+    fn chain_sheep_stealing_excludes_its_trigger_card_from_the_pending_shuffle() {
+        let mut state = GameState::from_setup(&setup());
+        let player = PlayerId::new("alice");
+        let owned_cards = state
+            .card_instances
+            .iter()
+            .filter(|card| matches!(&card.origin, CardOrigin::Player(owner) if owner == &player))
+            .map(|card| card.instance)
+            .collect::<Vec<_>>();
+        let trigger = owned_cards
+            .iter()
+            .copied()
+            .find(|card| state.card_def(*card).unwrap().level == 2)
+            .unwrap();
+        let trigger_def = state.card_def(trigger).unwrap().clone();
+        let pouch = owned_cards
+            .iter()
+            .copied()
+            .find(|card| {
+                let definition = state.card_def(*card).unwrap();
+                definition.level != trigger_def.level && definition.element != trigger_def.element
+            })
+            .unwrap();
+        let remaining = owned_cards
+            .iter()
+            .copied()
+            .filter(|card| ![trigger, pouch].contains(card))
+            .take(4)
+            .collect::<Vec<_>>();
+        let deck_cards = &remaining[..2];
+        let discard_cards = &remaining[2..];
+        state.deck_for_mut(&player).unwrap().clear();
+        state
+            .deck_for_mut(&player)
+            .unwrap()
+            .extend([pouch, trigger]);
+        state
+            .deck_for_mut(&player)
+            .unwrap()
+            .extend(deck_cards.iter().copied());
+        state.discard_for_mut(&player).unwrap().clear();
+        state
+            .discard_for_mut(&player)
+            .unwrap()
+            .extend(discard_cards.iter().copied());
+
+        let events = chain_events(
+            &state,
+            &player,
+            &[
+                crate::domain::TargetDecl::Player(player.clone()),
+                crate::domain::TargetDecl::FormationRole {
+                    role: "pouch".to_string(),
+                    card: pouch,
+                },
+                crate::domain::TargetDecl::FormationRole {
+                    role: "trigger".to_string(),
+                    card: trigger,
+                },
+                crate::domain::TargetDecl::SecretStrategy(SecretStrategy::SheepStealing),
+                crate::domain::TargetDecl::SecretStrategyOptions {
+                    target_player: None,
+                    star: None,
+                    break_star: false,
+                    discard_card: None,
+                    deck_cards: deck_cards.to_vec(),
+                    discard_cards: discard_cards.to_vec(),
+                },
+            ],
+        )
+        .unwrap();
+        apply(&mut state, &events);
+
+        let request = state.pending_randomness.clone().unwrap();
+        assert!(!request.current_order.contains(&trigger));
+        let mut shuffled_order = request.current_order.clone();
+        shuffled_order.reverse();
+        crate::application::resolve_trusted_randomness(
+            &state,
+            &TrustedRandomnessAnswer {
+                request_id: request.request_id,
+                shuffled_order,
+            },
+        )
+        .unwrap();
     }
 
     #[test]

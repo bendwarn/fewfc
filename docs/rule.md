@@ -537,9 +537,10 @@ cannot answer HP loss caused by that same resolution.
 
 ### 5.6 Pouch
 
-Pouch is a Theme Rule Module from the official 5.16 PDF, pages 37-38. This
-product intentionally permits it only when Personal Deck and Spirit are
-enabled; Spirit transitively requires all three Advanced Rule Modules.
+Pouch is a Theme Rule Module from the
+[official 5.16 complete rulebook][6], pages 37-38. This product intentionally
+permits it only when Personal Deck and Spirit are enabled; Spirit transitively
+requires all three Advanced Rule Modules.
 
 Before initial hands are dealt, Players choose starting Pouches in Turn Order
 from their unshuffled Personal Decks. Each choice removes one Card Instance from
@@ -608,9 +609,11 @@ or two Cards:
 When two Cards are selected, Chain first places the new Pouch. Any Pouch
 previously owned by the target is immediately moved to its origin Discard Pile.
 Chain then reveals the second Card and resolves its selected Secret Strategy,
-moving that source Card to its origin Discard Pile only after the strategy
-finishes. A replaced Pouch already present in the performing Player's Discard
-Pile may therefore be selected by Sheep Stealing.
+setting that revealed source aside from the Personal Deck during resolution and
+moving it to its origin Discard Pile only after the strategy finishes. It is
+therefore not part of a Deck search or shuffle caused by that strategy. A
+replaced Pouch already present in the performing Player's Discard Pile may be
+selected by Sheep Stealing.
 
 Pouch ownership does not change Card Origin. A Pouch given to a teammate by
 Chain enters the origin Player's Discard Pile when it is triggered or replaced.
@@ -622,10 +625,13 @@ runs before the search as required by the published rule.
 
 Sheep Stealing first discards two selected Cards from the Player's Personal
 Deck, then returns two selected Cards from that Player's Discard Pile and
-shuffles. If the Deck contains fewer than two Cards when resolution begins, its
-existing Discard Pile is shuffled back first. The Secret Strategy source Card
-is discarded only after resolution and is therefore never one of the returned
-Cards.
+shuffles. Official clarification 3-2.4 makes this ordering consequential: the
+two Cards discarded by the first step are already in the Discard Pile during
+the return selection, so either or both may be selected and returned
+immediately. If the Deck contains fewer than two Cards when resolution begins,
+its existing Discard Pile is shuffled back first. The Secret Strategy source
+Card enters the Discard Pile only after the complete effect resolves and is
+therefore never one of the returned Cards.[6]
 
 Dark Crossing causes a Direct Profession Change based on the source Card's
 printed element: Metal to Warrior, Wood to Seeker, Water to Mesmer, Fire to
@@ -945,3 +951,4 @@ A known formation with legal cards but missing resolver is a rule implementation
 [3]: https://www.cfecards.org/rule/latest/xuan-yong-gui-ze-qi-pai-gui-ze-ge-ren-pai-zu '五行戰鬥牌官方網站 - 選用規則：棄牌回收、個人牌組'
 [4]: https://www.cfecards.org/rule/latest/hero '五行戰鬥牌官方網站 - 進階規則‧英雄學派'
 [5]: https://www.cfecards.org/rule/latest/star '五行戰鬥牌官方網站 - 進階規則‧星辰圖記'
+[6]: https://www.dropbox.com/scl/fi/4cigz3t61p07l5tkgvjyl/5.16.pdf?dl=0&rlkey=m2zx1x5dwb6cw7llyy8wt9xiy&st=mqligrpj '五行戰鬥牌官方 5.16 完整規則書'

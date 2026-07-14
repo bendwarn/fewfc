@@ -1593,6 +1593,30 @@ Pouch follows the same default after its release despite adding Initial Pouch
 Selection to Game Preparation. Existing rooms retain their stored module list;
 only newly created rooms receive Pouch by default.
 
+#### Pouch execution model
+
+Sheep Stealing carries both Card selections in one command, but the two sets
+do not share one validation snapshot. Validate the first set against the
+pre-effect Personal Deck, project those ordered Deck-to-Discard moves, and only
+then validate the return set against the performing Player's projected Discard
+Pile. This permits the same physical Card Instance to move from Deck to Discard
+and back to Deck during one resolution, as required by official clarification
+3-2.4. The canonical `CardsMoved` event records those deltas in resolution
+order and replay applies them sequentially.
+
+Private interaction options expose the current Discard Pile together with
+Personal Deck Cards that would enter that Player's Discard Pile when selected
+for the first step. The UI presents a prospective Deck Card as a return choice
+only after the Player selects it for discard. This is an interaction projection
+of the ordered effect, not a new canonical Pending Choice.
+
+Chain's ownerless `PouchRevealed` event sets the triggering source Card aside
+from its Player's Deck before projecting the Secret Strategy. The later
+`PouchConsumed` event moves that set-aside Card to its origin Discard Pile. A
+Deck shuffle requested by the strategy therefore excludes the source Card, and
+its recorded `currentOrder` still matches the Deck when trusted randomness is
+resolved after the complete command event batch.
+
 The Jianghu term **State (狀態)** is narrower than the engine's established
 generic `StatusEffect` concept. Define a separate typed Jianghu State collection
 containing only 千鋒, 踏雪, and 中毒; do not rename or change the generic model or

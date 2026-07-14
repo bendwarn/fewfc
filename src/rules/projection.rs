@@ -63,6 +63,16 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 known_by: known_by.clone(),
             });
         }
+        GameEvent::PouchRevealed {
+            owner: None, card, ..
+        } => {
+            for pile in &mut state.player_decks {
+                if let Some(position) = pile.cards.iter().position(|candidate| candidate == card) {
+                    pile.cards.remove(position);
+                    break;
+                }
+            }
+        }
         GameEvent::PouchRevealed { .. } => {}
         GameEvent::PouchConsumed { owner, card } => {
             if let Some(owner) = owner {
