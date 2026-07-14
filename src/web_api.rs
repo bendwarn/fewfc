@@ -2918,6 +2918,24 @@ impl PlayerVocabulary {
             _ => "未知原因",
         }
     }
+
+    fn choice_purpose(&self, purpose: &str, formation_names: &HashMap<String, String>) -> String {
+        if purpose == "turn-draw-discard" {
+            return "回合抽牌".to_string();
+        }
+        if let Some(name) = formation_names.get(purpose) {
+            return name.clone();
+        }
+        match purpose {
+            "choose-card-to-seal" => "封印".to_string(),
+            _ => {
+                let ability = self.ability(purpose);
+                (ability != "未知能力")
+                    .then_some(ability.to_string())
+                    .unwrap_or_else(|| "未知效果".to_string())
+            }
+        }
+    }
 }
 
 #[derive(Serialize, PartialEq, Eq)]
@@ -3158,7 +3176,11 @@ fn event_presentation_with_vocabulary(
             player, purpose, ..
         } => (
             "效果選擇".to_string(),
-            format!("{} 需要為 {} 作出選擇。", player.as_str(), purpose),
+            format!(
+                "{} 需要為「{}」作出選擇。",
+                player.as_str(),
+                vocabulary.choice_purpose(purpose, formation_names)
+            ),
         ),
         PublicGameEvent::RandomnessRequested { card_count, .. } => (
             "等待洗牌".to_string(),
@@ -5708,6 +5730,20 @@ mod tests {
         );
         assert!(public_event.summary.contains("火 3"));
         assert!(!public_event.summary.contains("42"));
+
+        let choice_event = WebPublicGameEvent::from_public(
+            2,
+            PublicGameEvent::EffectChoiceRequested {
+                player: PlayerId::new("alice"),
+                purpose: "echo:ringing-metal".to_string(),
+                kind: PublicPendingChoiceKind::Hidden,
+            },
+            &labels,
+            &formations,
+            &vocabulary,
+        );
+        assert!(choice_event.summary.contains("商調‧鳴金"));
+        assert!(!choice_event.summary.contains("echo:"));
     }
 
     #[test]
