@@ -2,7 +2,7 @@
 
 ## Development Environment
 
-- For Worker/Durable Object local development, ensure `.dev.vars` exists and `BETTER_AUTH_SECRET` is at least 32 characters, otherwise Better Auth routes fail with `500 BETTER_AUTH_SECRET must contain at least 32 characters`.
+- For Worker/Durable Object local development, ensure `.env` exists and `BETTER_AUTH_SECRET` is at least 32 characters, otherwise Better Auth routes fail with `500 BETTER_AUTH_SECRET must contain at least 32 characters`.
 - Local development servers may need sandbox escalation to bind localhost ports. If a server reports no available port while nothing is reachable, rerun with escalated permissions.
 
 ## Browser and E2E Validation

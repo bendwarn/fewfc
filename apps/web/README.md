@@ -19,7 +19,7 @@ bunx wrangler d1 create fewfc-auth
 bun run db:migrate:local
 ```
 
-Copy `.dev.vars.example` to `.dev.vars` and replace the value with a random secret containing at least 32 characters.
+Copy `.env.example` to `.env` and replace the value with a random secret containing at least 32 characters.
 
 ## Development Server
 
@@ -29,7 +29,7 @@ Authentication and online room APIs require Cloudflare bindings, so run the Work
 bun run cf:dev
 ```
 
-Plain `bun run dev` remains useful for Nuxt-only work, but D1 authentication routes return an unavailable-binding error outside Wrangler.
+`bun run dev` starts Wrangler directly when the application has already been built. `bun run cf:dev` additionally builds the app and applies local D1 migrations first.
 
 The login UI supports:
 

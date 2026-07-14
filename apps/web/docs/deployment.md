@@ -24,7 +24,7 @@ Build and run the Cloudflare Worker locally:
 bunx wrangler d1 create fewfc-auth
 # Copy the returned database_id into wrangler.toml.
 bun run db:migrate:local
-cp .dev.vars.example .dev.vars
+cp .env.example .env
 bun run cf:dev
 ```
 
@@ -34,7 +34,7 @@ or `.env.production`; Wrangler injects the matching value through `vars` in the
 default, `staging`, or `production` configuration. A missing or unsupported
 value fails the build or request.
 
-`BETTER_AUTH_SECRET` must contain at least 32 random characters. Keep it in `.dev.vars` locally and store it as a Worker secret in deployed environments:
+`BETTER_AUTH_SECRET` must contain at least 32 random characters. Keep it in `.env` locally and store it as a Worker secret in deployed environments:
 
 ```bash
 bunx wrangler secret put BETTER_AUTH_SECRET
