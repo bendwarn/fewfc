@@ -173,18 +173,39 @@ export async function saveReplayReference(
     userId, draft.replayId, draft.sourceGameId, draft.roomName,
     JSON.stringify(draft.players), JSON.stringify(draft.result), draft.finishedAt, new Date().toISOString(), userId,
   )
+  // D1 is the source of truth for both the player reference and the
+  // monotonic lifecycle. Keeping these statements in one batch means a
+  // replacement cannot publish a new reference while leaving the old archive
+  // count behind (or vice versa).
+  const retain = database.prepare(
+    `INSERT INTO replay_archive_lifecycle (replay_id, reference_count, version)
+     SELECT ?, 1, 1 WHERE changes() = 1
+     ON CONFLICT(replay_id) DO UPDATE SET
+       reference_count = reference_count + 1,
+       version = version + 1`,
+  ).bind(draft.replayId)
+  const release = replaceReplayId
+    ? database.prepare(
+        `UPDATE replay_archive_lifecycle
+         SET reference_count = CASE WHEN reference_count > 0 THEN reference_count - 1 ELSE 0 END,
+             version = version + 1
+         WHERE replay_id = ? AND changes() = 1`,
+      ).bind(replaceReplayId)
+    : undefined
   const results = replaceReplayId
     ? await database.batch([
         database.prepare('DELETE FROM player_saved_replay WHERE user_id = ? AND replay_id = ?').bind(userId, replaceReplayId),
+        release!,
         insert,
+        retain,
       ])
-    : [await insert.run()]
-  const inserted = results.at(-1)?.meta?.changes ?? 0
+    : await database.batch([insert, retain])
+  const inserted = results.at(replaceReplayId ? 2 : 0)?.meta?.changes ?? 0
   if (inserted !== 1) throw createError({ statusCode: 409, statusMessage: 'Replay library is full.', data: { code: 'replayLibraryFull' } })
-  const lifecycle = await retainReplayReference(database, draft.replayId)
+  const lifecycle = await lifecycleFor(database, draft.replayId)
   await createReplayArchive(event, draft, lifecycle)
   if (replaceReplayId && replaceReplayId !== draft.replayId) {
-    const replacedLifecycle = await releaseReplayReference(database, replaceReplayId)
+    const replacedLifecycle = await lifecycleFor(database, replaceReplayId)
     if (replacedLifecycle.referenceCount === 0) {
       await replayRequest(event, replaceReplayId, '', {
         method: 'DELETE',
@@ -198,12 +219,18 @@ export async function saveReplayReference(
 
 export async function deleteReplayReference(event: H3Event, userId: string, replayId: string) {
   const database = db(event)
-  const deleted = await database.prepare(
-    'DELETE FROM player_saved_replay WHERE user_id = ? AND replay_id = ?',
-  ).bind(userId, replayId).run()
-  if ((deleted.meta?.changes ?? 0) === 0) return
+  const results = await database.batch([
+    database.prepare('DELETE FROM player_saved_replay WHERE user_id = ? AND replay_id = ?').bind(userId, replayId),
+    database.prepare(
+      `UPDATE replay_archive_lifecycle
+       SET reference_count = CASE WHEN reference_count > 0 THEN reference_count - 1 ELSE 0 END,
+           version = version + 1
+       WHERE replay_id = ? AND changes() = 1`,
+    ).bind(replayId),
+  ])
+  if ((results[0]?.meta?.changes ?? 0) === 0) return
 
-  const lifecycle = await releaseReplayReference(database, replayId)
+  const lifecycle = await lifecycleFor(database, replayId)
   if (lifecycle.referenceCount === 0) {
     await replayRequest(event, replayId, '', {
       method: 'DELETE',

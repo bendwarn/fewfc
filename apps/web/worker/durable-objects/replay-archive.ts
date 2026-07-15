@@ -59,15 +59,15 @@ export class ReplayArchive extends DurableObject {
 
   private async create(request: ReplayArchiveCreateRequest): Promise<Response> {
     const { archive, lifecycle } = request
+    const existing = await this.ctx.storage.get<CompletedReplayDraft>('archive')
+    if (existing && JSON.stringify(existing) !== JSON.stringify(archive)) {
+      return Response.json({ error: 'replay id collision' }, { status: 409 })
+    }
     const previous = await this.ctx.storage.get<ReplayArchiveLifecycle>('lifecycle')
     if (previous && lifecycle.version <= previous.version) {
       return Response.json({ replayId: archive.replayId, created: false })
     }
-    const existing = await this.ctx.storage.get<CompletedReplayDraft>('archive')
     if (existing) {
-      if (JSON.stringify(existing) !== JSON.stringify(archive)) {
-        return Response.json({ error: 'replay id collision' }, { status: 409 })
-      }
       await this.ctx.storage.put('lifecycle', lifecycle)
       return Response.json({ replayId: archive.replayId, created: false })
     }

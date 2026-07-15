@@ -319,6 +319,7 @@
                     <small v-if="replayCoveredCards(seat.player).length">蓋牌 · {{ replayCoveredCards(seat.player).map(card => card.label).join('、') }}</small>
                     <small v-if="replayFrame.state.playerDecks.length">牌庫 {{ replayDeckCount(seat.player) }}</small>
                     <small v-else>共用牌庫 {{ replayFrame.state.deckCount ?? 0 }}</small>
+                    <small v-if="replayPlayerDiscardCards(seat.player).length">棄牌 · {{ replayPlayerDiscardCards(seat.player).map(card => card.label).join('、') }}</small>
                   </div>
                   <span v-if="replayFrame.state.currentPlayer === seat.player" class="turn-badge">行動中</span>
                   <span class="side-hand-count">{{ replayCardsFor(seat.player).length }} 張</span>
@@ -346,6 +347,7 @@
                   <div class="previous-formation"><template v-if="replayFrame.state.previousTurnFormation"><small>上一回合 · {{ replayPlayerLabel(replayFrame.state.previousTurnFormation.player) }}</small><strong>{{ replayFrame.state.previousTurnFormation.formationName ?? '陣法' }}</strong></template><p v-else>上一回合未發動陣法</p></div>
                 </div>
               </div>
+              <p v-if="replayFrame.state.pendingChoice" class="action-detail">{{ replayPlayerLabel(replayFrame.state.pendingChoice.player) }} 的選擇：{{ replayFrame.state.pendingChoice.cards.map(card => card.label).join('、') }}</p>
             </section>
           </div>
           <section class="event-panel expanded"><div class="panel-title"><h2>戰局紀錄</h2></div><ol class="event-feed"><li v-for="event in replayFrame.events" :key="event.id"><div><span>{{ event.title }}</span><p>{{ event.summary }}</p></div></li></ol></section>
@@ -2162,6 +2164,10 @@ function replayCoveredCards(player: PlayerId): PublicCard[] {
     .filter(passive => passive.owner === player)
     .flatMap(passive => passive.cards.kind === 'known' ? passive.cards.cards : [])
   return cards ?? []
+}
+
+function replayPlayerDiscardCards(player: PlayerId): PublicCard[] {
+  return replayFrame.value?.state.playerDiscards.find(entry => entry.player === player)?.cards ?? []
 }
 const previousFormationCards = computed(() => (
   cardTokensForRefs(state.value.previousTurnFormation?.cards, 'previous-formation')
