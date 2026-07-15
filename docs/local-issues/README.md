@@ -8,6 +8,7 @@ None.
 
 ## Completed Local Issues
 
+- [#69 Separate randomness continuations from player responses](069-separate-randomness-continuations-from-player-responses.md)
 - [#67 Align Echo action detail with rule consequences](067-align-echo-action-detail-with-rule-text.md)
 - [#68 Align Tuner obligation and residual semantics](068-align-tuner-obligation-and-residual-semantics.md)
 - [#66 Release the Tribulation Rule Module](066-release-tribulation-rule-module.md)

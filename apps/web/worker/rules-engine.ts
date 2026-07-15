@@ -1,9 +1,8 @@
 import type {
-  LocalGameResponse,
   PersonalDeckResolution,
   RulesCatalog,
 } from '../app/types/fewfc'
-import type { PlayerDeckList } from '../shared/game-room'
+import type { PlayerDeckList, RulesEngineResult } from '../shared/game-room'
 import { rulesEngineError } from './rules-engine-error'
 import rulesModule from './wasm/fewfc.wasm'
 
@@ -27,7 +26,7 @@ async function instance(): Promise<FewfcWasmExports> {
   return wasmInstance.exports as FewfcWasmExports
 }
 
-export async function callRulesEngine(request: unknown): Promise<LocalGameResponse> {
+export async function callRulesEngine(request: unknown): Promise<RulesEngineResult> {
   const wasm = await instance()
   return callJsonExport(wasm, request, wasm.fewfc_handle_request)
 }

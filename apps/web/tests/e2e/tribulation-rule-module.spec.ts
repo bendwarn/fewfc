@@ -65,3 +65,60 @@ test('Earth Rending Environment choice is private, accessible, and reconnectable
     await guestContext.close()
   }
 })
+
+test('Rusted Forest drains trusted shuffles inside one Game Room command', async ({ browser }) => {
+  test.setTimeout(180_000)
+  const hostContext = await browser.newContext()
+  const guestContext = await browser.newContext()
+  const host = await hostContext.newPage()
+  const guest = await guestContext.newPage()
+
+  try {
+    await loginAsGuests([host, guest])
+    const roomName = `鏽鐵枯林隨機續接測試 ${Date.now()}`
+    const roomId = await startTwoPlayerMatch(host, guest, roomName)
+    const fixture = await seedDevelopmentScenario<{
+      fixtureAction: {
+        type: 'performFormation'
+        player: string
+        formationId: string
+        cards: number[]
+      }
+    }>(host, { name: 'tribulation-rusted-forest' })
+    const commandId = `rusted-forest-${Date.now()}`
+
+    const response = await host.evaluate(async ({ gameId, action, commandId }) => {
+      const result = await fetch(`/api/games/${gameId}/commands`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ commandId, action }),
+      })
+      return {
+        ok: result.ok,
+        status: result.status,
+        body: await result.json(),
+      }
+    }, { gameId: roomId, action: fixture.fixtureAction, commandId })
+
+    expect(response.ok, JSON.stringify(response.body)).toBe(true)
+    expect(response.status).toBe(200)
+    expect(response.body.state.phase).toBe('TurnDrawDiscardChoice')
+    expect(response.body.state.pendingRandomness).toBeNull()
+    expect(response.body).not.toHaveProperty('type')
+    expect(response.body).not.toHaveProperty('record')
+    expect(response.body).not.toHaveProperty('request')
+    const serialized = JSON.stringify(response.body)
+    expect(serialized).not.toContain('needsRandomness')
+    expect(serialized).not.toContain('currentOrder')
+    expect(serialized).not.toContain('shuffledOrder')
+    expect(response.body.events.filter(
+      (event: { eventType: string }) => event.eventType === 'RustedForestStarted',
+    )).toHaveLength(1)
+    expect(response.body.events.filter(
+      (event: { eventType: string }) => event.eventType === 'RustedForestCompleted',
+    )).toHaveLength(1)
+  } finally {
+    await hostContext.close()
+    await guestContext.close()
+  }
+})

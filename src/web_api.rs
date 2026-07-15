@@ -136,7 +136,7 @@ fn card_facts_for_setup(setup: &GameSetup) -> HashMap<CardInstanceId, WebCardFac
         .collect()
 }
 
-fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
+fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
     let rules = OfficialRules::new();
     let setup = setup_for_request(&rules, request.setup, request.first_player.as_deref())?;
     let card_labels = rules.card_labels(&setup).map_err(ApiError::Game)?;
@@ -221,7 +221,8 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                 &card_facts,
                 &formation_names,
                 candidates.into_iter().map(web_playable_action).collect(),
-            );
+            )
+            .map(|response| ApiResult::Ready { response });
         }
         ApiAction::DevelopmentScenarioAction { player, scenario } => {
             let player = PlayerId::new(player);
@@ -234,7 +235,8 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                 &card_facts,
                 &formation_names,
                 playable_actions,
-            );
+            )
+            .map(|response| ApiResult::Ready { response });
         }
         ApiAction::PrepareDevelopmentScenario { player, scenario } => {
             prepare_development_scenario(&mut record, &PlayerId::new(player), &scenario)?;
@@ -252,7 +254,8 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
                     &card_facts,
                     &formation_names,
                     Vec::new(),
-                );
+                )
+                .map(|response| ApiResult::Ready { response });
             };
             let player = PlayerId::new(player);
             if record.state().current_player() != Some(&player) {
@@ -289,7 +292,7 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
             )?;
             response.trusted_random_candidates = Some(candidates);
             response.trusted_random_candidate_count = Some(selection_count);
-            return Ok(response);
+            return Ok(ApiResult::Ready { response });
         }
         ApiAction::PerformFormation {
             player,
@@ -477,6 +480,13 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
         }
     }
 
+    if let Some(request) = record.state().pending_randomness.clone() {
+        return Ok(ApiResult::NeedsRandomness {
+            record: record.recorded_decisions(),
+            request,
+        });
+    }
+
     response_for(
         &record,
         viewer,
@@ -485,6 +495,7 @@ fn handle(request: ApiRequest) -> Result<ApiResponse, ApiError> {
         &formation_names,
         Vec::new(),
     )
+    .map(|response| ApiResult::Ready { response })
 }
 
 fn advance_after_command(record: &mut GameRecord) -> Result<(), ApiError> {
@@ -670,7 +681,6 @@ fn response_for(
         },
         trusted_random_candidates: None,
         trusted_random_candidate_count: None,
-        pending_randomness_request: record.state().pending_randomness.clone(),
     })
 }
 
@@ -864,7 +874,23 @@ fn development_scenario_action(
         .state()
         .hand(player)
         .ok_or_else(|| ApiError::Message("development scenario player has no hand".to_string()))?;
-    if scenario == "tribulation-earth-rending" {
+    if matches!(
+        scenario,
+        "tribulation-earth-rending" | "tribulation-rusted-forest"
+    ) {
+        let (first_element, second_element, formation_id) = match scenario {
+            "tribulation-earth-rending" => (
+                Element::Earth,
+                Element::Wood,
+                crate::rules::tribulation::EARTH_RENDING,
+            ),
+            "tribulation-rusted-forest" => (
+                Element::Wood,
+                Element::Metal,
+                crate::rules::tribulation::RUSTED_FOREST,
+            ),
+            _ => unreachable!(),
+        };
         let cards = [4, 5]
             .into_iter()
             .flat_map(|size| card_combinations(hand, size))
@@ -881,8 +907,8 @@ fn development_scenario_action(
                 facts.len() == cards.len()
                     && crate::rules::tribulation::matches_elements(
                         &facts,
-                        Element::Earth,
-                        Element::Wood,
+                        first_element,
+                        second_element,
                     )
             });
         let Some(cards) = cards else {
@@ -896,7 +922,7 @@ fn development_scenario_action(
                     matches!(
                         action,
                         PlayableAction::PerformFormation(candidate)
-                            if candidate.formation_id == crate::rules::tribulation::EARTH_RENDING
+                            if candidate.formation_id == formation_id
                     )
                 })
             });
@@ -1127,6 +1153,7 @@ fn development_scenario_deck_order(
                 ("echo-pure-fire", Some(Element::Fire | Element::Water)) => true,
                 ("echo-split-earth", Some(Element::Earth)) => true,
                 ("tribulation-earth-rending", Some(Element::Earth | Element::Wood)) => true,
+                ("tribulation-rusted-forest", Some(Element::Wood | Element::Metal)) => true,
                 _ => false,
             }
         })
@@ -1134,7 +1161,7 @@ fn development_scenario_deck_order(
     let candidate_sizes: &[usize] = match scenario {
         "hero-schools-transition" => &[1],
         "spirit-metal" | "spirit-fire" | "echo-pure-fire" | "echo-split-earth" => &[2],
-        "tribulation-earth-rending" => &[4, 5],
+        "tribulation-earth-rending" | "tribulation-rusted-forest" => &[4, 5],
         _ => {
             return Err(ApiError::Message(
                 "unknown development scenario".to_string(),
@@ -1184,6 +1211,11 @@ fn development_scenario_deck_order(
                     &facts,
                     Element::Earth,
                     Element::Wood,
+                ),
+                "tribulation-rusted-forest" => crate::rules::tribulation::matches_elements(
+                    &facts,
+                    Element::Wood,
+                    Element::Metal,
                 ),
                 _ => false,
             }
@@ -1508,6 +1540,19 @@ fn viewer_from_request(viewer: Option<&str>) -> Viewer {
 }
 
 #[derive(Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum ApiResult {
+    NeedsRandomness {
+        record: Vec<RecordedDecision>,
+        request: PendingRandomness,
+    },
+    Ready {
+        #[serde(flatten)]
+        response: ApiResponse,
+    },
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ApiResponse {
     record: Vec<RecordedDecision>,
@@ -1519,8 +1564,6 @@ struct ApiResponse {
     trusted_random_candidates: Option<Vec<CardInstanceId>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     trusted_random_candidate_count: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pending_randomness_request: Option<PendingRandomness>,
 }
 
 #[derive(Serialize)]
@@ -4306,13 +4349,25 @@ enum ApiError {
 mod tests {
     use super::*;
 
+    fn expect_ready(result: ApiResult) -> ApiResponse {
+        match result {
+            ApiResult::Ready { response } => response,
+            ApiResult::NeedsRandomness { request, .. } => {
+                panic!("expected ready response, got randomness request {request:?}")
+            }
+        }
+    }
+
     #[test]
     fn start_request_returns_default_game_state() {
         let response = handle_request_json(r#"{"action":{"type":"start"},"viewer":"alice"}"#)
             .expect("start request should succeed");
+        let json: serde_json::Value = serde_json::from_str(&response).unwrap();
 
-        assert!(response.contains(r#""turnNumber":1"#));
-        assert!(response.contains(r#""record""#));
+        assert_eq!(json["type"], "ready");
+        assert_eq!(json["state"]["turnNumber"], 1);
+        assert!(json["record"].is_array());
+        assert!(json.get("request").is_none());
     }
 
     #[test]
@@ -4405,34 +4460,36 @@ mod tests {
         advance_to_interactive_decision(&mut record).unwrap();
         assert_eq!(record.state().hand(&alice), Some(radiance_cards.as_slice()));
 
-        let after_formation = handle(ApiRequest {
-            action: ApiAction::PerformFormation {
-                player: "alice".to_string(),
-                formation_id: "radiance".to_string(),
-                cards: radiance_cards,
-                star_substitution_card: None,
-                match_option_role: None,
-                match_option_card: None,
-                match_option_slots: None,
-                pouch_owner: None,
-                pouch_card: None,
-                trigger_card: None,
-                secret_strategy: None,
-                secret_strategy_target_player: None,
-                secret_strategy_star: None,
-                secret_strategy_break_star: None,
-                secret_strategy_discard_card: None,
-                secret_strategy_deck_cards: None,
-                secret_strategy_discard_cards: None,
-                trusted_random_cards: None,
-            },
-            viewer: Some("alice".to_string()),
-            record: Some(record.recorded_decisions()),
-            setup: Some(web_setup()),
-            first_player: None,
-            deck_seed: None,
-        })
-        .unwrap();
+        let after_formation = expect_ready(
+            handle(ApiRequest {
+                action: ApiAction::PerformFormation {
+                    player: "alice".to_string(),
+                    formation_id: "radiance".to_string(),
+                    cards: radiance_cards,
+                    star_substitution_card: None,
+                    match_option_role: None,
+                    match_option_card: None,
+                    match_option_slots: None,
+                    pouch_owner: None,
+                    pouch_card: None,
+                    trigger_card: None,
+                    secret_strategy: None,
+                    secret_strategy_target_player: None,
+                    secret_strategy_star: None,
+                    secret_strategy_break_star: None,
+                    secret_strategy_discard_card: None,
+                    secret_strategy_deck_cards: None,
+                    secret_strategy_discard_cards: None,
+                    trusted_random_cards: None,
+                },
+                viewer: Some("alice".to_string()),
+                record: Some(record.recorded_decisions()),
+                setup: Some(web_setup()),
+                first_player: None,
+                deck_seed: None,
+            })
+            .unwrap(),
+        );
         let discarded_card = after_formation
             .state
             .pending_choice
@@ -4441,18 +4498,20 @@ mod tests {
             .cards[0]
             .id;
 
-        let before_retrieval = handle(ApiRequest {
-            action: ApiAction::ChooseTurnDiscard {
-                player: "alice".to_string(),
-                card: discarded_card,
-            },
-            viewer: Some("bob".to_string()),
-            record: Some(after_formation.record),
-            setup: Some(web_setup()),
-            first_player: None,
-            deck_seed: None,
-        })
-        .unwrap();
+        let before_retrieval = expect_ready(
+            handle(ApiRequest {
+                action: ApiAction::ChooseTurnDiscard {
+                    player: "alice".to_string(),
+                    card: discarded_card,
+                },
+                viewer: Some("bob".to_string()),
+                record: Some(after_formation.record),
+                setup: Some(web_setup()),
+                first_player: None,
+                deck_seed: None,
+            })
+            .unwrap(),
+        );
 
         assert_eq!(before_retrieval.state.phase, "Main");
         assert_eq!(
@@ -4476,17 +4535,19 @@ mod tests {
         assert!(before_retrieval.interaction.can_pass);
         assert!(before_retrieval.interaction.can_retrieve_discard);
 
-        let after_retrieval = handle(ApiRequest {
-            action: ApiAction::RetrievePreviousTurnDiscard {
-                player: "bob".to_string(),
-            },
-            viewer: Some("bob".to_string()),
-            record: Some(before_retrieval.record),
-            setup: Some(web_setup()),
-            first_player: None,
-            deck_seed: None,
-        })
-        .unwrap();
+        let after_retrieval = expect_ready(
+            handle(ApiRequest {
+                action: ApiAction::RetrievePreviousTurnDiscard {
+                    player: "bob".to_string(),
+                },
+                viewer: Some("bob".to_string()),
+                record: Some(before_retrieval.record),
+                setup: Some(web_setup()),
+                first_player: None,
+                deck_seed: None,
+            })
+            .unwrap(),
+        );
         let events = after_retrieval
             .record
             .iter()
@@ -4564,6 +4625,150 @@ mod tests {
     }
 
     #[test]
+    fn legal_rusted_forest_returns_only_a_camel_case_randomness_continuation() {
+        let rules = OfficialRules::new();
+        let alice = PlayerId::new("alice");
+        let bob = PlayerId::new("bob");
+        let setup = rules
+            .configure_game(
+                vec![
+                    Player {
+                        id: alice.clone(),
+                        team: TeamId::new("team:alice"),
+                    },
+                    Player {
+                        id: bob.clone(),
+                        team: TeamId::new("team:bob"),
+                    },
+                ],
+                vec![alice.clone(), bob],
+                rules
+                    .default_rule_modules()
+                    .into_iter()
+                    .filter(|module| {
+                        !matches!(
+                            module.as_str(),
+                            crate::domain::POUCH_MODULE_ID | crate::domain::PERSONAL_DECK_MODULE_ID
+                        )
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        let mut used = Vec::new();
+        let formation_cards = [
+            (Element::Wood, 3),
+            (Element::Wood, 4),
+            (Element::Metal, 3),
+            (Element::Metal, 4),
+        ]
+        .into_iter()
+        .map(|(element, level)| {
+            let card = setup
+                .card_instances
+                .iter()
+                .find_map(|instance| {
+                    let definition = setup
+                        .card_defs
+                        .iter()
+                        .find(|definition| definition.id == instance.definition)?;
+                    (!used.contains(&instance.instance)
+                        && definition.element == element
+                        && definition.level == level)
+                        .then_some(instance.instance)
+                })
+                .expect("official Deck must contain the Rusted Forest Cards");
+            used.push(card);
+            card
+        })
+        .collect::<Vec<_>>();
+        let mut deck_order = formation_cards.clone();
+        deck_order.extend(
+            rules
+                .official_deck_order(&setup)
+                .unwrap()
+                .into_iter()
+                .filter(|card| !formation_cards.contains(card)),
+        );
+        let mut record = GameRecord::start(setup.clone(), deck_order).unwrap();
+        advance_to_interactive_decision(&mut record).unwrap();
+        assert_eq!(
+            record.state().hand(&alice),
+            Some(formation_cards.as_slice())
+        );
+
+        let request = serde_json::json!({
+            "action": {
+                "type": "performFormation",
+                "player": "alice",
+                "formationId": crate::rules::tribulation::RUSTED_FOREST,
+                "cards": formation_cards,
+            },
+            "viewer": "alice",
+            "record": record.recorded_decisions(),
+            "setup": {
+                "players": [
+                    { "id": "alice", "team": "team:alice" },
+                    { "id": "bob", "team": "team:bob" },
+                ],
+                "turnOrder": ["alice", "bob"],
+                "enabledRuleModules": setup.enabled_rule_modules,
+            },
+        });
+        let response = handle_request_json(&request.to_string())
+            .expect("a legal Rusted Forest should return a randomness continuation");
+        let json: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        let root_fields = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            root_fields,
+            ["record", "request", "type"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        );
+        assert_eq!(json["type"], "needsRandomness");
+        assert!(
+            json["record"]
+                .as_array()
+                .is_some_and(|record| !record.is_empty())
+        );
+        let request_fields = json["request"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            request_fields,
+            ["continuation", "currentOrder", "deck", "requestId"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        );
+        assert_eq!(
+            json["request"]["requestId"],
+            "tribulation:rusted-forest:1:shared"
+        );
+        assert_eq!(json["request"]["deck"], "Shared");
+        assert_eq!(
+            json["request"]["continuation"],
+            serde_json::json!({
+                "type": "tribulation",
+                "kind": "rustedForestShuffle",
+            })
+        );
+        assert!(json["request"]["currentOrder"].as_array().is_some());
+        for player_ready_field in ["state", "events", "playableActions", "interaction"] {
+            assert!(json.get(player_ready_field).is_none());
+        }
+    }
+
+    #[test]
     fn every_named_action_scenario_has_a_repeatable_official_start() {
         let rules = OfficialRules::new();
         let alice = PlayerId::new("alice");
@@ -4596,6 +4801,7 @@ mod tests {
             "echo-pure-fire",
             "echo-split-earth",
             "tribulation-earth-rending",
+            "tribulation-rusted-forest",
         ] {
             let first = development_scenario_deck_order(&rules, &setup, &alice, scenario).unwrap();
             let second = development_scenario_deck_order(&rules, &setup, &alice, scenario).unwrap();

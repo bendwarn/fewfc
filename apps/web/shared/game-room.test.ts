@@ -14,6 +14,7 @@ test('development fixtures expose only the closed named scenario catalog', () =>
   expect(isDevelopmentScenario({ name: 'star-endgame' })).toBe(true)
   expect(isDevelopmentScenario({ name: 'echo-split-earth' })).toBe(true)
   expect(isDevelopmentScenario({ name: 'tribulation-earth-rending' })).toBe(true)
+  expect(isDevelopmentScenario({ name: 'tribulation-rusted-forest' })).toBe(true)
   expect(isDevelopmentScenario({ name: 'star-endgame', state: {} })).toBe(false)
   expect(isDevelopmentScenario({ name: 'arbitrary-state', state: {} })).toBe(false)
   expect(isDevelopmentScenario({ record: [] })).toBe(false)
@@ -33,37 +34,54 @@ test('trusted randomness actions are not player-submittable', () => {
 })
 
 test('trusted randomness resolves sequential requests as distinct persisted decisions', async () => {
-  type Result = {
+  type Ready = {
+    type: 'ready'
     marker: string
-    pendingRandomnessRequest?: {
+  }
+  type NeedsRandomness = {
+    type: 'needsRandomness'
+    marker: string
+    record: string[]
+    request: {
       requestId: string
+      deck: 'Shared'
+      continuation: { type: 'echo'; kind: 'ringingMetalRecycleDiscard' | 'ringingMetalPostSearch' }
       currentOrder: number[]
     }
   }
+  type Result = Ready | NeedsRandomness
   const persisted: string[] = []
   const actions: TrustedRandomnessAction[] = []
   const responses: Result[] = [
     {
+      type: 'needsRandomness',
       marker: 'after-first',
-      pendingRandomnessRequest: {
+      record: ['command', 'first-shuffle'],
+      request: {
         requestId: 'post-search',
+        deck: 'Shared',
+        continuation: { type: 'echo', kind: 'ringingMetalPostSearch' },
         currentOrder: [4, 5],
       },
     },
-    { marker: 'complete' },
+    { type: 'ready', marker: 'complete' },
   ]
 
-  const result = await resolvePendingRandomnessSequence<Result>(
+  const result = await resolvePendingRandomnessSequence<Ready, NeedsRandomness>(
     {
+      type: 'needsRandomness',
       marker: 'initial',
-      pendingRandomnessRequest: {
+      record: ['command'],
+      request: {
         requestId: 'discard-recycle',
+        deck: 'Shared',
+        continuation: { type: 'echo', kind: 'ringingMetalRecycleDiscard' },
         currentOrder: [1, 2, 3],
       },
     },
     cards => [...cards].reverse(),
     async (current) => {
-      persisted.push(current.pendingRandomnessRequest?.requestId ?? '')
+      persisted.push(current.request.requestId)
     },
     async (action) => {
       actions.push(action)
@@ -71,11 +89,54 @@ test('trusted randomness resolves sequential requests as distinct persisted deci
     },
   )
 
+  expect(result.type).toBe('ready')
   expect(result.marker).toBe('complete')
   expect(persisted).toStrictEqual(['discard-recycle', 'post-search'])
   expect(actions).toStrictEqual([
     { type: 'resolveRandomness', requestId: 'discard-recycle', shuffledOrder: [3, 2, 1] },
     { type: 'resolveRandomness', requestId: 'post-search', shuffledOrder: [5, 4] },
+  ])
+})
+
+test('trusted randomness persists one continuation before returning ready', async () => {
+  type Ready = { type: 'ready'; marker: 'complete' }
+  type NeedsRandomness = {
+    type: 'needsRandomness'
+    record: string[]
+    request: {
+      requestId: string
+      deck: 'Shared'
+      continuation: { type: 'tribulation'; kind: 'rustedForestShuffle' }
+      currentOrder: number[]
+    }
+  }
+  const sequence: string[] = []
+
+  const result = await resolvePendingRandomnessSequence<Ready, NeedsRandomness>(
+    {
+      type: 'needsRandomness',
+      record: ['rusted-forest-command'],
+      request: {
+        requestId: 'rusted-forest-shuffle',
+        deck: 'Shared',
+        continuation: { type: 'tribulation', kind: 'rustedForestShuffle' },
+        currentOrder: [7, 8, 9],
+      },
+    },
+    cards => [cards[1] as number, cards[2] as number, cards[0] as number],
+    async (current) => {
+      sequence.push(`persist:${current.record.join(',')}`)
+    },
+    async (action) => {
+      sequence.push(`resolve:${action.requestId}:${action.shuffledOrder.join(',')}`)
+      return { type: 'ready', marker: 'complete' }
+    },
+  )
+
+  expect(result).toStrictEqual({ type: 'ready', marker: 'complete' })
+  expect(sequence).toStrictEqual([
+    'persist:rusted-forest-command',
+    'resolve:rusted-forest-shuffle:8,9,7',
   ])
 })
 

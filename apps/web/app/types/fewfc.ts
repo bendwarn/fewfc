@@ -448,13 +448,4 @@ export interface LocalGameResponse {
   }
   trustedRandomCandidates?: CardInstanceId[]
   trustedRandomCandidateCount?: number
-  pendingRandomnessRequest?: {
-    requestId: string
-    deck: 'Shared' | { Player: PlayerId }
-    continuation:
-      | { type: 'echo', kind: 'ringingMetalRecycleDiscard' | 'ringingMetalPostSearch' }
-      | { type: 'pouch', kind: 'initialShuffle' | 'sheepStealing' }
-      | { type: 'tribulation', kind: 'rustedForestShuffle' }
-    currentOrder: CardInstanceId[]
-  }
 }

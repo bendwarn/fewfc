@@ -227,6 +227,11 @@ export function isOnlineGameAction(value: unknown): value is OnlineGameAction {
 
 export interface TrustedRandomnessRequest {
   requestId: string
+  deck: 'Shared' | { Player: PlayerId }
+  continuation:
+    | { type: 'echo'; kind: 'ringingMetalRecycleDiscard' | 'ringingMetalPostSearch' }
+    | { type: 'pouch'; kind: 'initialShuffle' | 'sheepStealing' }
+    | { type: 'tribulation'; kind: 'rustedForestShuffle' }
   currentOrder: number[]
 }
 
@@ -237,24 +242,34 @@ export interface TrustedRandomnessAction {
 }
 
 export async function resolvePendingRandomnessSequence<
-  Result extends { pendingRandomnessRequest?: TrustedRandomnessRequest },
+  Ready extends { type: 'ready' },
+  NeedsRandomness extends { type: 'needsRandomness'; request: TrustedRandomnessRequest },
 >(
-  initial: Result,
+  initial: Ready | NeedsRandomness,
   shuffle: (cards: number[]) => number[],
-  persistPending: (result: Result) => Promise<void>,
-  resolve: (action: TrustedRandomnessAction, result: Result) => Promise<Result>,
-): Promise<Result> {
+  persistPending: (result: NeedsRandomness) => Promise<void>,
+  resolve: (
+    action: TrustedRandomnessAction,
+    result: NeedsRandomness,
+  ) => Promise<Ready | NeedsRandomness>,
+): Promise<Ready> {
   let result = initial
-  while (result.pendingRandomnessRequest) {
-    const request = result.pendingRandomnessRequest
-    await persistPending(result)
-    result = await resolve({
-      type: 'resolveRandomness',
-      requestId: request.requestId,
-      shuffledOrder: shuffle(request.currentOrder),
-    }, result)
+  while (true) {
+    switch (result.type) {
+      case 'ready':
+        return result
+      case 'needsRandomness': {
+        const request = result.request
+        await persistPending(result)
+        result = await resolve({
+          type: 'resolveRandomness',
+          requestId: request.requestId,
+          shuffledOrder: shuffle(request.currentOrder),
+        }, result)
+        break
+      }
+    }
   }
-  return result
 }
 
 export function requiresPendingCommandDraft(
@@ -339,18 +354,35 @@ export type GameRoomRequest =
       action: OnlineGameAction
     }
 
+export interface RulesNeedsRandomnessResult {
+  type: 'needsRandomness'
+  record: RecordedDecision[]
+  request: TrustedRandomnessRequest
+}
+
+export interface RulesReadyResult extends LocalGameResponse {
+  type: 'ready'
+}
+
+export type RulesEngineResult = RulesNeedsRandomnessResult | RulesReadyResult
+
+export function requireReadyRulesResult(result: RulesEngineResult): RulesReadyResult {
+  switch (result.type) {
+    case 'ready':
+      return result
+    case 'needsRandomness':
+      throw new Error(`Rules Engine unexpectedly requested randomness: ${result.request.requestId}`)
+  }
+}
+
 export interface GameRoomResponse extends Omit<
-  LocalGameResponse,
-  'record' | 'trustedRandomCandidates' | 'pendingRandomnessRequest'
+  RulesReadyResult,
+  'type' | 'record' | 'trustedRandomCandidates'
 > {
   gameId: string
   metadata: GameRoomMetadata
   invitation?: GameRoomInvitation
   lockedDeckName?: string
-}
-
-export interface RulesEngineResult extends LocalGameResponse {
-  playableActions: PlayableAction[]
 }
 
 export type GameRoomSocketMessage =

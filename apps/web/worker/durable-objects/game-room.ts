@@ -5,6 +5,7 @@ import {
   isOnlineGameAction,
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
+  requireReadyRulesResult,
   requiresPendingCommandDraft,
   resolvePendingRandomnessSequence,
   type GameRoomAccess,
@@ -20,11 +21,20 @@ import {
   type PlayerNotification,
   type RulesGameSetup,
   type RulesEngineResult,
+  type RulesNeedsRandomnessResult,
+  type RulesReadyResult,
   type StoredGameEvent,
 } from '../../shared/game-room'
 import type { PlayableAction, PlayerId } from '../../app/types/fewfc'
-import { callRuleModuleResolution, callRulesEngine } from '../rules-engine'
+import {
+  callRuleModuleResolution,
+  callRulesEngine as callRulesEngineResult,
+} from '../rules-engine'
 import { RulesEngineError } from '../rules-engine-error'
+
+async function callRulesEngine(request: unknown): Promise<RulesReadyResult> {
+  return requireReadyRulesResult(await callRulesEngineResult(request))
+}
 
 interface GameRoomEnv {
   PLAYER_NOTIFICATIONS: DurableObjectNamespace
@@ -590,6 +600,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         return await this.seedEchoFixture(actorUserId, 'splitEarth')
       case 'tribulation-earth-rending':
         return await this.seedTribulationFixture(actorUserId)
+      case 'tribulation-rusted-forest':
+        return await this.seedRustedForestFixture(actorUserId)
     }
   }
 
@@ -1067,6 +1079,81 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return this.json(await this.response(metadata, actorUserId))
   }
 
+  private async seedRustedForestFixture(actorUserId: string): Promise<Response> {
+    const metadata = await this.requireMetadata()
+    const actor = this.memberFor(metadata, actorUserId)
+
+    if (!actor?.owner) {
+      return this.json({ error: 'only room owner may seed a test fixture' }, 403)
+    }
+    if (metadata.status !== 'Active') {
+      return this.json({ error: 'test fixture requires an active match' }, 409)
+    }
+
+    const snapshot = await this.requireSnapshot()
+    if (!snapshot.setup.enabledRuleModules.includes('tribulation')) {
+      return this.json({ error: 'test fixture requires Tribulation' }, 409)
+    }
+    const setup: RulesGameSetup = {
+      ...snapshot.setup,
+      turnOrder: [
+        actor.player,
+        ...snapshot.setup.turnOrder.filter(player => player !== actor.player),
+      ],
+    }
+    const deckSeed = 'development:tribulation-rusted-forest'
+    const rules = await callRulesEngine({
+      action: {
+        type: 'startDevelopmentScenario',
+        player: actor.player,
+        scenario: 'tribulation-rusted-forest',
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+    })
+    const actions = await callRulesEngine({
+      action: {
+        type: 'developmentScenarioAction',
+        player: actor.player,
+        scenario: 'tribulation-rusted-forest',
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+    const rustedForest = actions.playableActions.find(
+      (action): action is Extract<PlayableAction, { type: 'performFormation' }> => (
+        action.type === 'performFormation'
+        && action.id === 'tribulation:rusted-forest'
+      ),
+    )
+    if (!rustedForest) {
+      return this.json({ error: 'test fixture could not find Rusted Forest Cards' }, 500)
+    }
+
+    await this.ctx.storage.put('snapshot', {
+      ...snapshot,
+      firstPlayer: actor.player,
+      setup,
+      deckSeed,
+      rulesRecord: rules.record,
+    } satisfies GameRoomSnapshot)
+    await this.ctx.storage.delete('pendingCommandDraft')
+    this.ctx.waitUntil(this.broadcast(metadata))
+
+    return this.json({
+      ...await this.response(metadata, actorUserId),
+      fixtureAction: {
+        type: 'performFormation',
+        player: actor.player,
+        formationId: rustedForest.id,
+        cards: rustedForest.cards,
+      },
+    })
+  }
+
   private async submitCommand(
     request: Extract<GameRoomRequest, { type: 'submitCommand' }>,
   ): Promise<Response> {
@@ -1090,7 +1177,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
     if (request.action.type === 'playableActions') {
       const snapshot = await this.requireSnapshot()
-      const rules = await this.callRules(playerAction, viewer, snapshot)
+      const rules = await this.callReadyRules(playerAction, viewer, snapshot)
 
       return this.json(await this.response(metadata, request.actorUserId, rules.playableActions))
     }
@@ -1119,23 +1206,34 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
     const canonicalSnapshot = await this.requireSnapshot()
     const previousSnapshot = existingDraft?.snapshot ?? canonicalSnapshot
-    const previousRules = await this.callRules({ type: 'refresh' }, 'observer', previousSnapshot)
-    let rules: RulesEngineResult
+    const previousRules = await this.callReadyRules(
+      { type: 'refresh' },
+      'observer',
+      canonicalSnapshot,
+    )
+    let initialRules: RulesEngineResult
     if (existingDraft?.pendingRandomness) {
-      rules = await this.callRules({ type: 'refresh' }, viewer, previousSnapshot)
+      initialRules = await this.callRules({ type: 'refresh' }, viewer, previousSnapshot)
     } else {
       const action = await this.withTrustedRandomness(playerAction, viewer, previousSnapshot)
-      rules = await this.callRules(action, viewer, previousSnapshot)
+      initialRules = await this.callRules(action, viewer, previousSnapshot)
     }
 
-    if (rules.pendingRandomnessRequest) {
-      const randomnessDraft: PendingCommandDraft = existingDraft ?? {
-        actorUserId: request.actorUserId,
-        commandId: request.commandId,
-        action: playerAction,
-        snapshot: previousSnapshot,
+    let rules: RulesReadyResult
+    switch (initialRules.type) {
+      case 'ready':
+        rules = initialRules
+        break
+      case 'needsRandomness': {
+        const randomnessDraft: PendingCommandDraft = existingDraft ?? {
+          actorUserId: request.actorUserId,
+          commandId: request.commandId,
+          action: playerAction,
+          snapshot: previousSnapshot,
+        }
+        rules = await this.resolvePendingRandomness(initialRules, viewer, randomnessDraft)
+        break
       }
-      rules = await this.resolvePendingRandomness(rules, viewer, randomnessDraft)
     }
 
     if (
@@ -1503,8 +1601,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
 
     const draft = actorUserId ? await this.pendingDraft() : undefined
-    const snapshot = draft?.snapshot ?? await this.requireSnapshot()
-    const publicRules = await this.callRules({ type: 'refresh' }, viewer, snapshot)
+    const snapshot = draft && !draft.pendingRandomness
+      ? draft.snapshot
+      : await this.requireSnapshot()
+    const publicRules = await this.callReadyRules({ type: 'refresh' }, viewer, snapshot)
     const responseMetadata: GameRoomMetadata = (
       currentMetadata.status === 'Active'
       && publicRules.state.status === 'Finished'
@@ -1619,7 +1719,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   ): Promise<OnlineGameAction> {
     if (!('player' in action)) return action
 
-    const candidates = await this.callRules({
+    const candidates = await this.callReadyRules({
       type: 'trustedRandomHandCandidates',
       player: action.player,
       candidateAction: action,
@@ -1636,11 +1736,14 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   }
 
   private async resolvePendingRandomness(
-    initialRules: RulesEngineResult,
+    initialRules: RulesNeedsRandomnessResult,
     viewer: string,
     draft: PendingCommandDraft,
-  ): Promise<RulesEngineResult> {
-    return await resolvePendingRandomnessSequence(
+  ): Promise<RulesReadyResult> {
+    return await resolvePendingRandomnessSequence<
+      RulesReadyResult,
+      RulesNeedsRandomnessResult
+    >(
       initialRules,
       cards => this.shuffle(cards),
       async (rules) => {
@@ -1668,14 +1771,22 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     action: RulesEngineAction,
     viewer: string | undefined,
     snapshot: GameRoomSnapshot,
-  ) {
-    return await callRulesEngine({
+  ): Promise<RulesEngineResult> {
+    return await callRulesEngineResult({
       action,
       viewer,
       setup: snapshot.setup,
       deckSeed: snapshot.deckSeed,
       record: snapshot.rulesRecord,
     })
+  }
+
+  private async callReadyRules(
+    action: RulesEngineAction,
+    viewer: string | undefined,
+    snapshot: GameRoomSnapshot,
+  ): Promise<RulesReadyResult> {
+    return requireReadyRulesResult(await this.callRules(action, viewer, snapshot))
   }
 
   private async storeRoomEvent(
