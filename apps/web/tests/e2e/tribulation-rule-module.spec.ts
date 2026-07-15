@@ -117,6 +117,25 @@ test('Rusted Forest drains trusted shuffles inside one Game Room command', async
     expect(response.body.events.filter(
       (event: { eventType: string }) => event.eventType === 'RustedForestCompleted',
     )).toHaveLength(1)
+
+    const audit = await host.evaluate(async ({ gameId, commandId }) => {
+      const result = await fetch(
+        `/api/games/${gameId}/test-record?commandId=${encodeURIComponent(commandId)}`,
+      )
+      return {
+        ok: result.ok,
+        status: result.status,
+        body: await result.json(),
+      }
+    }, { gameId: roomId, commandId })
+    expect(audit.ok, JSON.stringify(audit.body)).toBe(true)
+    expect(audit.body.commandCommitCount).toBe(1)
+    expect(audit.body.canonicalEventTypes.filter(
+      (eventType: string) => eventType === 'RandomnessResolved',
+    ).length).toBeGreaterThan(0)
+    expect(audit.body.canonicalEventTypes.filter(
+      (eventType: string) => eventType === 'RustedForestCompleted',
+    )).toHaveLength(1)
   } finally {
     await hostContext.close()
     await guestContext.close()

@@ -344,6 +344,11 @@ export type GameRoomRequest =
       scenario: DevelopmentScenario
     }
   | {
+      type: 'inspectDevelopmentRecord'
+      actorUserId: string
+      commandId: string
+    }
+  | {
       type: 'getState'
       actorUserId: string
     }

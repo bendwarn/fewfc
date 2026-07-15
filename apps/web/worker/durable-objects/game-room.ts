@@ -36,6 +36,17 @@ async function callRulesEngine(request: unknown): Promise<RulesReadyResult> {
   return requireReadyRulesResult(await callRulesEngineResult(request))
 }
 
+function canonicalEventTypes(record: unknown[]): string[] {
+  return record.flatMap((decision) => {
+    if (!decision || typeof decision !== 'object' || !('events' in decision)) return []
+    const events = decision.events
+    if (!Array.isArray(events)) return []
+    return events.flatMap((event) => (
+      event && typeof event === 'object' ? Object.keys(event) : []
+    ))
+  })
+}
+
 interface GameRoomEnv {
   PLAYER_NOTIFICATIONS: DurableObjectNamespace
 }
@@ -112,6 +123,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           return await this.resetGame(body.actorUserId)
         case 'seedDevelopmentScenario':
           return await this.seedDevelopmentScenario(body.actorUserId, body.scenario)
+        case 'inspectDevelopmentRecord':
+          return await this.inspectDevelopmentRecord(body.actorUserId, body.commandId)
         case 'getState':
           return await this.getState(body.actorUserId)
         case 'submitCommand':
@@ -603,6 +616,27 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       case 'tribulation-rusted-forest':
         return await this.seedRustedForestFixture(actorUserId)
     }
+  }
+
+  private async inspectDevelopmentRecord(
+    actorUserId: string,
+    commandId: string,
+  ): Promise<Response> {
+    const metadata = await this.requireMetadata()
+    const actor = this.memberFor(metadata, actorUserId)
+    if (!actor?.owner) {
+      return this.json({ error: 'only room owner may inspect a test record' }, 403)
+    }
+
+    const commandCommitCount = (await this.events()).filter((event) => (
+      event.type === 'RulesCommandApplied' && event.commandId === commandId
+    )).length
+    const snapshot = await this.requireSnapshot()
+
+    return this.json({
+      commandCommitCount,
+      canonicalEventTypes: canonicalEventTypes(snapshot.rulesRecord),
+    })
   }
 
   private async seedEndgameFixture(actorUserId: string): Promise<Response> {
