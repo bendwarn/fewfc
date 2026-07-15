@@ -2,6 +2,7 @@ import type {
   PlayerNotification,
   PlayerNotificationSocketMessage,
 } from '../../shared/game-room'
+import { mergePlayerNotification } from '../lib/player-notifications'
 
 export function usePlayerNotifications() {
   const notifications = ref<PlayerNotification[]>([])
@@ -49,10 +50,7 @@ export function usePlayerNotifications() {
       }
 
       if (message.type === 'notification') {
-        notifications.value = [
-          message.data,
-          ...notifications.value.filter((item) => item.id !== message.data.id),
-        ].slice(0, 8)
+        notifications.value = mergePlayerNotification(notifications.value, message.data)
       }
     })
 
