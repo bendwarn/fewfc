@@ -127,8 +127,8 @@ fn event_source(
         RecordedDecisionSource::Setup => EventSource::Setup,
         RecordedDecisionSource::Automatic => EventSource::Automatic {
             reason: automatic_reason(event)
-                .or_else(|| inherited_automatic_reason.clone())
-                .inspect(|reason| *inherited_automatic_reason = Some(reason.clone()))
+                .or(*inherited_automatic_reason)
+                .inspect(|reason| *inherited_automatic_reason = Some(*reason))
                 .expect("automatic advancement must begin with an automatic event"),
         },
         RecordedDecisionSource::Randomness { answer } => EventSource::Randomness {

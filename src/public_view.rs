@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 pub enum Viewer {
     Player(PlayerId),
     Observer,
+    /// Read-only completed-match viewer. It may inspect historical player-owned
+    /// information, but never deck order or trusted randomness answers.
+    Replay,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -327,7 +330,10 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .iter()
             .filter(|_| uses_personal_decks)
             .map(|pile| {
-                let visible = state.has_rule_module(crate::domain::POUCH_MODULE_ID)
+                // Replay intentionally reveals player areas but preserves every
+                // deck as an unordered count-only pile.
+                let visible = !matches!(&policy.viewer, Viewer::Replay)
+                    && state.has_rule_module(crate::domain::POUCH_MODULE_ID)
                     && policy.can_see_player_hidden_cards(&pile.player);
                 let cards = if visible {
                     let mut cards = pile.cards.clone();
@@ -357,6 +363,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .map(|pouch| PublicPouch {
                 owner: pouch.owner.clone(),
                 card: match &policy.viewer {
+                    Viewer::Replay => Some(pouch.card),
                     Viewer::Player(viewer) if pouch.known_by.contains(viewer) => Some(pouch.card),
                     _ => None,
                 },
@@ -517,6 +524,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         } => PublicGameEvent::PouchPlaced {
             owner: owner.clone(),
             card: match &policy.viewer {
+                Viewer::Replay => Some(*card),
                 Viewer::Player(viewer) if known_by.contains(viewer) => Some(*card),
                 _ => None,
             },
@@ -922,13 +930,36 @@ impl RedactionPolicy {
     }
 
     fn can_see_player_hidden_cards(&self, player: &PlayerId) -> bool {
-        matches!(&self.viewer, Viewer::Player(viewer) if viewer == player)
+        matches!(&self.viewer, Viewer::Replay)
+            || matches!(&self.viewer, Viewer::Player(viewer) if viewer == player)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_viewer_reveals_player_areas_but_keeps_decks_count_only() {
+        let alice = PlayerId::new("alice");
+        let mut state = GameState::from_setup(&crate::domain::GameSetup::two_player(
+            alice.clone(),
+            PlayerId::new("bob"),
+            30,
+        ));
+        state.enabled_rule_modules.push(crate::domain::RuleModuleId::new(
+            crate::domain::PERSONAL_DECK_MODULE_ID,
+        ));
+        state.hands[0].cards = vec![CardInstanceId::new(1)];
+        state.player_decks = vec![crate::domain::PlayerCardPile {
+            player: alice.clone(),
+            cards: vec![CardInstanceId::new(2), CardInstanceId::new(3)],
+        }];
+
+        let view = state_for(&state, Viewer::Replay);
+        assert_eq!(view.hands[0].cards, PublicCardRefs::Known(vec![CardInstanceId::new(1)]));
+        assert_eq!(view.player_decks[0].cards, PublicCardRefs::Hidden { count: 2 });
+    }
 
     #[test]
     fn card_movements_reveal_public_discards_without_leaking_hidden_returns() {

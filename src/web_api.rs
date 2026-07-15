@@ -1,4 +1,4 @@
-use crate::application::{GameRecord, RecordedDecision};
+use crate::application::{GameRecord, RecordedDecision, replay_frame};
 use crate::domain::targeting::{RulePlayerTarget, TurnOrderTargets};
 use crate::domain::{
     CardDefId, CardInstanceId, CardOrigin, Command, DISCARD_RETRIEVAL_MODULE_ID,
@@ -144,9 +144,15 @@ fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
     let formation_names = rules.formation_names(&setup).map_err(ApiError::Game)?;
     let viewer = viewer_from_request(request.viewer.as_deref());
     let deck_seed = request.deck_seed.clone();
+    if let ApiAction::ReplayFrame { step } = request.action {
+        let frame = replay_frame(&setup, &request.record.unwrap_or_default(), step)
+            .map_err(ApiError::Game)?;
+        return replay_response_for(frame, &card_labels, &card_facts, &formation_names);
+    }
     let mut record = record_from_request(&rules, &setup, request.record, deck_seed.as_deref())?;
 
     match request.action {
+        ApiAction::ReplayFrame { .. } => unreachable!("replay frames return before record loading"),
         ApiAction::Start => {
             record = GameRecord::start(
                 setup.clone(),
@@ -570,7 +576,7 @@ fn response_for(
     let vocabulary = PlayerVocabulary::for_modules(&record.state().enabled_rule_modules);
     let viewer_player = match &viewer {
         Viewer::Player(player) => Some(player.clone()),
-        Viewer::Observer => None,
+        Viewer::Observer | Viewer::Replay => None,
     };
     let can_pass = pass_action_for_state(record.state()).is_some();
     let can_retrieve_discard = can_retrieve_discard(record.state());
@@ -684,6 +690,45 @@ fn response_for(
     })
 }
 
+fn replay_response_for(
+    frame: crate::application::ReplayFrame,
+    card_labels: &HashMap<CardInstanceId, String>,
+    card_facts: &HashMap<CardInstanceId, WebCardFact>,
+    formation_names: &HashMap<String, String>,
+) -> Result<ApiResult, ApiError> {
+    let vocabulary = PlayerVocabulary::for_modules(&frame.state.enabled_rule_modules);
+    let state = WebPublicGameState::from_public(
+        crate::public_view::state_for(&frame.state, Viewer::Replay),
+        card_labels,
+        card_facts,
+        formation_names,
+    );
+    let events = crate::public_view::events_for(&frame.events, Viewer::Replay)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, event)| !matches!(
+            event,
+            PublicGameEvent::DeckPrepared { .. }
+                | PublicGameEvent::PlayerDeckPrepared { .. }
+        ))
+        .map(|(index, event)| WebPublicGameEvent::from_public(
+            index + 1,
+            event,
+            card_labels,
+            formation_names,
+            &vocabulary,
+        ))
+        .collect();
+
+    Ok(ApiResult::ReplayFrame {
+        current_step: frame.step,
+        total_steps: frame.total_steps,
+        state,
+        events,
+        interaction: WebInteraction::disabled(),
+    })
+}
+
 #[derive(Serialize, Deserialize)]
 struct ApiRequest {
     action: ApiAction,
@@ -733,6 +778,9 @@ struct WebSetupDeckList {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ApiAction {
+    ReplayFrame {
+        step: usize,
+    },
     Start,
     StartDevelopmentScenario {
         player: String,
@@ -1550,6 +1598,15 @@ enum ApiResult {
         #[serde(flatten)]
         response: ApiResponse,
     },
+    ReplayFrame {
+        #[serde(rename = "currentStep")]
+        current_step: usize,
+        #[serde(rename = "totalSteps")]
+        total_steps: usize,
+        state: WebPublicGameState,
+        events: Vec<WebPublicGameEvent>,
+        interaction: WebInteraction,
+    },
 }
 
 #[derive(Serialize)]
@@ -1577,6 +1634,21 @@ struct WebInteraction {
     can_trigger_pouch: bool,
     pouch_chain_action: Option<WebPouchChainActionOptions>,
     secret_strategy_actions: Vec<WebSecretStrategyActionOption>,
+}
+
+impl WebInteraction {
+    fn disabled() -> Self {
+        Self {
+            can_pass: false,
+            has_optional_effect: false,
+            can_retrieve_discard: false,
+            discard_retrieval_action: None,
+            can_choose_initial_pouch: false,
+            can_trigger_pouch: false,
+            pouch_chain_action: None,
+            secret_strategy_actions: Vec::new(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -2466,11 +2538,11 @@ impl WebPendingChoice {
                         .into_iter()
                         .map(|player| player.as_str().to_string())
                         .collect(),
-                    formation_groups: is_split_earth_formation_choice
-                        .then(|| {
-                            web_formation_choice_groups(&options.formations, enabled_rule_modules)
-                        })
-                        .unwrap_or_default(),
+                    formation_groups: if is_split_earth_formation_choice {
+                        web_formation_choice_groups(&options.formations, enabled_rule_modules)
+                    } else {
+                        Vec::new()
+                    },
                     formations: options.formations,
                     environments: options
                         .environments
@@ -2973,9 +3045,11 @@ impl PlayerVocabulary {
             "choose-card-to-seal" => "封印".to_string(),
             _ => {
                 let ability = self.ability(purpose);
-                (ability != "未知能力")
-                    .then_some(ability.to_string())
-                    .unwrap_or_else(|| "未知效果".to_string())
+                if ability != "未知能力" {
+                    ability.to_string()
+                } else {
+                    "未知效果".to_string()
+                }
             }
         }
     }
@@ -4355,6 +4429,7 @@ mod tests {
             ApiResult::NeedsRandomness { request, .. } => {
                 panic!("expected ready response, got randomness request {request:?}")
             }
+            ApiResult::ReplayFrame { .. } => panic!("expected ready response, got replay frame"),
         }
     }
 
@@ -4368,6 +4443,19 @@ mod tests {
         assert_eq!(json["state"]["turnNumber"], 1);
         assert!(json["record"].is_array());
         assert!(json.get("request").is_none());
+    }
+
+    #[test]
+    fn replay_frame_dto_uses_camel_case_contract_fields() {
+        let response = handle_request_json(
+            r#"{"action":{"type":"replayFrame","step":0},"viewer":"replay","record":[]}"#,
+        ).expect("replay frame should serialize");
+        let json: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(json["type"], "replayFrame");
+        assert!(json.get("currentStep").is_some());
+        assert!(json.get("totalSteps").is_some());
+        assert!(json.get("current_step").is_none());
+        assert!(json.get("total_steps").is_none());
     }
 
     #[test]

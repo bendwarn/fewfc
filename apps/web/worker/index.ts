@@ -1,6 +1,7 @@
 import nuxtWorker from '../.output/server/index.mjs'
 import { GameRoom } from './durable-objects/game-room'
 import { PlayerNotifications } from './durable-objects/player-notifications'
+import { ReplayArchive } from './durable-objects/replay-archive'
 import {
   callPersonalDeckResolution,
   callRuleModuleResolution,
@@ -10,6 +11,7 @@ import {
 interface WorkerEnv {
   GAME_ROOM: DurableObjectNamespace
   PLAYER_NOTIFICATIONS: DurableObjectNamespace
+  REPLAY: DurableObjectNamespace
   APP_ENV: 'development' | 'staging' | 'production'
 }
 
@@ -131,4 +133,4 @@ export default {
   },
 }
 
-export { GameRoom, PlayerNotifications }
+export { GameRoom, PlayerNotifications, ReplayArchive }

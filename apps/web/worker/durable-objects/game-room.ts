@@ -10,6 +10,7 @@ import {
   resolvePendingRandomnessSequence,
   type GameRoomAccess,
   type GameRoomCapacity,
+  type CompletedReplayDraft,
   type GameRoomInvitation,
   type GameRoomMember,
   type GameRoomMetadata,
@@ -121,6 +122,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           return await this.startGame(body.actorUserId, body.deckList)
         case 'resetGame':
           return await this.resetGame(body.actorUserId)
+        case 'getCompletedReplayDraft':
+          return await this.getCompletedReplayDraft(body.actorUserId)
         case 'seedDevelopmentScenario':
           return await this.seedDevelopmentScenario(body.actorUserId, body.scenario)
         case 'inspectDevelopmentRecord':
@@ -510,6 +513,9 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'not all joined players are ready' }, 409)
     }
 
+    // A completed draft is only saveable until the next match starts.
+    await this.ctx.storage.delete('lastCompletedReplayDraft')
+
     await this.ctx.storage.put(this.lockedDeckKey(actorUserId), deckList)
     const lockedDecks = await Promise.all(metadata.members.map(async member => ({
       player: member.player,
@@ -578,6 +584,29 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'match has not finished' }, 409)
     }
 
+    const snapshot = await this.requireSnapshot()
+    const finished = await this.callReadyRules({ type: 'refresh' }, 'observer', snapshot)
+    const draft: CompletedReplayDraft = {
+      schemaVersion: 1,
+      replayId: crypto.randomUUID(),
+      sourceGameId: metadata.gameId,
+      finishedAt: snapshot.finishedAt ?? new Date().toISOString(),
+      setup: snapshot.setup,
+      record: snapshot.rulesRecord,
+      players: metadata.members.map(member => ({
+        player: member.player,
+        displayName: member.displayName,
+      })),
+      originalUserIds: metadata.members.map(member => member.userId),
+      roomName: metadata.name,
+      result: {
+        status: finished.state.status,
+        hp: finished.state.hp,
+      },
+      firstPlayer: snapshot.firstPlayer,
+    }
+    await this.ctx.storage.put('lastCompletedReplayDraft', draft)
+
     const updatedMetadata = await this.storeRoomEvent({
       ...metadata,
       members: metadata.members.map((member) => ({
@@ -594,6 +623,17 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     this.ctx.waitUntil(this.afterRoomMutation(updatedMetadata))
 
     return this.json(await this.response(updatedMetadata, actorUserId))
+  }
+
+  private async getCompletedReplayDraft(actorUserId: string): Promise<Response> {
+    const draft = await this.ctx.storage.get<CompletedReplayDraft>('lastCompletedReplayDraft')
+    if (!draft) {
+      return this.json({ error: 'replay is no longer available', code: 'replayNoLongerAvailable' }, 409)
+    }
+    if (!draft.originalUserIds.includes(actorUserId)) {
+      return this.json({ error: 'only original players may save this replay' }, 403)
+    }
+    return this.json(draft)
   }
 
   private async seedDevelopmentScenario(
@@ -1327,6 +1367,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       ...previousSnapshot,
       sequence,
       rulesRecord: rules.record,
+      finishedAt: rules.state.status === 'Finished' ? now : previousSnapshot.finishedAt,
     }
     const status = rules.state.status === 'Finished' ? 'Finished' : 'Active'
     const updatedMetadata: GameRoomMetadata = {
@@ -1612,11 +1653,21 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       : 'observer'
 
     if (currentMetadata.status === 'Waiting' || currentMetadata.status === 'Dissolved') {
+      const completed = actorUserId
+        ? await this.ctx.storage.get<CompletedReplayDraft>('lastCompletedReplayDraft')
+        : undefined
       return {
         gameId: currentMetadata.gameId,
         metadata: currentMetadata,
         invitation: await this.invitationFor(currentMetadata, actorUserId),
         lockedDeckName,
+        savableReplay: completed && completed.originalUserIds.includes(actorUserId ?? '')
+          ? {
+              replayId: completed.replayId,
+              sourceGameId: completed.sourceGameId,
+              finishedAt: completed.finishedAt,
+            }
+          : undefined,
         state: emptyPublicState(currentMetadata.players),
         events: (await this.events()).map((event) => ({
           id: `room-event-${event.sequence}`,

@@ -107,6 +107,25 @@ export const publicGameRoom = sqliteTable(
   ],
 )
 
+export const playerSavedReplay = sqliteTable(
+  'player_saved_replay',
+  {
+    userId: text('user_id').notNull(),
+    replayId: text('replay_id').notNull(),
+    sourceGameId: text('source_game_id').notNull(),
+    roomName: text('room_name').notNull(),
+    playersJson: text('players_json').notNull(),
+    resultJson: text('result_json').notNull(),
+    finishedAt: text('finished_at').notNull(),
+    savedAt: text('saved_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('player_saved_replay_user_replay_idx').on(table.userId, table.replayId),
+    index('player_saved_replay_user_saved_at_idx').on(table.userId, table.savedAt),
+    index('player_saved_replay_replay_id_idx').on(table.replayId),
+  ],
+)
+
 export const schema = {
   user,
   session,
@@ -115,4 +134,5 @@ export const schema = {
   playerProfile,
   playerDeck,
   publicGameRoom,
+  playerSavedReplay,
 }

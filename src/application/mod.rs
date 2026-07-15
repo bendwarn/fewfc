@@ -64,6 +64,20 @@ pub struct GameRecord {
     current_state: GameState,
 }
 
+/// A prefix of a canonical record suitable for a read-only replay viewer.
+///
+/// `step` is deliberately expressed in player commands, not canonical events:
+/// setup and every decision before the first command are step zero; each later
+/// step contains one command and all following automatic/randomness decisions
+/// until the next command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayFrame {
+    pub step: usize,
+    pub total_steps: usize,
+    pub state: GameState,
+    pub events: Vec<GameEvent>,
+}
+
 impl GameRecord {
     pub fn start(setup: GameSetup, deck_order: Vec<CardInstanceId>) -> GameResult<Self> {
         let ruleset = OfficialRules::new();
@@ -322,6 +336,58 @@ pub fn replay(setup: &GameSetup, events: &[GameEvent]) -> Result<GameState, Game
     crate::rules::projection::project(setup, events)
 }
 
+/// Projects a canonical decision record without re-running commands, automatic
+/// advancement, or trusted randomness.  Verification is intentionally a
+/// separate operation (`verify_recorded_decisions`).
+pub fn replay_frame(
+    setup: &GameSetup,
+    recorded_decisions: &[RecordedDecision],
+    step: usize,
+) -> Result<ReplayFrame, GameError> {
+    OfficialRules::new().validate_setup(setup)?;
+
+    let groups = replay_decision_groups(recorded_decisions);
+    let total_steps = groups.len().saturating_sub(1);
+    if step > total_steps {
+        return Err(GameError::Validation(
+            crate::domain::ValidationError::ReplayStepOutOfRange { step, total_steps },
+        ));
+    }
+
+    let mut state = GameState::from_setup(setup);
+    let mut events = Vec::new();
+    for group in groups.into_iter().take(step + 1) {
+        for decision in group {
+            for event in &decision.events {
+                apply_event(&mut state, event);
+                events.push(event.clone());
+            }
+        }
+    }
+
+    Ok(ReplayFrame {
+        step,
+        total_steps,
+        state,
+        events,
+    })
+}
+
+/// Keeps decision grouping in the application layer so the archive adapter
+/// never has to understand canonical sources or trusted randomness payloads.
+pub fn replay_decision_groups(
+    recorded_decisions: &[RecordedDecision],
+) -> Vec<Vec<&RecordedDecision>> {
+    let mut groups = vec![Vec::new()];
+    for decision in recorded_decisions {
+        if matches!(decision.source, RecordedDecisionSource::Command { .. }) {
+            groups.push(Vec::new());
+        }
+        groups.last_mut().expect("replay always has setup group").push(decision);
+    }
+    groups
+}
+
 pub fn verify_recorded_decisions(
     setup: &GameSetup,
     recorded_decisions: &[RecordedDecision],
@@ -441,7 +507,34 @@ fn source_for_recorded_decision(decision: &RecordedDecision) -> EventSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{PlayerId, TeamId};
+    use crate::domain::{Command, CommandId, PassActionReason, PlayerId, TeamId};
+
+    #[test]
+    fn replay_frames_group_trailing_automatic_decisions_without_redeciding_commands() {
+        let setup = GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30);
+        // This command cannot be legal in the untouched setup. Pure replay must
+        // still project the recorded (empty) event batch rather than attempting
+        // verification and rejecting it.
+        let decisions = vec![
+            RecordedDecision { source: RecordedDecisionSource::Setup, events: vec![] },
+            RecordedDecision {
+                source: RecordedDecisionSource::Command {
+                    command_id: CommandId::new(1),
+                    command: Command::PassAction {
+                        player: PlayerId::new("p1"),
+                        reason: PassActionReason::NoCardsInHand,
+                    },
+                },
+                events: vec![],
+            },
+            RecordedDecision { source: RecordedDecisionSource::Automatic, events: vec![] },
+        ];
+
+        assert_eq!(replay_decision_groups(&decisions).iter().map(Vec::len).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(replay_frame(&setup, &decisions, 0).unwrap().total_steps, 1);
+        assert_eq!(replay_frame(&setup, &decisions, 1).unwrap().step, 1);
+        assert!(replay_frame(&setup, &decisions, 2).is_err());
+    }
 
     fn two_player_state() -> GameState {
         GameState::from_setup(&GameSetup::two_player(

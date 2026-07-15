@@ -70,6 +70,7 @@ export function useGameRoom(viewer: ViewerRef) {
   const metadata = ref<GameRoomMetadata | null>(null)
   const invitation = ref<GameRoomInvitation | null>(null)
   const lockedDeckName = ref<string | null>(null)
+  const savableReplay = ref<GameRoomResponse['savableReplay']>()
   const onlineGameId = ref<string | null>(null)
   const publicEvents = ref<PublicGameEvent[]>([])
   const selectedCards = ref<CardInstanceId[]>([])
@@ -180,6 +181,7 @@ export function useGameRoom(viewer: ViewerRef) {
     metadata.value = response.metadata
     invitation.value = response.invitation ?? null
     lockedDeckName.value = response.lockedDeckName ?? null
+    savableReplay.value = response.savableReplay
     onlineGameId.value = response.gameId
     state.value = response.state
     const reconciledDraft = reconcileActionDraft(
@@ -745,6 +747,7 @@ export function useGameRoom(viewer: ViewerRef) {
     metadata.value = null
     invitation.value = null
     lockedDeckName.value = null
+    savableReplay.value = undefined
     onlineGameId.value = null
     state.value = emptyState()
     publicEvents.value = []
@@ -761,6 +764,7 @@ export function useGameRoom(viewer: ViewerRef) {
     metadata,
     invitation,
     lockedDeckName,
+    savableReplay,
     onlineGameId,
     state,
     publicEvents,

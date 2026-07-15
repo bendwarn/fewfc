@@ -20,7 +20,7 @@ let wasmInstance: WebAssembly.Instance | undefined
 
 async function instance(): Promise<FewfcWasmExports> {
   if (!wasmInstance) {
-    wasmInstance = await WebAssembly.instantiate(rulesModule, {}) as WebAssembly.Instance
+    wasmInstance = await WebAssembly.instantiate(rulesModule, {})
   }
 
   return wasmInstance.exports as FewfcWasmExports
@@ -78,9 +78,9 @@ function readPackedJson<T>(wasm: FewfcWasmExports, packed: bigint): T {
   const output = new TextDecoder().decode(outputBytes)
   wasm.fewfc_dealloc(outputPtr, outputLen)
 
-  const parsed = JSON.parse(output) as T | { error: unknown }
+  const parsed = JSON.parse(output) as unknown
 
-  if ('error' in parsed) {
+  if (parsed && typeof parsed === 'object' && 'error' in parsed) {
     throw rulesEngineError(parsed.error)
   }
 

@@ -11,6 +11,7 @@ export interface WorkerEnv {
   DB: unknown
   GAME_ROOM: DurableObjectNamespaceBinding
   PLAYER_NOTIFICATIONS: DurableObjectNamespaceBinding
+  REPLAY: DurableObjectNamespaceBinding
   APP_ENV?: string
   BETTER_AUTH_SECRET?: string
   BETTER_AUTH_URL?: string

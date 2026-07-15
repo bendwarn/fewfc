@@ -25,6 +25,10 @@ class_name = "GameRoom"
 name = "PLAYER_NOTIFICATIONS"
 class_name = "PlayerNotifications"
 
+[[durable_objects.bindings]]
+name = "REPLAY"
+class_name = "ReplayArchive"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["GameRoom"]
@@ -32,6 +36,10 @@ new_sqlite_classes = ["GameRoom"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["PlayerNotifications"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["ReplayArchive"]
 
 [env.staging]
 name = "fewfc-web-staging"
@@ -54,6 +62,10 @@ class_name = "GameRoom"
 name = "PLAYER_NOTIFICATIONS"
 class_name = "PlayerNotifications"
 
+[[env.staging.durable_objects.bindings]]
+name = "REPLAY"
+class_name = "ReplayArchive"
+
 [[env.staging.migrations]]
 tag = "v1"
 new_sqlite_classes = ["GameRoom"]
@@ -61,6 +73,10 @@ new_sqlite_classes = ["GameRoom"]
 [[env.staging.migrations]]
 tag = "v2"
 new_sqlite_classes = ["PlayerNotifications"]
+
+[[env.staging.migrations]]
+tag = "v3"
+new_sqlite_classes = ["ReplayArchive"]
 
 [env.production]
 name = "fewfc-web-production"
@@ -83,6 +99,10 @@ class_name = "GameRoom"
 name = "PLAYER_NOTIFICATIONS"
 class_name = "PlayerNotifications"
 
+[[env.production.durable_objects.bindings]]
+name = "REPLAY"
+class_name = "ReplayArchive"
+
 [[env.production.migrations]]
 tag = "v1"
 new_sqlite_classes = ["GameRoom"]
@@ -90,3 +110,7 @@ new_sqlite_classes = ["GameRoom"]
 [[env.production.migrations]]
 tag = "v2"
 new_sqlite_classes = ["PlayerNotifications"]
+
+[[env.production.migrations]]
+tag = "v3"
+new_sqlite_classes = ["ReplayArchive"]

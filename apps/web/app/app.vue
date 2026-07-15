@@ -19,6 +19,7 @@
         </button>
         <div v-if="profileOpen" class="profile-menu">
           <button type="button" @click="openDeckEditor">個人牌組</button>
+          <button type="button" @click="openReplays">重播紀錄</button>
           <button type="button" @click="logout">登出</button>
         </div>
       </nav>
@@ -264,6 +265,42 @@
             {{ deckBusy ? '儲存中…' : '儲存牌組' }}
           </button>
         </div>
+      </section>
+    </main>
+
+    <main v-else-if="screen === 'replays'" class="lobby-page">
+      <section class="lobby-content" aria-label="重播紀錄">
+        <div class="lobby-heading"><h1>重播紀錄</h1><button class="ghost-button" type="button" @click="returnToLobby">返回房間</button></div>
+        <p v-if="replayError" class="form-error">{{ replayError }}</p>
+        <p v-if="replayReplaceSource" class="muted">已達 10 局，選擇要替換的紀錄。</p>
+        <article v-for="replay in replays" :key="replay.replayId" class="room-card">
+          <div><strong>{{ replay.roomName }}</strong><p>{{ replay.players.map(player => player.displayName).join('、') }} · {{ replay.finishedAt }} · {{ replayResultText(replay.result) }}</p></div>
+          <div class="result-actions">
+            <button class="ghost-button" type="button" @click="openReplay(replay.replayId)">觀看</button>
+            <button class="ghost-button" type="button" @click="copyReplayLink(replay.replayId)">複製連結</button>
+            <button v-if="replayReplaceSource" class="primary-button" type="button" @click="replaceReplay(replay.replayId)">以本局替換</button>
+            <button v-else class="ghost-button" type="button" @click="deleteReplay(replay.replayId)">刪除</button>
+          </div>
+        </article>
+        <p v-if="!replays.length && !replayLoading" class="muted">尚未儲存任何重播。</p>
+      </section>
+    </main>
+
+    <main v-else-if="screen === 'replay'" class="lobby-page">
+      <section class="lobby-content" aria-label="重播播放器">
+        <div class="lobby-heading"><h1>重播</h1><button class="ghost-button" type="button" @click="openReplays">返回重播清單</button></div>
+        <template v-if="replayFrame">
+          <p>第 {{ replayFrame.currentStep }} / {{ replayFrame.totalSteps }} 步</p>
+          <div class="result-actions">
+            <button class="ghost-button" :disabled="replayFrame.currentStep === 0" @click="loadReplayFrame(0)">第一步</button>
+            <button class="ghost-button" :disabled="replayFrame.currentStep === 0" @click="loadReplayFrame(replayFrame.currentStep - 1)">上一步</button>
+            <button class="ghost-button" :disabled="replayFrame.currentStep === replayFrame.totalSteps" @click="loadReplayFrame(replayFrame.currentStep + 1)">下一步</button>
+            <button class="ghost-button" :disabled="replayFrame.currentStep === replayFrame.totalSteps" @click="loadReplayFrame(replayFrame.totalSteps)">最後一步</button>
+            <button class="ghost-button" @click="copyReplayLink(replayRouteId)">分享連結</button>
+          </div>
+          <section class="event-panel expanded"><div class="panel-title"><h2>戰局紀錄</h2></div><ol class="event-feed"><li v-for="event in replayFrame.events" :key="event.id"><div><span>{{ event.title }}</span><p>{{ event.summary }}</p></div></li></ol></section>
+        </template>
+        <p v-else-if="!replayLoading" class="muted">找不到這個重播</p>
       </section>
     </main>
 
@@ -1376,7 +1413,7 @@
 
           <section class="event-panel" :class="{ expanded: eventExpanded }">
             <div class="panel-title">
-              <h2>戰局紀錄</h2>
+              <h2>戰局紀錄 <button v-if="roomWaiting && game.savableReplay.value" class="ghost-button" type="button" :disabled="replaySaving" @click="saveCurrentReplay">{{ replaySaved ? '已儲存' : '儲存本局' }}</button></h2>
               <button type="button" @click="eventExpanded = !eventExpanded">
                 {{ eventExpanded ? '收合' : '完整紀錄' }}
               </button>
@@ -1469,7 +1506,29 @@ import { presentApiError } from '~/lib/api-error-presentation'
 import { isLegalChainTrigger, sheepReturnCards } from '~/lib/pouch-choice'
 import type { LocalPasswordResetResult } from '#shared/local-password-reset'
 
-type Screen = 'login' | 'password-reset' | 'lobby' | 'deck' | 'game'
+type Screen = 'login' | 'password-reset' | 'lobby' | 'deck' | 'game' | 'replays' | 'replay'
+
+interface ReplaySummary {
+  replayId: string
+  sourceGameId: string
+  roomName: string
+  players: Array<{ player: string; displayName: string }>
+  result: unknown
+  finishedAt: string
+  savedAt: string
+}
+interface ReplayFrame {
+  currentStep: number
+  totalSteps: number
+  state: PublicGameState
+  events: PublicGameEvent[]
+}
+
+function replayResultText(result: unknown): string {
+  if (!result || typeof result !== 'object') return '結果未知'
+  const status = (result as { status?: unknown }).status
+  return status === 'Finished' ? '已完成' : '結果已記錄'
+}
 
 interface PublicRoomSummary {
   gameId: string
@@ -1496,6 +1555,8 @@ const screen = computed<Screen>(() => {
   if (route.path === '/login') return 'login'
   if (route.path === '/reset-password') return 'password-reset'
   if (route.path === '/deck') return 'deck'
+  if (route.path === '/replays') return 'replays'
+  if (route.path.startsWith('/replays/')) return 'replay'
   if (route.path.startsWith('/rooms/')) return 'game'
   return 'lobby'
 })
@@ -1518,6 +1579,14 @@ const resetPasswordConfirmation = ref('')
 const resetPasswordBusy = ref(false)
 const resetPasswordError = ref('')
 const currentUserId = ref('')
+const replays = ref<ReplaySummary[]>([])
+const replayFrame = ref<ReplayFrame | null>(null)
+const replayLoading = ref(false)
+const replaySaving = ref(false)
+const replaySaved = ref(false)
+const replayError = ref('')
+const replayReplaceSource = ref<string | null>(null)
+const replayRouteId = computed(() => typeof route.params.replayId === 'string' ? route.params.replayId : '')
 const profileOpen = ref(false)
 const roomSettingsOpen = ref(false)
 const createRoomTrigger = ref<HTMLButtonElement | null>(null)
@@ -2613,6 +2682,83 @@ async function copyInviteLink() {
   await navigator.clipboard.writeText(url.toString())
 }
 
+function openReplays() {
+  profileOpen.value = false
+  void router.push('/replays')
+}
+
+function openReplay(replayId: string) {
+  void router.push(`/replays/${encodeURIComponent(replayId)}`)
+}
+
+async function copyReplayLink(replayId: string) {
+  if (!replayId) return
+  await navigator.clipboard.writeText(new URL(`/replays/${encodeURIComponent(replayId)}`, window.location.origin).toString())
+}
+
+async function loadReplays() {
+  replayLoading.value = true
+  replayError.value = ''
+  try {
+    replays.value = (await $fetch<{ replays: ReplaySummary[] }>('/api/replays')).replays
+    replayReplaceSource.value = typeof route.query.save === 'string' ? route.query.save : null
+  } catch (error) {
+    replayError.value = presentApiError(error, '無法取得重播紀錄')
+  } finally {
+    replayLoading.value = false
+  }
+}
+
+async function loadReplayFrame(step = 0) {
+  if (!replayRouteId.value) return
+  replayLoading.value = true
+  replayFrame.value = null
+  try {
+    replayFrame.value = await $fetch<ReplayFrame>(`/api/replays/${encodeURIComponent(replayRouteId.value)}`, { query: { step } })
+  } catch {
+    replayFrame.value = null
+  } finally {
+    replayLoading.value = false
+  }
+}
+
+async function saveCurrentReplay() {
+  const sourceGameId = game.savableReplay.value?.sourceGameId
+  if (!sourceGameId || replaySaved.value) return
+  replaySaving.value = true
+  try {
+    await $fetch('/api/replays', { method: 'POST', body: { sourceGameId } })
+    replaySaved.value = true
+  } catch (error: unknown) {
+    const code = (error as { data?: { data?: { code?: string } } }).data?.data?.code
+    if (code === 'replayLibraryFull') {
+      await router.push({ path: '/replays', query: { save: sourceGameId } })
+    } else {
+      replayError.value = presentApiError(error, '無法儲存本局')
+    }
+  } finally {
+    replaySaving.value = false
+  }
+}
+
+async function replaceReplay(replaceReplayId: string) {
+  const sourceGameId = replayReplaceSource.value
+  if (!sourceGameId) return
+  try {
+    await $fetch('/api/replays', { method: 'POST', body: { sourceGameId, replaceReplayId } })
+    replayReplaceSource.value = null
+    await loadReplays()
+  } catch (error) {
+    replayError.value = presentApiError(error, '無法替換重播')
+  }
+}
+
+async function deleteReplay(replayId: string) {
+  if (!window.confirm('確定要刪除此收藏嗎？')) return
+  await $fetch(`/api/replays/${encodeURIComponent(replayId)}`, { method: 'DELETE' })
+  await loadReplays()
+}
+
 function loginRedirect(): string {
   return safeInternalPath(route.query.redirect) ?? '/rooms'
 }
@@ -2708,6 +2854,13 @@ async function restoreCurrentRoute() {
   } else if (route.path === '/deck') {
     game.clearRoom()
     await loadDeck()
+  } else if (route.path === '/replays') {
+    game.clearRoom()
+    replayFrame.value = null
+    await loadReplays()
+  } else if (route.path.startsWith('/replays/')) {
+    game.clearRoom()
+    await loadReplayFrame(0)
   } else {
     game.clearRoom()
     await refreshRoomLists()
@@ -2732,8 +2885,10 @@ onMounted(async () => {
     () => [
       route.path,
       route.params.gameId,
+      route.params.replayId,
       route.query.redirect,
       route.query.invite,
+      route.query.save,
     ],
     () => {
       void restoreCurrentRoute()

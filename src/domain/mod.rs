@@ -2008,6 +2008,10 @@ pub enum GameError {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum ValidationError {
+    ReplayStepOutOfRange {
+        step: usize,
+        total_steps: usize,
+    },
     GameFinished,
     GamePreparationInProgress,
     InitialPouchSelectionUnavailable,

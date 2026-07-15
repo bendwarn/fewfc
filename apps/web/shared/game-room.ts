@@ -128,6 +128,25 @@ export interface GameRoomSnapshot {
   deckSeed: string
   setup: RulesGameSetup
   rulesRecord: RecordedDecision[]
+  finishedAt?: string
+}
+
+export interface SavableReplay {
+  replayId: string
+  sourceGameId: string
+  finishedAt: string
+}
+
+/** Canonical-only object: never include this in a browser room response. */
+export interface CompletedReplayDraft extends SavableReplay {
+  schemaVersion: 1
+  setup: RulesGameSetup
+  record: RecordedDecision[]
+  players: Array<{ player: PlayerId; displayName: string }>
+  originalUserIds: string[]
+  roomName: string
+  result: unknown
+  firstPlayer: PlayerId
 }
 
 export interface RulesGameSetup {
@@ -339,6 +358,10 @@ export type GameRoomRequest =
       actorUserId: string
     }
   | {
+      type: 'getCompletedReplayDraft'
+      actorUserId: string
+    }
+  | {
       type: 'seedDevelopmentScenario'
       actorUserId: string
       scenario: DevelopmentScenario
@@ -388,6 +411,7 @@ export interface GameRoomResponse extends Omit<
   metadata: GameRoomMetadata
   invitation?: GameRoomInvitation
   lockedDeckName?: string
+  savableReplay?: SavableReplay
 }
 
 export type GameRoomSocketMessage =
