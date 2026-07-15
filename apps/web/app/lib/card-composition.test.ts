@@ -10,13 +10,13 @@ describe('buildCardComposition', () => {
   test('returns all 25 definitions in stable row and column order', () => {
     const rows = buildCardComposition([])
 
-    expect(rows.map(row => row.level)).toStrictEqual([...CARD_LEVELS])
+    expect(rows.map(row => row.element)).toStrictEqual([...CARD_ELEMENTS])
     expect(rows.flatMap(row => row.cells).length).toBe(25)
 
     for (const row of rows) {
-      expect(row.cells.map(cell => cell.element)).toStrictEqual([...CARD_ELEMENTS])
+      expect(row.cells.map(cell => cell.level)).toStrictEqual([...CARD_LEVELS])
       expect(row.cells.every(cell => (
-        cell.level === row.level && cell.count === 0 && cell.cardIds.length === 0
+        cell.element === row.element && cell.count === 0 && cell.cardIds.length === 0
       ))).toBeTruthy()
     }
   })
@@ -33,6 +33,8 @@ describe('buildCardComposition', () => {
     expect(cells.find(cell => cell.element === '金' && cell.level === 1)?.count).toBe(2)
     expect(cells.find(cell => cell.element === '金' && cell.level === 1)?.cardIds).toStrictEqual([1, 2])
     expect(cells.find(cell => cell.element === '火' && cell.level === 5)?.count).toBe(1)
+    expect(rows.find(row => row.element === '金')?.cells[0]?.cardIds).toStrictEqual([1, 2])
+    expect(rows.find(row => row.element === '火')?.cells[4]?.cardIds).toStrictEqual([3])
     expect(cells.reduce((total, cell) => total + cell.count, 0)).toBe(3)
   })
 

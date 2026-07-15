@@ -948,28 +948,28 @@
                 >
                   <h2 id="discard-composition-title">棄牌內容</h2>
                   <table>
-                    <caption class="sr-only">依五行與等級統計棄牌張數</caption>
+                    <caption class="sr-only">依五行與等級統計棄牌張數。列為五行，欄為等級。</caption>
                     <thead>
                       <tr>
-                        <th scope="col"><span class="sr-only">等級</span></th>
+                        <th scope="col"><span class="sr-only">五行</span></th>
                         <th
-                          v-for="element in CARD_ELEMENTS"
-                          :key="`discard-heading-${element}`"
+                          v-for="level in CARD_LEVELS"
+                          :key="`discard-heading-${level}`"
                           scope="col"
                         >
-                          {{ element }}
+                          {{ level }} 級
                         </th>
                       </tr>
                     </thead>
                     <tbody>
-                      <tr v-for="row in discardComposition" :key="`discard-level-${row.level}`">
-                        <th scope="row">{{ row.level }}</th>
+                      <tr v-for="row in discardComposition" :key="`discard-element-${row.element}`">
+                        <th scope="row">{{ row.element }}</th>
                         <td
                           v-for="cell in row.cells"
                           :key="`${cell.element}-${cell.level}`"
                           :class="{ empty: cell.count === 0 }"
                         >
-                          <span class="sr-only">{{ cell.element }} {{ cell.level }}，{{ cell.count }} 張</span>
+                          <span class="sr-only">{{ cell.element }} {{ cell.level }} 級，共 {{ cell.count }} 張</span>
                           <strong aria-hidden="true">{{ cell.count }}</strong>
                         </td>
                       </tr>
@@ -1599,7 +1599,7 @@ import {
   presentationForRuleModule,
 } from '#shared/utils/rule-modules'
 import { authClient } from '~/lib/auth-client'
-import { buildCardComposition, CARD_ELEMENTS } from '~/lib/card-composition'
+import { buildCardComposition, CARD_LEVELS } from '~/lib/card-composition'
 import { cardElementClass, cardElementGlyph } from '~/lib/card-face-presentation'
 import { presentCardInterpretation } from '~/lib/card-interpretation-presentation'
 import { presentPendingChoice } from '~/lib/pending-choice-presentation'
@@ -3885,11 +3885,11 @@ fieldset { @apply mb-[26px] border-0 p-0; }
 .card-composition tbody th { @apply w-7 text-[10px] font-normal text-muted; }
 .card-composition td strong { @apply font-serif text-sm text-[#e4c47d]; }
 .card-composition td.empty strong { @apply text-[#59635c]; }
-.card-composition thead th:nth-child(2) { color: #ded5ba; }
-.card-composition thead th:nth-child(3) { color: #77a980; }
-.card-composition thead th:nth-child(4) { color: #75a8bd; }
-.card-composition thead th:nth-child(5) { color: #d17a6c; }
-.card-composition thead th:nth-child(6) { color: #c8a265; }
+.card-composition tbody tr:nth-child(1) > th { color: #ded5ba; }
+.card-composition tbody tr:nth-child(2) > th { color: #77a980; }
+.card-composition tbody tr:nth-child(3) > th { color: #75a8bd; }
+.card-composition tbody tr:nth-child(4) > th { color: #d17a6c; }
+.card-composition tbody tr:nth-child(5) > th { color: #c8a265; }
 .pouch-composition { @apply mx-auto mt-5 w-[min(390px,calc(100vw-64px))] border border-[#8e733d] bg-[#18201b] p-3.5 text-[#ece8dd] shadow-[0_18px_48px_rgba(0,0,0,.52)]; }
 .pouch-composition td { @apply p-0; }
 .pouch-composition td button { @apply grid size-full min-h-8 place-items-center border-0 bg-transparent text-[#e4c47d] hover:bg-[rgba(185,149,80,.16)] disabled:cursor-not-allowed disabled:opacity-45; }

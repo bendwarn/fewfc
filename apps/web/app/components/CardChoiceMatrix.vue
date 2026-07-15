@@ -5,18 +5,18 @@
     :aria-label="label"
   >
     <table>
-      <caption class="sr-only">{{ caption }}</caption>
+      <caption class="sr-only">{{ caption }}。列為五行，欄為等級。</caption>
       <thead>
         <tr>
-          <th scope="col"><span class="sr-only">等級</span></th>
-          <th v-for="element in CARD_ELEMENTS" :key="element" scope="col">
-            {{ element }}
+          <th scope="col"><span class="sr-only">五行</span></th>
+          <th v-for="level in CARD_LEVELS" :key="level" scope="col">
+            {{ level }} 級
           </th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in composition" :key="row.level">
-          <th scope="row">{{ row.level }}</th>
+        <tr v-for="row in composition" :key="row.element">
+          <th scope="row">{{ row.element }}</th>
           <td
             v-for="cell in row.cells"
             :key="`${cell.element}-${cell.level}`"
@@ -48,7 +48,7 @@ import type { CardInstanceId, PublicCard } from '~/types/fewfc'
 import {
   buildCardComposition,
   cardForCompositionSelection,
-  CARD_ELEMENTS,
+  CARD_LEVELS,
   type CardCompositionSelectionMode,
 } from '~/lib/card-composition'
 
@@ -88,7 +88,7 @@ function cellDisabled(cardIds: CardInstanceId[]): boolean {
 
 function cellLabel(element: string, level: number, cardIds: CardInstanceId[]): string {
   const selected = selectedCount(cardIds)
-  return `${props.actionLabel} ${element} ${level}，共 ${cardIds.length} 張，已選 ${selected} 張`
+  return `${props.actionLabel}：${element} ${level} 級，共 ${cardIds.length} 張，已選 ${selected} 張`
 }
 
 function selectCell(cardIds: CardInstanceId[]) {

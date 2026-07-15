@@ -15,7 +15,7 @@ export interface CardCompositionCell {
 }
 
 export interface CardCompositionRow {
-  level: CardLevel
+  element: CardElement
   cells: CardCompositionCell[]
 }
 
@@ -36,9 +36,9 @@ export function buildCardComposition(cards: PublicCard[]): CardCompositionRow[] 
     cardIds.set(key, matchingCards)
   }
 
-  return CARD_LEVELS.map(level => ({
-    level,
-    cells: CARD_ELEMENTS.map((element) => {
+  return CARD_ELEMENTS.map(element => ({
+    element,
+    cells: CARD_LEVELS.map((level) => {
       const matchingCards = cardIds.get(compositionKey(element, level)) ?? []
       return {
         element,

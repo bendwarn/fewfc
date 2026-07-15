@@ -12,6 +12,13 @@ const discardDialog = (page: Page) => page.getByRole('dialog', { name: '棄牌�
 const discardTrigger = (page: Page, count: number) => page.getByRole('button', {
   name: `查看棄牌內容，共 ${count} 張`,
 })
+const matrixElements = [
+  ['金', 'Metal'],
+  ['木', 'Wood'],
+  ['水', 'Water'],
+  ['火', 'Fire'],
+  ['土', 'Earth'],
+] as const
 
 async function activePlayerPage(pages: Page[]) {
   await expect.poll(async () => {
@@ -77,18 +84,38 @@ async function expectStableComposition(page: Page, total: number) {
   const dialog = discardDialog(page)
   await expect(dialog).toBeVisible()
   await expect(dialog.getByRole('columnheader')).toHaveText([
-    '等級',
-    '金',
-    '木',
-    '水',
-    '火',
-    '土',
+    '五行',
+    '1 級',
+    '2 級',
+    '3 級',
+    '4 級',
+    '5 級',
   ])
-  await expect(dialog.getByRole('rowheader')).toHaveText(['1', '2', '3', '4', '5'])
+  await expect(dialog.getByRole('rowheader')).toHaveText(['金', '木', '水', '火', '土'])
   await expect(dialog.getByRole('cell')).toHaveCount(25)
 
   const counts = await dialog.locator('tbody td strong').allTextContents()
   expect(counts.map(Number).reduce((sum, count) => sum + count, 0)).toBe(total)
+}
+
+async function expectDiscardMatrixMatchesGameState(page: Page) {
+  const discard = await page.evaluate(async () => {
+    const gameId = location.pathname.split('/').at(-1)
+    const response = await fetch(`/api/games/${gameId}`)
+    const state = await response.json() as {
+      state: { discard: Array<{ element: string | null; level: number | null }> }
+    }
+    return state.state.discard
+  })
+
+  for (const [rowIndex, [elementLabel, element]] of matrixElements.entries()) {
+    const row = discardDialog(page).locator('tbody tr').nth(rowIndex)
+    await expect(row.getByRole('rowheader')).toHaveText(elementLabel)
+    for (let level = 1; level <= 5; level += 1) {
+      const expectedCount = discard.filter(card => card.element === element && card.level === level).length
+      await expect(row.locator('td').nth(level - 1).locator('strong')).toHaveText(String(expectedCount))
+    }
+  }
 }
 
 test('an empty discard pile reports zero cards and cannot be opened', async ({ page }) => {
@@ -181,6 +208,7 @@ test('players can inspect a synchronized discard composition throughout a match'
     const trigger = discardTrigger(observer, 2)
     await trigger.click()
     await expectStableComposition(observer, 2)
+    await expectDiscardMatrixMatchesGameState(observer)
 
     await discardDialog(observer).getByRole('heading', { name: '棄牌內容' }).click()
     await expect(discardDialog(observer)).toBeHidden()

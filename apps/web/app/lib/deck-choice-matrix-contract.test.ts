@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 
 const appSource = readFileSync(new URL('../app.vue', import.meta.url), 'utf8')
+const matrixSource = readFileSync(new URL('../components/CardChoiceMatrix.vue', import.meta.url), 'utf8')
 
 describe('deck card choice presentation', () => {
   test('every deck-search choice uses the element-by-level matrix', () => {
@@ -32,5 +33,14 @@ describe('deck card choice presentation', () => {
     }
 
     expect(appSource).toContain("state.pendingChoice.presentation.type === 'echoRingingMetalDeckCard'")
+  })
+
+  test('the shared matrix presents element rows and level columns', () => {
+    expect(matrixSource).toContain('<th scope="col"><span class="sr-only">五行</span></th>')
+    expect(matrixSource).toContain('<th v-for="level in CARD_LEVELS" :key="level" scope="col">')
+    expect(matrixSource).toContain('{{ level }} 級')
+    expect(matrixSource).toContain('<tr v-for="row in composition" :key="row.element">')
+    expect(matrixSource).toContain('<th scope="row">{{ row.element }}</th>')
+    expect(matrixSource).toContain('列為五行，欄為等級。')
   })
 })
