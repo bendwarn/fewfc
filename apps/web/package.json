@@ -3,7 +3,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "bun run build:rules-wasm && nuxt build --dotenv .env.development",
+    "build": "bun run build:rules-wasm && nuxt build",
     "build:staging": "bun run build:rules-wasm && nuxt build --dotenv .env.staging",
     "build:production": "bun run build:rules-wasm && nuxt build --dotenv .env.production",
     "build:rules-wasm": "cd ../.. && cargo build --release --target wasm32-unknown-unknown && mkdir -p apps/web/worker/wasm && cp target/wasm32-unknown-unknown/release/fewfc.wasm apps/web/worker/wasm/fewfc.wasm",
@@ -16,10 +16,10 @@
     "dev": "wrangler dev",
     "generate": "nuxt generate --dotenv .env.production",
     "preview": "nuxt preview --dotenv .env.production",
-    "postinstall": "nuxt prepare --dotenv .env.development",
+    "postinstall": "nuxt prepare",
     "test:e2e": "playwright test",
     "test:e2e:server": "bun tests/e2e/prepare-storage.ts && bun run build && wrangler d1 migrations apply fewfc-auth --local --persist-to .wrangler/e2e && wrangler dev --persist-to .wrangler/e2e --port 8787 --var LOCAL_PASSWORD_RESET_ENABLED:true",
-    "typecheck": "nuxt typecheck --dotenv .env.development",
+    "typecheck": "nuxt typecheck",
     "validate:deploy": "bun validate-deploy-environment.ts"
   },
   "dependencies": {

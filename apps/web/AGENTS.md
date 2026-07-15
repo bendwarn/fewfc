@@ -2,6 +2,11 @@
 
 ## Development Environment
 
+- Development is the default environment. The `build`, `postinstall`, and
+  `typecheck` package scripts intentionally rely on Nuxt's default `.env`
+  loading instead of passing `--dotenv .env.development`. For staging or
+  production, use the corresponding environment-specific script, which must
+  explicitly select `.env.staging` or `.env.production`.
 - For Worker/Durable Object local development, ensure `.env` exists and `BETTER_AUTH_SECRET` is at least 32 characters, otherwise Better Auth routes fail with `500 BETTER_AUTH_SECRET must contain at least 32 characters`.
 - Local development servers may need sandbox escalation to bind localhost ports. If a server reports no available port while nothing is reachable, rerun with escalated permissions.
 
