@@ -231,7 +231,7 @@
                 :disabled="deckCardCount(element, level) === 0"
                 @click="adjustDeckCard(element, level, -1)"
               >−</button>
-              <span>{{ deckCardCount(element, level) }}</span>
+              <span :aria-label="`${deckElementLabel(element)}${level}級張數`">{{ deckCardCount(element, level) }}</span>
               <button
                 type="button"
                 :aria-label="`增加${deckElementLabel(element)}${level}級`"
@@ -247,9 +247,30 @@
           <strong>{{ deckValidation.levelTotal }} / {{ deckRules?.maximumLevelTotal ?? '—' }} 級</strong>
           <span>{{ deckSource === 'custom' ? '目前使用自訂牌組' : '目前使用內建預組' }}</span>
         </div>
+        <ul v-if="deckValidation.errors.length" class="deck-validation-errors" aria-live="polite">
+          <li v-for="error in deckValidation.errors" :key="error">{{ error }}</li>
+        </ul>
         <p v-if="deckError" class="form-error">{{ deckError }}</p>
+        <p
+          v-if="deckExportStatus"
+          class="deck-transfer-status"
+          :class="{ 'form-error': deckExportFailed }"
+          :role="deckExportFailed ? 'alert' : 'status'"
+        >{{ deckExportStatus }}</p>
 
         <div class="setup-actions">
+          <button
+            ref="deckImportTrigger"
+            class="secondary-button"
+            type="button"
+            :disabled="deckBusy"
+            @click="openDeckImport"
+          >
+            匯入牌組
+          </button>
+          <button class="secondary-button" type="button" :disabled="deckBusy" @click="exportDeck">
+            匯出牌組
+          </button>
           <button class="secondary-button" type="button" :disabled="deckBusy" @click="resetDeck">
             重設為預組
           </button>
@@ -264,6 +285,47 @@
           >
             {{ deckBusy ? '儲存中…' : '儲存牌組' }}
           </button>
+        </div>
+
+        <div
+          v-if="deckImportOpen"
+          class="room-settings-layer"
+          @click.self="closeDeckImport"
+        >
+          <form
+            class="setup-card deck-import-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="deck-import-title"
+            aria-describedby="deck-import-help"
+            @keydown.esc.prevent="closeDeckImport"
+            @keydown.tab="trapDeckImportFocus"
+            @submit.prevent="applyDeckImport"
+          >
+            <div class="card-heading">
+              <span class="step-number">入</span>
+              <div>
+                <h2 id="deck-import-title">匯入牌組</h2>
+                <p id="deck-import-help">依金、木、水、火、土列與 1 至 5 級欄輸入 25 個張數。</p>
+              </div>
+            </div>
+
+            <label for="deck-import-text">牌組張數</label>
+            <textarea
+              id="deck-import-text"
+              ref="deckImportInput"
+              v-model="deckImportText"
+              class="deck-import-text"
+              rows="5"
+              spellcheck="false"
+            />
+            <p v-if="deckImportError" class="form-error" role="alert">{{ deckImportError }}</p>
+
+            <div class="setup-actions">
+              <button class="secondary-button" type="button" @click="closeDeckImport">取消</button>
+              <button class="primary-button" type="submit">套用</button>
+            </div>
+          </form>
         </div>
       </section>
     </main>
@@ -1553,7 +1615,12 @@ import {
   usesSplitEarthFormationGroups,
 } from '#shared/utils/split-earth-formation-choice'
 import { roomRouteResult, safeInternalPath } from '~/lib/navigation'
-import { createDeckCompositionPolicy, type PlayerDeckList } from '~/lib/player-deck'
+import {
+  createDeckCompositionPolicy,
+  parsePlayerDeckCounts,
+  serializePlayerDeckCounts,
+  type PlayerDeckList,
+} from '~/lib/player-deck'
 import { presentApiError } from '~/lib/api-error-presentation'
 import { isLegalChainTrigger, sheepReturnCards } from '~/lib/pouch-choice'
 import type { LocalPasswordResetResult } from '#shared/local-password-reset'
@@ -2012,6 +2079,13 @@ const deckDraft = ref<PlayerDeckList>({ name: '', cards: [] })
 const deckSource = ref<'custom' | 'preconstructed'>('preconstructed')
 const deckBusy = ref(false)
 const deckError = ref('')
+const deckImportOpen = ref(false)
+const deckImportText = ref('')
+const deckImportError = ref('')
+const deckImportTrigger = ref<HTMLButtonElement | null>(null)
+const deckImportInput = ref<HTMLTextAreaElement | null>(null)
+const deckExportStatus = ref('')
+const deckExportFailed = ref(false)
 let actionDetailTimer: ReturnType<typeof setTimeout> | undefined
 let setupRevealTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -2441,6 +2515,72 @@ function adjustDeckCard(
   }
   const index = deckDraft.value.cards.indexOf(id)
   if (index >= 0) deckDraft.value.cards.splice(index, 1)
+}
+
+async function openDeckImport() {
+  deckImportText.value = ''
+  deckImportError.value = ''
+  deckImportOpen.value = true
+  await nextTick()
+  deckImportInput.value?.focus()
+}
+
+function closeDeckImport() {
+  deckImportOpen.value = false
+  deckImportError.value = ''
+  void nextTick(() => deckImportTrigger.value?.focus())
+}
+
+function trapDeckImportFocus(event: KeyboardEvent) {
+  const dialog = event.currentTarget as HTMLElement
+  const focusable = [...dialog.querySelectorAll<HTMLElement>(
+    'button:not(:disabled), textarea:not(:disabled)',
+  )]
+  const first = focusable[0]
+  const last = focusable.at(-1)
+  if (!first || !last) return
+
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+function applyDeckImport() {
+  const imported = parsePlayerDeckCounts(deckImportText.value)
+  if (!imported.counts) {
+    deckImportError.value = imported.error
+    return
+  }
+  if (!deckRules.value) {
+    deckImportError.value = '牌組規則尚未載入，請稍後再試。'
+    return
+  }
+
+  deckDraft.value = deckRules.value.deckFromCounts(deckDraft.value.name, imported.counts)
+  deckExportStatus.value = ''
+  deckExportFailed.value = false
+  closeDeckImport()
+}
+
+async function exportDeck() {
+  if (!deckRules.value) {
+    deckExportFailed.value = true
+    deckExportStatus.value = '牌組規則尚未載入，無法匯出。'
+    return
+  }
+
+  try {
+    await navigator.clipboard.writeText(serializePlayerDeckCounts(deckRules.value.counts(deckDraft.value)))
+    deckExportFailed.value = false
+    deckExportStatus.value = '牌組已複製到剪貼簿。'
+  } catch {
+    deckExportFailed.value = true
+    deckExportStatus.value = '無法寫入剪貼簿，請確認瀏覽器權限後再試。'
+  }
 }
 
 async function loadDeck() {
@@ -3501,6 +3641,10 @@ function cardLevel(level: number | null | undefined): string {
 .deck-count-control span { @apply min-w-6 text-center font-bold; }
 .deck-validation { @apply flex flex-wrap gap-5 rounded-lg border border-emerald-700/30 bg-emerald-50 p-4 text-emerald-900; }
 .deck-validation.invalid { @apply border-red-700/30 bg-red-50 text-red-900; }
+.deck-validation-errors { @apply grid gap-1 text-sm text-red-700; }
+.deck-transfer-status { @apply text-sm text-emerald-700; }
+.deck-import-dialog { @apply my-auto w-full max-w-[640px] shadow-[0_24px_70px_rgba(0,0,0,.5)]; }
+.deck-import-text { @apply min-h-36 w-full border border-[#39443d] bg-[#111713] p-3 font-mono text-[#ece8dd] outline-0 focus:border-[#a57d35] focus:shadow-[0_0_0_2px_rgba(165,125,53,.12)]; }
 .rule-toggle { @apply flex items-center gap-2 py-2; }
 .waiting-rules { @apply my-4 grid gap-2 border-y border-white/15 py-2; }
 .waiting-rules legend { @apply w-full; }
