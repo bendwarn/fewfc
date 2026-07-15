@@ -14,7 +14,7 @@ export default defineConfig({
     timeout: 10_000,
   },
   use: {
-    baseURL: 'http://localhost:8787',
+    baseURL: 'http://localhost:8727',
     browserName: 'chromium',
     headless: true,
     launchOptions: browserPath ? { executablePath: browserPath } : {},
@@ -23,7 +23,7 @@ export default defineConfig({
   },
   webServer: {
     command: 'bun run test:e2e:server',
-    url: 'http://localhost:8787/login',
+    url: 'http://localhost:8727/login',
     reuseExistingServer: process.env.PLAYWRIGHT_REUSE_SERVER === '1',
     timeout: 360_000,
   },
