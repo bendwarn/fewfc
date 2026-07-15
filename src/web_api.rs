@@ -1671,6 +1671,7 @@ struct WebPublicGameState {
     turn_order: Vec<String>,
     hp: Vec<WebTeamHp>,
     hands: Vec<WebPlayerHand>,
+    deck_count: usize,
     discard: Vec<WebCard>,
     player_decks: Vec<WebPlayerDeck>,
     player_discards: Vec<WebPlayerDiscard>,
@@ -1766,6 +1767,7 @@ impl WebPublicGameState {
                     cards: WebCardRefs::from_public(hand.cards, labels, card_facts),
                 })
                 .collect(),
+            deck_count: state.deck_count,
             discard: state
                 .discard
                 .into_iter()

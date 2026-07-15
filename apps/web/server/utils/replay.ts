@@ -1,6 +1,6 @@
 import { createError, type H3Event } from 'h3'
 import type { CompletedReplayDraft } from '../../shared/game-room'
-import type { ReplayFrame } from '../../worker/durable-objects/replay-archive'
+import type { ReplayArchiveLifecycle, ReplayFrame } from '../../worker/durable-objects/replay-archive'
 import { workerEnv, type DurableObjectNamespaceBinding } from './worker-env'
 
 interface D1Result<T = Record<string, unknown>> {
@@ -68,13 +68,47 @@ export async function completedReplayDraft(
   return await response.json() as CompletedReplayDraft
 }
 
-export async function createReplayArchive(event: H3Event, draft: CompletedReplayDraft) {
+export async function createReplayArchive(
+  event: H3Event,
+  draft: CompletedReplayDraft,
+  lifecycle: ReplayArchiveLifecycle,
+) {
   const response = await replayRequest(event, draft.replayId, 'create', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(draft),
+    body: JSON.stringify({ archive: draft, lifecycle }),
   })
   if (!response.ok) throw createError({ statusCode: response.status, statusMessage: 'Unable to create replay archive.' })
+}
+
+async function lifecycleFor(database: D1Database, replayId: string): Promise<ReplayArchiveLifecycle> {
+  const result = await database.prepare(
+    'SELECT reference_count, version FROM replay_archive_lifecycle WHERE replay_id = ?',
+  ).bind(replayId).all<{ reference_count: number; version: number }>()
+  const row = result.results?.[0]
+  if (!row) throw new Error('replay archive lifecycle is missing')
+  return { referenceCount: Number(row.reference_count), version: Number(row.version) }
+}
+
+async function retainReplayReference(database: D1Database, replayId: string) {
+  await database.prepare(
+    `INSERT INTO replay_archive_lifecycle (replay_id, reference_count, version)
+     VALUES (?, 1, 1)
+     ON CONFLICT(replay_id) DO UPDATE SET
+       reference_count = reference_count + 1,
+       version = version + 1`,
+  ).bind(replayId).run()
+  return await lifecycleFor(database, replayId)
+}
+
+async function releaseReplayReference(database: D1Database, replayId: string) {
+  await database.prepare(
+    `UPDATE replay_archive_lifecycle
+     SET reference_count = CASE WHEN reference_count > 0 THEN reference_count - 1 ELSE 0 END,
+         version = version + 1
+     WHERE replay_id = ?`,
+  ).bind(replayId).run()
+  return await lifecycleFor(database, replayId)
 }
 
 export async function replayFrame(event: H3Event, replayId: string, step: number): Promise<ReplayFrame | null> {
@@ -109,7 +143,11 @@ export async function saveReplayReference(
   const duplicate = await database.prepare(
     'SELECT replay_id FROM player_saved_replay WHERE user_id = ? AND replay_id = ?',
   ).bind(userId, draft.replayId).all()
-  if ((duplicate.results?.length ?? 0) > 0) return { saved: true, replayId: draft.replayId }
+  if ((duplicate.results?.length ?? 0) > 0) {
+    const lifecycle = await lifecycleFor(database, draft.replayId)
+    await createReplayArchive(event, draft, lifecycle)
+    return { saved: true, replayId: draft.replayId }
+  }
 
   const count = await database.prepare(
     'SELECT COUNT(*) AS count FROM player_saved_replay WHERE user_id = ?',
@@ -143,15 +181,34 @@ export async function saveReplayReference(
     : [await insert.run()]
   const inserted = results.at(-1)?.meta?.changes ?? 0
   if (inserted !== 1) throw createError({ statusCode: 409, statusMessage: 'Replay library is full.', data: { code: 'replayLibraryFull' } })
+  const lifecycle = await retainReplayReference(database, draft.replayId)
+  await createReplayArchive(event, draft, lifecycle)
+  if (replaceReplayId && replaceReplayId !== draft.replayId) {
+    const replacedLifecycle = await releaseReplayReference(database, replaceReplayId)
+    if (replacedLifecycle.referenceCount === 0) {
+      await replayRequest(event, replaceReplayId, '', {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(replacedLifecycle),
+      })
+    }
+  }
   return { saved: true, replayId: draft.replayId }
 }
 
 export async function deleteReplayReference(event: H3Event, userId: string, replayId: string) {
-  await db(event).prepare('DELETE FROM player_saved_replay WHERE user_id = ? AND replay_id = ?').bind(userId, replayId).run()
-  const remaining = await db(event).prepare(
-    'SELECT COUNT(*) AS count FROM player_saved_replay WHERE replay_id = ?',
-  ).bind(replayId).all<{ count: number }>()
-  if (Number(remaining.results?.[0]?.count ?? 0) === 0) {
-    await replayRequest(event, replayId, '', { method: 'DELETE' })
+  const database = db(event)
+  const deleted = await database.prepare(
+    'DELETE FROM player_saved_replay WHERE user_id = ? AND replay_id = ?',
+  ).bind(userId, replayId).run()
+  if ((deleted.meta?.changes ?? 0) === 0) return
+
+  const lifecycle = await releaseReplayReference(database, replayId)
+  if (lifecycle.referenceCount === 0) {
+    await replayRequest(event, replayId, '', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(lifecycle),
+    })
   }
 }

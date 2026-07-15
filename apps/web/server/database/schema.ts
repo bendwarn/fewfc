@@ -126,6 +126,12 @@ export const playerSavedReplay = sqliteTable(
   ],
 )
 
+export const replayArchiveLifecycle = sqliteTable('replay_archive_lifecycle', {
+  replayId: text('replay_id').primaryKey(),
+  referenceCount: integer('reference_count').notNull(),
+  version: integer('version').notNull(),
+})
+
 export const schema = {
   user,
   session,
@@ -135,4 +141,5 @@ export const schema = {
   playerDeck,
   publicGameRoom,
   playerSavedReplay,
+  replayArchiveLifecycle,
 }

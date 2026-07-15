@@ -210,6 +210,7 @@ export interface PublicGameState {
   turnOrder: PlayerId[]
   hp: TeamHp[]
   hands: PublicPlayerHand[]
+  deckCount?: number
   discard: PublicCard[]
   playerDecks: Array<{ player: PlayerId; cards: PublicCardRefs }>
   playerDiscards: Array<{ player: PlayerId; cards: PublicCard[] }>

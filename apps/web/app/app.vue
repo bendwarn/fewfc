@@ -298,6 +298,56 @@
             <button class="ghost-button" :disabled="replayFrame.currentStep === replayFrame.totalSteps" @click="loadReplayFrame(replayFrame.totalSteps)">最後一步</button>
             <button class="ghost-button" @click="copyReplayLink(replayRouteId)">分享連結</button>
           </div>
+          <div class="battle-layout replay-layout">
+            <section
+              class="battlefield replay-battlefield"
+              :class="{ 'four-player': replaySeats.length === 4 }"
+              aria-label="重播戰場（唯讀）"
+            >
+              <div
+                v-for="seat in replaySeats"
+                :key="seat.player"
+                class="player-seat"
+                :class="[`seat-${seat.position}`, { acting: replayFrame.state.currentPlayer === seat.player }]"
+              >
+                <div class="player-identity">
+                  <span class="avatar">{{ replayPlayerLabel(seat.player).slice(0, 1) }}</span>
+                  <div>
+                    <strong>{{ replayPlayerLabel(seat.player) }}</strong>
+                    <small>{{ replayTeamHp(seat.player) }} HP</small>
+                    <small v-if="replayPouch(seat.player)">錦囊 · {{ replayPouch(seat.player)?.label }}</small>
+                    <small v-if="replayCoveredCards(seat.player).length">蓋牌 · {{ replayCoveredCards(seat.player).map(card => card.label).join('、') }}</small>
+                    <small v-if="replayFrame.state.playerDecks.length">牌庫 {{ replayDeckCount(seat.player) }}</small>
+                    <small v-else>共用牌庫 {{ replayFrame.state.deckCount ?? 0 }}</small>
+                  </div>
+                  <span v-if="replayFrame.state.currentPlayer === seat.player" class="turn-badge">行動中</span>
+                  <span class="side-hand-count">{{ replayCardsFor(seat.player).length }} 張</span>
+                </div>
+                <div class="hand fan seat-hand">
+                  <span
+                    v-for="card in replayCardsFor(seat.player)"
+                    :key="card.id"
+                    class="playing-card"
+                    :class="[elementClass(card.element)]"
+                    :aria-label="card.label"
+                  >
+                    <span class="card-level">{{ cardLevel(card.level) }}</span>
+                    <span class="card-element">{{ cardElement(card.element) }}</span>
+                  </span>
+                </div>
+              </div>
+              <div class="board-center">
+                <div class="discard-piles" aria-label="棄牌堆">
+                  <div class="discard-pile"><span>棄牌</span><strong>{{ replayFrame.state.discard.length }}</strong></div>
+                  <div v-for="pile in replayFrame.state.playerDiscards" :key="pile.player" class="discard-pile"><span>{{ replayPlayerLabel(pile.player) }} 棄牌</span><strong>{{ pile.cards.length }}</strong></div>
+                </div>
+                <div class="formation-field">
+                  <div class="formation-field-heading"><span class="formation-field-label">陣法區</span><span v-if="replayFrame.state.environment" class="environment-badge">環境 · {{ environmentLabel(replayFrame.state.environment) }}</span></div>
+                  <div class="previous-formation"><template v-if="replayFrame.state.previousTurnFormation"><small>上一回合 · {{ replayPlayerLabel(replayFrame.state.previousTurnFormation.player) }}</small><strong>{{ replayFrame.state.previousTurnFormation.formationName ?? '陣法' }}</strong></template><p v-else>上一回合未發動陣法</p></div>
+                </div>
+              </div>
+            </section>
+          </div>
           <section class="event-panel expanded"><div class="panel-title"><h2>戰局紀錄</h2></div><ol class="event-feed"><li v-for="event in replayFrame.events" :key="event.id"><div><span>{{ event.title }}</span><p>{{ event.summary }}</p></div></li></ol></section>
         </template>
         <p v-else-if="!replayLoading" class="muted">找不到這個重播</p>
@@ -1522,6 +1572,8 @@ interface ReplayFrame {
   totalSteps: number
   state: PublicGameState
   events: PublicGameEvent[]
+  players: Array<{ player: PlayerId; displayName: string }>
+  firstPlayer: PlayerId
 }
 
 function replayResultText(result: unknown): string {
@@ -2064,6 +2116,53 @@ const playerSeats = computed<PlayerSeat[]>(() => {
     position: positions[index] ?? 'top',
   }))
 })
+const replaySeats = computed<PlayerSeat[]>(() => {
+  const order = replayFrame.value?.state.turnOrder ?? []
+  const firstPlayer = replayFrame.value?.firstPlayer
+  const firstIndex = firstPlayer ? order.indexOf(firstPlayer) : 0
+  const relativeOrder = firstIndex > 0
+    ? [...order.slice(firstIndex), ...order.slice(0, firstIndex)]
+    : order
+  const positions: SeatPosition[] = relativeOrder.length === 4
+    ? ['bottom', 'left', 'top', 'right']
+    : ['bottom', 'top']
+  return relativeOrder.map((player, index) => ({
+    player,
+    position: positions[index] ?? 'top',
+  }))
+})
+
+function replayPlayerLabel(player: PlayerId): string {
+  return replayFrame.value?.players.find(entry => entry.player === player)?.displayName ?? player
+}
+
+function replayTeamHp(player: PlayerId): number {
+  const state = replayFrame.value?.state
+  const team = state?.players.find(entry => entry.id === player)?.team
+  return state?.hp.find(entry => entry.team === team)?.hp ?? 0
+}
+
+function replayCardsFor(player: PlayerId): CardToken[] {
+  const hand = replayFrame.value?.state.hands.find(entry => entry.player === player)
+  return cardTokensForRefs(hand?.cards, `replay-hand-${player}`)
+}
+
+function replayDeckCount(player: PlayerId): number {
+  const cards = replayFrame.value?.state.playerDecks.find(entry => entry.player === player)?.cards
+  if (!cards) return 0
+  return cards.kind === 'hidden' ? cards.count : cards.cards.length
+}
+
+function replayPouch(player: PlayerId): PublicCard | undefined {
+  return replayFrame.value?.state.pouches.find(entry => entry.owner === player)?.card ?? undefined
+}
+
+function replayCoveredCards(player: PlayerId): PublicCard[] {
+  const cards = replayFrame.value?.state.coveredPassives
+    .filter(passive => passive.owner === player)
+    .flatMap(passive => passive.cards.kind === 'known' ? passive.cards.cards : [])
+  return cards ?? []
+}
 const previousFormationCards = computed(() => (
   cardTokensForRefs(state.value.previousTurnFormation?.cards, 'previous-formation')
 ))

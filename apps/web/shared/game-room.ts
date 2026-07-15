@@ -464,6 +464,7 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
         count: player === players[0] ? 4 : 5,
       },
     })),
+    deckCount: 0,
     discard: [],
     playerDecks: [],
     playerDiscards: [],
