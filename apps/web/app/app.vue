@@ -393,10 +393,10 @@
           <h2>公開房間</h2>
           <span>可加入</span>
         </div>
-        <p v-if="!publicRooms.length" class="muted">目前沒有等待中的公開房間。</p>
+        <p v-if="!joinablePublicRooms.length" class="muted">目前沒有可加入的公開房間。</p>
         <div v-else class="public-room-list">
           <button
-            v-for="room in publicRooms"
+            v-for="room in joinablePublicRooms"
             :key="room.gameId"
             type="button"
             :disabled="lobbyBusy"
@@ -408,7 +408,7 @@
               <small>{{ room.members.length }} / {{ room.capacity }} 玩家 · 等待開始</small>
               <small v-if="roomRuleSummary(room)">{{ roomRuleSummary(room) }}</small>
             </div>
-            <i>{{ room.members.some((member) => member.userId === currentUserId) ? '已加入' : '加入' }}</i>
+            <i>加入</i>
           </button>
         </div>
       </section>
@@ -427,7 +427,7 @@
             :disabled="lobbyBusy"
             @click="openJoinedRoom(room.gameId)"
           >
-            <span class="room-code">{{ room.roomCode }}</span>
+            <span class="room-code">{{ room.gameId.slice(0, 8) }}</span>
             <div>
               <strong>{{ room.name }}</strong>
               <small>{{ roomStatusLabel(room) }}</small>
@@ -1532,6 +1532,9 @@ const lobbyBusy = ref(false)
 const lobbyError = ref('')
 const publicRooms = ref<PublicRoomSummary[]>([])
 const myRooms = ref<PublicRoomSummary[]>([])
+const joinablePublicRooms = computed(() => publicRooms.value.filter(
+  room => !room.members.some(member => member.userId === currentUserId.value),
+))
 const activeRoomName = ref('')
 const viewer = ref<ViewerId>('observer')
 const game = useGameRoom(viewer)

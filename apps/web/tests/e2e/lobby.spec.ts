@@ -36,7 +36,7 @@ test('all-enabled rooms omit a rule summary and list only disabled differences',
   expect(body.metadata.enabledRuleModules).toContain('pouch')
 
   await page.reload()
-  const room = page.locator('.public-rooms-card').first()
+  const room = page.locator('.my-rooms-card')
     .locator('.public-room-list button').filter({ hasText: roomName })
   await expect(room).toBeVisible()
   await expect(room).not.toContainText('停用：')
@@ -49,6 +49,60 @@ test('all-enabled rooms omit a rule summary and list only disabled differences',
   expect(updated.ok()).toBe(true)
   await page.reload()
   await expect(room).toContainText('停用：錦囊')
+})
+
+test('the lobby lists joined public rooms only in my rooms', async ({ browser }) => {
+  const hostContext = await browser.newContext()
+  const guestContext = await browser.newContext()
+  const host = await hostContext.newPage()
+  const guest = await guestContext.newPage()
+  const roomName = `已加入公開房間 ${Date.now()}`
+
+  try {
+    await loginAsGuests([host, guest])
+    const created = await host.context().request.post('/api/games', {
+      data: { name: roomName, access: 'public', capacity: 2 },
+    })
+    expect(created.ok()).toBe(true)
+    const body = await created.json() as {
+      gameId: string
+      invitation: { roomCode: string }
+    }
+
+    const hostPublicRooms = host.locator('.public-rooms-card').filter({
+      has: host.getByRole('heading', { name: '公開房間', exact: true }),
+    })
+    const hostMyRooms = host.locator('.my-rooms-card')
+    await host.reload()
+    await expect(hostPublicRooms.locator('button').filter({ hasText: roomName })).toHaveCount(0)
+    const hostRoom = hostMyRooms.locator('button').filter({ hasText: roomName })
+    await expect(hostRoom).toHaveCount(1)
+    await expect(hostRoom).toContainText(body.gameId.slice(0, 8))
+    await expect(hostRoom).not.toContainText(body.invitation.roomCode)
+
+    const guestPublicRooms = guest.locator('.public-rooms-card').filter({
+      has: guest.getByRole('heading', { name: '公開房間', exact: true }),
+    })
+    const guestMyRooms = guest.locator('.my-rooms-card')
+    await guest.reload()
+    const guestRoom = guestPublicRooms.locator('button').filter({ hasText: roomName })
+    await expect(guestRoom).toBeVisible()
+    await expect(guestRoom).toContainText(body.invitation.roomCode)
+    const joined = guest.waitForResponse(response => (
+      response.url().endsWith(`/api/games/${body.gameId}/join`)
+      && response.request().method() === 'POST'
+    ))
+    await guestRoom.click()
+    expect((await joined).ok()).toBe(true)
+    await expect(guest).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
+
+    await guest.goto('/rooms')
+    await expect(guestPublicRooms.locator('button').filter({ hasText: roomName })).toHaveCount(0)
+    await expect(guestMyRooms.locator('button').filter({ hasText: roomName })).toHaveCount(1)
+  } finally {
+    await hostContext.close()
+    await guestContext.close()
+  }
 })
 
 test('desktop waiting room uses a compact two-column layout inside the battlefield', async ({ page }) => {
