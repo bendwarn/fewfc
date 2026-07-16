@@ -1371,24 +1371,67 @@ Windwalking's 15-point threshold therefore reads Attack Points before
 Environment damage modification. Canonical Attack events record Attack Points
 separately from the final result.
 
-Activated Profession Abilities that prepare a later action, such as Illusion
-and Phantasm, create a serializable `PreparedProfessionAbility` in Game State.
-The activation event records the target Card Instance, declared element and
-level, and allowed Formation scope without mutating the Card Instance or Card
-Definition. The preparation is available only during the current Player's turn
-and clears after their action or at Turn End.
+Physical-Card preparations and virtual Formation components use different
+domain concepts. Blazing Yang Art and Dark Spirit create a serializable
+physical Card Interpretation for one Card Instance. Illusion and Phantasm
+instead discard two physical Cards and create a `VirtualFormationCard` with a
+fixed source ability, element, and level; neither ability targets or
+reinterprets a third Card Instance.
 
-Prepared Profession Ability identity and its declared interpretation are public
-immediately. The target Card Instance remains visible only to its owner until
-ordinary Card movement makes it public, matching Spirit Card Interpretation
-presentation. Activation cannot be rolled back and no other Player decision
-occurs between preparation and the current Player's action.
+The physical preparation's ability identity and interpreted facts are public,
+while its target Card Instance remains visible only to its owner until ordinary
+Card movement makes it public. Illusion and Phantasm cost Cards are ordinary
+public Discards, and the created virtual element and level are public as soon as
+the ability resolves.
 
-Preparing an ability does not force the Player's next Action to use it. At
-activation time, validation requires at least one legal Formation that could
-complete the prepared effect. The Player may subsequently choose another legal
-Action, but any Action clears the preparation and neither its paid cost nor the
-shared activation allowance is refunded.
+The Virtual Formation Card is public immediately, belongs to no Card zone, and
+has no Card Instance or Card Origin. Card Interpretation Layers, Pouch bonuses,
+and Star Element Substitution apply only to physical Card Instances and cannot
+change the virtual component. Formation matching, preview calculation, point
+formulas, effect resolution, and rules that count Formation components consume
+one resolved `FormationComposition`; Card movement, hand size, covering, and
+effects requiring a Card Instance consume only its physical Cards.
+
+Illusion creates a `FormationRequirement` whose only allowed completion is the
+corresponding Base Ruleset five-element strike. Phantasm creates the same kind
+of requirement but permits any Base Ruleset Formation; a one-component
+five-element strike means every legal element-and-level declaration has a
+completion path. The server automatically adds the virtual component only for
+Formation queries and submissions. The Player's selected Card set remains
+physical, so non-action-ending Spirit Skills and other abilities do not treat
+the virtual component as selected.
+
+Dark Spirit creates both a physical level interpretation and a Formation
+Requirement for its selected Card. It may declare level one or two only when
+that value lowers the Card's current effective level, and the server
+automatically includes the required Card once in Formation queries and
+submissions. Pass, Profession Change, and Formations that cannot satisfy an
+active Formation Requirement are illegal. Non-action-ending effects may occur
+first only while they preserve a completion path. An invalid submission leaves
+the requirement active; an accepted allowed Formation fulfills it even when
+the Formation is later cancelled, prevented, sealed, or ineffective.
+
+Blazing Yang Art raises its selected Wood or Fire Card by two, capped at five,
+without creating a Formation Requirement. If the Player uses that Card during
+the turn, its raised level is the only level available, it may participate only
+in a Base Ruleset Formation, and it may not be used for Profession Change or a
+Formation from another Rule Module. The Player may instead take an action that
+does not use the prepared Card.
+
+Physical Card Interpretation Layers compose by dimension and effect order.
+Pouch, Fire Spirit, Blazing Yang Art, Dark Spirit, and Star effects therefore
+resolve one effective element and level for each physical component. Formation
+matching does not create separate printed and prepared candidates, and accepted
+Formation resolution does not fall back to printed or globally cached Card
+facts. The canonical Formation Requirement completion records the full
+Formation Composition so replay and audit do not infer virtual facts from an
+earlier activation event.
+
+The Web does not fabricate a Card presentation, status badge, or Formation-name
+annotation for a Virtual Formation Card. The public event feed records its
+creation and requirement completion. When Phantasm covers a Passive Spell, the
+Formation identity and physical Cards retain the existing Covered Passive
+redaction, while the already-public virtual facts remain public.
 
 Formation matching distinguishes physical Card Instances from match slots.
 Sacred Art may expand one physical Card Instance into two slots for Formation
@@ -1398,13 +1441,11 @@ originating from the same Card Instance. The Web presents this only as a `×2`
 match annotation and keeps discard count and point previews based on the
 physical Card.
 
-Each physical Card Instance selects at most one element-and-level
-interpretation source in a Formation Match Option: its printed Card Definition,
-a Prepared Profession Ability, or Star Element Substitution. When multiple
-sources are legal, the Formation query returns separate options rather than
-chaining transformations. Sacred Art multiplicity is applied after selecting
-that one interpretation and is not itself another element or level
-transformation.
+Sacred Art multiplicity is applied after resolving physical Card Interpretation
+Layers. It is not another element or level transformation, and it remains
+incompatible with Star Element Substitution. Its duplicate match slots share
+one physical Card's effective facts, while Card movement and ordinary physical
+Card counts still include that Card Instance only once.
 
 The normal Web interaction remains Card-selection first. The existing playable
 Formation query deepens into a playable-Action query that returns both
@@ -1548,10 +1589,13 @@ Shield receives the unreduced damage.
   Card because Wood 2 + Fire 3 + Earth 4 totals only 9. There is one legal
   option recovering 50 HP. A choice is required only when multiple role
   assignments are legal.
-- **Mesmer:** printed page 21 explicitly states that Phantasm and Illusion are
-  different Activated Abilities, so Phantasm does not trigger Illusion
-  Refinement (`幻術精研`). This is consistent with, but not stated directly by,
-  the [Mesmer Web page](https://www.cfecards.org/rule/latest/hero/mesmer).
+- **Mesmer:** printed page 21 defines the result of Illusion and Phantasm as a
+  `虛擬牌` created after discarding two hand Cards, not as a third physical hand
+  Card receiving a new interpretation. It also explicitly states that Phantasm
+  and Illusion are different Activated Abilities, so Phantasm does not trigger
+  Illusion Refinement (`幻術精研`). This is consistent with, but not stated
+  directly by, the
+  [Mesmer Web page](https://www.cfecards.org/rule/latest/hero/mesmer).
 - **Windwalker:** printed page 23 classifies Instant Shadow Death's halving as
   an HP deduction. Resolve it by setting the target Team's HP to
   `floor(original HP / 2)` and record the resulting negative HP delta. The

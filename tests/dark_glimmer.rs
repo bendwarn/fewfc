@@ -144,6 +144,47 @@ fn dark_walker_transforms_before_its_dark_formation_resolves() {
 }
 
 #[test]
+fn dark_spirit_lowers_one_physical_card_and_automatically_requires_it() {
+    let mut game = state(2);
+    set_profession(&mut game, "p1", "dark:dark-spirit-envoy");
+    let card = cards(&game, &[(Element::Earth, 5)])[0];
+    set_hand(&mut game, "p1", vec![card]);
+    let events = handle_command(
+        &game,
+        Command::ActivateProfessionAbility {
+            player: PlayerId::new("p1"),
+            ability_id: "dark:dark-spirit".to_string(),
+            cards: vec![card],
+            target_card: Some(card),
+            declared_element: None,
+            declared_level: Some(1),
+        },
+    ).unwrap();
+    for event in &events { apply_event(&mut game, event); }
+    assert_eq!(game.card_level_for(&PlayerId::new("p1"), card), Some(1));
+    assert!(matches!(
+        handle_command(&game, Command::PassAction {
+            player: PlayerId::new("p1"),
+            reason: fewfc::domain::PassActionReason::NoCardsInHand,
+        }),
+        Err(GameError::Validation(_))
+    ));
+    let events = handle_command(
+        &game,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "earth-strike".to_string(),
+            cards: Vec::new(),
+            declared_targets: Vec::new(),
+        },
+    ).unwrap();
+    assert!(events.iter().any(|event| matches!(event,
+        GameEvent::AttackResolved { used_cards, point_breakdown, .. }
+            if used_cards == &vec![card] && point_breakdown.base_points == 5
+    )));
+}
+
+#[test]
 fn demon_spirit_possession_transforms_without_resetting_power() {
     let mut game = state(2);
     game.spirits.push(PlayerSpirit {

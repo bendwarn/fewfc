@@ -1,6 +1,4 @@
-use fewfc::application::{
-    GameRecord, RecordedDecisionSource, apply_event, handle_command, verify_recorded_decisions,
-};
+use fewfc::application::{GameRecord, apply_event, handle_command};
 use fewfc::domain::{
     CardInstanceId, Command, CoveredPassive, Element, FiveStarAlignment, GameError, GameEvent,
     GameOutcome, GameSetup, GameState, GameStatus, PassiveTriggerTiming, PendingChoiceKind, Phase,
@@ -337,24 +335,6 @@ fn substituted_passive_records_and_redacts_the_declared_card() {
             if candidate.formation_id == "defense"
                 && candidate.star_substitution.as_ref() == Some(&substitution)
     )));
-    let legacy_events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "defense".to_string(),
-            cards: cards.clone(),
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    assert!(matches!(
-        legacy_events.as_slice(),
-        [GameEvent::PassiveCovered {
-            star_substitution: None,
-            ..
-        }]
-    ));
-
     let events = handle_command(
         &state,
         Command::PerformFormation {
@@ -561,30 +541,6 @@ fn substituted_passive_replays_and_verifies_the_exact_declared_card() {
     assert_eq!(record.replay().unwrap(), *record.state());
     assert!(record.verify_replay().is_ok());
 
-    let mut legacy_decisions = record.recorded_decisions();
-    let legacy_cover = legacy_decisions.last_mut().unwrap();
-    if let RecordedDecisionSource::Command {
-        command: Command::PerformFormation {
-            declared_targets, ..
-        },
-        ..
-    } = &mut legacy_cover.source
-    {
-        declared_targets.clear();
-    } else {
-        panic!("expected the final decision to be the passive cover command");
-    }
-    if let [
-        GameEvent::PassiveCovered {
-            star_substitution, ..
-        },
-    ] = legacy_cover.events.as_mut_slice()
-    {
-        *star_substitution = None;
-    } else {
-        panic!("expected the final legacy event to be the passive cover event");
-    }
-    assert!(verify_recorded_decisions(record.setup(), &legacy_decisions).is_ok());
 }
 
 #[test]

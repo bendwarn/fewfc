@@ -2,8 +2,8 @@ use fewfc::application::{
     GameRecord, RecordedDecisionSource, ReplayVerificationError, replay, verify_recorded_decisions,
 };
 use fewfc::domain::{
-    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, CoveredPassive, GameError,
-    GameEvent, GameSetup, HpChangeDelta, PassiveTriggerTiming, PendingChoice, PendingChoiceKind,
+    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, GameError, GameEvent,
+    GameSetup, HpChangeDelta, PendingChoice, PendingChoiceKind,
     PlayerId, RuleModuleId, RulesetId, TeamId, ValidationError,
 };
 use fewfc::infrastructure::{
@@ -617,45 +617,4 @@ fn environment_events_round_trip_and_replay_without_recomputing_rules() {
     assert_eq!(restored, events);
     assert_eq!(state.environment, None);
     assert!(state.hp.iter().all(|team_hp| team_hp.hp == 10));
-}
-
-#[test]
-fn legacy_passive_cover_data_defaults_to_no_star_substitution() {
-    let event = GameEvent::PassiveCovered {
-        player: PlayerId::new("p1"),
-        formation_id: "defense".to_string(),
-        cards: vec![card(2), card(7)],
-        star_substitution: None,
-        sealed: false,
-    };
-    let mut event_json = serde_json::to_value(event).unwrap();
-    event_json["PassiveCovered"]
-        .as_object_mut()
-        .unwrap()
-        .remove("star_substitution");
-    let restored_event: GameEvent = serde_json::from_value(event_json).unwrap();
-    assert!(matches!(
-        restored_event,
-        GameEvent::PassiveCovered {
-            star_substitution: None,
-            ..
-        }
-    ));
-
-    let passive = CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "defense".to_string(),
-        cards: vec![card(2), card(7)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 1,
-        reveal_timing: PassiveTriggerTiming::NextPlayerActionStart,
-    };
-    let mut passive_json = serde_json::to_value(passive).unwrap();
-    passive_json
-        .as_object_mut()
-        .unwrap()
-        .remove("star_substitution");
-    let restored_passive: CoveredPassive = serde_json::from_value(passive_json).unwrap();
-    assert_eq!(restored_passive.star_substitution, None);
 }

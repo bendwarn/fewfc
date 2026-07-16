@@ -658,6 +658,13 @@ fn decide_command_with_base_ruleset(
         Command::PassAction { player, reason } => {
             ensure_current_player(state, &player)?;
             ensure_phase(state, Phase::Main)?;
+            if state.formation_requirements.iter().any(|requirement| {
+                requirement.player == player && requirement.applied_on_turn == state.turn_number
+            }) {
+                return Err(GameError::Validation(ValidationError::ProfessionAbilityCannotResolve(
+                    "formation-requirement".to_string(),
+                )));
+            }
             if state.confluence_card_obligations.iter().any(|obligation| {
                 obligation.owner == player && obligation.applied_on_turn == state.turn_number
             }) {
@@ -752,6 +759,13 @@ fn decide_command_with_base_ruleset(
         } => {
             ensure_current_player(state, &player)?;
             ensure_phase(state, Phase::Main)?;
+            if state.formation_requirements.iter().any(|requirement| {
+                requirement.player == player && requirement.applied_on_turn == state.turn_number
+            }) {
+                return Err(GameError::Validation(ValidationError::ProfessionAbilityCannotResolve(
+                    "formation-requirement".to_string(),
+                )));
+            }
             if !crate::rules::confluence::profession_change_satisfies_obligation(
                 state, &player, &cards,
             ) {

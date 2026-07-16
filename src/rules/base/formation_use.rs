@@ -27,6 +27,7 @@ struct FormationUsePlan {
     player: PlayerId,
     formation_id: String,
     cards: Vec<CardInstanceId>,
+    composition: crate::domain::FormationComposition,
     declared_targets: Vec<TargetDecl>,
     star_substitution: Option<crate::domain::StarElementSubstitution>,
     effect_plan: EffectPlan,
@@ -39,11 +40,23 @@ pub(super) fn resolve(
 ) -> GameResult<Vec<GameEvent>> {
     let player = request.player.clone();
     let formation_id = request.formation_id.clone();
-    let cards = request.cards.clone();
     let plan = BaseFormationPlanner::new().plan_use(state, request)?;
+    let composition = plan.composition.clone();
     let mut events = BaseEffectResolver::new().resolve(state, plan)?;
+    if state.formation_requirements.iter().any(|requirement| {
+        &requirement.player == &player && requirement.applied_on_turn == state.turn_number
+    }) {
+        events.push(GameEvent::FormationRequirementFulfilled {
+            player: player.clone(),
+            formation_id: formation_id.clone(),
+            composition: crate::domain::FormationComposition {
+                physical_cards: composition.physical_cards.clone(),
+                virtual_card: composition.virtual_card.clone(),
+            },
+        });
+    }
     if let Some(event) =
-        crate::rules::confluence::obligation_completion_event(state, &player, &cards)
+        crate::rules::confluence::obligation_completion_event(state, &player, &composition.physical_cards)
     {
         events.push(event);
     }
@@ -93,6 +106,7 @@ impl BaseFormationPlanner {
             player: request.player,
             formation_id: selected.formation_id,
             cards: selected.cards,
+            composition: selected.composition,
             declared_targets: selected.declared_targets,
             star_substitution: selected.star_substitution,
             effect_plan: selected.effect_plan,
@@ -1006,14 +1020,17 @@ fn metamorphosis_intents(
 }
 
 fn level_sum(state: &GameState, player: &PlayerId, cards: &[CardInstanceId]) -> GameResult<i32> {
-    cards.iter().try_fold(0, |sum, card| {
+    let physical = cards.iter().try_fold(0, |sum, card| {
         let level = state
             .card_level_for(player, *card)
             .ok_or(GameError::Validation(
                 ValidationError::MissingCardInstanceDefinition(*card),
             ))? as i32;
         Ok(sum + level)
-    })
+    })?;
+    Ok(physical + state.formation_requirements.iter().find(|requirement| {
+        &requirement.player == player && requirement.applied_on_turn == state.turn_number
+    }).and_then(|requirement| requirement.virtual_card.as_ref()).map_or(0, |card| card.level as i32))
 }
 
 fn team_hp(state: &GameState, team: &TeamId) -> GameResult<i32> {

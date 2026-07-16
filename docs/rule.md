@@ -446,11 +446,29 @@ require a separate rule-upgrade decision.
   original Formation rather than creating new Formation identities.
 - When one Card selection has multiple result-changing interpretations, the
   Player explicitly chooses a Formation Match Option.
-- Prepared Profession Abilities record turn-scoped Card interpretations without
-  mutating Card Instances or Card Definitions. Their ability identity and
-  declared interpretation are public, while the target Card Instance remains
-  visible only to its owner until ordinary Card movement makes it public. They
-  clear after the Player takes any Action.
+- Prepared Profession Abilities such as Blazing Yang Art and Dark Spirit add
+  turn-scoped interpretation or use restrictions to one physical Card Instance
+  without mutating its Card Definition. Formation matching, point calculation,
+  and effect resolution use the same effective element and level after all
+  applicable Card Interpretation Layers. The ability and interpreted facts are
+  public, while the physical target remains visible only to its owner until
+  ordinary Card movement makes it public.
+- Illusion and Phantasm discard two physical Cards and create one fixed Virtual
+  Formation Card of a declared element and level. They do not target or
+  reinterpret a third Card Instance. The virtual component is public when
+  created, belongs to no Card zone, and cannot receive Fire Spirit, Pouch, or
+  Star interpretations.
+- Illusion requires that virtual component to perform the corresponding
+  five-element strike during the same turn. Phantasm instead permits it to join
+  any Base Ruleset Formation; it is a different Activated Profession Ability
+  and does not trigger Illusion Refinement. A legal Formation Use records the
+  physical and virtual components separately and fulfills the requirement even
+  when the Formation is later ineffective or cancelled.
+- Dark Spirit can only lower its selected physical Card to level one or two and
+  requires that Card to join a Formation during the same turn. Blazing Yang Art
+  raises its selected Wood or Fire Card by two, capped at five; it does not
+  require using the Card, but that Card can participate only in a Base Ruleset
+  Formation and cannot be used for Profession Change during the turn.
 - Sacred Art may let one physical Card fill two Formation match slots, while
   Card movement and ordinary level-sum formulas count that Card only once.
 

@@ -1,6 +1,6 @@
 use crate::domain::{
-    CardInstanceId, GameError, GameResult, GameState, PlayerId, StarElementSubstitution,
-    TargetDecl, ValidationError,
+    CardInstanceId, FormationComposition, FormationRequirement, GameError, GameResult, GameState,
+    PlayerId, StarElementSubstitution, TargetDecl, ValidationError, VirtualFormationCard,
 };
 use crate::rules::{
     EffectPlan, FormationCandidate, FormationDef, FormationRegistry, SubmittedCardFacts,
@@ -16,6 +16,8 @@ pub(super) struct FormationSelection<'a> {
     profession_abilities_suppressed: bool,
     cards: Vec<CardInstanceId>,
     facts: Vec<SubmittedCardFacts>,
+    virtual_card: Option<VirtualFormationCard>,
+    formation_requirement: Option<FormationRequirement>,
     registry: FormationRegistry,
     team_star: Option<crate::domain::StarKind>,
     available_stars: Vec<crate::domain::StarKind>,
@@ -30,6 +32,8 @@ pub(super) struct FormationSelection<'a> {
 pub(super) struct SelectedFormation {
     pub(super) formation_id: String,
     pub(super) cards: Vec<CardInstanceId>,
+    pub(super) composition: FormationComposition,
+    pub(super) facts: Vec<SubmittedCardFacts>,
     pub(super) effect_plan: EffectPlan,
     pub(super) star_substitution: Option<StarElementSubstitution>,
     pub(super) declared_targets: Vec<TargetDecl>,
@@ -44,8 +48,17 @@ impl<'a> FormationSelection<'a> {
         let hand = state
             .hand(player)
             .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
+        let requirement = state.formation_requirements.iter().find(|requirement| {
+            &requirement.player == player && requirement.applied_on_turn == state.turn_number
+        }).cloned();
+        let mut selected_cards = selected_cards;
+        if let Some(card) = requirement.as_ref().and_then(|requirement| requirement.physical_card)
+            && !selected_cards.contains(&card)
+        {
+            selected_cards.push(card);
+        }
         let mut seen = HashSet::new();
-        let facts = selected_cards
+        let mut facts = selected_cards
             .iter()
             .map(|card| {
                 if !seen.insert(*card) {
@@ -61,14 +74,21 @@ impl<'a> FormationSelection<'a> {
                 let card_def = state.card_def(*card).ok_or(GameError::Validation(
                     ValidationError::MissingCardInstanceDefinition(*card),
                 ))?;
+                let prepared = state.prepared_profession_abilities.iter().rev().find(|prepared| {
+                    &prepared.player == player && prepared.card == *card && prepared.prepared_on_turn == state.turn_number
+                });
                 Ok(SubmittedCardFacts {
-                    element: card_def.element,
+                    element: prepared.map(|prepared| prepared.element).unwrap_or(card_def.element),
                     level: state
                         .card_level_for(player, *card)
                         .expect("known Card must have an effective level"),
                 })
             })
             .collect::<GameResult<Vec<_>>>()?;
+        let virtual_card = requirement.as_ref().and_then(|requirement| requirement.virtual_card.clone());
+        if let Some(card) = &virtual_card {
+            facts.push(SubmittedCardFacts { element: card.element, level: card.level });
+        }
 
         let team_star = state
             .has_rule_module(crate::domain::STAR_MODULE_ID)
@@ -100,6 +120,8 @@ impl<'a> FormationSelection<'a> {
             ),
             cards: selected_cards,
             facts,
+            virtual_card,
+            formation_requirement: requirement,
             registry: official_formation_registry(&state.enabled_rule_modules),
             team_star,
             available_stars,
@@ -185,27 +207,6 @@ impl<'a> FormationSelection<'a> {
                             )
                         })
                         .collect::<Vec<_>>();
-                if self.prepared_matches(formation, &matcher)
-                    && let Some(prepared) = &self.prepared
-                {
-                    candidates.push(FormationCandidate {
-                        formation_id: formation.id.clone(),
-                        formation_name: formation.name.clone(),
-                        rule_text: formation.rule_text.clone(),
-                        summary: formation.rule_text.clone(),
-                        category: formation.category.clone(),
-                        cards: self.cards.clone(),
-                        star_substitution: None,
-                        declared_targets: vec![TargetDecl::FormationRole {
-                            role: "prepared".to_string(),
-                            card: prepared.card,
-                        }],
-                        preview: Some(format!(
-                            "指定牌視為 {:?} {} 級",
-                            prepared.element, prepared.level
-                        )),
-                    });
-                }
                 for card in self.sacred_art_options(formation, &matcher) {
                     candidates.push(FormationCandidate {
                         formation_id: formation.id.clone(),
@@ -347,12 +348,6 @@ impl<'a> FormationSelection<'a> {
             None if options.contains(&None) => {
                 return self.selected(&formation, None, declared_targets);
             }
-            None if options.len() == 1 => {
-                // Legacy commands predate explicit match-option declarations. They may
-                // still use the sole substituted match, but must reproduce their
-                // original event payload without inventing a declaration.
-                return self.selected(&formation, None, declared_targets);
-            }
             None => {
                 return Err(GameError::Validation(
                     ValidationError::FormationMatchOptionRequired {
@@ -380,9 +375,15 @@ impl<'a> FormationSelection<'a> {
             .effect_for(formation)
             .expect("base formation registry must link every formation to an effect");
 
+        let composition = FormationComposition {
+            physical_cards: self.cards.clone(),
+            virtual_card: self.virtual_card,
+        };
         Ok(SelectedFormation {
             formation_id: formation.id.clone(),
             cards: self.cards,
+            composition,
+            facts: self.facts,
             effect_plan: effect.plan.clone(),
             star_substitution,
             declared_targets,
@@ -394,9 +395,19 @@ impl<'a> FormationSelection<'a> {
         formation: &FormationDef,
         matcher: &crate::rules::FormationMatcher<'_>,
     ) -> Vec<Option<StarElementSubstitution>> {
-        if self.prepared.as_ref().is_some_and(|prepared| {
-            prepared.ability_id == "dark:dark-spirit" && self.cards.contains(&prepared.card)
-        }) {
+        if let Some(requirement) = &self.formation_requirement
+            && (!requirement.allowed_formation_scope.iter().any(|scope| {
+                scope == "all" || scope == &formation.id || (scope == "base" && base_formation_registry().formation(&formation.id).is_some())
+            }) || requirement.physical_card.is_some_and(|card| !self.cards.contains(&card)))
+        {
+            return Vec::new();
+        }
+        if let Some(prepared) = &self.prepared
+            && self.cards.contains(&prepared.card)
+            && !prepared.allowed_formation_scope.iter().any(|scope| {
+                scope == "all" || scope == &formation.id || (scope == "base" && base_formation_registry().formation(&formation.id).is_some())
+            })
+        {
             return Vec::new();
         }
         if !crate::rules::confluence::formation_selection_satisfies_obligation(
@@ -495,7 +506,7 @@ impl<'a> FormationSelection<'a> {
         }
 
         for available_star in &self.available_stars {
-            options.extend(self.facts.iter().enumerate().filter_map(|(index, card)| {
+            options.extend(self.facts[..self.cards.len()].iter().enumerate().filter_map(|(index, card)| {
                 if card.element != star::companion_element(*available_star) {
                     return None;
                 }
@@ -626,7 +637,7 @@ impl<'a> FormationSelection<'a> {
         {
             return Vec::new();
         }
-        self.facts
+        self.facts[..self.cards.len()]
             .iter()
             .enumerate()
             .filter_map(|(index, fact)| {

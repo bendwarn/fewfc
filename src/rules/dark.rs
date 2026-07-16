@@ -871,6 +871,14 @@ pub(crate) fn activate_profession_ability(
             prepared_on_turn: state.turn_number,
             interpretation_revision: state.card_interpretation_revision + 1,
         }),
+    }, GameEvent::FormationRequirementSet {
+        requirement: crate::domain::FormationRequirement {
+            player: player.clone(),
+            physical_card: candidate.target_card,
+            virtual_card: None,
+            allowed_formation_scope: vec!["all".to_string()],
+            applied_on_turn: state.turn_number,
+        },
     }])
 }
 

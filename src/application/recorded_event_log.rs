@@ -184,6 +184,8 @@ pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::ProfessionTransformed { .. }
         | GameEvent::ProfessionBroken { .. }
         | GameEvent::ProfessionAbilityActivated { .. }
+        | GameEvent::FormationRequirementSet { .. }
+        | GameEvent::FormationRequirementFulfilled { .. }
         | GameEvent::SpiritSummoned { .. }
         | GameEvent::SpiritTransformed { .. }
         | GameEvent::SpiritPowerChanged { .. }

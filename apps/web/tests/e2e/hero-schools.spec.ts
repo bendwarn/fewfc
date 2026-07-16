@@ -54,9 +54,11 @@ test('a Profession change and activated ability survive public reconnect', async
     expect(activationResponse.ok()).toBe(true)
 
     await host.reload()
-    await expect(host.locator('.card-interpretation')).toContainText('已準備 · 幻術')
+    await expect(host.locator('.event-feed')).toContainText('虛擬牌')
+    await expect(host.locator('.card-interpretation')).toHaveCount(0)
     await guest.reload()
-    await expect(guest.locator('.card-interpretation')).toContainText('已準備 · 幻術')
+    await expect(guest.locator('.event-feed')).toContainText('虛擬牌')
+    await expect(guest.locator('.card-interpretation')).toHaveCount(0)
   } finally {
     await hostContext.close()
     await guestContext.close()

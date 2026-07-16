@@ -3175,6 +3175,8 @@ fn event_type(event: &PublicGameEvent) -> String {
         PublicGameEvent::SpiritSkillUsed { .. } => "SpiritSkillUsed".to_string(),
         PublicGameEvent::SpiritLevelInterpreted { .. } => "SpiritLevelInterpreted".to_string(),
         PublicGameEvent::CardsMoved { .. } => "CardsMoved".to_string(),
+        PublicGameEvent::FormationRequirementSet { .. } => "FormationRequirementSet".to_string(),
+        PublicGameEvent::FormationRequirementFulfilled { .. } => "FormationRequirementFulfilled".to_string(),
     }
 }
 
@@ -3237,6 +3239,20 @@ fn event_presentation_with_vocabulary(
                 "{} 因職業能力抽取 {}。",
                 player.as_str(),
                 card_refs_summary(cards, labels)
+            ),
+        ),
+        PublicGameEvent::FormationRequirementSet { player, virtual_card } => (
+            "陣法義務".to_string(),
+            virtual_card.as_ref().map_or_else(
+                || format!("{} 必須在本回合完成指定陣法。", player.as_str()),
+                |card| format!("{} 建立了 {} {} 級虛擬牌。", player.as_str(), element_short_name(card.element), card.level),
+            ),
+        ),
+        PublicGameEvent::FormationRequirementFulfilled { player, formation_id, virtual_card } => (
+            "陣法義務完成".to_string(),
+            virtual_card.as_ref().map_or_else(
+                || format!("{} 已以 {} 完成陣法義務。", player.as_str(), formation_id),
+                |card| format!("{} 以 {} {} 級虛擬牌完成 {}。", player.as_str(), element_short_name(card.element), card.level, formation_id),
             ),
         ),
         PublicGameEvent::DeckPrepared { deck } => (
@@ -3550,6 +3566,14 @@ fn game_event_presentation_with_vocabulary(
                     )
                 },
             ),
+        ),
+        GameEvent::FormationRequirementSet { requirement } => (
+            "陣法義務".to_string(),
+            format!("{} 必須在本回合完成已準備的陣法。", requirement.player.as_str()),
+        ),
+        GameEvent::FormationRequirementFulfilled { player, formation_id, .. } => (
+            "陣法義務完成".to_string(),
+            format!("{} 已以 {} 完成陣法義務。", player.as_str(), formation_id),
         ),
         GameEvent::SpiritSummoned {
             player,
@@ -5369,6 +5393,17 @@ mod tests {
         assert_eq!(json["declaredElement"], "Water");
         assert_eq!(json["declaredLevel"], 4);
         assert!(json.get("target_card").is_none());
+
+        let illusion = WebPlayableAction::ActivateProfessionAbility {
+            id: "illusion".to_string(),
+            name: "幻術".to_string(),
+            summary: "virtual".to_string(),
+            cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
+            target_card: None,
+            declared_element: Some("Fire".to_string()),
+            declared_level: Some(3),
+        };
+        assert!(serde_json::to_value(illusion).unwrap()["targetCard"].is_null());
     }
 
     #[test]
@@ -6224,25 +6259,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn legacy_spirit_level_event_without_skill_still_deserializes() {
-        let event = GameEvent::SpiritLevelInterpreted {
-            player: PlayerId::new("alice"),
-            skill: Some(crate::domain::SpiritSkill::Glimmer),
-            card: CardInstanceId::new(7),
-            level: 3,
-            applied_on_turn: 1,
-            interpretation_revision: 1,
-        };
-        let mut json = serde_json::to_value(event).unwrap();
-        json["SpiritLevelInterpreted"]
-            .as_object_mut()
-            .unwrap()
-            .remove("skill");
-
-        assert!(matches!(
-            serde_json::from_value::<GameEvent>(json).unwrap(),
-            GameEvent::SpiritLevelInterpreted { skill: None, .. }
-        ));
-    }
 }

@@ -100,6 +100,32 @@ pub struct PreparedProfessionAbility {
     pub interpretation_revision: u64,
 }
 
+/// A non-physical component supplied by an activated profession ability.
+/// It deliberately has neither an instance id nor an origin: only formation
+/// resolution may consume it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct VirtualFormationCard {
+    pub source_ability_id: String,
+    pub element: Element,
+    pub level: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FormationComposition {
+    pub physical_cards: Vec<CardInstanceId>,
+    #[serde(default)]
+    pub virtual_card: Option<VirtualFormationCard>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FormationRequirement {
+    pub player: PlayerId,
+    pub physical_card: Option<CardInstanceId>,
+    pub virtual_card: Option<VirtualFormationCard>,
+    pub allowed_formation_scope: Vec<String>,
+    pub applied_on_turn: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RuleModuleId(String);
 
@@ -791,6 +817,8 @@ pub struct GameState {
     #[serde(default)]
     pub prepared_profession_abilities: Vec<PreparedProfessionAbility>,
     #[serde(default)]
+    pub formation_requirements: Vec<FormationRequirement>,
+    #[serde(default)]
     pub activated_profession_ability_turns: HashMap<PlayerId, u64>,
     pub last_elemental_attack_by_player: HashMap<PlayerId, LastElementalAttack>,
     pub last_formation_by_player: HashMap<PlayerId, LastFormationUse>,
@@ -900,6 +928,7 @@ impl GameState {
             spirit_level_interpretations: Vec::new(),
             card_interpretation_revision: 0,
             prepared_profession_abilities: Vec::new(),
+            formation_requirements: Vec::new(),
             activated_profession_ability_turns: HashMap::new(),
             last_elemental_attack_by_player: HashMap::new(),
             last_formation_by_player: HashMap::new(),
@@ -1056,6 +1085,11 @@ impl GameState {
                 && bonus.applied_on_turn == self.turn_number
                 && bonus.cards.contains(&card)
         });
+        let prepared_level = self.prepared_profession_abilities.iter().rev().find(|prepared| {
+            &prepared.player == player
+                && prepared.card == card
+                && prepared.prepared_on_turn == self.turn_number
+        }).map(|prepared| prepared.level);
         self.spirit_level_interpretations
             .iter()
             .rev()
@@ -1065,6 +1099,7 @@ impl GameState {
                     && interpretation.applied_on_turn == self.turn_number
             })
             .map(|interpretation| interpretation.level)
+            .or(prepared_level)
             .or_else(|| self.card_def(card).map(|definition| definition.level))
             .map(|level| if pouch_bonus { level + 1 } else { level })
     }
@@ -1376,6 +1411,14 @@ pub enum GameEvent {
         player: PlayerId,
         ability_id: String,
         prepared: Option<PreparedProfessionAbility>,
+    },
+    FormationRequirementSet {
+        requirement: FormationRequirement,
+    },
+    FormationRequirementFulfilled {
+        player: PlayerId,
+        formation_id: String,
+        composition: FormationComposition,
     },
     SpiritSummoned {
         player: PlayerId,

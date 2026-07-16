@@ -247,6 +247,15 @@ pub enum PublicGameEvent {
     CardsMoved {
         cards: PublicCardRefs,
     },
+    FormationRequirementSet {
+        player: PlayerId,
+        virtual_card: Option<crate::domain::VirtualFormationCard>,
+    },
+    FormationRequirementFulfilled {
+        player: PlayerId,
+        formation_id: String,
+        virtual_card: Option<crate::domain::VirtualFormationCard>,
+    },
     EffectChoiceRequested {
         player: PlayerId,
         purpose: String,
@@ -682,6 +691,19 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         GameEvent::CardsMoved { card_moves } => PublicGameEvent::CardsMoved {
             cards: public_moved_cards(card_moves, &policy),
         },
+        GameEvent::FormationRequirementSet { requirement } => PublicGameEvent::FormationRequirementSet {
+            player: requirement.player.clone(),
+            // A Dark Spirit target remains hidden until a normal card movement
+            // reveals it; virtual facts are public when they are created.
+            virtual_card: requirement.virtual_card.clone(),
+        },
+        GameEvent::FormationRequirementFulfilled { player, formation_id, composition } => {
+            PublicGameEvent::FormationRequirementFulfilled {
+                player: player.clone(),
+                formation_id: formation_id.clone(),
+                virtual_card: composition.virtual_card.clone(),
+            }
+        }
         GameEvent::TurnStarted { .. }
         | GameEvent::GamePreparationCompleted
         | GameEvent::PouchRevealed { .. }

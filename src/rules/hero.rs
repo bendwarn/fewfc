@@ -1,6 +1,6 @@
 use crate::domain::{
     CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Element, GameError, GameEvent, GameResult,
-    GameState, HERO_SCHOOLS_MODULE_ID, HpChangeDelta, PlayerId, PreparedProfessionAbility,
+    GameState, HERO_SCHOOLS_MODULE_ID, HpChangeDelta, PlayerId,
     ProfessionId, StatusDuration, StatusEffect, StatusOwner, ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
@@ -1178,9 +1178,6 @@ pub(crate) fn playable_profession_abilities(
         }
     }
     if cards.len() == 2 {
-        let hand = state
-            .hand(player)
-            .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
         for (ability_id, ability_name, ability, scope) in [
             ("illusion", "幻術", ProfessionAbility::Illusion, "五行擊術"),
             (
@@ -1193,30 +1190,17 @@ pub(crate) fn playable_profession_abilities(
             if !abilities.contains(&ability) {
                 continue;
             }
-            for target_card in hand.iter().filter(|card| !cards.contains(card)) {
-                for element in [
-                    Element::Metal,
-                    Element::Wood,
-                    Element::Water,
-                    Element::Fire,
-                    Element::Earth,
-                ] {
-                    for level in 1..=5 {
-                        candidates.push(ProfessionAbilityCandidate {
-                            ability_id: ability_id.to_string(),
-                            ability_name: ability_name.to_string(),
-                            rule_text: format!(
-                                "捨棄所選兩張牌，將指定牌準備為{}{}級以組成{}；不結束行動",
-                                element_label(element),
-                                level,
-                                scope
-                            ),
-                            cards: cards.to_vec(),
-                            target_card: Some(*target_card),
-                            declared_element: Some(element),
-                            declared_level: Some(level),
-                        });
-                    }
+            for element in [Element::Metal, Element::Wood, Element::Water, Element::Fire, Element::Earth] {
+                for level in 1..=5 {
+                    candidates.push(ProfessionAbilityCandidate {
+                        ability_id: ability_id.to_string(),
+                        ability_name: ability_name.to_string(),
+                        rule_text: format!("捨棄所選兩張牌，建立{}{}級虛擬牌以組成{}；不結束行動", element_label(element), level, scope),
+                        cards: cards.to_vec(),
+                        target_card: None,
+                        declared_element: Some(element),
+                        declared_level: Some(level),
+                    });
                 }
             }
         }
@@ -1288,15 +1272,7 @@ pub(crate) fn activate_profession_ability(
             if cards.len() != 2 {
                 return cannot_resolve(ability_id);
             }
-            let target_card = target_card.ok_or_else(|| {
-                GameError::Validation(ValidationError::ProfessionAbilityCannotResolve(
-                    ability_id.to_string(),
-                ))
-            })?;
-            let hand = state.hand(player).ok_or_else(|| {
-                GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
-            })?;
-            if cards.contains(&target_card) || !hand.contains(&target_card) {
+            if target_card.is_some() {
                 return cannot_resolve(ability_id);
             }
             let element = declared_element.ok_or_else(|| {
@@ -1319,16 +1295,20 @@ pub(crate) fn activate_profession_ability(
             events.push(GameEvent::ProfessionAbilityActivated {
                 player: player.clone(),
                 ability_id: ability_id.to_string(),
-                prepared: Some(PreparedProfessionAbility {
+                prepared: None,
+            });
+            events.push(GameEvent::FormationRequirementSet {
+                requirement: crate::domain::FormationRequirement {
                     player: player.clone(),
-                    ability_id: ability_id.to_string(),
-                    card: target_card,
-                    element,
-                    level,
+                    physical_card: None,
+                    virtual_card: Some(crate::domain::VirtualFormationCard {
+                        source_ability_id: ability_id.to_string(),
+                        element,
+                        level,
+                    }),
                     allowed_formation_scope,
-                    prepared_on_turn: state.turn_number,
-                    interpretation_revision: state.card_interpretation_revision + 1,
-                }),
+                    applied_on_turn: state.turn_number,
+                },
             });
             events.push(GameEvent::CardsMoved {
                 card_moves: ability_card_moves(state, player, cards),

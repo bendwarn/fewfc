@@ -252,6 +252,23 @@ One legal interpretation of submitted Card Instances for a declared Formation,
 including any role assignment that changes the Formation's result.
 _Avoid_: automatic best match, separate Formation
 
+**Formation Composition**:
+The physical Card Instances and optional Virtual Formation Card accepted as the
+components of one Formation Use.
+_Avoid_: selected Cards, Discard list
+
+**Virtual Formation Card (虛擬牌)**:
+A non-physical Formation component created with a fixed source ability,
+element, and level. It belongs to no Card zone and has no Card Instance or Card
+Origin.
+_Avoid_: token Card Instance, interpreted hand Card
+
+**Formation Requirement**:
+A turn-scoped commitment that a specified physical or Virtual Formation Card
+must participate in an allowed Formation Use before the Player ends their
+action opportunity.
+_Avoid_: optional preparation, selected Cards
+
 **Activated Profession Ability (發動能力)**:
 A Profession Ability that its Player may deliberately use during the Main Phase
 without consuming the action opportunity. A Player may successfully use only
@@ -260,9 +277,9 @@ _Avoid_: Action Command, Formation Use
 
 **Prepared Profession Ability**:
 The declared, turn-scoped result of an Activated Profession Ability that changes
-how one specified Card Instance may be interpreted by the Player's subsequent
-action.
-_Avoid_: Card Definition mutation, hidden draft
+how one specified physical Card Instance may be interpreted or used by the
+Player's subsequent action.
+_Avoid_: Virtual Formation Card, Card Definition mutation, hidden draft
 
 **Card Level Interpretation**:
 A turn-scoped instruction to treat one specified Card Instance as a declared
@@ -271,10 +288,10 @@ Instance or its Card Definition.
 _Avoid_: Card Definition mutation, level counter
 
 **Card Interpretation Layer**:
-A rule-scoped override of one or more effective Card dimensions, such as element
-or level. Eligible layers apply in effect order, and a later layer replaces only
-the dimensions it specifies.
-_Avoid_: Card Definition mutation, mutually exclusive interpretation source
+A rule-scoped change to one or more effective dimensions of a physical Card
+Instance, such as element or level. Eligible layers apply in effect order while
+unrelated dimensions continue to compose.
+_Avoid_: Virtual Formation Card, Card Definition mutation
 
 **Sacred Art Multiplicity (聖術視為兩張)**:
 The Saint's ability to let one eligible physical Card fill two match slots when
@@ -584,7 +601,8 @@ same artifact as a Formation Catalog rule description.
 _Avoid_: raw rule_text, tooltip copy
 
 **Formation Use**:
-The accepted use of a declared formation, including its semantic resolution and explicit card movement.
+The accepted use of a Formation Composition, including its semantic resolution
+and explicit movement of its physical Cards.
 _Avoid_: implicit card discard
 
 **Ineffective Formation (陣法效果無效)**:
@@ -732,6 +750,11 @@ _Avoid_: callback response
   shared once-per-turn activation allowance
 - A **Prepared Profession Ability** expires after the Player's action or at the
   end of that turn
+- A **Formation Requirement** permits non-action-ending effects beforehand but
+  prevents the Player from ending their action opportunity without an allowed
+  **Formation Use**
+- A **Virtual Formation Card** contributes its fixed element and level to one
+  **Formation Composition** but never moves between Card zones
 - A **Team** owns HP for one or more **Players**
 - A **Player** owns at most one **Shield**
 - Every **Card Instance** has exactly one immutable **Card Origin**
@@ -898,7 +921,9 @@ _Avoid_: callback response
 - Elemental, physical, special, immediate, and passive are execution details, not **Formation Category** values; keep **Formation Category** to **Attack** or **Spell**.
 - Active-effect commands are not formation actions; do not treat every command accepted during **Main Phase** as an **Action Command**.
 - The first version of the base formation engine may define **Active-Effect Command** as a future extension point without implementing concrete commands.
-- `used_cards` identifies cards used by a **Formation Use**, but card zone changes must still be represented by **Card Move Deltas** or equivalent explicit replayable deltas.
+- `used_cards` identifies physical Card Instances used by a **Formation Use**;
+  a **Formation Composition** identifies any Virtual Formation Card separately,
+  and zone changes still require explicit replayable deltas.
 - Turn draw discard and effect-generated selections are both **Pending Choices**, even when events keep more specific semantic names.
 - `CannotAct` is the implementation spelling of **Cannot Act**, a canonical **Status Kind**, not arbitrary metadata.
 - Public event data is a **Public Event Feed**, not a replayable **Game Event** log.

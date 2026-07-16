@@ -1,5 +1,13 @@
 # 48 Prepare Formations through the Mesmer School
 
+> **Superseded in part:**
+> [ADR 0025](../adr/0025-model-illusion-cards-as-virtual-formation-components.md)
+> replaces this issue's Illusion and Phantasm preparation model. The completed
+> checklist below remains a historical record, but its third-physical-Card,
+> optional-follow-up, and mutually exclusive interpretation-source criteria are
+> no longer authoritative. Illusion and Phantasm now create a Virtual Formation
+> Card and a mandatory same-turn Formation Requirement.
+
 ## Triage
 
 ready-for-agent
@@ -25,6 +33,15 @@ Profession Formation, projection, and interaction from the
 - [x] Element resistance, Seal interaction, Shield behavior, draw bonuses, and Profession replacement use typed hooks.
 - [x] Direct execution, replay, Public Views, Web DTOs, playable Actions, the Ability panel, and ability summaries agree.
 - [x] Tests cover disconnect after preparation, unused preparation, invalid activation, copied effects, Hero-disabled behavior, and team mode.
+
+## Superseded acceptance criteria
+
+ADR 0025 supersedes the criteria that model Illusion or Phantasm as a
+`PreparedProfessionAbility` targeting a physical Card Instance, allow the
+Player to end the action without using the created Card, or choose exactly one
+of printed, Prepared, and Star interpretations. The remaining Mesmer School
+delivery criteria continue to describe the historical scope of this completed
+issue.
 
 ## Blocked by
 

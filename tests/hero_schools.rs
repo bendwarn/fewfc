@@ -5,7 +5,7 @@ use fewfc::domain::{
     Phase, Player, PlayerId, PlayerProfession, ProfessionId, RuleModuleId, STAR_MODULE_ID,
     TargetDecl, TeamId, ValidationError,
 };
-use fewfc::public_view::{PublicCardInterpretation, Viewer, state_for};
+use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
 
 fn game_state(modules: &[&str]) -> GameState {
@@ -386,7 +386,7 @@ fn mesmer_preparation_is_public_shared_and_clears_after_action() {
             player: PlayerId::new("p1"),
             ability_id: "illusion".to_string(),
             cards: selected[..2].to_vec(),
-            target_card: Some(selected[2]),
+            target_card: None,
             declared_element: Some(Element::Fire),
             declared_level: Some(3),
         },
@@ -398,12 +398,9 @@ fn mesmer_preparation_is_public_shared_and_clears_after_action() {
             .any(|event| matches!(event, GameEvent::TurnDrawBonusChanged { delta: 1, .. }))
     );
     apply_all(&mut state, &events);
-    assert!(matches!(
-        state_for(&state, Viewer::Observer)
-            .card_interpretations
-            .as_slice(),
-        [PublicCardInterpretation::ProfessionAbility { card: None, .. }]
-    ));
+    assert!(state_for(&state, Viewer::Observer).card_interpretations.is_empty());
+    assert!(matches!(state.formation_requirements.as_slice(), [requirement]
+        if requirement.virtual_card.as_ref().is_some_and(|card| card.element == Element::Fire && card.level == 3)));
     assert!(matches!(
         handle_command(
             &state,
@@ -411,7 +408,7 @@ fn mesmer_preparation_is_public_shared_and_clears_after_action() {
                 player: PlayerId::new("p1"),
                 ability_id: "phantasm".to_string(),
                 cards: selected[..2].to_vec(),
-                target_card: Some(selected[2]),
+                target_card: None,
                 declared_element: Some(Element::Fire),
                 declared_level: Some(3),
             },
@@ -421,20 +418,18 @@ fn mesmer_preparation_is_public_shared_and_clears_after_action() {
         ))
     ));
 
-    let candidates = formation_candidates(&state, &[selected[2]], "fire-strike");
-    let prepared = candidates
-        .iter()
-        .find(|candidate| !candidate.declared_targets.is_empty())
-        .unwrap();
+    let candidates = formation_candidates(&state, &[], "fire-strike");
+    assert!(!candidates.is_empty());
     let events = perform(
         &state,
         "fire-strike",
-        vec![selected[2]],
-        prepared.declared_targets.clone(),
+        vec![],
+        Vec::new(),
     )
     .unwrap();
     apply_all(&mut state, &events);
     assert!(state.prepared_profession_abilities.is_empty());
+    assert!(state.formation_requirements.is_empty());
 }
 
 #[test]
@@ -452,7 +447,7 @@ fn phantasm_does_not_trigger_illusion_refinement_and_mesmer_formations_resolve()
             player: PlayerId::new("p1"),
             ability_id: "phantasm".to_string(),
             cards: selected[..2].to_vec(),
-            target_card: Some(selected[2]),
+            target_card: None,
             declared_element: Some(Element::Fire),
             declared_level: Some(3),
         },
@@ -464,23 +459,20 @@ fn phantasm_does_not_trigger_illusion_refinement_and_mesmer_formations_resolve()
             .any(|event| matches!(event, GameEvent::TurnDrawBonusChanged { .. }))
     );
 
+    apply_all(&mut state, &events);
     let shield = cards(
         &state,
         &[
-            (Element::Water, 1),
-            (Element::Water, 2),
+            (Element::Wood, 1),
+            (Element::Wood, 2),
             (Element::Metal, 1),
-            (Element::Fire, 1),
-            (Element::Earth, 1),
         ],
     );
     set_hand(&mut state, "p1", shield.clone());
-    let events = perform(&state, "purple-light-shield", shield, Vec::new()).unwrap();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, GameEvent::ShieldChanged { new_value: 30, .. }))
-    );
+    let events = perform(&state, "barrier", shield, Vec::new()).unwrap();
+    assert!(events.iter().any(|event| matches!(event, GameEvent::ShieldChanged { new_value: 28, .. })));
+    assert!(events.iter().any(|event| matches!(event, GameEvent::FormationRequirementFulfilled { composition, .. }
+        if composition.physical_cards.len() == 3 && composition.virtual_card.is_some())));
 }
 
 #[test]

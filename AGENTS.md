@@ -4,6 +4,14 @@
 
 - This repository is a Rust crate. Prefer `cargo test` for the main validation path unless the task specifically touches package tooling.
 
+## Temporary Pre-deployment Policy
+
+- Backward compatibility does not need to be preserved before deployment unless
+  a task explicitly requires it. Prefer the clean current design over compatibility
+  shims or migrations for unreleased behavior.
+- Remove this temporary policy before deployment, then review compatibility and
+  migration requirements against the deployed version.
+
 ## Online Game Commands
 
 - Before changing pending command drafts, pending-choice payloads, or canonical
