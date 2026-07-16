@@ -398,6 +398,25 @@ Every Player's Deck count and Discard Pile contents are public. Deck order,
 ordinary opposing hands, Locked Deck List name, and Locked Deck List contents
 remain private.
 
+A **Discard Shuffle (洗棄牌)** occurs when an applicable Deck contains too few
+Cards for a required draw, inspection, or search: the complete corresponding
+Discard Pile is shuffled and placed at the bottom of that same Deck before the
+operation continues. The Deck need not be empty; having fewer Cards than the
+operation requires is sufficient. This is distinct from a **Deck Shuffle**,
+which reorders Cards already in a Deck.
+
+Fair Wind's Tailwind (`順風`) recovers only when a Discard Shuffle completes,
+never from a Deck Shuffle. A shared-Deck Discard Shuffle recovers Tailwind for
+every Player who currently owns that ability and whose Profession Abilities are
+effective. With Personal Deck enabled, it recovers Tailwind only for the owner
+of the shuffled Discard Pile, under the same conditions. A Player whose
+Tailwind is already at its maximum has no recovery change.
+
+Initial preparation shuffles, Rusted Iron Withered Forest, Sheep Stealing's
+post-exchange shuffle, and 商調‧鳴金's post-search shuffle are Deck Shuffles and
+therefore do not recover Tailwind. Any Discard Shuffle that those flows require
+before drawing, inspecting, or searching remains a Tailwind recovery trigger.
+
 ### 5.3 Star
 
 When the Star Rule Module is enabled:[5]
@@ -638,8 +657,9 @@ Chain enters the origin Player's Discard Pile when it is triggered or replaced.
 Chain does not shuffle after searching. Its private choice options expose
 eligible Card Instances without revealing their Deck positions, and selected
 Cards are removed while the relative order of the remaining Deck is preserved.
-If the Deck has only one Card when Chain begins, normal exhaustion recycling
-runs before the search as required by the published rule.
+If the Deck contains fewer than two Cards when Chain begins, a Discard Shuffle
+runs before the search as required by the published rule; the Player makes the
+Chain selection only after that shuffle has completed.
 
 Sheep Stealing first discards two selected Cards from the Player's Personal
 Deck, then returns two selected Cards from that Player's Discard Pile and
@@ -647,9 +667,11 @@ shuffles. Official clarification 3-2.4 makes this ordering consequential: the
 two Cards discarded by the first step are already in the Discard Pile during
 the return selection, so either or both may be selected and returned
 immediately. If the Deck contains fewer than two Cards when resolution begins,
-its existing Discard Pile is shuffled back first. The Secret Strategy source
-Card enters the Discard Pile only after the complete effect resolves and is
-therefore never one of the returned Cards.[6]
+its existing Discard Pile is Discard Shuffled first, and the Player selects the
+exchange Cards only after that shuffle has completed. This preliminary Discard
+Shuffle may recover Tailwind; Sheep Stealing's later post-exchange Deck Shuffle
+does not. The Secret Strategy source Card enters the Discard Pile only after the
+complete effect resolves and is therefore never one of the returned Cards.[6]
 
 Dark Crossing causes a Direct Profession Change based on the source Card's
 printed element: Metal to Warrior, Wood to Seeker, Water to Mesmer, Fire to
@@ -735,9 +757,9 @@ damage, and the rest of the Formation resolve atomically before Game Outcome
 evaluation.
 
 Rusted Iron Withered Forest processes a shared Deck once. With Personal Deck
-enabled, it processes each Player-owned Deck separately. A shared-Deck shuffle
-therefore recovers Tailwind for every eligible owner, while a Personal Deck
-shuffle recovers it only for that Deck's owner.
+enabled, it processes each Player-owned Deck separately. In either mode it
+reorders Cards already in each applicable Deck, so it is a Deck Shuffle and
+never recovers Tailwind.
 
 Gale-Rain Status makes life recovery from Formations performed by its owner
 ineffective; it does not block non-Formation recovery or Formations performed by
@@ -908,7 +930,7 @@ A known formation with legal cards but missing resolver is a rule implementation
 - `PassAction` is legal only for no hand or **Cannot Act**.
 - Turn draw uses "draw N+1, choose one newly drawn card to discard".
 - Turn draw discard creates a pending choice and can be replayed.
-- Discard recycling records shuffled order and does not rerun RNG on replay.
+- Discard Shuffles record shuffled order and do not rerun RNG on replay.
 - Attack base damage targets previous player and resolves HP to that player's team.
 - Two-player mode still uses team-owned HP.
 - Five-element interaction uses only a Five-Element Attack performed by the Previous Player during the immediately completed Previous Turn and is disabled by target shield.
@@ -932,7 +954,7 @@ A known formation with legal cards but missing resolver is a rule implementation
   level at most 170.
 - The Preconstructed Deck List has per-element counts `3/2/3/2/2` and total
   level 170.
-- Personal Deck draw, discard recycling, and initial deal use the correct
+- Personal Deck draw, Discard Shuffles, and initial deal use the correct
   Player-owned piles.
 - Exposed Foreign Cards remain public and return to their origin Discard Pile.
 - Locked Deck Lists and ordinary opposing hands remain private.

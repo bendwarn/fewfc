@@ -352,6 +352,12 @@ active-effect timing to return the Previous Player's Discarded Card from the
 Previous Turn to the top of the current Player's Deck.
 _Avoid_: discard recycling, turn-draw discard
 
+**Discard Shuffle (洗棄牌)**:
+The complete random reordering of an applicable Discard Pile when its Deck has
+too few Cards for a required operation, followed by placing every shuffled Card
+at the bottom of that same Deck.
+_Avoid_: Discard Retrieval, Deck Shuffle, discard recycling
+
 **Personal Deck (個人牌組)**:
 An Optional Rule Module under which each Player prepares and draws from their
 own 60-card Deck instead of all Players sharing one Deck.

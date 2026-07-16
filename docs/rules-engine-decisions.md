@@ -227,7 +227,7 @@ Flow:
 
 This supports mid-draw save/load, UI waiting states, online play, and deterministic replay.
 
-### 11. Draw Limits, Hand Limit, And Discard Recycling
+### 11. Draw Limits, Hand Limit, And Discard Shuffles
 
 Hand limit is 5.
 
@@ -239,35 +239,31 @@ This means a player with at least one available hand slot may temporarily hold o
 
 `allowed_discards` must contain only the cards drawn by that turn draw. Cards that were already in the player's hand before the draw are not legal choices for `ChooseTurnDiscard`.
 
-When the deck is insufficient, shuffle the discard pile first and place the shuffled discard cards at the bottom of the deck. Then continue drawing.
+When the Deck is insufficient, perform a **Discard Shuffle (洗棄牌)** first:
+shuffle the complete applicable Discard Pile and place every shuffled Card at
+the bottom of that same Deck. Then continue drawing. A non-empty Deck still
+requires a Discard Shuffle when it contains fewer Cards than the draw requires.
 
 Deck direction:
 
 - `deck[0]` is the top of the deck and the next card drawn.
 - `deck.last()` is the bottom of the deck.
 
-When recycling discard:
+Discard Shuffles use the trusted randomness decision boundary. The canonical
+request and result distinguish shuffling the complete Discard Pile into the
+bottom of its Deck from reordering Cards already in a Deck, and replay consumes
+the recorded order without rerunning RNG. The continuation describes what
+resumes after the shuffle; it does not classify which kind of shuffle occurred.
 
-```rust
-GameEvent::DiscardRecycledIntoDeck {
-    shuffled_order: Vec<CardInstanceId>,
-    placement: DeckPlacement::Bottom,
-}
-```
+Cards are eligible for a Discard Shuffle based on their current zone.
 
-Replay uses `shuffled_order` directly and does not rerun RNG.
-
-Pending implementation detail:
-
-- none
-
-Cards are eligible for discard recycling based on their current zone.
-
-- formation cards that already moved to `discard` before `TurnDraw` may be recycled during that same turn's draw
-- cards currently being drawn or awaiting `ChooseTurnDiscard` are not in `discard` and cannot be recycled into that same draw
+- formation cards that already moved to `discard` before `TurnDraw` may participate in a Discard Shuffle during that same turn's draw
+- cards currently being drawn or awaiting `ChooseTurnDiscard` are not in `discard` and cannot participate in that same Discard Shuffle
 - the card discarded by `ChooseTurnDiscard` enters `discard` only after that draw sequence has already completed
 
-If the player has available hand space but the deck plus recyclable discard pile cannot satisfy the required draw count, report an engine error. Do not perform a partial draw and do not create a pending choice.
+If the player has available hand space but the Deck plus its applicable Discard
+Pile cannot satisfy the required draw count, report an engine error. Do not
+perform a partial draw and do not create a pending choice.
 
 ### 12. Passing The Action Phase
 
@@ -1094,7 +1090,9 @@ Modes:
 - replay: apply the canonical event log exactly as recorded
 - verification: optionally rerun commands/automatic advancement and compare produced events with the canonical event log
 
-The canonical event log already contains automatic events such as initial deal, discard recycling, choice requests, and status expiration. Recomputing them during replay could duplicate events or diverge across ruleset versions.
+The canonical event log already contains automatic events such as initial deal,
+Discard Shuffles, choice requests, and status expiration. Recomputing them
+during replay could duplicate events or diverge across ruleset versions.
 
 Canonical `GameEvent` and `PendingChoice` payloads are persisted record formats and participate in replay verification. Their shape must not change without an explicit migration for existing records. Data needed only by a client, such as an effect choice's required card count, belongs in the Web projection and is derived from canonical state.
 
@@ -1190,7 +1188,7 @@ Meanings:
 
 Examples of `EngineInvariant`:
 
-- deck plus recyclable discard cannot satisfy a required draw
+- Deck plus its applicable Discard Pile cannot satisfy a required draw
 - duplicate pending choice
 - duplicate covered passive in a state where turn flow should have prevented it
 - zone ownership inconsistency
@@ -1707,11 +1705,19 @@ effect that inspects a complete hand uses that complete hand. Canonical events
 record the inspected set, but viewer filtering reveals it only to the inspecting
 Player and never supplements it with uninspected hidden Cards.
 
-Fair Wind's Tailwind (`順風`) recovers according to the Deck that was shuffled,
-not the Player or effect that caused the shuffle. Shuffling a shared Deck
-recovers Tailwind for every Player who currently owns that ability. With
-Personal Deck enabled, shuffling one Player-owned Deck recovers Tailwind only
-for that Pile Owner.
+Fair Wind's Tailwind (`順風`) recovers only when a Discard Shuffle completes;
+reordering Cards already in a Deck never recovers it. A shared-Deck Discard
+Shuffle recovers Tailwind for every Player who currently owns that ability and
+whose Profession Abilities are effective. With Personal Deck enabled, only the
+owner of the shuffled Discard Pile can recover it. Recovery records an explicit
+`LimitedUseChanged` only for an actual increase from zero to the current
+maximum; a Player already at maximum, whose Profession Abilities are
+ineffective, or who no longer owns Tailwind receives no recovery event.
+
+Local room `44e4b60f-89c9-4e7e-a832-521af4a5aa3c` is the regression scenario
+that fixed this distinction: command 39 consumes player-2's Tailwind, and
+command 72 performs Rusted Iron Withered Forest against player-2's Personal
+Deck. Its trusted shuffle is a Deck Shuffle, so Tailwind must remain exhausted.
 
 Death Spirit's Shared Fate (`同命`) reads the resolved Formation's Affected
 Player Set, not the Team HP delta by itself. A direct Player target contributes
@@ -1845,7 +1851,8 @@ application of the Formation effect.
 For Rusted Iron Withered Forest (`鏽鐵枯林`), a shared Deck is processed once:
 reveal its top eight Cards, discard Cards of level three or higher, then shuffle
 the rest back into that shared Deck. With Personal Deck enabled, each Player's
-Deck is processed separately.
+Deck is processed separately. Both paths reorder Cards already in a Deck and
+therefore never recover Tailwind.
 
 In team play, Divine Calculation Status makes Thunder-Fire Tribulation's
 (`天雷劫火`) 15-point global HP deduction ineffective for the Status owner's

@@ -3,6 +3,7 @@ use fewfc::domain::{
     CardInstanceId, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameState,
     HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind, LastFormationUse,
     Phase, Player, PlayerId, PlayerProfession, ProfessionId, RuleModuleId, STAR_MODULE_ID, TeamId,
+    TeamStar,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -251,5 +252,63 @@ fn water_dotting_fan_only_reads_the_immediately_previous_turns_formation() {
             ))
             .count(),
         2
+    );
+}
+
+#[test]
+fn dancing_yang_uses_the_attack_attribute_and_formation_card_count() {
+    let mut game = state();
+    set_profession(&mut game, "p1", "jianghu:qi-grandmaster");
+    game.team_stars.push(TeamStar {
+        team: TeamId::new("team:a"),
+        star: fewfc::domain::StarKind::Wood,
+    });
+    let used = cards(
+        &game,
+        &[(Element::Wood, 2), (Element::Wood, 3), (Element::Water, 1)],
+    );
+    set_hand(&mut game, "p1", used.clone());
+
+    let activation = handle_command(
+        &game,
+        Command::ActivateProfessionAbility {
+            player: PlayerId::new("p1"),
+            ability_id: "jianghu:dancing-yang-art".to_string(),
+            cards: Vec::new(),
+            target_card: None,
+            declared_element: None,
+            declared_level: None,
+        },
+    )
+    .unwrap();
+    for event in &activation {
+        apply_event(&mut game, event);
+    }
+
+    let events = handle_command(
+        &game,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "suixing-heaven-pillar".to_string(),
+            cards: used,
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::TurnDrawBonusChanged {
+                    old_value,
+                    new_value,
+                    ..
+                } => Some((*old_value, *new_value)),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![(0, 1), (1, 2)],
+        "歲星柱天陣 is a three-card 木行 attack, so its own bonus and 舞陽訣 both apply"
     );
 }

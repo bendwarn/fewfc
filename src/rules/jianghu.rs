@@ -7,7 +7,7 @@ use crate::domain::{
 use crate::rules::{
     AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget, EffectDef, EffectPlan,
     FormationCategory, FormationDef, FormationPattern, PointFormula, SpellPlanDef,
-    formation_resolved_on_previous_turn,
+    formation_resolved_on_previous_turn, official_formation_registry,
 };
 use crate::rules::{ProfessionAbilityCandidate, ProfessionChangeCandidate, SubmittedCardFacts};
 
@@ -482,7 +482,7 @@ pub(crate) fn post_attack_events(
     }
     if state.statuses.iter().any(|status| {
         status.owner == StatusOwner::Player(player.clone()) && status.kind == "JianghuDancingYang"
-    }) && cards_are_wood_or_fire_attack(state, player, formation_id)
+    }) && is_wood_or_fire_attack_with_at_least_three_cards(state, player, formation_id)
     {
         events.push(turn_draw_bonus_event(state, player));
     }
@@ -1077,21 +1077,29 @@ fn is_meteor_active(state: &GameState, player: &PlayerId) -> bool {
     })
 }
 
-fn cards_are_wood_or_fire_attack(state: &GameState, player: &PlayerId, formation_id: &str) -> bool {
-    state
+fn is_wood_or_fire_attack_with_at_least_three_cards(
+    state: &GameState,
+    player: &PlayerId,
+    formation_id: &str,
+) -> bool {
+    let Some(last) = state
         .last_formation_by_player
         .get(player)
         .filter(|last| last.formation_id == formation_id && last.used_cards.len() >= 3)
-        .is_some_and(|last| {
-            last.used_cards
-                .iter()
-                .filter(|card| {
-                    state.card_def(**card).is_some_and(|definition| {
-                        matches!(definition.element, Element::Wood | Element::Fire)
-                    })
+    else {
+        return false;
+    };
+    let registry = official_formation_registry(&state.enabled_rule_modules);
+    registry
+        .effect(&last.resolved_effect_id)
+        .is_some_and(|effect| {
+            matches!(
+                &effect.plan,
+                EffectPlan::Attack(AttackPlanDef {
+                    category: AttackCategory::Elemental(Element::Wood | Element::Fire),
+                    ..
                 })
-                .count()
-                >= 3
+            )
         })
 }
 

@@ -14,3 +14,12 @@ random algorithm. After the Player selects the searched Card, the unresolved
 shuffle is persisted as Pending Randomness and blocks further resolution until
 the adapter submits a validated permutation, allowing safe retry across Worker
 errors or restarts.
+
+Every trusted shuffle also records its pile operation independently from its
+continuation. A Deck Shuffle reorders Cards already in the target Deck; a
+Discard Shuffle (`洗棄牌`) shuffles the complete applicable Discard Pile and
+places every result at the bottom of that same Deck. The continuation states
+only what resumes after randomness resolves and never determines the source
+pile or destination. This structural distinction keeps replay validation and
+Tailwind recovery consistent across Turn Draw, Profession Abilities,
+Formations, Echoes, and Pouch strategies.
