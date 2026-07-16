@@ -858,28 +858,31 @@ pub(crate) fn activate_profession_ability(
                 ability_id.to_string(),
             ))
         })?;
-    Ok(vec![GameEvent::ProfessionAbilityActivated {
-        player: player.clone(),
-        ability_id: ability_id.to_string(),
-        prepared: Some(crate::domain::PreparedProfessionAbility {
+    Ok(vec![
+        GameEvent::ProfessionAbilityActivated {
             player: player.clone(),
             ability_id: ability_id.to_string(),
-            card: candidate.target_card.unwrap(),
-            element: declared_element.unwrap_or(candidate.declared_element.unwrap()),
-            level: candidate.declared_level.unwrap(),
-            allowed_formation_scope: vec!["all".to_string()],
-            prepared_on_turn: state.turn_number,
-            interpretation_revision: state.card_interpretation_revision + 1,
-        }),
-    }, GameEvent::FormationRequirementSet {
-        requirement: crate::domain::FormationRequirement {
-            player: player.clone(),
-            physical_card: candidate.target_card,
-            virtual_card: None,
-            allowed_formation_scope: vec!["all".to_string()],
-            applied_on_turn: state.turn_number,
+            prepared: Some(crate::domain::PreparedProfessionAbility {
+                player: player.clone(),
+                ability_id: ability_id.to_string(),
+                card: candidate.target_card.unwrap(),
+                element: declared_element.unwrap_or(candidate.declared_element.unwrap()),
+                level: candidate.declared_level.unwrap(),
+                allowed_formation_scope: vec!["all".to_string()],
+                prepared_on_turn: state.turn_number,
+                interpretation_revision: state.card_interpretation_revision + 1,
+            }),
         },
-    }])
+        GameEvent::FormationRequirementSet {
+            requirement: crate::domain::FormationRequirement {
+                player: player.clone(),
+                physical_card: candidate.target_card,
+                virtual_card: None,
+                allowed_formation_scope: vec!["all".to_string()],
+                applied_on_turn: state.turn_number,
+            },
+        },
+    ])
 }
 
 pub(crate) fn effective_ability_summaries(

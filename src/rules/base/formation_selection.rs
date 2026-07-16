@@ -48,11 +48,17 @@ impl<'a> FormationSelection<'a> {
         let hand = state
             .hand(player)
             .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
-        let requirement = state.formation_requirements.iter().find(|requirement| {
-            &requirement.player == player && requirement.applied_on_turn == state.turn_number
-        }).cloned();
+        let requirement = state
+            .formation_requirements
+            .iter()
+            .find(|requirement| {
+                &requirement.player == player && requirement.applied_on_turn == state.turn_number
+            })
+            .cloned();
         let mut selected_cards = selected_cards;
-        if let Some(card) = requirement.as_ref().and_then(|requirement| requirement.physical_card)
+        if let Some(card) = requirement
+            .as_ref()
+            .and_then(|requirement| requirement.physical_card)
             && !selected_cards.contains(&card)
         {
             selected_cards.push(card);
@@ -74,20 +80,33 @@ impl<'a> FormationSelection<'a> {
                 let card_def = state.card_def(*card).ok_or(GameError::Validation(
                     ValidationError::MissingCardInstanceDefinition(*card),
                 ))?;
-                let prepared = state.prepared_profession_abilities.iter().rev().find(|prepared| {
-                    &prepared.player == player && prepared.card == *card && prepared.prepared_on_turn == state.turn_number
-                });
+                let prepared = state
+                    .prepared_profession_abilities
+                    .iter()
+                    .rev()
+                    .find(|prepared| {
+                        &prepared.player == player
+                            && prepared.card == *card
+                            && prepared.prepared_on_turn == state.turn_number
+                    });
                 Ok(SubmittedCardFacts {
-                    element: prepared.map(|prepared| prepared.element).unwrap_or(card_def.element),
+                    element: prepared
+                        .map(|prepared| prepared.element)
+                        .unwrap_or(card_def.element),
                     level: state
                         .card_level_for(player, *card)
                         .expect("known Card must have an effective level"),
                 })
             })
             .collect::<GameResult<Vec<_>>>()?;
-        let virtual_card = requirement.as_ref().and_then(|requirement| requirement.virtual_card.clone());
+        let virtual_card = requirement
+            .as_ref()
+            .and_then(|requirement| requirement.virtual_card.clone());
         if let Some(card) = &virtual_card {
-            facts.push(SubmittedCardFacts { element: card.element, level: card.level });
+            facts.push(SubmittedCardFacts {
+                element: card.element,
+                level: card.level,
+            });
         }
 
         let team_star = state
@@ -397,15 +416,23 @@ impl<'a> FormationSelection<'a> {
     ) -> Vec<Option<StarElementSubstitution>> {
         if let Some(requirement) = &self.formation_requirement
             && (!requirement.allowed_formation_scope.iter().any(|scope| {
-                scope == "all" || scope == &formation.id || (scope == "base" && base_formation_registry().formation(&formation.id).is_some())
-            }) || requirement.physical_card.is_some_and(|card| !self.cards.contains(&card)))
+                scope == "all"
+                    || scope == &formation.id
+                    || (scope == "base"
+                        && base_formation_registry().formation(&formation.id).is_some())
+            }) || requirement
+                .physical_card
+                .is_some_and(|card| !self.cards.contains(&card)))
         {
             return Vec::new();
         }
         if let Some(prepared) = &self.prepared
             && self.cards.contains(&prepared.card)
             && !prepared.allowed_formation_scope.iter().any(|scope| {
-                scope == "all" || scope == &formation.id || (scope == "base" && base_formation_registry().formation(&formation.id).is_some())
+                scope == "all"
+                    || scope == &formation.id
+                    || (scope == "base"
+                        && base_formation_registry().formation(&formation.id).is_some())
             })
         {
             return Vec::new();
@@ -506,20 +533,25 @@ impl<'a> FormationSelection<'a> {
         }
 
         for available_star in &self.available_stars {
-            options.extend(self.facts[..self.cards.len()].iter().enumerate().filter_map(|(index, card)| {
-                if card.element != star::companion_element(*available_star) {
-                    return None;
-                }
-                let mut interpreted = self.facts.clone();
-                interpreted[index].element = star::element(*available_star);
-                matcher.matches(&formation.pattern, &interpreted).then(|| {
-                    Some(StarElementSubstitution {
-                        card: self.cards[index],
-                        printed_element: card.element,
-                        interpreted_element: star::element(*available_star),
-                    })
-                })
-            }));
+            options.extend(
+                self.facts[..self.cards.len()]
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, card)| {
+                        if card.element != star::companion_element(*available_star) {
+                            return None;
+                        }
+                        let mut interpreted = self.facts.clone();
+                        interpreted[index].element = star::element(*available_star);
+                        matcher.matches(&formation.pattern, &interpreted).then(|| {
+                            Some(StarElementSubstitution {
+                                card: self.cards[index],
+                                printed_element: card.element,
+                                interpreted_element: star::element(*available_star),
+                            })
+                        })
+                    }),
+            );
         }
         options
     }

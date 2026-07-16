@@ -3,8 +3,8 @@
 use crate::domain::{
     CardInstanceId, CounterEffect, Element, FormationSuppression, GameEvent, GameState, GameStatus,
     JianghuState, LimitedUse, PendingChoiceKind, Phase, Player, PlayerId, PlayerProfession,
-    PlayerShield, PlayerStarHistory, RandomnessDeck, RandomnessOperation, RuleModuleId, ScheduledEcho,
-    ScheduledPlantEarth, StatusEffect, TeamHp, TeamStar,
+    PlayerShield, PlayerStarHistory, RandomnessDeck, RandomnessOperation, RuleModuleId,
+    ScheduledEcho, ScheduledPlantEarth, StatusEffect, TeamHp, TeamStar,
 };
 use serde::{Deserialize, Serialize};
 
@@ -711,19 +711,23 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         GameEvent::CardsMoved { card_moves } => PublicGameEvent::CardsMoved {
             cards: public_moved_cards(card_moves, &policy),
         },
-        GameEvent::FormationRequirementSet { requirement } => PublicGameEvent::FormationRequirementSet {
-            player: requirement.player.clone(),
-            // A Dark Spirit target remains hidden until a normal card movement
-            // reveals it; virtual facts are public when they are created.
-            virtual_card: requirement.virtual_card.clone(),
-        },
-        GameEvent::FormationRequirementFulfilled { player, formation_id, composition } => {
-            PublicGameEvent::FormationRequirementFulfilled {
-                player: player.clone(),
-                formation_id: formation_id.clone(),
-                virtual_card: composition.virtual_card.clone(),
+        GameEvent::FormationRequirementSet { requirement } => {
+            PublicGameEvent::FormationRequirementSet {
+                player: requirement.player.clone(),
+                // A Dark Spirit target remains hidden until a normal card movement
+                // reveals it; virtual facts are public when they are created.
+                virtual_card: requirement.virtual_card.clone(),
             }
         }
+        GameEvent::FormationRequirementFulfilled {
+            player,
+            formation_id,
+            composition,
+        } => PublicGameEvent::FormationRequirementFulfilled {
+            player: player.clone(),
+            formation_id: formation_id.clone(),
+            virtual_card: composition.virtual_card.clone(),
+        },
         GameEvent::TurnStarted { .. }
         | GameEvent::GamePreparationCompleted
         | GameEvent::PouchRevealed { .. }
@@ -989,9 +993,11 @@ mod tests {
             PlayerId::new("bob"),
             30,
         ));
-        state.enabled_rule_modules.push(crate::domain::RuleModuleId::new(
-            crate::domain::PERSONAL_DECK_MODULE_ID,
-        ));
+        state
+            .enabled_rule_modules
+            .push(crate::domain::RuleModuleId::new(
+                crate::domain::PERSONAL_DECK_MODULE_ID,
+            ));
         state.hands[0].cards = vec![CardInstanceId::new(1)];
         state.player_decks = vec![crate::domain::PlayerCardPile {
             player: alice.clone(),
@@ -999,8 +1005,14 @@ mod tests {
         }];
 
         let view = state_for(&state, Viewer::Replay);
-        assert_eq!(view.hands[0].cards, PublicCardRefs::Known(vec![CardInstanceId::new(1)]));
-        assert_eq!(view.player_decks[0].cards, PublicCardRefs::Hidden { count: 2 });
+        assert_eq!(
+            view.hands[0].cards,
+            PublicCardRefs::Known(vec![CardInstanceId::new(1)])
+        );
+        assert_eq!(
+            view.player_decks[0].cards,
+            PublicCardRefs::Hidden { count: 2 }
+        );
     }
 
     #[test]

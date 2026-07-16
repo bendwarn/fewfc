@@ -540,7 +540,6 @@ fn substituted_passive_replays_and_verifies_the_exact_declared_card() {
     ));
     assert_eq!(record.replay().unwrap(), *record.state());
     assert!(record.verify_replay().is_ok());
-
 }
 
 #[test]

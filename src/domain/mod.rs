@@ -1085,11 +1085,16 @@ impl GameState {
                 && bonus.applied_on_turn == self.turn_number
                 && bonus.cards.contains(&card)
         });
-        let prepared_level = self.prepared_profession_abilities.iter().rev().find(|prepared| {
-            &prepared.player == player
-                && prepared.card == card
-                && prepared.prepared_on_turn == self.turn_number
-        }).map(|prepared| prepared.level);
+        let prepared_level = self
+            .prepared_profession_abilities
+            .iter()
+            .rev()
+            .find(|prepared| {
+                &prepared.player == player
+                    && prepared.card == card
+                    && prepared.prepared_on_turn == self.turn_number
+            })
+            .map(|prepared| prepared.level);
         self.spirit_level_interpretations
             .iter()
             .rev()

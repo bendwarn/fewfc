@@ -398,9 +398,15 @@ fn mesmer_preparation_is_public_shared_and_clears_after_action() {
             .any(|event| matches!(event, GameEvent::TurnDrawBonusChanged { delta: 1, .. }))
     );
     apply_all(&mut state, &events);
-    assert!(state_for(&state, Viewer::Observer).card_interpretations.is_empty());
-    assert!(matches!(state.formation_requirements.as_slice(), [requirement]
-        if requirement.virtual_card.as_ref().is_some_and(|card| card.element == Element::Fire && card.level == 3)));
+    assert!(
+        state_for(&state, Viewer::Observer)
+            .card_interpretations
+            .is_empty()
+    );
+    assert!(
+        matches!(state.formation_requirements.as_slice(), [requirement]
+        if requirement.virtual_card.as_ref().is_some_and(|card| card.element == Element::Fire && card.level == 3))
+    );
     assert!(matches!(
         handle_command(
             &state,
@@ -420,13 +426,7 @@ fn mesmer_preparation_is_public_shared_and_clears_after_action() {
 
     let candidates = formation_candidates(&state, &[], "fire-strike");
     assert!(!candidates.is_empty());
-    let events = perform(
-        &state,
-        "fire-strike",
-        vec![],
-        Vec::new(),
-    )
-    .unwrap();
+    let events = perform(&state, "fire-strike", vec![], Vec::new()).unwrap();
     apply_all(&mut state, &events);
     assert!(state.prepared_profession_abilities.is_empty());
     assert!(state.formation_requirements.is_empty());
@@ -462,17 +462,19 @@ fn phantasm_does_not_trigger_illusion_refinement_and_mesmer_formations_resolve()
     apply_all(&mut state, &events);
     let shield = cards(
         &state,
-        &[
-            (Element::Wood, 1),
-            (Element::Wood, 2),
-            (Element::Metal, 1),
-        ],
+        &[(Element::Wood, 1), (Element::Wood, 2), (Element::Metal, 1)],
     );
     set_hand(&mut state, "p1", shield.clone());
     let events = perform(&state, "barrier", shield, Vec::new()).unwrap();
-    assert!(events.iter().any(|event| matches!(event, GameEvent::ShieldChanged { new_value: 28, .. })));
-    assert!(events.iter().any(|event| matches!(event, GameEvent::FormationRequirementFulfilled { composition, .. }
-        if composition.physical_cards.len() == 3 && composition.virtual_card.is_some())));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, GameEvent::ShieldChanged { new_value: 28, .. }))
+    );
+    assert!(events.iter().any(
+        |event| matches!(event, GameEvent::FormationRequirementFulfilled { composition, .. }
+        if composition.physical_cards.len() == 3 && composition.virtual_card.is_some())
+    ));
 }
 
 #[test]

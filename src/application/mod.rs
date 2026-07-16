@@ -383,7 +383,10 @@ pub fn replay_decision_groups(
         if matches!(decision.source, RecordedDecisionSource::Command { .. }) {
             groups.push(Vec::new());
         }
-        groups.last_mut().expect("replay always has setup group").push(decision);
+        groups
+            .last_mut()
+            .expect("replay always has setup group")
+            .push(decision);
     }
     groups
 }
@@ -516,7 +519,10 @@ mod tests {
         // still project the recorded (empty) event batch rather than attempting
         // verification and rejecting it.
         let decisions = vec![
-            RecordedDecision { source: RecordedDecisionSource::Setup, events: vec![] },
+            RecordedDecision {
+                source: RecordedDecisionSource::Setup,
+                events: vec![],
+            },
             RecordedDecision {
                 source: RecordedDecisionSource::Command {
                     command_id: CommandId::new(1),
@@ -527,10 +533,19 @@ mod tests {
                 },
                 events: vec![],
             },
-            RecordedDecision { source: RecordedDecisionSource::Automatic, events: vec![] },
+            RecordedDecision {
+                source: RecordedDecisionSource::Automatic,
+                events: vec![],
+            },
         ];
 
-        assert_eq!(replay_decision_groups(&decisions).iter().map(Vec::len).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            replay_decision_groups(&decisions)
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         assert_eq!(replay_frame(&setup, &decisions, 0).unwrap().total_steps, 1);
         assert_eq!(replay_frame(&setup, &decisions, 1).unwrap().step, 1);
         assert!(replay_frame(&setup, &decisions, 2).is_err());

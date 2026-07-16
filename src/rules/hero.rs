@@ -1191,12 +1191,23 @@ pub(crate) fn playable_profession_abilities(
             if !abilities.contains(&ability) {
                 continue;
             }
-            for element in [Element::Metal, Element::Wood, Element::Water, Element::Fire, Element::Earth] {
+            for element in [
+                Element::Metal,
+                Element::Wood,
+                Element::Water,
+                Element::Fire,
+                Element::Earth,
+            ] {
                 for level in 1..=5 {
                     candidates.push(ProfessionAbilityCandidate {
                         ability_id: ability_id.to_string(),
                         ability_name: ability_name.to_string(),
-                        rule_text: format!("捨棄所選兩張牌，建立{}{}級虛擬牌以組成{}；不結束行動", element_label(element), level, scope),
+                        rule_text: format!(
+                            "捨棄所選兩張牌，建立{}{}級虛擬牌以組成{}；不結束行動",
+                            element_label(element),
+                            level,
+                            scope
+                        ),
                         cards: cards.to_vec(),
                         target_card: None,
                         declared_element: Some(element),
@@ -1396,12 +1407,18 @@ pub(crate) fn activate_profession_ability(
                 let pile = deck_kind(state, player);
                 events.push(GameEvent::RandomnessRequested {
                     request: crate::domain::PendingRandomness {
-                        request_id: format!("hero:revelation:{}:{}", state.turn_number, player.as_str()),
+                        request_id: format!(
+                            "hero:revelation:{}:{}",
+                            state.turn_number,
+                            player.as_str()
+                        ),
                         operation: RandomnessOperation::DiscardShuffle {
                             pile,
                             placement: crate::domain::DeckPlacement::Bottom,
                         },
-                        continuation: RandomnessContinuation::Hero(HeroRandomnessContinuation::Revelation),
+                        continuation: RandomnessContinuation::Hero(
+                            HeroRandomnessContinuation::Revelation,
+                        ),
                         current_order: projected
                             .discard_for(player)
                             .expect("known player has a discard pile")

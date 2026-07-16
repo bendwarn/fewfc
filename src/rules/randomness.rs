@@ -1,8 +1,8 @@
 use crate::domain::{
-    BaseRandomnessContinuation, ConfluenceRandomnessContinuation, GameError, GameEvent,
-    GameResult, GameState, HeroRandomnessContinuation, PouchRandomnessContinuation,
-    RandomnessContinuation, RandomnessOperation, RandomnessDeck,
-    TribulationRandomnessContinuation, TrustedRandomnessAnswer, ValidationError,
+    BaseRandomnessContinuation, ConfluenceRandomnessContinuation, GameError, GameEvent, GameResult,
+    GameState, HeroRandomnessContinuation, PouchRandomnessContinuation, RandomnessContinuation,
+    RandomnessDeck, RandomnessOperation, TribulationRandomnessContinuation,
+    TrustedRandomnessAnswer, ValidationError,
 };
 
 pub(crate) fn trusted_random_hand_count_for_formation(formation_id: &str) -> Option<usize> {

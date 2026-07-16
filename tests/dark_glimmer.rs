@@ -159,14 +159,20 @@ fn dark_spirit_lowers_one_physical_card_and_automatically_requires_it() {
             declared_element: None,
             declared_level: Some(1),
         },
-    ).unwrap();
-    for event in &events { apply_event(&mut game, event); }
+    )
+    .unwrap();
+    for event in &events {
+        apply_event(&mut game, event);
+    }
     assert_eq!(game.card_level_for(&PlayerId::new("p1"), card), Some(1));
     assert!(matches!(
-        handle_command(&game, Command::PassAction {
-            player: PlayerId::new("p1"),
-            reason: fewfc::domain::PassActionReason::NoCardsInHand,
-        }),
+        handle_command(
+            &game,
+            Command::PassAction {
+                player: PlayerId::new("p1"),
+                reason: fewfc::domain::PassActionReason::NoCardsInHand,
+            }
+        ),
         Err(GameError::Validation(_))
     ));
     let events = handle_command(
@@ -177,7 +183,8 @@ fn dark_spirit_lowers_one_physical_card_and_automatically_requires_it() {
             cards: Vec::new(),
             declared_targets: Vec::new(),
         },
-    ).unwrap();
+    )
+    .unwrap();
     assert!(events.iter().any(|event| matches!(event,
         GameEvent::AttackResolved { used_cards, point_breakdown, .. }
             if used_cards == &vec![card] && point_breakdown.base_points == 5

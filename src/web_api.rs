@@ -706,18 +706,21 @@ fn replay_response_for(
     let events = crate::public_view::events_for(&frame.events, Viewer::Replay)
         .into_iter()
         .enumerate()
-        .filter(|(_, event)| !matches!(
-            event,
-            PublicGameEvent::DeckPrepared { .. }
-                | PublicGameEvent::PlayerDeckPrepared { .. }
-        ))
-        .map(|(index, event)| WebPublicGameEvent::from_public(
-            index + 1,
-            event,
-            card_labels,
-            formation_names,
-            &vocabulary,
-        ))
+        .filter(|(_, event)| {
+            !matches!(
+                event,
+                PublicGameEvent::DeckPrepared { .. } | PublicGameEvent::PlayerDeckPrepared { .. }
+            )
+        })
+        .map(|(index, event)| {
+            WebPublicGameEvent::from_public(
+                index + 1,
+                event,
+                card_labels,
+                formation_names,
+                &vocabulary,
+            )
+        })
         .collect();
 
     Ok(ApiResult::ReplayFrame {
@@ -1840,7 +1843,9 @@ impl WebPublicGameState {
                     },
                     operation: match request.operation {
                         crate::public_view::PublicRandomnessOperation::DeckShuffle => "deckShuffle",
-                        crate::public_view::PublicRandomnessOperation::DiscardShuffle => "discardShuffle",
+                        crate::public_view::PublicRandomnessOperation::DiscardShuffle => {
+                            "discardShuffle"
+                        }
                     }
                     .to_string(),
                     card_count: request.card_count,
@@ -3182,7 +3187,9 @@ fn event_type(event: &PublicGameEvent) -> String {
         PublicGameEvent::SpiritLevelInterpreted { .. } => "SpiritLevelInterpreted".to_string(),
         PublicGameEvent::CardsMoved { .. } => "CardsMoved".to_string(),
         PublicGameEvent::FormationRequirementSet { .. } => "FormationRequirementSet".to_string(),
-        PublicGameEvent::FormationRequirementFulfilled { .. } => "FormationRequirementFulfilled".to_string(),
+        PublicGameEvent::FormationRequirementFulfilled { .. } => {
+            "FormationRequirementFulfilled".to_string()
+        }
     }
 }
 
@@ -3247,18 +3254,40 @@ fn event_presentation_with_vocabulary(
                 card_refs_summary(cards, labels)
             ),
         ),
-        PublicGameEvent::FormationRequirementSet { player, virtual_card } => (
+        PublicGameEvent::FormationRequirementSet {
+            player,
+            virtual_card,
+        } => (
             "陣法義務".to_string(),
             virtual_card.as_ref().map_or_else(
                 || format!("{} 必須在本回合完成指定陣法。", player.as_str()),
-                |card| format!("{} 建立了 {} {} 級虛擬牌。", player.as_str(), element_short_name(card.element), card.level),
+                |card| {
+                    format!(
+                        "{} 建立了 {} {} 級虛擬牌。",
+                        player.as_str(),
+                        element_short_name(card.element),
+                        card.level
+                    )
+                },
             ),
         ),
-        PublicGameEvent::FormationRequirementFulfilled { player, formation_id, virtual_card } => (
+        PublicGameEvent::FormationRequirementFulfilled {
+            player,
+            formation_id,
+            virtual_card,
+        } => (
             "陣法義務完成".to_string(),
             virtual_card.as_ref().map_or_else(
                 || format!("{} 已以 {} 完成陣法義務。", player.as_str(), formation_id),
-                |card| format!("{} 以 {} {} 級虛擬牌完成 {}。", player.as_str(), element_short_name(card.element), card.level, formation_id),
+                |card| {
+                    format!(
+                        "{} 以 {} {} 級虛擬牌完成 {}。",
+                        player.as_str(),
+                        element_short_name(card.element),
+                        card.level,
+                        formation_id
+                    )
+                },
             ),
         ),
         PublicGameEvent::DeckPrepared { deck } => (
@@ -3324,7 +3353,9 @@ fn event_presentation_with_vocabulary(
             ),
         ),
         PublicGameEvent::RandomnessRequested {
-            card_count, operation, ..
+            card_count,
+            operation,
+            ..
         } => (
             "等待洗牌".to_string(),
             match operation {
@@ -3337,7 +3368,9 @@ fn event_presentation_with_vocabulary(
             },
         ),
         PublicGameEvent::RandomnessResolved {
-            card_count, operation, ..
+            card_count,
+            operation,
+            ..
         } => (
             "完成洗牌".to_string(),
             match operation {
@@ -3593,9 +3626,16 @@ fn game_event_presentation_with_vocabulary(
         ),
         GameEvent::FormationRequirementSet { requirement } => (
             "陣法義務".to_string(),
-            format!("{} 必須在本回合完成已準備的陣法。", requirement.player.as_str()),
+            format!(
+                "{} 必須在本回合完成已準備的陣法。",
+                requirement.player.as_str()
+            ),
         ),
-        GameEvent::FormationRequirementFulfilled { player, formation_id, .. } => (
+        GameEvent::FormationRequirementFulfilled {
+            player,
+            formation_id,
+            ..
+        } => (
             "陣法義務完成".to_string(),
             format!("{} 已以 {} 完成陣法義務。", player.as_str(), formation_id),
         ),
@@ -3944,10 +3984,16 @@ fn game_event_presentation_with_vocabulary(
             ..
         } if key == crate::rules::confluence::TAILWIND_USE
             && *old_remaining == 0
-            && *new_remaining == *maximum => (
-            "順風回復".to_string(),
-            format!("洗棄牌完成，{} 的順風回復為 {new_remaining}/{maximum} 次。", owner.as_str()),
-        ),
+            && *new_remaining == *maximum =>
+        {
+            (
+                "順風回復".to_string(),
+                format!(
+                    "洗棄牌完成，{} 的順風回復為 {new_remaining}/{maximum} 次。",
+                    owner.as_str()
+                ),
+            )
+        }
         GameEvent::LimitedUseChanged {
             owner,
             key,
@@ -4496,7 +4542,8 @@ mod tests {
     fn replay_frame_dto_uses_camel_case_contract_fields() {
         let response = handle_request_json(
             r#"{"action":{"type":"replayFrame","step":0},"viewer":"replay","record":[]}"#,
-        ).expect("replay frame should serialize");
+        )
+        .expect("replay frame should serialize");
         let json: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(json["type"], "replayFrame");
         assert!(json.get("currentStep").is_some());
@@ -6282,5 +6329,4 @@ mod tests {
             serde_json::to_value(WebFormationActionPolicy::from_id(formation)).unwrap();
         }
     }
-
 }

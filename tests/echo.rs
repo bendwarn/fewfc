@@ -550,9 +550,11 @@ fn ringing_metal_with_no_preexisting_deck_or_discard_is_a_no_change_main_effect(
         event,
         GameEvent::RandomnessRequested { request } if request.operation.is_discard_shuffle()
     )));
-    assert!(!events
-        .iter()
-        .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. })));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+    );
 }
 
 #[test]

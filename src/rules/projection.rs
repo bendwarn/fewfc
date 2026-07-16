@@ -232,7 +232,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             state.formation_requirements.push(requirement.clone());
         }
         GameEvent::FormationRequirementFulfilled { player, .. } => {
-            state.formation_requirements.retain(|requirement| &requirement.player != player);
+            state
+                .formation_requirements
+                .retain(|requirement| &requirement.player != player);
         }
         GameEvent::SpiritSummoned { player, spirit, .. } => {
             state.spirit_skill_use_turns.remove(player);
@@ -390,7 +392,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             );
             state.phase = crate::domain::Phase::TurnDraw;
             clear_prepared_ability(state, player);
-            state.formation_requirements.retain(|requirement| &requirement.player != player);
+            state
+                .formation_requirements
+                .retain(|requirement| &requirement.player != player);
         }
         GameEvent::FormationMatchOptionDeclared { .. } => {}
         GameEvent::FormationEffectCopied { player, effect_id } => {
@@ -547,7 +551,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             }
             state.phase = crate::domain::Phase::TurnDraw;
             clear_prepared_ability(state, attacker);
-            state.formation_requirements.retain(|requirement| &requirement.player != attacker);
+            state
+                .formation_requirements
+                .retain(|requirement| &requirement.player != attacker);
         }
         GameEvent::EnvironmentTransferred { to, .. } => {
             state.environment = Some(*to);
@@ -635,7 +641,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             );
             state.phase = crate::domain::Phase::TurnDraw;
             clear_prepared_ability(state, player);
-            state.formation_requirements.retain(|requirement| &requirement.player != player);
+            state
+                .formation_requirements
+                .retain(|requirement| &requirement.player != player);
             finish_game_if_needed(state);
         }
         GameEvent::VoidSpiritShatteringResolved {
@@ -1025,10 +1033,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                             .clone_from(shuffled_order);
                     }
                 },
-                crate::domain::RandomnessOperation::DiscardShuffle {
-                    pile,
-                    placement,
-                } => {
+                crate::domain::RandomnessOperation::DiscardShuffle { pile, placement } => {
                     match (pile, placement) {
                         (crate::domain::RandomnessDeck::Shared, DeckPlacement::Bottom) => {
                             state.deck.extend(shuffled_order.iter().copied());

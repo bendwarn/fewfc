@@ -1,7 +1,7 @@
 use crate::domain::{
     CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, ConfluenceRandomnessContinuation, Element,
     GameError, GameEvent, GameResult, GameState, HpChangeDelta, PlayerId, ProfessionId,
-    RandomnessDeck, RandomnessContinuation, RandomnessOperation, RuleModuleId, StatusDuration,
+    RandomnessContinuation, RandomnessDeck, RandomnessOperation, RuleModuleId, StatusDuration,
     StatusEffect, StatusOwner, ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
@@ -1097,21 +1097,24 @@ pub(crate) fn tailwind_recovery_events(
     shuffled_deck: &RandomnessDeck,
 ) -> Vec<GameEvent> {
     let eligible = match shuffled_deck {
-        RandomnessDeck::Shared => state.players.iter().map(|player| player.id.clone()).collect(),
+        RandomnessDeck::Shared => state
+            .players
+            .iter()
+            .map(|player| player.id.clone())
+            .collect(),
         RandomnessDeck::Player(player) => vec![player.clone()],
     };
     eligible
         .into_iter()
         .filter(|player| {
             !crate::rules::pouch::profession_is_suppressed(state, player)
-                && state.profession_for(player).is_some_and(|profession| {
-                    profession.as_str() == CLEAR_WIND_ENVOY_ID
-                })
+                && state
+                    .profession_for(player)
+                    .is_some_and(|profession| profession.as_str() == CLEAR_WIND_ENVOY_ID)
         })
         .filter_map(|player| {
             let use_count = limited_use(state, &player, TAILWIND_USE)?;
-            (use_count.key == TAILWIND_USE && use_count.remaining == 0
-                && use_count.maximum > 0)
+            (use_count.key == TAILWIND_USE && use_count.remaining == 0 && use_count.maximum > 0)
                 .then(|| GameEvent::LimitedUseChanged {
                     owner: player,
                     key: TAILWIND_USE.to_string(),
@@ -1123,9 +1126,7 @@ pub(crate) fn tailwind_recovery_events(
         .collect()
 }
 
-pub(crate) fn after_clear_wind_randomness_events(
-    state: &GameState,
-) -> GameResult<Vec<GameEvent>> {
+pub(crate) fn after_clear_wind_randomness_events(state: &GameState) -> GameResult<Vec<GameEvent>> {
     let player = state
         .current_player()
         .cloned()

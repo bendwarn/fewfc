@@ -55,9 +55,11 @@ pub(super) fn resolve(
             },
         });
     }
-    if let Some(event) =
-        crate::rules::confluence::obligation_completion_event(state, &player, &composition.physical_cards)
-    {
+    if let Some(event) = crate::rules::confluence::obligation_completion_event(
+        state,
+        &player,
+        &composition.physical_cards,
+    ) {
         events.push(event);
     }
     crate::rules::tribulation::suppress_formation_recovery(state, &player, &mut events);
@@ -1028,9 +1030,15 @@ fn level_sum(state: &GameState, player: &PlayerId, cards: &[CardInstanceId]) -> 
             ))? as i32;
         Ok(sum + level)
     })?;
-    Ok(physical + state.formation_requirements.iter().find(|requirement| {
-        &requirement.player == player && requirement.applied_on_turn == state.turn_number
-    }).and_then(|requirement| requirement.virtual_card.as_ref()).map_or(0, |card| card.level as i32))
+    Ok(physical
+        + state
+            .formation_requirements
+            .iter()
+            .find(|requirement| {
+                &requirement.player == player && requirement.applied_on_turn == state.turn_number
+            })
+            .and_then(|requirement| requirement.virtual_card.as_ref())
+            .map_or(0, |card| card.level as i32))
 }
 
 fn team_hp(state: &GameState, team: &TeamId) -> GameResult<i32> {

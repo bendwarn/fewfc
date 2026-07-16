@@ -468,16 +468,28 @@ fn compute_attack_points(
     target: &PlayerId,
 ) -> GameResult<i32> {
     let level_sum = || -> GameResult<i32> {
-        cards.iter().try_fold(0, |sum, card| {
-            let level = state
-                .card_level_for(attacker, *card)
-                .ok_or(GameError::Validation(
-                    ValidationError::MissingCardInstanceDefinition(*card),
-                ))? as i32;
-            Ok(sum + level)
-        }).map(|physical| physical + state.formation_requirements.iter().find(|requirement| {
-            &requirement.player == attacker && requirement.applied_on_turn == state.turn_number
-        }).and_then(|requirement| requirement.virtual_card.as_ref()).map_or(0, |card| card.level as i32))
+        cards
+            .iter()
+            .try_fold(0, |sum, card| {
+                let level = state
+                    .card_level_for(attacker, *card)
+                    .ok_or(GameError::Validation(
+                        ValidationError::MissingCardInstanceDefinition(*card),
+                    ))? as i32;
+                Ok(sum + level)
+            })
+            .map(|physical| {
+                physical
+                    + state
+                        .formation_requirements
+                        .iter()
+                        .find(|requirement| {
+                            &requirement.player == attacker
+                                && requirement.applied_on_turn == state.turn_number
+                        })
+                        .and_then(|requirement| requirement.virtual_card.as_ref())
+                        .map_or(0, |card| card.level as i32)
+            })
     };
 
     match formula {
@@ -507,15 +519,25 @@ fn compute_attack_points(
             if state.formation_requirements.iter().any(|requirement| {
                 &requirement.player == attacker
                     && requirement.applied_on_turn == state.turn_number
-                    && requirement.virtual_card.as_ref().is_some_and(|card| card.element == *element)
+                    && requirement
+                        .virtual_card
+                        .as_ref()
+                        .is_some_and(|card| card.element == *element)
             }) {
-                levels.push(state.formation_requirements.iter().find_map(|requirement| {
-                    (&requirement.player == attacker && requirement.applied_on_turn == state.turn_number)
-                        .then_some(requirement.virtual_card.as_ref())
-                        .flatten()
-                        .filter(|card| card.element == *element)
-                        .map(|card| card.level as i32)
-                }).expect("matching virtual card must exist"));
+                levels.push(
+                    state
+                        .formation_requirements
+                        .iter()
+                        .find_map(|requirement| {
+                            (&requirement.player == attacker
+                                && requirement.applied_on_turn == state.turn_number)
+                                .then_some(requirement.virtual_card.as_ref())
+                                .flatten()
+                                .filter(|card| card.element == *element)
+                                .map(|card| card.level as i32)
+                        })
+                        .expect("matching virtual card must exist"),
+                );
             }
             Ok(levels.into_iter().product::<i32>() * *multiplier as i32)
         }

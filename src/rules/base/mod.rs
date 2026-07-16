@@ -6,11 +6,11 @@ mod formation_selection;
 mod formation_use;
 
 use crate::domain::{
-    CannotPerformFormationReason, CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Command,
-    BaseRandomnessContinuation, DISCARD_RETRIEVAL_MODULE_ID, DeckPlacement, EngineInvariantError,
-    GameError, GameEvent, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta,
-    PERSONAL_DECK_MODULE_ID, RandomnessContinuation, RandomnessDeck, RandomnessOperation,
-    PassActionReason, Phase, Player, PlayerDeckList, PlayerId, RulesetId, TeamHp,
+    BaseRandomnessContinuation, CannotPerformFormationReason, CardInstanceId, CardMoveDelta,
+    CardOrigin, CardZone, Command, DISCARD_RETRIEVAL_MODULE_ID, DeckPlacement,
+    EngineInvariantError, GameError, GameEvent, GameResult, GameSetup, GameState, GameStatus,
+    HpChangeDelta, PERSONAL_DECK_MODULE_ID, PassActionReason, Phase, Player, PlayerDeckList,
+    PlayerId, RandomnessContinuation, RandomnessDeck, RandomnessOperation, RulesetId, TeamHp,
     TurnDrawSkipReason, ValidationError, validate_setup,
 };
 use crate::rules::PlayableAction;
@@ -585,7 +585,9 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
                         pile,
                         placement: DeckPlacement::Bottom,
                     },
-                    continuation: RandomnessContinuation::Base(BaseRandomnessContinuation::TurnDraw),
+                    continuation: RandomnessContinuation::Base(
+                        BaseRandomnessContinuation::TurnDraw,
+                    ),
                     current_order: discard.to_vec(),
                 },
             }));
@@ -669,9 +671,11 @@ fn decide_command_with_base_ruleset(
             if state.formation_requirements.iter().any(|requirement| {
                 requirement.player == player && requirement.applied_on_turn == state.turn_number
             }) {
-                return Err(GameError::Validation(ValidationError::ProfessionAbilityCannotResolve(
-                    "formation-requirement".to_string(),
-                )));
+                return Err(GameError::Validation(
+                    ValidationError::ProfessionAbilityCannotResolve(
+                        "formation-requirement".to_string(),
+                    ),
+                ));
             }
             if state.confluence_card_obligations.iter().any(|obligation| {
                 obligation.owner == player && obligation.applied_on_turn == state.turn_number
@@ -770,9 +774,11 @@ fn decide_command_with_base_ruleset(
             if state.formation_requirements.iter().any(|requirement| {
                 requirement.player == player && requirement.applied_on_turn == state.turn_number
             }) {
-                return Err(GameError::Validation(ValidationError::ProfessionAbilityCannotResolve(
-                    "formation-requirement".to_string(),
-                )));
+                return Err(GameError::Validation(
+                    ValidationError::ProfessionAbilityCannotResolve(
+                        "formation-requirement".to_string(),
+                    ),
+                ));
             }
             if !crate::rules::confluence::profession_change_satisfies_obligation(
                 state, &player, &cards,

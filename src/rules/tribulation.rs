@@ -676,9 +676,7 @@ fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
                             RandomnessDeck::Player(player) => player.as_str(),
                         }
                     ),
-                    operation: crate::domain::RandomnessOperation::DeckShuffle {
-                        deck: deck_kind,
-                    },
+                    operation: crate::domain::RandomnessOperation::DeckShuffle { deck: deck_kind },
                     continuation: RandomnessContinuation::Tribulation(
                         TribulationRandomnessContinuation::RustedForestShuffle,
                     ),

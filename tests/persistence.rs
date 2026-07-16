@@ -2,9 +2,9 @@ use fewfc::application::{
     GameRecord, RecordedDecisionSource, ReplayVerificationError, replay, verify_recorded_decisions,
 };
 use fewfc::domain::{
-    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, GameError, GameEvent,
-    GameSetup, HpChangeDelta, PendingChoice, PendingChoiceKind,
-    PlayerId, RuleModuleId, RulesetId, TeamId, ValidationError,
+    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, GameError, GameEvent, GameSetup,
+    HpChangeDelta, PendingChoice, PendingChoiceKind, PlayerId, RuleModuleId, RulesetId, TeamId,
+    ValidationError,
 };
 use fewfc::infrastructure::{
     FileSystemPersistence, FixedDeckPreparation, InMemoryPersistence, PersistedGameRecord,
