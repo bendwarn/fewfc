@@ -10,6 +10,20 @@ test('account menu opens the valid built-in personal deck editor', async ({ page
   await expect(page.locator('.deck-validation')).toContainText('170 / 170 級')
   await expect(page.locator('.deck-validation')).toContainText('目前使用內建預組')
 
+  const managementButtons = [
+    page.getByRole('button', { name: '匯入牌組' }),
+    page.getByRole('button', { name: '匯出牌組' }),
+    page.getByRole('button', { name: '重設為預組' }),
+  ]
+  const managementWidths = await Promise.all(managementButtons.map(async (button) => (
+    (await button.boundingBox())?.width
+  )))
+  if (managementWidths.some(width => width === undefined)) {
+    throw new Error('Deck management button has no layout box')
+  }
+  const widths = managementWidths as number[]
+  expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1)
+
   await page.getByRole('button', { name: '減少金1級' }).click()
   await expect(page.getByRole('button', { name: '儲存牌組' })).toBeDisabled()
   await page.getByRole('button', { name: '重設為預組' }).click()
@@ -25,6 +39,8 @@ test('imports, exports, and rejects malformed personal-deck drafts', async ({ pa
   await page.getByRole('button', { name: '匯入牌組' }).click()
   const dialog = page.getByRole('dialog', { name: '匯入牌組' })
   await expect(dialog).toBeVisible()
+  await expect(dialog.getByLabel('連續數字格式範例')).toHaveText('4113141122444334113341113')
+  await expect(dialog.getByLabel('Tab 與換行格式範例')).toContainText('4\t1\t1\t3\t1')
   await expect(dialog.getByLabel('牌組張數')).toBeFocused()
   await page.keyboard.press('Shift+Tab')
   await expect(dialog.getByRole('button', { name: '套用' })).toBeFocused()

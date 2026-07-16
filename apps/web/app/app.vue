@@ -258,7 +258,7 @@
           :role="deckExportFailed ? 'alert' : 'status'"
         >{{ deckExportStatus }}</p>
 
-        <div class="setup-actions">
+        <div class="deck-management-actions">
           <button
             ref="deckImportTrigger"
             class="secondary-button"
@@ -274,6 +274,8 @@
           <button class="secondary-button" type="button" :disabled="deckBusy" @click="resetDeck">
             重設為預組
           </button>
+        </div>
+        <div class="setup-actions">
           <button class="secondary-button" type="button" :disabled="deckBusy" @click="returnToLobby">
             返回房間
           </button>
@@ -306,7 +308,15 @@
               <span class="step-number">入</span>
               <div>
                 <h2 id="deck-import-title">匯入牌組</h2>
-                <p id="deck-import-help">依金、木、水、火、土列與 1 至 5 級欄輸入 25 個張數。</p>
+                <div id="deck-import-help" class="deck-import-examples">
+                  <p>可貼上以下任一格式：</p>
+                  <code aria-label="Tab 與換行格式範例">4	1	1	3	1
+4	1	1	2	2
+4	4	4	3	3
+4	1	1	3	3
+4	1	1	1	3</code>
+                  <code aria-label="連續數字格式範例">4113141122444334113341113</code>
+                </div>
               </div>
             </div>
 
@@ -3638,12 +3648,15 @@ function cardLevel(level: number | null | undefined): string {
 .deck-grid > strong { @apply flex min-h-11 items-center justify-center text-sm; }
 .deck-count-control { @apply flex min-w-28 items-center justify-between rounded-lg border border-[#c9c2ae] bg-white p-1; }
 .deck-count-control button { @apply grid size-9 place-items-center rounded-md bg-[#e8e2d3] font-bold text-[#18201c] disabled:opacity-35; }
-.deck-count-control span { @apply min-w-6 text-center font-bold; }
+.deck-count-control span { @apply min-w-6 text-center font-bold text-[#18201c]; }
 .deck-validation { @apply flex flex-wrap gap-5 rounded-lg border border-emerald-700/30 bg-emerald-50 p-4 text-emerald-900; }
 .deck-validation.invalid { @apply border-red-700/30 bg-red-50 text-red-900; }
 .deck-validation-errors { @apply grid gap-1 text-sm text-red-700; }
 .deck-transfer-status { @apply text-sm text-emerald-700; }
 .deck-import-dialog { @apply my-auto w-full max-w-[640px] shadow-[0_24px_70px_rgba(0,0,0,.5)]; }
+.deck-management-actions { @apply grid grid-cols-3 gap-3 max-[600px]:grid-cols-1; }
+.deck-import-examples { @apply grid gap-2 text-xs text-muted; }
+.deck-import-examples code { @apply block whitespace-pre-wrap border border-[#39443d] bg-[#111713] p-2 font-mono text-[#ece8dd]; }
 .deck-import-text { @apply min-h-36 w-full border border-[#39443d] bg-[#111713] p-3 font-mono text-[#ece8dd] outline-0 focus:border-[#a57d35] focus:shadow-[0_0_0_2px_rgba(165,125,53,.12)]; }
 .rule-toggle { @apply flex items-center gap-2 py-2; }
 .waiting-rules { @apply my-4 grid gap-2 border-y border-white/15 py-2; }
