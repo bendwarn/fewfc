@@ -35,4 +35,5 @@ test('presents every Pending Choice by semantic continuation instead of internal
   }
 
   expect(presentPendingChoice({ type: 'clearWind' })).toBe('晴風：選取此牌捨棄；不選則放回牌組頂')
+  expect(presentPendingChoice({ type: 'clearWindTenThousandMiles' })).toBe('晴風萬里：選擇要保留的牌')
 })

@@ -1218,23 +1218,28 @@ fn resume_effect_choice_intents(
                 }],
             }])
         }
-        ("confluence:clear-wind-ten-thousand-miles", "confluence:clear-wind:keep-one") => {
+        ("confluence:clear-wind-ten-thousand-miles", "confluence:clear-wind:keep-cards") => {
             let allowed_cards = match &state.pending_choice {
                 Some(crate::domain::PendingChoice {
-                    kind: crate::domain::PendingChoiceKind::EffectGenerated { allowed_cards, .. },
+                    kind:
+                        crate::domain::PendingChoiceKind::CardSetChoice {
+                            effect_id: pending_effect,
+                            continuation_id: pending_continuation,
+                            allowed_cards,
+                            ..
+                        },
                     ..
-                }) => allowed_cards,
+                }) if pending_effect == effect_id && pending_continuation == continuation_id => {
+                    allowed_cards
+                }
                 _ => {
                     return Err(GameError::Validation(ValidationError::MissingPendingChoice));
                 }
             };
-            let kept = selected_cards
-                .first()
-                .ok_or(GameError::Validation(ValidationError::MissingPendingChoice))?;
             Ok(vec![EffectIntent::MoveCards {
                 card_moves: allowed_cards
                     .iter()
-                    .filter(|card| *card != kept)
+                    .filter(|card| !selected_cards.contains(card))
                     .copied()
                     .map(|card| CardMoveDelta {
                         card,

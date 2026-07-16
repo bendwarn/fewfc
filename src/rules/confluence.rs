@@ -1144,7 +1144,13 @@ fn clear_wind_ten_thousand_miles_after_shuffle(
         .take(10)
         .copied()
         .collect::<Vec<_>>();
-    let maximum = drawn.len();
+    let available_hand_space = state.hand_limit.saturating_sub(
+        state
+            .hand(player)
+            .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?
+            .len(),
+    );
+    let maximum = drawn.len().min(available_hand_space);
     let mut events = vec![GameEvent::CardsDrawnForProfessionChoice {
         player: player.clone(),
         ability_id: CLEAR_WIND_TEN_THOUSAND_MILES.to_string(),
@@ -1155,7 +1161,7 @@ fn clear_wind_ten_thousand_miles_after_shuffle(
             player: player.clone(),
             kind: crate::domain::PendingChoiceKind::CardSetChoice {
                 effect_id: CLEAR_WIND_TEN_THOUSAND_MILES.to_string(),
-                continuation_id: "confluence:clear-wind:keep-one".to_string(),
+                continuation_id: "confluence:clear-wind:keep-cards".to_string(),
                 allowed_cards: drawn,
                 minimum: 0,
                 maximum,

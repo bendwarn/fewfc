@@ -134,6 +134,111 @@ fn set_player_hand(state: &mut GameState, player: &str, cards: Vec<CardInstanceI
         .cards = cards;
 }
 
+fn cards_for_player(
+    state: &GameState,
+    player: &PlayerId,
+    requested: &[(Element, u32)],
+) -> Vec<CardInstanceId> {
+    let mut used = Vec::new();
+    requested
+        .iter()
+        .map(|(element, level)| {
+            let card = state
+                .card_instances
+                .iter()
+                .filter(|instance| {
+                    !state.uses_personal_decks()
+                        || matches!(
+                            &instance.origin,
+                            fewfc::domain::CardOrigin::Player(owner) if owner == player
+                        )
+                })
+                .map(|instance| instance.instance)
+                .find(|instance| {
+                    !used.contains(instance)
+                        && state.card_def(*instance).is_some_and(|definition| {
+                            definition.element == *element && definition.level == *level
+                        })
+                })
+                .unwrap();
+            used.push(card);
+            card
+        })
+        .collect()
+}
+
+fn clear_wind_ten_thousand_miles_game(
+    personal_deck: bool,
+) -> (
+    GameState,
+    PlayerId,
+    Vec<CardInstanceId>,
+    CardInstanceId,
+    Vec<CardInstanceId>,
+) {
+    let mut game = state(personal_deck);
+    let player = PlayerId::new("p2");
+    game.professions.push(PlayerProfession {
+        player: player.clone(),
+        profession: ProfessionId::new("confluence:clear-wind-envoy"),
+    });
+    let hand = cards_for_player(
+        &game,
+        &player,
+        &[
+            (Element::Metal, 1),
+            (Element::Wood, 2),
+            (Element::Water, 3),
+            (Element::Fire, 4),
+            (Element::Earth, 5),
+        ],
+    );
+    let used_cards = hand[..4].to_vec();
+    let remaining_card = hand[4];
+    let drawn_cards = game
+        .card_instances
+        .iter()
+        .filter(|instance| {
+            (!personal_deck
+                || matches!(
+                    &instance.origin,
+                    fewfc::domain::CardOrigin::Player(owner) if owner == &player
+                ))
+                && !hand.contains(&instance.instance)
+        })
+        .map(|instance| instance.instance)
+        .take(10)
+        .collect::<Vec<_>>();
+    assert_eq!(drawn_cards.len(), 10);
+    set_hand(&mut game, hand);
+    let deck = game.deck_for_mut(&player).unwrap();
+    deck.clear();
+    deck.extend(drawn_cards.iter().copied());
+
+    (game, player, used_cards, remaining_card, drawn_cards)
+}
+
+fn request_clear_wind_ten_thousand_miles(
+    game: &mut GameState,
+    player: &PlayerId,
+    used_cards: Vec<CardInstanceId>,
+) -> Vec<GameEvent> {
+    let events = handle_command(
+        game,
+        Command::PerformFormation {
+            player: player.clone(),
+            formation_id: "confluence:clear-wind-ten-thousand-miles".to_string(),
+            cards: used_cards,
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    for event in &events {
+        apply_event(game, event);
+    }
+    events
+}
+
 fn set_residual(state: &mut GameState, card: CardInstanceId) {
     state
         .discard_for_mut(&PlayerId::new("p1"))
@@ -242,6 +347,175 @@ fn clear_wind_reveals_once_then_waits_for_a_destination_choice() {
                 && card_moves[0].card == top
                 && matches!(card_moves[0].to, fewfc::domain::CardZone::Discard)
     )));
+}
+
+#[test]
+fn clear_wind_ten_thousand_miles_limits_kept_cards_and_discards_unselected_shared_cards() {
+    let (mut game, player, used_cards, remaining_card, drawn_cards) =
+        clear_wind_ten_thousand_miles_game(false);
+    request_clear_wind_ten_thousand_miles(&mut game, &player, used_cards.clone());
+
+    assert!(matches!(
+        &game.pending_choice,
+        Some(fewfc::domain::PendingChoice {
+            player: choice_player,
+            kind: fewfc::domain::PendingChoiceKind::CardSetChoice {
+                effect_id,
+                continuation_id,
+                allowed_cards,
+                minimum: 0,
+                maximum: 4,
+            },
+        }) if choice_player == &player
+            && effect_id == "confluence:clear-wind-ten-thousand-miles"
+            && continuation_id == "confluence:clear-wind:keep-cards"
+            && allowed_cards == &drawn_cards
+    ));
+
+    let kept_cards = drawn_cards[..4].to_vec();
+    let events = handle_command(
+        &game,
+        Command::AnswerEffectChoiceTyped {
+            player: player.clone(),
+            answer: EffectChoiceAnswer::Cards {
+                cards: kept_cards.clone(),
+            },
+        },
+    )
+    .unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::TypedEffectChoiceAnswered {
+            effect_id,
+            continuation_id,
+            ..
+        } if effect_id == "confluence:clear-wind-ten-thousand-miles"
+            && continuation_id == "confluence:clear-wind:keep-cards"
+    )));
+    for event in &events {
+        apply_event(&mut game, event);
+    }
+
+    let hand = game.hand(&player).unwrap();
+    assert_eq!(hand.len(), 5);
+    assert!(hand.contains(&remaining_card));
+    assert!(kept_cards.iter().all(|card| hand.contains(card)));
+    assert!(
+        drawn_cards[4..]
+            .iter()
+            .all(|card| game.discard.contains(card))
+    );
+    assert!(kept_cards.iter().all(|card| !game.discard.contains(card)));
+    assert!(used_cards.iter().all(|card| game.discard.contains(card)));
+}
+
+#[test]
+fn clear_wind_ten_thousand_miles_allows_keeping_no_cards() {
+    let (mut game, player, used_cards, remaining_card, drawn_cards) =
+        clear_wind_ten_thousand_miles_game(false);
+    request_clear_wind_ten_thousand_miles(&mut game, &player, used_cards);
+
+    let events = handle_command(
+        &game,
+        Command::AnswerEffectChoiceTyped {
+            player: player.clone(),
+            answer: EffectChoiceAnswer::Cards { cards: Vec::new() },
+        },
+    )
+    .unwrap();
+    for event in &events {
+        apply_event(&mut game, event);
+    }
+
+    assert_eq!(game.hand(&player).unwrap(), &[remaining_card]);
+    assert!(drawn_cards.iter().all(|card| game.discard.contains(card)));
+}
+
+#[test]
+fn clear_wind_ten_thousand_miles_rejects_answers_above_the_pending_maximum() {
+    let (mut game, player, used_cards, _, drawn_cards) = clear_wind_ten_thousand_miles_game(false);
+    request_clear_wind_ten_thousand_miles(&mut game, &player, used_cards);
+    let state_before_answer = game.clone();
+
+    let result = handle_command(
+        &game,
+        Command::AnswerEffectChoiceTyped {
+            player,
+            answer: EffectChoiceAnswer::Cards {
+                cards: drawn_cards[..5].to_vec(),
+            },
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(game, state_before_answer);
+}
+
+#[test]
+fn clear_wind_ten_thousand_miles_discards_personal_deck_cards_to_their_origin_piles() {
+    let (mut game, player, used_cards, _, mut drawn_cards) =
+        clear_wind_ten_thousand_miles_game(true);
+    let foreign_owner = PlayerId::new("p1");
+    let foreign_card = game
+        .card_instances
+        .iter()
+        .find(|instance| {
+            matches!(
+                &instance.origin,
+                fewfc::domain::CardOrigin::Player(owner) if owner == &foreign_owner
+            )
+        })
+        .unwrap()
+        .instance;
+    game.deck_for_mut(&foreign_owner)
+        .unwrap()
+        .retain(|card| card != &foreign_card);
+    let replaced_card = drawn_cards[9];
+    let deck = game.deck_for_mut(&player).unwrap();
+    let replaced_position = deck.iter().position(|card| card == &replaced_card).unwrap();
+    deck[replaced_position] = foreign_card;
+    drawn_cards[9] = foreign_card;
+    game.exposed_foreign_cards.push(foreign_card);
+    request_clear_wind_ten_thousand_miles(&mut game, &player, used_cards);
+
+    let events = handle_command(
+        &game,
+        Command::AnswerEffectChoiceTyped {
+            player: player.clone(),
+            answer: EffectChoiceAnswer::Cards { cards: Vec::new() },
+        },
+    )
+    .unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::CardsMoved { card_moves }
+            if card_moves.len() == drawn_cards.len()
+                && card_moves.iter().all(|move_delta| {
+                    matches!(
+                        move_delta.to,
+                        fewfc::domain::CardZone::PlayerDiscard(ref owner)
+                            if owner == if move_delta.card == foreign_card {
+                                &foreign_owner
+                            } else {
+                                &player
+                            }
+                    )
+                })
+    )));
+    for event in &events {
+        apply_event(&mut game, event);
+    }
+
+    let discard = game.discard_for(&player).unwrap();
+    assert!(drawn_cards
+        .iter()
+        .filter(|card| **card != foreign_card)
+        .all(|card| discard.contains(card)));
+    assert!(game
+        .discard_for(&foreign_owner)
+        .unwrap()
+        .contains(&foreign_card));
+    assert!(drawn_cards.iter().all(|card| !game.discard.contains(card)));
 }
 
 #[test]

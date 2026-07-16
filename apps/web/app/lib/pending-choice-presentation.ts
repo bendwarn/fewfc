@@ -9,7 +9,7 @@ export function presentPendingChoice(presentation: PendingChoicePresentation): s
     case 'revelation': return '啟示：從抽出的三張牌中選擇一張'
     case 'azureCloudStep': return '蒼雲步：選擇一張抽到的牌放回牌組'
     case 'clearWind': return '晴風：選取此牌捨棄；不選則放回牌組頂'
-    case 'clearWindTenThousandMiles': return '清風萬里：選擇要保留的牌'
+    case 'clearWindTenThousandMiles': return '晴風萬里：選擇要保留的牌'
     case 'mirrorResonance': return '鏡鳴：選擇對方一張手牌捨棄'
     case 'myriadResonance': return '萬鳴：選擇對方一張手牌捨棄'
     case 'thousandResonance': return '千鳴：選擇對方一張手牌捨棄'
