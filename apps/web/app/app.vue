@@ -12,15 +12,17 @@
         <span class="connection" :class="{ offline: appConnectionText !== '已連線' }">
           <i /> {{ appConnectionText }}
         </span>
-        <button class="profile-button" type="button" @click="profileOpen = !profileOpen">
-          <span class="avatar">{{ playerInitial }}</span>
-          <span>{{ displayName }}</span>
-          <span aria-hidden="true">⌄</span>
-        </button>
-        <div v-if="profileOpen" class="profile-menu">
-          <button type="button" @click="openDeckEditor">個人牌組</button>
-          <button type="button" @click="openReplays">重播紀錄</button>
-          <button type="button" @click="logout">登出</button>
+        <div ref="profileMenuContainer" class="profile-menu-container">
+          <button class="profile-button" type="button" @click="profileOpen = !profileOpen">
+            <span class="avatar">{{ playerInitial }}</span>
+            <span>{{ displayName }}</span>
+            <span aria-hidden="true">⌄</span>
+          </button>
+          <div v-if="profileOpen" class="profile-menu">
+            <button type="button" @click="openDeckEditor">個人牌組</button>
+            <button type="button" @click="openReplays">重播紀錄</button>
+            <button type="button" @click="logout">登出</button>
+          </div>
         </div>
       </nav>
     </header>
@@ -1719,6 +1721,7 @@ const replayError = ref('')
 const replayReplaceSource = ref<string | null>(null)
 const replayRouteId = computed(() => typeof route.params.replayId === 'string' ? route.params.replayId : '')
 const profileOpen = ref(false)
+const profileMenuContainer = ref<HTMLElement | null>(null)
 const roomSettingsOpen = ref(false)
 const createRoomTrigger = ref<HTMLButtonElement | null>(null)
 const roomNameInput = ref<HTMLInputElement | null>(null)
@@ -2739,7 +2742,14 @@ function startSplendorAction(ability: PlayableAction) {
   void game.performPlayableAction(ability)
 }
 
-function handlePageClick() {
+function handlePageClick(event: MouseEvent) {
+  if (
+    profileOpen.value
+    && event.target instanceof Node
+    && !profileMenuContainer.value?.contains(event.target)
+  ) {
+    profileOpen.value = false
+  }
   closeDiscardComposition()
   closeSplendorMenu()
 }
@@ -3681,6 +3691,7 @@ function cardLevel(level: number | null | undefined): string {
 .connection { @apply text-xs text-[#98a39c]; }
 .connection i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #62b585; margin-right: 6px; box-shadow: 0 0 8px #62b585; }
 .connection.offline i { background: #c7a35d; box-shadow: none; }
+.profile-menu-container { @apply relative; }
 .profile-button { @apply flex items-center gap-2 border-0 bg-transparent; }
 .avatar { @apply grid size-[34px] place-items-center rounded-full bg-[#b48a47] font-extrabold text-[#141813]; }
 .profile-menu { @apply absolute right-0 top-12 min-w-30 border border-[#39443d] bg-[#202822] p-1.5; }

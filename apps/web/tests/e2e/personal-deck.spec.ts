@@ -1,5 +1,13 @@
 import { createRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
 
+test('account menu closes when clicking outside it', async ({ page }) => {
+  await page.getByRole('button', { name: /旅人-/ }).click()
+  await expect(page.getByRole('button', { name: '個人牌組', exact: true })).toBeVisible()
+
+  await page.getByRole('heading', { name: '房間', exact: true }).click()
+  await expect(page.getByRole('button', { name: '個人牌組', exact: true })).toBeHidden()
+})
+
 test('account menu opens the valid built-in personal deck editor', async ({ page }) => {
   await page.getByRole('button', { name: /旅人-/ }).click()
   await page.getByRole('button', { name: '個人牌組', exact: true }).click()
