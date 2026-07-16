@@ -246,9 +246,14 @@ export function isOnlineGameAction(value: unknown): value is OnlineGameAction {
 
 export interface TrustedRandomnessRequest {
   requestId: string
-  deck: 'Shared' | { Player: PlayerId }
+  operation:
+    | { type: 'deckShuffle'; deck: 'Shared' | { Player: PlayerId } }
+    | { type: 'discardShuffle'; pile: 'Shared' | { Player: PlayerId }; placement: 'Bottom' }
   continuation:
+    | { type: 'base'; kind: 'turnDraw' }
     | { type: 'echo'; kind: 'ringingMetalRecycleDiscard' | 'ringingMetalPostSearch' }
+    | { type: 'hero'; kind: 'revelation' }
+    | { type: 'confluence'; kind: 'clearWindTenThousandMiles' }
     | { type: 'pouch'; kind: 'initialShuffle' | 'sheepStealing' }
     | { type: 'tribulation'; kind: 'rustedForestShuffle' }
   currentOrder: number[]

@@ -1,7 +1,8 @@
 use crate::domain::{
     CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Element, GameError, GameEvent, GameResult,
-    GameState, HERO_SCHOOLS_MODULE_ID, HpChangeDelta, PlayerId,
-    ProfessionId, StatusDuration, StatusEffect, StatusOwner, ValidationError,
+    GameState, HERO_SCHOOLS_MODULE_ID, HeroRandomnessContinuation, HpChangeDelta, PlayerId,
+    ProfessionId, RandomnessContinuation, RandomnessDeck, RandomnessOperation, StatusDuration,
+    StatusEffect, StatusOwner, ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 
@@ -1379,23 +1380,6 @@ pub(crate) fn activate_profession_ability(
             if deck.len() + discard.len() < 3 {
                 return cannot_resolve(ability_id);
             }
-            let mut available_cards = deck.to_vec();
-            let recycle_event = (deck.len() < 3).then(|| {
-                available_cards.extend(discard.iter().copied());
-                if state.uses_personal_decks() {
-                    GameEvent::PlayerDiscardRecycledIntoDeck {
-                        player: player.clone(),
-                        shuffled_order: discard.to_vec(),
-                        placement: crate::domain::DeckPlacement::Bottom,
-                    }
-                } else {
-                    GameEvent::DiscardRecycledIntoDeck {
-                        shuffled_order: discard.to_vec(),
-                        placement: crate::domain::DeckPlacement::Bottom,
-                    }
-                }
-            });
-            let drawn_cards = available_cards[..3].to_vec();
             events.push(GameEvent::ProfessionAbilityActivated {
                 player: player.clone(),
                 ability_id: ability_id.to_string(),
@@ -1404,24 +1388,74 @@ pub(crate) fn activate_profession_ability(
             events.push(GameEvent::CardsMoved {
                 card_moves: ability_card_moves(state, player, cards),
             });
-            events.extend(recycle_event);
-            events.push(GameEvent::CardsDrawnForProfessionChoice {
-                player: player.clone(),
-                ability_id: ability_id.to_string(),
-                cards: drawn_cards.clone(),
-            });
-            events.push(GameEvent::EffectChoiceRequested {
-                player: player.clone(),
-                kind: crate::domain::PendingChoiceKind::EffectGenerated {
-                    effect_id: ability_id.to_string(),
-                    continuation_id: "revelation:keep-one".to_string(),
-                    allowed_cards: drawn_cards,
-                },
-            });
+            if deck.len() < 3 {
+                let mut projected = state.clone();
+                for event in &events {
+                    crate::rules::projection::apply_event(&mut projected, event);
+                }
+                let pile = deck_kind(state, player);
+                events.push(GameEvent::RandomnessRequested {
+                    request: crate::domain::PendingRandomness {
+                        request_id: format!("hero:revelation:{}:{}", state.turn_number, player.as_str()),
+                        operation: RandomnessOperation::DiscardShuffle {
+                            pile,
+                            placement: crate::domain::DeckPlacement::Bottom,
+                        },
+                        continuation: RandomnessContinuation::Hero(HeroRandomnessContinuation::Revelation),
+                        current_order: projected
+                            .discard_for(player)
+                            .expect("known player has a discard pile")
+                            .to_vec(),
+                    },
+                });
+            } else {
+                events.extend(revelation_choice_events(state, player)?);
+            }
         }
         _ => unreachable!(),
     }
     Ok(events)
+}
+
+pub(crate) fn after_revelation_randomness_events(state: &GameState) -> GameResult<Vec<GameEvent>> {
+    let player = state
+        .current_player()
+        .cloned()
+        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?;
+    revelation_choice_events(state, &player)
+}
+
+fn revelation_choice_events(state: &GameState, player: &PlayerId) -> GameResult<Vec<GameEvent>> {
+    let drawn_cards = state
+        .deck_for(player)
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?
+        .iter()
+        .take(3)
+        .copied()
+        .collect::<Vec<_>>();
+    Ok(vec![
+        GameEvent::CardsDrawnForProfessionChoice {
+            player: player.clone(),
+            ability_id: "revelation".to_string(),
+            cards: drawn_cards.clone(),
+        },
+        GameEvent::EffectChoiceRequested {
+            player: player.clone(),
+            kind: crate::domain::PendingChoiceKind::EffectGenerated {
+                effect_id: "revelation".to_string(),
+                continuation_id: "revelation:keep-one".to_string(),
+                allowed_cards: drawn_cards,
+            },
+        },
+    ])
+}
+
+fn deck_kind(state: &GameState, player: &PlayerId) -> RandomnessDeck {
+    if state.uses_personal_decks() {
+        RandomnessDeck::Player(player.clone())
+    } else {
+        RandomnessDeck::Shared
+    }
 }
 
 fn cannot_resolve<T>(ability_id: &str) -> GameResult<T> {

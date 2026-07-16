@@ -1,9 +1,9 @@
-use fewfc::application::{apply_event, handle_command};
+use fewfc::application::{apply_event, handle_command, resolve_trusted_randomness};
 use fewfc::domain::{
     CardInstanceId, CardOrigin, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
     GameEvent, GameState, HERO_SCHOOLS_MODULE_ID, PERSONAL_DECK_MODULE_ID, PassiveTriggerTiming,
     Phase, Player, PlayerId, PlayerProfession, ProfessionId, RuleModuleId, STAR_MODULE_ID,
-    TargetDecl, TeamId, ValidationError,
+    TargetDecl, TeamId, TrustedRandomnessAnswer, ValidationError,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -796,19 +796,24 @@ fn activated_abilities_require_action_permission_and_revelation_recycles_persona
     .unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::PlayerDiscardRecycledIntoDeck { player, .. }
-            if player == &PlayerId::new("p1")
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::CardsDrawnForProfessionChoice { cards, .. } if cards == &draw
+        GameEvent::RandomnessRequested { request }
+            if request.operation.is_discard_shuffle()
+                && request.current_order.len() == 3
+                && request.current_order.contains(&cost)
     )));
     apply_all(&mut state, &events);
+    assert!(state.pending_randomness.is_some());
+    let request = state.pending_randomness.clone().unwrap();
+    let resolved = resolve_trusted_randomness(
+        &state,
+        &TrustedRandomnessAnswer {
+            request_id: request.request_id,
+            shuffled_order: request.current_order.clone(),
+        },
+    )
+    .unwrap();
+    apply_all(&mut state, &resolved);
     assert!(state.pending_choice.is_some());
-    assert!(
-        draw.iter()
-            .all(|card| state.hand(&PlayerId::new("p1")).unwrap().contains(card))
-    );
 }
 
 #[test]

@@ -1403,7 +1403,10 @@
           >
             <div>
               <h2>伺服器正在洗牌</h2>
-              <p>正在安全地重新排列 {{ state.pendingRandomness.cardCount }} 張牌。</p>
+              <p>
+                正在安全地{{ state.pendingRandomness.operation === 'discardShuffle' ? '洗棄牌並放回牌組' : '洗牌組' }}
+                {{ state.pendingRandomness.cardCount }} 張牌。
+              </p>
             </div>
           </div>
 

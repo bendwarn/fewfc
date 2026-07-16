@@ -7,8 +7,9 @@ mod formation_use;
 
 use crate::domain::{
     CannotPerformFormationReason, CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Command,
-    DISCARD_RETRIEVAL_MODULE_ID, DeckPlacement, EngineInvariantError, GameError, GameEvent,
-    GameResult, GameSetup, GameState, GameStatus, HpChangeDelta, PERSONAL_DECK_MODULE_ID,
+    BaseRandomnessContinuation, DISCARD_RETRIEVAL_MODULE_ID, DeckPlacement, EngineInvariantError,
+    GameError, GameEvent, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta,
+    PERSONAL_DECK_MODULE_ID, RandomnessContinuation, RandomnessDeck, RandomnessOperation,
     PassActionReason, Phase, Player, PlayerDeckList, PlayerId, RulesetId, TeamHp,
     TurnDrawSkipReason, ValidationError, validate_setup,
 };
@@ -472,6 +473,9 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
 
         projection::apply_event(&mut projected, &event);
         events.push(event);
+        if projected.pending_choice.is_some() || projected.pending_randomness.is_some() {
+            break;
+        }
     }
 
     Ok(events)
@@ -569,17 +573,21 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
         .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
     if deck.len() < draw_count {
         if deck.len() + discard.len() >= draw_count && !discard.is_empty() {
-            return Ok(Some(if state.uses_personal_decks() {
-                GameEvent::PlayerDiscardRecycledIntoDeck {
-                    player,
-                    shuffled_order: discard.to_vec(),
-                    placement: DeckPlacement::Bottom,
-                }
+            let pile = if state.uses_personal_decks() {
+                RandomnessDeck::Player(player.clone())
             } else {
-                GameEvent::DiscardRecycledIntoDeck {
-                    shuffled_order: discard.to_vec(),
-                    placement: DeckPlacement::Bottom,
-                }
+                RandomnessDeck::Shared
+            };
+            return Ok(Some(GameEvent::RandomnessRequested {
+                request: crate::domain::PendingRandomness {
+                    request_id: format!("base:turn-draw:{}:{}", state.turn_number, player.as_str()),
+                    operation: RandomnessOperation::DiscardShuffle {
+                        pile,
+                        placement: DeckPlacement::Bottom,
+                    },
+                    continuation: RandomnessContinuation::Base(BaseRandomnessContinuation::TurnDraw),
+                    current_order: discard.to_vec(),
+                },
             }));
         }
 

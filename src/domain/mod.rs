@@ -1226,17 +1226,63 @@ impl PendingChoiceKind {
 #[serde(rename_all = "camelCase")]
 pub struct PendingRandomness {
     pub request_id: String,
-    pub deck: RandomnessDeck,
+    pub operation: RandomnessOperation,
     pub continuation: RandomnessContinuation,
     pub current_order: Vec<CardInstanceId>,
+}
+
+/// The pile mutation performed by a trusted randomness decision.
+///
+/// This deliberately lives beside, rather than inside, the continuation: a
+/// continuation says which rule flow resumes, while this value says exactly
+/// which pile supplied the permutation and where its result is placed.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum RandomnessOperation {
+    DeckShuffle {
+        deck: RandomnessDeck,
+    },
+    DiscardShuffle {
+        pile: RandomnessDeck,
+        placement: DeckPlacement,
+    },
+}
+
+impl RandomnessOperation {
+    pub fn source_pile(&self) -> &RandomnessDeck {
+        match self {
+            Self::DeckShuffle { deck } => deck,
+            Self::DiscardShuffle { pile, .. } => pile,
+        }
+    }
+
+    pub fn destination_deck(&self) -> &RandomnessDeck {
+        match self {
+            Self::DeckShuffle { deck } => deck,
+            Self::DiscardShuffle { pile, .. } => pile,
+        }
+    }
+
+    pub fn is_discard_shuffle(&self) -> bool {
+        matches!(self, Self::DiscardShuffle { .. })
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "type", content = "kind", rename_all = "camelCase")]
 pub enum RandomnessContinuation {
+    Base(BaseRandomnessContinuation),
     Echo(EchoRandomnessContinuation),
+    Hero(HeroRandomnessContinuation),
+    Confluence(ConfluenceRandomnessContinuation),
     Pouch(PouchRandomnessContinuation),
     Tribulation(TribulationRandomnessContinuation),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BaseRandomnessContinuation {
+    TurnDraw,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1244,6 +1290,18 @@ pub enum RandomnessContinuation {
 pub enum EchoRandomnessContinuation {
     RingingMetalRecycleDiscard,
     RingingMetalPostSearch,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HeroRandomnessContinuation {
+    Revelation,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfluenceRandomnessContinuation {
+    ClearWindTenThousandMiles,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1670,7 +1728,7 @@ pub enum GameEvent {
     },
     RandomnessResolved {
         request_id: String,
-        deck: RandomnessDeck,
+        operation: RandomnessOperation,
         shuffled_order: Vec<CardInstanceId>,
     },
     EchoCostPaid {
@@ -1781,15 +1839,6 @@ pub enum GameEvent {
         passive_id: String,
         cards: Vec<CardInstanceId>,
         outcome: PassiveFlipOutcome,
-    },
-    DiscardRecycledIntoDeck {
-        shuffled_order: Vec<CardInstanceId>,
-        placement: DeckPlacement,
-    },
-    PlayerDiscardRecycledIntoDeck {
-        player: PlayerId,
-        shuffled_order: Vec<CardInstanceId>,
-        placement: DeckPlacement,
     },
     DiscardRetrieved {
         player: PlayerId,

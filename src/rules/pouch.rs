@@ -232,7 +232,9 @@ fn choose_initial_pouch(
         events.push(GameEvent::RandomnessRequested {
             request: crate::domain::PendingRandomness {
                 request_id: format!("pouch:initial-shuffle:{}", first.as_str()),
-                deck: RandomnessDeck::Player(first.clone()),
+                operation: crate::domain::RandomnessOperation::DeckShuffle {
+                    deck: RandomnessDeck::Player(first.clone()),
+                },
                 continuation: RandomnessContinuation::Pouch(
                     PouchRandomnessContinuation::InitialShuffle,
                 ),
@@ -264,7 +266,9 @@ pub(crate) fn after_initial_shuffle_randomness_events(
         return Ok(vec![GameEvent::RandomnessRequested {
             request: crate::domain::PendingRandomness {
                 request_id: format!("pouch:initial-shuffle:{}", player.as_str()),
-                deck: RandomnessDeck::Player(player.clone()),
+                operation: crate::domain::RandomnessOperation::DeckShuffle {
+                    deck: RandomnessDeck::Player(player.clone()),
+                },
                 continuation: RandomnessContinuation::Pouch(
                     PouchRandomnessContinuation::InitialShuffle,
                 ),
@@ -927,7 +931,9 @@ fn sheep_stealing_events(
                     player.as_str(),
                     state.turn_number
                 ),
-                deck: RandomnessDeck::Player(player.clone()),
+                operation: crate::domain::RandomnessOperation::DeckShuffle {
+                    deck: RandomnessDeck::Player(player.clone()),
+                },
                 continuation: RandomnessContinuation::Pouch(
                     PouchRandomnessContinuation::SheepStealing,
                 ),
@@ -1119,7 +1125,10 @@ mod tests {
 
         for player in [PlayerId::new("alice"), PlayerId::new("bob")] {
             let request = state.pending_randomness.clone().unwrap();
-            assert_eq!(request.deck, RandomnessDeck::Player(player));
+            assert_eq!(
+                request.operation.destination_deck(),
+                &RandomnessDeck::Player(player)
+            );
             let mut order = request.current_order.clone();
             order.reverse();
             let events = crate::application::resolve_trusted_randomness(

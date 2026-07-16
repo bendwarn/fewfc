@@ -493,18 +493,21 @@ fn ringing_metal_empty_deck_recycles_before_an_independent_post_search_shuffle()
     .unwrap();
     apply_all(&mut state, &performed);
     let recycle = state.pending_randomness.clone().unwrap();
-    assert_eq!(recycle.current_order, vec![card(3), card(4)]);
+    assert_eq!(
+        recycle.current_order,
+        vec![card(3), card(4), card(1), card(2)]
+    );
 
     let recycled = resolve_trusted_randomness(
         &state,
         &TrustedRandomnessAnswer {
             request_id: recycle.request_id,
-            shuffled_order: vec![card(4), card(3)],
+            shuffled_order: vec![card(4), card(3), card(1), card(2)],
         },
     )
     .unwrap();
     apply_all(&mut state, &recycled);
-    assert_eq!(state.discard, vec![card(1), card(2)]);
+    assert!(state.discard.is_empty());
     assert!(state.pending_choice.is_some());
 
     let selected = handle_command(
@@ -523,7 +526,7 @@ fn ringing_metal_empty_deck_recycles_before_an_independent_post_search_shuffle()
         post_search.continuation,
         RandomnessContinuation::Echo(EchoRandomnessContinuation::RingingMetalPostSearch)
     );
-    assert_eq!(post_search.current_order, vec![card(3)]);
+    assert_eq!(post_search.current_order, vec![card(3), card(1), card(2)]);
 }
 
 #[test]
@@ -543,16 +546,13 @@ fn ringing_metal_with_no_preexisting_deck_or_discard_is_a_no_change_main_effect(
         },
     )
     .unwrap();
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, GameEvent::RandomnessRequested { .. }))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
-    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::RandomnessRequested { request } if request.operation.is_discard_shuffle()
+    )));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. })));
 }
 
 #[test]
@@ -595,7 +595,10 @@ fn ringing_metal_uses_the_performing_players_personal_deck() {
     .unwrap();
     apply_all(&mut state, &selected);
     assert!(matches!(
-        state.pending_randomness.as_ref().map(|request| &request.deck),
+        state
+            .pending_randomness
+            .as_ref()
+            .map(|request| request.operation.destination_deck()),
         Some(fewfc::domain::RandomnessDeck::Player(player))
             if player == &PlayerId::new("p1")
     ));

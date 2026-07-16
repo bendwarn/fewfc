@@ -170,7 +170,7 @@ fn rule_text(melody: &MelodyDef) -> &'static str {
 }
 
 pub(crate) fn formation_main_effect_events(
-    state: &GameState,
+    _state: &GameState,
     post_formation_state: &GameState,
     player: &PlayerId,
     melody_id: &str,
@@ -178,8 +178,12 @@ pub(crate) fn formation_main_effect_events(
     let Some(melody) = melody(melody_id) else {
         return Ok(None);
     };
-    let mut events =
-        main_effect_events(state, player, &melody, MelodyExecutionOrigin::FormationUse)?;
+    let mut events = main_effect_events(
+        post_formation_state,
+        player,
+        &melody,
+        MelodyExecutionOrigin::FormationUse,
+    )?;
     let mut projected = post_formation_state.clone();
     for event in &events {
         crate::rules::projection::apply_event(&mut projected, event);
@@ -364,7 +368,9 @@ pub(crate) fn answer_choice(
                         state.turn_number,
                         player.as_str()
                     ),
-                    deck: deck_kind(state, player),
+                    operation: crate::domain::RandomnessOperation::DeckShuffle {
+                        deck: deck_kind(state, player),
+                    },
                     continuation: RandomnessContinuation::Echo(
                         EchoRandomnessContinuation::RingingMetalPostSearch,
                     ),
@@ -666,7 +672,10 @@ fn ringing_metal_start_events(state: &GameState, player: &PlayerId) -> GameResul
                 state.turn_number,
                 player.as_str()
             ),
-            deck: deck_kind(state, player),
+            operation: crate::domain::RandomnessOperation::DiscardShuffle {
+                pile: deck_kind(state, player),
+                placement: crate::domain::DeckPlacement::Bottom,
+            },
             continuation: RandomnessContinuation::Echo(
                 EchoRandomnessContinuation::RingingMetalRecycleDiscard,
             ),

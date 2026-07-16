@@ -1,6 +1,7 @@
 use crate::domain::{
-    EchoRandomnessContinuation, GameError, GameEvent, GameResult, GameState,
-    PouchRandomnessContinuation, RandomnessContinuation, RandomnessDeck,
+    BaseRandomnessContinuation, ConfluenceRandomnessContinuation, GameError, GameEvent,
+    GameResult, GameState, HeroRandomnessContinuation, PouchRandomnessContinuation,
+    RandomnessContinuation, RandomnessOperation, RandomnessDeck,
     TribulationRandomnessContinuation, TrustedRandomnessAnswer, ValidationError,
 };
 
@@ -30,12 +31,8 @@ pub(crate) fn resolve_trusted_randomness(
         ));
     }
 
-    let current_order = current_order_for_request(state, &request.deck, &request.continuation)?;
-    if !continuation_matches_current_order(
-        &request.continuation,
-        &request.current_order,
-        current_order,
-    ) {
+    let current_order = current_order_for_request(state, &request.operation)?;
+    if request.current_order != current_order {
         return Err(GameError::Validation(
             ValidationError::StalePendingRandomness,
         ));
@@ -53,59 +50,42 @@ pub(crate) fn resolve_trusted_randomness(
 
     let mut events = vec![GameEvent::RandomnessResolved {
         request_id: request.request_id.clone(),
-        deck: request.deck.clone(),
+        operation: request.operation.clone(),
         shuffled_order: answer.shuffled_order.clone(),
     }];
     let mut projected = state.clone();
     crate::rules::projection::apply_event(&mut projected, &events[0]);
+    if request.operation.is_discard_shuffle() {
+        let recovery = crate::rules::confluence::tailwind_recovery_events(
+            &projected,
+            request.operation.destination_deck(),
+        );
+        for event in &recovery {
+            crate::rules::projection::apply_event(&mut projected, event);
+        }
+        events.extend(recovery);
+    }
     events.extend(after_randomness_events(
         &projected,
         &request.continuation,
-        &request.deck,
+        request.operation.destination_deck(),
     )?);
     Ok(events)
 }
 
 fn current_order_for_request<'a>(
     state: &'a GameState,
-    deck: &'a RandomnessDeck,
-    continuation: &RandomnessContinuation,
+    operation: &'a RandomnessOperation,
 ) -> GameResult<&'a [crate::domain::CardInstanceId]> {
-    match (deck, continuation_validates_discard(continuation)) {
-        (RandomnessDeck::Shared, false) => Ok(&state.deck),
-        (RandomnessDeck::Shared, true) => Ok(&state.discard),
-        (RandomnessDeck::Player(player), false) => state
-            .deck_for(player)
-            .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone()))),
-        (RandomnessDeck::Player(player), true) => state
+    match operation.source_pile() {
+        RandomnessDeck::Shared if operation.is_discard_shuffle() => Ok(&state.discard),
+        RandomnessDeck::Shared => Ok(&state.deck),
+        RandomnessDeck::Player(player) if operation.is_discard_shuffle() => state
             .discard_for(player)
             .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone()))),
-    }
-}
-
-fn continuation_validates_discard(continuation: &RandomnessContinuation) -> bool {
-    matches!(
-        continuation,
-        RandomnessContinuation::Echo(EchoRandomnessContinuation::RingingMetalRecycleDiscard)
-    )
-}
-
-fn continuation_matches_current_order(
-    continuation: &RandomnessContinuation,
-    requested_order: &[crate::domain::CardInstanceId],
-    current_order: &[crate::domain::CardInstanceId],
-) -> bool {
-    if continuation_validates_discard(continuation) {
-        let mut available = current_order.to_vec();
-        requested_order.iter().all(|card| {
-            available
-                .iter()
-                .position(|candidate| candidate == card)
-                .map(|position| available.remove(position))
-                .is_some()
-        })
-    } else {
-        current_order == requested_order
+        RandomnessDeck::Player(player) => state
+            .deck_for(player)
+            .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone()))),
     }
 }
 
@@ -115,9 +95,16 @@ fn after_randomness_events(
     resolved_deck: &RandomnessDeck,
 ) -> GameResult<Vec<GameEvent>> {
     match continuation {
+        RandomnessContinuation::Base(BaseRandomnessContinuation::TurnDraw) => Ok(Vec::new()),
         RandomnessContinuation::Echo(continuation) => {
             crate::rules::echo::after_randomness_events(state, continuation)
         }
+        RandomnessContinuation::Hero(HeroRandomnessContinuation::Revelation) => {
+            crate::rules::hero::after_revelation_randomness_events(state)
+        }
+        RandomnessContinuation::Confluence(
+            ConfluenceRandomnessContinuation::ClearWindTenThousandMiles,
+        ) => crate::rules::confluence::after_clear_wind_randomness_events(state),
         RandomnessContinuation::Pouch(PouchRandomnessContinuation::InitialShuffle) => {
             crate::rules::pouch::after_initial_shuffle_randomness_events(state, resolved_deck)
         }

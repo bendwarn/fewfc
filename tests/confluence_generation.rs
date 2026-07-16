@@ -1,11 +1,12 @@
-use fewfc::application::{apply_event, handle_command};
+use fewfc::application::{apply_event, handle_command, resolve_trusted_randomness};
 use fewfc::domain::{
     CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, Command, DARK_GLIMMER_MODULE_ID,
     DeckPlacement, EffectChoiceAnswer, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent,
     GameState, GameStatus, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState,
     JianghuStateKind, LastTurnDiscard, LimitedUse, Phase, Player, PlayerId, PlayerProfession,
     PlayerSpirit, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind,
-    SpiritSkill, TargetDecl, TeamId,
+    SpiritSkill, TargetDecl, TeamId, TrustedRandomnessAnswer, PendingRandomness,
+    RandomnessContinuation, RandomnessDeck, RandomnessOperation,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -723,15 +724,31 @@ fn myriad_resonance_defers_game_outcome_until_mirror_choice_finishes() {
 fn tailwind_recovers_for_all_shared_deck_owners_but_only_personal_pile_owner() {
     let mut shared = state(false);
     shared.limited_uses = vec![limited("p1", 0), limited("p2", 0)];
+    shared.professions = vec![
+        PlayerProfession { player: PlayerId::new("p1"), profession: ProfessionId::new("confluence:clear-wind-envoy") },
+        PlayerProfession { player: PlayerId::new("p2"), profession: ProfessionId::new("confluence:clear-wind-envoy") },
+    ];
     let recycled = cards(&shared, &[(Element::Earth, 1)])[0];
     shared.discard.push(recycled);
     apply_event(
         &mut shared,
-        &GameEvent::DiscardRecycledIntoDeck {
-            shuffled_order: vec![recycled],
-            placement: DeckPlacement::Bottom,
+        &GameEvent::RandomnessRequested {
+            request: PendingRandomness {
+                request_id: "shared-discard".to_string(),
+                operation: RandomnessOperation::DiscardShuffle {
+                    pile: RandomnessDeck::Shared,
+                    placement: DeckPlacement::Bottom,
+                },
+                continuation: RandomnessContinuation::Base(fewfc::domain::BaseRandomnessContinuation::TurnDraw),
+                current_order: vec![recycled],
+            },
         },
     );
+    let events = resolve_trusted_randomness(&shared, &TrustedRandomnessAnswer {
+        request_id: "shared-discard".to_string(), shuffled_order: vec![recycled],
+    }).unwrap();
+    assert!(events.iter().filter(|event| matches!(event, GameEvent::LimitedUseChanged { .. })).count() == 2);
+    for event in &events { apply_event(&mut shared, event); }
     assert!(
         shared
             .limited_uses
@@ -741,6 +758,10 @@ fn tailwind_recovers_for_all_shared_deck_owners_but_only_personal_pile_owner() {
 
     let mut personal = state(true);
     personal.limited_uses = vec![limited("p1", 0), limited("p2", 0)];
+    personal.professions = vec![
+        PlayerProfession { player: PlayerId::new("p1"), profession: ProfessionId::new("confluence:clear-wind-envoy") },
+        PlayerProfession { player: PlayerId::new("p2"), profession: ProfessionId::new("confluence:clear-wind-envoy") },
+    ];
     let recycled = personal.player_discards[0]
         .cards
         .first()
@@ -752,12 +773,22 @@ fn tailwind_recovers_for_all_shared_deck_owners_but_only_personal_pile_owner() {
         });
     apply_event(
         &mut personal,
-        &GameEvent::PlayerDiscardRecycledIntoDeck {
-            player: PlayerId::new("p1"),
-            shuffled_order: vec![recycled],
-            placement: DeckPlacement::Bottom,
+        &GameEvent::RandomnessRequested {
+            request: PendingRandomness {
+                request_id: "personal-discard".to_string(),
+                operation: RandomnessOperation::DiscardShuffle {
+                    pile: RandomnessDeck::Player(PlayerId::new("p1")),
+                    placement: DeckPlacement::Bottom,
+                },
+                continuation: RandomnessContinuation::Base(fewfc::domain::BaseRandomnessContinuation::TurnDraw),
+                current_order: vec![recycled],
+            },
         },
     );
+    let events = resolve_trusted_randomness(&personal, &TrustedRandomnessAnswer {
+        request_id: "personal-discard".to_string(), shuffled_order: vec![recycled],
+    }).unwrap();
+    for event in &events { apply_event(&mut personal, event); }
     assert_eq!(personal.limited_uses[0].remaining, 1);
     assert_eq!(personal.limited_uses[1].remaining, 0);
 }

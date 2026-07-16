@@ -1002,7 +1002,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
         }
         GameEvent::RandomnessResolved {
             request_id,
-            deck,
+            operation,
             shuffled_order,
         } => {
             let pending = state
@@ -1010,72 +1010,57 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .as_ref()
                 .expect("canonical randomness result must have a pending request");
             assert_eq!(
-                (&pending.request_id, &pending.deck),
-                (request_id, deck),
+                (&pending.request_id, &pending.operation),
+                (request_id, operation),
                 "canonical randomness result must match the pending request"
             );
-            let recycles_discard = matches!(
-                pending.continuation,
-                crate::domain::RandomnessContinuation::Echo(
-                    crate::domain::EchoRandomnessContinuation::RingingMetalRecycleDiscard
-                )
-            );
-            let rusted_forest_shuffle = matches!(
-                pending.continuation,
-                crate::domain::RandomnessContinuation::Tribulation(
-                    crate::domain::TribulationRandomnessContinuation::RustedForestShuffle
-                )
-            );
             let recycled_cards = pending.current_order.clone();
-            match deck {
-                crate::domain::RandomnessDeck::Shared => {
-                    state.deck = shuffled_order.clone();
-                    if recycles_discard {
-                        for card in &recycled_cards {
-                            let position = state
-                                .discard
-                                .iter()
-                                .position(|discarded| discarded == card)
-                                .expect("recycled shared Card must remain in the Discard Pile");
-                            state.discard.remove(position);
-                        }
+            match operation {
+                crate::domain::RandomnessOperation::DeckShuffle { deck } => match deck {
+                    crate::domain::RandomnessDeck::Shared => state.deck = shuffled_order.clone(),
+                    crate::domain::RandomnessDeck::Player(player) => {
+                        state
+                            .deck_for_mut(player)
+                            .expect("canonical randomness result must target a known player deck")
+                            .clone_from(shuffled_order);
                     }
-                }
-                crate::domain::RandomnessDeck::Player(player) => {
-                    state
-                        .player_decks
-                        .iter_mut()
-                        .find(|pile| &pile.player == player)
-                        .expect("canonical randomness result must target a known player deck")
-                        .cards = shuffled_order.clone();
-                    if recycles_discard {
-                        let discard = &mut state
-                            .player_discards
-                            .iter_mut()
-                            .find(|pile| &pile.player == player)
-                            .expect(
-                                "canonical randomness recycling must target a known player discard",
-                            )
-                            .cards;
-                        for card in &recycled_cards {
-                            let position = discard
-                                .iter()
-                                .position(|discarded| discarded == card)
-                                .expect("recycled personal Card must remain in the Discard Pile");
-                            discard.remove(position);
+                },
+                crate::domain::RandomnessOperation::DiscardShuffle {
+                    pile,
+                    placement,
+                } => {
+                    match (pile, placement) {
+                        (crate::domain::RandomnessDeck::Shared, DeckPlacement::Bottom) => {
+                            state.deck.extend(shuffled_order.iter().copied());
+                            for card in &recycled_cards {
+                                let position = state
+                                    .discard
+                                    .iter()
+                                    .position(|discarded| discarded == card)
+                                    .expect("Discard Shuffle source Card must remain in the Discard Pile");
+                                state.discard.remove(position);
+                            }
+                        }
+                        (crate::domain::RandomnessDeck::Player(player), DeckPlacement::Bottom) => {
+                            state
+                                .deck_for_mut(player)
+                                .expect("Discard Shuffle must target a known player deck")
+                                .extend(shuffled_order.iter().copied());
+                            let discard = state
+                                .discard_for_mut(player)
+                                .expect("Discard Shuffle must target a known player discard");
+                            for card in &recycled_cards {
+                                let position = discard
+                                    .iter()
+                                    .position(|discarded| discarded == card)
+                                    .expect("Discard Shuffle source Card must remain in the Discard Pile");
+                                discard.remove(position);
+                            }
                         }
                     }
                 }
             }
             state.pending_randomness = None;
-            if rusted_forest_shuffle {
-                match deck {
-                    crate::domain::RandomnessDeck::Shared => recover_tailwind_uses(state, None),
-                    crate::domain::RandomnessDeck::Player(player) => {
-                        recover_tailwind_uses(state, Some(player))
-                    }
-                }
-            }
         }
         GameEvent::EchoCostPaid { card_move, .. } => {
             apply_card_move(state, card_move);
@@ -1381,48 +1366,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             debug_assert_eq!(state.phase, crate::domain::Phase::TurnDraw);
             state.phase = crate::domain::Phase::TurnEnd;
         }
-        GameEvent::DiscardRecycledIntoDeck {
-            shuffled_order,
-            placement,
-        } => {
-            match placement {
-                DeckPlacement::Bottom => state.deck.extend(shuffled_order.iter().copied()),
-            }
-
-            for card in shuffled_order {
-                let position = state
-                    .discard
-                    .iter()
-                    .position(|discarded| discarded == card)
-                    .expect("canonical recycle event must contain cards from discard");
-                state.discard.remove(position);
-            }
-            recover_tailwind_uses(state, None);
-        }
-        GameEvent::PlayerDiscardRecycledIntoDeck {
-            player,
-            shuffled_order,
-            placement,
-        } => {
-            match placement {
-                DeckPlacement::Bottom => state
-                    .deck_for_mut(player)
-                    .expect("canonical recycle event must target a known player deck")
-                    .extend(shuffled_order.iter().copied()),
-            }
-
-            let discard = state
-                .discard_for_mut(player)
-                .expect("canonical recycle event must target a known discard pile");
-            for card in shuffled_order {
-                let position = discard
-                    .iter()
-                    .position(|discarded| discarded == card)
-                    .expect("canonical recycle event must contain cards from discard");
-                discard.remove(position);
-            }
-            recover_tailwind_uses(state, Some(player));
-        }
         GameEvent::DiscardRetrieved {
             hp_change,
             card_move,
@@ -1474,16 +1417,6 @@ fn clear_confluence_obligations_for_cards(
     state
         .confluence_card_obligations
         .retain(|obligation| &obligation.owner != player || !cards.contains(&obligation.card));
-}
-
-fn recover_tailwind_uses(state: &mut GameState, owner: Option<&crate::domain::PlayerId>) {
-    for use_count in &mut state.limited_uses {
-        if use_count.key == crate::rules::confluence::TAILWIND_USE
-            && owner.is_none_or(|owner| &use_count.owner == owner)
-        {
-            use_count.remaining = use_count.maximum;
-        }
-    }
 }
 
 fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {

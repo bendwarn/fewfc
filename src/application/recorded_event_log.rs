@@ -149,8 +149,6 @@ pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         GameEvent::TurnStarted { .. } => Some(AutomaticReason::TurnStart),
         GameEvent::CardsDrawnForTurnDiscardChoice { .. } => Some(AutomaticReason::TurnDraw),
         GameEvent::TurnDrawSkipped { .. } => Some(AutomaticReason::TurnDrawSkipped),
-        GameEvent::DiscardRecycledIntoDeck { .. }
-        | GameEvent::PlayerDiscardRecycledIntoDeck { .. } => Some(AutomaticReason::DiscardRecycle),
         GameEvent::StatusExpired { .. } => Some(AutomaticReason::StatusExpired),
         GameEvent::JianghuStateExpired { .. } => Some(AutomaticReason::StatusExpired),
         GameEvent::JianghuPoisonTicked { .. } => Some(AutomaticReason::TurnEnd),

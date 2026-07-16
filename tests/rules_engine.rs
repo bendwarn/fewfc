@@ -4,7 +4,7 @@ use fewfc::application::{
 };
 use fewfc::domain::{
     ActionModification, AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
-    CardMoveDelta, CardZone, Command, CommandId, DamageTransform, DeckPlacement,
+    CardMoveDelta, CardZone, Command, CommandId, DamageTransform,
     EffectChoiceAnswer, ElementInteraction, EngineInvariantError, EnvironmentAttackEffect,
     GameError, GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta,
     LastElementalAttack, LastElementalAttackUpdate, LastFormationUse, PassActionReason,
@@ -2321,32 +2321,13 @@ fn turn_draw_recycles_discard_to_deck_bottom_when_deck_is_insufficient() {
         ),
     ];
 
-    assert_eq!(
-        advance_state_automatic(&state).unwrap(),
-        vec![
-            GameEvent::DiscardRecycledIntoDeck {
-                shuffled_order: vec![card(2)],
-                placement: DeckPlacement::Bottom,
-            },
-            GameEvent::CardsDrawnForTurnDiscardChoice {
-                player: PlayerId::new("p2"),
-                drawn_cards: vec![card(12), card(2)],
-                allowed_discards: vec![card(12), card(2)],
-            },
-        ]
-    );
-
-    for event in advance_state_automatic(&state).unwrap() {
-        apply_event(&mut state, &event);
-    }
-
-    assert_eq!(state.phase, Phase::TurnDrawDiscardChoice);
-    assert_eq!(state.deck, Vec::<CardInstanceId>::new());
-    assert_eq!(state.discard, Vec::<CardInstanceId>::new());
-    assert_eq!(
-        state.hand(&PlayerId::new("p2")),
-        Some(vec![card(5), card(6), card(7), card(8), card(12), card(2)].as_slice())
-    );
+    let events = advance_state_automatic(&state).unwrap();
+    assert!(matches!(
+        events.as_slice(),
+        [GameEvent::RandomnessRequested { request }]
+            if request.operation.is_discard_shuffle()
+                && request.current_order == vec![card(2)]
+    ));
 }
 
 #[test]

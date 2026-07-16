@@ -44,7 +44,7 @@ test('trusted randomness resolves sequential requests as distinct persisted deci
     record: string[]
     request: {
       requestId: string
-      deck: 'Shared'
+      operation: { type: 'deckShuffle'; deck: 'Shared' }
       continuation: { type: 'echo'; kind: 'ringingMetalRecycleDiscard' | 'ringingMetalPostSearch' }
       currentOrder: number[]
     }
@@ -59,7 +59,7 @@ test('trusted randomness resolves sequential requests as distinct persisted deci
       record: ['command', 'first-shuffle'],
       request: {
         requestId: 'post-search',
-        deck: 'Shared',
+        operation: { type: 'deckShuffle', deck: 'Shared' },
         continuation: { type: 'echo', kind: 'ringingMetalPostSearch' },
         currentOrder: [4, 5],
       },
@@ -74,7 +74,7 @@ test('trusted randomness resolves sequential requests as distinct persisted deci
       record: ['command'],
       request: {
         requestId: 'discard-recycle',
-        deck: 'Shared',
+        operation: { type: 'deckShuffle', deck: 'Shared' },
         continuation: { type: 'echo', kind: 'ringingMetalRecycleDiscard' },
         currentOrder: [1, 2, 3],
       },
@@ -105,7 +105,7 @@ test('trusted randomness persists one continuation before returning ready', asyn
     record: string[]
     request: {
       requestId: string
-      deck: 'Shared'
+      operation: { type: 'deckShuffle'; deck: 'Shared' }
       continuation: { type: 'tribulation'; kind: 'rustedForestShuffle' }
       currentOrder: number[]
     }
@@ -118,7 +118,7 @@ test('trusted randomness persists one continuation before returning ready', asyn
       record: ['rusted-forest-command'],
       request: {
         requestId: 'rusted-forest-shuffle',
-        deck: 'Shared',
+        operation: { type: 'deckShuffle', deck: 'Shared' },
         continuation: { type: 'tribulation', kind: 'rustedForestShuffle' },
         currentOrder: [7, 8, 9],
       },

@@ -171,7 +171,9 @@ fn state_with_pending_randomness() -> GameState {
         &GameEvent::RandomnessRequested {
             request: PendingRandomness {
                 request_id: "shuffle-1".to_string(),
-                deck: RandomnessDeck::Shared,
+                operation: fewfc::domain::RandomnessOperation::DeckShuffle {
+                    deck: RandomnessDeck::Shared,
+                },
                 continuation: RandomnessContinuation::Pouch(
                     PouchRandomnessContinuation::SheepStealing,
                 ),
@@ -264,7 +266,9 @@ fn accepted_shuffle_is_canonical_and_replay_uses_the_recorded_order() {
             GameEvent::RandomnessRequested {
                 request: PendingRandomness {
                     request_id: "shuffle-1".to_string(),
-                    deck: RandomnessDeck::Shared,
+                    operation: fewfc::domain::RandomnessOperation::DeckShuffle {
+                        deck: RandomnessDeck::Shared,
+                    },
                     continuation: RandomnessContinuation::Pouch(
                         PouchRandomnessContinuation::SheepStealing,
                     ),
@@ -329,7 +333,9 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
     assert_eq!(
         serde_json::to_value(PendingRandomness {
             request_id: "request".to_string(),
-            deck: RandomnessDeck::Shared,
+            operation: fewfc::domain::RandomnessOperation::DeckShuffle {
+                deck: RandomnessDeck::Shared,
+            },
             continuation: RandomnessContinuation::Echo(
                 fewfc::domain::EchoRandomnessContinuation::RingingMetalPostSearch,
             ),
@@ -338,12 +344,27 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
         .unwrap(),
         serde_json::json!({
             "requestId": "request",
-            "deck": "Shared",
+            "operation": {
+                "type": "deckShuffle",
+                "deck": "Shared"
+            },
             "continuation": {
                 "type": "echo",
                 "kind": "ringingMetalPostSearch"
             },
             "currentOrder": [1, 2],
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(fewfc::domain::RandomnessOperation::DiscardShuffle {
+            pile: RandomnessDeck::Player(PlayerId::new("p1")),
+            placement: fewfc::domain::DeckPlacement::Bottom,
+        })
+        .unwrap(),
+        serde_json::json!({
+            "type": "discardShuffle",
+            "pile": { "Player": "p1" },
+            "placement": "Bottom"
         })
     );
 }

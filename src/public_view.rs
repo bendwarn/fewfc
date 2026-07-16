@@ -3,7 +3,7 @@
 use crate::domain::{
     CardInstanceId, CounterEffect, Element, FormationSuppression, GameEvent, GameState, GameStatus,
     JianghuState, LimitedUse, PendingChoiceKind, Phase, Player, PlayerId, PlayerProfession,
-    PlayerShield, PlayerStarHistory, RandomnessDeck, RuleModuleId, ScheduledEcho,
+    PlayerShield, PlayerStarHistory, RandomnessDeck, RandomnessOperation, RuleModuleId, ScheduledEcho,
     ScheduledPlantEarth, StatusEffect, TeamHp, TeamStar,
 };
 use serde::{Deserialize, Serialize};
@@ -187,7 +187,22 @@ pub enum PublicPendingChoiceKind {
 pub struct PublicPendingRandomness {
     pub request_id: String,
     pub deck: RandomnessDeck,
+    pub operation: PublicRandomnessOperation,
     pub card_count: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PublicRandomnessOperation {
+    DeckShuffle,
+    DiscardShuffle,
+}
+
+fn public_randomness_operation(operation: &RandomnessOperation) -> PublicRandomnessOperation {
+    match operation {
+        RandomnessOperation::DeckShuffle { .. } => PublicRandomnessOperation::DeckShuffle,
+        RandomnessOperation::DiscardShuffle { .. } => PublicRandomnessOperation::DiscardShuffle,
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -264,11 +279,13 @@ pub enum PublicGameEvent {
     RandomnessRequested {
         request_id: String,
         deck: RandomnessDeck,
+        operation: PublicRandomnessOperation,
         card_count: usize,
     },
     RandomnessResolved {
         request_id: String,
         deck: RandomnessDeck,
+        operation: PublicRandomnessOperation,
         card_count: usize,
     },
     HandInspected {
@@ -419,7 +436,8 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
         pending_randomness: state.pending_randomness.as_ref().map(|request| {
             PublicPendingRandomness {
                 request_id: request.request_id.clone(),
-                deck: request.deck.clone(),
+                deck: request.operation.destination_deck().clone(),
+                operation: public_randomness_operation(&request.operation),
                 card_count: request.current_order.len(),
             }
         }),
@@ -629,16 +647,18 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         }
         GameEvent::RandomnessRequested { request } => PublicGameEvent::RandomnessRequested {
             request_id: request.request_id.clone(),
-            deck: request.deck.clone(),
+            deck: request.operation.destination_deck().clone(),
+            operation: public_randomness_operation(&request.operation),
             card_count: request.current_order.len(),
         },
         GameEvent::RandomnessResolved {
             request_id,
-            deck,
+            operation,
             shuffled_order,
         } => PublicGameEvent::RandomnessResolved {
             request_id: request_id.clone(),
-            deck: deck.clone(),
+            deck: operation.destination_deck().clone(),
+            operation: public_randomness_operation(operation),
             card_count: shuffled_order.len(),
         },
         GameEvent::HandInspected {
@@ -780,8 +800,6 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::RustedForestDeckProcessed { .. }
         | GameEvent::RustedForestCompleted { .. }
         | GameEvent::PassiveFlipped { .. }
-        | GameEvent::DiscardRecycledIntoDeck { .. }
-        | GameEvent::PlayerDiscardRecycledIntoDeck { .. }
         | GameEvent::DiscardRetrieved { .. }
         | GameEvent::TurnEnded { .. } => PublicGameEvent::Public(event.clone()),
     }

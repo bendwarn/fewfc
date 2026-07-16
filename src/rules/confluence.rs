@@ -1,7 +1,8 @@
 use crate::domain::{
-    CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, Element, GameError, GameEvent, GameResult,
-    GameState, HpChangeDelta, PlayerId, ProfessionId, RuleModuleId, StatusDuration, StatusEffect,
-    StatusOwner, ValidationError,
+    CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, ConfluenceRandomnessContinuation, Element,
+    GameError, GameEvent, GameResult, GameState, HpChangeDelta, PlayerId, ProfessionId,
+    RandomnessDeck, RandomnessContinuation, RandomnessOperation, RuleModuleId, StatusDuration,
+    StatusEffect, StatusOwner, ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::{
@@ -352,56 +353,30 @@ pub(crate) fn active_spell_events(
         }
         WIND_DANCE => vec![turn_draw_bonus_event(state, player, 1)],
         CLEAR_WIND_TEN_THOUSAND_MILES => {
-            let mut projected = state.clone();
-            let mut events = Vec::new();
-            let deck_count = projected.deck_for(player).map_or(0, |deck| deck.len());
-            if deck_count < 10 {
-                let shuffled_order = projected
-                    .discard_for(player)
-                    .map_or_else(Vec::new, |discard| discard.to_vec());
-                if !shuffled_order.is_empty() {
-                    let recycle = if projected.uses_personal_decks() {
-                        GameEvent::PlayerDiscardRecycledIntoDeck {
-                            player: player.clone(),
-                            shuffled_order,
+            let deck_count = state.deck_for(player).map_or(0, |deck| deck.len());
+            let discard = state.discard_for(player).map_or(&[][..], |cards| cards);
+            if deck_count < 10 && !discard.is_empty() {
+                let pile = deck_kind(state, player);
+                vec![GameEvent::RandomnessRequested {
+                    request: crate::domain::PendingRandomness {
+                        request_id: format!(
+                            "confluence:clear-wind-ten-thousand-miles:{}:{}",
+                            state.turn_number,
+                            player.as_str()
+                        ),
+                        operation: RandomnessOperation::DiscardShuffle {
+                            pile,
                             placement: crate::domain::DeckPlacement::Bottom,
-                        }
-                    } else {
-                        GameEvent::DiscardRecycledIntoDeck {
-                            shuffled_order,
-                            placement: crate::domain::DeckPlacement::Bottom,
-                        }
-                    };
-                    crate::rules::projection::apply_event(&mut projected, &recycle);
-                    events.push(recycle);
-                }
-            }
-            let drawn = projected
-                .deck_for(player)
-                .expect("known Player must have a Deck")
-                .iter()
-                .take(10)
-                .copied()
-                .collect::<Vec<_>>();
-            let maximum = drawn.len();
-            events.push(GameEvent::CardsDrawnForProfessionChoice {
-                player: player.clone(),
-                ability_id: resolver_id.to_string(),
-                cards: drawn.clone(),
-            });
-            if !drawn.is_empty() {
-                events.push(GameEvent::EffectChoiceRequested {
-                    player: player.clone(),
-                    kind: crate::domain::PendingChoiceKind::CardSetChoice {
-                        effect_id: resolver_id.to_string(),
-                        continuation_id: "confluence:clear-wind:keep-one".to_string(),
-                        allowed_cards: drawn,
-                        minimum: 0,
-                        maximum,
+                        },
+                        continuation: RandomnessContinuation::Confluence(
+                            ConfluenceRandomnessContinuation::ClearWindTenThousandMiles,
+                        ),
+                        current_order: discard.to_vec(),
                     },
-                });
+                }]
+            } else {
+                clear_wind_ten_thousand_miles_after_shuffle(state, player)?
             }
-            events
         }
         VOID_BARRIER => {
             let mut events = Vec::new();
@@ -1111,6 +1086,90 @@ pub(crate) fn set_limited_use(
         old_remaining: limited_use(state, player, key).map_or(0, |use_count| use_count.remaining),
         new_remaining: remaining,
         maximum,
+    }
+}
+
+/// Explicit Tailwind recovery records.  This is called only after a canonical
+/// Discard Shuffle has been projected, so replay never infers recovery from a
+/// continuation or from a Deck Shuffle.
+pub(crate) fn tailwind_recovery_events(
+    state: &GameState,
+    shuffled_deck: &RandomnessDeck,
+) -> Vec<GameEvent> {
+    let eligible = match shuffled_deck {
+        RandomnessDeck::Shared => state.players.iter().map(|player| player.id.clone()).collect(),
+        RandomnessDeck::Player(player) => vec![player.clone()],
+    };
+    eligible
+        .into_iter()
+        .filter(|player| {
+            !crate::rules::pouch::profession_is_suppressed(state, player)
+                && state.profession_for(player).is_some_and(|profession| {
+                    profession.as_str() == CLEAR_WIND_ENVOY_ID
+                })
+        })
+        .filter_map(|player| {
+            let use_count = limited_use(state, &player, TAILWIND_USE)?;
+            (use_count.key == TAILWIND_USE && use_count.remaining == 0
+                && use_count.maximum > 0)
+                .then(|| GameEvent::LimitedUseChanged {
+                    owner: player,
+                    key: TAILWIND_USE.to_string(),
+                    old_remaining: 0,
+                    new_remaining: use_count.maximum,
+                    maximum: use_count.maximum,
+                })
+        })
+        .collect()
+}
+
+pub(crate) fn after_clear_wind_randomness_events(
+    state: &GameState,
+) -> GameResult<Vec<GameEvent>> {
+    let player = state
+        .current_player()
+        .cloned()
+        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?;
+    clear_wind_ten_thousand_miles_after_shuffle(state, &player)
+}
+
+fn clear_wind_ten_thousand_miles_after_shuffle(
+    state: &GameState,
+    player: &PlayerId,
+) -> GameResult<Vec<GameEvent>> {
+    let drawn = state
+        .deck_for(player)
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?
+        .iter()
+        .take(10)
+        .copied()
+        .collect::<Vec<_>>();
+    let maximum = drawn.len();
+    let mut events = vec![GameEvent::CardsDrawnForProfessionChoice {
+        player: player.clone(),
+        ability_id: CLEAR_WIND_TEN_THOUSAND_MILES.to_string(),
+        cards: drawn.clone(),
+    }];
+    if !drawn.is_empty() {
+        events.push(GameEvent::EffectChoiceRequested {
+            player: player.clone(),
+            kind: crate::domain::PendingChoiceKind::CardSetChoice {
+                effect_id: CLEAR_WIND_TEN_THOUSAND_MILES.to_string(),
+                continuation_id: "confluence:clear-wind:keep-one".to_string(),
+                allowed_cards: drawn,
+                minimum: 0,
+                maximum,
+            },
+        });
+    }
+    Ok(events)
+}
+
+fn deck_kind(state: &GameState, player: &PlayerId) -> RandomnessDeck {
+    if state.uses_personal_decks() {
+        RandomnessDeck::Player(player.clone())
+    } else {
+        RandomnessDeck::Shared
     }
 }
 

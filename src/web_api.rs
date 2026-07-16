@@ -1838,6 +1838,11 @@ impl WebPublicGameState {
                             format!("player:{}", player.as_str())
                         }
                     },
+                    operation: match request.operation {
+                        crate::public_view::PublicRandomnessOperation::DeckShuffle => "deckShuffle",
+                        crate::public_view::PublicRandomnessOperation::DiscardShuffle => "discardShuffle",
+                    }
+                    .to_string(),
                     card_count: request.card_count,
                 }),
             shields: state
@@ -2374,6 +2379,7 @@ struct WebFormationChoice {
 struct WebPendingRandomness {
     request_id: String,
     deck: String,
+    operation: String,
     card_count: usize,
 }
 
@@ -3317,13 +3323,31 @@ fn event_presentation_with_vocabulary(
                 vocabulary.choice_purpose(purpose, formation_names)
             ),
         ),
-        PublicGameEvent::RandomnessRequested { card_count, .. } => (
+        PublicGameEvent::RandomnessRequested {
+            card_count, operation, ..
+        } => (
             "等待洗牌".to_string(),
-            format!("正在重新排列 {card_count} 張牌。"),
+            match operation {
+                crate::public_view::PublicRandomnessOperation::DeckShuffle => {
+                    format!("正在洗牌組中的 {card_count} 張牌。")
+                }
+                crate::public_view::PublicRandomnessOperation::DiscardShuffle => {
+                    format!("正在洗棄牌堆的 {card_count} 張牌並放回牌組。")
+                }
+            },
         ),
-        PublicGameEvent::RandomnessResolved { card_count, .. } => (
+        PublicGameEvent::RandomnessResolved {
+            card_count, operation, ..
+        } => (
             "完成洗牌".to_string(),
-            format!("已重新排列 {card_count} 張牌。"),
+            match operation {
+                crate::public_view::PublicRandomnessOperation::DeckShuffle => {
+                    format!("已洗牌組中的 {card_count} 張牌。")
+                }
+                crate::public_view::PublicRandomnessOperation::DiscardShuffle => {
+                    format!("已洗棄牌堆的 {card_count} 張牌並放回牌組。")
+                }
+            },
         ),
         PublicGameEvent::HandInspected {
             viewer,
@@ -3914,6 +3938,19 @@ fn game_event_presentation_with_vocabulary(
         GameEvent::LimitedUseChanged {
             owner,
             key,
+            old_remaining,
+            new_remaining,
+            maximum,
+            ..
+        } if key == crate::rules::confluence::TAILWIND_USE
+            && *old_remaining == 0
+            && *new_remaining == *maximum => (
+            "順風回復".to_string(),
+            format!("洗棄牌完成，{} 的順風回復為 {new_remaining}/{maximum} 次。", owner.as_str()),
+        ),
+        GameEvent::LimitedUseChanged {
+            owner,
+            key,
             new_remaining,
             maximum,
             ..
@@ -4001,22 +4038,6 @@ fn game_event_presentation_with_vocabulary(
             };
             ("蓋牌翻開".to_string(), detail)
         }
-        GameEvent::DiscardRecycledIntoDeck { shuffled_order, .. } => (
-            "重整牌庫".to_string(),
-            format!("棄牌堆的 {} 張牌已重新放回牌庫。", shuffled_order.len()),
-        ),
-        GameEvent::PlayerDiscardRecycledIntoDeck {
-            player,
-            shuffled_order,
-            ..
-        } => (
-            "重整個人牌庫".to_string(),
-            format!(
-                "{} 的棄牌堆有 {} 張牌重新放回牌庫。",
-                player.as_str(),
-                shuffled_order.len()
-            ),
-        ),
         GameEvent::DiscardRetrieved {
             player,
             previous_player,
@@ -4859,7 +4880,7 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
             request_fields,
-            ["continuation", "currentOrder", "deck", "requestId"]
+            ["continuation", "currentOrder", "operation", "requestId"]
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
@@ -4868,7 +4889,10 @@ mod tests {
             json["request"]["requestId"],
             "tribulation:rusted-forest:1:shared"
         );
-        assert_eq!(json["request"]["deck"], "Shared");
+        assert_eq!(
+            json["request"]["operation"],
+            serde_json::json!({"type": "deckShuffle", "deck": "Shared"})
+        );
         assert_eq!(
             json["request"]["continuation"],
             serde_json::json!({

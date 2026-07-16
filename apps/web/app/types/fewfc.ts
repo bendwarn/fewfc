@@ -129,6 +129,7 @@ export type EffectChoiceAnswer =
 export interface PublicPendingRandomness {
   requestId: string
   deck: string
+  operation: 'deckShuffle' | 'discardShuffle'
   cardCount: number
 }
 
