@@ -1321,6 +1321,12 @@ pub enum ConfluenceRandomnessContinuation {
 #[serde(rename_all = "camelCase")]
 pub enum PouchRandomnessContinuation {
     InitialShuffle,
+    SheepStealingRecycle {
+        source_card: CardInstanceId,
+        owner: Option<PlayerId>,
+        deck_cards: Vec<CardInstanceId>,
+        discard_cards: Vec<CardInstanceId>,
+    },
     SheepStealing {
         source_card: CardInstanceId,
         owner: Option<PlayerId>,

@@ -938,6 +938,26 @@ fn sheep_stealing_events(
     deck_cards: &[CardInstanceId],
     discard_cards: &[CardInstanceId],
 ) -> GameResult<Vec<GameEvent>> {
+    let deck = state.deck_for(player).ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
+    if deck.len() < 2 {
+        let discard = state.discard_for(player).unwrap_or_default();
+        if discard.is_empty() || deck.len() + discard.len() < 2 {
+            return Err(GameError::Validation(ValidationError::SecretStrategyInputInvalid));
+        }
+        return Ok(vec![GameEvent::RandomnessRequested {
+            request: crate::domain::PendingRandomness {
+                request_id: format!("pouch:sheep-stealing:recycle:{}:{}", player.as_str(), state.turn_number),
+                operation: crate::domain::RandomnessOperation::DiscardShuffle { pile: RandomnessDeck::Player(player.clone()), placement: crate::domain::DeckPlacement::Bottom },
+                continuation: RandomnessContinuation::Pouch(PouchRandomnessContinuation::SheepStealingRecycle {
+                    source_card,
+                    owner: state.pouch_for(player).filter(|p| p.card == source_card).map(|p| p.owner.clone()),
+                    deck_cards: deck_cards.to_vec(),
+                    discard_cards: discard_cards.to_vec(),
+                }),
+                current_order: discard.to_vec(),
+            },
+        }]);
+    }
     if deck_cards.len() != 2
         || discard_cards.len() != 2
         || deck_cards[0] == deck_cards[1]
@@ -1014,6 +1034,16 @@ fn sheep_stealing_events(
             },
         },
     ])
+}
+
+pub(crate) fn after_sheep_recycle_randomness_events(
+    state: &GameState,
+    source_card: CardInstanceId,
+    deck_cards: &[CardInstanceId],
+    discard_cards: &[CardInstanceId],
+) -> GameResult<Vec<GameEvent>> {
+    let player = state.current_player().ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?;
+    sheep_stealing_events(state, player, source_card, deck_cards, discard_cards)
 }
 
 pub(crate) fn has_status(state: &GameState, player: &PlayerId, kind: &str) -> bool {
