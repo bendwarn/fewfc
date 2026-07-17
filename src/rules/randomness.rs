@@ -108,7 +108,16 @@ fn after_randomness_events(
         RandomnessContinuation::Pouch(PouchRandomnessContinuation::InitialShuffle) => {
             crate::rules::pouch::after_initial_shuffle_randomness_events(state, resolved_deck)
         }
-        RandomnessContinuation::Pouch(PouchRandomnessContinuation::SheepStealing) => Ok(Vec::new()),
+        RandomnessContinuation::Pouch(PouchRandomnessContinuation::SheepStealing {
+            source_card,
+            owner,
+        }) => Ok(vec![GameEvent::PouchConsumed {
+            owner: owner.clone(),
+            card: *source_card,
+        }]),
+        RandomnessContinuation::Tribulation(
+            TribulationRandomnessContinuation::RustedForestDiscardShuffle,
+        ) => crate::rules::tribulation::after_rusted_forest_discard_shuffle_events(state),
         RandomnessContinuation::Tribulation(
             TribulationRandomnessContinuation::RustedForestShuffle,
         ) => crate::rules::tribulation::after_rusted_forest_randomness_events(state),

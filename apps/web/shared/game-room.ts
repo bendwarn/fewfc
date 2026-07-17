@@ -255,7 +255,7 @@ export interface TrustedRandomnessRequest {
     | { type: 'hero'; kind: 'revelation' }
     | { type: 'confluence'; kind: 'clearWindTenThousandMiles' }
     | { type: 'pouch'; kind: 'initialShuffle' | 'sheepStealing' }
-    | { type: 'tribulation'; kind: 'rustedForestShuffle' }
+    | { type: 'tribulation'; kind: 'rustedForestDiscardShuffle' | 'rustedForestShuffle' }
   currentOrder: number[]
 }
 

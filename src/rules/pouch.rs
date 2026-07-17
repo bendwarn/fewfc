@@ -349,10 +349,12 @@ fn resolve_owned_pouch(
         deck_cards,
         discard_cards,
     )?);
-    events.push(GameEvent::PouchConsumed {
-        owner: Some(player.clone()),
-        card: pouch.card,
-    });
+    if strategy != SecretStrategy::SheepStealing {
+        events.push(GameEvent::PouchConsumed {
+            owner: Some(player.clone()),
+            card: pouch.card,
+        });
+    }
     Ok(events)
 }
 
@@ -656,10 +658,12 @@ pub(crate) fn chain_events(
             strategy_deck_cards,
             strategy_discard_cards,
         )?);
-        events.push(GameEvent::PouchConsumed {
-            owner: None,
-            card: source_card,
-        });
+        if strategy != SecretStrategy::SheepStealing {
+            events.push(GameEvent::PouchConsumed {
+                owner: None,
+                card: source_card,
+            });
+        }
     }
     Ok(events)
 }
@@ -935,7 +939,13 @@ fn sheep_stealing_events(
                     deck: RandomnessDeck::Player(player.clone()),
                 },
                 continuation: RandomnessContinuation::Pouch(
-                    PouchRandomnessContinuation::SheepStealing,
+                    PouchRandomnessContinuation::SheepStealing {
+                        source_card,
+                        owner: state
+                            .pouch_for(player)
+                            .filter(|pouch| pouch.card == source_card)
+                            .map(|pouch| pouch.owner.clone()),
+                    },
                 ),
                 current_order: order,
             },

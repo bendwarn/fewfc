@@ -1313,12 +1313,16 @@ pub enum ConfluenceRandomnessContinuation {
 #[serde(rename_all = "camelCase")]
 pub enum PouchRandomnessContinuation {
     InitialShuffle,
-    SheepStealing,
+    SheepStealing {
+        source_card: CardInstanceId,
+        owner: Option<PlayerId>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum TribulationRandomnessContinuation {
+    RustedForestDiscardShuffle,
     RustedForestShuffle,
 }
 

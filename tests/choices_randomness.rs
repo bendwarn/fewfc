@@ -175,7 +175,10 @@ fn state_with_pending_randomness() -> GameState {
                     deck: RandomnessDeck::Shared,
                 },
                 continuation: RandomnessContinuation::Pouch(
-                    PouchRandomnessContinuation::SheepStealing,
+                    PouchRandomnessContinuation::SheepStealing {
+                        source_card: card(1),
+                        owner: None,
+                    },
                 ),
                 current_order: vec![card(1), card(2), card(3)],
             },
@@ -270,7 +273,10 @@ fn accepted_shuffle_is_canonical_and_replay_uses_the_recorded_order() {
                         deck: RandomnessDeck::Shared,
                     },
                     continuation: RandomnessContinuation::Pouch(
-                        PouchRandomnessContinuation::SheepStealing,
+                        PouchRandomnessContinuation::SheepStealing {
+                            source_card: card(1),
+                            owner: None,
+                        },
                     ),
                     current_order: vec![card(1), card(2), card(3)],
                 },

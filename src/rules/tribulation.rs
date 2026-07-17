@@ -605,6 +605,14 @@ pub(crate) fn after_rusted_forest_randomness_events(
     Ok(events)
 }
 
+pub(crate) fn after_rusted_forest_discard_shuffle_events(
+    state: &GameState,
+) -> GameResult<Vec<GameEvent>> {
+    let mut events = Vec::new();
+    continue_rusted_forest(state, &mut events)?;
+    Ok(events)
+}
+
 fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> GameResult<()> {
     let mut projected = state.clone();
     for event in events.iter() {
@@ -629,6 +637,36 @@ fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
                 GameError::Validation(ValidationError::UnknownPlayer(deck_owner.clone()))
             })?
             .to_vec();
+        let discard = match &deck_kind {
+            RandomnessDeck::Shared => projected.discard.clone(),
+            RandomnessDeck::Player(player) => projected
+                .discard_for(player)
+                .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?
+                .to_vec(),
+        };
+        if deck.len() < 8 && !discard.is_empty() {
+            events.push(GameEvent::RandomnessRequested {
+                request: PendingRandomness {
+                    request_id: format!(
+                        "tribulation:rusted-forest:discard:{}:{}",
+                        projected.turn_number,
+                        match &deck_kind {
+                            RandomnessDeck::Shared => "shared",
+                            RandomnessDeck::Player(player) => player.as_str(),
+                        }
+                    ),
+                    operation: crate::domain::RandomnessOperation::DiscardShuffle {
+                        pile: deck_kind,
+                        placement: crate::domain::DeckPlacement::Bottom,
+                    },
+                    continuation: RandomnessContinuation::Tribulation(
+                        TribulationRandomnessContinuation::RustedForestDiscardShuffle,
+                    ),
+                    current_order: discard,
+                },
+            });
+            return Ok(());
+        }
         let revealed = deck.iter().take(8).copied().collect::<Vec<_>>();
         let discarded = revealed
             .iter()
