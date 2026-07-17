@@ -4047,6 +4047,7 @@ fn game_event_presentation_with_vocabulary(
                 crate::domain::EffectChoiceAnswer::Environment { environment } => {
                     element_name(*environment).to_string()
                 }
+                crate::domain::EffectChoiceAnswer::Chain { .. } => "連環選擇".to_string(),
                 crate::domain::EffectChoiceAnswer::Decline => "放棄".to_string(),
             };
             (

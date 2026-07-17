@@ -1136,6 +1136,14 @@ pub enum EffectChoiceAnswer {
     Environment {
         environment: Element,
     },
+    Chain {
+        pouch_owner: PlayerId,
+        pouch_card: CardInstanceId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trigger_card: Option<CardInstanceId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strategy: Option<SecretStrategy>,
+    },
     Decline,
 }
 

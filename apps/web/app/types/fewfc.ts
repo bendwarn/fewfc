@@ -124,6 +124,7 @@ export type EffectChoiceAnswer =
   | { type: 'player'; player: PlayerId }
   | { type: 'formation'; formationId: string }
   | { type: 'environment'; environment: Element }
+  | { type: 'chain'; pouchOwner: PlayerId; pouchCard: CardInstanceId; triggerCard?: CardInstanceId; strategy?: SecretStrategy }
   | { type: 'decline' }
 
 export interface PublicPendingRandomness {

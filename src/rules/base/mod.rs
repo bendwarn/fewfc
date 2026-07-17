@@ -1196,6 +1196,12 @@ fn decide_command_with_base_ruleset(
                 crate::rules::tribulation::answer_choice(state, &continuation_id, &answer)?
             {
                 events.extend(tribulation_events);
+            } else if effect_id == crate::rules::pouch::CHAIN_ID {
+                if let Some(chain_events) =
+                    crate::rules::pouch::answer_chain_choice(state, &player, &answer)?
+                {
+                    events.extend(chain_events);
+                }
             } else if let crate::domain::EffectChoiceAnswer::Cards { cards } = &answer {
                 events.extend(formation_use::answer_effect_choice(
                     state,
@@ -1420,6 +1426,19 @@ pub(crate) fn effect_choice_answer_is_valid(
         }
         crate::domain::EffectChoiceAnswer::Environment { environment } => {
             options.environments.contains(environment)
+        }
+        crate::domain::EffectChoiceAnswer::Chain {
+            pouch_owner,
+            pouch_card,
+            trigger_card,
+            strategy,
+        } => {
+            options.players.contains(pouch_owner)
+                && options.cards.as_ref().is_some_and(|cards| {
+                    cards.allowed_cards.contains(pouch_card)
+                        && trigger_card.is_none_or(|card| cards.allowed_cards.contains(&card))
+                })
+                && (trigger_card.is_some() == strategy.is_some())
         }
         crate::domain::EffectChoiceAnswer::Decline => options.can_decline,
     }

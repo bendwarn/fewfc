@@ -518,6 +518,39 @@ pub(crate) fn chain_events(
     player: &PlayerId,
     targets: &[crate::domain::TargetDecl],
 ) -> GameResult<Vec<GameEvent>> {
+    if targets.is_empty() {
+        let deck = state
+            .deck_for(player)
+            .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
+        let team = state
+            .players
+            .iter()
+            .find(|candidate| &candidate.id == player)
+            .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?
+            .team
+            .clone();
+        return Ok(vec![GameEvent::EffectChoiceRequested {
+            player: player.clone(),
+            kind: crate::domain::PendingChoiceKind::TypedEffect {
+                effect_id: CHAIN_ID.to_string(),
+                continuation_id: "pouch:chain:select".to_string(),
+                options: crate::domain::EffectChoiceOptions {
+                    cards: Some(crate::domain::CardChoiceOptions {
+                        allowed_cards: deck.to_vec(),
+                        minimum: 1,
+                        maximum: 2,
+                    }),
+                    players: state
+                        .players
+                        .iter()
+                        .filter(|candidate| candidate.team == team)
+                        .map(|candidate| candidate.id.clone())
+                        .collect(),
+                    ..Default::default()
+                },
+            },
+        }]);
+    }
     let owner = targets
         .iter()
         .find_map(|target| match target {
@@ -666,6 +699,36 @@ pub(crate) fn chain_events(
         }
     }
     Ok(events)
+}
+
+pub(crate) fn answer_chain_choice(
+    state: &GameState,
+    player: &PlayerId,
+    answer: &crate::domain::EffectChoiceAnswer,
+) -> GameResult<Option<Vec<GameEvent>>> {
+    let crate::domain::EffectChoiceAnswer::Chain {
+        pouch_owner,
+        pouch_card,
+        trigger_card,
+        strategy,
+    } = answer else {
+        return Ok(None);
+    };
+    let mut targets = vec![
+        crate::domain::TargetDecl::Player(pouch_owner.clone()),
+        crate::domain::TargetDecl::FormationRole {
+            role: "pouch".to_string(),
+            card: *pouch_card,
+        },
+    ];
+    if let (Some(trigger), Some(strategy)) = (trigger_card, strategy) {
+        targets.push(crate::domain::TargetDecl::FormationRole {
+            role: "trigger".to_string(),
+            card: *trigger,
+        });
+        targets.push(crate::domain::TargetDecl::SecretStrategy(*strategy));
+    }
+    Ok(Some(chain_events(state, player, &targets)?))
 }
 
 #[allow(clippy::too_many_arguments)]
