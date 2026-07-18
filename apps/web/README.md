@@ -31,6 +31,18 @@ bun run cf:dev
 
 `bun run dev` starts Wrangler directly when the application has already been built. `bun run cf:dev` additionally builds the app and applies local D1 migrations first.
 
+Delete a local room by UUID when the Wrangler development server is stopped:
+
+```bash
+bun apps/web/scripts/delete-room.ts ROOM_UUID
+# or, from apps/web:
+bun run room:delete -- ROOM_UUID
+```
+
+The command removes the matching local GameRoom Durable Object storage and D1
+room/member indexes. It scans the local Wrangler stores under `apps/web/.wrangler`
+and refuses to run while this workspace's Wrangler server is active.
+
 The login UI supports:
 
 - Email and password registration/sign-in.

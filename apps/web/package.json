@@ -13,6 +13,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply fewfc-auth --local",
     "db:migrate:remote": "wrangler d1 migrations apply fewfc-auth --remote",
+    "room:delete": "bun scripts/delete-room.ts",
     "dev": "wrangler dev",
     "generate": "nuxt generate --dotenv .env.production",
     "preview": "nuxt preview --dotenv .env.production",
