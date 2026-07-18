@@ -3,6 +3,7 @@
 ## Repository Validation
 
 - This repository is a Rust crate. Prefer `cargo test` for the main validation path unless the task specifically touches package tooling.
+- ./tmp 可以放不用加到repo的檔案，避免需要在repo建立檔案
 
 ## Temporary Pre-deployment Policy
 

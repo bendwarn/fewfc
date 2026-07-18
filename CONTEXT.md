@@ -134,6 +134,13 @@ One of ten effects triggered by revealing a Pouch whose printed element or
 level satisfies that strategy's condition.
 _Avoid_: Formation, Spirit Skill, Pouch effect
 
+**Secret Strategy Option**:
+A state-derived pairing of one source Card, one eligible Secret Strategy, and
+the immediately required input candidates for that strategy. It may support a
+direct Pouch trigger or appear inside a Chain Pending Choice, so it is not
+necessarily an independently committable Action.
+_Avoid_: Secret Strategy Action, resolved Secret Strategy effect
+
 **Chain Formation (連環)**:
 The active Spell that searches a Deck for one or two Cards with different
 elements and levels. One becomes a friendly Player's Pouch; when a second is
@@ -598,13 +605,22 @@ The complete set of Formations contributed by the Base Ruleset and enabled Rule
 Modules, independent of whether a Player can currently perform them.
 _Avoid_: playable actions, current hand matches
 
+**Rule Consequence**:
+A closed typed Player-visible fact about one known consequence of a rule offer
+or choice, such as a cost, immediate effect, follow-up choice, trusted
+randomness, delayed effect, rule exception, or substitution. Rule Consequences
+may be reused by Player-Facing Action Details and Pending Choice descriptors;
+they are not Game Events, arbitrary prose, or predictions of the final Game
+State.
+_Avoid_: summary string, Game Event, simulated outcome
+
 **Player-Facing Action Detail**:
-The Web-visible explanation attached to a currently playable action before the
-Player commits it. It must describe every rule consequence the Player needs to
-understand at that decision point, including follow-up choices, delayed effects,
-and rule-module exceptions. It may reuse canonical rule text, but is not the
-same artifact as a Formation Catalog rule description.
-_Avoid_: raw rule_text, tooltip copy
+A Player-scoped, state-specific snapshot embedded in an offered Action before
+the Player commits it. It contains the complete ordered Rule Consequences the
+Player may see at that decision point; the Rules Engine owns those facts and the
+Web owns their localized presentation. It may refer to a Formation Catalog
+entry, but is not catalog prose, a Pending Choice payload, or command input.
+_Avoid_: raw rule_text, tooltip copy, choice payload
 
 **Formation Use**:
 The accepted use of a Formation Composition, including its semantic resolution
@@ -722,8 +738,20 @@ The command that consumes the player's action opportunity and closes the main ph
 _Avoid_: active-effect command
 
 **Pending Choice**:
-A serialized waiting state requiring a player decision before deterministic resolution can continue.
+A serialized waiting state requiring one closed typed Player answer before
+deterministic resolution can continue. Initial Pouch Selection remains a Game
+Preparation stage rather than a Pending Choice.
 _Avoid_: prompt, callback
+
+**Choice ID**:
+The stable canonical identity of one Pending Choice. A Player answer references
+the Choice ID so it cannot answer a later choice with the same visible shape.
+_Avoid_: UI key, payload hash
+
+**Choice Continuation**:
+The typed canonical instruction attached to a Pending Choice that tells the
+Rules Engine which rule flow resumes after the Player's answer is validated.
+_Avoid_: effect ID and continuation string pair, application callback
 
 **Pending Randomness**:
 A serialized waiting state requiring a trusted application adapter to supply a
@@ -737,11 +765,13 @@ resolution after the trusted application adapter answers.
 _Avoid_: continuation string, application callback
 
 **Choice Requested**:
-A game event moment that creates a pending choice for one player.
+A Game Event that creates one Pending Choice, including its Choice ID and
+Choice Continuation, for one Player.
 _Avoid_: UI prompt
 
 **Choice Made**:
-A game event moment that records the selected answer to a pending choice.
+A Game Event that records one Player's closed typed answer to a Pending Choice
+and clears that waiting state. Rule consequences remain separate Game Events.
 _Avoid_: callback response
 
 ## Relationships
@@ -909,6 +939,8 @@ _Avoid_: callback response
 - **Cannot Act** allows an action pass for the affected **Player**
 - A **Choice Requested** creates one **Pending Choice**
 - A **Choice Made** answers one **Pending Choice**
+- A **Pending Choice** has exactly one **Choice ID**
+- A **Pending Choice** has exactly one **Choice Continuation**
 - A **Game Record** projects **Game Events** into **Game State**
 - A **Public View** is derived from canonical data and is not used for replay
 - A **Public Event Feed** is derived from **Game Events**
