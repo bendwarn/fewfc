@@ -8,7 +8,6 @@ import {
 } from './fixtures'
 
 test('a Profession change and activated ability survive public reconnect', async ({ browser }) => {
-  test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()

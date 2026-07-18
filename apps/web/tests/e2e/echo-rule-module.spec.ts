@@ -20,7 +20,6 @@ async function waitForPlayableActions(page: Page) {
 }
 
 test('Echo defaults on and normalizes every Advanced Rule dependency', async ({ page }) => {
-  test.setTimeout(180_000)
   await createRoom(page, `迴響測試 ${Date.now()}`)
 
   await expect(page.getByLabel('迴響')).toBeChecked()
@@ -35,7 +34,6 @@ test('Echo defaults on and normalizes every Advanced Rule dependency', async ({ 
 })
 
 test('Pure Fire target choice is private, accessible, and reconnectable', async ({ browser }) => {
-  test.setTimeout(180_000)
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
   const host = await hostContext.newPage()
@@ -73,7 +71,6 @@ test('Pure Fire target choice is private, accessible, and reconnectable', async 
 })
 
 test('Split Earth selects a Formation through its providing rules', async ({ browser }) => {
-  test.setTimeout(180_000)
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
   const host = await hostContext.newPage()
@@ -122,7 +119,6 @@ test('Split Earth selects a Formation through its providing rules', async ({ bro
 })
 
 test('Echo action detail shows the delayed Echo policy on the battlefield', async ({ browser }) => {
-  test.setTimeout(180_000)
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
   const page = await hostContext.newPage()

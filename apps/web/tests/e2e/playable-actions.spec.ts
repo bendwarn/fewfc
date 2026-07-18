@@ -13,7 +13,6 @@ async function expectVerticalPanels(page: Page) {
 }
 
 test('selected cards expose rule-backed actions in vertically ordered control panels', async ({ browser }) => {
-  test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()

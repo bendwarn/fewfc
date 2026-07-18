@@ -2,6 +2,7 @@
 
 ## Development Environment
 
+- bun as default
 - Development is the default environment. The `build`, `postinstall`, and
   `typecheck` package scripts intentionally rely on Nuxt's default `.env`
   loading instead of passing `--dotenv .env.development`. For staging or
@@ -12,6 +13,10 @@
 
 ## Browser and E2E Validation
 
+- Keep E2E tests on Playwright's default timeouts whenever possible. If a test
+  times out, use the `playwright-cli` skill first to inspect the live flow and
+  identify where it is blocked before increasing a timeout or changing the
+  test.
 - Tests and development scenarios must be deterministic. Do not scan seed ranges,
   retry random outcomes, or rely on probability to reach the required state. When
   a scenario needs specific Cards, use a fixed Rules Engine-owned deck order and
@@ -23,10 +28,6 @@
 - Run Worker/Durable Object browser flows with `bun run test:e2e`. The Playwright
   configuration builds Nuxt and the rules WASM, applies migrations to isolated
   `.wrangler/e2e` storage, starts Wrangler, and launches Brave when it is installed.
-- `PLAYWRIGHT_REUSE_SERVER=1` is only for local iteration after intentionally
-  starting the matching E2E server. The default must remain a self-contained
-  server lifecycle so a normal development server cannot make tests pass by
-  accident.
 - A Playwright `click()` waits for the browser click action, not for an async Vue
   handler's command request to commit. Before reload or reconnect assertions,
   wait for the specific `/commands` response and identify it by request action

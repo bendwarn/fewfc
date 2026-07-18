@@ -21,7 +21,6 @@ async function indexedModules(page: Page, roomName: string): Promise<string[]> {
 }
 
 test('Star defaults on, survives reconnect, and is immutable after a two-player start', async ({ browser }) => {
-  test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
@@ -74,7 +73,6 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
 })
 
 test('disabling Star invalidates readiness and locked decks while preserving Base play', async ({ browser }) => {
-  test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
@@ -131,7 +129,6 @@ test('disabling Star invalidates readiness and locked decks while preserving Bas
 })
 
 test('a four-player team room starts with one shared immutable Star configuration', async ({ browser }) => {
-  test.setTimeout(240_000)
 
   const contexts = await Promise.all(Array.from({ length: 4 }, () => browser.newContext()))
   const pages = await Promise.all(contexts.map(context => context.newPage()))
@@ -169,7 +166,6 @@ test('a four-player team room starts with one shared immutable Star configuratio
 })
 
 test('a Star endgame fixture finishes through normal UI play and resets with its rules', async ({ browser }) => {
-  test.setTimeout(120_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()

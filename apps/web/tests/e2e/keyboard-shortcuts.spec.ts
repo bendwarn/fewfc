@@ -1,7 +1,6 @@
 import { activePlayerPage, expect, loginAsGuests, startTwoPlayerMatch, test } from './fixtures'
 
 test('Command+K submits AdvanceAutomatic for the active player', async ({ browser }) => {
-  test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()

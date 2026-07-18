@@ -1,7 +1,6 @@
 import { createPublicRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
 
 test('new rooms enable Five Directions Legend and hide the environment until one exists', async ({ browser }) => {
-  test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()

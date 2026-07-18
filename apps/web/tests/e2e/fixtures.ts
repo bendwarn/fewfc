@@ -78,7 +78,6 @@ export async function createPublicRoomViaApi(
           access: 'public',
           capacity: teamMode ? 4 : 2,
         },
-        timeout: 15_000,
       })
       if (response.ok()) {
         const body = await response.json() as {

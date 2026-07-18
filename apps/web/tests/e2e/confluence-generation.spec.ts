@@ -1,7 +1,6 @@
 import { createRoom, expect, test } from './fixtures'
 
 test('Confluence Generation defaults on and keeps Advanced dependencies coherent', async ({ page }) => {
-  test.setTimeout(180_000)
   await createRoom(page, `匯流世代測試 ${Date.now()}`)
 
   await expect(page.getByLabel('匯流世代')).toBeChecked()

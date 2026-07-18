@@ -95,7 +95,6 @@ test('imports, exports, and rejects malformed personal-deck drafts', async ({ pa
 })
 
 test('default room rules lock preconstructed decks and start personal piles', async ({ browser }) => {
-  test.setTimeout(300_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()

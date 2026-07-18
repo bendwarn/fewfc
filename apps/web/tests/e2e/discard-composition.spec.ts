@@ -130,7 +130,6 @@ test('an empty discard pile reports zero cards and cannot be opened', async ({ p
 })
 
 test('players can inspect a synchronized discard composition throughout a match', async ({ browser }) => {
-  test.setTimeout(300_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()

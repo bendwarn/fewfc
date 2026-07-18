@@ -1,7 +1,6 @@
 import { createPublicRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
 
 test('Jianghu defaults on, preserves dependencies, and survives reconnect', async ({ browser }) => {
-  test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()

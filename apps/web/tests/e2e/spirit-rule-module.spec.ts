@@ -8,7 +8,6 @@ import {
 } from './fixtures'
 
 test('Spirit defaults on and keeps its Advanced Rule dependencies coherent', async ({ browser }) => {
-  test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
@@ -67,7 +66,6 @@ test('Spirit defaults on and keeps its Advanced Rule dependencies coherent', asy
 })
 
 test('a Spirit Skill is usable from the Ability panel and survives reconnect', async ({ browser }) => {
-  test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
@@ -144,7 +142,6 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
 })
 
 test('Splendor exposes its declared levels on click and uses the chosen level', async ({ browser }) => {
-  test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()

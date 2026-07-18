@@ -10,7 +10,6 @@ import {
 } from './fixtures'
 
 test('Tribulation defaults on and normalizes every Advanced Rule dependency', async ({ page }) => {
-  test.setTimeout(180_000)
   await createRoom(page, `天劫測試 ${Date.now()}`)
 
   await expect(page.getByLabel('天劫')).toBeChecked()
@@ -24,7 +23,6 @@ test('Tribulation defaults on and normalizes every Advanced Rule dependency', as
 })
 
 test('Earth Rending Environment choice is private, accessible, and reconnectable', async ({ browser }) => {
-  test.setTimeout(180_000)
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
   const host = await hostContext.newPage()
@@ -67,7 +65,6 @@ test('Earth Rending Environment choice is private, accessible, and reconnectable
 })
 
 test('Rusted Forest drains trusted shuffles inside one Game Room command', async ({ browser }) => {
-  test.setTimeout(180_000)
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
   const host = await hostContext.newPage()
