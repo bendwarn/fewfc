@@ -1,10 +1,12 @@
 use fewfc::application::{
-    GameRecord, RecordedDecisionSource, ReplayVerificationError, replay, verify_recorded_decisions,
+    AutomaticReason, EventSource, GameRecord, RecordedDecisionSource, ReplayVerificationError,
+    replay, verify_recorded_decisions,
 };
 use fewfc::domain::{
-    CardDef, CardDefId, CardInstanceDef, CardInstanceId, Command, GameError, GameEvent, GameSetup,
-    HpChangeDelta, PendingChoice, PendingChoiceKind, PlayerId, RuleModuleId, RulesetId, TeamId,
-    ValidationError,
+    BaseChoiceContinuation, BaseRandomnessContinuation, CardDef, CardDefId, CardInstanceDef,
+    CardInstanceId, ChoiceContinuation, ChoiceId, Command, GameError, GameEvent, GameSetup,
+    HpChangeDelta, PendingChoice, PendingChoiceKind, PlayerId, RandomnessContinuation,
+    RandomnessOperation, RuleModuleId, RulesetId, TeamId, ValidationError,
 };
 use fewfc::infrastructure::{
     FileSystemPersistence, FixedDeckPreparation, InMemoryPersistence, PersistedGameRecord,
@@ -186,12 +188,15 @@ fn persisted_event_log_round_trip_replays_mid_turn_effect_choice() {
     assert_eq!(
         persisted.replay().unwrap().pending_choice,
         Some(PendingChoice {
+            choice_id: ChoiceId::new(1),
             player: PlayerId::new("p1"),
-            kind: PendingChoiceKind::EffectGenerated {
-                effect_id: "chaos".to_string(),
-                continuation_id: "chaos:return-two".to_string(),
-                allowed_cards: vec![card(3), card(4), card(6), card(7), card(8)],
+            kind: PendingChoiceKind::Card {
+                cards: vec![card(3), card(4), card(6), card(7), card(8)],
+                minimum: 2,
+                maximum: 2,
+                can_decline: false,
             },
+            continuation: ChoiceContinuation::Base(BaseChoiceContinuation::ChaosReturnTwo),
         })
     );
 }
@@ -222,13 +227,59 @@ fn persisted_event_log_round_trip_replays_turn_draw_discard_choice() {
     assert_eq!(
         persisted.replay().unwrap().pending_choice,
         Some(PendingChoice {
+            choice_id: ChoiceId::new(1),
             player: PlayerId::new("p1"),
-            kind: PendingChoiceKind::TurnDrawDiscard {
-                drawn_cards: vec![card(10), card(11), card(12)],
-                allowed_discards: vec![card(10), card(11), card(12)],
+            kind: PendingChoiceKind::Card {
+                cards: vec![card(10), card(11), card(12)],
+                minimum: 1,
+                maximum: 1,
+                can_decline: false,
             },
+            continuation: ChoiceContinuation::Base(BaseChoiceContinuation::TurnDrawDiscard),
         })
     );
+}
+
+#[test]
+fn turn_draw_discard_shuffle_records_turn_draw_reason_and_replays() {
+    let mut setup = two_player_setup();
+    setup
+        .card_instances
+        .retain(|instance| instance.instance <= card(11));
+    let mut record = GameRecord::start(setup, (1..=11).map(card).collect()).unwrap();
+
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+
+    let events = record.advance_automatic().unwrap();
+    assert!(matches!(
+        events.as_slice(),
+        [GameEvent::RandomnessRequested { request }]
+            if request.request_id == "base:turn-draw:1:p1"
+                && matches!(
+                    request.operation,
+                    RandomnessOperation::DiscardShuffle { .. }
+                )
+                && request.continuation
+                    == RandomnessContinuation::Base(BaseRandomnessContinuation::TurnDraw)
+    ));
+    assert!(matches!(
+        record.recorded_events().last(),
+        Some(recorded)
+            if matches!(recorded.event, GameEvent::RandomnessRequested { .. })
+                && recorded.metadata.source
+                    == EventSource::Automatic {
+                        reason: AutomaticReason::TurnDraw,
+                    }
+    ));
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }
 
 #[test]

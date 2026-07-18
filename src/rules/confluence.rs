@@ -443,20 +443,24 @@ pub(crate) fn active_spell_events(
             {
                 let previous = TurnOrderTargets::new(state)
                     .player_target(player, RulePlayerTarget::PreviousPlayer)?;
-                let continuation_id = selected
-                    .map(|element| format!("confluence:thousand-resonance-after:{element}"))
-                    .unwrap_or_else(|| "confluence:discard-inspected-card".to_string());
+                let after = selected.map(resonance_target_element).transpose()?;
                 return Ok(Some(inspect_and_discard_events_with_continuation(
                     state,
                     player,
                     &previous,
-                    resolver_id,
-                    &continuation_id,
+                    crate::domain::ConfluenceChoiceContinuation::DiscardInspectedCard {
+                        resonance: crate::domain::ConfluenceResonance::Thousand,
+                        after,
+                    },
                 )?));
             }
             let mut events = resonance_primary_events(state, player)?;
             if let Some(selected) = selected {
-                events.extend(resonance_element_events(state, player, selected)?);
+                events.extend(resonance_element_events(
+                    state,
+                    player,
+                    resonance_target_element(selected)?,
+                )?);
             }
             events
         }
@@ -468,17 +472,16 @@ pub(crate) fn active_spell_events(
 fn resonance_element_events(
     state: &GameState,
     player: &PlayerId,
-    element: &str,
+    element: Element,
 ) -> GameResult<Vec<GameEvent>> {
     let previous =
         TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::PreviousPlayer)?;
     match element {
-        "Metal" => inspect_and_discard_events(state, player, &previous, THOUSAND_RESONANCE),
-        "Wood" => Ok(vec![change_hp_event(state, player, 20)?]),
-        "Water" => Ok(vec![turn_draw_bonus_event(state, player, 2)]),
-        "Fire" => Ok(vec![change_hp_event(state, &previous, -20)?]),
-        "Earth" => Ok(vec![set_shield_event(state, player, 15)]),
-        _ => Ok(Vec::new()),
+        Element::Metal => inspect_and_discard_events(state, player, &previous, THOUSAND_RESONANCE),
+        Element::Wood => Ok(vec![change_hp_event(state, player, 20)?]),
+        Element::Water => Ok(vec![turn_draw_bonus_event(state, player, 2)]),
+        Element::Fire => Ok(vec![change_hp_event(state, &previous, -20)?]),
+        Element::Earth => Ok(vec![set_shield_event(state, player, 15)]),
     }
 }
 
@@ -507,8 +510,10 @@ fn inspect_and_discard_events(
         state,
         player,
         target,
-        effect_id,
-        "confluence:discard-inspected-card",
+        crate::domain::ConfluenceChoiceContinuation::DiscardInspectedCard {
+            resonance: confluence_resonance(effect_id)?,
+            after: None,
+        },
     )
 }
 
@@ -516,8 +521,7 @@ fn inspect_and_discard_events_with_continuation(
     state: &GameState,
     player: &PlayerId,
     target: &PlayerId,
-    effect_id: &str,
-    continuation_id: &str,
+    continuation: crate::domain::ConfluenceChoiceContinuation,
 ) -> GameResult<Vec<GameEvent>> {
     let cards = state
         .hand(target)
@@ -529,32 +533,63 @@ fn inspect_and_discard_events_with_continuation(
         cards: cards.clone(),
     }];
     if !cards.is_empty() {
-        events.push(GameEvent::EffectChoiceRequested {
-            player: player.clone(),
-            kind: crate::domain::PendingChoiceKind::EffectGenerated {
-                effect_id: effect_id.to_string(),
-                continuation_id: continuation_id.to_string(),
-                allowed_cards: cards,
+        events.push(crate::rules::pending_choice::request_event(
+            state,
+            crate::domain::ChoiceRequest {
+                player: player.clone(),
+                kind: crate::domain::PendingChoiceKind::Card {
+                    cards,
+                    minimum: 1,
+                    maximum: 1,
+                    can_decline: false,
+                },
+                continuation: crate::domain::ChoiceContinuation::Confluence(continuation),
             },
-        });
+        )?);
     }
     Ok(events)
 }
 
-pub(crate) fn after_effect_choice_events(
+fn confluence_resonance(effect_id: &str) -> GameResult<crate::domain::ConfluenceResonance> {
+    match effect_id {
+        MIRROR_RESONANCE => Ok(crate::domain::ConfluenceResonance::Mirror),
+        MYRIAD_RESONANCE => Ok(crate::domain::ConfluenceResonance::Myriad),
+        THOUSAND_RESONANCE => Ok(crate::domain::ConfluenceResonance::Thousand),
+        _ => {
+            return Err(GameError::RuleImplementation(
+                crate::domain::RuleImplementationError::EffectNotImplemented(effect_id.to_string()),
+            ));
+        }
+    }
+}
+
+fn resonance_target_element(target: &str) -> GameResult<Element> {
+    match target {
+        "Metal" => Ok(Element::Metal),
+        "Wood" => Ok(Element::Wood),
+        "Water" => Ok(Element::Water),
+        "Fire" => Ok(Element::Fire),
+        "Earth" => Ok(Element::Earth),
+        _ => Err(GameError::RuleImplementation(
+            crate::domain::RuleImplementationError::EffectNotImplemented(target.to_string()),
+        )),
+    }
+}
+
+pub(crate) fn after_choice_events(
     state: &GameState,
     player: &PlayerId,
-    effect_id: &str,
-    continuation_id: &str,
+    continuation: &crate::domain::ChoiceContinuation,
 ) -> GameResult<Vec<GameEvent>> {
-    if effect_id != THOUSAND_RESONANCE {
-        return Ok(Vec::new());
+    match continuation {
+        crate::domain::ChoiceContinuation::Confluence(
+            crate::domain::ConfluenceChoiceContinuation::DiscardInspectedCard {
+                resonance: crate::domain::ConfluenceResonance::Thousand,
+                after: Some(element),
+            },
+        ) => resonance_element_events(state, player, *element),
+        _ => Ok(Vec::new()),
     }
-    let Some(selected) = continuation_id.strip_prefix("confluence:thousand-resonance-after:")
-    else {
-        return Ok(Vec::new());
-    };
-    resonance_element_events(state, player, selected)
 }
 
 fn change_hp_event(state: &GameState, player: &PlayerId, delta: i32) -> GameResult<GameEvent> {
@@ -1158,16 +1193,21 @@ fn clear_wind_ten_thousand_miles_after_shuffle(
         cards: drawn.clone(),
     }];
     if !drawn.is_empty() {
-        events.push(GameEvent::EffectChoiceRequested {
-            player: player.clone(),
-            kind: crate::domain::PendingChoiceKind::CardSetChoice {
-                effect_id: CLEAR_WIND_TEN_THOUSAND_MILES.to_string(),
-                continuation_id: "confluence:clear-wind:keep-cards".to_string(),
-                allowed_cards: drawn,
-                minimum: 0,
-                maximum,
+        events.push(crate::rules::pending_choice::request_event(
+            state,
+            crate::domain::ChoiceRequest {
+                player: player.clone(),
+                kind: crate::domain::PendingChoiceKind::Card {
+                    cards: drawn,
+                    minimum: 0,
+                    maximum,
+                    can_decline: false,
+                },
+                continuation: crate::domain::ChoiceContinuation::Confluence(
+                    crate::domain::ConfluenceChoiceContinuation::ClearWindKeepCards,
+                ),
             },
-        });
+        )?);
     }
     Ok(events)
 }
@@ -1484,16 +1524,21 @@ pub(crate) fn activate_profession_ability(
                 player: player.clone(),
                 card: top,
             });
-            events.push(GameEvent::EffectChoiceRequested {
-                player: player.clone(),
-                kind: crate::domain::PendingChoiceKind::CardSetChoice {
-                    effect_id: "confluence:clear-wind".to_string(),
-                    continuation_id: "confluence:clear-wind:discard-top".to_string(),
-                    allowed_cards: vec![top],
-                    minimum: 0,
-                    maximum: 1,
+            events.push(crate::rules::pending_choice::request_event(
+                state,
+                crate::domain::ChoiceRequest {
+                    player: player.clone(),
+                    kind: crate::domain::PendingChoiceKind::Card {
+                        cards: vec![top],
+                        minimum: 0,
+                        maximum: 1,
+                        can_decline: false,
+                    },
+                    continuation: crate::domain::ChoiceContinuation::Confluence(
+                        crate::domain::ConfluenceChoiceContinuation::ClearWindDiscardTop,
+                    ),
                 },
-            });
+            )?);
         }
         "confluence:tailwind" => {
             let use_count = limited_use(state, player, TAILWIND_USE).unwrap();

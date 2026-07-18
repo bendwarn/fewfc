@@ -28,8 +28,9 @@ test('trusted randomness actions are not player-submittable', () => {
     shuffledOrder: [3, 1, 2],
   })).toBe(false)
   expect(isOnlineGameAction({
-    type: 'answerEffectChoiceTyped',
+    type: 'answerChoice',
     player: 'alice',
+    choiceId: 7,
     answer: { type: 'decline' },
   })).toBe(true)
 })
@@ -286,27 +287,44 @@ describe('requiresPendingCommandDraft', () => {
     formationId: 'fire-strike',
     cards: [1],
   }
+  const stagedChoice = {
+    visibility: 'visible' as const,
+    choiceId: 7,
+    player: 'alice',
+    reason: { type: 'chaos' as const },
+    choice: { type: 'card' as const, cards: [], minimum: 2, maximum: 2, canDecline: false },
+  }
+  const turnDrawChoice = {
+    ...stagedChoice,
+    reason: { type: 'turnDrawDiscard' as const },
+  }
 
-  test('keeps the originating command through staged formation and pouch choices', () => {
-    expect(requiresPendingCommandDraft(formation, 'EffectGenerated')).toBe(true)
-    expect(requiresPendingCommandDraft(formation, 'TypedEffect')).toBe(true)
-    expect(requiresPendingCommandDraft(formation, 'SheepStealing')).toBe(true)
+  test('keeps the originating command through staged typed choices', () => {
+    expect(requiresPendingCommandDraft(formation, stagedChoice)).toBe(true)
     expect(requiresPendingCommandDraft({
       type: 'triggerSecretStrategy',
       player: 'alice',
       strategy: 'SheepStealing',
-    }, 'SheepStealing')).toBe(true)
-    expect(requiresPendingCommandDraft(formation, 'TurnDrawDiscard')).toBe(false)
-    expect(requiresPendingCommandDraft({ type: 'passAction' }, 'EffectGenerated')).toBe(false)
+    }, stagedChoice)).toBe(true)
+    expect(requiresPendingCommandDraft(formation, turnDrawChoice)).toBe(false)
+    expect(requiresPendingCommandDraft({ type: 'passAction' }, stagedChoice)).toBe(false)
   })
 })
 
 describe('continuesPendingCommandDraft', () => {
-  test('continues across typed and Sheep Stealing choices', () => {
-    expect(continuesPendingCommandDraft('EffectGenerated')).toBe(true)
-    expect(continuesPendingCommandDraft('TypedEffect')).toBe(true)
-    expect(continuesPendingCommandDraft('SheepStealing')).toBe(true)
-    expect(continuesPendingCommandDraft('TurnDrawDiscard')).toBe(false)
-    expect(continuesPendingCommandDraft(undefined)).toBe(false)
+  test('continues across visible effect choices but not turn draw choices', () => {
+    const stagedChoice = {
+      visibility: 'visible' as const,
+      choiceId: 7,
+      player: 'alice',
+      reason: { type: 'sheepStealing' as const },
+      choice: { type: 'sheepStealing' as const, deckCards: [], discardCards: [] },
+    }
+    expect(continuesPendingCommandDraft(stagedChoice)).toBe(true)
+    expect(continuesPendingCommandDraft({
+      ...stagedChoice,
+      reason: { type: 'turnDrawDiscard' as const },
+    })).toBe(false)
+    expect(continuesPendingCommandDraft(null)).toBe(false)
   })
 })

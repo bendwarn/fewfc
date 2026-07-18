@@ -1,7 +1,8 @@
 use fewfc::domain::{
-    CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef, CardInstanceId, GameError,
-    GameSetup, PendingChoice, PendingChoiceKind, Phase, PlayerId, RuleModuleId, StatusDuration,
-    StatusEffect, StatusOwner, ValidationError,
+    BaseChoiceContinuation, CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef,
+    CardInstanceId, ChoiceContinuation, ChoiceId, GameError, GameSetup, PendingChoice,
+    PendingChoiceKind, Phase, PlayerId, RuleModuleId, StatusDuration, StatusEffect, StatusOwner,
+    ValidationError,
 };
 use fewfc::rules::{Element, FormationCandidate, FormationCategory, OfficialRules, PlayableAction};
 
@@ -226,12 +227,15 @@ fn playable_actions_returns_error_while_choice_is_pending() {
     let mut state = fewfc::domain::GameState::from_setup(&setup());
     state.phase = Phase::Main;
     state.pending_choice = Some(PendingChoice {
+        choice_id: ChoiceId::new(1),
         player: PlayerId::new("p1"),
-        kind: PendingChoiceKind::EffectGenerated {
-            effect_id: "metamorphosis".to_string(),
-            continuation_id: "metamorphosis:choose-card".to_string(),
-            allowed_cards: vec![card(1)],
+        kind: PendingChoiceKind::Card {
+            cards: vec![card(1)],
+            minimum: 1,
+            maximum: 1,
+            can_decline: false,
         },
+        continuation: ChoiceContinuation::Base(BaseChoiceContinuation::ChaosReturnTwo),
     });
 
     assert_eq!(

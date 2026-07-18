@@ -66,23 +66,56 @@ export interface PublicPreviousTurnFormation {
   cards: PublicCardRefs
 }
 
-export interface PublicPendingChoice {
+export type PublicPendingChoice = VisiblePendingChoice | HiddenPendingChoice
+
+export interface VisiblePendingChoice {
+  visibility: 'visible'
+  choiceId: number
   player: PlayerId
-  purpose: string
-  presentation: PendingChoicePresentation
-  kind: string
-  cards: PublicCard[]
-  deckCards: PublicCard[]
-  discardCards: PublicCard[]
-  requiredCount: number
-  minimumCount: number
-  maximumCount: number
-  players: PlayerId[]
-  formations: string[]
-  formationGroups: FormationChoiceGroup[]
-  environments: Element[]
-  canDecline: boolean
+  reason: PendingChoicePresentation
+  choice: PendingChoice
 }
+
+export interface HiddenPendingChoice {
+  visibility: 'hidden'
+  player: PlayerId
+  reason: PendingChoicePresentation
+}
+
+export type PendingChoice =
+  | {
+      type: 'card'
+      cards: PublicCard[]
+      minimum: number
+      maximum: number
+      canDecline: boolean
+    }
+  | {
+      type: 'player'
+      players: PlayerId[]
+      canDecline: boolean
+    }
+  | {
+      type: 'formation'
+      formations: string[]
+      formationGroups: FormationChoiceGroup[]
+      canDecline: boolean
+    }
+  | {
+      type: 'environment'
+      environments: Element[]
+      canDecline: boolean
+    }
+  | {
+      type: 'chain'
+      pouchOwners: PlayerId[]
+      deckCards: PublicCard[]
+    }
+  | {
+      type: 'sheepStealing'
+      deckCards: PublicCard[]
+      discardCards: PublicCard[]
+    }
 
 export interface FormationChoiceGroup {
   ruleModuleId: string | null
@@ -117,11 +150,13 @@ export type PendingChoicePresentation =
   | { type: 'echoPlantEarthMelody' }
   | { type: 'earthRendingEnvironment' }
   | { type: 'earthRendingCard' }
+  | { type: 'chain' }
+  | { type: 'sheepStealing' }
   | { type: 'metamorphosis' }
   | { type: 'sealCard' }
   | { type: 'unclassified' }
 
-export type EffectChoiceAnswer =
+export type ChoiceAnswer =
   | { type: 'cards'; cards: CardInstanceId[] }
   | { type: 'player'; player: PlayerId }
   | { type: 'formation'; formationId: string }

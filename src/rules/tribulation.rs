@@ -1,10 +1,10 @@
 use crate::domain::{
-    CardInstanceId, CardMoveDelta, CardOrigin, CardZone, EarthRendingPlayerAnswer,
-    EarthRendingResolution, EffectChoiceAnswer, EffectChoiceOptions, Element, GameError, GameEvent,
+    CardInstanceId, CardMoveDelta, CardOrigin, CardZone, ChoiceAnswer, ChoiceContinuation,
+    ChoiceRequest, EarthRendingPlayerAnswer, EarthRendingResolution, Element, GameError, GameEvent,
     GameResult, GameState, HpChangeDelta, PendingChoiceKind, PendingRandomness, PlayerId,
     RandomnessContinuation, RandomnessDeck, RustedForestResolution, StatusDuration, StatusEffect,
-    StatusOwner, TeamId, TribulationRandomnessContinuation, ValidationError,
-    targeting::TurnOrderTargets,
+    StatusOwner, TeamId, TribulationChoiceContinuation, TribulationRandomnessContinuation,
+    ValidationError, targeting::TurnOrderTargets,
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget, EffectDef, EffectPlan,
@@ -188,7 +188,7 @@ pub(crate) fn pre_attack_events(
     state: &GameState,
     attacker: &PlayerId,
     formation_id: &str,
-) -> GameResult<Vec<GameEvent>> {
+) -> Vec<GameEvent> {
     let protected = divine_calculation_owner(state);
     match formation_id {
         THUNDER_FIRE => state
@@ -202,7 +202,7 @@ pub(crate) fn pre_attack_events(
             })
             .map(|entry| {
                 let new_hp = (entry.hp - 15).max(0);
-                Ok(GameEvent::HpChanged {
+                GameEvent::HpChanged {
                     change: HpChangeDelta {
                         team: entry.team.clone(),
                         old_hp: entry.hp,
@@ -210,10 +210,10 @@ pub(crate) fn pre_attack_events(
                         new_hp,
                         effective_delta: new_hp - entry.hp,
                     },
-                })
+                }
             })
             .collect(),
-        MUDSLIDE_TORRENT => Ok(state
+        MUDSLIDE_TORRENT => state
             .shields
             .iter()
             .filter(|shield| shield.value > 0 && protected.as_ref() != Some(&shield.player))
@@ -226,12 +226,12 @@ pub(crate) fn pre_attack_events(
                     new_value,
                 }
             })
-            .collect()),
+            .collect(),
         GALE_RAIN | EARTH_RENDING | RUSTED_FOREST => {
             let _ = attacker;
-            Ok(Vec::new())
+            Vec::new()
         }
-        _ => Ok(Vec::new()),
+        _ => Vec::new(),
     }
 }
 
@@ -320,7 +320,7 @@ pub(crate) fn earth_rending_start_events(
     used_cards: &[CardInstanceId],
     damage_prevented: bool,
     split_attack_damage: bool,
-) -> Vec<GameEvent> {
+) -> GameResult<Vec<GameEvent>> {
     let attacker_index = state
         .turn_order
         .iter()
@@ -329,7 +329,7 @@ pub(crate) fn earth_rending_start_events(
     let remaining_players = (1..=state.turn_order.len())
         .map(|offset| state.turn_order[(attacker_index + offset) % state.turn_order.len()].clone())
         .collect();
-    vec![
+    Ok(vec![
         GameEvent::EarthRendingStarted {
             resolution: EarthRendingResolution {
                 attacker: attacker.clone(),
@@ -341,12 +341,11 @@ pub(crate) fn earth_rending_start_events(
                 split_attack_damage,
             },
         },
-        GameEvent::EffectChoiceRequested {
-            player: attacker.clone(),
-            kind: PendingChoiceKind::TypedEffect {
-                effect_id: EARTH_RENDING.to_string(),
-                continuation_id: "tribulation:earth-rending:environment".to_string(),
-                options: EffectChoiceOptions {
+        crate::rules::pending_choice::request_event(
+            state,
+            ChoiceRequest {
+                player: attacker.clone(),
+                kind: PendingChoiceKind::Environment {
                     environments: vec![
                         Element::Metal,
                         Element::Wood,
@@ -354,37 +353,36 @@ pub(crate) fn earth_rending_start_events(
                         Element::Fire,
                         Element::Earth,
                     ],
-                    ..Default::default()
+                    can_decline: false,
                 },
+                continuation: ChoiceContinuation::Tribulation(
+                    TribulationChoiceContinuation::EarthRendingEnvironment,
+                ),
             },
-        },
-    ]
+        )?,
+    ])
 }
 
 pub(crate) fn answer_choice(
     state: &GameState,
-    continuation_id: &str,
-    answer: &EffectChoiceAnswer,
+    continuation: &TribulationChoiceContinuation,
+    answer: &ChoiceAnswer,
 ) -> GameResult<Option<Vec<GameEvent>>> {
     let Some(active) = state.active_earth_rending_resolution.as_ref() else {
         return Ok(None);
     };
-    let mut events = match continuation_id {
-        "tribulation:earth-rending:environment" => {
-            let EffectChoiceAnswer::Environment { environment } = answer else {
-                return Err(GameError::Validation(
-                    ValidationError::InvalidEffectChoiceAnswer,
-                ));
+    let mut events = match continuation {
+        TribulationChoiceContinuation::EarthRendingEnvironment => {
+            let ChoiceAnswer::Environment { environment } = answer else {
+                return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
             };
             vec![GameEvent::EarthRendingEnvironmentChosen {
                 environment: *environment,
             }]
         }
-        "tribulation:earth-rending:card" => {
-            let EffectChoiceAnswer::Cards { cards } = answer else {
-                return Err(GameError::Validation(
-                    ValidationError::InvalidEffectChoiceAnswer,
-                ));
+        TribulationChoiceContinuation::EarthRendingCard => {
+            let ChoiceAnswer::Cards { cards } = answer else {
+                return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
             };
             vec![GameEvent::EarthRendingPlayerAnswered {
                 answer: EarthRendingPlayerAnswer {
@@ -401,7 +399,6 @@ pub(crate) fn answer_choice(
                 },
             }]
         }
-        _ => return Ok(None),
     };
     continue_earth_rending(state, &mut events)?;
     Ok(Some(events))
@@ -444,21 +441,21 @@ fn continue_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
             })
             .collect::<Vec<_>>();
         if !protected && !allowed_cards.is_empty() {
-            events.push(GameEvent::EffectChoiceRequested {
-                player,
-                kind: PendingChoiceKind::TypedEffect {
-                    effect_id: EARTH_RENDING.to_string(),
-                    continuation_id: "tribulation:earth-rending:card".to_string(),
-                    options: EffectChoiceOptions {
-                        cards: Some(crate::domain::CardChoiceOptions {
-                            allowed_cards,
-                            minimum: 1,
-                            maximum: 1,
-                        }),
-                        ..Default::default()
+            events.push(crate::rules::pending_choice::request_event(
+                &projected,
+                ChoiceRequest {
+                    player,
+                    kind: PendingChoiceKind::Card {
+                        cards: allowed_cards,
+                        minimum: 1,
+                        maximum: 1,
+                        can_decline: false,
                     },
+                    continuation: ChoiceContinuation::Tribulation(
+                        TribulationChoiceContinuation::EarthRendingCard,
+                    ),
                 },
-            });
+            )?);
             return Ok(());
         }
         let event = GameEvent::EarthRendingPlayerAnswered {

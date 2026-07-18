@@ -3,17 +3,16 @@ use fewfc::application::{
     resolve_trusted_randomness,
 };
 use fewfc::domain::{
-    CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, Command, CounterEffect, CoveredPassive,
-    DARK_GLIMMER_MODULE_ID, ECHO_MODULE_ID, EchoRandomnessContinuation, EffectChoiceAnswer,
-    Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, FormationSuppression, GameError, GameEvent,
-    GameSetup, GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState,
-    JianghuStateKind, PERSONAL_DECK_MODULE_ID, PassiveFlipOutcome, PassiveNoEffectReason,
-    PassiveTriggerTiming, Phase, PlayerId, PreparedProfessionAbility, RandomnessContinuation,
-    RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, ScheduledEcho, StarKind, StatusDuration,
-    StatusEffect, StatusOwner, TeamId, TeamStar, TimedEffectReduction, TrustedRandomnessAnswer,
-    ValidationError,
+    CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, ChoiceAnswer, Command, CounterEffect,
+    CoveredPassive, DARK_GLIMMER_MODULE_ID, ECHO_MODULE_ID, EchoRandomnessContinuation, Element,
+    FIVE_DIRECTIONS_LEGEND_MODULE_ID, FormationSuppression, GameError, GameEvent, GameSetup,
+    GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind,
+    PERSONAL_DECK_MODULE_ID, PassiveFlipOutcome, PassiveNoEffectReason, PassiveTriggerTiming,
+    Phase, PlayerId, PreparedProfessionAbility, RandomnessContinuation, RuleModuleId,
+    SPIRIT_MODULE_ID, STAR_MODULE_ID, ScheduledEcho, StarKind, StatusDuration, StatusEffect,
+    StatusOwner, TeamId, TeamStar, TimedEffectReduction, TrustedRandomnessAnswer, ValidationError,
 };
-use fewfc::public_view::{PublicPendingChoiceKind, Viewer, state_for};
+use fewfc::public_view::{PublicPendingChoice, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
 
 fn dependencies() -> Vec<RuleModuleId> {
@@ -64,6 +63,43 @@ fn apply_all(state: &mut GameState, events: &[GameEvent]) {
     for event in events {
         apply_event(state, event);
     }
+}
+
+fn answer_choice(
+    state: &GameState,
+    player: PlayerId,
+    answer: ChoiceAnswer,
+) -> Result<Vec<GameEvent>, GameError> {
+    handle_command(
+        state,
+        Command::AnswerChoice {
+            player,
+            choice_id: state
+                .pending_choice
+                .as_ref()
+                .expect("pending choice")
+                .choice_id,
+            answer,
+        },
+    )
+}
+
+fn answer_record_choice(
+    record: &mut GameRecord,
+    player: PlayerId,
+    answer: ChoiceAnswer,
+) -> Result<Vec<GameEvent>, GameError> {
+    let choice_id = record
+        .state()
+        .pending_choice
+        .as_ref()
+        .expect("pending choice")
+        .choice_id;
+    record.handle(Command::AnswerChoice {
+        player,
+        choice_id,
+        answer,
+    })
 }
 
 #[test]
@@ -176,24 +212,22 @@ fn falling_wood_pays_a_printed_element_cost_and_echoes_next_turn_start() {
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
     apply_all(&mut state, &events);
 
-    let answer = handle_command(
+    let answer = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Cards {
-                cards: vec![card(21)],
-            },
+        PlayerId::new("p1"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(21)],
         },
     )
     .unwrap();
     assert!(matches!(
         answer.as_slice(),
         [
-            GameEvent::TypedEffectChoiceAnswered { .. },
+            GameEvent::ChoiceMade { .. },
             GameEvent::EchoCostPaid { .. },
             GameEvent::EchoScheduled { .. }
         ]
@@ -249,7 +283,7 @@ fn lethal_war_fire_uses_direct_hp_loss_and_offers_no_echo_cost() {
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
 }
 
@@ -304,13 +338,11 @@ fn split_earth_selects_a_catalog_formation_and_only_its_next_use_is_ineffective(
         .any(|event| matches!(event, GameEvent::HandInspected { target, .. } if target == &PlayerId::new("p2"))));
     apply_all(&mut state, &performed);
 
-    let selected = handle_command(
+    let selected = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Formation {
-                formation_id: "weapon".to_string(),
-            },
+        PlayerId::new("p1"),
+        ChoiceAnswer::Formation {
+            formation_id: "weapon".to_string(),
         },
     )
     .unwrap();
@@ -324,18 +356,11 @@ fn split_earth_selects_a_catalog_formation_and_only_its_next_use_is_ineffective(
     assert!(
         selected
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
     apply_all(&mut state, &selected);
 
-    let declined = handle_command(
-        &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Decline,
-        },
-    )
-    .unwrap();
+    let declined = answer_choice(&state, PlayerId::new("p1"), ChoiceAnswer::Decline).unwrap();
     apply_all(&mut state, &declined);
 
     state.current_turn_index = 1;
@@ -398,7 +423,7 @@ fn an_ineffective_melody_neither_runs_its_main_effect_nor_offers_echo() {
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
 }
 
@@ -420,25 +445,19 @@ fn ringing_metal_reveals_then_shuffles_the_remainder_before_placing_it_on_top() 
     .unwrap();
     apply_all(&mut state, &performed);
     assert!(matches!(
-        state_for(&state, Viewer::Observer)
-            .pending_choice
-            .map(|choice| choice.kind),
-        Some(PublicPendingChoiceKind::Hidden)
+        state_for(&state, Viewer::Observer).pending_choice,
+        Some(PublicPendingChoice::Hidden { .. })
     ));
     assert!(matches!(
-        state_for(&state, Viewer::Player(PlayerId::new("p1")))
-            .pending_choice
-            .map(|choice| choice.kind),
-        Some(PublicPendingChoiceKind::Known(_))
+        state_for(&state, Viewer::Player(PlayerId::new("p1"))).pending_choice,
+        Some(PublicPendingChoice::Visible { .. })
     ));
 
-    let selected = handle_command(
+    let selected = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Cards {
-                cards: vec![card(4)],
-            },
+        PlayerId::new("p1"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(4)],
         },
     )
     .unwrap();
@@ -470,7 +489,7 @@ fn ringing_metal_reveals_then_shuffles_the_remainder_before_placing_it_on_top() 
     assert!(
         shuffled
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
 }
 
@@ -510,13 +529,11 @@ fn ringing_metal_empty_deck_recycles_before_an_independent_post_search_shuffle()
     assert!(state.discard.is_empty());
     assert!(state.pending_choice.is_some());
 
-    let selected = handle_command(
+    let selected = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Cards {
-                cards: vec![card(4)],
-            },
+        PlayerId::new("p1"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(4)],
         },
     )
     .unwrap();
@@ -553,7 +570,7 @@ fn ringing_metal_with_no_preexisting_deck_or_discard_is_a_no_change_main_effect(
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
 }
 
@@ -581,17 +598,15 @@ fn ringing_metal_uses_the_performing_players_personal_deck() {
     let choice = state.pending_choice.as_ref().unwrap();
     assert!(matches!(
         &choice.kind,
-        fewfc::domain::PendingChoiceKind::TypedEffect { options, .. }
-            if options.cards.as_ref().unwrap().allowed_cards == vec![card(3), card(4)]
+        fewfc::domain::PendingChoiceKind::Card { cards, .. }
+            if cards == &vec![card(3), card(4)]
     ));
 
-    let selected = handle_command(
+    let selected = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Cards {
-                cards: vec![card(3)],
-            },
+        PlayerId::new("p1"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(3)],
         },
     )
     .unwrap();
@@ -627,7 +642,7 @@ fn split_earth_echo_resolves_a_fresh_choice_without_scheduling_again() {
     assert!(
         started
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
     assert!(
         !started
@@ -636,13 +651,11 @@ fn split_earth_echo_resolves_a_fresh_choice_without_scheduling_again() {
     );
     apply_all(&mut state, &started);
 
-    let answered = handle_command(
+    let answered = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Formation {
-                formation_id: "weapon".to_string(),
-            },
+        PlayerId::new("p1"),
+        ChoiceAnswer::Formation {
+            formation_id: "weapon".to_string(),
         },
     )
     .unwrap();
@@ -659,7 +672,7 @@ fn split_earth_echo_resolves_a_fresh_choice_without_scheduling_again() {
     assert!(
         !answered
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
 }
 
@@ -679,14 +692,14 @@ fn echo_schedule_round_trips_through_recorded_decision_verification() {
             declared_targets: Vec::new(),
         })
         .unwrap();
-    record
-        .handle(Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Cards {
-                cards: vec![card(21)],
-            },
-        })
-        .unwrap();
+    answer_record_choice(
+        &mut record,
+        PlayerId::new("p1"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(21)],
+        },
+    )
+    .unwrap();
 
     assert_eq!(record.state().scheduled_echoes.len(), 1);
     assert_eq!(record.verify_replay().unwrap(), record.state().clone());
@@ -708,14 +721,14 @@ fn pure_fire_composite_reduction_round_trips_through_recorded_decisions() {
             declared_targets: Vec::new(),
         })
         .unwrap();
-    record
-        .handle(Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Player {
-                player: PlayerId::new("p2"),
-            },
-        })
-        .unwrap();
+    answer_record_choice(
+        &mut record,
+        PlayerId::new("p1"),
+        ChoiceAnswer::Player {
+            player: PlayerId::new("p2"),
+        },
+    )
+    .unwrap();
 
     assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }
@@ -835,20 +848,18 @@ fn pure_fire_is_a_successful_no_change_effect_and_schedules_free_echo() {
     .unwrap();
     apply_all(&mut state, &performed);
 
-    let answered = handle_command(
+    let answered = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Player {
-                player: PlayerId::new("p2"),
-            },
+        PlayerId::new("p1"),
+        ChoiceAnswer::Player {
+            player: PlayerId::new("p2"),
         },
     )
     .unwrap();
     assert!(matches!(
         answered.as_slice(),
         [
-            GameEvent::TypedEffectChoiceAnswered { .. },
+            GameEvent::ChoiceMade { .. },
             GameEvent::TimedEffectsReduced { reductions, .. },
             GameEvent::EchoScheduled { .. },
         ] if reductions.is_empty()
@@ -1020,13 +1031,11 @@ fn pure_fire_atomically_reduces_eligible_effects_and_preserves_hidden_passive_un
         last_resolved_turn: None,
     });
 
-    let answered = handle_command(
+    let answered = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Player {
-                player: target.clone(),
-            },
+        PlayerId::new("p1"),
+        ChoiceAnswer::Player {
+            player: target.clone(),
         },
     )
     .unwrap();
@@ -1120,13 +1129,11 @@ fn pure_fire_echo_chooses_a_fresh_target_and_does_not_schedule_again() {
 
     let started = advance_automatic(&state).unwrap();
     apply_all(&mut state, &started);
-    let answered = handle_command(
+    let answered = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Player {
-                player: PlayerId::new("p2"),
-            },
+        PlayerId::new("p1"),
+        ChoiceAnswer::Player {
+            player: PlayerId::new("p2"),
         },
     )
     .unwrap();
@@ -1209,13 +1216,11 @@ fn plant_earth_accepts_all_five_basic_melodies_and_finishes_nested_choices() {
 
         let started = advance_automatic(&state).unwrap();
         apply_all(&mut state, &started);
-        let selected = handle_command(
+        let selected = answer_choice(
             &state,
-            Command::AnswerEffectChoiceTyped {
-                player: PlayerId::new("p1"),
-                answer: EffectChoiceAnswer::Formation {
-                    formation_id: melody_id.to_string(),
-                },
+            PlayerId::new("p1"),
+            ChoiceAnswer::Formation {
+                formation_id: melody_id.to_string(),
             },
         )
         .unwrap();
@@ -1223,13 +1228,11 @@ fn plant_earth_accepts_all_five_basic_melodies_and_finishes_nested_choices() {
 
         match melody_id {
             "echo:ringing-metal" => {
-                let selected_card = handle_command(
+                let selected_card = answer_choice(
                     &state,
-                    Command::AnswerEffectChoiceTyped {
-                        player: PlayerId::new("p1"),
-                        answer: EffectChoiceAnswer::Cards {
-                            cards: vec![card(1)],
-                        },
+                    PlayerId::new("p1"),
+                    ChoiceAnswer::Cards {
+                        cards: vec![card(1)],
                     },
                 )
                 .unwrap();
@@ -1249,13 +1252,11 @@ fn plant_earth_accepts_all_five_basic_melodies_and_finishes_nested_choices() {
                 apply_all(&mut state, &shuffled);
             }
             "echo:split-earth" => {
-                let nested = handle_command(
+                let nested = answer_choice(
                     &state,
-                    Command::AnswerEffectChoiceTyped {
-                        player: PlayerId::new("p1"),
-                        answer: EffectChoiceAnswer::Formation {
-                            formation_id: "weapon".to_string(),
-                        },
+                    PlayerId::new("p1"),
+                    ChoiceAnswer::Formation {
+                        formation_id: "weapon".to_string(),
                     },
                 )
                 .unwrap();
@@ -1299,7 +1300,7 @@ fn plant_earth_schedules_a_fresh_turn_start_melody_without_echo() {
     assert!(
         !performed
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
     apply_all(&mut state, &performed);
 
@@ -1319,13 +1320,11 @@ fn plant_earth_schedules_a_fresh_turn_start_melody_without_echo() {
     );
     apply_all(&mut state, &started);
 
-    let selected = handle_command(
+    let selected = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Formation {
-                formation_id: "echo:falling-wood".to_string(),
-            },
+        PlayerId::new("p1"),
+        ChoiceAnswer::Formation {
+            formation_id: "echo:falling-wood".to_string(),
         },
     )
     .unwrap();
@@ -1347,7 +1346,7 @@ fn plant_earth_schedules_a_fresh_turn_start_melody_without_echo() {
     assert!(
         !selected
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
 }
 
@@ -1401,7 +1400,7 @@ fn plant_earth_turn_start_choice_records_automatic_metadata_without_panicking() 
     assert!(
         started
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
     assert!(record.state().pending_choice.is_some());
     let public_choice = record
@@ -1409,11 +1408,9 @@ fn plant_earth_turn_start_choice_records_automatic_metadata_without_panicking() 
         .unwrap()
         .pending_choice
         .expect("Plant Earth choice must be visible as a pending decision");
-    assert_eq!(public_choice.player, PlayerId::new("p2"));
-    assert_eq!(public_choice.purpose, "echo:plant-earth");
     assert!(matches!(
-        public_choice.kind,
-        PublicPendingChoiceKind::Hidden
+        public_choice,
+        PublicPendingChoice::Hidden { player, .. } if player == PlayerId::new("p2")
     ));
     assert!(
         record
@@ -1433,18 +1430,27 @@ fn plant_earth_turn_start_choice_records_automatic_metadata_without_panicking() 
 
 fn choose_first_turn_draw_discard(record: &mut GameRecord) {
     let events = record.advance_automatic().unwrap();
-    let (player, discard) = events
+    let (player, choice_id, discard) = events
         .iter()
         .find_map(|event| match event {
-            GameEvent::CardsDrawnForTurnDiscardChoice {
-                player,
-                allowed_discards,
-                ..
-            } => Some((player.clone(), allowed_discards[0])),
+            GameEvent::ChoiceRequested { choice } => Some((
+                choice.player.clone(),
+                choice.choice_id,
+                match &choice.kind {
+                    fewfc::domain::PendingChoiceKind::Card { cards, .. } => cards[0],
+                    _ => panic!("turn draw must use a card choice"),
+                },
+            )),
             _ => None,
         })
         .expect("turn draw must request a discard");
     record
-        .handle(Command::ChooseTurnDiscard { player, discard })
+        .handle(Command::AnswerChoice {
+            player,
+            choice_id,
+            answer: ChoiceAnswer::Cards {
+                cards: vec![discard],
+            },
+        })
         .unwrap();
 }

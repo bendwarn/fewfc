@@ -1456,14 +1456,21 @@ fn revelation_choice_events(state: &GameState, player: &PlayerId) -> GameResult<
             ability_id: "revelation".to_string(),
             cards: drawn_cards.clone(),
         },
-        GameEvent::EffectChoiceRequested {
-            player: player.clone(),
-            kind: crate::domain::PendingChoiceKind::EffectGenerated {
-                effect_id: "revelation".to_string(),
-                continuation_id: "revelation:keep-one".to_string(),
-                allowed_cards: drawn_cards,
+        crate::rules::pending_choice::request_event(
+            state,
+            crate::domain::ChoiceRequest {
+                player: player.clone(),
+                kind: crate::domain::PendingChoiceKind::Card {
+                    cards: drawn_cards,
+                    minimum: 1,
+                    maximum: 1,
+                    can_decline: false,
+                },
+                continuation: crate::domain::ChoiceContinuation::Hero(
+                    crate::domain::HeroChoiceContinuation::RevelationKeepOne,
+                ),
             },
-        },
+        )?,
     ])
 }
 

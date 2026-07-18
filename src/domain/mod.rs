@@ -759,6 +759,7 @@ pub struct GameState {
     #[serde(default)]
     pub last_turn_discard_by_player: HashMap<PlayerId, LastTurnDiscard>,
     pub pending_choice: Option<PendingChoice>,
+    pub next_choice_id: ChoiceId,
     #[serde(default)]
     pub pending_randomness: Option<PendingRandomness>,
     pub shields: Vec<PlayerShield>,
@@ -884,6 +885,7 @@ impl GameState {
             exposed_foreign_cards: Vec::new(),
             last_turn_discard_by_player: HashMap::new(),
             pending_choice: None,
+            next_choice_id: ChoiceId::new(1),
             pending_randomness: None,
             shields: setup
                 .players
@@ -1114,15 +1116,42 @@ impl GameState {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(transparent)]
+pub struct ChoiceId(u64);
+
+impl ChoiceId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+
+    pub const fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PendingChoice {
+    pub choice_id: ChoiceId,
     pub player: PlayerId,
     pub kind: PendingChoiceKind,
+    pub continuation: ChoiceContinuation,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ChoiceRequest {
+    pub player: PlayerId,
+    pub kind: PendingChoiceKind,
+    pub continuation: ChoiceContinuation,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "camelCase")]
-pub enum EffectChoiceAnswer {
+pub enum ChoiceAnswer {
     Cards {
         cards: Vec<CardInstanceId>,
     },
@@ -1175,52 +1204,40 @@ pub enum EffectChoiceAnswer {
     Decline,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct EffectChoiceOptions {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cards: Option<CardChoiceOptions>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub players: Vec<PlayerId>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub formations: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub environments: Vec<Element>,
-    #[serde(default)]
-    pub can_decline: bool,
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct CardChoiceOptions {
-    pub allowed_cards: Vec<CardInstanceId>,
-    pub minimum: usize,
-    pub maximum: usize,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PendingChoiceKind {
-    TurnDrawDiscard {
-        drawn_cards: Vec<CardInstanceId>,
-        allowed_discards: Vec<CardInstanceId>,
-    },
-    EffectGenerated {
-        effect_id: String,
-        continuation_id: String,
-        allowed_cards: Vec<CardInstanceId>,
-    },
-    CardSetChoice {
-        effect_id: String,
-        continuation_id: String,
-        allowed_cards: Vec<CardInstanceId>,
+    Card {
+        cards: Vec<CardInstanceId>,
         minimum: usize,
         maximum: usize,
+        #[serde(default)]
+        can_decline: bool,
     },
-    TypedEffect {
-        effect_id: String,
-        continuation_id: String,
-        options: EffectChoiceOptions,
+    Player {
+        players: Vec<PlayerId>,
+        #[serde(default)]
+        can_decline: bool,
+    },
+    Formation {
+        formations: Vec<String>,
+        #[serde(default)]
+        can_decline: bool,
+    },
+    Environment {
+        environments: Vec<Element>,
+        #[serde(default)]
+        can_decline: bool,
+    },
+    Chain {
+        #[serde(rename = "pouchOwners")]
+        pouch_owners: Vec<PlayerId>,
+        #[serde(rename = "deckCards")]
+        deck_cards: Vec<CardInstanceId>,
     },
     SheepStealing {
         #[serde(rename = "sourceCard")]
@@ -1234,45 +1251,89 @@ pub enum PendingChoiceKind {
 }
 
 impl PendingChoiceKind {
-    pub fn required_count(&self) -> usize {
+    pub fn card_bounds(&self) -> Option<(usize, usize)> {
         match self {
-            Self::TurnDrawDiscard { .. } => 1,
-            Self::EffectGenerated {
-                continuation_id,
-                allowed_cards,
-                ..
-            } => {
-                if continuation_id == "chaos:return-two" {
-                    allowed_cards.len().min(2)
-                } else {
-                    allowed_cards.len().min(1)
-                }
-            }
-            Self::CardSetChoice { minimum, .. } => *minimum,
-            Self::TypedEffect { options, .. } => {
-                options.cards.as_ref().map_or(0, |cards| cards.minimum)
-            }
-            Self::SheepStealing { .. } => 2,
-        }
-    }
-
-    pub fn selection_bounds(&self) -> (usize, usize) {
-        match self {
-            Self::TurnDrawDiscard { .. } => (1, 1),
-            Self::EffectGenerated { .. } => {
-                let required = self.required_count();
-                (required, required)
-            }
-            Self::CardSetChoice {
+            Self::Card {
                 minimum, maximum, ..
-            } => (*minimum, *maximum),
-            Self::TypedEffect { options, .. } => options
-                .cards
-                .as_ref()
-                .map_or((0, 0), |cards| (cards.minimum, cards.maximum)),
-            Self::SheepStealing { .. } => (2, 2),
+            } => Some((*minimum, *maximum)),
+            _ => None,
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "type", content = "kind", rename_all = "camelCase")]
+pub enum ChoiceContinuation {
+    Base(BaseChoiceContinuation),
+    Echo(EchoChoiceContinuation),
+    Hero(HeroChoiceContinuation),
+    Jianghu(JianghuChoiceContinuation),
+    Confluence(ConfluenceChoiceContinuation),
+    Pouch(PouchChoiceContinuation),
+    Tribulation(TribulationChoiceContinuation),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BaseChoiceContinuation {
+    TurnDrawDiscard,
+    HolyWindTakeHighest,
+    ChaosReturnTwo,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EchoChoiceContinuation {
+    PureFireTarget,
+    SplitEarthFormation,
+    RingingMetalDeckCard,
+    PlantEarthMelody,
+    Cost { melody_id: String },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HeroChoiceContinuation {
+    RevelationKeepOne,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum JianghuChoiceContinuation {
+    AzureCloudStepReturnOne,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfluenceChoiceContinuation {
+    DiscardInspectedCard {
+        resonance: ConfluenceResonance,
+        after: Option<Element>,
+    },
+    ClearWindKeepCards,
+    ClearWindDiscardTop,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfluenceResonance {
+    Mirror,
+    Myriad,
+    Thousand,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PouchChoiceContinuation {
+    Chain,
+    SheepStealing,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TribulationChoiceContinuation {
+    EarthRendingEnvironment,
+    EarthRendingCard,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1770,21 +1831,13 @@ pub enum GameEvent {
         owner: PlayerId,
         card: CardInstanceId,
     },
-    EffectChoiceRequested {
-        player: PlayerId,
-        kind: PendingChoiceKind,
+    ChoiceRequested {
+        choice: PendingChoice,
     },
-    EffectChoiceAnswered {
+    ChoiceMade {
         player: PlayerId,
-        effect_id: String,
-        continuation_id: String,
-        selected_cards: Vec<CardInstanceId>,
-    },
-    TypedEffectChoiceAnswered {
-        player: PlayerId,
-        effect_id: String,
-        continuation_id: String,
-        answer: EffectChoiceAnswer,
+        choice_id: ChoiceId,
+        answer: ChoiceAnswer,
     },
     RandomnessRequested {
         request: PendingRandomness,
@@ -1985,17 +2038,12 @@ pub enum Command {
         declared_level: Option<u32>,
         random_cards: Vec<CardInstanceId>,
     },
-    ChooseTurnDiscard {
+    #[serde(rename = "answerChoice")]
+    AnswerChoice {
         player: PlayerId,
-        discard: CardInstanceId,
-    },
-    AnswerEffectChoice {
-        player: PlayerId,
-        selected_cards: Vec<CardInstanceId>,
-    },
-    AnswerEffectChoiceTyped {
-        player: PlayerId,
-        answer: EffectChoiceAnswer,
+        #[serde(rename = "choiceId")]
+        choice_id: ChoiceId,
+        answer: ChoiceAnswer,
     },
     RetrievePreviousTurnDiscard {
         player: PlayerId,
@@ -2210,7 +2258,11 @@ pub enum ValidationError {
         team: TeamId,
     },
     MissingPendingChoice,
-    InvalidEffectChoiceAnswer,
+    InvalidChoiceAnswer,
+    StaleChoiceId {
+        expected: ChoiceId,
+        actual: ChoiceId,
+    },
     PendingChoiceInProgress {
         player: PlayerId,
     },
@@ -2351,6 +2403,7 @@ pub enum CannotPerformFormationReason {
 pub enum EngineInvariantError {
     NotEnoughCards { needed: usize, available: usize },
     DuplicatePendingChoice { player: PlayerId },
+    InvalidPendingChoice,
     DuplicateCoveredPassive { player: PlayerId },
     DuplicateProfession { player: PlayerId },
     ZoneOwnershipInconsistency { card: CardInstanceId },

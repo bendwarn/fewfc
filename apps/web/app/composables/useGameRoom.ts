@@ -1,5 +1,6 @@
 import type {
   CardInstanceId,
+  ChoiceAnswer,
   Element,
   PlayableAction,
   PlayerId,
@@ -17,8 +18,17 @@ import type {
   OnlineGameAction,
 } from '../../shared/game-room'
 import {
-  togglePendingChoiceSelection,
-} from '~/lib/pending-choice-selection'
+  cardChoiceAnswer,
+  cardChoiceIsComplete,
+  declineChoiceAnswer,
+  environmentChoiceAnswer,
+  formationChoiceAnswer,
+  playerChoiceAnswer,
+  sheepStealingChoiceAnswer,
+  shouldResetPendingChoiceDraft,
+  toggleChoiceCard,
+  visiblePendingChoice,
+} from '~/lib/pending-choice-interaction'
 import { reconcileActionDraft, toggleActionDraftCard } from '~/lib/action-draft'
 import { presentApiError } from '~/lib/api-error-presentation'
 
@@ -76,6 +86,7 @@ export function useGameRoom(viewer: ViewerRef) {
   const publicEvents = ref<PublicGameEvent[]>([])
   const selectedCards = ref<CardInstanceId[]>([])
   const selectedChoiceCards = ref<CardInstanceId[]>([])
+  const pendingChoiceDraftEpoch = ref(0)
   const playableActions = ref<PlayableAction[]>([])
   const playableAbilities = computed(() => (
     playableActions.value.filter(
@@ -113,6 +124,7 @@ export function useGameRoom(viewer: ViewerRef) {
   watch(viewer, () => {
     selectedCards.value = []
     selectedChoiceCards.value = []
+    pendingChoiceDraftEpoch.value += 1
     playableActions.value = []
 
     if (onlineGameId.value) {
@@ -135,38 +147,19 @@ export function useGameRoom(viewer: ViewerRef) {
   }
 
   const canSubmitPendingChoice = computed(() => {
-    const choice = state.value.pendingChoice
+    const choice = visiblePendingChoice(state.value.pendingChoice)
     return Boolean(
       choice
-      && (choice.kind === 'EffectGenerated' || choice.kind === 'TypedEffect')
-      && choice.cards.length > 0
+      && choice.choice.type === 'card'
       && viewer.value === choice.player
-      && selectedChoiceCards.value.length >= choice.minimumCount
-      && selectedChoiceCards.value.length <= choice.maximumCount,
+      && cardChoiceIsComplete(choice.choice, selectedChoiceCards.value),
     )
   })
-
-  function pendingChoiceKey(choice: PublicGameState['pendingChoice']): string {
-    return choice
-      ? [
-          choice.player,
-          choice.kind,
-          choice.purpose,
-          choice.requiredCount,
-          choice.cards.map(card => card.id).join(','),
-          choice.deckCards.map(card => card.id).join(','),
-          choice.discardCards.map(card => card.id).join(','),
-          choice.players.join(','),
-          choice.formations.join(','),
-          choice.environments.join(','),
-          choice.canDecline,
-        ].join(':')
-      : ''
-  }
 
   function applyRoomResponse(
     response: GameRoomResponse,
     preservePlayableActionsForSameState = false,
+    resetPendingChoiceDraft = false,
   ) {
     const preservePlayableActions = preservePlayableActionsForSameState
       && selectedCards.value.length > 0
@@ -179,7 +172,6 @@ export function useGameRoom(viewer: ViewerRef) {
       }
     }
     const previousState = state.value
-    const previousChoiceKey = pendingChoiceKey(previousState.pendingChoice)
     metadata.value = response.metadata
     invitation.value = response.invitation ?? null
     lockedDeckName.value = response.lockedDeckName ?? null
@@ -202,8 +194,13 @@ export function useGameRoom(viewer: ViewerRef) {
     errorMessage.value = null
     roomDissolved.value = response.metadata.status === 'Dissolved'
 
-    if (pendingChoiceKey(response.state.pendingChoice) !== previousChoiceKey) {
+    if (shouldResetPendingChoiceDraft(
+      previousState.pendingChoice,
+      response.state.pendingChoice,
+      resetPendingChoiceDraft,
+    )) {
       selectedChoiceCards.value = []
+      pendingChoiceDraftEpoch.value += 1
     }
 
     if (import.meta.client) {
@@ -402,23 +399,25 @@ export function useGameRoom(viewer: ViewerRef) {
     })
   }
 
-  async function answerChainChoice(answer: Extract<import('~/types/fewfc').EffectChoiceAnswer, { type: 'chain' }>) {
-    const choice = state.value.pendingChoice
-    if (!choice || choice.purpose !== 'pouch:chain' || viewer.value !== choice.player) return false
+  async function answerChainChoice(answer: Extract<ChoiceAnswer, { type: 'chain' }>) {
+    const choice = visiblePendingChoice(state.value.pendingChoice)
+    if (!choice || choice.choice.type !== 'chain' || viewer.value !== choice.player) return false
     return await submitOnline({
-      type: 'answerEffectChoiceTyped',
+      type: 'answerChoice',
       player: choice.player,
+      choiceId: choice.choiceId,
       answer,
     })
   }
 
   async function answerSheepStealingChoice(deckCards: CardInstanceId[], discardCards: CardInstanceId[]) {
-    const choice = state.value.pendingChoice
-    if (!choice || choice.kind !== 'SheepStealing' || viewer.value !== choice.player) return false
+    const choice = visiblePendingChoice(state.value.pendingChoice)
+    if (!choice || choice.choice.type !== 'sheepStealing' || viewer.value !== choice.player) return false
     return await submitOnline({
-      type: 'answerEffectChoiceTyped',
+      type: 'answerChoice',
       player: choice.player,
-      answer: { type: 'sheepStealing', deckCards, discardCards },
+      choiceId: choice.choiceId,
+      answer: sheepStealingChoiceAnswer(deckCards, discardCards),
     })
   }
 
@@ -463,140 +462,128 @@ export function useGameRoom(viewer: ViewerRef) {
   }
 
   async function choosePendingCard(card: CardInstanceId) {
-    const choice = state.value.pendingChoice
+    const choice = visiblePendingChoice(state.value.pendingChoice)
 
     if (!choice || viewer.value !== choice.player) {
       return
     }
-
-    if (choice.kind === 'TurnDrawDiscard') {
-      if (await submitOnline({
-        type: 'chooseTurnDiscard',
-        player: choice.player,
-        card,
-      })) {
-        selectedCards.value = []
-      }
-      return
-    }
-
-    if (choice.kind === 'EffectGenerated' || choice.kind === 'TypedEffect') {
+    if (choice.choice.type === 'card') {
       togglePendingChoiceCard(card)
     }
   }
 
   function togglePendingChoiceCard(card: CardInstanceId) {
-    const choice = state.value.pendingChoice
+    const choice = visiblePendingChoice(state.value.pendingChoice)
 
     if (
       !choice
-      || (choice.kind !== 'EffectGenerated' && choice.kind !== 'TypedEffect')
-      || choice.cards.length === 0
+      || choice.choice.type !== 'card'
       || viewer.value !== choice.player
     ) {
       return
     }
 
-    selectedChoiceCards.value = togglePendingChoiceSelection(
+    selectedChoiceCards.value = toggleChoiceCard(
       selectedChoiceCards.value,
       card,
-      choice.maximumCount,
+      choice.choice.maximum,
     )
   }
 
   async function submitPendingChoice() {
-    const choice = state.value.pendingChoice
-    const cards = choice
-      && (choice.kind === 'EffectGenerated' || choice.kind === 'TypedEffect')
-      && selectedChoiceCards.value.length >= choice.minimumCount
-      && selectedChoiceCards.value.length <= choice.maximumCount
-      ? [...selectedChoiceCards.value]
+    const choice = visiblePendingChoice(state.value.pendingChoice)
+    const answer = choice?.choice.type === 'card'
+      ? cardChoiceAnswer(choice.choice, [...selectedChoiceCards.value])
       : undefined
 
     if (
       !choice
-      || (choice.kind !== 'EffectGenerated' && choice.kind !== 'TypedEffect')
-      || choice.cards.length === 0
+      || choice.choice.type !== 'card'
       || viewer.value !== choice.player
-      || !cards
+      || !answer
     ) {
       return
     }
 
     if (await submitOnline({
-      type: 'answerEffectChoiceTyped',
+      type: 'answerChoice',
       player: choice.player,
-      answer: { type: 'cards', cards },
+      choiceId: choice.choiceId,
+      answer,
     })) {
       selectedChoiceCards.value = []
     }
   }
 
   async function choosePendingPlayer(player: PlayerId) {
-    const choice = state.value.pendingChoice
+    const choice = visiblePendingChoice(state.value.pendingChoice)
     if (
       !choice
-      || choice.kind !== 'TypedEffect'
+      || choice.choice.type !== 'player'
       || viewer.value !== choice.player
-      || !choice.players.includes(player)
+      || !choice.choice.players.includes(player)
     ) {
       return
     }
     await submitOnline({
-      type: 'answerEffectChoiceTyped',
+      type: 'answerChoice',
       player: choice.player,
-      answer: { type: 'player', player },
+      choiceId: choice.choiceId,
+      answer: playerChoiceAnswer(player),
     })
   }
 
   async function choosePendingFormation(formationId: string) {
-    const choice = state.value.pendingChoice
+    const choice = visiblePendingChoice(state.value.pendingChoice)
     if (
       !choice
-      || choice.kind !== 'TypedEffect'
+      || choice.choice.type !== 'formation'
       || viewer.value !== choice.player
-      || !choice.formations.includes(formationId)
+      || !choice.choice.formations.includes(formationId)
     ) {
       return
     }
     await submitOnline({
-      type: 'answerEffectChoiceTyped',
+      type: 'answerChoice',
       player: choice.player,
-      answer: { type: 'formation', formationId },
+      choiceId: choice.choiceId,
+      answer: formationChoiceAnswer(formationId),
     })
   }
 
   async function declinePendingChoice() {
-    const choice = state.value.pendingChoice
+    const choice = visiblePendingChoice(state.value.pendingChoice)
     if (
       !choice
-      || choice.kind !== 'TypedEffect'
+      || !('canDecline' in choice.choice)
       || viewer.value !== choice.player
-      || !choice.canDecline
+      || !choice.choice.canDecline
     ) {
       return
     }
     await submitOnline({
-      type: 'answerEffectChoiceTyped',
+      type: 'answerChoice',
       player: choice.player,
-      answer: { type: 'decline' },
+      choiceId: choice.choiceId,
+      answer: declineChoiceAnswer(),
     })
   }
 
   async function choosePendingEnvironment(environment: Element) {
-    const choice = state.value.pendingChoice
+    const choice = visiblePendingChoice(state.value.pendingChoice)
     if (
       !choice
-      || choice.kind !== 'TypedEffect'
+      || choice.choice.type !== 'environment'
       || viewer.value !== choice.player
-      || !choice.environments.includes(environment)
+      || !choice.choice.environments.includes(environment)
     ) {
       return
     }
     await submitOnline({
-      type: 'answerEffectChoiceTyped',
+      type: 'answerChoice',
       player: choice.player,
-      answer: { type: 'environment', environment },
+      choiceId: choice.choiceId,
+      answer: environmentChoiceAnswer(environment),
     })
   }
 
@@ -702,6 +689,8 @@ export function useGameRoom(viewer: ViewerRef) {
       connectionState.value = 'connected'
     })
 
+    const connectedAfterReconnect = reconnectAttempt > 0
+
     socket.addEventListener('message', (event) => {
       if (typeof event.data !== 'string' || event.data === 'pong') {
         return
@@ -710,7 +699,7 @@ export function useGameRoom(viewer: ViewerRef) {
       const message = JSON.parse(event.data) as GameRoomSocketMessage
 
       if (message.type === 'roomState') {
-        applyRoomResponse(message.data, true)
+        applyRoomResponse(message.data, true, connectedAfterReconnect)
         return
       }
 
@@ -760,6 +749,7 @@ export function useGameRoom(viewer: ViewerRef) {
     publicEvents.value = []
     selectedCards.value = []
     selectedChoiceCards.value = []
+    pendingChoiceDraftEpoch.value += 1
     playableActions.value = []
     errorMessage.value = null
     roomDissolved.value = false
@@ -777,6 +767,7 @@ export function useGameRoom(viewer: ViewerRef) {
     publicEvents,
     selectedCards,
     selectedChoiceCards,
+    pendingChoiceDraftEpoch,
     playableActions,
     playableAbilities,
     playableMainActions,

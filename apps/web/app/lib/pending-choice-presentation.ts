@@ -20,6 +20,8 @@ export function presentPendingChoice(presentation: PendingChoicePresentation): s
     case 'echoPlantEarthMelody': return '變宮‧植土：選擇要執行的曲調主效果'
     case 'earthRendingEnvironment': return '裂地崩山：選擇要轉移的環境'
     case 'earthRendingCard': return '裂地崩山：選擇一張環行牌捨棄或公開'
+    case 'chain': return '連環：選擇錦囊與可選的觸發秘計'
+    case 'sheepStealing': return '牽羊：各選兩張牌組牌與棄牌交換'
     case 'metamorphosis': return '幻化：選擇效果指定的牌'
     case 'sealCard': return '選擇要封印的牌'
     case 'unclassified': return '等待選擇'

@@ -421,7 +421,13 @@
                   <div class="previous-formation"><template v-if="replayFrame.state.previousTurnFormation"><small>上一回合 · {{ replayPlayerLabel(replayFrame.state.previousTurnFormation.player) }}</small><strong>{{ replayFrame.state.previousTurnFormation.formationName ?? '陣法' }}</strong></template><p v-else>上一回合未發動陣法</p></div>
                 </div>
               </div>
-              <p v-if="replayFrame.state.pendingChoice" class="action-detail">{{ replayPlayerLabel(replayFrame.state.pendingChoice.player) }} 的選擇：{{ replayFrame.state.pendingChoice.cards.map(card => card.label).join('、') }}</p>
+              <p
+                v-if="replayFrame.state.pendingChoice?.visibility === 'visible'
+                  && replayFrame.state.pendingChoice.choice.type === 'card'"
+                class="action-detail"
+              >
+                {{ replayPlayerLabel(replayFrame.state.pendingChoice.player) }} 的選擇：{{ replayFrame.state.pendingChoice.choice.cards.map(card => card.label).join('、') }}
+              </p>
             </section>
           </div>
           <section class="event-panel expanded"><div class="panel-title"><h2>戰局紀錄</h2></div><ol class="event-feed"><li v-for="event in replayFrame.events" :key="event.id"><div><span>{{ event.title }}</span><p>{{ event.summary }}</p></div></li></ol></section>
@@ -1101,7 +1107,7 @@
                 <h3>錦囊持有者</h3>
                 <div class="choice-options" aria-label="選擇錦囊持有者">
                   <button
-                    v-for="player in friendlyPouchOwners"
+                    v-for="player in chainPouchOwners"
                     :key="`pouch-owner-${player}`"
                     type="button"
                     :class="{ selected: pouchOwnerSelection === player }"
@@ -1217,61 +1223,44 @@
           </div>
 
           <div
-            v-if="state.pendingChoice && !pouchChoiceKind && viewer === state.pendingChoice.player"
+            v-if="state.pendingChoice?.visibility === 'visible'
+              && !pouchChoiceKind
+              && viewer === state.pendingChoice.player"
             class="choice-overlay"
           >
             <div>
               <h2>{{ pendingChoiceLabel(state.pendingChoice) }}</h2>
-              <CardChoiceMatrix
-                v-if="state.pendingChoice.presentation.type === 'echoRingingMetalDeckCard'"
-                :cards="state.pendingChoice.cards"
-                :selected-cards="game.selectedChoiceCards.value"
-                :maximum="state.pendingChoice.maximumCount"
-                :disabled="game.isLoading.value || !roomConnected"
-                mode="toggle"
-                label="商調‧鳴金牌組矩陣"
-                caption="依五行與等級選擇商調‧鳴金檢索的牌組牌"
-                action-label="選擇商調‧鳴金牌組牌"
-                @choose="game.togglePendingChoiceCard"
-              />
-              <div v-else class="choice-cards">
-                <button
-                  v-for="card in state.pendingChoice.cards"
-                  :key="card.id"
-                  type="button"
-                  :class="{ selected: game.selectedChoiceCards.value.includes(card.id) }"
-                  :aria-pressed="state.pendingChoice.kind === 'EffectGenerated'
-                    || state.pendingChoice.kind === 'TypedEffect'
-                    ? game.selectedChoiceCards.value.includes(card.id)
-                    : undefined"
-                  :disabled="
-                    game.isLoading.value
-                    || !roomConnected
-                    || viewer !== state.pendingChoice.player
-                    || (
-                      (state.pendingChoice.kind === 'EffectGenerated'
-                        || state.pendingChoice.kind === 'TypedEffect')
-                      && game.selectedChoiceCards.value.length >= state.pendingChoice.maximumCount
-                      && !game.selectedChoiceCards.value.includes(card.id)
-                    )
-                  "
-                  @click="state.pendingChoice.kind === 'EffectGenerated'
-                    || state.pendingChoice.kind === 'TypedEffect'
-                    ? game.togglePendingChoiceCard(card.id)
-                    : game.choosePendingCard(card.id)"
-                >
-                  {{ card.label }}
-                </button>
-              </div>
-              <template
-                v-if="(state.pendingChoice.kind === 'EffectGenerated'
-                  || state.pendingChoice.kind === 'TypedEffect')
-                  && state.pendingChoice.cards.length > 0
-                  && viewer === state.pendingChoice.player"
-              >
+              <template v-if="state.pendingChoice.choice.type === 'card'">
+                <CardChoiceMatrix
+                  v-if="state.pendingChoice.reason.type === 'echoRingingMetalDeckCard'"
+                  :cards="state.pendingChoice.choice.cards"
+                  :selected-cards="game.selectedChoiceCards.value"
+                  :maximum="state.pendingChoice.choice.maximum"
+                  :disabled="game.isLoading.value || !roomConnected"
+                  mode="toggle"
+                  label="商調‧鳴金牌組矩陣"
+                  caption="依五行與等級選擇商調‧鳴金檢索的牌組牌"
+                  action-label="選擇商調‧鳴金牌組牌"
+                  @choose="game.togglePendingChoiceCard"
+                />
+                <div v-else class="choice-cards">
+                  <button
+                    v-for="card in state.pendingChoice.choice.cards"
+                    :key="card.id"
+                    type="button"
+                    :class="{ selected: game.selectedChoiceCards.value.includes(card.id) }"
+                    :aria-pressed="game.selectedChoiceCards.value.includes(card.id)"
+                    :disabled="game.isLoading.value || !roomConnected
+                      || (game.selectedChoiceCards.value.length >= state.pendingChoice.choice.maximum
+                        && !game.selectedChoiceCards.value.includes(card.id))"
+                    @click="game.togglePendingChoiceCard(card.id)"
+                  >
+                    {{ card.label }}
+                  </button>
+                </div>
                 <p class="choice-count">
                   已選 {{ game.selectedChoiceCards.value.length }}
-                  （{{ state.pendingChoice.minimumCount }}–{{ state.pendingChoice.maximumCount }}）
+                  （{{ state.pendingChoice.choice.minimum }}–{{ state.pendingChoice.choice.maximum }}）
                 </p>
                 <button
                   class="choice-submit"
@@ -1283,13 +1272,12 @@
                 </button>
               </template>
               <div
-                v-if="state.pendingChoice.kind === 'TypedEffect'
-                  && state.pendingChoice.players.length > 0"
+                v-if="state.pendingChoice.choice.type === 'player'"
                 class="choice-options"
                 aria-label="選擇玩家"
               >
                 <button
-                  v-for="player in state.pendingChoice.players"
+                  v-for="player in state.pendingChoice.choice.players"
                   :key="`choice-player-${player}`"
                   type="button"
                   :disabled="game.isLoading.value || !roomConnected"
@@ -1300,25 +1288,21 @@
                 </button>
               </div>
               <SplitEarthFormationChoice
-                v-if="state.pendingChoice.kind === 'TypedEffect'
-                  && usesSplitEarthFormationGroups(state.pendingChoice)"
-                :key="splitEarthChoiceKey(
-                  state.pendingChoice,
-                  state.turnNumber,
-                  roomConnected,
-                )"
-                :groups="state.pendingChoice.formationGroups"
+                v-if="state.pendingChoice.choice.type === 'formation'
+                  && usesSplitEarthFormationGroups(state.pendingChoice.choice)"
+                :key="splitEarthChoiceKey(state.pendingChoice.choice, state.turnNumber, roomConnected)"
+                :groups="state.pendingChoice.choice.formationGroups"
                 :disabled="game.isLoading.value || !roomConnected"
-                @choose="game.choosePendingFormation"
+                @select="game.choosePendingFormation"
               />
               <div
-                v-else-if="state.pendingChoice.kind === 'TypedEffect'
-                  && state.pendingChoice.formations.length > 0"
+                v-else-if="state.pendingChoice.choice.type === 'formation'
+                  && state.pendingChoice.choice.formations.length > 0"
                 class="choice-options"
                 aria-label="選擇陣法"
               >
                 <button
-                  v-for="formationId in state.pendingChoice.formations"
+                  v-for="formationId in state.pendingChoice.choice.formations"
                   :key="`choice-formation-${formationId}`"
                   type="button"
                   :disabled="game.isLoading.value || !roomConnected"
@@ -1329,13 +1313,12 @@
                 </button>
               </div>
               <div
-                v-if="state.pendingChoice.kind === 'TypedEffect'
-                  && state.pendingChoice.environments.length > 0"
+                v-if="state.pendingChoice.choice.type === 'environment'"
                 class="choice-options"
                 aria-label="選擇環境"
               >
                 <button
-                  v-for="environment in state.pendingChoice.environments"
+                  v-for="environment in state.pendingChoice.choice.environments"
                   :key="`choice-environment-${environment}`"
                   type="button"
                   :disabled="game.isLoading.value || !roomConnected"
@@ -1346,8 +1329,7 @@
                 </button>
               </div>
               <button
-                v-if="state.pendingChoice.kind === 'TypedEffect'
-                  && state.pendingChoice.canDecline"
+                v-if="'canDecline' in state.pendingChoice.choice && state.pendingChoice.choice.canDecline"
                 class="choice-submit"
                 type="button"
                 :disabled="game.isLoading.value || !roomConnected"
@@ -1359,7 +1341,8 @@
           </div>
 
           <div
-            v-if="state.pendingChoice && !pouchChoiceKind && viewer !== state.pendingChoice.player"
+            v-if="state.pendingChoice && !pouchChoiceKind
+              && (state.pendingChoice.visibility === 'hidden' || viewer !== state.pendingChoice.player)"
             class="choice-waiting-overlay"
             role="status"
             aria-live="polite"
@@ -1612,6 +1595,10 @@ import {
   type PlayerDeckList,
 } from '~/lib/player-deck'
 import { presentApiError } from '~/lib/api-error-presentation'
+import {
+  chainChoiceAnswer,
+  toggleChoiceCard,
+} from '~/lib/pending-choice-interaction'
 import { isLegalChainTrigger, sheepReturnCards } from '~/lib/pouch-choice'
 import type { LocalPasswordResetResult } from '#shared/local-password-reset'
 
@@ -1832,10 +1819,11 @@ const ownHandCards = computed(() => {
   const hand = state.value.hands.find(entry => entry.player === viewer.value)?.cards
   return hand?.kind === 'known' ? hand.cards : []
 })
-const friendlyPouchOwners = computed(() => {
-  if (viewer.value === 'observer') return []
-  const team = state.value.players.find(player => player.id === viewer.value)?.team
-  return state.value.players.filter(player => player.team === team).map(player => player.id)
+const chainPouchOwners = computed(() => {
+  const choice = state.value.pendingChoice
+  return choice?.visibility === 'visible' && choice.choice.type === 'chain'
+    ? choice.choice.pouchOwners
+    : []
 })
 const chainPouchCard = computed(() => (
   pouchChoiceKind.value === 'chain' && pouchDeckSelection.value.length >= 1
@@ -1848,8 +1836,9 @@ const chainTriggerCard = computed(() => (
     : null
 ))
 const chainPouchCards = computed(() => (
-  (state.value.pendingChoice?.purpose === 'pouch:chain'
-    ? state.value.pendingChoice.cards
+  (state.value.pendingChoice?.visibility === 'visible'
+    && state.value.pendingChoice.choice.type === 'chain'
+    ? state.value.pendingChoice.choice.deckCards
     : ownDeckCards.value
   )
 ))
@@ -1860,7 +1849,9 @@ const chainTriggerCards = computed(() => (
 ))
 const pouchSwapSelectableDeckCards = computed(() => {
   const choice = state.value.pendingChoice
-  const cards = choice?.kind === 'SheepStealing' ? choice.deckCards : ownDeckCards.value
+  const cards = choice?.visibility === 'visible' && choice.choice.type === 'sheepStealing'
+    ? choice.choice.deckCards
+    : ownDeckCards.value
   return cards.filter(card => pouchSwapDeckCards.value.includes(card.id))
 })
 const pouchSwapReturnCards = computed(() => sheepReturnCards(
@@ -1932,9 +1923,7 @@ function togglePouchCard(
     pouchDeck: pouchDeckSelection,
     pouchDiscard: pouchDiscardSelection,
   }[kind]
-  selection.value = selection.value.includes(card)
-    ? selection.value.filter(selected => selected !== card)
-    : selection.value.length < maximum ? [...selection.value, card] : selection.value
+  selection.value = toggleChoiceCard(selection.value, card, maximum)
 
   if (kind === 'pouchDeck') {
     const available = new Set(pouchSwapReturnCards.value.map(candidate => candidate.id))
@@ -1983,7 +1972,7 @@ function startPlayableAction(action: PlayableAction) {
     void game.performPlayableAction(action).then((submitted) => {
       if (submitted) {
         pouchChoiceKind.value = 'chain'
-        pouchOwnerSelection.value = viewer.value === 'observer' ? null : viewer.value
+        pouchOwnerSelection.value = null
       }
     })
     return
@@ -2004,8 +1993,7 @@ async function submitPouchChoice() {
   const owner = pouchOwnerSelection.value
   const pouchCard = pouchDeckSelection.value[0]
   if (!owner || pouchCard === undefined) return
-  const submitted = await game.answerChainChoice({
-    type: 'chain',
+  const submitted = await game.answerChainChoice(chainChoiceAnswer({
     pouchOwner: owner,
     pouchCard,
     triggerCard: pouchDeckSelection.value[1],
@@ -2014,31 +2002,39 @@ async function submitPouchChoice() {
     star: strategyStarSelection.value ?? undefined,
     breakStar: strategyBreakStar.value,
     discardCard: strategyDiscardCard.value ?? undefined,
-  })
-  if (submitted && state.value.pendingChoice?.kind !== 'SheepStealing') resetPouchChoice()
+  }))
+  const nextChoice = state.value.pendingChoice
+  if (
+    submitted
+    && (nextChoice?.visibility !== 'visible' || nextChoice.choice.type !== 'sheepStealing')
+  ) resetPouchChoice()
 }
 
 watch(
-  () => state.value.pendingChoice,
-  (choice) => {
-    if (!choice || viewer.value !== choice.player) {
+  [
+    () => state.value.pendingChoice,
+    () => game.pendingChoiceDraftEpoch.value,
+  ],
+  ([choice, draftEpoch], [, previousDraftEpoch]) => {
+    if (draftEpoch !== previousDraftEpoch) resetPouchChoice()
+    if (!choice || choice.visibility !== 'visible' || viewer.value !== choice.player) {
       if (pouchChoiceKind.value) resetPouchChoice()
       return
     }
-    if (choice.purpose === 'pouch:chain') {
+    if (choice.choice.type === 'chain') {
       pouchChoiceKind.value = 'chain'
-      pouchOwnerSelection.value ??= viewer.value === 'observer' ? null : viewer.value
+      pouchOwnerSelection.value ??= choice.choice.pouchOwners[0] ?? null
       return
     }
-    if (choice.kind === 'SheepStealing') {
+    if (choice.choice.type === 'sheepStealing') {
       pouchChoiceKind.value = 'sheep'
       pouchDeckSelection.value = []
       pouchDiscardSelection.value = []
-      pouchSwapRequiredCount.value = choice.requiredCount
-      pouchSwapDeckCards.value = choice.deckCards.map(card => card.id)
+      pouchSwapRequiredCount.value = 2
+      pouchSwapDeckCards.value = choice.choice.deckCards.map(card => card.id)
       pouchSwapDiscardCards.value = [
-        ...choice.discardCards.map(card => card.id),
-        ...choice.deckCards.map(card => card.id),
+        ...choice.choice.discardCards.map(card => card.id),
+        ...choice.choice.deckCards.map(card => card.id),
       ]
     }
   },
@@ -3586,7 +3582,7 @@ function environmentLabel(value: PublicGameState['environment']): string {
 
 function pendingChoiceLabel(choice: PublicGameState['pendingChoice']): string {
   if (!choice) return '等待選擇'
-  return presentPendingChoice(choice.presentation)
+  return presentPendingChoice(choice.reason)
 }
 
 function formationChoiceLabel(formationId: string): string {

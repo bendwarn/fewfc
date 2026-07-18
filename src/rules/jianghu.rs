@@ -967,14 +967,21 @@ pub(crate) fn activate_profession_ability(
                 ability_id: ability_id.to_string(),
                 cards: drawn_cards.clone(),
             });
-            events.push(GameEvent::EffectChoiceRequested {
-                player: player.clone(),
-                kind: crate::domain::PendingChoiceKind::EffectGenerated {
-                    effect_id: ability_id.to_string(),
-                    continuation_id: "jianghu:azure-cloud-step:return-one".to_string(),
-                    allowed_cards: drawn_cards,
+            events.push(crate::rules::pending_choice::request_event(
+                state,
+                crate::domain::ChoiceRequest {
+                    player: player.clone(),
+                    kind: crate::domain::PendingChoiceKind::Card {
+                        maximum: 1,
+                        minimum: 1,
+                        cards: drawn_cards,
+                        can_decline: false,
+                    },
+                    continuation: crate::domain::ChoiceContinuation::Jianghu(
+                        crate::domain::JianghuChoiceContinuation::AzureCloudStepReturnOne,
+                    ),
                 },
-            });
+            )?);
         }
         _ => {
             return Err(GameError::Validation(

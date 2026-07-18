@@ -4,19 +4,17 @@ use fewfc::application::{
 };
 use fewfc::domain::{
     ActionModification, AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
-    CardMoveDelta, CardZone, Command, CommandId, DamageTransform, EffectChoiceAnswer,
-    ElementInteraction, EngineInvariantError, EnvironmentAttackEffect, GameError, GameEvent,
-    GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
+    CardMoveDelta, CardZone, ChoiceAnswer, ChoiceContinuation, ChoiceId, Command, CommandId,
+    DamageTransform, ElementInteraction, EngineInvariantError, EnvironmentAttackEffect, GameError,
+    GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
     LastElementalAttackUpdate, LastFormationUse, PassActionReason, PassiveFlipOutcome,
     PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player, PlayerHand, PlayerId,
-    PlayerShield, RuleImplementationError, RuleModuleId, RulesetId, ShieldChangeDelta,
-    StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId,
-    TurnDrawSkipReason, ValidationError,
+    PlayerShield, RuleModuleId, RulesetId, ShieldChangeDelta, StatusDuration, StatusEffect,
+    StatusExpiryTiming, StatusOwner, TeamHp, TeamId, TurnDrawSkipReason, ValidationError,
 };
 use fewfc::public_view::{
     self, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
-    PublicPendingChoiceKind, PublicPendingChoicePresentation, PublicPlayerHand,
-    PublicPreviousTurnFormation, Viewer,
+    PublicPendingChoicePresentation, PublicPlayerHand, PublicPreviousTurnFormation, Viewer,
 };
 use fewfc::rules::Element;
 
@@ -165,14 +163,53 @@ fn state_after_cannot_act_pass(record: &GameRecord, player: PlayerId) -> GameSta
     state
 }
 
+fn answer_choice(
+    state: &GameState,
+    player: PlayerId,
+    answer: ChoiceAnswer,
+) -> Result<Vec<GameEvent>, GameError> {
+    handle_command(
+        state,
+        Command::AnswerChoice {
+            player,
+            choice_id: state
+                .pending_choice
+                .as_ref()
+                .expect("pending choice")
+                .choice_id,
+            answer,
+        },
+    )
+}
+
+fn answer_record_choice(
+    record: &mut GameRecord,
+    player: PlayerId,
+    answer: ChoiceAnswer,
+) -> Result<Vec<GameEvent>, GameError> {
+    let choice_id = record
+        .state()
+        .pending_choice
+        .as_ref()
+        .expect("pending choice")
+        .choice_id;
+    record.handle(Command::AnswerChoice {
+        player,
+        choice_id,
+        answer,
+    })
+}
+
 fn advance_record_to_next_main_after_turn_draw(record: &mut GameRecord, discard: CardInstanceId) {
     record.advance_automatic().unwrap();
-    record
-        .handle(Command::ChooseTurnDiscard {
-            player: PlayerId::new("p1"),
-            discard,
-        })
-        .unwrap();
+    answer_record_choice(
+        record,
+        PlayerId::new("p1"),
+        ChoiceAnswer::Cards {
+            cards: vec![discard],
+        },
+    )
+    .unwrap();
     record.advance_automatic().unwrap();
 }
 
@@ -1688,47 +1725,22 @@ fn new_game_state_exposes_core_status_shields_and_passive_zones() {
 }
 
 #[test]
-fn pending_choices_can_store_effect_generated_continuations() {
+fn pending_choices_store_typed_continuations_and_ids() {
     let choice = PendingChoice {
+        choice_id: ChoiceId::new(7),
         player: PlayerId::new("p1"),
-        kind: PendingChoiceKind::EffectGenerated {
-            effect_id: "choose-card-to-seal".to_string(),
-            continuation_id: "seal-resolution".to_string(),
-            allowed_cards: vec![card(1), card(2)],
+        kind: PendingChoiceKind::Card {
+            cards: vec![card(1), card(2)],
+            minimum: 1,
+            maximum: 1,
+            can_decline: false,
         },
+        continuation: ChoiceContinuation::Base(
+            fewfc::domain::BaseChoiceContinuation::ChaosReturnTwo,
+        ),
     };
 
     assert_eq!(choice.clone(), choice);
-}
-
-#[test]
-fn unknown_effect_choice_continuation_is_rule_implementation_error_without_events_or_state_changes()
-{
-    let setup = two_player_setup();
-    let mut state = GameState::from_setup(&setup);
-    state.pending_choice = Some(PendingChoice {
-        player: PlayerId::new("p1"),
-        kind: PendingChoiceKind::EffectGenerated {
-            effect_id: "unknown-effect".to_string(),
-            continuation_id: "unknown-continuation".to_string(),
-            allowed_cards: Vec::new(),
-        },
-    });
-    let state_before = state.clone();
-
-    assert_eq!(
-        handle_command(
-            &state,
-            Command::AnswerEffectChoice {
-                player: PlayerId::new("p1"),
-                selected_cards: Vec::new(),
-            },
-        ),
-        Err(GameError::RuleImplementation(
-            RuleImplementationError::EffectNotImplemented("unknown-continuation".to_string())
-        ))
-    );
-    assert_eq!(state, state_before);
 }
 
 #[test]
@@ -1948,17 +1960,17 @@ fn invalid_command_returns_error_without_appending_events_or_changing_state() {
     let events_before = record.events().to_vec();
     let state_before = record.state().clone();
 
-    let result = record.handle(Command::ChooseTurnDiscard {
+    let result = record.handle(Command::AnswerChoice {
         player: PlayerId::new("p1"),
-        discard: card(1),
+        choice_id: ChoiceId::new(1),
+        answer: ChoiceAnswer::Cards {
+            cards: vec![card(1)],
+        },
     });
 
     assert_eq!(
         result,
-        Err(GameError::Validation(ValidationError::WrongPhase {
-            expected: Phase::TurnDrawDiscardChoice,
-            actual: Phase::TurnStart,
-        }))
+        Err(GameError::Validation(ValidationError::MissingPendingChoice))
     );
     assert_eq!(record.events(), events_before.as_slice());
     assert_eq!(record.state().clone(), state_before);
@@ -2097,11 +2109,28 @@ fn turn_draw_creates_pending_discard_choice_after_drawing_available_space_plus_o
 
     assert_eq!(
         advance_state_automatic(&state).unwrap(),
-        vec![GameEvent::CardsDrawnForTurnDiscardChoice {
-            player: PlayerId::new("p1"),
-            drawn_cards: vec![card(10), card(11)],
-            allowed_discards: vec![card(10), card(11)],
-        }]
+        vec![
+            GameEvent::CardsDrawnForTurnDiscardChoice {
+                player: PlayerId::new("p1"),
+                drawn_cards: vec![card(10), card(11)],
+                allowed_discards: vec![card(10), card(11)],
+            },
+            GameEvent::ChoiceRequested {
+                choice: PendingChoice {
+                    choice_id: ChoiceId::new(1),
+                    player: PlayerId::new("p1"),
+                    kind: PendingChoiceKind::Card {
+                        cards: vec![card(10), card(11)],
+                        minimum: 1,
+                        maximum: 1,
+                        can_decline: false,
+                    },
+                    continuation: ChoiceContinuation::Base(
+                        fewfc::domain::BaseChoiceContinuation::TurnDrawDiscard,
+                    ),
+                },
+            }
+        ]
     );
 
     for event in advance_state_automatic(&state).unwrap() {
@@ -2117,11 +2146,17 @@ fn turn_draw_creates_pending_discard_choice_after_drawing_available_space_plus_o
     assert_eq!(
         state.pending_choice,
         Some(PendingChoice {
+            choice_id: ChoiceId::new(1),
             player: PlayerId::new("p1"),
-            kind: PendingChoiceKind::TurnDrawDiscard {
-                drawn_cards: vec![card(10), card(11)],
-                allowed_discards: vec![card(10), card(11)],
+            kind: PendingChoiceKind::Card {
+                cards: vec![card(10), card(11)],
+                minimum: 1,
+                maximum: 1,
+                can_decline: false,
             },
+            continuation: ChoiceContinuation::Base(
+                fewfc::domain::BaseChoiceContinuation::TurnDrawDiscard,
+            ),
         })
     );
 }
@@ -2136,25 +2171,34 @@ fn choosing_turn_discard_finishes_draw_choice_and_moves_card_to_discard() {
     }
 
     assert_eq!(
-        handle_command(
+        answer_choice(
             &state,
-            Command::ChooseTurnDiscard {
-                player: PlayerId::new("p1"),
-                discard: card(10),
+            PlayerId::new("p1"),
+            ChoiceAnswer::Cards {
+                cards: vec![card(10)]
             },
         )
         .unwrap(),
-        vec![GameEvent::TurnDiscardChosen {
-            player: PlayerId::new("p1"),
-            discard: card(10),
-        }]
+        vec![
+            GameEvent::ChoiceMade {
+                player: PlayerId::new("p1"),
+                choice_id: ChoiceId::new(1),
+                answer: ChoiceAnswer::Cards {
+                    cards: vec![card(10)]
+                },
+            },
+            GameEvent::TurnDiscardChosen {
+                player: PlayerId::new("p1"),
+                discard: card(10),
+            },
+        ]
     );
 
-    for event in handle_command(
+    for event in answer_choice(
         &state,
-        Command::ChooseTurnDiscard {
-            player: PlayerId::new("p1"),
-            discard: card(10),
+        PlayerId::new("p1"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(10)],
         },
     )
     .unwrap()
@@ -2182,16 +2226,14 @@ fn choosing_turn_discard_rejects_cards_not_drawn_this_turn() {
     let state_before = state.clone();
 
     assert_eq!(
-        handle_command(
+        answer_choice(
             &state,
-            Command::ChooseTurnDiscard {
-                player: PlayerId::new("p1"),
-                discard: card(2),
+            PlayerId::new("p1"),
+            ChoiceAnswer::Cards {
+                cards: vec![card(2)]
             },
         ),
-        Err(GameError::Validation(ValidationError::IllegalDiscard(
-            card(2)
-        )))
+        Err(GameError::Validation(ValidationError::InvalidChoiceAnswer))
     );
     assert_eq!(state, state_before);
 }
@@ -2204,11 +2246,11 @@ fn turn_end_automatic_advance_starts_next_players_turn() {
     for event in advance_state_automatic(&state).unwrap() {
         apply_event(&mut state, &event);
     }
-    for event in handle_command(
+    for event in answer_choice(
         &state,
-        Command::ChooseTurnDiscard {
-            player: PlayerId::new("p1"),
-            discard: card(10),
+        PlayerId::new("p1"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(10)],
         },
     )
     .unwrap()
@@ -2246,11 +2288,11 @@ fn turn_draw_is_skipped_when_hand_is_already_at_limit() {
     for event in advance_state_automatic(&state).unwrap() {
         apply_event(&mut state, &event);
     }
-    for event in handle_command(
+    for event in answer_choice(
         &state,
-        Command::ChooseTurnDiscard {
-            player: PlayerId::new("p1"),
-            discard: card(10),
+        PlayerId::new("p1"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(10)],
         },
     )
     .unwrap()
@@ -2525,15 +2567,18 @@ fn five_streams_unite_uses_target_hand_count_and_increases_the_same_turn_draw() 
         &record.state().pending_choice,
         Some(PendingChoice {
             player,
-            kind: PendingChoiceKind::TurnDrawDiscard { drawn_cards, .. },
-        }) if player == &PlayerId::new("p2") && drawn_cards.len() == 4
+            kind: PendingChoiceKind::Card { cards, .. },
+            ..
+        }) if player == &PlayerId::new("p2") && cards.len() == 4
     ));
-    record
-        .handle(Command::ChooseTurnDiscard {
-            player: PlayerId::new("p2"),
-            discard: card(10),
-        })
-        .unwrap();
+    answer_record_choice(
+        &mut record,
+        PlayerId::new("p2"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(10)],
+        },
+    )
+    .unwrap();
     record.advance_automatic().unwrap();
 
     let state = record.state().clone();
@@ -3078,12 +3123,14 @@ fn metamorphosis_chain_copies_the_previous_resolved_effect_without_changing_name
         })
         .unwrap();
     record.advance_automatic().unwrap();
-    record
-        .handle(Command::ChooseTurnDiscard {
-            player: PlayerId::new("p2"),
-            discard: card(11),
-        })
-        .unwrap();
+    answer_record_choice(
+        &mut record,
+        PlayerId::new("p2"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(11)],
+        },
+    )
+    .unwrap();
     record.advance_automatic().unwrap();
     record
         .handle(Command::PerformFormation {
@@ -3363,55 +3410,59 @@ fn chaos_requests_two_next_player_hand_cards_and_returns_them_to_deck_top() {
                 target: PlayerId::new("p2"),
                 cards: vec![card(3), card(4), card(6), card(7), card(8)],
             },
-            GameEvent::EffectChoiceRequested {
-                player: PlayerId::new("p1"),
-                kind: PendingChoiceKind::EffectGenerated {
-                    effect_id: "chaos".to_string(),
-                    continuation_id: "chaos:return-two".to_string(),
-                    allowed_cards: vec![card(3), card(4), card(6), card(7), card(8)],
+            GameEvent::ChoiceRequested {
+                choice: PendingChoice {
+                    choice_id: ChoiceId::new(1),
+                    player: PlayerId::new("p1"),
+                    kind: PendingChoiceKind::Card {
+                        cards: vec![card(3), card(4), card(6), card(7), card(8)],
+                        minimum: 2,
+                        maximum: 2,
+                        can_decline: false,
+                    },
+                    continuation: ChoiceContinuation::Base(
+                        fewfc::domain::BaseChoiceContinuation::ChaosReturnTwo,
+                    ),
                 },
             },
         ]
     );
 
     assert_eq!(
-        record.handle(Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Cards {
-                cards: vec![card(3)],
+        answer_record_choice(
+            &mut record,
+            PlayerId::new("p1"),
+            ChoiceAnswer::Cards {
+                cards: vec![card(3)]
             },
-        }),
-        Err(GameError::Validation(
-            ValidationError::InvalidEffectChoiceAnswer
-        ))
+        ),
+        Err(GameError::Validation(ValidationError::InvalidChoiceAnswer))
     );
     assert_eq!(
-        record.handle(Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Cards {
-                cards: vec![card(3), card(3)],
+        answer_record_choice(
+            &mut record,
+            PlayerId::new("p1"),
+            ChoiceAnswer::Cards {
+                cards: vec![card(3), card(3)]
             },
-        }),
-        Err(GameError::Validation(
-            ValidationError::InvalidEffectChoiceAnswer
-        ))
+        ),
+        Err(GameError::Validation(ValidationError::InvalidChoiceAnswer))
     );
 
     assert_eq!(
-        record
-            .handle(Command::AnswerEffectChoiceTyped {
-                player: PlayerId::new("p1"),
-                answer: EffectChoiceAnswer::Cards {
-                    cards: vec![card(3), card(4)],
-                },
-            })
-            .unwrap(),
+        answer_record_choice(
+            &mut record,
+            PlayerId::new("p1"),
+            ChoiceAnswer::Cards {
+                cards: vec![card(3), card(4)]
+            },
+        )
+        .unwrap(),
         vec![
-            GameEvent::TypedEffectChoiceAnswered {
+            GameEvent::ChoiceMade {
                 player: PlayerId::new("p1"),
-                effect_id: "chaos".to_string(),
-                continuation_id: "chaos:return-two".to_string(),
-                answer: EffectChoiceAnswer::Cards {
+                choice_id: ChoiceId::new(1),
+                answer: ChoiceAnswer::Cards {
                     cards: vec![card(3), card(4)],
                 },
             },
@@ -3594,18 +3645,21 @@ fn answering_effect_choice_resumes_resolution_deterministically() {
         .unwrap();
 
     assert_eq!(
-        record
-            .handle(Command::AnswerEffectChoice {
-                player: PlayerId::new("p1"),
-                selected_cards: vec![card(3), card(4)],
-            })
-            .unwrap(),
+        answer_record_choice(
+            &mut record,
+            PlayerId::new("p1"),
+            ChoiceAnswer::Cards {
+                cards: vec![card(3), card(4)]
+            },
+        )
+        .unwrap(),
         vec![
-            GameEvent::EffectChoiceAnswered {
+            GameEvent::ChoiceMade {
                 player: PlayerId::new("p1"),
-                effect_id: "chaos".to_string(),
-                continuation_id: "chaos:return-two".to_string(),
-                selected_cards: vec![card(3), card(4)],
+                choice_id: ChoiceId::new(1),
+                answer: ChoiceAnswer::Cards {
+                    cards: vec![card(3), card(4)]
+                },
             },
             GameEvent::CardsMoved {
                 card_moves: vec![
@@ -4295,7 +4349,7 @@ fn seal_cancels_chaos_without_leaving_a_pending_choice() {
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
     for used_card in [card(8), card(13), card(5), card(10), card(2), card(1)] {
         assert!(state.discard.contains(&used_card));
@@ -4383,12 +4437,14 @@ fn sealed_passive_later_flips_as_no_effect_and_is_discarded() {
         })
         .unwrap();
     record.advance_automatic().unwrap();
-    record
-        .handle(Command::ChooseTurnDiscard {
-            player: PlayerId::new("p2"),
-            discard: card(13),
-        })
-        .unwrap();
+    answer_record_choice(
+        &mut record,
+        PlayerId::new("p2"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(13)],
+        },
+    )
+    .unwrap();
     record.advance_automatic().unwrap();
 
     let events = record
@@ -4710,44 +4766,46 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
 
     assert_eq!(
         public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).pending_choice,
-        Some(PublicPendingChoice {
+        Some(PublicPendingChoice::Visible {
+            choice_id: ChoiceId::new(1),
             player: PlayerId::new("p1"),
-            purpose: "chaos".to_string(),
-            presentation: PublicPendingChoicePresentation::Chaos,
-            kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
-                effect_id: "chaos".to_string(),
-                continuation_id: "chaos:return-two".to_string(),
-                allowed_cards: vec![card(3), card(4), card(6), card(7), card(8)],
-            }),
+            reason: PublicPendingChoicePresentation::Chaos,
+            choice: PendingChoiceKind::Card {
+                cards: vec![card(3), card(4), card(6), card(7), card(8)],
+                minimum: 2,
+                maximum: 2,
+                can_decline: false,
+            },
         })
     );
     assert_eq!(
         public_view::state_for(&state, Viewer::Player(PlayerId::new("p2"))).pending_choice,
-        Some(PublicPendingChoice {
+        Some(PublicPendingChoice::Hidden {
             player: PlayerId::new("p1"),
-            purpose: "chaos".to_string(),
-            presentation: PublicPendingChoicePresentation::Chaos,
-            kind: PublicPendingChoiceKind::Hidden,
+            reason: PublicPendingChoicePresentation::Chaos,
         })
     );
     assert_eq!(
         public_view::state_for(&state, Viewer::Observer).pending_choice,
-        Some(PublicPendingChoice {
+        Some(PublicPendingChoice::Hidden {
             player: PlayerId::new("p1"),
-            purpose: "chaos".to_string(),
-            presentation: PublicPendingChoicePresentation::Chaos,
-            kind: PublicPendingChoiceKind::Hidden,
+            reason: PublicPendingChoicePresentation::Chaos,
         })
     );
     assert_eq!(
         state.pending_choice,
         Some(PendingChoice {
+            choice_id: ChoiceId::new(1),
             player: PlayerId::new("p1"),
-            kind: PendingChoiceKind::EffectGenerated {
-                effect_id: "chaos".to_string(),
-                continuation_id: "chaos:return-two".to_string(),
-                allowed_cards: vec![card(3), card(4), card(6), card(7), card(8)],
+            kind: PendingChoiceKind::Card {
+                cards: vec![card(3), card(4), card(6), card(7), card(8)],
+                minimum: 2,
+                maximum: 2,
+                can_decline: false,
             },
+            continuation: ChoiceContinuation::Base(
+                fewfc::domain::BaseChoiceContinuation::ChaosReturnTwo,
+            ),
         })
     );
     assert_eq!(record.replay().unwrap(), state);
@@ -4803,52 +4861,72 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
 }
 
 #[test]
-fn effect_choice_event_view_filters_options_and_preserves_canonical_continuation() {
-    let event = GameEvent::EffectChoiceRequested {
-        player: PlayerId::new("p1"),
-        kind: PendingChoiceKind::EffectGenerated {
-            effect_id: "metamorphosis".to_string(),
-            continuation_id: "metamorphosis:choose-card".to_string(),
-            allowed_cards: vec![card(1), card(2)],
+fn choice_requested_event_view_filters_options_and_continuations() {
+    let event = GameEvent::ChoiceRequested {
+        choice: PendingChoice {
+            choice_id: ChoiceId::new(9),
+            player: PlayerId::new("p1"),
+            kind: PendingChoiceKind::Card {
+                cards: vec![card(1), card(2)],
+                minimum: 2,
+                maximum: 2,
+                can_decline: false,
+            },
+            continuation: ChoiceContinuation::Base(
+                fewfc::domain::BaseChoiceContinuation::ChaosReturnTwo,
+            ),
         },
     };
 
     assert_eq!(
         public_view::event_for(&event, Viewer::Player(PlayerId::new("p1"))),
-        PublicGameEvent::EffectChoiceRequested {
-            player: PlayerId::new("p1"),
-            purpose: "metamorphosis".to_string(),
-            kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
-                effect_id: "metamorphosis".to_string(),
-                continuation_id: "metamorphosis:choose-card".to_string(),
-                allowed_cards: vec![card(1), card(2)],
-            }),
+        PublicGameEvent::ChoiceRequested {
+            choice: PublicPendingChoice::Visible {
+                choice_id: ChoiceId::new(9),
+                player: PlayerId::new("p1"),
+                reason: PublicPendingChoicePresentation::Chaos,
+                choice: PendingChoiceKind::Card {
+                    cards: vec![card(1), card(2)],
+                    minimum: 2,
+                    maximum: 2,
+                    can_decline: false,
+                },
+            },
         }
     );
     assert_eq!(
         public_view::event_for(&event, Viewer::Player(PlayerId::new("p2"))),
-        PublicGameEvent::EffectChoiceRequested {
-            player: PlayerId::new("p1"),
-            purpose: "metamorphosis".to_string(),
-            kind: PublicPendingChoiceKind::Hidden,
+        PublicGameEvent::ChoiceRequested {
+            choice: PublicPendingChoice::Hidden {
+                player: PlayerId::new("p1"),
+                reason: PublicPendingChoicePresentation::Chaos,
+            },
         }
     );
     assert_eq!(
         public_view::event_for(&event, Viewer::Observer),
-        PublicGameEvent::EffectChoiceRequested {
-            player: PlayerId::new("p1"),
-            purpose: "metamorphosis".to_string(),
-            kind: PublicPendingChoiceKind::Hidden,
+        PublicGameEvent::ChoiceRequested {
+            choice: PublicPendingChoice::Hidden {
+                player: PlayerId::new("p1"),
+                reason: PublicPendingChoicePresentation::Chaos,
+            },
         }
     );
     assert_eq!(
         event,
-        GameEvent::EffectChoiceRequested {
-            player: PlayerId::new("p1"),
-            kind: PendingChoiceKind::EffectGenerated {
-                effect_id: "metamorphosis".to_string(),
-                continuation_id: "metamorphosis:choose-card".to_string(),
-                allowed_cards: vec![card(1), card(2)],
+        GameEvent::ChoiceRequested {
+            choice: PendingChoice {
+                choice_id: ChoiceId::new(9),
+                player: PlayerId::new("p1"),
+                kind: PendingChoiceKind::Card {
+                    cards: vec![card(1), card(2)],
+                    minimum: 2,
+                    maximum: 2,
+                    can_decline: false,
+                },
+                continuation: ChoiceContinuation::Base(
+                    fewfc::domain::BaseChoiceContinuation::ChaosReturnTwo,
+                ),
             },
         }
     );

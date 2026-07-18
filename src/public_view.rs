@@ -1,10 +1,11 @@
 //! Viewer-filtered Public View derivation from canonical game data.
 
 use crate::domain::{
-    CardInstanceId, CounterEffect, Element, FormationSuppression, GameEvent, GameState, GameStatus,
-    JianghuState, LimitedUse, PendingChoiceKind, Phase, Player, PlayerId, PlayerProfession,
-    PlayerShield, PlayerStarHistory, RandomnessDeck, RandomnessOperation, RuleModuleId,
-    ScheduledEcho, ScheduledPlantEarth, StatusEffect, TeamHp, TeamStar,
+    CardInstanceId, ChoiceContinuation, ChoiceId, CounterEffect, Element, FormationSuppression,
+    GameEvent, GameState, GameStatus, JianghuState, LimitedUse, PendingChoice, PendingChoiceKind,
+    Phase, Player, PlayerId, PlayerProfession, PlayerShield, PlayerStarHistory, RandomnessDeck,
+    RandomnessOperation, RuleModuleId, ScheduledEcho, ScheduledPlantEarth, StatusEffect, TeamHp,
+    TeamStar,
 };
 use serde::{Deserialize, Serialize};
 
@@ -133,11 +134,22 @@ pub enum PublicCardRefs {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct PublicPendingChoice {
-    pub player: PlayerId,
-    pub purpose: String,
-    pub presentation: PublicPendingChoicePresentation,
-    pub kind: PublicPendingChoiceKind,
+#[serde(
+    tag = "visibility",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PublicPendingChoice {
+    Visible {
+        choice_id: ChoiceId,
+        player: PlayerId,
+        reason: PublicPendingChoicePresentation,
+        choice: PendingChoiceKind,
+    },
+    Hidden {
+        player: PlayerId,
+        reason: PublicPendingChoicePresentation,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -162,6 +174,8 @@ pub enum PublicPendingChoicePresentation {
     EchoPlantEarthMelody,
     EarthRendingEnvironment,
     EarthRendingCard,
+    Chain,
+    SheepStealing,
     Metamorphosis,
     SealCard,
     Unclassified,
@@ -175,12 +189,6 @@ pub enum PublicEchoMelodyPresentation {
     FlowingWater,
     WarFire,
     SplitEarth,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum PublicPendingChoiceKind {
-    Known(PendingChoiceKind),
-    Hidden,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -272,10 +280,8 @@ pub enum PublicGameEvent {
         formation_id: String,
         virtual_card: Option<crate::domain::VirtualFormationCard>,
     },
-    EffectChoiceRequested {
-        player: PlayerId,
-        purpose: String,
-        kind: PublicPendingChoiceKind,
+    ChoiceRequested {
+        choice: PublicPendingChoice,
     },
     RandomnessRequested {
         request_id: String,
@@ -424,16 +430,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
         pending_choice: state
             .pending_choice
             .as_ref()
-            .map(|choice| PublicPendingChoice {
-                player: choice.player.clone(),
-                purpose: pending_choice_purpose(&choice.kind),
-                presentation: pending_choice_presentation(&choice.kind),
-                kind: if policy.can_see_player_hidden_cards(&choice.player) {
-                    PublicPendingChoiceKind::Known(choice.kind.clone())
-                } else {
-                    PublicPendingChoiceKind::Hidden
-                },
-            }),
+            .map(|choice| public_pending_choice(choice, &policy)),
         pending_randomness: state.pending_randomness.as_ref().map(|request| {
             PublicPendingRandomness {
                 request_id: request.request_id.clone(),
@@ -635,17 +632,9 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
                 PublicCardRefs::Hidden { count: cards.len() }
             },
         },
-        GameEvent::EffectChoiceRequested { player, kind } => {
-            PublicGameEvent::EffectChoiceRequested {
-                player: player.clone(),
-                purpose: pending_choice_purpose(kind),
-                kind: if policy.can_see_player_hidden_cards(player) {
-                    PublicPendingChoiceKind::Known(kind.clone())
-                } else {
-                    PublicPendingChoiceKind::Hidden
-                },
-            }
-        }
+        GameEvent::ChoiceRequested { choice } => PublicGameEvent::ChoiceRequested {
+            choice: public_pending_choice(choice, &policy),
+        },
         GameEvent::RandomnessRequested { request } => PublicGameEvent::RandomnessRequested {
             request_id: request.request_id.clone(),
             deck: request.operation.destination_deck().clone(),
@@ -778,8 +767,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::LimitedUseChanged { .. }
         | GameEvent::ConfluenceCardObligationSet { .. }
         | GameEvent::ConfluenceCardObligationCleared { .. }
-        | GameEvent::EffectChoiceAnswered { .. }
-        | GameEvent::TypedEffectChoiceAnswered { .. }
+        | GameEvent::ChoiceMade { .. }
         | GameEvent::EchoCostPaid { .. }
         | GameEvent::EchoDeclined { .. }
         | GameEvent::EchoScheduled { .. }
@@ -859,83 +847,91 @@ fn movement_zone_owner(zone: &crate::domain::CardZone) -> Option<&PlayerId> {
     }
 }
 
-fn pending_choice_purpose(kind: &PendingChoiceKind) -> String {
-    match kind {
-        PendingChoiceKind::TurnDrawDiscard { .. } => "turn-draw-discard".to_string(),
-        PendingChoiceKind::EffectGenerated { effect_id, .. }
-        | PendingChoiceKind::CardSetChoice { effect_id, .. }
-        | PendingChoiceKind::TypedEffect { effect_id, .. } => effect_id.clone(),
-        PendingChoiceKind::SheepStealing { .. } => "pouch:sheep-stealing".to_string(),
+fn public_pending_choice(choice: &PendingChoice, policy: &RedactionPolicy) -> PublicPendingChoice {
+    let reason = pending_choice_presentation(&choice.continuation);
+    if policy.can_see_player_hidden_cards(&choice.player) {
+        PublicPendingChoice::Visible {
+            choice_id: choice.choice_id,
+            player: choice.player.clone(),
+            reason,
+            choice: choice.kind.clone(),
+        }
+    } else {
+        PublicPendingChoice::Hidden {
+            player: choice.player.clone(),
+            reason,
+        }
     }
 }
 
-fn pending_choice_presentation(kind: &PendingChoiceKind) -> PublicPendingChoicePresentation {
-    let (effect_id, continuation_id) = match kind {
-        PendingChoiceKind::TurnDrawDiscard { .. } => {
-            return PublicPendingChoicePresentation::TurnDrawDiscard;
-        }
-        PendingChoiceKind::EffectGenerated {
-            effect_id,
-            continuation_id,
-            ..
-        }
-        | PendingChoiceKind::CardSetChoice {
-            effect_id,
-            continuation_id,
-            ..
-        }
-        | PendingChoiceKind::TypedEffect {
-            effect_id,
-            continuation_id,
-            ..
-        } => (effect_id.as_str(), continuation_id.as_str()),
-        PendingChoiceKind::SheepStealing { .. } => {
-            ("pouch:sheep-stealing", "pouch:sheep-stealing:exchange")
-        }
-    };
-
+fn pending_choice_presentation(
+    continuation: &ChoiceContinuation,
+) -> PublicPendingChoicePresentation {
     use PublicEchoMelodyPresentation as Melody;
     use PublicPendingChoicePresentation as Presentation;
-    match (effect_id, continuation_id) {
-        ("holy-wind", _) => Presentation::HolyWind,
-        ("chaos", _) => Presentation::Chaos,
-        ("revelation", _) => Presentation::Revelation,
-        ("jianghu:azure-cloud-step", _) => Presentation::AzureCloudStep,
-        ("confluence:clear-wind", _) => Presentation::ClearWind,
-        ("confluence:clear-wind-ten-thousand-miles", _) => Presentation::ClearWindTenThousandMiles,
-        ("confluence:mirror-resonance", _) => Presentation::MirrorResonance,
-        ("confluence:myriad-resonance", _) => Presentation::MyriadResonance,
-        ("confluence:thousand-resonance", _) => Presentation::ThousandResonance,
-        ("echo:ringing-metal", "echo:ringing-metal:select-card") => {
+    match continuation {
+        ChoiceContinuation::Base(crate::domain::BaseChoiceContinuation::TurnDrawDiscard) => {
+            Presentation::TurnDrawDiscard
+        }
+        ChoiceContinuation::Base(crate::domain::BaseChoiceContinuation::HolyWindTakeHighest) => {
+            Presentation::HolyWind
+        }
+        ChoiceContinuation::Base(crate::domain::BaseChoiceContinuation::ChaosReturnTwo) => {
+            Presentation::Chaos
+        }
+        ChoiceContinuation::Hero(crate::domain::HeroChoiceContinuation::RevelationKeepOne) => {
+            Presentation::Revelation
+        }
+        ChoiceContinuation::Jianghu(
+            crate::domain::JianghuChoiceContinuation::AzureCloudStepReturnOne,
+        ) => Presentation::AzureCloudStep,
+        ChoiceContinuation::Confluence(
+            crate::domain::ConfluenceChoiceContinuation::ClearWindDiscardTop,
+        ) => Presentation::ClearWind,
+        ChoiceContinuation::Confluence(
+            crate::domain::ConfluenceChoiceContinuation::ClearWindKeepCards,
+        ) => Presentation::ClearWindTenThousandMiles,
+        ChoiceContinuation::Confluence(
+            crate::domain::ConfluenceChoiceContinuation::DiscardInspectedCard { resonance, .. },
+        ) => match resonance {
+            crate::domain::ConfluenceResonance::Mirror => Presentation::MirrorResonance,
+            crate::domain::ConfluenceResonance::Myriad => Presentation::MyriadResonance,
+            crate::domain::ConfluenceResonance::Thousand => Presentation::ThousandResonance,
+        },
+        ChoiceContinuation::Echo(crate::domain::EchoChoiceContinuation::RingingMetalDeckCard) => {
             Presentation::EchoRingingMetalDeckCard
         }
-        ("echo:ringing-metal", "echo:cost") => Presentation::EchoCost {
-            melody: Melody::RingingMetal,
-        },
-        ("echo:falling-wood", "echo:cost") => Presentation::EchoCost {
-            melody: Melody::FallingWood,
-        },
-        ("echo:flowing-water", "echo:cost") => Presentation::EchoCost {
-            melody: Melody::FlowingWater,
-        },
-        ("echo:war-fire", "echo:cost") => Presentation::EchoCost {
-            melody: Melody::WarFire,
-        },
-        ("echo:split-earth", "echo:cost") => Presentation::EchoCost {
-            melody: Melody::SplitEarth,
-        },
-        ("echo:split-earth", "echo:split-earth:formation") => Presentation::EchoSplitEarthFormation,
-        ("echo:pure-fire", _) => Presentation::EchoPureFirePlayer,
-        ("echo:plant-earth", _) => Presentation::EchoPlantEarthMelody,
-        ("tribulation:earth-rending", "tribulation:earth-rending:environment") => {
-            Presentation::EarthRendingEnvironment
+        ChoiceContinuation::Echo(crate::domain::EchoChoiceContinuation::Cost { melody_id }) => {
+            let melody = match melody_id.as_str() {
+                "echo:ringing-metal" => Melody::RingingMetal,
+                "echo:falling-wood" => Melody::FallingWood,
+                "echo:flowing-water" => Melody::FlowingWater,
+                "echo:war-fire" => Melody::WarFire,
+                _ => Melody::SplitEarth,
+            };
+            Presentation::EchoCost { melody }
         }
-        ("tribulation:earth-rending", "tribulation:earth-rending:card") => {
-            Presentation::EarthRendingCard
+        ChoiceContinuation::Echo(crate::domain::EchoChoiceContinuation::SplitEarthFormation) => {
+            Presentation::EchoSplitEarthFormation
         }
-        ("metamorphosis", _) => Presentation::Metamorphosis,
-        ("choose-card-to-seal" | "seal", _) => Presentation::SealCard,
-        _ => Presentation::Unclassified,
+        ChoiceContinuation::Echo(crate::domain::EchoChoiceContinuation::PureFireTarget) => {
+            Presentation::EchoPureFirePlayer
+        }
+        ChoiceContinuation::Echo(crate::domain::EchoChoiceContinuation::PlantEarthMelody) => {
+            Presentation::EchoPlantEarthMelody
+        }
+        ChoiceContinuation::Tribulation(
+            crate::domain::TribulationChoiceContinuation::EarthRendingEnvironment,
+        ) => Presentation::EarthRendingEnvironment,
+        ChoiceContinuation::Tribulation(
+            crate::domain::TribulationChoiceContinuation::EarthRendingCard,
+        ) => Presentation::EarthRendingCard,
+        ChoiceContinuation::Pouch(crate::domain::PouchChoiceContinuation::Chain) => {
+            Presentation::Chain
+        }
+        ChoiceContinuation::Pouch(crate::domain::PouchChoiceContinuation::SheepStealing) => {
+            Presentation::SheepStealing
+        }
     }
 }
 
@@ -1060,51 +1056,49 @@ mod tests {
 
     #[test]
     fn every_official_pending_choice_path_has_a_typed_presentation() {
-        let paths = [
-            ("holy-wind", "any"),
-            ("chaos", "chaos:return-two"),
-            ("revelation", "any"),
-            ("jianghu:azure-cloud-step", "any"),
-            ("confluence:clear-wind", "confluence:clear-wind:discard-top"),
-            ("confluence:clear-wind-ten-thousand-miles", "any"),
-            ("confluence:mirror-resonance", "any"),
-            ("confluence:myriad-resonance", "any"),
-            ("confluence:thousand-resonance", "any"),
-            ("echo:ringing-metal", "echo:ringing-metal:select-card"),
-            ("echo:ringing-metal", "echo:cost"),
-            ("echo:falling-wood", "echo:cost"),
-            ("echo:flowing-water", "echo:cost"),
-            ("echo:war-fire", "echo:cost"),
-            ("echo:split-earth", "echo:cost"),
-            ("echo:split-earth", "echo:split-earth:formation"),
-            ("echo:pure-fire", "any"),
-            ("echo:plant-earth", "any"),
-            (
-                "tribulation:earth-rending",
-                "tribulation:earth-rending:environment",
-            ),
-            (
-                "tribulation:earth-rending",
-                "tribulation:earth-rending:card",
-            ),
-            ("metamorphosis", "any"),
-            ("seal", "any"),
+        use crate::domain::{
+            BaseChoiceContinuation as Base, ChoiceContinuation as Continuation,
+            ConfluenceChoiceContinuation as Confluence, ConfluenceResonance,
+            EchoChoiceContinuation as Echo, HeroChoiceContinuation as Hero,
+            JianghuChoiceContinuation as Jianghu, PouchChoiceContinuation as Pouch,
+            TribulationChoiceContinuation as Tribulation,
+        };
+
+        let paths = vec![
+            Continuation::Base(Base::TurnDrawDiscard),
+            Continuation::Base(Base::HolyWindTakeHighest),
+            Continuation::Base(Base::ChaosReturnTwo),
+            Continuation::Hero(Hero::RevelationKeepOne),
+            Continuation::Jianghu(Jianghu::AzureCloudStepReturnOne),
+            Continuation::Confluence(Confluence::ClearWindDiscardTop),
+            Continuation::Confluence(Confluence::ClearWindKeepCards),
+            Continuation::Confluence(Confluence::DiscardInspectedCard {
+                resonance: ConfluenceResonance::Mirror,
+                after: None,
+            }),
+            Continuation::Confluence(Confluence::DiscardInspectedCard {
+                resonance: ConfluenceResonance::Myriad,
+                after: None,
+            }),
+            Continuation::Confluence(Confluence::DiscardInspectedCard {
+                resonance: ConfluenceResonance::Thousand,
+                after: Some(Element::Fire),
+            }),
+            Continuation::Echo(Echo::RingingMetalDeckCard),
+            Continuation::Echo(Echo::Cost {
+                melody_id: "echo:ringing-metal".to_string(),
+            }),
+            Continuation::Echo(Echo::SplitEarthFormation),
+            Continuation::Echo(Echo::PureFireTarget),
+            Continuation::Echo(Echo::PlantEarthMelody),
+            Continuation::Tribulation(Tribulation::EarthRendingEnvironment),
+            Continuation::Tribulation(Tribulation::EarthRendingCard),
+            Continuation::Pouch(Pouch::Chain),
+            Continuation::Pouch(Pouch::SheepStealing),
         ];
 
-        assert_eq!(paths.len() + 1, 23);
-        assert_eq!(
-            pending_choice_presentation(&PendingChoiceKind::TurnDrawDiscard {
-                drawn_cards: vec![],
-                allowed_discards: vec![],
-            }),
-            PublicPendingChoicePresentation::TurnDrawDiscard
-        );
-        for (effect_id, continuation_id) in paths {
-            let presentation = pending_choice_presentation(&PendingChoiceKind::EffectGenerated {
-                effect_id: effect_id.to_string(),
-                continuation_id: continuation_id.to_string(),
-                allowed_cards: vec![],
-            });
+        for continuation in paths {
+            let presentation = pending_choice_presentation(&continuation);
             assert_ne!(presentation, PublicPendingChoicePresentation::Unclassified);
             assert!(!serde_json::to_string(&presentation).unwrap().is_empty());
         }

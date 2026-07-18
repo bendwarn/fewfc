@@ -163,6 +163,17 @@ pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         GameEvent::PlantEarthResolutionStarted { .. }
         | GameEvent::PlantEarthResolutionCompleted { .. } => Some(AutomaticReason::EchoResolution),
         GameEvent::FlowStateTriggered { .. } => Some(AutomaticReason::TurnDraw),
+        GameEvent::RandomnessRequested { request }
+            if matches!(
+                &request.continuation,
+                crate::domain::RandomnessContinuation::Base(
+                    crate::domain::BaseRandomnessContinuation::TurnDraw
+                )
+            ) =>
+        {
+            Some(AutomaticReason::TurnDraw)
+        }
+        GameEvent::RandomnessRequested { .. } => None,
         GameEvent::DeckPrepared { .. }
         | GameEvent::PlayerDeckPrepared { .. }
         | GameEvent::GamePreparationStarted { .. }
@@ -202,10 +213,8 @@ pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::VoidSpiritShatteringResolved { .. }
         | GameEvent::FiveStarAlignmentAchieved { .. }
         | GameEvent::CardsMoved { .. }
-        | GameEvent::EffectChoiceAnswered { .. }
-        | GameEvent::TypedEffectChoiceAnswered { .. }
-        | GameEvent::EffectChoiceRequested { .. }
-        | GameEvent::RandomnessRequested { .. }
+        | GameEvent::ChoiceMade { .. }
+        | GameEvent::ChoiceRequested { .. }
         | GameEvent::RandomnessResolved { .. }
         | GameEvent::EchoCostPaid { .. }
         | GameEvent::EchoDeclined { .. }
@@ -300,14 +309,9 @@ fn command_context(command: &Command) -> CommandContext {
             player: player.clone(),
             kind: CommandKind::UseSpiritSkill { skill: *skill },
         },
-        Command::ChooseTurnDiscard { player, .. } => CommandContext {
+        Command::AnswerChoice { player, .. } => CommandContext {
             player: player.clone(),
-            kind: CommandKind::ChooseTurnDiscard,
-        },
-        Command::AnswerEffectChoice { player, .. }
-        | Command::AnswerEffectChoiceTyped { player, .. } => CommandContext {
-            player: player.clone(),
-            kind: CommandKind::AnswerEffectChoice,
+            kind: CommandKind::AnswerChoice,
         },
         Command::RetrievePreviousTurnDiscard { player } => CommandContext {
             player: player.clone(),
@@ -398,7 +402,6 @@ pub enum CommandKind {
     UseSpiritSkill {
         skill: crate::domain::SpiritSkill,
     },
-    ChooseTurnDiscard,
-    AnswerEffectChoice,
+    AnswerChoice,
     RetrievePreviousTurnDiscard,
 }

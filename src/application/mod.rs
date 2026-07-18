@@ -296,14 +296,9 @@ fn command_context(command: &Command) -> CommandContext {
             player: player.clone(),
             kind: CommandKind::UseSpiritSkill { skill: *skill },
         },
-        Command::ChooseTurnDiscard { player, .. } => CommandContext {
+        Command::AnswerChoice { player, .. } => CommandContext {
             player: player.clone(),
-            kind: CommandKind::ChooseTurnDiscard,
-        },
-        Command::AnswerEffectChoice { player, .. }
-        | Command::AnswerEffectChoiceTyped { player, .. } => CommandContext {
-            player: player.clone(),
-            kind: CommandKind::AnswerEffectChoice,
+            kind: CommandKind::AnswerChoice,
         },
         Command::RetrievePreviousTurnDiscard { player } => CommandContext {
             player: player.clone(),

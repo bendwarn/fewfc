@@ -1,16 +1,35 @@
 use fewfc::application::{apply_event, handle_command, resolve_trusted_randomness};
 use fewfc::domain::{
-    CardInstanceId, CardOrigin, Command, EffectChoiceAnswer, Element,
-    FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID,
-    LimitedUse, PERSONAL_DECK_MODULE_ID, Phase, PlayerId, PlayerProfession, PlayerSpirit,
-    ProfessionId, RandomnessDeck, RuleModuleId, STAR_MODULE_ID, SpiritKind, StatusDuration,
-    StatusEffect, StatusOwner, TRIBULATION_MODULE_ID, TeamId, TrustedRandomnessAnswer,
+    CardInstanceId, CardOrigin, ChoiceAnswer, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+    GameEvent, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID, LimitedUse, PERSONAL_DECK_MODULE_ID,
+    Phase, PlayerId, PlayerProfession, PlayerSpirit, ProfessionId, RandomnessDeck, RuleModuleId,
+    STAR_MODULE_ID, SpiritKind, StatusDuration, StatusEffect, StatusOwner, TRIBULATION_MODULE_ID,
+    TeamId, TrustedRandomnessAnswer,
 };
-use fewfc::public_view::{PublicPendingChoiceKind, Viewer, state_for};
+use fewfc::public_view::{PublicPendingChoice, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
 
 fn card(id: u64) -> CardInstanceId {
     CardInstanceId::new(id)
+}
+
+fn answer_choice(
+    state: &GameState,
+    player: PlayerId,
+    answer: ChoiceAnswer,
+) -> fewfc::domain::GameResult<Vec<GameEvent>> {
+    handle_command(
+        state,
+        Command::AnswerChoice {
+            player,
+            choice_id: state
+                .pending_choice
+                .as_ref()
+                .expect("pending choice")
+                .choice_id,
+            answer,
+        },
+    )
 }
 
 fn setup() -> GameSetup {
@@ -401,13 +420,11 @@ fn earth_rending_waits_for_environment_and_player_answers_before_resolving() {
     );
     apply_all(&mut state, &started);
 
-    let environment = handle_command(
+    let environment = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Environment {
-                environment: Element::Fire,
-            },
+        PlayerId::new("p1"),
+        ChoiceAnswer::Environment {
+            environment: Element::Fire,
         },
     )
     .unwrap();
@@ -418,39 +435,33 @@ fn earth_rending_waits_for_environment_and_player_answers_before_resolving() {
     assert!(matches!(
         state_for(&state, Viewer::Player(PlayerId::new("p1")))
             .pending_choice
-            .unwrap()
-            .kind,
-        PublicPendingChoiceKind::Hidden
+            .unwrap(),
+        PublicPendingChoice::Hidden { .. }
     ));
     assert!(matches!(
         state_for(&state, Viewer::Player(PlayerId::new("p2")))
             .pending_choice
-            .unwrap()
-            .kind,
-        PublicPendingChoiceKind::Known(_)
+            .unwrap(),
+        PublicPendingChoice::Visible { .. }
     ));
 
     let recovered: GameState =
         serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
-    let answered = handle_command(
+    let answered = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p2"),
-            answer: EffectChoiceAnswer::Cards {
-                cards: vec![card(67)],
-            },
+        PlayerId::new("p2"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(67)],
         },
     )
     .unwrap();
     assert_eq!(
         answered,
-        handle_command(
+        answer_choice(
             &recovered,
-            Command::AnswerEffectChoiceTyped {
-                player: PlayerId::new("p2"),
-                answer: EffectChoiceAnswer::Cards {
-                    cards: vec![card(67)],
-                },
+            PlayerId::new("p2"),
+            ChoiceAnswer::Cards {
+                cards: vec![card(67)],
             },
         )
         .unwrap()
@@ -511,13 +522,11 @@ fn earth_rending_collects_four_player_answers_in_turn_order_and_performer_last()
     )
     .unwrap();
     apply_all(&mut state, &started);
-    let environment = handle_command(
+    let environment = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Environment {
-                environment: Element::Fire,
-            },
+        PlayerId::new("p1"),
+        ChoiceAnswer::Environment {
+            environment: Element::Fire,
         },
     )
     .unwrap();
@@ -527,13 +536,11 @@ fn earth_rending_collects_four_player_answers_in_turn_order_and_performer_last()
         Some(&PlayerId::new("p2"))
     );
 
-    let p2 = handle_command(
+    let p2 = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p2"),
-            answer: EffectChoiceAnswer::Cards {
-                cards: vec![card(67)],
-            },
+        PlayerId::new("p2"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(67)],
         },
     )
     .unwrap();
@@ -547,13 +554,11 @@ fn earth_rending_collects_four_player_answers_in_turn_order_and_performer_last()
         Some(&PlayerId::new("p4"))
     );
 
-    let p4 = handle_command(
+    let p4 = answer_choice(
         &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p4"),
-            answer: EffectChoiceAnswer::Cards {
-                cards: vec![card(70)],
-            },
+        PlayerId::new("p4"),
+        ChoiceAnswer::Cards {
+            cards: vec![card(70)],
         },
     )
     .unwrap();

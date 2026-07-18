@@ -15,7 +15,7 @@ describe('rulesEngineError', () => {
   })
 
   test('supports the legacy serialized error detail during rollout', () => {
-    const error = rulesEngineError('{"game":{"Validation":"InvalidEffectChoiceAnswer"}}')
+  const error = rulesEngineError('{"game":{"Validation":"InvalidChoiceAnswer"}}')
 
     expect(error.statusCode).toBe(400)
   })

@@ -10,12 +10,13 @@ import {
 } from './fixtures'
 
 async function waitForCommand(page: Page, actionType: string) {
-  return page.waitForResponse(response => (
+  const response = await page.waitForResponse(response => (
     response.url().includes('/commands')
     && response.request().method() === 'POST'
     && (response.request().postData() ?? '').includes(`"type":"${actionType}"`)
-    && response.ok()
   ))
+  expect(response.ok(), await response.text()).toBe(true)
+  return response
 }
 
 async function chooseVisibleInitialPouch(host: Page, guest: Page) {
@@ -145,7 +146,7 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
       },
     })
     expect(chain.ok, JSON.stringify(chain.body)).toBe(true)
-    expect(chain.body.state.pendingChoice?.purpose).toBe('pouch:chain')
+    expect(chain.body.state.pendingChoice?.choice.type).toBe('chain')
 
     await actor.reload()
     const chainDialog = actor.getByRole('dialog', { name: '連環：選擇錦囊' })
@@ -153,13 +154,16 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     const sheepTrigger = await actor.evaluate(async ({ gameId }) => {
       const response = await fetch(`/api/games/${gameId}`)
       const body = await response.json() as {
-        state: { pendingChoice: { cards: Array<{
+        state: { pendingChoice: { visibility: 'visible'; choice: { type: 'chain'; deckCards: Array<{
           element: string | null
           level: number | null
           secretStrategies: Array<{ strategy: string }>
-        }> | null } | null }
+        }> } } | null }
       }
-      const cards = body.state.pendingChoice?.cards ?? []
+      const cards = body.state.pendingChoice?.visibility === 'visible'
+        && body.state.pendingChoice.choice.type === 'chain'
+        ? body.state.pendingChoice.choice.deckCards
+        : []
       for (const trigger of cards.filter(card => (
         card.secretStrategies.some(option => option.strategy === 'SheepStealing')
       ))) {
@@ -189,7 +193,7 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     await expect(triggerButton).toHaveAttribute('aria-pressed', 'true')
     await chainDialog.getByLabel('選擇錦囊持有者').getByRole('button').first().click()
     await chainDialog.getByLabel('選擇秘計').getByRole('button', { name: '牽羊' }).click()
-    const chainAnswer = waitForCommand(actor, 'answerEffectChoiceTyped')
+    const chainAnswer = waitForCommand(actor, 'answerChoice')
     await chainDialog.getByRole('button', { name: '確認' }).click()
     await chainAnswer
 
@@ -197,7 +201,7 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     await expect(sheepDialog).toBeVisible()
     await chooseTwoMatrixCards(actor, '牽羊牌組矩陣')
     await chooseTwoMatrixCards(actor, '牽羊回收矩陣')
-    const sheepAnswer = waitForCommand(actor, 'answerEffectChoiceTyped')
+    const sheepAnswer = waitForCommand(actor, 'answerChoice')
     await sheepDialog.getByRole('button', { name: '確認' }).click()
     await sheepAnswer
     await expect(sheepDialog).toHaveCount(0)

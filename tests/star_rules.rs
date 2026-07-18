@@ -1,9 +1,10 @@
 use fewfc::application::{GameRecord, apply_event, handle_command};
 use fewfc::domain::{
-    CardInstanceId, Command, CoveredPassive, Element, FiveStarAlignment, GameError, GameEvent,
-    GameOutcome, GameSetup, GameState, GameStatus, PassiveTriggerTiming, PendingChoiceKind, Phase,
-    Player, PlayerId, PlayerStarHistory, RuleModuleId, STAR_MODULE_ID, StarBreakReason,
-    StarElementSubstitution, StarKind, TargetDecl, TeamId, TeamStar, ValidationError,
+    CardInstanceId, ChoiceAnswer, Command, CoveredPassive, Element, FiveStarAlignment, GameError,
+    GameEvent, GameOutcome, GameSetup, GameState, GameStatus, PassiveTriggerTiming,
+    PendingChoiceKind, Phase, Player, PlayerId, PlayerStarHistory, RuleModuleId, STAR_MODULE_ID,
+    StarBreakReason, StarElementSubstitution, StarKind, TargetDecl, TeamId, TeamStar,
+    ValidationError,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -484,19 +485,23 @@ fn substituted_passive_replays_and_verifies_the_exact_declared_card() {
         })
         .unwrap();
     advance_to_choice_or_main(&mut record);
-    let first_discard = match &record.state().pending_choice.as_ref().unwrap().kind {
-        PendingChoiceKind::TurnDrawDiscard {
-            allowed_discards, ..
-        } => *allowed_discards
-            .iter()
-            .find(|card| **card != water_2)
-            .unwrap(),
+    let (first_choice_id, first_discard) = match record.state().pending_choice.as_ref().unwrap() {
+        choice @ fewfc::domain::PendingChoice {
+            kind: PendingChoiceKind::Card { cards, .. },
+            ..
+        } => (
+            choice.choice_id,
+            *cards.iter().find(|card| **card != water_2).unwrap(),
+        ),
         other => panic!("unexpected first draw choice: {other:?}"),
     };
     record
-        .handle(Command::ChooseTurnDiscard {
+        .handle(Command::AnswerChoice {
             player: PlayerId::new("p1"),
-            discard: first_discard,
+            choice_id: first_choice_id,
+            answer: ChoiceAnswer::Cards {
+                cards: vec![first_discard],
+            },
         })
         .unwrap();
     advance_to_choice_or_main(&mut record);
@@ -509,16 +514,20 @@ fn substituted_passive_replays_and_verifies_the_exact_declared_card() {
         })
         .unwrap();
     advance_to_choice_or_main(&mut record);
-    let second_discard = match &record.state().pending_choice.as_ref().unwrap().kind {
-        PendingChoiceKind::TurnDrawDiscard {
-            allowed_discards, ..
-        } => allowed_discards[0],
+    let (second_choice_id, second_discard) = match record.state().pending_choice.as_ref().unwrap() {
+        choice @ fewfc::domain::PendingChoice {
+            kind: PendingChoiceKind::Card { cards, .. },
+            ..
+        } => (choice.choice_id, cards[0]),
         other => panic!("unexpected second draw choice: {other:?}"),
     };
     record
-        .handle(Command::ChooseTurnDiscard {
+        .handle(Command::AnswerChoice {
             player: PlayerId::new("p2"),
-            discard: second_discard,
+            choice_id: second_choice_id,
+            answer: ChoiceAnswer::Cards {
+                cards: vec![second_discard],
+            },
         })
         .unwrap();
     advance_to_choice_or_main(&mut record);

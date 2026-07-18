@@ -894,120 +894,29 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .confluence_card_obligations
                 .retain(|active| &active.owner != owner || active.card != *card);
         }
-        GameEvent::EffectChoiceRequested { player, kind } => {
+        GameEvent::ChoiceRequested { choice } => {
             if matches!(state.status, GameStatus::Finished { .. }) {
                 state.status = GameStatus::InProgress;
             }
-            state.pending_choice = Some(crate::domain::PendingChoice {
-                player: player.clone(),
-                kind: kind.clone(),
-            });
-        }
-        GameEvent::EffectChoiceAnswered {
-            player,
-            selected_cards,
-            ..
-        } => {
-            match &state.pending_choice {
-                Some(crate::domain::PendingChoice {
-                    player: choice_player,
-                    kind: crate::domain::PendingChoiceKind::EffectGenerated { allowed_cards, .. },
-                }) if choice_player == player => {
-                    for selected_card in selected_cards {
-                        if !allowed_cards.contains(selected_card) {
-                            panic!("canonical effect choice answer must select allowed cards");
-                        }
-                    }
-                }
-                Some(crate::domain::PendingChoice {
-                    player: choice_player,
-                    kind:
-                        crate::domain::PendingChoiceKind::CardSetChoice {
-                            allowed_cards,
-                            minimum,
-                            maximum,
-                            ..
-                        },
-                }) if choice_player == player
-                    && selected_cards.len() >= *minimum
-                    && selected_cards.len() <= *maximum =>
-                {
-                    for selected_card in selected_cards {
-                        if !allowed_cards.contains(selected_card) {
-                            panic!("canonical effect choice answer must select allowed cards");
-                        }
-                    }
-                }
-                _ => panic!("canonical effect choice answer must have a matching pending choice"),
-            }
-
-            state.pending_choice = None;
-            finish_game_if_needed(state);
-        }
-        GameEvent::TypedEffectChoiceAnswered { player, answer, .. } => {
-            let matches = match (&state.pending_choice, answer) {
-                (
-                    Some(crate::domain::PendingChoice {
-                        player: choice_player,
-                        kind:
-                            crate::domain::PendingChoiceKind::EffectGenerated { allowed_cards, .. },
-                    }),
-                    crate::domain::EffectChoiceAnswer::Cards { cards },
-                ) => {
-                    choice_player == player
-                        && cards.len()
-                            == state
-                                .pending_choice
-                                .as_ref()
-                                .expect("matched pending choice")
-                                .kind
-                                .required_count()
-                        && crate::rules::base::effect_choice_cards_are_valid(allowed_cards, cards)
-                }
-                (
-                    Some(crate::domain::PendingChoice {
-                        player: choice_player,
-                        kind:
-                            crate::domain::PendingChoiceKind::CardSetChoice {
-                                allowed_cards,
-                                minimum,
-                                maximum,
-                                ..
-                            },
-                    }),
-                    crate::domain::EffectChoiceAnswer::Cards { cards },
-                ) => {
-                    choice_player == player
-                        && cards.len() >= *minimum
-                        && cards.len() <= *maximum
-                        && crate::rules::base::effect_choice_cards_are_valid(allowed_cards, cards)
-                }
-                (
-                    Some(crate::domain::PendingChoice {
-                        player: choice_player,
-                        kind: crate::domain::PendingChoiceKind::TypedEffect { options, .. },
-                    }),
-                    answer,
-                ) => {
-                    choice_player == player
-                        && crate::rules::base::effect_choice_answer_is_valid(options, answer)
-                }
-                (
-                    Some(crate::domain::PendingChoice {
-                        player: choice_player,
-                        kind: crate::domain::PendingChoiceKind::SheepStealing { .. },
-                    }),
-                    crate::domain::EffectChoiceAnswer::SheepStealing {
-                        deck_cards,
-                        discard_cards,
-                    },
-                ) => choice_player == player && deck_cards.len() == 2 && discard_cards.len() == 2,
-                _ => false,
-            };
             assert!(
-                matches,
-                "canonical typed effect choice answer must match the pending choice"
+                state.pending_choice.is_none(),
+                "canonical choice request cannot replace a pending choice"
             );
+            assert_eq!(choice.choice_id, state.next_choice_id);
+            state.next_choice_id = choice.choice_id.next();
+            state.pending_choice = Some(choice.clone());
+        }
+        GameEvent::ChoiceMade {
+            player,
+            choice_id,
+            answer,
+        } => {
+            let choice = state
+                .pending_choice
+                .as_ref()
+                .expect("canonical choice answer must have a pending choice");
+            crate::rules::pending_choice::validate_answer(choice, player, *choice_id, answer)
+                .expect("canonical choice answer must match the pending choice");
             state.pending_choice = None;
             finish_game_if_needed(state);
         }
@@ -1315,7 +1224,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
         GameEvent::CardsDrawnForTurnDiscardChoice {
             player,
             drawn_cards,
-            allowed_discards,
+            ..
         } => {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, crate::domain::Phase::TurnDraw);
@@ -1328,33 +1237,11 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .deck_for_mut(player)
                 .expect("canonical draw event must target a known player deck")
                 .drain(0..drawn_cards.len());
-            state.pending_choice = Some(crate::domain::PendingChoice {
-                player: player.clone(),
-                kind: crate::domain::PendingChoiceKind::TurnDrawDiscard {
-                    drawn_cards: drawn_cards.clone(),
-                    allowed_discards: allowed_discards.clone(),
-                },
-            });
             state.phase = crate::domain::Phase::TurnDrawDiscardChoice;
         }
         GameEvent::TurnDiscardChosen { player, discard } => {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, crate::domain::Phase::TurnDrawDiscardChoice);
-
-            let allowed_discards = match &state.pending_choice {
-                Some(crate::domain::PendingChoice {
-                    player: choice_player,
-                    kind:
-                        crate::domain::PendingChoiceKind::TurnDrawDiscard {
-                            allowed_discards, ..
-                        },
-                }) if choice_player == player => allowed_discards,
-                _ => panic!("canonical discard event must have a matching pending choice"),
-            };
-
-            if !allowed_discards.contains(discard) {
-                panic!("canonical discard event must choose an allowed card");
-            }
 
             let hand = state
                 .hand_mut(player)
@@ -1373,7 +1260,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     turn_number: state.turn_number,
                 },
             );
-            state.pending_choice = None;
             state.phase = crate::domain::Phase::TurnEnd;
         }
         GameEvent::TurnDrawSkipped { player, .. } => {

@@ -1,12 +1,12 @@
 use fewfc::application::{apply_event, handle_command, resolve_trusted_randomness};
 use fewfc::domain::{
-    CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, Command, DARK_GLIMMER_MODULE_ID,
-    DeckPlacement, EffectChoiceAnswer, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent,
-    GameState, GameStatus, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState,
-    JianghuStateKind, LastTurnDiscard, LimitedUse, PendingRandomness, Phase, Player, PlayerId,
-    PlayerProfession, PlayerSpirit, ProfessionId, RandomnessContinuation, RandomnessDeck,
-    RandomnessOperation, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind, SpiritSkill,
-    TargetDecl, TeamId, TrustedRandomnessAnswer,
+    CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, ChoiceAnswer, Command, DARK_GLIMMER_MODULE_ID,
+    DeckPlacement, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameState, GameStatus,
+    HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind, LastTurnDiscard,
+    LimitedUse, PendingRandomness, Phase, Player, PlayerId, PlayerProfession, PlayerSpirit,
+    ProfessionId, RandomnessContinuation, RandomnessDeck, RandomnessOperation, RuleModuleId,
+    SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind, SpiritSkill, TargetDecl, TeamId,
+    TrustedRandomnessAnswer,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -43,6 +43,25 @@ fn state(personal_deck: bool) -> GameState {
     state.turn_number = 2;
     state.phase = Phase::Main;
     state
+}
+
+fn answer_choice(
+    state: &GameState,
+    player: PlayerId,
+    answer: ChoiceAnswer,
+) -> fewfc::domain::GameResult<Vec<GameEvent>> {
+    handle_command(
+        state,
+        Command::AnswerChoice {
+            player,
+            choice_id: state
+                .pending_choice
+                .as_ref()
+                .expect("pending choice")
+                .choice_id,
+            answer,
+        },
+    )
 }
 
 fn team_state(extra_modules: Vec<RuleModuleId>) -> GameState {
@@ -302,28 +321,26 @@ fn clear_wind_reveals_once_then_waits_for_a_destination_choice() {
     )));
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::EffectChoiceRequested { player: owner, kind }
-            if owner == &player
-                && matches!(kind, fewfc::domain::PendingChoiceKind::CardSetChoice {
-                    effect_id,
-                    continuation_id,
-                    allowed_cards,
+        GameEvent::ChoiceRequested { choice }
+            if choice.player == player
+                && matches!(&choice.kind, fewfc::domain::PendingChoiceKind::Card {
+                    cards,
                     minimum: 0,
                     maximum: 1,
-                } if effect_id == "confluence:clear-wind"
-                    && continuation_id == "confluence:clear-wind:discard-top"
-                    && allowed_cards == &vec![top])
+                    ..
+                } if cards == &vec![top])
+                && matches!(choice.continuation,
+                    fewfc::domain::ChoiceContinuation::Confluence(
+                        fewfc::domain::ConfluenceChoiceContinuation::ClearWindDiscardTop))
     )));
 
     for event in &events {
         apply_event(&mut game, event);
     }
-    let return_events = handle_command(
+    let return_events = answer_choice(
         &game,
-        Command::AnswerEffectChoiceTyped {
-            player: player.clone(),
-            answer: EffectChoiceAnswer::Cards { cards: Vec::new() },
-        },
+        player.clone(),
+        ChoiceAnswer::Cards { cards: Vec::new() },
     )
     .unwrap();
     assert!(
@@ -332,14 +349,8 @@ fn clear_wind_reveals_once_then_waits_for_a_destination_choice() {
             .any(|event| matches!(event, GameEvent::CardsMoved { .. }))
     );
 
-    let discard_events = handle_command(
-        &game,
-        Command::AnswerEffectChoiceTyped {
-            player,
-            answer: EffectChoiceAnswer::Cards { cards: vec![top] },
-        },
-    )
-    .unwrap();
+    let discard_events =
+        answer_choice(&game, player, ChoiceAnswer::Cards { cards: vec![top] }).unwrap();
     assert!(discard_events.iter().any(|event| matches!(
         event,
         GameEvent::CardsMoved { card_moves }
@@ -359,39 +370,33 @@ fn clear_wind_ten_thousand_miles_limits_kept_cards_and_discards_unselected_share
         &game.pending_choice,
         Some(fewfc::domain::PendingChoice {
             player: choice_player,
-            kind: fewfc::domain::PendingChoiceKind::CardSetChoice {
-                effect_id,
-                continuation_id,
-                allowed_cards,
+            kind: fewfc::domain::PendingChoiceKind::Card {
+                cards: allowed_cards,
                 minimum: 0,
                 maximum: 4,
+                ..
             },
+            continuation: fewfc::domain::ChoiceContinuation::Confluence(
+                fewfc::domain::ConfluenceChoiceContinuation::ClearWindKeepCards),
+            ..
         }) if choice_player == &player
-            && effect_id == "confluence:clear-wind-ten-thousand-miles"
-            && continuation_id == "confluence:clear-wind:keep-cards"
             && allowed_cards == &drawn_cards
     ));
 
     let kept_cards = drawn_cards[..4].to_vec();
-    let events = handle_command(
+    let events = answer_choice(
         &game,
-        Command::AnswerEffectChoiceTyped {
-            player: player.clone(),
-            answer: EffectChoiceAnswer::Cards {
-                cards: kept_cards.clone(),
-            },
+        player.clone(),
+        ChoiceAnswer::Cards {
+            cards: kept_cards.clone(),
         },
     )
     .unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::TypedEffectChoiceAnswered {
-            effect_id,
-            continuation_id,
-            ..
-        } if effect_id == "confluence:clear-wind-ten-thousand-miles"
-            && continuation_id == "confluence:clear-wind:keep-cards"
-    )));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, GameEvent::ChoiceMade { .. }))
+    );
     for event in &events {
         apply_event(&mut game, event);
     }
@@ -415,12 +420,10 @@ fn clear_wind_ten_thousand_miles_allows_keeping_no_cards() {
         clear_wind_ten_thousand_miles_game(false);
     request_clear_wind_ten_thousand_miles(&mut game, &player, used_cards);
 
-    let events = handle_command(
+    let events = answer_choice(
         &game,
-        Command::AnswerEffectChoiceTyped {
-            player: player.clone(),
-            answer: EffectChoiceAnswer::Cards { cards: Vec::new() },
-        },
+        player.clone(),
+        ChoiceAnswer::Cards { cards: Vec::new() },
     )
     .unwrap();
     for event in &events {
@@ -437,13 +440,11 @@ fn clear_wind_ten_thousand_miles_rejects_answers_above_the_pending_maximum() {
     request_clear_wind_ten_thousand_miles(&mut game, &player, used_cards);
     let state_before_answer = game.clone();
 
-    let result = handle_command(
+    let result = answer_choice(
         &game,
-        Command::AnswerEffectChoiceTyped {
-            player,
-            answer: EffectChoiceAnswer::Cards {
-                cards: drawn_cards[..5].to_vec(),
-            },
+        player,
+        ChoiceAnswer::Cards {
+            cards: drawn_cards[..5].to_vec(),
         },
     );
 
@@ -478,12 +479,10 @@ fn clear_wind_ten_thousand_miles_discards_personal_deck_cards_to_their_origin_pi
     game.exposed_foreign_cards.push(foreign_card);
     request_clear_wind_ten_thousand_miles(&mut game, &player, used_cards);
 
-    let events = handle_command(
+    let events = answer_choice(
         &game,
-        Command::AnswerEffectChoiceTyped {
-            player: player.clone(),
-            answer: EffectChoiceAnswer::Cards { cards: Vec::new() },
-        },
+        player.clone(),
+        ChoiceAnswer::Cards { cards: Vec::new() },
     )
     .unwrap();
     assert!(events.iter().any(|event| matches!(
@@ -898,7 +897,7 @@ fn thousand_resonance_resolves_residual_mirror_choice_before_selected_resonance(
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
     assert!(!events.iter().any(|event| matches!(
         event,
@@ -912,12 +911,10 @@ fn thousand_resonance_resolves_residual_mirror_choice_before_selected_resonance(
     assert!(matches!(game.status, GameStatus::InProgress));
     assert!(game.pending_choice.is_some());
 
-    let events = handle_command(
+    let events = answer_choice(
         &game,
-        Command::AnswerEffectChoice {
-            player: PlayerId::new("p2"),
-            selected_cards: inspected,
-        },
+        PlayerId::new("p2"),
+        ChoiceAnswer::Cards { cards: inspected },
     )
     .unwrap();
     assert!(events.iter().any(|event| matches!(
@@ -974,7 +971,7 @@ fn myriad_resonance_defers_game_outcome_until_mirror_choice_finishes() {
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, GameEvent::EffectChoiceRequested { .. }))
+            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
 
     for event in &events {
@@ -983,12 +980,10 @@ fn myriad_resonance_defers_game_outcome_until_mirror_choice_finishes() {
     assert!(matches!(game.status, GameStatus::InProgress));
     assert!(game.pending_choice.is_some());
 
-    let events = handle_command(
+    let events = answer_choice(
         &game,
-        Command::AnswerEffectChoice {
-            player: PlayerId::new("p2"),
-            selected_cards: inspected,
-        },
+        PlayerId::new("p2"),
+        ChoiceAnswer::Cards { cards: inspected },
     )
     .unwrap();
     for event in &events {

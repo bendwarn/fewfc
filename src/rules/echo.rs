@@ -1,8 +1,9 @@
 use crate::domain::targeting::{RulePlayerTarget, TurnOrderTargets};
 use crate::domain::{
-    CardMoveDelta, CardOrigin, CardZone, ECHO_MODULE_ID, EchoRandomnessContinuation,
-    EffectChoiceAnswer, Element, GameError, GameEvent, GameResult, GameState, GameStatus,
-    PendingChoiceKind, PlayerId, RandomnessContinuation, ScheduledEcho, ValidationError,
+    CardMoveDelta, CardOrigin, CardZone, ChoiceAnswer, ChoiceContinuation, ChoiceRequest,
+    ECHO_MODULE_ID, EchoChoiceContinuation, EchoRandomnessContinuation, Element, GameError,
+    GameEvent, GameResult, GameState, GameStatus, PendingChoiceKind, PlayerId,
+    RandomnessContinuation, ScheduledEcho, ValidationError,
 };
 use crate::rules::{
     BaseFormationSpec, EffectDef, EffectPlan, FormationCategory, FormationDef, FormationPattern,
@@ -191,7 +192,7 @@ pub(crate) fn formation_main_effect_events(
     if !events.iter().any(|event| {
         matches!(
             event,
-            GameEvent::EffectChoiceRequested { .. } | GameEvent::RandomnessRequested { .. }
+            GameEvent::ChoiceRequested { .. } | GameEvent::RandomnessRequested { .. }
         )
     }) && !matches!(projected.status, GameStatus::Finished { .. })
         && melody
@@ -206,216 +207,205 @@ pub(crate) fn formation_main_effect_events(
 pub(crate) fn answer_choice(
     state: &GameState,
     player: &PlayerId,
-    melody_id: &str,
-    continuation_id: &str,
-    answer: &EffectChoiceAnswer,
+    continuation: &EchoChoiceContinuation,
+    answer: &ChoiceAnswer,
 ) -> GameResult<Option<Vec<GameEvent>>> {
-    let Some(melody) = melody(melody_id) else {
-        return Ok(None);
-    };
-    if continuation_id == "echo:split-earth:formation" {
-        let EffectChoiceAnswer::Formation { formation_id } = answer else {
-            return Err(GameError::Validation(
-                ValidationError::InvalidEffectChoiceAnswer,
-            ));
-        };
-        let target =
-            TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::NextPlayer)?;
-        let mut events = vec![GameEvent::FormationSuppressionSet {
-            suppression: crate::domain::FormationSuppression {
-                source: player.clone(),
-                target,
-                formation_id: formation_id.clone(),
-                expires_on_turn_number: state.turn_number + 1,
-            },
-        }];
-        if let Some(active) = &state.active_plant_earth_resolution {
-            events.push(GameEvent::PlantEarthResolutionCompleted {
-                player: player.clone(),
-                due_turn_number: active.due_turn_number,
-                melody_id: melody_id.to_string(),
-            });
-        } else if state
-            .active_echo_resolution
-            .as_ref()
-            .is_some_and(|active| active.player == *player && active.melody_id == melody_id)
-        {
-            let active = state
+    match continuation {
+        EchoChoiceContinuation::SplitEarthFormation => {
+            let ChoiceAnswer::Formation { formation_id } = answer else {
+                return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
+            };
+            let target =
+                TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::NextPlayer)?;
+            let mut events = vec![GameEvent::FormationSuppressionSet {
+                suppression: crate::domain::FormationSuppression {
+                    source: player.clone(),
+                    target,
+                    formation_id: formation_id.clone(),
+                    expires_on_turn_number: state.turn_number + 1,
+                },
+            }];
+            if let Some(active) = &state.active_plant_earth_resolution {
+                events.push(GameEvent::PlantEarthResolutionCompleted {
+                    player: player.clone(),
+                    due_turn_number: active.due_turn_number,
+                    melody_id: SPLIT_EARTH.to_string(),
+                });
+            } else if state
                 .active_echo_resolution
                 .as_ref()
-                .expect("matched active Echo");
-            events.push(GameEvent::EchoResolutionCompleted {
-                player: player.clone(),
-                melody_id: melody_id.to_string(),
-                due_turn_number: active.due_turn_number,
-            });
-        } else {
-            events.push(echo_cost_choice(state, player, &melody)?);
+                .is_some_and(|active| active.player == *player && active.melody_id == SPLIT_EARTH)
+            {
+                let active = state
+                    .active_echo_resolution
+                    .as_ref()
+                    .expect("matched active Echo");
+                events.push(GameEvent::EchoResolutionCompleted {
+                    player: player.clone(),
+                    melody_id: SPLIT_EARTH.to_string(),
+                    due_turn_number: active.due_turn_number,
+                });
+            } else {
+                let melody = melody(SPLIT_EARTH).expect("Split Earth is an official Melody");
+                events.push(echo_cost_choice(state, player, &melody)?);
+            }
+            Ok(Some(events))
         }
-        return Ok(Some(events));
-    }
-    if continuation_id == "echo:plant-earth:melody" {
-        let EffectChoiceAnswer::Formation { formation_id } = answer else {
-            return Err(GameError::Validation(
-                ValidationError::InvalidEffectChoiceAnswer,
-            ));
-        };
-        let selected = melody_catalog()
-            .into_iter()
-            .find(|candidate| candidate.id == formation_id)
-            .filter(|selected| {
-                matches!(
-                    selected.id,
-                    RINGING_METAL | FALLING_WOOD | FLOWING_WATER | WAR_FIRE | SPLIT_EARTH
-                )
-            });
-        let Some(selected) = selected else {
-            return Err(GameError::Validation(
-                ValidationError::InvalidEffectChoiceAnswer,
-            ));
-        };
-        let mut events = main_effect_events(
-            state,
-            player,
-            &selected,
-            MelodyExecutionOrigin::PlantedEarth,
-        )?;
-        if !events.iter().any(|event| {
-            matches!(
-                event,
-                GameEvent::EffectChoiceRequested { .. } | GameEvent::RandomnessRequested { .. }
-            )
-        }) {
-            let active = state
-                .active_plant_earth_resolution
-                .as_ref()
-                .ok_or_else(|| {
-                    GameError::RuleImplementation(
-                        crate::domain::RuleImplementationError::EffectNotImplemented(
-                            "echo:plant-earth:missing-active-resolution".to_string(),
-                        ),
+        EchoChoiceContinuation::PlantEarthMelody => {
+            let ChoiceAnswer::Formation { formation_id } = answer else {
+                return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
+            };
+            let selected = melody_catalog()
+                .into_iter()
+                .find(|candidate| candidate.id == formation_id)
+                .filter(|selected| {
+                    matches!(
+                        selected.id,
+                        RINGING_METAL | FALLING_WOOD | FLOWING_WATER | WAR_FIRE | SPLIT_EARTH
                     )
-                })?;
-            events.push(GameEvent::PlantEarthResolutionCompleted {
-                player: player.clone(),
-                due_turn_number: active.due_turn_number,
-                melody_id: selected.id.to_string(),
-            });
+                });
+            let Some(selected) = selected else {
+                return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
+            };
+            let mut events = main_effect_events(
+                state,
+                player,
+                &selected,
+                MelodyExecutionOrigin::PlantedEarth,
+            )?;
+            if !events.iter().any(|event| {
+                matches!(
+                    event,
+                    GameEvent::ChoiceRequested { .. } | GameEvent::RandomnessRequested { .. }
+                )
+            }) {
+                let active = state
+                    .active_plant_earth_resolution
+                    .as_ref()
+                    .ok_or_else(|| {
+                        GameError::RuleImplementation(
+                            crate::domain::RuleImplementationError::EffectNotImplemented(
+                                "echo:plant-earth:missing-active-resolution".to_string(),
+                            ),
+                        )
+                    })?;
+                events.push(GameEvent::PlantEarthResolutionCompleted {
+                    player: player.clone(),
+                    due_turn_number: active.due_turn_number,
+                    melody_id: selected.id.to_string(),
+                });
+            }
+            Ok(Some(events))
         }
-        return Ok(Some(events));
-    }
-    if continuation_id == "echo:pure-fire:target" {
-        let EffectChoiceAnswer::Player { player: target } = answer else {
-            return Err(GameError::Validation(
-                ValidationError::InvalidEffectChoiceAnswer,
-            ));
-        };
-        let mut events = vec![GameEvent::TimedEffectsReduced {
-            source: player.clone(),
-            target: target.clone(),
-            reductions: timed_effect_reductions(state, target),
-        }];
-        if let Some(active) = state
-            .active_echo_resolution
-            .as_ref()
-            .filter(|active| active.player == *player && active.melody_id == PURE_FIRE)
-        {
-            events.push(GameEvent::EchoResolutionCompleted {
-                player: player.clone(),
-                melody_id: PURE_FIRE.to_string(),
-                due_turn_number: active.due_turn_number,
-            });
-        } else {
-            events.push(GameEvent::EchoScheduled {
-                schedule: ScheduledEcho {
+        EchoChoiceContinuation::PureFireTarget => {
+            let ChoiceAnswer::Player { player: target } = answer else {
+                return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
+            };
+            let mut events = vec![GameEvent::TimedEffectsReduced {
+                source: player.clone(),
+                target: target.clone(),
+                reductions: timed_effect_reductions(state, target),
+            }];
+            if let Some(active) = state
+                .active_echo_resolution
+                .as_ref()
+                .filter(|active| active.player == *player && active.melody_id == PURE_FIRE)
+            {
+                events.push(GameEvent::EchoResolutionCompleted {
                     player: player.clone(),
                     melody_id: PURE_FIRE.to_string(),
-                    due_turn_number: state.turn_number + state.turn_order.len() as u64,
-                },
-            });
-        }
-        return Ok(Some(events));
-    }
-    if continuation_id == "echo:ringing-metal:select-card" {
-        let EffectChoiceAnswer::Cards { cards } = answer else {
-            return Err(GameError::Validation(
-                ValidationError::InvalidEffectChoiceAnswer,
-            ));
-        };
-        let card = cards[0];
-        let selection = crate::domain::RingingMetalSelection {
-            player: player.clone(),
-            card,
-            deck: deck_kind(state, player),
-        };
-        let mut projected = state.clone();
-        let revealed = GameEvent::RingingMetalCardRevealed {
-            selection: selection.clone(),
-        };
-        crate::rules::projection::apply_event(&mut projected, &revealed);
-        let mut events = vec![revealed];
-        let remainder = projected
-            .deck_for(player)
-            .expect("choice Player must have a Deck")
-            .to_vec();
-        if remainder.is_empty() {
-            events.extend(ringing_metal_completion_events(&projected, selection)?);
-        } else {
-            events.push(GameEvent::RandomnessRequested {
-                request: crate::domain::PendingRandomness {
-                    request_id: format!(
-                        "echo:ringing-metal:post-search:{}:{}",
-                        state.turn_number,
-                        player.as_str()
-                    ),
-                    operation: crate::domain::RandomnessOperation::DeckShuffle {
-                        deck: deck_kind(state, player),
+                    due_turn_number: active.due_turn_number,
+                });
+            } else {
+                events.push(GameEvent::EchoScheduled {
+                    schedule: ScheduledEcho {
+                        player: player.clone(),
+                        melody_id: PURE_FIRE.to_string(),
+                        due_turn_number: state.turn_number + state.turn_order.len() as u64,
                     },
-                    continuation: RandomnessContinuation::Echo(
-                        EchoRandomnessContinuation::RingingMetalPostSearch,
-                    ),
-                    current_order: remainder,
-                },
-            });
+                });
+            }
+            Ok(Some(events))
         }
-        return Ok(Some(events));
-    }
-    if continuation_id != "echo:cost" {
-        return Ok(None);
-    }
-    let mut events = match answer {
-        EffectChoiceAnswer::Decline => vec![GameEvent::EchoDeclined {
-            player: player.clone(),
-            melody_id: melody.id.to_string(),
-        }],
-        EffectChoiceAnswer::Cards { cards } if cards.len() == 1 => {
+        EchoChoiceContinuation::RingingMetalDeckCard => {
+            let ChoiceAnswer::Cards { cards } = answer else {
+                return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
+            };
             let card = cards[0];
-            vec![GameEvent::EchoCostPaid {
+            let selection = crate::domain::RingingMetalSelection {
                 player: player.clone(),
-                melody_id: melody.id.to_string(),
-                card_move: CardMoveDelta {
-                    card,
-                    from: CardZone::Hand(player.clone()),
-                    to: discard_zone_for_card(state, card),
-                },
-            }]
+                card,
+                deck: deck_kind(state, player),
+            };
+            let mut projected = state.clone();
+            let revealed = GameEvent::RingingMetalCardRevealed {
+                selection: selection.clone(),
+            };
+            crate::rules::projection::apply_event(&mut projected, &revealed);
+            let mut events = vec![revealed];
+            let remainder = projected
+                .deck_for(player)
+                .expect("choice Player must have a Deck")
+                .to_vec();
+            if remainder.is_empty() {
+                events.extend(ringing_metal_completion_events(&projected, selection)?);
+            } else {
+                events.push(GameEvent::RandomnessRequested {
+                    request: crate::domain::PendingRandomness {
+                        request_id: format!(
+                            "echo:ringing-metal:post-search:{}:{}",
+                            state.turn_number,
+                            player.as_str()
+                        ),
+                        operation: crate::domain::RandomnessOperation::DeckShuffle {
+                            deck: deck_kind(state, player),
+                        },
+                        continuation: RandomnessContinuation::Echo(
+                            EchoRandomnessContinuation::RingingMetalPostSearch,
+                        ),
+                        current_order: remainder,
+                    },
+                });
+            }
+            Ok(Some(events))
         }
-        _ => {
-            return Err(GameError::Validation(
-                ValidationError::InvalidEffectChoiceAnswer,
-            ));
+        EchoChoiceContinuation::Cost { melody_id } => {
+            let Some(melody) = melody(melody_id) else {
+                return Ok(None);
+            };
+            let mut events = match answer {
+                ChoiceAnswer::Decline => vec![GameEvent::EchoDeclined {
+                    player: player.clone(),
+                    melody_id: melody.id.to_string(),
+                }],
+                ChoiceAnswer::Cards { cards } if cards.len() == 1 => {
+                    let card = cards[0];
+                    vec![GameEvent::EchoCostPaid {
+                        player: player.clone(),
+                        melody_id: melody.id.to_string(),
+                        card_move: CardMoveDelta {
+                            card,
+                            from: CardZone::Hand(player.clone()),
+                            to: discard_zone_for_card(state, card),
+                        },
+                    }]
+                }
+                _ => {
+                    return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
+                }
+            };
+            if matches!(answer, ChoiceAnswer::Cards { .. }) {
+                events.push(GameEvent::EchoScheduled {
+                    schedule: ScheduledEcho {
+                        player: player.clone(),
+                        melody_id: melody.id.to_string(),
+                        due_turn_number: state.turn_number + state.turn_order.len() as u64,
+                    },
+                });
+            }
+            Ok(Some(events))
         }
-    };
-    if matches!(answer, EffectChoiceAnswer::Cards { .. }) {
-        events.push(GameEvent::EchoScheduled {
-            schedule: ScheduledEcho {
-                player: player.clone(),
-                melody_id: melody.id.to_string(),
-                due_turn_number: state.turn_number + state.turn_order.len() as u64,
-            },
-        });
     }
-    Ok(Some(events))
 }
 
 pub(crate) fn turn_start_events(state: &GameState) -> GameResult<Vec<GameEvent>> {
@@ -451,7 +441,7 @@ pub(crate) fn turn_start_events(state: &GameState) -> GameResult<Vec<GameEvent>>
     if !events.iter().any(|event| {
         matches!(
             event,
-            GameEvent::EffectChoiceRequested { .. } | GameEvent::RandomnessRequested { .. }
+            GameEvent::ChoiceRequested { .. } | GameEvent::RandomnessRequested { .. }
         )
     }) {
         events.push(GameEvent::EchoResolutionCompleted {
@@ -528,17 +518,17 @@ fn main_effect_events(
                 },
             }])
         }
-        PURE_FIRE => Ok(vec![GameEvent::EffectChoiceRequested {
-            player: player.clone(),
-            kind: PendingChoiceKind::TypedEffect {
-                effect_id: PURE_FIRE.to_string(),
-                continuation_id: "echo:pure-fire:target".to_string(),
-                options: crate::domain::EffectChoiceOptions {
+        PURE_FIRE => Ok(vec![crate::rules::pending_choice::request_event(
+            state,
+            ChoiceRequest {
+                player: player.clone(),
+                kind: PendingChoiceKind::Player {
                     players: state.players.iter().map(|entry| entry.id.clone()).collect(),
-                    ..Default::default()
+                    can_decline: false,
                 },
+                continuation: ChoiceContinuation::Echo(EchoChoiceContinuation::PureFireTarget),
             },
-        }]),
+        )?]),
         PLANT_EARTH => Err(GameError::RuleImplementation(
             crate::domain::RuleImplementationError::EffectNotImplemented(melody.id.to_string()),
         )),
@@ -564,17 +554,19 @@ fn main_effect_events(
                     target,
                     cards,
                 },
-                GameEvent::EffectChoiceRequested {
-                    player: player.clone(),
-                    kind: PendingChoiceKind::TypedEffect {
-                        effect_id: melody.id.to_string(),
-                        continuation_id: "echo:split-earth:formation".to_string(),
-                        options: crate::domain::EffectChoiceOptions {
+                crate::rules::pending_choice::request_event(
+                    state,
+                    ChoiceRequest {
+                        player: player.clone(),
+                        kind: PendingChoiceKind::Formation {
                             formations,
-                            ..Default::default()
+                            can_decline: false,
                         },
+                        continuation: ChoiceContinuation::Echo(
+                            EchoChoiceContinuation::SplitEarthFormation,
+                        ),
                     },
-                },
+                )?,
             ])
         }
         RINGING_METAL => ringing_metal_start_events(state, player),
@@ -698,21 +690,19 @@ fn ringing_metal_search_choice(state: &GameState) -> GameResult<Vec<GameEvent>> 
     if allowed_cards.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(vec![GameEvent::EffectChoiceRequested {
-        player: player.clone(),
-        kind: PendingChoiceKind::TypedEffect {
-            effect_id: RINGING_METAL.to_string(),
-            continuation_id: "echo:ringing-metal:select-card".to_string(),
-            options: crate::domain::EffectChoiceOptions {
-                cards: Some(crate::domain::CardChoiceOptions {
-                    allowed_cards,
-                    minimum: 1,
-                    maximum: 1,
-                }),
-                ..Default::default()
+    Ok(vec![crate::rules::pending_choice::request_event(
+        state,
+        ChoiceRequest {
+            player: player.clone(),
+            kind: PendingChoiceKind::Card {
+                cards: allowed_cards,
+                minimum: 1,
+                maximum: 1,
+                can_decline: false,
             },
+            continuation: ChoiceContinuation::Echo(EchoChoiceContinuation::RingingMetalDeckCard),
         },
-    }])
+    )?])
 }
 
 fn ringing_metal_completion_events(
@@ -761,12 +751,11 @@ fn plant_earth_turn_start_events(state: &GameState) -> GameResult<Vec<GameEvent>
         GameEvent::PlantEarthResolutionStarted {
             schedule: schedule.clone(),
         },
-        GameEvent::EffectChoiceRequested {
-            player: player.clone(),
-            kind: PendingChoiceKind::TypedEffect {
-                effect_id: PLANT_EARTH.to_string(),
-                continuation_id: "echo:plant-earth:melody".to_string(),
-                options: crate::domain::EffectChoiceOptions {
+        crate::rules::pending_choice::request_event(
+            state,
+            ChoiceRequest {
+                player: player.clone(),
+                kind: PendingChoiceKind::Formation {
                     formations: vec![
                         RINGING_METAL.to_string(),
                         FALLING_WOOD.to_string(),
@@ -774,10 +763,11 @@ fn plant_earth_turn_start_events(state: &GameState) -> GameResult<Vec<GameEvent>
                         WAR_FIRE.to_string(),
                         SPLIT_EARTH.to_string(),
                     ],
-                    ..Default::default()
+                    can_decline: false,
                 },
+                continuation: ChoiceContinuation::Echo(EchoChoiceContinuation::PlantEarthMelody),
             },
-        },
+        )?,
     ])
 }
 
@@ -869,22 +859,21 @@ fn echo_cost_choice(
                 .is_some_and(|definition| allowed_printed_elements.contains(&definition.element))
         })
         .collect();
-    Ok(GameEvent::EffectChoiceRequested {
-        player: player.clone(),
-        kind: PendingChoiceKind::TypedEffect {
-            effect_id: melody.id.to_string(),
-            continuation_id: "echo:cost".to_string(),
-            options: crate::domain::EffectChoiceOptions {
-                cards: Some(crate::domain::CardChoiceOptions {
-                    allowed_cards,
-                    minimum: 1,
-                    maximum: 1,
-                }),
+    crate::rules::pending_choice::request_event(
+        state,
+        ChoiceRequest {
+            player: player.clone(),
+            kind: PendingChoiceKind::Card {
+                cards: allowed_cards,
+                minimum: 1,
+                maximum: 1,
                 can_decline: true,
-                ..Default::default()
             },
+            continuation: ChoiceContinuation::Echo(EchoChoiceContinuation::Cost {
+                melody_id: melody.id.to_string(),
+            }),
         },
-    })
+    )
 }
 
 fn discard_zone_for_card(state: &GameState, card: crate::domain::CardInstanceId) -> CardZone {

@@ -1,16 +1,16 @@
 use crate::application::{GameRecord, RecordedDecision, replay_frame};
 use crate::domain::targeting::{RulePlayerTarget, TurnOrderTargets};
 use crate::domain::{
-    CardDefId, CardInstanceId, CardOrigin, Command, DISCARD_RETRIEVAL_MODULE_ID,
-    EffectChoiceAnswer, Element, GameError, GameEvent, GamePreparationStage, GameSetup, GameState,
-    GameStatus, PassActionReason, PendingChoiceKind, PendingRandomness, Phase, Player,
+    CardDefId, CardInstanceId, CardOrigin, ChoiceAnswer, ChoiceId, Command,
+    DISCARD_RETRIEVAL_MODULE_ID, Element, GameError, GameEvent, GamePreparationStage, GameSetup,
+    GameState, GameStatus, PassActionReason, PendingChoiceKind, PendingRandomness, Phase, Player,
     PlayerDeckList, PlayerId, ProfessionId, RuleModuleId, SecretStrategy, SpiritKind, SpiritSkill,
     StarKind, StatusDuration, StatusOwner, TargetDecl, TeamHp, TeamId, TrustedRandomnessAnswer,
     TurnDrawSkipReason,
 };
 use crate::public_view::{
     PublicCardInterpretation, PublicCardRefs, PublicGameEvent, PublicGameState,
-    PublicPendingChoiceKind, PublicPendingChoicePresentation, Viewer,
+    PublicPendingChoicePresentation, Viewer,
 };
 use crate::rules::{
     DeckCompositionCatalog, FormationCategory, OfficialRuleModuleSpec, OfficialRules,
@@ -406,28 +406,15 @@ fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
             };
             let _ = record.handle(command).map_err(ApiError::Game)?;
         }
-        ApiAction::ChooseTurnDiscard { player, card } => {
+        ApiAction::AnswerChoice {
+            player,
+            choice_id,
+            answer,
+        } => {
             let _ = record
-                .handle(Command::ChooseTurnDiscard {
+                .handle(Command::AnswerChoice {
                     player: PlayerId::new(player),
-                    discard: card,
-                })
-                .map_err(ApiError::Game)?;
-            advance_after_command(&mut record)?;
-        }
-        ApiAction::AnswerEffectChoice { player, cards } => {
-            let _ = record
-                .handle(Command::AnswerEffectChoice {
-                    player: PlayerId::new(player),
-                    selected_cards: cards,
-                })
-                .map_err(ApiError::Game)?;
-            advance_after_command(&mut record)?;
-        }
-        ApiAction::AnswerEffectChoiceTyped { player, answer } => {
-            let _ = record
-                .handle(Command::AnswerEffectChoiceTyped {
-                    player: PlayerId::new(player),
+                    choice_id,
                     answer,
                 })
                 .map_err(ApiError::Game)?;
@@ -643,19 +630,11 @@ fn secret_strategy_actions_for(
     let mut source_cards = match state.pending_choice.as_ref() {
         Some(choice)
             if &choice.player == player
-                && matches!(
-                    &choice.kind,
-                    PendingChoiceKind::TypedEffect { effect_id, .. }
-                        if effect_id == crate::rules::pouch::CHAIN_ID
-                ) =>
+                && matches!(&choice.kind, PendingChoiceKind::Chain { .. }) =>
         {
             match &choice.kind {
-                PendingChoiceKind::TypedEffect { options, .. } => options
-                    .cards
-                    .as_ref()
-                    .map(|cards| cards.allowed_cards.clone())
-                    .unwrap_or_default(),
-                _ => unreachable!("matched typed Chain choice"),
+                PendingChoiceKind::Chain { deck_cards, .. } => deck_cards.clone(),
+                _ => unreachable!("matched Chain choice"),
             }
         }
         _ if state.current_player() == Some(player) && state.phase == Phase::Main => {
@@ -860,17 +839,11 @@ enum ApiAction {
         #[serde(default, rename = "trustedRandomCards")]
         trusted_random_cards: Option<Vec<CardInstanceId>>,
     },
-    ChooseTurnDiscard {
+    AnswerChoice {
         player: String,
-        card: CardInstanceId,
-    },
-    AnswerEffectChoice {
-        player: String,
-        cards: Vec<CardInstanceId>,
-    },
-    AnswerEffectChoiceTyped {
-        player: String,
-        answer: EffectChoiceAnswer,
+        #[serde(rename = "choiceId")]
+        choice_id: ChoiceId,
+        answer: ChoiceAnswer,
     },
     ResolveRandomness {
         #[serde(rename = "requestId")]
@@ -1013,22 +986,32 @@ fn prepare_development_scenario(
         }
 
         if let Some(choice) = record.state().pending_choice.clone() {
-            let PendingChoiceKind::TurnDrawDiscard {
-                allowed_discards, ..
-            } = choice.kind
-            else {
+            let PendingChoiceKind::Card { cards, .. } = choice.kind else {
                 return Err(ApiError::Message(
                     "development scenario cannot answer pending choice".to_string(),
                 ));
             };
-            let discard = allowed_discards
+            if !matches!(
+                choice.continuation,
+                crate::domain::ChoiceContinuation::Base(
+                    crate::domain::BaseChoiceContinuation::TurnDrawDiscard
+                )
+            ) {
+                return Err(ApiError::Message(
+                    "development scenario cannot answer pending choice".to_string(),
+                ));
+            }
+            let discard = cards
                 .iter()
                 .min_by_key(|discard| {
                     let mut candidate = record.clone();
                     if candidate
-                        .handle(Command::ChooseTurnDiscard {
+                        .handle(Command::AnswerChoice {
                             player: choice.player.clone(),
-                            discard: **discard,
+                            choice_id: choice.choice_id,
+                            answer: ChoiceAnswer::Cards {
+                                cards: vec![**discard],
+                            },
                         })
                         .is_err()
                     {
@@ -1046,9 +1029,12 @@ fn prepare_development_scenario(
                     )
                 })?;
             record
-                .handle(Command::ChooseTurnDiscard {
+                .handle(Command::AnswerChoice {
                     player: choice.player,
-                    discard,
+                    choice_id: choice.choice_id,
+                    answer: ChoiceAnswer::Cards {
+                        cards: vec![discard],
+                    },
                 })
                 .map_err(ApiError::Game)?;
             advance_after_command(record)?;
@@ -1385,18 +1371,23 @@ fn complete_pouch_chain_development_preparation(
             .map_err(ApiError::Game)?;
     }
     advance_to_interactive_decision(record)?;
-    if let Some(crate::domain::PendingChoice {
-        player,
-        kind: PendingChoiceKind::TurnDrawDiscard {
-            allowed_discards, ..
-        },
-    }) = record.state().pending_choice.clone()
-    {
-        let discard = allowed_discards.first().copied().ok_or_else(|| {
+    if let Some(choice) = record.state().pending_choice.clone() {
+        let PendingChoiceKind::Card { cards, .. } = choice.kind else {
+            return Err(ApiError::Message(
+                "Pouch scenario has no Turn Draw discard".to_string(),
+            ));
+        };
+        let discard = cards.first().copied().ok_or_else(|| {
             ApiError::Message("Pouch scenario has no Turn Draw discard".to_string())
         })?;
         record
-            .handle(Command::ChooseTurnDiscard { player, discard })
+            .handle(Command::AnswerChoice {
+                player: choice.player,
+                choice_id: choice.choice_id,
+                answer: ChoiceAnswer::Cards {
+                    cards: vec![discard],
+                },
+            })
             .map_err(ApiError::Game)?;
         advance_to_interactive_decision(record)?;
     }
@@ -2454,23 +2445,58 @@ struct WebPreviousTurnFormation {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebPendingChoice {
-    player: String,
-    purpose: String,
-    presentation: PublicPendingChoicePresentation,
-    kind: String,
-    cards: Vec<WebCard>,
-    deck_cards: Vec<WebCard>,
-    discard_cards: Vec<WebCard>,
-    required_count: usize,
-    minimum_count: usize,
-    maximum_count: usize,
-    players: Vec<String>,
-    formations: Vec<String>,
-    formation_groups: Vec<WebFormationChoiceGroup>,
-    environments: Vec<String>,
-    can_decline: bool,
+#[serde(
+    tag = "visibility",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum WebPendingChoice {
+    Visible {
+        choice_id: ChoiceId,
+        player: String,
+        reason: PublicPendingChoicePresentation,
+        choice: WebChoice,
+    },
+    Hidden {
+        player: String,
+        reason: PublicPendingChoicePresentation,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum WebChoice {
+    Card {
+        cards: Vec<WebCard>,
+        minimum: usize,
+        maximum: usize,
+        can_decline: bool,
+    },
+    Player {
+        players: Vec<String>,
+        can_decline: bool,
+    },
+    Formation {
+        formations: Vec<String>,
+        formation_groups: Vec<WebFormationChoiceGroup>,
+        can_decline: bool,
+    },
+    Environment {
+        environments: Vec<Element>,
+        can_decline: bool,
+    },
+    Chain {
+        pouch_owners: Vec<String>,
+        deck_cards: Vec<WebCard>,
+    },
+    SheepStealing {
+        deck_cards: Vec<WebCard>,
+        discard_cards: Vec<WebCard>,
+    },
 }
 
 #[derive(Serialize)]
@@ -2559,171 +2585,98 @@ impl WebPendingChoice {
         card_facts: &HashMap<CardInstanceId, WebCardFact>,
         enabled_rule_modules: &[RuleModuleId],
     ) -> Self {
-        let (minimum_count, maximum_count) = match &choice.kind {
-            PublicPendingChoiceKind::Known(kind) => kind.selection_bounds(),
-            PublicPendingChoiceKind::Hidden => (0, 0),
-        };
-        let required_count = minimum_count;
-
-        let presentation = choice.presentation;
-        let is_split_earth_formation_choice = matches!(
-            presentation,
-            PublicPendingChoicePresentation::EchoSplitEarthFormation
-        );
-        match choice.kind {
-            PublicPendingChoiceKind::Known(PendingChoiceKind::TurnDrawDiscard {
-                allowed_discards,
-                ..
-            }) => Self {
-                player: choice.player.as_str().to_string(),
-                purpose: choice.purpose,
-                presentation,
-                kind: "TurnDrawDiscard".to_string(),
-                required_count,
-                minimum_count,
-                maximum_count,
-                cards: allowed_discards
-                    .into_iter()
-                    .map(|card| WebCard::from_id(card, labels, card_facts))
-                    .collect(),
-                deck_cards: Vec::new(),
-                discard_cards: Vec::new(),
-                players: Vec::new(),
-                formations: Vec::new(),
-                formation_groups: Vec::new(),
-                environments: Vec::new(),
-                can_decline: false,
+        match choice {
+            crate::public_view::PublicPendingChoice::Hidden { player, reason } => Self::Hidden {
+                player: player.as_str().to_string(),
+                reason,
             },
-            PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
-                allowed_cards,
-                ..
-            }) => Self {
-                player: choice.player.as_str().to_string(),
-                purpose: choice.purpose,
-                presentation,
-                kind: "EffectGenerated".to_string(),
-                required_count,
-                minimum_count,
-                maximum_count,
-                cards: allowed_cards
-                    .into_iter()
-                    .map(|card| WebCard::from_id(card, labels, card_facts))
-                    .collect(),
-                deck_cards: Vec::new(),
-                discard_cards: Vec::new(),
-                players: Vec::new(),
-                formations: Vec::new(),
-                formation_groups: Vec::new(),
-                environments: Vec::new(),
-                can_decline: false,
-            },
-            PublicPendingChoiceKind::Known(PendingChoiceKind::CardSetChoice {
-                allowed_cards,
-                ..
-            }) => Self {
-                player: choice.player.as_str().to_string(),
-                purpose: choice.purpose,
-                presentation,
-                kind: "EffectGenerated".to_string(),
-                required_count,
-                minimum_count,
-                maximum_count,
-                cards: allowed_cards
-                    .into_iter()
-                    .map(|card| WebCard::from_id(card, labels, card_facts))
-                    .collect(),
-                deck_cards: Vec::new(),
-                discard_cards: Vec::new(),
-                players: Vec::new(),
-                formations: Vec::new(),
-                formation_groups: Vec::new(),
-                environments: Vec::new(),
-                can_decline: false,
-            },
-            PublicPendingChoiceKind::Known(PendingChoiceKind::TypedEffect { options, .. }) => {
-                Self {
-                    player: choice.player.as_str().to_string(),
-                    purpose: choice.purpose,
-                    presentation,
-                    kind: "TypedEffect".to_string(),
-                    required_count,
-                    minimum_count,
-                    maximum_count,
-                    cards: options
-                        .cards
-                        .map(|cards| {
-                            cards
-                                .allowed_cards
-                                .into_iter()
-                                .map(|card| WebCard::from_id(card, labels, card_facts))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    deck_cards: Vec::new(),
-                    discard_cards: Vec::new(),
-                    players: options
-                        .players
-                        .into_iter()
-                        .map(|player| player.as_str().to_string())
-                        .collect(),
-                    formation_groups: if is_split_earth_formation_choice {
-                        web_formation_choice_groups(&options.formations, enabled_rule_modules)
-                    } else {
-                        Vec::new()
+            crate::public_view::PublicPendingChoice::Visible {
+                choice_id,
+                player,
+                reason,
+                choice,
+            } => {
+                let split_earth = matches!(
+                    reason,
+                    PublicPendingChoicePresentation::EchoSplitEarthFormation
+                );
+                let choice = match choice {
+                    PendingChoiceKind::Card {
+                        cards,
+                        minimum,
+                        maximum,
+                        can_decline,
+                    } => WebChoice::Card {
+                        cards: cards
+                            .into_iter()
+                            .map(|card| WebCard::from_id(card, labels, card_facts))
+                            .collect(),
+                        minimum,
+                        maximum,
+                        can_decline,
                     },
-                    formations: options.formations,
-                    environments: options
-                        .environments
-                        .into_iter()
-                        .map(|environment| format!("{environment:?}"))
-                        .collect(),
-                    can_decline: options.can_decline,
+                    PendingChoiceKind::Player {
+                        players,
+                        can_decline,
+                    } => WebChoice::Player {
+                        players: players
+                            .into_iter()
+                            .map(|player| player.as_str().to_string())
+                            .collect(),
+                        can_decline,
+                    },
+                    PendingChoiceKind::Formation {
+                        formations,
+                        can_decline,
+                    } => WebChoice::Formation {
+                        formation_groups: split_earth
+                            .then(|| web_formation_choice_groups(&formations, enabled_rule_modules))
+                            .unwrap_or_default(),
+                        formations,
+                        can_decline,
+                    },
+                    PendingChoiceKind::Environment {
+                        environments,
+                        can_decline,
+                    } => WebChoice::Environment {
+                        environments,
+                        can_decline,
+                    },
+                    PendingChoiceKind::Chain {
+                        pouch_owners,
+                        deck_cards,
+                    } => WebChoice::Chain {
+                        pouch_owners: pouch_owners
+                            .into_iter()
+                            .map(|player| player.as_str().to_string())
+                            .collect(),
+                        deck_cards: deck_cards
+                            .into_iter()
+                            .map(|card| WebCard::from_id(card, labels, card_facts))
+                            .collect(),
+                    },
+                    PendingChoiceKind::SheepStealing {
+                        deck_cards,
+                        discard_cards,
+                        ..
+                    } => WebChoice::SheepStealing {
+                        deck_cards: deck_cards
+                            .into_iter()
+                            .map(|card| WebCard::from_id(card, labels, card_facts))
+                            .collect(),
+                        discard_cards: discard_cards
+                            .into_iter()
+                            .map(|card| WebCard::from_id(card, labels, card_facts))
+                            .collect(),
+                    },
+                };
+                Self::Visible {
+                    choice_id,
+                    player: player.as_str().to_string(),
+                    reason,
+                    choice,
                 }
             }
-            PublicPendingChoiceKind::Known(PendingChoiceKind::SheepStealing {
-                deck_cards,
-                discard_cards,
-                ..
-            }) => Self {
-                player: choice.player.as_str().to_string(),
-                purpose: choice.purpose,
-                presentation,
-                kind: "SheepStealing".to_string(),
-                required_count,
-                minimum_count,
-                maximum_count,
-                cards: Vec::new(),
-                deck_cards: deck_cards
-                    .into_iter()
-                    .map(|card| WebCard::from_id(card, labels, card_facts))
-                    .collect(),
-                discard_cards: discard_cards
-                    .into_iter()
-                    .map(|card| WebCard::from_id(card, labels, card_facts))
-                    .collect(),
-                players: Vec::new(),
-                formations: Vec::new(),
-                formation_groups: Vec::new(),
-                environments: Vec::new(),
-                can_decline: false,
-            },
-            PublicPendingChoiceKind::Hidden => Self {
-                player: choice.player.as_str().to_string(),
-                purpose: choice.purpose,
-                presentation,
-                kind: "Hidden".to_string(),
-                cards: Vec::new(),
-                deck_cards: Vec::new(),
-                discard_cards: Vec::new(),
-                required_count: 0,
-                minimum_count: 0,
-                maximum_count: 0,
-                players: Vec::new(),
-                formations: Vec::new(),
-                formation_groups: Vec::new(),
-                environments: Vec::new(),
-                can_decline: false,
-            },
         }
     }
 }
@@ -3154,26 +3107,6 @@ impl PlayerVocabulary {
             _ => "未知原因",
         }
     }
-
-    fn choice_purpose(&self, purpose: &str, formation_names: &HashMap<String, String>) -> String {
-        if purpose == "turn-draw-discard" {
-            return "回合抽牌".to_string();
-        }
-        if let Some(name) = formation_names.get(purpose) {
-            return name.clone();
-        }
-        match purpose {
-            "choose-card-to-seal" => "封印".to_string(),
-            _ => {
-                let ability = self.ability(purpose);
-                if ability != "未知能力" {
-                    ability.to_string()
-                } else {
-                    "未知效果".to_string()
-                }
-            }
-        }
-    }
 }
 
 #[derive(Serialize, PartialEq, Eq)]
@@ -3287,7 +3220,7 @@ fn event_type(event: &PublicGameEvent) -> String {
         PublicGameEvent::CardsDrawnForProfessionChoice { .. } => {
             "CardsDrawnForProfessionChoice".to_string()
         }
-        PublicGameEvent::EffectChoiceRequested { .. } => "EffectChoiceRequested".to_string(),
+        PublicGameEvent::ChoiceRequested { .. } => "ChoiceRequested".to_string(),
         PublicGameEvent::RandomnessRequested { .. } => "RandomnessRequested".to_string(),
         PublicGameEvent::RandomnessResolved { .. } => "RandomnessResolved".to_string(),
         PublicGameEvent::HandInspected { .. } => "HandInspected".to_string(),
@@ -3450,15 +3383,9 @@ fn event_presentation_with_vocabulary(
                 card_refs_summary(drawn_cards, labels)
             ),
         ),
-        PublicGameEvent::EffectChoiceRequested {
-            player, purpose, ..
-        } => (
+        PublicGameEvent::ChoiceRequested { choice } => (
             "效果選擇".to_string(),
-            format!(
-                "{} 需要為「{}」作出選擇。",
-                player.as_str(),
-                vocabulary.choice_purpose(purpose, formation_names)
-            ),
+            format!("{} 需要作出選擇。", public_choice_player(choice).as_str(),),
         ),
         PublicGameEvent::RandomnessRequested {
             card_count,
@@ -3563,6 +3490,13 @@ fn event_presentation_with_vocabulary(
         PublicGameEvent::CardsMoved { cards } => {
             ("卡牌移動".to_string(), card_movement_summary(cards, labels))
         }
+    }
+}
+
+fn public_choice_player(choice: &crate::public_view::PublicPendingChoice) -> &PlayerId {
+    match choice {
+        crate::public_view::PublicPendingChoice::Visible { player, .. }
+        | crate::public_view::PublicPendingChoice::Hidden { player, .. } => player,
     }
 }
 
@@ -4127,37 +4061,25 @@ fn game_event_presentation_with_vocabulary(
             "調律完成".to_string(),
             format!("{} 已完成調律牌義務。", owner.as_str()),
         ),
-        GameEvent::EffectChoiceRequested { player, .. } => (
+        GameEvent::ChoiceRequested { choice } => (
             "效果選擇".to_string(),
-            format!("{} 需要選擇效果。", player.as_str()),
+            format!("{} 需要選擇效果。", choice.player.as_str()),
         ),
-        GameEvent::EffectChoiceAnswered {
-            player,
-            selected_cards,
-            ..
-        } => (
-            "完成選擇".to_string(),
-            format!(
-                "{} 已選擇 {}。",
-                player.as_str(),
-                cards_summary(selected_cards, labels)
-            ),
-        ),
-        GameEvent::TypedEffectChoiceAnswered { player, answer, .. } => {
+        GameEvent::ChoiceMade { player, answer, .. } => {
             let selection = match answer {
-                crate::domain::EffectChoiceAnswer::Cards { cards } => cards_summary(cards, labels),
-                crate::domain::EffectChoiceAnswer::Player { player } => {
+                crate::domain::ChoiceAnswer::Cards { cards } => cards_summary(cards, labels),
+                crate::domain::ChoiceAnswer::Player { player } => {
                     format!("玩家 {}", player.as_str())
                 }
-                crate::domain::EffectChoiceAnswer::Formation { formation_id } => {
+                crate::domain::ChoiceAnswer::Formation { formation_id } => {
                     format!("陣法 {}", formation_name(formation_names, formation_id))
                 }
-                crate::domain::EffectChoiceAnswer::Environment { environment } => {
+                crate::domain::ChoiceAnswer::Environment { environment } => {
                     element_name(*environment).to_string()
                 }
-                crate::domain::EffectChoiceAnswer::Chain { .. } => "連環選擇".to_string(),
-                crate::domain::EffectChoiceAnswer::SheepStealing { .. } => "牽羊交換".to_string(),
-                crate::domain::EffectChoiceAnswer::Decline => "放棄".to_string(),
+                crate::domain::ChoiceAnswer::Chain { .. } => "連環選擇".to_string(),
+                crate::domain::ChoiceAnswer::SheepStealing { .. } => "牽羊交換".to_string(),
+                crate::domain::ChoiceAnswer::Decline => "放棄".to_string(),
             };
             (
                 "完成選擇".to_string(),
@@ -4772,19 +4694,28 @@ mod tests {
             })
             .unwrap(),
         );
-        let discarded_card = after_formation
+        let (choice_id, discarded_card) = match after_formation
             .state
             .pending_choice
             .as_ref()
             .expect("turn draw should await a discard choice")
-            .cards[0]
-            .id;
+        {
+            WebPendingChoice::Visible {
+                choice_id,
+                choice: WebChoice::Card { cards, .. },
+                ..
+            } => (*choice_id, cards[0].id),
+            _ => panic!("turn draw should expose a visible Card choice"),
+        };
 
         let before_retrieval = expect_ready(
             handle(ApiRequest {
-                action: ApiAction::ChooseTurnDiscard {
+                action: ApiAction::AnswerChoice {
                     player: "alice".to_string(),
-                    card: discarded_card,
+                    choice_id,
+                    answer: ChoiceAnswer::Cards {
+                        cards: vec![discarded_card],
+                    },
                 },
                 viewer: Some("bob".to_string()),
                 record: Some(after_formation.record),
@@ -5703,20 +5634,34 @@ mod tests {
     #[test]
     fn typed_choice_and_randomness_actions_use_the_web_camel_case_contract() {
         let choice: ApiAction = serde_json::from_value(serde_json::json!({
-            "type": "answerEffectChoiceTyped",
+            "type": "answerChoice",
             "player": "alice",
+            "choiceId": 7,
             "answer": {
                 "type": "formation",
                 "formationId": "echo:melody"
             }
         }))
         .unwrap();
+        assert_eq!(
+            serde_json::to_value(&choice).unwrap(),
+            serde_json::json!({
+                "type": "answerChoice",
+                "player": "alice",
+                "choiceId": 7,
+                "answer": {
+                    "type": "formation",
+                    "formationId": "echo:melody"
+                }
+            })
+        );
         assert!(matches!(
             choice,
-            ApiAction::AnswerEffectChoiceTyped {
-                answer: EffectChoiceAnswer::Formation { formation_id },
+            ApiAction::AnswerChoice {
+                choice_id,
+                answer: ChoiceAnswer::Formation { formation_id },
                 ..
-            } if formation_id == "echo:melody"
+            } if choice_id == ChoiceId::new(7) && formation_id == "echo:melody"
         ));
 
         let randomness: ApiAction = serde_json::from_value(serde_json::json!({
@@ -5846,68 +5791,64 @@ mod tests {
     }
 
     #[test]
-    fn effect_choice_exposes_required_card_count() {
-        let choice = crate::public_view::PublicPendingChoice {
+    fn card_choice_serializes_exact_bounds_and_the_choice_id() {
+        let choice = crate::public_view::PublicPendingChoice::Visible {
+            choice_id: ChoiceId::new(7),
             player: PlayerId::new("alice"),
-            purpose: "chaos".to_string(),
-            presentation: PublicPendingChoicePresentation::Chaos,
-            kind: PublicPendingChoiceKind::Known(PendingChoiceKind::EffectGenerated {
-                effect_id: "chaos".to_string(),
-                continuation_id: "chaos:return-two".to_string(),
-                allowed_cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
-            }),
+            reason: PublicPendingChoicePresentation::Chaos,
+            choice: PendingChoiceKind::Card {
+                cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
+                minimum: 2,
+                maximum: 2,
+                can_decline: false,
+            },
         };
         let web_choice =
             WebPendingChoice::from_public(choice, &HashMap::new(), &HashMap::new(), &[]);
         let json = serde_json::to_value(web_choice).expect("choice should serialize");
 
-        assert_eq!(json["requiredCount"], 2);
-        assert_eq!(json["purpose"], "chaos");
-        assert_eq!(json["presentation"]["type"], "chaos");
-        assert_eq!(json["formationGroups"], serde_json::json!([]));
-        assert_eq!(json["deckCards"], serde_json::json!([]));
-        assert_eq!(json["discardCards"], serde_json::json!([]));
+        assert_eq!(json["visibility"], "visible");
+        assert_eq!(json["choiceId"], 7);
+        assert_eq!(json["reason"]["type"], "chaos");
+        assert_eq!(json["choice"]["type"], "card");
+        assert_eq!(json["choice"]["minimum"], 2);
+        assert_eq!(json["choice"]["maximum"], 2);
     }
 
     #[test]
     fn sheep_choice_serializes_separate_camel_case_card_piles() {
-        let choice = crate::public_view::PublicPendingChoice {
+        let choice = crate::public_view::PublicPendingChoice::Visible {
+            choice_id: ChoiceId::new(8),
             player: PlayerId::new("alice"),
-            purpose: "pouch:sheep-stealing".to_string(),
-            presentation: PublicPendingChoicePresentation::Unclassified,
-            kind: PublicPendingChoiceKind::Known(PendingChoiceKind::SheepStealing {
+            reason: PublicPendingChoicePresentation::SheepStealing,
+            choice: PendingChoiceKind::SheepStealing {
                 source_card: CardInstanceId::new(9),
                 owner: Some(PlayerId::new("alice")),
                 deck_cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
                 discard_cards: vec![CardInstanceId::new(3), CardInstanceId::new(4)],
-            }),
+            },
         };
         let web_choice =
             WebPendingChoice::from_public(choice, &HashMap::new(), &HashMap::new(), &[]);
         let json = serde_json::to_value(web_choice).expect("choice should serialize");
 
-        assert_eq!(json["kind"], "SheepStealing");
-        assert_eq!(json["cards"], serde_json::json!([]));
-        assert_eq!(json["deckCards"].as_array().unwrap().len(), 2);
-        assert_eq!(json["discardCards"].as_array().unwrap().len(), 2);
-        assert!(json.get("deck_cards").is_none());
-        assert!(json.get("discard_cards").is_none());
+        assert_eq!(json["choice"]["type"], "sheepStealing");
+        assert_eq!(json["choice"]["deckCards"].as_array().unwrap().len(), 2);
+        assert_eq!(json["choice"]["discardCards"].as_array().unwrap().len(), 2);
+        assert!(json["choice"].get("deck_cards").is_none());
+        assert!(json["choice"].get("discard_cards").is_none());
     }
 
     #[test]
     fn split_earth_choice_serializes_camel_case_formation_groups() {
-        let choice = crate::public_view::PublicPendingChoice {
+        let choice = crate::public_view::PublicPendingChoice::Visible {
+            choice_id: ChoiceId::new(9),
             player: PlayerId::new("alice"),
-            purpose: "裂土指定".to_string(),
-            presentation: PublicPendingChoicePresentation::EchoSplitEarthFormation,
-            kind: PublicPendingChoiceKind::Known(PendingChoiceKind::TypedEffect {
-                effect_id: "echo:split-earth".to_string(),
-                continuation_id: "echo:split-earth:formation".to_string(),
-                options: crate::domain::EffectChoiceOptions {
-                    formations: vec!["weapon".to_string(), "echo:split-earth".to_string()],
-                    ..Default::default()
-                },
-            }),
+            reason: PublicPendingChoicePresentation::EchoSplitEarthFormation,
+            choice: PendingChoiceKind::Formation {
+                formations: vec!["weapon".to_string(), "echo:split-earth".to_string()],
+                can_decline: false,
+            },
         };
         let web_choice = WebPendingChoice::from_public(
             choice,
@@ -5918,7 +5859,7 @@ mod tests {
         let json = serde_json::to_value(web_choice).expect("choice should serialize");
 
         assert_eq!(
-            json["formationGroups"],
+            json["choice"]["formationGroups"],
             serde_json::json!([
                 {
                     "ruleModuleId": null,
@@ -5930,8 +5871,12 @@ mod tests {
                 }
             ])
         );
-        assert!(json.get("formation_groups").is_none());
-        assert!(json["formationGroups"][0].get("rule_module_id").is_none());
+        assert!(json["choice"].get("formation_groups").is_none());
+        assert!(
+            json["choice"]["formationGroups"][0]
+                .get("rule_module_id")
+                .is_none()
+        );
     }
 
     #[test]
@@ -6077,22 +6022,27 @@ mod tests {
     }
 
     #[test]
-    fn chaos_choice_requires_two_cards_without_changing_record_schema() {
-        let choice = PendingChoiceKind::EffectGenerated {
-            effect_id: "chaos".to_string(),
-            continuation_id: "chaos:return-two".to_string(),
-            allowed_cards: vec![
+    fn chaos_choice_serializes_exact_card_bounds_without_internal_continuations() {
+        let choice = PendingChoiceKind::Card {
+            cards: vec![
                 CardInstanceId::new(1),
                 CardInstanceId::new(2),
                 CardInstanceId::new(3),
             ],
+            minimum: 2,
+            maximum: 2,
+            can_decline: false,
         };
 
-        assert_eq!(choice.required_count(), 2);
-        assert!(
-            !serde_json::to_string(&choice)
-                .expect("choice should serialize")
-                .contains("required_count")
+        assert_eq!(
+            serde_json::to_value(&choice).unwrap(),
+            serde_json::json!({
+                "type": "card",
+                "cards": [1, 2, 3],
+                "minimum": 2,
+                "maximum": 2,
+                "canDecline": false,
+            })
         );
     }
 
@@ -6142,12 +6092,11 @@ mod tests {
     }
 
     #[test]
-    fn typed_echo_answers_are_explicit_in_event_history() {
-        let target = GameEvent::TypedEffectChoiceAnswered {
+    fn choice_answers_are_explicit_in_event_history() {
+        let target = GameEvent::ChoiceMade {
             player: PlayerId::new("alice"),
-            effect_id: "echo:pure-fire".to_string(),
-            continuation_id: "echo:pure-fire:target".to_string(),
-            answer: EffectChoiceAnswer::Player {
+            choice_id: ChoiceId::new(1),
+            answer: ChoiceAnswer::Player {
                 player: PlayerId::new("bob"),
             },
         };
@@ -6157,11 +6106,10 @@ mod tests {
                 .contains("玩家 bob")
         );
 
-        let formation = GameEvent::TypedEffectChoiceAnswered {
+        let formation = GameEvent::ChoiceMade {
             player: PlayerId::new("alice"),
-            effect_id: "echo:plant-earth".to_string(),
-            continuation_id: "echo:plant-earth:melody".to_string(),
-            answer: EffectChoiceAnswer::Formation {
+            choice_id: ChoiceId::new(2),
+            answer: ChoiceAnswer::Formation {
                 formation_id: "echo:ringing-metal".to_string(),
             },
         };
@@ -6319,16 +6267,17 @@ mod tests {
 
         let choice_event = WebPublicGameEvent::from_public(
             2,
-            PublicGameEvent::EffectChoiceRequested {
-                player: PlayerId::new("alice"),
-                purpose: "echo:ringing-metal".to_string(),
-                kind: PublicPendingChoiceKind::Hidden,
+            PublicGameEvent::ChoiceRequested {
+                choice: crate::public_view::PublicPendingChoice::Hidden {
+                    player: PlayerId::new("alice"),
+                    reason: PublicPendingChoicePresentation::EchoRingingMetalDeckCard,
+                },
             },
             &labels,
             &formations,
             &vocabulary,
         );
-        assert!(choice_event.summary.contains("商調‧鳴金"));
+        assert!(choice_event.summary.contains("需要作出選擇"));
         assert!(!choice_event.summary.contains("echo:"));
     }
 

@@ -1,6 +1,6 @@
 use crate::domain::{
-    CardInstanceId, CardMoveDelta, EngineInvariantError, GameError, GameEvent, GameResult,
-    GameState, PlayerId, TeamId, ValidationError,
+    CardInstanceId, CardMoveDelta, ChoiceRequest, EngineInvariantError, GameError, GameEvent,
+    GameResult, GameState, PlayerId, TeamId, ValidationError,
 };
 use crate::rules::{AttackCategory, PointFormula};
 
@@ -38,8 +38,7 @@ pub(in crate::rules::base) enum EffectIntent {
         used_cards: Vec<CardInstanceId>,
     },
     RequestChoice {
-        player: PlayerId,
-        kind: crate::domain::PendingChoiceKind,
+        request: ChoiceRequest,
     },
 }
 
@@ -135,7 +134,7 @@ pub(in crate::rules::base) fn effect_intent_events(
                 )?);
                 continue;
             }
-            EffectIntent::RequestChoice { player, kind } => {
+            EffectIntent::RequestChoice { request } => {
                 if let Some(existing_player) = requested_choice_player {
                     return Err(GameError::EngineInvariant(
                         EngineInvariantError::DuplicatePendingChoice {
@@ -144,8 +143,8 @@ pub(in crate::rules::base) fn effect_intent_events(
                     ));
                 }
 
-                requested_choice_player = Some(player.clone());
-                GameEvent::EffectChoiceRequested { player, kind }
+                requested_choice_player = Some(request.player.clone());
+                crate::rules::pending_choice::request_event(state, request)?
             }
         };
 
@@ -158,7 +157,9 @@ pub(in crate::rules::base) fn effect_intent_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{GameSetup, PendingChoiceKind};
+    use crate::domain::{
+        BaseChoiceContinuation, ChoiceContinuation, ChoiceRequest, GameSetup, PendingChoiceKind,
+    };
 
     fn state() -> GameState {
         GameState::from_setup(&GameSetup::two_player(
@@ -188,19 +189,31 @@ mod tests {
             &state(),
             vec![
                 EffectIntent::RequestChoice {
-                    player: PlayerId::new("p1"),
-                    kind: PendingChoiceKind::EffectGenerated {
-                        effect_id: "first".to_string(),
-                        continuation_id: "first".to_string(),
-                        allowed_cards: Vec::new(),
+                    request: ChoiceRequest {
+                        player: PlayerId::new("p1"),
+                        kind: PendingChoiceKind::Card {
+                            cards: Vec::new(),
+                            minimum: 0,
+                            maximum: 0,
+                            can_decline: false,
+                        },
+                        continuation: ChoiceContinuation::Base(
+                            BaseChoiceContinuation::HolyWindTakeHighest,
+                        ),
                     },
                 },
                 EffectIntent::RequestChoice {
-                    player: PlayerId::new("p2"),
-                    kind: PendingChoiceKind::EffectGenerated {
-                        effect_id: "second".to_string(),
-                        continuation_id: "second".to_string(),
-                        allowed_cards: Vec::new(),
+                    request: ChoiceRequest {
+                        player: PlayerId::new("p2"),
+                        kind: PendingChoiceKind::Card {
+                            cards: Vec::new(),
+                            minimum: 0,
+                            maximum: 0,
+                            can_decline: false,
+                        },
+                        continuation: ChoiceContinuation::Base(
+                            BaseChoiceContinuation::ChaosReturnTwo,
+                        ),
                     },
                 },
             ],

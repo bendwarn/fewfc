@@ -1,11 +1,12 @@
 use fewfc::application::{GameRecord, apply_event, handle_command};
 use fewfc::domain::{
-    CardInstanceId, Command, CoveredPassive, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
-    GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HERO_SCHOOLS_MODULE_ID,
-    PERSONAL_DECK_MODULE_ID, PassiveTriggerTiming, PendingChoice, PendingChoiceKind, Phase, Player,
-    PlayerId, PlayerProfession, PlayerSpirit, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID,
-    STAR_MODULE_ID, SpiritKind, SpiritSkill, StarKind, StatusDuration, StatusEffect, StatusOwner,
-    TargetDecl, TeamId, TeamStar, ValidationError,
+    BaseChoiceContinuation, CardInstanceId, ChoiceAnswer, ChoiceContinuation, ChoiceId, Command,
+    CoveredPassive, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError, GameEvent, GameOutcome,
+    GameSetup, GameState, GameStatus, HERO_SCHOOLS_MODULE_ID, PERSONAL_DECK_MODULE_ID,
+    PassiveTriggerTiming, PendingChoice, PendingChoiceKind, Phase, Player, PlayerId,
+    PlayerProfession, PlayerSpirit, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID,
+    SpiritKind, SpiritSkill, StarKind, StatusDuration, StatusEffect, StatusOwner, TargetDecl,
+    TeamId, TeamStar, ValidationError,
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, event_for, state_for};
 use fewfc::rules::OfficialRules;
@@ -254,24 +255,32 @@ fn matching_turn_discard_charges_only_the_owners_spirit_to_six() {
     *state.hand_mut(&PlayerId::new("p1")).unwrap() = vec![discard];
     state.phase = Phase::TurnDrawDiscardChoice;
     state.pending_choice = Some(PendingChoice {
+        choice_id: ChoiceId::new(1),
         player: PlayerId::new("p1"),
-        kind: PendingChoiceKind::TurnDrawDiscard {
-            drawn_cards: vec![discard],
-            allowed_discards: vec![discard],
+        kind: PendingChoiceKind::Card {
+            cards: vec![discard],
+            minimum: 1,
+            maximum: 1,
+            can_decline: false,
         },
+        continuation: ChoiceContinuation::Base(BaseChoiceContinuation::TurnDrawDiscard),
     });
 
     let events = handle_command(
         &state,
-        Command::ChooseTurnDiscard {
+        Command::AnswerChoice {
             player: PlayerId::new("p1"),
-            discard,
+            choice_id: ChoiceId::new(1),
+            answer: ChoiceAnswer::Cards {
+                cards: vec![discard],
+            },
         },
     )
     .unwrap();
     assert!(matches!(
         events.as_slice(),
         [
+            GameEvent::ChoiceMade { .. },
             GameEvent::TurnDiscardChosen { .. },
             GameEvent::SpiritPowerChanged {
                 old_power: 5,

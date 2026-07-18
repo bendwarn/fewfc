@@ -50,7 +50,7 @@ test('Earth Rending Environment choice is private, accessible, and reconnectable
     const [answer] = await Promise.all([
       host.waitForResponse(response => (
         response.url().endsWith(`/api/games/${roomId}/commands`)
-        && response.request().postDataJSON()?.action?.type === 'answerEffectChoiceTyped'
+        && response.request().postDataJSON()?.action?.type === 'answerChoice'
       )),
       host.getByRole('button', { name: '選擇環境 火行' }).click(),
     ])

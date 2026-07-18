@@ -493,27 +493,24 @@ pub(crate) fn chain_events(
             .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?
             .team
             .clone();
-        return Ok(vec![GameEvent::EffectChoiceRequested {
-            player: player.clone(),
-            kind: crate::domain::PendingChoiceKind::TypedEffect {
-                effect_id: CHAIN_ID.to_string(),
-                continuation_id: "pouch:chain:select".to_string(),
-                options: crate::domain::EffectChoiceOptions {
-                    cards: Some(crate::domain::CardChoiceOptions {
-                        allowed_cards: deck.to_vec(),
-                        minimum: 1,
-                        maximum: deck.len().min(2),
-                    }),
-                    players: state
+        return Ok(vec![crate::rules::pending_choice::request_event(
+            state,
+            crate::domain::ChoiceRequest {
+                player: player.clone(),
+                kind: crate::domain::PendingChoiceKind::Chain {
+                    pouch_owners: state
                         .players
                         .iter()
                         .filter(|candidate| candidate.team == team)
                         .map(|candidate| candidate.id.clone())
                         .collect(),
-                    ..Default::default()
+                    deck_cards: deck.to_vec(),
                 },
+                continuation: crate::domain::ChoiceContinuation::Pouch(
+                    crate::domain::PouchChoiceContinuation::Chain,
+                ),
             },
-        }]);
+        )?]);
     }
     let owner = targets
         .iter()
@@ -668,9 +665,9 @@ pub(crate) fn chain_events(
 pub(crate) fn answer_chain_choice(
     state: &GameState,
     player: &PlayerId,
-    answer: &crate::domain::EffectChoiceAnswer,
+    answer: &crate::domain::ChoiceAnswer,
 ) -> GameResult<Option<Vec<GameEvent>>> {
-    let crate::domain::EffectChoiceAnswer::Chain {
+    let crate::domain::ChoiceAnswer::Chain {
         pouch_owner,
         pouch_card,
         trigger_card,
@@ -1074,36 +1071,43 @@ fn sheep_choice_events(
             },
         }]);
     }
-    Ok(vec![GameEvent::EffectChoiceRequested {
-        player: player.clone(),
-        kind: crate::domain::PendingChoiceKind::SheepStealing {
-            source_card,
-            owner: state
-                .pouch_for(player)
-                .filter(|pouch| pouch.card == source_card)
-                .map(|pouch| pouch.owner.clone()),
-            deck_cards: state.deck_for(player).unwrap_or_default().to_vec(),
-            discard_cards: state.discard_for(player).unwrap_or_default().to_vec(),
+    Ok(vec![crate::rules::pending_choice::request_event(
+        state,
+        crate::domain::ChoiceRequest {
+            player: player.clone(),
+            kind: crate::domain::PendingChoiceKind::SheepStealing {
+                source_card,
+                owner: state
+                    .pouch_for(player)
+                    .filter(|pouch| pouch.card == source_card)
+                    .map(|pouch| pouch.owner.clone()),
+                deck_cards: state.deck_for(player).unwrap_or_default().to_vec(),
+                discard_cards: state.discard_for(player).unwrap_or_default().to_vec(),
+            },
+            continuation: crate::domain::ChoiceContinuation::Pouch(
+                crate::domain::PouchChoiceContinuation::SheepStealing,
+            ),
         },
-    }])
+    )?])
 }
 
 pub(crate) fn answer_sheep_choice(
     state: &GameState,
+    choice: &crate::domain::PendingChoice,
     player: &PlayerId,
-    answer: &crate::domain::EffectChoiceAnswer,
+    answer: &crate::domain::ChoiceAnswer,
 ) -> GameResult<Option<Vec<GameEvent>>> {
-    let crate::domain::EffectChoiceAnswer::SheepStealing {
+    let crate::domain::ChoiceAnswer::SheepStealing {
         deck_cards,
         discard_cards,
     } = answer
     else {
         return Ok(None);
     };
-    let Some(crate::domain::PendingChoice {
+    let crate::domain::PendingChoice {
         kind: crate::domain::PendingChoiceKind::SheepStealing { source_card, .. },
         ..
-    }) = &state.pending_choice
+    } = choice
     else {
         return Ok(None);
     };
@@ -1495,9 +1499,11 @@ mod tests {
         .unwrap();
         assert!(matches!(
             resumed.last(),
-            Some(GameEvent::EffectChoiceRequested {
-                kind: crate::domain::PendingChoiceKind::SheepStealing { .. },
-                ..
+            Some(GameEvent::ChoiceRequested {
+                choice: crate::domain::PendingChoice {
+                    kind: crate::domain::PendingChoiceKind::SheepStealing { .. },
+                    ..
+                }
             })
         ));
     }
@@ -1538,10 +1544,12 @@ mod tests {
         .unwrap();
         assert!(matches!(
             resumed.last(),
-            Some(GameEvent::EffectChoiceRequested {
-                kind: crate::domain::PendingChoiceKind::TypedEffect { effect_id, .. },
-                ..
-            }) if effect_id == CHAIN_ID
+            Some(GameEvent::ChoiceRequested {
+                choice: crate::domain::PendingChoice {
+                    kind: crate::domain::PendingChoiceKind::Chain { .. },
+                    ..
+                }
+            })
         ));
     }
 
@@ -1591,6 +1599,7 @@ mod tests {
             .discard_for_mut(&player)
             .unwrap()
             .extend(discard_cards.iter().copied());
+        state.status = GameStatus::InProgress;
 
         let events = chain_events(
             &state,
@@ -1623,8 +1632,20 @@ mod tests {
             state.pending_choice.as_ref().map(|choice| &choice.kind),
             Some(crate::domain::PendingChoiceKind::SheepStealing { .. })
         ));
-        let exchange =
-            sheep_stealing_events(&state, &player, trigger, deck_cards, discard_cards).unwrap();
+        let choice_id = state.pending_choice.as_ref().unwrap().choice_id;
+        let exchange = crate::rules::base::BaseRuleset::new()
+            .decide_command(
+                &state,
+                Command::AnswerChoice {
+                    player: player.clone(),
+                    choice_id,
+                    answer: crate::domain::ChoiceAnswer::SheepStealing {
+                        deck_cards: deck_cards.to_vec(),
+                        discard_cards: discard_cards.to_vec(),
+                    },
+                },
+            )
+            .unwrap();
         apply(&mut state, &exchange);
 
         let request = state.pending_randomness.clone().unwrap();

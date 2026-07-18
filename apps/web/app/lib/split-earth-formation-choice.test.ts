@@ -13,9 +13,6 @@ test('presents the base ruleset and Rule Module names for Split Earth', () => {
 
 test('uses grouped choices only for Split Earth and keys each Pending Choice', () => {
   const choice = {
-    player: 'p1',
-    purpose: '裂土指定',
-    presentation: { type: 'echoSplitEarthFormation' as const },
     formationGroups: [{
       ruleModuleId: null,
       formations: [{ id: 'weapon', name: '武器' }],
@@ -25,12 +22,8 @@ test('uses grouped choices only for Split Earth and keys each Pending Choice', (
   expect(usesSplitEarthFormationGroups(choice)).toBe(true)
   expect(usesSplitEarthFormationGroups({
     ...choice,
-    presentation: { type: 'echoPlantEarthMelody' },
+    formationGroups: [],
   })).toBe(false)
-  expect(splitEarthChoiceKey(choice, 3, true)).not.toBe(splitEarthChoiceKey({
-    ...choice,
-    purpose: '新的裂土指定',
-  }, 3, true))
   expect(splitEarthChoiceKey(choice, 3, true)).not.toBe(
     splitEarthChoiceKey(choice, 4, true),
   )

@@ -30,7 +30,7 @@ describe('deck card choice presentation', () => {
       expect(appSource.match(new RegExp(`label="${label}"`, 'g'))).toHaveLength(1)
     }
 
-    expect(appSource).toContain("state.pendingChoice.presentation.type === 'echoRingingMetalDeckCard'")
+    expect(appSource).toContain("state.pendingChoice.reason.type === 'echoRingingMetalDeckCard'")
     expect(appSource).not.toContain('連環牽羊牌組矩陣')
     expect(appSource).not.toContain('連環牽羊回收矩陣')
   })

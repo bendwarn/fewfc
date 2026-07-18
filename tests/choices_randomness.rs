@@ -2,10 +2,9 @@ use fewfc::application::{
     advance_automatic, apply_event, handle_command, replay, resolve_trusted_randomness,
 };
 use fewfc::domain::{
-    CardChoiceOptions, CardInstanceId, Command, EffectChoiceAnswer, EffectChoiceOptions, GameError,
-    GameEvent, GameSetup, GameState, PassActionReason, PendingChoice, PendingChoiceKind,
-    PendingRandomness, PlayerId, PouchRandomnessContinuation, RandomnessContinuation,
-    RandomnessDeck, TrustedRandomnessAnswer, ValidationError,
+    CardInstanceId, ChoiceAnswer, ChoiceId, Command, GameError, GameEvent, GameSetup, GameState,
+    PassActionReason, PendingChoiceKind, PendingRandomness, PlayerId, PouchRandomnessContinuation,
+    RandomnessContinuation, RandomnessDeck, TrustedRandomnessAnswer, ValidationError,
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, event_for, state_for};
 
@@ -15,152 +14,6 @@ fn card(id: u64) -> CardInstanceId {
 
 fn setup() -> GameSetup {
     GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30)
-}
-
-fn typed_choice_state(options: EffectChoiceOptions) -> GameState {
-    let mut state = GameState::from_setup(&setup());
-    state.pending_choice = Some(PendingChoice {
-        player: PlayerId::new("p1"),
-        kind: PendingChoiceKind::TypedEffect {
-            effect_id: "test:effect".to_string(),
-            continuation_id: "test:continue".to_string(),
-            options,
-        },
-    });
-    state
-}
-
-#[test]
-fn typed_effect_choices_accept_each_declared_answer_kind() {
-    let cases = [
-        (
-            EffectChoiceOptions {
-                players: vec![PlayerId::new("p2")],
-                ..Default::default()
-            },
-            EffectChoiceAnswer::Player {
-                player: PlayerId::new("p2"),
-            },
-        ),
-        (
-            EffectChoiceOptions {
-                formations: vec!["echo:melody".to_string()],
-                ..Default::default()
-            },
-            EffectChoiceAnswer::Formation {
-                formation_id: "echo:melody".to_string(),
-            },
-        ),
-        (
-            EffectChoiceOptions {
-                environments: vec![fewfc::domain::Element::Fire],
-                ..Default::default()
-            },
-            EffectChoiceAnswer::Environment {
-                environment: fewfc::domain::Element::Fire,
-            },
-        ),
-        (
-            EffectChoiceOptions {
-                can_decline: true,
-                ..Default::default()
-            },
-            EffectChoiceAnswer::Decline,
-        ),
-    ];
-
-    for (options, answer) in cases {
-        let events = handle_command(
-            &typed_choice_state(options),
-            Command::AnswerEffectChoiceTyped {
-                player: PlayerId::new("p1"),
-                answer: answer.clone(),
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            events,
-            vec![GameEvent::TypedEffectChoiceAnswered {
-                player: PlayerId::new("p1"),
-                effect_id: "test:effect".to_string(),
-                continuation_id: "test:continue".to_string(),
-                answer,
-            }]
-        );
-    }
-}
-
-#[test]
-fn typed_card_choice_validates_and_resumes_the_existing_continuation() {
-    let mut state = GameState::from_setup(&setup());
-    state.hands[1].cards = vec![card(1)];
-    state.pending_choice = Some(PendingChoice {
-        player: PlayerId::new("p1"),
-        kind: PendingChoiceKind::TypedEffect {
-            effect_id: "holy-wind".to_string(),
-            continuation_id: "holy-wind:take-highest".to_string(),
-            options: EffectChoiceOptions {
-                cards: Some(CardChoiceOptions {
-                    allowed_cards: vec![card(1)],
-                    minimum: 1,
-                    maximum: 1,
-                }),
-                ..Default::default()
-            },
-        },
-    });
-
-    let events = handle_command(
-        &state,
-        Command::AnswerEffectChoiceTyped {
-            player: PlayerId::new("p1"),
-            answer: EffectChoiceAnswer::Cards {
-                cards: vec![card(1)],
-            },
-        },
-    )
-    .unwrap();
-
-    assert!(matches!(
-        events.first(),
-        Some(GameEvent::TypedEffectChoiceAnswered { .. })
-    ));
-    assert!(matches!(events.get(1), Some(GameEvent::CardsMoved { .. })));
-}
-
-#[test]
-fn invalid_typed_answers_emit_no_events() {
-    let state = typed_choice_state(EffectChoiceOptions {
-        players: vec![PlayerId::new("p2")],
-        ..Default::default()
-    });
-
-    for answer in [
-        EffectChoiceAnswer::Player {
-            player: PlayerId::new("unknown"),
-        },
-        EffectChoiceAnswer::Formation {
-            formation_id: "not-allowed".to_string(),
-        },
-        EffectChoiceAnswer::Decline,
-        EffectChoiceAnswer::Cards {
-            cards: vec![card(1)],
-        },
-    ] {
-        assert_eq!(
-            handle_command(
-                &state,
-                Command::AnswerEffectChoiceTyped {
-                    player: PlayerId::new("p1"),
-                    answer,
-                },
-            ),
-            Err(GameError::Validation(
-                ValidationError::InvalidEffectChoiceAnswer
-            ))
-        );
-        assert!(state.pending_choice.is_some());
-    }
 }
 
 fn state_with_pending_randomness() -> GameState {
@@ -317,22 +170,14 @@ fn public_randomness_views_never_expose_the_order() {
 #[test]
 fn new_choice_and_randomness_fields_serialize_as_camel_case() {
     assert_eq!(
-        serde_json::to_value(EffectChoiceAnswer::Formation {
+        serde_json::to_value(ChoiceAnswer::Formation {
             formation_id: "formation".to_string(),
         })
         .unwrap(),
         serde_json::json!({"type": "formation", "formationId": "formation"})
     );
     assert_eq!(
-        serde_json::to_value(EffectChoiceOptions {
-            environments: vec![fewfc::domain::Element::Fire],
-            ..Default::default()
-        })
-        .unwrap(),
-        serde_json::json!({"environments": ["Fire"], "canDecline": false})
-    );
-    assert_eq!(
-        serde_json::to_value(EffectChoiceAnswer::SheepStealing {
+        serde_json::to_value(ChoiceAnswer::SheepStealing {
             deck_cards: vec![card(2), card(3)],
             discard_cards: vec![card(4), card(5)],
         })
@@ -344,7 +189,7 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
         })
     );
     assert_eq!(
-        serde_json::to_value(EffectChoiceAnswer::Chain {
+        serde_json::to_value(ChoiceAnswer::Chain {
             pouch_owner: PlayerId::new("p2"),
             pouch_card: card(2),
             trigger_card: Some(card(3)),
@@ -368,7 +213,7 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
         })
     );
     assert_eq!(
-        serde_json::to_value(fewfc::domain::PendingChoiceKind::SheepStealing {
+        serde_json::to_value(PendingChoiceKind::SheepStealing {
             source_card: card(9),
             owner: Some(PlayerId::new("p1")),
             deck_cards: vec![card(2), card(3)],
@@ -376,11 +221,42 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
         })
         .unwrap(),
         serde_json::json!({
-            "sheepStealing": {
-                "sourceCard": 9,
-                "owner": "p1",
-                "deckCards": [2, 3],
-                "discardCards": [4, 5]
+            "type": "sheepStealing",
+            "sourceCard": 9,
+            "owner": "p1",
+            "deckCards": [2, 3],
+            "discardCards": [4, 5]
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(Command::AnswerChoice {
+            player: PlayerId::new("p1"),
+            choice_id: ChoiceId::new(7),
+            answer: ChoiceAnswer::Chain {
+                pouch_owner: PlayerId::new("p2"),
+                pouch_card: card(2),
+                trigger_card: Some(card(3)),
+                strategy: None,
+                target_player: Some(PlayerId::new("p1")),
+                star: None,
+                break_star: true,
+                discard_card: Some(card(4)),
+            },
+        })
+        .unwrap(),
+        serde_json::json!({
+            "answerChoice": {
+                "player": "p1",
+                "choiceId": 7,
+                "answer": {
+                    "type": "chain",
+                    "pouchOwner": "p2",
+                    "pouchCard": 2,
+                    "triggerCard": 3,
+                    "targetPlayer": "p1",
+                    "breakStar": true,
+                    "discardCard": 4
+                }
             }
         })
     );

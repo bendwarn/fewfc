@@ -57,11 +57,11 @@ test('Pure Fire target choice is private, accessible, and reconnectable', async 
     const [answer] = await Promise.all([
       host.waitForResponse(response => (
         response.url().endsWith(`/api/games/${roomId}/commands`)
-        && response.request().postDataJSON()?.action?.type === 'answerEffectChoiceTyped'
+        && response.request().postDataJSON()?.action?.type === 'answerChoice'
       )),
       targets.nth(1).click(),
     ])
-    expect(answer.ok()).toBe(true)
+    expect(answer.ok(), await answer.text()).toBe(true)
     await expect(host.getByText('淨火', { exact: true })).toBeVisible()
     await expect(host.getByText(/迴響 · .* · 第 \d+ 回合/)).toBeVisible()
   } finally {
@@ -106,11 +106,11 @@ test('Split Earth selects a Formation through its providing rules', async ({ bro
     const [answer] = await Promise.all([
       host.waitForResponse(response => (
         response.url().endsWith(`/api/games/${roomId}/commands`)
-        && response.request().postDataJSON()?.action?.type === 'answerEffectChoiceTyped'
+        && response.request().postDataJSON()?.action?.type === 'answerChoice'
       )),
       host.getByRole('button', { name: '選擇陣法 武器' }).click(),
     ])
-    expect(answer.ok()).toBe(true)
+    expect(answer.ok(), await answer.text()).toBe(true)
     await expect(host.getByText(/裂土：壓制 武器/)).toBeVisible()
   } finally {
     await hostContext.close()

@@ -1,9 +1,10 @@
 import type {
   Element,
-  EffectChoiceAnswer,
+  ChoiceAnswer,
   LocalGameResponse,
   PlayerId,
   PlayableAction,
+  PublicPendingChoice,
   PublicGameState,
   RecordedDecision,
   SecretStrategy,
@@ -207,8 +208,7 @@ export type OnlineGameAction =
       selectedCard?: number
       declaredLevel?: number
     }
-  | { type: 'chooseTurnDiscard'; player: PlayerId; card: number }
-  | { type: 'answerEffectChoiceTyped'; player: PlayerId; answer: EffectChoiceAnswer }
+  | { type: 'answerChoice'; player: PlayerId; choiceId: number; answer: ChoiceAnswer }
   | { type: 'retrievePreviousTurnDiscard'; player: PlayerId }
   | { type: 'playableActions'; player: PlayerId; cards: number[] }
 
@@ -227,8 +227,7 @@ export function isOnlineGameAction(value: unknown): value is OnlineGameAction {
     'changeProfession',
     'activateProfessionAbility',
     'useSpiritSkill',
-    'chooseTurnDiscard',
-    'answerEffectChoiceTyped',
+    'answerChoice',
     'retrievePreviousTurnDiscard',
     'playableActions',
   ].includes(String(value.type))
@@ -295,19 +294,20 @@ export async function resolvePendingRandomnessSequence<
 
 export function requiresPendingCommandDraft(
   action: OnlineGameAction,
-  pendingChoiceKind: string | undefined,
+  pendingChoice: PublicPendingChoice | null,
 ): boolean {
   return (
     (action.type === 'performFormation' || action.type === 'triggerSecretStrategy')
-    && pendingChoiceKind !== undefined
-    && ['EffectGenerated', 'TypedEffect', 'SheepStealing'].includes(pendingChoiceKind)
+    && pendingChoice?.visibility === 'visible'
+    && pendingChoice.reason.type !== 'turnDrawDiscard'
   )
 }
 
 export function continuesPendingCommandDraft(
-  pendingChoiceKind: string | undefined,
+  pendingChoice: PublicPendingChoice | null,
 ): boolean {
-  return ['EffectGenerated', 'TypedEffect', 'SheepStealing'].includes(pendingChoiceKind ?? '')
+  return pendingChoice?.visibility === 'visible'
+    && pendingChoice.reason.type !== 'turnDrawDiscard'
 }
 
 export type GameRoomRequest =

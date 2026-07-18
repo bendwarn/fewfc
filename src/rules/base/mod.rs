@@ -473,6 +473,30 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
 
         projection::apply_event(&mut projected, &event);
         events.push(event);
+        if let Some(GameEvent::CardsDrawnForTurnDiscardChoice {
+            player,
+            allowed_discards,
+            ..
+        }) = events.last()
+        {
+            let choice_event = crate::rules::pending_choice::request_event(
+                &projected,
+                crate::domain::ChoiceRequest {
+                    player: player.clone(),
+                    kind: crate::domain::PendingChoiceKind::Card {
+                        cards: allowed_discards.clone(),
+                        minimum: 1,
+                        maximum: 1,
+                        can_decline: false,
+                    },
+                    continuation: crate::domain::ChoiceContinuation::Base(
+                        crate::domain::BaseChoiceContinuation::TurnDrawDiscard,
+                    ),
+                },
+            )?;
+            projection::apply_event(&mut projected, &choice_event);
+            events.push(choice_event);
+        }
         if projected.pending_choice.is_some() || projected.pending_randomness.is_some() {
             break;
         }
@@ -635,27 +659,7 @@ fn decide_command_with_base_ruleset(
         ));
     }
     if let Some(choice) = &state.pending_choice {
-        let is_choice_answer = matches!(
-            (&choice.kind, &command),
-            (
-                crate::domain::PendingChoiceKind::TurnDrawDiscard { .. },
-                Command::ChooseTurnDiscard { .. }
-            ) | (
-                crate::domain::PendingChoiceKind::EffectGenerated { .. },
-                Command::AnswerEffectChoice { .. } | Command::AnswerEffectChoiceTyped { .. }
-            ) | (
-                crate::domain::PendingChoiceKind::CardSetChoice { .. },
-                Command::AnswerEffectChoice { .. } | Command::AnswerEffectChoiceTyped { .. }
-            ) | (
-                crate::domain::PendingChoiceKind::TypedEffect { .. },
-                Command::AnswerEffectChoiceTyped { .. }
-            ) | (
-                crate::domain::PendingChoiceKind::SheepStealing { .. },
-                Command::AnswerEffectChoiceTyped { .. }
-            )
-        );
-
-        if !is_choice_answer {
+        if !matches!(command, Command::AnswerChoice { .. }) {
             return Err(GameError::Validation(
                 ValidationError::PendingChoiceInProgress {
                     player: choice.player.clone(),
@@ -978,261 +982,11 @@ fn decide_command_with_base_ruleset(
             }
             Ok(events)
         }
-        Command::ChooseTurnDiscard { player, discard } => {
-            ensure_current_player(state, &player)?;
-            ensure_phase(state, Phase::TurnDrawDiscardChoice)?;
-
-            let allowed_discards = match &state.pending_choice {
-                Some(crate::domain::PendingChoice {
-                    player: choice_player,
-                    kind:
-                        crate::domain::PendingChoiceKind::TurnDrawDiscard {
-                            allowed_discards, ..
-                        },
-                }) if choice_player == &player => allowed_discards,
-                _ => return Err(GameError::Validation(ValidationError::MissingPendingChoice)),
-            };
-
-            if !allowed_discards.contains(&discard) {
-                return Err(GameError::Validation(ValidationError::IllegalDiscard(
-                    discard,
-                )));
-            }
-
-            let mut events = vec![GameEvent::TurnDiscardChosen {
-                player: player.clone(),
-                discard,
-            }];
-            if let Some(owned) = state.spirit_for(&player)
-                && owned.power < 6
-                && !crate::rules::pouch::spirit_is_suppressed(state, &player)
-                && crate::rules::spirit::turn_discard_charges(state, owned.spirit, discard)
-            {
-                events.push(GameEvent::SpiritPowerChanged {
-                    player,
-                    spirit: owned.spirit,
-                    old_power: owned.power,
-                    delta: 1,
-                    new_power: owned.power + 1,
-                    reason: crate::domain::SpiritPowerChangeReason::TurnDrawDiscard {
-                        card: discard,
-                    },
-                });
-            }
-            Ok(events)
-        }
-        Command::AnswerEffectChoice {
+        Command::AnswerChoice {
             player,
-            selected_cards,
-        } => {
-            let (effect_id, continuation_id, allowed_cards, minimum, maximum) =
-                match &state.pending_choice {
-                    Some(crate::domain::PendingChoice {
-                        player: choice_player,
-                        kind:
-                            crate::domain::PendingChoiceKind::EffectGenerated {
-                                effect_id,
-                                continuation_id,
-                                allowed_cards,
-                            },
-                    }) if choice_player == &player => {
-                        let required = state
-                            .pending_choice
-                            .as_ref()
-                            .expect("matched pending choice")
-                            .kind
-                            .required_count();
-                        (
-                            effect_id.clone(),
-                            continuation_id.clone(),
-                            allowed_cards,
-                            required,
-                            required,
-                        )
-                    }
-                    Some(crate::domain::PendingChoice {
-                        player: choice_player,
-                        kind:
-                            crate::domain::PendingChoiceKind::CardSetChoice {
-                                effect_id,
-                                continuation_id,
-                                allowed_cards,
-                                minimum,
-                                maximum,
-                            },
-                    }) if choice_player == &player => (
-                        effect_id.clone(),
-                        continuation_id.clone(),
-                        allowed_cards,
-                        *minimum,
-                        *maximum,
-                    ),
-                    _ => return Err(GameError::Validation(ValidationError::MissingPendingChoice)),
-                };
-
-            if selected_cards.len() < minimum || selected_cards.len() > maximum {
-                return Err(GameError::Validation(ValidationError::MissingPendingChoice));
-            }
-
-            let mut seen = HashSet::new();
-            for selected_card in &selected_cards {
-                if !seen.insert(*selected_card) {
-                    return Err(GameError::Validation(ValidationError::DuplicateChoiceCard(
-                        *selected_card,
-                    )));
-                }
-
-                if !allowed_cards.contains(selected_card) {
-                    return Err(GameError::Validation(ValidationError::IllegalChoiceCard(
-                        *selected_card,
-                    )));
-                }
-            }
-
-            let mut events = vec![GameEvent::EffectChoiceAnswered {
-                player: player.clone(),
-                effect_id: effect_id.clone(),
-                continuation_id: continuation_id.clone(),
-                selected_cards: selected_cards.clone(),
-            }];
-            let resumed_events = formation_use::answer_effect_choice(
-                state,
-                &player,
-                &effect_id,
-                &continuation_id,
-                &selected_cards,
-            )?;
-            events.extend(resumed_events);
-            Ok(events)
-        }
-        Command::AnswerEffectChoiceTyped { player, answer } => {
-            let (effect_id, continuation_id) = match &state.pending_choice {
-                Some(crate::domain::PendingChoice {
-                    player: choice_player,
-                    kind:
-                        crate::domain::PendingChoiceKind::EffectGenerated {
-                            effect_id,
-                            continuation_id,
-                            allowed_cards,
-                        },
-                }) if choice_player == &player
-                    && matches!(
-                        &answer,
-                        crate::domain::EffectChoiceAnswer::Cards { cards }
-                            if cards.len()
-                                == state
-                                    .pending_choice
-                                    .as_ref()
-                                    .expect("matched pending choice")
-                                    .kind
-                                    .required_count()
-                                && effect_choice_cards_are_valid(allowed_cards, cards)
-                    ) =>
-                {
-                    (effect_id.clone(), continuation_id.clone())
-                }
-                Some(crate::domain::PendingChoice {
-                    player: choice_player,
-                    kind:
-                        crate::domain::PendingChoiceKind::CardSetChoice {
-                            effect_id,
-                            continuation_id,
-                            allowed_cards,
-                            minimum,
-                            maximum,
-                        },
-                }) if choice_player == &player
-                    && matches!(
-                        &answer,
-                        crate::domain::EffectChoiceAnswer::Cards { cards }
-                            if cards.len() >= *minimum
-                                && cards.len() <= *maximum
-                                && effect_choice_cards_are_valid(allowed_cards, cards)
-                    ) =>
-                {
-                    (effect_id.clone(), continuation_id.clone())
-                }
-                Some(crate::domain::PendingChoice {
-                    player: choice_player,
-                    kind:
-                        crate::domain::PendingChoiceKind::TypedEffect {
-                            effect_id,
-                            continuation_id,
-                            options,
-                        },
-                }) if choice_player == &player
-                    && effect_choice_answer_is_valid(options, &answer) =>
-                {
-                    (effect_id.clone(), continuation_id.clone())
-                }
-                Some(crate::domain::PendingChoice {
-                    player: choice_player,
-                    kind: crate::domain::PendingChoiceKind::SheepStealing { .. },
-                }) if choice_player == &player
-                    && matches!(answer, crate::domain::EffectChoiceAnswer::SheepStealing { ref deck_cards, ref discard_cards } if deck_cards.len() == 2 && discard_cards.len() == 2) =>
-                {
-                    (
-                        "pouch:sheep-stealing".to_string(),
-                        "pouch:sheep-stealing:exchange".to_string(),
-                    )
-                }
-                Some(crate::domain::PendingChoice {
-                    player: choice_player,
-                    ..
-                }) if choice_player != &player => {
-                    return Err(GameError::Validation(ValidationError::MissingPendingChoice));
-                }
-                Some(_) => {
-                    return Err(GameError::Validation(
-                        ValidationError::InvalidEffectChoiceAnswer,
-                    ));
-                }
-                None => {
-                    return Err(GameError::Validation(ValidationError::MissingPendingChoice));
-                }
-            };
-
-            let mut events = vec![GameEvent::TypedEffectChoiceAnswered {
-                player: player.clone(),
-                effect_id: effect_id.clone(),
-                continuation_id: continuation_id.clone(),
-                answer: answer.clone(),
-            }];
-            if let Some(echo_events) = crate::rules::echo::answer_choice(
-                state,
-                &player,
-                &effect_id,
-                &continuation_id,
-                &answer,
-            )? {
-                events.extend(echo_events);
-            } else if let Some(tribulation_events) =
-                crate::rules::tribulation::answer_choice(state, &continuation_id, &answer)?
-            {
-                events.extend(tribulation_events);
-            } else if effect_id == crate::rules::pouch::CHAIN_ID {
-                if let Some(chain_events) =
-                    crate::rules::pouch::answer_chain_choice(state, &player, &answer)?
-                {
-                    events.extend(chain_events);
-                }
-            } else if effect_id == "pouch:sheep-stealing" {
-                if let Some(sheep_events) =
-                    crate::rules::pouch::answer_sheep_choice(state, &player, &answer)?
-                {
-                    events.extend(sheep_events);
-                }
-            } else if let crate::domain::EffectChoiceAnswer::Cards { cards } = &answer {
-                events.extend(formation_use::answer_effect_choice(
-                    state,
-                    &player,
-                    &effect_id,
-                    &continuation_id,
-                    cards,
-                )?);
-            }
-            Ok(events)
-        }
+            choice_id,
+            answer,
+        } => crate::rules::pending_choice::answer_events(state, player, choice_id, answer),
         Command::RetrievePreviousTurnDiscard { player } => {
             ensure_current_player(state, &player)?;
             ensure_phase(state, Phase::Main)?;
@@ -1423,61 +1177,105 @@ fn ensure_can_query_playable_actions(
     Ok(())
 }
 
-pub(crate) fn effect_choice_answer_is_valid(
-    options: &crate::domain::EffectChoiceOptions,
-    answer: &crate::domain::EffectChoiceAnswer,
-) -> bool {
-    match answer {
-        crate::domain::EffectChoiceAnswer::Cards { cards } => {
-            let Some(card_options) = &options.cards else {
-                return false;
-            };
-            if cards.len() < card_options.minimum || cards.len() > card_options.maximum {
-                return false;
-            }
-            let mut seen = HashSet::new();
-            cards
-                .iter()
-                .all(|card| seen.insert(*card) && card_options.allowed_cards.contains(card))
-        }
-        crate::domain::EffectChoiceAnswer::Player { player } => options.players.contains(player),
-        crate::domain::EffectChoiceAnswer::Formation { formation_id } => {
-            options.formations.contains(formation_id)
-        }
-        crate::domain::EffectChoiceAnswer::Environment { environment } => {
-            options.environments.contains(environment)
-        }
-        crate::domain::EffectChoiceAnswer::Chain {
-            pouch_owner,
-            pouch_card,
-            trigger_card,
-            strategy,
-            ..
-        } => {
-            options.players.contains(pouch_owner)
-                && options.cards.as_ref().is_some_and(|cards| {
-                    cards.allowed_cards.contains(pouch_card)
-                        && trigger_card.is_none_or(|card| {
-                            card != *pouch_card
-                                && cards.maximum >= 2
-                                && cards.allowed_cards.contains(&card)
-                        })
-                })
-                && (trigger_card.is_some() == strategy.is_some())
-        }
-        crate::domain::EffectChoiceAnswer::SheepStealing { .. } => false,
-        crate::domain::EffectChoiceAnswer::Decline => options.can_decline,
-    }
-}
+pub(crate) fn resolve_answered_choice(
+    state: &GameState,
+    choice: &crate::domain::PendingChoice,
+    player: PlayerId,
+    choice_id: crate::domain::ChoiceId,
+    answer: crate::domain::ChoiceAnswer,
+) -> GameResult<Vec<GameEvent>> {
+    let mut events = vec![GameEvent::ChoiceMade {
+        player: player.clone(),
+        choice_id,
+        answer: answer.clone(),
+    }];
+    // Consequences are planned from the canonical state after Choice Made.
+    // This lets a continuation request the next Choice without replacing the
+    // active one in the planning state, while the returned event sequence
+    // remains replayable from the pre-answer state.
+    let mut resolved_state = state.clone();
+    crate::rules::projection::apply_event(&mut resolved_state, &events[0]);
 
-pub(crate) fn effect_choice_cards_are_valid(
-    allowed_cards: &[crate::domain::CardInstanceId],
-    cards: &[crate::domain::CardInstanceId],
-) -> bool {
-    let mut seen = HashSet::new();
-    cards
-        .iter()
-        .all(|card| seen.insert(*card) && allowed_cards.contains(card))
+    match &choice.continuation {
+        crate::domain::ChoiceContinuation::Base(
+            crate::domain::BaseChoiceContinuation::TurnDrawDiscard,
+        ) => {
+            ensure_current_player(&resolved_state, &player)?;
+            ensure_phase(&resolved_state, Phase::TurnDrawDiscardChoice)?;
+            let crate::domain::ChoiceAnswer::Cards { cards } = answer else {
+                unreachable!("validated Turn Draw answer is a Card answer")
+            };
+            let discard = cards[0];
+            events.push(GameEvent::TurnDiscardChosen {
+                player: player.clone(),
+                discard,
+            });
+            if let Some(owned) = resolved_state.spirit_for(&player)
+                && owned.power < 6
+                && !crate::rules::pouch::spirit_is_suppressed(&resolved_state, &player)
+                && crate::rules::spirit::turn_discard_charges(
+                    &resolved_state,
+                    owned.spirit,
+                    discard,
+                )
+            {
+                events.push(GameEvent::SpiritPowerChanged {
+                    player,
+                    spirit: owned.spirit,
+                    old_power: owned.power,
+                    delta: 1,
+                    new_power: owned.power + 1,
+                    reason: crate::domain::SpiritPowerChangeReason::TurnDrawDiscard {
+                        card: discard,
+                    },
+                });
+            }
+        }
+        crate::domain::ChoiceContinuation::Echo(continuation) => {
+            if let Some(resumed) =
+                crate::rules::echo::answer_choice(&resolved_state, &player, continuation, &answer)?
+            {
+                events.extend(resumed);
+            }
+        }
+        crate::domain::ChoiceContinuation::Tribulation(continuation) => {
+            if let Some(resumed) =
+                crate::rules::tribulation::answer_choice(&resolved_state, continuation, &answer)?
+            {
+                events.extend(resumed);
+            }
+        }
+        crate::domain::ChoiceContinuation::Pouch(crate::domain::PouchChoiceContinuation::Chain) => {
+            if let Some(resumed) =
+                crate::rules::pouch::answer_chain_choice(&resolved_state, &player, &answer)?
+            {
+                events.extend(resumed);
+            }
+        }
+        crate::domain::ChoiceContinuation::Pouch(
+            crate::domain::PouchChoiceContinuation::SheepStealing,
+        ) => {
+            if let Some(resumed) =
+                crate::rules::pouch::answer_sheep_choice(&resolved_state, choice, &player, &answer)?
+            {
+                events.extend(resumed);
+            }
+        }
+        continuation => {
+            let cards = match &answer {
+                crate::domain::ChoiceAnswer::Cards { cards } => cards,
+                _ => unreachable!("validated card continuation has a Card answer"),
+            };
+            events.extend(formation_use::answer_choice(
+                &resolved_state,
+                choice,
+                &player,
+                continuation,
+                cards,
+            )?);
+        }
+    }
+    Ok(events)
 }
 
 fn ensure_current_player(state: &GameState, actual: &crate::domain::PlayerId) -> GameResult<()> {

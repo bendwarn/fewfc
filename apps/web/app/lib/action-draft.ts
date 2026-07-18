@@ -24,7 +24,9 @@ export function actionDraftContextKey(state: PublicGameState): string {
     state.turnNumber,
     state.phase,
     state.currentPlayer ?? '',
-    state.pendingChoice?.purpose ?? '',
+    state.pendingChoice?.visibility === 'visible'
+      ? `${state.pendingChoice.choiceId}:${state.pendingChoice.choice.type}`
+      : state.pendingChoice?.visibility ?? '',
     visibleHand,
   ].join(':')
 }

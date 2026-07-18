@@ -778,13 +778,17 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       deckSeed,
       record: rules.record,
     })
-    const discardChoice = rules.state.pendingChoice?.cards[0]
+    const discardChoice = rules.state.pendingChoice?.visibility === 'visible'
+      && rules.state.pendingChoice.choice.type === 'card'
+      ? { choiceId: rules.state.pendingChoice.choiceId, card: rules.state.pendingChoice.choice.cards[0] }
+      : undefined
     if (discardChoice) {
       rules = await callRulesEngine({
         action: {
-          type: 'chooseTurnDiscard',
+          type: 'answerChoice',
           player: actor.player,
-          card: discardChoice.id,
+          choiceId: discardChoice.choiceId,
+          answer: { type: 'cards', cards: [discardChoice.card.id] },
         },
         viewer: actor.player,
         setup,
@@ -841,13 +845,17 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       deckSeed,
       record: rules.record,
     })
-    const opponentDiscardChoice = rules.state.pendingChoice?.cards[0]
+    const opponentDiscardChoice = rules.state.pendingChoice?.visibility === 'visible'
+      && rules.state.pendingChoice.choice.type === 'card'
+      ? { choiceId: rules.state.pendingChoice.choiceId, card: rules.state.pendingChoice.choice.cards[0] }
+      : undefined
     if (opponentDiscardChoice) {
       rules = await callRulesEngine({
         action: {
-          type: 'chooseTurnDiscard',
+          type: 'answerChoice',
           player: opponent,
-          card: opponentDiscardChoice.id,
+          choiceId: opponentDiscardChoice.choiceId,
+          answer: { type: 'cards', cards: [opponentDiscardChoice.card.id] },
         },
         viewer: opponent,
         setup,
@@ -1054,7 +1062,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       record: rules.record,
     })
     if (
-      rules.state.pendingChoice?.kind !== 'TypedEffect'
+      rules.state.pendingChoice?.visibility !== 'visible'
     ) {
       return this.json({ error: `test fixture did not reach ${formationName} choice` }, 500)
     }
@@ -1137,8 +1145,9 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       record: rules.record,
     })
     if (
-      rules.state.pendingChoice?.kind !== 'TypedEffect'
-      || rules.state.pendingChoice.environments.length !== 5
+      rules.state.pendingChoice?.visibility !== 'visible'
+      || rules.state.pendingChoice.choice.type !== 'environment'
+      || rules.state.pendingChoice.choice.environments.length !== 5
     ) {
       return this.json({ error: 'test fixture did not reach Environment choice' }, 500)
     }
@@ -1342,7 +1351,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     if (
       existingDraft
       && !existingDraft.pendingRandomness
-      && playerAction.type !== 'answerEffectChoiceTyped'
+      && playerAction.type !== 'answerChoice'
     ) {
       return this.json({ error: 'complete or cancel the pending effect choice first' }, 409)
     }
@@ -1387,7 +1396,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
     if (
       !existingDraft
-      && requiresPendingCommandDraft(playerAction, rules.state.pendingChoice?.kind)
+      && requiresPendingCommandDraft(playerAction, rules.state.pendingChoice)
     ) {
       const draft: PendingCommandDraft = {
         actorUserId: request.actorUserId,
@@ -1407,7 +1416,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
     if (
       existingDraft
-      && continuesPendingCommandDraft(rules.state.pendingChoice?.kind)
+      && continuesPendingCommandDraft(rules.state.pendingChoice)
     ) {
       await this.ctx.storage.put('pendingCommandDraft', {
         ...existingDraft,
@@ -1852,8 +1861,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       case 'changeProfession':
       case 'chooseInitialPouch':
       case 'triggerSecretStrategy':
-      case 'chooseTurnDiscard':
-      case 'answerEffectChoiceTyped':
+      case 'answerChoice':
       case 'retrievePreviousTurnDiscard':
       case 'playableActions':
         return { ...action, player }
@@ -2045,8 +2053,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         performFormation: `${actor} 已完成陣法行動。`,
         activateProfessionAbility: `${actor} 已發動職業能力。`,
         performFormationWithChoices: `${actor} 已完成陣法與效果選擇。`,
-        chooseTurnDiscard: `${actor} 已完成捨棄。`,
-        answerEffectChoiceTyped: `${actor} 已完成效果選擇。`,
+        answerChoice: `${actor} 已完成選擇。`,
         retrievePreviousTurnDiscard: `${actor} 已發動棄牌回收。`,
       }
       return summaries[action] ?? '戰局狀態已更新。'

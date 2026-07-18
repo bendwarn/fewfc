@@ -69,21 +69,19 @@ pub(super) fn resolve(
     Ok(events)
 }
 
-pub(super) fn answer_effect_choice(
+pub(crate) fn answer_choice(
     state: &GameState,
+    choice: &crate::domain::PendingChoice,
     player: &PlayerId,
-    effect_id: &str,
-    continuation_id: &str,
+    continuation: &crate::domain::ChoiceContinuation,
     selected_cards: &[CardInstanceId],
 ) -> GameResult<Vec<GameEvent>> {
-    let intents =
-        resume_effect_choice_intents(state, player, effect_id, continuation_id, selected_cards)?;
+    let intents = resume_choice_intents(state, choice, player, continuation, selected_cards)?;
     let mut events = effect_intent_events(state, intents)?;
-    events.extend(crate::rules::confluence::after_effect_choice_events(
+    events.extend(crate::rules::confluence::after_choice_events(
         state,
         player,
-        effect_id,
-        continuation_id,
+        continuation,
     )?);
     Ok(events)
 }
@@ -211,7 +209,7 @@ impl BaseEffectResolver {
                         &plan.cards,
                         damage_prevented,
                         split_attack_damage,
-                    ));
+                    )?);
                     return Ok(events);
                 }
                 if plan.formation_id == crate::rules::tribulation::RUSTED_FOREST
@@ -234,7 +232,7 @@ impl BaseEffectResolver {
                         state,
                         &plan.player,
                         &plan.formation_id,
-                    )?
+                    )
                 };
                 let point_formula = crate::rules::tribulation::attack_points(
                     &plan.formation_id,
@@ -836,11 +834,17 @@ fn active_spell_intents(
             ];
             if !allowed_cards.is_empty() {
                 intents.push(EffectIntent::RequestChoice {
-                    player: player.clone(),
-                    kind: crate::domain::PendingChoiceKind::EffectGenerated {
-                        effect_id: resolver_id.to_string(),
-                        continuation_id: "holy-wind:take-highest".to_string(),
-                        allowed_cards,
+                    request: crate::domain::ChoiceRequest {
+                        player: player.clone(),
+                        kind: crate::domain::PendingChoiceKind::Card {
+                            cards: allowed_cards,
+                            minimum: 1,
+                            maximum: 1,
+                            can_decline: false,
+                        },
+                        continuation: crate::domain::ChoiceContinuation::Base(
+                            crate::domain::BaseChoiceContinuation::HolyWindTakeHighest,
+                        ),
                     },
                 });
             }
@@ -940,11 +944,17 @@ fn active_spell_intents(
                     cards: allowed_cards.clone(),
                 },
                 EffectIntent::RequestChoice {
-                    player: player.clone(),
-                    kind: crate::domain::PendingChoiceKind::EffectGenerated {
-                        effect_id: resolver_id.to_string(),
-                        continuation_id: "chaos:return-two".to_string(),
-                        allowed_cards,
+                    request: crate::domain::ChoiceRequest {
+                        player: player.clone(),
+                        kind: crate::domain::PendingChoiceKind::Card {
+                            maximum: allowed_cards.len().min(2),
+                            minimum: allowed_cards.len().min(2),
+                            cards: allowed_cards,
+                            can_decline: false,
+                        },
+                        continuation: crate::domain::ChoiceContinuation::Base(
+                            crate::domain::BaseChoiceContinuation::ChaosReturnTwo,
+                        ),
                     },
                 },
             ])
@@ -1063,15 +1073,17 @@ fn nth_future_turn_for_player(
     TurnOrderTargets::new(state).nth_future_turn_for_player(player, occurrence)
 }
 
-fn resume_effect_choice_intents(
+fn resume_choice_intents(
     state: &GameState,
+    choice: &crate::domain::PendingChoice,
     player: &PlayerId,
-    effect_id: &str,
-    continuation_id: &str,
+    continuation: &crate::domain::ChoiceContinuation,
     selected_cards: &[CardInstanceId],
 ) -> GameResult<Vec<EffectIntent>> {
-    match (effect_id, continuation_id) {
-        ("confluence:clear-wind", "confluence:clear-wind:discard-top") => {
+    match continuation {
+        crate::domain::ChoiceContinuation::Confluence(
+            crate::domain::ConfluenceChoiceContinuation::ClearWindDiscardTop,
+        ) => {
             let Some(card) = selected_cards.first().copied() else {
                 return Ok(Vec::new());
             };
@@ -1087,23 +1099,9 @@ fn resume_effect_choice_intents(
                 }],
             }])
         }
-        ("metamorphosis", "metamorphosis:choose-card") => {
-            let selected_card = selected_cards
-                .first()
-                .ok_or(GameError::Validation(ValidationError::MissingPendingChoice))?;
-            let value =
-                state
-                    .card_level_for(player, *selected_card)
-                    .ok_or(GameError::Validation(
-                        ValidationError::MissingCardInstanceDefinition(*selected_card),
-                    ))? as i32;
-
-            Ok(vec![EffectIntent::SetShield {
-                player: player.clone(),
-                value,
-            }])
-        }
-        ("chaos", "chaos:return-two") => {
+        crate::domain::ChoiceContinuation::Base(
+            crate::domain::BaseChoiceContinuation::ChaosReturnTwo,
+        ) => {
             let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
             let target_hand = state.hand(&target).ok_or_else(|| {
                 GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
@@ -1130,7 +1128,9 @@ fn resume_effect_choice_intents(
                     .collect(),
             }])
         }
-        ("holy-wind", "holy-wind:take-highest") => {
+        crate::domain::ChoiceContinuation::Base(
+            crate::domain::BaseChoiceContinuation::HolyWindTakeHighest,
+        ) => {
             let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
             let card = *selected_cards
                 .first()
@@ -1143,16 +1143,11 @@ fn resume_effect_choice_intents(
                 }],
             }])
         }
-        ("revelation", "revelation:keep-one") => {
-            let allowed_cards = match &state.pending_choice {
-                Some(crate::domain::PendingChoice {
-                    kind: crate::domain::PendingChoiceKind::EffectGenerated { allowed_cards, .. },
-                    ..
-                })
-                | Some(crate::domain::PendingChoice {
-                    kind: crate::domain::PendingChoiceKind::CardSetChoice { allowed_cards, .. },
-                    ..
-                }) => allowed_cards,
+        crate::domain::ChoiceContinuation::Hero(
+            crate::domain::HeroChoiceContinuation::RevelationKeepOne,
+        ) => {
+            let allowed_cards = match &choice.kind {
+                crate::domain::PendingChoiceKind::Card { cards, .. } => cards,
                 _ => return Err(GameError::Validation(ValidationError::MissingPendingChoice)),
             };
             Ok(vec![EffectIntent::MoveCards {
@@ -1168,19 +1163,16 @@ fn resume_effect_choice_intents(
                     .collect(),
             }])
         }
-        ("jianghu:azure-cloud-step", "jianghu:azure-cloud-step:return-one") => {
-            let allowed_cards = match &state.pending_choice {
-                Some(crate::domain::PendingChoice {
-                    kind:
-                        crate::domain::PendingChoiceKind::EffectGenerated {
-                            effect_id: pending_effect,
-                            continuation_id: pending_continuation,
-                            allowed_cards,
-                        },
-                    ..
-                }) if pending_effect == effect_id && pending_continuation == continuation_id => {
-                    allowed_cards
-                }
+        crate::domain::ChoiceContinuation::Jianghu(
+            crate::domain::JianghuChoiceContinuation::AzureCloudStepReturnOne,
+        ) => {
+            let allowed_cards = match (&choice.kind, &choice.continuation) {
+                (
+                    crate::domain::PendingChoiceKind::Card { cards, .. },
+                    crate::domain::ChoiceContinuation::Jianghu(
+                        crate::domain::JianghuChoiceContinuation::AzureCloudStepReturnOne,
+                    ),
+                ) => cards,
                 _ => {
                     return Err(GameError::Validation(ValidationError::MissingPendingChoice));
                 }
@@ -1209,15 +1201,9 @@ fn resume_effect_choice_intents(
                     .collect(),
             }])
         }
-        (effect, continuation)
-            if matches!(
-                effect,
-                "confluence:mirror-resonance"
-                    | "confluence:myriad-resonance"
-                    | "confluence:thousand-resonance"
-            ) && (continuation == "confluence:discard-inspected-card"
-                || continuation.starts_with("confluence:thousand-resonance-after:")) =>
-        {
+        crate::domain::ChoiceContinuation::Confluence(
+            crate::domain::ConfluenceChoiceContinuation::DiscardInspectedCard { .. },
+        ) => {
             let target =
                 resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)?;
             let card = *selected_cards
@@ -1231,20 +1217,16 @@ fn resume_effect_choice_intents(
                 }],
             }])
         }
-        ("confluence:clear-wind-ten-thousand-miles", "confluence:clear-wind:keep-cards") => {
-            let allowed_cards = match &state.pending_choice {
-                Some(crate::domain::PendingChoice {
-                    kind:
-                        crate::domain::PendingChoiceKind::CardSetChoice {
-                            effect_id: pending_effect,
-                            continuation_id: pending_continuation,
-                            allowed_cards,
-                            ..
-                        },
-                    ..
-                }) if pending_effect == effect_id && pending_continuation == continuation_id => {
-                    allowed_cards
-                }
+        crate::domain::ChoiceContinuation::Confluence(
+            crate::domain::ConfluenceChoiceContinuation::ClearWindKeepCards,
+        ) => {
+            let allowed_cards = match (&choice.kind, &choice.continuation) {
+                (
+                    crate::domain::PendingChoiceKind::Card { cards, .. },
+                    crate::domain::ChoiceContinuation::Confluence(
+                        crate::domain::ConfluenceChoiceContinuation::ClearWindKeepCards,
+                    ),
+                ) => cards,
                 _ => {
                     return Err(GameError::Validation(ValidationError::MissingPendingChoice));
                 }
@@ -1264,7 +1246,7 @@ fn resume_effect_choice_intents(
         }
         _ => Err(GameError::RuleImplementation(
             crate::domain::RuleImplementationError::EffectNotImplemented(
-                continuation_id.to_string(),
+                "unsupported choice continuation".to_string(),
             ),
         )),
     }
