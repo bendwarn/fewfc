@@ -1106,6 +1106,52 @@ fn tailwind_recovers_for_all_shared_deck_owners_but_only_personal_pile_owner() {
     assert_eq!(personal.limited_uses[1].remaining, 0);
 }
 
+#[test]
+fn deck_shuffles_and_ineligible_tailwind_owners_do_not_emit_recovery_events() {
+    let mut state = state(false);
+    state.limited_uses = vec![limited("p1", 0), limited("p2", 0)];
+    state.professions = vec![
+        PlayerProfession {
+            player: PlayerId::new("p1"),
+            profession: ProfessionId::new("confluence:clear-wind-envoy"),
+        },
+        PlayerProfession {
+            player: PlayerId::new("p2"),
+            profession: ProfessionId::new("confluence:clear-wind-envoy"),
+        },
+    ];
+    let shuffled = cards(&state, &[(Element::Earth, 1)])[0];
+    state.deck.push(shuffled);
+    apply_event(
+        &mut state,
+        &GameEvent::RandomnessRequested {
+            request: PendingRandomness {
+                request_id: "forest-deck-shuffle".to_string(),
+                operation: RandomnessOperation::DeckShuffle {
+                    deck: RandomnessDeck::Shared,
+                },
+                continuation: RandomnessContinuation::Base(
+                    fewfc::domain::BaseRandomnessContinuation::TurnDraw,
+                ),
+                current_order: vec![shuffled],
+            },
+        },
+    );
+    let events = resolve_trusted_randomness(
+        &state,
+        &TrustedRandomnessAnswer {
+            request_id: "forest-deck-shuffle".to_string(),
+            shuffled_order: vec![shuffled],
+        },
+    )
+    .unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, GameEvent::LimitedUseChanged { .. }))
+    );
+}
+
 fn limited(player: &str, remaining: u32) -> LimitedUse {
     LimitedUse {
         owner: PlayerId::new(player),

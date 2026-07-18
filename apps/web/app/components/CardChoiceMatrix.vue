@@ -69,7 +69,7 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{
-  select: [card: CardInstanceId]
+  choose: [card: CardInstanceId]
 }>()
 
 const composition = computed(() => buildCardComposition(props.cards))
@@ -98,6 +98,6 @@ function selectCell(cardIds: CardInstanceId[]) {
     props.maximum,
     props.mode,
   )
-  if (card !== undefined) emit('select', card)
+  if (card !== undefined) emit('choose', card)
 }
 </script>

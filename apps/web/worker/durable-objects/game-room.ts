@@ -655,6 +655,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         return await this.seedTribulationFixture(actorUserId)
       case 'tribulation-rusted-forest':
         return await this.seedRustedForestFixture(actorUserId)
+      case 'pouch-chain-sheep':
+        return await this.seedPouchChainSheepFixture(actorUserId)
     }
   }
 
@@ -1228,6 +1230,79 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     })
   }
 
+  private async seedPouchChainSheepFixture(actorUserId: string): Promise<Response> {
+    const metadata = await this.requireMetadata()
+    const actor = this.memberFor(metadata, actorUserId)
+    if (!actor?.owner) {
+      return this.json({ error: 'only room owner may seed a test fixture' }, 403)
+    }
+    if (metadata.status !== 'Active') {
+      return this.json({ error: 'test fixture requires an active match' }, 409)
+    }
+
+    const snapshot = await this.requireSnapshot()
+    if (!snapshot.setup.enabledRuleModules.includes('pouch')) {
+      return this.json({ error: 'test fixture requires Pouch' }, 409)
+    }
+    const setup: RulesGameSetup = {
+      ...snapshot.setup,
+      turnOrder: [
+        actor.player,
+        ...snapshot.setup.turnOrder.filter(player => player !== actor.player),
+      ],
+    }
+    const deckSeed = 'development:pouch-chain-sheep'
+    const rules = await callRulesEngine({
+      action: {
+        type: 'startDevelopmentScenario',
+        player: actor.player,
+        scenario: 'pouch-chain-sheep',
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+    })
+    const scenario = await callRulesEngine({
+      action: {
+        type: 'developmentScenarioAction',
+        player: actor.player,
+        scenario: 'pouch-chain-sheep',
+      },
+      viewer: actor.player,
+      setup,
+      deckSeed,
+      record: rules.record,
+    })
+    const chain = scenario.playableActions.find(
+      (action): action is Extract<PlayableAction, { type: 'performFormation' }> => (
+        action.type === 'performFormation' && action.id === 'pouch:chain'
+      ),
+    )
+    if (!chain) {
+      return this.json({ error: 'test fixture could not find Chain Cards' }, 500)
+    }
+
+    await this.ctx.storage.put('snapshot', {
+      ...snapshot,
+      firstPlayer: actor.player,
+      setup,
+      deckSeed,
+      rulesRecord: rules.record,
+    } satisfies GameRoomSnapshot)
+    await this.ctx.storage.delete('pendingCommandDraft')
+    this.ctx.waitUntil(this.broadcast(metadata))
+
+    return this.json({
+      ...await this.response(metadata, actorUserId),
+      fixtureAction: {
+        type: 'performFormation',
+        player: actor.player,
+        formationId: chain.id,
+        cards: chain.cards,
+      },
+    })
+  }
+
   private async submitCommand(
     request: Extract<GameRoomRequest, { type: 'submitCommand' }>,
   ): Promise<Response> {
@@ -1764,16 +1839,6 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           matchOptionRole: action.matchOptionRole,
           matchOptionCard: action.matchOptionCard,
           matchOptionSlots: action.matchOptionSlots,
-          pouchOwner: action.pouchOwner,
-          pouchCard: action.pouchCard,
-          triggerCard: action.triggerCard,
-          secretStrategy: action.secretStrategy,
-          secretStrategyTargetPlayer: action.secretStrategyTargetPlayer,
-          secretStrategyStar: action.secretStrategyStar,
-          secretStrategyBreakStar: action.secretStrategyBreakStar,
-          secretStrategyDiscardCard: action.secretStrategyDiscardCard,
-          secretStrategyDeckCards: action.secretStrategyDeckCards,
-          secretStrategyDiscardCards: action.secretStrategyDiscardCards,
         }
       case 'useSpiritSkill':
         return {

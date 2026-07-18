@@ -6,6 +6,7 @@ export type DevelopmentScenario =
   | { name: 'echo-split-earth' }
   | { name: 'tribulation-earth-rending' }
   | { name: 'tribulation-rusted-forest' }
+  | { name: 'pouch-chain-sheep' }
 
 export const DEVELOPMENT_SCENARIO_NAMES: DevelopmentScenario['name'][] = [
   'star-endgame',
@@ -15,6 +16,7 @@ export const DEVELOPMENT_SCENARIO_NAMES: DevelopmentScenario['name'][] = [
   'echo-split-earth',
   'tribulation-earth-rending',
   'tribulation-rusted-forest',
+  'pouch-chain-sheep',
 ]
 
 export function isDevelopmentScenario(value: unknown): value is DevelopmentScenario {
@@ -29,7 +31,8 @@ export function isDevelopmentScenario(value: unknown): value is DevelopmentScena
     || scenario.name === 'hero-schools-transition'
     || scenario.name === 'echo-split-earth'
     || scenario.name === 'tribulation-earth-rending'
-    || scenario.name === 'tribulation-rusted-forest') {
+    || scenario.name === 'tribulation-rusted-forest'
+    || scenario.name === 'pouch-chain-sheep') {
     return keys.length === 1
   }
   if (keys.some(key => key !== 'name' && key !== 'options')) return false

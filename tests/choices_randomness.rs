@@ -295,6 +295,9 @@ fn public_randomness_views_never_expose_the_order() {
     let state_json = serde_json::to_string(&public).unwrap();
     assert!(!state_json.contains("current_order"));
     assert!(!state_json.contains("[1,2,3]"));
+    assert!(state_json.contains("\"requestId\""));
+    assert!(state_json.contains("\"cardCount\""));
+    assert!(state_json.contains("\"operation\":\"deckShuffle\""));
 
     let event = GameEvent::RandomnessRequested {
         request: state.pending_randomness.unwrap(),
@@ -329,6 +332,59 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
         serde_json::json!({"environments": ["Fire"], "canDecline": false})
     );
     assert_eq!(
+        serde_json::to_value(EffectChoiceAnswer::SheepStealing {
+            deck_cards: vec![card(2), card(3)],
+            discard_cards: vec![card(4), card(5)],
+        })
+        .unwrap(),
+        serde_json::json!({
+            "type": "sheepStealing",
+            "deckCards": [2, 3],
+            "discardCards": [4, 5]
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(EffectChoiceAnswer::Chain {
+            pouch_owner: PlayerId::new("p2"),
+            pouch_card: card(2),
+            trigger_card: Some(card(3)),
+            strategy: Some(fewfc::domain::SecretStrategy::DeceiveHeaven),
+            target_player: Some(PlayerId::new("p1")),
+            star: Some(fewfc::domain::StarKind::Fire),
+            break_star: true,
+            discard_card: Some(card(4)),
+        })
+        .unwrap(),
+        serde_json::json!({
+            "type": "chain",
+            "pouchOwner": "p2",
+            "pouchCard": 2,
+            "triggerCard": 3,
+            "strategy": "DeceiveHeaven",
+            "targetPlayer": "p1",
+            "star": "Fire",
+            "breakStar": true,
+            "discardCard": 4
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(fewfc::domain::PendingChoiceKind::SheepStealing {
+            source_card: card(9),
+            owner: Some(PlayerId::new("p1")),
+            deck_cards: vec![card(2), card(3)],
+            discard_cards: vec![card(4), card(5)],
+        })
+        .unwrap(),
+        serde_json::json!({
+            "sheepStealing": {
+                "sourceCard": 9,
+                "owner": "p1",
+                "deckCards": [2, 3],
+                "discardCards": [4, 5]
+            }
+        })
+    );
+    assert_eq!(
         serde_json::to_value(TrustedRandomnessAnswer {
             request_id: "request".to_string(),
             shuffled_order: vec![card(2), card(1)],
@@ -359,6 +415,52 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
                 "kind": "ringingMetalPostSearch"
             },
             "currentOrder": [1, 2],
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(PouchRandomnessContinuation::ChainRecycle).unwrap(),
+        serde_json::json!("chainRecycle")
+    );
+    assert_eq!(
+        serde_json::to_value(PendingRandomness {
+            request_id: "pouch-recycle".to_string(),
+            operation: fewfc::domain::RandomnessOperation::DiscardShuffle {
+                pile: RandomnessDeck::Player(PlayerId::new("p1")),
+                placement: fewfc::domain::DeckPlacement::Bottom,
+            },
+            continuation: RandomnessContinuation::Pouch(
+                PouchRandomnessContinuation::SheepStealingRecycle {
+                    source_card: card(9),
+                },
+            ),
+            current_order: vec![card(1)],
+        })
+        .unwrap(),
+        serde_json::json!({
+            "requestId": "pouch-recycle",
+            "operation": {
+                "type": "discardShuffle",
+                "pile": { "Player": "p1" },
+                "placement": "Bottom"
+            },
+            "continuation": {
+                "type": "pouch",
+                "kind": { "sheepStealingRecycle": { "sourceCard": 9 } }
+            },
+            "currentOrder": [1]
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(PouchRandomnessContinuation::SheepStealing {
+            source_card: card(9),
+            owner: Some(PlayerId::new("p1")),
+        })
+        .unwrap(),
+        serde_json::json!({
+            "sheepStealing": {
+                "sourceCard": 9,
+                "owner": "p1"
+            }
         })
     );
     assert_eq!(

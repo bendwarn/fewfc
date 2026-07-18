@@ -427,6 +427,11 @@ impl BaseEffectResolver {
                 }
                 if !spell_cancelled && !spell_ineffective {
                     if spell.resolver_id == crate::rules::pouch::CHAIN_ID {
+                        if !plan.declared_targets.is_empty() {
+                            return Err(GameError::Validation(
+                                crate::domain::ValidationError::SecretStrategyInputInvalid,
+                            ));
+                        }
                         events.extend(crate::rules::pouch::chain_events(
                             state,
                             &plan.player,

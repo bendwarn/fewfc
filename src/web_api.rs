@@ -2,10 +2,11 @@ use crate::application::{GameRecord, RecordedDecision, replay_frame};
 use crate::domain::targeting::{RulePlayerTarget, TurnOrderTargets};
 use crate::domain::{
     CardDefId, CardInstanceId, CardOrigin, Command, DISCARD_RETRIEVAL_MODULE_ID,
-    EffectChoiceAnswer, Element, GameError, GameEvent, GameSetup, PassActionReason,
-    PendingChoiceKind, PendingRandomness, Phase, Player, PlayerDeckList, PlayerId, ProfessionId,
-    RuleModuleId, SecretStrategy, SpiritKind, SpiritSkill, StarKind, StatusDuration, StatusOwner,
-    TargetDecl, TeamHp, TeamId, TrustedRandomnessAnswer, TurnDrawSkipReason,
+    EffectChoiceAnswer, Element, GameError, GameEvent, GamePreparationStage, GameSetup, GameState,
+    GameStatus, PassActionReason, PendingChoiceKind, PendingRandomness, Phase, Player,
+    PlayerDeckList, PlayerId, ProfessionId, RuleModuleId, SecretStrategy, SpiritKind, SpiritSkill,
+    StarKind, StatusDuration, StatusOwner, TargetDecl, TeamHp, TeamId, TrustedRandomnessAnswer,
+    TurnDrawSkipReason,
 };
 use crate::public_view::{
     PublicCardInterpretation, PublicCardRefs, PublicGameEvent, PublicGameState,
@@ -168,7 +169,11 @@ fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
                 development_scenario_deck_order(&rules, &setup, &player, &scenario)?,
             )
             .map_err(ApiError::Game)?;
-            advance_to_interactive_decision(&mut record)?;
+            if scenario == "pouch-chain-sheep" {
+                complete_pouch_chain_development_preparation(&mut record, &player)?;
+            } else {
+                advance_to_interactive_decision(&mut record)?;
+            }
         }
         ApiAction::ChooseInitialPouch { player, card } => {
             let _ = record
@@ -308,16 +313,6 @@ fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
             match_option_role,
             match_option_card,
             match_option_slots,
-            pouch_owner,
-            pouch_card,
-            trigger_card,
-            secret_strategy,
-            secret_strategy_target_player,
-            secret_strategy_star,
-            secret_strategy_break_star,
-            secret_strategy_discard_card,
-            secret_strategy_deck_cards,
-            secret_strategy_discard_cards,
             trusted_random_cards,
         } => {
             let mut declared_targets = star_substitution_card
@@ -333,32 +328,6 @@ fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
                 } else {
                     declared_targets.push(TargetDecl::FormationRole { role, card });
                 }
-            }
-            if let Some(owner) = pouch_owner {
-                declared_targets.push(TargetDecl::Player(PlayerId::new(owner)));
-            }
-            if let Some(card) = pouch_card {
-                declared_targets.push(TargetDecl::FormationRole {
-                    role: "pouch".to_string(),
-                    card,
-                });
-            }
-            if let Some(card) = trigger_card {
-                declared_targets.push(TargetDecl::FormationRole {
-                    role: "trigger".to_string(),
-                    card,
-                });
-            }
-            if let Some(strategy) = secret_strategy {
-                declared_targets.push(TargetDecl::SecretStrategy(strategy));
-                declared_targets.push(TargetDecl::SecretStrategyOptions {
-                    target_player: secret_strategy_target_player.map(PlayerId::new),
-                    star: secret_strategy_star,
-                    break_star: secret_strategy_break_star.unwrap_or(false),
-                    discard_card: secret_strategy_discard_card,
-                    deck_cards: secret_strategy_deck_cards.unwrap_or_default(),
-                    discard_cards: secret_strategy_discard_cards.unwrap_or_default(),
-                });
             }
             let command = if let Some(random_cards) = trusted_random_cards {
                 Command::PerformFormationWithTrustedRandomness {
@@ -604,30 +573,8 @@ fn response_for(
     }
     let secret_strategy_actions = viewer_player
         .as_ref()
-        .filter(|player| {
-            record.state().current_player() == Some(*player) && record.state().phase == Phase::Main
-        })
-        .map(|player| {
-            let mut source_cards = record.state().deck_for(player).unwrap_or_default().to_vec();
-            if let Some(pouch) = record.state().pouch_for(player) {
-                source_cards.push(pouch.card);
-            }
-            source_cards.sort();
-            source_cards.dedup();
-            source_cards
-                .into_iter()
-                .flat_map(|card| {
-                    crate::rules::pouch::strategy_action_options(record.state(), player, card)
-                })
-                .map(WebSecretStrategyActionOption::from)
-                .collect()
-        })
+        .map(|player| secret_strategy_actions_for(record.state(), player))
         .unwrap_or_default();
-    let pouch_chain_action = viewer_player.as_ref().and_then(|player| {
-        crate::rules::pouch::chain_action_options(record.state(), player)
-            .map(WebPouchChainActionOptions::from)
-    });
-
     Ok(ApiResponse {
         record: record.recorded_decisions(),
         state: WebPublicGameState::from_public(
@@ -682,12 +629,51 @@ fn response_for(
                     && record.state().phase == Phase::Main
                     && record.state().pouch_for(player).is_some()
             }),
-            pouch_chain_action,
             secret_strategy_actions,
         },
         trusted_random_candidates: None,
         trusted_random_candidate_count: None,
     })
+}
+
+fn secret_strategy_actions_for(
+    state: &GameState,
+    player: &PlayerId,
+) -> Vec<WebSecretStrategyActionOption> {
+    let mut source_cards = match state.pending_choice.as_ref() {
+        Some(choice)
+            if &choice.player == player
+                && matches!(
+                    &choice.kind,
+                    PendingChoiceKind::TypedEffect { effect_id, .. }
+                        if effect_id == crate::rules::pouch::CHAIN_ID
+                ) =>
+        {
+            match &choice.kind {
+                PendingChoiceKind::TypedEffect { options, .. } => options
+                    .cards
+                    .as_ref()
+                    .map(|cards| cards.allowed_cards.clone())
+                    .unwrap_or_default(),
+                _ => unreachable!("matched typed Chain choice"),
+            }
+        }
+        _ if state.current_player() == Some(player) && state.phase == Phase::Main => {
+            let mut cards = state.deck_for(player).unwrap_or_default().to_vec();
+            if let Some(pouch) = state.pouch_for(player) {
+                cards.push(pouch.card);
+            }
+            cards
+        }
+        _ => Vec::new(),
+    };
+    source_cards.sort();
+    source_cards.dedup();
+    source_cards
+        .into_iter()
+        .flat_map(|card| crate::rules::pouch::strategy_action_options(state, player, card))
+        .map(WebSecretStrategyActionOption::from)
+        .collect()
 }
 
 fn replay_response_for(
@@ -780,6 +766,7 @@ struct WebSetupDeckList {
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 enum ApiAction {
     ReplayFrame {
         step: usize,
@@ -842,26 +829,6 @@ enum ApiAction {
         match_option_card: Option<CardInstanceId>,
         #[serde(default, rename = "matchOptionSlots")]
         match_option_slots: Option<usize>,
-        #[serde(default, rename = "pouchOwner")]
-        pouch_owner: Option<String>,
-        #[serde(default, rename = "pouchCard")]
-        pouch_card: Option<CardInstanceId>,
-        #[serde(default, rename = "triggerCard")]
-        trigger_card: Option<CardInstanceId>,
-        #[serde(default, rename = "secretStrategy")]
-        secret_strategy: Option<SecretStrategy>,
-        #[serde(default, rename = "secretStrategyTargetPlayer")]
-        secret_strategy_target_player: Option<String>,
-        #[serde(default, rename = "secretStrategyStar")]
-        secret_strategy_star: Option<StarKind>,
-        #[serde(default, rename = "secretStrategyBreakStar")]
-        secret_strategy_break_star: Option<bool>,
-        #[serde(default, rename = "secretStrategyDiscardCard")]
-        secret_strategy_discard_card: Option<CardInstanceId>,
-        #[serde(default, rename = "secretStrategyDeckCards")]
-        secret_strategy_deck_cards: Option<Vec<CardInstanceId>>,
-        #[serde(default, rename = "secretStrategyDiscardCards")]
-        secret_strategy_discard_cards: Option<Vec<CardInstanceId>>,
         #[serde(default, rename = "trustedRandomCards")]
         trusted_random_cards: Option<Vec<CardInstanceId>>,
     },
@@ -981,6 +948,7 @@ fn development_scenario_action(
     let candidate_sizes: &[usize] = match scenario {
         "hero-schools-transition" => &[1],
         "spirit-metal" | "spirit-fire" | "echo-pure-fire" | "echo-split-earth" => &[2],
+        "pouch-chain-sheep" => &[3],
         _ => {
             return Err(ApiError::Message(
                 "unknown development scenario".to_string(),
@@ -1007,6 +975,9 @@ fn development_scenario_action(
                 }
                 ("echo-split-earth", PlayableAction::PerformFormation(candidate)) => {
                     candidate.formation_id == crate::rules::echo::SPLIT_EARTH
+                }
+                ("pouch-chain-sheep", PlayableAction::PerformFormation(candidate)) => {
+                    candidate.formation_id == crate::rules::pouch::CHAIN_ID
                 }
                 _ => false,
             }) {
@@ -1205,6 +1176,7 @@ fn development_scenario_deck_order(
                 ("echo-split-earth", Some(Element::Earth)) => true,
                 ("tribulation-earth-rending", Some(Element::Earth | Element::Wood)) => true,
                 ("tribulation-rusted-forest", Some(Element::Wood | Element::Metal)) => true,
+                ("pouch-chain-sheep", Some(_)) => true,
                 _ => false,
             }
         })
@@ -1213,6 +1185,7 @@ fn development_scenario_deck_order(
         "hero-schools-transition" => &[1],
         "spirit-metal" | "spirit-fire" | "echo-pure-fire" | "echo-split-earth" => &[2],
         "tribulation-earth-rending" | "tribulation-rusted-forest" => &[4, 5],
+        "pouch-chain-sheep" => &[3],
         _ => {
             return Err(ApiError::Message(
                 "unknown development scenario".to_string(),
@@ -1268,6 +1241,7 @@ fn development_scenario_deck_order(
                     Element::Wood,
                     Element::Metal,
                 ),
+                "pouch-chain-sheep" => crate::rules::pouch::matches_chain(&facts),
                 _ => false,
             }
         })
@@ -1276,6 +1250,33 @@ fn development_scenario_deck_order(
                 "development scenario has no deterministic starting hand: {scenario}"
             ))
         })?;
+
+    if scenario == "pouch-chain-sheep" {
+        let initial_pouch = deck_order
+            .iter()
+            .copied()
+            .find(|card| {
+                !selected.contains(card)
+                    && setup.card_instances.iter().any(|instance| {
+                        instance.instance == *card
+                            && matches!(
+                                &instance.origin,
+                                CardOrigin::Player(owner) if owner == player
+                            )
+                    })
+            })
+            .ok_or_else(|| {
+                ApiError::Message("Pouch scenario needs an initial Pouch Card".to_string())
+            })?;
+        let head = std::iter::once(initial_pouch)
+            .chain(selected.iter().copied())
+            .collect::<Vec<_>>();
+        return Ok(head
+            .iter()
+            .copied()
+            .chain(deck_order.into_iter().filter(|card| !head.contains(card)))
+            .collect());
+    }
 
     let mut remaining = deck_order
         .into_iter()
@@ -1294,6 +1295,112 @@ fn development_scenario_deck_order(
     }
 
     Ok(selected.iter().copied().chain(remaining).collect())
+}
+
+fn complete_pouch_chain_development_preparation(
+    record: &mut GameRecord,
+    scenario_player: &PlayerId,
+) -> Result<(), ApiError> {
+    while let GameStatus::Preparing {
+        stage: GamePreparationStage::InitialPouchSelection { player },
+    } = record.state().status.clone()
+    {
+        let card = record
+            .state()
+            .deck_for(&player)
+            .and_then(|deck| deck.first().copied())
+            .ok_or_else(|| {
+                ApiError::Message("Pouch scenario has no initial Pouch Card".to_string())
+            })?;
+        record
+            .handle(Command::ChooseInitialPouch { player, card })
+            .map_err(ApiError::Game)?;
+    }
+    while let Some(request) = record.state().pending_randomness.clone() {
+        let shuffled_order = match &request.operation {
+            crate::domain::RandomnessOperation::DeckShuffle {
+                deck: crate::domain::RandomnessDeck::Player(player),
+            } if player == scenario_player => {
+                let chain_cards = card_combinations(&request.current_order, 3)
+                    .into_iter()
+                    .find(|cards| {
+                        let facts = cards
+                            .iter()
+                            .filter_map(|card| {
+                                record.state().card_def(*card).map(|definition| {
+                                    crate::rules::SubmittedCardFacts {
+                                        element: definition.element,
+                                        level: definition.level,
+                                    }
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        facts.len() == cards.len() && crate::rules::pouch::matches_chain(&facts)
+                    })
+                    .ok_or_else(|| {
+                        ApiError::Message("Pouch scenario has no Chain Cards".to_string())
+                    })?;
+                let remaining = request
+                    .current_order
+                    .iter()
+                    .copied()
+                    .filter(|card| !chain_cards.contains(card))
+                    .collect::<Vec<_>>();
+                let trigger = remaining
+                    .iter()
+                    .copied()
+                    .find(|card| {
+                        record
+                            .state()
+                            .card_def(*card)
+                            .is_some_and(|definition| definition.level == 2)
+                    })
+                    .ok_or_else(|| {
+                        ApiError::Message("Pouch scenario has no Sheep trigger Card".to_string())
+                    })?;
+                let filler = remaining
+                    .iter()
+                    .copied()
+                    .find(|card| *card != trigger)
+                    .expect("a Personal Deck has more than one non-Chain Card");
+                chain_cards
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(filler))
+                    .chain(std::iter::once(trigger))
+                    .chain(
+                        remaining
+                            .into_iter()
+                            .filter(|card| *card != filler && *card != trigger),
+                    )
+                    .collect()
+            }
+            _ => request.current_order.clone(),
+        };
+        record
+            .resolve_randomness(TrustedRandomnessAnswer {
+                request_id: request.request_id,
+                shuffled_order,
+            })
+            .map_err(ApiError::Game)?;
+    }
+    advance_to_interactive_decision(record)?;
+    if let Some(crate::domain::PendingChoice {
+        player,
+        kind: PendingChoiceKind::TurnDrawDiscard {
+            allowed_discards, ..
+        },
+    }) = record.state().pending_choice.clone()
+    {
+        let discard = allowed_discards.first().copied().ok_or_else(|| {
+            ApiError::Message("Pouch scenario has no Turn Draw discard".to_string())
+        })?;
+        record
+            .handle(Command::ChooseTurnDiscard { player, discard })
+            .map_err(ApiError::Game)?;
+        advance_to_interactive_decision(record)?;
+    }
+    Ok(())
 }
 
 fn setup_card_element(setup: &GameSetup, card: CardInstanceId) -> Option<Element> {
@@ -1635,7 +1742,6 @@ struct WebInteraction {
     discard_retrieval_action: Option<WebDiscardRetrievalActionDetail>,
     can_choose_initial_pouch: bool,
     can_trigger_pouch: bool,
-    pouch_chain_action: Option<WebPouchChainActionOptions>,
     secret_strategy_actions: Vec<WebSecretStrategyActionOption>,
 }
 
@@ -1648,7 +1754,6 @@ impl WebInteraction {
             discard_retrieval_action: None,
             can_choose_initial_pouch: false,
             can_trigger_pouch: false,
-            pouch_chain_action: None,
             secret_strategy_actions: Vec::new(),
         }
     }
@@ -2356,6 +2461,8 @@ struct WebPendingChoice {
     presentation: PublicPendingChoicePresentation,
     kind: String,
     cards: Vec<WebCard>,
+    deck_cards: Vec<WebCard>,
+    discard_cards: Vec<WebCard>,
     required_count: usize,
     minimum_count: usize,
     maximum_count: usize,
@@ -2479,6 +2586,8 @@ impl WebPendingChoice {
                     .into_iter()
                     .map(|card| WebCard::from_id(card, labels, card_facts))
                     .collect(),
+                deck_cards: Vec::new(),
+                discard_cards: Vec::new(),
                 players: Vec::new(),
                 formations: Vec::new(),
                 formation_groups: Vec::new(),
@@ -2500,6 +2609,8 @@ impl WebPendingChoice {
                     .into_iter()
                     .map(|card| WebCard::from_id(card, labels, card_facts))
                     .collect(),
+                deck_cards: Vec::new(),
+                discard_cards: Vec::new(),
                 players: Vec::new(),
                 formations: Vec::new(),
                 formation_groups: Vec::new(),
@@ -2521,6 +2632,8 @@ impl WebPendingChoice {
                     .into_iter()
                     .map(|card| WebCard::from_id(card, labels, card_facts))
                     .collect(),
+                deck_cards: Vec::new(),
+                discard_cards: Vec::new(),
                 players: Vec::new(),
                 formations: Vec::new(),
                 formation_groups: Vec::new(),
@@ -2546,6 +2659,8 @@ impl WebPendingChoice {
                                 .collect()
                         })
                         .unwrap_or_default(),
+                    deck_cards: Vec::new(),
+                    discard_cards: Vec::new(),
                     players: options
                         .players
                         .into_iter()
@@ -2565,12 +2680,41 @@ impl WebPendingChoice {
                     can_decline: options.can_decline,
                 }
             }
+            PublicPendingChoiceKind::Known(PendingChoiceKind::SheepStealing {
+                deck_cards,
+                discard_cards,
+                ..
+            }) => Self {
+                player: choice.player.as_str().to_string(),
+                purpose: choice.purpose,
+                presentation,
+                kind: "SheepStealing".to_string(),
+                required_count,
+                minimum_count,
+                maximum_count,
+                cards: Vec::new(),
+                deck_cards: deck_cards
+                    .into_iter()
+                    .map(|card| WebCard::from_id(card, labels, card_facts))
+                    .collect(),
+                discard_cards: discard_cards
+                    .into_iter()
+                    .map(|card| WebCard::from_id(card, labels, card_facts))
+                    .collect(),
+                players: Vec::new(),
+                formations: Vec::new(),
+                formation_groups: Vec::new(),
+                environments: Vec::new(),
+                can_decline: false,
+            },
             PublicPendingChoiceKind::Hidden => Self {
                 player: choice.player.as_str().to_string(),
                 purpose: choice.purpose,
                 presentation,
                 kind: "Hidden".to_string(),
                 cards: Vec::new(),
+                deck_cards: Vec::new(),
+                discard_cards: Vec::new(),
                 required_count: 0,
                 minimum_count: 0,
                 maximum_count: 0,
@@ -2795,43 +2939,7 @@ struct WebSecretStrategyActionOption {
     required_card_count: usize,
 }
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebPouchChainActionOptions {
-    formation_id: &'static str,
-    owner_players: Vec<PlayerId>,
-    cards: Vec<WebPouchChainCardOption>,
-    minimum_card_count: usize,
-    maximum_card_count: usize,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebPouchChainCardOption {
-    pouch_card: CardInstanceId,
-    trigger_cards: Vec<CardInstanceId>,
-}
-
-impl From<crate::rules::pouch::ChainActionOptions> for WebPouchChainActionOptions {
-    fn from(options: crate::rules::pouch::ChainActionOptions) -> Self {
-        Self {
-            formation_id: options.formation_id,
-            owner_players: options.owner_players,
-            cards: options
-                .cards
-                .into_iter()
-                .map(|card| WebPouchChainCardOption {
-                    pouch_card: card.pouch_card,
-                    trigger_cards: card.trigger_cards,
-                })
-                .collect(),
-            minimum_card_count: options.minimum_card_count,
-            maximum_card_count: options.maximum_card_count,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum WebSecretStrategyInputRequirement {
     None,
@@ -4048,6 +4156,7 @@ fn game_event_presentation_with_vocabulary(
                     element_name(*environment).to_string()
                 }
                 crate::domain::EffectChoiceAnswer::Chain { .. } => "連環選擇".to_string(),
+                crate::domain::EffectChoiceAnswer::SheepStealing { .. } => "牽羊交換".to_string(),
                 crate::domain::EffectChoiceAnswer::Decline => "放棄".to_string(),
             };
             (
@@ -4653,16 +4762,6 @@ mod tests {
                     match_option_role: None,
                     match_option_card: None,
                     match_option_slots: None,
-                    pouch_owner: None,
-                    pouch_card: None,
-                    trigger_card: None,
-                    secret_strategy: None,
-                    secret_strategy_target_player: None,
-                    secret_strategy_star: None,
-                    secret_strategy_break_star: None,
-                    secret_strategy_discard_card: None,
-                    secret_strategy_deck_cards: None,
-                    secret_strategy_discard_cards: None,
                     trusted_random_cards: None,
                 },
                 viewer: Some("alice".to_string()),
@@ -4805,6 +4904,52 @@ mod tests {
             Some(PlayableAction::PerformFormation(candidate))
                 if candidate.formation_id == crate::rules::tribulation::EARTH_RENDING
         ));
+    }
+
+    #[test]
+    fn pouch_chain_sheep_development_scenario_reaches_chain() {
+        let rules = OfficialRules::new();
+        let base = GameSetup::two_player(PlayerId::new("alice"), PlayerId::new("bob"), 20);
+        let modules = rules.default_rule_modules();
+        let setup = rules
+            .configure_game(base.players, base.turn_order, modules)
+            .unwrap();
+        let alice = PlayerId::new("alice");
+        assert!(setup.has_rule_module(crate::domain::POUCH_MODULE_ID));
+        let deck_order =
+            development_scenario_deck_order(&rules, &setup, &alice, "pouch-chain-sheep").unwrap();
+        let mut record = GameRecord::start(setup, deck_order).unwrap();
+        complete_pouch_chain_development_preparation(&mut record, &alice).unwrap();
+        assert!(record.state().deck_for(&alice).unwrap().iter().any(|card| {
+            record
+                .state()
+                .card_def(*card)
+                .is_some_and(|definition| definition.level == 2)
+        }));
+
+        let action = development_scenario_action(&record, &alice, "pouch-chain-sheep").unwrap();
+        let Some(PlayableAction::PerformFormation(candidate)) = action else {
+            panic!("Pouch development scenario should offer Chain")
+        };
+        assert_eq!(candidate.formation_id, crate::rules::pouch::CHAIN_ID);
+        record
+            .handle(Command::PerformFormation {
+                player: alice.clone(),
+                formation_id: candidate.formation_id,
+                cards: candidate.cards,
+                declared_targets: candidate.declared_targets,
+            })
+            .unwrap();
+
+        let chain_actions = secret_strategy_actions_for(record.state(), &alice);
+        assert!(chain_actions.iter().any(|action| {
+            action.strategy == SecretStrategy::SheepStealing
+                && action.input == WebSecretStrategyInputRequirement::DeckDiscardSwap
+        }));
+        assert!(
+            secret_strategy_actions_for(record.state(), &PlayerId::new("bob")).is_empty(),
+            "a private Chain choice must not disclose its strategy options to another player"
+        );
     }
 
     #[test]
@@ -5015,16 +5160,6 @@ mod tests {
                 match_option_role: None,
                 match_option_card: None,
                 match_option_slots: None,
-                pouch_owner: None,
-                pouch_card: None,
-                trigger_card: None,
-                secret_strategy: None,
-                secret_strategy_target_player: None,
-                secret_strategy_star: None,
-                secret_strategy_break_star: None,
-                secret_strategy_discard_card: None,
-                secret_strategy_deck_cards: None,
-                secret_strategy_discard_cards: None,
                 trusted_random_cards: None,
             }),
             Some(2)
@@ -5730,6 +5865,33 @@ mod tests {
         assert_eq!(json["purpose"], "chaos");
         assert_eq!(json["presentation"]["type"], "chaos");
         assert_eq!(json["formationGroups"], serde_json::json!([]));
+        assert_eq!(json["deckCards"], serde_json::json!([]));
+        assert_eq!(json["discardCards"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn sheep_choice_serializes_separate_camel_case_card_piles() {
+        let choice = crate::public_view::PublicPendingChoice {
+            player: PlayerId::new("alice"),
+            purpose: "pouch:sheep-stealing".to_string(),
+            presentation: PublicPendingChoicePresentation::Unclassified,
+            kind: PublicPendingChoiceKind::Known(PendingChoiceKind::SheepStealing {
+                source_card: CardInstanceId::new(9),
+                owner: Some(PlayerId::new("alice")),
+                deck_cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
+                discard_cards: vec![CardInstanceId::new(3), CardInstanceId::new(4)],
+            }),
+        };
+        let web_choice =
+            WebPendingChoice::from_public(choice, &HashMap::new(), &HashMap::new(), &[]);
+        let json = serde_json::to_value(web_choice).expect("choice should serialize");
+
+        assert_eq!(json["kind"], "SheepStealing");
+        assert_eq!(json["cards"], serde_json::json!([]));
+        assert_eq!(json["deckCards"].as_array().unwrap().len(), 2);
+        assert_eq!(json["discardCards"].as_array().unwrap().len(), 2);
+        assert!(json.get("deck_cards").is_none());
+        assert!(json.get("discard_cards").is_none());
     }
 
     #[test]
@@ -5778,6 +5940,27 @@ mod tests {
             card_refs_summary(&PublicCardRefs::Hidden { count: 5 }, &HashMap::new()),
             "5 張牌"
         );
+    }
+
+    #[test]
+    fn pending_randomness_web_contract_uses_camel_case_and_exposes_only_the_operation_kind() {
+        let json = serde_json::to_value(WebPendingRandomness {
+            request_id: "shuffle-1".to_string(),
+            deck: "player:alice".to_string(),
+            operation: "discardShuffle".to_string(),
+            card_count: 3,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "requestId": "shuffle-1",
+                "deck": "player:alice",
+                "operation": "discardShuffle",
+                "cardCount": 3
+            })
+        );
+        assert!(json.get("currentOrder").is_none());
     }
 
     #[test]
@@ -6236,7 +6419,7 @@ mod tests {
             } if player == "bob" && deck_cards.len() == 2 && discard_cards.len() == 2
         ));
 
-        let chain: ApiAction = serde_json::from_value(serde_json::json!({
+        let stale_chain = serde_json::from_value::<ApiAction>(serde_json::json!({
             "type": "performFormation",
             "player": "alice",
             "formationId": "pouch:chain",
@@ -6249,19 +6432,23 @@ mod tests {
             "secretStrategyBreakStar": true,
             "secretStrategyDeckCards": [9, 10],
             "secretStrategyDiscardCards": [11, 12]
+        }));
+        assert!(stale_chain.is_err(), "legacy chain fields must be rejected");
+
+        let chain: ApiAction = serde_json::from_value(serde_json::json!({
+            "type": "performFormation",
+            "player": "alice",
+            "formationId": "pouch:chain",
+            "cards": [1, 2, 3]
         }))
         .unwrap();
         assert!(matches!(
             chain,
             ApiAction::PerformFormation {
-                secret_strategy: Some(SecretStrategy::DeceiveHeaven),
-                secret_strategy_star: Some(StarKind::Fire),
-                secret_strategy_break_star: Some(true),
-                ref secret_strategy_deck_cards,
-                ref secret_strategy_discard_cards,
+                ref formation_id,
+                ref cards,
                 ..
-            } if secret_strategy_deck_cards.as_ref().is_some_and(|cards| cards.len() == 2)
-                && secret_strategy_discard_cards.as_ref().is_some_and(|cards| cards.len() == 2)
+            } if formation_id == "pouch:chain" && cards == &vec![CardInstanceId::new(1), CardInstanceId::new(2), CardInstanceId::new(3)]
         ));
     }
 

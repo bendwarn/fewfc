@@ -1137,12 +1137,40 @@ pub enum EffectChoiceAnswer {
         environment: Element,
     },
     Chain {
+        #[serde(rename = "pouchOwner")]
         pouch_owner: PlayerId,
+        #[serde(rename = "pouchCard")]
         pouch_card: CardInstanceId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "triggerCard",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         trigger_card: Option<CardInstanceId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         strategy: Option<SecretStrategy>,
+        #[serde(
+            rename = "targetPlayer",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        target_player: Option<PlayerId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        star: Option<StarKind>,
+        #[serde(rename = "breakStar", default)]
+        break_star: bool,
+        #[serde(
+            rename = "discardCard",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        discard_card: Option<CardInstanceId>,
+    },
+    SheepStealing {
+        #[serde(rename = "deckCards")]
+        deck_cards: Vec<CardInstanceId>,
+        #[serde(rename = "discardCards")]
+        discard_cards: Vec<CardInstanceId>,
     },
     Decline,
 }
@@ -1171,6 +1199,7 @@ pub struct CardChoiceOptions {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub enum PendingChoiceKind {
     TurnDrawDiscard {
         drawn_cards: Vec<CardInstanceId>,
@@ -1193,6 +1222,15 @@ pub enum PendingChoiceKind {
         continuation_id: String,
         options: EffectChoiceOptions,
     },
+    SheepStealing {
+        #[serde(rename = "sourceCard")]
+        source_card: CardInstanceId,
+        owner: Option<PlayerId>,
+        #[serde(rename = "deckCards")]
+        deck_cards: Vec<CardInstanceId>,
+        #[serde(rename = "discardCards")]
+        discard_cards: Vec<CardInstanceId>,
+    },
 }
 
 impl PendingChoiceKind {
@@ -1214,6 +1252,7 @@ impl PendingChoiceKind {
             Self::TypedEffect { options, .. } => {
                 options.cards.as_ref().map_or(0, |cards| cards.minimum)
             }
+            Self::SheepStealing { .. } => 2,
         }
     }
 
@@ -1231,6 +1270,7 @@ impl PendingChoiceKind {
                 .cards
                 .as_ref()
                 .map_or((0, 0), |cards| (cards.minimum, cards.maximum)),
+            Self::SheepStealing { .. } => (2, 2),
         }
     }
 }
@@ -1321,13 +1361,13 @@ pub enum ConfluenceRandomnessContinuation {
 #[serde(rename_all = "camelCase")]
 pub enum PouchRandomnessContinuation {
     InitialShuffle,
+    ChainRecycle,
     SheepStealingRecycle {
+        #[serde(rename = "sourceCard")]
         source_card: CardInstanceId,
-        owner: Option<PlayerId>,
-        deck_cards: Vec<CardInstanceId>,
-        discard_cards: Vec<CardInstanceId>,
     },
     SheepStealing {
+        #[serde(rename = "sourceCard")]
         source_card: CardInstanceId,
         owner: Option<PlayerId>,
     },

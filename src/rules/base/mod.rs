@@ -649,6 +649,9 @@ fn decide_command_with_base_ruleset(
             ) | (
                 crate::domain::PendingChoiceKind::TypedEffect { .. },
                 Command::AnswerEffectChoiceTyped { .. }
+            ) | (
+                crate::domain::PendingChoiceKind::SheepStealing { .. },
+                Command::AnswerEffectChoiceTyped { .. }
             )
         );
 
@@ -1164,6 +1167,17 @@ fn decide_command_with_base_ruleset(
                 }
                 Some(crate::domain::PendingChoice {
                     player: choice_player,
+                    kind: crate::domain::PendingChoiceKind::SheepStealing { .. },
+                }) if choice_player == &player
+                    && matches!(answer, crate::domain::EffectChoiceAnswer::SheepStealing { ref deck_cards, ref discard_cards } if deck_cards.len() == 2 && discard_cards.len() == 2) =>
+                {
+                    (
+                        "pouch:sheep-stealing".to_string(),
+                        "pouch:sheep-stealing:exchange".to_string(),
+                    )
+                }
+                Some(crate::domain::PendingChoice {
+                    player: choice_player,
                     ..
                 }) if choice_player != &player => {
                     return Err(GameError::Validation(ValidationError::MissingPendingChoice));
@@ -1201,6 +1215,12 @@ fn decide_command_with_base_ruleset(
                     crate::rules::pouch::answer_chain_choice(state, &player, &answer)?
                 {
                     events.extend(chain_events);
+                }
+            } else if effect_id == "pouch:sheep-stealing" {
+                if let Some(sheep_events) =
+                    crate::rules::pouch::answer_sheep_choice(state, &player, &answer)?
+                {
+                    events.extend(sheep_events);
                 }
             } else if let crate::domain::EffectChoiceAnswer::Cards { cards } = &answer {
                 events.extend(formation_use::answer_effect_choice(
@@ -1432,14 +1452,20 @@ pub(crate) fn effect_choice_answer_is_valid(
             pouch_card,
             trigger_card,
             strategy,
+            ..
         } => {
             options.players.contains(pouch_owner)
                 && options.cards.as_ref().is_some_and(|cards| {
                     cards.allowed_cards.contains(pouch_card)
-                        && trigger_card.is_none_or(|card| cards.allowed_cards.contains(&card))
+                        && trigger_card.is_none_or(|card| {
+                            card != *pouch_card
+                                && cards.maximum >= 2
+                                && cards.allowed_cards.contains(&card)
+                        })
                 })
                 && (trigger_card.is_some() == strategy.is_some())
         }
+        crate::domain::EffectChoiceAnswer::SheepStealing { .. } => false,
         crate::domain::EffectChoiceAnswer::Decline => options.can_decline,
     }
 }

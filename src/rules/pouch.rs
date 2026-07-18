@@ -16,69 +16,6 @@ pub(crate) const WATCH_FIRE_STATUS: &str = "PouchWatchFire";
 pub(crate) const LURE_PLAYER_STATUS: &str = "PouchLurePlayer";
 pub(crate) const LURE_SPIRIT_STATUS: &str = "PouchLureSpirit";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ChainCardOption {
-    pub pouch_card: CardInstanceId,
-    pub trigger_cards: Vec<CardInstanceId>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ChainActionOptions {
-    pub formation_id: &'static str,
-    pub owner_players: Vec<PlayerId>,
-    pub cards: Vec<ChainCardOption>,
-    pub minimum_card_count: usize,
-    pub maximum_card_count: usize,
-}
-
-pub(crate) fn chain_action_options(
-    state: &GameState,
-    player: &PlayerId,
-) -> Option<ChainActionOptions> {
-    if !state.has_rule_module(POUCH_MODULE_ID) {
-        return None;
-    }
-    let team = state
-        .players
-        .iter()
-        .find(|candidate| &candidate.id == player)?
-        .team
-        .clone();
-    let deck = state.deck_for(player)?;
-    let cards = deck
-        .iter()
-        .filter_map(|pouch_card| {
-            let pouch = state.card_def(*pouch_card)?;
-            Some(ChainCardOption {
-                pouch_card: *pouch_card,
-                trigger_cards: deck
-                    .iter()
-                    .filter(|trigger| {
-                        **trigger != *pouch_card
-                            && state.card_def(**trigger).is_some_and(|definition| {
-                                definition.element != pouch.element
-                                    && definition.level != pouch.level
-                            })
-                    })
-                    .copied()
-                    .collect(),
-            })
-        })
-        .collect();
-    Some(ChainActionOptions {
-        formation_id: CHAIN_ID,
-        owner_players: state
-            .players
-            .iter()
-            .filter(|candidate| candidate.team == team)
-            .map(|candidate| candidate.id.clone())
-            .collect(),
-        cards,
-        minimum_card_count: 1,
-        maximum_card_count: 2,
-    })
-}
-
 pub(crate) fn formation_specs() -> Vec<BaseFormationSpec> {
     vec![BaseFormationSpec {
         formation: FormationDef {
@@ -522,6 +459,33 @@ pub(crate) fn chain_events(
         let deck = state
             .deck_for(player)
             .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
+        if deck.len() < 2 {
+            let discard = state.discard_for(player).unwrap_or_default();
+            if !discard.is_empty() {
+                return Ok(vec![GameEvent::RandomnessRequested {
+                    request: crate::domain::PendingRandomness {
+                        request_id: format!(
+                            "pouch:chain:recycle:{}:{}",
+                            player.as_str(),
+                            state.turn_number
+                        ),
+                        operation: crate::domain::RandomnessOperation::DiscardShuffle {
+                            pile: RandomnessDeck::Player(player.clone()),
+                            placement: crate::domain::DeckPlacement::Bottom,
+                        },
+                        continuation: RandomnessContinuation::Pouch(
+                            PouchRandomnessContinuation::ChainRecycle,
+                        ),
+                        current_order: discard.to_vec(),
+                    },
+                }]);
+            }
+        }
+        if deck.is_empty() {
+            return Err(GameError::Validation(
+                ValidationError::SecretStrategyInputInvalid,
+            ));
+        }
         let team = state
             .players
             .iter()
@@ -538,7 +502,7 @@ pub(crate) fn chain_events(
                     cards: Some(crate::domain::CardChoiceOptions {
                         allowed_cards: deck.to_vec(),
                         minimum: 1,
-                        maximum: 2,
+                        maximum: deck.len().min(2),
                     }),
                     players: state
                         .players
@@ -711,7 +675,12 @@ pub(crate) fn answer_chain_choice(
         pouch_card,
         trigger_card,
         strategy,
-    } = answer else {
+        target_player,
+        star,
+        break_star,
+        discard_card,
+    } = answer
+    else {
         return Ok(None);
     };
     let mut targets = vec![
@@ -722,11 +691,58 @@ pub(crate) fn answer_chain_choice(
         },
     ];
     if let (Some(trigger), Some(strategy)) = (trigger_card, strategy) {
+        let target_is_player = target_player.as_ref().is_some_and(|target| {
+            state
+                .players
+                .iter()
+                .any(|candidate| candidate.id == *target)
+        });
+        let input_is_valid = match strategy {
+            SecretStrategy::LureTheTigerAway => {
+                target_is_player && star.is_none() && !*break_star && discard_card.is_none()
+            }
+            SecretStrategy::DeceiveHeaven => {
+                target_player.is_none() && star.is_some() && discard_card.is_none()
+            }
+            SecretStrategy::Retreat => target_player.is_none() && star.is_none() && !*break_star,
+            SecretStrategy::SheepStealing
+            | SecretStrategy::GoldenCicada
+            | SecretStrategy::StealTheBeam
+            | SecretStrategy::MuddyWaters
+            | SecretStrategy::WatchTheFire
+            | SecretStrategy::ReturnSoul
+            | SecretStrategy::DarkCrossing => {
+                target_player.is_none() && star.is_none() && !*break_star && discard_card.is_none()
+            }
+        };
+        if !input_is_valid {
+            return Err(GameError::Validation(
+                ValidationError::SecretStrategyInputInvalid,
+            ));
+        }
         targets.push(crate::domain::TargetDecl::FormationRole {
             role: "trigger".to_string(),
             card: *trigger,
         });
         targets.push(crate::domain::TargetDecl::SecretStrategy(*strategy));
+        targets.push(crate::domain::TargetDecl::SecretStrategyOptions {
+            target_player: target_player.clone(),
+            star: *star,
+            break_star: *break_star,
+            discard_card: *discard_card,
+            deck_cards: Vec::new(),
+            discard_cards: Vec::new(),
+        });
+    } else if trigger_card.is_some()
+        || strategy.is_some()
+        || target_player.is_some()
+        || star.is_some()
+        || *break_star
+        || discard_card.is_some()
+    {
+        return Err(GameError::Validation(
+            ValidationError::SecretStrategyInputInvalid,
+        ));
     }
     Ok(Some(chain_events(state, player, &targets)?))
 }
@@ -741,8 +757,8 @@ fn strategy_events(
     star: Option<StarKind>,
     break_star: bool,
     discard_card: Option<CardInstanceId>,
-    deck_cards: &[CardInstanceId],
-    discard_cards: &[CardInstanceId],
+    _deck_cards: &[CardInstanceId],
+    _discard_cards: &[CardInstanceId],
 ) -> GameResult<Vec<GameEvent>> {
     let status = |kind: &str, owner: PlayerId, duration: StatusDuration| GameEvent::StatusAdded {
         status: StatusEffect {
@@ -840,9 +856,7 @@ fn strategy_events(
                 power,
             }]
         }
-        SecretStrategy::SheepStealing => {
-            sheep_stealing_events(state, player, source_card, deck_cards, discard_cards)?
-        }
+        SecretStrategy::SheepStealing => sheep_choice_events(state, player, source_card)?,
         SecretStrategy::DarkCrossing => {
             if has_status(state, player, "CannotChangeProfession") {
                 Vec::new()
@@ -938,25 +952,16 @@ fn sheep_stealing_events(
     deck_cards: &[CardInstanceId],
     discard_cards: &[CardInstanceId],
 ) -> GameResult<Vec<GameEvent>> {
-    let deck = state.deck_for(player).ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
+    let deck = state
+        .deck_for(player)
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
     if deck.len() < 2 {
-        let discard = state.discard_for(player).unwrap_or_default();
-        if discard.is_empty() || deck.len() + discard.len() < 2 {
-            return Err(GameError::Validation(ValidationError::SecretStrategyInputInvalid));
-        }
-        return Ok(vec![GameEvent::RandomnessRequested {
-            request: crate::domain::PendingRandomness {
-                request_id: format!("pouch:sheep-stealing:recycle:{}:{}", player.as_str(), state.turn_number),
-                operation: crate::domain::RandomnessOperation::DiscardShuffle { pile: RandomnessDeck::Player(player.clone()), placement: crate::domain::DeckPlacement::Bottom },
-                continuation: RandomnessContinuation::Pouch(PouchRandomnessContinuation::SheepStealingRecycle {
-                    source_card,
-                    owner: state.pouch_for(player).filter(|p| p.card == source_card).map(|p| p.owner.clone()),
-                    deck_cards: deck_cards.to_vec(),
-                    discard_cards: discard_cards.to_vec(),
-                }),
-                current_order: discard.to_vec(),
-            },
-        }]);
+        // The typed exchange choice is emitted only after `sheep_choice_events`
+        // has ensured that two deck cards exist.  Do not create a second recycle
+        // request while accepting that choice: a stale answer must be rejected.
+        return Err(GameError::Validation(
+            ValidationError::SecretStrategyInputInvalid,
+        ));
     }
     if deck_cards.len() != 2
         || discard_cards.len() != 2
@@ -1036,14 +1041,98 @@ fn sheep_stealing_events(
     ])
 }
 
+fn sheep_choice_events(
+    state: &GameState,
+    player: &PlayerId,
+    source_card: CardInstanceId,
+) -> GameResult<Vec<GameEvent>> {
+    let deck = state
+        .deck_for(player)
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
+    if deck.len() < 2 {
+        let discard = state.discard_for(player).unwrap_or_default();
+        if deck.len() + discard.len() < 2 || discard.is_empty() {
+            return Err(GameError::Validation(
+                ValidationError::SecretStrategyInputInvalid,
+            ));
+        }
+        return Ok(vec![GameEvent::RandomnessRequested {
+            request: crate::domain::PendingRandomness {
+                request_id: format!(
+                    "pouch:sheep-stealing:recycle:{}:{}",
+                    player.as_str(),
+                    state.turn_number
+                ),
+                operation: crate::domain::RandomnessOperation::DiscardShuffle {
+                    pile: RandomnessDeck::Player(player.clone()),
+                    placement: crate::domain::DeckPlacement::Bottom,
+                },
+                continuation: RandomnessContinuation::Pouch(
+                    PouchRandomnessContinuation::SheepStealingRecycle { source_card },
+                ),
+                current_order: discard.to_vec(),
+            },
+        }]);
+    }
+    Ok(vec![GameEvent::EffectChoiceRequested {
+        player: player.clone(),
+        kind: crate::domain::PendingChoiceKind::SheepStealing {
+            source_card,
+            owner: state
+                .pouch_for(player)
+                .filter(|pouch| pouch.card == source_card)
+                .map(|pouch| pouch.owner.clone()),
+            deck_cards: state.deck_for(player).unwrap_or_default().to_vec(),
+            discard_cards: state.discard_for(player).unwrap_or_default().to_vec(),
+        },
+    }])
+}
+
+pub(crate) fn answer_sheep_choice(
+    state: &GameState,
+    player: &PlayerId,
+    answer: &crate::domain::EffectChoiceAnswer,
+) -> GameResult<Option<Vec<GameEvent>>> {
+    let crate::domain::EffectChoiceAnswer::SheepStealing {
+        deck_cards,
+        discard_cards,
+    } = answer
+    else {
+        return Ok(None);
+    };
+    let Some(crate::domain::PendingChoice {
+        kind: crate::domain::PendingChoiceKind::SheepStealing { source_card, .. },
+        ..
+    }) = &state.pending_choice
+    else {
+        return Ok(None);
+    };
+    Ok(Some(sheep_stealing_events(
+        state,
+        player,
+        *source_card,
+        deck_cards,
+        discard_cards,
+    )?))
+}
+
 pub(crate) fn after_sheep_recycle_randomness_events(
     state: &GameState,
     source_card: CardInstanceId,
-    deck_cards: &[CardInstanceId],
-    discard_cards: &[CardInstanceId],
 ) -> GameResult<Vec<GameEvent>> {
-    let player = state.current_player().ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?;
-    sheep_stealing_events(state, player, source_card, deck_cards, discard_cards)
+    let player = state
+        .current_player()
+        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?;
+    sheep_choice_events(state, player, source_card)
+}
+
+pub(crate) fn after_chain_recycle_randomness_events(
+    state: &GameState,
+) -> GameResult<Vec<GameEvent>> {
+    let player = state
+        .current_player()
+        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?;
+    chain_events(state, player, &[])
 }
 
 pub(crate) fn has_status(state: &GameState, player: &PlayerId, kind: &str) -> bool {
@@ -1371,6 +1460,92 @@ mod tests {
     }
 
     #[test]
+    fn sheep_stealing_recycles_before_exposing_the_exchange_choice() {
+        let mut state = GameState::from_setup(&setup());
+        let player = PlayerId::new("alice");
+        let cards = state
+            .card_instances
+            .iter()
+            .filter(|card| matches!(&card.origin, CardOrigin::Player(owner) if owner == &player))
+            .map(|card| card.instance)
+            .take(3)
+            .collect::<Vec<_>>();
+        state.deck_for_mut(&player).unwrap().clear();
+        state.deck_for_mut(&player).unwrap().push(cards[0]);
+        state.discard_for_mut(&player).unwrap().clear();
+        state.discard_for_mut(&player).unwrap().push(cards[1]);
+
+        let events = sheep_choice_events(&state, &player, cards[2]).unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [GameEvent::RandomnessRequested { request }]
+                if matches!(request.operation, crate::domain::RandomnessOperation::DiscardShuffle { .. })
+        ));
+        apply(&mut state, &events);
+        assert!(state.pending_choice.is_none());
+
+        let request = state.pending_randomness.clone().unwrap();
+        let resumed = crate::application::resolve_trusted_randomness(
+            &state,
+            &TrustedRandomnessAnswer {
+                request_id: request.request_id,
+                shuffled_order: vec![cards[1]],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            resumed.last(),
+            Some(GameEvent::EffectChoiceRequested {
+                kind: crate::domain::PendingChoiceKind::SheepStealing { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn chain_recycles_before_exposing_its_card_and_owner_choice() {
+        let mut state = GameState::from_setup(&setup());
+        let player = PlayerId::new("alice");
+        let cards = state
+            .card_instances
+            .iter()
+            .filter(|card| matches!(&card.origin, CardOrigin::Player(owner) if owner == &player))
+            .map(|card| card.instance)
+            .take(2)
+            .collect::<Vec<_>>();
+        state.deck_for_mut(&player).unwrap().clear();
+        state.deck_for_mut(&player).unwrap().push(cards[0]);
+        state.discard_for_mut(&player).unwrap().clear();
+        state.discard_for_mut(&player).unwrap().push(cards[1]);
+
+        let events = chain_events(&state, &player, &[]).unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [GameEvent::RandomnessRequested { request }]
+                if matches!(request.operation, crate::domain::RandomnessOperation::DiscardShuffle { .. })
+                    && matches!(request.continuation, RandomnessContinuation::Pouch(PouchRandomnessContinuation::ChainRecycle))
+        ));
+        apply(&mut state, &events);
+
+        let request = state.pending_randomness.clone().unwrap();
+        let resumed = crate::application::resolve_trusted_randomness(
+            &state,
+            &TrustedRandomnessAnswer {
+                request_id: request.request_id,
+                shuffled_order: vec![cards[1]],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            resumed.last(),
+            Some(GameEvent::EffectChoiceRequested {
+                kind: crate::domain::PendingChoiceKind::TypedEffect { effect_id, .. },
+                ..
+            }) if effect_id == CHAIN_ID
+        ));
+    }
+
+    #[test]
     fn chain_sheep_stealing_excludes_its_trigger_card_from_the_pending_shuffle() {
         let mut state = GameState::from_setup(&setup());
         let player = PlayerId::new("alice");
@@ -1443,6 +1618,14 @@ mod tests {
         )
         .unwrap();
         apply(&mut state, &events);
+
+        assert!(matches!(
+            state.pending_choice.as_ref().map(|choice| &choice.kind),
+            Some(crate::domain::PendingChoiceKind::SheepStealing { .. })
+        ));
+        let exchange =
+            sheep_stealing_events(&state, &player, trigger, deck_cards, discard_cards).unwrap();
+        apply(&mut state, &exchange);
 
         let request = state.pending_randomness.clone().unwrap();
         assert!(!request.current_order.contains(&trigger));

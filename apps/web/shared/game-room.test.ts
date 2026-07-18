@@ -15,6 +15,7 @@ test('development fixtures expose only the closed named scenario catalog', () =>
   expect(isDevelopmentScenario({ name: 'echo-split-earth' })).toBe(true)
   expect(isDevelopmentScenario({ name: 'tribulation-earth-rending' })).toBe(true)
   expect(isDevelopmentScenario({ name: 'tribulation-rusted-forest' })).toBe(true)
+  expect(isDevelopmentScenario({ name: 'pouch-chain-sheep' })).toBe(true)
   expect(isDevelopmentScenario({ name: 'star-endgame', state: {} })).toBe(false)
   expect(isDevelopmentScenario({ name: 'arbitrary-state', state: {} })).toBe(false)
   expect(isDevelopmentScenario({ record: [] })).toBe(false)
@@ -286,16 +287,25 @@ describe('requiresPendingCommandDraft', () => {
     cards: [1],
   }
 
-  test('creates drafts only for effect-generated formation choices', () => {
+  test('keeps the originating command through staged formation and pouch choices', () => {
     expect(requiresPendingCommandDraft(formation, 'EffectGenerated')).toBe(true)
+    expect(requiresPendingCommandDraft(formation, 'TypedEffect')).toBe(true)
+    expect(requiresPendingCommandDraft(formation, 'SheepStealing')).toBe(true)
+    expect(requiresPendingCommandDraft({
+      type: 'triggerSecretStrategy',
+      player: 'alice',
+      strategy: 'SheepStealing',
+    }, 'SheepStealing')).toBe(true)
     expect(requiresPendingCommandDraft(formation, 'TurnDrawDiscard')).toBe(false)
     expect(requiresPendingCommandDraft({ type: 'passAction' }, 'EffectGenerated')).toBe(false)
   })
 })
 
 describe('continuesPendingCommandDraft', () => {
-  test('continues only for another effect-generated choice', () => {
+  test('continues across typed and Sheep Stealing choices', () => {
     expect(continuesPendingCommandDraft('EffectGenerated')).toBe(true)
+    expect(continuesPendingCommandDraft('TypedEffect')).toBe(true)
+    expect(continuesPendingCommandDraft('SheepStealing')).toBe(true)
     expect(continuesPendingCommandDraft('TurnDrawDiscard')).toBe(false)
     expect(continuesPendingCommandDraft(undefined)).toBe(false)
   })

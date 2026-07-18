@@ -1,5 +1,13 @@
 import type { Page } from '@playwright/test'
-import { createPublicRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
+import {
+  createPublicRoom,
+  expect,
+  joinListedRoom,
+  loginAsGuests,
+  seedDevelopmentScenario,
+  startTwoPlayerMatch,
+  test,
+} from './fixtures'
 
 async function waitForCommand(page: Page, actionType: string) {
   return page.waitForResponse(response => (
@@ -32,8 +40,19 @@ async function chooseVisibleInitialPouch(host: Page, guest: Page) {
   await command
 }
 
+async function chooseTwoMatrixCards(page: Page, label: string) {
+  const matrix = page.getByLabel(label)
+  const buttons = matrix.getByRole('button')
+  expect(await buttons.count()).toBeGreaterThanOrEqual(2)
+  await buttons.nth(0).click()
+  await buttons.nth(1).click()
+}
+
+function elementLabel(element: string) {
+  return ({ Metal: '金', Wood: '木', Water: '水', Fire: '火', Earth: '土' } as Record<string, string>)[element]
+}
+
 test('Pouch preparation is private, reconnectable, and triggers through the Ability panel', async ({ browser }) => {
-  test.setTimeout(180_000)
 
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
@@ -76,6 +95,112 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     await command
     await expect(active.getByRole('button', { name: /秘計‧金蟬/ })).toHaveCount(0)
     await expect(active.locator('.persistent-effect')).toContainText('本回合結束 · 金蟬')
+  } finally {
+    await hostContext.close()
+    await guestContext.close()
+  }
+})
+
+test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser }) => {
+  const hostContext = await browser.newContext()
+  const guestContext = await browser.newContext()
+  const host = await hostContext.newPage()
+  const guest = await guestContext.newPage()
+  const pages = [host, guest]
+
+  try {
+    await loginAsGuests(pages)
+    const roomName = `連環牽羊測試 ${Date.now()}`
+    const roomId = await startTwoPlayerMatch(host, guest, roomName, async (page) => {
+      await page.getByLabel('錦囊').check()
+    })
+    const fixture = await seedDevelopmentScenario<{
+      fixtureAction: { player: string; formationId: string; cards: number[] }
+    }>(host, { name: 'pouch-chain-sheep' })
+    const actor = host
+    await actor.reload()
+    const commandId = `chain-sheep-${Date.now()}`
+    const chain = await actor.evaluate(async ({ gameId, command, action }) => {
+      const response = await fetch(`/api/games/${gameId}/commands`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          commandId: command,
+          action: {
+            type: 'performFormation',
+            player: action.player,
+            formationId: action.id,
+            cards: action.cards,
+          },
+        }),
+      })
+      return { ok: response.ok, body: await response.json() }
+    }, {
+      gameId: roomId,
+      command: commandId,
+      action: {
+        player: fixture.fixtureAction.player,
+        id: fixture.fixtureAction.formationId,
+        cards: fixture.fixtureAction.cards,
+      },
+    })
+    expect(chain.ok, JSON.stringify(chain.body)).toBe(true)
+    expect(chain.body.state.pendingChoice?.purpose).toBe('pouch:chain')
+
+    await actor.reload()
+    const chainDialog = actor.getByRole('dialog', { name: '連環：選擇錦囊' })
+    await expect(chainDialog).toBeVisible()
+    const sheepTrigger = await actor.evaluate(async ({ gameId }) => {
+      const response = await fetch(`/api/games/${gameId}`)
+      const body = await response.json() as {
+        state: { pendingChoice: { cards: Array<{
+          element: string | null
+          level: number | null
+          secretStrategies: Array<{ strategy: string }>
+        }> | null } | null }
+      }
+      const cards = body.state.pendingChoice?.cards ?? []
+      for (const trigger of cards.filter(card => (
+        card.secretStrategies.some(option => option.strategy === 'SheepStealing')
+      ))) {
+        const pouch = cards.find(candidate => (
+          candidate.element !== null
+          && candidate.level !== null
+          && candidate !== trigger
+          && candidate.element !== trigger.element
+          && candidate.level !== trigger.level
+        ))
+        if (pouch) return { pouch, trigger }
+      }
+      return null
+    }, { gameId: roomId })
+    expect(sheepTrigger).not.toBeNull()
+    const pouchMatrix = chainDialog.getByLabel('連環錦囊牌組矩陣')
+    const pouchButton = pouchMatrix.getByRole('button', {
+      name: new RegExp(`：${elementLabel(sheepTrigger!.pouch.element!)} ${sheepTrigger!.pouch.level} 級`),
+    }).first()
+    await pouchButton.click()
+    await expect(pouchButton).toHaveAttribute('aria-pressed', 'true')
+    const triggerMatrix = chainDialog.getByLabel('連環觸發牌組矩陣')
+    const triggerButton = triggerMatrix.getByRole('button', {
+      name: new RegExp(`：${elementLabel(sheepTrigger!.trigger.element!)} ${sheepTrigger!.trigger.level} 級`),
+    }).first()
+    await triggerButton.click()
+    await expect(triggerButton).toHaveAttribute('aria-pressed', 'true')
+    await chainDialog.getByLabel('選擇錦囊持有者').getByRole('button').first().click()
+    await chainDialog.getByLabel('選擇秘計').getByRole('button', { name: '牽羊' }).click()
+    const chainAnswer = waitForCommand(actor, 'answerEffectChoiceTyped')
+    await chainDialog.getByRole('button', { name: '確認' }).click()
+    await chainAnswer
+
+    const sheepDialog = actor.getByRole('dialog', { name: '牽羊：交換牌' })
+    await expect(sheepDialog).toBeVisible()
+    await chooseTwoMatrixCards(actor, '牽羊牌組矩陣')
+    await chooseTwoMatrixCards(actor, '牽羊回收矩陣')
+    const sheepAnswer = waitForCommand(actor, 'answerEffectChoiceTyped')
+    await sheepDialog.getByRole('button', { name: '確認' }).click()
+    await sheepAnswer
+    await expect(sheepDialog).toHaveCount(0)
   } finally {
     await hostContext.close()
     await guestContext.close()

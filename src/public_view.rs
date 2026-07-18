@@ -184,6 +184,7 @@ pub enum PublicPendingChoiceKind {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct PublicPendingRandomness {
     pub request_id: String,
     pub deck: RandomnessDeck,
@@ -864,6 +865,7 @@ fn pending_choice_purpose(kind: &PendingChoiceKind) -> String {
         PendingChoiceKind::EffectGenerated { effect_id, .. }
         | PendingChoiceKind::CardSetChoice { effect_id, .. }
         | PendingChoiceKind::TypedEffect { effect_id, .. } => effect_id.clone(),
+        PendingChoiceKind::SheepStealing { .. } => "pouch:sheep-stealing".to_string(),
     }
 }
 
@@ -887,6 +889,9 @@ fn pending_choice_presentation(kind: &PendingChoiceKind) -> PublicPendingChoiceP
             continuation_id,
             ..
         } => (effect_id.as_str(), continuation_id.as_str()),
+        PendingChoiceKind::SheepStealing { .. } => {
+            ("pouch:sheep-stealing", "pouch:sheep-stealing:exchange")
+        }
     };
 
     use PublicEchoMelodyPresentation as Melody;

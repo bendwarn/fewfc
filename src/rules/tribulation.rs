@@ -641,7 +641,9 @@ fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
             RandomnessDeck::Shared => projected.discard.clone(),
             RandomnessDeck::Player(player) => projected
                 .discard_for(player)
-                .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?
+                .ok_or_else(|| {
+                    GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
+                })?
                 .to_vec(),
         };
         if deck.len() < 8 && !discard.is_empty() {

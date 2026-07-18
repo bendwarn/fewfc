@@ -23,8 +23,6 @@ describe('deck card choice presentation', () => {
       '連環觸發牌組矩陣',
       '牽羊牌組矩陣',
       '牽羊回收矩陣',
-      '連環牽羊牌組矩陣',
-      '連環牽羊回收矩陣',
       '商調‧鳴金牌組矩陣',
     ]
 
@@ -33,6 +31,8 @@ describe('deck card choice presentation', () => {
     }
 
     expect(appSource).toContain("state.pendingChoice.presentation.type === 'echoRingingMetalDeckCard'")
+    expect(appSource).not.toContain('連環牽羊牌組矩陣')
+    expect(appSource).not.toContain('連環牽羊回收矩陣')
   })
 
   test('the shared matrix presents element rows and level columns', () => {

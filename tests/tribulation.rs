@@ -2,9 +2,9 @@ use fewfc::application::{apply_event, handle_command, resolve_trusted_randomness
 use fewfc::domain::{
     CardInstanceId, CardOrigin, Command, EffectChoiceAnswer, Element,
     FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID,
-    PERSONAL_DECK_MODULE_ID, Phase, PlayerId, PlayerSpirit, RandomnessDeck, RuleModuleId,
-    STAR_MODULE_ID, SpiritKind, StatusDuration, StatusEffect, StatusOwner, TRIBULATION_MODULE_ID,
-    TeamId, TrustedRandomnessAnswer,
+    LimitedUse, PERSONAL_DECK_MODULE_ID, Phase, PlayerId, PlayerProfession, PlayerSpirit,
+    ProfessionId, RandomnessDeck, RuleModuleId, STAR_MODULE_ID, SpiritKind, StatusDuration,
+    StatusEffect, StatusOwner, TRIBULATION_MODULE_ID, TeamId, TrustedRandomnessAnswer,
 };
 use fewfc::public_view::{PublicPendingChoiceKind, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -701,4 +701,87 @@ fn rusted_forest_processes_each_personal_deck_and_skips_only_the_protected_owner
     assert!(state.discard_for(&p2).unwrap().is_empty());
     assert!(state.active_rusted_forest_resolution.is_none());
     assert!(!state.statuses.iter().any(|status| status.id == "divine:p2"));
+}
+
+#[test]
+fn rusted_forest_deck_shuffle_does_not_recover_exhausted_tailwind() {
+    let mut state = personal_deck_state();
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let formation = vec![
+        personal_card(&state, &p1, Element::Wood, 4),
+        personal_card(&state, &p1, Element::Wood, 3),
+        personal_card(&state, &p1, Element::Metal, 4),
+        personal_card(&state, &p1, Element::Metal, 3),
+    ];
+    state
+        .deck_for_mut(&p1)
+        .unwrap()
+        .retain(|card| !formation.contains(card));
+    *state.hand_mut(&p1).unwrap() = formation.clone();
+    state.professions.push(PlayerProfession {
+        player: p2.clone(),
+        profession: ProfessionId::new("confluence:clear-wind-envoy"),
+    });
+    state.limited_uses.push(LimitedUse {
+        owner: p2.clone(),
+        key: "confluence:tailwind".to_string(),
+        remaining: 0,
+        maximum: 1,
+    });
+    let p2_deck = state
+        .card_instances
+        .iter()
+        .filter(|instance| instance.origin == CardOrigin::Player(p2.clone()))
+        .map(|instance| instance.instance)
+        .take(10)
+        .collect();
+    *state.deck_for_mut(&p2).unwrap() = p2_deck;
+    assert!(state.deck_for(&p2).unwrap().len() > 8);
+
+    let mut events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: p1,
+            formation_id: "tribulation:rusted-forest".to_string(),
+            cards: formation,
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    apply_all(&mut state, &events);
+    let mut p2_deck_shuffle_seen = false;
+    while let Some(request) = state.pending_randomness.clone() {
+        if matches!(request.operation, fewfc::domain::RandomnessOperation::DeckShuffle {
+            deck: RandomnessDeck::Player(ref owner)
+        } if owner == &p2)
+        {
+            p2_deck_shuffle_seen = true;
+        }
+        events = resolve_trusted_randomness(
+            &state,
+            &TrustedRandomnessAnswer {
+                request_id: request.request_id,
+                shuffled_order: request.current_order.into_iter().rev().collect(),
+            },
+        )
+        .unwrap();
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            GameEvent::LimitedUseChanged { owner, key, .. }
+                if owner == &p2 && key == "confluence:tailwind"
+        )));
+        apply_all(&mut state, &events);
+    }
+
+    assert!(p2_deck_shuffle_seen);
+    assert_eq!(
+        state
+            .limited_uses
+            .iter()
+            .find(|use_count| use_count.owner == p2 && use_count.key == "confluence:tailwind")
+            .unwrap()
+            .remaining,
+        0
+    );
 }

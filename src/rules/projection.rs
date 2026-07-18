@@ -992,6 +992,16 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     choice_player == player
                         && crate::rules::base::effect_choice_answer_is_valid(options, answer)
                 }
+                (
+                    Some(crate::domain::PendingChoice {
+                        player: choice_player,
+                        kind: crate::domain::PendingChoiceKind::SheepStealing { .. },
+                    }),
+                    crate::domain::EffectChoiceAnswer::SheepStealing {
+                        deck_cards,
+                        discard_cards,
+                    },
+                ) => choice_player == player && deck_cards.len() == 2 && discard_cards.len() == 2,
                 _ => false,
             };
             assert!(

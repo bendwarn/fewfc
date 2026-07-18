@@ -72,6 +72,8 @@ export interface PublicPendingChoice {
   presentation: PendingChoicePresentation
   kind: string
   cards: PublicCard[]
+  deckCards: PublicCard[]
+  discardCards: PublicCard[]
   requiredCount: number
   minimumCount: number
   maximumCount: number
@@ -124,7 +126,18 @@ export type EffectChoiceAnswer =
   | { type: 'player'; player: PlayerId }
   | { type: 'formation'; formationId: string }
   | { type: 'environment'; environment: Element }
-  | { type: 'chain'; pouchOwner: PlayerId; pouchCard: CardInstanceId; triggerCard?: CardInstanceId; strategy?: SecretStrategy }
+  | {
+      type: 'chain'
+      pouchOwner: PlayerId
+      pouchCard: CardInstanceId
+      triggerCard?: CardInstanceId
+      strategy?: SecretStrategy
+      targetPlayer?: PlayerId
+      star?: StarKind
+      breakStar?: boolean
+      discardCard?: CardInstanceId
+    }
+  | { type: 'sheepStealing'; deckCards: CardInstanceId[]; discardCards: CardInstanceId[] }
   | { type: 'decline' }
 
 export interface PublicPendingRandomness {
@@ -437,16 +450,6 @@ export interface LocalGameResponse {
     discardRetrievalAction: DiscardRetrievalActionDetail | null
     canChooseInitialPouch: boolean
     canTriggerPouch: boolean
-    pouchChainAction: {
-      formationId: string
-      ownerPlayers: PlayerId[]
-      cards: Array<{
-        pouchCard: CardInstanceId
-        triggerCards: CardInstanceId[]
-      }>
-      minimumCardCount: number
-      maximumCardCount: number
-    } | null
     secretStrategyActions: SecretStrategyAction[]
   }
   trustedRandomCandidates?: CardInstanceId[]

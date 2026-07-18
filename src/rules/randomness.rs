@@ -108,17 +108,12 @@ fn after_randomness_events(
         RandomnessContinuation::Pouch(PouchRandomnessContinuation::InitialShuffle) => {
             crate::rules::pouch::after_initial_shuffle_randomness_events(state, resolved_deck)
         }
+        RandomnessContinuation::Pouch(PouchRandomnessContinuation::ChainRecycle) => {
+            crate::rules::pouch::after_chain_recycle_randomness_events(state)
+        }
         RandomnessContinuation::Pouch(PouchRandomnessContinuation::SheepStealingRecycle {
             source_card,
-            deck_cards,
-            discard_cards,
-            ..
-        }) => crate::rules::pouch::after_sheep_recycle_randomness_events(
-            state,
-            *source_card,
-            deck_cards,
-            discard_cards,
-        ),
+        }) => crate::rules::pouch::after_sheep_recycle_randomness_events(state, *source_card),
         RandomnessContinuation::Pouch(PouchRandomnessContinuation::SheepStealing {
             source_card,
             owner,

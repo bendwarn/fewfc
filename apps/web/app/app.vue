@@ -1001,12 +1001,12 @@
               <h2>選擇初始錦囊</h2>
               <p>先從個人牌組選一張牌；所有玩家完成後才洗牌發牌。</p>
               <CardChoiceMatrix
-                :cards="initialPouchCards"
+                :cards="ownDeckCards"
                 :disabled="game.isLoading.value || !roomConnected"
                 label="初始錦囊牌組矩陣"
                 caption="依五行與等級選擇初始錦囊"
                 action-label="選擇作為初始錦囊"
-                @select="chooseInitialPouchCard"
+                @choose="chooseInitialPouchCard"
               />
             </div>
           </div>
@@ -1052,7 +1052,7 @@
                   label="連環錦囊牌組矩陣"
                   caption="依五行與等級選擇連環錦囊牌"
                   action-label="選擇作為連環錦囊"
-                  @select="chooseChainPouchCard"
+                  @choose="chooseChainPouchCard"
                 />
 
                 <template v-if="chainPouchCard">
@@ -1068,7 +1068,7 @@
                     label="連環觸發牌組矩陣"
                     caption="依五行與等級選擇連環觸發牌"
                     action-label="選擇作為連環觸發牌"
-                    @select="chooseChainTriggerCard"
+                    @choose="chooseChainTriggerCard"
                   />
                 </template>
               </template>
@@ -1082,7 +1082,7 @@
                   label="牽羊牌組矩陣"
                   caption="依五行與等級選擇牽羊交換的牌組牌"
                   action-label="選擇牽羊牌組牌"
-                  @select="togglePouchCard('pouchDeck', $event, pouchSwapRequiredCount)"
+                  @choose="togglePouchCard('pouchDeck', $event, pouchSwapRequiredCount)"
                 />
                 <h3>選擇 {{ pouchSwapRequiredCount }} 張要放回牌組的牌</h3>
                 <CardChoiceMatrix
@@ -1093,7 +1093,7 @@
                   label="牽羊回收矩陣"
                   caption="依五行與等級選擇牽羊放回牌組的牌"
                   action-label="選擇牽羊回收牌"
-                  @select="togglePouchCard('pouchDiscard', $event, pouchSwapRequiredCount)"
+                  @choose="togglePouchCard('pouchDiscard', $event, pouchSwapRequiredCount)"
                 />
               </template>
 
@@ -1144,34 +1144,9 @@
                     </button>
                   </div>
 
-                  <template v-if="selectedChainStrategyAction?.input === 'deckDiscardSwap'">
-                    <h3>牽羊：另選兩張牌組牌</h3>
-                    <CardChoiceMatrix
-                      :cards="chainStrategySelectableDeckCards"
-                      :selected-cards="strategyDeckSelection"
-                      :maximum="selectedChainStrategyAction?.requiredCardCount ?? 0"
-                      mode="toggle"
-                      label="連環牽羊牌組矩陣"
-                      caption="依五行與等級選擇連環牽羊交換的牌組牌"
-                      action-label="選擇連環牽羊牌組牌"
-                      @select="togglePouchCard(
-                        'strategyDeck', $event, selectedChainStrategyAction?.requiredCardCount ?? 0,
-                      )"
-                    />
-                    <h3>牽羊：選兩張要放回牌組的牌</h3>
-                    <CardChoiceMatrix
-                      :cards="chainStrategyReturnCards"
-                      :selected-cards="strategyDiscardSelection"
-                      :maximum="selectedChainStrategyAction?.requiredCardCount ?? 0"
-                      mode="toggle"
-                      label="連環牽羊回收矩陣"
-                      caption="依五行與等級選擇連環牽羊放回牌組的牌"
-                      action-label="選擇連環牽羊回收牌"
-                      @select="togglePouchCard(
-                        'strategyDiscard', $event, selectedChainStrategyAction?.requiredCardCount ?? 0,
-                      )"
-                    />
-                  </template>
+                  <p v-if="selectedChainStrategyAction?.input === 'deckDiscardSwap'">
+                    確認後會先依當前牌組狀態洗棄牌（若需要），再選擇牽羊交換的牌。
+                  </p>
 
                   <template v-if="selectedChainStrategyAction?.input === 'star'">
                     <h3>瞞天：取得星辰效果或破除星辰</h3>
@@ -1236,13 +1211,13 @@
                 >
                   確認
                 </button>
-                <button type="button" @click="resetPouchChoice">取消</button>
+                <button v-if="!state.pendingChoice" type="button" @click="resetPouchChoice">取消</button>
               </div>
             </div>
           </div>
 
           <div
-            v-if="state.pendingChoice && viewer === state.pendingChoice.player"
+            v-if="state.pendingChoice && !pouchChoiceKind && viewer === state.pendingChoice.player"
             class="choice-overlay"
           >
             <div>
@@ -1257,7 +1232,7 @@
                 label="商調‧鳴金牌組矩陣"
                 caption="依五行與等級選擇商調‧鳴金檢索的牌組牌"
                 action-label="選擇商調‧鳴金牌組牌"
-                @select="game.togglePendingChoiceCard"
+                @choose="game.togglePendingChoiceCard"
               />
               <div v-else class="choice-cards">
                 <button
@@ -1334,7 +1309,7 @@
                 )"
                 :groups="state.pendingChoice.formationGroups"
                 :disabled="game.isLoading.value || !roomConnected"
-                @select="game.choosePendingFormation"
+                @choose="game.choosePendingFormation"
               />
               <div
                 v-else-if="state.pendingChoice.kind === 'TypedEffect'
@@ -1384,7 +1359,7 @@
           </div>
 
           <div
-            v-else-if="state.pendingChoice"
+            v-if="state.pendingChoice && !pouchChoiceKind && viewer !== state.pendingChoice.player"
             class="choice-waiting-overlay"
             role="status"
             aria-live="polite"
@@ -1758,7 +1733,7 @@ const directPlayableAbilities = computed(() => (
     ability => ability.type !== 'useSpiritSkill' || ability.id !== 'Splendor',
   )
 ))
-const initialPouchCards = computed<PublicCard[]>(() => {
+const ownDeckCards = computed<PublicCard[]>(() => {
   if (viewer.value === 'observer') return []
   const cards = state.value.playerDecks.find(entry => entry.player === viewer.value)?.cards
   return cards?.kind === 'known' ? cards.cards : []
@@ -1772,10 +1747,6 @@ type PouchStrategyAction = {
   detail: string
   strategy: SecretStrategy
   options?: Parameters<typeof game.triggerSecretStrategy>[1]
-  choice?: 'sheep'
-  requiredCardCount?: number
-  deckCards?: number[]
-  discardCards?: number[]
 }
 const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
   if (viewer.value === 'observer' || !game.interaction.value.canTriggerPouch) return []
@@ -1799,16 +1770,11 @@ const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
         })
       }
     } else if (requirement.input === 'deckDiscardSwap') {
-      if (requirement.deckCards.length >= requirement.requiredCardCount
-        && requirement.discardCards.length >= requirement.requiredCardCount) {
+      if (requirement.discardCards.length >= requirement.requiredCardCount) {
         actions.push({
           label: `秘計‧${strategyLabel(strategy)}`,
           detail,
           strategy,
-          choice: 'sheep',
-          requiredCardCount: requirement.requiredCardCount,
-          deckCards: requirement.deckCards,
-          discardCards: requirement.discardCards,
         })
       }
     } else if (requirement.input === 'star') {
@@ -1846,11 +1812,8 @@ const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
   return actions
 })
 const pouchChoiceKind = ref<'chain' | 'sheep' | null>(null)
-const pouchFormationAction = ref<PlayableAction | null>(null)
 const pouchDeckSelection = ref<number[]>([])
 const pouchDiscardSelection = ref<number[]>([])
-const strategyDeckSelection = ref<number[]>([])
-const strategyDiscardSelection = ref<number[]>([])
 const pouchOwnerSelection = ref<PlayerId | null>(null)
 const chainStrategySelection = ref<SecretStrategy | null>(null)
 const strategyTargetSelection = ref<PlayerId | null>(null)
@@ -1876,51 +1839,48 @@ const friendlyPouchOwners = computed(() => {
 })
 const chainPouchCard = computed(() => (
   pouchChoiceKind.value === 'chain' && pouchDeckSelection.value.length >= 1
-    ? initialPouchCards.value.find(card => card.id === pouchDeckSelection.value[0]) ?? null
+    ? chainPouchCards.value.find(card => card.id === pouchDeckSelection.value[0]) ?? null
     : null
 ))
 const chainTriggerCard = computed(() => (
   pouchChoiceKind.value === 'chain' && pouchDeckSelection.value.length === 2
-    ? initialPouchCards.value.find(card => card.id === pouchDeckSelection.value[1]) ?? null
+    ? chainPouchCards.value.find(card => card.id === pouchDeckSelection.value[1]) ?? null
     : null
 ))
 const chainPouchCards = computed(() => (
-  initialPouchCards.value.filter(card => !strategyDeckSelection.value.includes(card.id))
+  (state.value.pendingChoice?.purpose === 'pouch:chain'
+    ? state.value.pendingChoice.cards
+    : ownDeckCards.value
+  )
 ))
 const chainTriggerCards = computed(() => (
-  initialPouchCards.value.filter(card => (
+  chainPouchCards.value.filter(card => (
     isLegalChainTrigger(chainPouchCard.value, card)
-    && !strategyDeckSelection.value.includes(card.id)
   ))
 ))
-const pouchSwapSelectableDeckCards = computed(() => initialPouchCards.value.filter(
-  card => pouchSwapDeckCards.value.includes(card.id),
-))
+const pouchSwapSelectableDeckCards = computed(() => {
+  const choice = state.value.pendingChoice
+  const cards = choice?.kind === 'SheepStealing' ? choice.deckCards : ownDeckCards.value
+  return cards.filter(card => pouchSwapDeckCards.value.includes(card.id))
+})
 const pouchSwapReturnCards = computed(() => sheepReturnCards(
   pouchSwapDiscardCards.value,
   ownDiscardCards.value,
-  initialPouchCards.value,
+  ownDeckCards.value,
   pouchDeckSelection.value,
 ))
 const chainStrategyOptions = computed(() => {
   const card = chainTriggerCard.value
   if (!card) return []
+  const prospectiveDeckCount = ownDeckCards.value.length - 2
+  const sheepCanComplete = prospectiveDeckCount + ownDiscardCards.value.length >= 2
   return game.interaction.value.secretStrategyActions
     .filter(option => option.sourceCard === card.id)
+    .filter(option => option.strategy !== 'SheepStealing' || sheepCanComplete)
 })
 const selectedChainStrategyAction = computed(() => chainStrategyOptions.value.find(
   option => option.strategy === chainStrategySelection.value,
 ) ?? null)
-const chainStrategySelectableDeckCards = computed(() => initialPouchCards.value.filter(
-  card => selectedChainStrategyAction.value?.deckCards.includes(card.id)
-    && !pouchDeckSelection.value.includes(card.id),
-))
-const chainStrategyReturnCards = computed(() => sheepReturnCards(
-  selectedChainStrategyAction.value?.discardCards ?? [],
-  ownDiscardCards.value,
-  initialPouchCards.value,
-  strategyDeckSelection.value,
-))
 const canSubmitPouchChoice = computed(() => {
   if (pouchChoiceKind.value === 'sheep') {
     const count = pouchSwapRequiredCount.value
@@ -1931,7 +1891,6 @@ const canSubmitPouchChoice = computed(() => {
       && containsSelectedCards(pouchSwapReturnCards.value, pouchDiscardSelection.value)
   }
   if (pouchChoiceKind.value !== 'chain'
-    || !pouchFormationAction.value
     || !pouchOwnerSelection.value
     || pouchDeckSelection.value.length < 1
     || pouchDeckSelection.value.length > 2) return false
@@ -1940,12 +1899,7 @@ const canSubmitPouchChoice = computed(() => {
   if (!requirement) return false
   if (requirement.input === 'targetPlayer') return !!strategyTargetSelection.value
   if (requirement.input === 'star') return !!strategyStarSelection.value
-  if (requirement.input === 'deckDiscardSwap') {
-    return strategyDeckSelection.value.length === requirement.requiredCardCount
-      && strategyDiscardSelection.value.length === requirement.requiredCardCount
-      && containsSelectedCards(chainStrategySelectableDeckCards.value, strategyDeckSelection.value)
-      && containsSelectedCards(chainStrategyReturnCards.value, strategyDiscardSelection.value)
-  }
+  if (requirement.input === 'deckDiscardSwap') return true
   return true
 })
 
@@ -1956,11 +1910,8 @@ function containsSelectedCards(cards: PublicCard[], selected: CardInstanceId[]):
 
 function resetPouchChoice() {
   pouchChoiceKind.value = null
-  pouchFormationAction.value = null
   pouchDeckSelection.value = []
   pouchDiscardSelection.value = []
-  strategyDeckSelection.value = []
-  strategyDiscardSelection.value = []
   pouchOwnerSelection.value = null
   chainStrategySelection.value = null
   strategyTargetSelection.value = null
@@ -1973,15 +1924,13 @@ function resetPouchChoice() {
 }
 
 function togglePouchCard(
-  kind: 'pouchDeck' | 'pouchDiscard' | 'strategyDeck' | 'strategyDiscard',
+  kind: 'pouchDeck' | 'pouchDiscard',
   card: number,
   maximum: number,
 ) {
   const selection = {
     pouchDeck: pouchDeckSelection,
     pouchDiscard: pouchDiscardSelection,
-    strategyDeck: strategyDeckSelection,
-    strategyDiscard: strategyDiscardSelection,
   }[kind]
   selection.value = selection.value.includes(card)
     ? selection.value.filter(selected => selected !== card)
@@ -1990,9 +1939,6 @@ function togglePouchCard(
   if (kind === 'pouchDeck') {
     const available = new Set(pouchSwapReturnCards.value.map(candidate => candidate.id))
     pouchDiscardSelection.value = pouchDiscardSelection.value.filter(id => available.has(id))
-  } else if (kind === 'strategyDeck') {
-    const available = new Set(chainStrategyReturnCards.value.map(candidate => candidate.id))
-    strategyDiscardSelection.value = strategyDiscardSelection.value.filter(id => available.has(id))
   }
 }
 
@@ -2020,8 +1966,6 @@ function clearChainTriggerCard() {
 }
 
 function resetChainStrategyChoice() {
-  strategyDeckSelection.value = []
-  strategyDiscardSelection.value = []
   chainStrategySelection.value = null
   strategyTargetSelection.value = null
   strategyStarSelection.value = null
@@ -2030,23 +1974,18 @@ function resetChainStrategyChoice() {
 }
 
 function startPouchAction(action: PouchStrategyAction) {
-  if (action.choice === 'sheep') {
-    resetPouchChoice()
-    pouchChoiceKind.value = 'sheep'
-    pouchSwapRequiredCount.value = action.requiredCardCount ?? 0
-    pouchSwapDeckCards.value = action.deckCards ?? []
-    pouchSwapDiscardCards.value = action.discardCards ?? []
-    return
-  }
   void game.triggerSecretStrategy(action.strategy, action.options)
 }
 
 function startPlayableAction(action: PlayableAction) {
   if (action.type === 'performFormation' && action.id === 'pouch:chain') {
     resetPouchChoice()
-    pouchChoiceKind.value = 'chain'
-    pouchFormationAction.value = action
-    pouchOwnerSelection.value = viewer.value === 'observer' ? null : viewer.value
+    void game.performPlayableAction(action).then((submitted) => {
+      if (submitted) {
+        pouchChoiceKind.value = 'chain'
+        pouchOwnerSelection.value = viewer.value === 'observer' ? null : viewer.value
+      }
+    })
     return
   }
   void game.performPlayableAction(action)
@@ -2055,30 +1994,56 @@ function startPlayableAction(action: PlayableAction) {
 async function submitPouchChoice() {
   if (!canSubmitPouchChoice.value) return
   if (pouchChoiceKind.value === 'sheep') {
-    const submitted = await game.triggerSecretStrategy('SheepStealing', {
-      deckCards: pouchDeckSelection.value,
-      discardCards: pouchDiscardSelection.value,
-    })
+    const submitted = await game.answerSheepStealingChoice(
+      pouchDeckSelection.value,
+      pouchDiscardSelection.value,
+    )
     if (submitted !== false) resetPouchChoice()
     return
   }
-  const action = pouchFormationAction.value
   const owner = pouchOwnerSelection.value
-  if (!action || !owner) return
-  const submitted = await game.performPlayableAction(action, {
+  const pouchCard = pouchDeckSelection.value[0]
+  if (!owner || pouchCard === undefined) return
+  const submitted = await game.answerChainChoice({
+    type: 'chain',
     pouchOwner: owner,
-    pouchCard: pouchDeckSelection.value[0],
+    pouchCard,
     triggerCard: pouchDeckSelection.value[1],
-    secretStrategy: chainStrategySelection.value ?? undefined,
-    secretStrategyTargetPlayer: strategyTargetSelection.value ?? undefined,
-    secretStrategyStar: strategyStarSelection.value ?? undefined,
-    secretStrategyBreakStar: strategyBreakStar.value,
-    secretStrategyDiscardCard: strategyDiscardCard.value ?? undefined,
-    secretStrategyDeckCards: strategyDeckSelection.value,
-    secretStrategyDiscardCards: strategyDiscardSelection.value,
+    strategy: chainStrategySelection.value ?? undefined,
+    targetPlayer: strategyTargetSelection.value ?? undefined,
+    star: strategyStarSelection.value ?? undefined,
+    breakStar: strategyBreakStar.value,
+    discardCard: strategyDiscardCard.value ?? undefined,
   })
-  if (submitted) resetPouchChoice()
+  if (submitted && state.value.pendingChoice?.kind !== 'SheepStealing') resetPouchChoice()
 }
+
+watch(
+  () => state.value.pendingChoice,
+  (choice) => {
+    if (!choice || viewer.value !== choice.player) {
+      if (pouchChoiceKind.value) resetPouchChoice()
+      return
+    }
+    if (choice.purpose === 'pouch:chain') {
+      pouchChoiceKind.value = 'chain'
+      pouchOwnerSelection.value ??= viewer.value === 'observer' ? null : viewer.value
+      return
+    }
+    if (choice.kind === 'SheepStealing') {
+      pouchChoiceKind.value = 'sheep'
+      pouchDeckSelection.value = []
+      pouchDiscardSelection.value = []
+      pouchSwapRequiredCount.value = choice.requiredCount
+      pouchSwapDeckCards.value = choice.deckCards.map(card => card.id)
+      pouchSwapDiscardCards.value = [
+        ...choice.discardCards.map(card => card.id),
+        ...choice.deckCards.map(card => card.id),
+      ]
+    }
+  },
+)
+
 const actionDetail = ref<{ name: string; summary: string } | null>(null)
 const discardRetrievalDetail = computed(() => {
   const detail = game.interaction.value.discardRetrievalAction

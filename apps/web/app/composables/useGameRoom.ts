@@ -99,7 +99,6 @@ export function useGameRoom(viewer: ViewerRef) {
     discardRetrievalAction: null,
     canChooseInitialPouch: false,
     canTriggerPouch: false,
-    pouchChainAction: null,
     secretStrategyActions: [],
   })
   const connectionState = ref<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle')
@@ -155,6 +154,8 @@ export function useGameRoom(viewer: ViewerRef) {
           choice.purpose,
           choice.requiredCount,
           choice.cards.map(card => card.id).join(','),
+          choice.deckCards.map(card => card.id).join(','),
+          choice.discardCards.map(card => card.id).join(','),
           choice.players.join(','),
           choice.formations.join(','),
           choice.environments.join(','),
@@ -401,6 +402,26 @@ export function useGameRoom(viewer: ViewerRef) {
     })
   }
 
+  async function answerChainChoice(answer: Extract<import('~/types/fewfc').EffectChoiceAnswer, { type: 'chain' }>) {
+    const choice = state.value.pendingChoice
+    if (!choice || choice.purpose !== 'pouch:chain' || viewer.value !== choice.player) return false
+    return await submitOnline({
+      type: 'answerEffectChoiceTyped',
+      player: choice.player,
+      answer,
+    })
+  }
+
+  async function answerSheepStealingChoice(deckCards: CardInstanceId[], discardCards: CardInstanceId[]) {
+    const choice = state.value.pendingChoice
+    if (!choice || choice.kind !== 'SheepStealing' || viewer.value !== choice.player) return false
+    return await submitOnline({
+      type: 'answerEffectChoiceTyped',
+      player: choice.player,
+      answer: { type: 'sheepStealing', deckCards, discardCards },
+    })
+  }
+
   async function queryPlayableActions(revision: number, cards: CardInstanceId[]) {
     const player = state.value.currentPlayer
 
@@ -587,21 +608,7 @@ export function useGameRoom(viewer: ViewerRef) {
     selectedCards.value = toggleActionDraftCard(selectedCards.value, card)
   }
 
-  async function performPlayableAction(
-    action: PlayableAction,
-    pouchOptions: {
-      pouchOwner?: PlayerId
-      pouchCard?: CardInstanceId
-      triggerCard?: CardInstanceId
-      secretStrategy?: SecretStrategy
-      secretStrategyTargetPlayer?: PlayerId
-      secretStrategyStar?: StarKind
-      secretStrategyBreakStar?: boolean
-      secretStrategyDiscardCard?: CardInstanceId
-      secretStrategyDeckCards?: CardInstanceId[]
-      secretStrategyDiscardCards?: CardInstanceId[]
-    } = {},
-  ): Promise<boolean> {
+  async function performPlayableAction(action: PlayableAction): Promise<boolean> {
     const player = state.value.currentPlayer
 
     if (viewer.value !== player) {
@@ -619,7 +626,6 @@ export function useGameRoom(viewer: ViewerRef) {
           matchOptionRole: action.matchOption?.role,
           matchOptionCard: action.matchOption?.card,
           matchOptionSlots: action.matchOption?.slots,
-          ...pouchOptions,
         })
         if (submitted) {
           selectedCards.value = []
@@ -796,6 +802,8 @@ export function useGameRoom(viewer: ViewerRef) {
     retrievePreviousTurnDiscard,
     chooseInitialPouch,
     triggerSecretStrategy,
+    answerChainChoice,
+    answerSheepStealingChoice,
     canSelectCard,
     toggleCardSelection,
     performPlayableAction,

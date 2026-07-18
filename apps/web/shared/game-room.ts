@@ -189,16 +189,6 @@ export type OnlineGameAction =
       matchOptionRole?: string
       matchOptionCard?: number
       matchOptionSlots?: number
-      pouchOwner?: PlayerId
-      pouchCard?: number
-      triggerCard?: number
-      secretStrategy?: SecretStrategy
-      secretStrategyTargetPlayer?: PlayerId
-      secretStrategyStar?: StarKind
-      secretStrategyBreakStar?: boolean
-      secretStrategyDiscardCard?: number
-      secretStrategyDeckCards?: number[]
-      secretStrategyDiscardCards?: number[]
     }
   | { type: 'changeProfession'; player: PlayerId; professionId: string; cards: number[] }
   | {
@@ -254,7 +244,14 @@ export interface TrustedRandomnessRequest {
     | { type: 'echo'; kind: 'ringingMetalRecycleDiscard' | 'ringingMetalPostSearch' }
     | { type: 'hero'; kind: 'revelation' }
     | { type: 'confluence'; kind: 'clearWindTenThousandMiles' }
-    | { type: 'pouch'; kind: 'initialShuffle' | 'sheepStealing' }
+    | {
+        type: 'pouch'
+        kind:
+          | 'initialShuffle'
+          | 'chainRecycle'
+          | { sheepStealingRecycle: { sourceCard: number } }
+          | { sheepStealing: { sourceCard: number; owner: PlayerId | null } }
+      }
     | { type: 'tribulation'; kind: 'rustedForestDiscardShuffle' | 'rustedForestShuffle' }
   currentOrder: number[]
 }
@@ -299,14 +296,18 @@ export async function resolvePendingRandomnessSequence<
 export function requiresPendingCommandDraft(
   action: OnlineGameAction,
   pendingChoiceKind: string | undefined,
-): action is Extract<OnlineGameAction, { type: 'performFormation' }> {
-  return action.type === 'performFormation' && pendingChoiceKind === 'EffectGenerated'
+): boolean {
+  return (
+    (action.type === 'performFormation' || action.type === 'triggerSecretStrategy')
+    && pendingChoiceKind !== undefined
+    && ['EffectGenerated', 'TypedEffect', 'SheepStealing'].includes(pendingChoiceKind)
+  )
 }
 
 export function continuesPendingCommandDraft(
   pendingChoiceKind: string | undefined,
 ): boolean {
-  return pendingChoiceKind === 'EffectGenerated'
+  return ['EffectGenerated', 'TypedEffect', 'SheepStealing'].includes(pendingChoiceKind ?? '')
 }
 
 export type GameRoomRequest =
