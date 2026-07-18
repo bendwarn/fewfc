@@ -6,6 +6,7 @@ describe('safeInternalPath', () => {
     expect(safeInternalPath('/rooms/abc?invite=secret')).toBe('/rooms/abc?invite=secret')
     expect(safeInternalPath('/rooms?tab=join')).toBe('/rooms?tab=join')
     expect(safeInternalPath('/deck')).toBe('/deck')
+    expect(safeInternalPath('/replays/replay-7?step=12')).toBe('/replays/replay-7?step=12')
     expect(safeInternalPath('/login')).toBe(undefined)
   })
 

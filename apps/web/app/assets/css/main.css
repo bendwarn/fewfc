@@ -38,11 +38,6 @@
     @apply m-0;
   }
 }
-.route-page,
-.route-anchor {
-  display: none;
-}
-
 .route-state {
   display: grid;
   min-height: calc(100vh - 76px);
