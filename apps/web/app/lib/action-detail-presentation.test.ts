@@ -26,7 +26,7 @@ const everyConsequence: RuleConsequence[] = [
   { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'attack', target: 'selfTeam', category: 'special', points: { type: 'formula', formula: { type: 'levelSumTimes', multiplier: 3 } } } },
   { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'attack', target: 'allPlayers', category: 'special', points: { type: 'formula', formula: { type: 'targetHandCountTimes', multiplier: 15 } } } },
   { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'attack', target: 'eachTeam', category: 'special', points: { type: 'formula', formula: { type: 'elementProductTimes', element: 'Fire', multiplier: 5 } } } },
-  ...(['coverCounter', 'copyPreviousTurnFormation', 'recoverHp', 'reduceShield', 'inspectHand', 'createShield', 'returnTeamHp', 'drawCards', 'swapTeamHp', 'summonSpirit', 'clearEnvironment', 'applyStatus', 'changeEnvironment', 'breakProfession', 'limitedUseRecovery', 'resolveMelodyMainEffect', 'beginChainChoice', 'shatterSpirits', 'breakStars'] as const)
+  ...(['coverCounter', 'copyPreviousTurnFormation', 'recoverHp', 'reduceShield', 'inspectHand', 'createShield', 'returnTeamHp', 'drawCards', 'swapTeamHp', 'summonSpirit', 'clearEnvironment', 'applyStatus', 'changeEnvironment', 'breakProfession', 'limitedUseRecovery', 'resolveMelodyMainEffect', 'beginChainChoice', 'shatterSpirits', 'breakStars', 'damageEachTeamBy15', 'applyGaleRain', 'reduceEveryShieldBy20', 'attackIncreasesTo80IfShieldReduced', 'chooseEnvironmentAndRequireMatchingCardOrRevealHand', 'revealTopEightDiscardLevelThreeOrHigherThenShuffle', 'transferEnvironmentToUsedElement'] as const)
     .map(effect => ({ type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'resolveFormationEffect', effect } }) as const),
   { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'changeProfession', professionId: 'hero:warrior' } },
   ...([
@@ -49,7 +49,7 @@ const everyConsequence: RuleConsequence[] = [
   ] satisfies SpiritSkillEffect[]).map(effect => ({ type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'useSpiritSkill', effect } }) as const),
   { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'triggerSecretStrategy', effect: 'protectTriggeringPlayer' } },
   { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'movePreviousTurnDiscardToDeckTop', card: 5, previousPlayer: 'bob' } },
-  ...(['selectPlayer', 'selectFormation', 'selectMelody', 'selectDeckCard', 'selectPouchOwnerAndOptionalStrategy'] as const)
+  ...(['selectPlayer', 'selectFormation', 'selectMelody', 'selectDeckCard', 'selectEnvironment', 'selectPouchOwnerAndOptionalStrategy'] as const)
     .map(type => ({ type: 'followUpChoice', certainty: 'followUp', choice: { type } }) as const),
   { type: 'followUpChoice', certainty: 'followUp', choice: { type: 'selectSecretStrategyInput', input: 'deckDiscardSwap' } },
   { type: 'followUpChoice', certainty: 'followUp', choice: { type: 'selectCards', minimum: 1, maximum: 2 } },
@@ -58,7 +58,7 @@ const everyConsequence: RuleConsequence[] = [
   { type: 'trustedRandomness', certainty: 'random', operation: { type: 'selectHiddenHandCards', count: 2 } },
   { type: 'delayedEffect', certainty: 'scheduled', timing: 'nextTurnStart', effect: 'repeatMelodyMainEffect' },
   { type: 'delayedEffect', certainty: 'scheduled', timing: 'nextPlayerTurn', effect: 'selectAndPerformMelodyMainEffect' },
-  ...(['doesNotEndAction', 'doesNotCreateFormationUse', 'doesNotScheduleAnotherEcho', 'effectMayBeIneffective', 'usesPrintedElement'] as const)
+  ...(['doesNotEndAction', 'doesNotCreateFormationUse', 'doesNotScheduleAnotherEcho', 'ignoresOtherFormationEffects', 'effectMayBeIneffective', 'usesPrintedElement'] as const)
     .map(type => ({ type: 'ruleException', certainty: 'guaranteed', exception: { type } }) as const),
   { type: 'ruleException', certainty: 'guaranteed', exception: { type: 'limitedUse', key: 'tailwind', remaining: 0, maximum: 1 } },
   { type: 'substitution', certainty: 'guaranteed', card: 6, printedElement: 'Metal', interpretedElement: 'Earth' },
@@ -103,9 +103,11 @@ test('presents Echo, Chain, direct Pouch, and Discard Retrieval through their ty
       { type: 'cost', certainty: 'guaranteed', cost: { type: 'consumePouch', sourceCard: 8 } },
       { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'triggerSecretStrategy', effect: 'swapDeckAndDiscard' } },
       { type: 'followUpChoice', certainty: 'followUp', choice: { type: 'selectSecretStrategyInput', input: 'deckDiscardSwap' } },
+      { type: 'trustedRandomness', certainty: 'random', operation: 'shuffleDeck' },
     ] },
   }
   expect(presentSecretStrategyOption(pouch)).toContain('各選兩張牌交換牌組與棄牌堆')
+  expect(presentSecretStrategyOption(pouch)).toContain('隨機決定：由受信任的隨機程序洗牌')
 
   expect(presentDiscardRetrievalAction({ detail: { consequences: [
     { type: 'cost', certainty: 'guaranteed', cost: { type: 'loseHp', amount: 6 } },

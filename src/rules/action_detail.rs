@@ -348,6 +348,12 @@ pub(crate) fn secret_strategy_detail(
             choice: super::FollowUpChoice::SelectSecretStrategyInput { input },
         });
     }
+    if strategy == SecretStrategy::SheepStealing {
+        consequences.push(RuleConsequence::TrustedRandomness {
+            certainty: ConsequenceCertainty::Random,
+            operation: TrustedRandomness::ShuffleDeck,
+        });
+    }
     PlayerFacingActionDetail::complete(consequences)
 }
 
@@ -561,6 +567,16 @@ mod tests {
                     declared_level: Some(4),
                     detail: pending,
                 }),
+                PlayableAction::PerformFormation(FormationCandidate {
+                    formation_id: "east-azure-dragon".to_string(),
+                    formation_name: "東‧青龍".to_string(),
+                    category: super::super::FormationCategory::Attack,
+                    cards: vec![CardInstanceId::new(11)],
+                    star_substitution: None,
+                    declared_targets: Vec::new(),
+                    preview: None,
+                    detail: PlayerFacingActionDetail::pending_composition(),
+                }),
             ],
         );
 
@@ -595,6 +611,34 @@ mod tests {
                 ..
             }
         )));
+        let sheep = secret_strategy_detail(
+            CardInstanceId::new(12),
+            SecretStrategy::SheepStealing,
+            super::super::SecretStrategyInput::DeckDiscardSwap,
+        );
+        assert!(sheep.consequences.iter().any(|consequence| matches!(
+            consequence,
+            RuleConsequence::TrustedRandomness {
+                certainty: ConsequenceCertainty::Random,
+                operation: TrustedRandomness::ShuffleDeck,
+            }
+        )));
+        let PlayableAction::PerformFormation(sacred_beast) = &actions[4] else {
+            panic!("fifth action should be the supplied sacred beast")
+        };
+        assert!(
+            sacred_beast
+                .detail
+                .consequences
+                .iter()
+                .any(|consequence| matches!(
+                    consequence,
+                    RuleConsequence::RuleException {
+                        exception: RuleException::IgnoresOtherFormationEffects,
+                        ..
+                    }
+                ))
+        );
         let retrieval = discard_retrieval_detail(CardInstanceId::new(8), PlayerId::new("bob"), 6);
         assert!(retrieval.consequences.iter().any(|consequence| matches!(
             consequence,

@@ -9,7 +9,8 @@ use crate::domain::{
 use crate::rules::{
     AttackCategory, AttackPlanDef, BaseFormationSpec, ConsequenceCertainty, DamageTarget,
     EffectDef, EffectPlan, FollowUpChoice, FormationCategory, FormationDef, FormationEffect,
-    FormationPattern, PointFormula, RuleConsequence, SpellPlanDef, SubmittedCardFacts,
+    FormationPattern, ImmediateEffect, PointFormula, RuleConsequence, SpellPlanDef,
+    SubmittedCardFacts, TrustedRandomness,
 };
 
 pub(crate) const THUNDER_FIRE: &str = "tribulation:thunder-fire";
@@ -108,14 +109,53 @@ fn tribulation(id: &str, name: &str, rule_text: &str) -> BaseFormationSpec {
 }
 
 pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence>> {
+    let immediate = |effect, certainty| RuleConsequence::ImmediateEffect {
+        certainty,
+        effect: ImmediateEffect::ResolveFormationEffect { effect },
+    };
     match id {
-        EARTH_RENDING | RUSTED_FOREST => Some(vec![RuleConsequence::FollowUpChoice {
-            certainty: ConsequenceCertainty::FollowUp,
-            choice: FollowUpChoice::SelectCards {
-                minimum: 0,
-                maximum: 8,
+        THUNDER_FIRE => Some(vec![immediate(
+            FormationEffect::DamageEachTeamBy15,
+            ConsequenceCertainty::Guaranteed,
+        )]),
+        GALE_RAIN => Some(vec![immediate(
+            FormationEffect::ApplyGaleRain,
+            ConsequenceCertainty::Guaranteed,
+        )]),
+        MUDSLIDE_TORRENT => Some(vec![
+            immediate(
+                FormationEffect::ReduceEveryShieldBy20,
+                ConsequenceCertainty::Guaranteed,
+            ),
+            immediate(
+                FormationEffect::AttackIncreasesTo80IfShieldReduced,
+                ConsequenceCertainty::Conditional,
+            ),
+        ]),
+        EARTH_RENDING => Some(vec![
+            RuleConsequence::FollowUpChoice {
+                certainty: ConsequenceCertainty::FollowUp,
+                choice: FollowUpChoice::SelectEnvironment,
             },
-        }]),
+            immediate(
+                FormationEffect::ChooseEnvironmentAndRequireMatchingCardOrRevealHand,
+                ConsequenceCertainty::FollowUp,
+            ),
+        ]),
+        RUSTED_FOREST => Some(vec![
+            immediate(
+                FormationEffect::RevealTopEightDiscardLevelThreeOrHigherThenShuffle,
+                ConsequenceCertainty::Guaranteed,
+            ),
+            RuleConsequence::TrustedRandomness {
+                certainty: ConsequenceCertainty::Random,
+                operation: TrustedRandomness::ShuffleDeck,
+            },
+            RuleConsequence::TrustedRandomness {
+                certainty: ConsequenceCertainty::Conditional,
+                operation: TrustedRandomness::ShuffleDiscardIntoDeck,
+            },
+        ]),
         _ => None,
     }
 }
@@ -852,5 +892,56 @@ mod tests {
                 },
             ],
         ));
+    }
+
+    #[test]
+    fn every_tribulation_contributes_its_rule_specific_action_detail_facts() {
+        use crate::rules::{
+            ConsequenceCertainty, FormationEffect, ImmediateEffect, RuleConsequence,
+        };
+
+        let cases = [
+            (THUNDER_FIRE, FormationEffect::DamageEachTeamBy15),
+            (GALE_RAIN, FormationEffect::ApplyGaleRain),
+            (MUDSLIDE_TORRENT, FormationEffect::ReduceEveryShieldBy20),
+            (
+                EARTH_RENDING,
+                FormationEffect::ChooseEnvironmentAndRequireMatchingCardOrRevealHand,
+            ),
+            (
+                RUSTED_FOREST,
+                FormationEffect::RevealTopEightDiscardLevelThreeOrHigherThenShuffle,
+            ),
+        ];
+
+        for (id, expected) in cases {
+            let detail = formation_action_detail_consequences(id)
+                .unwrap_or_else(|| panic!("{id} must declare action-detail facts"));
+            assert!(detail.iter().any(|consequence| matches!(
+                consequence,
+                RuleConsequence::ImmediateEffect {
+                    certainty: ConsequenceCertainty::Guaranteed | ConsequenceCertainty::FollowUp,
+                    effect: ImmediateEffect::ResolveFormationEffect { effect },
+                } if *effect == expected
+            )));
+        }
+        let mudslide = formation_action_detail_consequences(MUDSLIDE_TORRENT).unwrap();
+        assert!(mudslide.iter().any(|consequence| matches!(
+            consequence,
+            RuleConsequence::ImmediateEffect {
+                certainty: ConsequenceCertainty::Conditional,
+                effect: ImmediateEffect::ResolveFormationEffect {
+                    effect: FormationEffect::AttackIncreasesTo80IfShieldReduced,
+                },
+            }
+        )));
+        let rusted_forest = formation_action_detail_consequences(RUSTED_FOREST).unwrap();
+        assert!(rusted_forest.iter().any(|consequence| matches!(
+            consequence,
+            RuleConsequence::TrustedRandomness {
+                certainty: ConsequenceCertainty::Random,
+                operation: TrustedRandomness::ShuffleDeck,
+            }
+        )));
     }
 }

@@ -440,7 +440,7 @@ export type EffectFormula =
   | { type: 'levelSumTimes'; multiplier: number }
   | { type: 'targetHandCountTimes'; multiplier: number }
   | { type: 'elementProductTimes'; element: Element; multiplier: number }
-export type FormationEffect = 'coverCounter' | 'copyPreviousTurnFormation' | 'recoverHp' | 'reduceShield' | 'inspectHand' | 'createShield' | 'returnTeamHp' | 'drawCards' | 'swapTeamHp' | 'summonSpirit' | 'clearEnvironment' | 'applyStatus' | 'changeEnvironment' | 'breakProfession' | 'limitedUseRecovery' | 'resolveMelodyMainEffect' | 'beginChainChoice' | 'shatterSpirits' | 'breakStars'
+export type FormationEffect = 'coverCounter' | 'copyPreviousTurnFormation' | 'recoverHp' | 'reduceShield' | 'inspectHand' | 'createShield' | 'returnTeamHp' | 'drawCards' | 'swapTeamHp' | 'summonSpirit' | 'clearEnvironment' | 'applyStatus' | 'changeEnvironment' | 'breakProfession' | 'limitedUseRecovery' | 'resolveMelodyMainEffect' | 'beginChainChoice' | 'shatterSpirits' | 'breakStars' | 'damageEachTeamBy15' | 'applyGaleRain' | 'reduceEveryShieldBy20' | 'attackIncreasesTo80IfShieldReduced' | 'chooseEnvironmentAndRequireMatchingCardOrRevealHand' | 'revealTopEightDiscardLevelThreeOrHigherThenShuffle' | 'transferEnvironmentToUsedElement'
 export type SecretStrategyEffect = 'protectTriggeringPlayer' | 'increaseHandLevels' | 'increaseTurnDraw' | 'negateNextPlayerFormationHpChanges' | 'suppressPlayerAbilitiesAndSpiritPower' | 'summonSpiritFromPouch' | 'swapDeckAndDiscard' | 'directProfessionChange' | 'breakOrGainStar' | 'clearOrChangeEnvironment'
 export type ProfessionAbilityEffect =
   | { type: 'damagePreviousTeamByCardLevelTimes'; multiplier: number }
@@ -473,6 +473,7 @@ export type FollowUpChoice =
   | { type: 'selectFormation' }
   | { type: 'selectMelody' }
   | { type: 'selectDeckCard' }
+  | { type: 'selectEnvironment' }
   | { type: 'selectPouchOwnerAndOptionalStrategy' }
   | { type: 'selectSecretStrategyInput'; input: SecretStrategyInput }
   | { type: 'selectCards'; minimum: number; maximum: number }
@@ -484,6 +485,7 @@ export type RuleException =
   | { type: 'doesNotEndAction' }
   | { type: 'doesNotCreateFormationUse' }
   | { type: 'doesNotScheduleAnotherEcho' }
+  | { type: 'ignoresOtherFormationEffects' }
   | { type: 'limitedUse'; key: string; remaining: number; maximum: number }
   | { type: 'effectMayBeIneffective' }
   | { type: 'usesPrintedElement' }

@@ -253,6 +253,13 @@ pub enum FormationEffect {
     BeginChainChoice,
     ShatterSpirits,
     BreakStars,
+    DamageEachTeamBy15,
+    ApplyGaleRain,
+    ReduceEveryShieldBy20,
+    AttackIncreasesTo80IfShieldReduced,
+    ChooseEnvironmentAndRequireMatchingCardOrRevealHand,
+    RevealTopEightDiscardLevelThreeOrHigherThenShuffle,
+    TransferEnvironmentToUsedElement,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -335,6 +342,7 @@ pub enum FollowUpChoice {
     SelectFormation,
     SelectMelody,
     SelectDeckCard,
+    SelectEnvironment,
     SelectPouchOwnerAndOptionalStrategy,
     SelectSecretStrategyInput { input: SecretStrategyInput },
     SelectCards { minimum: usize, maximum: usize },
@@ -386,6 +394,7 @@ pub enum RuleException {
     DoesNotEndAction,
     DoesNotCreateFormationUse,
     DoesNotScheduleAnotherEcho,
+    IgnoresOtherFormationEffects,
     LimitedUse {
         key: String,
         remaining: u32,

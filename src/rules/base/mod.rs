@@ -14,7 +14,10 @@ use crate::domain::{
     TurnDrawSkipReason, ValidationError, validate_setup,
 };
 use crate::rules::projection;
-use crate::rules::{ConsequenceCertainty, FollowUpChoice, PlayableAction, RuleConsequence};
+use crate::rules::{
+    ConsequenceCertainty, FollowUpChoice, FormationEffect, ImmediateEffect, PlayableAction,
+    RuleConsequence, RuleException,
+};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn timed_effect_reductions(
@@ -58,6 +61,10 @@ pub(crate) fn timed_effect_reductions(
 /// Rule-specific choice facts kept beside the base spell resolvers.  This is
 /// explanatory only; the actual Pending Choice remains owned by resolution.
 pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence>> {
+    let immediate = |effect| RuleConsequence::ImmediateEffect {
+        certainty: ConsequenceCertainty::Guaranteed,
+        effect: ImmediateEffect::ResolveFormationEffect { effect },
+    };
     match id {
         "chaos" => Some(vec![RuleConsequence::FollowUpChoice {
             certainty: ConsequenceCertainty::FollowUp,
@@ -66,6 +73,17 @@ pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleC
                 maximum: 2,
             },
         }]),
+        "east-azure-dragon"
+        | "west-white-tiger"
+        | "south-vermilion-bird"
+        | "north-black-tortoise"
+        | "center-yellow-serpent" => Some(vec![
+            immediate(FormationEffect::TransferEnvironmentToUsedElement),
+            RuleConsequence::RuleException {
+                certainty: ConsequenceCertainty::Guaranteed,
+                exception: RuleException::IgnoresOtherFormationEffects,
+            },
+        ]),
         _ => None,
     }
 }

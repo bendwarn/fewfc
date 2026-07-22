@@ -128,6 +128,11 @@ function presentImmediateEffect(effect: ImmediateEffect, cardLabel: CardLabel, p
         changeEnvironment: '轉移環境', breakProfession: '破除職業', limitedUseRecovery: '回復有限使用次數',
         resolveMelodyMainEffect: '結算此曲調的主效果', beginChainChoice: '開始連環的錦囊與秘計選擇',
         shatterSpirits: '削減所有精靈靈力並處理受影響隊伍生命', breakStars: '破除所有星辰並處理受影響隊伍生命',
+        damageEachTeamBy15: '每支隊伍各扣除 15 點生命', applyGaleRain: '使所有未受神算保護的玩家獲得烈風暴雨狀態',
+        reduceEveryShieldBy20: '所有未受神算保護的防護罩各扣除 20', attackIncreasesTo80IfShieldReduced: '若實際扣除了任一防護罩，此攻擊點數改為 80',
+        chooseEnvironmentAndRequireMatchingCardOrRevealHand: '選擇環境後，各玩家捨棄一張相同行屬牌，否則展示手牌',
+        revealTopEightDiscardLevelThreeOrHigherThenShuffle: '依序處理牌組頂最多八張牌，捨棄等級 3 以上者後洗牌',
+        transferEnvironmentToUsedElement: '傷害後將環境轉移為此陣法行屬',
       } satisfies Record<typeof effect.effect, string>
       return labels[effect.effect]
     }
@@ -160,6 +165,7 @@ function presentFollowUp(choice: FollowUpChoice): string {
     case 'selectFormation': return '結算時選擇一個陣法'
     case 'selectMelody': return '於下次回合開始選擇一種曲調主效果'
     case 'selectDeckCard': return '結算時從牌組選擇一張牌'
+    case 'selectEnvironment': return '結算時選擇一種環境'
     case 'selectPouchOwnerAndOptionalStrategy': return '結算時選擇錦囊持有者，並可選擇第二張牌觸發秘計'
     case 'selectSecretStrategyInput': {
       const labels = {
@@ -178,6 +184,7 @@ function presentException(exception: RuleException): string {
     case 'doesNotEndAction': return '不結束行動階段'
     case 'doesNotCreateFormationUse': return '此後續效果不視為新的陣法施展'
     case 'doesNotScheduleAnotherEcho': return '此後續效果不會再次排定迴響'
+    case 'ignoresOtherFormationEffects': return '不受其他陣法效果影響'
     case 'limitedUse': return `本局剩餘 ${exception.remaining}/${exception.maximum} 次使用`
     case 'effectMayBeIneffective': return '仍受適用的規則限制，效果可能無效'
     case 'usesPrintedElement': return '此處判定使用卡牌印刷行屬'
