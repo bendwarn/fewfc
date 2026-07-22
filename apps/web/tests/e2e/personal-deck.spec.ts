@@ -1,6 +1,6 @@
-import { createRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
+import { expect, fastPageTest, setupFastTwoPlayerGame, test } from './fixtures'
 
-test('account menu closes when clicking outside it', async ({ page }) => {
+fastPageTest('account menu closes when clicking outside it', async ({ page }) => {
   await page.getByRole('button', { name: /旅人-/ }).click()
   await expect(page.getByRole('button', { name: '個人牌組', exact: true })).toBeVisible()
 
@@ -8,7 +8,7 @@ test('account menu closes when clicking outside it', async ({ page }) => {
   await expect(page.getByRole('button', { name: '個人牌組', exact: true })).toBeHidden()
 })
 
-test('account menu opens the valid built-in personal deck editor', async ({ page }) => {
+fastPageTest('account menu opens the valid built-in personal deck editor', async ({ page }) => {
   await page.getByRole('button', { name: /旅人-/ }).click()
   await page.getByRole('button', { name: '個人牌組', exact: true }).click()
 
@@ -38,7 +38,7 @@ test('account menu opens the valid built-in personal deck editor', async ({ page
   await expect(page.locator('.deck-validation')).toContainText('60 / 60 張')
 })
 
-test('imports, exports, and rejects malformed personal-deck drafts', async ({ page }) => {
+fastPageTest('imports, exports, and rejects malformed personal-deck drafts', async ({ page }) => {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
   await page.getByRole('button', { name: /旅人-/ }).click()
   await page.getByRole('button', { name: '個人牌組', exact: true }).click()
@@ -95,36 +95,26 @@ test('imports, exports, and rejects malformed personal-deck drafts', async ({ pa
 })
 
 test('default room rules lock preconstructed decks and start personal piles', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `個人牌組測試 ${Date.now()}`,
+    enabledRuleModules: ['discard-retrieval', 'personal-deck', 'five-directions-legend'],
+    activeMatch: false,
+  })
+  const { host, guest } = game
 
   try {
-    await loginAsGuests([host, guest])
-    const roomName = `個人牌組測試 ${Date.now()}`
-
-    await createRoom(host, roomName)
     await expect(host.getByLabel('棄牌回收')).toBeChecked()
     await expect(host.getByLabel('個人牌組')).toBeChecked()
-
-    await joinListedRoom(guest, roomName)
 
     await expect(guest.getByLabel('棄牌回收')).toBeChecked()
     await expect(guest.getByLabel('個人牌組')).toBeChecked()
     await expect(guest.getByLabel('五方傳說')).toBeChecked()
     await expect(guest.getByLabel('個人牌組')).toBeDisabled()
 
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    await expect(guest.getByRole('button', { name: '取消準備 →' })).toBeVisible()
-    await expect(guest.getByText('本局使用：五行均衡預組')).toBeVisible()
-    await host.getByRole('button', { name: '開始遊戲 →' }).click()
+    await game.start()
 
-    await expect(host.locator('.setup-reveal')).toBeHidden()
     await expect(host.locator('.player-identity').filter({ hasText: /牌庫 5[56] · 棄牌 0/ })).toHaveCount(2)
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })

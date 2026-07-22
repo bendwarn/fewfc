@@ -1,14 +1,33 @@
-import type { Page } from '@playwright/test'
+import type { APIResponse, Page } from '@playwright/test'
 import {
-  createPublicRoom,
   expect,
-  joinListedRoom,
-  loginAsGuests,
-  reloadAppRoute,
+  reloadFastGameRoute,
   seedDevelopmentScenario,
-  startTwoPlayerMatch,
+  setupFastTwoPlayerGame,
   test,
 } from './fixtures'
+
+const pouchRuleModules = [
+  'personal-deck',
+  'five-directions-legend',
+  'star',
+  'hero-schools',
+  'spirit',
+  'pouch',
+] as const
+
+async function requestJson<T>(operation: string, responsePromise: Promise<APIResponse>): Promise<T> {
+  const response = await responsePromise
+  const body = await response.text()
+  if (!response.ok()) {
+    throw new Error(`${operation} failed with HTTP ${response.status()}: ${body}`)
+  }
+  try {
+    return JSON.parse(body) as T
+  } catch {
+    throw new Error(`${operation} returned invalid JSON: ${body}`)
+  }
+}
 
 async function waitForCommand(page: Page, actionType: string) {
   const response = await page.waitForResponse(response => (
@@ -55,25 +74,13 @@ function elementLabel(element: string) {
 }
 
 test('Pouch preparation is private, reconnectable, and triggers through the Ability panel', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
-  const pages = [host, guest]
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `錦囊規則測試 ${Date.now()}`,
+    enabledRuleModules: pouchRuleModules,
+  })
+  const { host, guest, pages, gameId: roomId } = game
 
   try {
-    await loginAsGuests(pages)
-    const roomName = `錦囊規則測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-    await host.getByLabel('錦囊').check()
-    await expect(host.getByLabel('個人牌組')).toBeChecked()
-    await expect(host.getByLabel('精靈')).toBeChecked()
-
-    await joinListedRoom(guest, roomName)
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    await host.getByRole('button', { name: '開始遊戲 →' }).click()
-
     for (let selection = 0; selection < 2; selection += 1) {
       await chooseVisibleInitialPouch(host, guest)
     }
@@ -87,7 +94,7 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     const active = (await host.getByRole('button', { name: /秘計‧金蟬/ }).count())
       ? host
       : guest
-    await reloadAppRoute(active)
+    await reloadFastGameRoute(active, roomId)
     const goldenCicada = active.getByRole('button', { name: /秘計‧金蟬/ })
     await expect(goldenCicada).toBeVisible()
     await goldenCicada.hover()
@@ -98,87 +105,73 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     await expect(active.getByRole('button', { name: /秘計‧金蟬/ })).toHaveCount(0)
     await expect(active.locator('.persistent-effect')).toContainText('本回合結束 · 金蟬')
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })
 
 test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser }) => {
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
-  const pages = [host, guest]
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `連環牽羊測試 ${Date.now()}`,
+    enabledRuleModules: pouchRuleModules,
+  })
+  const { host, gameId: roomId } = game
 
   try {
-    await loginAsGuests(pages)
-    const roomName = `連環牽羊測試 ${Date.now()}`
-    const roomId = await startTwoPlayerMatch(host, guest, roomName, async (page) => {
-      await page.getByLabel('錦囊').check()
-    })
     const fixture = await seedDevelopmentScenario<{
       fixtureAction: { player: string; formationId: string; cards: number[] }
     }>(host, { name: 'pouch-chain-sheep' })
     const actor = host
-    await reloadAppRoute(actor)
+    await reloadFastGameRoute(actor, roomId)
     const commandId = `chain-sheep-${Date.now()}`
-    const chain = await actor.evaluate(async ({ gameId, command, action }) => {
-      const response = await fetch(`/api/games/${gameId}/commands`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          commandId: command,
+    const chain = await requestJson<{ state: { pendingChoice?: { choice: { type: string } } } }>(
+      `POST /api/games/${roomId}/commands`,
+      actor.context().request.post(`/api/games/${roomId}/commands`, {
+        data: {
+          commandId,
           action: {
             type: 'performFormation',
-            player: action.player,
-            formationId: action.id,
-            cards: action.cards,
+            player: fixture.fixtureAction.player,
+            formationId: fixture.fixtureAction.formationId,
+            cards: fixture.fixtureAction.cards,
           },
-        }),
-      })
-      return { ok: response.ok, body: await response.json() }
-    }, {
-      gameId: roomId,
-      command: commandId,
-      action: {
-        player: fixture.fixtureAction.player,
-        id: fixture.fixtureAction.formationId,
-        cards: fixture.fixtureAction.cards,
-      },
-    })
-    expect(chain.ok, JSON.stringify(chain.body)).toBe(true)
-    expect(chain.body.state.pendingChoice?.choice.type).toBe('chain')
+        },
+      }),
+    )
+    expect(chain.state.pendingChoice?.choice.type).toBe('chain')
 
-    await reloadAppRoute(actor)
+    await reloadFastGameRoute(actor, roomId)
     const chainDialog = actor.getByRole('dialog', { name: '連環：選擇錦囊' })
     await expect(chainDialog).toBeVisible()
-    const sheepTrigger = await actor.evaluate(async ({ gameId }) => {
-      const response = await fetch(`/api/games/${gameId}`)
-      const body = await response.json() as {
-        state: { pendingChoice: { visibility: 'visible'; choice: { type: 'chain'; deckCards: Array<{
-          element: string | null
-          level: number | null
-          secretStrategies: Array<{ strategy: string }>
-        }> } } | null }
+    const state = await requestJson<{
+      state: { pendingChoice: { visibility: 'visible'; choice: { type: 'chain'; deckCards: Array<{
+        element: string | null
+        level: number | null
+        secretStrategies: Array<{ strategy: string }>
+      }> } } | null }
+    }>(
+      `GET /api/games/${roomId}`,
+      actor.context().request.get(`/api/games/${roomId}`),
+    )
+    const cards = state.state.pendingChoice?.visibility === 'visible'
+      && state.state.pendingChoice.choice.type === 'chain'
+      ? state.state.pendingChoice.choice.deckCards
+      : []
+    let sheepTrigger: { pouch: typeof cards[number]; trigger: typeof cards[number] } | null = null
+    for (const trigger of cards.filter(card => (
+      card.secretStrategies.some(option => option.strategy === 'SheepStealing')
+    ))) {
+      const pouch = cards.find(candidate => (
+        candidate.element !== null
+        && candidate.level !== null
+        && candidate !== trigger
+        && candidate.element !== trigger.element
+        && candidate.level !== trigger.level
+      ))
+      if (pouch) {
+        sheepTrigger = { pouch, trigger }
+        break
       }
-      const cards = body.state.pendingChoice?.visibility === 'visible'
-        && body.state.pendingChoice.choice.type === 'chain'
-        ? body.state.pendingChoice.choice.deckCards
-        : []
-      for (const trigger of cards.filter(card => (
-        card.secretStrategies.some(option => option.strategy === 'SheepStealing')
-      ))) {
-        const pouch = cards.find(candidate => (
-          candidate.element !== null
-          && candidate.level !== null
-          && candidate !== trigger
-          && candidate.element !== trigger.element
-          && candidate.level !== trigger.level
-        ))
-        if (pouch) return { pouch, trigger }
-      }
-      return null
-    }, { gameId: roomId })
+    }
     expect(sheepTrigger).not.toBeNull()
     const pouchMatrix = chainDialog.getByLabel('連環錦囊牌組矩陣')
     const pouchButton = pouchMatrix.getByRole('button', {
@@ -208,7 +201,6 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     await sheepAnswer
     await expect(sheepDialog).toHaveCount(0)
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })

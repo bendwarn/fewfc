@@ -1,5 +1,25 @@
-import { expect as bareExpect, test as bareTest } from '@playwright/test'
-import { createPublicRoomViaApi, expect, test } from './fixtures'
+import { expect as bareExpect, test as bareTest, type Page } from '@playwright/test'
+import { expect, fastPageTest, test } from './fixtures'
+
+async function createWaitingRoomViaRequest(page: Page, roomName: string): Promise<string> {
+  const response = await page.context().request.post('/api/games', {
+    data: { name: roomName, access: 'public', capacity: 2 },
+  })
+  const body = await response.text()
+  if (!response.ok()) {
+    throw new Error(`POST /api/games failed with HTTP ${response.status()}: ${body}`)
+  }
+  let result: { gameId?: unknown }
+  try {
+    result = JSON.parse(body) as { gameId?: unknown }
+  } catch {
+    throw new Error(`POST /api/games returned invalid JSON: ${body}`)
+  }
+  if (typeof result.gameId !== 'string' || !result.gameId) {
+    throw new Error(`POST /api/games returned no gameId: ${body}`)
+  }
+  return result.gameId
+}
 
 bareTest('unauthenticated deep links preserve room invite and replay queries through login', async ({ page }) => {
   await page.goto('/rooms/room-7?invite=invite-token')
@@ -13,7 +33,7 @@ bareTest('unauthenticated deep links preserve room invite and replay queries thr
   bareExpect(new URL(page.url()).searchParams.get('redirect')).toBe('/replays/replay-9?step=12')
 })
 
-test('Deck owns its route-local loading and retryable error outcomes', async ({ page }) => {
+fastPageTest('Deck owns its route-local loading and retryable error outcomes', async ({ page }) => {
   let releaseDeckLoad: (() => void) | undefined
   const deckLoadGate = new Promise<void>((resolve) => { releaseDeckLoad = resolve })
   const deckUrl = '**/api/deck'
@@ -46,7 +66,7 @@ test('Deck owns its route-local loading and retryable error outcomes', async ({ 
   await page.unroute(deckUrl)
 })
 
-test('Deck owns its import dialog focus, cleans up its listener, and Replay routes render their own error outcome', async ({ page }) => {
+fastPageTest('Deck owns its import dialog focus, cleans up its listener, and Replay routes render their own error outcome', async ({ page }) => {
   await page.goto('/deck')
   const importButton = page.getByRole('button', { name: '匯入牌組' })
   await importButton.click()
@@ -55,7 +75,10 @@ test('Deck owns its import dialog focus, cleans up its listener, and Replay rout
   await page.keyboard.press('Escape')
   await expect(importButton).toBeFocused()
 
-  await page.goto('/rooms')
+  await Promise.all([
+    page.goto('/rooms', { waitUntil: 'domcontentloaded' }),
+    page.context().request.get('/api/games'),
+  ])
   const createRoomButton = page.getByRole('button', { name: '建立房間', exact: true })
   await createRoomButton.click()
   await expect(page.getByRole('dialog', { name: '建立房間' })).toBeVisible()
@@ -91,8 +114,8 @@ test('Lobby exposes its route-local loading state before rooms arrive', async ({
 
 test('Lobby navigation reloads Game state, resets parameter-local state, and tears down the room session before re-entry', async ({ page }) => {
   await page.setViewportSize({ width: 600, height: 900 })
-  const gameId = await createPublicRoomViaApi(page, `路由生命週期 ${Date.now()}`)
-  const nextGameId = await createPublicRoomViaApi(page, `路由生命週期下一局 ${Date.now()}`)
+  const gameId = await createWaitingRoomViaRequest(page, `路由生命週期 ${Date.now()}`)
+  const nextGameId = await createWaitingRoomViaRequest(page, `路由生命週期下一局 ${Date.now()}`)
   await page.goto('/rooms')
 
   const openedSockets: string[] = []
@@ -132,8 +155,8 @@ test('Lobby navigation reloads Game state, resets parameter-local state, and tea
   await expect.poll(() => openedSockets.filter(url => url.includes(`/api/games/${gameId}/socket`)).length).toBe(2)
 })
 
-test('leaving a loading Game route cannot recreate its room session', async ({ page }) => {
-  const gameId = await createPublicRoomViaApi(page, `離開載入中的房間 ${Date.now()}`)
+fastPageTest('leaving a loading Game route cannot recreate its room session', async ({ page }) => {
+  const gameId = await createWaitingRoomViaRequest(page, `離開載入中的房間 ${Date.now()}`)
   await page.goto('/rooms')
 
   const openedSockets: string[] = []

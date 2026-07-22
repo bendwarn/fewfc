@@ -36,10 +36,6 @@
   trace console errors before changing replay or persistence. A Vue render
   exception can hide state that is present in command responses, refresh
   responses, and WebSocket messages.
-- The suite is validated with two Playwright workers and uses that as the
-  default. Do not increase parallelism further without isolating D1/Durable
-  Object persistence per worker or proving the full suite stable, because tests
-  share one local Worker and database.
 - Playwright locators are strict. Use the complete accessible name when controls
   share a label, such as `建立房間` and `建立房間 →`.
 - Do not keep tombstone assertions whose only purpose is proving that a removed

@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { activePlayerPage, createPublicRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
+import { activePlayerPage, expect, setupFastTwoPlayerGame, test } from './fixtures'
 
 async function expectVerticalPanels(page: Page) {
   const ability = page.getByRole('region', { name: '能力' })
@@ -13,29 +13,13 @@ async function expectVerticalPanels(page: Page) {
 }
 
 test('selected cards expose rule-backed actions in vertically ordered control panels', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
-  const pages = [host, guest]
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `可用行動測試 ${Date.now()}`,
+    enabledRuleModules: ['discard-retrieval', 'star', 'hero-schools'],
+  })
+  const { host, guest, pages } = game
 
   try {
-    await loginAsGuests(pages)
-
-    const roomName = `可用行動測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-    await expect(host.getByLabel('英雄學派')).toBeChecked()
-    await host.getByLabel('五方傳說').uncheck()
-    await host.getByLabel('個人牌組').uncheck()
-
-    await joinListedRoom(guest, roomName)
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    const startButton = host.getByRole('button', { name: '開始遊戲 →' })
-    await expect(startButton).toBeEnabled()
-    await startButton.click()
-    await Promise.all(pages.map(page => expect(page.locator('.setup-reveal')).toBeHidden()))
-
     const active = await activePlayerPage(pages)
     const ability = active.getByRole('region', { name: '能力' })
     const action = active.getByRole('region', { name: '行動' })
@@ -88,7 +72,6 @@ test('selected cards expose rule-backed actions in vertically ordered control pa
     await expect(active.locator('.action-error')).not.toContainText('500')
     await expect(active.locator('.action-error')).not.toContainText('Internal Server Error')
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })

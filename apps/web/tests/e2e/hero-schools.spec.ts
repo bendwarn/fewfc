@@ -1,40 +1,23 @@
 import {
-  createPublicRoom,
   expect,
-  joinListedRoom,
-  loginAsGuests,
-  reloadAppRoute,
+  reloadFastGameRoute,
   seedDevelopmentScenario,
+  setupFastTwoPlayerGame,
   test,
 } from './fixtures'
 
 test('a Profession change and activated ability survive public reconnect', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `英雄學派測試 ${Date.now()}`,
+    enabledRuleModules: ['hero-schools'],
+  })
+  const { host, guest, gameId: roomId } = game
 
   try {
-    await loginAsGuests([host, guest])
-    const roomName = `英雄學派測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-    await host.getByLabel('星辰圖記').uncheck()
-    await host.getByLabel('五方傳說').uncheck()
-    await host.getByLabel('棄牌回收').uncheck()
-    await host.getByLabel('個人牌組').uncheck()
-
-    await joinListedRoom(guest, roomName)
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    await host.getByRole('button', { name: '開始遊戲 →' }).click()
-    await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
-
-    const roomId = new URL(host.url()).pathname.split('/').pop()
     await seedDevelopmentScenario(host, { name: 'hero-schools-transition' })
 
     await expect(host.locator('.profession-badge')).toContainText('幻術師')
     await expect(guest.locator('.profession-badge')).toContainText('幻術師')
-    await reloadAppRoute(host)
     const selectable = host.locator('.playing-card:enabled:not(.hidden)')
     await expect(selectable).toHaveCount(5)
     await selectable.nth(0).click()
@@ -53,14 +36,13 @@ test('a Profession change and activated ability survive public reconnect', async
     ])
     expect(activationResponse.ok()).toBe(true)
 
-    await reloadAppRoute(host)
+    await reloadFastGameRoute(host, roomId)
     await expect(host.locator('.event-feed')).toContainText('虛擬牌')
     await expect(host.locator('.card-interpretation')).toHaveCount(0)
-    await reloadAppRoute(guest)
+    await reloadFastGameRoute(guest, roomId)
     await expect(guest.locator('.event-feed')).toContainText('虛擬牌')
     await expect(guest.locator('.card-interpretation')).toHaveCount(0)
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })

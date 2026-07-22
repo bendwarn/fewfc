@@ -1,32 +1,24 @@
 import {
-  createPublicRoom,
   expect,
-  joinListedRoom,
-  loginAsGuests,
-  reloadAppRoute,
+  reloadFastGameRoute,
   seedDevelopmentScenario,
+  setupFastTwoPlayerGame,
   test,
 } from './fixtures'
 
 test('Spirit defaults on and keeps its Advanced Rule dependencies coherent', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `精靈規則測試 ${Date.now()}`,
+    enabledRuleModules: ['five-directions-legend', 'star', 'hero-schools', 'spirit'],
+    activeMatch: false,
+  })
+  const { host, guest, hostContext, gameId: roomId } = game
 
   try {
-    await loginAsGuests([host, guest])
-    const roomName = `精靈規則測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-
     await expect(host.getByLabel('精靈')).toBeChecked()
     await expect(host.getByLabel('星辰圖記')).toBeChecked()
     await expect(host.getByLabel('英雄學派')).toBeChecked()
     await expect(host.getByLabel('五方傳說')).toBeChecked()
-
-    await joinListedRoom(guest, roomName, '停用：錦囊')
-    await guest.getByRole('button', { name: '準備 →' }).click()
 
     await host.getByLabel('星辰圖記').uncheck()
     await expect(host.getByLabel('精靈')).not.toBeChecked()
@@ -38,49 +30,33 @@ test('Spirit defaults on and keeps its Advanced Rule dependencies coherent', asy
     await expect(host.getByLabel('英雄學派')).toBeChecked()
     await expect(host.getByLabel('五方傳說')).toBeChecked()
 
-    const roomId = new URL(host.url()).pathname.split('/').pop()
-    const invalidStatus = await host.evaluate(async (id) => {
-      const response = await fetch(`/api/games/${id}/rules`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ enabledRuleModules: ['spirit'] }),
-      })
-      return response.status
-    }, roomId)
-    expect(invalidStatus).toBe(400)
+    const invalidResponse = await hostContext.request.put(`/api/games/${roomId}/rules`, {
+      data: { enabledRuleModules: ['spirit'] },
+    })
+    expect(invalidResponse.status()).toBe(400)
 
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    await host.getByRole('button', { name: '開始遊戲 →' }).click()
+    await game.start()
 
     await Promise.all([host, guest].map(async (page) => {
       await expect(page.getByRole('region', { name: '啟用規則' }))
         .toContainText('精靈')
     }))
 
-    await reloadAppRoute(guest)
+    await reloadFastGameRoute(guest, roomId)
     await expect(guest.getByRole('region', { name: '啟用規則' }))
       .toContainText('精靈')
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })
 
 test('a Spirit Skill is usable from the Ability panel and survives reconnect', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `精靈技能測試 ${Date.now()}`,
+  })
+  const { host, guest, gameId: roomId } = game
 
   try {
-    await loginAsGuests([host, guest])
-    const roomName = `精靈技能測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-    await joinListedRoom(guest, roomName, '停用：錦囊')
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    await host.getByRole('button', { name: '開始遊戲 →' }).click()
-    await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
     await expect(host.getByLabel('棄牌堆').locator('.discard-pile')).toHaveCount(2)
     await expect(host.locator('.discard-position-top')).toHaveCount(1)
     await expect(host.locator('.discard-position-bottom')).toHaveCount(1)
@@ -96,10 +72,9 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
     })
     expect(discardOverlapsFormation).toBe(false)
 
-    const roomId = new URL(host.url()).pathname.split('/').pop()
     await seedDevelopmentScenario(host, { name: 'spirit-skill' })
 
-    await reloadAppRoute(host)
+    await reloadFastGameRoute(host, roomId)
     await expect(host.locator('.spirit-status')).toContainText('精靈 · 金精靈 · 靈力 2 / 6')
     const flyingBlade = host
       .getByRole('region', { name: '能力' })
@@ -132,39 +107,28 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
 
     await expect(host.getByText('使用精靈技能', { exact: true })).toBeVisible()
     await expect(host.getByText(/使用「飛刃」，靈力由 2 變為 0/)).toBeVisible()
-    await reloadAppRoute(guest)
+    await reloadFastGameRoute(guest, roomId)
     await expect(guest.getByText(/使用「飛刃」，靈力由 2 變為 0/)).toBeVisible()
-    await reloadAppRoute(host)
+    await reloadFastGameRoute(host, roomId)
     await expect(host.getByText(/的金精靈已破除/)).toBeVisible()
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })
 
 test('Splendor exposes its declared levels on click and uses the chosen level', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `絢爛選級測試 ${Date.now()}`,
+  })
+  const { host, guest, gameId: roomId } = game
 
   try {
-    await loginAsGuests([host, guest])
-    const roomName = `絢爛選級測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-    await joinListedRoom(guest, roomName, '停用：錦囊')
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    await host.getByRole('button', { name: '開始遊戲 →' }).click()
-    await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
-
-    const roomId = new URL(host.url()).pathname.split('/').pop()
     await seedDevelopmentScenario(host, {
       name: 'spirit-skill',
       options: { spirit: 'Fire' },
     })
 
-    await reloadAppRoute(host)
+    await reloadFastGameRoute(host, roomId)
     await expect(host.locator('.spirit-status')).toContainText('精靈 · 火精靈 · 靈力 3 / 6')
     const selectedCard = host.locator('.playing-card:enabled:not(.hidden)').first()
     await Promise.all([
@@ -195,13 +159,12 @@ test('Splendor exposes its declared levels on click and uses the chosen level', 
     ])
     expect(skillResponse.ok()).toBe(true)
     await expect(host.getByText(/使用「絢爛」.*宣告 4 級/)).toBeVisible()
-    await reloadAppRoute(host)
+    await reloadFastGameRoute(host, roomId)
     await expect(host.locator('.card-interpretation')).toContainText('已生效 · 絢爛')
     await expect(host.locator('.card-interpretation')).toContainText('視為 4 級')
-    await reloadAppRoute(guest)
+    await reloadFastGameRoute(guest, roomId)
     await expect(guest.locator('.card-interpretation')).toContainText('一張手牌視為 4 級')
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })

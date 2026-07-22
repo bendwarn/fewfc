@@ -1,10 +1,8 @@
 import { type Page } from '@playwright/test'
 import {
-  createPublicRoom,
-  createRoom,
   expect,
-  joinListedRoom,
-  loginAsGuests,
+  setupFastTwoPlayerGame,
+  setupFastWaitingRoom,
   test,
 } from './fixtures'
 
@@ -114,14 +112,16 @@ async function expectStableComposition(page: Page, total: number) {
 }
 
 async function expectDiscardMatrixMatchesGameState(page: Page) {
-  const discard = await page.evaluate(async () => {
-    const gameId = location.pathname.split('/').at(-1)
-    const response = await fetch(`/api/games/${gameId}`)
-    const state = await response.json() as {
-      state: { discard: Array<{ element: string | null; level: number | null }> }
-    }
-    return state.state.discard
-  })
+  const gameId = new URL(page.url()).pathname.split('/').at(-1)
+  if (!gameId) throw new Error(`No game id in ${page.url()}`)
+  const response = await page.context().request.get(`/api/games/${gameId}`)
+  const body = await response.text()
+  if (!response.ok()) {
+    throw new Error(`GET /api/games/${gameId} failed with HTTP ${response.status()}: ${body}`)
+  }
+  const discard = (JSON.parse(body) as {
+    state: { discard: Array<{ element: string | null; level: number | null }> }
+  }).state.discard
 
   for (const [rowIndex, [elementLabel, element]] of matrixElements.entries()) {
     const row = discardDialog(page).locator('tbody tr').nth(rowIndex)
@@ -133,44 +133,31 @@ async function expectDiscardMatrixMatchesGameState(page: Page) {
   }
 }
 
-test('an empty discard pile reports zero cards and cannot be opened', async ({ page }) => {
-  await createRoom(page, `棄牌測試 ${Date.now()}`)
-  await expect(page).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
-  await page.getByLabel('個人牌組').uncheck()
+test('an empty discard pile reports zero cards and cannot be opened', async ({ browser }) => {
+  const room = await setupFastWaitingRoom(browser, {
+    roomName: `棄牌測試 ${Date.now()}`,
+  })
+  const { page } = room
 
-  const trigger = discardTrigger(page, 0)
-  await expect(trigger).toHaveAttribute('aria-disabled', 'true')
-  await trigger.click({ force: true })
-  await expect(discardDialog(page)).toBeHidden()
+  try {
+    await page.getByLabel('個人牌組').uncheck()
+    const trigger = discardTrigger(page, 0)
+    await expect(trigger).toHaveAttribute('aria-disabled', 'true')
+    await trigger.click({ force: true })
+    await expect(discardDialog(page)).toBeHidden()
+  } finally {
+    await room.close()
+  }
 })
 
 test('players can inspect a synchronized discard composition throughout a match', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
-  const pages = [host, guest]
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `同步棄牌測試 ${Date.now()}`,
+    disabledRuleModules: ['five-directions-legend', 'personal-deck'],
+  })
+  const { host, guest, pages } = game
 
   try {
-    await loginAsGuests(pages)
-
-    const roomName = `同步棄牌測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-    await expect(host).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
-    await expect(host.getByLabel('星辰圖記')).toBeChecked()
-    await host.getByLabel('五方傳說').uncheck()
-    await host.getByLabel('個人牌組').uncheck()
-
-    await joinListedRoom(guest, roomName)
-    await expect(guest).toHaveURL(/\/rooms\/[0-9a-f-]+$/)
-    expect(new URL(host.url()).pathname).toBe(new URL(guest.url()).pathname)
-
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    const startButton = host.getByRole('button', { name: '開始遊戲 →' })
-    await expect(startButton).toBeEnabled()
-    await startButton.click()
-    await Promise.all(pages.map(page => expect(page.locator('.setup-reveal')).toBeHidden()))
     await Promise.all(pages.map(async (page) => {
       await expect(page.locator('.seat-bottom .playing-card:not(.hidden)')).not.toHaveCount(0)
       await expect(page.locator('.seat-top .playing-card.hidden')).not.toHaveCount(0)
@@ -281,7 +268,6 @@ test('players can inspect a synchronized discard composition throughout a match'
     expect(await finishSingleCardTurn(active)).toBe(false)
     await expectDiscardTotal(pages, 4)
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })

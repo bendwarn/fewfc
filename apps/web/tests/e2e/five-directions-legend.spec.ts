@@ -1,25 +1,13 @@
-import { createPublicRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
+import { expect, setupFastTwoPlayerGame, test } from './fixtures'
 
 test('new rooms enable Five Directions Legend and hide the environment until one exists', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `五方傳說測試 ${Date.now()}`,
+  })
+  const { host, guest } = game
 
   try {
-    await loginAsGuests([host, guest])
-
-    const roomName = `五方傳說測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-    await expect(host.getByLabel('五方傳說')).toBeChecked()
-
-    await joinListedRoom(guest, roomName)
-    await guest.getByRole('button', { name: '準備 →' }).click()
-
-    const startButton = host.getByRole('button', { name: '開始遊戲 →' })
-    await expect(startButton).toBeEnabled()
-    await startButton.click()
+    await expect(host.getByRole('region', { name: '啟用規則' })).toContainText('五方傳說')
 
     await Promise.all([
       expect(host.locator('.formation-field-heading')).toHaveText('陣法區'),
@@ -28,7 +16,6 @@ test('new rooms enable Five Directions Legend and hide the environment until one
     await expect(host.locator('.environment-badge')).toHaveCount(0)
     await expect(guest.locator('.environment-badge')).toHaveCount(0)
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })

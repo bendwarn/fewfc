@@ -1,16 +1,13 @@
-import { activePlayerPage, expect, loginAsGuests, startTwoPlayerMatch, test } from './fixtures'
+import { activePlayerPage, expect, setupFastTwoPlayerGame, test } from './fixtures'
 
 test('Command+K submits AdvanceAutomatic for the active player', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `快捷鍵測試 ${Date.now()}`,
+  })
+  const { host, guest, pages } = game
 
   try {
-    await loginAsGuests([host, guest])
-    await startTwoPlayerMatch(host, guest, `快捷鍵測試 ${Date.now()}`)
-    const active = await activePlayerPage([host, guest])
+    const active = await activePlayerPage(pages)
     const command = active.waitForResponse(response => (
       response.url().includes('/commands')
       && response.request().method() === 'POST'
@@ -21,7 +18,6 @@ test('Command+K submits AdvanceAutomatic for the active player', async ({ browse
 
     expect((await command).ok()).toBe(true)
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })

@@ -1,38 +1,77 @@
 import type { Page } from '@playwright/test'
 import {
   createPublicRoom,
-  createPublicRoomViaApi,
   expect,
+  gotoAppRoute,
   joinListedRoom,
   loginAsGuests,
-  reloadAppRoute,
+  reloadFastGameRoute,
   seedDevelopmentScenario,
-  startTwoPlayerMatch,
+  setupFastTwoPlayerGame,
   test,
 } from './fixtures'
 
+const defaultRuleModulesWithoutPouch = [
+  'discard-retrieval',
+  'personal-deck',
+  'five-directions-legend',
+  'star',
+  'hero-schools',
+  'spirit',
+  'jianghu',
+  'confluence-generation',
+  'dark-glimmer',
+  'echo',
+  'tribulation',
+]
+
+async function createFourPlayerRoomViaRequest(page: Page, roomName: string): Promise<string> {
+  const response = await page.context().request.post('/api/games', {
+    data: {
+      name: roomName,
+      access: 'public',
+      capacity: 4,
+      enabledRuleModules: defaultRuleModulesWithoutPouch,
+    },
+  })
+  const body = await response.text()
+  if (!response.ok()) {
+    throw new Error(`POST /api/games failed with HTTP ${response.status()}: ${body}`)
+  }
+  let result: { gameId?: unknown }
+  try {
+    result = JSON.parse(body) as { gameId?: unknown }
+  } catch {
+    throw new Error(`POST /api/games returned invalid JSON: ${body}`)
+  }
+  if (typeof result.gameId !== 'string' || !result.gameId) {
+    throw new Error(`POST /api/games returned no gameId: ${body}`)
+  }
+  await gotoAppRoute(page, `/rooms/${result.gameId}`)
+  return result.gameId
+}
+
 async function indexedModules(page: Page, roomName: string): Promise<string[]> {
-  return await page.evaluate(async (name) => {
-    const response = await fetch('/api/games')
-    const result = await response.json() as {
-      myRooms: Array<{ name: string; enabledRuleModules: string[] }>
-    }
-    return result.myRooms.find(room => room.name === name)?.enabledRuleModules ?? []
-  }, roomName)
+  const response = await page.context().request.get('/api/games')
+  const body = await response.text()
+  if (!response.ok()) {
+    throw new Error(`GET /api/games failed with HTTP ${response.status()}: ${body}`)
+  }
+  let result: { myRooms?: Array<{ name: string; enabledRuleModules: string[] }> }
+  try {
+    result = JSON.parse(body) as { myRooms?: Array<{ name: string; enabledRuleModules: string[] }> }
+  } catch {
+    throw new Error(`GET /api/games returned invalid JSON: ${body}`)
+  }
+  return result.myRooms?.find(room => room.name === roomName)?.enabledRuleModules ?? []
 }
 
 test('Star defaults on, survives reconnect, and is immutable after a two-player start', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
+  const roomName = `星辰預設測試 ${Date.now()}`
+  const game = await setupFastTwoPlayerGame(browser, { roomName, activeMatch: false })
+  const { host, guest, hostContext, gameId: roomId } = game
 
   try {
-    await loginAsGuests([host, guest])
-    const roomName = `星辰預設測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-
     await expect(host.getByRole('heading', { name: '選用規則' })).toBeVisible()
     await expect(host.getByRole('heading', { name: '進階規則' })).toBeVisible()
     await expect(host.getByRole('heading', { name: '主題規則' })).toBeVisible()
@@ -40,11 +79,9 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
     await expect(host.getByLabel('星辰圖記')).toBeEnabled()
     expect(await indexedModules(host, roomName)).toContain('star')
 
-    await joinListedRoom(guest, roomName, '停用：錦囊')
     await expect(guest.getByLabel('星辰圖記')).toBeChecked()
     await expect(guest.getByLabel('星辰圖記')).toBeDisabled()
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    await host.getByRole('button', { name: '開始遊戲 →' }).click()
+    await game.start()
 
     await Promise.all([host, guest].map(async (page) => {
       const rules = page.getByRole('region', { name: '啟用規則' })
@@ -53,40 +90,26 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
       await expect(page.locator('.player-identity').filter({ hasText: '召星' })).toHaveCount(0)
     }))
 
-    const roomId = new URL(host.url()).pathname.split('/').pop()
-    const updateStatus = await host.evaluate(async (id) => {
-      const response = await fetch(`/api/games/${id}/rules`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ enabledRuleModules: [] }),
-      })
-      return response.status
-    }, roomId)
-    expect(updateStatus).toBe(409)
+    const updateResponse = await hostContext.request.put(`/api/games/${roomId}/rules`, {
+      data: { enabledRuleModules: [] },
+    })
+    expect(updateResponse.status()).toBe(409)
 
-    await reloadAppRoute(guest)
+    await reloadFastGameRoute(guest, roomId)
     await expect(guest.getByRole('region', { name: '啟用規則' }))
       .toContainText('星辰圖記')
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })
 
 test('disabling Star invalidates readiness and locked decks while preserving Base play', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
+  const roomName = `星辰關閉測試 ${Date.now()}`
+  const game = await setupFastTwoPlayerGame(browser, { roomName, activeMatch: false })
+  const { host, guest, hostContext, gameId: roomId } = game
 
   try {
-    await loginAsGuests([host, guest])
-    const roomName = `星辰關閉測試 ${Date.now()}`
-    await createPublicRoom(host, roomName)
-    await joinListedRoom(guest, roomName, '停用：錦囊')
-
-    await guest.getByRole('button', { name: '準備 →' }).click()
+    await game.readyGuest()
     await expect(guest.getByText('本局使用：五行均衡預組')).toBeVisible()
     await host.getByLabel('星辰圖記').uncheck()
 
@@ -95,10 +118,10 @@ test('disabling Star invalidates readiness and locked decks while preserving Bas
     await expect(guest.getByText('本局使用：五行均衡預組')).toHaveCount(0)
     expect(await indexedModules(host, roomName)).not.toContain('star')
 
-    await reloadAppRoute(guest)
+    await reloadFastGameRoute(guest, roomId)
     await expect(guest.getByLabel('星辰圖記')).not.toBeChecked()
-    await guest.getByRole('button', { name: '準備 →' }).click()
-    await host.getByRole('button', { name: '開始遊戲 →' }).click()
+    await game.readyGuest()
+    await game.start()
 
     await Promise.all([host, guest].map(async (page) => {
       await expect(page.getByRole('region', { name: '啟用規則' }))
@@ -111,21 +134,23 @@ test('disabling Star invalidates readiness and locked decks while preserving Bas
     await expect(active.locator('.action-panel .action-candidates button:not(.skip-action)').first())
       .toBeVisible()
 
-    const roomId = new URL(host.url()).pathname.split('/').pop()
-    const publicState = await host.evaluate(async (id) => {
-      const response = await fetch(`/api/games/${id}`)
-      return (await response.json()).state as {
+    const stateResponse = await hostContext.request.get(`/api/games/${roomId}`)
+    const stateBody = await stateResponse.text()
+    if (!stateResponse.ok()) {
+      throw new Error(`GET /api/games/${roomId} failed with HTTP ${stateResponse.status()}: ${stateBody}`)
+    }
+    const publicState = (JSON.parse(stateBody) as {
+      state: {
         enabledRuleModules: string[]
         teamStars: unknown[]
         starHistories: unknown[]
       }
-    }, roomId)
+    }).state
     expect(publicState.enabledRuleModules).not.toContain('star')
     expect(publicState.teamStars).toEqual([])
     expect(publicState.starHistories).toEqual([])
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })
 
@@ -138,7 +163,7 @@ test('a four-player team room starts with one shared immutable Star configuratio
   try {
     await loginAsGuests(pages)
     const roomName = `星辰團隊測試 ${Date.now()}`
-    await createPublicRoomViaApi(host!, roomName, true)
+    await createFourPlayerRoomViaRequest(host!, roomName)
 
     for (const guest of guests) {
       await joinListedRoom(guest, roomName, '停用：錦囊')
@@ -167,17 +192,12 @@ test('a four-player team room starts with one shared immutable Star configuratio
 })
 
 test('a Star endgame fixture finishes through normal UI play and resets with its rules', async ({ browser }) => {
-
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
-  const pages = [host, guest]
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `星辰殘局測試 ${Date.now()}`,
+  })
+  const { host, guest, pages } = game
 
   try {
-    await loginAsGuests(pages)
-    const roomName = `星辰殘局測試 ${Date.now()}`
-    const roomId = await startTwoPlayerMatch(host, guest, roomName)
     await seedDevelopmentScenario(host, { name: 'star-endgame' })
 
     await Promise.all(pages.map(page => (
@@ -208,7 +228,6 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
       await expect(page.getByRole('heading', { name: '進階規則' })).toBeVisible()
     }))
   } finally {
-    await hostContext.close()
-    await guestContext.close()
+    await game.close()
   }
 })
