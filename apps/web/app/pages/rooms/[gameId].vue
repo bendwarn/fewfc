@@ -902,7 +902,7 @@
           <section class="event-panel" :class="{ expanded: eventExpanded }">
             <div class="panel-title">
               <h2>戰局紀錄 <button v-if="roomWaiting && game.savableReplay.value" class="ghost-button" type="button" :disabled="replaySaving" @click="saveCurrentReplay">{{ replaySaved ? '已儲存' : '儲存本局' }}</button></h2>
-              <button type="button" @click="eventExpanded = !eventExpanded">
+              <button class="event-expand-button" type="button" @click="eventExpanded = !eventExpanded">
                 {{ eventExpanded ? '收合' : '完整紀錄' }}
               </button>
             </div>
@@ -2109,7 +2109,7 @@ function cardLevel(level: number | null | undefined): string {
 @reference "../../assets/css/main.css";
 
 @scope (.game-page) {
-.game-page { @apply flex h-[calc(100vh-84px)] flex-col overflow-hidden max-[900px]:h-auto max-[900px]:overflow-visible; }
+:scope { @apply flex h-[calc(100vh-84px)] flex-col overflow-hidden max-[900px]:h-auto max-[900px]:overflow-visible; }
 .back-button { @apply grid size-9 place-items-center border border-[#4a554e] bg-[rgba(17,23,19,.88)] text-base text-[#ddd7c9] hover:border-[#b99550] hover:text-gold-light; }
 .battlefield-back { @apply absolute top-4 left-4 z-20; }
 .battle-layout { @apply grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px] max-[900px]:grid-cols-1 max-[900px]:overflow-auto; }
@@ -2318,7 +2318,7 @@ function cardLevel(level: number | null | undefined): string {
 .panel-title { @apply flex items-start justify-between; }
 .event-panel { @apply min-h-0 overflow-auto border-b border-line p-5; }
 .panel-title h2 { @apply font-serif text-[15px]; }
-.event-panel .panel-title button { @apply hidden border-0 bg-transparent text-[10px] text-gold-light; }
+.event-panel .event-expand-button { @apply hidden border-0 bg-transparent text-[10px] text-gold-light; }
 .event-feed { @apply mt-4 grid list-none gap-[13px] p-0; }
 .event-feed li { @apply grid grid-cols-[10px_1fr] gap-[7px]; }
 .event-feed li > i { width: 5px; height: 5px; border-radius: 50%; background: #b79550; margin-top: 6px; box-shadow: 0 0 0 4px rgba(183, 149, 80, .08); }
@@ -2346,7 +2346,7 @@ function cardLevel(level: number | null | undefined): string {
   }
   .discard-composition { width: min(330px, calc(100vw - 32px)); }
   .game-sidebar { border-left: 0; }
-  .event-panel .panel-title button { display: block; }
+  .event-panel .event-expand-button { display: block; }
   .event-panel:not(.expanded) .event-feed li:nth-child(n+4) { display: none; }
 }
 
