@@ -523,6 +523,11 @@ mod tests {
                 .expect("randomness operation must serialize"),
             serde_json::json!({ "type": "shuffleDeck" })
         );
+        assert_eq!(
+            serde_json::to_value(TrustedRandomness::ShuffleDiscardIntoDeck)
+                .expect("randomness operation must serialize"),
+            serde_json::json!({ "type": "shuffleDiscardIntoDeck" })
+        );
     }
 
     #[test]
