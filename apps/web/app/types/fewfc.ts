@@ -478,7 +478,10 @@ export type FollowUpChoice =
   | { type: 'selectSecretStrategyInput'; input: SecretStrategyInput }
   | { type: 'selectCards'; minimum: number; maximum: number }
 export type SecretStrategyInput = 'none' | 'targetPlayer' | 'deckDiscardSwap' | 'star' | 'retreat'
-export type TrustedRandomness = 'shuffleDeck' | 'shuffleDiscardIntoDeck' | { type: 'selectHiddenHandCards'; count: number }
+export type TrustedRandomness =
+  | { type: 'shuffleDeck' }
+  | { type: 'shuffleDiscardIntoDeck' }
+  | { type: 'selectHiddenHandCards'; count: number }
 export type DelayedTiming = 'nextTurnStart' | 'nextPlayerTurn'
 export type DelayedEffect = 'repeatMelodyMainEffect' | 'selectAndPerformMelodyMainEffect'
 export type RuleException =

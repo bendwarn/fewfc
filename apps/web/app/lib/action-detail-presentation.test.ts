@@ -53,8 +53,8 @@ const everyConsequence: RuleConsequence[] = [
     .map(type => ({ type: 'followUpChoice', certainty: 'followUp', choice: { type } }) as const),
   { type: 'followUpChoice', certainty: 'followUp', choice: { type: 'selectSecretStrategyInput', input: 'deckDiscardSwap' } },
   { type: 'followUpChoice', certainty: 'followUp', choice: { type: 'selectCards', minimum: 1, maximum: 2 } },
-  { type: 'trustedRandomness', certainty: 'random', operation: 'shuffleDeck' },
-  { type: 'trustedRandomness', certainty: 'random', operation: 'shuffleDiscardIntoDeck' },
+  { type: 'trustedRandomness', certainty: 'random', operation: { type: 'shuffleDeck' } },
+  { type: 'trustedRandomness', certainty: 'random', operation: { type: 'shuffleDiscardIntoDeck' } },
   { type: 'trustedRandomness', certainty: 'random', operation: { type: 'selectHiddenHandCards', count: 2 } },
   { type: 'delayedEffect', certainty: 'scheduled', timing: 'nextTurnStart', effect: 'repeatMelodyMainEffect' },
   { type: 'delayedEffect', certainty: 'scheduled', timing: 'nextPlayerTurn', effect: 'selectAndPerformMelodyMainEffect' },
@@ -103,7 +103,7 @@ test('presents Echo, Chain, direct Pouch, and Discard Retrieval through their ty
       { type: 'cost', certainty: 'guaranteed', cost: { type: 'consumePouch', sourceCard: 8 } },
       { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'triggerSecretStrategy', effect: 'swapDeckAndDiscard' } },
       { type: 'followUpChoice', certainty: 'followUp', choice: { type: 'selectSecretStrategyInput', input: 'deckDiscardSwap' } },
-      { type: 'trustedRandomness', certainty: 'random', operation: 'shuffleDeck' },
+      { type: 'trustedRandomness', certainty: 'random', operation: { type: 'shuffleDeck' } },
     ] },
   }
   expect(presentSecretStrategyOption(pouch)).toContain('各選兩張牌交換牌組與棄牌堆')

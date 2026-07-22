@@ -487,6 +487,10 @@ mod tests {
         assert_eq!(json["consequences"][2]["type"], "immediateEffect");
         assert_eq!(json["consequences"][2]["effect"]["previousPlayer"], "bob");
         assert_eq!(json["consequences"][6]["type"], "followUpChoice");
+        assert_eq!(
+            json["consequences"][7]["operation"]["type"],
+            "selectHiddenHandCards"
+        );
         assert_eq!(json["consequences"][7]["operation"]["count"], 2);
         assert_eq!(json["consequences"][8]["timing"], "nextTurnStart");
         assert_eq!(json["consequences"][9]["exception"]["remaining"], 0);
@@ -513,6 +517,11 @@ mod tests {
             json["consequences"][2]["effect"]
                 .get("previous_player")
                 .is_none()
+        );
+        assert_eq!(
+            serde_json::to_value(TrustedRandomness::ShuffleDeck)
+                .expect("randomness operation must serialize"),
+            serde_json::json!({ "type": "shuffleDeck" })
         );
     }
 

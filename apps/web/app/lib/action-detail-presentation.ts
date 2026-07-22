@@ -203,14 +203,10 @@ function presentDeclaredInput(input: DeclaredInput, cardLabel: CardLabel): strin
 }
 
 function presentTrustedRandomness(operation: TrustedRandomness): string {
-  if (typeof operation !== 'string') {
-    switch (operation.type) {
-      case 'selectHiddenHandCards': return `由受信任的隨機程序選出 ${operation.count} 張隱藏手牌`
-    }
-  }
-  switch (operation) {
+  switch (operation.type) {
     case 'shuffleDeck': return '由受信任的隨機程序洗牌'
     case 'shuffleDiscardIntoDeck': return '由受信任的隨機程序洗棄牌堆後重組牌組'
+    case 'selectHiddenHandCards': return `由受信任的隨機程序選出 ${operation.count} 張隱藏手牌`
     default: return assertNever(operation)
   }
 }
