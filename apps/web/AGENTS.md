@@ -28,10 +28,10 @@
 - Run Worker/Durable Object browser flows with `bun test:e2e`. The Playwright
   configuration builds Nuxt and the rules WASM, applies migrations to isolated
   `.wrangler/e2e` storage and starts Wrangler.
-- Keep the browser choice local: `PLAYWRIGHT_BROWSER=chromium`, `firefox`, or
-  `webkit` selects the Playwright engine; `PLAYWRIGHT_BROWSER_PATH=/absolute/path`
-  supplies a local executable when needed. Neither setting belongs in committed
-  test configuration.
+- Keep the browser choice local in the untracked `.env`: `PLAYWRIGHT_BROWSER`
+  accepts `chromium`, `firefox`, or `webkit`; `PLAYWRIGHT_BROWSER_PATH` supplies
+  a local executable when needed. `bun test:e2e` loads `.env`; neither setting
+  belongs in committed test configuration.
 - A Playwright `click()` waits for the browser click action, not for an async Vue
   handler's command request to commit. Before reload or reconnect assertions,
   wait for the specific `/commands` response and identify it by request action
