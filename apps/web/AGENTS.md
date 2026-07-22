@@ -30,8 +30,8 @@
   `.wrangler/e2e` storage and starts Wrangler.
 - Keep the browser choice local in the untracked `.env`: `PLAYWRIGHT_BROWSER`
   accepts `chromium`, `firefox`, or `webkit`; `PLAYWRIGHT_BROWSER_PATH` supplies
-  a local executable when needed. `bun test:e2e` loads `.env`; neither setting
-  belongs in committed test configuration.
+  a local executable when needed. The Playwright configuration explicitly loads
+  `.env`; neither setting belongs in committed test configuration.
 - A Playwright `click()` waits for the browser click action, not for an async Vue
   handler's command request to commit. Before reload or reconnect assertions,
   wait for the specific `/commands` response and identify it by request action
