@@ -3,9 +3,38 @@ import type { DevelopmentScenario } from '../../shared/development-scenarios'
 
 const roomUrl = /\/rooms\/[0-9a-f-]+$/
 
+async function waitForClientRoute(page: Page, navigate: () => Promise<unknown>) {
+  const sessionRefresh = page.waitForResponse(response => (
+    response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/api/auth/get-session'
+  ))
+  await navigate()
+  await sessionRefresh
+}
+
+/**
+ * Playwright's document-navigation load event precedes Nuxt hydration. The
+ * global auth middleware refreshes the session while establishing every client
+ * route, giving this Worker-backed suite an observable route-ready boundary
+ * without coupling tests to Nuxt internals.
+ */
+export async function gotoAppRoute(page: Page, path: string) {
+  await waitForClientRoute(page, () => page.goto(path))
+}
+
+export async function reloadAppRoute(page: Page) {
+  await waitForClientRoute(page, () => page.reload())
+}
+
 export async function loginAsGuest(page: Page) {
-  await page.goto('/login')
+  await gotoAppRoute(page, '/login')
+  const signIn = page.waitForResponse(response => (
+    response.request().method() === 'POST'
+    && new URL(response.url()).pathname.endsWith('/sign-in/anonymous')
+  ))
   await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
+  const response = await signIn
+  expect(response.ok(), await response.text()).toBe(true)
   await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
 }
 
@@ -91,7 +120,7 @@ export async function createPublicRoomViaApi(
         if (!updated.ok()) {
           throw new Error(`Could not disable Pouch for E2E fixture: ${updated.status()}`)
         }
-        await page.goto(`/rooms/${body.gameId}`)
+        await gotoAppRoute(page, `/rooms/${body.gameId}`)
         await expect(page).toHaveURL(roomUrl)
         return body.gameId
       }

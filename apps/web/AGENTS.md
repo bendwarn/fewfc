@@ -25,7 +25,7 @@
 - Do not use manual visual inspection or screenshot comparison as acceptance
   validation. Prefer repeatable Playwright assertions against routes, DOM state,
   accessible roles and names, focus, and element geometry.
-- Run Worker/Durable Object browser flows with `bun run test:e2e`. The Playwright
+- Run Worker/Durable Object browser flows with `bun test:e2e`. The Playwright
   configuration builds Nuxt and the rules WASM, applies migrations to isolated
   `.wrangler/e2e` storage, starts Wrangler, and launches Brave when it is installed.
 - A Playwright `click()` waits for the browser click action, not for an async Vue

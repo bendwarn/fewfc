@@ -6,8 +6,8 @@ use crate::domain::{
 };
 
 use super::{
-    BaseFormationSpec, EffectDef, EffectPlan, FormationCategory, FormationDef, FormationPattern,
-    PointFormula, SpellPlanDef, SpiritSkillCandidate,
+    BaseFormationSpec, EffectDef, EffectPlan, FormationCategory, FormationDef, FormationEffect,
+    FormationPattern, PointFormula, SpellPlanDef, SpiritSkillCandidate, SpiritSkillEffect,
 };
 
 pub(super) fn specs() -> Vec<BaseFormationSpec> {
@@ -403,7 +403,6 @@ struct SkillDefinition {
     spirit: SpiritKind,
     cost: u32,
     name: &'static str,
-    rule_text: &'static str,
 }
 
 fn skill_definition(skill: SpiritSkill) -> SkillDefinition {
@@ -412,79 +411,92 @@ fn skill_definition(skill: SpiritSkill) -> SkillDefinition {
             spirit: SpiritKind::Metal,
             cost: 2,
             name: "飛刃",
-            rule_text: "消耗２靈力，上家扣除１０點生命",
         },
         SpiritSkill::SwordRain => SkillDefinition {
             spirit: SpiritKind::Metal,
             cost: 6,
             name: "劍雨",
-            rule_text: "消耗６靈力，上家扣除４０點生命",
         },
         SpiritSkill::Fragrance => SkillDefinition {
             spirit: SpiritKind::Wood,
             cost: 2,
             name: "芬芳",
-            rule_text: "消耗２靈力，回復１０點生命",
         },
         SpiritSkill::Bloom => SkillDefinition {
             spirit: SpiritKind::Wood,
             cost: 6,
             name: "綻放",
-            rule_text: "消耗６靈力，回復４０點生命",
         },
         SpiritSkill::Flow => SkillDefinition {
             spirit: SpiritKind::Water,
             cost: 1,
             name: "川流",
-            rule_text: "消耗１靈力並捨棄一張手牌，本回合抽牌＋１",
         },
         SpiritSkill::Vastness => SkillDefinition {
             spirit: SpiritKind::Water,
             cost: 3,
             name: "浩瀚",
-            rule_text: "消耗３靈力，本回合抽牌＋１",
         },
         SpiritSkill::Glimmer => SkillDefinition {
             spirit: SpiritKind::Fire,
             cost: 1,
             name: "螢光",
-            rule_text: "消耗１靈力，指定手牌本回合視為３級",
         },
         SpiritSkill::Splendor => SkillDefinition {
             spirit: SpiritKind::Fire,
             cost: 3,
             name: "絢爛",
-            rule_text: "消耗３靈力，指定手牌本回合視為指定等級",
         },
         SpiritSkill::StoneShield => SkillDefinition {
             spirit: SpiritKind::Earth,
             cost: 2,
             name: "石盾",
-            rule_text: "消耗２靈力，下家下回合攻擊之傷害無效",
         },
         SpiritSkill::RockWall => SkillDefinition {
             spirit: SpiritKind::Earth,
             cost: 6,
             name: "岩壁",
-            rule_text: "消耗６靈力，建構４０點防護罩",
         },
         SpiritSkill::EvilGaze => SkillDefinition {
             spirit: SpiritKind::Evil,
             cost: 2,
             name: "惡視",
-            rule_text: "消耗２靈力，隨機檢視下家兩張手牌",
         },
         SpiritSkill::DeathOmen => SkillDefinition {
             spirit: SpiritKind::Death,
             cost: 4,
             name: "死兆",
-            rule_text: "消耗４靈力，捨棄下家牌堆頂四張並依最高等級扣除生命",
         },
     }
 }
 
 pub(crate) fn skill_cost(skill: SpiritSkill) -> u32 {
     skill_definition(skill).cost
+}
+
+/// Kept beside `skill_effect_events`: changing a skill's resolver requires an
+/// explicit player-facing semantic fact as well.
+pub(crate) fn player_facing_effect(skill: SpiritSkill) -> SpiritSkillEffect {
+    match skill {
+        SpiritSkill::FlyingBlade => SpiritSkillEffect::DamagePreviousTeam { amount: 10 },
+        SpiritSkill::SwordRain => SpiritSkillEffect::DamagePreviousTeam { amount: 40 },
+        SpiritSkill::Fragrance => SpiritSkillEffect::RecoverOwnTeam { amount: 10 },
+        SpiritSkill::Bloom => SpiritSkillEffect::RecoverOwnTeam { amount: 40 },
+        SpiritSkill::Flow => {
+            SpiritSkillEffect::DiscardSelectedCardAndIncreaseTurnDraw { amount: 1 }
+        }
+        SpiritSkill::Vastness => SpiritSkillEffect::IncreaseTurnDraw { amount: 1 },
+        SpiritSkill::Glimmer | SpiritSkill::Splendor => {
+            SpiritSkillEffect::InterpretSelectedCardLevel
+        }
+        SpiritSkill::StoneShield => SpiritSkillEffect::ProtectNextPlayerFromAttack,
+        SpiritSkill::RockWall => SpiritSkillEffect::SetOwnShield { amount: 40 },
+        SpiritSkill::EvilGaze => SpiritSkillEffect::InspectRandomNextPlayerHandCards { count: 2 },
+        SpiritSkill::DeathOmen => SpiritSkillEffect::DiscardNextPlayerDeckAndDamageByHighestLevel {
+            count: 4,
+            multiplier: 4,
+        },
+    }
 }
 
 fn skills_for(spirit: SpiritKind) -> Vec<SpiritSkill> {
@@ -508,9 +520,9 @@ fn candidate(
     SpiritSkillCandidate {
         skill,
         skill_name: definition.name.to_string(),
-        rule_text: definition.rule_text.to_string(),
         selected_card,
         declared_level,
+        detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
     }
 }
 
@@ -834,6 +846,7 @@ fn summoning_spec(spirit: SpiritKind) -> BaseFormationSpec {
             id: id.to_string(),
             plan: EffectPlan::ActiveSpell(SpellPlanDef {
                 resolver_id: id.to_string(),
+                player_facing_effect: FormationEffect::SummonSpirit,
             }),
         },
     }
@@ -856,6 +869,7 @@ fn void_spirit_shattering_spec() -> BaseFormationSpec {
             id: id.to_string(),
             plan: EffectPlan::ActiveSpell(SpellPlanDef {
                 resolver_id: id.to_string(),
+                player_facing_effect: FormationEffect::ShatterSpirits,
             }),
         },
     }

@@ -6,8 +6,10 @@ use crate::domain::{
     RandomnessContinuation, ScheduledEcho, ValidationError,
 };
 use crate::rules::{
-    BaseFormationSpec, EffectDef, EffectPlan, FormationCategory, FormationDef, FormationPattern,
-    PointFormula, SpellPlanDef, SubmittedCardFacts,
+    ActionCost, BaseFormationSpec, ConsequenceCertainty, DelayedEffect, DelayedTiming, EffectDef,
+    EffectPlan, FollowUpChoice, FormationCategory, FormationDef, FormationEffect, FormationPattern,
+    PointFormula, RuleConsequence, RuleException, SpellPlanDef, SubmittedCardFacts,
+    TrustedRandomness,
 };
 
 pub(crate) const RINGING_METAL: &str = "echo:ringing-metal";
@@ -114,6 +116,99 @@ pub(crate) fn melody(id: &str) -> Option<MelodyDef> {
     melody_catalog().into_iter().find(|melody| melody.id == id)
 }
 
+/// Reusable player-facing clauses for a Melody.  These facts sit beside the
+/// same policy that schedules and resolves its Echo, rather than in a Web
+/// Formation-ID presentation table.
+pub(crate) fn action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence>> {
+    let melody = melody(id)?;
+    let mut consequences = Vec::new();
+    match melody.echo_policy {
+        EchoPolicy::OptionalCost {
+            allowed_printed_elements,
+        } => {
+            consequences.push(RuleConsequence::Cost {
+                certainty: ConsequenceCertainty::Conditional,
+                cost: ActionCost::OptionalDiscardByPrintedElement {
+                    allowed_printed_elements: allowed_printed_elements.to_vec(),
+                },
+            });
+            consequences.push(RuleConsequence::FollowUpChoice {
+                certainty: ConsequenceCertainty::FollowUp,
+                choice: FollowUpChoice::SelectCards {
+                    minimum: 0,
+                    maximum: 1,
+                },
+            });
+            consequences.push(RuleConsequence::DelayedEffect {
+                certainty: ConsequenceCertainty::Conditional,
+                timing: DelayedTiming::NextTurnStart,
+                effect: DelayedEffect::RepeatMelodyMainEffect,
+            });
+            consequences.push(RuleConsequence::RuleException {
+                certainty: ConsequenceCertainty::Conditional,
+                exception: RuleException::DoesNotCreateFormationUse,
+            });
+            consequences.push(RuleConsequence::RuleException {
+                certainty: ConsequenceCertainty::Conditional,
+                exception: RuleException::DoesNotScheduleAnotherEcho,
+            });
+        }
+        EchoPolicy::Automatic => {
+            consequences.push(RuleConsequence::DelayedEffect {
+                certainty: ConsequenceCertainty::Scheduled,
+                timing: DelayedTiming::NextTurnStart,
+                effect: DelayedEffect::RepeatMelodyMainEffect,
+            });
+            consequences.push(RuleConsequence::RuleException {
+                certainty: ConsequenceCertainty::Scheduled,
+                exception: RuleException::DoesNotCreateFormationUse,
+            });
+            consequences.push(RuleConsequence::RuleException {
+                certainty: ConsequenceCertainty::Scheduled,
+                exception: RuleException::DoesNotScheduleAnotherEcho,
+            });
+        }
+        EchoPolicy::None => {}
+    }
+    match id {
+        RINGING_METAL => {
+            consequences.push(RuleConsequence::FollowUpChoice {
+                certainty: ConsequenceCertainty::FollowUp,
+                choice: FollowUpChoice::SelectDeckCard,
+            });
+            consequences.push(RuleConsequence::TrustedRandomness {
+                certainty: ConsequenceCertainty::Random,
+                operation: TrustedRandomness::ShuffleDeck,
+            });
+        }
+        SPLIT_EARTH => consequences.push(RuleConsequence::FollowUpChoice {
+            certainty: ConsequenceCertainty::FollowUp,
+            choice: FollowUpChoice::SelectFormation,
+        }),
+        PURE_FIRE => consequences.push(RuleConsequence::FollowUpChoice {
+            certainty: ConsequenceCertainty::FollowUp,
+            choice: FollowUpChoice::SelectPlayer,
+        }),
+        PLANT_EARTH => {
+            consequences.push(RuleConsequence::DelayedEffect {
+                certainty: ConsequenceCertainty::Scheduled,
+                timing: DelayedTiming::NextTurnStart,
+                effect: DelayedEffect::SelectAndPerformMelodyMainEffect,
+            });
+            consequences.push(RuleConsequence::FollowUpChoice {
+                certainty: ConsequenceCertainty::FollowUp,
+                choice: FollowUpChoice::SelectMelody,
+            });
+            consequences.push(RuleConsequence::RuleException {
+                certainty: ConsequenceCertainty::Scheduled,
+                exception: RuleException::DoesNotCreateFormationUse,
+            });
+        }
+        _ => {}
+    }
+    Some(consequences)
+}
+
 pub(crate) fn formation_specs() -> Vec<BaseFormationSpec> {
     melody_catalog()
         .into_iter()
@@ -134,6 +229,7 @@ pub(crate) fn formation_specs() -> Vec<BaseFormationSpec> {
                 id: melody.id.to_string(),
                 plan: EffectPlan::ActiveSpell(SpellPlanDef {
                     resolver_id: melody.id.to_string(),
+                    player_facing_effect: FormationEffect::ResolveMelodyMainEffect,
                 }),
             },
         })

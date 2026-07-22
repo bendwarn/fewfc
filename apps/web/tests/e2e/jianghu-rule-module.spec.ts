@@ -1,4 +1,4 @@
-import { createPublicRoom, expect, joinListedRoom, loginAsGuests, test } from './fixtures'
+import { createPublicRoom, expect, joinListedRoom, loginAsGuests, reloadAppRoute, test } from './fixtures'
 
 test('Jianghu defaults on, preserves dependencies, and survives reconnect', async ({ browser }) => {
 
@@ -34,7 +34,7 @@ test('Jianghu defaults on, preserves dependencies, and survives reconnect', asyn
     await expect(host.getByRole('region', { name: '啟用規則' }))
       .toContainText('江湖')
 
-    await guest.reload()
+    await reloadAppRoute(guest)
     await expect(guest.getByRole('region', { name: '啟用規則' }))
       .toContainText('江湖')
   } finally {

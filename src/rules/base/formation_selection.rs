@@ -207,31 +207,30 @@ impl<'a> FormationSelection<'a> {
                         .map(|(target, preview)| (vec![target], Some(preview)))
                         .collect()
                 };
-                let mut candidates =
-                    self.match_options(formation, &matcher)
-                        .into_iter()
-                        .flat_map(move |star_substitution| {
-                            role_options.clone().into_iter().map(
-                                move |(declared_targets, preview)| FormationCandidate {
-                                    formation_id: formation.id.clone(),
-                                    formation_name: formation.name.clone(),
-                                    rule_text: formation.rule_text.clone(),
-                                    summary: formation.rule_text.clone(),
-                                    category: formation.category.clone(),
-                                    cards: self.cards.clone(),
-                                    star_substitution: star_substitution.clone(),
-                                    declared_targets,
-                                    preview,
-                                },
-                            )
-                        })
-                        .collect::<Vec<_>>();
+                let mut candidates = self
+                    .match_options(formation, &matcher)
+                    .into_iter()
+                    .flat_map(move |star_substitution| {
+                        role_options
+                            .clone()
+                            .into_iter()
+                            .map(move |(declared_targets, preview)| FormationCandidate {
+                                formation_id: formation.id.clone(),
+                                formation_name: formation.name.clone(),
+                                category: formation.category.clone(),
+                                cards: self.cards.clone(),
+                                star_substitution: star_substitution.clone(),
+                                declared_targets,
+                                preview,
+                                detail: crate::rules::PlayerFacingActionDetail::pending_composition(
+                                ),
+                            })
+                    })
+                    .collect::<Vec<_>>();
                 for card in self.sacred_art_options(formation, &matcher) {
                     candidates.push(FormationCandidate {
                         formation_id: formation.id.clone(),
                         formation_name: formation.name.clone(),
-                        rule_text: formation.rule_text.clone(),
-                        summary: formation.rule_text.clone(),
                         category: formation.category.clone(),
                         cards: self.cards.clone(),
                         star_substitution: None,
@@ -241,6 +240,7 @@ impl<'a> FormationSelection<'a> {
                             card.as_u64(),
                             self.cards.len()
                         )),
+                        detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
                     });
                 }
                 candidates

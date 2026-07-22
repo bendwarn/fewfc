@@ -17,7 +17,7 @@ export interface ReplayFrame {
     discardRetrievalAction: null
     canChooseInitialPouch: false
     canTriggerPouch: false
-    secretStrategyActions: []
+    secretStrategyOptions: []
   }
   players: Array<{ player: string; displayName: string }>
   firstPlayer: string

@@ -13,8 +13,8 @@ use crate::domain::{
     PlayerId, RandomnessContinuation, RandomnessDeck, RandomnessOperation, RulesetId, TeamHp,
     TurnDrawSkipReason, ValidationError, validate_setup,
 };
-use crate::rules::PlayableAction;
 use crate::rules::projection;
+use crate::rules::{ConsequenceCertainty, FollowUpChoice, PlayableAction, RuleConsequence};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn timed_effect_reductions(
@@ -53,6 +53,21 @@ pub(crate) fn timed_effect_reductions(
             ),
     );
     reductions
+}
+
+/// Rule-specific choice facts kept beside the base spell resolvers.  This is
+/// explanatory only; the actual Pending Choice remains owned by resolution.
+pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence>> {
+    match id {
+        "chaos" => Some(vec![RuleConsequence::FollowUpChoice {
+            certainty: ConsequenceCertainty::FollowUp,
+            choice: FollowUpChoice::SelectCards {
+                minimum: 1,
+                maximum: 2,
+            },
+        }]),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -172,6 +187,13 @@ impl BaseRuleset {
                 actions.push(PlayableAction::UseSpiritSkill(candidate));
             }
         }
+        let actions = crate::rules::action_detail::attach_to_actions(state, player, actions);
+        debug_assert!(actions.iter().all(|action| match action {
+            PlayableAction::PerformFormation(candidate) => candidate.detail.is_complete(),
+            PlayableAction::ChangeProfession(candidate) => candidate.detail.is_complete(),
+            PlayableAction::ActivateProfessionAbility(candidate) => candidate.detail.is_complete(),
+            PlayableAction::UseSpiritSkill(candidate) => candidate.detail.is_complete(),
+        }));
         Ok(actions)
     }
 

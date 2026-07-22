@@ -6,8 +6,9 @@ use crate::domain::{
     StatusEffect, StatusOwner, TemporaryStarEffect, ValidationError,
 };
 use crate::rules::{
-    BaseFormationSpec, EffectDef, EffectPlan, FormationCategory, FormationDef, FormationPattern,
-    PointFormula, SpellPlanDef,
+    BaseFormationSpec, ConsequenceCertainty, EffectDef, EffectPlan, FollowUpChoice,
+    FormationCategory, FormationDef, FormationEffect, FormationPattern, PlayerFacingActionDetail,
+    PointFormula, RuleConsequence, SpellPlanDef,
 };
 
 pub(crate) const CHAIN_ID: &str = "pouch:chain";
@@ -31,6 +32,7 @@ pub(crate) fn formation_specs() -> Vec<BaseFormationSpec> {
             id: CHAIN_ID.to_string(),
             plan: EffectPlan::ActiveSpell(SpellPlanDef {
                 resolver_id: CHAIN_ID.to_string(),
+                player_facing_effect: FormationEffect::BeginChainChoice,
             }),
         },
     }]
@@ -311,7 +313,7 @@ pub(crate) struct SecretStrategyCardOption {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SecretStrategyActionOption {
+pub(crate) struct SecretStrategyOption {
     pub source_card: CardInstanceId,
     pub strategy: SecretStrategy,
     pub input: SecretStrategyInputRequirement,
@@ -322,6 +324,7 @@ pub(crate) struct SecretStrategyActionOption {
     pub discard_cards: Vec<CardInstanceId>,
     pub hand_cards: Vec<CardInstanceId>,
     pub required_card_count: usize,
+    pub detail: PlayerFacingActionDetail,
 }
 
 pub(crate) fn strategy_options_for_card(
@@ -398,56 +401,109 @@ pub(crate) fn strategy_action_options(
     state: &GameState,
     player: &PlayerId,
     source_card: CardInstanceId,
-) -> Vec<SecretStrategyActionOption> {
+) -> Vec<SecretStrategyOption> {
     let Some(definition) = state.card_def(source_card) else {
         return Vec::new();
     };
     strategy_options_for_card(definition.element, definition.level)
         .into_iter()
-        .map(|option| SecretStrategyActionOption {
-            source_card,
-            strategy: option.strategy,
-            input: option.input,
-            target_players: matches!(option.input, SecretStrategyInputRequirement::TargetPlayer)
+        .map(|option| {
+            let input = option.input;
+            SecretStrategyOption {
+                source_card,
+                strategy: option.strategy,
+                input,
+                target_players: matches!(
+                    option.input,
+                    SecretStrategyInputRequirement::TargetPlayer
+                )
                 .then(|| state.turn_order.clone())
                 .unwrap_or_default(),
-            stars: matches!(option.input, SecretStrategyInputRequirement::Star)
-                .then(|| {
-                    vec![
-                        StarKind::Metal,
-                        StarKind::Wood,
-                        StarKind::Water,
-                        StarKind::Fire,
-                        StarKind::Earth,
-                    ]
-                })
+                stars: matches!(option.input, SecretStrategyInputRequirement::Star)
+                    .then(|| {
+                        vec![
+                            StarKind::Metal,
+                            StarKind::Wood,
+                            StarKind::Water,
+                            StarKind::Fire,
+                            StarKind::Earth,
+                        ]
+                    })
+                    .unwrap_or_default(),
+                break_stars: matches!(option.input, SecretStrategyInputRequirement::Star)
+                    .then(|| state.team_stars.iter().map(|owned| owned.star).collect())
+                    .unwrap_or_default(),
+                deck_cards: matches!(
+                    option.input,
+                    SecretStrategyInputRequirement::DeckDiscardSwap
+                )
+                .then(|| sheep_deck_card_options(state, player, source_card))
                 .unwrap_or_default(),
-            break_stars: matches!(option.input, SecretStrategyInputRequirement::Star)
-                .then(|| state.team_stars.iter().map(|owned| owned.star).collect())
+                discard_cards: matches!(
+                    option.input,
+                    SecretStrategyInputRequirement::DeckDiscardSwap
+                )
+                .then(|| sheep_return_card_options(state, player, source_card))
                 .unwrap_or_default(),
-            deck_cards: matches!(
-                option.input,
-                SecretStrategyInputRequirement::DeckDiscardSwap
-            )
-            .then(|| sheep_deck_card_options(state, player, source_card))
-            .unwrap_or_default(),
-            discard_cards: matches!(
-                option.input,
-                SecretStrategyInputRequirement::DeckDiscardSwap
-            )
-            .then(|| sheep_return_card_options(state, player, source_card))
-            .unwrap_or_default(),
-            hand_cards: matches!(option.input, SecretStrategyInputRequirement::Retreat)
-                .then(|| state.hand(player).unwrap_or_default().to_vec())
+                hand_cards: matches!(option.input, SecretStrategyInputRequirement::Retreat)
+                    .then(|| state.hand(player).unwrap_or_default().to_vec())
+                    .unwrap_or_default(),
+                required_card_count: matches!(
+                    option.input,
+                    SecretStrategyInputRequirement::DeckDiscardSwap
+                )
+                .then_some(2)
                 .unwrap_or_default(),
-            required_card_count: matches!(
-                option.input,
-                SecretStrategyInputRequirement::DeckDiscardSwap
-            )
-            .then_some(2)
-            .unwrap_or_default(),
+                detail: crate::rules::action_detail::secret_strategy_detail(
+                    source_card,
+                    option.strategy,
+                    secret_strategy_input(input),
+                ),
+            }
         })
         .collect()
+}
+
+fn secret_strategy_input(
+    input: SecretStrategyInputRequirement,
+) -> crate::rules::SecretStrategyInput {
+    match input {
+        SecretStrategyInputRequirement::None => crate::rules::SecretStrategyInput::None,
+        SecretStrategyInputRequirement::TargetPlayer => {
+            crate::rules::SecretStrategyInput::TargetPlayer
+        }
+        SecretStrategyInputRequirement::DeckDiscardSwap => {
+            crate::rules::SecretStrategyInput::DeckDiscardSwap
+        }
+        SecretStrategyInputRequirement::Star => crate::rules::SecretStrategyInput::Star,
+        SecretStrategyInputRequirement::Retreat => crate::rules::SecretStrategyInput::Retreat,
+    }
+}
+
+/// Chain has its own Pending Choice lifecycle.  This explains the known
+/// commitment before it starts, without carrying a Choice ID or continuation.
+pub(crate) fn formation_action_detail_consequences(
+    state: &GameState,
+    player: &PlayerId,
+    id: &str,
+) -> Option<Vec<RuleConsequence>> {
+    (id == CHAIN_ID).then(|| {
+        let mut consequences = vec![RuleConsequence::FollowUpChoice {
+            certainty: ConsequenceCertainty::FollowUp,
+            choice: FollowUpChoice::SelectPouchOwnerAndOptionalStrategy,
+        }];
+        if state.deck_for(player).is_some_and(|deck| deck.len() < 2)
+            && state
+                .discard_for(player)
+                .is_some_and(|discard| !discard.is_empty())
+        {
+            consequences.push(RuleConsequence::TrustedRandomness {
+                certainty: ConsequenceCertainty::Conditional,
+                operation: crate::rules::TrustedRandomness::ShuffleDiscardIntoDeck,
+            });
+        }
+        consequences
+    })
 }
 
 pub(crate) fn chain_events(

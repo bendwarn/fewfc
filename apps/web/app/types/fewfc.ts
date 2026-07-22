@@ -399,23 +399,107 @@ export interface PublicGameEvent {
   summary: string
 }
 
+export interface PlayerFacingActionDetail {
+  consequences: RuleConsequence[]
+}
+
+export type ConsequenceCertainty = 'guaranteed' | 'conditional' | 'random' | 'followUp' | 'scheduled'
+
+export type RuleConsequence =
+  | { type: 'cost'; certainty: ConsequenceCertainty; cost: ActionCost }
+  | { type: 'immediateEffect'; certainty: ConsequenceCertainty; effect: ImmediateEffect }
+  | { type: 'followUpChoice'; certainty: ConsequenceCertainty; choice: FollowUpChoice }
+  | { type: 'trustedRandomness'; certainty: ConsequenceCertainty; operation: TrustedRandomness }
+  | { type: 'delayedEffect'; certainty: ConsequenceCertainty; timing: DelayedTiming; effect: DelayedEffect }
+  | { type: 'ruleException'; certainty: ConsequenceCertainty; exception: RuleException }
+  | { type: 'substitution'; certainty: ConsequenceCertainty; card: CardInstanceId; printedElement: Element; interpretedElement: Element }
+  | { type: 'declaredInput'; certainty: ConsequenceCertainty; input: DeclaredInput }
+
+export type ActionCost =
+  | { type: 'useCards'; cards: CardInstanceId[] }
+  | { type: 'discardCards'; cards: CardInstanceId[] }
+  | { type: 'spendSpiritPower'; amount: number }
+  | { type: 'loseHp'; amount: number }
+  | { type: 'optionalDiscardByPrintedElement'; allowedPrintedElements: Element[] }
+  | { type: 'consumePouch'; sourceCard: CardInstanceId }
+
+export type ImmediateEffect =
+  | { type: 'attack'; target: ActionTarget; category: ActionAttackCategory; points: EffectAmount }
+  | { type: 'resolveFormationEffect'; effect: FormationEffect }
+  | { type: 'changeProfession'; professionId: string }
+  | { type: 'activateProfessionAbility'; abilityId: string; effect: ProfessionAbilityEffect }
+  | { type: 'useSpiritSkill'; effect: SpiritSkillEffect }
+  | { type: 'triggerSecretStrategy'; effect: SecretStrategyEffect }
+  | { type: 'movePreviousTurnDiscardToDeckTop'; card: CardInstanceId; previousPlayer: PlayerId }
+
+export type ActionTarget = 'selfPlayer' | 'selfTeam' | 'previousPlayer' | 'previousTeam' | 'nextPlayer' | 'nextTeam' | 'selectedPlayer' | 'allPlayers' | 'otherPlayers' | 'eachTeam'
+export type ActionAttackCategory = 'elemental' | 'physical' | 'special'
+export type EffectAmount = { type: 'fixed'; value: number } | { type: 'formula'; formula: EffectFormula }
+export type EffectFormula =
+  | { type: 'levelPlus'; amount: number }
+  | { type: 'levelSumTimes'; multiplier: number }
+  | { type: 'targetHandCountTimes'; multiplier: number }
+  | { type: 'elementProductTimes'; element: Element; multiplier: number }
+export type FormationEffect = 'coverCounter' | 'copyPreviousTurnFormation' | 'recoverHp' | 'reduceShield' | 'inspectHand' | 'createShield' | 'returnTeamHp' | 'drawCards' | 'swapTeamHp' | 'summonSpirit' | 'clearEnvironment' | 'applyStatus' | 'changeEnvironment' | 'breakProfession' | 'limitedUseRecovery' | 'resolveMelodyMainEffect' | 'beginChainChoice' | 'shatterSpirits' | 'breakStars'
+export type SecretStrategyEffect = 'protectTriggeringPlayer' | 'increaseHandLevels' | 'increaseTurnDraw' | 'negateNextPlayerFormationHpChanges' | 'suppressPlayerAbilitiesAndSpiritPower' | 'summonSpiritFromPouch' | 'swapDeckAndDiscard' | 'directProfessionChange' | 'breakOrGainStar' | 'clearOrChangeEnvironment'
+export type ProfessionAbilityEffect =
+  | { type: 'damagePreviousTeamByCardLevelTimes'; multiplier: number }
+  | { type: 'increaseTurnDraw'; amount: number }
+  | { type: 'drawThreeThenChooseOne' }
+  | { type: 'createVirtualFormationCard'; scope: VirtualFormationScope }
+  | { type: 'applyYangAura' }
+  | { type: 'prepareFormationDrawBonus' }
+  | { type: 'prepareCardWithLevelBonus'; amount: number; maximum: number }
+  | { type: 'prepareMeteorEffect' }
+  | { type: 'drawTwoThenReturnOne' }
+  | { type: 'retrievePreviousPlayerDiscardForProfessionUse' }
+  | { type: 'retrievePreviousPlayerDiscard' }
+  | { type: 'revealDeckTopAndChooseDiscard' }
+  | { type: 'applyShuffleRecovery' }
+  | { type: 'prepareCardAtDeclaredLevel' }
+export type VirtualFormationScope = 'elementalStrike' | 'baseFormation' | 'anyFormation'
+export type SpiritSkillEffect =
+  | { type: 'damagePreviousTeam'; amount: number }
+  | { type: 'recoverOwnTeam'; amount: number }
+  | { type: 'discardSelectedCardAndIncreaseTurnDraw'; amount: number }
+  | { type: 'increaseTurnDraw'; amount: number }
+  | { type: 'interpretSelectedCardLevel' }
+  | { type: 'protectNextPlayerFromAttack' }
+  | { type: 'setOwnShield'; amount: number }
+  | { type: 'inspectRandomNextPlayerHandCards'; count: number }
+  | { type: 'discardNextPlayerDeckAndDamageByHighestLevel'; count: number; multiplier: number }
+export type FollowUpChoice =
+  | { type: 'selectPlayer' }
+  | { type: 'selectFormation' }
+  | { type: 'selectMelody' }
+  | { type: 'selectDeckCard' }
+  | { type: 'selectPouchOwnerAndOptionalStrategy' }
+  | { type: 'selectSecretStrategyInput'; input: SecretStrategyInput }
+  | { type: 'selectCards'; minimum: number; maximum: number }
+export type SecretStrategyInput = 'none' | 'targetPlayer' | 'deckDiscardSwap' | 'star' | 'retreat'
+export type TrustedRandomness = 'shuffleDeck' | 'shuffleDiscardIntoDeck' | { type: 'selectHiddenHandCards'; count: number }
+export type DelayedTiming = 'nextTurnStart' | 'nextPlayerTurn'
+export type DelayedEffect = 'repeatMelodyMainEffect' | 'selectAndPerformMelodyMainEffect'
+export type RuleException =
+  | { type: 'doesNotEndAction' }
+  | { type: 'doesNotCreateFormationUse' }
+  | { type: 'doesNotScheduleAnotherEcho' }
+  | { type: 'limitedUse'; key: string; remaining: number; maximum: number }
+  | { type: 'effectMayBeIneffective' }
+  | { type: 'usesPrintedElement' }
+export type DeclaredInput =
+  | { type: 'card'; card: CardInstanceId }
+  | { type: 'element'; element: Element }
+  | { type: 'level'; level: number }
+  | { type: 'targetCard'; card: CardInstanceId }
+
 export type PlayableAction =
   | {
       type: 'performFormation'
       id: string
       name: string
       category: 'Attack' | 'Spell'
-      policy:
-        | 'standard'
-        | 'pouchChain'
-        | 'echoRingingMetal'
-        | 'echoFallingWood'
-        | 'echoFlowingWater'
-        | 'echoWarFire'
-        | 'echoSplitEarth'
-        | 'echoPureFire'
-        | 'echoPlantEarth'
-      summary: string
+      detail: PlayerFacingActionDetail
       cards: CardInstanceId[]
       starSubstitution: StarElementSubstitution | null
       matchOption: {
@@ -429,14 +513,14 @@ export type PlayableAction =
       type: 'changeProfession'
       id: string
       name: string
-      summary: string
+      detail: PlayerFacingActionDetail
       cards: CardInstanceId[]
     }
   | {
       type: 'activateProfessionAbility'
       id: string
       name: string
-      summary: string
+      detail: PlayerFacingActionDetail
       cards: CardInstanceId[]
       targetCard: CardInstanceId | null
       declaredElement: Element | null
@@ -446,7 +530,7 @@ export type PlayableAction =
       type: 'useSpiritSkill'
       id: string
       name: string
-      summary: string
+      detail: PlayerFacingActionDetail
       cards: CardInstanceId[]
       selectedCard: CardInstanceId | null
       declaredLevel: number | null
@@ -454,7 +538,7 @@ export type PlayableAction =
 
 export type RecordedDecision = unknown
 
-export interface SecretStrategyAction {
+export interface SecretStrategyOption {
   sourceCard: CardInstanceId
   strategy: SecretStrategy
   input: 'none' | 'targetPlayer' | 'deckDiscardSwap' | 'star' | 'retreat'
@@ -465,12 +549,11 @@ export interface SecretStrategyAction {
   discardCards: CardInstanceId[]
   handCards: CardInstanceId[]
   requiredCardCount: number
+  detail: PlayerFacingActionDetail
 }
 
 export interface DiscardRetrievalActionDetail {
-  card: PublicCard
-  previousPlayer: PlayerId
-  hpCost: number
+  detail: PlayerFacingActionDetail
 }
 
 export interface LocalGameResponse {
@@ -485,7 +568,7 @@ export interface LocalGameResponse {
     discardRetrievalAction: DiscardRetrievalActionDetail | null
     canChooseInitialPouch: boolean
     canTriggerPouch: boolean
-    secretStrategyActions: SecretStrategyAction[]
+    secretStrategyOptions: SecretStrategyOption[]
   }
   trustedRandomCandidates?: CardInstanceId[]
   trustedRandomCandidateCount?: number

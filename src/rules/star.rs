@@ -2,7 +2,7 @@ use crate::domain::{Element, StarKind};
 
 use super::{
     AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget, EffectDef, EffectPlan,
-    FormationDef, FormationPattern, PointFormula, SpellPlanDef,
+    FormationDef, FormationEffect, FormationPattern, PointFormula, SpellPlanDef,
 };
 
 pub(super) fn specs() -> Vec<BaseFormationSpec> {
@@ -202,6 +202,7 @@ fn void_star_breaking() -> BaseFormationSpec {
             id: "void-star-breaking".to_string(),
             plan: EffectPlan::ActiveSpell(SpellPlanDef {
                 resolver_id: "void-star-breaking".to_string(),
+                player_facing_effect: FormationEffect::BreakStars,
             }),
         },
     }

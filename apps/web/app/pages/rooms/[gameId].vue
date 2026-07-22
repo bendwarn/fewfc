@@ -347,7 +347,7 @@
 
                 <p v-if="actionDetail" class="action-detail">
                   <strong>{{ actionDetail.name }}</strong>
-                  {{ actionDetail.summary }}
+                  {{ actionDetail.text }}
                 </p>
               </div>
             </div>
@@ -529,6 +529,10 @@
                       {{ strategyLabel(option.strategy) }}
                     </button>
                   </div>
+
+                  <p v-if="selectedChainStrategyAction" class="action-detail">
+                    {{ presentSecretStrategyOption(selectedChainStrategyAction) }}
+                  </p>
 
                   <div
                     v-if="selectedChainStrategyAction?.input === 'targetPlayer'"
@@ -947,7 +951,7 @@ import { cardElementClass, cardElementGlyph } from '~/lib/card-face-presentation
 import { presentCardInterpretation } from '~/lib/card-interpretation-presentation'
 import { presentPendingChoice } from '~/lib/pending-choice-presentation'
 import { presentPersistentEffects } from '~/lib/persistent-effect-presentation'
-import { presentDiscardRetrievalAction, presentPlayableAction, presentSecretStrategyAction } from '~/lib/action-detail-presentation'
+import { presentDiscardRetrievalAction, presentPlayableAction, presentSecretStrategyOption } from '~/lib/action-detail-presentation'
 import { splitEarthChoiceKey, usesSplitEarthFormationGroups } from '#shared/utils/split-earth-formation-choice'
 import { roomRouteResult } from '~/lib/navigation'
 import { chainChoiceAnswer, toggleChoiceCard } from '~/lib/pending-choice-interaction'
@@ -1004,11 +1008,11 @@ const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
   const pouch = state.value.pouches.find(entry => entry.owner === viewer.value)?.card
   if (!pouch) return []
   const actions: PouchStrategyAction[] = []
-  const requirements = game.interaction.value.secretStrategyActions
+  const requirements = game.interaction.value.secretStrategyOptions
     .filter(requirement => requirement.sourceCard === pouch.id)
   for (const requirement of requirements) {
     const { strategy } = requirement
-    const detail = presentSecretStrategyAction(requirement)
+    const detail = presentSecretStrategyOption(requirement)
     if (requirement.input === 'none') {
       actions.push({ label: `秘計‧${strategyLabel(strategy)}`, detail, strategy })
     } else if (requirement.input === 'targetPlayer') {
@@ -1129,7 +1133,7 @@ const chainStrategyOptions = computed(() => {
   if (!card) return []
   const prospectiveDeckCount = ownDeckCards.value.length - 2
   const sheepCanComplete = prospectiveDeckCount + ownDiscardCards.value.length >= 2
-  return game.interaction.value.secretStrategyActions
+  return game.interaction.value.secretStrategyOptions
     .filter(option => option.sourceCard === card.id)
     .filter(option => option.strategy !== 'SheepStealing' || sheepCanComplete)
 })
@@ -1304,7 +1308,7 @@ watch(
   },
 )
 
-const actionDetail = ref<{ name: string; summary: string } | null>(null)
+const actionDetail = ref<{ name: string; text: string } | null>(null)
 const discardRetrievalDetail = computed(() => {
   const detail = game.interaction.value.discardRetrievalAction
   return detail ? presentDiscardRetrievalAction(detail, playerLabel) : ''
@@ -2021,12 +2025,12 @@ function playableActionDetail(action: PlayableAction): string {
 
 function showActionDetail(action: PlayableAction) {
   clearTimeout(actionDetailTimer)
-  actionDetail.value = { name: action.name, summary: playableActionDetail(action) }
+  actionDetail.value = { name: action.name, text: playableActionDetail(action) }
 }
 
-function showTextActionDetail(name: string, summary: string) {
+function showTextActionDetail(name: string, text: string) {
   clearTimeout(actionDetailTimer)
-  actionDetail.value = { name, summary }
+  actionDetail.value = { name, text }
 }
 
 function hideActionDetail() {
@@ -2037,7 +2041,7 @@ function hideActionDetail() {
 function startActionDetail(action: PlayableAction) {
   clearTimeout(actionDetailTimer)
   actionDetailTimer = setTimeout(() => {
-    actionDetail.value = { name: action.name, summary: playableActionDetail(action) }
+    actionDetail.value = { name: action.name, text: playableActionDetail(action) }
   }, 450)
 }
 

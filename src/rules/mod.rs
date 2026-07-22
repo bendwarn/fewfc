@@ -1,5 +1,6 @@
 //! Rule registries: formations, effects, matchers, and formula resolvers.
 
+pub(crate) mod action_detail;
 pub(crate) mod base;
 pub(crate) mod confluence;
 pub(crate) mod dark;
@@ -25,7 +26,387 @@ pub use base::deck_composition::{
 pub use official::{OfficialRuleModuleCategory, OfficialRuleModuleSpec, OfficialRules};
 
 pub use crate::domain::Element;
+use serde::Serialize;
 use std::collections::HashMap;
+
+/// A player-visible, state-specific fact explaining an offered action.
+///
+/// This deliberately models commitments, not the canonical events that will
+/// eventually be emitted.  In particular it never contains a Choice ID,
+/// continuation, hidden card, or a prediction of trusted randomness.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerFacingActionDetail {
+    pub consequences: Vec<RuleConsequence>,
+}
+
+impl PlayerFacingActionDetail {
+    pub(crate) fn complete(consequences: Vec<RuleConsequence>) -> Self {
+        assert!(
+            !consequences.is_empty(),
+            "an offered action must have at least one player-facing consequence"
+        );
+        Self { consequences }
+    }
+
+    pub(crate) fn pending_composition() -> Self {
+        // Candidates are first assembled by their rule modules and then
+        // completed by the single action-detail composer before they leave
+        // `BaseRuleset::playable_actions`.
+        Self {
+            consequences: Vec::new(),
+        }
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        !self.consequences.is_empty()
+    }
+}
+
+/// The certainty of a clause.  This is separate from the consequence kind so
+/// presentation cannot accidentally turn a choice, random outcome, or delayed
+/// result into a guaranteed final state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConsequenceCertainty {
+    Guaranteed,
+    Conditional,
+    Random,
+    FollowUp,
+    Scheduled,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RuleConsequence {
+    Cost {
+        certainty: ConsequenceCertainty,
+        cost: ActionCost,
+    },
+    ImmediateEffect {
+        certainty: ConsequenceCertainty,
+        effect: ImmediateEffect,
+    },
+    FollowUpChoice {
+        certainty: ConsequenceCertainty,
+        choice: FollowUpChoice,
+    },
+    TrustedRandomness {
+        certainty: ConsequenceCertainty,
+        operation: TrustedRandomness,
+    },
+    DelayedEffect {
+        certainty: ConsequenceCertainty,
+        timing: DelayedTiming,
+        effect: DelayedEffect,
+    },
+    RuleException {
+        certainty: ConsequenceCertainty,
+        exception: RuleException,
+    },
+    Substitution {
+        certainty: ConsequenceCertainty,
+        card: crate::domain::CardInstanceId,
+        printed_element: Element,
+        interpreted_element: Element,
+    },
+    DeclaredInput {
+        certainty: ConsequenceCertainty,
+        input: DeclaredInput,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ActionCost {
+    UseCards {
+        cards: Vec<crate::domain::CardInstanceId>,
+    },
+    DiscardCards {
+        cards: Vec<crate::domain::CardInstanceId>,
+    },
+    SpendSpiritPower {
+        amount: u32,
+    },
+    LoseHp {
+        amount: i32,
+    },
+    OptionalDiscardByPrintedElement {
+        allowed_printed_elements: Vec<Element>,
+    },
+    ConsumePouch {
+        source_card: crate::domain::CardInstanceId,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ImmediateEffect {
+    Attack {
+        target: ActionTarget,
+        category: ActionAttackCategory,
+        points: EffectAmount,
+    },
+    ResolveFormationEffect {
+        effect: FormationEffect,
+    },
+    ChangeProfession {
+        profession_id: String,
+    },
+    ActivateProfessionAbility {
+        ability_id: String,
+        effect: ProfessionAbilityEffect,
+    },
+    UseSpiritSkill {
+        effect: SpiritSkillEffect,
+    },
+    TriggerSecretStrategy {
+        effect: SecretStrategyEffect,
+    },
+    MovePreviousTurnDiscardToDeckTop {
+        card: crate::domain::CardInstanceId,
+        previous_player: crate::domain::PlayerId,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActionTarget {
+    SelfPlayer,
+    SelfTeam,
+    PreviousPlayer,
+    PreviousTeam,
+    NextPlayer,
+    NextTeam,
+    SelectedPlayer,
+    AllPlayers,
+    OtherPlayers,
+    EachTeam,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActionAttackCategory {
+    Elemental,
+    Physical,
+    Special,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum EffectAmount {
+    Fixed { value: u32 },
+    Formula { formula: EffectFormula },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum EffectFormula {
+    LevelPlus { amount: u32 },
+    LevelSumTimes { multiplier: u32 },
+    TargetHandCountTimes { multiplier: u32 },
+    ElementProductTimes { element: Element, multiplier: u32 },
+}
+
+/// Semantic main-effect facts reused by every action family.  A spell plan
+/// must choose one explicit fact; there is deliberately no generic
+/// "resolve spell" fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FormationEffect {
+    CoverCounter,
+    CopyPreviousTurnFormation,
+    RecoverHp,
+    ReduceShield,
+    InspectHand,
+    CreateShield,
+    ReturnTeamHp,
+    DrawCards,
+    SwapTeamHp,
+    SummonSpirit,
+    ClearEnvironment,
+    ApplyStatus,
+    ChangeEnvironment,
+    BreakProfession,
+    LimitedUseRecovery,
+    ResolveMelodyMainEffect,
+    BeginChainChoice,
+    ShatterSpirits,
+    BreakStars,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SecretStrategyEffect {
+    ProtectTriggeringPlayer,
+    IncreaseHandLevels,
+    IncreaseTurnDraw,
+    NegateNextPlayerFormationHpChanges,
+    SuppressPlayerAbilitiesAndSpiritPower,
+    SummonSpiritFromPouch,
+    SwapDeckAndDiscard,
+    DirectProfessionChange,
+    BreakOrGainStar,
+    ClearOrChangeEnvironment,
+}
+
+/// The semantic commitment made by an activated Profession Ability.  The
+/// ability id remains an action identity for command validation; presentation
+/// must use this closed effect fact instead of a browser-side id-to-prose map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ProfessionAbilityEffect {
+    DamagePreviousTeamByCardLevelTimes { multiplier: u32 },
+    IncreaseTurnDraw { amount: u32 },
+    DrawThreeThenChooseOne,
+    CreateVirtualFormationCard { scope: VirtualFormationScope },
+    ApplyYangAura,
+    PrepareFormationDrawBonus,
+    PrepareCardWithLevelBonus { amount: u32, maximum: u32 },
+    PrepareMeteorEffect,
+    DrawTwoThenReturnOne,
+    RetrievePreviousPlayerDiscardForProfessionUse,
+    RetrievePreviousPlayerDiscard,
+    RevealDeckTopAndChooseDiscard,
+    ApplyShuffleRecovery,
+    PrepareCardAtDeclaredLevel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VirtualFormationScope {
+    ElementalStrike,
+    BaseFormation,
+    AnyFormation,
+}
+
+/// The semantic main effect of a Spirit Skill.  Inputs and costs are separate
+/// consequences so the same fact can be reused without hiding a commitment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SpiritSkillEffect {
+    DamagePreviousTeam { amount: u32 },
+    RecoverOwnTeam { amount: u32 },
+    DiscardSelectedCardAndIncreaseTurnDraw { amount: u32 },
+    IncreaseTurnDraw { amount: u32 },
+    InterpretSelectedCardLevel,
+    ProtectNextPlayerFromAttack,
+    SetOwnShield { amount: u32 },
+    InspectRandomNextPlayerHandCards { count: usize },
+    DiscardNextPlayerDeckAndDamageByHighestLevel { count: usize, multiplier: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FollowUpChoice {
+    SelectPlayer,
+    SelectFormation,
+    SelectMelody,
+    SelectDeckCard,
+    SelectPouchOwnerAndOptionalStrategy,
+    SelectSecretStrategyInput { input: SecretStrategyInput },
+    SelectCards { minimum: usize, maximum: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SecretStrategyInput {
+    None,
+    TargetPlayer,
+    DeckDiscardSwap,
+    Star,
+    Retreat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum TrustedRandomness {
+    ShuffleDeck,
+    ShuffleDiscardIntoDeck,
+    SelectHiddenHandCards { count: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DelayedTiming {
+    NextTurnStart,
+    NextPlayerTurn,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DelayedEffect {
+    RepeatMelodyMainEffect,
+    SelectAndPerformMelodyMainEffect,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RuleException {
+    DoesNotEndAction,
+    DoesNotCreateFormationUse,
+    DoesNotScheduleAnotherEcho,
+    LimitedUse {
+        key: String,
+        remaining: u32,
+        maximum: u32,
+    },
+    EffectMayBeIneffective,
+    UsesPrintedElement,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum DeclaredInput {
+    Card { card: crate::domain::CardInstanceId },
+    Element { element: Element },
+    Level { level: u32 },
+    TargetCard { card: crate::domain::CardInstanceId },
+}
 
 pub(crate) fn formation_resolved_on_previous_turn<'a>(
     state: &'a crate::domain::GameState,
@@ -80,13 +461,12 @@ pub(crate) struct SubmittedCardFacts {
 pub struct FormationCandidate {
     pub formation_id: String,
     pub formation_name: String,
-    pub rule_text: String,
-    pub summary: String,
     pub category: FormationCategory,
     pub cards: Vec<crate::domain::CardInstanceId>,
     pub star_substitution: Option<crate::domain::StarElementSubstitution>,
     pub declared_targets: Vec<crate::domain::TargetDecl>,
     pub preview: Option<String>,
+    pub detail: PlayerFacingActionDetail,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,28 +481,28 @@ pub enum PlayableAction {
 pub struct ProfessionChangeCandidate {
     pub profession_id: crate::domain::ProfessionId,
     pub profession_name: String,
-    pub rule_text: String,
     pub cards: Vec<crate::domain::CardInstanceId>,
+    pub detail: PlayerFacingActionDetail,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfessionAbilityCandidate {
     pub ability_id: String,
     pub ability_name: String,
-    pub rule_text: String,
     pub cards: Vec<crate::domain::CardInstanceId>,
     pub target_card: Option<crate::domain::CardInstanceId>,
     pub declared_element: Option<Element>,
     pub declared_level: Option<u32>,
+    pub detail: PlayerFacingActionDetail,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpiritSkillCandidate {
     pub skill: crate::domain::SpiritSkill,
     pub skill_name: String,
-    pub rule_text: String,
     pub selected_card: Option<crate::domain::CardInstanceId>,
     pub declared_level: Option<u32>,
+    pub detail: PlayerFacingActionDetail,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -157,6 +537,9 @@ pub(crate) struct AttackPlanDef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SpellPlanDef {
     pub resolver_id: String,
+    /// Required semantic action-detail fact.  This sits with the rule plan,
+    /// not in a generic Formation-ID presentation fallback.
+    pub player_facing_effect: FormationEffect,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -883,6 +1266,7 @@ fn five_directions_legend_specs() -> Vec<BaseFormationSpec> {
                 id: "void-meridian-severing".to_string(),
                 plan: EffectPlan::ActiveSpell(SpellPlanDef {
                     resolver_id: "void-meridian-severing".to_string(),
+                    player_facing_effect: FormationEffect::ClearEnvironment,
                 }),
             },
         },
@@ -982,9 +1366,11 @@ fn spell(
     let plan = match timing {
         SpellTiming::Active => EffectPlan::ActiveSpell(SpellPlanDef {
             resolver_id: id.to_string(),
+            player_facing_effect: base_spell_player_facing_effect(id),
         }),
         SpellTiming::Passive => EffectPlan::PassiveSpell(SpellPlanDef {
             resolver_id: id.to_string(),
+            player_facing_effect: base_spell_player_facing_effect(id),
         }),
     };
     let effect = EffectDef {
@@ -993,6 +1379,20 @@ fn spell(
     };
 
     BaseFormationSpec { formation, effect }
+}
+
+fn base_spell_player_facing_effect(id: &str) -> FormationEffect {
+    match id {
+        "defense" | "seal" | "countershock" | "empty-city" => FormationEffect::CoverCounter,
+        "metamorphosis" => FormationEffect::CopyPreviousTurnFormation,
+        "generating-formation" | "return-to-origin" | "reincarnation" => FormationEffect::RecoverHp,
+        "overcoming-formation" => FormationEffect::ReduceShield,
+        "radiance" | "chaos" => FormationEffect::InspectHand,
+        "barrier" | "purple-light-shield" => FormationEffect::CreateShield,
+        "five-elements-cycle" => FormationEffect::ReturnTeamHp,
+        "shadow-assault" | "instant-shadow-death" | "holy-wind" => FormationEffect::ApplyStatus,
+        _ => panic!("base spell `{id}` is missing a player-facing effect fact"),
+    }
 }
 
 #[cfg(test)]
@@ -1274,6 +1674,7 @@ mod tests {
             registry.effect("barrier").unwrap().plan,
             EffectPlan::ActiveSpell(SpellPlanDef {
                 resolver_id: "barrier".to_string(),
+                player_facing_effect: FormationEffect::CreateShield,
             }),
         );
     }

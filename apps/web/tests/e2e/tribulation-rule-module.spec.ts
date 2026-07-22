@@ -4,6 +4,7 @@ import {
   expect,
   joinListedRoom,
   loginAsGuests,
+  reloadAppRoute,
   seedDevelopmentScenario,
   startTwoPlayerMatch,
   test,
@@ -34,14 +35,14 @@ test('Earth Rending Environment choice is private, accessible, and reconnectable
     const roomId = await startTwoPlayerMatch(host, guest, roomName)
     await seedDevelopmentScenario(host, { name: 'tribulation-earth-rending' })
 
-    await host.reload()
+    await reloadAppRoute(host)
     await expect(host.getByRole('heading', {
       name: '裂地崩山：選擇要轉移的環境',
     })).toBeVisible()
     const environments = host.getByLabel('選擇環境').getByRole('button')
     await expect(environments).toHaveCount(5)
 
-    await guest.reload()
+    await reloadAppRoute(guest)
     await expect(guest.getByText('裂地崩山：選擇要轉移的環境', {
       exact: true,
     })).toBeVisible()
@@ -56,7 +57,7 @@ test('Earth Rending Environment choice is private, accessible, and reconnectable
     ])
     expect(answer.ok()).toBe(true)
 
-    await host.reload()
+    await reloadAppRoute(host)
     await expect(host.getByText('裂地崩山', { exact: true }).first()).toBeVisible()
   } finally {
     await hostContext.close()

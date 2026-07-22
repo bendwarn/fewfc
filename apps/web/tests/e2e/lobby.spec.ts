@@ -2,6 +2,7 @@ import {
   createPublicRoom,
   expect,
   loginAsGuests,
+  reloadAppRoute,
   seedDevelopmentScenario,
   startTwoPlayerMatch,
   test,
@@ -35,7 +36,7 @@ test('all-enabled rooms omit a rule summary and list only disabled differences',
   }
   expect(body.metadata.enabledRuleModules).toContain('pouch')
 
-  await page.reload()
+  await reloadAppRoute(page)
   const room = page.locator('.my-rooms-card')
     .locator('.public-room-list button').filter({ hasText: roomName })
   await expect(room).toBeVisible()
@@ -47,7 +48,7 @@ test('all-enabled rooms omit a rule summary and list only disabled differences',
     },
   })
   expect(updated.ok()).toBe(true)
-  await page.reload()
+  await reloadAppRoute(page)
   await expect(room).toContainText('停用：錦囊')
 })
 
@@ -73,7 +74,7 @@ test('the lobby lists joined public rooms only in my rooms', async ({ browser })
       has: host.getByRole('heading', { name: '公開房間', exact: true }),
     })
     const hostMyRooms = host.locator('.my-rooms-card')
-    await host.reload()
+    await reloadAppRoute(host)
     await expect(hostPublicRooms.locator('button').filter({ hasText: roomName })).toHaveCount(0)
     const hostRoom = hostMyRooms.locator('button').filter({ hasText: roomName })
     await expect(hostRoom).toHaveCount(1)
@@ -84,7 +85,7 @@ test('the lobby lists joined public rooms only in my rooms', async ({ browser })
       has: guest.getByRole('heading', { name: '公開房間', exact: true }),
     })
     const guestMyRooms = guest.locator('.my-rooms-card')
-    await guest.reload()
+    await reloadAppRoute(guest)
     const guestRoom = guestPublicRooms.locator('button').filter({ hasText: roomName })
     await expect(guestRoom).toBeVisible()
     await expect(guestRoom).toContainText(body.invitation.roomCode)
@@ -163,7 +164,7 @@ test('enabled rules flows downward as newer battle records arrive', async ({ bro
     await expect(records.last()).toContainText('基礎規則')
 
     await seedDevelopmentScenario(host, { name: 'hero-schools-transition' })
-    await host.reload()
+    await reloadAppRoute(host)
 
     await expect.poll(() => records.count()).toBeGreaterThan(initialCount)
     await expect(records.last()).toContainText('啟用規則')

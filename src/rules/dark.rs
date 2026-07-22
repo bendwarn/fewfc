@@ -5,9 +5,10 @@ use crate::domain::{
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::{
-    AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget, EffectDef, EffectPlan,
-    FormationCategory, FormationDef, FormationPattern, PointFormula, ProfessionAbilityCandidate,
-    ProfessionChangeCandidate, SpellPlanDef, SubmittedCardFacts,
+    AttackCategory, AttackPlanDef, BaseFormationSpec, ConsequenceCertainty, DamageTarget,
+    EffectDef, EffectPlan, FormationCategory, FormationDef, FormationEffect, FormationPattern,
+    PointFormula, ProfessionAbilityCandidate, ProfessionAbilityEffect, ProfessionChangeCandidate,
+    RuleConsequence, SpellPlanDef, SubmittedCardFacts, TrustedRandomness,
 };
 
 pub(crate) fn timed_effect_reductions(
@@ -96,8 +97,8 @@ pub(crate) fn playable_profession_changes(
         .map(|profession| ProfessionChangeCandidate {
             profession_id: profession.id,
             profession_name: profession.name.to_string(),
-            rule_text: profession.rule_text.to_string(),
             cards: cards.to_vec(),
+            detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
         })
         .collect())
 }
@@ -231,9 +232,30 @@ fn spell(id: &str, name: &str, rule_text: &str) -> BaseFormationSpec {
             id: id.to_string(),
             plan: EffectPlan::ActiveSpell(SpellPlanDef {
                 resolver_id: id.to_string(),
+                player_facing_effect: player_facing_formation_effect(id),
             }),
         },
     }
+}
+
+fn player_facing_formation_effect(id: &str) -> FormationEffect {
+    match id {
+        DARK_RADIANCE | DARK_CHAOS => FormationEffect::InspectHand,
+        DARK_BARRIER => FormationEffect::CreateShield,
+        DARK_RETURN_TO_ORIGIN => FormationEffect::RecoverHp,
+        DARK_CYCLE => FormationEffect::BreakProfession,
+        EVIL_SPIRIT_SUMMONING | DEATH_SPIRIT_SUMMONING => FormationEffect::SummonSpirit,
+        _ => panic!("Dark formation `{id}` is missing a player-facing effect fact"),
+    }
+}
+
+pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence>> {
+    (id == DARK_CHAOS).then(|| {
+        vec![RuleConsequence::TrustedRandomness {
+            certainty: ConsequenceCertainty::Random,
+            operation: TrustedRandomness::SelectHiddenHandCards { count: 2 },
+        }]
+    })
 }
 
 fn attack(
@@ -827,13 +849,19 @@ pub(crate) fn playable_profession_abilities(
         .map(|target_level| ProfessionAbilityCandidate {
             ability_id: "dark:dark-spirit".to_string(),
             ability_name: "暗靈".to_string(),
-            rule_text: format!("此牌本回合降為 {target_level} 級，且須用於施展陣法"),
             cards: cards.to_vec(),
             target_card: Some(cards[0]),
             declared_element: state.card_def(cards[0]).map(|card| card.element),
             declared_level: Some(target_level),
+            detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
         })
         .collect())
+}
+
+/// The only currently activated Dark ability prepares a specific existing
+/// card; its declared element and level are separate action-detail facts.
+pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbilityEffect> {
+    (id == "dark:dark-spirit").then_some(ProfessionAbilityEffect::PrepareCardAtDeclaredLevel)
 }
 
 pub(crate) fn activate_profession_ability(

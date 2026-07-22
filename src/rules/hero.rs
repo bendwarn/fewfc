@@ -8,8 +8,9 @@ use crate::domain::{
 
 use super::{
     AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget, EffectDef, EffectPlan,
-    FormationCategory, FormationDef, FormationPattern, PointFormula, ProfessionAbilityCandidate,
-    ProfessionChangeCandidate, SubmittedCardFacts,
+    FormationCategory, FormationDef, FormationEffect, FormationPattern, PointFormula,
+    ProfessionAbilityCandidate, ProfessionAbilityEffect, ProfessionChangeCandidate,
+    SubmittedCardFacts, VirtualFormationScope,
 };
 
 pub(crate) const WARRIOR_ID: &str = "warrior";
@@ -517,8 +518,8 @@ pub(crate) fn playable_profession_changes(
         .map(|profession| ProfessionChangeCandidate {
             profession_id: profession.id,
             profession_name: profession.name.to_string(),
-            rule_text: profession.rule_text.to_string(),
             cards: cards.to_vec(),
+            detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
         })
         .collect())
 }
@@ -1142,25 +1143,22 @@ pub(crate) fn playable_profession_abilities(
             candidates.push(ProfessionAbilityCandidate {
                 ability_id: "shadow-cut".to_string(),
                 ability_name: "影切".to_string(),
-                rule_text: format!(
-                    "捨棄此牌，上家扣除 {} 點生命；不結束行動",
-                    effective_level * 2
-                ),
                 cards: cards.to_vec(),
                 target_card: None,
                 declared_element: None,
                 declared_level: None,
+                detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
             });
         }
         if effective_level >= 4 && abilities.contains(&ProfessionAbility::Meditation) {
             candidates.push(ProfessionAbilityCandidate {
                 ability_id: "meditation".to_string(),
                 ability_name: "冥思".to_string(),
-                rule_text: "捨棄此牌，本回合抽牌＋１；不結束行動".to_string(),
                 cards: cards.to_vec(),
                 target_card: None,
                 declared_element: None,
                 declared_level: None,
+                detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
             });
         }
         if effective_level >= 4
@@ -1170,16 +1168,16 @@ pub(crate) fn playable_profession_abilities(
             candidates.push(ProfessionAbilityCandidate {
                 ability_id: "revelation".to_string(),
                 ability_name: "啟示".to_string(),
-                rule_text: "捨棄此牌，抽三張並選一張加入手牌；不結束行動".to_string(),
                 cards: cards.to_vec(),
                 target_card: None,
                 declared_element: None,
                 declared_level: None,
+                detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
             });
         }
     }
     if cards.len() == 2 {
-        for (ability_id, ability_name, ability, scope) in [
+        for (ability_id, ability_name, ability, _scope) in [
             ("illusion", "幻術", ProfessionAbility::Illusion, "五行擊術"),
             (
                 "phantasm",
@@ -1202,16 +1200,11 @@ pub(crate) fn playable_profession_abilities(
                     candidates.push(ProfessionAbilityCandidate {
                         ability_id: ability_id.to_string(),
                         ability_name: ability_name.to_string(),
-                        rule_text: format!(
-                            "捨棄所選兩張牌，建立{}{}級虛擬牌以組成{}；不結束行動",
-                            element_label(element),
-                            level,
-                            scope
-                        ),
                         cards: cards.to_vec(),
                         target_card: None,
                         declared_element: Some(element),
                         declared_level: Some(level),
+                        detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
                     });
                 }
             }
@@ -1220,14 +1213,23 @@ pub(crate) fn playable_profession_abilities(
     Ok(candidates)
 }
 
-fn element_label(element: Element) -> &'static str {
-    match element {
-        Element::Metal => "金",
-        Element::Wood => "木",
-        Element::Water => "水",
-        Element::Fire => "火",
-        Element::Earth => "土",
-    }
+/// Mirrors the activated-ability resolver below.  The browser renders this
+/// typed fact, never an ability-id prose lookup.
+pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbilityEffect> {
+    Some(match id {
+        "shadow-cut" => {
+            ProfessionAbilityEffect::DamagePreviousTeamByCardLevelTimes { multiplier: 2 }
+        }
+        "meditation" => ProfessionAbilityEffect::IncreaseTurnDraw { amount: 1 },
+        "revelation" => ProfessionAbilityEffect::DrawThreeThenChooseOne,
+        "illusion" => ProfessionAbilityEffect::CreateVirtualFormationCard {
+            scope: VirtualFormationScope::ElementalStrike,
+        },
+        "phantasm" => ProfessionAbilityEffect::CreateVirtualFormationCard {
+            scope: VirtualFormationScope::BaseFormation,
+        },
+        _ => return None,
+    })
 }
 
 pub(crate) fn activate_profession_ability(
@@ -1892,7 +1894,18 @@ fn profession_spell(
             id: id.to_string(),
             plan: EffectPlan::ActiveSpell(super::SpellPlanDef {
                 resolver_id: id.to_string(),
+                player_facing_effect: player_facing_formation_effect(id),
             }),
         },
+    }
+}
+
+fn player_facing_formation_effect(id: &str) -> FormationEffect {
+    match id {
+        "reincarnation" => FormationEffect::RecoverHp,
+        "purple-light-shield" => FormationEffect::CreateShield,
+        "shadow-assault" | "instant-shadow-death" | "holy-wind" => FormationEffect::ApplyStatus,
+        "void-reversion" => FormationEffect::BreakProfession,
+        _ => panic!("Hero formation `{id}` is missing a player-facing effect fact"),
     }
 }

@@ -5,6 +5,7 @@ import {
   expect,
   joinListedRoom,
   loginAsGuests,
+  reloadAppRoute,
   seedDevelopmentScenario,
   startTwoPlayerMatch,
   test,
@@ -63,7 +64,7 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
     }, roomId)
     expect(updateStatus).toBe(409)
 
-    await guest.reload()
+    await reloadAppRoute(guest)
     await expect(guest.getByRole('region', { name: '啟用規則' }))
       .toContainText('星辰圖記')
   } finally {
@@ -94,7 +95,7 @@ test('disabling Star invalidates readiness and locked decks while preserving Bas
     await expect(guest.getByText('本局使用：五行均衡預組')).toHaveCount(0)
     expect(await indexedModules(host, roomName)).not.toContain('star')
 
-    await guest.reload()
+    await reloadAppRoute(guest)
     await expect(guest.getByLabel('星辰圖記')).not.toBeChecked()
     await guest.getByRole('button', { name: '準備 →' }).click()
     await host.getByRole('button', { name: '開始遊戲 →' }).click()
@@ -184,9 +185,16 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
     )))
     const active = (await host.locator('.playing-card:enabled:not(.hidden)').count()) ? host : guest
     await active.locator('.playing-card:enabled:not(.hidden)').first().click()
-    const attack = active.locator('.action-panel .action-candidates button:not(.skip-action)').first()
+    const attack = active.locator(
+      '.action-panel .action-candidates button[title*="進行五行攻擊"]',
+    )
     await expect(attack).toBeVisible()
+    const command = active.waitForResponse(response => (
+      response.request().method() === 'POST'
+      && new URL(response.url()).pathname.endsWith('/commands')
+    ))
     await attack.click()
+    expect((await command).ok()).toBe(true)
 
     await Promise.all(pages.map(async (page) => {
       await expect(page.locator('.result-panel')).toBeVisible()

@@ -4,6 +4,7 @@ import {
   expect,
   joinListedRoom,
   loginAsGuests,
+  reloadAppRoute,
   seedDevelopmentScenario,
   startTwoPlayerMatch,
   test,
@@ -86,7 +87,7 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     const active = (await host.getByRole('button', { name: /秘計‧金蟬/ }).count())
       ? host
       : guest
-    await active.reload()
+    await reloadAppRoute(active)
     const goldenCicada = active.getByRole('button', { name: /秘計‧金蟬/ })
     await expect(goldenCicada).toBeVisible()
     await goldenCicada.hover()
@@ -119,7 +120,7 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
       fixtureAction: { player: string; formationId: string; cards: number[] }
     }>(host, { name: 'pouch-chain-sheep' })
     const actor = host
-    await actor.reload()
+    await reloadAppRoute(actor)
     const commandId = `chain-sheep-${Date.now()}`
     const chain = await actor.evaluate(async ({ gameId, command, action }) => {
       const response = await fetch(`/api/games/${gameId}/commands`, {
@@ -148,7 +149,7 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     expect(chain.ok, JSON.stringify(chain.body)).toBe(true)
     expect(chain.body.state.pendingChoice?.choice.type).toBe('chain')
 
-    await actor.reload()
+    await reloadAppRoute(actor)
     const chainDialog = actor.getByRole('dialog', { name: '連環：選擇錦囊' })
     await expect(chainDialog).toBeVisible()
     const sheepTrigger = await actor.evaluate(async ({ gameId }) => {
@@ -193,6 +194,7 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     await expect(triggerButton).toHaveAttribute('aria-pressed', 'true')
     await chainDialog.getByLabel('選擇錦囊持有者').getByRole('button').first().click()
     await chainDialog.getByLabel('選擇秘計').getByRole('button', { name: '牽羊' }).click()
+    await expect(chainDialog.locator('.action-detail')).toContainText('各選兩張牌交換牌組與棄牌堆')
     const chainAnswer = waitForCommand(actor, 'answerChoice')
     await chainDialog.getByRole('button', { name: '確認' }).click()
     await chainAnswer

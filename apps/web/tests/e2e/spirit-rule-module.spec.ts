@@ -3,6 +3,7 @@ import {
   expect,
   joinListedRoom,
   loginAsGuests,
+  reloadAppRoute,
   seedDevelopmentScenario,
   test,
 } from './fixtures'
@@ -56,7 +57,7 @@ test('Spirit defaults on and keeps its Advanced Rule dependencies coherent', asy
         .toContainText('精靈')
     }))
 
-    await guest.reload()
+    await reloadAppRoute(guest)
     await expect(guest.getByRole('region', { name: '啟用規則' }))
       .toContainText('精靈')
   } finally {
@@ -98,7 +99,7 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
     const roomId = new URL(host.url()).pathname.split('/').pop()
     await seedDevelopmentScenario(host, { name: 'spirit-skill' })
 
-    await host.reload()
+    await reloadAppRoute(host)
     await expect(host.locator('.spirit-status')).toContainText('精靈 · 金精靈 · 靈力 2 / 6')
     const flyingBlade = host
       .getByRole('region', { name: '能力' })
@@ -131,9 +132,9 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
 
     await expect(host.getByText('使用精靈技能', { exact: true })).toBeVisible()
     await expect(host.getByText(/使用「飛刃」，靈力由 2 變為 0/)).toBeVisible()
-    await guest.reload()
+    await reloadAppRoute(guest)
     await expect(guest.getByText(/使用「飛刃」，靈力由 2 變為 0/)).toBeVisible()
-    await host.reload()
+    await reloadAppRoute(host)
     await expect(host.getByText(/的金精靈已破除/)).toBeVisible()
   } finally {
     await hostContext.close()
@@ -163,7 +164,7 @@ test('Splendor exposes its declared levels on click and uses the chosen level', 
       options: { spirit: 'Fire' },
     })
 
-    await host.reload()
+    await reloadAppRoute(host)
     await expect(host.locator('.spirit-status')).toContainText('精靈 · 火精靈 · 靈力 3 / 6')
     const selectedCard = host.locator('.playing-card:enabled:not(.hidden)').first()
     await Promise.all([
@@ -194,10 +195,10 @@ test('Splendor exposes its declared levels on click and uses the chosen level', 
     ])
     expect(skillResponse.ok()).toBe(true)
     await expect(host.getByText(/使用「絢爛」.*宣告 4 級/)).toBeVisible()
-    await host.reload()
+    await reloadAppRoute(host)
     await expect(host.locator('.card-interpretation')).toContainText('已生效 · 絢爛')
     await expect(host.locator('.card-interpretation')).toContainText('視為 4 級')
-    await guest.reload()
+    await reloadAppRoute(guest)
     await expect(guest.locator('.card-interpretation')).toContainText('一張手牌視為 4 級')
   } finally {
     await hostContext.close()

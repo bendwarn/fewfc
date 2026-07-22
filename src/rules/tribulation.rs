@@ -7,9 +7,9 @@ use crate::domain::{
     ValidationError, targeting::TurnOrderTargets,
 };
 use crate::rules::{
-    AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget, EffectDef, EffectPlan,
-    FormationCategory, FormationDef, FormationPattern, PointFormula, SpellPlanDef,
-    SubmittedCardFacts,
+    AttackCategory, AttackPlanDef, BaseFormationSpec, ConsequenceCertainty, DamageTarget,
+    EffectDef, EffectPlan, FollowUpChoice, FormationCategory, FormationDef, FormationEffect,
+    FormationPattern, PointFormula, RuleConsequence, SpellPlanDef, SubmittedCardFacts,
 };
 
 pub(crate) const THUNDER_FIRE: &str = "tribulation:thunder-fire";
@@ -78,6 +78,7 @@ pub(crate) fn formation_specs() -> Vec<BaseFormationSpec> {
                 id: DIVINE_CALCULATION.to_string(),
                 plan: EffectPlan::ActiveSpell(SpellPlanDef {
                     resolver_id: DIVINE_CALCULATION.to_string(),
+                    player_facing_effect: FormationEffect::ApplyStatus,
                 }),
             },
         },
@@ -103,6 +104,19 @@ fn tribulation(id: &str, name: &str, rule_text: &str) -> BaseFormationSpec {
                 damage_target: DamageTarget::PreviousPlayer,
             }),
         },
+    }
+}
+
+pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence>> {
+    match id {
+        EARTH_RENDING | RUSTED_FOREST => Some(vec![RuleConsequence::FollowUpChoice {
+            certainty: ConsequenceCertainty::FollowUp,
+            choice: FollowUpChoice::SelectCards {
+                minimum: 0,
+                maximum: 8,
+            },
+        }]),
+        _ => None,
     }
 }
 

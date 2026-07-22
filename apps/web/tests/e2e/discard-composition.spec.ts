@@ -37,6 +37,14 @@ async function activePlayerPage(pages: Page[]) {
   throw new Error('No active player page')
 }
 
+async function waitForGameCommand(page: Page) {
+  const gameId = new URL(page.url()).pathname.split('/').at(-1)
+  return await page.waitForResponse(response => (
+    response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `/api/games/${gameId}/commands`
+  ))
+}
+
 async function beginSingleCardTurn(pages: Page[]) {
   const page = await activePlayerPage(pages)
   const cards = page.locator('.playing-card:enabled:not(.hidden)')
@@ -52,7 +60,9 @@ async function beginSingleCardTurn(pages: Page[]) {
   await cards.nth(highestLevelIndex).click()
   const formation = page.locator('.action-panel .action-candidates button:not(.skip-action)').first()
   await expect(formation).toBeVisible()
+  const command = waitForGameCommand(page)
   await formation.click()
+  expect((await command).ok()).toBe(true)
 
   await expect.poll(async () => (
     await page.locator('.choice-overlay').isVisible()
@@ -70,6 +80,11 @@ async function finishSingleCardTurn(page: Page) {
   const choice = page.locator('.choice-cards button:enabled').first()
   await expect(choice).toBeVisible()
   await choice.click()
+  const confirm = page.getByRole('button', { name: '確認選擇' })
+  await expect(confirm).toBeEnabled()
+  const command = waitForGameCommand(page)
+  await confirm.click()
+  expect((await command).ok()).toBe(true)
   await expect(page.locator('.choice-overlay')).toBeHidden()
   return await page.locator('.result-panel').isVisible()
 }

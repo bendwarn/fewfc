@@ -5,6 +5,7 @@ import {
   expect,
   joinListedRoom,
   loginAsGuests,
+  reloadAppRoute,
   seedDevelopmentScenario,
   startTwoPlayerMatch,
   test,
@@ -45,12 +46,12 @@ test('Pure Fire target choice is private, accessible, and reconnectable', async 
     const roomId = await startTwoPlayerMatch(host, guest, roomName)
     await seedDevelopmentScenario(host, { name: 'echo-pure-fire' })
 
-    await host.reload()
+    await reloadAppRoute(host)
     await expect(host.getByRole('heading', { name: '變徵‧淨火：選擇受影響玩家' })).toBeVisible()
     const targets = host.getByLabel('選擇玩家').getByRole('button')
     await expect(targets).toHaveCount(2)
 
-    await guest.reload()
+    await reloadAppRoute(guest)
     await expect(guest.getByText('變徵‧淨火：選擇受影響玩家', { exact: true })).toBeVisible()
     await expect(guest.getByLabel('選擇玩家')).toHaveCount(0)
 
@@ -82,7 +83,7 @@ test('Split Earth selects a Formation through its providing rules', async ({ bro
     const roomId = await startTwoPlayerMatch(host, guest, roomName)
     await seedDevelopmentScenario(host, { name: 'echo-split-earth' })
 
-    await host.reload()
+    await reloadAppRoute(host)
     await expect(host.getByRole('heading', { name: '宮調‧裂土：選擇要壓制的陣法' })).toBeVisible()
     await expect(host.getByLabel('選擇提供陣法的規則')).toBeVisible()
     await expect(host.getByLabel('選擇陣法', { exact: true })).toHaveCount(0)
@@ -94,11 +95,11 @@ test('Split Earth selects a Formation through its providing rules', async ({ bro
     await expect(host.getByLabel('選擇提供陣法的規則')).toBeVisible()
 
     await host.getByRole('button', { name: '選擇規則 五方傳說' }).click()
-    await host.reload()
+    await reloadAppRoute(host)
     await expect(host.getByLabel('選擇提供陣法的規則')).toBeVisible()
     await expect(host.getByLabel('選擇陣法', { exact: true })).toHaveCount(0)
 
-    await guest.reload()
+    await reloadAppRoute(guest)
     await expect(guest.getByText('宮調‧裂土：選擇要壓制的陣法', { exact: true })).toBeVisible()
     await expect(guest.getByLabel('選擇提供陣法的規則')).toHaveCount(0)
 
@@ -118,7 +119,7 @@ test('Split Earth selects a Formation through its providing rules', async ({ bro
   }
 })
 
-test('Echo action detail shows the delayed Echo policy on the battlefield', async ({ browser }) => {
+test('Echo action detail renders scheduled typed consequences on the battlefield', async ({ browser }) => {
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
   const page = await hostContext.newPage()
@@ -134,7 +135,7 @@ test('Echo action detail shows the delayed Echo policy on the battlefield', asyn
     })
     expect(seeded.fixtureCards?.length).toBe(2)
 
-    await page.reload()
+    await reloadAppRoute(page)
     await expect(page.getByRole('region', { name: '啟用規則' })).toBeVisible()
 
     for (const cardId of seeded.fixtureCards ?? []) {
@@ -147,7 +148,7 @@ test('Echo action detail shows the delayed Echo policy on the battlefield', asyn
     await expect(pureFire).toBeVisible()
     await pureFire.hover()
     const detail = page.locator('.action-detail')
-    await expect(detail).toContainText('不需支付迴響代價並自動排定迴響')
+    await expect(detail).toContainText('結算此曲調的主效果')
     await expect(detail).toContainText('自己下次回合開始')
     await expect(detail).toContainText('不視為新的陣法')
     await expect(detail).toContainText('不會再次排定迴響')

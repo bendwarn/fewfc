@@ -27,12 +27,12 @@
     "@better-auth/drizzle-adapter": "^1.6.23",
     "better-auth": "^1.6.23",
     "drizzle-orm": "^0.45.2",
-    "nuxt": "^4.4.8",
+    "nuxt": "^4.5.0",
     "vue": "^3.5.40",
     "vue-router": "^5.2.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260716.1",
+    "@cloudflare/workers-types": "^5.20260721.1",
     "@playwright/cli": "^0.1.17",
     "@playwright/test": "^1.61.1",
     "@tailwindcss/vite": "^4.3.3",
@@ -42,6 +42,6 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
     "vue-tsc": "^3.3.7",
-    "wrangler": "^4.111.0"
+    "wrangler": "^4.113.0"
   }
 }

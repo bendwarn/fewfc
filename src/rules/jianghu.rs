@@ -6,10 +6,13 @@ use crate::domain::{
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget, EffectDef, EffectPlan,
-    FormationCategory, FormationDef, FormationPattern, PointFormula, SpellPlanDef,
+    FormationCategory, FormationDef, FormationEffect, FormationPattern, PointFormula, SpellPlanDef,
     formation_resolved_on_previous_turn, official_formation_registry,
 };
-use crate::rules::{ProfessionAbilityCandidate, ProfessionChangeCandidate, SubmittedCardFacts};
+use crate::rules::{
+    ProfessionAbilityCandidate, ProfessionAbilityEffect, ProfessionChangeCandidate,
+    SubmittedCardFacts,
+};
 
 pub(crate) const LONE_WANDERER_ID: &str = "jianghu:lone-wanderer";
 pub(crate) const SWORDSMAN_ID: &str = "jianghu:swordsman";
@@ -225,6 +228,7 @@ fn spell(
 ) -> BaseFormationSpec {
     let plan = SpellPlanDef {
         resolver_id: id.to_string(),
+        player_facing_effect: player_facing_formation_effect(id),
     };
     BaseFormationSpec {
         formation: FormationDef {
@@ -244,6 +248,15 @@ fn spell(
                 EffectPlan::ActiveSpell(plan)
             },
         },
+    }
+}
+
+fn player_facing_formation_effect(id: &str) -> FormationEffect {
+    match id {
+        POISON_DART | THOUSAND_POISON_HAND => FormationEffect::ApplyStatus,
+        POISON_SMOKE | LINGERING_FROST_HAND => FormationEffect::CoverCounter,
+        KING_YAMA_DECREE => FormationEffect::ApplyStatus,
+        _ => panic!("Jianghu formation `{id}` is missing a player-facing effect fact"),
     }
 }
 
@@ -851,6 +864,22 @@ pub(crate) fn playable_profession_abilities(
     Ok(candidates)
 }
 
+/// Mirrors the activated-ability resolver below.  Each currently offerable
+/// Jianghu ability must choose one closed player-facing semantic effect.
+pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbilityEffect> {
+    Some(match id {
+        "jianghu:heavenly-yang-aura" => ProfessionAbilityEffect::ApplyYangAura,
+        "jianghu:blazing-yang-art" => ProfessionAbilityEffect::PrepareCardWithLevelBonus {
+            amount: 2,
+            maximum: 5,
+        },
+        "jianghu:dancing-yang-art" => ProfessionAbilityEffect::PrepareFormationDrawBonus,
+        "jianghu:azure-cloud-step" => ProfessionAbilityEffect::DrawTwoThenReturnOne,
+        "jianghu:meteor-step" => ProfessionAbilityEffect::PrepareMeteorEffect,
+        _ => return None,
+    })
+}
+
 pub(crate) fn activate_profession_ability(
     state: &GameState,
     player: &PlayerId,
@@ -995,18 +1024,18 @@ pub(crate) fn activate_profession_ability(
 fn ability_candidate(
     id: &str,
     name: &str,
-    rule_text: &str,
+    _rule_text: &str,
     cards: &[CardInstanceId],
     target_card: Option<CardInstanceId>,
 ) -> ProfessionAbilityCandidate {
     ProfessionAbilityCandidate {
         ability_id: id.to_string(),
         ability_name: name.to_string(),
-        rule_text: rule_text.to_string(),
         cards: cards.to_vec(),
         target_card,
         declared_element: None,
         declared_level: None,
+        detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
     }
 }
 
@@ -1354,8 +1383,8 @@ pub(crate) fn playable_profession_changes(
         .map(|profession| ProfessionChangeCandidate {
             profession_id: profession.id,
             profession_name: profession.name.to_string(),
-            rule_text: profession.rule_text.to_string(),
             cards: cards.to_vec(),
+            detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
         })
         .collect())
 }

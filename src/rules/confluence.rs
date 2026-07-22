@@ -6,8 +6,9 @@ use crate::domain::{
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::{
-    BaseFormationSpec, EffectDef, EffectPlan, FormationCategory, FormationDef, FormationPattern,
-    PointFormula, SpellPlanDef,
+    BaseFormationSpec, ConsequenceCertainty, EffectDef, EffectPlan, FollowUpChoice,
+    FormationCategory, FormationDef, FormationEffect, FormationPattern, PointFormula,
+    RuleConsequence, SpellPlanDef,
 };
 
 pub(crate) fn timed_effect_reductions(
@@ -19,7 +20,10 @@ pub(crate) fn timed_effect_reductions(
     }
     crate::rules::timed_effect::status_reductions(state, target, |id| id.starts_with("confluence-"))
 }
-use crate::rules::{ProfessionAbilityCandidate, ProfessionChangeCandidate, SubmittedCardFacts};
+use crate::rules::{
+    ProfessionAbilityCandidate, ProfessionAbilityEffect, ProfessionChangeCandidate,
+    SubmittedCardFacts,
+};
 
 pub(crate) const TUNER_ID: &str = "confluence:tuner";
 pub(crate) const STRING_CHANGER_ID: &str = "confluence:string-changer";
@@ -131,9 +135,38 @@ fn spell(id: &str, name: &str, rule_text: &str) -> BaseFormationSpec {
             id: id.to_string(),
             plan: EffectPlan::ActiveSpell(SpellPlanDef {
                 resolver_id: id.to_string(),
+                player_facing_effect: player_facing_formation_effect(id),
             }),
         },
     }
+}
+
+fn player_facing_formation_effect(id: &str) -> FormationEffect {
+    match id {
+        MIRROR_RESONANCE => FormationEffect::InspectHand,
+        FOREST_RESONANCE => FormationEffect::RecoverHp,
+        STREAM_RESONANCE | WIND_DANCE | CLEAR_WIND_TEN_THOUSAND_MILES => FormationEffect::DrawCards,
+        BLAZE_RESONANCE => FormationEffect::ReturnTeamHp,
+        EARTH_RESONANCE => FormationEffect::CreateShield,
+        THOUSAND_RESONANCE | MYRIAD_RESONANCE => FormationEffect::ApplyStatus,
+        IMPRISONING_ARRAY => FormationEffect::ApplyStatus,
+        ENDLESS_ARRAY => FormationEffect::LimitedUseRecovery,
+        VOID_BARRIER => FormationEffect::ReduceShield,
+        VOID_RETURN_TO_NOTHING => FormationEffect::ReturnTeamHp,
+        _ => panic!("Confluence formation `{id}` is missing a player-facing effect fact"),
+    }
+}
+
+pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence>> {
+    (id == CLEAR_WIND_TEN_THOUSAND_MILES).then(|| {
+        vec![RuleConsequence::FollowUpChoice {
+            certainty: ConsequenceCertainty::FollowUp,
+            choice: FollowUpChoice::SelectCards {
+                minimum: 0,
+                maximum: 10,
+            },
+        }]
+    })
 }
 
 pub(crate) fn is_profession_formation(id: &str) -> bool {
@@ -752,8 +785,8 @@ pub(crate) fn playable_profession_changes(
         .map(|profession| ProfessionChangeCandidate {
             profession_id: profession.id,
             profession_name: profession.name.to_string(),
-            rule_text: profession.rule_text.to_string(),
             cards: cards.to_vec(),
+            detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
         })
         .collect())
 }
@@ -1403,6 +1436,20 @@ pub(crate) fn playable_profession_abilities(
     Ok(candidates)
 }
 
+/// Kept next to the activation resolver so a new offer cannot silently reuse
+/// a generic browser description.
+pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbilityEffect> {
+    Some(match id {
+        "confluence:tuning" => {
+            ProfessionAbilityEffect::RetrievePreviousPlayerDiscardForProfessionUse
+        }
+        "confluence:heavenly-resonance" => ProfessionAbilityEffect::RetrievePreviousPlayerDiscard,
+        "confluence:clear-wind" => ProfessionAbilityEffect::RevealDeckTopAndChooseDiscard,
+        "confluence:tailwind" => ProfessionAbilityEffect::IncreaseTurnDraw { amount: 2 },
+        _ => return None,
+    })
+}
+
 fn tuning_card_can_be_used(
     state: &GameState,
     player: &PlayerId,
@@ -1563,7 +1610,7 @@ pub(crate) fn activate_profession_ability(
 fn ability_candidate(
     id: &str,
     name: &str,
-    rule_text: &str,
+    _rule_text: &str,
     cards: &[CardInstanceId],
     target_card: Option<CardInstanceId>,
     declared_level: Option<u32>,
@@ -1571,11 +1618,11 @@ fn ability_candidate(
     ProfessionAbilityCandidate {
         ability_id: id.to_string(),
         ability_name: name.to_string(),
-        rule_text: rule_text.to_string(),
         cards: cards.to_vec(),
         target_card,
         declared_element: None,
         declared_level,
+        detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
     }
 }
 

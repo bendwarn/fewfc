@@ -3,6 +3,7 @@ import {
   expect,
   joinListedRoom,
   loginAsGuests,
+  reloadAppRoute,
   seedDevelopmentScenario,
   test,
 } from './fixtures'
@@ -33,7 +34,7 @@ test('a Profession change and activated ability survive public reconnect', async
 
     await expect(host.locator('.profession-badge')).toContainText('幻術師')
     await expect(guest.locator('.profession-badge')).toContainText('幻術師')
-    await host.reload()
+    await reloadAppRoute(host)
     const selectable = host.locator('.playing-card:enabled:not(.hidden)')
     await expect(selectable).toHaveCount(5)
     await selectable.nth(0).click()
@@ -52,10 +53,10 @@ test('a Profession change and activated ability survive public reconnect', async
     ])
     expect(activationResponse.ok()).toBe(true)
 
-    await host.reload()
+    await reloadAppRoute(host)
     await expect(host.locator('.event-feed')).toContainText('虛擬牌')
     await expect(host.locator('.card-interpretation')).toHaveCount(0)
-    await guest.reload()
+    await reloadAppRoute(guest)
     await expect(guest.locator('.event-feed')).toContainText('虛擬牌')
     await expect(guest.locator('.card-interpretation')).toHaveCount(0)
   } finally {

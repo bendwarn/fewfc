@@ -4,7 +4,10 @@ use fewfc::domain::{
     PendingChoiceKind, Phase, PlayerId, RuleModuleId, StatusDuration, StatusEffect, StatusOwner,
     ValidationError,
 };
-use fewfc::rules::{Element, FormationCandidate, FormationCategory, OfficialRules, PlayableAction};
+use fewfc::rules::{
+    Element, FormationCandidate, FormationCategory, ImmediateEffect, OfficialRules, PlayableAction,
+    RuleConsequence,
+};
 
 fn card(id: u64) -> CardInstanceId {
     CardInstanceId::new(id)
@@ -142,7 +145,16 @@ fn playable_actions_returns_formation_candidates_from_selected_hand_cards() {
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].formation_id, "metal-strike");
     assert_eq!(candidates[0].formation_name, "金擊術");
-    assert_eq!(candidates[0].rule_text, "金行攻擊，點數＝等級＋４");
+    assert!(matches!(
+        candidates[0].detail.consequences.as_slice(),
+        [
+            RuleConsequence::Cost { .. },
+            RuleConsequence::ImmediateEffect {
+                effect: ImmediateEffect::Attack { .. },
+                ..
+            },
+        ]
+    ));
     assert_eq!(candidates[0].category, FormationCategory::Attack);
     assert_eq!(candidates[0].cards, vec![card(1)]);
 }

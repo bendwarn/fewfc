@@ -110,7 +110,7 @@ export function useGameRoom(viewer: ViewerRef) {
     discardRetrievalAction: null,
     canChooseInitialPouch: false,
     canTriggerPouch: false,
-    secretStrategyActions: [],
+    secretStrategyOptions: [],
   })
   const connectionState = ref<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle')
   const roomDissolved = ref(false)
