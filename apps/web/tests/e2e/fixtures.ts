@@ -11,12 +11,13 @@ import type { DevelopmentScenario } from '../../shared/development-scenarios'
 const roomUrl = /\/rooms\/[0-9a-f-]+$/
 
 async function waitForClientRoute(page: Page, navigate: () => Promise<unknown>) {
-  const sessionRefresh = page.waitForResponse(response => (
-    response.request().method() === 'GET'
-    && new URL(response.url()).pathname === '/api/auth/get-session'
-  ))
-  await navigate()
-  await sessionRefresh
+  await Promise.all([
+    navigate(),
+    apiText(
+      'GET /api/auth/get-session for route',
+      page.context().request.get('/api/auth/get-session'),
+    ),
+  ])
 }
 
 /**
@@ -26,27 +27,25 @@ async function waitForClientRoute(page: Page, navigate: () => Promise<unknown>) 
  * without coupling tests to Nuxt internals.
  */
 export async function gotoAppRoute(page: Page, path: string) {
-  await waitForClientRoute(page, () => page.goto(path))
+  // Auth-only tests exercise a route whose form mounts after the client-side
+  // session refresh. Use that route's own observable response so fields are
+  // not filled into the pre-refresh instance and then discarded on remount.
+  const sessionRefresh = page.waitForResponse(response => (
+    response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/api/auth/get-session'
+  ))
+  const resetAvailability = path.startsWith('/reset-password')
+    ? page.waitForResponse(response => (
+      response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/local-password-reset'
+    ))
+    : undefined
+  await page.goto(path)
+  await Promise.all([sessionRefresh, resetAvailability])
 }
 
 export async function reloadAppRoute(page: Page) {
   await waitForClientRoute(page, () => page.reload())
-}
-
-export async function loginAsGuest(page: Page) {
-  await gotoAppRoute(page, '/login')
-  const signIn = page.waitForResponse(response => (
-    response.request().method() === 'POST'
-    && new URL(response.url()).pathname.endsWith('/sign-in/anonymous')
-  ))
-  await page.getByRole('button', { name: '以訪客身份遊玩' }).click()
-  const response = await signIn
-  expect(response.ok(), await response.text()).toBe(true)
-  await expect(page).toHaveURL(/\/rooms(?:\?.*)?$/)
-}
-
-export async function loginAsGuests(pages: Page[]) {
-  await Promise.all(pages.map(loginAsGuest))
 }
 
 export async function activePlayerPage(pages: Page[]) {
@@ -118,6 +117,13 @@ async function apiJson<T>(operation: string, responsePromise: Promise<APIRespons
   }
 }
 
+export async function signInAnonymously(context: BrowserContext, player: string) {
+  await apiText(
+    `POST /api/auth/sign-in/anonymous for ${player}`,
+    context.request.post('/api/auth/sign-in/anonymous', { data: {} }),
+  )
+}
+
 function gameIdFromResponse(body: { gameId?: unknown }, operation: string): string {
   if (typeof body.gameId !== 'string' || !body.gameId) {
     throw new Error(`${operation} returned no gameId: ${JSON.stringify(body)}`)
@@ -157,6 +163,17 @@ export type FastWaitingRoomOptions = Pick<FastTwoPlayerGameOptions,
 export type FastWaitingRoom = {
   context: BrowserContext
   page: Page
+  gameId: string
+  close: () => Promise<void>
+}
+
+export type FastFourPlayerGameOptions = Pick<FastTwoPlayerGameOptions,
+  'roomName' | 'enabledRuleModules' | 'disabledRuleModules'
+>
+
+export type FastFourPlayerGame = {
+  contexts: readonly BrowserContext[]
+  pages: readonly Page[]
   gameId: string
   close: () => Promise<void>
 }
@@ -272,10 +289,7 @@ export async function setupFastWaitingRoom(
     : defaultFastRuleModules(disabledRuleModules)
 
   try {
-    await apiText(
-      'POST /api/auth/sign-in/anonymous for room owner',
-      context.request.post('/api/auth/sign-in/anonymous', { data: {} }),
-    )
+    await signInAnonymously(context, 'room owner')
     const created = await apiJson<{ gameId?: unknown }>(
       'POST /api/games',
       context.request.post('/api/games', {
@@ -317,14 +331,8 @@ export async function setupFastTwoPlayerGame(
 
   try {
     await Promise.all([
-      apiText(
-        'POST /api/auth/sign-in/anonymous for host',
-        hostContext.request.post('/api/auth/sign-in/anonymous', { data: {} }),
-      ),
-      apiText(
-        'POST /api/auth/sign-in/anonymous for guest',
-        guestContext.request.post('/api/auth/sign-in/anonymous', { data: {} }),
-      ),
+      signInAnonymously(hostContext, 'host'),
+      signInAnonymously(guestContext, 'guest'),
     ])
 
     const created = await apiJson<{ gameId?: unknown }>(
@@ -411,6 +419,75 @@ export async function setupFastTwoPlayerGame(
   }
 }
 
+/**
+ * API-only setup for an active four-player team game. Every player retains a
+ * distinct BrowserContext and its own request cookie jar.
+ */
+export async function setupFastFourPlayerGame(
+  browser: Browser,
+  {
+    roomName = `快速 API 四人房間 ${Date.now()}`,
+    enabledRuleModules,
+    disabledRuleModules = [],
+  }: FastFourPlayerGameOptions = {},
+): Promise<FastFourPlayerGame> {
+  const contexts = await Promise.all(Array.from({ length: 4 }, () => browser.newContext()))
+  const close = async () => {
+    await Promise.allSettled(contexts.map(context => context.close()))
+  }
+  const configuredRuleModules = enabledRuleModules
+    ? [...enabledRuleModules]
+    : defaultFastRuleModules(disabledRuleModules)
+
+  try {
+    await Promise.all(contexts.map((context, index) => (
+      signInAnonymously(context, `four-player ${index + 1}`)
+    )))
+    const hostContext = contexts[0]!
+    const created = await apiJson<{ gameId?: unknown }>(
+      'POST /api/games for four-player game',
+      hostContext.request.post('/api/games', {
+        data: {
+          name: roomName,
+          access: 'public',
+          capacity: 4,
+          enabledRuleModules: configuredRuleModules,
+        },
+      }),
+    )
+    const gameId = gameIdFromResponse(created, 'POST /api/games for four-player game')
+
+    for (const guestContext of contexts.slice(1)) {
+      await apiText(
+        `POST /api/games/${gameId}/join for four-player guest`,
+        guestContext.request.post(`/api/games/${gameId}/join`, { data: {} }),
+      )
+    }
+
+    const pages = await Promise.all(contexts.map(context => context.newPage()))
+    for (const page of pages) {
+      await gotoFastGameRoute(page, gameId)
+    }
+
+    for (const guestContext of contexts.slice(1)) {
+      await apiText(
+        `POST /api/games/${gameId}/ready for four-player guest`,
+        guestContext.request.post(`/api/games/${gameId}/ready`, { data: {} }),
+      )
+    }
+    await apiText(
+      `POST /api/games/${gameId}/start for four-player host`,
+      hostContext.request.post(`/api/games/${gameId}/start`, { data: {} }),
+    )
+    await Promise.all(pages.map(waitForActiveMatch))
+
+    return { contexts, pages, gameId, close }
+  } catch (error) {
+    await close()
+    throw error
+  }
+}
+
 export async function joinListedRoom(
   page: Page,
   roomName: string,
@@ -466,10 +543,7 @@ export const fastPageTest = base.extend({
   page: async ({ browser }, use) => {
     const context = await browser.newContext()
     try {
-      await apiText(
-        'POST /api/auth/sign-in/anonymous for fast page',
-        context.request.post('/api/auth/sign-in/anonymous', { data: {} }),
-      )
+      await signInAnonymously(context, 'fast page')
       const page = await context.newPage()
       await Promise.all([
         page.goto('/rooms', { waitUntil: 'domcontentloaded' }),
@@ -484,8 +558,19 @@ export const fastPageTest = base.extend({
 })
 
 export const test = base.extend({
-  page: async ({ page }, use) => {
-    await loginAsGuest(page)
-    await use(page)
+  page: async ({ browser }, use) => {
+    const context = await browser.newContext()
+    try {
+      await signInAnonymously(context, 'default page')
+      const page = await context.newPage()
+      await Promise.all([
+        page.goto('/rooms', { waitUntil: 'domcontentloaded' }),
+        apiText('GET /api/auth/get-session for default page', context.request.get('/api/auth/get-session')),
+      ])
+      await expect(page.getByRole('heading', { name: '房間', exact: true })).toBeVisible()
+      await use(page)
+    } finally {
+      await context.close()
+    }
   },
 })

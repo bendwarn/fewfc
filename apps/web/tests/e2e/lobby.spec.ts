@@ -1,9 +1,9 @@
 import {
-  createPublicRoom,
   expect,
-  loginAsGuests,
   reloadAppRoute,
   seedDevelopmentScenario,
+  signInAnonymously,
+  setupFastWaitingRoom,
   startTwoPlayerMatch,
   test,
 } from './fixtures'
@@ -55,12 +55,19 @@ test('all-enabled rooms omit a rule summary and list only disabled differences',
 test('the lobby lists joined public rooms only in my rooms', async ({ browser }) => {
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
   const roomName = `已加入公開房間 ${Date.now()}`
 
   try {
-    await loginAsGuests([host, guest])
+    await Promise.all([
+      signInAnonymously(hostContext, 'lobby host'),
+      signInAnonymously(guestContext, 'lobby guest'),
+    ])
+    const host = await hostContext.newPage()
+    const guest = await guestContext.newPage()
+    await Promise.all([
+      host.goto('/rooms', { waitUntil: 'domcontentloaded' }),
+      guest.goto('/rooms', { waitUntil: 'domcontentloaded' }),
+    ])
     const created = await host.context().request.post('/api/games', {
       data: { name: roomName, access: 'public', capacity: 2 },
     })
@@ -106,55 +113,69 @@ test('the lobby lists joined public rooms only in my rooms', async ({ browser })
   }
 })
 
-test('desktop waiting room uses a compact two-column layout inside the battlefield', async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 720 })
-  await createPublicRoom(page, `桌面等待層 ${Date.now()}`)
+test('desktop waiting room uses a compact two-column layout inside the battlefield', async ({ browser }) => {
+  const room = await setupFastWaitingRoom(browser, {
+    roomName: `桌面等待層 ${Date.now()}`,
+  })
+  const { page } = room
 
-  const waitingOverlay = page.locator('.waiting-overlay')
-  const waitingPanel = page.locator('.waiting-panel')
-  const waitingMain = page.locator('.waiting-main')
-  const waitingSide = page.locator('.waiting-side')
-  const startButton = page.getByRole('button', { name: '開始遊戲 →' })
-  await expect(waitingOverlay).toHaveCSS('overflow-y', 'auto')
-  await startButton.scrollIntoViewIfNeeded()
+  try {
+    await page.setViewportSize({ width: 1280, height: 720 })
+    const waitingOverlay = page.locator('.waiting-overlay')
+    const waitingPanel = page.locator('.waiting-panel')
+    const waitingMain = page.locator('.waiting-main')
+    const waitingSide = page.locator('.waiting-side')
+    const startButton = page.getByRole('button', { name: '開始遊戲 →' })
+    await expect(waitingOverlay).toHaveCSS('overflow-y', 'auto')
+    await startButton.scrollIntoViewIfNeeded()
 
-  const [panelBox, mainBox, sideBox, buttonBox] = await Promise.all([
-    waitingPanel.boundingBox(),
-    waitingMain.boundingBox(),
-    waitingSide.boundingBox(),
-    startButton.boundingBox(),
-  ])
-  expect(panelBox).not.toBeNull()
-  expect(mainBox).not.toBeNull()
-  expect(sideBox).not.toBeNull()
-  expect(buttonBox).not.toBeNull()
-  expect(panelBox!.width).toBeGreaterThanOrEqual(800)
-  expect(sideBox!.x).toBeGreaterThanOrEqual(mainBox!.x + mainBox!.width)
-  expect(buttonBox!.x).toBeGreaterThanOrEqual(sideBox!.x)
-  expect(buttonBox!.y).toBeGreaterThanOrEqual(0)
-  expect(buttonBox!.y + buttonBox!.height).toBeLessThanOrEqual(720)
+    const [panelBox, mainBox, sideBox, buttonBox] = await Promise.all([
+      waitingPanel.boundingBox(),
+      waitingMain.boundingBox(),
+      waitingSide.boundingBox(),
+      startButton.boundingBox(),
+    ])
+    expect(panelBox).not.toBeNull()
+    expect(mainBox).not.toBeNull()
+    expect(sideBox).not.toBeNull()
+    expect(buttonBox).not.toBeNull()
+    expect(panelBox!.width).toBeGreaterThanOrEqual(800)
+    expect(sideBox!.x).toBeGreaterThanOrEqual(mainBox!.x + mainBox!.width)
+    expect(buttonBox!.x).toBeGreaterThanOrEqual(sideBox!.x)
+    expect(buttonBox!.y).toBeGreaterThanOrEqual(0)
+    expect(buttonBox!.y + buttonBox!.height).toBeLessThanOrEqual(720)
 
-  await page.setViewportSize({ width: 390, height: 844 })
-  const [mobilePanelBox, mobileMainBox, mobileSideBox] = await Promise.all([
-    waitingPanel.boundingBox(),
-    waitingMain.boundingBox(),
-    waitingSide.boundingBox(),
-  ])
-  expect(mobilePanelBox).not.toBeNull()
-  expect(mobileMainBox).not.toBeNull()
-  expect(mobileSideBox).not.toBeNull()
-  expect(mobilePanelBox!.width).toBeLessThanOrEqual(390 - 32)
-  expect(mobileSideBox!.y).toBeGreaterThanOrEqual(mobileMainBox!.y + mobileMainBox!.height)
+    await page.setViewportSize({ width: 390, height: 844 })
+    const [mobilePanelBox, mobileMainBox, mobileSideBox] = await Promise.all([
+      waitingPanel.boundingBox(),
+      waitingMain.boundingBox(),
+      waitingSide.boundingBox(),
+    ])
+    expect(mobilePanelBox).not.toBeNull()
+    expect(mobileMainBox).not.toBeNull()
+    expect(mobileSideBox).not.toBeNull()
+    expect(mobilePanelBox!.width).toBeLessThanOrEqual(390 - 32)
+    expect(mobileSideBox!.y).toBeGreaterThanOrEqual(mobileMainBox!.y + mobileMainBox!.height)
+  } finally {
+    await room.close()
+  }
 })
 
 test('enabled rules flows downward as newer battle records arrive', async ({ browser }) => {
   const hostContext = await browser.newContext()
   const guestContext = await browser.newContext()
-  const host = await hostContext.newPage()
-  const guest = await guestContext.newPage()
 
   try {
-    await loginAsGuests([host, guest])
+    await Promise.all([
+      signInAnonymously(hostContext, 'event-record host'),
+      signInAnonymously(guestContext, 'event-record guest'),
+    ])
+    const host = await hostContext.newPage()
+    const guest = await guestContext.newPage()
+    await Promise.all([
+      host.goto('/rooms', { waitUntil: 'domcontentloaded' }),
+      guest.goto('/rooms', { waitUntil: 'domcontentloaded' }),
+    ])
     await startTwoPlayerMatch(host, guest, `啟用規則紀錄 ${Date.now()}`)
 
     const records = host.locator('.event-feed li')

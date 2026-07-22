@@ -1,55 +1,12 @@
 import type { Page } from '@playwright/test'
 import {
-  createPublicRoom,
   expect,
-  gotoAppRoute,
-  joinListedRoom,
-  loginAsGuests,
   reloadFastGameRoute,
   seedDevelopmentScenario,
+  setupFastFourPlayerGame,
   setupFastTwoPlayerGame,
   test,
 } from './fixtures'
-
-const defaultRuleModulesWithoutPouch = [
-  'discard-retrieval',
-  'personal-deck',
-  'five-directions-legend',
-  'star',
-  'hero-schools',
-  'spirit',
-  'jianghu',
-  'confluence-generation',
-  'dark-glimmer',
-  'echo',
-  'tribulation',
-]
-
-async function createFourPlayerRoomViaRequest(page: Page, roomName: string): Promise<string> {
-  const response = await page.context().request.post('/api/games', {
-    data: {
-      name: roomName,
-      access: 'public',
-      capacity: 4,
-      enabledRuleModules: defaultRuleModulesWithoutPouch,
-    },
-  })
-  const body = await response.text()
-  if (!response.ok()) {
-    throw new Error(`POST /api/games failed with HTTP ${response.status()}: ${body}`)
-  }
-  let result: { gameId?: unknown }
-  try {
-    result = JSON.parse(body) as { gameId?: unknown }
-  } catch {
-    throw new Error(`POST /api/games returned invalid JSON: ${body}`)
-  }
-  if (typeof result.gameId !== 'string' || !result.gameId) {
-    throw new Error(`POST /api/games returned no gameId: ${body}`)
-  }
-  await gotoAppRoute(page, `/rooms/${result.gameId}`)
-  return result.gameId
-}
 
 async function indexedModules(page: Page, roomName: string): Promise<string[]> {
   const response = await page.context().request.get('/api/games')
@@ -155,26 +112,12 @@ test('disabling Star invalidates readiness and locked decks while preserving Bas
 })
 
 test('a four-player team room starts with one shared immutable Star configuration', async ({ browser }) => {
-
-  const contexts = await Promise.all(Array.from({ length: 4 }, () => browser.newContext()))
-  const pages = await Promise.all(contexts.map(context => context.newPage()))
-  const [host, ...guests] = pages
+  const game = await setupFastFourPlayerGame(browser, {
+    roomName: `星辰團隊測試 ${Date.now()}`,
+  })
+  const { pages } = game
 
   try {
-    await loginAsGuests(pages)
-    const roomName = `星辰團隊測試 ${Date.now()}`
-    await createFourPlayerRoomViaRequest(host!, roomName)
-
-    for (const guest of guests) {
-      await joinListedRoom(guest, roomName, '停用：錦囊')
-      await expect(guest.getByLabel('星辰圖記')).toBeChecked()
-      await guest.getByRole('button', { name: '準備 →' }).click()
-    }
-
-    const start = host!.getByRole('button', { name: '開始遊戲 →' })
-    await expect(start).toBeEnabled()
-    await start.click()
-
     await Promise.all(pages.map(async (page) => {
       await expect(page.getByRole('region', { name: '啟用規則' }))
         .toContainText('星辰圖記')
@@ -187,7 +130,7 @@ test('a four-player team room starts with one shared immutable Star configuratio
       await expect(page.locator('.player-identity').filter({ hasText: '召星' })).toHaveCount(0)
     }))
   } finally {
-    await Promise.all(contexts.map(context => context.close()))
+    await game.close()
   }
 })
 
