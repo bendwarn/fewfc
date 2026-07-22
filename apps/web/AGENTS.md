@@ -27,7 +27,7 @@
   accessible roles and names, focus, and element geometry.
 - Run Worker/Durable Object browser flows with `bun test:e2e`. The Playwright
   configuration builds Nuxt and the rules WASM, applies migrations to isolated
-  `.wrangler/e2e` storage, starts Wrangler, and launches Brave when it is installed.
+  `.wrangler/e2e` storage and starts Wrangler.
 - A Playwright `click()` waits for the browser click action, not for an async Vue
   handler's command request to commit. Before reload or reconnect assertions,
   wait for the specific `/commands` response and identify it by request action

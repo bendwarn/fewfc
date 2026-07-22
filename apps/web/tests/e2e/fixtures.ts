@@ -362,7 +362,7 @@ export async function setupFastTwoPlayerGame(
     const guest = await guestContext.newPage()
     // With three workers this intentionally keeps at most one cold room route
     // per match in flight. Loading both players together creates six concurrent
-    // Brave renderers and is slower than the small host-to-guest handoff.
+    // browser renderers and is slower than the small host-to-guest handoff.
     await gotoFastGameRoute(host, gameId)
     await gotoFastGameRoute(guest, gameId)
     // The guest view receives the joined room-state after both sockets are
