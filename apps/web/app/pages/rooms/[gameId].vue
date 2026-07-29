@@ -142,6 +142,7 @@
                 :data-card-id="card.cardId"
                 :disabled="!card.selectable || !roomConnected"
                 :aria-label="card.hidden ? '牌背' : card.label"
+                :aria-pressed="card.selected"
                 @click="game.toggleCardSelection(seat.player, card.cardId)"
               >
                 <span v-if="!card.hidden" class="card-level">{{ cardLevel(card.level) }}</span>
@@ -228,12 +229,12 @@
                       v-for="pouchAction in pouchStrategyActions"
                       :key="`pouch-${pouchAction.label}`"
                       type="button"
-                      :title="pouchAction.detail"
-                      :aria-label="`${pouchAction.label}：${pouchAction.detail}`"
+                      :title="pouchAction.detail || undefined"
+                      :aria-label="labelWithDetail(pouchAction.label, pouchAction.detail)"
                       :disabled="!roomConnected || game.isLoading.value"
-                      @mouseenter="showTextActionDetail(pouchAction.label, pouchAction.detail)"
+                      @mouseenter="showTextActionDetail(pouchAction.detail)"
                       @mouseleave="hideActionDetail"
-                      @focus="showTextActionDetail(pouchAction.label, pouchAction.detail)"
+                      @focus="showTextActionDetail(pouchAction.detail)"
                       @blur="hideActionDetail"
                       @click="startPouchAction(pouchAction)"
                     >
@@ -243,18 +244,49 @@
                       v-for="ability in directPlayableAbilities"
                       :key="playableAbilityKey(ability)"
                       type="button"
-                      :title="playableActionDetail(ability)"
-                      :aria-label="`${ability.name}：${playableActionDetail(ability)}`"
+                      :title="playableActionDetail(ability) || undefined"
+                      :aria-label="playableActionAccessibleLabel(ability)"
                       @mouseenter="showActionDetail(ability)"
                       @mouseleave="hideActionDetail"
                       @focus="showActionDetail(ability)"
                       @blur="hideActionDetail"
-                      @click="game.performPlayableAction(ability)"
+                      @click="startDirectAbility(ability)"
                     >
                       {{ ability.name }}
                     </button>
                     <div
-                      v-if="splendorAbilities.length"
+                      v-if="darkSpiritPicker"
+                      class="spirit-level-picker"
+                      role="group"
+                      aria-label="暗靈：選擇指定等級"
+                      @click.stop
+                    >
+                      <button
+                        ref="darkSpiritMenuTrigger"
+                        class="spirit-level-trigger"
+                        type="button"
+                        aria-haspopup="menu"
+                        :aria-expanded="darkSpiritMenuOpen"
+                        @click="darkSpiritMenuOpen = !darkSpiritMenuOpen"
+                      >
+                        暗靈
+                      </button>
+                      <div v-if="darkSpiritMenuOpen" class="spirit-level-options" role="menu">
+                        <button
+                          v-for="ability in darkSpiritPicker.options"
+                          :key="playableAbilityKey(ability)"
+                          type="button"
+                          role="menuitem"
+                          :title="playableActionDetail(ability) || undefined"
+                          :aria-label="labelWithDetail(`暗靈：指定為 ${ability.declaredLevel} 級`, playableActionDetail(ability))"
+                          @click="startDarkSpiritAction(ability)"
+                        >
+                          {{ ability.declaredLevel }} 級
+                        </button>
+                      </div>
+                    </div>
+                    <div
+                      v-if="splendorPicker"
                       class="spirit-level-picker"
                       role="group"
                       aria-label="絢爛：選擇指定等級"
@@ -272,12 +304,12 @@
                       </button>
                       <div v-if="splendorMenuOpen" class="spirit-level-options" role="menu">
                         <button
-                          v-for="ability in splendorAbilities"
+                          v-for="ability in splendorPicker.options"
                           :key="playableAbilityKey(ability)"
                           type="button"
                           role="menuitem"
-                          :title="playableActionDetail(ability)"
-                          :aria-label="`絢爛：指定為 ${ability.declaredLevel} 級`"
+                          :title="playableActionDetail(ability) || undefined"
+                          :aria-label="labelWithDetail(`絢爛：指定為 ${ability.declaredLevel} 級`, playableActionDetail(ability))"
                           @click="startSplendorAction(ability)"
                         >
                           {{ ability.declaredLevel }} 級
@@ -288,12 +320,12 @@
                       v-if="game.interaction.value.canRetrieveDiscard"
                       class="retrieve-action"
                       type="button"
-                      :title="discardRetrievalDetail"
-                      :aria-label="`棄牌回收：${discardRetrievalDetail}`"
+                      :title="discardRetrievalDetail || undefined"
+                      :aria-label="labelWithDetail('棄牌回收', discardRetrievalDetail)"
                       :disabled="!roomConnected"
-                      @mouseenter="showTextActionDetail('棄牌回收', discardRetrievalDetail)"
+                      @mouseenter="showTextActionDetail(discardRetrievalDetail)"
                       @mouseleave="hideActionDetail"
-                      @focus="showTextActionDetail('棄牌回收', discardRetrievalDetail)"
+                      @focus="showTextActionDetail(discardRetrievalDetail)"
                       @blur="hideActionDetail"
                       @click="game.retrievePreviousTurnDiscard()"
                     >
@@ -315,7 +347,8 @@
                       v-for="action in game.playableMainActions.value"
                       :key="`${action.type}:${action.id}:${action.cards.join('-')}:${action.type === 'performFormation' ? `${action.starSubstitution?.card ?? 'printed'}:${action.matchOption?.role ?? 'default'}:${action.matchOption?.card ?? ''}` : 'profession'}`"
                       type="button"
-                      :title="playableActionDetail(action)"
+                      :title="playableActionDetail(action) || undefined"
+                      :aria-label="playableActionAccessibleLabel(action)"
                       @mouseenter="showActionDetail(action)"
                       @mouseleave="hideActionDetail"
                       @focus="showActionDetail(action)"
@@ -345,10 +378,7 @@
                   </p>
                 </section>
 
-                <p v-if="actionDetail" class="action-detail">
-                  <strong>{{ actionDetail.name }}</strong>
-                  {{ actionDetail.text }}
-                </p>
+                <p v-if="actionDetail" class="action-detail">{{ actionDetail }}</p>
               </div>
             </div>
             <div
@@ -391,6 +421,65 @@
                     </tbody>
                   </table>
                 </section>
+            </div>
+          </div>
+
+          <div
+            v-if="virtualFormationCardDraft"
+            class="choice-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="virtual-formation-card-title"
+          >
+            <div ref="virtualFormationCardDialog" class="virtual-formation-card-dialog">
+              <h2 id="virtual-formation-card-title">
+                {{ virtualFormationCardDraft.name }}：選擇虛擬牌
+              </h2>
+              <table class="virtual-formation-card-matrix">
+                <caption class="sr-only">列為五行，欄為等級；選擇後立即發動能力。</caption>
+                <thead>
+                  <tr>
+                    <th scope="col"><span class="sr-only">五行</span></th>
+                    <th
+                      v-for="level in virtualFormationCardDraft.inputRequirement.levels"
+                      :key="`virtual-level-${level}`"
+                      scope="col"
+                    >
+                      {{ level }} 級
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="element in virtualFormationCardDraft.inputRequirement.elements"
+                    :key="`virtual-element-${element}`"
+                  >
+                    <th scope="row">{{ environmentLabel(element) }}</th>
+                    <td
+                      v-for="level in virtualFormationCardDraft.inputRequirement.levels"
+                      :key="`${element}-${level}`"
+                    >
+                      <button
+                        class="virtual-formation-card-option"
+                        type="button"
+                        :disabled="game.isLoading.value || !roomConnected"
+                        :aria-label="`${virtualFormationCardDraft.name}：${environmentLabel(element)} ${level} 級`"
+                        @click="chooseVirtualFormationCard(element, level)"
+                      >
+                        {{ level }}
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <button
+                class="virtual-formation-card-cancel"
+                type="button"
+                :disabled="game.isLoading.value"
+                @click="closeVirtualFormationCardDraft()"
+              >
+                取消
+              </button>
             </div>
           </div>
 
@@ -959,6 +1048,13 @@ import { isLegalChainTrigger, sheepReturnCards } from '~/lib/pouch-choice'
 import { useLayoutNotifications } from '~/lib/player-notifications-context'
 import { useRulesCatalog } from '~/lib/rules-catalog'
 import { presentApiError } from '~/lib/api-error-presentation'
+import { abilityLevelPicker } from '~/lib/ability-level-picker'
+import {
+  completeVirtualFormationCardOffer,
+  isVirtualFormationCardOffer,
+  professionAbilityOfferKey,
+  type VirtualFormationCardOffer,
+} from '~/lib/profession-ability-input'
 
 const route = useRoute()
 const router = useRouter()
@@ -976,16 +1072,20 @@ const replayError = ref('')
 const viewer = ref<ViewerId>('observer')
 const game = useGameRoom(viewer)
 const state = game.state
-const splendorAbilities = computed(() => (
-  game.playableAbilities.value
-    .filter(ability => ability.type === 'useSpiritSkill'
-      && ability.id === 'Splendor'
-      && ability.declaredLevel !== null)
-    .sort((left, right) => (left.declaredLevel ?? 0) - (right.declaredLevel ?? 0))
+const splendorPicker = computed(() => abilityLevelPicker(
+  game.playableAbilities.value,
+  'useSpiritSkill',
+  'Splendor',
+))
+const darkSpiritPicker = computed(() => abilityLevelPicker(
+  game.playableAbilities.value,
+  'activateProfessionAbility',
+  'dark:dark-spirit',
 ))
 const directPlayableAbilities = computed(() => (
   game.playableAbilities.value.filter(
-    ability => ability.type !== 'useSpiritSkill' || ability.id !== 'Splendor',
+    ability => (ability.type !== 'useSpiritSkill' || ability.id !== 'Splendor')
+      && (ability.type !== 'activateProfessionAbility' || ability.id !== 'dark:dark-spirit'),
   )
 ))
 const ownDeckCards = computed<PublicCard[]>(() => {
@@ -1308,18 +1408,59 @@ watch(
   },
 )
 
-const actionDetail = ref<{ name: string; text: string } | null>(null)
+const actionDetail = ref<string | null>(null)
 const discardRetrievalDetail = computed(() => {
   const detail = game.interaction.value.discardRetrievalAction
-  return detail ? presentDiscardRetrievalAction(detail, playerLabel) : ''
+  return detail ? presentDiscardRetrievalAction(detail) : ''
 })
 const splendorMenuOpen = ref(false)
 const splendorMenuTrigger = ref<HTMLButtonElement | null>(null)
+const darkSpiritMenuOpen = ref(false)
+const darkSpiritMenuTrigger = ref<HTMLButtonElement | null>(null)
+const virtualFormationCardDraft = ref<VirtualFormationCardOffer | null>(null)
+const virtualFormationCardDialog = ref<HTMLElement | null>(null)
+let virtualFormationCardReturnFocus: HTMLElement | null = null
 const eventExpanded = ref(false)
 const showSetupReveal = ref(false)
 const discardOpen = ref(false)
 const activeDiscardOwner = ref<PlayerId | null>(null)
 const discardTrigger = ref<HTMLButtonElement | null>(null)
+
+watch(
+  [
+    viewer,
+    () => state.value.currentPlayer,
+    () => state.value.turnNumber,
+    () => state.value.phase,
+    () => game.connectionState.value,
+    () => game.playableAbilities.value
+      .filter(ability => ability.type === 'activateProfessionAbility')
+      .map(professionAbilityOfferKey)
+      .join('|'),
+  ],
+  () => {
+    const draft = virtualFormationCardDraft.value
+    if (!draft) return
+
+    const draftKey = professionAbilityOfferKey(draft)
+    const stillOffered = game.playableAbilities.value.some(ability => (
+      ability.type === 'activateProfessionAbility'
+      && professionAbilityOfferKey(ability) === draftKey
+    ))
+    if (
+      game.connectionState.value !== 'connected'
+      || viewer.value !== state.value.currentPlayer
+      || state.value.status !== 'InProgress'
+      || state.value.phase !== 'Main'
+      || Boolean(state.value.pendingChoice)
+      || draft.cards.length !== game.selectedCards.value.length
+      || draft.cards.some(card => !game.selectedCards.value.includes(card))
+      || !stillOffered
+    ) {
+      closeVirtualFormationCardDraft(false)
+    }
+  },
+)
 
 const ruleGroupLabels = {
   optional: '選用規則',
@@ -1478,6 +1619,11 @@ function resetRoomRouteState() {
   actionDetail.value = null
   splendorMenuOpen.value = false
   splendorMenuTrigger.value = null
+  darkSpiritMenuOpen.value = false
+  darkSpiritMenuTrigger.value = null
+  virtualFormationCardDraft.value = null
+  virtualFormationCardDialog.value = null
+  virtualFormationCardReturnFocus = null
   eventExpanded.value = false
   showSetupReveal.value = false
   discardOpen.value = false
@@ -1525,14 +1671,77 @@ function closeSplendorMenu(returnFocus = false) {
   }
 }
 
+function closeDarkSpiritMenu(returnFocus = false) {
+  if (!darkSpiritMenuOpen.value) {
+    return
+  }
+
+  darkSpiritMenuOpen.value = false
+  if (returnFocus) {
+    void nextTick(() => darkSpiritMenuTrigger.value?.focus())
+  }
+}
+
 function startSplendorAction(ability: PlayableAction) {
   closeSplendorMenu(true)
   void game.performPlayableAction(ability)
 }
 
+function startDarkSpiritAction(ability: PlayableAction) {
+  closeDarkSpiritMenu(true)
+  void game.performPlayableAction(ability)
+}
+
+function startDirectAbility(
+  ability: Extract<PlayableAction, { type: 'activateProfessionAbility' | 'useSpiritSkill' }>,
+) {
+  if (ability.type !== 'activateProfessionAbility' || !isVirtualFormationCardOffer(ability)) {
+    void game.performPlayableAction(ability)
+    return
+  }
+
+  virtualFormationCardReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null
+  virtualFormationCardDraft.value = ability
+  void nextTick(() => {
+    virtualFormationCardDialog.value
+      ?.querySelector<HTMLButtonElement>('.virtual-formation-card-option')
+      ?.focus()
+  })
+}
+
+function closeVirtualFormationCardDraft(returnFocus = true) {
+  if (!virtualFormationCardDraft.value) {
+    return
+  }
+
+  const focusTarget = virtualFormationCardReturnFocus
+  virtualFormationCardDraft.value = null
+  virtualFormationCardReturnFocus = null
+  if (returnFocus) {
+    void nextTick(() => focusTarget?.focus())
+  }
+}
+
+function chooseVirtualFormationCard(element: Element, level: number) {
+  const draft = virtualFormationCardDraft.value
+  if (!draft || game.isLoading.value || !roomConnected.value) {
+    return
+  }
+  const completed = completeVirtualFormationCardOffer(draft, element, level)
+  if (!completed) {
+    return
+  }
+
+  closeVirtualFormationCardDraft(false)
+  void game.performPlayableAction(completed)
+}
+
 function handlePageClick() {
   closeDiscardComposition()
   closeSplendorMenu()
+  closeDarkSpiritMenu()
 }
 
 function targetsEditableControl(target: EventTarget | null) {
@@ -1563,6 +1772,18 @@ function handlePageKeydown(event: KeyboardEvent) {
   }
 
   if (event.key !== 'Escape') {
+    return
+  }
+
+  if (virtualFormationCardDraft.value) {
+    event.preventDefault()
+    closeVirtualFormationCardDraft()
+    return
+  }
+
+  if (darkSpiritMenuOpen.value) {
+    event.preventDefault()
+    closeDarkSpiritMenu(true)
     return
   }
 
@@ -1980,6 +2201,9 @@ function waitingMemberStatus(member: GameRoomMember | undefined): string {
 }
 
 function playableActionName(action: PlayableAction): string {
+  if (action.type === 'changeProfession') {
+    return `轉職：${action.name}`
+  }
   if (action.type !== 'performFormation') {
     return action.name
   }
@@ -2009,7 +2233,7 @@ function playableAbilityKey(
   if (ability.type === 'useSpiritSkill') {
     return `spirit:${ability.id}:${ability.selectedCard ?? ''}:${ability.declaredLevel ?? ''}`
   }
-  return `profession:${ability.id}:${ability.cards.join('-')}:${ability.targetCard ?? ''}:${ability.declaredElement ?? ''}:${ability.declaredLevel ?? ''}`
+  return `profession:${ability.id}:${ability.cards.join('-')}:${ability.targetCard ?? ''}:${ability.declaredElement ?? ''}:${ability.declaredLevel ?? ''}:${ability.inputRequirement?.type ?? ''}`
 }
 
 function knownCardLabel(cardId: number): string {
@@ -2020,17 +2244,39 @@ function knownCardLabel(cardId: number): string {
 }
 
 function playableActionDetail(action: PlayableAction): string {
-  return presentPlayableAction(action, knownCardLabel)
+  return presentPlayableAction(action)
+}
+
+function playableActionIdentity(action: PlayableAction): string {
+  const parts: string[] = []
+  if (action.type === 'activateProfessionAbility') {
+    if (action.cards.length) parts.push(`所選牌：${action.cards.map(knownCardLabel).join('、')}`)
+    if (action.targetCard !== null) parts.push(`指定牌：${knownCardLabel(action.targetCard)}`)
+    if (action.declaredElement !== null) parts.push(`宣告屬性：${cardElementLabel(action.declaredElement)}`)
+    if (action.declaredLevel !== null) parts.push(`宣告等級：${action.declaredLevel}`)
+  } else if (action.type === 'useSpiritSkill') {
+    if (action.selectedCard !== null) parts.push(`指定牌：${knownCardLabel(action.selectedCard)}`)
+    if (action.declaredLevel !== null) parts.push(`宣告等級：${action.declaredLevel}`)
+  }
+  return parts.length ? `${playableActionName(action)}；${parts.join('；')}` : playableActionName(action)
+}
+
+function labelWithDetail(label: string, detail: string): string {
+  return detail ? `${label}；${detail}` : label
+}
+
+function playableActionAccessibleLabel(action: PlayableAction): string {
+  return labelWithDetail(playableActionIdentity(action), playableActionDetail(action))
 }
 
 function showActionDetail(action: PlayableAction) {
   clearTimeout(actionDetailTimer)
-  actionDetail.value = { name: action.name, text: playableActionDetail(action) }
+  actionDetail.value = playableActionDetail(action) || null
 }
 
-function showTextActionDetail(name: string, text: string) {
+function showTextActionDetail(text: string) {
   clearTimeout(actionDetailTimer)
-  actionDetail.value = { name, text }
+  actionDetail.value = text || null
 }
 
 function hideActionDetail() {
@@ -2041,7 +2287,7 @@ function hideActionDetail() {
 function startActionDetail(action: PlayableAction) {
   clearTimeout(actionDetailTimer)
   actionDetailTimer = setTimeout(() => {
-    actionDetail.value = { name: action.name, text: playableActionDetail(action) }
+    actionDetail.value = playableActionDetail(action) || null
   }, 450)
 }
 
@@ -2271,6 +2517,14 @@ function cardLevel(level: number | null | undefined): string {
 .choice-waiting-overlay > div { @apply max-h-[calc(100%-32px)] min-w-90 overflow-y-auto border border-[#8e733d] bg-[rgba(24,32,27,.94)] p-[30px] shadow-[0_18px_48px_rgba(0,0,0,.42)]; }
 .choice-overlay h2,
 .choice-waiting-overlay h2 { @apply mt-2.5 mb-5 font-serif; }
+.virtual-formation-card-dialog { @apply max-w-[min(560px,calc(100vw-32px))]; }
+.virtual-formation-card-matrix { @apply mx-auto border-collapse text-xs; }
+.virtual-formation-card-matrix th { @apply border border-[#4f584f] bg-[#18201b] px-2 py-1.5 font-normal text-muted; }
+.virtual-formation-card-matrix tbody th { @apply min-w-14 text-gold-light; }
+.virtual-formation-card-matrix td { @apply border border-[#4f584f] p-0; }
+.virtual-formation-card-option { @apply grid size-11 place-items-center bg-[#222b25] font-serif text-sm text-[#e5dfd1] hover:bg-[#3a443d] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
+.virtual-formation-card-option:focus-visible { @apply relative z-1 outline-2 outline-offset-[-3px] outline-[#d1ad62]; }
+.virtual-formation-card-cancel { @apply mt-5 min-h-9 border border-[#59635c] bg-[#18201b] px-4 py-2 text-xs text-[#d5d8d4] hover:border-[#b99550] hover:text-gold-light; }
 .choice-cards { @apply flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
 .choice-cards button { @apply border border-[#ae8b47] bg-[#ede6d4] p-2.5 text-[#18201c]; }
 .choice-cards button.selected { @apply bg-[#c9a451] font-bold shadow-[0_0_0_2px_#f0d99e]; }

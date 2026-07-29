@@ -29,11 +29,12 @@ pub use crate::domain::Element;
 use serde::Serialize;
 use std::collections::HashMap;
 
-/// A player-visible, state-specific fact explaining an offered action.
+/// Optional player-visible, state-specific facts supplementing an offered action.
 ///
-/// This deliberately models commitments, not the canonical events that will
-/// eventually be emitted.  In particular it never contains a Choice ID,
-/// continuation, hidden card, or a prediction of trusted randomness.
+/// This deliberately excludes action identity and models commitments, not the
+/// canonical events that will eventually be emitted. In particular it never
+/// contains a Choice ID, continuation, hidden card, or a prediction of trusted
+/// randomness.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayerFacingActionDetail {
@@ -41,11 +42,7 @@ pub struct PlayerFacingActionDetail {
 }
 
 impl PlayerFacingActionDetail {
-    pub(crate) fn complete(consequences: Vec<RuleConsequence>) -> Self {
-        assert!(
-            !consequences.is_empty(),
-            "an offered action must have at least one player-facing consequence"
-        );
+    pub(crate) fn composed(consequences: Vec<RuleConsequence>) -> Self {
         Self { consequences }
     }
 
@@ -58,8 +55,8 @@ impl PlayerFacingActionDetail {
         }
     }
 
-    pub(crate) fn is_complete(&self) -> bool {
-        !self.consequences.is_empty()
+    pub(crate) fn into_optional(self) -> Option<Self> {
+        (!self.consequences.is_empty()).then_some(self)
     }
 }
 
@@ -108,16 +105,6 @@ pub enum RuleConsequence {
         certainty: ConsequenceCertainty,
         exception: RuleException,
     },
-    Substitution {
-        certainty: ConsequenceCertainty,
-        card: crate::domain::CardInstanceId,
-        printed_element: Element,
-        interpreted_element: Element,
-    },
-    DeclaredInput {
-        certainty: ConsequenceCertainty,
-        input: DeclaredInput,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -127,12 +114,7 @@ pub enum RuleConsequence {
     rename_all_fields = "camelCase"
 )]
 pub enum ActionCost {
-    UseCards {
-        cards: Vec<crate::domain::CardInstanceId>,
-    },
-    DiscardCards {
-        cards: Vec<crate::domain::CardInstanceId>,
-    },
+    DiscardSelectedCards,
     SpendSpiritPower {
         amount: u32,
     },
@@ -142,9 +124,7 @@ pub enum ActionCost {
     OptionalDiscardByPrintedElement {
         allowed_printed_elements: Vec<Element>,
     },
-    ConsumePouch {
-        source_card: crate::domain::CardInstanceId,
-    },
+    ConsumePouch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -162,11 +142,7 @@ pub enum ImmediateEffect {
     ResolveFormationEffect {
         effect: FormationEffect,
     },
-    ChangeProfession {
-        profession_id: String,
-    },
     ActivateProfessionAbility {
-        ability_id: String,
         effect: ProfessionAbilityEffect,
     },
     UseSpiritSkill {
@@ -175,10 +151,7 @@ pub enum ImmediateEffect {
     TriggerSecretStrategy {
         effect: SecretStrategyEffect,
     },
-    MovePreviousTurnDiscardToDeckTop {
-        card: crate::domain::CardInstanceId,
-        previous_player: crate::domain::PlayerId,
-    },
+    MovePreviousTurnDiscardToDeckTop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -340,22 +313,10 @@ pub enum SpiritSkillEffect {
 pub enum FollowUpChoice {
     SelectPlayer,
     SelectFormation,
-    SelectMelody,
     SelectDeckCard,
     SelectEnvironment,
     SelectPouchOwnerAndOptionalStrategy,
-    SelectSecretStrategyInput { input: SecretStrategyInput },
     SelectCards { minimum: usize, maximum: usize },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SecretStrategyInput {
-    None,
-    TargetPlayer,
-    DeckDiscardSwap,
-    Star,
-    Retreat,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -391,30 +352,12 @@ pub enum DelayedEffect {
     rename_all_fields = "camelCase"
 )]
 pub enum RuleException {
-    DoesNotEndAction,
-    DoesNotCreateFormationUse,
-    DoesNotScheduleAnotherEcho,
     IgnoresOtherFormationEffects,
     LimitedUse {
         key: String,
         remaining: u32,
         maximum: u32,
     },
-    EffectMayBeIneffective,
-    UsesPrintedElement,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(
-    tag = "type",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum DeclaredInput {
-    Card { card: crate::domain::CardInstanceId },
-    Element { element: Element },
-    Level { level: u32 },
-    TargetCard { card: crate::domain::CardInstanceId },
 }
 
 pub(crate) fn formation_resolved_on_previous_turn<'a>(
@@ -486,6 +429,19 @@ pub enum PlayableAction {
     UseSpiritSkill(SpiritSkillCandidate),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ActionInputRequirement {
+    VirtualFormationCard {
+        elements: Vec<Element>,
+        levels: Vec<u32>,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfessionChangeCandidate {
     pub profession_id: crate::domain::ProfessionId,
@@ -502,6 +458,7 @@ pub struct ProfessionAbilityCandidate {
     pub target_card: Option<crate::domain::CardInstanceId>,
     pub declared_element: Option<Element>,
     pub declared_level: Option<u32>,
+    pub input_requirement: Option<ActionInputRequirement>,
     pub detail: PlayerFacingActionDetail,
 }
 

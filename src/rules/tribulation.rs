@@ -8,9 +8,8 @@ use crate::domain::{
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, BaseFormationSpec, ConsequenceCertainty, DamageTarget,
-    EffectDef, EffectPlan, FollowUpChoice, FormationCategory, FormationDef, FormationEffect,
-    FormationPattern, ImmediateEffect, PointFormula, RuleConsequence, SpellPlanDef,
-    SubmittedCardFacts, TrustedRandomness,
+    EffectDef, EffectPlan, FormationCategory, FormationDef, FormationEffect, FormationPattern,
+    ImmediateEffect, PointFormula, RuleConsequence, SpellPlanDef, SubmittedCardFacts,
 };
 
 pub(crate) const THUNDER_FIRE: &str = "tribulation:thunder-fire";
@@ -132,30 +131,14 @@ pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleC
                 ConsequenceCertainty::Conditional,
             ),
         ]),
-        EARTH_RENDING => Some(vec![
-            RuleConsequence::FollowUpChoice {
-                certainty: ConsequenceCertainty::FollowUp,
-                choice: FollowUpChoice::SelectEnvironment,
-            },
-            immediate(
-                FormationEffect::ChooseEnvironmentAndRequireMatchingCardOrRevealHand,
-                ConsequenceCertainty::FollowUp,
-            ),
-        ]),
-        RUSTED_FOREST => Some(vec![
-            immediate(
-                FormationEffect::RevealTopEightDiscardLevelThreeOrHigherThenShuffle,
-                ConsequenceCertainty::Guaranteed,
-            ),
-            RuleConsequence::TrustedRandomness {
-                certainty: ConsequenceCertainty::Random,
-                operation: TrustedRandomness::ShuffleDeck,
-            },
-            RuleConsequence::TrustedRandomness {
-                certainty: ConsequenceCertainty::Conditional,
-                operation: TrustedRandomness::ShuffleDiscardIntoDeck,
-            },
-        ]),
+        EARTH_RENDING => Some(vec![immediate(
+            FormationEffect::ChooseEnvironmentAndRequireMatchingCardOrRevealHand,
+            ConsequenceCertainty::FollowUp,
+        )]),
+        RUSTED_FOREST => Some(vec![immediate(
+            FormationEffect::RevealTopEightDiscardLevelThreeOrHigherThenShuffle,
+            ConsequenceCertainty::Guaranteed,
+        )]),
         _ => None,
     }
 }
@@ -936,12 +919,6 @@ mod tests {
             }
         )));
         let rusted_forest = formation_action_detail_consequences(RUSTED_FOREST).unwrap();
-        assert!(rusted_forest.iter().any(|consequence| matches!(
-            consequence,
-            RuleConsequence::TrustedRandomness {
-                certainty: ConsequenceCertainty::Random,
-                operation: TrustedRandomness::ShuffleDeck,
-            }
-        )));
+        assert_eq!(rusted_forest.len(), 1);
     }
 }

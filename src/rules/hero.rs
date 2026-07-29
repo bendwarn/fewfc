@@ -7,9 +7,9 @@ use crate::domain::{
 };
 
 use super::{
-    AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget, EffectDef, EffectPlan,
-    FormationCategory, FormationDef, FormationEffect, FormationPattern, PointFormula,
-    ProfessionAbilityCandidate, ProfessionAbilityEffect, ProfessionChangeCandidate,
+    ActionInputRequirement, AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget,
+    EffectDef, EffectPlan, FormationCategory, FormationDef, FormationEffect, FormationPattern,
+    PointFormula, ProfessionAbilityCandidate, ProfessionAbilityEffect, ProfessionChangeCandidate,
     SubmittedCardFacts, VirtualFormationScope,
 };
 
@@ -1147,6 +1147,7 @@ pub(crate) fn playable_profession_abilities(
                 target_card: None,
                 declared_element: None,
                 declared_level: None,
+                input_requirement: None,
                 detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
             });
         }
@@ -1158,6 +1159,7 @@ pub(crate) fn playable_profession_abilities(
                 target_card: None,
                 declared_element: None,
                 declared_level: None,
+                input_requirement: None,
                 detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
             });
         }
@@ -1172,6 +1174,7 @@ pub(crate) fn playable_profession_abilities(
                 target_card: None,
                 declared_element: None,
                 declared_level: None,
+                input_requirement: None,
                 detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
             });
         }
@@ -1189,25 +1192,25 @@ pub(crate) fn playable_profession_abilities(
             if !abilities.contains(&ability) {
                 continue;
             }
-            for element in [
-                Element::Metal,
-                Element::Wood,
-                Element::Water,
-                Element::Fire,
-                Element::Earth,
-            ] {
-                for level in 1..=5 {
-                    candidates.push(ProfessionAbilityCandidate {
-                        ability_id: ability_id.to_string(),
-                        ability_name: ability_name.to_string(),
-                        cards: cards.to_vec(),
-                        target_card: None,
-                        declared_element: Some(element),
-                        declared_level: Some(level),
-                        detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
-                    });
-                }
-            }
+            candidates.push(ProfessionAbilityCandidate {
+                ability_id: ability_id.to_string(),
+                ability_name: ability_name.to_string(),
+                cards: cards.to_vec(),
+                target_card: None,
+                declared_element: None,
+                declared_level: None,
+                input_requirement: Some(ActionInputRequirement::VirtualFormationCard {
+                    elements: vec![
+                        Element::Metal,
+                        Element::Wood,
+                        Element::Water,
+                        Element::Fire,
+                        Element::Earth,
+                    ],
+                    levels: (1..=5).collect(),
+                }),
+                detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
+            });
         }
     }
     Ok(candidates)

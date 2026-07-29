@@ -454,55 +454,20 @@ pub(crate) fn strategy_action_options(
                 )
                 .then_some(2)
                 .unwrap_or_default(),
-                detail: crate::rules::action_detail::secret_strategy_detail(
-                    source_card,
-                    option.strategy,
-                    secret_strategy_input(input),
-                ),
+                detail: crate::rules::action_detail::secret_strategy_detail(option.strategy),
             }
         })
         .collect()
 }
 
-fn secret_strategy_input(
-    input: SecretStrategyInputRequirement,
-) -> crate::rules::SecretStrategyInput {
-    match input {
-        SecretStrategyInputRequirement::None => crate::rules::SecretStrategyInput::None,
-        SecretStrategyInputRequirement::TargetPlayer => {
-            crate::rules::SecretStrategyInput::TargetPlayer
-        }
-        SecretStrategyInputRequirement::DeckDiscardSwap => {
-            crate::rules::SecretStrategyInput::DeckDiscardSwap
-        }
-        SecretStrategyInputRequirement::Star => crate::rules::SecretStrategyInput::Star,
-        SecretStrategyInputRequirement::Retreat => crate::rules::SecretStrategyInput::Retreat,
-    }
-}
-
 /// Chain has its own Pending Choice lifecycle.  This explains the known
 /// commitment before it starts, without carrying a Choice ID or continuation.
-pub(crate) fn formation_action_detail_consequences(
-    state: &GameState,
-    player: &PlayerId,
-    id: &str,
-) -> Option<Vec<RuleConsequence>> {
+pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence>> {
     (id == CHAIN_ID).then(|| {
-        let mut consequences = vec![RuleConsequence::FollowUpChoice {
+        vec![RuleConsequence::FollowUpChoice {
             certainty: ConsequenceCertainty::FollowUp,
             choice: FollowUpChoice::SelectPouchOwnerAndOptionalStrategy,
-        }];
-        if state.deck_for(player).is_some_and(|deck| deck.len() < 2)
-            && state
-                .discard_for(player)
-                .is_some_and(|discard| !discard.is_empty())
-        {
-            consequences.push(RuleConsequence::TrustedRandomness {
-                certainty: ConsequenceCertainty::Conditional,
-                operation: crate::rules::TrustedRandomness::ShuffleDiscardIntoDeck,
-            });
-        }
-        consequences
+        }]
     })
 }
 

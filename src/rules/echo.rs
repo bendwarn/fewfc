@@ -8,8 +8,7 @@ use crate::domain::{
 use crate::rules::{
     ActionCost, BaseFormationSpec, ConsequenceCertainty, DelayedEffect, DelayedTiming, EffectDef,
     EffectPlan, FollowUpChoice, FormationCategory, FormationDef, FormationEffect, FormationPattern,
-    PointFormula, RuleConsequence, RuleException, SpellPlanDef, SubmittedCardFacts,
-    TrustedRandomness,
+    PointFormula, RuleConsequence, SpellPlanDef, SubmittedCardFacts, TrustedRandomness,
 };
 
 pub(crate) const RINGING_METAL: &str = "echo:ringing-metal";
@@ -132,25 +131,10 @@ pub(crate) fn action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence
                     allowed_printed_elements: allowed_printed_elements.to_vec(),
                 },
             });
-            consequences.push(RuleConsequence::FollowUpChoice {
-                certainty: ConsequenceCertainty::FollowUp,
-                choice: FollowUpChoice::SelectCards {
-                    minimum: 0,
-                    maximum: 1,
-                },
-            });
             consequences.push(RuleConsequence::DelayedEffect {
                 certainty: ConsequenceCertainty::Conditional,
                 timing: DelayedTiming::NextTurnStart,
                 effect: DelayedEffect::RepeatMelodyMainEffect,
-            });
-            consequences.push(RuleConsequence::RuleException {
-                certainty: ConsequenceCertainty::Conditional,
-                exception: RuleException::DoesNotCreateFormationUse,
-            });
-            consequences.push(RuleConsequence::RuleException {
-                certainty: ConsequenceCertainty::Conditional,
-                exception: RuleException::DoesNotScheduleAnotherEcho,
             });
         }
         EchoPolicy::Automatic => {
@@ -158,14 +142,6 @@ pub(crate) fn action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence
                 certainty: ConsequenceCertainty::Scheduled,
                 timing: DelayedTiming::NextTurnStart,
                 effect: DelayedEffect::RepeatMelodyMainEffect,
-            });
-            consequences.push(RuleConsequence::RuleException {
-                certainty: ConsequenceCertainty::Scheduled,
-                exception: RuleException::DoesNotCreateFormationUse,
-            });
-            consequences.push(RuleConsequence::RuleException {
-                certainty: ConsequenceCertainty::Scheduled,
-                exception: RuleException::DoesNotScheduleAnotherEcho,
             });
         }
         EchoPolicy::None => {}
@@ -194,14 +170,6 @@ pub(crate) fn action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence
                 certainty: ConsequenceCertainty::Scheduled,
                 timing: DelayedTiming::NextTurnStart,
                 effect: DelayedEffect::SelectAndPerformMelodyMainEffect,
-            });
-            consequences.push(RuleConsequence::FollowUpChoice {
-                certainty: ConsequenceCertainty::FollowUp,
-                choice: FollowUpChoice::SelectMelody,
-            });
-            consequences.push(RuleConsequence::RuleException {
-                certainty: ConsequenceCertainty::Scheduled,
-                exception: RuleException::DoesNotCreateFormationUse,
             });
         }
         _ => {}

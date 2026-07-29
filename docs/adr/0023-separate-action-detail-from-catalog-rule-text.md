@@ -4,6 +4,12 @@ status: accepted
 
 # Model player-facing action detail as typed rule consequences
 
+> Refined by
+> [ADR-0028](./0028-treat-action-detail-as-contextual-supplement.md). The typed
+> Rules Engine ownership established here remains accepted; ADR-0028 replaces
+> the required, non-empty, standalone-completeness and one-variant-one-clause
+> assumptions.
+
 ## Context
 
 Formation Catalog text and the explanation shown before a Player commits an

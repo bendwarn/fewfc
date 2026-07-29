@@ -78,7 +78,7 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
     await expect(host.locator('.spirit-status')).toContainText('精靈 · 金精靈 · 靈力 2 / 6')
     const flyingBlade = host
       .getByRole('region', { name: '能力' })
-      .getByRole('button', { name: /^飛刃：/ })
+      .getByRole('button', { name: /^飛刃/ })
     await expect(flyingBlade).toBeVisible()
     const selectedCard = host.locator('.playing-card:enabled:not(.hidden)').first()
     await Promise.all([

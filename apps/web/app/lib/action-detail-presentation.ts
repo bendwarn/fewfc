@@ -1,6 +1,5 @@
 import type {
   ActionCost,
-  DeclaredInput,
   EffectAmount,
   EffectFormula,
   FollowUpChoice,
@@ -15,9 +14,6 @@ import type {
   TrustedRandomness,
 } from '../types/fewfc'
 
-type CardLabel = (card: number) => string
-type PlayerLabel = (player: string) => string
-
 const elementLabels = {
   Metal: '金行牌',
   Wood: '木行牌',
@@ -26,25 +22,25 @@ const elementLabels = {
   Earth: '土行牌',
 } as const
 
-const defaultCardLabel: CardLabel = card => `牌 ${card}`
-const defaultPlayerLabel: PlayerLabel = player => player
+const elementNames = {
+  Metal: '金',
+  Wood: '木',
+  Water: '水',
+  Fire: '火',
+  Earth: '土',
+} as const
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled action-detail variant: ${JSON.stringify(value)}`)
 }
 
-function cards(cards: number[], cardLabel: CardLabel): string {
-  return cards.map(cardLabel).join('、')
-}
-
-function presentCost(cost: ActionCost, cardLabel: CardLabel): string {
+function presentCost(cost: ActionCost): string {
   switch (cost.type) {
-    case 'useCards': return `使用 ${cards(cost.cards, cardLabel)}`
-    case 'discardCards': return `捨棄 ${cards(cost.cards, cardLabel)}`
+    case 'discardSelectedCards': return '捨棄所選牌'
     case 'spendSpiritPower': return `消耗 ${cost.amount} 點靈力`
     case 'loseHp': return `支付 ${cost.amount} 點生命`
-    case 'optionalDiscardByPrintedElement': return `可額外捨棄一張印刷行屬為 ${cost.allowedPrintedElements.map(element => elementLabels[element]).join('或')}的手牌`
-    case 'consumePouch': return `公開並消耗錦囊 ${cardLabel(cost.sourceCard)}`
+    case 'optionalDiscardByPrintedElement': return `結算主效果後，可捨棄一張${cost.allowedPrintedElements.map(element => elementNames[element]).join('或')}屬性的手牌`
+    case 'consumePouch': return '公開並消耗該錦囊'
     default: return assertNever(cost)
   }
 }
@@ -107,7 +103,7 @@ function presentSpiritSkillEffect(effect: SpiritSkillEffect): string {
   }
 }
 
-function presentImmediateEffect(effect: ImmediateEffect, cardLabel: CardLabel, playerLabel: PlayerLabel): string {
+function presentImmediateEffect(effect: ImmediateEffect): string | null {
   switch (effect.type) {
     case 'attack': {
       const category = { elemental: '五行', physical: '物理', special: '特殊' }[effect.category]
@@ -126,17 +122,16 @@ function presentImmediateEffect(effect: ImmediateEffect, cardLabel: CardLabel, p
         returnTeamHp: '改變隊伍生命', drawCards: '增加本回合抽牌', swapTeamHp: '交換隊伍生命',
         summonSpirit: '召喚或強化精靈', clearEnvironment: '破除環境', applyStatus: '取得狀態',
         changeEnvironment: '轉移環境', breakProfession: '破除職業', limitedUseRecovery: '回復有限使用次數',
-        resolveMelodyMainEffect: '結算此曲調的主效果', beginChainChoice: '開始連環的錦囊與秘計選擇',
+        resolveMelodyMainEffect: '結算此曲調的主效果', beginChainChoice: null,
         shatterSpirits: '削減所有精靈靈力並處理受影響隊伍生命', breakStars: '破除所有星辰並處理受影響隊伍生命',
         damageEachTeamBy15: '每支隊伍各扣除 15 點生命', applyGaleRain: '使所有未受神算保護的玩家獲得烈風暴雨狀態',
         reduceEveryShieldBy20: '所有未受神算保護的防護罩各扣除 20', attackIncreasesTo80IfShieldReduced: '若實際扣除了任一防護罩，此攻擊點數改為 80',
-        chooseEnvironmentAndRequireMatchingCardOrRevealHand: '選擇環境後，各玩家捨棄一張相同行屬牌，否則展示手牌',
+        chooseEnvironmentAndRequireMatchingCardOrRevealHand: '選擇環境後，各玩家捨棄一張相同屬性的牌，否則展示手牌',
         revealTopEightDiscardLevelThreeOrHigherThenShuffle: '依序處理牌組頂最多八張牌，捨棄等級 3 以上者後洗牌',
-        transferEnvironmentToUsedElement: '傷害後將環境轉移為此陣法行屬',
-      } satisfies Record<typeof effect.effect, string>
+        transferEnvironmentToUsedElement: '傷害後將環境轉移為此陣法屬性',
+      } satisfies Record<typeof effect.effect, string | null>
       return labels[effect.effect]
     }
-    case 'changeProfession': return '轉職為此職業'
     case 'activateProfessionAbility': return presentProfessionAbilityEffect(effect.effect)
     case 'useSpiritSkill': return presentSpiritSkillEffect(effect.effect)
     case 'triggerSecretStrategy': {
@@ -146,15 +141,15 @@ function presentImmediateEffect(effect: ImmediateEffect, cardLabel: CardLabel, p
         increaseTurnDraw: '本回合抽牌＋1',
         negateNextPlayerFormationHpChanges: '下家下個回合由陣法造成的隊伍生命變化無效',
         suppressPlayerAbilitiesAndSpiritPower: '指定玩家一回合內無法使用職業能力與精靈技能，且精靈無法增加靈力',
-        summonSpiritFromPouch: '召喚錦囊印刷行屬的精靈，保留可適用的既有靈力',
+        summonSpiritFromPouch: '召喚該錦囊屬性的精靈，保留可適用的既有靈力',
         swapDeckAndDiscard: '從牌組與棄牌堆各選兩張交換，之後洗牌',
-        directProfessionChange: '直接轉職為錦囊印刷行屬對應的一階英雄學派職業',
+        directProfessionChange: '直接轉職為該錦囊屬性對應的一階英雄學派職業',
         breakOrGainStar: '破除現有星辰，或取得本回合有效的指定星辰效果',
-        clearOrChangeEnvironment: '破除目前環境，或捨棄手牌將環境轉移為該牌印刷行屬',
+        clearOrChangeEnvironment: '破除目前環境，或捨棄手牌將環境轉移為該牌屬性',
       } satisfies Record<typeof effect.effect, string>
       return labels[effect.effect]
     }
-    case 'movePreviousTurnDiscardToDeckTop': return `將${playerLabel(effect.previousPlayer)}上回合捨棄的${cardLabel(effect.card)}放到自己的牌組頂`
+    case 'movePreviousTurnDiscardToDeckTop': return '將上回合棄牌放到自己的牌組頂'
     default: return assertNever(effect)
   }
 }
@@ -163,17 +158,9 @@ function presentFollowUp(choice: FollowUpChoice): string {
   switch (choice.type) {
     case 'selectPlayer': return '結算時選擇一名玩家'
     case 'selectFormation': return '結算時選擇一個陣法'
-    case 'selectMelody': return '於下次回合開始選擇一種曲調主效果'
     case 'selectDeckCard': return '結算時從牌組選擇一張牌'
     case 'selectEnvironment': return '結算時選擇一種環境'
     case 'selectPouchOwnerAndOptionalStrategy': return '結算時選擇錦囊持有者，並可選擇第二張牌觸發秘計'
-    case 'selectSecretStrategyInput': {
-      const labels = {
-        none: '不需要額外輸入', targetPlayer: '選擇目標玩家', deckDiscardSwap: '各選兩張牌交換牌組與棄牌堆',
-        star: '選擇星辰效果', retreat: '選擇破除環境或捨棄手牌轉移環境',
-      } satisfies Record<typeof choice.input, string>
-      return `結算時${labels[choice.input]}`
-    }
     case 'selectCards': return `結算時選擇 ${choice.minimum} 至 ${choice.maximum} 張牌`
     default: return assertNever(choice)
   }
@@ -181,32 +168,17 @@ function presentFollowUp(choice: FollowUpChoice): string {
 
 function presentException(exception: RuleException): string {
   switch (exception.type) {
-    case 'doesNotEndAction': return '不結束行動階段'
-    case 'doesNotCreateFormationUse': return '此後續效果不視為新的陣法施展'
-    case 'doesNotScheduleAnotherEcho': return '此後續效果不會再次排定迴響'
     case 'ignoresOtherFormationEffects': return '不受其他陣法效果影響'
     case 'limitedUse': return `本局剩餘 ${exception.remaining}/${exception.maximum} 次使用`
-    case 'effectMayBeIneffective': return '仍受適用的規則限制，效果可能無效'
-    case 'usesPrintedElement': return '此處判定使用卡牌印刷行屬'
     default: return assertNever(exception)
-  }
-}
-
-function presentDeclaredInput(input: DeclaredInput, cardLabel: CardLabel): string {
-  switch (input.type) {
-    case 'card': return `指定 ${cardLabel(input.card)}`
-    case 'element': return `宣告 ${elementLabels[input.element]}`
-    case 'level': return `宣告 ${input.level} 級`
-    case 'targetCard': return `指定牌 ${cardLabel(input.card)}`
-    default: return assertNever(input)
   }
 }
 
 function presentTrustedRandomness(operation: TrustedRandomness): string {
   switch (operation.type) {
-    case 'shuffleDeck': return '由受信任的隨機程序洗牌'
-    case 'shuffleDiscardIntoDeck': return '由受信任的隨機程序洗棄牌堆後重組牌組'
-    case 'selectHiddenHandCards': return `由受信任的隨機程序選出 ${operation.count} 張隱藏手牌`
+    case 'shuffleDeck': return '洗牌'
+    case 'shuffleDiscardIntoDeck': return '需要時洗棄牌並重組牌組'
+    case 'selectHiddenHandCards': return `隨機檢視下家 ${operation.count} 張手牌`
     default: return assertNever(operation)
   }
 }
@@ -214,69 +186,95 @@ function presentTrustedRandomness(operation: TrustedRandomness): string {
 function presentDelayedEffect(timing: 'nextTurnStart' | 'nextPlayerTurn', effect: 'repeatMelodyMainEffect' | 'selectAndPerformMelodyMainEffect'): string {
   const timingText = (() => {
     switch (timing) {
-      case 'nextTurnStart': return '自己下次回合開始'
+      case 'nextTurnStart': return '下次回合開始'
       case 'nextPlayerTurn': return '下位玩家下次回合'
       default: return assertNever(timing)
     }
   })()
   switch (effect) {
-    case 'repeatMelodyMainEffect': return `於${timingText}再次執行此曲調主效果`
-    case 'selectAndPerformMelodyMainEffect': return `於${timingText}選擇並執行一個曲調主效果`
+    case 'repeatMelodyMainEffect': return `${timingText}再執行一次此曲調主效果`
+    case 'selectAndPerformMelodyMainEffect': return `${timingText}選擇並執行一個曲調主效果`
     default: return assertNever(effect)
   }
 }
 
-function qualify(certainty: RuleConsequence['certainty'], text: string): string {
-  switch (certainty) {
-    case 'guaranteed': return text
-    case 'conditional': return `若符合後續條件，${text}`
-    case 'random': return `隨機決定：${text}`
-    case 'followUp': return `後續選擇：${text}`
-    case 'scheduled': return `已排定：${text}`
-    default: return assertNever(certainty)
+function presentConsequence(consequence: RuleConsequence): string | null {
+  switch (consequence.type) {
+    case 'cost': return presentCost(consequence.cost)
+    case 'immediateEffect': return presentImmediateEffect(consequence.effect)
+    case 'followUpChoice': return presentFollowUp(consequence.choice)
+    case 'trustedRandomness': return presentTrustedRandomness(consequence.operation)
+    case 'delayedEffect': return presentDelayedEffect(consequence.timing, consequence.effect)
+    case 'ruleException': return presentException(consequence.exception)
+    default: return assertNever(consequence)
   }
 }
 
-function presentConsequence(consequence: RuleConsequence, cardLabel: CardLabel, playerLabel: PlayerLabel): string {
-  const text = (() => {
-    switch (consequence.type) {
-      case 'cost': return presentCost(consequence.cost, cardLabel)
-      case 'immediateEffect': return presentImmediateEffect(consequence.effect, cardLabel, playerLabel)
-      case 'followUpChoice': return presentFollowUp(consequence.choice)
-      case 'trustedRandomness': return presentTrustedRandomness(consequence.operation)
-      case 'delayedEffect': return presentDelayedEffect(consequence.timing, consequence.effect)
-      case 'ruleException': return presentException(consequence.exception)
-      case 'substitution': return `星辰效果將${cardLabel(consequence.card)}（${elementLabels[consequence.printedElement]}）視為${elementLabels[consequence.interpretedElement]}`
-      case 'declaredInput': return presentDeclaredInput(consequence.input, cardLabel)
-      default: return assertNever(consequence)
-    }
-  })()
-  return qualify(consequence.certainty, text)
-}
-
 export function presentActionDetail(
-  detail: PlayerFacingActionDetail,
-  cardLabel: CardLabel = defaultCardLabel,
-  playerLabel: PlayerLabel = defaultPlayerLabel,
+  detail: PlayerFacingActionDetail | null,
 ): string {
-  return detail.consequences
-    .map(consequence => presentConsequence(consequence, cardLabel, playerLabel))
-    .map(text => `${text}。`)
-    .join('')
+  if (!detail) return ''
+  const consumed = new Set<number>()
+  const clauses: string[] = []
+
+  detail.consequences.forEach((consequence, index) => {
+    if (consumed.has(index)) return
+
+    if (consequence.type === 'immediateEffect'
+      && consequence.effect.type === 'resolveFormationEffect'
+      && consequence.effect.effect === 'inspectHand'
+      && detail.consequences.some(candidate => (
+        candidate.type === 'trustedRandomness'
+        && candidate.operation.type === 'selectHiddenHandCards'
+      ))) {
+      return
+    }
+
+    if (consequence.type === 'cost' && consequence.cost.type === 'optionalDiscardByPrintedElement') {
+      const delayedIndex = detail.consequences.findIndex((candidate, candidateIndex) => (
+        !consumed.has(candidateIndex)
+        && candidate.type === 'delayedEffect'
+        && candidate.certainty === 'conditional'
+        && candidate.timing === 'nextTurnStart'
+        && candidate.effect === 'repeatMelodyMainEffect'
+      ))
+      if (delayedIndex >= 0) {
+        consumed.add(delayedIndex)
+        clauses.push(`${presentCost(consequence.cost)}；若捨棄，${presentDelayedEffect('nextTurnStart', 'repeatMelodyMainEffect')}`)
+        return
+      }
+    }
+
+    if (consequence.type === 'followUpChoice' && consequence.choice.type === 'selectDeckCard') {
+      const shuffleIndex = detail.consequences.findIndex((candidate, candidateIndex) => (
+        !consumed.has(candidateIndex)
+        && candidate.type === 'trustedRandomness'
+        && candidate.operation.type === 'shuffleDeck'
+      ))
+      if (shuffleIndex >= 0) {
+        consumed.add(shuffleIndex)
+        clauses.push(`${presentFollowUp(consequence.choice)}後洗牌`)
+        return
+      }
+    }
+
+    const text = presentConsequence(consequence)
+    if (text) clauses.push(text)
+  })
+
+  return clauses.map(text => `${text}。`).join('')
 }
 
-export function presentPlayableAction(action: PlayableAction, cardLabel: CardLabel = defaultCardLabel): string {
-  return presentActionDetail(action.detail, cardLabel)
+export function presentPlayableAction(action: PlayableAction): string {
+  return presentActionDetail(action.detail)
 }
 
-export function presentSecretStrategyOption(action: SecretStrategyOption, cardLabel: CardLabel = defaultCardLabel): string {
-  return presentActionDetail(action.detail, cardLabel)
+export function presentSecretStrategyOption(action: SecretStrategyOption): string {
+  return presentActionDetail(action.detail)
 }
 
 export function presentDiscardRetrievalAction(
   detail: { detail: PlayerFacingActionDetail },
-  playerLabel: PlayerLabel,
-  cardLabel: CardLabel = defaultCardLabel,
 ): string {
-  return presentActionDetail(detail.detail, cardLabel, playerLabel)
+  return presentActionDetail(detail.detail)
 }

@@ -6,7 +6,7 @@ use fewfc::domain::{
     TargetDecl, TeamId, TrustedRandomnessAnswer, ValidationError,
 };
 use fewfc::public_view::{Viewer, state_for};
-use fewfc::rules::{OfficialRules, PlayableAction};
+use fewfc::rules::{ActionInputRequirement, OfficialRules, PlayableAction};
 
 fn game_state(modules: &[&str]) -> GameState {
     let setup = OfficialRules::new()
@@ -369,6 +369,52 @@ fn seeker_cost_counter_resistance_and_spell_protection_are_typed() {
         event,
         GameEvent::AttackResolved { hp_change, .. } if hp_change.delta == 0
     )));
+}
+
+#[test]
+fn illusion_and_phantasm_are_single_offers_with_virtual_card_input() {
+    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
+    set_profession(&mut state, "p1", "hermit");
+    let selected = cards(&state, &[(Element::Metal, 1), (Element::Wood, 1)]);
+    set_hand(&mut state, "p1", selected.clone());
+
+    let offers = OfficialRules::new()
+        .playable_actions(&state, &PlayerId::new("p1"), &selected)
+        .unwrap()
+        .into_iter()
+        .filter_map(|action| match action {
+            PlayableAction::ActivateProfessionAbility(candidate)
+                if matches!(candidate.ability_id.as_str(), "illusion" | "phantasm") =>
+            {
+                Some(candidate)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(offers.len(), 2);
+    for ability_id in ["illusion", "phantasm"] {
+        let offer = offers
+            .iter()
+            .find(|offer| offer.ability_id == ability_id)
+            .expect("each Mesmer ability should have one offer");
+        assert_eq!(offer.cards, selected);
+        assert_eq!(offer.declared_element, None);
+        assert_eq!(offer.declared_level, None);
+        assert_eq!(
+            offer.input_requirement,
+            Some(ActionInputRequirement::VirtualFormationCard {
+                elements: vec![
+                    Element::Metal,
+                    Element::Wood,
+                    Element::Water,
+                    Element::Fire,
+                    Element::Earth,
+                ],
+                levels: vec![1, 2, 3, 4, 5],
+            })
+        );
+    }
 }
 
 #[test]

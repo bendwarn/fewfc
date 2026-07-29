@@ -187,7 +187,7 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     await expect(triggerButton).toHaveAttribute('aria-pressed', 'true')
     await chainDialog.getByLabel('選擇錦囊持有者').getByRole('button').first().click()
     await chainDialog.getByLabel('選擇秘計').getByRole('button', { name: '牽羊' }).click()
-    await expect(chainDialog.locator('.action-detail')).toContainText('各選兩張牌交換牌組與棄牌堆')
+    await expect(chainDialog.locator('.action-detail')).toContainText('從牌組與棄牌堆各選兩張交換，之後洗牌')
     const chainAnswer = waitForCommand(actor, 'answerChoice')
     await chainDialog.getByRole('button', { name: '確認' }).click()
     await chainAnswer

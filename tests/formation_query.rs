@@ -147,13 +147,10 @@ fn playable_actions_returns_formation_candidates_from_selected_hand_cards() {
     assert_eq!(candidates[0].formation_name, "金擊術");
     assert!(matches!(
         candidates[0].detail.consequences.as_slice(),
-        [
-            RuleConsequence::Cost { .. },
-            RuleConsequence::ImmediateEffect {
-                effect: ImmediateEffect::Attack { .. },
-                ..
-            },
-        ]
+        [RuleConsequence::ImmediateEffect {
+            effect: ImmediateEffect::Attack { .. },
+            ..
+        }]
     ));
     assert_eq!(candidates[0].category, FormationCategory::Attack);
     assert_eq!(candidates[0].cards, vec![card(1)]);

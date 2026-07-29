@@ -1399,6 +1399,15 @@ Formation queries and submissions. The Player's selected Card set remains
 physical, so non-action-ending Spirit Skills and other abilities do not treat
 the virtual component as selected.
 
+Before activation, a playable-action query exposes one Illusion or Phantasm
+offer with a typed Action Input Requirement containing the legal Virtual
+Formation Card elements and levels. It does not enumerate one complete offer
+per element-and-level pair. Selecting those inputs remains pre-commit browser
+state; only an accepted `ActivateProfessionAbility` command creates the Virtual
+Formation Card, consumes the activation allowance, and establishes the
+Formation Requirement. This pre-commit input is not a Pending Choice and does
+not survive reconnect.
+
 Dark Spirit creates both a physical level interpretation and a Formation
 Requirement for its selected Card. It may declare level one or two only when
 that value lowers the Card's current effective level, and the server
@@ -1909,14 +1918,19 @@ Player Set rule, so Shared Fate triggers once for each included Death Spirit
 owner only when that Team actually loses HP. A Team protected by Divine
 Calculation has no such HP deduction or Shared Fate trigger.
 
-Playable action detail is a player-facing decision contract, not merely the
-Formation Catalog's raw `rule_text`. For Echo Melodies, the action detail must
-include the relevant Echo policy because the Player is choosing an action whose
-visible consequences extend past the immediate main effect. The five
-optional-cost Melodies need their allowed printed-element Echo Cost, 變徵‧淨火
-needs its automatic no-cost Echo, and 變宮‧植土 needs its distinct
-next-Turn-Start Melody-main-effect schedule with no Echo. The detail must not
-imply that delayed Echo or 植土 is a new Formation Use.
+Playable action detail is an optional, contextual player-facing decision
+contract rather than Formation Catalog `rule_text` or a standalone restatement
+of the offered Action. For Echo Melodies it supplements the visible offer with
+the relevant Echo policy: the five optional-cost Melodies state the allowed
+Echo Cost elements and their conditional next-Turn-Start repetition,
+變徵‧淨火 states its automatic no-cost repetition, and 變宮‧植土 states its
+distinct next-Turn-Start Melody-main-effect choice. Positive wording such as
+repeating the main effect once expresses the player-visible boundary without
+describing whether the engine creates another Formation Use.
+[ADR-0023](adr/0023-separate-action-detail-from-catalog-rule-text.md) owns the
+typed rule-fact boundary, refined by
+[ADR-0028](adr/0028-treat-action-detail-as-contextual-supplement.md), which
+defines contextual completeness.
 
 `SpiritLevelInterpreted.skill` is an optional canonical semantic field. New
 records write the Fire Spirit Skill that created the Card Interpretation;

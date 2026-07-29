@@ -206,12 +206,6 @@ impl BaseRuleset {
             }
         }
         let actions = crate::rules::action_detail::attach_to_actions(state, player, actions);
-        debug_assert!(actions.iter().all(|action| match action {
-            PlayableAction::PerformFormation(candidate) => candidate.detail.is_complete(),
-            PlayableAction::ChangeProfession(candidate) => candidate.detail.is_complete(),
-            PlayableAction::ActivateProfessionAbility(candidate) => candidate.detail.is_complete(),
-            PlayableAction::UseSpiritSkill(candidate) => candidate.detail.is_complete(),
-        }));
         Ok(actions)
     }
 

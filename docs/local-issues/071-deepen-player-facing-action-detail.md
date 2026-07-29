@@ -4,6 +4,17 @@
 
 ready-for-agent
 
+## Decision Refinement
+
+[ADR-0028](../adr/0028-treat-action-detail-as-contextual-supplement.md) and the
+current glossary refine this issue after its initial design. The closed typed
+Rules Engine ownership and distinct Web presentation module remain
+authoritative. Statements below that require every offer to contain a non-empty,
+independently complete detail, repeat Action identity inside detail, or render
+one sentence per typed consequence are historical and must not guide follow-up
+changes. Follow-up work treats Action Detail as an optional contextual
+supplement and tests the complete decision surface.
+
 ## Problem Statement
 
 The explanation shown before a Player commits an Action is currently assembled

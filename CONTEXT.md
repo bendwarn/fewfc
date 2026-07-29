@@ -278,9 +278,10 @@ _Avoid_: optional preparation, selected Cards
 
 **Activated Profession Ability (發動能力)**:
 A Profession Ability that its Player may deliberately use during the Main Phase
-without consuming the action opportunity. A Player may successfully use only
-one Activated Profession Ability per turn.
-_Avoid_: Action Command, Formation Use
+without consuming the action opportunity. It becomes activated only after all
+required inputs are accepted, consuming the shared once-per-turn activation
+allowance; uncommitted input selection does neither.
+_Avoid_: Action Command, Formation Use, started input selection
 
 **Prepared Profession Ability**:
 The declared, turn-scoped result of an Activated Profession Ability that changes
@@ -606,21 +607,26 @@ Modules, independent of whether a Player can currently perform them.
 _Avoid_: playable actions, current hand matches
 
 **Rule Consequence**:
-A closed typed Player-visible fact about one known consequence of a rule offer
-or choice, such as a cost, immediate effect, follow-up choice, trusted
-randomness, delayed effect, rule exception, or substitution. Rule Consequences
-may be reused by Player-Facing Action Details and Pending Choice descriptors;
-they are not Game Events, arbitrary prose, or predictions of the final Game
-State.
-_Avoid_: summary string, Game Event, simulated outcome
+A closed typed Player-visible fact that can change the Player's understanding
+of one rule offer or choice, such as a concrete cost, effect, follow-up, timing,
+current limit, or material exception. It excludes Action identity, universal
+rules, vague caveats, engine-lifecycle distinctions, arbitrary prose, Game
+Events, and predictions of the final Game State.
+_Avoid_: summary string, Game Event, simulated outcome, engine diagnostic
 
 **Player-Facing Action Detail**:
-A Player-scoped, state-specific snapshot embedded in an offered Action before
-the Player commits it. It contains the complete ordered Rule Consequences the
-Player may see at that decision point; the Rules Engine owns those facts and the
-Web owns their localized presentation. It may refer to a Formation Catalog
-entry, but is not catalog prose, a Pending Choice payload, or command input.
-_Avoid_: raw rule_text, tooltip copy, choice payload
+An optional Player-scoped, state-specific supplement containing only the Rule
+Consequences needed beyond an offered Action's accessible label and visible
+decision context. The Rules Engine owns which supplemental facts hold; the Web
+owns concise localized composition that states each Player-visible fact once,
+uses official game terms, and orders related clauses by dependency and timing.
+_Avoid_: raw rule_text, tooltip copy, choice payload, repeated Action identity
+
+**Action Input Requirement**:
+A typed description of the Player input still required to turn one offered
+Action into a complete command. It is pre-commit offer data and does not create
+a Pending Choice or canonical waiting state.
+_Avoid_: Pending Choice, Rule Consequence, command draft
 
 **Formation Use**:
 The accepted use of a Formation Composition, including its semantic resolution

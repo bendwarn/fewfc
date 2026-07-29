@@ -853,6 +853,7 @@ pub(crate) fn playable_profession_abilities(
             target_card: Some(cards[0]),
             declared_element: state.card_def(cards[0]).map(|card| card.element),
             declared_level: Some(target_level),
+            input_requirement: None,
             detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
         })
         .collect())

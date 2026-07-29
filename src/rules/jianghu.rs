@@ -1035,6 +1035,7 @@ fn ability_candidate(
         target_card,
         declared_element: None,
         declared_level: None,
+        input_requirement: None,
         detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
     }
 }

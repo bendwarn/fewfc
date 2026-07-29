@@ -1,18 +1,17 @@
-//! Composition of player-facing action facts.
+//! Composition of player-facing action-detail supplements.
 //!
 //! Rule modules keep their reusable rule-specific clauses beside execution
 //! (`echo`, `pouch`, and `spirit` currently contribute here).  This module is
-//! the one place that joins those clauses to a legal offered action, orders
-//! them, applies snapshot facts, and refuses incomplete offers.
+//! the one place that joins those clauses to a legal offered action and orders
+//! them. Action identity remains on the offer, and an empty supplement is valid.
 
-use crate::domain::{CardInstanceId, GameState, PlayerId, SecretStrategy, SpiritSkill};
+use crate::domain::{GameState, PlayerId, SecretStrategy, SpiritSkill};
 
 use super::{
-    ActionAttackCategory, ActionCost, ActionTarget, ConsequenceCertainty, DeclaredInput,
-    EffectAmount, EffectFormula, FormationCandidate, ImmediateEffect, PlayableAction,
-    PlayerFacingActionDetail, ProfessionAbilityCandidate, ProfessionAbilityEffect,
-    ProfessionChangeCandidate, RuleConsequence, RuleException, SecretStrategyEffect,
-    SpiritSkillCandidate, TrustedRandomness,
+    ActionAttackCategory, ActionCost, ActionTarget, ConsequenceCertainty, EffectAmount,
+    EffectFormula, FormationCandidate, ImmediateEffect, PlayableAction, PlayerFacingActionDetail,
+    ProfessionAbilityCandidate, ProfessionAbilityEffect, RuleConsequence, RuleException,
+    SecretStrategyEffect, SpiritSkillCandidate,
 };
 
 pub(crate) fn attach_to_actions(
@@ -45,14 +44,13 @@ fn attach_to_action(
     mut action: PlayableAction,
 ) -> PlayableAction {
     let detail = match &action {
-        PlayableAction::PerformFormation(candidate) => formation_detail(state, player, candidate),
-        PlayableAction::ChangeProfession(candidate) => profession_change_detail(candidate),
+        PlayableAction::PerformFormation(candidate) => formation_detail(state, candidate),
+        PlayableAction::ChangeProfession(_) => profession_change_detail(),
         PlayableAction::ActivateProfessionAbility(candidate) => {
             profession_ability_detail(state, player, candidate)
         }
         PlayableAction::UseSpiritSkill(candidate) => spirit_skill_detail(candidate),
     };
-    debug_assert!(detail.is_complete());
     match &mut action {
         PlayableAction::PerformFormation(candidate) => candidate.detail = detail,
         PlayableAction::ChangeProfession(candidate) => candidate.detail = detail,
@@ -62,39 +60,8 @@ fn attach_to_action(
     action
 }
 
-fn formation_detail(
-    state: &GameState,
-    _player: &PlayerId,
-    candidate: &FormationCandidate,
-) -> PlayerFacingActionDetail {
-    let mut consequences = vec![RuleConsequence::Cost {
-        certainty: ConsequenceCertainty::Guaranteed,
-        cost: ActionCost::UseCards {
-            cards: candidate.cards.clone(),
-        },
-    }];
-
-    if let Some(substitution) = &candidate.star_substitution {
-        consequences.push(RuleConsequence::Substitution {
-            certainty: ConsequenceCertainty::Guaranteed,
-            card: substitution.card,
-            printed_element: substitution.printed_element,
-            interpreted_element: substitution.interpreted_element,
-        });
-    }
-
-    for target in &candidate.declared_targets {
-        match target {
-            crate::domain::TargetDecl::FormationRole { card, .. }
-            | crate::domain::TargetDecl::CardMultiplicity { card, .. } => {
-                consequences.push(RuleConsequence::DeclaredInput {
-                    certainty: ConsequenceCertainty::Guaranteed,
-                    input: DeclaredInput::TargetCard { card: *card },
-                });
-            }
-            _ => {}
-        }
-    }
+fn formation_detail(state: &GameState, candidate: &FormationCandidate) -> PlayerFacingActionDetail {
+    let mut consequences = Vec::new();
 
     let registry = crate::rules::official_formation_registry(&state.enabled_rule_modules);
     let formation = registry
@@ -136,13 +103,8 @@ fn formation_detail(
         }
     }
 
-    append_formation_specific_consequences(
-        &mut consequences,
-        state,
-        _player,
-        &candidate.formation_id,
-    );
-    PlayerFacingActionDetail::complete(consequences)
+    append_formation_specific_consequences(&mut consequences, &candidate.formation_id);
+    PlayerFacingActionDetail::composed(consequences)
 }
 
 fn point_amount(formula: &super::PointFormula) -> EffectAmount {
@@ -175,15 +137,12 @@ fn point_amount(formula: &super::PointFormula) -> EffectAmount {
 
 fn append_formation_specific_consequences(
     consequences: &mut Vec<RuleConsequence>,
-    state: &GameState,
-    player: &PlayerId,
     formation_id: &str,
 ) {
     if let Some(mut echo) = crate::rules::echo::action_detail_consequences(formation_id) {
         consequences.append(&mut echo);
     }
-    if let Some(mut pouch) =
-        crate::rules::pouch::formation_action_detail_consequences(state, player, formation_id)
+    if let Some(mut pouch) = crate::rules::pouch::formation_action_detail_consequences(formation_id)
     {
         consequences.append(&mut pouch);
     }
@@ -199,25 +158,8 @@ fn append_formation_specific_consequences(
     }
 }
 
-fn profession_change_detail(candidate: &ProfessionChangeCandidate) -> PlayerFacingActionDetail {
-    PlayerFacingActionDetail::complete(vec![
-        RuleConsequence::Cost {
-            certainty: ConsequenceCertainty::Guaranteed,
-            cost: ActionCost::UseCards {
-                cards: candidate.cards.clone(),
-            },
-        },
-        RuleConsequence::ImmediateEffect {
-            certainty: ConsequenceCertainty::Guaranteed,
-            effect: ImmediateEffect::ChangeProfession {
-                profession_id: candidate.profession_id.as_str().to_string(),
-            },
-        },
-        RuleConsequence::RuleException {
-            certainty: ConsequenceCertainty::Conditional,
-            exception: RuleException::EffectMayBeIneffective,
-        },
-    ])
+fn profession_change_detail() -> PlayerFacingActionDetail {
+    PlayerFacingActionDetail::composed(Vec::new())
 }
 
 fn profession_ability_detail(
@@ -225,40 +167,18 @@ fn profession_ability_detail(
     player: &PlayerId,
     candidate: &ProfessionAbilityCandidate,
 ) -> PlayerFacingActionDetail {
-    let mut consequences = Vec::new();
+    let mut consequences = vec![RuleConsequence::ImmediateEffect {
+        certainty: ConsequenceCertainty::Guaranteed,
+        effect: ImmediateEffect::ActivateProfessionAbility {
+            effect: profession_ability_effect(&candidate.ability_id),
+        },
+    }];
     if !candidate.cards.is_empty() {
         consequences.push(RuleConsequence::Cost {
             certainty: ConsequenceCertainty::Guaranteed,
-            cost: ActionCost::DiscardCards {
-                cards: candidate.cards.clone(),
-            },
+            cost: ActionCost::DiscardSelectedCards,
         });
     }
-    if let Some(card) = candidate.target_card {
-        consequences.push(RuleConsequence::DeclaredInput {
-            certainty: ConsequenceCertainty::Guaranteed,
-            input: DeclaredInput::TargetCard { card },
-        });
-    }
-    if let Some(element) = candidate.declared_element {
-        consequences.push(RuleConsequence::DeclaredInput {
-            certainty: ConsequenceCertainty::Guaranteed,
-            input: DeclaredInput::Element { element },
-        });
-    }
-    if let Some(level) = candidate.declared_level {
-        consequences.push(RuleConsequence::DeclaredInput {
-            certainty: ConsequenceCertainty::Guaranteed,
-            input: DeclaredInput::Level { level },
-        });
-    }
-    consequences.push(RuleConsequence::ImmediateEffect {
-        certainty: ConsequenceCertainty::Guaranteed,
-        effect: ImmediateEffect::ActivateProfessionAbility {
-            ability_id: candidate.ability_id.clone(),
-            effect: profession_ability_effect(&candidate.ability_id),
-        },
-    });
     if let Some(use_count) = state
         .limited_uses
         .iter()
@@ -273,88 +193,47 @@ fn profession_ability_detail(
             },
         });
     }
-    consequences.push(RuleConsequence::RuleException {
-        certainty: ConsequenceCertainty::Guaranteed,
-        exception: RuleException::DoesNotEndAction,
-    });
-    PlayerFacingActionDetail::complete(consequences)
+    PlayerFacingActionDetail::composed(consequences)
 }
 
 fn spirit_skill_detail(candidate: &SpiritSkillCandidate) -> PlayerFacingActionDetail {
-    let mut consequences = vec![RuleConsequence::Cost {
-        certainty: ConsequenceCertainty::Guaranteed,
-        cost: ActionCost::SpendSpiritPower {
-            amount: crate::rules::spirit::skill_cost(candidate.skill),
-        },
-    }];
-    if let Some(card) = candidate.selected_card {
-        if candidate.skill == SpiritSkill::Flow {
-            consequences.push(RuleConsequence::Cost {
-                certainty: ConsequenceCertainty::Guaranteed,
-                cost: ActionCost::DiscardCards { cards: vec![card] },
-            });
-        } else {
-            consequences.push(RuleConsequence::DeclaredInput {
-                certainty: ConsequenceCertainty::Guaranteed,
-                input: DeclaredInput::Card { card },
-            });
-        }
-    }
-    if let Some(level) = candidate.declared_level {
-        consequences.push(RuleConsequence::DeclaredInput {
-            certainty: ConsequenceCertainty::Guaranteed,
-            input: DeclaredInput::Level { level },
-        });
-    }
-    consequences.push(RuleConsequence::ImmediateEffect {
-        certainty: ConsequenceCertainty::Guaranteed,
-        effect: ImmediateEffect::UseSpiritSkill {
-            effect: crate::rules::spirit::player_facing_effect(candidate.skill),
-        },
-    });
-    if candidate.skill == SpiritSkill::EvilGaze {
-        consequences.push(RuleConsequence::TrustedRandomness {
-            certainty: ConsequenceCertainty::Random,
-            operation: TrustedRandomness::SelectHiddenHandCards { count: 2 },
-        });
-    }
-    consequences.push(RuleConsequence::RuleException {
-        certainty: ConsequenceCertainty::Guaranteed,
-        exception: RuleException::DoesNotEndAction,
-    });
-    PlayerFacingActionDetail::complete(consequences)
-}
-
-pub(crate) fn secret_strategy_detail(
-    source_card: CardInstanceId,
-    strategy: SecretStrategy,
-    input: super::SecretStrategyInput,
-) -> PlayerFacingActionDetail {
     let mut consequences = vec![
+        RuleConsequence::ImmediateEffect {
+            certainty: ConsequenceCertainty::Guaranteed,
+            effect: ImmediateEffect::UseSpiritSkill {
+                effect: crate::rules::spirit::player_facing_effect(candidate.skill),
+            },
+        },
         RuleConsequence::Cost {
             certainty: ConsequenceCertainty::Guaranteed,
-            cost: ActionCost::ConsumePouch { source_card },
+            cost: ActionCost::SpendSpiritPower {
+                amount: crate::rules::spirit::skill_cost(candidate.skill),
+            },
         },
+    ];
+    if candidate.selected_card.is_some() && candidate.skill == SpiritSkill::Flow {
+        consequences.push(RuleConsequence::Cost {
+            certainty: ConsequenceCertainty::Guaranteed,
+            cost: ActionCost::DiscardSelectedCards,
+        });
+    }
+    PlayerFacingActionDetail::composed(consequences)
+}
+
+pub(crate) fn secret_strategy_detail(strategy: SecretStrategy) -> PlayerFacingActionDetail {
+    let consequences = vec![
         RuleConsequence::ImmediateEffect {
             certainty: ConsequenceCertainty::Guaranteed,
             effect: ImmediateEffect::TriggerSecretStrategy {
                 effect: secret_strategy_effect(strategy),
             },
         },
+        RuleConsequence::Cost {
+            certainty: ConsequenceCertainty::Guaranteed,
+            cost: ActionCost::ConsumePouch,
+        },
     ];
-    if input != super::SecretStrategyInput::None {
-        consequences.push(RuleConsequence::FollowUpChoice {
-            certainty: ConsequenceCertainty::FollowUp,
-            choice: super::FollowUpChoice::SelectSecretStrategyInput { input },
-        });
-    }
-    if strategy == SecretStrategy::SheepStealing {
-        consequences.push(RuleConsequence::TrustedRandomness {
-            certainty: ConsequenceCertainty::Random,
-            operation: TrustedRandomness::ShuffleDeck,
-        });
-    }
-    PlayerFacingActionDetail::complete(consequences)
+    PlayerFacingActionDetail::composed(consequences)
 }
 
 fn secret_strategy_effect(strategy: SecretStrategy) -> SecretStrategyEffect {
@@ -374,26 +253,15 @@ fn secret_strategy_effect(strategy: SecretStrategy) -> SecretStrategyEffect {
     }
 }
 
-pub(crate) fn discard_retrieval_detail(
-    card: CardInstanceId,
-    previous_player: PlayerId,
-    hp_cost: i32,
-) -> PlayerFacingActionDetail {
-    PlayerFacingActionDetail::complete(vec![
+pub(crate) fn discard_retrieval_detail(hp_cost: i32) -> PlayerFacingActionDetail {
+    PlayerFacingActionDetail::composed(vec![
+        RuleConsequence::ImmediateEffect {
+            certainty: ConsequenceCertainty::Guaranteed,
+            effect: ImmediateEffect::MovePreviousTurnDiscardToDeckTop,
+        },
         RuleConsequence::Cost {
             certainty: ConsequenceCertainty::Guaranteed,
             cost: ActionCost::LoseHp { amount: hp_cost },
-        },
-        RuleConsequence::ImmediateEffect {
-            certainty: ConsequenceCertainty::Guaranteed,
-            effect: ImmediateEffect::MovePreviousTurnDiscardToDeckTop {
-                card,
-                previous_player,
-            },
-        },
-        RuleConsequence::RuleException {
-            certainty: ConsequenceCertainty::Guaranteed,
-            exception: RuleException::DoesNotEndAction,
         },
     ])
 }
@@ -401,53 +269,37 @@ pub(crate) fn discard_retrieval_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Element, GameSetup, Phase};
+    use crate::domain::{CardInstanceId, Element, GameSetup, Phase};
+    use crate::rules::{ProfessionChangeCandidate, TrustedRandomness};
 
     #[test]
     fn consequence_contract_uses_tagged_variants_and_camel_case_fields() {
-        let detail = PlayerFacingActionDetail::complete(vec![
+        let detail = PlayerFacingActionDetail::composed(vec![
             RuleConsequence::Cost {
                 certainty: ConsequenceCertainty::Guaranteed,
                 cost: ActionCost::OptionalDiscardByPrintedElement {
                     allowed_printed_elements: vec![Element::Metal, Element::Earth],
                 },
             },
-            RuleConsequence::Substitution {
-                certainty: ConsequenceCertainty::Guaranteed,
-                card: CardInstanceId::new(7),
-                printed_element: Element::Metal,
-                interpreted_element: Element::Earth,
-            },
             RuleConsequence::ImmediateEffect {
                 certainty: ConsequenceCertainty::Guaranteed,
-                effect: ImmediateEffect::MovePreviousTurnDiscardToDeckTop {
-                    card: CardInstanceId::new(8),
-                    previous_player: PlayerId::new("bob"),
-                },
+                effect: ImmediateEffect::MovePreviousTurnDiscardToDeckTop,
             },
             RuleConsequence::Cost {
                 certainty: ConsequenceCertainty::Guaranteed,
-                cost: ActionCost::ConsumePouch {
-                    source_card: CardInstanceId::new(10),
-                },
-            },
-            RuleConsequence::ImmediateEffect {
-                certainty: ConsequenceCertainty::Guaranteed,
-                effect: ImmediateEffect::ChangeProfession {
-                    profession_id: "hero:warrior".to_string(),
-                },
+                cost: ActionCost::ConsumePouch,
             },
             RuleConsequence::ImmediateEffect {
                 certainty: ConsequenceCertainty::Guaranteed,
                 effect: ImmediateEffect::ActivateProfessionAbility {
-                    ability_id: "meditation".to_string(),
                     effect: ProfessionAbilityEffect::IncreaseTurnDraw { amount: 1 },
                 },
             },
             RuleConsequence::FollowUpChoice {
                 certainty: ConsequenceCertainty::FollowUp,
-                choice: super::super::FollowUpChoice::SelectSecretStrategyInput {
-                    input: super::super::SecretStrategyInput::TargetPlayer,
+                choice: super::super::FollowUpChoice::SelectCards {
+                    minimum: 1,
+                    maximum: 2,
                 },
             },
             RuleConsequence::TrustedRandomness {
@@ -467,11 +319,9 @@ mod tests {
                     maximum: 1,
                 },
             },
-            RuleConsequence::DeclaredInput {
+            RuleConsequence::Cost {
                 certainty: ConsequenceCertainty::Guaranteed,
-                input: DeclaredInput::TargetCard {
-                    card: CardInstanceId::new(9),
-                },
+                cost: ActionCost::DiscardSelectedCards,
             },
         ]);
         let json = serde_json::to_value(detail).expect("detail must serialize");
@@ -481,42 +331,32 @@ mod tests {
             json["consequences"][0]["cost"]["allowedPrintedElements"],
             serde_json::json!(["Metal", "Earth"])
         );
-        assert_eq!(json["consequences"][1]["printedElement"], "Metal");
-        assert_eq!(json["consequences"][1]["interpretedElement"], "Earth");
-        assert!(json["consequences"][1].get("printed_element").is_none());
-        assert_eq!(json["consequences"][2]["type"], "immediateEffect");
-        assert_eq!(json["consequences"][2]["effect"]["previousPlayer"], "bob");
-        assert_eq!(json["consequences"][6]["type"], "followUpChoice");
         assert_eq!(
-            json["consequences"][7]["operation"]["type"],
+            json["consequences"][1]["effect"],
+            serde_json::json!({ "type": "movePreviousTurnDiscardToDeckTop" })
+        );
+        assert_eq!(
+            json["consequences"][2]["cost"],
+            serde_json::json!({ "type": "consumePouch" })
+        );
+        assert_eq!(
+            json["consequences"][3]["effect"],
+            serde_json::json!({
+                "type": "activateProfessionAbility",
+                "effect": { "type": "increaseTurnDraw", "amount": 1 }
+            })
+        );
+        assert_eq!(json["consequences"][4]["type"], "followUpChoice");
+        assert_eq!(
+            json["consequences"][5]["operation"]["type"],
             "selectHiddenHandCards"
         );
-        assert_eq!(json["consequences"][7]["operation"]["count"], 2);
-        assert_eq!(json["consequences"][8]["timing"], "nextTurnStart");
-        assert_eq!(json["consequences"][9]["exception"]["remaining"], 0);
-        assert_eq!(json["consequences"][10]["input"]["type"], "targetCard");
-        assert_eq!(json["consequences"][10]["input"]["card"], 9);
-        assert_eq!(json["consequences"][3]["cost"]["sourceCard"], 10);
-        assert!(json["consequences"][3]["cost"].get("source_card").is_none());
+        assert_eq!(json["consequences"][5]["operation"]["count"], 2);
+        assert_eq!(json["consequences"][6]["timing"], "nextTurnStart");
+        assert_eq!(json["consequences"][7]["exception"]["remaining"], 0);
         assert_eq!(
-            json["consequences"][4]["effect"]["professionId"],
-            "hero:warrior"
-        );
-        assert!(
-            json["consequences"][4]["effect"]
-                .get("profession_id")
-                .is_none()
-        );
-        assert_eq!(json["consequences"][5]["effect"]["abilityId"], "meditation");
-        assert!(
-            json["consequences"][5]["effect"]
-                .get("ability_id")
-                .is_none()
-        );
-        assert!(
-            json["consequences"][2]["effect"]
-                .get("previous_player")
-                .is_none()
+            json["consequences"][8]["cost"],
+            serde_json::json!({ "type": "discardSelectedCards" })
         );
         assert_eq!(
             serde_json::to_value(TrustedRandomness::ShuffleDeck)
@@ -531,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn composes_complete_details_for_every_offer_family_without_catalog_text() {
+    fn composes_only_contextual_supplements_for_each_offer_family() {
         let rules = crate::rules::OfficialRules::new();
         let alice = PlayerId::new("alice");
         let bob = PlayerId::new("bob");
@@ -572,6 +412,7 @@ mod tests {
                     target_card: None,
                     declared_element: Some(Element::Water),
                     declared_level: Some(3),
+                    input_requirement: None,
                     detail: pending.clone(),
                 }),
                 PlayableAction::UseSpiritSkill(SpiritSkillCandidate {
@@ -594,12 +435,6 @@ mod tests {
             ],
         );
 
-        assert!(actions.iter().all(|action| match action {
-            PlayableAction::PerformFormation(candidate) => candidate.detail.is_complete(),
-            PlayableAction::ChangeProfession(candidate) => candidate.detail.is_complete(),
-            PlayableAction::ActivateProfessionAbility(candidate) => candidate.detail.is_complete(),
-            PlayableAction::UseSpiritSkill(candidate) => candidate.detail.is_complete(),
-        }));
         let PlayableAction::PerformFormation(echo) = &actions[0] else {
             panic!("first action should be the supplied Echo formation")
         };
@@ -611,11 +446,29 @@ mod tests {
                 ..
             }
         )));
-        let pouch = secret_strategy_detail(
-            CardInstanceId::new(7),
-            SecretStrategy::GoldenCicada,
-            super::super::SecretStrategyInput::None,
-        );
+        let PlayableAction::ChangeProfession(change) = &actions[1] else {
+            panic!("second action should be Profession Change")
+        };
+        assert!(change.detail.consequences.is_empty());
+
+        let PlayableAction::ActivateProfessionAbility(ability) = &actions[2] else {
+            panic!("third action should be Profession Ability")
+        };
+        assert!(matches!(
+            ability.detail.consequences.as_slice(),
+            [
+                RuleConsequence::ImmediateEffect {
+                    effect: ImmediateEffect::ActivateProfessionAbility { .. },
+                    ..
+                },
+                RuleConsequence::Cost {
+                    cost: ActionCost::DiscardSelectedCards,
+                    ..
+                }
+            ]
+        ));
+
+        let pouch = secret_strategy_detail(SecretStrategy::GoldenCicada);
         assert!(pouch.consequences.iter().any(|consequence| matches!(
             consequence,
             RuleConsequence::ImmediateEffect {
@@ -625,18 +478,19 @@ mod tests {
                 ..
             }
         )));
-        let sheep = secret_strategy_detail(
-            CardInstanceId::new(12),
-            SecretStrategy::SheepStealing,
-            super::super::SecretStrategyInput::DeckDiscardSwap,
-        );
-        assert!(sheep.consequences.iter().any(|consequence| matches!(
-            consequence,
-            RuleConsequence::TrustedRandomness {
-                certainty: ConsequenceCertainty::Random,
-                operation: TrustedRandomness::ShuffleDeck,
-            }
-        )));
+        assert!(matches!(
+            pouch.consequences.as_slice(),
+            [
+                RuleConsequence::ImmediateEffect { .. },
+                RuleConsequence::Cost {
+                    cost: ActionCost::ConsumePouch,
+                    ..
+                }
+            ]
+        ));
+
+        let sheep = secret_strategy_detail(SecretStrategy::SheepStealing);
+        assert_eq!(sheep.consequences.len(), 2);
         let PlayableAction::PerformFormation(sacred_beast) = &actions[4] else {
             panic!("fifth action should be the supplied sacred beast")
         };
@@ -653,13 +507,19 @@ mod tests {
                     }
                 ))
         );
-        let retrieval = discard_retrieval_detail(CardInstanceId::new(8), PlayerId::new("bob"), 6);
-        assert!(retrieval.consequences.iter().any(|consequence| matches!(
-            consequence,
-            RuleConsequence::RuleException {
-                exception: RuleException::DoesNotEndAction,
-                ..
-            }
-        )));
+        let retrieval = discard_retrieval_detail(6);
+        assert!(matches!(
+            retrieval.consequences.as_slice(),
+            [
+                RuleConsequence::ImmediateEffect {
+                    effect: ImmediateEffect::MovePreviousTurnDiscardToDeckTop,
+                    ..
+                },
+                RuleConsequence::Cost {
+                    cost: ActionCost::LoseHp { amount: 6 },
+                    ..
+                }
+            ]
+        ));
     }
 }

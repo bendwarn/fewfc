@@ -403,6 +403,13 @@ export interface PlayerFacingActionDetail {
   consequences: RuleConsequence[]
 }
 
+export type ActionInputRequirement =
+  | {
+      type: 'virtualFormationCard'
+      elements: Element[]
+      levels: number[]
+    }
+
 export type ConsequenceCertainty = 'guaranteed' | 'conditional' | 'random' | 'followUp' | 'scheduled'
 
 export type RuleConsequence =
@@ -412,25 +419,21 @@ export type RuleConsequence =
   | { type: 'trustedRandomness'; certainty: ConsequenceCertainty; operation: TrustedRandomness }
   | { type: 'delayedEffect'; certainty: ConsequenceCertainty; timing: DelayedTiming; effect: DelayedEffect }
   | { type: 'ruleException'; certainty: ConsequenceCertainty; exception: RuleException }
-  | { type: 'substitution'; certainty: ConsequenceCertainty; card: CardInstanceId; printedElement: Element; interpretedElement: Element }
-  | { type: 'declaredInput'; certainty: ConsequenceCertainty; input: DeclaredInput }
 
 export type ActionCost =
-  | { type: 'useCards'; cards: CardInstanceId[] }
-  | { type: 'discardCards'; cards: CardInstanceId[] }
+  | { type: 'discardSelectedCards' }
   | { type: 'spendSpiritPower'; amount: number }
   | { type: 'loseHp'; amount: number }
   | { type: 'optionalDiscardByPrintedElement'; allowedPrintedElements: Element[] }
-  | { type: 'consumePouch'; sourceCard: CardInstanceId }
+  | { type: 'consumePouch' }
 
 export type ImmediateEffect =
   | { type: 'attack'; target: ActionTarget; category: ActionAttackCategory; points: EffectAmount }
   | { type: 'resolveFormationEffect'; effect: FormationEffect }
-  | { type: 'changeProfession'; professionId: string }
-  | { type: 'activateProfessionAbility'; abilityId: string; effect: ProfessionAbilityEffect }
+  | { type: 'activateProfessionAbility'; effect: ProfessionAbilityEffect }
   | { type: 'useSpiritSkill'; effect: SpiritSkillEffect }
   | { type: 'triggerSecretStrategy'; effect: SecretStrategyEffect }
-  | { type: 'movePreviousTurnDiscardToDeckTop'; card: CardInstanceId; previousPlayer: PlayerId }
+  | { type: 'movePreviousTurnDiscardToDeckTop' }
 
 export type ActionTarget = 'selfPlayer' | 'selfTeam' | 'previousPlayer' | 'previousTeam' | 'nextPlayer' | 'nextTeam' | 'selectedPlayer' | 'allPlayers' | 'otherPlayers' | 'eachTeam'
 export type ActionAttackCategory = 'elemental' | 'physical' | 'special'
@@ -471,13 +474,10 @@ export type SpiritSkillEffect =
 export type FollowUpChoice =
   | { type: 'selectPlayer' }
   | { type: 'selectFormation' }
-  | { type: 'selectMelody' }
   | { type: 'selectDeckCard' }
   | { type: 'selectEnvironment' }
   | { type: 'selectPouchOwnerAndOptionalStrategy' }
-  | { type: 'selectSecretStrategyInput'; input: SecretStrategyInput }
   | { type: 'selectCards'; minimum: number; maximum: number }
-export type SecretStrategyInput = 'none' | 'targetPlayer' | 'deckDiscardSwap' | 'star' | 'retreat'
 export type TrustedRandomness =
   | { type: 'shuffleDeck' }
   | { type: 'shuffleDiscardIntoDeck' }
@@ -485,18 +485,8 @@ export type TrustedRandomness =
 export type DelayedTiming = 'nextTurnStart' | 'nextPlayerTurn'
 export type DelayedEffect = 'repeatMelodyMainEffect' | 'selectAndPerformMelodyMainEffect'
 export type RuleException =
-  | { type: 'doesNotEndAction' }
-  | { type: 'doesNotCreateFormationUse' }
-  | { type: 'doesNotScheduleAnotherEcho' }
   | { type: 'ignoresOtherFormationEffects' }
   | { type: 'limitedUse'; key: string; remaining: number; maximum: number }
-  | { type: 'effectMayBeIneffective' }
-  | { type: 'usesPrintedElement' }
-export type DeclaredInput =
-  | { type: 'card'; card: CardInstanceId }
-  | { type: 'element'; element: Element }
-  | { type: 'level'; level: number }
-  | { type: 'targetCard'; card: CardInstanceId }
 
 export type PlayableAction =
   | {
@@ -504,7 +494,7 @@ export type PlayableAction =
       id: string
       name: string
       category: 'Attack' | 'Spell'
-      detail: PlayerFacingActionDetail
+      detail: PlayerFacingActionDetail | null
       cards: CardInstanceId[]
       starSubstitution: StarElementSubstitution | null
       matchOption: {
@@ -518,24 +508,25 @@ export type PlayableAction =
       type: 'changeProfession'
       id: string
       name: string
-      detail: PlayerFacingActionDetail
+      detail: PlayerFacingActionDetail | null
       cards: CardInstanceId[]
     }
   | {
       type: 'activateProfessionAbility'
       id: string
       name: string
-      detail: PlayerFacingActionDetail
+      detail: PlayerFacingActionDetail | null
       cards: CardInstanceId[]
       targetCard: CardInstanceId | null
       declaredElement: Element | null
       declaredLevel: number | null
+      inputRequirement: ActionInputRequirement | null
     }
   | {
       type: 'useSpiritSkill'
       id: string
       name: string
-      detail: PlayerFacingActionDetail
+      detail: PlayerFacingActionDetail | null
       cards: CardInstanceId[]
       selectedCard: CardInstanceId | null
       declaredLevel: number | null

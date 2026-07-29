@@ -8,6 +8,7 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Completed Local Issues
 
+- [#72 Compose Illusion input before activation](072-compose-illusion-input-before-activation.md)
 - [#70 Deepen the Pending Choice lifecycle](070-deepen-pending-choice-lifecycle.md)
 - [#69 Separate randomness continuations from player responses](069-separate-randomness-continuations-from-player-responses.md)
 - [#67 Align Echo action detail with rule consequences](067-align-echo-action-detail-with-rule-text.md)

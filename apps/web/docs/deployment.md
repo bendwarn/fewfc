@@ -42,17 +42,19 @@ bunx wrangler secret put BETTER_AUTH_SECRET --env staging
 bunx wrangler secret put BETTER_AUTH_SECRET --env production
 ```
 
+CI/CD supplies this secret from the matching GitHub Environment instead. Do not
+commit the value to this repository.
+
 Before deployment:
 
-1. Replace the D1 placeholder IDs in `wrangler.toml`.
+1. Verify the staging and production D1 IDs in `wrangler.toml`.
 2. Replace `BETTER_AUTH_URL` with the actual production and staging origins.
-3. Apply migrations to each remote database.
-4. Configure `BETTER_AUTH_SECRET` for each environment.
+3. Configure `BETTER_AUTH_SECRET` for each environment.
+4. Apply migrations to each remote database.
 
 ```bash
-bun run db:migrate:remote
-bunx wrangler d1 migrations apply fewfc-auth-staging --remote --env staging
-bunx wrangler d1 migrations apply fewfc-auth-production --remote --env production
+bun run db:migrate:staging
+bun run db:migrate:production
 ```
 
 `bun run build` first compiles the Rust rules engine to `worker/wasm/fewfc.wasm`, then runs the Nuxt Cloudflare build. The generated Wasm binary is ignored by git and should be rebuilt in deploy environments.
@@ -66,6 +68,37 @@ bun run cf:deploy:production
 
 There is intentionally no unqualified deployment command. Each deployment command
 validates that its origin and D1 ID no longer contain repository placeholders.
+The commands build first, then apply the matching remote D1 migrations immediately
+before deploying the Worker.
+
+## GitHub Actions CI/CD
+
+`.github/workflows/ci-cd.yml` is the deployment source of truth:
+
+- Pull requests and pushes to `main` run Rust tests, Web unit tests and type
+  checking, and the Worker-backed Playwright suite.
+- A successful push to `main` deploys `staging` automatically.
+- `production` is deployed from `main` through the workflow's manual
+  `workflow_dispatch` action. Protect the GitHub `production` Environment with
+  required reviewers.
+- Each deployment builds the environment-specific Nuxt/Wasm output, uploads
+  `BETTER_AUTH_SECRET`, applies pending remote D1 migrations, and then deploys
+  the Worker.
+
+Create GitHub Environments named `staging` and `production`. Add these encrypted
+secrets to both environments:
+
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_API_TOKEN`
+- `BETTER_AUTH_SECRET`
+
+Use different `BETTER_AUTH_SECRET` values for staging and production. The
+Cloudflare token needs Workers Scripts write access, D1 edit access, and Account
+Settings read access, scoped to the deployment account. Add Workers Routes write
+access for the relevant zone if a custom domain is managed by Wrangler.
+
+Before enabling automatic deployment, replace both placeholder
+`BETTER_AUTH_URL` values in `wrangler.toml` with the actual HTTPS origins.
 
 Durable Objects should own authoritative online Game Records. Browser clients submit Commands and receive viewer-filtered Public Game State and Public Event Feed data.
 

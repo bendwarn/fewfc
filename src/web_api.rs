@@ -1439,7 +1439,7 @@ fn web_playable_action(candidate: PlayableAction) -> WebPlayableAction {
             id: candidate.formation_id.clone(),
             name: candidate.formation_name,
             category: WebFormationCategory::from(candidate.category),
-            detail: candidate.detail,
+            detail: candidate.detail.into_optional(),
             cards: candidate.cards,
             star_substitution: candidate
                 .star_substitution
@@ -1466,26 +1466,27 @@ fn web_playable_action(candidate: PlayableAction) -> WebPlayableAction {
         PlayableAction::ChangeProfession(candidate) => WebPlayableAction::ChangeProfession {
             id: candidate.profession_id.as_str().to_string(),
             name: candidate.profession_name,
-            detail: candidate.detail,
+            detail: candidate.detail.into_optional(),
             cards: candidate.cards,
         },
         PlayableAction::ActivateProfessionAbility(candidate) => {
             WebPlayableAction::ActivateProfessionAbility {
                 id: candidate.ability_id,
                 name: candidate.ability_name,
-                detail: candidate.detail,
+                detail: candidate.detail.into_optional(),
                 cards: candidate.cards,
                 target_card: candidate.target_card,
                 declared_element: candidate
                     .declared_element
                     .map(|element| format!("{element:?}")),
                 declared_level: candidate.declared_level,
+                input_requirement: candidate.input_requirement,
             }
         }
         PlayableAction::UseSpiritSkill(candidate) => WebPlayableAction::UseSpiritSkill {
             id: format!("{:?}", candidate.skill),
             name: candidate.skill_name,
-            detail: candidate.detail,
+            detail: candidate.detail.into_optional(),
             cards: candidate.selected_card.into_iter().collect(),
             selected_card: candidate.selected_card,
             declared_level: candidate.declared_level,
@@ -1563,11 +1564,7 @@ fn discard_retrieval_action(
     let level = state.card_def(card)?.level as i32;
     let hp_cost = crate::rules::hero::discard_retrieval_cost(state, player, level * 2);
     Some(WebDiscardRetrievalActionDetail {
-        detail: crate::rules::action_detail::discard_retrieval_detail(
-            card,
-            previous.clone(),
-            hp_cost,
-        ),
+        detail: crate::rules::action_detail::discard_retrieval_detail(hp_cost),
     })
 }
 
@@ -3128,7 +3125,7 @@ enum WebPlayableAction {
         id: String,
         name: String,
         category: WebFormationCategory,
-        detail: PlayerFacingActionDetail,
+        detail: Option<PlayerFacingActionDetail>,
         cards: Vec<CardInstanceId>,
         #[serde(rename = "starSubstitution")]
         star_substitution: Option<WebStarElementSubstitution>,
@@ -3138,13 +3135,13 @@ enum WebPlayableAction {
     ChangeProfession {
         id: String,
         name: String,
-        detail: PlayerFacingActionDetail,
+        detail: Option<PlayerFacingActionDetail>,
         cards: Vec<CardInstanceId>,
     },
     ActivateProfessionAbility {
         id: String,
         name: String,
-        detail: PlayerFacingActionDetail,
+        detail: Option<PlayerFacingActionDetail>,
         cards: Vec<CardInstanceId>,
         #[serde(rename = "targetCard")]
         target_card: Option<CardInstanceId>,
@@ -3152,11 +3149,13 @@ enum WebPlayableAction {
         declared_element: Option<String>,
         #[serde(rename = "declaredLevel")]
         declared_level: Option<u32>,
+        #[serde(rename = "inputRequirement")]
+        input_requirement: Option<crate::rules::ActionInputRequirement>,
     },
     UseSpiritSkill {
         id: String,
         name: String,
-        detail: PlayerFacingActionDetail,
+        detail: Option<PlayerFacingActionDetail>,
         cards: Vec<CardInstanceId>,
         #[serde(rename = "selectedCard")]
         selected_card: Option<CardInstanceId>,
@@ -4530,7 +4529,7 @@ mod tests {
     use super::*;
 
     fn test_action_detail() -> PlayerFacingActionDetail {
-        PlayerFacingActionDetail::complete(vec![crate::rules::RuleConsequence::ImmediateEffect {
+        PlayerFacingActionDetail::composed(vec![crate::rules::RuleConsequence::ImmediateEffect {
             certainty: crate::rules::ConsequenceCertainty::Guaranteed,
             effect: crate::rules::ImmediateEffect::ResolveFormationEffect {
                 effect: crate::rules::FormationEffect::ApplyStatus,
@@ -5303,7 +5302,7 @@ mod tests {
             id: "defense".to_string(),
             name: "防禦".to_string(),
             category: WebFormationCategory::Spell,
-            detail: test_action_detail(),
+            detail: Some(test_action_detail()),
             cards: vec![CardInstanceId::new(7), CardInstanceId::new(42)],
             star_substitution: Some(substitution),
             match_option: None,
@@ -5508,11 +5507,12 @@ mod tests {
         let action = WebPlayableAction::ActivateProfessionAbility {
             id: "illusion".to_string(),
             name: "幻術".to_string(),
-            detail: test_action_detail(),
+            detail: Some(test_action_detail()),
             cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
             target_card: Some(CardInstanceId::new(3)),
             declared_element: Some("Water".to_string()),
             declared_level: Some(4),
+            input_requirement: None,
         };
         let json = serde_json::to_value(action).expect("action should serialize");
 
@@ -5524,13 +5524,48 @@ mod tests {
         let illusion = WebPlayableAction::ActivateProfessionAbility {
             id: "illusion".to_string(),
             name: "幻術".to_string(),
-            detail: test_action_detail(),
+            detail: Some(test_action_detail()),
             cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
             target_card: None,
-            declared_element: Some("Fire".to_string()),
-            declared_level: Some(3),
+            declared_element: None,
+            declared_level: None,
+            input_requirement: Some(crate::rules::ActionInputRequirement::VirtualFormationCard {
+                elements: vec![
+                    crate::domain::Element::Metal,
+                    crate::domain::Element::Wood,
+                    crate::domain::Element::Water,
+                    crate::domain::Element::Fire,
+                    crate::domain::Element::Earth,
+                ],
+                levels: vec![1, 2, 3, 4, 5],
+            }),
         };
-        assert!(serde_json::to_value(illusion).unwrap()["targetCard"].is_null());
+        let illusion = serde_json::to_value(illusion).unwrap();
+        assert!(illusion["targetCard"].is_null());
+        assert!(illusion["declaredElement"].is_null());
+        assert!(illusion["declaredLevel"].is_null());
+        assert_eq!(
+            illusion["inputRequirement"],
+            serde_json::json!({
+                "type": "virtualFormationCard",
+                "elements": ["Metal", "Wood", "Water", "Fire", "Earth"],
+                "levels": [1, 2, 3, 4, 5],
+            })
+        );
+        assert!(illusion.get("input_requirement").is_none());
+    }
+
+    #[test]
+    fn action_without_a_contextual_supplement_serializes_null_detail() {
+        let action = WebPlayableAction::ChangeProfession {
+            id: "hero:warrior".to_string(),
+            name: "戰士".to_string(),
+            detail: None,
+            cards: vec![CardInstanceId::new(1)],
+        };
+        let json = serde_json::to_value(action).expect("action should serialize");
+
+        assert!(json["detail"].is_null());
     }
 
     #[test]
@@ -5759,10 +5794,16 @@ mod tests {
         assert_eq!(candidate["cards"], serde_json::json!([first_card]));
         assert!(candidate.get("summary").is_none());
         assert!(candidate.get("policy").is_none());
-        assert_eq!(candidate["detail"]["consequences"][0]["type"], "cost");
         assert_eq!(
-            candidate["detail"]["consequences"][1]["effect"]["type"],
+            candidate["detail"]["consequences"][0]["effect"]["type"],
             "attack"
+        );
+        assert_eq!(
+            candidate["detail"]["consequences"]
+                .as_array()
+                .expect("detail consequences should be an array")
+                .len(),
+            1
         );
     }
 

@@ -1,11 +1,14 @@
 name = "fewfc-web"
 main = "worker/index.ts"
-compatibility_date = "2025-07-15"
+compatibility_date = "2026-07-26"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
 APP_ENV = "development"
 BETTER_AUTH_URL = "http://localhost:8787"
+
+[secrets]
+required = ["BETTER_AUTH_SECRET"]
 
 [assets]
 directory = ".output/public"
@@ -48,10 +51,13 @@ name = "fewfc-web-staging"
 APP_ENV = "staging"
 BETTER_AUTH_URL = "https://staging.example.com"
 
+[env.staging.secrets]
+required = ["BETTER_AUTH_SECRET"]
+
 [[env.staging.d1_databases]]
 binding = "DB"
 database_name = "fewfc-auth-staging"
-database_id = "REPLACE_WITH_STAGING_D1_DATABASE_ID"
+database_id = "b6b2d384-aca2-439f-80af-ff59b9fb2c43"
 migrations_dir = "migrations"
 
 [[env.staging.durable_objects.bindings]]
@@ -85,10 +91,13 @@ name = "fewfc-web-production"
 APP_ENV = "production"
 BETTER_AUTH_URL = "https://example.com"
 
+[env.production.secrets]
+required = ["BETTER_AUTH_SECRET"]
+
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "fewfc-auth-production"
-database_id = "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+database_id = "20d53641-c841-434c-82ab-119fef4c9209"
 migrations_dir = "migrations"
 
 [[env.production.durable_objects.bindings]]
