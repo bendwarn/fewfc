@@ -22,7 +22,6 @@ pub(super) struct FormationSelection<'a> {
     team_star: Option<crate::domain::StarKind>,
     available_stars: Vec<crate::domain::StarKind>,
     prepared: Option<crate::domain::PreparedProfessionAbility>,
-    spirit_level_interpretations: Vec<crate::domain::SpiritLevelInterpretation>,
     residual_card_facts: Option<(crate::domain::Element, u32)>,
     limited_uses: Vec<crate::domain::LimitedUse>,
     confluence_card_obligation: Option<crate::domain::ConfluenceCardObligation>,
@@ -77,25 +76,15 @@ impl<'a> FormationSelection<'a> {
                     return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
                 }
 
-                let card_def = state.card_def(*card).ok_or(GameError::Validation(
-                    ValidationError::MissingCardInstanceDefinition(*card),
-                ))?;
-                let prepared = state
-                    .prepared_profession_abilities
-                    .iter()
-                    .rev()
-                    .find(|prepared| {
-                        &prepared.player == player
-                            && prepared.card == *card
-                            && prepared.prepared_on_turn == state.turn_number
-                    });
+                let facts =
+                    state
+                        .effective_card_facts(player, *card)
+                        .ok_or(GameError::Validation(
+                            ValidationError::MissingCardInstanceDefinition(*card),
+                        ))?;
                 Ok(SubmittedCardFacts {
-                    element: prepared
-                        .map(|prepared| prepared.element)
-                        .unwrap_or(card_def.element),
-                    level: state
-                        .card_level_for(player, *card)
-                        .expect("known Card must have an effective level"),
+                    element: facts.element,
+                    level: facts.level,
                 })
             })
             .collect::<GameResult<Vec<_>>>()?;
@@ -156,15 +145,6 @@ impl<'a> FormationSelection<'a> {
                         .cloned()
                 })
                 .flatten(),
-            spirit_level_interpretations: state
-                .spirit_level_interpretations
-                .iter()
-                .filter(|interpretation| {
-                    &interpretation.player == player
-                        && interpretation.applied_on_turn == state.turn_number
-                })
-                .cloned()
-                .collect(),
             residual_card_facts: crate::rules::confluence::residual_card_facts(state, player),
             limited_uses: state
                 .limited_uses
@@ -620,36 +600,19 @@ impl<'a> FormationSelection<'a> {
         {
             return false;
         }
-        let mut interpreted = self.facts.clone();
-        let Some(index) = self.cards.iter().position(|card| *card == prepared.card) else {
-            return false;
-        };
-        let later_spirit_level = self
-            .spirit_level_interpretations
-            .iter()
-            .rev()
-            .find(|interpretation| {
-                interpretation.card == prepared.card
-                    && interpretation.interpretation_revision > prepared.interpretation_revision
-            })
-            .map(|interpretation| interpretation.level);
-        interpreted[index] = SubmittedCardFacts {
-            element: prepared.element,
-            level: later_spirit_level.unwrap_or(prepared.level),
-        };
-        matcher.matches(&formation.pattern, &interpreted)
+        matcher.matches(&formation.pattern, &self.facts)
             || crate::rules::confluence::formation_matches(
                 &formation.id,
                 self.residual_card_facts,
-                &interpreted,
+                &self.facts,
             )
-            || crate::rules::dark::formation_matches(&formation.id, &interpreted)
+            || crate::rules::dark::formation_matches(&formation.id, &self.facts)
             || !self.profession_abilities_suppressed
                 && crate::rules::hero::matches_proficiency(
                     &self.enabled_rule_modules,
                     self.profession.as_ref(),
                     &formation.id,
-                    &interpreted,
+                    &self.facts,
                 )
     }
 

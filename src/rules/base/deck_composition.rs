@@ -1,6 +1,6 @@
 use crate::domain::{
     CardDef, CardDefId, CardInstanceDef, CardInstanceId, CardOrigin, Element, PlayerDeckList,
-    PlayerId,
+    PlayerId, PrintedCardLevel,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -111,10 +111,10 @@ impl DeckComposition {
                     id: definition.id,
                     name: definition.name,
                     element: definition.element,
-                    level: definition.level,
-                    shared_deck_copies: official_copy_count(definition.level),
-                    personal_deck_copy_limit: personal_copy_limit(definition.level),
-                    preconstructed_copies: preconstructed_copy_count(definition.level),
+                    level: definition.level.value(),
+                    shared_deck_copies: official_copy_count(definition.level.value()),
+                    personal_deck_copy_limit: personal_copy_limit(definition.level.value()),
+                    preconstructed_copies: preconstructed_copy_count(definition.level.value()),
                 })
                 .collect(),
             shared_deck: SharedDeckComposition {
@@ -139,7 +139,7 @@ impl DeckComposition {
         let mut next_instance = 1;
         let mut instances = Vec::new();
         for definition in official_card_defs() {
-            for _ in 0..official_copy_count(definition.level) {
+            for _ in 0..official_copy_count(definition.level.value()) {
                 instances.push(CardInstanceDef {
                     instance: CardInstanceId::new(next_instance),
                     definition: definition.id.clone(),
@@ -173,7 +173,7 @@ impl DeckComposition {
         }
         for card in &deck.cards {
             if let Some(definition) = definitions.get(card) {
-                level_total += definition.level;
+                level_total += definition.level.value();
                 *copies.entry(card.clone()).or_default() += 1;
             } else {
                 issues.push(DeckListIssue::UnknownCardDefinition {
@@ -195,7 +195,7 @@ impl DeckComposition {
         }
         for definition in official_card_defs() {
             let actual = copies.get(&definition.id).copied().unwrap_or_default();
-            let maximum = personal_copy_limit(definition.level);
+            let maximum = personal_copy_limit(definition.level.value());
             if actual > maximum {
                 issues.push(DeckListIssue::CopyLimitExceeded {
                     card_definition: definition.id,
@@ -256,7 +256,7 @@ fn official_card_defs() -> Vec<CardDef> {
                 id: CardDefId::new(format!("{}-{level}", element.id)),
                 name: element.name.to_string(),
                 element: element.element,
-                level,
+                level: PrintedCardLevel::new(level),
             })
         })
         .collect()
@@ -266,7 +266,7 @@ fn preconstructed_cards() -> Vec<CardDefId> {
     official_card_defs()
         .into_iter()
         .flat_map(|definition| {
-            let copies = preconstructed_copy_count(definition.level);
+            let copies = preconstructed_copy_count(definition.level.value());
             std::iter::repeat_n(definition.id, copies)
         })
         .collect()

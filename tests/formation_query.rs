@@ -18,7 +18,7 @@ fn card_def(id: &str, element: Element) -> CardDef {
         id: CardDefId::new(id),
         name: id.to_string(),
         element,
-        level: 1,
+        level: fewfc::domain::PrintedCardLevel::new(1),
     }
 }
 

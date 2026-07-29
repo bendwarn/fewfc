@@ -710,7 +710,7 @@ fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
             .filter(|card| {
                 projected
                     .card_def(*card)
-                    .is_some_and(|definition| definition.level >= 3)
+                    .is_some_and(|definition| definition.level.value() >= 3)
             })
             .collect::<Vec<_>>();
         let reveal_event = GameEvent::RustedForestCardsRevealed {
@@ -838,19 +838,19 @@ mod tests {
             &[
                 SubmittedCardFacts {
                     element: crate::domain::Element::Metal,
-                    level: 4,
+                    level: crate::domain::EffectiveCardLevel::new(4),
                 },
                 SubmittedCardFacts {
                     element: crate::domain::Element::Metal,
-                    level: 3,
+                    level: crate::domain::EffectiveCardLevel::new(3),
                 },
                 SubmittedCardFacts {
                     element: crate::domain::Element::Fire,
-                    level: 4,
+                    level: crate::domain::EffectiveCardLevel::new(4),
                 },
                 SubmittedCardFacts {
                     element: crate::domain::Element::Fire,
-                    level: 3,
+                    level: crate::domain::EffectiveCardLevel::new(3),
                 },
             ],
         ));
@@ -859,19 +859,19 @@ mod tests {
             &[
                 SubmittedCardFacts {
                     element: crate::domain::Element::Metal,
-                    level: 5,
+                    level: crate::domain::EffectiveCardLevel::new(5),
                 },
                 SubmittedCardFacts {
                     element: crate::domain::Element::Fire,
-                    level: 5,
+                    level: crate::domain::EffectiveCardLevel::new(5),
                 },
                 SubmittedCardFacts {
                     element: crate::domain::Element::Wood,
-                    level: 5,
+                    level: crate::domain::EffectiveCardLevel::new(5),
                 },
                 SubmittedCardFacts {
                     element: crate::domain::Element::Fire,
-                    level: 2,
+                    level: crate::domain::EffectiveCardLevel::new(2),
                 },
             ],
         ));

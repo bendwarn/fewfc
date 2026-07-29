@@ -673,14 +673,15 @@ fn submitted_card_facts(
             if !hand.contains(card) {
                 return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
             }
-            let definition = state.card_def(*card).ok_or(GameError::Validation(
+            state.card_def(*card).ok_or(GameError::Validation(
                 ValidationError::MissingCardInstanceDefinition(*card),
             ))?;
+            let facts = state
+                .effective_card_facts(player, *card)
+                .expect("known Card has facts");
             Ok(SubmittedCardFacts {
-                element: definition.element,
-                level: state
-                    .card_level_for(player, *card)
-                    .expect("known Card must have an effective level"),
+                element: facts.element,
+                level: facts.level,
             })
         })
         .collect()
@@ -1106,7 +1107,7 @@ pub(crate) fn formation_role_options(
                         role: "standalone-wood".to_string(),
                         card: *standalone,
                     },
-                    format!("回復 {} 點生命", standalone_fact.level * 25),
+                    format!("回復 {} 點生命", standalone_fact.level.value() * 25),
                 )
             })
         })
@@ -1321,7 +1322,8 @@ pub(crate) fn activate_profession_ability(
                     virtual_card: Some(crate::domain::VirtualFormationCard {
                         source_ability_id: ability_id.to_string(),
                         element,
-                        level,
+                        level: crate::domain::EffectiveCardLevel::try_from(level)
+                            .expect("Virtual Formation Card levels are validated at command input"),
                     }),
                     allowed_formation_scope,
                     applied_on_turn: state.turn_number,
@@ -1348,7 +1350,8 @@ pub(crate) fn activate_profession_ability(
                 .card_level_for(player, cards[0])
                 .ok_or(GameError::Validation(
                     ValidationError::MissingCardInstanceDefinition(cards[0]),
-                ))? as i32;
+                ))?
+                .value() as i32;
             events.push(GameEvent::ProfessionAbilityActivated {
                 player: player.clone(),
                 ability_id: ability_id.to_string(),

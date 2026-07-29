@@ -122,10 +122,10 @@ fn card_facts_for_setup(setup: &GameSetup) -> HashMap<CardInstanceId, WebCardFac
                     instance.instance,
                     WebCardFact {
                         element: definition.element,
-                        level: definition.level,
+                        level: definition.level.value(),
                         secret_strategies: crate::rules::pouch::strategy_options_for_card(
                             definition.element,
-                            definition.level,
+                            definition.level.value(),
                         )
                         .into_iter()
                         .map(WebSecretStrategyCardOption::from)
@@ -902,8 +902,8 @@ fn development_scenario_action(
                     .iter()
                     .filter_map(|card| {
                         Some(crate::rules::SubmittedCardFacts {
-                            element: record.state().card_def(*card)?.element,
-                            level: record.state().card_level_for(player, *card)?,
+                            element: record.state().effective_card_facts(player, *card)?.element,
+                            level: record.state().effective_card_facts(player, *card)?.level,
                         })
                     })
                     .collect::<Vec<_>>();
@@ -1207,7 +1207,7 @@ fn development_scenario_deck_order(
                         .find(|definition| definition.id == instance.definition)?;
                     Some(crate::rules::SubmittedCardFacts {
                         element: definition.element,
-                        level: definition.level,
+                        level: definition.level.into(),
                     })
                 })
                 .collect::<Vec<_>>();
@@ -1328,7 +1328,7 @@ fn complete_pouch_chain_development_preparation(
                                 record.state().card_def(*card).map(|definition| {
                                     crate::rules::SubmittedCardFacts {
                                         element: definition.element,
-                                        level: definition.level,
+                                        level: definition.level.into(),
                                     }
                                 })
                             })
@@ -1351,7 +1351,7 @@ fn complete_pouch_chain_development_preparation(
                         record
                             .state()
                             .card_def(*card)
-                            .is_some_and(|definition| definition.level == 2)
+                            .is_some_and(|definition| definition.level.value() == 2)
                     })
                     .ok_or_else(|| {
                         ApiError::Message("Pouch scenario has no Sheep trigger Card".to_string())
@@ -1561,7 +1561,7 @@ fn discard_retrieval_action(
     };
     let previous = state.turn_order.get(previous_index)?;
     let card = state.last_turn_discard_by_player.get(previous)?.card;
-    let level = state.card_def(card)?.level as i32;
+    let level = state.card_def(card)?.level.value() as i32;
     let hp_cost = crate::rules::hero::discard_retrieval_cost(state, player, level * 2);
     Some(WebDiscardRetrievalActionDetail {
         detail: crate::rules::action_detail::discard_retrieval_detail(hp_cost),
@@ -4643,7 +4643,7 @@ mod tests {
                                     .find(|definition| definition.id == instance.definition)
                             })
                             .is_some_and(|definition| {
-                                definition.element == element && definition.level == level
+                                definition.element == element && definition.level.value() == level
                             })
                 })
                 .expect("official deck must contain the Radiance cards");
@@ -4844,7 +4844,7 @@ mod tests {
             record
                 .state()
                 .card_def(*card)
-                .is_some_and(|definition| definition.level == 2)
+                .is_some_and(|definition| definition.level.value() == 2)
         }));
 
         let action = development_scenario_action(&record, &alice, "pouch-chain-sheep").unwrap();
@@ -4921,7 +4921,7 @@ mod tests {
                         .find(|definition| definition.id == instance.definition)?;
                     (!used.contains(&instance.instance)
                         && definition.element == element
-                        && definition.level == level)
+                        && definition.level.value() == level)
                         .then_some(instance.instance)
                 })
                 .expect("official Deck must contain the Rusted Forest Cards");
@@ -5244,7 +5244,7 @@ mod tests {
                 player: PlayerId::new("alice"),
                 skill: Some(crate::domain::SpiritSkill::Glimmer),
                 card: interpreted_card,
-                level: 3,
+                level: crate::domain::EffectiveCardLevel::new(3),
                 applied_on_turn: state.turn_number,
                 interpretation_revision: 1,
             });

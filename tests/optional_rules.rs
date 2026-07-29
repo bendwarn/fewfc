@@ -68,6 +68,7 @@ fn personal_deck_falls_back_to_the_balanced_preconstructed_list() {
                     .find(|definition| definition.id == *card)
                     .unwrap()
                     .level
+                    .value()
             })
             .sum::<u32>();
         assert_eq!(level_total, 170);
@@ -119,7 +120,8 @@ fn discard_retrieval_is_derived_and_remains_legal_under_cannot_act() {
                 == definition.id
         })
         .unwrap()
-        .level as i32;
+        .level
+        .value() as i32;
     let mut state = GameState::from_setup(&setup);
     state.current_turn_index = 1;
     state.phase = Phase::Main;

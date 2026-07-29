@@ -25,6 +25,7 @@ pub use base::deck_composition::{
 };
 pub use official::{OfficialRuleModuleCategory, OfficialRuleModuleSpec, OfficialRules};
 
+use crate::domain::EffectiveCardLevel;
 pub use crate::domain::Element;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -406,7 +407,7 @@ pub(crate) enum FormationPattern {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SubmittedCardFacts {
     pub element: Element,
-    pub level: u32,
+    pub level: EffectiveCardLevel,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -930,7 +931,13 @@ pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
                     .iter()
                     .map(|card| card.level)
                     .collect::<std::collections::HashSet<_>>()
-                    == std::collections::HashSet::from([1, 2, 3, 4, 5])
+                    == std::collections::HashSet::from([
+                        EffectiveCardLevel::new(1),
+                        EffectiveCardLevel::new(2),
+                        EffectiveCardLevel::new(3),
+                        EffectiveCardLevel::new(4),
+                        EffectiveCardLevel::new(5),
+                    ])
         })
         .with_custom("single-level-one", |submitted| {
             submitted.len() == 1 && submitted[0].level == 1
@@ -1370,7 +1377,10 @@ mod tests {
     }
 
     fn leveled_card(element: Element, level: u32) -> SubmittedCardFacts {
-        SubmittedCardFacts { element, level }
+        SubmittedCardFacts {
+            element,
+            level: EffectiveCardLevel::new(level),
+        }
     }
 
     #[test]

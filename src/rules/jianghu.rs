@@ -376,11 +376,8 @@ pub(crate) fn modify_attack_points(
                 .iter()
                 .filter(|card| {
                     state
-                        .card_def(**card)
-                        .is_some_and(|definition| definition.element == *element)
-                        && state
-                            .card_level_for(player, **card)
-                            .is_some_and(|level| level < 5)
+                        .effective_card_facts(player, **card)
+                        .is_some_and(|facts| facts.element == *element && facts.level < 5)
                 })
                 .count() as i32;
             points + matching_raised * *multiplier as i32
@@ -936,12 +933,16 @@ pub(crate) fn activate_profession_ability(
         }
         "jianghu:blazing-yang-art" => {
             let card_id = target_card.unwrap_or(candidate.cards[0]);
-            let definition = state.card_def(card_id).expect("validated card");
-            let level = state
-                .card_level_for(player, card_id)
-                .expect("validated card level")
-                .saturating_add(2)
-                .min(5);
+            let current = state
+                .effective_card_facts(player, card_id)
+                .expect("validated card");
+            let level = crate::domain::EffectiveCardLevel::new(
+                current
+                    .level
+                    .value()
+                    .saturating_add(2)
+                    .min(crate::domain::MAX_CARD_LEVEL),
+            );
             events[0] = GameEvent::ProfessionAbilityActivated {
                 player: player.clone(),
                 ability_id: ability_id.to_string(),
@@ -949,7 +950,7 @@ pub(crate) fn activate_profession_ability(
                     player: player.clone(),
                     ability_id: ability_id.to_string(),
                     card: card_id,
-                    element: definition.element,
+                    element: current.element,
                     level,
                     allowed_formation_scope: vec!["base".to_string()],
                     prepared_on_turn: state.turn_number,
@@ -1512,14 +1513,15 @@ fn submitted_card_facts(
             if !hand.contains(card) {
                 return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
             }
-            let definition = state.card_def(*card).ok_or(GameError::Validation(
+            state.card_def(*card).ok_or(GameError::Validation(
                 ValidationError::MissingCardInstanceDefinition(*card),
             ))?;
+            let facts = state
+                .effective_card_facts(player, *card)
+                .expect("known Card has facts");
             Ok(SubmittedCardFacts {
-                element: definition.element,
-                level: state
-                    .card_level_for(player, *card)
-                    .expect("known Card must have an effective level"),
+                element: facts.element,
+                level: facts.level,
             })
         })
         .collect()

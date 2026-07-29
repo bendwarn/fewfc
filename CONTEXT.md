@@ -289,16 +289,28 @@ how one specified physical Card Instance may be interpreted or used by the
 Player's subsequent action.
 _Avoid_: Virtual Formation Card, Card Definition mutation, hidden draft
 
+**Printed Card Level (牌面等級)**:
+The immutable one-through-five level belonging to a Card Definition. Only rules
+that explicitly name the printed level read it instead of the effective level.
+_Avoid_: base level, raw level
+
+**Effective Card Level (有效等級)**:
+The bounded one-through-five level exposed after every applicable Card
+Interpretation Layer has composed. An unqualified reference to a Card's level
+means its Effective Card Level.
+_Avoid_: Printed Card Level, unbounded composed level
+
 **Card Level Interpretation**:
-A turn-scoped instruction to treat one specified Card Instance as a declared
-level wherever rules read that Card's level. It does not change the Card
-Instance or its Card Definition.
+A Card Interpretation Layer that either assigns an in-range level or adjusts
+the currently composed level. Applicable level interpretations compose in
+effect order before their final result becomes the Effective Card Level.
 _Avoid_: Card Definition mutation, level counter
 
 **Card Interpretation Layer**:
 A rule-scoped change to one or more effective dimensions of a physical Card
-Instance, such as element or level. Eligible layers apply in effect order while
-unrelated dimensions continue to compose.
+Instance, such as element or level. Eligible layers compose in effect order
+before their effective facts are exposed, while unrelated dimensions continue
+to compose.
 _Avoid_: Virtual Formation Card, Card Definition mutation
 
 **Sacred Art Multiplicity (聖術視為兩張)**:

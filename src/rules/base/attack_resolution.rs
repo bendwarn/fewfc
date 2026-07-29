@@ -475,7 +475,8 @@ fn compute_attack_points(
                     .card_level_for(attacker, *card)
                     .ok_or(GameError::Validation(
                         ValidationError::MissingCardInstanceDefinition(*card),
-                    ))? as i32;
+                    ))?
+                    .value() as i32;
                 Ok(sum + level)
             })
             .map(|physical| {
@@ -488,7 +489,7 @@ fn compute_attack_points(
                                 && requirement.applied_on_turn == state.turn_number
                         })
                         .and_then(|requirement| requirement.virtual_card.as_ref())
-                        .map_or(0, |card| card.level as i32)
+                        .map_or(0, |card| card.level.value() as i32)
             })
     };
 
@@ -508,13 +509,9 @@ fn compute_attack_points(
         } => {
             let mut levels = cards
                 .iter()
-                .filter(|card| {
-                    state
-                        .card_def(**card)
-                        .is_some_and(|definition| definition.element == *element)
-                })
-                .filter_map(|card| state.card_level_for(attacker, *card))
-                .map(|level| level as i32)
+                .filter_map(|card| state.effective_card_facts(attacker, *card))
+                .filter(|facts| facts.element == *element)
+                .map(|facts| facts.level.value() as i32)
                 .collect::<Vec<_>>();
             if state.formation_requirements.iter().any(|requirement| {
                 &requirement.player == attacker
@@ -534,7 +531,7 @@ fn compute_attack_points(
                                 .then_some(requirement.virtual_card.as_ref())
                                 .flatten()
                                 .filter(|card| card.element == *element)
-                                .map(|card| card.level as i32)
+                                .map(|card| card.level.value() as i32)
                         })
                         .expect("matching virtual card must exist"),
                 );
@@ -767,13 +764,13 @@ mod tests {
                     id: CardDefId::new("metal"),
                     name: "metal".to_string(),
                     element: crate::rules::Element::Metal,
-                    level: 3,
+                    level: crate::domain::PrintedCardLevel::new(3),
                 },
                 CardDef {
                     id: CardDefId::new("wood"),
                     name: "wood".to_string(),
                     element: crate::rules::Element::Wood,
-                    level: 2,
+                    level: crate::domain::PrintedCardLevel::new(2),
                 },
             ],
             vec![

@@ -149,7 +149,7 @@ fn change_matches(
         DEMON_SPIRIT_MASTER_ID => {
             state.spirit_for(player).is_some()
                 && facts.len() == 2
-                && matches!(facts[0].level, 2 | 4)
+                && matches!(facts[0].level.value(), 2 | 4)
                 && facts[1].level == facts[0].level
         }
         _ => false,
@@ -397,7 +397,7 @@ pub(crate) fn profession_acquired_events(
     let target = cards
         .first()
         .and_then(|card| state.card_level_for(player, *card))
-        .and_then(|level| match level {
+        .and_then(|level| match level.value() {
             2 => Some(SpiritKind::Evil),
             4 => Some(SpiritKind::Death),
             _ => None,
@@ -744,7 +744,11 @@ pub(crate) fn append_mischief_events(
     for (_, target, cards) in inspected {
         let highest = cards
             .iter()
-            .filter_map(|card| state.card_def(*card).map(|definition| definition.level))
+            .filter_map(|card| {
+                state
+                    .card_def(*card)
+                    .map(|definition| definition.level.value())
+            })
             .max()
             .unwrap_or(0);
         if highest == 0 {
@@ -843,7 +847,9 @@ pub(crate) fn playable_profession_abilities(
             cards[0],
         )));
     }
-    let level = state.card_level_for(player, cards[0]).unwrap_or(1);
+    let level = state
+        .card_level_for(player, cards[0])
+        .map_or(1, |level| level.value());
     Ok((1..=2)
         .filter(|target_level| *target_level < level)
         .map(|target_level| ProfessionAbilityCandidate {
@@ -851,7 +857,9 @@ pub(crate) fn playable_profession_abilities(
             ability_name: "暗靈".to_string(),
             cards: cards.to_vec(),
             target_card: Some(cards[0]),
-            declared_element: state.card_def(cards[0]).map(|card| card.element),
+            declared_element: state
+                .effective_card_facts(player, cards[0])
+                .map(|facts| facts.element),
             declared_level: Some(target_level),
             input_requirement: None,
             detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
@@ -896,7 +904,10 @@ pub(crate) fn activate_profession_ability(
                 ability_id: ability_id.to_string(),
                 card: candidate.target_card.unwrap(),
                 element: declared_element.unwrap_or(candidate.declared_element.unwrap()),
-                level: candidate.declared_level.unwrap(),
+                level: crate::domain::EffectiveCardLevel::try_from(
+                    candidate.declared_level.unwrap(),
+                )
+                .expect("Dark Spirit candidates only declare in-range levels"),
                 allowed_formation_scope: vec!["all".to_string()],
                 prepared_on_turn: state.turn_number,
                 interpretation_revision: state.card_interpretation_revision + 1,
@@ -973,7 +984,7 @@ fn level_sum(state: &GameState, player: &PlayerId, cards: &[CardInstanceId]) -> 
     cards.iter().try_fold(0, |sum, card| {
         state
             .card_level_for(player, *card)
-            .map(|level| sum + level as i32)
+            .map(|level| sum + level.value() as i32)
             .ok_or(GameError::Validation(
                 ValidationError::MissingCardInstanceDefinition(*card),
             ))
@@ -1063,14 +1074,15 @@ fn submitted_card_facts(
             if !hand.contains(card) {
                 return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
             }
-            let definition = state.card_def(*card).ok_or(GameError::Validation(
+            state.card_def(*card).ok_or(GameError::Validation(
                 ValidationError::MissingCardInstanceDefinition(*card),
             ))?;
+            let facts = state
+                .effective_card_facts(player, *card)
+                .expect("known Card has facts");
             Ok(SubmittedCardFacts {
-                element: definition.element,
-                level: state
-                    .card_level_for(player, *card)
-                    .unwrap_or(definition.level),
+                element: facts.element,
+                level: facts.level,
             })
         })
         .collect()

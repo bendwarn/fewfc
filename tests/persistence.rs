@@ -27,14 +27,14 @@ fn card_def(id: &str, element: Element) -> CardDef {
         id: CardDefId::new(id),
         name: id.to_string(),
         element,
-        level: match id {
+        level: fewfc::domain::PrintedCardLevel::new(match id {
             "metal" => 3,
             "wood" => 2,
             "water" => 1,
             "fire" => 4,
             "earth" => 5,
             _ => 1,
-        },
+        }),
     }
 }
 

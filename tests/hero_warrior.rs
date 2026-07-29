@@ -39,7 +39,7 @@ fn cards(state: &GameState, requested: &[(Element, u32)]) -> Vec<CardInstanceId>
                 .find(|instance| {
                     !used.contains(instance)
                         && state.card_def(*instance).is_some_and(|definition| {
-                            definition.element == *element && definition.level == *level
+                            definition.element == *element && definition.level.value() == *level
                         })
                 })
                 .unwrap();

@@ -265,7 +265,7 @@ fn resolve_owned_pouch(
     let definition = state.card_def(pouch.card).ok_or(GameError::Validation(
         ValidationError::MissingCardInstanceDefinition(pouch.card),
     ))?;
-    if !strategy_matches(strategy, definition.element, definition.level) {
+    if !strategy_matches(strategy, definition.element, definition.level.value()) {
         return Err(GameError::Validation(
             ValidationError::SecretStrategyConditionMismatch,
         ));
@@ -405,7 +405,7 @@ pub(crate) fn strategy_action_options(
     let Some(definition) = state.card_def(source_card) else {
         return Vec::new();
     };
-    strategy_options_for_card(definition.element, definition.level)
+    strategy_options_for_card(definition.element, definition.level.value())
         .into_iter()
         .map(|option| {
             let input = option.input;
@@ -618,7 +618,7 @@ pub(crate) fn chain_events(
         let definition = state.card_def(source_card).ok_or(GameError::Validation(
             ValidationError::SecretStrategyInputInvalid,
         ))?;
-        if !strategy_matches(strategy, definition.element, definition.level) {
+        if !strategy_matches(strategy, definition.element, definition.level.value()) {
             return Err(GameError::Validation(
                 ValidationError::SecretStrategyConditionMismatch,
             ));
@@ -1454,7 +1454,7 @@ mod tests {
             .iter()
             .find(|card| {
                 matches!(&card.origin, CardOrigin::Player(owner) if owner == &player)
-                    && state.card_def(card.instance).unwrap().level == 2
+                    && state.card_def(card.instance).unwrap().level.value() == 2
             })
             .unwrap()
             .instance;
@@ -1587,7 +1587,7 @@ mod tests {
         let trigger = owned_cards
             .iter()
             .copied()
-            .find(|card| state.card_def(*card).unwrap().level == 2)
+            .find(|card| state.card_def(*card).unwrap().level.value() == 2)
             .unwrap();
         let trigger_def = state.card_def(trigger).unwrap().clone();
         let pouch = owned_cards
@@ -1924,7 +1924,7 @@ mod tests {
                 matches!(&card.origin, CardOrigin::Player(owner) if owner == &alice)
                     && state
                         .card_def(card.instance)
-                        .is_some_and(|card| card.level >= 4)
+                        .is_some_and(|card| card.level.value() >= 4)
             })
             .unwrap()
             .instance;
@@ -2014,7 +2014,11 @@ mod tests {
         let trigger = alice_cards
             .iter()
             .copied()
-            .find(|card| state.card_def(*card).is_some_and(|card| card.level == 4))
+            .find(|card| {
+                state
+                    .card_def(*card)
+                    .is_some_and(|card| card.level.value() == 4)
+            })
             .unwrap();
         let trigger_definition = state.card_def(trigger).unwrap().clone();
         let pouch = alice_cards

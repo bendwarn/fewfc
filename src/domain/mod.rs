@@ -2,7 +2,7 @@
 
 pub mod targeting;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -44,6 +44,204 @@ pub const DARK_GLIMMER_MODULE_ID: &str = "dark-glimmer";
 pub const ECHO_MODULE_ID: &str = "echo";
 pub const TRIBULATION_MODULE_ID: &str = "tribulation";
 pub const POUCH_MODULE_ID: &str = "pouch";
+
+/// The Base Ruleset's immutable bounds for every consumable Card Level.
+pub const MIN_CARD_LEVEL: u32 = 1;
+pub const MAX_CARD_LEVEL: u32 = 5;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CardLevelOutOfBounds {
+    pub value: u32,
+}
+
+impl std::fmt::Display for CardLevelOutOfBounds {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Card Level {} is outside the Base Ruleset range {}..={}",
+            self.value, MIN_CARD_LEVEL, MAX_CARD_LEVEL
+        )
+    }
+}
+
+/// The immutable level printed on a Card Definition.
+///
+/// This intentionally is not interchangeable with [`EffectiveCardLevel`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct PrintedCardLevel(u32);
+
+impl PrintedCardLevel {
+    pub const fn new(value: u32) -> Self {
+        assert!(value >= MIN_CARD_LEVEL && value <= MAX_CARD_LEVEL);
+        Self(value)
+    }
+
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for PrintedCardLevel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl TryFrom<u32> for PrintedCardLevel {
+    type Error = CardLevelOutOfBounds;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        if (MIN_CARD_LEVEL..=MAX_CARD_LEVEL).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(CardLevelOutOfBounds { value })
+        }
+    }
+}
+
+impl Serialize for PrintedCardLevel {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u32(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for PrintedCardLevel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::try_from(u32::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
+/// The bounded level exposed to ordinary rules after Card Interpretation Layers
+/// have fully composed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct EffectiveCardLevel(u32);
+
+impl EffectiveCardLevel {
+    pub const fn new(value: u32) -> Self {
+        assert!(value >= MIN_CARD_LEVEL && value <= MAX_CARD_LEVEL);
+        Self(value)
+    }
+
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+
+    pub(crate) fn clamp_composed(value: i32) -> Self {
+        Self(value.clamp(MIN_CARD_LEVEL as i32, MAX_CARD_LEVEL as i32) as u32)
+    }
+}
+
+impl PartialEq<u32> for EffectiveCardLevel {
+    fn eq(&self, other: &u32) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialOrd<u32> for EffectiveCardLevel {
+    fn partial_cmp(&self, other: &u32) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+
+impl std::ops::Rem<u32> for EffectiveCardLevel {
+    type Output = u32;
+
+    fn rem(self, divisor: u32) -> Self::Output {
+        self.0 % divisor
+    }
+}
+
+impl std::iter::Sum<EffectiveCardLevel> for u32 {
+    fn sum<I: Iterator<Item = EffectiveCardLevel>>(iter: I) -> Self {
+        iter.map(EffectiveCardLevel::value).sum()
+    }
+}
+
+impl From<PrintedCardLevel> for EffectiveCardLevel {
+    fn from(level: PrintedCardLevel) -> Self {
+        Self(level.0)
+    }
+}
+
+impl TryFrom<u32> for EffectiveCardLevel {
+    type Error = CardLevelOutOfBounds;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        if (MIN_CARD_LEVEL..=MAX_CARD_LEVEL).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(CardLevelOutOfBounds { value })
+        }
+    }
+}
+
+impl From<EffectiveCardLevel> for u32 {
+    fn from(level: EffectiveCardLevel) -> Self {
+        level.0
+    }
+}
+
+impl std::fmt::Display for EffectiveCardLevel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl Serialize for EffectiveCardLevel {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u32(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for EffectiveCardLevel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::try_from(u32::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardLevelInterpretation {
+    Set(EffectiveCardLevel),
+    Adjust(i32),
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardInterpretationSource {
+    PouchLevelBonusGranted,
+    SpiritLevelInterpreted,
+    ProfessionAbilityActivated,
+}
+
+/// One ordered projection of a semantic canonical event onto a physical Card.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct CardInterpretationLayer {
+    pub source: CardInterpretationSource,
+    pub player: PlayerId,
+    pub card: CardInstanceId,
+    pub applied_on_turn: u64,
+    pub element: Option<Element>,
+    pub level: Option<CardLevelInterpretation>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EffectiveCardFacts {
+    pub element: Element,
+    pub level: EffectiveCardLevel,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RulesetId(String);
@@ -93,7 +291,7 @@ pub struct PreparedProfessionAbility {
     pub ability_id: String,
     pub card: CardInstanceId,
     pub element: Element,
-    pub level: u32,
+    pub level: EffectiveCardLevel,
     pub allowed_formation_scope: Vec<String>,
     pub prepared_on_turn: u64,
     #[serde(default)]
@@ -107,7 +305,7 @@ pub struct PreparedProfessionAbility {
 pub struct VirtualFormationCard {
     pub source_ability_id: String,
     pub element: Element,
-    pub level: u32,
+    pub level: EffectiveCardLevel,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -235,7 +433,7 @@ pub struct SpiritLevelInterpretation {
     #[serde(default)]
     pub skill: Option<SpiritSkill>,
     pub card: CardInstanceId,
-    pub level: u32,
+    pub level: EffectiveCardLevel,
     pub applied_on_turn: u64,
     pub interpretation_revision: u64,
 }
@@ -355,7 +553,7 @@ pub struct CardDef {
     pub id: CardDefId,
     pub name: String,
     pub element: Element,
-    pub level: u32,
+    pub level: PrintedCardLevel,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -527,7 +725,7 @@ pub struct ConfluenceCardObligation {
     pub allow_profession_formation: bool,
     pub applied_on_turn: u64,
     pub residual_element: Option<Element>,
-    pub residual_level: Option<u32>,
+    pub residual_level: Option<PrintedCardLevel>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -813,6 +1011,11 @@ pub struct GameState {
     pub spirit_skill_use_turns: HashMap<PlayerId, u64>,
     #[serde(default)]
     pub spirit_level_interpretations: Vec<SpiritLevelInterpretation>,
+    /// Ordered Card Interpretation Layers projected from semantic canonical
+    /// events. Ordinary rule consumers must resolve physical card facts through
+    /// this collection instead of reading or recomposing event-specific state.
+    #[serde(default)]
+    pub card_interpretation_layers: Vec<CardInterpretationLayer>,
     #[serde(default)]
     pub card_interpretation_revision: u64,
     #[serde(default)]
@@ -928,6 +1131,7 @@ impl GameState {
             spirits: Vec::new(),
             spirit_skill_use_turns: HashMap::new(),
             spirit_level_interpretations: Vec::new(),
+            card_interpretation_layers: Vec::new(),
             card_interpretation_revision: 0,
             prepared_profession_abilities: Vec::new(),
             formation_requirements: Vec::new(),
@@ -1081,34 +1285,54 @@ impl GameState {
         self.spirits.iter().find(|owned| &owned.player == player)
     }
 
-    pub fn card_level_for(&self, player: &PlayerId, card: CardInstanceId) -> Option<u32> {
-        let pouch_bonus = self.pouch_level_bonuses.iter().any(|bonus| {
-            &bonus.player == player
-                && bonus.applied_on_turn == self.turn_number
-                && bonus.cards.contains(&card)
-        });
-        let prepared_level = self
-            .prepared_profession_abilities
-            .iter()
-            .rev()
-            .find(|prepared| {
-                &prepared.player == player
-                    && prepared.card == card
-                    && prepared.prepared_on_turn == self.turn_number
-            })
-            .map(|prepared| prepared.level);
-        self.spirit_level_interpretations
-            .iter()
-            .rev()
-            .find(|interpretation| {
-                &interpretation.player == player
-                    && interpretation.card == card
-                    && interpretation.applied_on_turn == self.turn_number
-            })
-            .map(|interpretation| interpretation.level)
-            .or(prepared_level)
-            .or_else(|| self.card_def(card).map(|definition| definition.level))
-            .map(|level| if pouch_bonus { level + 1 } else { level })
+    /// Resolves the one effective element and level exposed by a physical Card.
+    ///
+    /// Layer order is canonical event order. Relative adjustments may leave the
+    /// Base Ruleset range while composing; the range is applied exactly once to
+    /// the final composed level.
+    pub fn effective_card_facts(
+        &self,
+        player: &PlayerId,
+        card: CardInstanceId,
+    ) -> Option<EffectiveCardFacts> {
+        let definition = self.card_def(card)?;
+        let mut element = definition.element;
+        let mut composed_level = definition.level.value() as i32;
+
+        for layer in self.card_interpretation_layers.iter().filter(|layer| {
+            &layer.player == player
+                && layer.card == card
+                && layer.applied_on_turn == self.turn_number
+        }) {
+            if let Some(interpreted_element) = layer.element {
+                element = interpreted_element;
+            }
+            match layer.level {
+                Some(CardLevelInterpretation::Set(level)) => {
+                    composed_level = level.value() as i32;
+                }
+                Some(CardLevelInterpretation::Adjust(delta)) => {
+                    composed_level += delta;
+                }
+                None => {}
+            }
+        }
+
+        Some(EffectiveCardFacts {
+            element,
+            level: EffectiveCardLevel::clamp_composed(composed_level),
+        })
+    }
+
+    /// A compatibility convenience for callers that require only the bounded
+    /// effective level. It delegates exclusively to `effective_card_facts`.
+    pub fn card_level_for(
+        &self,
+        player: &PlayerId,
+        card: CardInstanceId,
+    ) -> Option<EffectiveCardLevel> {
+        self.effective_card_facts(player, card)
+            .map(|facts| facts.level)
     }
 
     pub fn pouch_for(&self, player: &PlayerId) -> Option<&PlayerPouch> {
@@ -1635,7 +1859,7 @@ pub enum GameEvent {
         #[serde(default)]
         skill: Option<SpiritSkill>,
         card: CardInstanceId,
-        level: u32,
+        level: EffectiveCardLevel,
         applied_on_turn: u64,
         interpretation_revision: u64,
     },
@@ -2572,7 +2796,7 @@ fn validate_deck_lists(setup: &GameSetup) -> GameResult<()> {
             let definition = definitions.get(card_id).ok_or_else(|| {
                 GameError::Validation(ValidationError::MissingCardDefinition(card_id.clone()))
             })?;
-            level_total += definition.level;
+            level_total += definition.level.value();
             *copies.entry(card_id.clone()).or_default() += 1;
         }
         if level_total > 170 {
@@ -2588,7 +2812,7 @@ fn validate_deck_lists(setup: &GameSetup) -> GameResult<()> {
             let definition = definitions
                 .get(&card)
                 .expect("deck card definitions were validated");
-            let maximum = match definition.level {
+            let maximum = match definition.level.value() {
                 1..=3 => 4,
                 4..=5 => 3,
                 _ => 0,

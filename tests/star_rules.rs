@@ -77,7 +77,7 @@ fn card(state: &GameState, element: Element, level: u32) -> CardInstanceId {
         .iter()
         .find(|instance| {
             state.card_def(instance.instance).is_some_and(|definition| {
-                definition.element == element && definition.level == level
+                definition.element == element && definition.level.value() == level
             })
         })
         .unwrap()

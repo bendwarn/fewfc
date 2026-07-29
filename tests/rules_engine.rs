@@ -27,14 +27,14 @@ fn card_def(id: &str, element: Element) -> CardDef {
         id: CardDefId::new(id),
         name: id.to_string(),
         element,
-        level: match id {
+        level: fewfc::domain::PrintedCardLevel::new(match id {
             "metal" => 3,
             "wood" => 2,
             "water" => 1,
             "fire" => 4,
             "earth" => 5,
             _ => 1,
-        },
+        }),
     }
 }
 
@@ -1136,7 +1136,7 @@ fn new_game_preserves_card_instance_definitions_for_lookup() {
             id: CardDefId::new("metal"),
             name: "metal".to_string(),
             element: Element::Metal,
-            level: 3,
+            level: fewfc::domain::PrintedCardLevel::new(3),
         })
     );
     assert_eq!(state.card_def(card(99)), None);

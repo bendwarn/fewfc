@@ -48,8 +48,12 @@ pub(crate) fn turn_discard_charges(
     card: CardInstanceId,
 ) -> bool {
     match spirit {
-        SpiritKind::Evil => state.card_def(card).is_some_and(|card| card.level == 2),
-        SpiritKind::Death => state.card_def(card).is_some_and(|card| card.level == 4),
+        SpiritKind::Evil => state
+            .card_def(card)
+            .is_some_and(|card| card.level.value() == 2),
+        SpiritKind::Death => state
+            .card_def(card)
+            .is_some_and(|card| card.level.value() == 4),
         _ => state.card_element(card) == Some(element(spirit)),
     }
 }
@@ -614,7 +618,10 @@ fn skill_effect_events(
                 player: player.clone(),
                 skill: Some(skill),
                 card: selected_card.expect("validated Fire Skill must select one Card"),
-                level: declared_level.expect("validated Fire Skill must declare a level"),
+                level: crate::domain::EffectiveCardLevel::try_from(
+                    declared_level.expect("validated Fire Skill must declare a level"),
+                )
+                .expect("validated Fire Skill levels are in range"),
                 applied_on_turn: state.turn_number,
                 interpretation_revision: state.card_interpretation_revision + 1,
             }])
@@ -674,7 +681,8 @@ fn skill_effect_events(
                 .collect::<Vec<_>>();
             let highest = cards
                 .iter()
-                .filter_map(|card| state.card_def(*card).map(|definition| definition.level))
+                .filter_map(|card| state.effective_card_facts(&target, *card))
+                .map(|facts| facts.level.value())
                 .max()
                 .unwrap_or(0);
             let mut events = vec![GameEvent::CardsMoved {
@@ -698,8 +706,8 @@ fn skill_effect_events(
             )?);
             if cards.iter().any(|card| {
                 state
-                    .card_def(*card)
-                    .is_some_and(|definition| definition.level == 4)
+                    .effective_card_facts(&target, *card)
+                    .is_some_and(|facts| facts.level == 4)
             }) {
                 let power_after_cost = state
                     .spirit_for(player)

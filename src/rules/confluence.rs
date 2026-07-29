@@ -219,7 +219,7 @@ pub(crate) fn formation_matches(
                 && cards.iter().enumerate().any(|(element_index, card)| {
                     card.element == required_element
                         && cards.iter().enumerate().any(|(level_index, card)| {
-                            level_index != element_index && card.level == level
+                            level_index != element_index && card.level.value() == level
                         })
                 })
         });
@@ -229,14 +229,14 @@ pub(crate) fn formation_matches(
             cards.len() == 3
                 && (0..cards.len()).any(|both| {
                     cards[both].element == element
-                        && cards[both].level == level
+                        && cards[both].level.value() == level
                         && (0..cards.len()).any(|element_card| {
                             element_card != both
                                 && cards[element_card].element == element
                                 && (0..cards.len()).any(|level_card| {
                                     level_card != both
                                         && level_card != element_card
-                                        && cards[level_card].level == level
+                                        && cards[level_card].level.value() == level
                                 })
                         })
                 })
@@ -251,7 +251,7 @@ pub(crate) fn formation_matches(
                     == 5
                 && cards
                     .iter()
-                    .any(|card| card.element == element && card.level == level)
+                    .any(|card| card.element == element && card.level.value() == level)
         }),
         IMPRISONING_ARRAY | ENDLESS_ARRAY => cards.len() == 1 && cards[0].level == 5,
         WIND_DANCE => consecutive_levels(cards, 2),
@@ -866,7 +866,7 @@ fn change_matches(
                     .is_some_and(|entry| state.star_for_team(&entry.team).is_none())
                 && state.spirit_for(player).is_none()
                 && facts.len() == 3
-                && (2..=5).contains(&facts[0].level)
+                && (2..=5).contains(&facts[0].level.value())
                 && facts.iter().all(|card| card.level == facts[0].level)
         }
         VOID_DESTROYER_ID => false,
@@ -880,7 +880,7 @@ pub(crate) fn residual_card_facts(state: &GameState, player: &PlayerId) -> Optio
     }) && let (Some(element), Some(level)) =
         (obligation.residual_element, obligation.residual_level)
     {
-        return Some((element, level));
+        return Some((element, level.value()));
     }
     let previous = TurnOrderTargets::new(state)
         .player_target(player, RulePlayerTarget::PreviousPlayer)
@@ -890,7 +890,7 @@ pub(crate) fn residual_card_facts(state: &GameState, player: &PlayerId) -> Optio
         .get(&previous)
         .filter(|discard| discard.turn_number + 1 == state.turn_number)?;
     let definition = state.card_def(discard.card)?;
-    Some((definition.element, definition.level))
+    Some((definition.element, definition.level.value()))
 }
 
 pub(crate) fn profession_change_satisfies_obligation(
@@ -1063,9 +1063,11 @@ pub(crate) fn void_transcendence_events(
         )
     });
     let uses_three_fives = cards.len() == 3
-        && cards
-            .iter()
-            .all(|card| state.card_level_for(player, *card) == Some(5));
+        && cards.iter().all(|card| {
+            state
+                .card_level_for(player, *card)
+                .is_some_and(|level| level == 5)
+        });
     if !is_void_profession || !uses_three_fives {
         return Ok(Vec::new());
     }
@@ -1273,14 +1275,15 @@ fn submitted_card_facts(
             if !hand.contains(card) {
                 return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
             }
-            let definition = state.card_def(*card).ok_or(GameError::Validation(
+            state.card_def(*card).ok_or(GameError::Validation(
                 ValidationError::MissingCardInstanceDefinition(*card),
             ))?;
+            let facts = state
+                .effective_card_facts(player, *card)
+                .expect("known Card has facts");
             Ok(SubmittedCardFacts {
-                element: definition.element,
-                level: state
-                    .card_level_for(player, *card)
-                    .unwrap_or(definition.level),
+                element: facts.element,
+                level: facts.level,
             })
         })
         .collect()
@@ -1307,7 +1310,9 @@ fn consecutive_levels(facts: &[SubmittedCardFacts], count: usize) -> bool {
     }
     let mut levels = facts.iter().map(|card| card.level).collect::<Vec<_>>();
     levels.sort_unstable();
-    levels.windows(2).all(|pair| pair[1] == pair[0] + 1)
+    levels
+        .windows(2)
+        .all(|pair| pair[1].value() == pair[0].value() + 1)
 }
 
 fn entry(
@@ -1376,7 +1381,7 @@ pub(crate) fn playable_profession_abilities(
         && let Some((_, residual_level)) = residual_card_facts(state, player)
         && state
             .card_level_for(player, cards[0])
-            .is_some_and(|level| level > residual_level)
+            .is_some_and(|level| level.value() > residual_level)
         && tuning_card_can_be_used(state, player, cards[0])?
     {
         candidates.push(ability_candidate(

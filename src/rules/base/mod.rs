@@ -1051,7 +1051,8 @@ fn decide_command_with_base_ruleset(
                 .ok_or(GameError::Validation(
                     ValidationError::MissingCardInstanceDefinition(card),
                 ))?
-                .level as i32;
+                .level
+                .value() as i32;
             let team = state
                 .players
                 .iter()
@@ -1365,7 +1366,7 @@ mod tests {
                 id: CardDefId::new("metal"),
                 name: "metal".to_string(),
                 element: Element::Metal,
-                level: 3,
+                level: crate::domain::PrintedCardLevel::new(3),
             }],
             (1..=10)
                 .map(|id| CardInstanceDef {
@@ -1406,7 +1407,7 @@ mod tests {
                             .iter()
                             .find(|card_def| card_def.id == instance.definition)
                             .is_some_and(|card_def| {
-                                card_def.element == element && card_def.level == level
+                                card_def.element == element && card_def.level.value() == level
                             })
                     })
                     .count();

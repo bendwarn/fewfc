@@ -776,7 +776,8 @@ fn active_spell_intents(
                 .card_level_for(player, standalone)
                 .ok_or(GameError::Validation(
                     ValidationError::MissingCardInstanceDefinition(standalone),
-                ))? as i32;
+                ))?
+                .value() as i32;
             Ok(vec![EffectIntent::ChangeHp {
                 team: player_team(state, player)?,
                 delta: level * 25,
@@ -812,15 +813,16 @@ fn active_spell_intents(
             })?;
             let highest = hand
                 .iter()
-                .filter_map(|card| state.card_def(*card).map(|definition| definition.level))
+                .filter_map(|card| state.effective_card_facts(&target, *card))
+                .map(|facts| facts.level)
                 .max();
             let allowed_cards = highest.map_or_else(Vec::new, |highest| {
                 hand.iter()
                     .copied()
                     .filter(|card| {
                         state
-                            .card_def(*card)
-                            .is_some_and(|definition| definition.level == highest)
+                            .effective_card_facts(&target, *card)
+                            .is_some_and(|facts| facts.level == highest)
                     })
                     .collect()
             });
@@ -1042,7 +1044,8 @@ fn level_sum(state: &GameState, player: &PlayerId, cards: &[CardInstanceId]) -> 
             .card_level_for(player, *card)
             .ok_or(GameError::Validation(
                 ValidationError::MissingCardInstanceDefinition(*card),
-            ))? as i32;
+            ))?
+            .value() as i32;
         Ok(sum + level)
     })?;
     Ok(physical
@@ -1053,7 +1056,7 @@ fn level_sum(state: &GameState, player: &PlayerId, cards: &[CardInstanceId]) -> 
                 &requirement.player == player && requirement.applied_on_turn == state.turn_number
             })
             .and_then(|requirement| requirement.virtual_card.as_ref())
-            .map_or(0, |card| card.level as i32))
+            .map_or(0, |card| card.level.value() as i32))
 }
 
 fn team_hp(state: &GameState, team: &TeamId) -> GameResult<i32> {

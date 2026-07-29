@@ -75,7 +75,7 @@ fn cards(state: &GameState, requested: &[(Element, u32)]) -> Vec<CardInstanceId>
                 .find(|instance| {
                     !used.contains(instance)
                         && state.card_def(*instance).is_some_and(|definition| {
-                            definition.element == *element && definition.level == *level
+                            definition.element == *element && definition.level.value() == *level
                         })
                 })
                 .unwrap();
@@ -164,7 +164,10 @@ fn dark_spirit_lowers_one_physical_card_and_automatically_requires_it() {
     for event in &events {
         apply_event(&mut game, event);
     }
-    assert_eq!(game.card_level_for(&PlayerId::new("p1"), card), Some(1));
+    assert_eq!(
+        game.card_level_for(&PlayerId::new("p1"), card),
+        Some(fewfc::domain::EffectiveCardLevel::new(1))
+    );
     assert!(matches!(
         handle_command(
             &game,

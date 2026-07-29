@@ -45,7 +45,7 @@ fn cards(state: &GameState, requested: &[(Element, u32)]) -> Vec<CardInstanceId>
                 .find(|instance| {
                     !used.contains(instance)
                         && state.card_def(*instance).is_some_and(|definition| {
-                            definition.element == *element && definition.level == *level
+                            definition.element == *element && definition.level.value() == *level
                         })
                 })
                 .unwrap();
@@ -807,7 +807,7 @@ fn activated_abilities_require_action_permission_and_revelation_recycles_persona
         .find(|card| {
             state
                 .card_def(*card)
-                .is_some_and(|definition| definition.level >= 4)
+                .is_some_and(|definition| definition.level.value() >= 4)
         })
         .unwrap();
     let draw = p1_cards

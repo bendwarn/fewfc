@@ -1,7 +1,56 @@
 use crate::domain::{
-    CardMoveDelta, CardOrigin, CardZone, DeckPlacement, GameEvent, GameOutcome, GameResult,
-    GameSetup, GameState, GameStatus, LastFormationUse, ShieldChangeDelta, validate_setup,
+    CardInterpretationLayer, CardInterpretationSource, CardLevelInterpretation, CardMoveDelta,
+    CardOrigin, CardZone, DeckPlacement, GameEvent, GameOutcome, GameResult, GameSetup, GameState,
+    GameStatus, LastFormationUse, ShieldChangeDelta, validate_setup,
 };
+
+/// Projects the rules-specific semantic event into the one ordered Card
+/// Interpretation Layer collection. The event itself remains the canonical
+/// record; this is derived state only.
+pub(crate) fn card_interpretation_layers_for_event(
+    event: &GameEvent,
+) -> Vec<CardInterpretationLayer> {
+    match event {
+        GameEvent::PouchLevelBonusGranted { bonus } => bonus
+            .cards
+            .iter()
+            .map(|card| CardInterpretationLayer {
+                source: CardInterpretationSource::PouchLevelBonusGranted,
+                player: bonus.player.clone(),
+                card: *card,
+                applied_on_turn: bonus.applied_on_turn,
+                element: None,
+                level: Some(CardLevelInterpretation::Adjust(1)),
+            })
+            .collect(),
+        GameEvent::SpiritLevelInterpreted {
+            player,
+            card,
+            level,
+            applied_on_turn,
+            ..
+        } => vec![CardInterpretationLayer {
+            source: CardInterpretationSource::SpiritLevelInterpreted,
+            player: player.clone(),
+            card: *card,
+            applied_on_turn: *applied_on_turn,
+            element: None,
+            level: Some(CardLevelInterpretation::Set(*level)),
+        }],
+        GameEvent::ProfessionAbilityActivated {
+            prepared: Some(prepared),
+            ..
+        } => vec![CardInterpretationLayer {
+            source: CardInterpretationSource::ProfessionAbilityActivated,
+            player: prepared.player.clone(),
+            card: prepared.card,
+            applied_on_turn: prepared.prepared_on_turn,
+            element: Some(prepared.element),
+            level: Some(CardLevelInterpretation::Set(prepared.level)),
+        }],
+        _ => Vec::new(),
+    }
+}
 
 pub(crate) fn project(setup: &GameSetup, events: &[GameEvent]) -> GameResult<GameState> {
     validate_setup(setup)?;
@@ -13,6 +62,9 @@ pub(crate) fn project(setup: &GameSetup, events: &[GameEvent]) -> GameResult<Gam
 }
 
 pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
+    state
+        .card_interpretation_layers
+        .extend(card_interpretation_layers_for_event(event));
     match event {
         GameEvent::GamePreparationStarted { player_decks } => {
             state.player_decks = player_decks.clone();

@@ -162,16 +162,23 @@ fn star_substitution_does_not_make_a_melody_legal() {
 fn card_interpretation_must_explicitly_include_the_melody_scope() {
     let mut state = configured_state();
     state.hands[0].cards = vec![card(1), card(73)];
-    state.prepared_profession_abilities = vec![PreparedProfessionAbility {
-        player: PlayerId::new("p1"),
-        ability_id: "test:interpretation".to_string(),
-        card: card(73),
-        element: Element::Metal,
-        level: 1,
-        allowed_formation_scope: vec!["base".to_string()],
-        prepared_on_turn: 1,
-        interpretation_revision: 1,
-    }];
+    apply_event(
+        &mut state,
+        &GameEvent::ProfessionAbilityActivated {
+            player: PlayerId::new("p1"),
+            ability_id: "test:interpretation".to_string(),
+            prepared: Some(PreparedProfessionAbility {
+                player: PlayerId::new("p1"),
+                ability_id: "test:interpretation".to_string(),
+                card: card(73),
+                element: Element::Metal,
+                level: fewfc::domain::EffectiveCardLevel::new(1),
+                allowed_formation_scope: vec!["base".to_string()],
+                prepared_on_turn: 1,
+                interpretation_revision: 1,
+            }),
+        },
+    );
     let base_only = formation_ids(
         OfficialRules::new()
             .playable_actions(&state, &PlayerId::new("p1"), &[card(1), card(73)])
@@ -806,16 +813,24 @@ fn pure_fire_and_plant_earth_require_the_published_mixed_level_seven_patterns() 
     );
     assert!(!star_substitution.contains(&"echo:pure-fire".to_string()));
 
-    state.prepared_profession_abilities = vec![PreparedProfessionAbility {
-        player: PlayerId::new("p1"),
-        ability_id: "test:level-interpretation".to_string(),
-        card: card(37),
-        element: Element::Water,
-        level: 5,
-        allowed_formation_scope: vec!["echo:pure-fire".to_string()],
-        prepared_on_turn: state.turn_number,
-        interpretation_revision: 1,
-    }];
+    let current_turn = state.turn_number;
+    apply_event(
+        &mut state,
+        &GameEvent::ProfessionAbilityActivated {
+            player: PlayerId::new("p1"),
+            ability_id: "test:level-interpretation".to_string(),
+            prepared: Some(PreparedProfessionAbility {
+                player: PlayerId::new("p1"),
+                ability_id: "test:level-interpretation".to_string(),
+                card: card(37),
+                element: Element::Water,
+                level: fewfc::domain::EffectiveCardLevel::new(5),
+                allowed_formation_scope: vec!["echo:pure-fire".to_string()],
+                prepared_on_turn: current_turn,
+                interpretation_revision: 1,
+            }),
+        },
+    );
     let interpreted_level = formation_ids(
         OfficialRules::new()
             .playable_actions(&state, &PlayerId::new("p1"), &[card(37), card(63)])

@@ -498,7 +498,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
                     .can_see_player_hidden_cards(&prepared.player)
                     .then_some(prepared.card),
                 element: prepared.element,
-                level: prepared.level,
+                level: prepared.level.value(),
             })
             .chain(
                 state
@@ -510,7 +510,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
                         card: policy
                             .can_see_player_hidden_cards(&interpretation.player)
                             .then_some(interpretation.card),
-                        level: interpretation.level,
+                        level: interpretation.level.value(),
                     }),
             )
             .collect(),
@@ -695,7 +695,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
             player: player.clone(),
             skill: *skill,
             card: policy.can_see_player_hidden_cards(player).then_some(*card),
-            level: *level,
+            level: level.value(),
             applied_on_turn: *applied_on_turn,
         },
         GameEvent::CardsMoved { card_moves } => PublicGameEvent::CardsMoved {

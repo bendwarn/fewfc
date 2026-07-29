@@ -80,7 +80,7 @@ fn personal_card(
         .find(|instance| {
             instance.origin == CardOrigin::Player(player.clone())
                 && state.card_def(instance.instance).is_some_and(|definition| {
-                    definition.element == element && definition.level == level
+                    definition.element == element && definition.level.value() == level
                 })
         })
         .expect("preconstructed personal deck has the requested card")
