@@ -265,8 +265,14 @@
                         ref="darkSpiritMenuTrigger"
                         class="spirit-level-trigger"
                         type="button"
+                        :title="playableActionDetail(darkSpiritPicker.representative) || undefined"
+                        :aria-label="playableActionAccessibleLabel(darkSpiritPicker.representative)"
                         aria-haspopup="menu"
                         :aria-expanded="darkSpiritMenuOpen"
+                        @mouseenter="showActionDetail(darkSpiritPicker.representative)"
+                        @mouseleave="hideActionDetail"
+                        @focus="showActionDetail(darkSpiritPicker.representative)"
+                        @blur="hideActionDetail"
                         @click="darkSpiritMenuOpen = !darkSpiritMenuOpen"
                       >
                         暗靈
@@ -279,6 +285,10 @@
                           role="menuitem"
                           :title="playableActionDetail(ability) || undefined"
                           :aria-label="labelWithDetail(`暗靈：指定為 ${ability.declaredLevel} 級`, playableActionDetail(ability))"
+                          @mouseenter="showActionDetail(ability)"
+                          @mouseleave="hideActionDetail"
+                          @focus="showActionDetail(ability)"
+                          @blur="hideActionDetail"
                           @click="startDarkSpiritAction(ability)"
                         >
                           {{ ability.declaredLevel }} 級
@@ -296,8 +306,14 @@
                         ref="splendorMenuTrigger"
                         class="spirit-level-trigger"
                         type="button"
+                        :title="playableActionDetail(splendorPicker.representative) || undefined"
+                        :aria-label="playableActionAccessibleLabel(splendorPicker.representative)"
                         aria-haspopup="menu"
                         :aria-expanded="splendorMenuOpen"
+                        @mouseenter="showActionDetail(splendorPicker.representative)"
+                        @mouseleave="hideActionDetail"
+                        @focus="showActionDetail(splendorPicker.representative)"
+                        @blur="hideActionDetail"
                         @click="splendorMenuOpen = !splendorMenuOpen"
                       >
                         絢爛
@@ -310,6 +326,10 @@
                           role="menuitem"
                           :title="playableActionDetail(ability) || undefined"
                           :aria-label="labelWithDetail(`絢爛：指定為 ${ability.declaredLevel} 級`, playableActionDetail(ability))"
+                          @mouseenter="showActionDetail(ability)"
+                          @mouseleave="hideActionDetail"
+                          @focus="showActionDetail(ability)"
+                          @blur="hideActionDetail"
                           @click="startSplendorAction(ability)"
                         >
                           {{ ability.declaredLevel }} 級
@@ -317,7 +337,7 @@
                       </div>
                     </div>
                     <button
-                      v-if="game.interaction.value.canRetrieveDiscard"
+                      v-if="game.playableDiscardRetrieval.value"
                       class="retrieve-action"
                       type="button"
                       :title="discardRetrievalDetail || undefined"
@@ -327,11 +347,11 @@
                       @mouseleave="hideActionDetail"
                       @focus="showTextActionDetail(discardRetrievalDetail)"
                       @blur="hideActionDetail"
-                      @click="game.retrievePreviousTurnDiscard()"
+                      @click="game.performPlayableAction(game.playableDiscardRetrieval.value)"
                     >
                       棄牌回收
                     </button>
-                    <p v-if="!game.playableAbilities.value.length && !game.interaction.value.canRetrieveDiscard">
+                    <p v-if="!game.playableAbilities.value.length && !game.playableDiscardRetrieval.value">
                       目前沒有可用能力
                     </p>
                   </div>
@@ -365,7 +385,7 @@
                       class="skip-action"
                       type="button"
                       :disabled="!roomConnected"
-                      @click="game.passAction()"
+                      @click="game.playablePass.value && game.performPlayableAction(game.playablePass.value)"
                     >
                       跳過
                     </button>
@@ -1104,11 +1124,11 @@ type PouchStrategyAction = {
   options?: Parameters<typeof game.triggerSecretStrategy>[1]
 }
 const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
-  if (viewer.value === 'observer' || !game.interaction.value.canTriggerPouch) return []
+  if (viewer.value === 'observer') return []
   const pouch = state.value.pouches.find(entry => entry.owner === viewer.value)?.card
   if (!pouch) return []
   const actions: PouchStrategyAction[] = []
-  const requirements = game.interaction.value.secretStrategyOptions
+  const requirements = game.playableSecretStrategies.value
     .filter(requirement => requirement.sourceCard === pouch.id)
   for (const requirement of requirements) {
     const { strategy } = requirement
@@ -1231,9 +1251,11 @@ const pouchSwapReturnCards = computed(() => sheepReturnCards(
 const chainStrategyOptions = computed(() => {
   const card = chainTriggerCard.value
   if (!card) return []
+  const choice = state.value.pendingChoice
+  if (choice?.visibility !== 'visible' || choice.choice.type !== 'chain') return []
   const prospectiveDeckCount = ownDeckCards.value.length - 2
   const sheepCanComplete = prospectiveDeckCount + ownDiscardCards.value.length >= 2
-  return game.interaction.value.secretStrategyOptions
+  return choice.choice.strategyOptions
     .filter(option => option.sourceCard === card.id)
     .filter(option => option.strategy !== 'SheepStealing' || sheepCanComplete)
 })
@@ -1410,8 +1432,8 @@ watch(
 
 const actionDetail = ref<string | null>(null)
 const discardRetrievalDetail = computed(() => {
-  const detail = game.interaction.value.discardRetrievalAction
-  return detail ? presentDiscardRetrievalAction(detail) : ''
+  const action = game.playableDiscardRetrieval.value
+  return action?.detail ? presentDiscardRetrievalAction(action) : ''
 })
 const splendorMenuOpen = ref(false)
 const splendorMenuTrigger = ref<HTMLButtonElement | null>(null)
@@ -1573,8 +1595,7 @@ const discardComposition = computed(() => buildCardComposition(activeDiscardCard
 const activeTeams = computed(() => [...new Set(state.value.players.map((player) => player.team))])
 const showSkip = computed(() => (
   roomConnected.value
-  && game.interaction.value.canPass
-  && game.interaction.value.hasOptionalEffect
+  && game.playablePass.value !== null
 ))
 const gameResultText = computed(() => {
   if (state.value.fiveStarAlignment) {
@@ -2201,6 +2222,15 @@ function waitingMemberStatus(member: GameRoomMember | undefined): string {
 }
 
 function playableActionName(action: PlayableAction): string {
+  if (action.type === 'pass') {
+    return '跳過'
+  }
+  if (action.type === 'retrievePreviousTurnDiscard') {
+    return '棄牌回收'
+  }
+  if (action.type === 'triggerSecretStrategy') {
+    return `秘計‧${strategyLabel(action.strategy)}`
+  }
   if (action.type === 'changeProfession') {
     return `轉職：${action.name}`
   }

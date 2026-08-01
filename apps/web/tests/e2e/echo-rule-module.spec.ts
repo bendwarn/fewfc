@@ -142,9 +142,8 @@ test('Echo action detail renders scheduled typed consequences on the battlefield
     await pureFire.hover()
     const detail = page.locator('.action-detail')
     await expect(detail).toContainText('結算此曲調的主效果')
-    await expect(detail).toContainText(
-      '結算主效果後，可捨棄一張金或土屬性的手牌；若捨棄，下次回合開始再執行一次此曲調主效果',
-    )
+    await expect(detail).toContainText('下次回合開始再執行一次此曲調主效果')
+    await expect(detail).not.toContainText('可捨棄')
   } finally {
     await game.close()
   }

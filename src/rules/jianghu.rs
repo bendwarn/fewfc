@@ -877,6 +877,10 @@ pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbility
     })
 }
 
+pub(crate) fn player_facing_ability_discards_selected_cards(id: &str) -> bool {
+    matches!(id, "jianghu:azure-cloud-step" | "jianghu:meteor-step")
+}
+
 pub(crate) fn activate_profession_ability(
     state: &GameState,
     player: &PlayerId,

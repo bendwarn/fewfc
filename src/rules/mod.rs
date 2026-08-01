@@ -24,6 +24,7 @@ pub use base::deck_composition::{
     SharedDeckComposition,
 };
 pub use official::{OfficialRuleModuleCategory, OfficialRuleModuleSpec, OfficialRules};
+pub use pouch::{SecretStrategyInputRequirement, SecretStrategyOption};
 
 use crate::domain::EffectiveCardLevel;
 pub use crate::domain::Element;
@@ -428,6 +429,37 @@ pub enum PlayableAction {
     ChangeProfession(ProfessionChangeCandidate),
     ActivateProfessionAbility(ProfessionAbilityCandidate),
     UseSpiritSkill(SpiritSkillCandidate),
+    TriggerSecretStrategy(SecretStrategyOption),
+    RetrievePreviousTurnDiscard(DiscardRetrievalCandidate),
+    Pass {
+        reason: crate::domain::PassActionReason,
+    },
+}
+
+impl PlayableAction {
+    pub fn command_role(&self) -> MainPhaseCommandRole {
+        match self {
+            Self::PerformFormation(_) | Self::ChangeProfession(_) | Self::Pass { .. } => {
+                MainPhaseCommandRole::Action
+            }
+            Self::ActivateProfessionAbility(_)
+            | Self::UseSpiritSkill(_)
+            | Self::TriggerSecretStrategy(_)
+            | Self::RetrievePreviousTurnDiscard(_) => MainPhaseCommandRole::ActiveEffect,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MainPhaseCommandRole {
+    ActiveEffect,
+    Action,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscardRetrievalCandidate {
+    pub detail: PlayerFacingActionDetail,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

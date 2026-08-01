@@ -4,6 +4,7 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Open Local Issues
 
+- [#73 Deepen Online Command Transactions](073-deepen-online-command-transactions.md)
 - [#71 Deepen Player-Facing Action Detail](071-deepen-player-facing-action-detail.md)
 
 ## Completed Local Issues

@@ -15,8 +15,8 @@ use crate::domain::{
 };
 use crate::rules::projection;
 use crate::rules::{
-    ConsequenceCertainty, FollowUpChoice, FormationEffect, ImmediateEffect, PlayableAction,
-    RuleConsequence, RuleException,
+    ConsequenceCertainty, DiscardRetrievalCandidate, FollowUpChoice, FormationEffect,
+    ImmediateEffect, PlayableAction, RuleConsequence, RuleException,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -203,6 +203,19 @@ impl BaseRuleset {
             .unwrap_or(true);
             if preserves {
                 actions.push(PlayableAction::UseSpiritSkill(candidate));
+            }
+        }
+        if selected_cards.is_empty() {
+            actions.extend(
+                crate::rules::pouch::playable_owned_strategy_actions(state, player)
+                    .into_iter()
+                    .map(PlayableAction::TriggerSecretStrategy),
+            );
+            if let Some(candidate) = playable_discard_retrieval(state, player) {
+                actions.push(PlayableAction::RetrievePreviousTurnDiscard(candidate));
+            }
+            if let Some(reason) = playable_pass_reason(state, player) {
+                actions.push(PlayableAction::Pass { reason });
             }
         }
         let actions = crate::rules::action_detail::attach_to_actions(state, player, actions);
@@ -1155,6 +1168,49 @@ fn ensure_engine_invariants(state: &GameState) -> GameResult<()> {
     }
 
     Ok(())
+}
+
+fn playable_pass_reason(state: &GameState, player: &PlayerId) -> Option<PassActionReason> {
+    let hand = state.hand(player)?;
+    let reason = if hand.is_empty() {
+        PassActionReason::NoCardsInHand
+    } else if player_has_status(state, player, "CannotAct") {
+        PassActionReason::CannotActByStatus
+    } else {
+        return None;
+    };
+    let command = Command::PassAction {
+        player: player.clone(),
+        reason,
+    };
+
+    BaseRuleset::new()
+        .decide_command(state, command)
+        .is_ok()
+        .then_some(reason)
+}
+
+fn playable_discard_retrieval(
+    state: &GameState,
+    player: &PlayerId,
+) -> Option<DiscardRetrievalCandidate> {
+    BaseRuleset::new()
+        .decide_command(
+            state,
+            Command::RetrievePreviousTurnDiscard {
+                player: player.clone(),
+            },
+        )
+        .ok()?;
+
+    let previous = previous_player(state, player).ok()?;
+    let card = state.last_turn_discard_by_player.get(&previous)?.card;
+    let level = state.card_def(card)?.level.value() as i32;
+    let hp_cost = crate::rules::hero::discard_retrieval_cost(state, player, level * 2);
+
+    Some(DiscardRetrievalCandidate {
+        detail: crate::rules::action_detail::discard_retrieval_detail(hp_cost),
+    })
 }
 
 fn ensure_can_query_playable_actions(

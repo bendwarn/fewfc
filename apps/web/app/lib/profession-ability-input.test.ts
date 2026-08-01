@@ -9,6 +9,7 @@ import {
 function offer(overrides: Partial<ProfessionAbilityOffer> = {}): ProfessionAbilityOffer {
   return {
     type: 'activateProfessionAbility',
+    commandRole: 'activeEffect',
     id: 'illusion',
     name: '幻術',
     detail: null,

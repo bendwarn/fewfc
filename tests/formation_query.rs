@@ -61,7 +61,10 @@ fn formations(actions: Vec<PlayableAction>) -> Vec<FormationCandidate> {
             PlayableAction::PerformFormation(candidate) => Some(candidate),
             PlayableAction::ChangeProfession(_)
             | PlayableAction::ActivateProfessionAbility(_)
-            | PlayableAction::UseSpiritSkill(_) => None,
+            | PlayableAction::UseSpiritSkill(_)
+            | PlayableAction::TriggerSecretStrategy(_)
+            | PlayableAction::RetrievePreviousTurnDiscard(_)
+            | PlayableAction::Pass { .. } => None,
         })
         .collect()
 }
@@ -272,10 +275,13 @@ fn playable_actions_returns_no_formations_when_player_has_cannot_act_status() {
         duration: StatusDuration::Permanent,
     });
 
-    assert_eq!(
+    assert!(matches!(
         rules
             .playable_actions(&state, &PlayerId::new("p1"), &[])
-            .unwrap(),
-        Vec::new()
-    );
+            .unwrap()
+            .as_slice(),
+        [PlayableAction::Pass {
+            reason: fewfc::domain::PassActionReason::NoCardsInHand,
+        }]
+    ));
 }

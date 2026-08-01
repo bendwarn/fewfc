@@ -307,7 +307,10 @@ describe('requiresPendingCommandDraft', () => {
       strategy: 'SheepStealing',
     }, stagedChoice)).toBe(true)
     expect(requiresPendingCommandDraft(formation, turnDrawChoice)).toBe(false)
-    expect(requiresPendingCommandDraft({ type: 'passAction' }, stagedChoice)).toBe(false)
+    expect(requiresPendingCommandDraft({
+      type: 'passAction',
+      reason: 'CannotActByStatus',
+    }, stagedChoice)).toBe(false)
   })
 })
 

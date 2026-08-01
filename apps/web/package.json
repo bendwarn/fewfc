@@ -31,22 +31,22 @@
     "@better-auth/drizzle-adapter": "^1.6.25",
     "better-auth": "^1.6.25",
     "drizzle-orm": "^0.45.2",
-    "nuxt": "^4.5.0",
+    "nuxt": "^4.5.1",
     "vue": "^3.5.40",
     "vue-router": "^5.2.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260723.1",
+    "@cloudflare/workers-types": "^5.20260731.1",
     "@playwright/cli": "^0.1.17",
-    "@playwright/test": "^1.61.1",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/bun": "^1.3.14",
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
-    "vue-tsc": "^3.3.8",
-    "wrangler": "^4.114.0"
+    "vue-tsc": "^3.3.9",
+    "wrangler": "^4.116.0"
   }
 }

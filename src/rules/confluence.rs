@@ -1455,6 +1455,10 @@ pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbility
     })
 }
 
+pub(crate) fn player_facing_ability_discards_selected_cards(id: &str) -> bool {
+    id == "confluence:tuning"
+}
+
 fn tuning_card_can_be_used(
     state: &GameState,
     player: &PlayerId,

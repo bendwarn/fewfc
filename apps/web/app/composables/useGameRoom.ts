@@ -93,24 +93,38 @@ export function useGameRoom(viewer: ViewerRef) {
       (action): action is Extract<
         PlayableAction,
         { type: 'activateProfessionAbility' | 'useSpiritSkill' }
-      > => action.type === 'activateProfessionAbility' || action.type === 'useSpiritSkill',
+      > => action.commandRole === 'activeEffect'
+        && (action.type === 'activateProfessionAbility' || action.type === 'useSpiritSkill'),
     )
   ))
   const playableMainActions = computed(() => (
     playableActions.value.filter(
-      action => action.type !== 'activateProfessionAbility' && action.type !== 'useSpiritSkill',
+      action => action.commandRole === 'action' && action.type !== 'pass',
+    )
+  ))
+  const playablePass = computed(() => (
+    playableActions.value.find(
+      (action): action is Extract<PlayableAction, { type: 'pass' }> => action.type === 'pass',
+    ) ?? null
+  ))
+  const playableDiscardRetrieval = computed(() => (
+    playableActions.value.find(
+      (action): action is Extract<PlayableAction, { type: 'retrievePreviousTurnDiscard' }> => (
+        action.type === 'retrievePreviousTurnDiscard'
+      ),
+    ) ?? null
+  ))
+  const playableSecretStrategies = computed(() => (
+    playableActions.value.filter(
+      (action): action is Extract<PlayableAction, { type: 'triggerSecretStrategy' }> => (
+        action.type === 'triggerSecretStrategy'
+      ),
     )
   ))
   const errorMessage = ref<string | null>(null)
   const isLoading = ref(false)
   const interaction = ref<GameRoomResponse['interaction']>({
-    canPass: false,
-    hasOptionalEffect: false,
-    canRetrieveDiscard: false,
-    discardRetrievalAction: null,
     canChooseInitialPouch: false,
-    canTriggerPouch: false,
-    secretStrategyOptions: [],
   })
   const connectionState = ref<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle')
   const roomDissolved = ref(false)
@@ -350,24 +364,8 @@ export function useGameRoom(viewer: ViewerRef) {
     }
   }
 
-  async function passAction() {
-    if (await submitOnline({ type: 'passAction' })) {
-      selectedCards.value = []
-    }
-  }
-
   async function advanceAutomatic() {
     return await submitOnline({ type: 'advanceAutomatic' })
-  }
-
-  async function retrievePreviousTurnDiscard() {
-    const player = state.value.currentPlayer
-    if (!player) return
-
-    await submitOnline({
-      type: 'retrievePreviousTurnDiscard',
-      player,
-    })
   }
 
   async function chooseInitialPouch(card: CardInstanceId) {
@@ -659,6 +657,24 @@ export function useGameRoom(viewer: ViewerRef) {
         }
         return submitted
       }
+      case 'retrievePreviousTurnDiscard': {
+        return await submitOnline({
+          type: 'retrievePreviousTurnDiscard',
+          player,
+        })
+      }
+      case 'pass': {
+        const submitted = await submitOnline({
+          type: 'passAction',
+          reason: action.reason,
+        })
+        if (submitted) {
+          selectedCards.value = []
+        }
+        return submitted
+      }
+      case 'triggerSecretStrategy':
+        return false
     }
   }
 
@@ -771,6 +787,9 @@ export function useGameRoom(viewer: ViewerRef) {
     playableActions,
     playableAbilities,
     playableMainActions,
+    playablePass,
+    playableDiscardRetrieval,
+    playableSecretStrategies,
     errorMessage,
     isLoading,
     interaction,
@@ -789,8 +808,6 @@ export function useGameRoom(viewer: ViewerRef) {
     clearRoom,
     disconnectRoomSocket,
     advanceAutomatic,
-    passAction,
-    retrievePreviousTurnDiscard,
     chooseInitialPouch,
     triggerSecretStrategy,
     answerChainChoice,

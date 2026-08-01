@@ -43,19 +43,22 @@ fn attach_to_action(
     player: &PlayerId,
     mut action: PlayableAction,
 ) -> PlayableAction {
-    let detail = match &action {
-        PlayableAction::PerformFormation(candidate) => formation_detail(state, candidate),
-        PlayableAction::ChangeProfession(_) => profession_change_detail(),
-        PlayableAction::ActivateProfessionAbility(candidate) => {
-            profession_ability_detail(state, player, candidate)
-        }
-        PlayableAction::UseSpiritSkill(candidate) => spirit_skill_detail(candidate),
-    };
     match &mut action {
-        PlayableAction::PerformFormation(candidate) => candidate.detail = detail,
-        PlayableAction::ChangeProfession(candidate) => candidate.detail = detail,
-        PlayableAction::ActivateProfessionAbility(candidate) => candidate.detail = detail,
-        PlayableAction::UseSpiritSkill(candidate) => candidate.detail = detail,
+        PlayableAction::PerformFormation(candidate) => {
+            candidate.detail = formation_detail(state, candidate)
+        }
+        PlayableAction::ChangeProfession(candidate) => {
+            candidate.detail = profession_change_detail()
+        }
+        PlayableAction::ActivateProfessionAbility(candidate) => {
+            candidate.detail = profession_ability_detail(state, player, candidate)
+        }
+        PlayableAction::UseSpiritSkill(candidate) => {
+            candidate.detail = spirit_skill_detail(candidate)
+        }
+        PlayableAction::TriggerSecretStrategy(_)
+        | PlayableAction::RetrievePreviousTurnDiscard(_)
+        | PlayableAction::Pass { .. } => {}
     }
     action
 }
@@ -173,7 +176,15 @@ fn profession_ability_detail(
             effect: profession_ability_effect(&candidate.ability_id),
         },
     }];
-    if !candidate.cards.is_empty() {
+    if !candidate.cards.is_empty()
+        && (crate::rules::hero::player_facing_ability_discards_selected_cards(
+            &candidate.ability_id,
+        ) || crate::rules::jianghu::player_facing_ability_discards_selected_cards(
+            &candidate.ability_id,
+        ) || crate::rules::confluence::player_facing_ability_discards_selected_cards(
+            &candidate.ability_id,
+        ))
+    {
         consequences.push(RuleConsequence::Cost {
             certainty: ConsequenceCertainty::Guaranteed,
             cost: ActionCost::DiscardSelectedCards,

@@ -10,6 +10,7 @@ use crate::rules::{
     FormationCategory, FormationDef, FormationEffect, FormationPattern, PlayerFacingActionDetail,
     PointFormula, RuleConsequence, SpellPlanDef,
 };
+use serde::Serialize;
 
 pub(crate) const CHAIN_ID: &str = "pouch:chain";
 pub(crate) const GOLDEN_CICADA_STATUS: &str = "PouchGoldenCicada";
@@ -297,8 +298,9 @@ fn resolve_owned_pouch(
     Ok(events)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SecretStrategyInputRequirement {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SecretStrategyInputRequirement {
     None,
     TargetPlayer,
     DeckDiscardSwap,
@@ -312,8 +314,9 @@ pub(crate) struct SecretStrategyCardOption {
     pub input: SecretStrategyInputRequirement,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SecretStrategyOption {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretStrategyOption {
     pub source_card: CardInstanceId,
     pub strategy: SecretStrategy,
     pub input: SecretStrategyInputRequirement,
@@ -456,6 +459,35 @@ pub(crate) fn strategy_action_options(
                 .unwrap_or_default(),
                 detail: crate::rules::action_detail::secret_strategy_detail(option.strategy),
             }
+        })
+        .collect()
+}
+
+pub(crate) fn playable_owned_strategy_actions(
+    state: &GameState,
+    player: &PlayerId,
+) -> Vec<SecretStrategyOption> {
+    let Some(source_card) = state.pouch_for(player).map(|pouch| pouch.card) else {
+        return Vec::new();
+    };
+
+    strategy_action_options(state, player, source_card)
+        .into_iter()
+        .filter(|option| {
+            let target_player = option.target_players.first();
+            let star = option.stars.first().copied();
+            resolve_owned_pouch(
+                state,
+                player,
+                option.strategy,
+                target_player,
+                star,
+                false,
+                None,
+                &[],
+                &[],
+            )
+            .is_ok()
         })
         .collect()
 }

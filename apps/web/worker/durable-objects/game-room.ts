@@ -1761,10 +1761,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         })).reverse(),
         playableActions: playableActions ?? [],
         interaction: {
-          canPass: false,
-          hasOptionalEffect: false,
-          canRetrieveDiscard: false,
-          discardRetrievalAction: null,
+          canChooseInitialPouch: false,
         },
       }
     }

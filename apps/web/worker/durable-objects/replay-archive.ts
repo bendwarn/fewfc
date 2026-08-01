@@ -11,13 +11,7 @@ export interface ReplayFrame {
   state: PublicGameState
   events: PublicGameEvent[]
   interaction: {
-    canPass: false
-    hasOptionalEffect: false
-    canRetrieveDiscard: false
-    discardRetrievalAction: null
     canChooseInitialPouch: false
-    canTriggerPouch: false
-    secretStrategyOptions: []
   }
   players: Array<{ player: string; displayName: string }>
   firstPlayer: string

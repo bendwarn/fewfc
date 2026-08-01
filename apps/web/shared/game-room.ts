@@ -7,6 +7,7 @@ import type {
   PublicPendingChoice,
   PublicGameState,
   RecordedDecision,
+  PassActionReason,
   SecretStrategy,
   StarKind,
 } from '../app/types/fewfc'
@@ -168,7 +169,7 @@ export type OnlineGameAction =
   | { type: 'start'; firstPlayer?: PlayerId; deckSeed?: string }
   | { type: 'refresh' }
   | { type: 'advanceAutomatic' }
-  | { type: 'passAction' }
+  | { type: 'passAction'; reason: PassActionReason }
   | { type: 'chooseInitialPouch'; player: PlayerId; card: number }
   | {
       type: 'triggerSecretStrategy'

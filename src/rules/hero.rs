@@ -1236,6 +1236,13 @@ pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbility
     })
 }
 
+pub(crate) fn player_facing_ability_discards_selected_cards(id: &str) -> bool {
+    matches!(
+        id,
+        "shadow-cut" | "meditation" | "revelation" | "illusion" | "phantasm"
+    )
+}
+
 pub(crate) fn activate_profession_ability(
     state: &GameState,
     player: &PlayerId,

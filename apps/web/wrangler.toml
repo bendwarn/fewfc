@@ -49,7 +49,7 @@ name = "fewfc-web-staging"
 
 [env.staging.vars]
 APP_ENV = "staging"
-BETTER_AUTH_URL = "https://staging.example.com"
+BETTER_AUTH_URL = "https://fewfc-web-staging.febcg.workers.dev"
 
 [env.staging.secrets]
 required = ["BETTER_AUTH_SECRET"]
@@ -85,11 +85,11 @@ tag = "v3"
 new_sqlite_classes = ["ReplayArchive"]
 
 [env.production]
-name = "fewfc-web-production"
+name = "fewfc"
 
 [env.production.vars]
 APP_ENV = "production"
-BETTER_AUTH_URL = "https://example.com"
+BETTER_AUTH_URL = "https://fewfc.febcg.workers.dev"
 
 [env.production.secrets]
 required = ["BETTER_AUTH_SECRET"]

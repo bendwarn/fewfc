@@ -259,6 +259,20 @@ One legal interpretation of submitted Card Instances for a declared Formation,
 including any role assignment that changes the Formation's result.
 _Avoid_: automatic best match, separate Formation
 
+**Action Card Selection**:
+The exact set of physical Card Instances a Player is currently proposing for
+one offered Main Phase command. A non-empty selection matches only offers that
+use every selected Card; an empty selection matches only offers that require no
+selected physical Card.
+_Avoid_: candidate filter, Formation Composition, Pending Choice
+
+**Playable Action**:
+A currently legal Main Phase command offer whose physical Card input exactly
+matches the Action Card Selection. Completing any declared Action Input
+Requirement produces a command that is accepted while the Game State remains
+unchanged.
+_Avoid_: Formation Catalog entry, UI capability flag, predicted command result
+
 **Formation Composition**:
 The physical Card Instances and optional Virtual Formation Card accepted as the
 components of one Formation Use.
@@ -755,6 +769,14 @@ _Avoid_: formation action
 The command that consumes the player's action opportunity and closes the main phase.
 _Avoid_: active-effect command
 
+**Action Pass**:
+An Action Command that closes the Main Phase without another action when the
+Rules Engine permits it. It remains an explicit Command whether a Player
+submits it to decline optional Active-Effect Commands or the Rules Engine
+selects it as the sole Playable Action, and its Playable Action carries the
+authoritative Pass reason.
+_Avoid_: Skip button, Automatic Decision
+
 **Pending Choice**:
 A serialized waiting state requiring one closed typed Player answer before
 deterministic resolution can continue. Initial Pouch Selection remains a Game
@@ -950,6 +972,32 @@ _Avoid_: callback response
 - An **Attack Plan** may be elemental, physical, or special without changing the **Formation Category**
 - An **Attack** targets a **Previous Player** before resolving HP impact to that player's **Team**
 - The **Main Phase** may accept multiple **Active-Effect Commands** before one **Action Command**
+- Every legal Main Phase option is classified by the Rules Engine as either an
+  **Active-Effect Command** or an **Action Command**; presentation may group
+  those options but does not reclassify them
+- **Playable Actions** include every legal Main Phase command contributed by
+  the Base Ruleset and enabled Rule Modules, independent of where presentation
+  places the corresponding controls
+- Trusted-randomness command variants continue an already chosen Formation or
+  Spirit Skill through **Pending Randomness**; they are not separate
+  **Playable Actions**
+- Public presentation derives Main Phase controls only from **Playable
+  Actions** and carries no parallel capability flags for the same legality
+- An initial, refreshed, or reconnected Main Phase view uses an empty **Action
+  Card Selection**; non-empty selections remain uncommitted Player-local input
+- A Main Phase option that uses selected physical Cards must use exactly the
+  current **Action Card Selection**; selection-independent options appear only
+  for an empty Action Card Selection
+- A legal **Action Pass** is a **Playable Action** only for an empty
+  **Action Card Selection**
+- An **Action Pass** may coexist with optional **Active-Effect Commands** but
+  never with another **Action Command**
+- A Main Phase whose sole **Playable Action** is an **Action Pass** contains no
+  Player decision and advances by applying that explicit Command; every sole
+  non-pass Playable Action remains a Player decision
+- The sole Action Pass condition is derived from the same empty-selection
+  **Playable Actions** used for Player presentation, never from a parallel
+  capability predicate
 - A successful **Action Command** closes the **Main Phase**
 - A **Covered Passive** belongs to one **Player** and flips at the next player's action start
 - A **Counter Effect** may be hidden behind a **Covered Passive** or publicly established by class change

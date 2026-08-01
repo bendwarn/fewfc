@@ -113,6 +113,7 @@ test('composes related Echo facts into reader-facing clauses', () => {
   }
   const action: PlayableAction = {
     type: 'performFormation',
+    commandRole: 'action',
     id: 'echo:ringing-metal',
     name: '商調‧鳴金',
     category: 'Spell',

@@ -274,7 +274,7 @@ export function presentSecretStrategyOption(action: SecretStrategyOption): strin
 }
 
 export function presentDiscardRetrievalAction(
-  detail: { detail: PlayerFacingActionDetail },
+  action: { detail: PlayerFacingActionDetail | null },
 ): string {
-  return presentActionDetail(detail.detail)
+  return presentActionDetail(action.detail)
 }

@@ -110,6 +110,7 @@ export type PendingChoice =
       type: 'chain'
       pouchOwners: PlayerId[]
       deckCards: PublicCard[]
+      strategyOptions: SecretStrategyOption[]
     }
   | {
       type: 'sheepStealing'
@@ -491,6 +492,7 @@ export type RuleException =
 export type PlayableAction =
   | {
       type: 'performFormation'
+      commandRole: 'action'
       id: string
       name: string
       category: 'Attack' | 'Spell'
@@ -506,6 +508,7 @@ export type PlayableAction =
     }
   | {
       type: 'changeProfession'
+      commandRole: 'action'
       id: string
       name: string
       detail: PlayerFacingActionDetail | null
@@ -513,6 +516,7 @@ export type PlayableAction =
     }
   | {
       type: 'activateProfessionAbility'
+      commandRole: 'activeEffect'
       id: string
       name: string
       detail: PlayerFacingActionDetail | null
@@ -524,6 +528,7 @@ export type PlayableAction =
     }
   | {
       type: 'useSpiritSkill'
+      commandRole: 'activeEffect'
       id: string
       name: string
       detail: PlayerFacingActionDetail | null
@@ -531,6 +536,23 @@ export type PlayableAction =
       selectedCard: CardInstanceId | null
       declaredLevel: number | null
     }
+  | ({
+      type: 'triggerSecretStrategy'
+      commandRole: 'activeEffect'
+    } & SecretStrategyOption)
+  | {
+      type: 'retrievePreviousTurnDiscard'
+      commandRole: 'activeEffect'
+      detail: PlayerFacingActionDetail | null
+    }
+  | {
+      type: 'pass'
+      commandRole: 'action'
+      detail: null
+      reason: PassActionReason
+    }
+
+export type PassActionReason = 'NoCardsInHand' | 'CannotActByStatus'
 
 export type RecordedDecision = unknown
 
@@ -548,23 +570,13 @@ export interface SecretStrategyOption {
   detail: PlayerFacingActionDetail
 }
 
-export interface DiscardRetrievalActionDetail {
-  detail: PlayerFacingActionDetail
-}
-
 export interface LocalGameResponse {
   record: RecordedDecision[]
   state: PublicGameState
   events: PublicGameEvent[]
   playableActions: PlayableAction[]
   interaction: {
-    canPass: boolean
-    hasOptionalEffect: boolean
-    canRetrieveDiscard: boolean
-    discardRetrievalAction: DiscardRetrievalActionDetail | null
     canChooseInitialPouch: boolean
-    canTriggerPouch: boolean
-    secretStrategyOptions: SecretStrategyOption[]
   }
   trustedRandomCandidates?: CardInstanceId[]
   trustedRandomCandidateCount?: number

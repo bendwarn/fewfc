@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cloudflare Git integration 還是 GitHub Actions？</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<main>
+  <p class="eyebrow">Lesson 0001 · 約 5 分鐘</p>
+  <h1>誰負責按下 Deploy？</h1>
+  <p class="lead">這一課只學一件事：分辨 Cloudflare Git integration 與 GitHub Actions，並為 fewfc 選出唯一的部署負責者。</p>
+
+  <div class="verdict">
+    <strong>先講結論：</strong>Cloudflare Git integration 啟用後會自動部署，不需要 Action YAML；但 fewfc 應保留現有 GitHub Actions，並避免再啟用 Cloudflare 的 production 自動部署。
+  </div>
+
+  <h2>兩條路線是平行的</h2>
+  <div class="grid">
+    <section class="card">
+      <h3>路線 A：Cloudflare Builds</h3>
+      <p>在 Dashboard 授權 GitHub App 並連接 repository。push 發生後，由 Cloudflare checkout、build、deploy。</p>
+      <p>設定放在 Cloudflare Dashboard，不會建立或讀取 GitHub workflow 來決定部署流程。</p>
+    </section>
+    <section class="card">
+      <h3>路線 B：GitHub Actions</h3>
+      <p>GitHub 讀取 <code>.github/workflows/ci-cd.yml</code>，先跑測試，再呼叫 Wrangler Action。</p>
+      <p>Cloudflare 只是接受 API token 驗證過的 deploy，不負責控制前面的 gates。</p>
+    </section>
+  </div>
+
+  <div class="flow">A. push → Cloudflare GitHub App → Build → Deploy
+
+B. push → GitHub Actions → Tests → Migration → Wrangler Deploy</div>
+
+  <h2>「自動」從何時開始？</h2>
+  <p>不是把 <code>wrangler.toml</code> push 上去就會自動整合。你必須先在 Cloudflare Dashboard 對某個 Worker 連接 repository、授權 GitHub App，並指定 production branch。完成一次設定後，後續 push 才會自動觸發。</p>
+
+  <h2>為何 fewfc 選 GitHub Actions</h2>
+  <ul>
+    <li>Rust tests、Web unit tests、typecheck 與 Playwright E2E 都必須先成功。</li>
+    <li>D1 migrations 必須在 Worker deploy 前執行。</li>
+    <li>staging 會在 main 通過檢查後自動部署。</li>
+    <li>production 目前設計為手動 dispatch，還能搭配 GitHub Environment approval。</li>
+  </ul>
+  <p>Cloudflare Builds 可以自訂 build/deploy commands，但把上述跨語言測試與核准流程全部搬過去，會比保留現有 workflow 更複雜。</p>
+
+  <h2>快速檢查</h2>
+  <section class="quiz">
+    <p><strong>情境：</strong>你保留 GitHub Actions 的 deploy job，又在 Cloudflare 連接同一 repository，兩邊都監聽 main。一次 push 後誰會 deploy？</p>
+    <ol>
+      <li>路線一會單獨部署</li>
+      <li>路線二會單獨部署</li>
+      <li>兩路都會各自部署</li>
+    </ol>
+    <details>
+      <summary>查看答案</summary>
+      <p>答案是 3：兩邊各自執行部署。它們是獨立的觸發器，不會自動互相等待或去重。</p>
+    </details>
+  </section>
+
+  <h2>主要來源</h2>
+  <p>先讀 Cloudflare 官方的 <a href="https://developers.cloudflare.com/workers/ci-cd/builds/git-integration/">Git integration</a>；再比較官方的 <a href="https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/">GitHub Actions</a> 路線。</p>
+
+  <footer>
+    <a href="../reference/cloudflare-deployment-owner.html">開啟部署負責者速查表</a>
+    <p>有任何一步不清楚，直接問 Codex；下一課可以練習在 Dashboard 判斷某個 Worker 是否已啟用 Git integration。</p>
+  </footer>
+</main>
+</body>
+</html>

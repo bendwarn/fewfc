@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cloudflare 部署負責者速查</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<main>
+  <p class="eyebrow">Quick reference</p>
+  <h1>一個環境，只選一個部署負責者</h1>
+  <div class="grid">
+    <section class="card">
+      <h3>Cloudflare Git integration</h3>
+      <p>Dashboard 連接 repository 一次，之後由 Cloudflare 監聽 push，自動 build/deploy。</p>
+      <p><strong>不需要：</strong><code>.github/workflows/*.yml</code></p>
+      <p><strong>仍需要：</strong>Dashboard 的 branch、root directory、build/deploy commands、secrets。</p>
+    </section>
+    <section class="card">
+      <h3>GitHub Actions</h3>
+      <p>GitHub 依 workflow 執行測試、核准、migration，再以 Wrangler Action deploy。</p>
+      <p><strong>需要：</strong><code>.github/workflows/*.yml</code></p>
+      <p><strong>不需要：</strong>啟用 Cloudflare repository 自動部署。</p>
+    </section>
+  </div>
+  <div class="verdict">
+    fewfc 建議保留 GitHub Actions：它已有 Rust、Web、E2E gates、D1 migration、staging 自動部署與 production 手動部署。
+  </div>
+  <h2>最常見的錯誤</h2>
+  <p>同時啟用 Cloudflare Git integration 的 production deploy 與 GitHub Actions deploy。同一次 push 會啟動兩條互不等待的流程，可能重複或競速部署。</p>
+  <h2>判斷口訣</h2>
+  <div class="flow">只要 push 後簡單 build/deploy → Cloudflare Git integration
+需要跨語言測試、migration、環境核准 → GitHub Actions</div>
+  <footer>
+    <a href="../lessons/0001-cloudflare-git-or-github-actions.html">回到完整短課程</a>
+  </footer>
+</main>
+</body>
+</html>

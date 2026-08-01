@@ -8,6 +8,7 @@ export type PlayableAbility = Extract<
 export interface AbilityLevelPicker {
   id: string
   name: string
+  representative: PlayableAbility
   options: PlayableAbility[]
 }
 
@@ -28,6 +29,7 @@ export function abilityLevelPicker(
     ? {
         id,
         name: options[0]!.name,
+        representative: options[0]!,
         options,
       }
     : null

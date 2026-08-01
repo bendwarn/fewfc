@@ -1,0 +1,99 @@
+:root {
+  color-scheme: light dark;
+  --paper: #fbfaf6;
+  --ink: #20231f;
+  --muted: #62685f;
+  --line: #d9ddd4;
+  --accent: #c14f18;
+  --accent-soft: #fff0e7;
+  --good: #246b45;
+  --good-soft: #eaf6ef;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  line-height: 1.65;
+}
+
+main {
+  width: min(880px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 64px 0 88px;
+}
+
+h1, h2 { line-height: 1.2; letter-spacing: -0.025em; }
+h1 { font-size: clamp(2rem, 6vw, 4rem); margin: 0 0 16px; }
+h2 { margin-top: 48px; }
+p, li { max-width: 72ch; }
+a { color: var(--accent); }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.eyebrow {
+  color: var(--accent);
+  font-size: .78rem;
+  font-weight: 750;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.lead { color: var(--muted); font-size: 1.2rem; }
+
+.verdict {
+  border-left: 5px solid var(--good);
+  border-radius: 8px;
+  background: var(--good-soft);
+  padding: 18px 22px;
+  font-size: 1.08rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 16px;
+  margin: 24px 0;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+  background: color-mix(in srgb, var(--paper) 92%, white);
+}
+
+.card h3 { margin-top: 0; }
+
+.flow {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+}
+
+.quiz {
+  border-radius: 12px;
+  background: var(--accent-soft);
+  padding: 20px;
+}
+
+details { margin-top: 12px; }
+summary { cursor: pointer; font-weight: 700; }
+
+footer {
+  border-top: 1px solid var(--line);
+  margin-top: 56px;
+  padding-top: 20px;
+  color: var(--muted);
+}
+
+@media print {
+  :root { color-scheme: light; }
+  main { width: 100%; padding: 24px; }
+  a { color: inherit; text-decoration: none; }
+  details > * { display: block; }
+}

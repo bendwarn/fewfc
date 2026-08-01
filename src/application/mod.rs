@@ -180,12 +180,21 @@ impl GameRecord {
     }
 
     pub fn advance_until_decision(&mut self) -> GameResult<EventBatch> {
-        let events = OfficialRules::new().advance_automatic(self.state())?;
-        self.event_log.append_automatic(events.clone());
-        for event in &events {
-            apply_event(&mut self.current_state, event);
+        let mut advanced = Vec::new();
+
+        loop {
+            let events = OfficialRules::new().advance_automatic(self.state())?;
+            self.event_log.append_automatic(events.clone());
+            for event in &events {
+                apply_event(&mut self.current_state, event);
+            }
+            advanced.extend(events);
+
+            let Some(command) = self.sole_forced_pass_command()? else {
+                return Ok(EventBatch::new(advanced));
+            };
+            advanced.extend(self.apply(command)?.into_events());
         }
-        Ok(EventBatch::new(events))
     }
 
     pub fn advance_automatic(&mut self) -> GameResult<Vec<GameEvent>> {
@@ -214,6 +223,28 @@ impl GameRecord {
         selected_cards: &[CardInstanceId],
     ) -> GameResult<Vec<PlayableAction>> {
         OfficialRules::new().playable_actions(self.state(), player, selected_cards)
+    }
+
+    fn sole_forced_pass_command(&self) -> GameResult<Option<Command>> {
+        if !matches!(self.state().status, crate::domain::GameStatus::InProgress)
+            || self.state().phase != crate::domain::Phase::Main
+            || self.state().pending_choice.is_some()
+            || self.state().pending_randomness.is_some()
+        {
+            return Ok(None);
+        }
+        let Some(player) = self.state().current_player().cloned() else {
+            return Ok(None);
+        };
+        let actions = self.playable_actions(&player, &[])?;
+
+        Ok(match actions.as_slice() {
+            [PlayableAction::Pass { reason }] => Some(Command::PassAction {
+                player,
+                reason: *reason,
+            }),
+            _ => None,
+        })
     }
 
     fn next_command_id(&self) -> CommandId {
@@ -505,7 +536,49 @@ fn source_for_recorded_decision(decision: &RecordedDecision) -> EventSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Command, CommandId, PassActionReason, PlayerId, TeamId};
+    use crate::domain::{Command, CommandId, GameEvent, PassActionReason, Phase, PlayerId, TeamId};
+
+    #[test]
+    fn sole_pass_is_recorded_as_an_explicit_command_before_advancing() {
+        let rules = OfficialRules::new();
+        let base = GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30);
+        let setup = rules
+            .configure_game(base.players, base.turn_order, Vec::new())
+            .unwrap();
+        let deck = rules.official_deck_order(&setup).unwrap();
+        let mut record = GameRecord::start(setup, deck).unwrap();
+        record.advance_until_decision().unwrap();
+        assert_eq!(record.state().phase, Phase::Main);
+
+        let player = record.state().current_player().cloned().unwrap();
+        let discarded = std::mem::take(record.fixture_state_mut().hand_mut(&player).unwrap());
+        record.fixture_state_mut().discard.extend(discarded);
+
+        let events = record.advance_until_decision().unwrap().into_events();
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            GameEvent::ActionPassed {
+                player: passed,
+                reason: PassActionReason::NoCardsInHand,
+            } if passed == &player
+        )));
+        assert!(record.recorded_decisions().iter().any(|decision| matches!(
+            &decision.source,
+            RecordedDecisionSource::Command {
+                command:
+                    Command::PassAction {
+                        player: passed,
+                        reason: PassActionReason::NoCardsInHand,
+                    },
+                ..
+            } if passed == &player
+        )));
+        assert_ne!(
+            (record.state().current_player(), record.state().phase),
+            (Some(&player), Phase::Main)
+        );
+    }
 
     #[test]
     fn replay_frames_group_trailing_automatic_decisions_without_redeciding_commands() {

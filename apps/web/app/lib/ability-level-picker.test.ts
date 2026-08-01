@@ -8,6 +8,7 @@ function darkSpirit(level: number): Extract<
 > {
   return {
     type: 'activateProfessionAbility',
+    commandRole: 'activeEffect',
     id: 'dark:dark-spirit',
     name: '暗靈',
     detail: null,
@@ -39,6 +40,7 @@ describe('Ability level picker', () => {
       darkSpirit(2),
       {
         type: 'useSpiritSkill',
+        commandRole: 'activeEffect',
         id: 'Splendor',
         name: '絢爛',
         detail: null,
