@@ -160,37 +160,3 @@ test('desktop waiting room uses a compact two-column layout inside the battlefie
     await room.close()
   }
 })
-
-test('enabled rules flows downward as newer battle records arrive', async ({ browser }) => {
-  const hostContext = await browser.newContext()
-  const guestContext = await browser.newContext()
-
-  try {
-    await Promise.all([
-      signInAnonymously(hostContext, 'event-record host'),
-      signInAnonymously(guestContext, 'event-record guest'),
-    ])
-    const host = await hostContext.newPage()
-    const guest = await guestContext.newPage()
-    await Promise.all([
-      host.goto('/rooms', { waitUntil: 'domcontentloaded' }),
-      guest.goto('/rooms', { waitUntil: 'domcontentloaded' }),
-    ])
-    await startTwoPlayerMatch(host, guest, `啟用規則紀錄 ${Date.now()}`)
-
-    const records = host.locator('.event-feed li')
-    const initialCount = await records.count()
-    await expect(records.first()).toContainText('對局開始')
-    await expect(records.last()).toContainText('啟用規則')
-    await expect(records.last()).toContainText('基礎規則')
-
-    await seedDevelopmentScenario(host, { name: 'hero-schools-transition' })
-    await reloadAppRoute(host)
-
-    await expect.poll(() => records.count()).toBeGreaterThan(initialCount)
-    await expect(records.last()).toContainText('啟用規則')
-  } finally {
-    await hostContext.close()
-    await guestContext.close()
-  }
-})

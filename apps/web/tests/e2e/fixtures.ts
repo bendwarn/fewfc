@@ -545,10 +545,7 @@ export const fastPageTest = base.extend({
     try {
       await signInAnonymously(context, 'fast page')
       const page = await context.newPage()
-      await Promise.all([
-        page.goto('/rooms', { waitUntil: 'domcontentloaded' }),
-        apiText('GET /api/auth/get-session for fast page', context.request.get('/api/auth/get-session')),
-      ])
+      await gotoAppRoute(page, '/rooms')
       await expect(page.getByRole('heading', { name: '房間', exact: true })).toBeVisible()
       await use(page)
     } finally {
@@ -563,10 +560,7 @@ export const test = base.extend({
     try {
       await signInAnonymously(context, 'default page')
       const page = await context.newPage()
-      await Promise.all([
-        page.goto('/rooms', { waitUntil: 'domcontentloaded' }),
-        apiText('GET /api/auth/get-session for default page', context.request.get('/api/auth/get-session')),
-      ])
+      await gotoAppRoute(page, '/rooms')
       await expect(page.getByRole('heading', { name: '房間', exact: true })).toBeVisible()
       await use(page)
     } finally {

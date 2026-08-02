@@ -1048,33 +1048,36 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       })
     }
 
-    rules = await callRulesEngine({
-      action: {
-        type: 'performFormation',
-        player: actor.player,
-        formationId: formation.id,
-        cards: formation.cards,
-      },
-      viewer: actor.player,
-      setup,
-      deckSeed,
-      record: rules.record,
-    })
-    if (
-      rules.state.pendingChoice?.visibility !== 'visible'
-    ) {
-      return this.json({ error: `test fixture did not reach ${formationName} choice` }, 500)
-    }
-
     await this.ctx.storage.put('gameRecord', {
       ...snapshot,
       setup,
       deckSeed,
       rulesRecord: rules.record,
     } satisfies GameRecord)
-    this.ctx.waitUntil(this.broadcast(metadata))
 
-    return this.json(await this.response(metadata, actorUserId))
+    // A Pending Choice is a canonical transaction checkpoint.  Create it by
+    // exercising the same command path as a player, so the fixture also has
+    // the durable transaction that authorizes the later choice response.
+    const commandId = `development:${scenario}:${crypto.randomUUID()}`
+    const response = await this.submitCommand({
+      type: 'submitCommand',
+      commandId,
+      gameInstanceId: snapshot.gameInstanceId,
+      transactionId: `transaction:${commandId}`,
+      actorUserId,
+      action: {
+        type: 'performFormation',
+        player: actor.player,
+        formationId: formation.id,
+        cards: formation.cards,
+      },
+    })
+    const body = await response.clone().json<GameRoomResponse>()
+    if (!response.ok || body.receipt?.outcome !== 'accepted' || !body.state.pendingChoice) {
+      return this.json({ error: `test fixture did not reach ${formationName} choice` }, 500)
+    }
+
+    return response
   }
 
   private async seedTribulationFixture(actorUserId: string): Promise<Response> {
@@ -1130,35 +1133,38 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'test fixture could not find Earth Rending Cards' }, 500)
     }
 
-    rules = await callRulesEngine({
-      action: {
-        type: 'performFormation',
-        player: actor.player,
-        formationId: earthRending.id,
-        cards: earthRending.cards,
-      },
-      viewer: actor.player,
-      setup,
-      deckSeed,
-      record: rules.record,
-    })
-    if (
-      rules.state.pendingChoice?.visibility !== 'visible'
-      || rules.state.pendingChoice.choice.type !== 'environment'
-      || rules.state.pendingChoice.choice.environments.length !== 5
-    ) {
-      return this.json({ error: 'test fixture did not reach Environment choice' }, 500)
-    }
-
     await this.ctx.storage.put('gameRecord', {
       ...snapshot,
       setup,
       deckSeed,
       rulesRecord: rules.record,
     } satisfies GameRecord)
-    this.ctx.waitUntil(this.broadcast(metadata))
 
-    return this.json(await this.response(metadata, actorUserId))
+    const commandId = `development:tribulation-earth-rending:${crypto.randomUUID()}`
+    const response = await this.submitCommand({
+      type: 'submitCommand',
+      commandId,
+      gameInstanceId: snapshot.gameInstanceId,
+      transactionId: `transaction:${commandId}`,
+      actorUserId,
+      action: {
+        type: 'performFormation',
+        player: actor.player,
+        formationId: earthRending.id,
+        cards: earthRending.cards,
+      },
+    })
+    const body = await response.clone().json<GameRoomResponse>()
+    if (
+      !response.ok
+      || body.receipt?.outcome !== 'accepted'
+      || body.state.pendingChoice?.choice.type !== 'environment'
+      || body.state.pendingChoice.choice.environments.length !== 5
+    ) {
+      return this.json({ error: 'test fixture did not reach Environment choice' }, 500)
+    }
+
+    return response
   }
 
   private async seedRustedForestFixture(actorUserId: string): Promise<Response> {

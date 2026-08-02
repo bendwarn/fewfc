@@ -1,5 +1,5 @@
 import { expect as bareExpect, test as bareTest, type Page } from '@playwright/test'
-import { expect, fastPageTest, test } from './fixtures'
+import { expect, fastPageTest, gotoAppRoute, test } from './fixtures'
 
 async function createWaitingRoomViaRequest(page: Page, roomName: string): Promise<string> {
   const response = await page.context().request.post('/api/games', {
@@ -133,17 +133,15 @@ test('Lobby navigation reloads Game state, resets parameter-local state, and tea
   await page.setViewportSize({ width: 600, height: 900 })
   const gameId = await createWaitingRoomViaRequest(page, `路由生命週期 ${Date.now()}`)
   const nextGameId = await createWaitingRoomViaRequest(page, `路由生命週期下一局 ${Date.now()}`)
-  await page.goto('/rooms')
+  await gotoAppRoute(page, '/rooms')
 
   const openedSockets: string[] = []
-  const closedSockets: string[] = []
   page.on('websocket', socket => {
     if (
       socket.url().includes(`/api/games/${gameId}/socket`)
       || socket.url().includes(`/api/games/${nextGameId}/socket`)
     ) {
       openedSockets.push(socket.url())
-      socket.on('close', () => closedSockets.push(socket.url()))
     }
   })
 
@@ -163,11 +161,18 @@ test('Lobby navigation reloads Game state, resets parameter-local state, and tea
   await expect(page.locator('.event-panel.expanded')).toHaveCount(0)
   await expect.poll(() => openedSockets.some(url => url.includes(`/api/games/${nextGameId}/socket`))).toBe(true)
 
-  await page.goto('/rooms')
+  await gotoAppRoute(page, '/rooms')
   await expect(page.getByRole('heading', { name: '公開房間' })).toBeVisible()
-  await expect.poll(() => closedSockets.some(url => url.includes(`/api/games/${nextGameId}/socket`))).toBe(true)
+  await expect.poll(async () => {
+    const response = await page.context().request.get(`/api/games/${nextGameId}`)
+    if (!response.ok()) return undefined
+    const room = await response.json() as {
+      metadata: { members: Array<{ owner: boolean, connected: boolean }> }
+    }
+    return room.metadata.members.find(member => member.owner)?.connected
+  }).toBe(false)
 
-  await page.goto(`/rooms/${gameId}`)
+  await gotoAppRoute(page, `/rooms/${gameId}`)
   await expect(page.locator('.waiting-overlay')).toBeVisible()
   await expect.poll(() => openedSockets.filter(url => url.includes(`/api/games/${gameId}/socket`)).length).toBe(2)
 })

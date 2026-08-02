@@ -143,19 +143,20 @@ test('Splendor exposes its declared levels on click and uses the chosen level', 
     await expect(picker).toBeVisible()
     const levelOptions = picker.getByRole('menuitem')
     await expect(levelOptions).toHaveCount(0)
-    const trigger = picker.getByRole('button', { name: '絢爛', exact: true })
+    const trigger = picker.getByRole('button', { name: /^絢爛(?:；|$)/ })
     await expect(trigger).toHaveAttribute('aria-expanded', 'false')
     await trigger.click()
     await expect(trigger).toHaveAttribute('aria-expanded', 'true')
     await expect(levelOptions).toHaveCount(5)
-    await expect(picker.getByRole('menuitem', { name: '絢爛：指定為 4 級' })).toBeVisible()
+    const levelFour = picker.getByRole('menuitem', { name: /^絢爛：指定為 4 級(?:；|$)/ })
+    await expect(levelFour).toBeVisible()
 
     const [skillResponse] = await Promise.all([
       host.waitForResponse(response => (
         response.url().endsWith(`/api/games/${roomId}/commands`)
         && response.request().postDataJSON()?.action?.type === 'useSpiritSkill'
       )),
-      picker.getByRole('menuitem', { name: '絢爛：指定為 4 級' }).click(),
+      levelFour.click(),
     ])
     expect(skillResponse.ok()).toBe(true)
     await expect(host.getByText(/使用「絢爛」.*宣告 4 級/)).toBeVisible()

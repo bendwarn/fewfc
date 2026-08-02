@@ -25,9 +25,13 @@
 - Do not use manual visual inspection or screenshot comparison as acceptance
   validation. Prefer repeatable Playwright assertions against routes, DOM state,
   accessible roles and names, focus, and element geometry.
-- Run Worker/Durable Object browser flows with `bun test:e2e`. The Playwright
-  configuration builds Nuxt and the rules WASM, applies migrations to isolated
-  `.wrangler/e2e` storage and starts Wrangler.
+- Run Worker/Durable Object browser flows with `bun test:e2e`. Locally,
+  Playwright reuses a reachable server on port 8727 by default to avoid
+  competing Wrangler instances. A reused server also reuses its build and
+  `.wrangler/e2e` storage, so run only compatible focused tests against it and
+  do not assume a fresh database. Set `PLAYWRIGHT_REUSE_SERVER=0` to force the
+  full build, storage preparation, migrations, and a fresh Wrangler server.
+  CI always uses that isolated path.
 - Keep the browser choice local in the untracked `.env`: `PLAYWRIGHT_BROWSER`
   accepts `chromium`, `firefox`, or `webkit`; `PLAYWRIGHT_BROWSER_PATH` supplies
   a local executable when needed. The Playwright configuration explicitly loads
