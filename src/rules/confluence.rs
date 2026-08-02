@@ -781,7 +781,7 @@ pub(crate) fn playable_profession_changes(
     let facts = submitted_card_facts(state, player, cards)?;
     Ok(profession_catalog_entries()
         .into_iter()
-        .filter(|profession| change_matches(state, player, &profession.id, &facts))
+        .filter(|profession| profession_change_matches(state, player, &profession.id, &facts))
         .map(|profession| ProfessionChangeCandidate {
             profession_id: profession.id,
             profession_name: profession.name.to_string(),
@@ -798,7 +798,7 @@ pub(crate) fn validate_profession_change(
     cards: &[CardInstanceId],
 ) -> GameResult<()> {
     let facts = submitted_card_facts(state, player, cards)?;
-    if change_matches(state, player, target, &facts) {
+    if profession_change_matches(state, player, target, &facts) {
         Ok(())
     } else {
         Err(GameError::Validation(
@@ -809,7 +809,7 @@ pub(crate) fn validate_profession_change(
     }
 }
 
-fn change_matches(
+fn profession_change_matches(
     state: &GameState,
     player: &PlayerId,
     target: &ProfessionId,
@@ -818,14 +818,11 @@ fn change_matches(
     let current = state.profession_for(player);
     let residual = residual_card_facts(state, player);
     match target.as_str() {
-        TUNER_ID => {
-            current.is_none()
-                && residual.is_some_and(|(element, _)| {
-                    !facts.is_empty()
-                        && facts.iter().all(|card| card.element == element)
-                        && facts.iter().map(|card| card.level).sum::<u32>() >= 3
-                })
-        }
+        TUNER_ID => residual.is_some_and(|(element, _)| {
+            !facts.is_empty()
+                && facts.iter().all(|card| card.element == element)
+                && facts.iter().map(|card| card.level).sum::<u32>() >= 3
+        }),
         STRING_CHANGER_ID | HEAVENLY_RESONATOR_ID => {
             let (required, minimum) = if target.as_str() == STRING_CHANGER_ID {
                 (TUNER_ID, 6)
@@ -852,7 +849,7 @@ fn change_matches(
                     .iter()
                     .all(|card| matches!(card.element, Element::Wood | Element::Fire))
         }
-        CLEAR_WIND_ADEPT_ID => current.is_none() && consecutive_levels(facts, 2),
+        CLEAR_WIND_ADEPT_ID => consecutive_levels(facts, 2),
         CLEAR_WIND_ENVOY_ID => {
             current.is_some_and(|profession| profession.as_str() == CLEAR_WIND_ADEPT_ID)
                 && consecutive_levels(facts, 3)

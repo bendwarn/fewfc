@@ -1385,7 +1385,7 @@ pub(crate) fn playable_profession_changes(
     let facts = submitted_card_facts(state, player, cards)?;
     Ok(profession_catalog_entries()
         .into_iter()
-        .filter(|profession| change_matches(state, player, &profession.id, &facts))
+        .filter(|profession| profession_change_matches(state, player, &profession.id, &facts))
         .map(|profession| ProfessionChangeCandidate {
             profession_id: profession.id,
             profession_name: profession.name.to_string(),
@@ -1402,7 +1402,7 @@ pub(crate) fn validate_profession_change(
     cards: &[CardInstanceId],
 ) -> GameResult<()> {
     let facts = submitted_card_facts(state, player, cards)?;
-    if change_matches(state, player, target, &facts) {
+    if profession_change_matches(state, player, target, &facts) {
         Ok(())
     } else {
         Err(GameError::Validation(
@@ -1413,7 +1413,7 @@ pub(crate) fn validate_profession_change(
     }
 }
 
-fn change_matches(
+fn profession_change_matches(
     state: &GameState,
     player: &PlayerId,
     target: &ProfessionId,
@@ -1427,7 +1427,7 @@ fn change_matches(
         )
     });
     match target.as_str() {
-        LONE_WANDERER_ID => current.is_none() && facts.len() == 1 && facts[0].level == 3,
+        LONE_WANDERER_ID => facts.len() == 1 && facts[0].level == 3,
         SWORDSMAN_ID => {
             first_or_lone && dual_element_minimums(facts, Element::Metal, 3, Element::Water, 3)
         }
