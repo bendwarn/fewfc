@@ -134,6 +134,13 @@ export function useGameRoom(viewer: ViewerRef) {
   let reconnectAttempt = 0
   let playableQueryRevision = 0
   let playableQueryInFlight = false
+  let activeTransactionId: string | null = null
+  let retryableSubmission: {
+    actionIdentity: string
+    gameInstanceId: string
+    commandId: string
+    transactionId: string
+  } | null = null
 
   watch(viewer, () => {
     selectedCards.value = []
@@ -207,6 +214,7 @@ export function useGameRoom(viewer: ViewerRef) {
     interaction.value = response.interaction
     errorMessage.value = null
     roomDissolved.value = response.metadata.status === 'Dissolved'
+    activeTransactionId = response.activeTransactionId ?? null
 
     if (shouldResetPendingChoiceDraft(
       previousState.pendingChoice,
@@ -223,9 +231,23 @@ export function useGameRoom(viewer: ViewerRef) {
   }
 
   async function submitOnline(action: OnlineGameAction): Promise<boolean> {
-    if (!onlineGameId.value) {
+    const gameInstanceId = metadata.value?.gameInstanceId
+    if (!onlineGameId.value || !gameInstanceId) {
       return false
     }
+
+    const actionIdentity = JSON.stringify(action)
+    const submission = retryableSubmission
+      && retryableSubmission.actionIdentity === actionIdentity
+      && retryableSubmission.gameInstanceId === gameInstanceId
+      ? retryableSubmission
+      : {
+          actionIdentity,
+          gameInstanceId,
+          commandId: crypto.randomUUID(),
+          transactionId: activeTransactionId ?? crypto.randomUUID(),
+        }
+    retryableSubmission = submission
 
     playableQueryInFlight = true
     isLoading.value = true
@@ -235,9 +257,13 @@ export function useGameRoom(viewer: ViewerRef) {
       applyRoomResponse(await $fetch<GameRoomResponse>(`/api/games/${onlineGameId.value}/commands`, {
         method: 'POST',
         body: {
+          commandId: submission.commandId,
+          gameInstanceId: submission.gameInstanceId,
+          transactionId: submission.transactionId,
           action,
         },
       }))
+      retryableSubmission = null
       return true
     } catch (error) {
       errorMessage.value = presentApiError(error, '無法完成遊戲操作，請稍後再試。')
@@ -421,8 +447,9 @@ export function useGameRoom(viewer: ViewerRef) {
 
   async function queryPlayableActions(revision: number, cards: CardInstanceId[]) {
     const player = state.value.currentPlayer
+    const gameInstanceId = metadata.value?.gameInstanceId
 
-    if (!player || !onlineGameId.value) {
+    if (!player || !onlineGameId.value || !gameInstanceId) {
       return
     }
 
@@ -434,6 +461,9 @@ export function useGameRoom(viewer: ViewerRef) {
         {
           method: 'POST',
           body: {
+            commandId: crypto.randomUUID(),
+            gameInstanceId,
+            transactionId: activeTransactionId ?? crypto.randomUUID(),
             action: {
               type: 'playableActions',
               player,

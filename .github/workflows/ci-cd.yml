@@ -34,6 +34,8 @@ jobs:
     name: Web checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      APP_ENV: development
     defaults:
       run:
         working-directory: apps/web
@@ -48,6 +50,9 @@ jobs:
     name: Browser E2E
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      APP_ENV: development
+      BETTER_AUTH_SECRET: ci-e2e-only-not-for-production-00000000
     defaults:
       run:
         working-directory: apps/web
@@ -60,7 +65,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: bun install --frozen-lockfile
       - run: bunx playwright install --with-deps chromium
-      - run: cp .env.example .env
       - run: bun run build
       - run: bun run test:e2e:built
 
@@ -73,6 +77,8 @@ jobs:
       - e2e
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      APP_ENV: staging
     permissions:
       contents: read
       deployments: write
@@ -122,6 +128,8 @@ jobs:
       - e2e
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      APP_ENV: ${{ inputs.environment }}
     permissions:
       contents: read
       deployments: write

@@ -33,6 +33,23 @@ bareTest('unauthenticated deep links preserve room invite and replay queries thr
   bareExpect(new URL(page.url()).searchParams.get('redirect')).toBe('/replays/replay-9?step=12')
 })
 
+bareTest('unauthenticated root visitors are redirected to login through the rooms route', async ({ page }) => {
+  await page.goto('/')
+  await bareExpect(page).toHaveURL(/\/login/)
+  bareExpect(new URL(page.url()).searchParams.get('redirect')).toBe('/rooms')
+})
+
+test('the root route redirects before mounting a route-state page root', async ({ page }) => {
+  const serverRedirect = await page.context().request.get('/', { maxRedirects: 0 })
+  expect(serverRedirect.status()).toBe(302)
+  expect(serverRedirect.headers().location).toBe('/rooms')
+
+  await page.goto('/')
+  await expect(page).toHaveURL(/\/rooms$/)
+  await expect(page.locator('main.lobby-page')).toBeVisible()
+  await expect(page.locator('main.route-state')).toHaveCount(0)
+})
+
 fastPageTest('Deck owns its route-local loading and retryable error outcomes', async ({ page }) => {
   let releaseDeckLoad: (() => void) | undefined
   const deckLoadGate = new Promise<void>((resolve) => { releaseDeckLoad = resolve })

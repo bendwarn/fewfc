@@ -13,6 +13,8 @@ export default defineEventHandler(async (event) => {
 
   const body = await readBody<{
     commandId?: string
+    gameInstanceId?: string
+    transactionId?: string
     action?: GameRoomRequest extends { type: 'submitCommand'; action: infer Action } ? Action : never
   }>(event)
 
@@ -22,10 +24,18 @@ export default defineEventHandler(async (event) => {
       statusMessage: 'Missing command action.',
     })
   }
+  if (!body.commandId?.trim() || !body.gameInstanceId?.trim() || !body.transactionId?.trim()) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: 'Missing command identity.',
+    })
+  }
 
   const response = await callGameRoom(event, gameId, {
     type: 'submitCommand',
-    commandId: body.commandId?.trim() || crypto.randomUUID(),
+    commandId: body.commandId.trim(),
+    gameInstanceId: body.gameInstanceId.trim(),
+    transactionId: body.transactionId.trim(),
     actorUserId: session.user.id,
     action: body.action,
   })

@@ -4,7 +4,6 @@ import type {
   LocalGameResponse,
   PlayerId,
   PlayableAction,
-  PublicPendingChoice,
   PublicGameState,
   RecordedDecision,
   PassActionReason,
@@ -31,8 +30,10 @@ export interface GameRoomMember {
 }
 
 export interface GameRoomMetadata {
-  schemaVersion: 3
+  schemaVersion: 4
   gameId: string
+  /** Undefined only while the room is waiting for its next Game Instance. */
+  gameInstanceId?: string
   name: string
   access: GameRoomAccess
   capacity: GameRoomCapacity
@@ -73,7 +74,7 @@ interface StoredGameRoomMetadata extends Omit<
   GameRoomMetadata,
   'schemaVersion' | 'name' | 'capacity' | 'members' | 'enabledRuleModules'
 > {
-  schemaVersion: 1 | 2 | 3
+  schemaVersion: 1 | 2 | 3 | 4
   name?: string
   capacity?: GameRoomCapacity
   members: StoredGameRoomMember[]
@@ -88,8 +89,9 @@ export function normalizeGameRoomMetadata(
   const capacity: GameRoomCapacity = stored.capacity === 4 || stored.players.length === 4 ? 4 : 2
 
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     gameId: stored.gameId,
+    gameInstanceId: stored.gameInstanceId,
     name: stored.name?.trim() || stored.gameId,
     access: stored.access,
     capacity,
@@ -118,13 +120,19 @@ export interface StoredGameEvent {
   sequence: number
   type: string
   commandId?: string
+  transactionId?: string
   actor?: PlayerId
   payload: unknown
   createdAt: string
 }
 
-export interface GameRoomSnapshot {
-  schemaVersion: 5
+/**
+ * The one authoritative, durable checkpoint for an active Game Instance.
+ * Transaction metadata deliberately never contains another copy of this record.
+ */
+export interface GameRecord {
+  schemaVersion: 6
+  gameInstanceId: string
   sequence: number
   firstPlayer: PlayerId
   deckSeed: string
@@ -262,55 +270,6 @@ export interface TrustedRandomnessAction {
   shuffledOrder: number[]
 }
 
-export async function resolvePendingRandomnessSequence<
-  Ready extends { type: 'ready' },
-  NeedsRandomness extends { type: 'needsRandomness'; request: TrustedRandomnessRequest },
->(
-  initial: Ready | NeedsRandomness,
-  shuffle: (cards: number[]) => number[],
-  persistPending: (result: NeedsRandomness) => Promise<void>,
-  resolve: (
-    action: TrustedRandomnessAction,
-    result: NeedsRandomness,
-  ) => Promise<Ready | NeedsRandomness>,
-): Promise<Ready> {
-  let result = initial
-  while (true) {
-    switch (result.type) {
-      case 'ready':
-        return result
-      case 'needsRandomness': {
-        const request = result.request
-        await persistPending(result)
-        result = await resolve({
-          type: 'resolveRandomness',
-          requestId: request.requestId,
-          shuffledOrder: shuffle(request.currentOrder),
-        }, result)
-        break
-      }
-    }
-  }
-}
-
-export function requiresPendingCommandDraft(
-  action: OnlineGameAction,
-  pendingChoice: PublicPendingChoice | null,
-): boolean {
-  return (
-    (action.type === 'performFormation' || action.type === 'triggerSecretStrategy')
-    && pendingChoice?.visibility === 'visible'
-    && pendingChoice.reason.type !== 'turnDrawDiscard'
-  )
-}
-
-export function continuesPendingCommandDraft(
-  pendingChoice: PublicPendingChoice | null,
-): boolean {
-  return pendingChoice?.visibility === 'visible'
-    && pendingChoice.reason.type !== 'turnDrawDiscard'
-}
-
 export type GameRoomRequest =
   | {
       type: 'createGame'
@@ -385,6 +344,8 @@ export type GameRoomRequest =
   | {
       type: 'submitCommand'
       commandId: string
+      gameInstanceId: string
+      transactionId: string
       actorUserId: string
       action: OnlineGameAction
     }
@@ -419,6 +380,29 @@ export interface GameRoomResponse extends Omit<
   invitation?: GameRoomInvitation
   lockedDeckName?: string
   savableReplay?: SavableReplay
+  /** Present only while the canonical Game Record is waiting for a continuation. */
+  activeTransactionId?: string
+  receipt?: CommandReceipt
+}
+
+export type CommandTransactionStatus = 'awaitingChoice' | 'awaitingRandomness' | 'complete'
+
+export interface CommandReceipt {
+  schemaVersion: 1
+  commandId: string
+  transactionId: string
+  gameInstanceId: string
+  actorUserId: string
+  actor: PlayerId
+  payloadIdentity: string
+  outcome: 'accepted' | 'rejected'
+  /** Present for accepted Commands; it is the Game Record checkpoint sequence. */
+  committedSequence?: number
+  /** Present for deterministic Validation Failures; it does not advance canonical sequence. */
+  observedSequence?: number
+  transactionStatus?: CommandTransactionStatus
+  errorCode?: string
+  createdAt: string
 }
 
 export type GameRoomSocketMessage =

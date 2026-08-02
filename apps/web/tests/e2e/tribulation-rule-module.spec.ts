@@ -66,6 +66,7 @@ test('Rusted Forest drains trusted shuffles inside one Game Room command', async
 
   try {
     const fixture = await seedDevelopmentScenario<{
+      metadata: { gameInstanceId?: string }
       fixtureAction: {
         type: 'performFormation'
         player: string
@@ -74,9 +75,16 @@ test('Rusted Forest drains trusted shuffles inside one Game Room command', async
       }
     }>(host, { name: 'tribulation-rusted-forest' })
     const commandId = `rusted-forest-${Date.now()}`
+    const gameInstanceId = fixture.metadata.gameInstanceId
+    expect(gameInstanceId).toBeTruthy()
 
     const commandResponse = await host.context().request.post(`/api/games/${roomId}/commands`, {
-      data: { commandId, action: fixture.fixtureAction },
+      data: {
+        commandId,
+        gameInstanceId,
+        transactionId: `transaction:${commandId}`,
+        action: fixture.fixtureAction,
+      },
     })
     const commandText = await commandResponse.text()
     expect(commandResponse.ok(), commandText).toBe(true)

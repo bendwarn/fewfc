@@ -118,16 +118,21 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
 
   try {
     const fixture = await seedDevelopmentScenario<{
+      metadata: { gameInstanceId?: string }
       fixtureAction: { player: string; formationId: string; cards: number[] }
     }>(host, { name: 'pouch-chain-sheep' })
     const actor = host
     await reloadFastGameRoute(actor, roomId)
     const commandId = `chain-sheep-${Date.now()}`
+    const gameInstanceId = fixture.metadata.gameInstanceId
+    expect(gameInstanceId).toBeTruthy()
     const chain = await requestJson<{ state: { pendingChoice?: { choice: { type: string } } } }>(
       `POST /api/games/${roomId}/commands`,
       actor.context().request.post(`/api/games/${roomId}/commands`, {
         data: {
           commandId,
+          gameInstanceId,
+          transactionId: `transaction:${commandId}`,
           action: {
             type: 'performFormation',
             player: fixture.fixtureAction.player,

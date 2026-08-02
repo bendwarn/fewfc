@@ -1,28 +1,24 @@
 import { DurableObject } from 'cloudflare:workers'
 import {
-  continuesPendingCommandDraft,
   emptyPublicState,
-  isOnlineGameAction,
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
   requireReadyRulesResult,
-  requiresPendingCommandDraft,
-  resolvePendingRandomnessSequence,
   type GameRoomAccess,
   type GameRoomCapacity,
+  type CommandReceipt,
   type CompletedReplayDraft,
   type GameRoomInvitation,
   type GameRoomMember,
   type GameRoomMetadata,
   type GameRoomRequest,
   type GameRoomResponse,
-  type GameRoomSnapshot,
+  type GameRecord,
   type OnlineGameAction,
   type PlayerDeckList,
   type PlayerNotification,
   type RulesGameSetup,
   type RulesEngineResult,
-  type RulesNeedsRandomnessResult,
   type RulesReadyResult,
   type StoredGameEvent,
 } from '../../shared/game-room'
@@ -32,6 +28,10 @@ import {
   callRulesEngine as callRulesEngineResult,
 } from '../rules-engine'
 import { RulesEngineError } from '../rules-engine-error'
+import {
+  executePlayerCommand,
+  OnlineCommandTransactionError,
+} from './online-command-transaction'
 
 async function callRulesEngine(request: unknown): Promise<RulesReadyResult> {
   return requireReadyRulesResult(await callRulesEngineResult(request))
@@ -59,14 +59,6 @@ interface SocketAttachment {
 interface NotificationEnvelope {
   targetUserId: string
   notification: PlayerNotification
-}
-
-interface PendingCommandDraft {
-  actorUserId: string
-  commandId: string
-  action: OnlineGameAction
-  snapshot: GameRoomSnapshot
-  pendingRandomness?: boolean
 }
 
 type RulesEngineAction =
@@ -141,6 +133,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           return this.json({ error: error.message, code: error.code }, error.statusCode)
         }
 
+        if (error instanceof OnlineCommandTransactionError) {
+          return this.json({ error: error.message, code: error.code }, error.statusCode)
+        }
+
         if (error instanceof Error && error.message === 'game room has not been created') {
           return this.json({ error: '找不到遊戲房間。', code: 'roomNotFound' }, 404)
         }
@@ -197,7 +193,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     const players = Array.from({ length: capacity }, (_, index) => `player-${index + 1}`)
     const now = new Date().toISOString()
     const metadata: GameRoomMetadata = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       gameId: request.gameId,
       name: request.name?.trim() || request.gameId,
       access: request.access ?? 'private',
@@ -524,6 +520,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     const setup = this.randomSetup(metadata, lockedDecks)
     const firstPlayer = setup.turnOrder[0] ?? metadata.players[0] ?? 'player-1'
     const deckSeed = crypto.randomUUID()
+    const gameInstanceId = crypto.randomUUID()
     const rules = await callRulesEngine({
       action: { type: 'start' },
       viewer: 'observer',
@@ -537,14 +534,16 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       type: 'GameStarted',
       actor: owner.player,
       payload: {
+        gameInstanceId,
         setup,
         firstPlayer,
         deckSeed,
       },
       createdAt: now,
     }
-    const snapshot: GameRoomSnapshot = {
-      schemaVersion: 5,
+    const snapshot: GameRecord = {
+      schemaVersion: 6,
+      gameInstanceId,
       sequence,
       firstPlayer,
       deckSeed,
@@ -553,13 +552,14 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
     const updatedMetadata: GameRoomMetadata = {
       ...metadata,
+      gameInstanceId,
       status: 'Active',
       updatedAt: now,
     }
 
     await this.ctx.storage.put('metadata', updatedMetadata)
     await this.ctx.storage.put('nextSequence', sequence + 1)
-    await this.ctx.storage.put('snapshot', snapshot)
+    await this.ctx.storage.put('gameRecord', snapshot)
     await this.ctx.storage.put(this.eventKey(sequence), event)
 
     this.ctx.waitUntil(Promise.all([
@@ -584,7 +584,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'match has not finished' }, 409)
     }
 
-    const snapshot = await this.requireSnapshot()
+    const snapshot = await this.requireGameRecord()
     const finished = await this.callReadyRules({ type: 'refresh' }, 'observer', snapshot)
     const draft: CompletedReplayDraft = {
       schemaVersion: 1,
@@ -609,6 +609,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
     const updatedMetadata = await this.storeRoomEvent({
       ...metadata,
+      gameInstanceId: undefined,
       members: metadata.members.map((member) => ({
         ...member,
         ready: false,
@@ -619,6 +620,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     for (const member of metadata.members) {
       await this.ctx.storage.delete(this.lockedDeckKey(member.userId))
     }
+    await this.ctx.storage.delete('gameRecord')
+    await this.deleteGameInstanceTransactions(snapshot.gameInstanceId)
 
     this.ctx.waitUntil(this.afterRoomMutation(updatedMetadata))
 
@@ -673,7 +676,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     const commandCommitCount = (await this.events()).filter((event) => (
       event.type === 'RulesCommandApplied' && event.commandId === commandId
     )).length
-    const snapshot = await this.requireSnapshot()
+    const snapshot = await this.requireGameRecord()
 
     return this.json({
       commandCommitCount,
@@ -692,7 +695,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'test fixture requires an active match' }, 409)
     }
 
-    const snapshot = await this.requireSnapshot()
+    const snapshot = await this.requireGameRecord()
     const teams = [...new Set(snapshot.setup.players.map(player => player.team))]
     const setup: RulesGameSetup = {
       ...snapshot.setup,
@@ -705,12 +708,11 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       deckSeed: snapshot.deckSeed,
     })
 
-    await this.ctx.storage.put('snapshot', {
+    await this.ctx.storage.put('gameRecord', {
       ...snapshot,
       setup,
       rulesRecord: rules.record,
-    } satisfies GameRoomSnapshot)
-    await this.ctx.storage.delete('pendingCommandDraft')
+    } satisfies GameRecord)
     this.ctx.waitUntil(this.broadcast(metadata))
 
     return this.json(await this.response(metadata, actorUserId))
@@ -727,7 +729,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'test fixture requires an active match' }, 409)
     }
 
-    const snapshot = await this.requireSnapshot()
+    const snapshot = await this.requireGameRecord()
     if (!snapshot.setup.enabledRuleModules.includes('hero-schools')) {
       return this.json({ error: 'test fixture requires Hero Schools' }, 409)
     }
@@ -864,14 +866,13 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       })
     }
 
-    await this.ctx.storage.put('snapshot', {
+    await this.ctx.storage.put('gameRecord', {
       ...snapshot,
       firstPlayer: actor.player,
       deckSeed,
       setup,
       rulesRecord: rules.record,
-    } satisfies GameRoomSnapshot)
-    await this.ctx.storage.delete('pendingCommandDraft')
+    } satisfies GameRecord)
     this.ctx.waitUntil(this.broadcast(metadata))
 
     return this.json(await this.response(metadata, actorUserId))
@@ -891,7 +892,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'test fixture requires an active match' }, 409)
     }
 
-    const snapshot = await this.requireSnapshot()
+    const snapshot = await this.requireGameRecord()
     if (!snapshot.setup.enabledRuleModules.includes('spirit')) {
       return this.json({ error: 'test fixture requires Spirit' }, 409)
     }
@@ -960,13 +961,12 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       record: rules.record,
     })
 
-    await this.ctx.storage.put('snapshot', {
+    await this.ctx.storage.put('gameRecord', {
       ...snapshot,
       setup,
       deckSeed,
       rulesRecord: rules.record,
-    } satisfies GameRoomSnapshot)
-    await this.ctx.storage.delete('pendingCommandDraft')
+    } satisfies GameRecord)
     this.ctx.waitUntil(this.broadcast(metadata))
 
     return this.json(await this.response(metadata, actorUserId))
@@ -987,7 +987,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'test fixture requires an active match' }, 409)
     }
 
-    const snapshot = await this.requireSnapshot()
+    const snapshot = await this.requireGameRecord()
     if (!snapshot.setup.enabledRuleModules.includes('echo')) {
       return this.json({ error: 'test fixture requires Echo' }, 409)
     }
@@ -1034,13 +1034,12 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
 
     if (mode === 'actionDetail') {
-      await this.ctx.storage.put('snapshot', {
+      await this.ctx.storage.put('gameRecord', {
         ...snapshot,
         setup,
         deckSeed,
         rulesRecord: rules.record,
-      } satisfies GameRoomSnapshot)
-      await this.ctx.storage.delete('pendingCommandDraft')
+      } satisfies GameRecord)
       this.ctx.waitUntil(this.broadcast(metadata))
 
       return this.json({
@@ -1067,13 +1066,12 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: `test fixture did not reach ${formationName} choice` }, 500)
     }
 
-    await this.ctx.storage.put('snapshot', {
+    await this.ctx.storage.put('gameRecord', {
       ...snapshot,
       setup,
       deckSeed,
       rulesRecord: rules.record,
-    } satisfies GameRoomSnapshot)
-    await this.ctx.storage.delete('pendingCommandDraft')
+    } satisfies GameRecord)
     this.ctx.waitUntil(this.broadcast(metadata))
 
     return this.json(await this.response(metadata, actorUserId))
@@ -1090,7 +1088,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'test fixture requires an active match' }, 409)
     }
 
-    const snapshot = await this.requireSnapshot()
+    const snapshot = await this.requireGameRecord()
     if (!snapshot.setup.enabledRuleModules.includes('tribulation')) {
       return this.json({ error: 'test fixture requires Tribulation' }, 409)
     }
@@ -1152,13 +1150,12 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'test fixture did not reach Environment choice' }, 500)
     }
 
-    await this.ctx.storage.put('snapshot', {
+    await this.ctx.storage.put('gameRecord', {
       ...snapshot,
       setup,
       deckSeed,
       rulesRecord: rules.record,
-    } satisfies GameRoomSnapshot)
-    await this.ctx.storage.delete('pendingCommandDraft')
+    } satisfies GameRecord)
     this.ctx.waitUntil(this.broadcast(metadata))
 
     return this.json(await this.response(metadata, actorUserId))
@@ -1175,7 +1172,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'test fixture requires an active match' }, 409)
     }
 
-    const snapshot = await this.requireSnapshot()
+    const snapshot = await this.requireGameRecord()
     if (!snapshot.setup.enabledRuleModules.includes('tribulation')) {
       return this.json({ error: 'test fixture requires Tribulation' }, 409)
     }
@@ -1218,14 +1215,13 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'test fixture could not find Rusted Forest Cards' }, 500)
     }
 
-    await this.ctx.storage.put('snapshot', {
+    await this.ctx.storage.put('gameRecord', {
       ...snapshot,
       firstPlayer: actor.player,
       setup,
       deckSeed,
       rulesRecord: rules.record,
-    } satisfies GameRoomSnapshot)
-    await this.ctx.storage.delete('pendingCommandDraft')
+    } satisfies GameRecord)
     this.ctx.waitUntil(this.broadcast(metadata))
 
     return this.json({
@@ -1249,7 +1245,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'test fixture requires an active match' }, 409)
     }
 
-    const snapshot = await this.requireSnapshot()
+    const snapshot = await this.requireGameRecord()
     if (!snapshot.setup.enabledRuleModules.includes('pouch')) {
       return this.json({ error: 'test fixture requires Pouch' }, 409)
     }
@@ -1291,14 +1287,13 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'test fixture could not find Chain Cards' }, 500)
     }
 
-    await this.ctx.storage.put('snapshot', {
+    await this.ctx.storage.put('gameRecord', {
       ...snapshot,
       firstPlayer: actor.player,
       setup,
       deckSeed,
       rulesRecord: rules.record,
-    } satisfies GameRoomSnapshot)
-    await this.ctx.storage.delete('pendingCommandDraft')
+    } satisfies GameRecord)
     this.ctx.waitUntil(this.broadcast(metadata))
 
     return this.json({
@@ -1315,171 +1310,34 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private async submitCommand(
     request: Extract<GameRoomRequest, { type: 'submitCommand' }>,
   ): Promise<Response> {
-    const metadata = await this.requireMetadata()
-    const actor = this.playerFor(metadata, request.actorUserId)
+    const executed = await executePlayerCommand({
+      storage: this.ctx.storage,
+      metadata: () => this.metadata(),
+      gameRecord: () => this.requireGameRecord(),
+      playerFor: (metadata, userId) => this.playerFor(metadata, userId),
+      actionForPlayer: (action, player) => this.actionForPlayer(action, player),
+      callRules: (action, viewer, record) => this.callRules(action, viewer, record),
+      response: (metadata, actorUserId, playableActions, receipt) => (
+        this.response(metadata, actorUserId, playableActions, receipt)
+      ),
+      shuffle: values => this.shuffle(values),
+    }, request)
 
-    if (metadata.status !== 'Active') {
-      return this.json({ error: 'room has not started' }, 409)
+    if (executed.committed) {
+      this.ctx.waitUntil(Promise.all([
+        this.broadcast(executed.metadata),
+        executed.nextPlayer && executed.nextPlayer !== executed.previousPlayer
+          ? this.notifyPlayer(executed.metadata, executed.nextPlayer, {
+              kind: 'yourTurn',
+              message: `「${executed.metadata.name}」輪到你行動。`,
+            })
+          : Promise.resolve(),
+      ]).catch(error => {
+        console.error('post-commit game-room delivery failed', error)
+      }))
     }
 
-    if (!actor) {
-      return this.json({ error: 'only room players may submit commands' }, 403)
-    }
-
-    if (!isOnlineGameAction(request.action)) {
-      return this.json({ error: 'unsupported player action' }, 400)
-    }
-    const playerAction = this.actionForPlayer(request.action, actor)
-    const viewer = actor
-    const existingDraft = await this.pendingDraft()
-
-    if (request.action.type === 'playableActions') {
-      const snapshot = await this.requireSnapshot()
-      const rules = await this.callReadyRules(playerAction, viewer, snapshot)
-
-      return this.json(await this.response(metadata, request.actorUserId, rules.playableActions))
-    }
-
-    if (existingDraft && existingDraft.actorUserId !== request.actorUserId) {
-      return this.json({ error: 'another player decision is pending' }, 409)
-    }
-
-    if (existingDraft?.pendingRandomness && existingDraft.commandId !== request.commandId) {
-      return this.json({ error: 'retry the pending command before submitting another command' }, 409)
-    }
-
-    if (
-      existingDraft
-      && !existingDraft.pendingRandomness
-      && playerAction.type !== 'answerChoice'
-    ) {
-      return this.json({ error: 'complete or cancel the pending effect choice first' }, 409)
-    }
-
-    const duplicate = await this.findEventByCommandId(request.commandId)
-
-    if (duplicate) {
-      return this.json(await this.response(metadata, request.actorUserId))
-    }
-
-    const canonicalSnapshot = await this.requireSnapshot()
-    const previousSnapshot = existingDraft?.snapshot ?? canonicalSnapshot
-    const previousRules = await this.callReadyRules(
-      { type: 'refresh' },
-      'observer',
-      canonicalSnapshot,
-    )
-    let initialRules: RulesEngineResult
-    if (existingDraft?.pendingRandomness) {
-      initialRules = await this.callRules({ type: 'refresh' }, viewer, previousSnapshot)
-    } else {
-      const action = await this.withTrustedRandomness(playerAction, viewer, previousSnapshot)
-      initialRules = await this.callRules(action, viewer, previousSnapshot)
-    }
-
-    let rules: RulesReadyResult
-    switch (initialRules.type) {
-      case 'ready':
-        rules = initialRules
-        break
-      case 'needsRandomness': {
-        const randomnessDraft: PendingCommandDraft = existingDraft ?? {
-          actorUserId: request.actorUserId,
-          commandId: request.commandId,
-          action: playerAction,
-          snapshot: previousSnapshot,
-        }
-        rules = await this.resolvePendingRandomness(initialRules, viewer, randomnessDraft)
-        break
-      }
-    }
-
-    if (
-      !existingDraft
-      && requiresPendingCommandDraft(playerAction, rules.state.pendingChoice)
-    ) {
-      const draft: PendingCommandDraft = {
-        actorUserId: request.actorUserId,
-        commandId: request.commandId,
-        action: playerAction,
-        snapshot: {
-          ...previousSnapshot,
-          rulesRecord: rules.record,
-        },
-      }
-
-      await this.ctx.storage.put('pendingCommandDraft', draft)
-      this.ctx.waitUntil(this.broadcast(metadata))
-
-      return this.json(await this.response(metadata, request.actorUserId))
-    }
-
-    if (
-      existingDraft
-      && continuesPendingCommandDraft(rules.state.pendingChoice)
-    ) {
-      await this.ctx.storage.put('pendingCommandDraft', {
-        ...existingDraft,
-        pendingRandomness: false,
-        snapshot: {
-          ...existingDraft.snapshot,
-          rulesRecord: rules.record,
-        },
-      } satisfies PendingCommandDraft)
-      this.ctx.waitUntil(this.broadcast(metadata))
-
-      return this.json(await this.response(metadata, request.actorUserId))
-    }
-
-    const now = new Date().toISOString()
-    const sequence = await this.nextSequence()
-    const event: StoredGameEvent = {
-      sequence,
-      type: 'RulesCommandApplied',
-      commandId: existingDraft?.commandId ?? request.commandId,
-      actor,
-      payload: existingDraft
-        && existingDraft.action.type === 'performFormation'
-        ? {
-            type: 'performFormationWithChoices',
-            formation: existingDraft.action,
-          }
-        : (existingDraft?.action ?? playerAction),
-      createdAt: now,
-    }
-    const snapshot: GameRoomSnapshot = {
-      ...previousSnapshot,
-      sequence,
-      rulesRecord: rules.record,
-      finishedAt: rules.state.status === 'Finished' ? now : previousSnapshot.finishedAt,
-    }
-    const status = rules.state.status === 'Finished' ? 'Finished' : 'Active'
-    const updatedMetadata: GameRoomMetadata = {
-      ...metadata,
-      status,
-      updatedAt: now,
-    }
-
-    await this.ctx.storage.put(this.eventKey(sequence), event)
-    await this.ctx.storage.put('nextSequence', sequence + 1)
-    await this.ctx.storage.put('snapshot', snapshot)
-    await this.ctx.storage.put('metadata', updatedMetadata)
-    await this.ctx.storage.delete('pendingCommandDraft')
-
-    const nextPlayer = rules.state.currentPlayer
-    const previousPlayer = previousRules.state.currentPlayer
-
-    this.ctx.waitUntil(Promise.all([
-      this.broadcast(updatedMetadata),
-      nextPlayer && nextPlayer !== previousPlayer
-        ? this.notifyPlayer(metadata, nextPlayer, {
-            kind: 'yourTurn',
-            message: `「${metadata.name}」輪到你行動。`,
-          })
-        : Promise.resolve(),
-    ]).then(() => undefined))
-
-    return this.json(await this.response(updatedMetadata, request.actorUserId))
+    return this.json(executed.response)
   }
 
   private async connect(request: Request): Promise<Response> {
@@ -1727,6 +1585,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     metadata?: GameRoomMetadata,
     actorUserId?: string,
     playableActions?: PlayableAction[],
+    receipt?: CommandReceipt,
   ): Promise<GameRoomResponse> {
     const currentMetadata = metadata ?? await this.requireMetadata()
     const lockedDeckName = actorUserId
@@ -1766,10 +1625,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       }
     }
 
-    const draft = actorUserId ? await this.pendingDraft() : undefined
-    const snapshot = draft && !draft.pendingRandomness
-      ? draft.snapshot
-      : await this.requireSnapshot()
+    const snapshot = await this.requireGameRecord()
     const publicRules = await this.callReadyRules({ type: 'refresh' }, viewer, snapshot)
     const responseMetadata: GameRoomMetadata = (
       currentMetadata.status === 'Active'
@@ -1785,6 +1641,11 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     if (responseMetadata !== currentMetadata) {
       await this.ctx.storage.put('metadata', responseMetadata)
     }
+    const activeTransactionId = responseMetadata.gameInstanceId
+      ? (await this.ctx.storage.get<{ transactionId: string }>(
+          `transaction:${responseMetadata.gameInstanceId}`,
+        ))?.transactionId
+      : undefined
 
     return {
       gameId: currentMetadata.gameId,
@@ -1798,6 +1659,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       })),
       playableActions: playableActions ?? publicRules.playableActions,
       interaction: publicRules.interaction,
+      activeTransactionId,
+      receipt,
     }
   }
 
@@ -1867,65 +1730,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
   }
 
-  private async withTrustedRandomness(
-    action: OnlineGameAction,
-    viewer: string,
-    snapshot: GameRoomSnapshot,
-  ): Promise<OnlineGameAction> {
-    if (!('player' in action)) return action
-
-    const candidates = await this.callReadyRules({
-      type: 'trustedRandomHandCandidates',
-      player: action.player,
-      candidateAction: action,
-    }, viewer, snapshot)
-    if (candidates.trustedRandomCandidates) {
-      return {
-        ...action,
-        trustedRandomCards: this.shuffle(candidates.trustedRandomCandidates)
-          .slice(0, candidates.trustedRandomCandidateCount ?? 0),
-      } as OnlineGameAction
-    }
-
-    return action
-  }
-
-  private async resolvePendingRandomness(
-    initialRules: RulesNeedsRandomnessResult,
-    viewer: string,
-    draft: PendingCommandDraft,
-  ): Promise<RulesReadyResult> {
-    return await resolvePendingRandomnessSequence<
-      RulesReadyResult,
-      RulesNeedsRandomnessResult
-    >(
-      initialRules,
-      cards => this.shuffle(cards),
-      async (rules) => {
-        const pendingSnapshot: GameRoomSnapshot = {
-          ...draft.snapshot,
-          rulesRecord: rules.record,
-        }
-        await this.ctx.storage.put('pendingCommandDraft', {
-          ...draft,
-          snapshot: pendingSnapshot,
-          pendingRandomness: true,
-        } satisfies PendingCommandDraft)
-      },
-      async (action, rules) => {
-        const pendingSnapshot: GameRoomSnapshot = {
-          ...draft.snapshot,
-          rulesRecord: rules.record,
-        }
-        return await this.callRules(action, viewer, pendingSnapshot)
-      },
-    )
-  }
-
   private async callRules(
     action: RulesEngineAction,
     viewer: string | undefined,
-    snapshot: GameRoomSnapshot,
+    snapshot: GameRecord,
   ): Promise<RulesEngineResult> {
     return await callRulesEngineResult({
       action,
@@ -1939,7 +1747,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private async callReadyRules(
     action: RulesEngineAction,
     viewer: string | undefined,
-    snapshot: GameRoomSnapshot,
+    snapshot: GameRecord,
   ): Promise<RulesReadyResult> {
     return requireReadyRulesResult(await this.callRules(action, viewer, snapshot))
   }
@@ -1976,18 +1784,14 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return metadata
   }
 
-  private async requireSnapshot(): Promise<GameRoomSnapshot> {
-    const snapshot = await this.ctx.storage.get<GameRoomSnapshot>('snapshot')
+  private async requireGameRecord(): Promise<GameRecord> {
+    const snapshot = await this.ctx.storage.get<GameRecord>('gameRecord')
 
     if (!snapshot) {
-      throw new Error('game room snapshot is missing')
+      throw new Error('game room Game Record is missing')
     }
 
     return snapshot
-  }
-
-  private async pendingDraft(): Promise<PendingCommandDraft | undefined> {
-    return await this.ctx.storage.get<PendingCommandDraft>('pendingCommandDraft')
   }
 
   private async metadata(): Promise<GameRoomMetadata | undefined> {
@@ -2018,8 +1822,16 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return [...entries.values()].sort((left, right) => left.sequence - right.sequence)
   }
 
-  private async findEventByCommandId(commandId: string): Promise<StoredGameEvent | undefined> {
-    return (await this.events()).find((event) => event.commandId === commandId)
+  private async deleteGameInstanceTransactions(gameInstanceId: string) {
+    const prefixes = [
+      `commandReceipt:${gameInstanceId}:`,
+      `trustedReceipt:${gameInstanceId}:`,
+      `transaction:${gameInstanceId}`,
+    ]
+    for (const prefix of prefixes) {
+      const entries = await this.ctx.storage.list({ prefix })
+      await Promise.all([...entries.keys()].map(key => this.ctx.storage.delete(key)))
+    }
   }
 
   private eventKey(sequence: number): string {

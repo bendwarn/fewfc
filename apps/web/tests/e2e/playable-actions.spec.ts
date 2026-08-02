@@ -37,6 +37,9 @@ test('selected cards expose rule-backed actions in vertically ordered control pa
     await active.route(commandUrl, async (route) => {
       const body = route.request().postDataJSON()
       if (body?.action?.type === 'playableActions') {
+        expect(body.commandId).toMatch(/\S/)
+        expect(body.gameInstanceId).toMatch(/\S/)
+        expect(body.transactionId).toMatch(/\S/)
         await new Promise(resolve => setTimeout(resolve, 300))
       }
       await route.continue()

@@ -1,14 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  continuesPendingCommandDraft,
   isOnlineGameAction,
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
-  resolvePendingRandomnessSequence,
-  requiresPendingCommandDraft,
 } from './game-room'
 import { isDevelopmentScenario } from './development-scenarios'
-import type { TrustedRandomnessAction } from './game-room'
 
 test('development fixtures expose only the closed named scenario catalog', () => {
   expect(isDevelopmentScenario({ name: 'star-endgame' })).toBe(true)
@@ -35,111 +31,21 @@ test('trusted randomness actions are not player-submittable', () => {
   })).toBe(true)
 })
 
-test('trusted randomness resolves sequential requests as distinct persisted decisions', async () => {
-  type Ready = {
-    type: 'ready'
-    marker: string
+test('online command transaction fields keep the exact camelCase wire contract', () => {
+  const receipt = {
+    gameInstanceId: 'game-1',
+    transactionId: 'transaction-1',
+    committedSequence: 8,
+    transactionStatus: 'awaitingChoice',
   }
-  type NeedsRandomness = {
-    type: 'needsRandomness'
-    marker: string
-    record: string[]
-    request: {
-      requestId: string
-      operation: { type: 'deckShuffle'; deck: 'Shared' }
-      continuation: { type: 'echo'; kind: 'ringingMetalRecycleDiscard' | 'ringingMetalPostSearch' }
-      currentOrder: number[]
-    }
-  }
-  type Result = Ready | NeedsRandomness
-  const persisted: string[] = []
-  const actions: TrustedRandomnessAction[] = []
-  const responses: Result[] = [
-    {
-      type: 'needsRandomness',
-      marker: 'after-first',
-      record: ['command', 'first-shuffle'],
-      request: {
-        requestId: 'post-search',
-        operation: { type: 'deckShuffle', deck: 'Shared' },
-        continuation: { type: 'echo', kind: 'ringingMetalPostSearch' },
-        currentOrder: [4, 5],
-      },
-    },
-    { type: 'ready', marker: 'complete' },
-  ]
+  const wire = JSON.stringify(receipt)
 
-  const result = await resolvePendingRandomnessSequence<Ready, NeedsRandomness>(
-    {
-      type: 'needsRandomness',
-      marker: 'initial',
-      record: ['command'],
-      request: {
-        requestId: 'discard-recycle',
-        operation: { type: 'deckShuffle', deck: 'Shared' },
-        continuation: { type: 'echo', kind: 'ringingMetalRecycleDiscard' },
-        currentOrder: [1, 2, 3],
-      },
-    },
-    cards => [...cards].reverse(),
-    async (current) => {
-      persisted.push(current.request.requestId)
-    },
-    async (action) => {
-      actions.push(action)
-      return responses.shift() as Result
-    },
-  )
-
-  expect(result.type).toBe('ready')
-  expect(result.marker).toBe('complete')
-  expect(persisted).toStrictEqual(['discard-recycle', 'post-search'])
-  expect(actions).toStrictEqual([
-    { type: 'resolveRandomness', requestId: 'discard-recycle', shuffledOrder: [3, 2, 1] },
-    { type: 'resolveRandomness', requestId: 'post-search', shuffledOrder: [5, 4] },
-  ])
-})
-
-test('trusted randomness persists one continuation before returning ready', async () => {
-  type Ready = { type: 'ready'; marker: 'complete' }
-  type NeedsRandomness = {
-    type: 'needsRandomness'
-    record: string[]
-    request: {
-      requestId: string
-      operation: { type: 'deckShuffle'; deck: 'Shared' }
-      continuation: { type: 'tribulation'; kind: 'rustedForestShuffle' }
-      currentOrder: number[]
-    }
-  }
-  const sequence: string[] = []
-
-  const result = await resolvePendingRandomnessSequence<Ready, NeedsRandomness>(
-    {
-      type: 'needsRandomness',
-      record: ['rusted-forest-command'],
-      request: {
-        requestId: 'rusted-forest-shuffle',
-        operation: { type: 'deckShuffle', deck: 'Shared' },
-        continuation: { type: 'tribulation', kind: 'rustedForestShuffle' },
-        currentOrder: [7, 8, 9],
-      },
-    },
-    cards => [cards[1] as number, cards[2] as number, cards[0] as number],
-    async (current) => {
-      sequence.push(`persist:${current.record.join(',')}`)
-    },
-    async (action) => {
-      sequence.push(`resolve:${action.requestId}:${action.shuffledOrder.join(',')}`)
-      return { type: 'ready', marker: 'complete' }
-    },
-  )
-
-  expect(result).toStrictEqual({ type: 'ready', marker: 'complete' })
-  expect(sequence).toStrictEqual([
-    'persist:rusted-forest-command',
-    'resolve:rusted-forest-shuffle:8,9,7',
-  ])
+  expect(wire).toContain('gameInstanceId')
+  expect(wire).toContain('transactionId')
+  expect(wire).toContain('committedSequence')
+  expect(wire).toContain('transactionStatus')
+  expect(wire).not.toContain('game_instance_id')
+  expect(wire).not.toContain('transaction_id')
 })
 
 describe('normalizeGameRoomMetadata', () => {
@@ -214,7 +120,7 @@ describe('normalizeGameRoomMetadata', () => {
       updatedAt: '2026-06-28T00:00:00.000Z',
     })
 
-    expect(metadata.schemaVersion).toBe(3)
+    expect(metadata.schemaVersion).toBe(4)
     expect(metadata.enabledRuleModules).toStrictEqual([])
     expect(metadata.name).toBe('version-one-room')
     expect(metadata.capacity).toBe(2)
@@ -277,57 +183,5 @@ describe('invitationCredentialMatches', () => {
       type: 'token',
       value: 'wrong',
     })).toBe(false)
-  })
-})
-
-describe('requiresPendingCommandDraft', () => {
-  const formation = {
-    type: 'performFormation' as const,
-    player: 'alice',
-    formationId: 'fire-strike',
-    cards: [1],
-  }
-  const stagedChoice = {
-    visibility: 'visible' as const,
-    choiceId: 7,
-    player: 'alice',
-    reason: { type: 'chaos' as const },
-    choice: { type: 'card' as const, cards: [], minimum: 2, maximum: 2, canDecline: false },
-  }
-  const turnDrawChoice = {
-    ...stagedChoice,
-    reason: { type: 'turnDrawDiscard' as const },
-  }
-
-  test('keeps the originating command through staged typed choices', () => {
-    expect(requiresPendingCommandDraft(formation, stagedChoice)).toBe(true)
-    expect(requiresPendingCommandDraft({
-      type: 'triggerSecretStrategy',
-      player: 'alice',
-      strategy: 'SheepStealing',
-    }, stagedChoice)).toBe(true)
-    expect(requiresPendingCommandDraft(formation, turnDrawChoice)).toBe(false)
-    expect(requiresPendingCommandDraft({
-      type: 'passAction',
-      reason: 'CannotActByStatus',
-    }, stagedChoice)).toBe(false)
-  })
-})
-
-describe('continuesPendingCommandDraft', () => {
-  test('continues across visible effect choices but not turn draw choices', () => {
-    const stagedChoice = {
-      visibility: 'visible' as const,
-      choiceId: 7,
-      player: 'alice',
-      reason: { type: 'sheepStealing' as const },
-      choice: { type: 'sheepStealing' as const, deckCards: [], discardCards: [] },
-    }
-    expect(continuesPendingCommandDraft(stagedChoice)).toBe(true)
-    expect(continuesPendingCommandDraft({
-      ...stagedChoice,
-      reason: { type: 'turnDrawDiscard' as const },
-    })).toBe(false)
-    expect(continuesPendingCommandDraft(null)).toBe(false)
   })
 })
