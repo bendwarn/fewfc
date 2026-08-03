@@ -34,13 +34,13 @@ function assertNever(value: never): never {
   throw new Error(`Unhandled action-detail variant: ${JSON.stringify(value)}`)
 }
 
-function presentCost(cost: ActionCost): string {
+function presentCost(cost: ActionCost): string | null {
   switch (cost.type) {
     case 'discardSelectedCards': return '捨棄所選牌'
     case 'spendSpiritPower': return `消耗 ${cost.amount} 點靈力`
     case 'loseHp': return `支付 ${cost.amount} 點生命`
     case 'optionalDiscardByPrintedElement': return `結算主效果後，可捨棄一張${cost.allowedPrintedElements.map(element => elementNames[element]).join('或')}屬性的手牌`
-    case 'consumePouch': return '公開並消耗該錦囊'
+    case 'consumePouch': return null
     default: return assertNever(cost)
   }
 }
@@ -271,6 +271,21 @@ export function presentPlayableAction(action: PlayableAction): string {
 
 export function presentSecretStrategyOption(action: SecretStrategyOption): string {
   return presentActionDetail(action.detail)
+}
+
+function presentDirectSecretStrategyActivation(input: SecretStrategyOption['input']): string {
+  switch (input) {
+    case 'none': return '點擊後立即發動'
+    case 'deckDiscardSwap': return '點擊後立即發動，接著選擇牌組與棄牌堆各兩張牌'
+    case 'targetPlayer': return '點擊後需要先選擇目標玩家'
+    case 'star': return '點擊後需要先選擇取得或破除的星辰'
+    case 'retreat': return '點擊後需要先選擇破除環境或捨棄手牌'
+    default: return assertNever(input)
+  }
+}
+
+export function presentDirectSecretStrategyAction(action: SecretStrategyOption): string {
+  return `${presentDirectSecretStrategyActivation(action.input)}。${presentSecretStrategyOption(action)}`
 }
 
 export function presentDiscardRetrievalAction(

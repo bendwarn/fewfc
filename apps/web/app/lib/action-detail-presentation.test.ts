@@ -11,6 +11,7 @@ import type {
 import {
   presentActionDetail,
   presentDiscardRetrievalAction,
+  presentDirectSecretStrategyAction,
   presentPlayableAction,
   presentSecretStrategyOption,
 } from './action-detail-presentation'
@@ -150,7 +151,12 @@ test('presents Chain, direct Pouch, and Discard Retrieval without repeating thei
       { type: 'cost', certainty: 'guaranteed', cost: { type: 'consumePouch' } },
     ] },
   }
-  expect(presentSecretStrategyOption(pouch)).toBe('從牌組與棄牌堆各選兩張交換，之後洗牌。公開並消耗該錦囊。')
+  expect(presentSecretStrategyOption(pouch)).toBe('從牌組與棄牌堆各選兩張交換，之後洗牌。')
+  expect(presentDirectSecretStrategyAction(pouch)).toBe('點擊後立即發動，接著選擇牌組與棄牌堆各兩張牌。從牌組與棄牌堆各選兩張交換，之後洗牌。')
+  expect(presentDirectSecretStrategyAction({ ...pouch, input: 'none' })).toBe('點擊後立即發動。從牌組與棄牌堆各選兩張交換，之後洗牌。')
+  expect(presentDirectSecretStrategyAction({ ...pouch, input: 'targetPlayer' })).toBe('點擊後需要先選擇目標玩家。從牌組與棄牌堆各選兩張交換，之後洗牌。')
+  expect(presentDirectSecretStrategyAction({ ...pouch, input: 'star' })).toBe('點擊後需要先選擇取得或破除的星辰。從牌組與棄牌堆各選兩張交換，之後洗牌。')
+  expect(presentDirectSecretStrategyAction({ ...pouch, input: 'retreat' })).toBe('點擊後需要先選擇破除環境或捨棄手牌。從牌組與棄牌堆各選兩張交換，之後洗牌。')
 
   expect(presentDiscardRetrievalAction({ detail: { consequences: [
     { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'movePreviousTurnDiscardToDeckTop' } },
