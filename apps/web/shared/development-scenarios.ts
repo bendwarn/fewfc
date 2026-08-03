@@ -3,6 +3,7 @@ export type DevelopmentScenario =
   | { name: 'hero-schools-transition' }
   | { name: 'spirit-skill'; options?: { spirit?: 'Metal' | 'Fire' } }
   | { name: 'echo-pure-fire'; options?: { mode?: 'actionDetail' } }
+  | { name: 'echo-ringing-metal' }
   | { name: 'echo-split-earth' }
   | { name: 'tribulation-earth-rending' }
   | { name: 'tribulation-rusted-forest' }
@@ -13,6 +14,7 @@ export const DEVELOPMENT_SCENARIO_NAMES: DevelopmentScenario['name'][] = [
   'hero-schools-transition',
   'spirit-skill',
   'echo-pure-fire',
+  'echo-ringing-metal',
   'echo-split-earth',
   'tribulation-earth-rending',
   'tribulation-rusted-forest',
@@ -29,6 +31,7 @@ export function isDevelopmentScenario(value: unknown): value is DevelopmentScena
   const keys = Object.keys(scenario)
   if (scenario.name === 'star-endgame'
     || scenario.name === 'hero-schools-transition'
+    || scenario.name === 'echo-ringing-metal'
     || scenario.name === 'echo-split-earth'
     || scenario.name === 'tribulation-earth-rending'
     || scenario.name === 'tribulation-rusted-forest'

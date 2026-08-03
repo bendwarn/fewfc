@@ -867,7 +867,7 @@
                   label="商調‧鳴金牌組矩陣"
                   caption="依五行與等級選擇商調‧鳴金檢索的牌組牌"
                   action-label="選擇商調‧鳴金牌組牌"
-                  @choose="game.togglePendingChoiceCard"
+                  @choose="game.choosePendingCard"
                 />
                 <div v-else class="choice-cards">
                   <GameCard
@@ -876,25 +876,42 @@
                     class="choice-card"
                     :card="card"
                     selectable
-                    :selected="game.selectedChoiceCards.value.includes(card.id)"
+                    :selected="!isImmediateCardChoice(state.pendingChoice.choice)
+                      && game.selectedChoiceCards.value.includes(card.id)"
                     :interpretations="state.cardInterpretations"
                     :disabled="game.isLoading.value || !roomConnected
-                      || (game.selectedChoiceCards.value.length >= state.pendingChoice.choice.maximum
+                      || (!isImmediateCardChoice(state.pendingChoice.choice)
+                        && game.selectedChoiceCards.value.length >= state.pendingChoice.choice.maximum
                         && !game.selectedChoiceCards.value.includes(card.id))"
-                    @select="game.togglePendingChoiceCard(card.id)"
+                    @select="game.choosePendingCard(card.id)"
                   />
                 </div>
-                <p class="choice-count">
-                  已選 {{ game.selectedChoiceCards.value.length }}
-                  （{{ state.pendingChoice.choice.minimum }}–{{ state.pendingChoice.choice.maximum }}）
+                <p
+                  v-if="!isImmediateCardChoice(state.pendingChoice.choice)"
+                  class="choice-count"
+                >
+                  {{ cardChoiceDraftCount(
+                    state.pendingChoice.choice,
+                    game.selectedChoiceCards.value.length,
+                  ) }}
                 </p>
                 <button
+                  v-if="!isImmediateCardChoice(state.pendingChoice.choice)"
                   class="choice-submit"
                   type="button"
                   :disabled="game.isLoading.value || !roomConnected || !game.canSubmitPendingChoice.value"
                   @click="game.submitPendingChoice()"
                 >
                   確認選擇
+                </button>
+                <button
+                  v-if="state.pendingChoice.reason.type === 'clearWind'"
+                  class="choice-submit"
+                  type="button"
+                  :disabled="game.isLoading.value || !roomConnected"
+                  @click="game.discardClearWindCard()"
+                >
+                  捨棄此牌
                 </button>
               </template>
               <div
@@ -1179,7 +1196,7 @@ import { presentPersistentEffects } from '~/lib/persistent-effect-presentation'
 import { presentDirectSecretStrategyAction, presentDiscardRetrievalAction, presentPlayableAction, presentSecretStrategyOption } from '~/lib/action-detail-presentation'
 import { splitEarthChoiceKey, usesSplitEarthFormationGroups } from '#shared/utils/split-earth-formation-choice'
 import { roomRouteResult } from '~/lib/navigation'
-import { chainChoiceAnswer, toggleChoiceCard } from '~/lib/pending-choice-interaction'
+import { cardChoiceDraftCount, chainChoiceAnswer, isImmediateCardChoice, toggleChoiceCard } from '~/lib/pending-choice-interaction'
 import { isLegalChainTrigger, sheepReturnCards } from '~/lib/pouch-choice'
 import { useLayoutNotifications } from '~/lib/player-notifications-context'
 import { useRulesCatalog } from '~/lib/rules-catalog'

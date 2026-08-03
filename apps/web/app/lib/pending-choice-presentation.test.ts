@@ -34,6 +34,7 @@ test('presents every Pending Choice by semantic continuation instead of internal
     expect(label).not.toMatch(/echo:|jianghu:|confluence:|tribulation:/)
   }
 
-  expect(presentPendingChoice({ type: 'clearWind' })).toBe('晴風：選取此牌捨棄；不選則放回牌組頂')
+  expect(presentPendingChoice({ type: 'clearWind' })).toBe('晴風：選擇此牌則放回牌堆最上方')
   expect(presentPendingChoice({ type: 'clearWindTenThousandMiles' })).toBe('晴風萬里：選擇要保留的牌')
+  expect(presentPendingChoice({ type: 'chaos' })).toBe('混沌：選擇手牌放回牌堆最上方')
 })

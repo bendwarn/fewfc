@@ -115,6 +115,43 @@ test('Split Earth selects a Formation through its providing rules', async ({ bro
   }
 })
 
+test('Ringing Metal Card Choice Matrix submits its one-card answer immediately', async ({ browser }) => {
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `鳴金即時選擇 ${Date.now()}`,
+  })
+  const { host, gameId: roomId } = game
+
+  try {
+    await seedDevelopmentScenario(host, { name: 'echo-ringing-metal' })
+
+    await reloadFastGameRoute(host, roomId)
+    await expect(host.getByRole('heading', { name: '商調‧鳴金：從牌組選擇一張牌' })).toBeVisible()
+    const matrix = host.getByRole('group', { name: '商調‧鳴金牌組矩陣' })
+    const card = matrix.getByRole('button').first()
+    await expect(card).toBeVisible()
+    await expect(card).toHaveAttribute('aria-pressed', 'false')
+    await expect(host.getByRole('button', { name: '確認選擇' })).toHaveCount(0)
+
+    const [answer] = await Promise.all([
+      host.waitForResponse(response => (
+        response.url().endsWith(`/api/games/${roomId}/commands`)
+        && response.request().postDataJSON()?.action?.type === 'answerChoice'
+      )),
+      card.click(),
+    ])
+    expect(answer.ok(), await answer.text()).toBe(true)
+    expect(answer.request().postDataJSON()?.action?.answer).toEqual({
+      type: 'cards',
+      cards: expect.any(Array),
+    })
+    await expect(host.getByRole('heading', {
+      name: '商調‧鳴金：選擇一張手牌支付迴響代價，或放棄迴響',
+    })).toBeVisible()
+  } finally {
+    await game.close()
+  }
+})
+
 test('Echo action detail renders scheduled typed consequences on the battlefield', async ({ browser }) => {
   const game = await setupFastTwoPlayerGame(browser, {
     roomName: `迴響行動詳情 ${Date.now()}`,

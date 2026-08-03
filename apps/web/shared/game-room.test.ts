@@ -8,6 +8,7 @@ import { isDevelopmentScenario } from './development-scenarios'
 
 test('development fixtures expose only the closed named scenario catalog', () => {
   expect(isDevelopmentScenario({ name: 'star-endgame' })).toBe(true)
+  expect(isDevelopmentScenario({ name: 'echo-ringing-metal' })).toBe(true)
   expect(isDevelopmentScenario({ name: 'echo-split-earth' })).toBe(true)
   expect(isDevelopmentScenario({ name: 'tribulation-earth-rending' })).toBe(true)
   expect(isDevelopmentScenario({ name: 'tribulation-rusted-forest' })).toBe(true)

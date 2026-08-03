@@ -5,13 +5,25 @@ import type {
   PendingChoice,
   PlayerId,
   PublicPendingChoice,
+  PublicCard,
   VisiblePendingChoice,
 } from '../types/fewfc'
+
+export type CardPendingChoice = Extract<PendingChoice, { type: 'card' }>
+export type VisibleCardPendingChoice = VisiblePendingChoice & { choice: CardPendingChoice }
+export type CardsChoiceAnswer = Extract<ChoiceAnswer, { type: 'cards' }>
 
 export function visiblePendingChoice(
   choice: PublicPendingChoice | null,
 ): VisiblePendingChoice | null {
   return choice?.visibility === 'visible' ? choice : null
+}
+
+export function visibleCardPendingChoice(
+  choice: PublicPendingChoice | null,
+): VisibleCardPendingChoice | null {
+  const visible = visiblePendingChoice(choice)
+  return visible?.choice.type === 'card' ? visible as VisibleCardPendingChoice : null
 }
 
 export function pendingChoiceKey(choice: PublicPendingChoice | null): string {
@@ -40,6 +52,50 @@ export function toggleChoiceCard(
 ): CardInstanceId[] {
   if (selectedCards.includes(card)) return selectedCards.filter(selected => selected !== card)
   return selectedCards.length < maximum ? [...selectedCards, card] : selectedCards
+}
+
+/**
+ * Card choices with one maximum result are answers, rather than local drafts.
+ * Clear Wind retains its canonical zero-or-one Cards encoding, but presents
+ * the revealed Card as the keep-on-deck outcome.
+ */
+export function isImmediateCardChoice(choice: CardPendingChoice): boolean {
+  return choice.maximum === 1
+}
+
+export function cardChoiceDraftCount(
+  choice: CardPendingChoice,
+  selectedCount: number,
+): string {
+  return `已選 ${selectedCount}（${choice.minimum}~${choice.maximum}）`
+}
+
+export function immediateCardChoiceAnswer(
+  choice: VisibleCardPendingChoice,
+  card: PublicCard,
+): CardsChoiceAnswer | undefined {
+  if (
+    !isImmediateCardChoice(choice.choice)
+    || !choice.choice.cards.some(candidate => candidate.id === card.id)
+  ) {
+    return undefined
+  }
+
+  return {
+    type: 'cards',
+    cards: choice.reason.type === 'clearWind' ? [] : [card.id],
+  }
+}
+
+export function clearWindDiscardAnswer(
+  choice: VisibleCardPendingChoice,
+): CardsChoiceAnswer | undefined {
+  const card = choice.choice.cards[0]
+  if (choice.reason.type !== 'clearWind' || !isImmediateCardChoice(choice.choice) || !card) {
+    return undefined
+  }
+
+  return { type: 'cards', cards: [card.id] }
 }
 
 export function cardChoiceIsComplete(

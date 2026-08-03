@@ -392,6 +392,12 @@ too few Cards for a required operation, followed by placing every shuffled Card
 at the bottom of that same Deck.
 _Avoid_: Discard Retrieval, Deck Shuffle, discard recycling
 
+**Deck (牌堆)**:
+The ordered hidden pile used for draws and top-or-bottom Card movement. An
+unqualified rule reference to 牌堆 means the resolving Player's applicable Deck;
+another Player's Deck must be identified explicitly.
+_Avoid_: Deck List, Discard Pile, target Player's Deck by default
+
 **Personal Deck (個人牌組)**:
 An Optional Rule Module under which each Player prepares and draws from their
 own 60-card Deck instead of all Players sharing one Deck.

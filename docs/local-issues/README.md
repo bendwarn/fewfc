@@ -6,6 +6,7 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Completed Local Issues
 
+- [#74 Simplify single-selection Pending Choices](074-simplify-single-selection-pending-choices.md)
 - [#71 Deepen Player-Facing Action Detail](071-deepen-player-facing-action-detail.md)
 - [#73 Deepen Online Command Transactions](073-deepen-online-command-transactions.md)
 - [#72 Compose Illusion input before activation](072-compose-illusion-input-before-activation.md)

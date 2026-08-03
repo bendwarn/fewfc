@@ -1,6 +1,7 @@
 import { type Page } from '@playwright/test'
 import {
   expect,
+  reloadFastGameRoute,
   setupFastTwoPlayerGame,
   setupFastWaitingRoom,
   test,
@@ -77,12 +78,11 @@ async function finishSingleCardTurn(page: Page) {
 
   const choice = page.locator('.choice-cards button:enabled').first()
   await expect(choice).toBeVisible()
-  await choice.click()
   const confirm = page.getByRole('button', { name: '確認選擇' })
-  await expect(confirm).toBeEnabled()
   const command = waitForGameCommand(page)
-  await confirm.click()
+  await choice.click()
   expect((await command).ok()).toBe(true)
+  await expect(confirm).toHaveCount(0)
   await expect(page.locator('.choice-overlay')).toBeHidden()
   return await page.locator('.result-panel').isVisible()
 }
@@ -155,7 +155,7 @@ test('players can inspect a synchronized discard composition throughout a match'
     roomName: `同步棄牌測試 ${Date.now()}`,
     disabledRuleModules: ['five-directions-legend', 'personal-deck'],
   })
-  const { host, guest, pages } = game
+  const { host, guest, pages, gameId } = game
 
   try {
     await Promise.all(pages.map(async (page) => {
@@ -191,6 +191,9 @@ test('players can inspect a synchronized discard composition throughout a match'
     const hiddenChoiceObserver = pages.find(page => page !== active)!
     await expect(active.locator('.choice-overlay')).toBeVisible()
     await expect(hiddenChoiceObserver.locator('.choice-overlay')).toBeHidden()
+    await reloadFastGameRoute(active, gameId)
+    await expect(active.locator('.choice-overlay')).toBeVisible()
+    await expect(active.getByRole('button', { name: '確認選擇' })).toHaveCount(0)
     const choiceOverlayStyle = await active.locator('.choice-overlay').evaluate((overlay) => {
       const style = getComputedStyle(overlay)
       return {
@@ -267,6 +270,70 @@ test('players can inspect a synchronized discard composition throughout a match'
     await expect(discardDialog(pendingObserver)).toBeHidden()
     expect(await finishSingleCardTurn(active)).toBe(false)
     await expectDiscardTotal(pages, 4)
+  } finally {
+    await game.close()
+  }
+})
+
+test('a failed immediate turn discard keeps the same choice enabled for an explicit retry', async ({ browser }) => {
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `即時棄牌重試 ${Date.now()}`,
+    disabledRuleModules: ['five-directions-legend', 'personal-deck'],
+  })
+  const { pages, gameId } = game
+
+  try {
+    const active = await beginSingleCardTurn(pages)
+    const choice = active.locator('.choice-cards button:enabled').first()
+    const commandUrl = `**/api/games/${gameId}/commands`
+    let answerAttempts = 0
+    let releaseFailure: (() => void) | undefined
+    let intercepted: (() => void) | undefined
+    const interceptedAnswer = new Promise<void>((resolve) => {
+      intercepted = resolve
+    })
+    const failureReleased = new Promise<void>((resolve) => {
+      releaseFailure = resolve
+    })
+
+    await active.route(commandUrl, async (route) => {
+      const action = route.request().postDataJSON()?.action
+      if (action?.type !== 'answerChoice') {
+        await route.continue()
+        return
+      }
+
+      answerAttempts += 1
+      intercepted?.()
+      await failureReleased
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ message: '暫時失敗' }),
+      })
+    })
+
+    await choice.click()
+    await interceptedAnswer
+    await expect.poll(async () => (
+      await active.locator('.choice-cards button').evaluateAll(buttons => (
+        buttons.every(button => (button as HTMLButtonElement).disabled)
+      ))
+    )).toBe(true)
+    releaseFailure?.()
+    await expect(active.getByText('無法完成遊戲操作，請稍後再試。')).toBeVisible()
+    await expect.poll(async () => (
+      await active.locator('.choice-cards button').evaluateAll(buttons => (
+        buttons.every(button => !(button as HTMLButtonElement).disabled)
+      ))
+    )).toBe(true)
+    expect(answerAttempts).toBe(1)
+
+    await active.unroute(commandUrl)
+    const command = waitForGameCommand(active)
+    await choice.click()
+    expect((await command).ok()).toBe(true)
+    await expect(active.locator('.choice-overlay')).toBeHidden()
   } finally {
     await game.close()
   }

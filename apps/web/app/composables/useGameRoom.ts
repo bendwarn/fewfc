@@ -17,16 +17,21 @@ import type {
   GameRoomSocketMessage,
   OnlineGameAction,
 } from '../../shared/game-room'
+import type { CardsChoiceAnswer, VisibleCardPendingChoice } from '~/lib/pending-choice-interaction'
 import {
   cardChoiceAnswer,
   cardChoiceIsComplete,
+  clearWindDiscardAnswer,
   declineChoiceAnswer,
   environmentChoiceAnswer,
   formationChoiceAnswer,
+  immediateCardChoiceAnswer,
+  isImmediateCardChoice,
   playerChoiceAnswer,
   sheepStealingChoiceAnswer,
   shouldResetPendingChoiceDraft,
   toggleChoiceCard,
+  visibleCardPendingChoice,
   visiblePendingChoice,
 } from '~/lib/pending-choice-interaction'
 import { reconcileActionDraft, toggleActionDraftCard } from '~/lib/action-draft'
@@ -174,6 +179,7 @@ export function useGameRoom(viewer: ViewerRef) {
     return Boolean(
       choice
       && choice.choice.type === 'card'
+      && !isImmediateCardChoice(choice.choice)
       && viewer.value === choice.player
       && cardChoiceIsComplete(choice.choice, selectedChoiceCards.value),
     )
@@ -497,22 +503,31 @@ export function useGameRoom(viewer: ViewerRef) {
   }
 
   async function choosePendingCard(card: CardInstanceId) {
-    const choice = visiblePendingChoice(state.value.pendingChoice)
+    const choice = visibleCardPendingChoice(state.value.pendingChoice)
 
     if (!choice || viewer.value !== choice.player) {
       return
     }
-    if (choice.choice.type === 'card') {
-      togglePendingChoiceCard(card)
+    const selectedCard = choice.choice.cards.find(candidate => candidate.id === card)
+    if (!selectedCard) {
+      return
     }
+
+    const answer = immediateCardChoiceAnswer(choice, selectedCard)
+    if (answer) {
+      await submitCardChoiceAnswer(choice, answer)
+      return
+    }
+
+    togglePendingChoiceCard(card)
   }
 
   function togglePendingChoiceCard(card: CardInstanceId) {
-    const choice = visiblePendingChoice(state.value.pendingChoice)
+    const choice = visibleCardPendingChoice(state.value.pendingChoice)
 
     if (
       !choice
-      || choice.choice.type !== 'card'
+      || isImmediateCardChoice(choice.choice)
       || viewer.value !== choice.player
     ) {
       return
@@ -526,28 +541,47 @@ export function useGameRoom(viewer: ViewerRef) {
   }
 
   async function submitPendingChoice() {
-    const choice = visiblePendingChoice(state.value.pendingChoice)
-    const answer = choice?.choice.type === 'card'
+    const choice = visibleCardPendingChoice(state.value.pendingChoice)
+    const answer = choice
+      && !isImmediateCardChoice(choice.choice)
       ? cardChoiceAnswer(choice.choice, [...selectedChoiceCards.value])
       : undefined
 
     if (
       !choice
-      || choice.choice.type !== 'card'
       || viewer.value !== choice.player
       || !answer
     ) {
       return
     }
 
-    if (await submitOnline({
+    if (await submitCardChoiceAnswer(choice, answer)) {
+      selectedChoiceCards.value = []
+    }
+  }
+
+  async function discardClearWindCard() {
+    const choice = visibleCardPendingChoice(state.value.pendingChoice)
+    if (!choice || viewer.value !== choice.player) {
+      return
+    }
+
+    const answer = clearWindDiscardAnswer(choice)
+    if (answer) {
+      await submitCardChoiceAnswer(choice, answer)
+    }
+  }
+
+  async function submitCardChoiceAnswer(
+    choice: VisibleCardPendingChoice,
+    answer: CardsChoiceAnswer,
+  ): Promise<boolean> {
+    return await submitOnline({
       type: 'answerChoice',
       player: choice.player,
       choiceId: choice.choiceId,
       answer,
-    })) {
-      selectedChoiceCards.value = []
-    }
+    })
   }
 
   async function choosePendingPlayer(player: PlayerId) {
@@ -863,6 +897,7 @@ export function useGameRoom(viewer: ViewerRef) {
     choosePendingFormation,
     choosePendingEnvironment,
     declinePendingChoice,
+    discardClearWindCard,
     togglePendingChoiceCard,
     submitPendingChoice,
   }

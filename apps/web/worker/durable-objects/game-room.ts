@@ -652,6 +652,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         return await this.seedSpiritFixture(actorUserId, scenario.options?.spirit)
       case 'echo-pure-fire':
         return await this.seedEchoFixture(actorUserId, 'pureFire', scenario.options?.mode)
+      case 'echo-ringing-metal':
+        return await this.seedEchoFixture(actorUserId, 'ringingMetal')
       case 'echo-split-earth':
         return await this.seedEchoFixture(actorUserId, 'splitEarth')
       case 'tribulation-earth-rending':
@@ -974,7 +976,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
   private async seedEchoFixture(
     actorUserId: string,
-    melody: 'pureFire' | 'splitEarth',
+    melody: 'pureFire' | 'ringingMetal' | 'splitEarth',
     mode?: 'actionDetail',
   ): Promise<Response> {
     const metadata = await this.requireMetadata()
@@ -999,9 +1001,21 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       ],
     }
 
-    const scenario = melody === 'pureFire' ? 'echo-pure-fire' : 'echo-split-earth'
-    const formationId = melody === 'pureFire' ? 'echo:pure-fire' : 'echo:split-earth'
-    const formationName = melody === 'pureFire' ? 'Pure Fire' : 'Split Earth'
+    const scenario = {
+      pureFire: 'echo-pure-fire',
+      ringingMetal: 'echo-ringing-metal',
+      splitEarth: 'echo-split-earth',
+    }[melody]
+    const formationId = {
+      pureFire: 'echo:pure-fire',
+      ringingMetal: 'echo:ringing-metal',
+      splitEarth: 'echo:split-earth',
+    }[melody]
+    const formationName = {
+      pureFire: 'Pure Fire',
+      ringingMetal: 'Ringing Metal',
+      splitEarth: 'Split Earth',
+    }[melody]
     const deckSeed = `development:${scenario}`
     let rules = await callRulesEngine({
       action: {

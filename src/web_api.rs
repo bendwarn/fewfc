@@ -882,7 +882,8 @@ fn development_scenario_action(
     }
     let candidate_sizes: &[usize] = match scenario {
         "hero-schools-transition" => &[1],
-        "spirit-metal" | "spirit-fire" | "echo-pure-fire" | "echo-split-earth" => &[2],
+        "spirit-metal" | "spirit-fire" | "echo-pure-fire" | "echo-ringing-metal"
+        | "echo-split-earth" => &[2],
         "pouch-chain-sheep" => &[3],
         _ => {
             return Err(ApiError::Message(
@@ -907,6 +908,9 @@ fn development_scenario_action(
                 }
                 ("echo-pure-fire", PlayableAction::PerformFormation(candidate)) => {
                     candidate.formation_id == crate::rules::echo::PURE_FIRE
+                }
+                ("echo-ringing-metal", PlayableAction::PerformFormation(candidate)) => {
+                    candidate.formation_id == crate::rules::echo::RINGING_METAL
                 }
                 ("echo-split-earth", PlayableAction::PerformFormation(candidate)) => {
                     candidate.formation_id == crate::rules::echo::SPLIT_EARTH
@@ -1121,6 +1125,7 @@ fn development_scenario_deck_order(
                     element == crate::rules::spirit::element(SpiritKind::Fire)
                 }
                 ("echo-pure-fire", Some(Element::Fire | Element::Water)) => true,
+                ("echo-ringing-metal", Some(Element::Metal)) => true,
                 ("echo-split-earth", Some(Element::Earth)) => true,
                 ("tribulation-earth-rending", Some(Element::Earth | Element::Wood)) => true,
                 ("tribulation-rusted-forest", Some(Element::Wood | Element::Metal)) => true,
@@ -1131,7 +1136,8 @@ fn development_scenario_deck_order(
         .collect::<Vec<_>>();
     let candidate_sizes: &[usize] = match scenario {
         "hero-schools-transition" => &[1],
-        "spirit-metal" | "spirit-fire" | "echo-pure-fire" | "echo-split-earth" => &[2],
+        "spirit-metal" | "spirit-fire" | "echo-pure-fire" | "echo-ringing-metal"
+        | "echo-split-earth" => &[2],
         "tribulation-earth-rending" | "tribulation-rusted-forest" => &[4, 5],
         "pouch-chain-sheep" => &[3],
         _ => {
@@ -1176,6 +1182,9 @@ fn development_scenario_deck_order(
                     .iter()
                     .all(|card| card.element == crate::rules::spirit::element(SpiritKind::Fire)),
                 "echo-pure-fire" => crate::rules::echo::matches_pure_fire(&facts),
+                "echo-ringing-metal" => {
+                    facts.len() == 2 && facts.iter().all(|card| card.element == Element::Metal)
+                }
                 "echo-split-earth" => {
                     facts.len() == 2 && facts.iter().all(|card| card.element == Element::Earth)
                 }
@@ -5050,6 +5059,7 @@ mod tests {
             "spirit-metal",
             "spirit-fire",
             "echo-pure-fire",
+            "echo-ringing-metal",
             "echo-split-earth",
             "tribulation-earth-rending",
             "tribulation-rusted-forest",
