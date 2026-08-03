@@ -1,6 +1,6 @@
 <template>
   <div class="auth-card">
-    <div class="mobile-brand"><span class="brand-mark">五</span> 五行戰牌</div>
+    <div class="mobile-brand"><span class="brand-mark">五</span> 五行戰鬥牌</div>
     <h2>{{ authMode === 'sign-in' ? '登入對戰' : '建立帳號' }}</h2>
     <p class="muted">{{ authMode === 'sign-in' ? '使用 Email 登入，繼續你的對戰紀錄。' : '建立可在不同裝置使用的玩家身份。' }}</p>
 

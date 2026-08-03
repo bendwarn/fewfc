@@ -2,6 +2,22 @@ import { describe, expect, test } from 'bun:test'
 import { resolveAuthNavigation } from './auth-navigation'
 
 describe('authentication navigation policy', () => {
+  test('shows the public homepage while signed out and keeps the signed-in shortcut to rooms', () => {
+    expect(resolveAuthNavigation({
+      authenticated: false,
+      path: '/',
+      fullPath: '/',
+      resetPasswordEnabled: false,
+    })).toEqual({ allow: true })
+
+    expect(resolveAuthNavigation({
+      authenticated: true,
+      path: '/',
+      fullPath: '/',
+      resetPasswordEnabled: false,
+    })).toEqual({ redirect: '/rooms' })
+  })
+
   test('sends an unauthenticated room deep link to login and retains its invite', () => {
     expect(resolveAuthNavigation({
       authenticated: false,

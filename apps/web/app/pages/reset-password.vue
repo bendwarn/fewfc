@@ -1,6 +1,6 @@
 <template>
   <div class="auth-card">
-    <div class="mobile-brand"><span class="brand-mark">五</span> 五行戰牌</div>
+    <div class="mobile-brand"><span class="brand-mark">五</span> 五行戰鬥牌</div>
     <h2>重設本機密碼</h2>
     <p class="muted">此入口僅適用於已啟用的本機開發環境，會直接更新既有的 Email 密碼登入憑證。</p>
     <form @submit.prevent="resetLocalPassword">

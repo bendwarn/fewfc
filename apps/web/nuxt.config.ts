@@ -13,6 +13,15 @@ export default defineNuxtConfig({
   app: {
     head: {
       htmlAttrs: { lang: 'zh-Hant' },
+      link: [
+        { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
+        { rel: 'icon', type: 'image/x-icon', href: '/favicon.ico', sizes: '16x16 32x32 48x48' },
+        { rel: 'apple-touch-icon', href: '/apple-touch-icon.png', sizes: '180x180' },
+      ],
+      meta: [
+        { name: 'theme-color', content: '#f3f0e8', media: '(prefers-color-scheme: light)' },
+        { name: 'theme-color', content: '#101512', media: '(prefers-color-scheme: dark)' },
+      ],
       script: [{
         innerHTML: `try{const t=localStorage.getItem('fewfc-color-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch{}`,
         tagPosition: 'head',

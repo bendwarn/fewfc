@@ -14,7 +14,7 @@
             'four-player': playerSeats.length === 4,
             'discard-open': discardOpen,
           }"
-          aria-label="五行戰牌對戰桌"
+          aria-label="五行戰鬥牌對戰桌"
         >
           <button
             class="back-button battlefield-back"

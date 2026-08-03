@@ -1,0 +1,27 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>五行戰鬥牌</title>
+  <defs>
+    <linearGradient id="card" x1="10" y1="6" x2="54" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2F74B7"/>
+      <stop offset=".52" stop-color="#173C83"/>
+      <stop offset="1" stop-color="#0B1C3D"/>
+    </linearGradient>
+    <filter id="markShadow" x="8" y="8" width="48" height="50" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="2" stdDeviation="1.5" flood-color="#071020" flood-opacity=".55"/>
+    </filter>
+  </defs>
+
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#card)"/>
+  <rect x="3" y="3" width="58" height="58" rx="13" stroke="#8FC7E6" stroke-opacity=".42" stroke-width="2"/>
+
+  <g filter="url(#markShadow)">
+    <circle cx="32" cy="32" r="20" fill="#F5EFD9" stroke="#D8BD7E" stroke-width="2"/>
+    <text x="32" y="42" text-anchor="middle" fill="#17231C" font-family="Noto Serif TC, PingFang TC, serif" font-size="28" font-weight="900">五</text>
+  </g>
+
+  <circle cx="32" cy="8" r="3.5" fill="#D8D3C4" stroke="#F5EFD9"/>
+  <circle cx="54" cy="24" r="3.5" fill="#65AD70" stroke="#F5EFD9"/>
+  <circle cx="46" cy="51" r="3.5" fill="#5BA1D8" stroke="#F5EFD9"/>
+  <circle cx="18" cy="51" r="3.5" fill="#D85A4F" stroke="#F5EFD9"/>
+  <circle cx="10" cy="24" r="3.5" fill="#C49B4E" stroke="#F5EFD9"/>
+</svg>

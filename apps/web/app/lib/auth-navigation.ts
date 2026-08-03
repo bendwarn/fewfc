@@ -29,6 +29,10 @@ export function resolveAuthNavigation(input: AuthNavigationInput): AuthNavigatio
     return { allow: true }
   }
 
+  if (input.path === '/') {
+    return { allow: true }
+  }
+
   const redirect = safeInternalPath(input.fullPath)
   return {
     redirect: redirect ? `/login?redirect=${encodeURIComponent(redirect)}` : '/login',
