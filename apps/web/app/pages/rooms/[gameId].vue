@@ -78,13 +78,6 @@
                     </small>
                   </span>
                 </span>
-                <small
-                  v-for="(interpretation, index) in cardInterpretationsFor(seat.player)"
-                  :key="`${seat.player}-interpretation-${index}`"
-                  class="card-interpretation"
-                >
-                  {{ presentCardInterpretation(interpretation) }}
-                </small>
                 <small v-if="state.enabledRuleModules.includes('personal-deck')">
                   牌庫 {{ playerDeckCount(seat.player) }} · 棄牌 {{ playerDiscardCount(seat.player) }}
                 </small>
@@ -131,27 +124,21 @@
             </div>
 
             <div class="hand fan seat-hand">
-              <button
+              <GameCard
                 v-for="(card, cardIndex) in cardsFor(seat.player)"
                 :key="card.id"
-                type="button"
-                class="playing-card"
-                :class="[
-                  { hidden: card.hidden, selected: card.selected },
-                  elementClass(card.element),
-                ]"
+                :card="card.card"
+                :hidden="card.hidden"
+                :selectable="card.selectable"
+                :selected="card.selected"
+                :disabled="!roomConnected"
+                :interpretations="state.cardInterpretations"
                 :data-card-id="card.cardId"
-                :disabled="!card.selectable || !roomConnected"
-                :aria-label="card.hidden ? '牌背' : card.label"
-                :aria-pressed="card.selected"
-                :aria-keyshortcuts="card.selectable
+                :shortcut="card.selectable
                   ? shortcutLabel(HAND_SHORTCUT_KEYS, cardIndex)
                   : undefined"
-                @click="game.toggleCardSelection(seat.player, card.cardId)"
-              >
-                <span v-if="!card.hidden" class="card-level">{{ cardLevel(card.level) }}</span>
-                <span v-if="!card.hidden" class="card-element">{{ cardElement(card.element) }}</span>
-              </button>
+                @select="game.toggleCardSelection(seat.player, card.cardId)"
+              />
             </div>
           </div>
 
@@ -197,18 +184,14 @@
                   <small>上一回合 · {{ playerLabel(state.previousTurnFormation.player) }}</small>
                   <strong>{{ state.previousTurnFormation.formationName ?? '蓋牌' }}</strong>
                   <div class="formation-cards">
-                    <span
+                    <GameCard
                       v-for="card in previousFormationCards"
                       :key="card.id"
                       class="formation-card"
-                      :class="[{
-                        hidden: card.hidden,
-                      }, elementClass(card.element)]"
-                      :aria-label="card.hidden ? '牌背' : card.label"
-                    >
-                      <i v-if="!card.hidden">{{ cardLevel(card.level) }}</i>
-                      <b v-if="!card.hidden">{{ cardElement(card.element) }}</b>
-                    </span>
+                      :card="card.card"
+                      :hidden="card.hidden"
+                      :interpretations="state.cardInterpretations"
+                    />
                   </div>
                 </template>
                 <p v-else>上一回合未發動陣法</p>
@@ -887,19 +870,19 @@
                   @choose="game.togglePendingChoiceCard"
                 />
                 <div v-else class="choice-cards">
-                  <button
+                  <GameCard
                     v-for="card in state.pendingChoice.choice.cards"
                     :key="card.id"
-                    type="button"
-                    :class="{ selected: game.selectedChoiceCards.value.includes(card.id) }"
-                    :aria-pressed="game.selectedChoiceCards.value.includes(card.id)"
+                    class="choice-card"
+                    :card="card"
+                    selectable
+                    :selected="game.selectedChoiceCards.value.includes(card.id)"
+                    :interpretations="state.cardInterpretations"
                     :disabled="game.isLoading.value || !roomConnected
                       || (game.selectedChoiceCards.value.length >= state.pendingChoice.choice.maximum
                         && !game.selectedChoiceCards.value.includes(card.id))"
-                    @click="game.togglePendingChoiceCard(card.id)"
-                  >
-                    {{ card.label }}
-                  </button>
+                    @select="game.togglePendingChoiceCard(card.id)"
+                  />
                 </div>
                 <p class="choice-count">
                   已選 {{ game.selectedChoiceCards.value.length }}
@@ -1190,8 +1173,7 @@ import type {
 import type { GameRoomMember, GameRoomResponse } from '#shared/game-room'
 import { createRuleModulePolicy, presentationForRuleModule } from '#shared/utils/rule-modules'
 import { buildCardComposition, CARD_LEVELS } from '~/lib/card-composition'
-import { cardElementClass, cardElementGlyph } from '~/lib/card-face-presentation'
-import { presentCardInterpretation } from '~/lib/card-interpretation-presentation'
+import { cardElementGlyph } from '~/lib/card-face-presentation'
 import { presentPendingChoice } from '~/lib/pending-choice-presentation'
 import { presentPersistentEffects } from '~/lib/persistent-effect-presentation'
 import { presentDirectSecretStrategyAction, presentDiscardRetrievalAction, presentPlayableAction, presentSecretStrategyOption } from '~/lib/action-detail-presentation'
@@ -1801,6 +1783,7 @@ let setupRevealTimer: ReturnType<typeof setTimeout> | undefined
 interface CardToken {
   id: string
   cardId: number
+  card: PublicCard | null
   label: string
   element?: Element | null
   level?: number | null
@@ -2302,6 +2285,7 @@ function cardsFor(player: PlayerId): CardToken[] {
     return hand.cards.cards.map((card, index) => ({
       id: `${player}-known-${index}-${card.id}`,
       cardId: card.id,
+      card,
       label: card.label,
       element: card.element,
       level: card.level,
@@ -2316,6 +2300,7 @@ function cardsFor(player: PlayerId): CardToken[] {
       ? {
           id: `${player}-known-${index}-${card.id}`,
           cardId: card.id,
+          card,
           label: card.label,
           element: card.element,
           level: card.level,
@@ -2326,6 +2311,7 @@ function cardsFor(player: PlayerId): CardToken[] {
       : {
           id: `${player}-hidden-${index}`,
           cardId: -index - 1,
+          card: null,
           label: '',
           hidden: true,
           selectable: false,
@@ -2336,6 +2322,7 @@ function cardsFor(player: PlayerId): CardToken[] {
   return Array.from({ length: hand.cards.count }, (_, index) => ({
     id: `${player}-hidden-${index}`,
     cardId: -index - 1,
+    card: null,
     label: '',
     hidden: true,
     selectable: false,
@@ -2350,6 +2337,7 @@ function cardTokensForRefs(cards: PublicCardRefs | undefined, prefix: string): C
     return cards.cards.map((card, index) => ({
       id: `${prefix}-known-${index}-${card.id}`,
       cardId: card.id,
+      card,
       label: card.label,
       element: card.element,
       level: card.level,
@@ -2364,6 +2352,7 @@ function cardTokensForRefs(cards: PublicCardRefs | undefined, prefix: string): C
       ? {
           id: `${prefix}-known-${index}-${card.id}`,
           cardId: card.id,
+          card,
           label: card.label,
           element: card.element,
           level: card.level,
@@ -2374,6 +2363,7 @@ function cardTokensForRefs(cards: PublicCardRefs | undefined, prefix: string): C
       : {
           id: `${prefix}-hidden-${index}`,
           cardId: -index - 1,
+          card: null,
           label: '',
           hidden: true,
           selectable: false,
@@ -2384,6 +2374,7 @@ function cardTokensForRefs(cards: PublicCardRefs | undefined, prefix: string): C
   return Array.from({ length: cards.count }, (_, index) => ({
     id: `${prefix}-hidden-${index}`,
     cardId: -index - 1,
+    card: null,
     label: '',
     hidden: true,
     selectable: false,
@@ -2436,10 +2427,6 @@ function spiritLabel(spirit: SpiritKind): string {
 
 function professionFor(player: PlayerId) {
   return state.value.professions.find(profession => profession.player === player)
-}
-
-function cardInterpretationsFor(player: PlayerId) {
-  return state.value.cardInterpretations.filter(interpretation => interpretation.player === player)
 }
 
 function persistentEffectsFor(player: PlayerId) {
@@ -2686,19 +2673,6 @@ function formationChoiceLabel(formationId: string): string {
   return labels[formationId] ?? formationId
 }
 
-function elementClass(element: Element | null | undefined): string {
-  return cardElementClass(element)
-}
-
-function cardElement(element: Element | null | undefined): string {
-  return cardElementGlyph(element)
-}
-
-function cardLevel(level: number | null | undefined): string {
-  return level === null || level === undefined ? '◆' : String(level)
-}
-
-
 </script>
 
 <style>
@@ -2706,7 +2680,7 @@ function cardLevel(level: number | null | undefined): string {
 
 @scope (.game-page) {
 :scope { @apply flex h-[calc(100vh-84px)] flex-col overflow-hidden max-[900px]:h-auto max-[900px]:overflow-visible; }
-.back-button { @apply grid size-9 place-items-center border border-[#4a554e] bg-[rgba(17,23,19,.88)] text-base text-[#ddd7c9] hover:border-[#b99550] hover:text-gold-light; }
+.back-button { @apply grid size-9 place-items-center border border-[var(--app-border-strong)] bg-[rgba(17,23,19,.88)] text-base text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light; }
 .battlefield-back { @apply absolute top-4 left-4 z-20; }
 .battle-layout { @apply grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px] max-[900px]:grid-cols-1 max-[900px]:overflow-auto; }
 .battlefield {
@@ -2725,7 +2699,7 @@ function cardLevel(level: number | null | undefined): string {
   gap: 8px 14px;
   padding: 22px 36px;
   overflow: hidden;
-  background: radial-gradient(ellipse at center, #273029 0%, #141b17 58%, #0f1512 100%);
+  background: radial-gradient(ellipse at center, var(--app-battlefield-center) 0%, var(--app-battlefield-mid) 58%, var(--app-battlefield-edge) 100%);
 }
 .battlefield::before { content: ""; position: absolute; inset: 22px; border: 1px solid rgba(175, 143, 79, .18); pointer-events: none; }
 .battlefield::after { content: "五 行"; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 270px; height: 270px; border: 1px solid rgba(183, 148, 77, .1); border-radius: 50%; display: grid; place-items: center; color: rgba(204, 171, 100, .06); font-family: serif; font-size: 70px; pointer-events: none; }
@@ -2738,11 +2712,10 @@ function cardLevel(level: number | null | undefined): string {
 .player-identity div { @apply grid; }
 .player-identity strong { @apply max-w-36 truncate text-xs; }
 .player-identity small { @apply text-[11px] text-[#d0a450]; }
-.profession-badge { @apply relative cursor-help border border-[#79633b] bg-[#18201b] px-1.5 py-0.5 text-[10px] text-gold-light outline-none focus-visible:border-[#d1ad62]; }
-.profession-summary { @apply invisible absolute top-[calc(100%+6px)] left-0 z-20 grid w-64 gap-1 border border-[#64583f] bg-[#18201b] p-2.5 text-left opacity-0 shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
+.profession-badge { @apply relative cursor-help border border-[var(--app-accent)] bg-[var(--app-surface-raised)] px-1.5 py-0.5 text-[10px] text-gold-light outline-none focus-visible:border-[#d1ad62]; }
+.profession-summary { @apply invisible absolute top-[calc(100%+6px)] left-0 z-20 grid w-64 gap-1 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-2.5 text-left opacity-0 shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
 .profession-summary b { @apply font-serif text-xs text-gold-light; }
 .profession-summary small { @apply whitespace-normal text-[10px]! leading-4 text-muted!; }
-.card-interpretation { @apply border border-[#526c7c] bg-[#17232b] px-1.5 py-0.5 text-[9px]! text-[#b9d5e5]!; }
 .profession-badge:hover .profession-summary, .profession-badge:focus .profession-summary, .profession-badge:focus-within .profession-summary { @apply visible opacity-100; }
 .connection-dot { @apply size-2 shrink-0 rounded-full border border-[#76524b] bg-[#6f3c34]; }
 .connection-dot.connected { @apply border-[#477557] bg-[#63a979]; }
@@ -2753,38 +2726,6 @@ function cardLevel(level: number | null | undefined): string {
 .status-badge { @apply border border-[#765557] bg-[#28191b] px-[7px] py-[3px] text-[9px]! whitespace-nowrap text-[#d49a9a]!; }
 .side-hand-count { @apply hidden text-[9px] text-muted; }
 .hand { @apply flex min-w-0 items-center justify-center gap-2; }
-.playing-card {
-  width: clamp(62px, 7vw, 92px); aspect-ratio: 5 / 7; border: 1px solid #79715e; border-radius: 5px;
-  --card-face: #ded8c8;
-  --card-face-light: #f0eadc;
-  --card-border: #79715e;
-  --card-ink: #18201c;
-  border-color: var(--card-border);
-  background-color: var(--card-face);
-  background-image: linear-gradient(145deg, var(--card-face-light), var(--card-face));
-  color: var(--card-ink);
-  @apply relative flex flex-col items-center justify-center p-2 transition-[.18s] max-[600px]:w-[58px];
-  box-shadow: 0 5px 15px rgba(0,0,0,.35);
-}
-.playing-card:enabled:hover, .playing-card.selected { transform: translateY(-14px); border-color: #e2bd67; box-shadow: 0 0 0 2px #c9a451, 0 12px 18px rgba(0,0,0,.45); z-index: 5; }
-.playing-card.hidden, .formation-card.hidden {
-  background: repeating-linear-gradient(45deg, var(--card-back-base), var(--card-back-base) 5px, var(--card-back-stripe) 5px, var(--card-back-stripe) 10px);
-  border: 2px solid var(--card-back-border);
-}
-.playing-card.hidden::after, .formation-card.hidden::after {
-  content: "";
-  width: 48%;
-  aspect-ratio: 1;
-  border: 1px solid rgba(198, 163, 94, .58);
-  transform: rotate(45deg);
-}
-.card-level { @apply absolute top-1 left-1/2 -translate-x-1/2 font-serif text-xs leading-none font-extrabold; }
-.card-element { @apply grid size-[35px] place-items-center rounded-full border border-current font-serif text-lg; color: var(--card-ink); }
-.playing-card.element-Metal { --card-face: #ddd5b5; --card-face-light: #f3eed8; --card-border: #89783e; --card-ink: #67571e; }
-.playing-card.element-Wood { --card-face: #cfe0ce; --card-face-light: #e8f1e5; --card-border: #52765a; --card-ink: #315f3d; }
-.playing-card.element-Water { --card-face: #cbdfe8; --card-face-light: #e7f1f5; --card-border: #4d7890; --card-ink: #245d78; }
-.playing-card.element-Fire { --card-face: #ead0c9; --card-face-light: #f6e7e2; --card-border: #985448; --card-ink: #8d3026; }
-.playing-card.element-Earth { --card-face: #e4d5ba; --card-face-light: #f3ead8; --card-border: #936d3b; --card-ink: #785027; }
 .seat-top .playing-card { width: clamp(48px, 5vw, 68px); }
 .seat-top .card-element { @apply size-7 text-sm; }
 .seat-left .seat-hand, .seat-right .seat-hand { @apply flex-col gap-1; }
@@ -2796,126 +2737,123 @@ function cardLevel(level: number | null | undefined): string {
 .battlefield.discard-open .board-center { z-index: 16; }
 .discard-piles { @apply z-2 flex w-full justify-end; grid-column: 1 / -1; grid-row: 1; }
 .discard-piles.personal { @apply pointer-events-none absolute inset-0 block; }
-.discard-pile { @apply grid justify-items-center gap-1.5 text-[9px] text-[#707b73]; }
+.discard-pile { @apply grid justify-items-center gap-1.5 text-[9px] text-[var(--app-text-muted)]; }
 .discard-piles.personal .discard-pile { @apply pointer-events-auto absolute w-[90px]; }
 .discard-position-top { top: 0; left: 0; }
 .discard-position-left { bottom: 0; left: 0; }
 .discard-position-right { top: 0; right: 0; }
 .discard-position-bottom { right: 0; bottom: 0; }
-.discard-pile-trigger { @apply grid w-[52px] place-items-center border border-[#665b44] bg-[#18201b] font-serif text-xl text-[#a68d56]; aspect-ratio: 5/7; }
-.discard-pile-trigger { @apply p-0 hover:border-[#b99550] hover:text-gold-light; }
+.discard-pile-trigger { @apply grid w-[52px] place-items-center border border-[var(--app-accent)] bg-[var(--app-surface-raised)] font-serif text-xl text-[#a68d56]; aspect-ratio: 5/7; }
+.discard-pile-trigger { @apply p-0 hover:border-[var(--app-accent)] hover:text-gold-light; }
 .discard-pile-trigger:focus-visible { outline: 2px solid #d1ad62; outline-offset: 3px; }
 .discard-pile.disabled .discard-pile-trigger { @apply cursor-not-allowed opacity-45; }
 .discard-composition-layer { @apply absolute right-0 z-20; bottom: calc(50% + 48px); }
 .discard-composition {
-  @apply w-[300px] border border-[#8e733d] bg-[#18201b] p-3.5 text-[#ece8dd] shadow-[0_18px_48px_rgba(0,0,0,.52)];
+  @apply w-[300px] border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3.5 text-[var(--app-text)] shadow-[0_18px_48px_rgba(0,0,0,.52)];
 }
 .discard-composition h2 { @apply mb-2.5 font-serif text-sm text-gold-light; }
 .card-composition table { @apply w-full table-fixed border-collapse; }
-.card-composition th, .card-composition td { @apply h-8 border border-[#354039] text-center; }
-.card-composition thead th { @apply text-[10px] font-bold text-[#d5d8d4]; }
+.card-composition th, .card-composition td { @apply h-8 border border-[var(--app-border)] text-center; }
+.card-composition thead th { @apply text-[10px] font-bold text-[var(--app-text)]; }
 .card-composition tbody th { @apply w-7 text-[10px] font-normal text-muted; }
 .card-composition td strong { @apply font-serif text-sm text-[#e4c47d]; }
-.card-composition td.empty strong { @apply text-[#59635c]; }
+.card-composition td.empty strong { color: var(--app-text-soft); }
 .card-composition tbody tr:nth-child(1) > th { color: #ded5ba; }
 .card-composition tbody tr:nth-child(2) > th { color: #77a980; }
 .card-composition tbody tr:nth-child(3) > th { color: #75a8bd; }
 .card-composition tbody tr:nth-child(4) > th { color: #d17a6c; }
 .card-composition tbody tr:nth-child(5) > th { color: #c8a265; }
-.pouch-composition { @apply mx-auto mt-5 w-[min(390px,calc(100vw-64px))] border border-[#8e733d] bg-[#18201b] p-3.5 text-[#ece8dd] shadow-[0_18px_48px_rgba(0,0,0,.52)]; }
+.pouch-composition { @apply mx-auto mt-5 w-[min(390px,calc(100vw-64px))] border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3.5 text-[var(--app-text)] shadow-[0_18px_48px_rgba(0,0,0,.52)]; }
 .pouch-composition td { @apply p-0; }
 .pouch-composition td button { @apply grid size-full min-h-8 place-items-center border-0 bg-transparent text-[#e4c47d] hover:bg-[rgba(185,149,80,.16)] disabled:cursor-not-allowed disabled:opacity-45; }
 .pouch-composition td button[aria-pressed="true"] { @apply bg-[rgba(185,149,80,.3)] shadow-[inset_0_0_0_2px_#d1ad62]; }
 .choice-card-matrix td button small { @apply text-[8px] font-normal text-[#f0d99e]; }
 .chain-composition { @apply mt-2; }
 .choice-selection-summary { @apply mx-auto mb-1 flex max-w-[390px] items-center justify-between gap-3 text-xs text-gold-light; }
-.choice-selection-summary button { @apply border border-[#665b44] bg-[#18201b] px-2 py-1 text-[10px] text-[#d5d8d4] hover:border-[#b99550]; }
-.formation-field { @apply relative z-3 grid min-h-48 w-full min-w-0 grid-rows-[auto_1fr_auto] items-center border-x border-[rgba(166,141,86,.14)] px-3 py-2 text-center text-[10px] text-[#69736c]; grid-column: 2; grid-row: 1; }
+.choice-selection-summary button { @apply border border-[var(--app-accent)] bg-[var(--app-surface-raised)] px-2 py-1 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
+.formation-field { @apply relative z-3 grid min-h-48 w-full min-w-0 grid-rows-[auto_1fr_auto] items-center border-x border-[rgba(166,141,86,.14)] px-3 py-2 text-center text-[10px] text-[var(--app-text-muted)]; grid-column: 2; grid-row: 1; }
 .formation-field-heading { @apply flex flex-wrap items-center justify-center gap-2; }
 .formation-field-label { @apply text-[#9a8251]; letter-spacing: .2em; }
-.environment-badge { @apply border border-[#64583f] bg-[#1a211c] px-2 py-1 text-[9px] text-gold-light; }
+.environment-badge { @apply border border-[var(--app-accent)] bg-[var(--app-surface-raised)] px-2 py-1 text-[9px] text-gold-light; }
 .previous-formation { @apply grid min-h-24 content-center justify-items-center gap-1.5; }
 .previous-formation small { @apply text-[9px] text-muted; }
 .previous-formation strong { @apply font-serif text-sm text-gold-light; }
-.previous-formation p { @apply text-[10px] text-[#68726b]; }
+.previous-formation p { @apply text-[10px] text-[var(--app-text-muted)]; }
 .formation-cards { @apply flex min-h-12 items-center justify-center; }
-.formation-card { @apply relative grid w-8 place-items-center rounded-[3px] border border-[#79715e] bg-[#d8cfba] text-[#18201c]; aspect-ratio: 5/7; margin-left: -4px; }
-.formation-card i { @apply absolute top-0.5 left-1 text-[8px] not-italic; }
-.formation-card b { @apply font-serif text-xs; }
+.formation-card { width: 34px; margin-left: -4px; }
 .turn-controls { @apply relative grid min-h-14 content-center gap-2 border-t border-[rgba(166,141,86,.14)] pt-2; }
-.ability-panel, .action-panel { @apply grid gap-1.5 border border-[rgba(166,141,86,.18)] bg-[rgba(17,23,19,.45)] p-2; }
+.ability-panel, .action-panel { @apply grid gap-1.5 border p-2; border-color: color-mix(in srgb, var(--app-accent) 24%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--app-surface-muted) 84%, transparent); }
 .ability-panel header, .action-panel header { @apply flex flex-wrap items-baseline justify-between gap-x-2 text-left; }
 .ability-panel h3, .action-panel h3 { @apply font-serif text-xs text-gold-light; }
 .ability-panel small, .action-panel small { @apply text-[9px] text-muted; }
 .action-candidates { @apply flex max-w-full flex-wrap justify-center gap-1.5; }
-.action-candidates button { @apply min-h-8 border border-[#4c554f] bg-[#18201b] px-2.5 py-1.5 text-[10px] text-[#e1ddd2] hover:border-[#b99550]; }
-.action-candidates p { @apply text-[9px] text-[#68726b]; }
+.action-candidates button { @apply min-h-8 border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2.5 py-1.5 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
+.action-candidates p { @apply text-[9px] text-[var(--app-text-muted)]; }
 .spirit-level-picker { @apply relative; }
-.spirit-level-trigger { @apply grid min-h-8 min-w-12 place-items-center border border-[#4c554f] bg-[#18201b] px-2.5 py-1.5 text-[10px] text-[#e1ddd2] hover:border-[#b99550]; }
+.spirit-level-trigger { @apply grid min-h-8 min-w-12 place-items-center border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2.5 py-1.5 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
 .spirit-level-trigger:focus-visible { outline: 2px solid #d1ad62; outline-offset: 2px; }
-.spirit-level-options { @apply absolute bottom-[calc(100%+5px)] left-1/2 z-10 grid min-w-20 -translate-x-1/2 gap-1 border border-[#64583f] bg-[#121915] p-1 shadow-[0_10px_24px_rgba(0,0,0,.45)]; }
+.spirit-level-options { @apply absolute bottom-[calc(100%+5px)] left-1/2 z-10 grid min-w-20 -translate-x-1/2 gap-1 border border-[var(--app-accent)] bg-[var(--app-surface-muted)] p-1 shadow-[0_10px_24px_rgba(0,0,0,.45)]; }
 .action-candidates .spirit-level-options button { @apply min-h-7 whitespace-nowrap px-2 py-1; }
-.action-candidates .skip-action { @apply border-[#79633b] text-gold-light; }
+.action-candidates .skip-action { @apply border-[var(--app-accent)] text-gold-light; }
 .action-processing { @apply text-[#d0aa5e]; }
 .action-error { @apply text-[#d79587]; }
-.action-prompt { @apply text-[#68726b]; }
-.action-detail { @apply absolute right-0 bottom-[calc(100%+8px)] left-0 z-8 border border-[#64583f] bg-[#1c241f] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
+.action-prompt { @apply text-[var(--app-text-muted)]; }
+.action-detail { @apply absolute right-0 bottom-[calc(100%+8px)] left-0 z-8 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
 .action-detail strong { @apply mr-2 text-gold-light; }
 .choice-overlay,
-.choice-waiting-overlay { @apply absolute inset-0 z-12 grid place-items-center bg-[rgba(7,10,8,.28)] text-center; }
+.choice-waiting-overlay { @apply absolute inset-0 z-12 grid place-items-center bg-[var(--app-choice-overlay)] text-center; }
 .choice-overlay > div,
-.choice-waiting-overlay > div { @apply max-h-[calc(100%-32px)] min-w-90 overflow-y-auto border border-[#8e733d] bg-[rgba(24,32,27,.94)] p-[30px] shadow-[0_18px_48px_rgba(0,0,0,.42)]; }
+.choice-waiting-overlay > div { @apply max-h-[calc(100%-32px)] min-w-90 overflow-y-auto border border-[var(--app-accent)] p-[30px]; border-radius: 16px; background: var(--app-surface-raised); box-shadow: var(--app-shadow-lg); }
 .choice-overlay h2,
 .choice-waiting-overlay h2 { @apply mt-2.5 mb-5 font-serif; }
 .virtual-formation-card-dialog { @apply max-w-[min(560px,calc(100vw-32px))]; }
 .virtual-formation-card-matrix { @apply mx-auto border-collapse text-xs; }
-.virtual-formation-card-matrix th { @apply border border-[#4f584f] bg-[#18201b] px-2 py-1.5 font-normal text-muted; }
+.virtual-formation-card-matrix th { @apply border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2 py-1.5 font-normal text-muted; }
 .virtual-formation-card-matrix tbody th { @apply min-w-14 text-gold-light; }
-.virtual-formation-card-matrix td { @apply border border-[#4f584f] p-0; }
-.virtual-formation-card-option { @apply grid size-11 place-items-center bg-[#222b25] font-serif text-sm text-[#e5dfd1] hover:bg-[#3a443d] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
+.virtual-formation-card-matrix td { @apply border border-[var(--app-border-strong)] p-0; }
+.virtual-formation-card-option { @apply grid size-11 place-items-center bg-[var(--app-surface-subtle)] font-serif text-sm text-[#e5dfd1] hover:bg-[#3a443d] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
 .virtual-formation-card-option:focus-visible { @apply relative z-1 outline-2 outline-offset-[-3px] outline-[#d1ad62]; }
-.virtual-formation-card-cancel { @apply mt-5 min-h-9 border border-[#59635c] bg-[#18201b] px-4 py-2 text-xs text-[#d5d8d4] hover:border-[#b99550] hover:text-gold-light; }
+.virtual-formation-card-cancel { @apply mt-5 min-h-9 border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-4 py-2 text-xs text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light; }
 .choice-cards { @apply flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
-.choice-cards button { @apply border border-[#ae8b47] bg-[#ede6d4] p-2.5 text-[#18201c]; }
-.choice-cards button.selected { @apply bg-[#c9a451] font-bold shadow-[0_0_0_2px_#f0d99e]; }
+.choice-cards .choice-card { width: clamp(76px, 11vw, 112px); }
 .choice-options { @apply mt-3 flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
-.choice-options button { @apply min-h-10 border border-[#59635c] bg-[#18201b] px-3 py-2 text-xs text-[#d5d8d4] hover:border-[#b99550] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
+.choice-options button { @apply min-h-10 border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-3 py-2 text-xs text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
 .choice-options button:focus-visible { @apply border-[#d1ad62] outline-2 outline-offset-2 outline-[#d1ad62]; }
 .choice-options button.selected,
-.choice-options button[aria-pressed="true"] { @apply border-[#d1ad62] bg-[#c9a451] font-bold text-[#121713] shadow-[0_0_0_2px_#f0d99e]; }
+.choice-options button[aria-pressed="true"] { @apply font-bold; border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); box-shadow: 0 0 0 2px var(--app-accent-soft); }
 .choice-actions { @apply mt-5; }
-.choice-actions .choice-confirm { @apply border-[#b99550] bg-[#b99550] font-bold text-[#121713] hover:bg-[#c9a451] hover:text-[#121713]; }
+.choice-actions .choice-confirm { @apply border-[var(--app-accent)] bg-[var(--app-accent)] font-bold hover:bg-[var(--app-accent-strong)]; color: var(--app-on-accent); }
 .choice-count { @apply mt-4 text-xs text-muted; }
-.choice-submit { @apply mt-3 border border-[#b99550] bg-[#b99550] px-5 py-2 text-xs font-bold text-[#121713] disabled:cursor-not-allowed disabled:opacity-45; }
-.setup-reveal { @apply absolute inset-0 z-15 grid place-items-center bg-[rgba(7,10,8,.88)] text-center backdrop-blur-[5px]; }
-.setup-reveal > div { @apply grid w-[min(520px,calc(100vw-32px))] gap-4 border border-[#b99550] bg-[#18201b] p-7; }
+.choice-submit { @apply mt-3 border border-[var(--app-accent)] bg-[var(--app-accent)] px-5 py-2 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-45; color: var(--app-on-accent); }
+.setup-reveal { @apply absolute inset-0 z-15 grid place-items-center bg-[var(--app-overlay)] text-center backdrop-blur-[5px]; }
+.setup-reveal > div { @apply grid w-[min(520px,calc(100vw-32px))] gap-4 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-7; }
 .setup-reveal h2 { @apply font-serif text-2xl text-gold-light; }
 .setup-reveal ol { @apply m-0 grid list-none grid-cols-4 gap-2 p-0 max-[600px]:grid-cols-2; counter-reset: order; }
-.setup-reveal li { @apply border border-[#39443d] bg-[#111713] p-2 text-xs; counter-increment: order; }
+.setup-reveal li { @apply border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-2 text-xs; counter-increment: order; }
 .setup-reveal li::before { content: counter(order) ". "; color: #c6a35e; }
 .revealed-teams { @apply grid grid-cols-2 gap-3; }
-.revealed-teams span { @apply grid gap-1 border border-[#39443d] p-3 text-xs text-muted; }
+.revealed-teams span { @apply grid gap-1 border border-[var(--app-border)] p-3 text-xs text-muted; }
 .revealed-teams strong { @apply text-gold-light; }
-.waiting-overlay { @apply absolute inset-0 flex items-start justify-center overflow-y-auto bg-[rgba(7,10,8,.78)] py-4 backdrop-blur-[4px]; z-index: 13; }
-.waiting-panel { width: min(860px, calc(100% - 64px)); @apply my-auto grid grid-cols-[minmax(0,1.45fr)_minmax(240px,.75fr)] gap-6 border border-[#8e733d] bg-[#18201b] p-7 text-left shadow-[0_24px_80px_rgba(0,0,0,.42)]; }
+.waiting-overlay { @apply absolute inset-0 flex items-start justify-center overflow-y-auto bg-[var(--app-overlay)] py-4 backdrop-blur-[4px]; z-index: 13; }
+.waiting-panel { width: min(860px, calc(100% - 64px)); @apply my-auto grid grid-cols-[minmax(0,1.45fr)_minmax(240px,.75fr)] gap-6 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-7 text-left; border-radius: 16px; box-shadow: var(--app-shadow-lg); }
 .waiting-main { @apply min-w-0; }
-.waiting-side { @apply grid min-w-0 content-start gap-4 border-l border-[#354039] pl-6; }
+.waiting-side { @apply grid min-w-0 content-start gap-4 border-l border-[var(--app-border)] pl-6; }
 .waiting-overlay h2 { @apply font-serif text-3xl text-gold-light; }
 .waiting-overlay p:not(.section-kicker) { @apply text-sm text-muted; }
 .waiting-members { @apply grid grid-cols-2 gap-3; }
-.waiting-members span { @apply grid gap-1 border border-[#354039] bg-[#111713] p-3 text-sm text-muted; }
-.waiting-members span.joined { @apply border-[#b99550] text-[#ece8dd]; }
+.waiting-members span { @apply grid gap-1 border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-3 text-sm text-muted; }
+.waiting-members span.joined { @apply border-[var(--app-accent)] text-[var(--app-text)]; }
 .waiting-members small { @apply text-[10px] text-muted; }
 .waiting-members button { @apply mt-1 border-0 bg-transparent text-[9px] text-[#c98e82]; }
 .waiting-side .result-actions { @apply mt-0; }
 .invite-link { @apply justify-self-start border-0 bg-transparent text-xs text-gold-light; }
 .result-actions { @apply mt-2 grid grid-cols-2 gap-3; }
-.result-actions .ghost-button { @apply border-[#59635c] text-[#ece8dd]; }
+.result-actions .ghost-button { @apply border-[var(--app-border-strong)] text-[var(--app-text)]; }
 .result-actions .primary-button { @apply justify-between; }
 
 .game-sidebar { @apply grid min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
 .game-sidebar.finished { grid-template-rows: auto minmax(0, 1fr); }
-.result-panel { @apply border-b border-[#8e733d] bg-[#18201b] p-5; }
+.result-panel { @apply border-b border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-5; }
 .result-panel h2 { @apply font-serif text-2xl text-gold-light; }
 .result-panel p { @apply mt-1 text-xs text-muted; }
 .result-panel .result-actions { @apply grid-cols-1; }
@@ -2926,8 +2864,8 @@ function cardLevel(level: number | null | undefined): string {
 .event-feed { @apply mt-4 grid list-none gap-[13px] p-0; }
 .event-feed li { @apply grid grid-cols-[10px_1fr] gap-[7px]; }
 .event-feed li > i { width: 5px; height: 5px; border-radius: 50%; background: #b79550; margin-top: 6px; box-shadow: 0 0 0 4px rgba(183, 149, 80, .08); }
-.event-feed span { color: #d4d8d4; font-size: 10px; font-weight: 700; }
-.event-feed p { color: #6f7972; font-size: 9px; line-height: 1.45; margin-top: 2px; }
+.event-feed span { color: var(--app-text); font-size: 10px; font-weight: 700; }
+.event-feed p { color: var(--app-text-muted); font-size: 9px; line-height: 1.45; margin-top: 2px; }
 @media (min-width: 901px) {
   .player-identity strong { font-size: 14px; }
   .player-identity small { font-size: 12px; }
@@ -2946,7 +2884,7 @@ function cardLevel(level: number | null | undefined): string {
   .game-page { height: auto; overflow: visible; }
   .battlefield { min-height: 720px; padding: 22px; }
   .discard-composition-layer {
-    @apply fixed inset-0 grid place-items-center bg-[rgba(7,10,8,.72)] p-4 backdrop-blur-[3px];
+    @apply fixed inset-0 grid place-items-center bg-[var(--app-overlay)] p-4 backdrop-blur-[3px];
   }
   .discard-composition { width: min(330px, calc(100vw - 32px)); }
   .game-sidebar { border-left: 0; }

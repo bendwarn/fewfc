@@ -8,6 +8,16 @@ const elementGlyphs = {
   Earth: '土',
 } as const satisfies Record<Element, string>
 
+const elementAssetSlugs = {
+  Metal: 'metal',
+  Wood: 'wood',
+  Water: 'water',
+  Fire: 'fire',
+  Earth: 'earth',
+} as const satisfies Record<Element, string>
+
+export const CARD_BACK_IMAGE_PATH = '/cards/back.webp'
+
 export type ElementGlyph = typeof elementGlyphs[Element]
 
 export function cardElementGlyph(element: Element): ElementGlyph
@@ -19,4 +29,14 @@ export function cardElementGlyph(element: Element | null | undefined): ElementGl
 
 export function cardElementClass(element: Element | null | undefined): string {
   return element ? `element-${element}` : ''
+}
+
+export function cardFaceImagePath(
+  element: Element | null | undefined,
+  level: number | null | undefined,
+): string | null {
+  if (!element || !Number.isInteger(level) || level === undefined || level === null || level < 1 || level > 5) {
+    return null
+  }
+  return `/cards/${elementAssetSlugs[element]}-${level}.webp`
 }

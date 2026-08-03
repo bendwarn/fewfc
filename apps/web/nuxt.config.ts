@@ -10,6 +10,15 @@ if (!['development', 'staging', 'production'].includes(appEnvironment ?? '')) {
 export default defineNuxtConfig({
   compatibilityDate: '2026-07-26',
   css: ['~/assets/css/main.css'],
+  app: {
+    head: {
+      htmlAttrs: { lang: 'zh-Hant' },
+      script: [{
+        innerHTML: `try{const t=localStorage.getItem('fewfc-color-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch{}`,
+        tagPosition: 'head',
+      }],
+    },
+  },
   devtools: { enabled: appEnvironment === 'development' },
   runtimeConfig: {
     public: {

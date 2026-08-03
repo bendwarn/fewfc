@@ -108,9 +108,9 @@ watch(() => route.query.save, () => {
 .lobby-heading { @apply flex items-center justify-between gap-4; }
 .lobby-heading h1 { @apply font-serif text-3xl text-gold-light; }
 .result-actions { @apply mt-2 grid grid-cols-2 gap-3; }
-.result-actions .ghost-button { @apply border-[#59635c] text-[#e8e4d8]; }
-.room-card { @apply flex items-center justify-between gap-5 border border-line bg-panel p-5 max-[600px]:grid; }
-.room-card strong { @apply text-lg text-[#ece8dd]; }
+.result-actions .ghost-button { border-color: var(--app-border-strong); color: var(--app-text); }
+.room-card { @apply flex items-center justify-between gap-5 border border-line bg-panel p-5 max-[600px]:grid; border-radius: 14px; box-shadow: var(--app-shadow-sm); }
+.room-card strong { @apply text-lg; color: var(--app-text); }
 .room-card p { @apply mt-2 text-xs text-muted; }
 @media (max-width: 600px) { .lobby-page { padding: 36px 16px; } }
 </style>

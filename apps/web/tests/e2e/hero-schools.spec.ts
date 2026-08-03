@@ -78,10 +78,10 @@ test('a Profession change and activated ability survive public reconnect', async
 
     await reloadFastGameRoute(host, roomId)
     await expect(host.locator('.event-feed')).toContainText('虛擬牌')
-    await expect(host.locator('.card-interpretation')).toHaveCount(0)
+    await expect(host.locator('.card-interpretation-badge')).toHaveCount(0)
     await reloadFastGameRoute(guest, roomId)
     await expect(guest.locator('.event-feed')).toContainText('虛擬牌')
-    await expect(guest.locator('.card-interpretation')).toHaveCount(0)
+    await expect(guest.locator('.card-interpretation-badge')).toHaveCount(0)
   } finally {
     await game.close()
   }

@@ -4,12 +4,116 @@
 @theme {
   --font-sans: "Noto Sans TC", ui-sans-serif, system-ui, sans-serif;
   --font-serif: "Noto Serif TC", ui-serif, Georgia, serif;
-  --color-ink: #101512;
-  --color-panel: #171e1a;
-  --color-line: #303a34;
-  --color-gold: #c6a35e;
-  --color-gold-light: #ddc17f;
-  --color-muted: #7f8982;
+  --color-ink: var(--app-canvas);
+  --color-panel: var(--app-surface);
+  --color-line: var(--app-border);
+  --color-gold: var(--app-accent);
+  --color-gold-light: var(--app-accent-strong);
+  --color-muted: var(--app-text-muted);
+}
+
+:root {
+  color-scheme: light;
+  --app-canvas: #f3f0e8;
+  --app-surface: #fffdf8;
+  --app-surface-raised: #ffffff;
+  --app-surface-muted: #f7f3ea;
+  --app-surface-subtle: #ece6da;
+  --app-control: #f7f2e7;
+  --app-input: #fffefa;
+  --app-header: rgba(255, 253, 248, .94);
+  --app-text: #252923;
+  --app-text-muted: #676c65;
+  --app-text-soft: #858a82;
+  --app-border: #d8d1c3;
+  --app-border-strong: #a99d88;
+  --app-accent: #8b641e;
+  --app-accent-strong: #6f4d12;
+  --app-accent-soft: #f1e5cc;
+  --app-on-accent: #fffdf7;
+  --app-danger: #a33a32;
+  --app-danger-surface: #f8e6e2;
+  --app-success: #2f704d;
+  --app-success-surface: #e5f1e9;
+  --app-focus-ring: rgba(139, 100, 30, .22);
+  --app-overlay: rgba(38, 32, 24, .44);
+  --app-choice-overlay: rgba(38, 32, 24, .28);
+  --app-shadow-sm: 0 2px 10px rgba(55, 45, 30, .08);
+  --app-shadow-md: 0 12px 34px rgba(55, 45, 30, .11);
+  --app-shadow-lg: 0 20px 60px rgba(45, 36, 24, .19);
+  --app-battlefield-center: #ebe4d6;
+  --app-battlefield-mid: #d8d0c1;
+  --app-battlefield-edge: #c6bcaa;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --app-canvas: #101512;
+  --app-surface: #171e1a;
+  --app-surface-raised: #18201b;
+  --app-surface-muted: #111713;
+  --app-surface-subtle: #222a25;
+  --app-control: #222a25;
+  --app-input: #111713;
+  --app-header: rgba(14, 19, 16, .96);
+  --app-text: #e8e4d8;
+  --app-text-muted: #8a948d;
+  --app-text-soft: #707a73;
+  --app-border: #303a34;
+  --app-border-strong: #59635c;
+  --app-accent: #c6a35e;
+  --app-accent-strong: #ddc17f;
+  --app-accent-soft: #2a281e;
+  --app-on-accent: #141813;
+  --app-danger: #d79587;
+  --app-danger-surface: #2a1817;
+  --app-success: #77bd8d;
+  --app-success-surface: #16251b;
+  --app-focus-ring: rgba(198, 163, 94, .24);
+  --app-overlay: rgba(7, 10, 8, .76);
+  --app-choice-overlay: rgba(7, 10, 8, .28);
+  --app-shadow-sm: 0 2px 10px rgba(0, 0, 0, .24);
+  --app-shadow-md: 0 12px 34px rgba(0, 0, 0, .32);
+  --app-shadow-lg: 0 20px 60px rgba(0, 0, 0, .46);
+  --app-battlefield-center: #273029;
+  --app-battlefield-mid: #141b17;
+  --app-battlefield-edge: #0f1512;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --app-canvas: #101512;
+    --app-surface: #171e1a;
+    --app-surface-raised: #18201b;
+    --app-surface-muted: #111713;
+    --app-surface-subtle: #222a25;
+    --app-control: #222a25;
+    --app-input: #111713;
+    --app-header: rgba(14, 19, 16, .96);
+    --app-text: #e8e4d8;
+    --app-text-muted: #8a948d;
+    --app-text-soft: #707a73;
+    --app-border: #303a34;
+    --app-border-strong: #59635c;
+    --app-accent: #c6a35e;
+    --app-accent-strong: #ddc17f;
+    --app-accent-soft: #2a281e;
+    --app-on-accent: #141813;
+    --app-danger: #d79587;
+    --app-danger-surface: #2a1817;
+    --app-success: #77bd8d;
+    --app-success-surface: #16251b;
+    --app-focus-ring: rgba(198, 163, 94, .24);
+    --app-overlay: rgba(7, 10, 8, .76);
+    --app-choice-overlay: rgba(7, 10, 8, .28);
+    --app-shadow-sm: 0 2px 10px rgba(0, 0, 0, .24);
+    --app-shadow-md: 0 12px 34px rgba(0, 0, 0, .32);
+    --app-shadow-lg: 0 20px 60px rgba(0, 0, 0, .46);
+    --app-battlefield-center: #273029;
+    --app-battlefield-mid: #141b17;
+    --app-battlefield-edge: #0f1512;
+  }
 }
 
 @layer base {
@@ -19,7 +123,9 @@
   }
 
   body {
-    @apply m-0 min-w-80 bg-ink font-sans text-[#e8e4d8];
+    @apply m-0 min-w-80 bg-ink font-sans;
+    color: var(--app-text);
+    transition: background-color .18s ease, color .18s ease;
   }
 
   button,
@@ -31,11 +137,26 @@
     @apply cursor-pointer text-inherit disabled:cursor-not-allowed disabled:opacity-[.45];
   }
 
+  input,
+  textarea,
+  select {
+    color: var(--app-text);
+  }
+
   h1,
   h2,
   h3,
   p {
     @apply m-0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
 .route-state {

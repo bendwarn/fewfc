@@ -341,9 +341,9 @@ onMounted(() => {
 .deck-editor { @apply grid gap-5; }
 .deck-grid { @apply grid grid-cols-6 gap-2 overflow-x-auto; }
 .deck-grid > strong { @apply flex min-h-11 items-center justify-center text-sm; }
-.deck-count-control { @apply flex min-w-28 items-center justify-between rounded-lg border border-[#c9c2ae] bg-white p-1; }
-.deck-count-control button { @apply grid size-9 place-items-center rounded-md bg-[#e8e2d3] font-bold text-[#18201c] disabled:opacity-35; }
-.deck-count-control span { @apply min-w-6 text-center font-bold text-[#18201c]; }
+.deck-count-control { @apply flex min-w-28 items-center justify-between rounded-lg p-1; border: 1px solid var(--app-border); background: var(--app-surface-raised); }
+.deck-count-control button { @apply grid size-9 place-items-center rounded-md font-bold disabled:opacity-35; background: var(--app-control); color: var(--app-text); }
+.deck-count-control span { @apply min-w-6 text-center font-bold; color: var(--app-text); }
 .deck-validation { @apply flex flex-wrap gap-5 rounded-lg border border-emerald-700/30 bg-emerald-50 p-4 text-emerald-900; }
 .deck-validation.invalid { @apply border-red-700/30 bg-red-50 text-red-900; }
 .deck-validation-errors { @apply grid gap-1 text-sm text-red-700; }
@@ -351,6 +351,7 @@ onMounted(() => {
 .deck-import-dialog { @apply my-auto w-full max-w-[640px] shadow-[0_24px_70px_rgba(0,0,0,.5)]; }
 .deck-management-actions { @apply grid grid-cols-3 gap-3 max-[600px]:grid-cols-1; }
 .deck-import-examples { @apply grid gap-2 text-xs text-muted; }
-.deck-import-examples code { @apply block whitespace-pre-wrap border border-[#39443d] bg-[#111713] p-2 font-mono text-[#ece8dd]; }
-.deck-import-text { @apply min-h-36 w-full border border-[#39443d] bg-[#111713] p-3 font-mono text-[#ece8dd] outline-0 focus:border-[#a57d35] focus:shadow-[0_0_0_2px_rgba(165,125,53,.12)]; }
+.deck-import-examples code { @apply block whitespace-pre-wrap p-2 font-mono; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface-muted); color: var(--app-text); }
+.deck-import-text { @apply min-h-36 w-full p-3 font-mono outline-0; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-input); color: var(--app-text); }
+.deck-import-text:focus { border-color: var(--app-accent); box-shadow: 0 0 0 3px var(--app-focus-ring); }
 </style>

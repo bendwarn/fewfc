@@ -341,38 +341,40 @@ watch(() => notifications.roomListRevision.value, () => {
 .lobby-page { @apply mx-auto max-w-[1180px] px-[30px] pt-15 pb-[90px] max-[600px]:px-4 max-[600px]:py-9; }
 .lobby-heading { @apply mb-[38px] flex items-end justify-between gap-6 max-[900px]:flex-col max-[900px]:items-start; }
 .lobby-actions { @apply flex items-stretch gap-3 max-[600px]:w-full max-[600px]:flex-col-reverse; }
-.room-code-form { @apply flex min-h-[50px] border border-[#3a443e] bg-[#111713] focus-within:border-[#b99550]; }
+.room-code-form { @apply flex min-h-[50px]; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-input); }
+.room-code-form:focus-within { border-color: var(--app-accent); box-shadow: 0 0 0 3px var(--app-focus-ring); }
 .room-code-form .code-input { @apply h-auto min-w-48 border-0 px-4 text-left tracking-[.08em] max-[600px]:min-w-0; }
-.room-code-form button { @apply border-0 border-l border-[#3a443e] bg-[#222a25] px-4 text-xs text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
+.room-code-form button { @apply border-0 border-l px-4 text-xs text-gold-light disabled:cursor-not-allowed disabled:opacity-45; border-color: var(--app-border); border-radius: 0 9px 9px 0; background: var(--app-control); }
 .create-room-button { @apply min-w-35 justify-center; }
-.lobby-error { @apply mb-2 border border-[#6b3532] bg-[#2a1817] p-3; }
+.lobby-error { @apply mb-2 p-3; border: 1px solid var(--app-danger); border-radius: 10px; background: var(--app-danger-surface); }
 .room-settings-dialog { @apply my-auto w-full max-w-[720px] shadow-[0_24px_70px_rgba(0,0,0,.5)]; }
 fieldset { @apply mb-[26px] border-0 p-0; }
 .option-grid { @apply grid grid-cols-2 gap-3 max-[600px]:grid-cols-1; }
-.mode-option { @apply relative grid min-h-27 grid-cols-[42px_1fr] border border-[#354039] bg-[#121814] p-4 text-left text-[#d5d8d4]; }
-.mode-option.selected { border-color: #b99550; background: #1d2118; box-shadow: inset 0 0 0 1px #b99550; }
-.mode-icon { @apply row-span-2 grid size-8 place-items-center rounded-full bg-[#2b3027] text-[#d8b569]; }
-.mode-option small { @apply text-[#758078]; }
-.segmented { @apply grid grid-cols-2 bg-[#111713] p-1; }
+.mode-option { @apply relative grid min-h-27 grid-cols-[42px_1fr] p-4 text-left; border: 1px solid var(--app-border); border-radius: 12px; background: var(--app-surface-muted); color: var(--app-text); }
+.mode-option.selected { border-color: var(--app-accent); background: var(--app-accent-soft); box-shadow: inset 0 0 0 1px var(--app-accent); }
+.mode-icon { @apply row-span-2 grid size-8 place-items-center rounded-full; background: var(--app-control); color: var(--app-accent-strong); }
+.mode-option small { color: var(--app-text-muted); }
+.segmented { @apply grid grid-cols-2 p-1; border-radius: 10px; background: var(--app-surface-muted); }
 .segmented button { @apply min-h-10 border-0 bg-transparent text-muted; }
-.segmented button.active { @apply bg-[#293128] text-[#e1c47f]; }
-.setup-summary { @apply mb-5 grid gap-2 border border-[#39443d] bg-[#111713] p-4; }
+.segmented button.active { background: var(--app-surface-raised); color: var(--app-accent-strong); box-shadow: var(--app-shadow-sm); }
+.setup-summary { @apply mb-5 grid gap-2 p-4; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface-muted); }
 .setup-summary div { @apply flex items-center justify-between gap-4 max-[600px]:grid; }
 .setup-summary span { @apply text-[10px] tracking-[.18em] text-muted; }
 .setup-summary strong { @apply text-sm text-gold-light; }
 .setup-summary p { @apply text-xs text-muted; }
 .start-button { @apply w-full; }
 .setup-actions { @apply mt-5 grid grid-cols-[auto_1fr] gap-3; }
-.code-input { max-width: 320px; height: 52px; border: 1px solid #3a443e; color: white; padding: 0 20px; text-align: center; letter-spacing: .2em; }
-.public-rooms-card { @apply mt-0 border border-line bg-panel p-6; }
-.my-rooms-card { @apply mt-6 border-[#4a4536]; }
+.code-input { max-width: 320px; height: 52px; border: 1px solid var(--app-border); color: var(--app-text); padding: 0 20px; text-align: center; letter-spacing: .2em; }
+.public-rooms-card { @apply mt-0 border border-line bg-panel p-6; border-radius: 16px; box-shadow: var(--app-shadow-md); }
+.my-rooms-card { @apply mt-6; }
 .public-rooms-card .panel-title { @apply mb-4; }
 .public-room-list { @apply grid gap-3; }
-.public-room-list button { @apply grid grid-cols-[92px_1fr_auto] items-center gap-3 border border-[#354039] bg-[#111713] p-4 text-left hover:border-[#b99550]; }
+.public-room-list button { @apply grid grid-cols-[92px_1fr_auto] items-center gap-3 p-4 text-left; border: 1px solid var(--app-border); border-radius: 12px; background: var(--app-surface-muted); }
+.public-room-list button:hover { border-color: var(--app-accent); background: var(--app-accent-soft); }
 .public-room-list button:disabled { @apply cursor-not-allowed opacity-55; }
-.public-room-list strong { @apply block text-sm text-[#ece8dd]; }
+.public-room-list strong { @apply block text-sm; color: var(--app-text); }
 .public-room-list small { @apply text-xs text-muted; }
 .public-room-list i { @apply text-[10px] not-italic text-gold-light; }
-.room-code { @apply font-mono text-[10px] text-[#8a948d]; overflow-wrap: anywhere; }
+.room-code { @apply font-mono text-[10px]; color: var(--app-text-muted); overflow-wrap: anywhere; }
 @media (max-width: 600px) { .lobby-heading { align-items: start; gap: 25px; flex-direction: column; }.lobby-page { padding: 36px 16px; }.option-grid { grid-template-columns: 1fr; }.setup-card { padding: 22px 18px; } }
 </style>

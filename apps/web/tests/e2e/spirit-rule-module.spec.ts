@@ -161,10 +161,11 @@ test('Splendor exposes its declared levels on click and uses the chosen level', 
     expect(skillResponse.ok()).toBe(true)
     await expect(host.getByText(/使用「絢爛」.*宣告 4 級/)).toBeVisible()
     await reloadFastGameRoute(host, roomId)
-    await expect(host.locator('.card-interpretation')).toContainText('已生效 · 絢爛')
-    await expect(host.locator('.card-interpretation')).toContainText('視為 4 級')
+    const interpretationBadge = host.locator('.card-interpretation-badge')
+    await expect(interpretationBadge).toContainText('視為 4 級')
+    await expect(interpretationBadge).toHaveAttribute('title', /絢爛/)
     await reloadFastGameRoute(guest, roomId)
-    await expect(guest.locator('.card-interpretation')).toContainText('一張手牌視為 4 級')
+    await expect(guest.locator('.card-interpretation-badge')).toHaveCount(0)
   } finally {
     await game.close()
   }
