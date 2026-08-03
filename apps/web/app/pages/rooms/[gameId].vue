@@ -8,6 +8,7 @@
   <main v-else class="game-page">
     <div class="battle-layout">
         <section
+          ref="battlefield"
           class="battlefield"
           :class="{
             'four-player': playerSeats.length === 4,
@@ -131,7 +132,7 @@
 
             <div class="hand fan seat-hand">
               <button
-                v-for="card in cardsFor(seat.player)"
+                v-for="(card, cardIndex) in cardsFor(seat.player)"
                 :key="card.id"
                 type="button"
                 class="playing-card"
@@ -143,6 +144,9 @@
                 :disabled="!card.selectable || !roomConnected"
                 :aria-label="card.hidden ? '牌背' : card.label"
                 :aria-pressed="card.selected"
+                :aria-keyshortcuts="card.selectable
+                  ? shortcutLabel(HAND_SHORTCUT_KEYS, cardIndex)
+                  : undefined"
                 @click="game.toggleCardSelection(seat.player, card.cardId)"
               >
                 <span v-if="!card.hidden" class="card-level">{{ cardLevel(card.level) }}</span>
@@ -226,11 +230,13 @@
                   </header>
                   <div class="action-candidates">
                     <button
-                      v-for="pouchAction in pouchStrategyActions"
+                      v-for="(pouchAction, abilityIndex) in pouchStrategyActions"
                       :key="`pouch-${pouchAction.label}`"
                       type="button"
                       :title="pouchAction.detail || undefined"
                       :aria-label="labelWithDetail(pouchAction.label, pouchAction.detail)"
+                      :aria-keyshortcuts="shortcutLabel(ABILITY_SHORTCUT_KEYS, abilityIndex)"
+                      data-keyboard-shortcut="ability"
                       :disabled="!roomConnected || game.isLoading.value"
                       @mouseenter="showTextActionDetail(pouchAction.detail)"
                       @mouseleave="hideActionDetail"
@@ -241,11 +247,16 @@
                       {{ pouchAction.label }}
                     </button>
                     <button
-                      v-for="ability in directPlayableAbilities"
+                      v-for="(ability, abilityIndex) in directPlayableAbilities"
                       :key="playableAbilityKey(ability)"
                       type="button"
                       :title="playableActionDetail(ability) || undefined"
                       :aria-label="playableActionAccessibleLabel(ability)"
+                      :aria-keyshortcuts="shortcutLabel(
+                        ABILITY_SHORTCUT_KEYS,
+                        directAbilityShortcutOffset + abilityIndex,
+                      )"
+                      data-keyboard-shortcut="ability"
                       @mouseenter="showActionDetail(ability)"
                       @mouseleave="hideActionDetail"
                       @focus="showActionDetail(ability)"
@@ -267,6 +278,11 @@
                         type="button"
                         :title="playableActionDetail(darkSpiritPicker.representative) || undefined"
                         :aria-label="playableActionAccessibleLabel(darkSpiritPicker.representative)"
+                        :aria-keyshortcuts="shortcutLabel(
+                          ABILITY_SHORTCUT_KEYS,
+                          darkSpiritShortcutIndex,
+                        )"
+                        data-keyboard-shortcut="ability"
                         aria-haspopup="menu"
                         :aria-expanded="darkSpiritMenuOpen"
                         @mouseenter="showActionDetail(darkSpiritPicker.representative)"
@@ -308,6 +324,11 @@
                         type="button"
                         :title="playableActionDetail(splendorPicker.representative) || undefined"
                         :aria-label="playableActionAccessibleLabel(splendorPicker.representative)"
+                        :aria-keyshortcuts="shortcutLabel(
+                          ABILITY_SHORTCUT_KEYS,
+                          splendorShortcutIndex,
+                        )"
+                        data-keyboard-shortcut="ability"
                         aria-haspopup="menu"
                         :aria-expanded="splendorMenuOpen"
                         @mouseenter="showActionDetail(splendorPicker.representative)"
@@ -342,6 +363,11 @@
                       type="button"
                       :title="discardRetrievalDetail || undefined"
                       :aria-label="labelWithDetail('棄牌回收', discardRetrievalDetail)"
+                      :aria-keyshortcuts="shortcutLabel(
+                        ABILITY_SHORTCUT_KEYS,
+                        discardRetrievalShortcutIndex,
+                      )"
+                      data-keyboard-shortcut="ability"
                       :disabled="!roomConnected"
                       @mouseenter="showTextActionDetail(discardRetrievalDetail)"
                       @mouseleave="hideActionDetail"
@@ -364,11 +390,13 @@
                   </header>
                   <div v-if="!game.isLoading.value" class="action-candidates">
                     <button
-                      v-for="action in game.playableMainActions.value"
+                      v-for="(action, actionIndex) in game.playableMainActions.value"
                       :key="`${action.type}:${action.id}:${action.cards.join('-')}:${action.type === 'performFormation' ? `${action.starSubstitution?.card ?? 'printed'}:${action.matchOption?.role ?? 'default'}:${action.matchOption?.card ?? ''}` : 'profession'}`"
                       type="button"
                       :title="playableActionDetail(action) || undefined"
                       :aria-label="playableActionAccessibleLabel(action)"
+                      :aria-keyshortcuts="shortcutLabel(ACTION_SHORTCUT_KEYS, actionIndex)"
+                      data-keyboard-shortcut="action"
                       @mouseenter="showActionDetail(action)"
                       @mouseleave="hideActionDetail"
                       @focus="showActionDetail(action)"
@@ -385,6 +413,11 @@
                       class="skip-action"
                       type="button"
                       :disabled="!roomConnected"
+                      :aria-keyshortcuts="shortcutLabel(
+                        ACTION_SHORTCUT_KEYS,
+                        game.playableMainActions.value.length,
+                      )"
+                      data-keyboard-shortcut="action"
                       @click="game.playablePass.value && game.performPlayableAction(game.playablePass.value)"
                     >
                       跳過
@@ -535,6 +568,106 @@
                 等待 {{ playerLabel(state.preparationPlayer) }} 完成選擇。
               </p>
               <p v-else>伺服器正在洗牌與發牌。</p>
+            </div>
+          </div>
+
+          <div
+            v-if="secretStrategyDraft"
+            class="choice-overlay"
+            role="dialog"
+            :aria-label="`秘計‧${strategyLabel(secretStrategyDraft.strategy)}：選擇輸入`"
+          >
+            <div>
+              <h2>秘計‧{{ strategyLabel(secretStrategyDraft.strategy) }}</h2>
+              <p class="action-detail">{{ presentSecretStrategyOption(secretStrategyDraft) }}</p>
+
+              <div
+                v-if="secretStrategyDraft.input === 'targetPlayer'"
+                class="choice-options"
+                aria-label="離山目標"
+              >
+                <button
+                  v-for="player in secretStrategyDraft.targetPlayers"
+                  :key="`secret-strategy-target-${player}`"
+                  type="button"
+                  :class="{ selected: secretStrategyTargetSelection === player }"
+                  :aria-pressed="secretStrategyTargetSelection === player"
+                  :disabled="game.isLoading.value || !roomConnected"
+                  @click="secretStrategyTargetSelection = player"
+                >
+                  {{ playerLabel(player) }}
+                </button>
+              </div>
+
+              <template v-if="secretStrategyDraft.input === 'star'">
+                <h3>瞞天：取得星辰效果或破除星辰</h3>
+                <div class="choice-options" aria-label="瞞天選擇">
+                  <button
+                    v-for="star in secretStrategyDraft.stars"
+                    :key="`secret-strategy-star-${star}`"
+                    type="button"
+                    :class="{ selected: secretStrategyStarSelection === star && !secretStrategyBreakStar }"
+                    :aria-pressed="secretStrategyStarSelection === star && !secretStrategyBreakStar"
+                    :disabled="game.isLoading.value || !roomConnected"
+                    @click="secretStrategyStarSelection = star; secretStrategyBreakStar = false"
+                  >
+                    取得 {{ starLabel(star) }}
+                  </button>
+                  <button
+                    v-for="star in secretStrategyDraft.breakStars"
+                    :key="`secret-strategy-break-star-${star}`"
+                    type="button"
+                    :class="{ selected: secretStrategyStarSelection === star && secretStrategyBreakStar }"
+                    :aria-pressed="secretStrategyStarSelection === star && secretStrategyBreakStar"
+                    :disabled="game.isLoading.value || !roomConnected"
+                    @click="secretStrategyStarSelection = star; secretStrategyBreakStar = true"
+                  >
+                    破除 {{ starLabel(star) }}
+                  </button>
+                </div>
+              </template>
+
+              <template v-if="secretStrategyDraft.input === 'retreat'">
+                <h3>走為：破除環境或捨棄手牌</h3>
+                <div class="choice-options" aria-label="走為選擇">
+                  <button
+                    type="button"
+                    :class="{ selected: secretStrategyRetreatSelection === 'clearEnvironment' }"
+                    :aria-pressed="secretStrategyRetreatSelection === 'clearEnvironment'"
+                    :disabled="game.isLoading.value || !roomConnected"
+                    @click="secretStrategyRetreatSelection = 'clearEnvironment'"
+                  >
+                    破除環境
+                  </button>
+                  <button
+                    v-for="card in ownHandCards.filter(
+                      candidate => secretStrategyDraft?.handCards.includes(candidate.id),
+                    )"
+                    :key="`secret-strategy-hand-${card.id}`"
+                    type="button"
+                    :class="{ selected: secretStrategyRetreatSelection === card.id }"
+                    :aria-pressed="secretStrategyRetreatSelection === card.id"
+                    :disabled="game.isLoading.value || !roomConnected"
+                    @click="secretStrategyRetreatSelection = card.id"
+                  >
+                    捨棄 {{ card.label }}
+                  </button>
+                </div>
+              </template>
+
+              <div class="choice-options choice-actions">
+                <button
+                  class="choice-confirm"
+                  type="button"
+                  :disabled="!canSubmitSecretStrategyDraft || game.isLoading.value || !roomConnected"
+                  @click="submitSecretStrategyDraft"
+                >
+                  確認
+                </button>
+                <button type="button" :disabled="game.isLoading.value" @click="resetSecretStrategyDraft">
+                  取消
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1048,6 +1181,7 @@ import type {
   PublicGameEvent,
   PublicGameState,
   SecretStrategy,
+  SecretStrategyOption,
   SpiritKind,
   StarKind,
   TeamId,
@@ -1060,7 +1194,7 @@ import { cardElementClass, cardElementGlyph } from '~/lib/card-face-presentation
 import { presentCardInterpretation } from '~/lib/card-interpretation-presentation'
 import { presentPendingChoice } from '~/lib/pending-choice-presentation'
 import { presentPersistentEffects } from '~/lib/persistent-effect-presentation'
-import { presentDiscardRetrievalAction, presentPlayableAction, presentSecretStrategyOption } from '~/lib/action-detail-presentation'
+import { presentDirectSecretStrategyAction, presentDiscardRetrievalAction, presentPlayableAction, presentSecretStrategyOption } from '~/lib/action-detail-presentation'
 import { splitEarthChoiceKey, usesSplitEarthFormationGroups } from '#shared/utils/split-earth-formation-choice'
 import { roomRouteResult } from '~/lib/navigation'
 import { chainChoiceAnswer, toggleChoiceCard } from '~/lib/pending-choice-interaction'
@@ -1076,6 +1210,14 @@ import {
   type VirtualFormationCardOffer,
 } from '~/lib/profession-ability-input'
 
+const HAND_SHORTCUT_KEYS = ['1', '2', '3', '4', '5'] as const
+const ABILITY_SHORTCUT_KEYS = [...'qwertyuiop'] as const
+const ACTION_SHORTCUT_KEYS = [...'asdfghjkl'] as const
+
+function shortcutLabel(keys: readonly string[], index: number) {
+  return keys[index]?.toUpperCase()
+}
+
 const route = useRoute()
 const router = useRouter()
 const session = usePlayerSession()
@@ -1088,6 +1230,7 @@ const roomCode = ref('')
 const replaySaving = ref(false)
 const replaySaved = ref(false)
 const replayError = ref('')
+const battlefield = ref<HTMLElement | null>(null)
 
 const viewer = ref<ViewerId>('observer')
 const game = useGameRoom(viewer)
@@ -1121,72 +1264,45 @@ type PouchStrategyAction = {
   label: string
   detail: string
   strategy: SecretStrategy
-  options?: Parameters<typeof game.triggerSecretStrategy>[1]
+  requirement: SecretStrategyOption
 }
 const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
   if (viewer.value === 'observer') return []
   const pouch = state.value.pouches.find(entry => entry.owner === viewer.value)?.card
   if (!pouch) return []
-  const actions: PouchStrategyAction[] = []
+  const strategies = new Set<SecretStrategy>()
   const requirements = game.playableSecretStrategies.value
     .filter(requirement => requirement.sourceCard === pouch.id)
-  for (const requirement of requirements) {
-    const { strategy } = requirement
-    const detail = presentSecretStrategyOption(requirement)
-    if (requirement.input === 'none') {
-      actions.push({ label: `秘計‧${strategyLabel(strategy)}`, detail, strategy })
-    } else if (requirement.input === 'targetPlayer') {
-      for (const player of requirement.targetPlayers) {
-        actions.push({
-          label: `秘計‧${strategyLabel(strategy)} → ${playerLabel(player)}`,
-          detail,
-          strategy,
-          options: { targetPlayer: player },
-        })
-      }
-    } else if (requirement.input === 'deckDiscardSwap') {
-      if (requirement.discardCards.length >= requirement.requiredCardCount) {
-        actions.push({
-          label: `秘計‧${strategyLabel(strategy)}`,
-          detail,
-          strategy,
-        })
-      }
-    } else if (requirement.input === 'star') {
-      for (const star of requirement.stars) {
-        actions.push({
-          label: `秘計‧${strategyLabel(strategy)} → ${starLabel(star)}`,
-          detail,
-          strategy,
-          options: { star },
-        })
-      }
-      for (const star of requirement.breakStars) {
-        actions.push({
-          label: `秘計‧${strategyLabel(strategy)} → 破除 ${starLabel(star)}`,
-          detail,
-          strategy,
-          options: { star, breakStar: true },
-        })
-      }
-    } else if (requirement.input === 'retreat') {
-      actions.push({ label: `秘計‧${strategyLabel(strategy)} → 破除環境`, detail, strategy })
-      for (const cardId of requirement.handCards) {
-        const card = ownHandCards.value.find(candidate => candidate.id === cardId)
-        if (card) {
-          actions.push({
-            label: `秘計‧${strategyLabel(strategy)} → 捨棄 ${card.label}`,
-            detail,
-            strategy,
-            options: { discardCard: card.id },
-          })
-        }
-      }
-    }
-  }
-  return actions
+  return requirements.flatMap((requirement) => {
+    if (strategies.has(requirement.strategy)
+      || (requirement.input === 'deckDiscardSwap'
+        && requirement.discardCards.length < requirement.requiredCardCount)) return []
+
+    strategies.add(requirement.strategy)
+    return [{
+      label: `秘計‧${strategyLabel(requirement.strategy)}`,
+      detail: presentDirectSecretStrategyAction(requirement),
+      strategy: requirement.strategy,
+      requirement,
+    }]
+  })
 })
+const directAbilityShortcutOffset = computed(() => pouchStrategyActions.value.length)
+const darkSpiritShortcutIndex = computed(() => (
+  directAbilityShortcutOffset.value + directPlayableAbilities.value.length
+))
+const splendorShortcutIndex = computed(() => (
+  darkSpiritShortcutIndex.value + Number(Boolean(darkSpiritPicker.value))
+))
+const discardRetrievalShortcutIndex = computed(() => (
+  splendorShortcutIndex.value + Number(Boolean(splendorPicker.value))
+))
 const pouchChoiceKind = ref<'chain' | 'sheep' | null>(null)
+const secretStrategyDraft = ref<SecretStrategyOption | null>(null)
+const secretStrategyTargetSelection = ref<PlayerId | null>(null)
+const secretStrategyStarSelection = ref<StarKind | null>(null)
+const secretStrategyBreakStar = ref(false)
+const secretStrategyRetreatSelection = ref<CardInstanceId | 'clearEnvironment' | null>(null)
 const pouchDeckSelection = ref<number[]>([])
 const pouchDiscardSelection = ref<number[]>([])
 const pouchOwnerSelection = ref<PlayerId | null>(null)
@@ -1262,6 +1378,28 @@ const chainStrategyOptions = computed(() => {
 const selectedChainStrategyAction = computed(() => chainStrategyOptions.value.find(
   option => option.strategy === chainStrategySelection.value,
 ) ?? null)
+const canSubmitSecretStrategyDraft = computed(() => {
+  const draft = secretStrategyDraft.value
+  if (!draft) return false
+
+  if (draft.input === 'targetPlayer') {
+    return secretStrategyTargetSelection.value !== null
+      && draft.targetPlayers.includes(secretStrategyTargetSelection.value)
+  }
+  if (draft.input === 'star') {
+    const star = secretStrategyStarSelection.value
+    return star !== null && (secretStrategyBreakStar.value
+      ? draft.breakStars.includes(star)
+      : draft.stars.includes(star))
+  }
+  if (draft.input === 'retreat') {
+    return secretStrategyRetreatSelection.value === 'clearEnvironment'
+      || (secretStrategyRetreatSelection.value !== null
+        && draft.handCards.includes(secretStrategyRetreatSelection.value))
+  }
+
+  return false
+})
 const canSubmitPouchChoice = computed(() => {
   if (pouchChoiceKind.value === 'sheep') {
     const count = pouchSwapRequiredCount.value
@@ -1302,6 +1440,14 @@ function resetPouchChoice() {
   pouchSwapRequiredCount.value = 0
   pouchSwapDeckCards.value = []
   pouchSwapDiscardCards.value = []
+}
+
+function resetSecretStrategyDraft() {
+  secretStrategyDraft.value = null
+  secretStrategyTargetSelection.value = null
+  secretStrategyStarSelection.value = null
+  secretStrategyBreakStar.value = false
+  secretStrategyRetreatSelection.value = null
 }
 
 function togglePouchCard(
@@ -1353,7 +1499,34 @@ function resetChainStrategyChoice() {
 }
 
 function startPouchAction(action: PouchStrategyAction) {
-  void game.triggerSecretStrategy(action.strategy, action.options)
+  if (action.requirement.input === 'none' || action.requirement.input === 'deckDiscardSwap') {
+    void game.triggerSecretStrategy(action.strategy)
+    return
+  }
+
+  resetSecretStrategyDraft()
+  secretStrategyDraft.value = action.requirement
+}
+
+async function submitSecretStrategyDraft() {
+  const draft = secretStrategyDraft.value
+  if (!draft || !canSubmitSecretStrategyDraft.value) return
+
+  const options: Parameters<typeof game.triggerSecretStrategy>[1] = {}
+  if (draft.input === 'targetPlayer') {
+    options.targetPlayer = secretStrategyTargetSelection.value ?? undefined
+  } else if (draft.input === 'star') {
+    options.star = secretStrategyStarSelection.value ?? undefined
+    options.breakStar = secretStrategyBreakStar.value
+  } else if (draft.input === 'retreat') {
+    options.discardCard = secretStrategyRetreatSelection.value === 'clearEnvironment'
+      ? undefined
+      : secretStrategyRetreatSelection.value ?? undefined
+  }
+
+  if (await game.triggerSecretStrategy(draft.strategy, options)) {
+    resetSecretStrategyDraft()
+  }
 }
 
 function startPlayableAction(action: PlayableAction) {
@@ -1427,6 +1600,19 @@ watch(
         ...choice.choice.deckCards.map(card => card.id),
       ]
     }
+  },
+)
+
+watch(
+  [
+    viewer,
+    () => state.value.currentPlayer,
+    () => state.value.pendingChoice,
+    () => game.connectionState.value,
+    () => game.playableSecretStrategies.value,
+  ],
+  () => {
+    if (secretStrategyDraft.value) resetSecretStrategyDraft()
   },
 )
 
@@ -1637,6 +1823,7 @@ function resetRoomRouteState() {
   replaySaved.value = false
   replayError.value = ''
   resetPouchChoice()
+  resetSecretStrategyDraft()
   actionDetail.value = null
   splendorMenuOpen.value = false
   splendorMenuTrigger.value = null
@@ -1772,6 +1959,126 @@ function targetsEditableControl(target: EventTarget | null) {
     || (target instanceof HTMLElement && target.isContentEditable)
 }
 
+function shortcutHasModifier(event: KeyboardEvent) {
+  return event.metaKey || event.ctrlKey || event.altKey || event.shiftKey
+}
+
+function hasKeyboardBlockingLayer() {
+  return Boolean(
+    discardOpen.value
+    || virtualFormationCardDraft.value
+    || darkSpiritMenuOpen.value
+    || splendorMenuOpen.value
+    || secretStrategyDraft.value
+    || pouchChoiceKind.value
+    || state.value.pendingChoice
+    || state.value.pendingRandomness
+    || showSetupReveal.value,
+  )
+}
+
+function isMainShortcutContext() {
+  return onlineMetadata.value?.status === 'Active'
+    && state.value.status === 'InProgress'
+    && state.value.phase === 'Main'
+    && viewer.value === state.value.currentPlayer
+    && roomConnected.value
+    && !hasKeyboardBlockingLayer()
+}
+
+function canUseHandShortcut() {
+  return isMainShortcutContext()
+    && !game.isSubmittingCommand.value
+    && (!game.isLoading.value || game.isQueryingPlayableActions.value)
+}
+
+function canUseCommandShortcut() {
+  return isMainShortcutContext()
+    && !game.isLoading.value
+    && !game.isSubmittingCommand.value
+    && !game.isQueryingPlayableActions.value
+}
+
+function shortcutButton(group: 'ability' | 'action', index: number) {
+  const buttons = battlefield.value?.querySelectorAll<HTMLButtonElement>(
+    `button[data-keyboard-shortcut="${group}"]`,
+  )
+  if (!buttons) return undefined
+
+  return Array.from(buttons)
+    .filter(button => !button.disabled && button.getClientRects().length > 0)[index]
+}
+
+function randomIndex(length: number) {
+  const uint32Range = 2 ** 32
+  const acceptedRange = uint32Range - (uint32Range % length)
+  const sample = new Uint32Array(1)
+  let value: number
+
+  do {
+    crypto.getRandomValues(sample)
+    value = sample[0]!
+  } while (value >= acceptedRange)
+
+  return value % length
+}
+
+function triggerKeyboardShortcut(event: KeyboardEvent) {
+  if (event.repeat || shortcutHasModifier(event) || targetsEditableControl(event.target)) {
+    return false
+  }
+
+  const key = event.key.toLowerCase()
+  if (
+    key === 'r'
+    && state.value.status === 'Preparing'
+    && game.interaction.value.canChooseInitialPouch
+    && viewer.value !== 'observer'
+    && roomConnected.value
+    && !game.isLoading.value
+    && ownDeckCards.value.length > 0
+  ) {
+    event.preventDefault()
+    const card = ownDeckCards.value[randomIndex(ownDeckCards.value.length)]!
+    void game.chooseInitialPouch(card.id)
+    return true
+  }
+
+  const handIndex = HAND_SHORTCUT_KEYS.indexOf(key as typeof HAND_SHORTCUT_KEYS[number])
+  if (handIndex >= 0 && canUseHandShortcut()) {
+    const card = ownHandCards.value[handIndex]
+    if (card && viewer.value !== 'observer') {
+      event.preventDefault()
+      game.toggleCardSelection(viewer.value, card.id)
+      return true
+    }
+  }
+
+  if (!canUseCommandShortcut()) return false
+
+  const abilityIndex = ABILITY_SHORTCUT_KEYS.indexOf(key as typeof ABILITY_SHORTCUT_KEYS[number])
+  if (abilityIndex >= 0) {
+    const button = shortcutButton('ability', abilityIndex)
+    if (button) {
+      event.preventDefault()
+      button.click()
+      return true
+    }
+  }
+
+  const actionIndex = ACTION_SHORTCUT_KEYS.indexOf(key as typeof ACTION_SHORTCUT_KEYS[number])
+  if (actionIndex >= 0) {
+    const button = shortcutButton('action', actionIndex)
+    if (button) {
+      event.preventDefault()
+      button.click()
+      return true
+    }
+  }
+
+  return false
+}
+
 function handlePageKeydown(event: KeyboardEvent) {
   if (
     event.metaKey
@@ -1783,16 +2090,29 @@ function handlePageKeydown(event: KeyboardEvent) {
     && !targetsEditableControl(event.target)
     && onlineMetadata.value?.status === 'Active'
     && state.value.status === 'InProgress'
+    && state.value.phase === 'Main'
     && viewer.value === state.value.currentPlayer
-    && !state.value.pendingChoice
+    && !hasKeyboardBlockingLayer()
     && !game.isLoading.value
+    && !game.isSubmittingCommand.value
+    && !game.isQueryingPlayableActions.value
   ) {
     event.preventDefault()
     void game.advanceAutomatic()
     return
   }
 
+  if (triggerKeyboardShortcut(event)) {
+    return
+  }
+
   if (event.key !== 'Escape') {
+    return
+  }
+
+  if (secretStrategyDraft.value) {
+    event.preventDefault()
+    resetSecretStrategyDraft()
     return
   }
 

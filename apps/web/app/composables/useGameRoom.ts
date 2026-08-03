@@ -123,6 +123,8 @@ export function useGameRoom(viewer: ViewerRef) {
   ))
   const errorMessage = ref<string | null>(null)
   const isLoading = ref(false)
+  const isSubmittingCommand = ref(false)
+  const isQueryingPlayableActions = ref(false)
   const interaction = ref<GameRoomResponse['interaction']>({
     canChooseInitialPouch: false,
   })
@@ -189,6 +191,7 @@ export function useGameRoom(viewer: ViewerRef) {
       playableQueryRevision += 1
       if (playableQueryInFlight) {
         playableQueryInFlight = false
+        isQueryingPlayableActions.value = false
         isLoading.value = false
       }
     }
@@ -249,7 +252,7 @@ export function useGameRoom(viewer: ViewerRef) {
         }
     retryableSubmission = submission
 
-    playableQueryInFlight = true
+    isSubmittingCommand.value = true
     isLoading.value = true
     errorMessage.value = null
 
@@ -269,6 +272,7 @@ export function useGameRoom(viewer: ViewerRef) {
       errorMessage.value = presentApiError(error, '無法完成遊戲操作，請稍後再試。')
       return false
     } finally {
+      isSubmittingCommand.value = false
       isLoading.value = false
     }
   }
@@ -453,6 +457,8 @@ export function useGameRoom(viewer: ViewerRef) {
       return
     }
 
+    playableQueryInFlight = true
+    isQueryingPlayableActions.value = true
     isLoading.value = true
     errorMessage.value = null
     try {
@@ -484,6 +490,7 @@ export function useGameRoom(viewer: ViewerRef) {
     } finally {
       if (revision === playableQueryRevision) {
         playableQueryInFlight = false
+        isQueryingPlayableActions.value = false
         isLoading.value = false
       }
     }
@@ -798,6 +805,10 @@ export function useGameRoom(viewer: ViewerRef) {
     pendingChoiceDraftEpoch.value += 1
     playableActions.value = []
     errorMessage.value = null
+    isLoading.value = false
+    isSubmittingCommand.value = false
+    isQueryingPlayableActions.value = false
+    playableQueryInFlight = false
     roomDissolved.value = false
   }
 
@@ -822,6 +833,8 @@ export function useGameRoom(viewer: ViewerRef) {
     playableSecretStrategies,
     errorMessage,
     isLoading,
+    isSubmittingCommand,
+    isQueryingPlayableActions,
     interaction,
     canSubmitPendingChoice,
     connectionState,
