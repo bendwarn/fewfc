@@ -1,4 +1,5 @@
 import type {
+  CardInstanceId,
   LimitedUsePresentation,
   PlayerId,
   PublicGameState,
@@ -20,6 +21,7 @@ type PersistentEffectState = Pick<PublicGameState,
   | 'flowStates'
   | 'formationSuppressions'
   | 'scheduledPlantEarth'>
+  & Partial<Pick<PublicGameState, 'hands'>>
 
 export interface PresentedPersistentEffect {
   key: string
@@ -105,6 +107,19 @@ function presentDuration(
   return exhaustive
 }
 
+function visibleHandCardLabel(
+  state: PersistentEffectState,
+  player: PlayerId,
+  cardId: CardInstanceId,
+): string | null {
+  const cards = state.hands?.find(hand => hand.player === player)?.cards
+  if (!cards || cards.kind === 'hidden') return null
+  if (cards.kind === 'known') {
+    return cards.cards.find(card => card.id === cardId)?.label ?? null
+  }
+  return cards.cards.find(card => card?.id === cardId)?.label ?? null
+}
+
 export function presentPersistentEffects(
   state: PersistentEffectState,
   player: PlayerId,
@@ -180,9 +195,12 @@ export function presentPersistentEffects(
     })
   }
   for (const obligation of state.confluenceCardObligations.filter(active => active.owner === player)) {
+    const cardLabel = obligation.card === null
+      ? null
+      : visibleHandCardLabel(state, obligation.owner, obligation.card)
     effects.push({
       key: `tuning:${obligation.card ?? 'hidden'}`,
-      label: `調律牌 · ${obligation.card === null ? '一張手牌' : `牌 ${obligation.card}`}（${obligation.allowProfessionFormation ? '可用於職業陣法' : '僅可轉職'}）`,
+      label: `調律牌 · ${cardLabel ?? '一張手牌'}（${obligation.allowProfessionFormation ? '可用於職業陣法' : '僅可轉職'}）`,
     })
   }
   for (const schedule of state.scheduledEchoes.filter(active => active.player === player)) {
