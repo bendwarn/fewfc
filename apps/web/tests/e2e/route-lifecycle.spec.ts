@@ -33,16 +33,17 @@ bareTest('unauthenticated deep links preserve room invite and replay queries thr
   bareExpect(new URL(page.url()).searchParams.get('redirect')).toBe('/replays/replay-9?step=12')
 })
 
-bareTest('unauthenticated root visitors are redirected to login through the rooms route', async ({ page }) => {
+bareTest('unauthenticated root visitors stay on the public homepage', async ({ page }) => {
   await page.goto('/')
-  await bareExpect(page).toHaveURL(/\/login/)
-  bareExpect(new URL(page.url()).searchParams.get('redirect')).toBe('/rooms')
+  await bareExpect(page).toHaveURL(/\/$/)
+  await bareExpect(page.getByRole('heading', { level: 1, name: '以牌為陣， 決勝五行。' })).toBeVisible()
+  await bareExpect(page.getByRole('link', { name: '立即遊玩' }).first()).toHaveAttribute('href', '/login')
 })
 
-test('the root route redirects before mounting a route-state page root', async ({ page }) => {
-  const serverRedirect = await page.context().request.get('/', { maxRedirects: 0 })
-  expect(serverRedirect.status()).toBe(302)
-  expect(serverRedirect.headers().location).toBe('/rooms')
+test('the root route renders publicly before a signed-in client continues to rooms', async ({ page }) => {
+  const serverHomepage = await page.context().request.get('/', { maxRedirects: 0 })
+  expect(serverHomepage.status()).toBe(200)
+  expect(await serverHomepage.text()).toContain('id="landing-content"')
 
   await page.goto('/')
   await expect(page).toHaveURL(/\/rooms$/)
