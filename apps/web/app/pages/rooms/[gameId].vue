@@ -2146,6 +2146,9 @@ function handlePageKeydown(event: KeyboardEvent) {
 
 async function restartGame() {
   await game.resetOnlineRoom()
+  // Reset replay save state when returning to the room for a new game
+  replaySaved.value = false
+  replayError.value = ''
 }
 
 async function toggleWaitingRule(moduleId: string) {
