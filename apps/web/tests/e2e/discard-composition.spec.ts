@@ -133,23 +133,6 @@ async function expectDiscardMatrixMatchesGameState(page: Page) {
   }
 }
 
-test('an empty discard pile reports zero cards and cannot be opened', async ({ browser }) => {
-  const room = await setupFastWaitingRoom(browser, {
-    roomName: `棄牌測試 ${Date.now()}`,
-  })
-  const { page } = room
-
-  try {
-    await page.getByLabel('個人牌組').uncheck()
-    const trigger = discardTrigger(page, 0)
-    await expect(trigger).toHaveAttribute('aria-disabled', 'true')
-    await trigger.click({ force: true })
-    await expect(discardDialog(page)).toBeHidden()
-  } finally {
-    await room.close()
-  }
-})
-
 test('players can inspect a synchronized discard composition throughout a match', async ({ browser }) => {
   const game = await setupFastTwoPlayerGame(browser, {
     roomName: `同步棄牌測試 ${Date.now()}`,

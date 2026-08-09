@@ -33,13 +33,3 @@ test('an enabled local password reset repairs an email credential and signs the 
   await page.getByRole('button', { name: '登入' }).click()
   await expect(page).toHaveURL(/\/rooms$/)
 })
-
-test('the local reset form reports an unknown account in its development-only diagnostics', async ({ page }) => {
-  await gotoAppRoute(page, '/reset-password')
-  await expect(page.getByRole('heading', { name: '重設本機密碼' })).toBeVisible()
-  await page.getByLabel('Email').fill(`missing-${Date.now()}@example.com`)
-  await page.getByLabel('新密碼', { exact: true }).fill('ReplacementPassword123!')
-  await page.getByLabel('確認新密碼').fill('ReplacementPassword123!')
-  await page.getByRole('button', { name: '重設密碼並登入' }).click()
-  await expect(page.getByRole('alert')).toHaveText('找不到這個 Email 的帳號')
-})

@@ -261,14 +261,14 @@ _Avoid_: automatic best match, separate Formation
 
 **Action Card Selection**:
 The exact set of physical Card Instances a Player is currently proposing for
-one offered Main Phase command. A non-empty selection matches only offers that
-use every selected Card; an empty selection matches only offers that require no
-selected physical Card.
+one offered Active Effects Process Command. A non-empty selection matches only
+offers that use every selected Card; an empty selection matches only offers
+that require no selected physical Card.
 _Avoid_: candidate filter, Formation Composition, Pending Choice
 
 **Playable Action**:
-A currently legal Main Phase command offer whose physical Card input exactly
-matches the Action Card Selection. Completing any declared Action Input
+A currently legal Active Effects Process Command offer whose physical Card
+input exactly matches the Action Card Selection. Completing any declared Action Input
 Requirement produces a command that is accepted while the Game State remains
 unchanged.
 _Avoid_: Formation Catalog entry, UI capability flag, predicted command result
@@ -298,10 +298,10 @@ action opportunity.
 _Avoid_: optional preparation, selected Cards
 
 **Activated Profession Ability (發動能力)**:
-A Profession Ability that its Player may deliberately use during the Main Phase
-without consuming the action opportunity. It becomes activated only after all
-required inputs are accepted, consuming the shared once-per-turn activation
-allowance; uncommitted input selection does neither.
+A Profession Ability that its Player may deliberately use during the Active
+Effects Process without consuming the action opportunity. It becomes activated
+only after all required inputs are accepted, consuming the shared once-per-turn
+activation allowance; uncommitted input selection does neither.
 _Avoid_: Action Command, Formation Use, started input selection
 
 **Prepared Profession Ability**:
@@ -427,6 +427,16 @@ _Avoid_: record, save
 **Game Event**:
 A canonical fact emitted by accepted setup, command, or automatic advancement and used for replay.
 _Avoid_: log message, notification
+
+**Game Conclusion (遊戲結論)**:
+The canonical terminal fact containing the Game Outcome and one or more Game
+End Causes. It persists independently of Card zones and previous-Turn queries.
+_Avoid_: final board, last Formation, result presentation
+
+**Game End Cause (遊戲結束原因)**:
+A typed reason the Game ended, pairing a terminal condition with the Formation
+Use or Rule Effect that caused it. Simultaneous causes may produce a Draw.
+_Avoid_: Formation Area snapshot, Previous-Turn Formation, inferred cause
 
 **Validation Failure**:
 A rejected command or setup because the submitted player/input data is illegal for the current rules and state.
@@ -617,8 +627,9 @@ _Avoid_: team order
 
 **Turn Start (回合開始)**:
 The opening timing of a Player's turn, when due expirations resolve before
-delayed rule effects. All Turn Start effects finish before the Main Phase.
-_Avoid_: start of Main Phase
+delayed rule effects. All Turn Start effects finish before the Active Effects
+Process.
+_Avoid_: start of Active Effects Process
 
 **Previous Player**:
 The player immediately before the current player in turn order.
@@ -806,8 +817,8 @@ Action for the Turn.
 _Avoid_: active-effect command
 
 **Action Pass**:
-An Action Command that closes the Main Phase without another action when the
-Rules Engine permits it. It remains an explicit Command whether a Player
+An Action Command that completes the Action Process without another action when
+the Rules Engine permits it. It remains an explicit Command whether a Player
 submits it to decline optional Active-Effect Commands or the Rules Engine
 selects it as the sole Playable Action, and its Playable Action carries the
 authoritative Pass reason.
@@ -909,8 +920,8 @@ _Avoid_: callback response
   Draw; if that Turn Draw produces no Turn Draw Discard, the Next Player
   receives no new residual facts
 - A **Tuning Card Obligation** permits non-action-ending abilities beforehand,
-  but no action may end the Main Phase without consuming the Tuning Card through
-  an allowed action
+  but no Action may complete without consuming the Tuning Card through an
+  allowed Action
 - 調律 is available when at least one legal sequence of the Player's remaining
   non-action-ending abilities can lead to an action that fulfills the resulting
   Tuning Card Obligation; immediate post-調律 legality is not required
@@ -1007,34 +1018,36 @@ _Avoid_: callback response
 - A **Card Definition** has a level from 1 to 5
 - An **Attack Plan** may be elemental, physical, or special without changing the **Formation Category**
 - An **Attack** targets a **Previous Player** before resolving HP impact to that player's **Team**
-- The **Main Phase** may accept multiple **Active-Effect Commands** before one **Action Command**
-- Every legal Main Phase option is classified by the Rules Engine as either an
+- The **Active Effects Process** may accept multiple **Active-Effect Commands**
+  before one **Action Command** begins the **Action Process**
+- Every legal Active Effects Process option is classified by the Rules Engine as either an
   **Active-Effect Command** or an **Action Command**; presentation may group
   those options but does not reclassify them
-- **Playable Actions** include every legal Main Phase command contributed by
+- **Playable Actions** include every legal Active Effects Process Command contributed by
   the Base Ruleset and enabled Rule Modules, independent of where presentation
   places the corresponding controls
 - Trusted-randomness command variants continue an already chosen Formation or
   Spirit Skill through **Pending Randomness**; they are not separate
   **Playable Actions**
-- Public presentation derives Main Phase controls only from **Playable
+- Public presentation derives Active Effects Process controls only from **Playable
   Actions** and carries no parallel capability flags for the same legality
-- An initial, refreshed, or reconnected Main Phase view uses an empty **Action
+- An initial, refreshed, or reconnected Active Effects Process view uses an empty **Action
   Card Selection**; non-empty selections remain uncommitted Player-local input
-- A Main Phase option that uses selected physical Cards must use exactly the
+- An Active Effects Process option that uses selected physical Cards must use exactly the
   current **Action Card Selection**; selection-independent options appear only
   for an empty Action Card Selection
 - A legal **Action Pass** is a **Playable Action** only for an empty
   **Action Card Selection**
 - An **Action Pass** may coexist with optional **Active-Effect Commands** but
   never with another **Action Command**
-- A Main Phase whose sole **Playable Action** is an **Action Pass** contains no
+- An Active Effects Process whose sole **Playable Action** is an **Action Pass** contains no
   Player decision and advances by applying that explicit Command; every sole
   non-pass Playable Action remains a Player decision
 - The sole Action Pass condition is derived from the same empty-selection
   **Playable Actions** used for Player presentation, never from a parallel
   capability predicate
-- A successful **Action Command** closes the **Main Phase**
+- A successful **Action Command** ends the **Active Effects Process** and begins
+  the **Action Process**
 - A **Covered Passive** belongs to one **Player** and flips at the next player's action start
 - A **Counter Effect** may be hidden behind a **Covered Passive** or publicly established by class change
 - A **Status Effect** has one **Status Kind**
@@ -1059,7 +1072,8 @@ _Avoid_: callback response
 
 - "opponent" is too vague in team mode; use **Previous Player** when the rule follows seating order, and **Team** only when describing HP ownership.
 - Elemental, physical, special, immediate, and passive are execution details, not **Formation Category** values; keep **Formation Category** to **Attack** or **Spell**.
-- Active-effect commands are not formation actions; do not treat every command accepted during **Main Phase** as an **Action Command**.
+- Active-effect commands are not Formation Actions; do not treat every Command
+  accepted during the **Active Effects Process** as an **Action Command**.
 - The first version of the base formation engine may define **Active-Effect Command** as a future extension point without implementing concrete commands.
 - `used_cards` identifies physical Card Instances used by a **Formation Use**;
   a **Formation Composition** identifies any Virtual Formation Card separately,

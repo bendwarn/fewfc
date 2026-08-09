@@ -25,7 +25,27 @@ async function stackingAtOverlap(target: Locator, orbit: Locator) {
   }, await orbit.elementHandle())
 }
 
-test('login hero copy is never obscured by the decorative orbit', async ({ page }) => {
+test('landing layout keeps its hero readable without horizontal overflow', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/')
+
+  const desktopLayout = await page.evaluate(() => {
+    const copy = document.querySelector('.landing-hero-copy')?.getBoundingClientRect()
+    const visual = document.querySelector('.hero-visual')?.getBoundingClientRect()
+    return {
+      fitsViewport: document.documentElement.scrollWidth <= window.innerWidth,
+      columnsAreSeparated: Boolean(copy && visual && copy.right <= visual.left),
+    }
+  })
+  expect(desktopLayout).toEqual({ fitsViewport: true, columnsAreSeparated: true })
+
+  await page.setViewportSize({ width: 375, height: 812 })
+  await expect(page.getByRole('link', { name: '五行戰鬥牌官方網站' }).first()).toBeVisible()
+  await expect(page.getByRole('button', { name: /^外觀：/ })).toBeVisible()
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
+
+test('login hero copy stays above the decorative orbit when they overlap', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 })
   await page.goto('/login')
 

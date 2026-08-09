@@ -1,4 +1,5 @@
 import { createError, type H3Event } from 'h3'
+import { parseAppEnvironment } from './app-environment'
 
 export interface DurableObjectNamespaceBinding {
   idFromName(name: string): unknown

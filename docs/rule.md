@@ -19,8 +19,10 @@ case must be confirmed before either document narrows or broadens the source.
 
 Build a deterministic CFECards rules engine that:
 
-- Enforces fixed turn flow with a public phase model: `TurnStart -> Main -> TurnDraw -> TurnDrawDiscardChoice? -> TurnEnd`.
-- Supports `Main` as the public input phase where a player may use zero or more active-effect commands before exactly one action command closes the phase.
+- Enforces the official fixed turn flow with a canonical phase model:
+  `TurnStart -> ActiveEffects -> Action -> TurnDraw -> TurnEnd`.
+- Supports `ActiveEffects` as the input phase where a Player may use zero or
+  more Active-Effect Commands before one Action Command begins `Action`.
 - Supports action commands such as `PerformFormation` and `PassAction`; future rulesets may add more action commands.
 - Treats Metamorphosis (`幻化`) as a formation use, not as a standalone `ChangeClass` command.
 - Implements formation resolution through effect plans:
@@ -38,15 +40,37 @@ Build a deterministic CFECards rules engine that:
 
 Each player turn eventually gives control to the next player (`下家`) in circular turn order.
 
-Public phases:
+Canonical phases:
 
 1. `TurnStart` - start-of-turn timing and status expiration.
-2. `Main` - accepts active-effect commands, then exactly one action command.
-3. `TurnDraw` - automatic draw pipeline.
-4. `TurnDrawDiscardChoice` - only present when draw creates a pending discard choice.
+2. `ActiveEffects` - accepts zero or more Active-Effect Commands and one Action
+   Command.
+3. `Action` - carries the committed Action through every required rule step and
+   Pending Choice.
+4. `TurnDraw` - draws into the Turn Draw Pool and remains active while the
+   discard Pending Choice is unresolved.
 5. `TurnEnd` - end-of-turn timing and status expiration.
 
-Rulebook timing names such as `ActiveWindow` and `Action` remain useful concepts, but they are not separate public phases. The engine does not require or event-log an `EndActiveWindow` command. The first successful action command implicitly closes `Main`.
+The engine does not require or event-log an `EndActiveEffects` command. The
+first accepted Action Command ends `ActiveEffects` and enters `Action`. Neither
+an effect-generated Pending Choice nor the Turn Draw discard choice creates a
+new phase; each suspends its owning phase until answered.
+
+Turn Draw follows official rule 4-2.4d exactly:
+
+1. Determine the allowed hand increase `N` from the current hand, hand limit,
+   base draw, and applicable modifiers.
+2. Draw `N + 1` Cards from the applicable Deck into the single game-scoped
+   Turn Draw Pool. These Cards are not yet in the Player's hand.
+3. Request one Pending Choice whose legal discards are exactly the Cards in the
+   Turn Draw Pool.
+4. Resolve one atomic `TurnDrawResolved` fact that explicitly records the
+   chosen `discard` and all `kept_cards`. Its rule meaning is that the chosen
+   Card is Discarded first and only then do the kept Cards enter the hand; no
+   Player input or replay state exists between those movements.
+
+If Turn Draw is skipped because the hand is full or the Player cannot draw, no
+Turn Draw Pool or discard Pending Choice is created.
 
 ### 1.2 Seating And Targets
 
@@ -110,10 +134,21 @@ Minimum shape:
 ```rust
 enum Phase {
     TurnStart,
-    Main,
+    ActiveEffects,
+    Action,
     TurnDraw,
-    TurnDrawDiscardChoice,
     TurnEnd,
+}
+
+struct PlayerFormationArea {
+    player: PlayerId,
+    formation: Option<FormationInArea>,
+}
+
+enum FormationAreaState {
+    FaceUpResolving,
+    FaceDownResolving,
+    FaceDownWaiting { sealed: bool },
 }
 
 struct GameSetup {
@@ -143,9 +178,10 @@ struct GameState {
     hands: Vec<PlayerHand>,
     discard_piles: Vec<CardPile>,
     exposed_foreign_cards: Vec<CardInstanceId>,
+    formation_areas: Vec<PlayerFormationArea>,
+    turn_draw_pool: Vec<CardInstanceId>,
     pending_choice: Option<PendingChoice>,
     shields: Vec<PlayerShield>,
-    covered_passives: Vec<CoveredPassive>,
     counter_effects: Vec<CounterEffect>,
     statuses: Vec<StatusEffect>,
     last_formation_by_player: HashMap<PlayerId, LastFormationUse>,
@@ -161,7 +197,13 @@ Notes:
 - The base turn draw is 2, adjusted by available hand space.
 - Shields are attached to players, not teams.
 - Team HP cannot exceed that match's initial HP.
-- Covered passive cards remain canonical hidden information in domain state and canonical events.
+- Each Player owns one Formation Area, which contains at most one Formation.
+- A Covered Passive is a face-down Formation in its owner's Formation Area,
+  not a separate Card container.
+- The Game has at most one non-empty Turn Draw Pool.
+- Cards in a Formation Area or the Turn Draw Pool are not in a hand or Discard
+  Pile.
+- Covered Passive Cards remain canonical hidden information in domain state and canonical events.
 - Public counter effects are stored separately from hidden covered-passive cards.
 
 ### 2.1 Status Effects

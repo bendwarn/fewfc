@@ -26,7 +26,9 @@
     "test:e2e:server:built": "bun tests/e2e/prepare-storage.ts && bun db:migrate:local --persist-to .wrangler/e2e && wrangler dev --persist-to .wrangler/e2e --port 8727 --var LOCAL_PASSWORD_RESET_ENABLED:true --var BETTER_AUTH_URL:http://localhost:8727",
     "typecheck": "nuxt typecheck",
     "validate:deploy": "bun validate-deploy-environment.ts",
-    "test:component": "APP_ENV=development vitest --config vitest.config.ts --run"
+    "test:component": "APP_ENV=development vitest --config vitest.config.ts --run",
+    "test:component:browser": "playwright test --config playwright.component.config.ts",
+    "test:integration": "bun test server"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "^1.6.25",
@@ -48,6 +50,7 @@
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "happy-dom": "^20.11.2",
+    "miniflare": "^5.20260801.1-alpha",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10",

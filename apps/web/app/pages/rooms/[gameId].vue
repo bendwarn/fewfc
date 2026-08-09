@@ -148,29 +148,17 @@
               :class="{ personal: state.playerDiscards.length > 0 }"
               aria-label="棄牌堆"
             >
-              <div
+              <DiscardPileControl
                 v-for="pile in visibleDiscardPiles"
                 :key="pile.owner ?? 'shared'"
-                class="discard-pile"
-                :class="[
-                  { disabled: discardPileUnavailable(pile.cards) },
-                  pile.position ? `discard-position-${pile.position}` : '',
-                ]"
-              >
-                <span>{{ pile.owner ? `${playerLabel(pile.owner)} 棄牌` : '棄牌' }}</span>
-                <button
-                  class="discard-pile-trigger"
-                  type="button"
-                  aria-haspopup="dialog"
-                  aria-controls="discard-composition"
-                  :aria-expanded="discardOpen && activeDiscardOwner === pile.owner"
-                  :aria-disabled="discardPileUnavailable(pile.cards)"
-                  :aria-label="`查看${pile.owner ? `${playerLabel(pile.owner)}的` : ''}棄牌內容，共 ${pile.cards.length} 張`"
-                  @click.stop="toggleDiscardComposition(pile.owner, $event)"
-                >
-                  {{ pile.cards.length }}
-                </button>
-              </div>
+                :owner="pile.owner"
+                :owner-label="pile.owner ? playerLabel(pile.owner) : ''"
+                :count="pile.cards.length"
+                :unavailable="discardPileUnavailable(pile.cards)"
+                :open="discardOpen && activeDiscardOwner === pile.owner"
+                :position="pile.position"
+                @toggle="toggleDiscardComposition(pile.owner, $event)"
+              />
             </div>
             <div class="formation-field">
               <div class="formation-field-heading">
@@ -1026,9 +1014,8 @@
             </div>
           </div>
 
-          <div v-if="roomWaiting" class="waiting-overlay">
-            <div class="waiting-panel">
-              <section class="waiting-main">
+          <WaitingRoomLayout v-if="roomWaiting">
+            <template #main>
                 <h2>{{ activeRoomName }}</h2>
                 <p>{{ waitingRoomSummary }}</p>
                 <p v-if="game.lockedDeckName.value" class="muted">
@@ -1044,9 +1031,9 @@
                 <p v-if="game.errorMessage.value" class="form-error" role="alert">
                   {{ game.errorMessage.value }}
                 </p>
-              </section>
+            </template>
 
-              <aside class="waiting-side" aria-label="房間成員與操作">
+            <template #side>
                 <div class="waiting-members">
                   <span
                     v-for="player in onlinePlayers"
@@ -1111,9 +1098,8 @@
                 >
                   複製邀請連結
                 </button>
-              </aside>
-            </div>
-          </div>
+            </template>
+          </WaitingRoomLayout>
 
         </section>
 
@@ -1813,7 +1799,7 @@ function discardPileUnavailable(cards: readonly unknown[]): boolean {
   return cards.length === 0 || Boolean(state.value.pendingChoice)
 }
 
-function toggleDiscardComposition(owner: PlayerId | null, event: MouseEvent) {
+function toggleDiscardComposition(owner: PlayerId | null, trigger: HTMLButtonElement) {
   if (discardOpen.value && activeDiscardOwner.value === owner) {
     closeDiscardComposition()
     return
@@ -1824,7 +1810,7 @@ function toggleDiscardComposition(owner: PlayerId | null, event: MouseEvent) {
     return
   }
 
-  discardTrigger.value = event.currentTarget as HTMLButtonElement
+  discardTrigger.value = trigger
   activeDiscardOwner.value = owner
   discardOpen.value = true
 }
@@ -2723,16 +2709,6 @@ function formationChoiceLabel(formationId: string): string {
 .battlefield.discard-open .board-center { z-index: 16; }
 .discard-piles { @apply z-2 flex w-full justify-end; grid-column: 1 / -1; grid-row: 1; }
 .discard-piles.personal { @apply pointer-events-none absolute inset-0 block; }
-.discard-pile { @apply grid justify-items-center gap-1.5 text-[9px] text-[var(--app-text-muted)]; }
-.discard-piles.personal .discard-pile { @apply pointer-events-auto absolute w-[90px]; }
-.discard-position-top { top: 0; left: 0; }
-.discard-position-left { bottom: 0; left: 0; }
-.discard-position-right { top: 0; right: 0; }
-.discard-position-bottom { right: 0; bottom: 0; }
-.discard-pile-trigger { @apply grid w-[52px] place-items-center border border-[var(--app-accent)] bg-[var(--app-surface-raised)] font-serif text-xl text-[#a68d56]; aspect-ratio: 5/7; }
-.discard-pile-trigger { @apply p-0 hover:border-[var(--app-accent)] hover:text-gold-light; }
-.discard-pile-trigger:focus-visible { outline: 2px solid #d1ad62; outline-offset: 3px; }
-.discard-pile.disabled .discard-pile-trigger { @apply cursor-not-allowed opacity-45; }
 .discard-composition-layer { @apply absolute right-0 z-20; bottom: calc(50% + 48px); }
 .discard-composition {
   @apply w-[300px] border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3.5 text-[var(--app-text)] shadow-[0_18px_48px_rgba(0,0,0,.52)];
@@ -2820,18 +2796,11 @@ function formationChoiceLabel(formationId: string): string {
 .revealed-teams { @apply grid grid-cols-2 gap-3; }
 .revealed-teams span { @apply grid gap-1 border border-[var(--app-border)] p-3 text-xs text-muted; }
 .revealed-teams strong { @apply text-gold-light; }
-.waiting-overlay { @apply absolute inset-0 flex items-start justify-center overflow-y-auto bg-[var(--app-overlay)] py-4 backdrop-blur-[4px]; z-index: 13; }
-.waiting-panel { width: min(860px, calc(100% - 64px)); @apply my-auto grid grid-cols-[minmax(0,1.45fr)_minmax(240px,.75fr)] gap-6 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-7 text-left; border-radius: 16px; box-shadow: var(--app-shadow-lg); }
-.waiting-main { @apply min-w-0; }
-.waiting-side { @apply grid min-w-0 content-start gap-4 border-l border-[var(--app-border)] pl-6; }
-.waiting-overlay h2 { @apply font-serif text-3xl text-gold-light; }
-.waiting-overlay p:not(.section-kicker) { @apply text-sm text-muted; }
 .waiting-members { @apply grid grid-cols-2 gap-3; }
 .waiting-members span { @apply grid gap-1 border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-3 text-sm text-muted; }
 .waiting-members span.joined { @apply border-[var(--app-accent)] text-[var(--app-text)]; }
 .waiting-members small { @apply text-[10px] text-muted; }
 .waiting-members button { @apply mt-1 border-0 bg-transparent text-[9px] text-[#c98e82]; }
-.waiting-side .result-actions { @apply mt-0; }
 .invite-link { @apply justify-self-start border-0 bg-transparent text-xs text-gold-light; }
 .result-actions { @apply mt-2 grid grid-cols-2 gap-3; }
 .result-actions .ghost-button { @apply border-[var(--app-border-strong)] text-[var(--app-text)]; }
@@ -2856,7 +2825,6 @@ function formationChoiceLabel(formationId: string): string {
   .player-identity strong { font-size: 14px; }
   .player-identity small { font-size: 12px; }
   .reconnecting-label, .turn-badge, .counter-badge, .shield-badge, .status-badge, .side-hand-count { font-size: 11px!important; }
-  .discard-pile { font-size: 11px; }
   .formation-field { font-size: 12px; }
   .previous-formation small { font-size: 11px; }
   .previous-formation p, .action-candidates button { font-size: 12px; }
@@ -2899,15 +2867,11 @@ function formationChoiceLabel(formationId: string): string {
   .seat-left .side-hand-count, .seat-right .side-hand-count { @apply block; }
   .board-center { grid-template-columns: 48px minmax(0, 1fr) 48px; width: 100%; }
   .formation-field { min-width: 0; width: 100%; }
-  .discard-piles.personal .discard-pile { width: 48px; }
-  .discard-pile-trigger { width: 38px; }
   .playing-card { width: 54px; }
   .seat-top .playing-card { width: 43px; }
   .player-identity strong { max-width: 110px; }
   .turn-badge { font-size: 8px!important; }
   .action-candidates button { min-height: 30px; padding: 4px 7px; }
-  .waiting-panel { min-width: 0; width: calc(100vw - 32px); grid-template-columns: 1fr; gap: 18px; padding: 22px 16px; }
-  .waiting-side { @apply border-t border-l-0 pt-4 pl-0; }
   .waiting-members { grid-template-columns: 1fr 1fr; }
 }
 }

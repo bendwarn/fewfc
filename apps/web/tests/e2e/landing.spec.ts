@@ -28,23 +28,3 @@ test('public homepage presents the game, metadata, and login entry', async ({ pa
   await expect(page).toHaveURL('/login')
   await expect(page).toHaveTitle('登入｜五行戰鬥牌')
 })
-
-test('homepage remains readable without document overflow on desktop and mobile', async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 800 })
-  await page.goto('/')
-
-  const desktopLayout = await page.evaluate(() => {
-    const copy = document.querySelector('.landing-hero-copy')?.getBoundingClientRect()
-    const visual = document.querySelector('.hero-visual')?.getBoundingClientRect()
-    return {
-      fitsViewport: document.documentElement.scrollWidth <= window.innerWidth,
-      columnsAreSeparated: Boolean(copy && visual && copy.right <= visual.left),
-    }
-  })
-  expect(desktopLayout).toEqual({ fitsViewport: true, columnsAreSeparated: true })
-
-  await page.setViewportSize({ width: 375, height: 812 })
-  await expect(page.getByRole('link', { name: '五行戰鬥牌官方網站' }).first()).toBeVisible()
-  await expect(page.getByRole('button', { name: /^外觀：/ })).toBeVisible()
-  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
-})
