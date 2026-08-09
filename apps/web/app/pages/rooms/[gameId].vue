@@ -1034,26 +1034,13 @@
                 <p v-if="game.lockedDeckName.value" class="muted">
                   本局使用：{{ game.lockedDeckName.value }}
                 </p>
-                <fieldset class="waiting-rules">
-                  <legend>{{ isRoomOwner ? '規則模組' : '啟用規則' }}</legend>
-                  <section
-                    v-for="group in ruleGroups"
-                    :key="group.id"
-                    class="waiting-rule-group"
-                    :aria-labelledby="`waiting-rule-group-${group.id}`"
-                  >
-                    <h3 :id="`waiting-rule-group-${group.id}`">{{ group.label }}</h3>
-                    <label v-for="rule in group.rules" :key="rule.id" class="rule-toggle">
-                      <input
-                        type="checkbox"
-                        :checked="onlineMetadata?.enabledRuleModules.includes(rule.id)"
-                        :disabled="game.isLoading.value || !isRoomOwner"
-                        @change="toggleWaitingRule(rule.id)"
-                      >
-                      {{ rule.label }}
-                    </label>
-                  </section>
-                </fieldset>
+                <RuleModuleSettings
+                  :catalog="rulesCatalog.catalog.value?.ruleModules ?? []"
+                  :enabled-rule-modules="onlineMetadata?.enabledRuleModules ?? []"
+                  :is-owner="isRoomOwner"
+                  :disabled="game.isLoading.value"
+                  @update:enabled-rule-modules="updateWaitingRuleModules"
+                />
                 <p v-if="game.errorMessage.value" class="form-error" role="alert">
                   {{ game.errorMessage.value }}
                 </p>
@@ -1197,6 +1184,7 @@ import { presentDirectSecretStrategyAction, presentDiscardRetrievalAction, prese
 import { splitEarthChoiceKey, usesSplitEarthFormationGroups } from '#shared/utils/split-earth-formation-choice'
 import { roomRouteResult } from '~/lib/navigation'
 import { cardChoiceDraftCount, chainChoiceAnswer, isImmediateCardChoice, toggleChoiceCard } from '~/lib/pending-choice-interaction'
+import { secretStrategyDraftAction } from '~/lib/secret-strategy-draft'
 import { isLegalChainTrigger, sheepReturnCards } from '~/lib/pouch-choice'
 import { useLayoutNotifications } from '~/lib/player-notifications-context'
 import { useRulesCatalog } from '~/lib/rules-catalog'
@@ -1377,28 +1365,18 @@ const chainStrategyOptions = computed(() => {
 const selectedChainStrategyAction = computed(() => chainStrategyOptions.value.find(
   option => option.strategy === chainStrategySelection.value,
 ) ?? null)
-const canSubmitSecretStrategyDraft = computed(() => {
+const secretStrategyAction = computed(() => {
   const draft = secretStrategyDraft.value
-  if (!draft) return false
-
-  if (draft.input === 'targetPlayer') {
-    return secretStrategyTargetSelection.value !== null
-      && draft.targetPlayers.includes(secretStrategyTargetSelection.value)
-  }
-  if (draft.input === 'star') {
-    const star = secretStrategyStarSelection.value
-    return star !== null && (secretStrategyBreakStar.value
-      ? draft.breakStars.includes(star)
-      : draft.stars.includes(star))
-  }
-  if (draft.input === 'retreat') {
-    return secretStrategyRetreatSelection.value === 'clearEnvironment'
-      || (secretStrategyRetreatSelection.value !== null
-        && draft.handCards.includes(secretStrategyRetreatSelection.value))
-  }
-
-  return false
+  return draft
+    ? secretStrategyDraftAction(draft, {
+        targetPlayer: secretStrategyTargetSelection.value,
+        star: secretStrategyStarSelection.value,
+        breakStar: secretStrategyBreakStar.value,
+        retreat: secretStrategyRetreatSelection.value,
+      })
+    : undefined
 })
+const canSubmitSecretStrategyDraft = computed(() => secretStrategyAction.value !== undefined)
 const canSubmitPouchChoice = computed(() => {
   if (pouchChoiceKind.value === 'sheep') {
     const count = pouchSwapRequiredCount.value
@@ -1508,22 +1486,10 @@ function startPouchAction(action: PouchStrategyAction) {
 }
 
 async function submitSecretStrategyDraft() {
-  const draft = secretStrategyDraft.value
-  if (!draft || !canSubmitSecretStrategyDraft.value) return
+  const action = secretStrategyAction.value
+  if (!action) return
 
-  const options: Parameters<typeof game.triggerSecretStrategy>[1] = {}
-  if (draft.input === 'targetPlayer') {
-    options.targetPlayer = secretStrategyTargetSelection.value ?? undefined
-  } else if (draft.input === 'star') {
-    options.star = secretStrategyStarSelection.value ?? undefined
-    options.breakStar = secretStrategyBreakStar.value
-  } else if (draft.input === 'retreat') {
-    options.discardCard = secretStrategyRetreatSelection.value === 'clearEnvironment'
-      ? undefined
-      : secretStrategyRetreatSelection.value ?? undefined
-  }
-
-  if (await game.triggerSecretStrategy(draft.strategy, options)) {
+  if (await game.triggerSecretStrategy(action.strategy, action.options)) {
     resetSecretStrategyDraft()
   }
 }
@@ -1785,6 +1751,10 @@ const showSkip = computed(() => (
 const gameResultText = computed(() => {
   if (state.value.fiveStarAlignment) {
     return `五星連珠 · ${teamLabel(state.value.fiveStarAlignment.team)} 勝利`
+  }
+
+  if (state.value.winnerTeam) {
+    return `${teamLabel(state.value.winnerTeam)} 勝利`
   }
 
   const aliveTeams = state.value.hp.filter((entry) => entry.hp > 0)
@@ -2151,11 +2121,7 @@ async function restartGame() {
   replayError.value = ''
 }
 
-async function toggleWaitingRule(moduleId: string) {
-  const current = onlineMetadata.value?.enabledRuleModules ?? []
-  const next = current.includes(moduleId)
-    ? ruleModulePolicy.value.disable(current, moduleId)
-    : ruleModulePolicy.value.enable(current, moduleId)
+async function updateWaitingRuleModules(next: string[]) {
   await game.updateRuleModules(next)
 }
 

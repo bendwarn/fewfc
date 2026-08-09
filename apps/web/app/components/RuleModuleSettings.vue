@@ -1,0 +1,63 @@
+<template>
+  <fieldset class="waiting-rules">
+    <legend>{{ isOwner ? '規則模組' : '啟用規則' }}</legend>
+    <section
+      v-for="group in groups"
+      :key="group.id"
+      class="waiting-rule-group"
+      :aria-labelledby="`waiting-rule-group-${group.id}`"
+    >
+      <h3 :id="`waiting-rule-group-${group.id}`">{{ group.label }}</h3>
+      <label v-for="rule in group.rules" :key="rule.id" class="rule-toggle">
+        <input
+          type="checkbox"
+          :aria-label="rule.label"
+          :checked="enabledRuleModules.includes(rule.id)"
+          :disabled="disabled || !isOwner"
+          @change="toggle(rule.id)"
+        >
+        {{ rule.label }}
+      </label>
+    </section>
+  </fieldset>
+</template>
+
+<script setup lang="ts">
+import type { RuleModuleSpec } from '~/types/fewfc'
+import { createRuleModulePolicy, presentationForRuleModule } from '#shared/utils/rule-modules'
+
+const props = withDefaults(defineProps<{
+  catalog: RuleModuleSpec[]
+  enabledRuleModules: string[]
+  isOwner: boolean
+  disabled?: boolean
+}>(), {
+  disabled: false,
+})
+
+const emit = defineEmits<{
+  'update:enabledRuleModules': [enabledRuleModules: string[]]
+}>()
+
+const policy = computed(() => createRuleModulePolicy(props.catalog))
+const groupLabels = {
+  optional: '選用規則',
+  advanced: '進階規則',
+  theme: '主題規則',
+}
+const groups = computed(() => (['optional', 'advanced', 'theme'] as const).map(id => ({
+  id,
+  label: groupLabels[id],
+  rules: policy.value.modules
+    .filter(module => module.category === id)
+    .map(module => ({ id: module.id, ...presentationForRuleModule(module.id) })),
+})))
+
+function toggle(moduleId: string) {
+  if (props.disabled || !props.isOwner) return
+  const next = props.enabledRuleModules.includes(moduleId)
+    ? policy.value.disable(props.enabledRuleModules, moduleId)
+    : policy.value.enable(props.enabledRuleModules, moduleId)
+  emit('update:enabledRuleModules', next)
+}
+</script>

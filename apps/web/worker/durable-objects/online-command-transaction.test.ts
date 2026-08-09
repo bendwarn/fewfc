@@ -36,7 +36,7 @@ describe('executePlayerCommand', () => {
     })).rejects.toMatchObject({ code: 'idempotencyConflict', statusCode: 409 })
   })
 
-  test('checkpoints every trusted randomness answer before running the next request', async () => {
+  test('drains every trusted shuffle in one command transaction and returns only a redacted room response', async () => {
     const room = randomnessRoom()
 
     const result = await executePlayerCommand(room, {
@@ -47,6 +47,16 @@ describe('executePlayerCommand', () => {
     expect(result.receipt?.transactionStatus).toBe('awaitingRandomness')
     expect(room.randomnessRequests).toStrictEqual(['shuffle-1', 'shuffle-2'])
     expect(room.committedSequences).toStrictEqual([8, 9, 10])
+    expect(room.commandActions).toStrictEqual(['passAction'])
+    expect(result.response).toStrictEqual({
+      state: { pendingRandomness: null },
+      events: [
+        { eventType: 'RustedForestStarted' },
+        { eventType: 'RustedForestCompleted' },
+      ],
+    })
+    expect(JSON.stringify(result.response)).not.toContain('currentOrder')
+    expect(JSON.stringify(result.response)).not.toContain('needsRandomness')
   })
 
   test('keeps a deterministic validation failure as a noncanonical rejection receipt', async () => {
@@ -124,6 +134,7 @@ function randomnessRoom() {
   }
   const randomnessRequests: string[] = []
   const committedSequences: number[] = []
+  const commandActions: string[] = []
   values.set('nextSequence', 8)
   values.set('gameRecord', record)
 
@@ -146,6 +157,7 @@ function randomnessRoom() {
   return {
     randomnessRequests,
     committedSequences,
+    commandActions,
     storage: {
       async get<T>(key: string) { return values.get(key) as T | undefined },
       async put(entries: Record<string, unknown>) {
@@ -166,10 +178,21 @@ function randomnessRoom() {
         randomnessRequests.push(action.requestId as string)
         return action.requestId === 'shuffle-1' ? needs('shuffle-2', [3, 4]) : ready
       }
-      if (action.type === 'passAction') return needs('shuffle-1', [1, 2])
+      if (action.type === 'passAction') {
+        commandActions.push(action.type)
+        return needs('shuffle-1', [1, 2])
+      }
       return ready
     },
-    async response() { return { marker: 'ready' } },
+    async response() {
+      return {
+        state: { pendingRandomness: null },
+        events: [
+          { eventType: 'RustedForestStarted' },
+          { eventType: 'RustedForestCompleted' },
+        ],
+      }
+    },
     shuffle<T>(cards: T[]) { return [...cards].reverse() },
   }
 }

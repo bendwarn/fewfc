@@ -602,7 +602,10 @@ pub(crate) fn active_spell_events(
             if hp > 40 {
                 Vec::new()
             } else {
-                vec![hp_loss_for_player(state, &target, hp)?]
+                vec![GameEvent::KingYamaDecreeVictoryAchieved {
+                    player: player.clone(),
+                    team: TurnOrderTargets::new(state).team_of(player)?,
+                }]
             }
         }
         _ => return Ok(None),

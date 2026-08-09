@@ -254,6 +254,7 @@ export interface PersonalDeckResolution {
 export interface PublicGameState {
   enabledRuleModules: string[]
   status: 'Preparing' | 'InProgress' | 'Finished'
+  winnerTeam: TeamId | null
   turnNumber: number
   phase: 'TurnStart' | 'Main' | 'TurnDraw' | 'TurnDrawDiscardChoice' | 'TurnEnd'
   currentPlayer: PlayerId | null

@@ -36,6 +36,7 @@ import {
 } from '~/lib/pending-choice-interaction'
 import { reconcileActionDraft, toggleActionDraftCard } from '~/lib/action-draft'
 import { presentApiError } from '~/lib/api-error-presentation'
+import { createSubmissionController } from '~/lib/submission-controller'
 
 type ViewerRef = Ref<ViewerId>
 
@@ -73,6 +74,7 @@ function emptyState(): PublicGameState {
     teamStars: [],
     starHistories: [],
     fiveStarAlignment: null,
+    winnerTeam: null,
     professions: [],
     professionCatalog: [],
     cardInterpretations: [],
@@ -239,7 +241,7 @@ export function useGameRoom(viewer: ViewerRef) {
     }
   }
 
-  async function submitOnline(action: OnlineGameAction): Promise<boolean> {
+  const commandSubmission = createSubmissionController(async (action: OnlineGameAction) => {
     const gameInstanceId = metadata.value?.gameInstanceId
     if (!onlineGameId.value || !gameInstanceId) {
       return false
@@ -281,6 +283,11 @@ export function useGameRoom(viewer: ViewerRef) {
       isSubmittingCommand.value = false
       isLoading.value = false
     }
+  })
+
+  async function submitOnline(action: OnlineGameAction): Promise<boolean> {
+    if (commandSubmission.isSubmitting) return false
+    return await commandSubmission.submit(action)
   }
 
   async function refreshOnlineGame() {

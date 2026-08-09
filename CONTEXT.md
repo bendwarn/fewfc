@@ -278,6 +278,13 @@ The physical Card Instances and optional Virtual Formation Card accepted as the
 components of one Formation Use.
 _Avoid_: selected Cards, Discard list
 
+**Formation Area (陣法區)**:
+The Player-owned Card zone holding a Formation's physical Cards after they
+leave that Player's hand and until they are Discarded. Attacks and active
+Spells resolve face up; Covered Passives wait face down until their trigger
+timing. Each Player's Formation Area holds at most one Formation.
+_Avoid_: Formation Display, display zone, Covered Passive zone
+
 **Virtual Formation Card (虛擬牌)**:
 A non-physical Formation component created with a fixed source ability,
 element, and level. It belongs to no Card zone and has no Card Instance or Card
@@ -665,6 +672,12 @@ The accepted use of a Formation Composition, including its semantic resolution
 and explicit movement of its physical Cards.
 _Avoid_: implicit card discard
 
+**Formation Use Commitment (陣法施展承諾)**:
+The irreversible boundary reached when a complete Formation command passes
+validation and its physical Cards enter the performing Player's Formation Area.
+Later prevention or ineffectiveness changes only the resolution outcome.
+_Avoid_: Action Card Selection, Pending Choice, effect completion
+
 **Ineffective Formation (陣法效果無效)**:
 An accepted Formation Use whose Formation effects do not execute. It still
 consumes its action and Cards and satisfies rules based only on performing it.
@@ -697,9 +710,9 @@ it is distinct from Formation Category and is not copied by class change.
 _Avoid_: spell category
 
 **Covered Passive**:
-A hidden passive spell placed by a player and checked at the next player's
+A passive Spell waiting face down in the Formation Area until the next Player's
 action start. If neutralized before that timing, it remains hidden until its
-ordinary reveal and discard.
+ordinary reveal and Discard.
 _Avoid_: trap, secret
 
 **Counter Effect**:
@@ -758,21 +771,38 @@ _Avoid_: activated Spirit Skill, Automatic Profession Ability
 A status kind that prevents a player from taking an action command.
 _Avoid_: stunned, disabled
 
-**Main Phase**:
-The public input phase where the current player may use active-effect commands before exactly one action command closes the phase.
-_Avoid_: active window, action phase
+**Active Effects Process (主動效果流程)**:
+The fixed Turn process after Turn Start and before Action in which the current
+Player may use zero or more Active-Effect Commands. The first accepted Action
+Command ends this process without a separate completion Command.
+_Avoid_: Main Phase, active window
+
+**Action Process (行動流程)**:
+The fixed Turn process after active-effect timing and before Turn Draw in which
+exactly one Action is committed and completed. Choices required by a Formation
+Use pause inside this process rather than creating another Turn phase.
+_Avoid_: Formation Resolution phase, Pending Choice phase
 
 **Turn Draw (回合抽牌)**:
-The mandatory draw step in the turn flow. It draws one extra card and requires
-the Player to choose one of those cards to Discard.
+The mandatory draw step in the turn flow. Drawn Cards enter the Turn Draw Pool,
+one is Discarded, and only the remaining Cards then enter the Player's hand.
 _Avoid_: 抽牌選擇
 
+**Turn Draw Pool (回合抽牌區)**:
+The transient Card zone holding Cards removed from a Deck during Turn Draw
+until one is Discarded and all remaining Cards enter the Player's hand. The
+Game has at most one Turn Draw Pool because only the current Turn Draw may be
+unresolved.
+_Avoid_: temporary hand, drawn hand, Pending Choice
+
 **Active-Effect Command**:
-A non-formation player ability command that may be used during the main phase without closing the player's action opportunity.
+A non-Formation Player ability Command that may be used during the Active
+Effects Process without committing the Player's Action.
 _Avoid_: formation action
 
 **Action Command**:
-The command that consumes the player's action opportunity and closes the main phase.
+A Command that ends the Active Effects Process and commits the Player's one
+Action for the Turn.
 _Avoid_: active-effect command
 
 **Action Pass**:

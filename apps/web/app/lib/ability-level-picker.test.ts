@@ -20,6 +20,19 @@ function darkSpirit(level: number): Extract<
   }
 }
 
+function splendor(level: number): Extract<PlayableAction, { type: 'useSpiritSkill' }> {
+  return {
+    type: 'useSpiritSkill',
+    commandRole: 'activeEffect',
+    id: 'Splendor',
+    name: '絢爛',
+    detail: null,
+    cards: [8],
+    selectedCard: 8,
+    declaredLevel: level,
+  }
+}
+
 describe('Ability level picker', () => {
   test('keeps one Dark Spirit trigger even when only one level is legal', () => {
     const picker = abilityLevelPicker(
@@ -55,5 +68,21 @@ describe('Ability level picker', () => {
       abilityLevelPicker(abilities, 'activateProfessionAbility', 'dark:dark-spirit')
         ?.options.map(option => option.declaredLevel),
     ).toEqual([1, 2])
+  })
+
+  test('retains each exact Splendor action for the declared-level menu', () => {
+    const picker = abilityLevelPicker(
+      [splendor(5), splendor(1), splendor(4), splendor(2), splendor(3)],
+      'useSpiritSkill',
+      'Splendor',
+    )
+
+    expect(picker?.options.map(option => option.declaredLevel)).toEqual([1, 2, 3, 4, 5])
+    expect(picker?.options[3]).toMatchObject({
+      type: 'useSpiritSkill',
+      id: 'Splendor',
+      selectedCard: 8,
+      declaredLevel: 4,
+    })
   })
 })

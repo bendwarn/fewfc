@@ -753,6 +753,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::VoidReversionResolved { .. }
         | GameEvent::VoidSpiritShatteringResolved { .. }
         | GameEvent::FiveStarAlignmentAchieved { .. }
+        | GameEvent::KingYamaDecreeVictoryAchieved { .. }
         | GameEvent::TurnDrawBonusChanged { .. }
         | GameEvent::ShieldChanged { .. }
         | GameEvent::HpChanged { .. }

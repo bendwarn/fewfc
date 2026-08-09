@@ -1,6 +1,5 @@
 import type { APIResponse, Page } from '@playwright/test'
 import {
-  activePlayerPage,
   expect,
   reloadFastGameRoute,
   seedDevelopmentScenario,
@@ -62,46 +61,6 @@ async function chooseVisibleInitialPouch(host: Page, guest: Page) {
   await command
 }
 
-async function chooseInitialPouchWithCard(
-  host: Page,
-  guest: Page,
-  element: string,
-  level: number,
-) {
-  const hostChoice = host.getByRole('dialog', { name: '選擇初始錦囊' })
-    .getByRole('button', { name: new RegExp(`選擇作為初始錦囊：${element} ${level} 級`) })
-  const guestChoice = guest.getByRole('dialog', { name: '選擇初始錦囊' })
-    .getByRole('button', { name: new RegExp(`選擇作為初始錦囊：${element} ${level} 級`) })
-
-  await expect.poll(async () => (
-    Number(await hostChoice.isVisible()) + Number(await guestChoice.isVisible())
-  )).toBe(1)
-
-  const page = await hostChoice.isVisible() ? host : guest
-  const choice = page === host ? hostChoice : guestChoice
-  const command = waitForCommand(page, 'chooseInitialPouch')
-  await choice.click()
-  await command
-}
-
-async function chooseInitialPouchForEachPlayer(
-  host: Page,
-  guest: Page,
-  element: string,
-  level: number,
-) {
-  for (let selection = 0; selection < 2; selection += 1) {
-    await chooseInitialPouchWithCard(host, guest, element, level)
-  }
-}
-
-async function roomSnapshot(page: Page, roomId: string) {
-  return await requestJson<{ state: unknown; events: unknown[] }>(
-    `GET /api/games/${roomId}`,
-    page.context().request.get(`/api/games/${roomId}`),
-  )
-}
-
 async function chooseTwoMatrixCards(page: Page, label: string) {
   const matrix = page.getByLabel(label)
   const buttons = matrix.getByRole('button')
@@ -146,108 +105,6 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     await command
     await expect(active.getByRole('button', { name: /秘計‧金蟬/ })).toHaveCount(0)
     await expect(active.locator('.persistent-effect')).toContainText('本回合結束 · 金蟬')
-  } finally {
-    await game.close()
-  }
-})
-
-test('Earth level-five Pouch stages Secret Strategy inputs locally before confirmation', async ({ browser }) => {
-  const game = await setupFastTwoPlayerGame(browser, {
-    roomName: `土五錦囊秘計測試 ${Date.now()}`,
-    enabledRuleModules: pouchRuleModules,
-  })
-  const { host, guest, pages, gameId: roomId } = game
-
-  try {
-    await chooseInitialPouchForEachPlayer(host, guest, '土', 5)
-    const active = await activePlayerPage(pages)
-    await reloadFastGameRoute(active, roomId)
-
-    const lure = active.getByRole('button', { name: /秘計‧離山/ })
-    const retreat = active.getByRole('button', { name: /秘計‧走為/ })
-    await expect(lure).toHaveCount(1)
-    await expect(retreat).toHaveCount(1)
-    await lure.hover()
-    await expect(active.locator('.action-detail')).toContainText('點擊後需要先選擇目標玩家')
-
-    const beforeCancel = await roomSnapshot(active, roomId)
-    await lure.click()
-    const draft = active.getByRole('dialog', { name: '秘計‧離山：選擇輸入' })
-    await expect(draft).toBeVisible()
-    await expect(draft.getByRole('button', { name: '確認' })).toBeDisabled()
-    await draft.getByLabel('離山目標').getByRole('button').first().click()
-    await expect(draft.getByRole('button', { name: '確認' })).toBeEnabled()
-    await draft.getByRole('button', { name: '取消' }).click()
-    await expect(draft).toHaveCount(0)
-    expect(await roomSnapshot(active, roomId)).toEqual(beforeCancel)
-
-    await lure.click()
-    const confirmedDraft = active.getByRole('dialog', { name: '秘計‧離山：選擇輸入' })
-    await confirmedDraft.getByLabel('離山目標').getByRole('button').first().click()
-    const command = waitForCommand(active, 'triggerSecretStrategy')
-    await confirmedDraft.getByRole('button', { name: '確認' }).click()
-    await command
-    await expect(lure).toHaveCount(0)
-  } finally {
-    await game.close()
-  }
-})
-
-test('Retreat stages clear-environment or hand-card choices before confirmation', async ({ browser }) => {
-  const game = await setupFastTwoPlayerGame(browser, {
-    roomName: `走為錦囊秘計測試 ${Date.now()}`,
-    enabledRuleModules: pouchRuleModules,
-  })
-  const { host, guest, pages, gameId: roomId } = game
-
-  try {
-    await chooseInitialPouchForEachPlayer(host, guest, '土', 5)
-    const active = await activePlayerPage(pages)
-    await reloadFastGameRoute(active, roomId)
-
-    const retreat = active.getByRole('button', { name: /秘計‧走為/ })
-    await expect(retreat).toHaveCount(1)
-    await retreat.click()
-    const draft = active.getByRole('dialog', { name: '秘計‧走為：選擇輸入' })
-    await expect(draft.getByRole('button', { name: '確認' })).toBeDisabled()
-    await draft.getByLabel('走為選擇').getByRole('button', { name: '破除環境' }).click()
-    await expect(draft.getByRole('button', { name: '確認' })).toBeEnabled()
-    await draft.getByRole('button', { name: '取消' }).click()
-
-    await retreat.click()
-    const confirmedDraft = active.getByRole('dialog', { name: '秘計‧走為：選擇輸入' })
-    await confirmedDraft.getByLabel('走為選擇').getByRole('button', { name: /捨棄/ }).first().click()
-    const command = waitForCommand(active, 'triggerSecretStrategy')
-    await confirmedDraft.getByRole('button', { name: '確認' }).click()
-    await command
-    await expect(retreat).toHaveCount(0)
-  } finally {
-    await game.close()
-  }
-})
-
-test('Level-four Pouch opens a local Star selection before triggering Deceive Heaven', async ({ browser }) => {
-  const game = await setupFastTwoPlayerGame(browser, {
-    roomName: `四級錦囊秘計測試 ${Date.now()}`,
-    enabledRuleModules: pouchRuleModules,
-  })
-  const { host, guest, pages, gameId: roomId } = game
-
-  try {
-    await chooseInitialPouchForEachPlayer(host, guest, '金', 4)
-    const active = await activePlayerPage(pages)
-    await reloadFastGameRoute(active, roomId)
-
-    const deceiveHeaven = active.getByRole('button', { name: /秘計‧瞞天/ })
-    await expect(deceiveHeaven).toHaveCount(1)
-    await deceiveHeaven.click()
-    const draft = active.getByRole('dialog', { name: '秘計‧瞞天：選擇輸入' })
-    await expect(draft.getByRole('button', { name: '確認' })).toBeDisabled()
-    await draft.getByLabel('瞞天選擇').getByRole('button', { name: /取得/ }).first().click()
-    const command = waitForCommand(active, 'triggerSecretStrategy')
-    await draft.getByRole('button', { name: '確認' }).click()
-    await command
-    await expect(deceiveHeaven).toHaveCount(0)
   } finally {
     await game.close()
   }

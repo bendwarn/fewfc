@@ -25,7 +25,8 @@
     "test:e2e:server": "bun tests/e2e/prepare-storage.ts && bun run build && bun db:migrate:local --persist-to .wrangler/e2e && wrangler dev --persist-to .wrangler/e2e --port 8727 --var LOCAL_PASSWORD_RESET_ENABLED:true --var BETTER_AUTH_URL:http://localhost:8727",
     "test:e2e:server:built": "bun tests/e2e/prepare-storage.ts && bun db:migrate:local --persist-to .wrangler/e2e && wrangler dev --persist-to .wrangler/e2e --port 8727 --var LOCAL_PASSWORD_RESET_ENABLED:true --var BETTER_AUTH_URL:http://localhost:8727",
     "typecheck": "nuxt typecheck",
-    "validate:deploy": "bun validate-deploy-environment.ts"
+    "validate:deploy": "bun validate-deploy-environment.ts",
+    "test:component": "APP_ENV=development vitest --config vitest.config.ts --run"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "^1.6.25",
@@ -37,15 +38,19 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260731.1",
+    "@nuxt/test-utils": "^4.1.0",
     "@playwright/cli": "^0.1.17",
     "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/bun": "^1.3.14",
     "@types/node": "^26.1.2",
+    "@vue/test-utils": "^2.4.11",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
+    "happy-dom": "^20.11.2",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
+    "vitest": "^4.1.10",
     "vue-tsc": "^3.3.9",
     "wrangler": "^4.116.0"
   }

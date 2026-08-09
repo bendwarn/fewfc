@@ -1671,6 +1671,7 @@ impl WebInteraction {
 struct WebPublicGameState {
     enabled_rule_modules: Vec<String>,
     status: String,
+    winner_team: Option<String>,
     turn_number: u64,
     phase: String,
     current_player: Option<String>,
@@ -1722,6 +1723,12 @@ impl WebPublicGameState {
             } => Some(player.as_str().to_string()),
             _ => None,
         };
+        let winner_team = match &state.status {
+            crate::domain::GameStatus::Finished {
+                outcome: crate::domain::GameOutcome::Team(team),
+            } => Some(team.as_str().to_string()),
+            _ => None,
+        };
         Self {
             enabled_rule_modules: enabled_rule_modules
                 .iter()
@@ -1732,6 +1739,7 @@ impl WebPublicGameState {
                 crate::domain::GameStatus::InProgress => "InProgress".to_string(),
                 crate::domain::GameStatus::Finished { .. } => "Finished".to_string(),
             },
+            winner_team,
             turn_number: state.turn_number,
             phase: format!("{:?}", state.phase),
             current_player: state
@@ -4163,6 +4171,10 @@ fn game_event_presentation_with_vocabulary(
             "五星連珠".to_string(),
             format!("{} 完成五星連珠，所屬隊伍獲勝。", player.as_str()),
         ),
+        GameEvent::KingYamaDecreeVictoryAchieved { player, .. } => (
+            "閻王令".to_string(),
+            format!("{} 施展閻王令，所屬隊伍直接獲勝。", player.as_str()),
+        ),
         GameEvent::EchoCostPaid { player, .. } => (
             "支付迴響代價".to_string(),
             format!("{} 捨棄一張牌並排定迴響。", player.as_str()),
@@ -5385,6 +5397,7 @@ mod tests {
         let json = serde_json::to_value(web_state).expect("web state should serialize");
 
         assert_eq!(json["status"], "Finished");
+        assert_eq!(json["winnerTeam"], setup.players[0].team.as_str());
     }
 
     #[test]

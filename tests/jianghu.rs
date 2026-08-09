@@ -1,9 +1,9 @@
 use fewfc::application::{advance_automatic, apply_event, handle_command};
 use fewfc::domain::{
-    CardInstanceId, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameState,
-    HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind, LastFormationUse,
-    Phase, Player, PlayerId, PlayerProfession, ProfessionId, RuleModuleId, STAR_MODULE_ID, TeamId,
-    TeamStar,
+    CardInstanceId, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameOutcome,
+    GameState, GameStatus, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState,
+    JianghuStateKind, LastFormationUse, Phase, Player, PlayerId, PlayerProfession, ProfessionId,
+    RuleModuleId, STAR_MODULE_ID, StatusDuration, StatusEffect, StatusOwner, TeamId, TeamStar,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -196,6 +196,63 @@ fn poison_stacks_ticks_at_affected_players_turn_end_and_uses_poison_mastery() {
             .unwrap()
             .remaining_turns,
         2
+    );
+}
+
+#[test]
+fn king_yama_decree_wins_directly_through_watch_fire_protection() {
+    let mut game = state();
+    set_profession(&mut game, "p1", "jianghu:poison-saint");
+    let decree = cards(&game, &[(Element::Metal, 1)]);
+    set_hand(&mut game, "p1", decree.clone());
+    game.hp
+        .iter_mut()
+        .find(|team_hp| team_hp.team == TeamId::new("team:b"))
+        .unwrap()
+        .hp = 40;
+    game.statuses.push(StatusEffect {
+        id: "watch-fire".to_string(),
+        owner: StatusOwner::Player(PlayerId::new("p1")),
+        kind: "PouchWatchFire".to_string(),
+        value: None,
+        duration: StatusDuration::UntilTurnEnd {
+            player: PlayerId::new("p1"),
+        },
+    });
+
+    let events = handle_command(
+        &game,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "jianghu:king-yama-decree".to_string(),
+            cards: decree,
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::KingYamaDecreeVictoryAchieved { player, team }
+            if player == &PlayerId::new("p1") && team == &TeamId::new("team:a")
+    )));
+    for event in &events {
+        apply_event(&mut game, event);
+    }
+
+    assert_eq!(
+        game.status,
+        GameStatus::Finished {
+            outcome: GameOutcome::Team(TeamId::new("team:a")),
+        }
+    );
+    assert_eq!(
+        game.hp
+            .iter()
+            .find(|team_hp| team_hp.team == TeamId::new("team:b"))
+            .unwrap()
+            .hp,
+        40,
+        "觀火仍應阻止陣式造成的生命值變化"
     );
 }
 

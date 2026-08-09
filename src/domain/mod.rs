@@ -1989,6 +1989,10 @@ pub enum GameEvent {
         player: PlayerId,
         team: TeamId,
     },
+    KingYamaDecreeVictoryAchieved {
+        player: PlayerId,
+        team: TeamId,
+    },
     TurnDrawBonusChanged {
         player: PlayerId,
         old_value: usize,

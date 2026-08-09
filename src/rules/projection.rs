@@ -772,6 +772,11 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 outcome: GameOutcome::Team(team.clone()),
             };
         }
+        GameEvent::KingYamaDecreeVictoryAchieved { team, .. } => {
+            state.status = GameStatus::Finished {
+                outcome: GameOutcome::Team(team.clone()),
+            };
+        }
         GameEvent::TurnDrawBonusChanged {
             player, new_value, ..
         } => {

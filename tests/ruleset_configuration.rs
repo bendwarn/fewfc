@@ -119,33 +119,63 @@ fn official_setup_uses_rulebook_hp_for_base_and_advanced_games() {
 #[test]
 fn official_rule_module_catalog_is_the_authoritative_configuration_contract() {
     let catalog = OfficialRules::new().rule_module_catalog();
-    let spirit = catalog
-        .iter()
-        .find(|module| module.id.as_str() == "spirit")
-        .unwrap();
-    assert_eq!(spirit.category, OfficialRuleModuleCategory::Theme);
-    assert!(spirit.default_enabled);
     assert_eq!(
-        spirit
-            .dependencies
+        catalog
             .iter()
-            .map(|module| module.as_str())
+            .map(|module| (
+                module.id.as_str(),
+                module.category,
+                module.default_enabled,
+                module
+                    .dependencies
+                    .iter()
+                    .map(|dependency| dependency.as_str())
+                    .collect::<Vec<_>>(),
+            ))
             .collect::<Vec<_>>(),
-        ["star", "five-directions-legend", "hero-schools"]
-    );
-
-    let pouch = catalog
-        .iter()
-        .find(|module| module.id.as_str() == "pouch")
-        .unwrap();
-    assert_eq!(pouch.category, OfficialRuleModuleCategory::Theme);
-    assert!(pouch.default_enabled);
-    assert_eq!(
-        pouch
-            .dependencies
-            .iter()
-            .map(|module| module.as_str())
-            .collect::<Vec<_>>(),
-        ["personal-deck", "spirit"]
+        vec![
+            ("discard-retrieval", OfficialRuleModuleCategory::Optional, true, vec![]),
+            ("personal-deck", OfficialRuleModuleCategory::Optional, true, vec![]),
+            ("five-directions-legend", OfficialRuleModuleCategory::Advanced, true, vec![]),
+            ("star", OfficialRuleModuleCategory::Advanced, true, vec![]),
+            ("hero-schools", OfficialRuleModuleCategory::Advanced, true, vec![]),
+            (
+                "spirit",
+                OfficialRuleModuleCategory::Theme,
+                true,
+                vec!["star", "five-directions-legend", "hero-schools"],
+            ),
+            (
+                "jianghu",
+                OfficialRuleModuleCategory::Theme,
+                true,
+                vec!["star", "five-directions-legend", "hero-schools"],
+            ),
+            (
+                "confluence-generation",
+                OfficialRuleModuleCategory::Theme,
+                true,
+                vec!["star", "five-directions-legend", "hero-schools"],
+            ),
+            ("dark-glimmer", OfficialRuleModuleCategory::Theme, true, vec!["spirit"]),
+            (
+                "echo",
+                OfficialRuleModuleCategory::Theme,
+                true,
+                vec!["star", "five-directions-legend", "hero-schools"],
+            ),
+            (
+                "tribulation",
+                OfficialRuleModuleCategory::Theme,
+                true,
+                vec!["star", "five-directions-legend", "hero-schools"],
+            ),
+            (
+                "pouch",
+                OfficialRuleModuleCategory::Theme,
+                true,
+                vec!["personal-deck", "spirit"],
+            ),
+        ]
     );
 }

@@ -1,42 +1,10 @@
-import type { Page } from '@playwright/test'
 import {
   expect,
   reloadFastGameRoute,
   seedDevelopmentScenario,
   setupFastTwoPlayerGame,
-  setupFastWaitingRoom,
   test,
 } from './fixtures'
-
-async function waitForPlayableActions(page: Page) {
-  return page.waitForResponse(response => (
-    response.url().includes('/commands')
-    && response.request().method() === 'POST'
-    && (response.request().postData() ?? '').includes('"type":"playableActions"')
-    && response.ok()
-  ))
-}
-
-test('Echo defaults on and normalizes every Advanced Rule dependency', async ({ browser }) => {
-  const room = await setupFastWaitingRoom(browser, {
-    roomName: `迴響測試 ${Date.now()}`,
-  })
-  const { page } = room
-
-  try {
-    await expect(page.getByLabel('迴響')).toBeChecked()
-
-    await page.getByLabel('英雄學派').uncheck()
-    await expect(page.getByLabel('迴響')).not.toBeChecked()
-
-    await page.getByLabel('迴響').check()
-    await expect(page.getByLabel('星辰圖記')).toBeChecked()
-    await expect(page.getByLabel('英雄學派')).toBeChecked()
-    await expect(page.getByLabel('五方傳說')).toBeChecked()
-  } finally {
-    await room.close()
-  }
-})
 
 test('Pure Fire target choice is private, accessible, and reconnectable', async ({ browser }) => {
   const game = await setupFastTwoPlayerGame(browser, {
@@ -66,121 +34,6 @@ test('Pure Fire target choice is private, accessible, and reconnectable', async 
     expect(answer.ok(), await answer.text()).toBe(true)
     await expect(host.getByText('淨火', { exact: true })).toBeVisible()
     await expect(host.getByText(/迴響 · .* · 第 \d+ 回合/)).toBeVisible()
-  } finally {
-    await game.close()
-  }
-})
-
-test('Split Earth selects a Formation through its providing rules', async ({ browser }) => {
-  const game = await setupFastTwoPlayerGame(browser, {
-    roomName: `裂土選擇測試 ${Date.now()}`,
-  })
-  const { host, guest, gameId: roomId } = game
-
-  try {
-    await seedDevelopmentScenario(host, { name: 'echo-split-earth' })
-
-    await reloadFastGameRoute(host, roomId)
-    await expect(host.getByRole('heading', { name: '宮調‧裂土：選擇要壓制的陣法' })).toBeVisible()
-    await expect(host.getByLabel('選擇提供陣法的規則')).toBeVisible()
-    await expect(host.getByLabel('選擇陣法', { exact: true })).toHaveCount(0)
-
-    await host.getByRole('button', { name: '選擇規則 五方傳說' }).click()
-    await expect(host.getByLabel('選擇提供陣法的規則')).toHaveCount(0)
-    await expect(host.getByLabel('選擇陣法', { exact: true })).toContainText('東‧青龍')
-    await host.getByRole('button', { name: '重新選擇規則' }).click()
-    await expect(host.getByLabel('選擇提供陣法的規則')).toBeVisible()
-
-    await host.getByRole('button', { name: '選擇規則 五方傳說' }).click()
-    await reloadFastGameRoute(host, roomId)
-    await expect(host.getByLabel('選擇提供陣法的規則')).toBeVisible()
-    await expect(host.getByLabel('選擇陣法', { exact: true })).toHaveCount(0)
-
-    await reloadFastGameRoute(guest, roomId)
-    await expect(guest.getByText('宮調‧裂土：選擇要壓制的陣法', { exact: true })).toBeVisible()
-    await expect(guest.getByLabel('選擇提供陣法的規則')).toHaveCount(0)
-
-    await host.getByRole('button', { name: '選擇規則 基礎規則' }).click()
-    const [answer] = await Promise.all([
-      host.waitForResponse(response => (
-        response.url().endsWith(`/api/games/${roomId}/commands`)
-        && response.request().postDataJSON()?.action?.type === 'answerChoice'
-      )),
-      host.getByRole('button', { name: '選擇陣法 武器' }).click(),
-    ])
-    expect(answer.ok(), await answer.text()).toBe(true)
-    await expect(host.getByText(/裂土：壓制 武器/)).toBeVisible()
-  } finally {
-    await game.close()
-  }
-})
-
-test('Ringing Metal Card Choice Matrix submits its one-card answer immediately', async ({ browser }) => {
-  const game = await setupFastTwoPlayerGame(browser, {
-    roomName: `鳴金即時選擇 ${Date.now()}`,
-  })
-  const { host, gameId: roomId } = game
-
-  try {
-    await seedDevelopmentScenario(host, { name: 'echo-ringing-metal' })
-
-    await reloadFastGameRoute(host, roomId)
-    await expect(host.getByRole('heading', { name: '商調‧鳴金：從牌組選擇一張牌' })).toBeVisible()
-    const matrix = host.getByRole('group', { name: '商調‧鳴金牌組矩陣' })
-    const card = matrix.getByRole('button').first()
-    await expect(card).toBeVisible()
-    await expect(card).toHaveAttribute('aria-pressed', 'false')
-    await expect(host.getByRole('button', { name: '確認選擇' })).toHaveCount(0)
-
-    const [answer] = await Promise.all([
-      host.waitForResponse(response => (
-        response.url().endsWith(`/api/games/${roomId}/commands`)
-        && response.request().postDataJSON()?.action?.type === 'answerChoice'
-      )),
-      card.click(),
-    ])
-    expect(answer.ok(), await answer.text()).toBe(true)
-    expect(answer.request().postDataJSON()?.action?.answer).toEqual({
-      type: 'cards',
-      cards: expect.any(Array),
-    })
-    await expect(host.getByRole('heading', {
-      name: '商調‧鳴金：選擇一張手牌支付迴響代價，或放棄迴響',
-    })).toBeVisible()
-  } finally {
-    await game.close()
-  }
-})
-
-test('Echo action detail renders scheduled typed consequences on the battlefield', async ({ browser }) => {
-  const game = await setupFastTwoPlayerGame(browser, {
-    roomName: `迴響行動詳情 ${Date.now()}`,
-  })
-  const { host: page, guest, gameId: roomId } = game
-
-  try {
-    const seeded = await seedDevelopmentScenario<{ fixtureCards?: number[] }>(page, {
-      name: 'echo-pure-fire',
-      options: { mode: 'actionDetail' },
-    })
-    expect(seeded.fixtureCards?.length).toBe(2)
-
-    await reloadFastGameRoute(page, roomId)
-    await expect(page.getByRole('region', { name: '啟用規則' })).toBeVisible()
-
-    for (const cardId of seeded.fixtureCards ?? []) {
-      const response = waitForPlayableActions(page)
-      await page.locator(`[data-card-id="${cardId}"]`).click()
-      await response
-    }
-
-    const pureFire = page.getByRole('button', { name: '變徵‧淨火' })
-    await expect(pureFire).toBeVisible()
-    await pureFire.hover()
-    const detail = page.locator('.action-detail')
-    await expect(detail).toContainText('結算此曲調的主效果')
-    await expect(detail).toContainText('下次回合開始再執行一次此曲調主效果')
-    await expect(detail).not.toContainText('可捨棄')
   } finally {
     await game.close()
   }

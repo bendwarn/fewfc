@@ -212,6 +212,7 @@ pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::VoidReversionResolved { .. }
         | GameEvent::VoidSpiritShatteringResolved { .. }
         | GameEvent::FiveStarAlignmentAchieved { .. }
+        | GameEvent::KingYamaDecreeVictoryAchieved { .. }
         | GameEvent::CardsMoved { .. }
         | GameEvent::ChoiceMade { .. }
         | GameEvent::ChoiceRequested { .. }
