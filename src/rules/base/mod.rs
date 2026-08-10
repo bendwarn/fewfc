@@ -1464,6 +1464,7 @@ pub(crate) fn resolve_answered_choice(
             )?);
         }
     }
+    formation_use::append_completed_active_spell_post_formation_events(state, &mut events)?;
     append_terminal_game_end(state, &mut events);
     let mut projected = state.clone();
     for event in &events {

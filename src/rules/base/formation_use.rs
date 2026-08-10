@@ -50,6 +50,7 @@ pub(super) fn resolve(
         }
     };
     let is_passive = matches!(plan.effect_plan, EffectPlan::PassiveSpell(_));
+    let is_active_spell = matches!(&plan.effect_plan, EffectPlan::ActiveSpell(_));
     let mut events = BaseEffectResolver::new().resolve(state, plan)?;
     // Composite Formation effects historically carried their own formation
     // cards as Hand-to-Discard deltas.  Under Formation Areas those are the
@@ -112,6 +113,9 @@ pub(super) fn resolve(
     crate::rules::dark::append_shared_fate_events(state, &player, &formation_id, &mut events)?;
     crate::rules::dark::append_mischief_events(state, &mut events)?;
     crate::rules::pouch::suppress_watch_fire_formation_hp_changes(state, &player, &mut events);
+    if is_active_spell {
+        append_post_formation_events(state, &player, &formation_id, &mut events)?;
+    }
     attack_resolution::absorb_simultaneous_events(&mut events);
     super::append_terminal_game_end(state, &mut events);
     let waits_for_choice = events.iter().any(|event| {
@@ -131,6 +135,113 @@ pub(super) fn resolve(
         });
     }
     Ok(events)
+}
+
+pub(super) fn append_completed_active_spell_post_formation_events(
+    state: &GameState,
+    events: &mut Vec<GameEvent>,
+) -> GameResult<()> {
+    let mut projected = state.clone();
+    for event in events.iter() {
+        crate::rules::projection::apply_event(&mut projected, event);
+    }
+
+    if projected.pending_choice.is_some()
+        || projected.pending_randomness.is_some()
+        || !matches!(projected.status, crate::domain::GameStatus::InProgress)
+        || projected.phase != crate::domain::Phase::Action
+    {
+        return Ok(());
+    }
+    let Some(player) = projected.current_player().cloned() else {
+        return Ok(());
+    };
+    let Some(formation) = projected
+        .formation_area(&player)
+        .and_then(|area| area.formation.as_ref())
+    else {
+        return Ok(());
+    };
+    if !matches!(
+        formation.state,
+        crate::domain::FormationAreaState::FaceUpResolving
+    ) {
+        return Ok(());
+    }
+
+    let registry = base_formation_registry();
+    let is_active_spell = registry
+        .formation(&formation.formation_id)
+        .and_then(|definition| registry.effect_for(definition))
+        .is_some_and(|effect| matches!(effect.plan, EffectPlan::ActiveSpell(_)));
+    if is_active_spell {
+        append_post_formation_events(state, &player, &formation.formation_id, events)?;
+    }
+    Ok(())
+}
+
+pub(super) fn append_post_formation_events(
+    state: &GameState,
+    player: &PlayerId,
+    formation_id: &str,
+    events: &mut Vec<GameEvent>,
+) -> GameResult<()> {
+    if events
+        .iter()
+        .any(|event| matches!(event, GameEvent::GameEnded { .. }))
+    {
+        return Ok(());
+    }
+
+    let mut projected = state.clone();
+    for event in events.iter() {
+        crate::rules::projection::apply_event(&mut projected, event);
+    }
+    if projected.pending_choice.is_some() || projected.pending_randomness.is_some() {
+        return Ok(());
+    }
+
+    // Test terminality without mutating the actual event stream: the terminal
+    // fact must remain last, so a post-Formation consequence can never follow
+    // it.
+    let mut terminal_probe = events.clone();
+    super::append_terminal_game_end(state, &mut terminal_probe);
+    if terminal_probe
+        .iter()
+        .any(|event| matches!(event, GameEvent::GameEnded { .. }))
+    {
+        return Ok(());
+    }
+
+    for intent in crate::rules::hero::post_formation_intents(&projected, player, formation_id)? {
+        match intent {
+            crate::rules::hero::PostFormationIntent::AddTurnDraw { player, amount } => {
+                let old_value = projected
+                    .turn_draw_bonus_by_player
+                    .get(&player)
+                    .copied()
+                    .unwrap_or(0);
+                events.push(GameEvent::TurnDrawBonusChanged {
+                    player,
+                    old_value,
+                    delta: amount as i32,
+                    new_value: old_value + amount,
+                });
+            }
+            crate::rules::hero::PostFormationIntent::AddStatus { status } => {
+                events.push(GameEvent::StatusAdded {
+                    status: crate::rules::jianghu::shorten_enemy_status(&projected, status),
+                });
+            }
+            crate::rules::hero::PostFormationIntent::EstablishCounterEffect {
+                owner,
+                effect_id,
+            } => {
+                events.push(GameEvent::CounterEffectEstablished { owner, effect_id });
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn answer_choice(

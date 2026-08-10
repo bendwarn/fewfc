@@ -1,9 +1,9 @@
 use fewfc::application::{apply_event, handle_command, resolve_trusted_randomness};
 use fewfc::domain::{
-    CardInstanceId, CardOrigin, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
-    GameEvent, GameState, HERO_SCHOOLS_MODULE_ID, PERSONAL_DECK_MODULE_ID, PassiveTriggerTiming,
-    Phase, Player, PlayerId, PlayerProfession, ProfessionId, RuleModuleId, STAR_MODULE_ID,
-    TargetDecl, TeamId, TrustedRandomnessAnswer, ValidationError,
+    CardInstanceId, CardOrigin, ChoiceAnswer, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+    GameError, GameEvent, GameState, HERO_SCHOOLS_MODULE_ID, PERSONAL_DECK_MODULE_ID,
+    PassiveTriggerTiming, Phase, Player, PlayerId, PlayerProfession, ProfessionId, RuleModuleId,
+    STAR_MODULE_ID, TargetDecl, TeamId, TrustedRandomnessAnswer, ValidationError,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{ActionInputRequirement, OfficialRules, PlayableAction};
@@ -110,6 +110,214 @@ fn perform(
             declared_targets,
         },
     )
+}
+
+fn answer_choice(
+    state: &GameState,
+    player: PlayerId,
+    answer: ChoiceAnswer,
+) -> Result<Vec<GameEvent>, GameError> {
+    handle_command(
+        state,
+        Command::AnswerChoice {
+            player,
+            choice_id: state
+                .pending_choice
+                .as_ref()
+                .expect("pending choice")
+                .choice_id,
+            answer,
+        },
+    )
+}
+
+#[test]
+fn immortal_chaos_grants_one_draw_after_chaos_return_two_completes() {
+    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
+    set_profession(&mut state, "p1", "immortal");
+    let chaos = cards(
+        &state,
+        &[
+            (Element::Earth, 1),
+            (Element::Earth, 2),
+            (Element::Wood, 1),
+            (Element::Metal, 1),
+        ],
+    );
+    let selected_for_return = cards(&state, &[(Element::Fire, 1), (Element::Water, 1)]);
+    set_hand(&mut state, "p1", chaos.clone());
+    set_hand(&mut state, "p2", selected_for_return.clone());
+
+    let formation_events = perform(&state, "chaos", chaos, Vec::new()).unwrap();
+    assert!(
+        !formation_events
+            .iter()
+            .any(|event| matches!(event, GameEvent::TurnDrawBonusChanged { .. }))
+    );
+    apply_all(&mut state, &formation_events);
+
+    let completion_events = answer_choice(
+        &state,
+        PlayerId::new("p1"),
+        ChoiceAnswer::Cards {
+            cards: selected_for_return,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        completion_events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                GameEvent::TurnDrawBonusChanged {
+                    player,
+                    old_value: 0,
+                    delta: 1,
+                    new_value: 1,
+                } if player == &PlayerId::new("p1")
+            ))
+            .count(),
+        1
+    );
+    apply_all(&mut state, &completion_events);
+    assert_eq!(
+        state.turn_draw_bonus_by_player.get(&PlayerId::new("p1")),
+        Some(&1)
+    );
+}
+
+#[test]
+fn immortal_barrier_grants_one_draw_through_the_completed_active_spell_boundary() {
+    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
+    set_profession(&mut state, "p1", "immortal");
+    let barrier = cards(
+        &state,
+        &[
+            (Element::Wood, 1),
+            (Element::Wood, 2),
+            (Element::Metal, 1),
+            (Element::Fire, 1),
+        ],
+    );
+    set_hand(&mut state, "p1", barrier.clone());
+
+    let events = perform(&state, "barrier", barrier, Vec::new()).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                GameEvent::TurnDrawBonusChanged {
+                    player,
+                    old_value: 0,
+                    delta: 1,
+                    new_value: 1,
+                } if player == &PlayerId::new("p1")
+            ))
+            .count(),
+        1
+    );
+    apply_all(&mut state, &events);
+    assert_eq!(
+        state.turn_draw_bonus_by_player.get(&PlayerId::new("p1")),
+        Some(&1)
+    );
+}
+
+#[test]
+fn immortal_radiance_and_return_to_origin_grant_one_draw_as_completed_active_spells() {
+    for (formation_id, formation_cards) in [
+        (
+            "radiance",
+            vec![
+                (Element::Metal, 1),
+                (Element::Metal, 2),
+                (Element::Fire, 1),
+                (Element::Water, 1),
+            ],
+        ),
+        (
+            "return-to-origin",
+            vec![
+                (Element::Water, 1),
+                (Element::Water, 2),
+                (Element::Earth, 1),
+                (Element::Wood, 1),
+            ],
+        ),
+    ] {
+        let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
+        set_profession(&mut state, "p1", "immortal");
+        let selected = cards(&state, &formation_cards);
+        set_hand(&mut state, "p1", selected.clone());
+
+        let events = perform(&state, formation_id, selected, Vec::new()).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    GameEvent::TurnDrawBonusChanged {
+                        player,
+                        old_value: 0,
+                        delta: 1,
+                        new_value: 1,
+                    } if player == &PlayerId::new("p1")
+                ))
+                .count(),
+            1,
+            "{formation_id} must emit exactly one canonical draw bonus"
+        );
+        apply_all(&mut state, &events);
+        assert_eq!(
+            state.turn_draw_bonus_by_player.get(&PlayerId::new("p1")),
+            Some(&1),
+            "{formation_id} must project its draw bonus"
+        );
+    }
+}
+
+#[test]
+fn immortal_shock_burst_keeps_one_draw_in_the_atomic_attack_resolution() {
+    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
+    set_profession(&mut state, "p1", "immortal");
+    let shock_burst = cards(
+        &state,
+        &[
+            (Element::Fire, 1),
+            (Element::Fire, 2),
+            (Element::Water, 1),
+            (Element::Earth, 1),
+        ],
+    );
+    set_hand(&mut state, "p1", shock_burst.clone());
+
+    let events = perform(&state, "shock-burst", shock_burst, Vec::new()).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::AttackResolved {
+                    elemental_context_update: Some(effects),
+                    ..
+                } => Some(&effects.turn_draw_bonus_changes),
+                _ => None,
+            })
+            .flatten()
+            .filter(|change| {
+                change.player == PlayerId::new("p1")
+                    && change.old_value == 0
+                    && change.delta == 1
+                    && change.new_value == 1
+            })
+            .count(),
+        1
+    );
+    apply_all(&mut state, &events);
+    assert_eq!(
+        state.turn_draw_bonus_by_player.get(&PlayerId::new("p1")),
+        Some(&1)
+    );
 }
 
 #[test]

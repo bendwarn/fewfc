@@ -3038,7 +3038,7 @@ impl PlayerVocabulary {
 
     fn reason(&self, id: &str) -> &'static str {
         match id {
-            "pouch:dark-crossing" => "暗渡陳倉",
+            "pouch:dark-crossing" => "暗渡",
             "confluence:void-seeking" => "虛空追尋",
             "dark:dark-walking" => "暗行",
             _ => "未知原因",
@@ -4477,16 +4477,16 @@ fn spirit_skill_name(skill: crate::domain::SpiritSkill) -> &'static str {
 
 fn secret_strategy_name(strategy: SecretStrategy) -> &'static str {
     match strategy {
-        SecretStrategy::GoldenCicada => "金蟬脫殼",
-        SecretStrategy::StealTheBeam => "偷梁換柱",
-        SecretStrategy::MuddyWaters => "混水摸魚",
-        SecretStrategy::WatchTheFire => "隔岸觀火",
-        SecretStrategy::LureTheTigerAway => "調虎離山",
-        SecretStrategy::ReturnSoul => "借屍還魂",
-        SecretStrategy::SheepStealing => "順手牽羊",
-        SecretStrategy::DarkCrossing => "暗渡陳倉",
-        SecretStrategy::DeceiveHeaven => "瞞天過海",
-        SecretStrategy::Retreat => "急流勇退",
+        SecretStrategy::GoldenCicada => "金蟬",
+        SecretStrategy::StealTheBeam => "偷梁",
+        SecretStrategy::MuddyWaters => "混水",
+        SecretStrategy::WatchTheFire => "觀火",
+        SecretStrategy::LureTheTigerAway => "離山",
+        SecretStrategy::ReturnSoul => "還魂",
+        SecretStrategy::SheepStealing => "牽羊",
+        SecretStrategy::DarkCrossing => "暗渡",
+        SecretStrategy::DeceiveHeaven => "瞞天",
+        SecretStrategy::Retreat => "走為",
     }
 }
 
@@ -6471,8 +6471,8 @@ mod tests {
         assert!(summaries[2].contains("禁錮法陣"));
         assert!(summaries[4].contains("金") && summaries[4].contains("惡"));
         assert!(summaries[5].contains("惡") && summaries[5].contains("死"));
-        assert!(summaries[6].contains("暗渡陳倉"));
-        assert!(summaries[7].contains("暗渡陳倉"));
+        assert!(summaries[6].contains("暗渡"));
+        assert!(summaries[7].contains("暗渡"));
         assert!(summaries[8].contains("商調‧鳴金"));
         assert!(summaries[9].contains("變宮‧植土"));
         assert!(summaries[10].contains("火 3"));

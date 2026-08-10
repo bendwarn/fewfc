@@ -407,38 +407,12 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
     };
 
     if request.mode == AttackResolutionMode::FormationUse && game_continues {
-        for intent in crate::rules::hero::post_formation_intents(
+        super::formation_use::append_post_formation_events(
             state,
             &request.attacker,
             &request.formation_id,
-        )? {
-            match intent {
-                crate::rules::hero::PostFormationIntent::AddTurnDraw { player, amount } => {
-                    let old_value = state
-                        .turn_draw_bonus_by_player
-                        .get(&player)
-                        .copied()
-                        .unwrap_or(0);
-                    events.push(GameEvent::TurnDrawBonusChanged {
-                        player,
-                        old_value,
-                        delta: amount as i32,
-                        new_value: old_value + amount,
-                    });
-                }
-                crate::rules::hero::PostFormationIntent::AddStatus { status } => {
-                    events.push(GameEvent::StatusAdded {
-                        status: crate::rules::jianghu::shorten_enemy_status(state, status),
-                    });
-                }
-                crate::rules::hero::PostFormationIntent::EstablishCounterEffect {
-                    owner,
-                    effect_id,
-                } => {
-                    events.push(GameEvent::CounterEffectEstablished { owner, effect_id });
-                }
-            }
-        }
+            &mut events,
+        )?;
         let mut projected = state.clone();
         for event in &events {
             crate::rules::projection::apply_event(&mut projected, event);
