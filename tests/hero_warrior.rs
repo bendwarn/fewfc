@@ -23,7 +23,7 @@ fn state(player_count: usize, hero_enabled: bool) -> GameState {
         .configure_game(players, turn_order, modules)
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
 }
 
@@ -143,7 +143,7 @@ fn profession_change_progresses_in_order_and_replays_explicit_card_moves() {
         Some(&ProfessionId::new("warrior"))
     );
 
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     let war_god_cards = cards(&state, &[(Element::Metal, 1), (Element::Metal, 5)]);
     set_hand(&mut state, "p1", war_god_cards.clone());
     change_profession(&mut state, "war-god", war_god_cards);
@@ -152,7 +152,7 @@ fn profession_change_progresses_in_order_and_replays_explicit_card_moves() {
         Some(&ProfessionId::new("war-god"))
     );
 
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     let hero_cards = cards(&state, &[(Element::Metal, 4), (Element::Metal, 5)]);
     set_hand(&mut state, "p1", hero_cards.clone());
     change_profession(&mut state, "hero", hero_cards);
@@ -242,11 +242,13 @@ fn warrior_proficiencies_keep_original_formation_identity_and_effect() {
         event,
         GameEvent::AttackResolved { formation_id, .. } if formation_id == "weapon"
     )));
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, GameEvent::TurnDrawBonusChanged { delta: 1, .. }))
-    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            elemental_context_update: Some(effects),
+            ..
+        } if effects.turn_draw_bonus_changes.iter().any(|change| change.delta == 1)
+    )));
 }
 
 #[test]
@@ -407,8 +409,14 @@ fn hero_formations_and_battle_soul_work_in_four_player_games() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, GameEvent::StatusAdded { .. }))
-            .count(),
+            .find_map(|event| match event {
+                GameEvent::AttackResolved {
+                    elemental_context_update: Some(effects),
+                    ..
+                } => Some(effects.statuses_added.len()),
+                _ => None,
+            })
+            .unwrap_or_default(),
         6
     );
 }

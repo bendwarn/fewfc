@@ -1610,7 +1610,7 @@ watch(
       game.connectionState.value !== 'connected'
       || viewer.value !== state.value.currentPlayer
       || state.value.status !== 'InProgress'
-      || state.value.phase !== 'Main'
+      || state.value.phase !== 'ActiveEffects'
       || Boolean(state.value.pendingChoice)
       || draft.cards.length !== game.selectedCards.value.length
       || draft.cards.some(card => !game.selectedCards.value.includes(card))
@@ -1936,7 +1936,7 @@ function hasKeyboardBlockingLayer() {
 function isMainShortcutContext() {
   return onlineMetadata.value?.status === 'Active'
     && state.value.status === 'InProgress'
-    && state.value.phase === 'Main'
+    && state.value.phase === 'ActiveEffects'
     && viewer.value === state.value.currentPlayer
     && roomConnected.value
     && !hasKeyboardBlockingLayer()
@@ -2046,7 +2046,7 @@ function handlePageKeydown(event: KeyboardEvent) {
     && !targetsEditableControl(event.target)
     && onlineMetadata.value?.status === 'Active'
     && state.value.status === 'InProgress'
-    && state.value.phase === 'Main'
+    && state.value.phase === 'ActiveEffects'
     && viewer.value === state.value.currentPlayer
     && !hasKeyboardBlockingLayer()
     && !game.isLoading.value
@@ -2606,11 +2606,11 @@ function cancelActionDetail() {
 
 function phaseLabel(value: string): string {
   const labels: Record<string, string> = {
-    Main: '主要階段',
+    ActiveEffects: '效果處理',
+    Action: '行動',
     MainPhase: '主要階段',
     TurnStart: '回合開始',
     TurnDraw: '回合抽牌',
-    TurnDrawDiscardChoice: '回合抽牌',
     TurnEnd: '回合結束',
   }
   return labels[value] ?? value

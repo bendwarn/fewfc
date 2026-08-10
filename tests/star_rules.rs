@@ -1,10 +1,10 @@
 use fewfc::application::{GameRecord, apply_event, handle_command};
 use fewfc::domain::{
-    CardInstanceId, ChoiceAnswer, Command, CoveredPassive, Element, FiveStarAlignment, GameError,
-    GameEvent, GameOutcome, GameSetup, GameState, GameStatus, PassiveTriggerTiming,
-    PendingChoiceKind, Phase, Player, PlayerId, PlayerStarHistory, RuleModuleId, STAR_MODULE_ID,
-    StarBreakReason, StarElementSubstitution, StarKind, TargetDecl, TeamId, TeamStar,
-    ValidationError,
+    CardInstanceId, ChoiceAnswer, Command, Element, FiveStarAlignment, FormationAreaState,
+    FormationInArea, GameError, GameEvent, GameOutcome, GameSetup, GameState, GameStatus,
+    PassiveTriggerTiming, PendingChoiceKind, Phase, Player, PlayerId, PlayerStarHistory,
+    RuleModuleId, STAR_MODULE_ID, StarBreakReason, StarElementSubstitution, StarKind, TargetDecl,
+    TeamId, TeamStar, ValidationError,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -33,8 +33,32 @@ fn two_player_state(stars_enabled: bool) -> GameState {
         )
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
+}
+
+fn cover(
+    state: &mut GameState,
+    owner: &str,
+    formation_id: &str,
+    cards: Vec<CardInstanceId>,
+    sealed: bool,
+    star_substitution: Option<StarElementSubstitution>,
+) {
+    state
+        .formation_area_mut(&PlayerId::new(owner))
+        .unwrap()
+        .formation = Some(FormationInArea {
+        formation_id: formation_id.to_string(),
+        cards,
+        star_substitution,
+        state: FormationAreaState::FaceDownWaiting {
+            sealed,
+            revealed: false,
+            neutralized: false,
+            trigger_timing: PassiveTriggerTiming::NextPlayerActionStart,
+        },
+    });
 }
 
 fn team_state() -> GameState {
@@ -67,7 +91,7 @@ fn team_state() -> GameState {
         )
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
 }
 
@@ -239,7 +263,7 @@ fn summoning_replaces_own_star_breaks_opposing_star_and_never_duplicates() {
     assert_eq!(state.team_stars.len(), 1);
     assert_eq!(state.team_stars[0].star, StarKind::Metal);
 
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     let cards = [1, 2, 3]
         .map(|level| card(&state, Element::Metal, level))
         .to_vec();
@@ -346,17 +370,20 @@ fn substituted_passive_records_and_redacts_the_declared_card() {
         },
     )
     .unwrap();
-    assert!(matches!(
-        events.as_slice(),
-        [GameEvent::PassiveCovered {
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::PassiveCovered {
             star_substitution: Some(actual),
             ..
-        }] if actual == &substitution
-    ));
+        } if actual == &substitution
+    )));
 
     apply_all(&mut state, &events);
     assert_eq!(
-        state.covered_passives[0].star_substitution,
+        state
+            .covered_passive(&PlayerId::new("p1"))
+            .unwrap()
+            .star_substitution,
         Some(substitution.clone())
     );
 
@@ -471,7 +498,7 @@ fn substituted_passive_replays_and_verifies_the_exact_declared_card() {
 
     let advance_to_choice_or_main = |record: &mut GameRecord| loop {
         record.advance_until_decision().unwrap();
-        if record.state().pending_choice.is_some() || record.state().phase == Phase::Main {
+        if record.state().pending_choice.is_some() || record.state().phase == Phase::ActiveEffects {
             break;
         }
     };
@@ -540,13 +567,13 @@ fn substituted_passive_replays_and_verifies_the_exact_declared_card() {
             declared_targets: vec![TargetDecl::Card(water_2)],
         })
         .unwrap();
-    assert!(matches!(
-        events.as_slice(),
-        [GameEvent::PassiveCovered {
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::PassiveCovered {
             star_substitution: Some(StarElementSubstitution { card, .. }),
             ..
-        }] if *card == water_2
-    ));
+        } if *card == water_2
+    )));
     assert_eq!(record.replay().unwrap(), *record.state());
     assert!(record.verify_replay().is_ok());
 }
@@ -562,15 +589,7 @@ fn three_card_star_formation_breaks_star_and_grants_draw_even_when_damage_is_pre
         card(&state, Element::Wood, 1),
         card(&state, Element::Wood, 2),
     ];
-    state.covered_passives.push(CoveredPassive {
-        owner: PlayerId::new("p2"),
-        formation_id: "defense".to_string(),
-        cards: passive_cards,
-        sealed: false,
-        covered_on_turn: 0,
-        reveal_timing: PassiveTriggerTiming::NextPlayerActionStart,
-        star_substitution: None,
-    });
+    cover(&mut state, "p2", "defense", passive_cards, false, None);
     let cards = vec![
         card(&state, Element::Metal, 2),
         card(&state, Element::Metal, 3),
@@ -579,11 +598,13 @@ fn three_card_star_formation_breaks_star_and_grants_draw_even_when_damage_is_pre
     set_hand(&mut state, "p1", cards.clone());
 
     let events = perform(&state, "p1", "taibai-heaven-forging", cards);
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, GameEvent::TurnDrawBonusChanged { delta: 1, .. }))
-    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            elemental_context_update: Some(effects),
+            ..
+        } if effects.turn_draw_bonus_changes.iter().any(|change| change.delta == 1)
+    )));
     assert!(events.iter().any(|event| matches!(
         event,
         GameEvent::StarBroken {
@@ -629,35 +650,30 @@ fn void_star_breaking_is_atomic_and_seal_cancels_every_consequence() {
         2
     );
     assert!(matches!(
-        events.last(),
+        events
+            .iter()
+            .find(|event| matches!(event, GameEvent::VoidStarBreakingCompleted { .. })),
         Some(GameEvent::VoidStarBreakingCompleted { .. })
     ));
     apply_all(&mut state, &events);
     assert!(state.team_stars.is_empty());
-    assert_eq!(
+    assert!(matches!(
         state.status,
         GameStatus::Finished {
-            outcome: GameOutcome::Draw
-        }
-    );
+            ref conclusion
+        } if conclusion.outcome == GameOutcome::Draw
+    ));
 
     let mut sealed = two_player_state(true);
     sealed.team_stars.push(TeamStar {
         team: TeamId::new("team:p1"),
         star: StarKind::Metal,
     });
-    sealed.covered_passives.push(CoveredPassive {
-        owner: PlayerId::new("p2"),
-        formation_id: "seal".to_string(),
-        cards: vec![
-            card(&sealed, Element::Water, 1),
-            card(&sealed, Element::Water, 2),
-        ],
-        sealed: false,
-        covered_on_turn: 0,
-        reveal_timing: PassiveTriggerTiming::NextPlayerActionStart,
-        star_substitution: None,
-    });
+    let seal_cards = vec![
+        card(&sealed, Element::Water, 1),
+        card(&sealed, Element::Water, 2),
+    ];
+    cover(&mut sealed, "p2", "seal", seal_cards, false, None);
     let cards = [Element::Metal, Element::Wood, Element::Fire]
         .map(|element| card(&sealed, element, 3))
         .to_vec();
@@ -692,18 +708,18 @@ fn five_star_alignment_overrides_the_same_formations_hp_result() {
     for hp in &mut state.hp {
         hp.hp = 1;
     }
-    state.covered_passives.push(CoveredPassive {
-        owner: PlayerId::new("p2"),
-        formation_id: "countershock".to_string(),
-        cards: vec![
-            card(&state, Element::Fire, 1),
-            card(&state, Element::Fire, 2),
-        ],
-        sealed: false,
-        covered_on_turn: 0,
-        reveal_timing: PassiveTriggerTiming::NextPlayerActionStart,
-        star_substitution: None,
-    });
+    let countershock_cards = vec![
+        card(&state, Element::Fire, 1),
+        card(&state, Element::Fire, 2),
+    ];
+    cover(
+        &mut state,
+        "p2",
+        "countershock",
+        countershock_cards,
+        false,
+        None,
+    );
     let cards = [3, 4, 5]
         .map(|level| card(&state, Element::Metal, level))
         .to_vec();
@@ -723,12 +739,12 @@ fn five_star_alignment_overrides_the_same_formations_hp_result() {
             team: TeamId::new("team:p1"),
         })
     );
-    assert_eq!(
+    assert!(matches!(
         state.status,
         GameStatus::Finished {
-            outcome: GameOutcome::Team(TeamId::new("team:p1"))
-        }
-    );
+            ref conclusion
+        } if conclusion.outcome == GameOutcome::Winner(TeamId::new("team:p1"))
+    ));
 }
 
 #[test]

@@ -7,7 +7,7 @@ function state(overrides: Partial<PublicGameState> = {}): PublicGameState {
     enabledRuleModules: [],
     status: 'InProgress',
     turnNumber: 1,
-    phase: 'Main',
+    phase: 'ActiveEffects',
     currentPlayer: 'alice',
     players: [],
     turnOrder: ['alice', 'bob'],

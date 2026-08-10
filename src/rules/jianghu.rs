@@ -418,6 +418,7 @@ pub(crate) fn post_attack_events(
     state: &GameState,
     player: &PlayerId,
     formation_id: &str,
+    used_cards: &[CardInstanceId],
 ) -> GameResult<Vec<GameEvent>> {
     let mut events = Vec::new();
     if formation_id == THOUSAND_BLADES_SWORD_ART {
@@ -492,7 +493,7 @@ pub(crate) fn post_attack_events(
     }
     if state.statuses.iter().any(|status| {
         status.owner == StatusOwner::Player(player.clone()) && status.kind == "JianghuDancingYang"
-    }) && is_wood_or_fire_attack_with_at_least_three_cards(state, player, formation_id)
+    }) && is_wood_or_fire_attack_with_at_least_three_cards(state, formation_id, used_cards)
     {
         events.push(turn_draw_bonus_event(state, player));
     }
@@ -1124,28 +1125,22 @@ fn is_meteor_active(state: &GameState, player: &PlayerId) -> bool {
 
 fn is_wood_or_fire_attack_with_at_least_three_cards(
     state: &GameState,
-    player: &PlayerId,
     formation_id: &str,
+    used_cards: &[CardInstanceId],
 ) -> bool {
-    let Some(last) = state
-        .last_formation_by_player
-        .get(player)
-        .filter(|last| last.formation_id == formation_id && last.used_cards.len() >= 3)
-    else {
+    if used_cards.len() < 3 {
         return false;
-    };
+    }
     let registry = official_formation_registry(&state.enabled_rule_modules);
-    registry
-        .effect(&last.resolved_effect_id)
-        .is_some_and(|effect| {
-            matches!(
-                &effect.plan,
-                EffectPlan::Attack(AttackPlanDef {
-                    category: AttackCategory::Elemental(Element::Wood | Element::Fire),
-                    ..
-                })
-            )
-        })
+    registry.effect(formation_id).is_some_and(|effect| {
+        matches!(
+            &effect.plan,
+            EffectPlan::Attack(AttackPlanDef {
+                category: AttackCategory::Elemental(Element::Wood | Element::Fire),
+                ..
+            })
+        )
+    })
 }
 
 fn turn_draw_bonus_event(state: &GameState, player: &PlayerId) -> GameEvent {

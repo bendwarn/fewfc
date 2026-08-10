@@ -29,7 +29,7 @@ fn game_state(modules: &[&str]) -> GameState {
         )
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
 }
 
@@ -326,7 +326,10 @@ fn seeker_cost_counter_resistance_and_spell_protection_are_typed() {
     let events = perform(&state, "dao-defense", dao, Vec::new()).unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::CounterEffectEstablished { effect_id, .. } if effect_id == "dao-defense"
+        GameEvent::AttackResolved {
+            elemental_context_update: Some(effects),
+            ..
+        } if effects.counter_effects_established.iter().any(|effect| effect.effect_id == "dao-defense")
     )));
 
     set_profession(&mut state, "p1", "benevolent");
@@ -580,7 +583,10 @@ fn mage_and_windwalker_profession_formations_keep_stage_semantics() {
     )));
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::StatusAdded { status } if status.kind == "CannotDraw"
+        GameEvent::AttackResolved {
+            elemental_context_update: Some(effects),
+            ..
+        } if effects.statuses_added.iter().any(|status| status.kind == "CannotDraw")
     )));
 
     let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
@@ -629,13 +635,14 @@ fn sacred_beast_resistance_applies_only_after_shield_absorption() {
     );
     set_hand(&mut state, "p1", beast.clone());
     let events = perform(&state, "west-white-tiger", beast.clone(), Vec::new()).unwrap();
-    assert!(matches!(
-        events.as_slice(),
-        [
-            GameEvent::AttackResolved { hp_change, .. },
-            GameEvent::EnvironmentTransferred { .. }
-        ] if hp_change.delta == 0
-    ));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            hp_change,
+            elemental_context_update: Some(effects),
+            ..
+        } if hp_change.delta == 0 && !effects.environment_transfers.is_empty()
+    )));
 
     state
         .shields
@@ -659,14 +666,19 @@ fn sacred_beast_resistance_applies_only_after_shield_absorption() {
 fn windwalker_and_unaffiliated_effects_use_shared_pipelines() {
     let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
     set_profession(&mut state, "p1", "windwalker");
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p2"),
+    state
+        .formation_area_mut(&PlayerId::new("p2"))
+        .unwrap()
+        .formation = Some(fewfc::domain::FormationInArea {
         formation_id: "defense".to_string(),
         cards: cards(&state, &[(Element::Wood, 1), (Element::Wood, 2)]),
         star_substitution: None,
-        sealed: false,
-        covered_on_turn: 0,
-        reveal_timing: PassiveTriggerTiming::NextPlayerActionStart,
+        state: fewfc::domain::FormationAreaState::FaceDownWaiting {
+            sealed: false,
+            revealed: false,
+            neutralized: false,
+            trigger_timing: PassiveTriggerTiming::NextPlayerActionStart,
+        },
     });
     let strike = cards(&state, &[(Element::Metal, 1)]);
     set_hand(&mut state, "p1", strike.clone());
@@ -739,17 +751,17 @@ fn void_reversion_is_atomic_and_protects_low_level_legendary_professions() {
     );
     set_hand(&mut state, "p1", selected.clone());
     let events = perform(&state, "void-reversion", selected, Vec::new()).unwrap();
-    assert!(matches!(
-        events.as_slice(),
-        [GameEvent::VoidReversionResolved {
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::VoidReversionResolved {
             hp_change,
             broken_professions,
             retained_legendary_professions,
             ..
-        }] if hp_change.delta == -20
+        } if hp_change.delta == -20
             && broken_professions.len() == 1
             && retained_legendary_professions.len() == 1
-    ));
+    )));
     apply_all(&mut state, &events);
     assert_eq!(
         state.profession_for(&PlayerId::new("p2")),
@@ -882,17 +894,18 @@ fn high_level_void_reversion_breaks_legendary_professions_before_outcome() {
     set_hand(&mut state, "p1", selected.clone());
 
     let events = perform(&state, "void-reversion", selected, Vec::new()).unwrap();
-    assert!(matches!(
-        events.as_slice(),
-        [GameEvent::VoidReversionResolved {
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::VoidReversionResolved {
             hp_change,
             broken_professions,
             retained_legendary_professions,
             ..
-        }] if hp_change.new_hp == 0
+        } if hp_change.new_hp == 0
             && broken_professions.len() == 2
             && retained_legendary_professions.is_empty()
-    ));
+    )));
+    assert!(matches!(events.last(), Some(GameEvent::GameEnded { .. })));
     apply_all(&mut state, &events);
     assert!(state.professions.is_empty());
     assert!(matches!(

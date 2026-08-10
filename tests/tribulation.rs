@@ -1,10 +1,10 @@
 use fewfc::application::{apply_event, handle_command, resolve_trusted_randomness};
 use fewfc::domain::{
-    CardInstanceId, CardOrigin, ChoiceAnswer, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID,
-    GameEvent, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID, LimitedUse, PERSONAL_DECK_MODULE_ID,
-    Phase, PlayerId, PlayerProfession, PlayerSpirit, ProfessionId, RandomnessDeck, RuleModuleId,
-    STAR_MODULE_ID, SpiritKind, StatusDuration, StatusEffect, StatusOwner, TRIBULATION_MODULE_ID,
-    TeamId, TrustedRandomnessAnswer,
+    AttackResolutionEffects, CardInstanceId, CardOrigin, ChoiceAnswer, Command, Element,
+    FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID,
+    LimitedUse, PERSONAL_DECK_MODULE_ID, Phase, PlayerId, PlayerProfession, PlayerSpirit,
+    ProfessionId, RandomnessDeck, RuleModuleId, STAR_MODULE_ID, SpiritKind, StatusDuration,
+    StatusEffect, StatusOwner, TRIBULATION_MODULE_ID, TeamId, TrustedRandomnessAnswer,
 };
 use fewfc::public_view::{PublicPendingChoice, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -52,7 +52,7 @@ fn setup() -> GameSetup {
 
 fn state() -> GameState {
     let mut state = GameState::from_setup(&setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
 }
 
@@ -64,7 +64,7 @@ fn personal_deck_state() -> GameState {
         .configure_game_with_decks(shape.players, shape.turn_order, configured, Vec::new())
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
 }
 
@@ -91,6 +91,19 @@ fn apply_all(state: &mut GameState, events: &[GameEvent]) {
     for event in events {
         apply_event(state, event);
     }
+}
+
+fn attack_effects(events: &[GameEvent]) -> &AttackResolutionEffects {
+    events
+        .iter()
+        .find_map(|event| match event {
+            GameEvent::AttackResolved {
+                elemental_context_update: Some(effects),
+                ..
+            } => Some(effects),
+            _ => None,
+        })
+        .expect("tribulation attack must carry its simultaneous effects atomically")
 }
 
 #[test]
@@ -148,13 +161,7 @@ fn thunder_fire_deducts_each_team_then_resolves_its_special_attack() {
         },
     )
     .unwrap();
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(event, GameEvent::HpChanged { .. }))
-            .count(),
-        2
-    );
+    assert_eq!(attack_effects(&events).hp_changes.len(), 2);
     assert!(events.iter().any(|event| matches!(
         event,
         GameEvent::AttackResolved {
@@ -182,7 +189,7 @@ fn thunder_fire_shared_fate_uses_every_player_on_losing_teams_but_not_a_protecte
         )
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands[0].cards = vec![card(13), card(16), card(67), card(70)];
     state.spirits.extend([
         PlayerSpirit {
@@ -214,12 +221,9 @@ fn thunder_fire_shared_fate_uses_every_player_on_losing_teams_but_not_a_protecte
         },
     )
     .unwrap();
-    let hp_changes = events
+    let hp_changes = attack_effects(&events)
+        .hp_changes
         .iter()
-        .filter_map(|event| match event {
-            GameEvent::HpChanged { change } => Some(change),
-            _ => None,
-        })
         .collect::<Vec<_>>();
     assert_eq!(hp_changes.len(), 2);
     assert!(
@@ -254,7 +258,7 @@ fn divine_calculation_replaces_its_owner_and_protects_the_next_tribulation() {
             && status.owner == fewfc::domain::StatusOwner::Player(PlayerId::new("p1"))
     }));
 
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands[0].cards = vec![card(13), card(16), card(67), card(70)];
     let tribulation = handle_command(
         &state,
@@ -266,18 +270,15 @@ fn divine_calculation_replaces_its_owner_and_protects_the_next_tribulation() {
         },
     )
     .unwrap();
-    assert_eq!(
-        tribulation
+    assert_eq!(attack_effects(&tribulation).hp_changes.len(), 1);
+    assert!(
+        attack_effects(&tribulation)
+            .statuses_removed
             .iter()
-            .filter(|event| matches!(event, GameEvent::HpChanged { .. }))
-            .count(),
-        1
+            .any(|status| status
+                .status_id
+                .starts_with("tribulation:divine-calculation:"))
     );
-    assert!(tribulation.iter().any(|event| matches!(
-        event,
-        GameEvent::StatusRemoved { status_id, .. }
-            if status_id.starts_with("tribulation:divine-calculation:")
-    )));
 }
 
 #[test]
@@ -297,7 +298,7 @@ fn ineffective_tribulation_still_consumes_divine_calculation() {
     .unwrap();
     apply_all(&mut state, &divine);
 
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands[0].cards = vec![card(13), card(16), card(67), card(70)];
     let tribulation = handle_command(
         &state,
@@ -309,11 +310,14 @@ fn ineffective_tribulation_still_consumes_divine_calculation() {
         },
     )
     .unwrap();
-    assert!(tribulation.iter().any(|event| matches!(
-        event,
-        GameEvent::StatusRemoved { status_id, .. }
-            if status_id.starts_with("tribulation:divine-calculation:")
-    )));
+    assert!(
+        attack_effects(&tribulation)
+            .statuses_removed
+            .iter()
+            .any(|status| status
+                .status_id
+                .starts_with("tribulation:divine-calculation:"))
+    );
 }
 
 #[test]
@@ -332,13 +336,7 @@ fn mudslide_uses_eighty_points_only_after_effective_global_shield_loss() {
         },
     )
     .unwrap();
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(event, GameEvent::ShieldChanged { .. }))
-            .count(),
-        2
-    );
+    assert_eq!(attack_effects(&events).shield_changes.len(), 2);
     assert!(events.iter().any(|event| matches!(
         event,
         GameEvent::AttackResolved {
@@ -373,7 +371,7 @@ fn gale_rain_tracks_each_player_and_blocks_only_its_owners_formation_recovery() 
         2
     );
 
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hp[0].hp = 100;
     state.hands[0].cards = vec![card(37), card(38), card(73), card(19)];
     let recovery = handle_command(
@@ -472,10 +470,10 @@ fn earth_rending_waits_for_environment_and_player_answers_before_resolving() {
     )));
     assert!(answered.iter().any(|event| matches!(
         event,
-        GameEvent::EnvironmentTransferred {
-            to: Element::Fire,
+        GameEvent::AttackResolved {
+            elemental_context_update: Some(effects),
             ..
-        }
+        } if effects.environment_transfers.iter().any(|transfer| transfer.to == Element::Fire)
     )));
     assert!(
         answered
@@ -505,7 +503,7 @@ fn earth_rending_collects_four_player_answers_in_turn_order_and_performer_last()
         )
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands[0].cards = vec![card(31), card(34), card(85), card(88)];
     state.hands[1].cards = vec![card(67)];
     state.hands[2].cards = vec![card(1)];

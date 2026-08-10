@@ -256,7 +256,7 @@ export interface PublicGameState {
   status: 'Preparing' | 'InProgress' | 'Finished'
   winnerTeam: TeamId | null
   turnNumber: number
-  phase: 'TurnStart' | 'Main' | 'TurnDraw' | 'TurnDrawDiscardChoice' | 'TurnEnd'
+  phase: 'TurnStart' | 'ActiveEffects' | 'Action' | 'TurnDraw' | 'TurnEnd'
   currentPlayer: PlayerId | null
   players: PublicPlayer[]
   turnOrder: PlayerId[]

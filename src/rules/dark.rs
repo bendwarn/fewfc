@@ -637,9 +637,28 @@ pub(crate) fn append_shared_fate_events(
     for event in events.iter() {
         match event {
             GameEvent::AttackResolved {
-                target, hp_change, ..
-            } if hp_change.effective_delta < 0 => {
-                affected.insert(target.clone());
+                target,
+                hp_change,
+                elemental_context_update,
+                ..
+            } => {
+                if hp_change.effective_delta < 0 {
+                    affected.insert(target.clone());
+                }
+                if let Some(effects) = elemental_context_update {
+                    for change in effects
+                        .hp_changes
+                        .iter()
+                        .filter(|change| change.effective_delta < 0)
+                    {
+                        affected.extend(affected_players_for_hp_change(
+                            state,
+                            performer,
+                            formation_id,
+                            &change.team,
+                        )?);
+                    }
+                }
             }
             GameEvent::HpChanged { change } if change.effective_delta < 0 => {
                 affected.extend(affected_players_for_hp_change(

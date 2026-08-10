@@ -42,7 +42,53 @@ pub(super) fn resolve(
     let formation_id = request.formation_id.clone();
     let plan = BaseFormationPlanner::new().plan_use(state, request)?;
     let composition = plan.composition.clone();
+    let star_substitution = plan.star_substitution.clone();
+    let committed_state = match plan.effect_plan {
+        EffectPlan::PassiveSpell(_) => crate::domain::FormationAreaState::FaceDownResolving,
+        EffectPlan::Attack(_) | EffectPlan::ActiveSpell(_) => {
+            crate::domain::FormationAreaState::FaceUpResolving
+        }
+    };
+    let is_passive = matches!(plan.effect_plan, EffectPlan::PassiveSpell(_));
     let mut events = BaseEffectResolver::new().resolve(state, plan)?;
+    // Composite Formation effects historically carried their own formation
+    // cards as Hand-to-Discard deltas.  Under Formation Areas those are the
+    // pipeline's responsibility, so retain only genuinely additional moves.
+    for event in &mut events {
+        match event {
+            GameEvent::VoidReversionResolved { card_moves, .. }
+            | GameEvent::VoidSpiritShatteringResolved { card_moves, .. } => {
+                card_moves.retain(|movement| !composition.physical_cards.contains(&movement.card));
+            }
+            _ => {}
+        }
+    }
+    // Validation has already succeeded.  Formation Commitment is consequently
+    // the first resolution fact and cannot be rolled back by prevention,
+    // sealing, or an ineffective outcome.
+    events.retain(|event| !matches!(event, GameEvent::FormationPerformed { .. }));
+    // A Pending Randomness request is part of the still-active Action.  Its
+    // source pile must not pretend that the committed Formation cards have
+    // already reached a discard pile.
+    for event in &mut events {
+        if let GameEvent::RandomnessRequested { request } = event
+            && request.operation.is_discard_shuffle()
+        {
+            request
+                .current_order
+                .retain(|card| !composition.physical_cards.contains(card));
+        }
+    }
+    events.insert(
+        0,
+        GameEvent::FormationCommitted {
+            player: player.clone(),
+            formation_id: formation_id.clone(),
+            cards: composition.physical_cards.clone(),
+            star_substitution,
+            state: committed_state,
+        },
+    );
     if state.formation_requirements.iter().any(|requirement| {
         &requirement.player == &player && requirement.applied_on_turn == state.turn_number
     }) {
@@ -66,6 +112,24 @@ pub(super) fn resolve(
     crate::rules::dark::append_shared_fate_events(state, &player, &formation_id, &mut events)?;
     crate::rules::dark::append_mischief_events(state, &mut events)?;
     crate::rules::pouch::suppress_watch_fire_formation_hp_changes(state, &player, &mut events);
+    attack_resolution::absorb_simultaneous_events(&mut events);
+    super::append_terminal_game_end(state, &mut events);
+    let waits_for_choice = events.iter().any(|event| {
+        matches!(
+            event,
+            GameEvent::ChoiceRequested { .. } | GameEvent::RandomnessRequested { .. }
+        )
+    });
+    let has_terminal_event = events
+        .iter()
+        .any(|event| matches!(event, GameEvent::GameEnded { .. }));
+    if !is_passive && !waits_for_choice && !has_terminal_event {
+        events.push(GameEvent::FormationCardsDiscarded {
+            player: player.clone(),
+            formation_id: formation_id.clone(),
+            cards: composition.physical_cards,
+        });
+    }
     Ok(events)
 }
 
@@ -240,13 +304,19 @@ impl BaseEffectResolver {
                 )
                 .map(PointFormula::Fixed)
                 .unwrap_or_else(|| attack_plan.point_formula.clone());
-                events.extend(tribulation_pre_events);
                 let mut projected = state.clone();
                 for event in &events {
                     crate::rules::projection::apply_event(&mut projected, event);
                 }
+                // Tribulation's pre-attack deltas participate in the same
+                // canonical AttackResolved event, but its attack math must
+                // still see their resolved state (notably Mudslide shields).
+                let mut attack_state = projected.clone();
+                for event in &tribulation_pre_events {
+                    crate::rules::projection::apply_event(&mut attack_state, event);
+                }
                 events.extend(attack_resolution::resolve(
-                    &projected,
+                    &attack_state,
                     AttackRequest {
                         attacker: plan.player.clone(),
                         formation_id: plan.formation_id.clone(),
@@ -256,6 +326,9 @@ impl BaseEffectResolver {
                         damage_prevented,
                         split_attack_damage,
                         mode: AttackResolutionMode::FormationUse,
+                        pre_resolution_effects: attack_resolution::effects_from_events(
+                            &tribulation_pre_events,
+                        )?,
                     },
                 )?);
                 if !environment_ineffective && !formation_suppressed {
@@ -273,6 +346,8 @@ impl BaseEffectResolver {
                     );
                 }
 
+                attack_resolution::absorb_simultaneous_events(&mut events);
+
                 Ok(events)
             }
             EffectPlan::PassiveSpell(_) => {
@@ -285,9 +360,8 @@ impl BaseEffectResolver {
                 }
 
                 if state
-                    .covered_passives
-                    .iter()
-                    .any(|passive| passive.owner == plan.player)
+                    .formation_area(&plan.player)
+                    .is_some_and(|area| area.formation.is_some())
                 {
                     return Err(GameError::Validation(
                         ValidationError::PendingPassiveAlreadyCovered {

@@ -222,6 +222,25 @@ Avoid generic `remaining_turns`, `remaining_rounds`, and `untilNextAction` in th
 
 `CannotAct` is the implementation spelling of the canonical status kind **Cannot Act**.
 
+### 2.2 Game Conclusion
+
+When a fully resolved semantic step produces a terminal outcome, record one
+independent `GameConclusion` containing the `GameOutcome` and its explicit
+`GameEndCause` or causes, then emit `GameEnded { conclusion }` as the last
+canonical event. Neither the current Formation Area nor
+`last_formation_by_player` is the authoritative source of the end reason.
+
+Complete the current simultaneous semantic resolution before evaluating and
+recording its conclusion. After `GameEnded`, stop: do not process later effects,
+discard a remaining Formation merely for cleanup, enter `TurnDraw`, or enter
+`TurnEnd`. Cards remain in the last Card zones established before the terminal
+event, as required by official rule 7-3's immediate end and unfinished-effect
+stop.
+
+A public projection may render a source-Formation snapshot stored in the Game
+Conclusion using Formation Area styling. That presentation does not make the
+Formation Area itself the canonical end-reason record.
+
 ## 3) Commands
 
 All gameplay changes come from validated commands and canonical automatic advancement.
@@ -241,7 +260,7 @@ Optional future command types:
 
 Do not add:
 
-- `EndActiveWindow`
+- `EndActiveEffects`
 - a standalone `ChangeClass` command for Metamorphosis (`幻化`)
 
 Validation rules:
@@ -251,9 +270,14 @@ Validation rules:
 - reject illegal formation declarations, missing cards, duplicate submitted cards, and illegal declared targets
 - validation failures emit no events and do not mutate state
 
-The online adapter may store a pending command draft only while an `EffectGenerated` choice suspends and later continues formation resolution. `TurnDrawDiscard` is normal turn completion and must not retain the preceding formation command as a draft.
+The online adapter may store a pending command draft only while an
+`EffectGenerated` choice suspends and later continues the Action that owns it.
+A Turn Draw discard choice belongs to `TurnDraw` and must not retain the
+preceding Action Command as a draft.
 
-`PassAction` is legal only when the player has no cards in hand or has **Cannot Act** status. A successful pass consumes the action opportunity and advances toward turn draw.
+`PassAction` is legal only when the player has no cards in hand or has **Cannot
+Act** status. A successful pass enters `Action`, processes the previous
+Player's Covered Passive, and then advances to `TurnDraw` unless the game ends.
 
 `RetrievePreviousTurnDiscard` is an active-effect command. It does not accept a
 card target and does not consume the action opportunity; the rules derive the
@@ -275,16 +299,39 @@ Formation matching decides only whether submitted card instances form the declar
 
 If the same card instances can match multiple formations, the player or upper layer must explicitly declare `formation_id`. The engine does not infer or auto-select a formation.
 
+Complete every `PerformFormation` validation before commitment. A failed
+validation emits no event and changes no Card zone. After validation succeeds,
+`FormationCommitted` atomically moves the submitted physical Cards from the
+performing Player's hand to that Player's Formation Area, sets their initial
+face state, and enters `Action`; later prevention or ineffectiveness never
+returns them to hand.
+
+Attack and immediate-Spell Formations commit face-up. A covered Passive Spell
+commits face-down. Because Formation Areas belong to Players, the previous
+Player's Covered Passive and the current Player's incoming Formation can occupy
+their respective Formation Areas at the same time.
+
 ### 4.2 Attack Resolution
 
 On `PerformFormation` whose effect plan is attack:
 
 1. Validate current player, phase, formation declaration, submitted card instances, and declared targets.
-2. Flip and resolve the previous player's covered passive, if present.
-3. Resolve the attack target from current state. Base attack damage targets the previous player.
-4. Compute base points from the attack plan's point formula.
-5. Resolve shield absorption and five-element interaction.
-6. Emit a semantic attack event with explicit replayable deltas, including point breakdown, HP delta, shield delta if any, and card move deltas.
+2. Commit the Formation face-up to the performing Player's Formation Area.
+3. Compute base points from the attack plan's point formula.
+4. Flip, resolve, and discard the previous Player's Covered Passive, if present.
+5. Resolve the attack target from current state. Base attack damage targets the previous player.
+6. Collect every Pending Choice needed to determine the Attack Resolution
+   without applying any part of that resolution early. An effect with an
+   explicitly specified different timing remains outside this atomic result
+   and is processed at its specified point.
+7. Emit one atomic `AttackResolved` containing the damage resolution and every
+   attached effect without another specified timing. Its replayable facts
+   include the point breakdown, every HP and Shield delta, and all other effect
+   deltas; none has an event-log order relative to another.
+8. Apply the complete `AttackResolved` before evaluating Game Outcome. If
+   `GameEnded` is emitted, stop. Otherwise emit `FormationCardsDiscarded`,
+   moving the current Formation from its Formation Area to the applicable
+   origin Discard Pile or Piles, and enter `TurnDraw`.
 
 Five-element interaction:
 
@@ -312,10 +359,13 @@ does not satisfy this condition (Jianghu rule 4-7).
 On `PerformFormation` whose effect plan is immediate spell:
 
 - validate the formation use
+- commit the Formation face-up to the performing Player's Formation Area
 - flip and resolve the previous player's covered passive, if present
 - resolve spell intents into semantic events
-- request a pending choice when a spell needs player input
-- record formation-use card movement explicitly through card move deltas or equivalent replayable deltas
+- request a Pending Choice when the Spell needs Player input; it suspends this
+  `Action` without creating another phase
+- after all effects and choices resolve, stop on `GameEnded`; otherwise emit
+  `FormationCardsDiscarded` and enter `TurnDraw`
 
 Metamorphosis keeps `metamorphosis` as the performed formation identity while
 storing the copied category and effect separately. It keeps its active Spell Type,
@@ -335,10 +385,12 @@ filtering exposes the cards only to the formation player.
 On `PerformFormation` whose effect plan is covered passive:
 
 - validate the formation use
+- commit the Formation face-down to the performing Player's Formation Area
 - flip and resolve the previous player's covered passive, if present
-- place submitted card instances into the covered passive zone
-- mark the covered passive as sealed if an applicable seal modifies the incoming cover action
-- record all zone movement explicitly
+- mark the incoming Formation as sealed if an applicable seal modifies the
+  cover action
+- emit `PassiveCovered`, leave the Formation face-down in the Formation Area,
+  and enter `TurnDraw` unless `GameEnded` has been emitted
 
 At the next player's action start, the previous player's covered passive flips and attempts to affect that incoming action. The passive is discarded whether it applies or not.
 
@@ -351,7 +403,20 @@ Rules:
 - `Defense` prevents attack damage but not other attack effects such as Five Streams Unite's draw bonus.
 - `Seal` applies only to incoming spells.
 - If `Seal` applies to an incoming covered passive, the incoming passive remains covered and is marked sealed; it later flips as no effect.
-- A player can have at most one pending covered passive.
+- A Player's Formation Area can contain at most one Formation.
+
+### 4.5 Other Actions
+
+Profession Change is an Action Command, not a Formation Use. After validating
+the declared Profession, prerequisite Profession, and selected Cards, it enters
+`Action`, processes the previous Player's Covered Passive, and emits one
+`ProfessionChanged` event that atomically changes Profession and moves the
+selected Cards directly from hand to their applicable origin Discard Pile or
+Piles. There is no temporary Card zone for those Cards.
+
+`PassAction` enters `Action` without committing a Formation, processes the
+previous Player's Covered Passive, and enters `TurnDraw` unless `GameEnded` has
+been emitted.
 
 ## 5) Rulesets
 
@@ -384,7 +449,8 @@ Team mode is not a separate ruleset unless future rule behavior diverges. It is 
 
 ### 5.1 Discard Retrieval
 
-Discard Retrieval is independently configurable and resolves during `Main` as
+Discard Retrieval is independently configurable and resolves during
+`ActiveEffects` as
 an active effect.[3]
 
 1. The Previous Player must have a Turn Draw Discarded Card from the immediately
@@ -396,7 +462,7 @@ an active effect.[3]
    this is the shared Deck.
 5. HP change, card movement, and public exposure are one semantic resolution.
 
-Discard Retrieval is optional, does not close `Main`, and remains legal under
+Discard Retrieval is optional, does not enter `Action`, and remains legal under
 **Cannot Act**. Insufficient HP does not prevent it: HP falls to zero, retrieval
 still resolves, and the game then ends.
 
@@ -500,8 +566,8 @@ require a separate rule-upgrade decision.
   progression. Immortal and Saint do not retain the previous Profession's
   abilities.
 - Automatic Profession Abilities and Formation Proficiencies apply
-  automatically. Activated Profession Abilities resolve during `Main`, do not
-  close the action opportunity, and share one successful activation allowance
+  automatically. Activated Profession Abilities resolve during `ActiveEffects`,
+  do not enter `Action`, and share one successful activation allowance
   per Player turn.
 - Formation Proficiencies add Player-scoped alternative matchers to the
   original Formation rather than creating new Formation identities.
@@ -562,8 +628,8 @@ Spirit Power ranges from zero through six:
 The five Spirit-summoning Formations are Active Spells made from two
 same-element Cards: 金靈喚術、木靈喚術、水靈喚術、火靈喚術、and 土靈喚術.
 
-Spirit Skills resolve as active effects during `Main`, do not close the Action
-opportunity, and remain legal while the Player has **Cannot Act**. Each
+Spirit Skills resolve during `ActiveEffects`, do not enter `Action`, and remain
+legal while the Player has **Cannot Act**. Each
 individual Spirit may use one Skill per Player turn; replacing a Spirit creates
 a new Spirit with its own allowance. A Skill validates only its printed timing,
 inputs, and power cost. It may resolve with no benefit or a detrimental result,
@@ -640,8 +706,9 @@ the performing Player retains knowledge because they selected the Card, and the
 new Pouch Owner may also inspect it; every other viewer sees only a Card Back.
 Once revealed or moved into a public Discard Pile, its identity is public.
 
-Triggering a Pouch is an active effect during `Main`, before the Player's Action,
-and remains legal under **Cannot Act**. The Player reveals the Card, chooses
+Triggering a Pouch is an active effect during `ActiveEffects`, before the
+Player's Action, and remains legal under **Cannot Act**. The Player reveals the
+Card, chooses
 exactly one Secret Strategy whose condition matches its printed element or
 level, resolves that effect, and only then moves the revealed Card to its origin
 Discard Pile.
@@ -794,7 +861,7 @@ current one. Discard eligibility uses printed Card elements and the selected
 Environment. Starting with the performing Player's Next Player, Players choose
 sequentially; the performing Player is last. The declared Environment and
 answers remain in the pending Formation command until every answer is present.
-Under main rule 5-2.4i, Environment Transfer, discards or hand reveals, Attack
+Under official rule 5-2.4i, Environment Transfer, discards or hand reveals, Attack
 damage, and the rest of the Formation resolve atomically before Game Outcome
 evaluation.
 
@@ -805,7 +872,7 @@ never recovers Tailwind.
 
 Gale-Rain Status makes life recovery from Formations performed by its owner
 ineffective; it does not block non-Formation recovery or Formations performed by
-an unaffected teammate. Main rule 6-1 tracks each two-turn application
+an unaffected teammate. Official rule 6-1 tracks each two-turn application
 independently. The performing Player's current Turn End counts as their first
 turn under the Status.
 
@@ -918,6 +985,11 @@ Avoid events that are too vague to replay without recomputing rules:
 GameEvent::FormationPerformed { formation_id: FormationId }
 ```
 
+Do not add an abstract `FormationUseCompleted` event. Completion is represented
+by the next rule-significant fact: `FormationCardsDiscarded` for a resolved
+Attack or immediate Spell, `PassiveCovered` for a waiting Passive Spell, or
+`GameEnded` for a terminal resolution.
+
 Also avoid reducing the log to only low-level mutations with no domain meaning.
 
 Prefer semantic events such as:
@@ -927,23 +999,61 @@ GameEvent::AttackResolved {
     attacker: PlayerId,
     target: PlayerId,
     formation_id: FormationId,
-    used_cards: Vec<CardInstanceId>,
-    point_breakdown: AttackPointBreakdown,
-    hp_change: HpChangeDelta,
-    shield_change: Option<ShieldChangeDelta>,
-    card_moves: Vec<CardMoveDelta>,
+    resolution: AttackResolution,
     elemental_context_update: Option<LastElementalAttackUpdate>,
+}
+
+struct AttackResolution {
+    outcome: ActionOutcome,
+    point_breakdown: AttackPointBreakdown,
+    damage: AttackDamageResolution,
+    additional_effects: ResolvedAttackEffects,
+}
+
+GameEvent::TurnDrawResolved {
+    player: PlayerId,
+    discard: CardInstanceId,
+    kept_cards: Vec<CardInstanceId>,
+}
+
+GameEvent::GameEnded {
+    conclusion: GameConclusion,
 }
 ```
 
+Formation Card movement has its own semantic boundaries:
+
+- `FormationCommitted` moves submitted physical Cards from hand to the
+  performing Player's Formation Area after validation succeeds.
+- `FormationCardsDiscarded` moves a resolved face-up Formation from its area to
+  the applicable origin Discard Pile or Piles.
+- `PassiveCovered` records that a committed passive Formation remains
+  face-down and waiting in its owner's Formation Area.
+- `TurnDrawResolved` records both the selected discard and every Card kept from
+  the Turn Draw Pool. Replay applies the discard before moving kept Cards into
+  hand, but no canonical event exists between those moves.
+- `GameEnded` records the independent Game Conclusion and is always the last
+  canonical event.
+
+Official rules 2-5.3c and 5-2.4i make Attack damage and every attached effect
+without a different specified timing one simultaneous Attack Resolution.
+`AttackResolved` therefore stores all of those resolved consequences in one
+event and applies them atomically. Do not emit separate `HpChanged`,
+`ShieldChanged`, status, Card-movement, or bonus events for consequences inside
+that same Attack Resolution; their sequence would invent a rule order that does
+not exist. Effects with an explicit different timing retain their own semantic
+event at that timing.
+
 A single command may emit multiple events, for example:
 
+- `FormationCommitted`
 - `PassiveFlipped`
 - `CounterEffectResolved`
 - `FormationEffectCopied`
 - `HandInspected`
 - `AttackResolved`
 - `EffectChoiceRequested`
+- `FormationCardsDiscarded`
 
 Do not persist a separate command log. Recorded-event metadata is enough to correlate accepted commands with emitted events.
 
@@ -966,19 +1076,31 @@ A known formation with legal cards but missing resolver is a rule implementation
 ## 9) Testing Checklist
 
 - Public phase flow stops only when player input is needed.
-- `Main` allows zero or more active-effect commands before one action command.
-- No `EndActiveWindow` command is required or event-logged.
-- `PerformFormation` and `PassAction` close `Main`.
+- `ActiveEffects` allows zero or more Active-Effect Commands before one Action
+  Command enters `Action`.
+- No `EndActiveEffects` command is required or event-logged.
+- `Action` remains current across every effect-generated Pending Choice.
 - `PassAction` is legal only for no hand or **Cannot Act**.
-- Turn draw uses "draw N+1, choose one newly drawn card to discard".
-- Turn draw discard creates a pending choice and can be replayed.
+- A validated Formation moves from hand to its Player-owned Formation Area
+  before effects begin and is never rolled back by prevention or
+  ineffectiveness.
+- Turn Draw moves N+1 Cards to the Turn Draw Pool, and only the selected discard
+  and remaining kept Cards leave it during `TurnDrawResolved`.
+- Drawn Cards are not part of the hand while the discard Pending Choice remains
+  unresolved.
+- The Turn Draw discard Pending Choice remains in `TurnDraw` and can be replayed.
 - Discard Shuffles record shuffled order and do not rerun RNG on replay.
 - Attack base damage targets previous player and resolves HP to that player's team.
+- One atomic `AttackResolved` contains Attack damage and every attached effect
+  without another specified timing; replay and Public Views never expose an
+  invented order among those consequences.
 - Two-player mode still uses team-owned HP.
 - Five-element interaction uses only a Five-Element Attack performed by the Previous Player during the immediately completed Previous Turn and is disabled by target shield.
 - Physical attacks deal double damage to shields.
 - Covered passive flips at next player's action start and is discarded whether it applies or not.
 - Covered passive also flips when that action is passed.
+- Each Player owns one Formation Area containing at most one Formation; a
+  Covered Passive is a face-down state in that area, not a separate zone.
 - `Defense` applies only to attacks.
 - `Seal` applies only to spells, and seals incoming covered passives without revealing them early.
 - Metamorphosis preserves its name, stores the copied resolved effect, and copies counter effects without copying passive performance procedure.
@@ -986,6 +1108,8 @@ A known formation with legal cards but missing resolver is a rule implementation
 - Radiance hand snapshots are visible only to the formation player.
 - Public state views and public event feeds do not leak hidden hands, covered cards, draw choices, or effect-choice options.
 - Canonical events remain complete enough for replay.
+- `GameEnded` carries the Game Conclusion, is last, and prevents Formation
+  cleanup, Turn Draw, Turn End, and all later unfinished processing.
 - Team-mode setup validation rejects invalid seating and unequal teams.
 - Every enabled Rule Module executes through the same Ruleset interface.
 - Discard Retrieval derives the Previous Player's Previous Turn discard and

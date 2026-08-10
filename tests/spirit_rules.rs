@@ -1,12 +1,12 @@
 use fewfc::application::{GameRecord, apply_event, handle_command};
 use fewfc::domain::{
     BaseChoiceContinuation, CardInstanceId, ChoiceAnswer, ChoiceContinuation, ChoiceId, Command,
-    CoveredPassive, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError, GameEvent, GameOutcome,
-    GameSetup, GameState, GameStatus, HERO_SCHOOLS_MODULE_ID, PERSONAL_DECK_MODULE_ID,
-    PassiveTriggerTiming, PendingChoice, PendingChoiceKind, Phase, Player, PlayerId,
-    PlayerProfession, PlayerSpirit, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID,
-    SpiritKind, SpiritSkill, StarKind, StatusDuration, StatusEffect, StatusOwner, TargetDecl,
-    TeamId, TeamStar, ValidationError,
+    Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, FormationAreaState, FormationInArea, GameError,
+    GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HERO_SCHOOLS_MODULE_ID,
+    PERSONAL_DECK_MODULE_ID, PassiveTriggerTiming, PendingChoice, PendingChoiceKind, Phase, Player,
+    PlayerId, PlayerProfession, PlayerSpirit, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID,
+    STAR_MODULE_ID, SpiritKind, SpiritSkill, StarKind, StatusDuration, StatusEffect, StatusOwner,
+    TargetDecl, TeamId, TeamStar, ValidationError,
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, event_for, state_for};
 use fewfc::rules::OfficialRules;
@@ -27,6 +27,23 @@ fn players() -> (Vec<Player>, Vec<PlayerId>) {
     )
 }
 
+fn cover(state: &mut GameState, owner: &str, formation_id: &str, cards: Vec<CardInstanceId>) {
+    state
+        .formation_area_mut(&PlayerId::new(owner))
+        .unwrap()
+        .formation = Some(FormationInArea {
+        formation_id: formation_id.to_string(),
+        cards,
+        star_substitution: None,
+        state: FormationAreaState::FaceDownWaiting {
+            sealed: false,
+            revealed: false,
+            neutralized: false,
+            trigger_timing: PassiveTriggerTiming::NextPlayerActionStart,
+        },
+    });
+}
+
 fn spirit_modules() -> Vec<RuleModuleId> {
     [
         STAR_MODULE_ID,
@@ -45,7 +62,7 @@ fn spirit_state() -> GameState {
         .configure_game(players, turn_order, spirit_modules())
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
 }
 
@@ -78,7 +95,7 @@ fn team_spirit_state() -> GameState {
         )
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
 }
 
@@ -197,8 +214,10 @@ fn summoning_formations_replace_the_players_spirit_at_two_power() {
     )
     .unwrap();
     assert!(matches!(
-        events.last(),
-        Some(GameEvent::SpiritSummoned {
+        events
+            .iter()
+            .find(|event| matches!(event, GameEvent::SpiritSummoned { .. })),
+        Some(&GameEvent::SpiritSummoned {
             previous: None,
             spirit: SpiritKind::Metal,
             ..
@@ -207,7 +226,7 @@ fn summoning_formations_replace_the_players_spirit_at_two_power() {
     apply_all(&mut state, &events);
     assert_eq!(state.spirit_for(&PlayerId::new("p1")).unwrap().power, 2);
 
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     let wood_cards = vec![
         card(&state, Element::Wood, 1),
         card(&state, Element::Wood, 2),
@@ -224,8 +243,10 @@ fn summoning_formations_replace_the_players_spirit_at_two_power() {
     )
     .unwrap();
     assert!(matches!(
-        replacement.last(),
-        Some(GameEvent::SpiritSummoned {
+        replacement
+            .iter()
+            .find(|event| matches!(event, GameEvent::SpiritSummoned { .. })),
+        Some(&GameEvent::SpiritSummoned {
             previous: Some(SpiritKind::Metal),
             spirit: SpiritKind::Wood,
             ..
@@ -252,8 +273,8 @@ fn matching_turn_discard_charges_only_the_owners_spirit_to_six() {
     );
     state.spirits[0].power = 5;
     let discard = card(&state, Element::Metal, 3);
-    *state.hand_mut(&PlayerId::new("p1")).unwrap() = vec![discard];
-    state.phase = Phase::TurnDrawDiscardChoice;
+    state.turn_draw_pool = vec![discard];
+    state.phase = Phase::TurnDraw;
     state.pending_choice = Some(PendingChoice {
         choice_id: ChoiceId::new(1),
         player: PlayerId::new("p1"),
@@ -281,7 +302,7 @@ fn matching_turn_discard_charges_only_the_owners_spirit_to_six() {
         events.as_slice(),
         [
             GameEvent::ChoiceMade { .. },
-            GameEvent::TurnDiscardChosen { .. },
+            GameEvent::TurnDrawResolved { .. },
             GameEvent::SpiritPowerChanged {
                 old_power: 5,
                 new_power: 6,
@@ -479,7 +500,7 @@ fn flow_moves_personal_cards_to_their_origin_discard() {
         .configure_game_with_decks(players, turn_order, modules, Vec::new())
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     give_spirit(&mut state, SpiritKind::Water, 1);
     let selected = state
         .card_instances
@@ -679,7 +700,7 @@ fn earth_skills_replace_shields_and_stone_shield_prevents_sacred_beast_damage_on
     apply_all(&mut stone, &stone_events);
     stone.current_turn_index = 1;
     stone.turn_number += 1;
-    stone.phase = Phase::Main;
+    stone.phase = Phase::ActiveEffects;
     let beast_cards = [1, 2, 3, 4, 5]
         .map(|level| card(&stone, Element::Metal, level))
         .to_vec();
@@ -700,10 +721,10 @@ fn earth_skills_replace_shields_and_stone_shield_prevents_sacred_beast_damage_on
     )));
     assert!(attack.iter().any(|event| matches!(
         event,
-        GameEvent::EnvironmentTransferred {
-            to: Element::Metal,
+        GameEvent::AttackResolved {
+            elemental_context_update: Some(effects),
             ..
-        }
+        } if effects.environment_transfers.iter().any(|transfer| transfer.to == Element::Metal)
     )));
 }
 
@@ -788,15 +809,7 @@ fn five_star_direct_victory_takes_priority_over_automatic_bloom() {
         StarKind::Fire,
         StarKind::Earth,
     ];
-    state.covered_passives.push(CoveredPassive {
-        owner: PlayerId::new("p4"),
-        formation_id: "countershock".to_string(),
-        cards: Vec::new(),
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 0,
-        reveal_timing: PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(&mut state, "p4", "countershock", Vec::new());
     let cards = vec![
         card(&state, Element::Metal, 3),
         card(&state, Element::Metal, 4),
@@ -825,12 +838,12 @@ fn five_star_direct_victory_takes_priority_over_automatic_bloom() {
             .any(|event| matches!(event, GameEvent::AutomaticBloomsResolved { .. }))
     );
     apply_all(&mut state, &events);
-    assert_eq!(
+    assert!(matches!(
         state.status,
         GameStatus::Finished {
-            outcome: GameOutcome::Team(TeamId::new("team:a"))
-        }
-    );
+            ref conclusion
+        } if conclusion.outcome == GameOutcome::Winner(TeamId::new("team:a"))
+    ));
     assert_eq!(state.spirit_for(&PlayerId::new("p1")).unwrap().power, 6);
 }
 
@@ -878,17 +891,17 @@ fn void_spirit_shattering_resolves_power_breaking_hp_and_cards_as_one_event() {
     )
     .unwrap();
     assert!(matches!(
-        events.as_slice(),
-        [GameEvent::VoidSpiritShatteringResolved {
+        events.iter().find(|event| matches!(event, GameEvent::VoidSpiritShatteringResolved { .. })),
+        Some(GameEvent::VoidSpiritShatteringResolved {
             spirit_changes,
             broken_spirits,
             hp_changes,
             card_moves,
             ..
-        }] if spirit_changes.len() == 4
+        }) if spirit_changes.len() == 4
             && broken_spirits.len() == 2
             && hp_changes.len() == 2
-            && card_moves.len() == 3
+            && card_moves.is_empty()
     ));
     assert!(
         !events
@@ -900,17 +913,23 @@ fn void_spirit_shattering_resolves_power_breaking_hp_and_cards_as_one_event() {
     apply_all(&mut state, &events);
     apply_all(&mut replayed, &events);
     assert_eq!(replayed, state);
-    assert_eq!(
+    assert!(matches!(
         state.status,
         GameStatus::Finished {
-            outcome: GameOutcome::Draw
-        }
-    );
+            ref conclusion
+        } if conclusion.outcome == GameOutcome::Draw
+    ));
     assert_eq!(state.spirit_for(&PlayerId::new("p1")).unwrap().power, 4);
     assert_eq!(state.spirit_for(&PlayerId::new("p3")).unwrap().power, 2);
     assert!(state.spirit_for(&PlayerId::new("p2")).is_none());
     assert!(state.spirit_for(&PlayerId::new("p4")).is_none());
-    assert!(cards.iter().all(|card| state.discard.contains(card)));
+    assert_eq!(
+        state
+            .formation_area(&PlayerId::new("p1"))
+            .and_then(|area| area.formation.as_ref())
+            .map(|formation| formation.cards.as_slice()),
+        Some(cards.as_slice())
+    );
 }
 
 #[test]
@@ -921,15 +940,7 @@ fn seal_cancels_void_spirit_shattering_but_still_discards_the_formation() {
         spirit: SpiritKind::Wood,
         power: 6,
     });
-    state.covered_passives.push(CoveredPassive {
-        owner: PlayerId::new("p4"),
-        formation_id: "seal".to_string(),
-        cards: Vec::new(),
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 0,
-        reveal_timing: PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(&mut state, "p4", "seal", Vec::new());
     let cards = [Element::Metal, Element::Wood, Element::Water]
         .map(|element| card(&state, element, 2))
         .to_vec();
@@ -948,7 +959,7 @@ fn seal_cancels_void_spirit_shattering_but_still_discards_the_formation() {
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, GameEvent::FormationPerformed { .. }))
+            .any(|event| matches!(event, GameEvent::FormationCommitted { .. }))
     );
     assert!(
         !events

@@ -188,6 +188,7 @@ pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::CardsDealt { .. }
         | GameEvent::CounterEffectEstablished { .. }
         | GameEvent::CounterEffectResolved { .. }
+        | GameEvent::ActionStarted { .. }
         | GameEvent::ActionPassed { .. }
         | GameEvent::ProfessionChanged { .. }
         | GameEvent::ProfessionTransformed { .. }
@@ -202,6 +203,8 @@ pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::SpiritLevelInterpreted { .. }
         | GameEvent::SpiritBroken { .. }
         | GameEvent::AutomaticBloomsResolved { .. }
+        | GameEvent::FormationCommitted { .. }
+        | GameEvent::FormationCardsDiscarded { .. }
         | GameEvent::CardsDrawnForProfessionChoice { .. }
         | GameEvent::AttackResolved { .. }
         | GameEvent::EnvironmentTransferred { .. }
@@ -252,6 +255,8 @@ pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::ConfluenceCardObligationCleared { .. }
         | GameEvent::TurnDrawBonusChanged { .. }
         | GameEvent::TurnDiscardChosen { .. }
+        | GameEvent::TurnDrawResolved { .. }
+        | GameEvent::GameEnded { .. }
         | GameEvent::DiscardRetrieved { .. } => None,
     }
 }

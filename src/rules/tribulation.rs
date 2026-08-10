@@ -207,17 +207,29 @@ pub(crate) fn suppress_formation_recovery(
         return;
     }
     for event in events {
-        let change = match event {
-            GameEvent::HpChanged { change } => Some(change),
-            GameEvent::AttackResolved { hp_change, .. } => Some(hp_change),
-            _ => None,
-        };
-        if let Some(change) = change
-            && change.effective_delta > 0
-        {
-            change.new_hp = change.old_hp;
-            change.effective_delta = 0;
+        match event {
+            GameEvent::HpChanged { change } => suppress_recovery(change),
+            GameEvent::AttackResolved {
+                hp_change,
+                elemental_context_update,
+                ..
+            } => {
+                suppress_recovery(hp_change);
+                if let Some(effects) = elemental_context_update {
+                    for change in &mut effects.hp_changes {
+                        suppress_recovery(change);
+                    }
+                }
+            }
+            _ => {}
         }
+    }
+}
+
+fn suppress_recovery(change: &mut HpChangeDelta) {
+    if change.effective_delta > 0 {
+        change.new_hp = change.old_hp;
+        change.effective_delta = 0;
     }
 }
 
@@ -520,12 +532,12 @@ fn finish_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> GameR
         .clone()
         .expect("Earth Rending completion requires active state");
     let environment = active.environment.expect("environment was chosen");
-    events.push(GameEvent::EnvironmentTransferred {
+    let environment_transfer = GameEvent::EnvironmentTransferred {
         player: active.attacker.clone(),
         formation_id: EARTH_RENDING.to_string(),
         from: state.environment,
         to: environment,
-    });
+    };
     let card_moves = active
         .answers
         .iter()
@@ -536,17 +548,18 @@ fn finish_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> GameR
             to: discard_zone(state, card),
         })
         .collect::<Vec<_>>();
+    // `continue_earth_rending` passes its projected state here after applying
+    // the current answer. Replaying `events` again would consume the final
+    // player twice and create a false ordered-answer violation.
+    let attack_state = state.clone();
+    let mut pre_resolution_events = vec![environment_transfer];
     if !card_moves.is_empty() {
-        events.push(GameEvent::CardsMoved { card_moves });
+        pre_resolution_events.push(GameEvent::CardsMoved { card_moves });
     }
-    let mut projected = state.clone();
-    for event in events.iter().skip_while(|event| {
-        !matches!(event, GameEvent::EnvironmentTransferred { formation_id, .. } if formation_id == EARTH_RENDING)
-    }) {
-        crate::rules::projection::apply_event(&mut projected, event);
-    }
+    let pre_resolution_effects =
+        crate::rules::base::attack_resolution::effects_from_events(&pre_resolution_events)?;
     let mut attack_events = crate::rules::base::attack_resolution::resolve(
-        &projected,
+        &attack_state,
         crate::rules::base::attack_resolution::AttackRequest {
             attacker: active.attacker.clone(),
             formation_id: EARTH_RENDING.to_string(),
@@ -556,19 +569,21 @@ fn finish_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> GameR
             damage_prevented: active.damage_prevented,
             split_attack_damage: active.split_attack_damage,
             mode: crate::rules::base::attack_resolution::AttackResolutionMode::FormationUse,
+            pre_resolution_effects,
         },
     )?;
     attack_events.extend(post_attack_events(
-        &projected,
+        &attack_state,
         &active.attacker,
         EARTH_RENDING,
     )?);
     crate::rules::dark::append_shared_fate_events(
-        &projected,
+        &attack_state,
         &active.attacker,
         EARTH_RENDING,
         &mut attack_events,
     )?;
+    crate::rules::base::attack_resolution::absorb_simultaneous_events(&mut attack_events);
     events.extend(attack_events);
     events.push(GameEvent::EarthRendingCompleted {
         player: active.attacker,
@@ -781,6 +796,7 @@ fn finish_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> GameR
             damage_prevented: active.damage_prevented,
             split_attack_damage: active.split_attack_damage,
             mode: crate::rules::base::attack_resolution::AttackResolutionMode::FormationUse,
+            pre_resolution_effects: crate::domain::AttackResolutionEffects::default(),
         },
     )?;
     attack_events.extend(post_attack_events(state, &active.attacker, RUSTED_FOREST)?);

@@ -4,13 +4,14 @@ use fewfc::application::{
 };
 use fewfc::domain::{
     CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, ChoiceAnswer, Command, CounterEffect,
-    CoveredPassive, DARK_GLIMMER_MODULE_ID, ECHO_MODULE_ID, EchoRandomnessContinuation, Element,
-    FIVE_DIRECTIONS_LEGEND_MODULE_ID, FormationSuppression, GameError, GameEvent, GameSetup,
-    GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind,
-    PERSONAL_DECK_MODULE_ID, PassiveFlipOutcome, PassiveNoEffectReason, PassiveTriggerTiming,
-    Phase, PlayerId, PreparedProfessionAbility, RandomnessContinuation, RuleModuleId,
-    SPIRIT_MODULE_ID, STAR_MODULE_ID, ScheduledEcho, StarKind, StatusDuration, StatusEffect,
-    StatusOwner, TeamId, TeamStar, TimedEffectReduction, TrustedRandomnessAnswer, ValidationError,
+    DARK_GLIMMER_MODULE_ID, ECHO_MODULE_ID, EchoRandomnessContinuation, Element,
+    FIVE_DIRECTIONS_LEGEND_MODULE_ID, FormationAreaState, FormationInArea, FormationSuppression,
+    GameError, GameEvent, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID,
+    JianghuState, JianghuStateKind, PERSONAL_DECK_MODULE_ID, PassiveFlipOutcome,
+    PassiveNoEffectReason, PassiveTriggerTiming, Phase, PlayerId, PreparedProfessionAbility,
+    RandomnessContinuation, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, ScheduledEcho,
+    StarKind, StatusDuration, StatusEffect, StatusOwner, TeamId, TeamStar, TimedEffectReduction,
+    TrustedRandomnessAnswer, ValidationError,
 };
 use fewfc::public_view::{PublicPendingChoice, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -45,7 +46,7 @@ fn configured_setup() -> GameSetup {
 
 fn configured_state() -> GameState {
     let mut state = GameState::from_setup(&configured_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
 }
 
@@ -236,7 +237,8 @@ fn falling_wood_pays_a_printed_element_cost_and_echoes_next_turn_start() {
         [
             GameEvent::ChoiceMade { .. },
             GameEvent::EchoCostPaid { .. },
-            GameEvent::EchoScheduled { .. }
+            GameEvent::EchoScheduled { .. },
+            ..
         ]
     ));
     apply_all(&mut state, &answer);
@@ -372,7 +374,7 @@ fn split_earth_selects_a_catalog_formation_and_only_its_next_use_is_ineffective(
 
     state.current_turn_index = 1;
     state.turn_number = 2;
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     let old_hp = state.hp[0].hp;
     let suppressed = handle_command(
         &state,
@@ -505,7 +507,10 @@ fn ringing_metal_empty_deck_recycles_before_an_independent_post_search_shuffle()
     let mut state = configured_state();
     state.hands[0].cards = vec![card(1), card(2), card(19)];
     state.deck.clear();
-    state.discard = vec![card(3), card(4)];
+    // Formation cards remain in the Formation Area while the randomness
+    // request is pending, so the recyclable discard alone must satisfy the
+    // requested draw.
+    state.discard = vec![card(3), card(4), card(5), card(6)];
 
     let performed = handle_command(
         &state,
@@ -521,14 +526,14 @@ fn ringing_metal_empty_deck_recycles_before_an_independent_post_search_shuffle()
     let recycle = state.pending_randomness.clone().unwrap();
     assert_eq!(
         recycle.current_order,
-        vec![card(3), card(4), card(1), card(2)]
+        vec![card(3), card(4), card(5), card(6)]
     );
 
     let recycled = resolve_trusted_randomness(
         &state,
         &TrustedRandomnessAnswer {
             request_id: recycle.request_id,
-            shuffled_order: vec![card(4), card(3), card(1), card(2)],
+            shuffled_order: vec![card(4), card(3), card(5), card(6)],
         },
     )
     .unwrap();
@@ -550,7 +555,7 @@ fn ringing_metal_empty_deck_recycles_before_an_independent_post_search_shuffle()
         post_search.continuation,
         RandomnessContinuation::Echo(EchoRandomnessContinuation::RingingMetalPostSearch)
     );
-    assert_eq!(post_search.current_order, vec![card(3), card(1), card(2)]);
+    assert_eq!(post_search.current_order, vec![card(3), card(5), card(6)]);
 }
 
 #[test]
@@ -756,7 +761,7 @@ fn split_earth_uses_the_next_player_in_four_player_turn_order() {
         .configure_game(shape.players, shape.turn_order, modules)
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands[0].cards = vec![card(73), card(74)];
     state.hands[1].cards = vec![card(1)];
 
@@ -877,6 +882,7 @@ fn pure_fire_is_a_successful_no_change_effect_and_schedules_free_echo() {
             GameEvent::ChoiceMade { .. },
             GameEvent::TimedEffectsReduced { reductions, .. },
             GameEvent::EchoScheduled { .. },
+            ..
         ] if reductions.is_empty()
     ));
     assert!(
@@ -1017,14 +1023,16 @@ fn pure_fire_atomically_reduces_eligible_effects_and_preserves_hidden_passive_un
             },
         },
     ]);
-    state.covered_passives.push(CoveredPassive {
-        owner: target.clone(),
+    state.formation_area_mut(&target).unwrap().formation = Some(FormationInArea {
         formation_id: "defense".to_string(),
         cards: vec![card(89), card(90)],
         star_substitution: None,
-        sealed: false,
-        covered_on_turn: 0,
-        reveal_timing: PassiveTriggerTiming::NextPlayerActionStart,
+        state: FormationAreaState::FaceDownWaiting {
+            sealed: false,
+            revealed: false,
+            neutralized: false,
+            trigger_timing: PassiveTriggerTiming::NextPlayerActionStart,
+        },
     });
     state.counter_effects.push(CounterEffect {
         owner: target.clone(),
@@ -1075,8 +1083,13 @@ fn pure_fire_atomically_reduces_eligible_effects_and_preserves_hidden_passive_un
     assert!(state.formation_suppressions.is_empty());
     assert!(state.counter_effects.is_empty());
     assert_eq!(state.jianghu_states[0].remaining_turns, 1);
-    assert_eq!(state.covered_passives.len(), 1);
-    assert!(state.neutralized_covered_passive_owners.contains(&target));
+    assert!(matches!(
+        state.covered_passive(&target).unwrap().state,
+        FormationAreaState::FaceDownWaiting {
+            neutralized: true,
+            ..
+        }
+    ));
     assert!(state.statuses.iter().any(|status| {
         status.id == "spirit-stone-shield-p2-turn-3"
             && status.duration
@@ -1106,7 +1119,7 @@ fn pure_fire_atomically_reduces_eligible_effects_and_preserves_hidden_passive_un
     );
 
     state.pending_choice = None;
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands[0].cards = vec![card(1), card(2)];
     let triggered = handle_command(
         &state,

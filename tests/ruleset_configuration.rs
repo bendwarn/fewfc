@@ -134,11 +134,31 @@ fn official_rule_module_catalog_is_the_authoritative_configuration_contract() {
             ))
             .collect::<Vec<_>>(),
         vec![
-            ("discard-retrieval", OfficialRuleModuleCategory::Optional, true, vec![]),
-            ("personal-deck", OfficialRuleModuleCategory::Optional, true, vec![]),
-            ("five-directions-legend", OfficialRuleModuleCategory::Advanced, true, vec![]),
+            (
+                "discard-retrieval",
+                OfficialRuleModuleCategory::Optional,
+                true,
+                vec![]
+            ),
+            (
+                "personal-deck",
+                OfficialRuleModuleCategory::Optional,
+                true,
+                vec![]
+            ),
+            (
+                "five-directions-legend",
+                OfficialRuleModuleCategory::Advanced,
+                true,
+                vec![]
+            ),
             ("star", OfficialRuleModuleCategory::Advanced, true, vec![]),
-            ("hero-schools", OfficialRuleModuleCategory::Advanced, true, vec![]),
+            (
+                "hero-schools",
+                OfficialRuleModuleCategory::Advanced,
+                true,
+                vec![]
+            ),
             (
                 "spirit",
                 OfficialRuleModuleCategory::Theme,
@@ -157,7 +177,12 @@ fn official_rule_module_catalog_is_the_authoritative_configuration_contract() {
                 true,
                 vec!["star", "five-directions-legend", "hero-schools"],
             ),
-            ("dark-glimmer", OfficialRuleModuleCategory::Theme, true, vec!["spirit"]),
+            (
+                "dark-glimmer",
+                OfficialRuleModuleCategory::Theme,
+                true,
+                vec!["spirit"]
+            ),
             (
                 "echo",
                 OfficialRuleModuleCategory::Theme,

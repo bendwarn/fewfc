@@ -618,7 +618,7 @@ pub struct TeamHp {
 pub enum GameStatus {
     Preparing { stage: GamePreparationStage },
     InProgress,
-    Finished { outcome: GameOutcome },
+    Finished { conclusion: GameConclusion },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -630,8 +630,50 @@ pub enum GamePreparationStage {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum GameOutcome {
-    Team(TeamId),
+    Winner(TeamId),
     Draw,
+}
+
+/// The immutable terminal fact for a Game.  This deliberately does not borrow
+/// from a Formation Area or previous-turn query: those are mutable projections,
+/// while a conclusion is part of the canonical record.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct GameConclusion {
+    pub outcome: GameOutcome,
+    pub causes: Vec<GameEndCause>,
+    #[serde(default)]
+    pub source_formation: Option<ConcludingFormationSnapshot>,
+}
+
+impl GameConclusion {
+    pub fn new(
+        outcome: GameOutcome,
+        causes: Vec<GameEndCause>,
+        source_formation: Option<ConcludingFormationSnapshot>,
+    ) -> Self {
+        assert!(
+            !causes.is_empty(),
+            "a Game Conclusion must have at least one Game End Cause"
+        );
+        Self {
+            outcome,
+            causes,
+            source_formation,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum GameEndCause {
+    TeamHpDepleted { teams: Vec<TeamId> },
+    DirectVictory { rule: String, team: TeamId },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ConcludingFormationSnapshot {
+    pub player: PlayerId,
+    pub formation_id: String,
+    pub cards: Vec<CardInstanceId>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -641,15 +683,32 @@ pub struct PlayerShield {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct CoveredPassive {
-    pub owner: PlayerId,
+pub struct FormationInArea {
     pub formation_id: String,
     pub cards: Vec<CardInstanceId>,
     #[serde(default)]
     pub star_substitution: Option<StarElementSubstitution>,
-    pub sealed: bool,
-    pub covered_on_turn: u64,
-    pub reveal_timing: PassiveTriggerTiming,
+    pub state: FormationAreaState,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum FormationAreaState {
+    FaceUpResolving,
+    FaceDownResolving,
+    FaceDownWaiting {
+        sealed: bool,
+        #[serde(default)]
+        revealed: bool,
+        #[serde(default)]
+        neutralized: bool,
+        trigger_timing: PassiveTriggerTiming,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PlayerFormationArea {
+    pub player: PlayerId,
+    pub formation: Option<FormationInArea>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -916,9 +975,9 @@ impl GameSetup {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     TurnStart,
-    Main,
+    ActiveEffects,
+    Action,
     TurnDraw,
-    TurnDrawDiscardChoice,
     TurnEnd,
 }
 
@@ -956,16 +1015,19 @@ pub struct GameState {
     pub exposed_foreign_cards: Vec<CardInstanceId>,
     #[serde(default)]
     pub last_turn_discard_by_player: HashMap<PlayerId, LastTurnDiscard>,
+    /// The sole game-scoped holding zone for the N+1 cards waiting for the
+    /// Turn Draw discard answer.  Cards here are in neither a hand nor a pile.
+    #[serde(default)]
+    pub turn_draw_pool: Vec<CardInstanceId>,
     pub pending_choice: Option<PendingChoice>,
     pub next_choice_id: ChoiceId,
     #[serde(default)]
     pub pending_randomness: Option<PendingRandomness>,
     pub shields: Vec<PlayerShield>,
-    pub covered_passives: Vec<CoveredPassive>,
+    /// Every Player owns exactly one Formation Area.  Covered Passives are a
+    /// face-down state of a Formation in this collection, never a second zone.
     #[serde(default)]
-    pub neutralized_covered_passive_owners: Vec<PlayerId>,
-    #[serde(default)]
-    pub revealed_covered_passive_owners: Vec<PlayerId>,
+    pub formation_areas: Vec<PlayerFormationArea>,
     #[serde(default)]
     pub counter_effects: Vec<CounterEffect>,
     pub statuses: Vec<StatusEffect>,
@@ -1087,6 +1149,7 @@ impl GameState {
             temporary_star_effects: Vec::new(),
             exposed_foreign_cards: Vec::new(),
             last_turn_discard_by_player: HashMap::new(),
+            turn_draw_pool: Vec::new(),
             pending_choice: None,
             next_choice_id: ChoiceId::new(1),
             pending_randomness: None,
@@ -1098,9 +1161,14 @@ impl GameState {
                     value: 0,
                 })
                 .collect(),
-            covered_passives: Vec::new(),
-            neutralized_covered_passive_owners: Vec::new(),
-            revealed_covered_passive_owners: Vec::new(),
+            formation_areas: setup
+                .players
+                .iter()
+                .map(|player| PlayerFormationArea {
+                    player: player.id.clone(),
+                    formation: None,
+                })
+                .collect(),
             counter_effects: Vec::new(),
             statuses: Vec::new(),
             jianghu_states: Vec::new(),
@@ -1160,6 +1228,27 @@ impl GameState {
             .iter_mut()
             .find(|hand| &hand.player == player)
             .map(|hand| &mut hand.cards)
+    }
+
+    pub fn formation_area(&self, player: &PlayerId) -> Option<&PlayerFormationArea> {
+        self.formation_areas
+            .iter()
+            .find(|area| &area.player == player)
+    }
+
+    pub fn formation_area_mut(&mut self, player: &PlayerId) -> Option<&mut PlayerFormationArea> {
+        self.formation_areas
+            .iter_mut()
+            .find(|area| &area.player == player)
+    }
+
+    pub fn covered_passive(&self, player: &PlayerId) -> Option<&FormationInArea> {
+        self.formation_area(player)?
+            .formation
+            .as_ref()
+            .filter(|formation| {
+                matches!(formation.state, FormationAreaState::FaceDownWaiting { .. })
+            })
     }
 
     pub fn shield(&self, player: &PlayerId) -> Option<i32> {
@@ -1871,6 +1960,29 @@ pub enum GameEvent {
     AutomaticBloomsResolved {
         resolutions: Vec<TeamBloomResolution>,
     },
+    /// Commits physical Formation cards from the performer's hand into that
+    /// Player's Formation Area after validation succeeds.  Subsequent
+    /// prevention or ineffectiveness never reverses this fact.
+    FormationCommitted {
+        player: PlayerId,
+        formation_id: String,
+        cards: Vec<CardInstanceId>,
+        #[serde(default)]
+        star_substitution: Option<StarElementSubstitution>,
+        state: FormationAreaState,
+    },
+    /// The normal face-up completion boundary for a Formation.  Replay moves
+    /// every listed card from the owner's Formation Area to its origin discard.
+    FormationCardsDiscarded {
+        player: PlayerId,
+        formation_id: String,
+        cards: Vec<CardInstanceId>,
+    },
+    /// Marks the first accepted non-Formation Action Command. Formation
+    /// actions enter Action through FormationCommitted.
+    ActionStarted {
+        player: PlayerId,
+    },
     CardsDrawnForTurnDiscardChoice {
         player: PlayerId,
         drawn_cards: Vec<CardInstanceId>,
@@ -1884,6 +1996,13 @@ pub enum GameEvent {
     TurnDiscardChosen {
         player: PlayerId,
         discard: CardInstanceId,
+    },
+    /// Atomic Turn Draw completion.  `discard` is moved to its origin discard
+    /// before `kept_cards` enter the hand, with no replay state between them.
+    TurnDrawResolved {
+        player: PlayerId,
+        discard: CardInstanceId,
+        kept_cards: Vec<CardInstanceId>,
     },
     TurnDrawSkipped {
         player: PlayerId,
@@ -1937,7 +2056,16 @@ pub enum GameEvent {
         hp_change: HpChangeDelta,
         shield_change: Option<ShieldChangeDelta>,
         card_moves: Vec<CardMoveDelta>,
-        elemental_context_update: Option<LastElementalAttackUpdate>,
+        /// The complete simultaneous semantic result for this attack.  It is
+        /// optional only for backward-compatible decoding of records written
+        /// before attack resolutions became atomic.
+        #[serde(default)]
+        elemental_context_update: Option<AttackResolutionEffects>,
+    },
+    /// A terminal conclusion is always the final canonical event.  It is
+    /// intentionally separate from card zones and previous-Formation state.
+    GameEnded {
+        conclusion: GameConclusion,
     },
     EnvironmentTransferred {
         player: PlayerId,
@@ -2390,6 +2518,83 @@ pub struct LastElementalAttackUpdate {
     pub attack: LastElementalAttack,
 }
 
+/// Canonical deltas that occur at the same resolution point as an attack.
+/// The vectors have stable serialization order for replay, but their order is
+/// not a rules-processing priority: every delta is computed from the state
+/// before the enclosing `AttackResolved` event.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct AttackResolutionEffects {
+    #[serde(default)]
+    pub outcome: AttackOutcome,
+    #[serde(default)]
+    pub elemental_context_update: Option<LastElementalAttackUpdate>,
+    #[serde(default)]
+    pub hp_changes: Vec<HpChangeDelta>,
+    #[serde(default)]
+    pub shield_changes: Vec<ShieldChangeDelta>,
+    #[serde(default)]
+    pub card_moves: Vec<CardMoveDelta>,
+    #[serde(default)]
+    pub statuses_added: Vec<StatusEffect>,
+    #[serde(default)]
+    pub statuses_removed: Vec<AttackStatusRemoval>,
+    #[serde(default)]
+    pub counter_effects_established: Vec<AttackCounterEffect>,
+    #[serde(default)]
+    pub turn_draw_bonus_changes: Vec<TurnDrawBonusDelta>,
+    #[serde(default)]
+    pub environment_transfers: Vec<EnvironmentTransferDelta>,
+}
+
+impl AttackResolutionEffects {
+    pub fn with_elemental_context(update: LastElementalAttackUpdate) -> Self {
+        Self {
+            elemental_context_update: Some(update),
+            ..Self::default()
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AttackOutcome {
+    #[default]
+    Resolved,
+    DamagePrevented,
+    AbsorbedByShield,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AttackStatusRemoval {
+    pub status_id: String,
+    pub owner: StatusOwner,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AttackCounterEffect {
+    pub owner: PlayerId,
+    pub effect_id: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct TurnDrawBonusDelta {
+    pub player: PlayerId,
+    pub old_value: usize,
+    pub delta: i32,
+    pub new_value: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct EnvironmentTransferDelta {
+    pub player: PlayerId,
+    pub formation_id: String,
+    pub from: Option<Element>,
+    pub to: Element,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct HpChangeDelta {
     pub team: TeamId,
@@ -2632,7 +2837,8 @@ pub enum EngineInvariantError {
     NotEnoughCards { needed: usize, available: usize },
     DuplicatePendingChoice { player: PlayerId },
     InvalidPendingChoice,
-    DuplicateCoveredPassive { player: PlayerId },
+    DuplicateFormationArea { player: PlayerId },
+    FormationAreaMissing { player: PlayerId },
     DuplicateProfession { player: PlayerId },
     ZoneOwnershipInconsistency { card: CardInstanceId },
 }

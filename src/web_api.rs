@@ -520,7 +520,7 @@ fn response_for(
         Some(actions) => actions,
         None if viewer_player.as_ref().is_some_and(|player| {
             record.state().current_player() == Some(player)
-                && record.state().phase == Phase::Main
+                && record.state().phase == Phase::ActiveEffects
                 && record.state().pending_choice.is_none()
                 && record.state().pending_randomness.is_none()
         }) =>
@@ -945,7 +945,7 @@ fn prepare_development_scenario(
 
     for _ in 0..80 {
         if record.state().current_player() == Some(player)
-            && record.state().phase == Phase::Main
+            && record.state().phase == Phase::ActiveEffects
             && development_skill_is_playable(record, player, skill)?
         {
             return Ok(());
@@ -1007,7 +1007,8 @@ fn prepare_development_scenario(
             continue;
         }
 
-        if record.state().phase != Phase::Main || record.state().current_player().is_none() {
+        if record.state().phase != Phase::ActiveEffects || record.state().current_player().is_none()
+        {
             advance_to_interactive_decision(record)?;
             continue;
         }
@@ -1725,7 +1726,11 @@ impl WebPublicGameState {
         };
         let winner_team = match &state.status {
             crate::domain::GameStatus::Finished {
-                outcome: crate::domain::GameOutcome::Team(team),
+                conclusion:
+                    crate::domain::GameConclusion {
+                        outcome: crate::domain::GameOutcome::Winner(team),
+                        ..
+                    },
             } => Some(team.as_str().to_string()),
             _ => None,
         };
@@ -3142,9 +3147,11 @@ fn event_type(event: &PublicGameEvent) -> String {
         PublicGameEvent::PlayerDeckPrepared { .. } => "PlayerDeckPrepared".to_string(),
         PublicGameEvent::CardsDealt { .. } => "CardsDealt".to_string(),
         PublicGameEvent::PassiveCovered { .. } => "PassiveCovered".to_string(),
+        PublicGameEvent::FormationCommitted { .. } => "FormationCommitted".to_string(),
         PublicGameEvent::CardsDrawnForTurnDiscardChoice { .. } => {
             "CardsDrawnForTurnDiscardChoice".to_string()
         }
+        PublicGameEvent::TurnDrawResolved { .. } => "TurnDrawResolved".to_string(),
         PublicGameEvent::CardsDrawnForProfessionChoice { .. } => {
             "CardsDrawnForProfessionChoice".to_string()
         }
@@ -3299,6 +3306,30 @@ fn event_presentation_with_vocabulary(
                 },
             ),
         ),
+        PublicGameEvent::FormationCommitted {
+            player,
+            formation_id,
+            cards,
+        } => (
+            "承諾陣法".to_string(),
+            formation_id.as_deref().map_or_else(
+                || {
+                    format!(
+                        "{} 承諾了 {}。",
+                        player.as_str(),
+                        card_refs_summary(cards, labels)
+                    )
+                },
+                |formation_id| {
+                    format!(
+                        "{} 承諾「{}」，使用 {}。",
+                        player.as_str(),
+                        formation_name(formation_names, formation_id),
+                        card_refs_summary(cards, labels)
+                    )
+                },
+            ),
+        ),
         PublicGameEvent::CardsDrawnForTurnDiscardChoice {
             player,
             drawn_cards,
@@ -3309,6 +3340,19 @@ fn event_presentation_with_vocabulary(
                 "{} 進行回合抽牌，抽取 {}，需選擇一張捨棄。",
                 player.as_str(),
                 card_refs_summary(drawn_cards, labels)
+            ),
+        ),
+        PublicGameEvent::TurnDrawResolved {
+            player,
+            discard,
+            kept_cards,
+        } => (
+            "完成回合抽牌".to_string(),
+            format!(
+                "{} 捨棄 {}，保留 {}。",
+                player.as_str(),
+                card_summary(discard, labels),
+                card_refs_summary(kept_cards, labels)
             ),
         ),
         PublicGameEvent::ChoiceRequested { choice } => (
@@ -3519,6 +3563,10 @@ fn game_event_presentation_with_vocabulary(
             "回合開始".to_string(),
             format!("第 {turn_number} 回合由 {} 行動。", player.as_str()),
         ),
+        GameEvent::ActionStarted { player } => (
+            "進入行動".to_string(),
+            format!("{} 開始處理本回合的行動。", player.as_str()),
+        ),
         GameEvent::ActionPassed { player, reason } => (
             "跳過行動".to_string(),
             format!(
@@ -3711,6 +3759,28 @@ fn game_event_presentation_with_vocabulary(
                     .join("；")
             ),
         ),
+        GameEvent::FormationCommitted {
+            player,
+            formation_id,
+            cards,
+            ..
+        } => (
+            "承諾陣法".to_string(),
+            format!(
+                "{} 承諾「{}」，使用 {}。",
+                player.as_str(),
+                formation_name(formation_names, formation_id),
+                cards_summary(cards, labels)
+            ),
+        ),
+        GameEvent::FormationCardsDiscarded { player, cards, .. } => (
+            "陣法棄置".to_string(),
+            format!(
+                "{} 的 {} 張陣法牌進入棄牌堆。",
+                player.as_str(),
+                cards.len()
+            ),
+        ),
         GameEvent::CardsDrawnForProfessionChoice { .. } => (
             "職業能力抽牌".to_string(),
             "已抽取職業能力指定的牌。".to_string(),
@@ -3733,6 +3803,19 @@ fn game_event_presentation_with_vocabulary(
                 "{} 捨棄了 {}。",
                 player.as_str(),
                 card_summary(discard, labels)
+            ),
+        ),
+        GameEvent::TurnDrawResolved {
+            player,
+            discard,
+            kept_cards,
+        } => (
+            "完成回合抽牌".to_string(),
+            format!(
+                "{} 捨棄 {}，保留 {} 張牌。",
+                player.as_str(),
+                card_summary(discard, labels),
+                kept_cards.len()
             ),
         ),
         GameEvent::TurnDrawSkipped { player, reason } => (
@@ -4174,6 +4257,15 @@ fn game_event_presentation_with_vocabulary(
         GameEvent::KingYamaDecreeVictoryAchieved { player, .. } => (
             "閻王令".to_string(),
             format!("{} 施展閻王令，所屬隊伍直接獲勝。", player.as_str()),
+        ),
+        GameEvent::GameEnded { conclusion } => (
+            "遊戲結束".to_string(),
+            match &conclusion.outcome {
+                crate::domain::GameOutcome::Winner(team) => {
+                    format!("{} 獲勝。", team.as_str())
+                }
+                crate::domain::GameOutcome::Draw => "平局。".to_string(),
+            },
         ),
         GameEvent::EchoCostPaid { player, .. } => (
             "支付迴響代價".to_string(),
@@ -4668,7 +4760,7 @@ mod tests {
             .unwrap(),
         );
 
-        assert_eq!(before_retrieval.state.phase, "Main");
+        assert_eq!(before_retrieval.state.phase, "ActiveEffects");
         assert_eq!(
             before_retrieval.state.current_player.as_deref(),
             Some("bob")
@@ -4785,7 +4877,7 @@ mod tests {
                 after_retrieval.state.current_player.as_deref(),
                 after_retrieval.state.phase.as_str(),
             ),
-            (Some("bob"), "Main")
+            (Some("bob"), "ActiveEffects")
         );
     }
 
@@ -5386,7 +5478,14 @@ mod tests {
         let setup = fixture_setup(&rules, None).unwrap();
         let mut state = crate::domain::GameState::from_setup(&setup);
         state.status = crate::domain::GameStatus::Finished {
-            outcome: crate::domain::GameOutcome::Team(setup.players[0].team.clone()),
+            conclusion: crate::domain::GameConclusion::new(
+                crate::domain::GameOutcome::Winner(setup.players[0].team.clone()),
+                vec![crate::domain::GameEndCause::DirectVictory {
+                    rule: "test".to_string(),
+                    team: setup.players[0].team.clone(),
+                }],
+                None,
+            ),
         };
         let web_state = WebPublicGameState::from_public(
             crate::public_view::state_for(&state, Viewer::Player(setup.players[0].id.clone())),
@@ -5657,7 +5756,7 @@ mod tests {
             .unwrap();
         let deck_order = rules.official_deck_order(&setup).unwrap();
         let mut record = GameRecord::start(setup.clone(), deck_order).unwrap();
-        record.fixture_state_mut().phase = Phase::Main;
+        record.fixture_state_mut().phase = Phase::ActiveEffects;
         record
             .fixture_state_mut()
             .professions
@@ -5868,7 +5967,7 @@ mod tests {
     fn pass_reason_is_returned_by_playable_actions() {
         let setup = fixture_setup(&OfficialRules::new(), None).unwrap();
         let mut state = crate::domain::GameState::from_setup(&setup);
-        state.phase = Phase::Main;
+        state.phase = Phase::ActiveEffects;
         let current = state.current_player().cloned().unwrap();
         state.hand_mut(&current).unwrap().clear();
 
@@ -5897,7 +5996,7 @@ mod tests {
     fn pass_is_not_offered_while_a_formation_requirement_is_active() {
         let setup = fixture_setup(&OfficialRules::new(), None).unwrap();
         let mut state = crate::domain::GameState::from_setup(&setup);
-        state.phase = Phase::Main;
+        state.phase = Phase::ActiveEffects;
         let current = state.current_player().cloned().unwrap();
         state.hand_mut(&current).unwrap().clear();
         state

@@ -3,14 +3,16 @@ use fewfc::application::{
     advance_automatic as advance_state_automatic, apply_event, handle_command,
 };
 use fewfc::domain::{
-    ActionModification, AttackPointBreakdown, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
-    CardMoveDelta, CardZone, ChoiceAnswer, ChoiceContinuation, ChoiceId, Command, CommandId,
-    DamageTransform, ElementInteraction, EngineInvariantError, EnvironmentAttackEffect, GameError,
-    GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, LastFormationUse, PassActionReason, PassiveFlipOutcome,
-    PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player, PlayerHand, PlayerId,
-    PlayerShield, RuleModuleId, RulesetId, ShieldChangeDelta, StatusDuration, StatusEffect,
-    StatusExpiryTiming, StatusOwner, TeamHp, TeamId, TurnDrawSkipReason, ValidationError,
+    ActionModification, AttackPointBreakdown, AttackResolutionEffects, CardDef, CardDefId,
+    CardInstanceDef, CardInstanceId, CardMoveDelta, CardZone, ChoiceAnswer, ChoiceContinuation,
+    ChoiceId, Command, CommandId, DamageTransform, ElementInteraction, EngineInvariantError,
+    EnvironmentAttackEffect, FormationAreaState, FormationInArea, GameConclusion, GameEndCause,
+    GameError, GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta,
+    LastElementalAttack, LastElementalAttackUpdate, LastFormationUse, PassActionReason,
+    PassiveFlipOutcome, PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player,
+    PlayerFormationArea, PlayerHand, PlayerId, PlayerShield, RuleModuleId, RulesetId,
+    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
+    TeamId, TurnDrawSkipReason, ValidationError,
 };
 use fewfc::public_view::{
     self, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
@@ -20,6 +22,103 @@ use fewfc::rules::Element;
 
 fn card(id: u64) -> CardInstanceId {
     CardInstanceId::new(id)
+}
+
+macro_rules! atomic_context {
+    ($update:expr) => {
+        Some(AttackResolutionEffects::with_elemental_context($update))
+    };
+}
+
+/// Older behavior assertions describe the semantic effect of a command rather
+/// than the new zone/terminal lifecycle facts.  Compare that invariant view
+/// on both sides while dedicated tests below assert the lifecycle itself.
+fn semantic_events(events: &[GameEvent]) -> Vec<GameEvent> {
+    let mut semantic = Vec::new();
+    for event in events {
+        match event {
+            GameEvent::FormationCommitted { .. }
+            | GameEvent::FormationCardsDiscarded { .. }
+            | GameEvent::FormationPerformed { .. }
+            | GameEvent::ActionStarted { .. }
+            | GameEvent::GameEnded { .. } => continue,
+            GameEvent::TurnDrawResolved {
+                player, discard, ..
+            } => semantic.push(GameEvent::TurnDiscardChosen {
+                player: player.clone(),
+                discard: *discard,
+            }),
+            GameEvent::AttackResolved { .. } => {
+                let mut attack = event.clone();
+                let mut environment_transfers = Vec::new();
+                if let GameEvent::AttackResolved {
+                    card_moves,
+                    elemental_context_update,
+                    ..
+                } = &mut attack
+                {
+                    // Formation cards now move through the Formation Area,
+                    // rather than the attack's old hand-to-discard payload.
+                    card_moves.clear();
+                    if let Some(effects) = elemental_context_update {
+                        effects.outcome = Default::default();
+                        environment_transfers = std::mem::take(&mut effects.environment_transfers)
+                            .into_iter()
+                            .map(|transfer| GameEvent::EnvironmentTransferred {
+                                player: transfer.player,
+                                formation_id: transfer.formation_id,
+                                from: transfer.from,
+                                to: transfer.to,
+                            })
+                            .collect();
+                        if effects.is_empty() {
+                            *elemental_context_update = None;
+                        }
+                    }
+                }
+                semantic.push(attack);
+                semantic.extend(environment_transfers);
+            }
+            _ => semantic.push(event.clone()),
+        }
+    }
+    semantic
+}
+
+macro_rules! assert_event_semantics_eq {
+    ($actual:expr, $expected:expr $(,)?) => {
+        assert_eq!(semantic_events(&$actual), semantic_events(&$expected));
+    };
+}
+
+fn cover(
+    state: &mut GameState,
+    owner: &str,
+    formation_id: &str,
+    cards: Vec<CardInstanceId>,
+    sealed: bool,
+) {
+    state
+        .formation_area_mut(&PlayerId::new(owner))
+        .unwrap()
+        .formation = Some(FormationInArea {
+        formation_id: formation_id.to_string(),
+        cards,
+        star_substitution: None,
+        state: FormationAreaState::FaceDownWaiting {
+            sealed,
+            revealed: false,
+            neutralized: false,
+            trigger_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
+        },
+    });
+}
+
+fn no_covered(state: &GameState) -> bool {
+    state
+        .formation_areas
+        .iter()
+        .all(|area| area.formation.is_none())
 }
 
 fn card_def(id: &str, element: Element) -> CardDef {
@@ -234,7 +333,7 @@ fn sacred_beast_attacks_then_transfers_the_environment() {
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     setup.card_instances.push(card_instance(21, "metal"));
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands = vec![
         PlayerHand::new(
             PlayerId::new("p1"),
@@ -255,7 +354,7 @@ fn sacred_beast_attacks_then_transfers_the_environment() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
+        semantic_events(&events).as_slice(),
         [
             GameEvent::AttackResolved {
                 point_breakdown: AttackPointBreakdown {
@@ -291,7 +390,7 @@ fn sacred_beast_attacks_then_transfers_the_environment() {
 #[test]
 fn elemental_interaction_ignores_an_elemental_attack_from_an_older_turn() {
     let mut state = GameState::from_setup(&two_player_setup_with_hp(100));
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.turn_number = 3;
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(5)]),
@@ -319,7 +418,7 @@ fn elemental_interaction_ignores_an_elemental_attack_from_an_older_turn() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
+        semantic_events(&events).as_slice(),
         [GameEvent::AttackResolved {
             point_breakdown: AttackPointBreakdown {
                 interaction: ElementInteraction::None,
@@ -338,7 +437,7 @@ fn matching_environment_damage_stacks_with_overcoming_interaction() {
     let setup = two_player_setup_with_hp(100)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.environment = Some(Element::Metal);
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(1)]),
@@ -366,7 +465,7 @@ fn matching_environment_damage_stacks_with_overcoming_interaction() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
+        semantic_events(&events).as_slice(),
         [GameEvent::AttackResolved {
             point_breakdown: AttackPointBreakdown {
                 base_points: 7,
@@ -388,7 +487,7 @@ fn environment_healing_stacks_with_overcoming_interaction() {
     let setup = two_player_setup_with_hp(100)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.environment = Some(Element::Metal);
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(5)]),
@@ -422,7 +521,7 @@ fn environment_healing_stacks_with_overcoming_interaction() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
+        semantic_events(&events).as_slice(),
         [GameEvent::AttackResolved {
             point_breakdown: AttackPointBreakdown {
                 base_points: 9,
@@ -445,7 +544,7 @@ fn overlapping_environment_and_generating_recovery_applies_once() {
     let setup = two_player_setup_with_hp(100)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.environment = Some(Element::Metal);
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(5)]),
@@ -479,7 +578,7 @@ fn overlapping_environment_and_generating_recovery_applies_once() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
+        semantic_events(&events).as_slice(),
         [GameEvent::AttackResolved {
             point_breakdown: AttackPointBreakdown {
                 environment_effect:
@@ -502,7 +601,7 @@ fn environment_recovery_is_halved_rounding_up_by_same_element_neutralization() {
     let setup = two_player_setup_with_hp(100)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.environment = Some(Element::Metal);
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(5)]),
@@ -536,7 +635,7 @@ fn environment_recovery_is_halved_rounding_up_by_same_element_neutralization() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
+        semantic_events(&events).as_slice(),
         [GameEvent::AttackResolved {
             point_breakdown: AttackPointBreakdown {
                 interaction: ElementInteraction::Same,
@@ -555,7 +654,7 @@ fn shield_receives_damage_before_environment_can_convert_it_to_healing() {
     let setup = two_player_setup_with_hp(100)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.environment = Some(Element::Metal);
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(5)]),
@@ -586,7 +685,7 @@ fn shield_receives_damage_before_environment_can_convert_it_to_healing() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
+        semantic_events(&events).as_slice(),
         [GameEvent::AttackResolved {
             point_breakdown: AttackPointBreakdown {
                 environment_effect: EnvironmentAttackEffect::None,
@@ -608,7 +707,7 @@ fn sacred_beast_consumes_defense_without_preventing_damage() {
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     setup.card_instances.push(card_instance(21, "metal"));
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands = vec![
         PlayerHand::new(
             PlayerId::new("p1"),
@@ -616,15 +715,7 @@ fn sacred_beast_consumes_defense_without_preventing_damage() {
         ),
         PlayerHand::new(PlayerId::new("p2"), Vec::new()),
     ];
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p2"),
-        formation_id: "defense".to_string(),
-        cards: vec![card(2), card(7)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 0,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(&mut state, "p2", "defense", vec![card(2), card(7)], false);
 
     let events = handle_command(
         &state,
@@ -638,7 +729,7 @@ fn sacred_beast_consumes_defense_without_preventing_damage() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
+        semantic_events(&events).as_slice(),
         [
             GameEvent::PassiveFlipped {
                 outcome: PassiveFlipOutcome::NoEffect {
@@ -660,7 +751,7 @@ fn ineffective_barrier_is_performed_without_replacing_an_existing_shield() {
     let setup = two_player_setup_with_hp(100)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.environment = Some(Element::Metal);
     state.hands = vec![
         PlayerHand::new(
@@ -692,17 +783,13 @@ fn ineffective_barrier_is_performed_without_replacing_an_existing_shield() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
-        [
-            GameEvent::FormationPerformed { formation_id, .. },
-            GameEvent::FormationEffectIgnored {
-                reason:
-                    fewfc::domain::FormationNoEffectReason::IneffectiveInEnvironment {
-                        environment: Element::Metal,
-                    },
-                ..
+        semantic_events(&events).as_slice(),
+        [GameEvent::FormationEffectIgnored {
+            reason: fewfc::domain::FormationNoEffectReason::IneffectiveInEnvironment {
+                environment: Element::Metal,
             },
-        ] if formation_id == "barrier"
+            ..
+        }]
     ));
     for event in &events {
         apply_event(&mut state, event);
@@ -716,7 +803,7 @@ fn ineffective_weapon_is_performed_without_dealing_damage() {
     let setup = two_player_setup_with_hp(100)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.environment = Some(Element::Fire);
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(6)]),
@@ -735,7 +822,7 @@ fn ineffective_weapon_is_performed_without_dealing_damage() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
+        semantic_events(&events).as_slice(),
         [
             GameEvent::FormationEffectIgnored {
                 reason: fewfc::domain::FormationNoEffectReason::IneffectiveInEnvironment {
@@ -762,22 +849,14 @@ fn ineffective_defense_flips_and_is_consumed_without_preventing_damage() {
     let setup = two_player_setup_with_hp(100)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.environment = Some(Element::Metal);
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), Vec::new()),
         PlayerHand::new(PlayerId::new("p2"), vec![card(1)]),
     ];
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "defense".to_string(),
-        cards: vec![card(2), card(7)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 0,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(&mut state, "p1", "defense", vec![card(2), card(7)], false);
 
     let events = handle_command(
         &state,
@@ -791,7 +870,7 @@ fn ineffective_defense_flips_and_is_consumed_without_preventing_damage() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
+        semantic_events(&events).as_slice(),
         [
             GameEvent::PassiveFlipped {
                 outcome: PassiveFlipOutcome::NoEffect {
@@ -832,7 +911,7 @@ fn void_meridian_severing_clears_environment_and_changes_team_hp_atomically() {
     let setup = two_player_setup_with_hp(15)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.environment = Some(Element::Fire);
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(6), card(11)]),
@@ -851,16 +930,13 @@ fn void_meridian_severing_clears_environment_and_changes_team_hp_atomically() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
-        [
-            GameEvent::FormationPerformed { .. },
-            GameEvent::EnvironmentCleared {
+        semantic_events(&events).as_slice(),
+        [GameEvent::EnvironmentCleared {
                 player,
                 formation_id,
                 environment: Element::Fire,
                 hp_changes,
-            },
-        ] if player == &PlayerId::new("p1")
+            }] if player == &PlayerId::new("p1")
             && formation_id == "void-meridian-severing"
             && hp_changes.len() == 2
             && hp_changes.iter().all(|change| change.new_hp == 0)
@@ -870,12 +946,10 @@ fn void_meridian_severing_clears_environment_and_changes_team_hp_atomically() {
         apply_event(&mut state, event);
     }
     assert_eq!(state.environment, None);
-    assert_eq!(
+    assert!(matches!(
         state.status,
-        GameStatus::Finished {
-            outcome: GameOutcome::Draw,
-        }
-    );
+        GameStatus::Finished { ref conclusion } if conclusion.outcome == GameOutcome::Draw
+    ));
 }
 
 #[test]
@@ -883,7 +957,7 @@ fn void_meridian_severing_without_environment_does_not_change_hp() {
     let setup = two_player_setup_with_hp(100)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(6), card(11)]),
         PlayerHand::new(PlayerId::new("p2"), Vec::new()),
@@ -900,10 +974,7 @@ fn void_meridian_severing_without_environment_does_not_change_hp() {
     )
     .unwrap();
 
-    assert!(matches!(
-        events.as_slice(),
-        [GameEvent::FormationPerformed { .. }]
-    ));
+    assert!(semantic_events(&events).is_empty());
     for event in &events {
         apply_event(&mut state, event);
     }
@@ -915,21 +986,13 @@ fn sealed_void_meridian_severing_does_not_clear_environment_or_change_hp() {
     let setup = two_player_setup_with_hp(100)
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.environment = Some(Element::Fire);
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(6), card(11)]),
         PlayerHand::new(PlayerId::new("p2"), Vec::new()),
     ];
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p2"),
-        formation_id: "seal".to_string(),
-        cards: vec![card(3), card(8)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 0,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(&mut state, "p2", "seal", vec![card(3), card(8)], false);
 
     let events = handle_command(
         &state,
@@ -966,7 +1029,7 @@ fn void_meridian_severing_changes_each_team_hp_once_in_team_mode() {
     .with_cards(card_setup.card_defs, card_setup.card_instances)
     .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.environment = Some(Element::Earth);
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(6), card(11)]),
@@ -987,11 +1050,8 @@ fn void_meridian_severing_changes_each_team_hp_once_in_team_mode() {
     .unwrap();
 
     assert!(matches!(
-        events.as_slice(),
-        [
-            GameEvent::FormationPerformed { .. },
-            GameEvent::EnvironmentCleared { hp_changes, .. },
-        ] if hp_changes.len() == 2
+        semantic_events(&events).as_slice(),
+        [GameEvent::EnvironmentCleared { hp_changes, .. }] if hp_changes.len() == 2
             && hp_changes.iter().all(|change| change.old_hp == 250 && change.new_hp == 230)
     ));
 }
@@ -1002,7 +1062,7 @@ fn same_element_sacred_beast_still_records_environment_transfer() {
         .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
     setup.card_instances.push(card_instance(21, "metal"));
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.environment = Some(Element::Metal);
     state.hands = vec![
         PlayerHand::new(
@@ -1024,7 +1084,7 @@ fn same_element_sacred_beast_still_records_environment_transfer() {
     .unwrap();
 
     assert!(matches!(
-        events.last(),
+        semantic_events(&events).last(),
         Some(GameEvent::EnvironmentTransferred {
             from: Some(Element::Metal),
             to: Element::Metal,
@@ -1211,7 +1271,7 @@ fn game_record_facade_applies_commands_and_verifies_replay() {
         })
         .unwrap();
     assert!(matches!(
-        command_events.events(),
+        semantic_events(command_events.events()).as_slice(),
         [GameEvent::AttackResolved { .. }]
     ));
 
@@ -1538,7 +1598,7 @@ fn team_mode_attack_resolves_previous_player_and_opposing_team_without_declared_
     let mut record = GameRecord::start(setup, official_deck()).unwrap();
     record.advance_automatic().unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p1"),
@@ -1572,7 +1632,7 @@ fn team_mode_attack_resolves_previous_player_and_opposing_team_without_declared_
                 from: CardZone::Hand(PlayerId::new("p1")),
                 to: CardZone::Discard,
             }],
-            elemental_context_update: Some(LastElementalAttackUpdate {
+            elemental_context_update: atomic_context!(LastElementalAttackUpdate {
                 player: PlayerId::new("p1"),
                 attack: LastElementalAttack {
                     element: Element::Metal,
@@ -1611,7 +1671,7 @@ fn team_mode_attack_uses_only_the_previous_players_personal_shield() {
     )
     .with_cards(card_setup.card_defs, card_setup.card_instances);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(1)]),
         PlayerHand::new(PlayerId::new("p2"), Vec::new()),
@@ -1720,7 +1780,7 @@ fn new_game_state_exposes_core_status_shields_and_passive_zones() {
     assert_eq!(state.status, GameStatus::InProgress);
     assert_eq!(state.shield(&PlayerId::new("p1")), Some(0));
     assert_eq!(state.shield(&PlayerId::new("p2")), Some(0));
-    assert!(state.covered_passives.is_empty());
+    assert!(no_covered(&state));
     assert!(state.statuses.is_empty());
 }
 
@@ -1765,24 +1825,16 @@ fn automatic_draw_invariant_error_emits_no_events_and_leaves_state_unchanged() {
 #[test]
 fn duplicate_covered_passive_is_engine_invariant_before_command_validation() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "defense".to_string(),
-        cards: vec![card(2), card(7)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 1,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "seal".to_string(),
-        cards: vec![card(3), card(8)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 1,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
+    state.phase = Phase::ActiveEffects;
+    cover(&mut state, "p1", "defense", vec![card(2), card(7)], false);
+    cover(&mut state, "p1", "seal", vec![card(3), card(8)], false);
+    state.formation_areas.push(PlayerFormationArea {
+        player: PlayerId::new("p1"),
+        formation: state
+            .formation_area(&PlayerId::new("p1"))
+            .unwrap()
+            .formation
+            .clone(),
     });
     let state_before = state.clone();
 
@@ -1795,7 +1847,7 @@ fn duplicate_covered_passive_is_engine_invariant_before_command_validation() {
             },
         ),
         Err(GameError::EngineInvariant(
-            EngineInvariantError::DuplicateCoveredPassive {
+            EngineInvariantError::DuplicateFormationArea {
                 player: PlayerId::new("p1"),
             }
         ))
@@ -1859,7 +1911,7 @@ fn turn_start_status_expiration_is_event_logged_before_turn_starts() {
         apply_event(&mut replayed, event);
     }
     assert!(state.statuses.is_empty());
-    assert_eq!(state.phase, Phase::Main);
+    assert_eq!(state.phase, Phase::ActiveEffects);
     assert_eq!(replayed, state);
 }
 
@@ -1924,7 +1976,7 @@ fn turn_end_status_expiration_is_event_logged_before_turn_ends() {
         apply_event(&mut replayed, event);
     }
     assert!(state.statuses.is_empty());
-    assert_eq!(state.phase, Phase::Main);
+    assert_eq!(state.phase, Phase::ActiveEffects);
     assert_eq!(state.current_player(), Some(&PlayerId::new("p2")));
     assert_eq!(replayed, state);
 }
@@ -1937,7 +1989,7 @@ fn permanent_statuses_do_not_expire_and_remain_visible_to_command_validation() {
     add_status(&mut state, cannot_act_status(PlayerId::new("p1")));
 
     assert_eq!(advance_state_automatic(&state).unwrap(), Vec::new());
-    assert_eq!(
+    assert_event_semantics_eq!(
         handle_command(
             &state,
             Command::PassAction {
@@ -1989,7 +2041,7 @@ fn automatic_advance_stops_at_main_after_turn_start() {
     );
 
     let state = record.state().clone();
-    assert_eq!(state.phase, Phase::Main);
+    assert_eq!(state.phase, Phase::ActiveEffects);
     assert_eq!(record.replay().unwrap(), state);
 }
 
@@ -2005,7 +2057,7 @@ fn pass_action_with_no_cards_consumes_the_turn_action_and_enters_turn_draw() {
         },
     );
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         handle_command(
             &state,
             Command::PassAction {
@@ -2050,7 +2102,7 @@ fn pass_action_is_allowed_when_player_cannot_act_by_status() {
     let mut state = record.state().clone();
     add_status(&mut state, cannot_act_status(PlayerId::new("p1")));
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         handle_command(
             &state,
             Command::PassAction {
@@ -2095,7 +2147,7 @@ fn pass_action_still_flips_and_discards_the_previous_players_covered_passive() {
             ..
         } if owner == &PlayerId::new("p1") && passive_id == "defense"
     )));
-    assert!(state.covered_passives.is_empty());
+    assert!(no_covered(&state));
     assert!(state.discard.contains(&card(2)));
     assert!(state.discard.contains(&card(7)));
     assert_eq!(state.phase, Phase::TurnDraw);
@@ -2137,11 +2189,12 @@ fn turn_draw_creates_pending_discard_choice_after_drawing_available_space_plus_o
         apply_event(&mut state, &event);
     }
 
-    assert_eq!(state.phase, Phase::TurnDrawDiscardChoice);
+    assert_eq!(state.phase, Phase::TurnDraw);
     assert_eq!(
         state.hand(&PlayerId::new("p1")),
-        Some(vec![card(1), card(2), card(3), card(4), card(10), card(11)].as_slice())
+        Some(vec![card(1), card(2), card(3), card(4)].as_slice())
     );
+    assert_eq!(state.turn_draw_pool, vec![card(10), card(11)]);
     assert_eq!(state.deck, (12..=20).map(card).collect::<Vec<_>>());
     assert_eq!(
         state.pending_choice,
@@ -2187,9 +2240,10 @@ fn choosing_turn_discard_finishes_draw_choice_and_moves_card_to_discard() {
                     cards: vec![card(10)]
                 },
             },
-            GameEvent::TurnDiscardChosen {
+            GameEvent::TurnDrawResolved {
                 player: PlayerId::new("p1"),
                 discard: card(10),
+                kept_cards: vec![card(11)],
             },
         ]
     );
@@ -2275,7 +2329,7 @@ fn turn_end_automatic_advance_starts_next_players_turn() {
         apply_event(&mut state, &event);
     }
 
-    assert_eq!(state.phase, Phase::Main);
+    assert_eq!(state.phase, Phase::ActiveEffects);
     assert_eq!(state.current_player(), Some(&PlayerId::new("p2")));
     assert_eq!(state.turn_number, 2);
 }
@@ -2337,7 +2391,7 @@ fn turn_draw_is_skipped_when_hand_is_already_at_limit() {
         apply_event(&mut state, &event);
     }
 
-    assert_eq!(state.phase, Phase::Main);
+    assert_eq!(state.phase, Phase::ActiveEffects);
     assert_eq!(state.current_player(), Some(&PlayerId::new("p1")));
     assert_eq!(
         state.hand(&PlayerId::new("p2")),
@@ -2365,7 +2419,7 @@ fn turn_draw_recycles_discard_to_deck_bottom_when_deck_is_insufficient() {
 
     let events = advance_state_automatic(&state).unwrap();
     assert!(matches!(
-        events.as_slice(),
+        semantic_events(&events).as_slice(),
         [GameEvent::RandomnessRequested { request }]
             if request.operation.is_discard_shuffle()
                 && request.current_order == vec![card(2)]
@@ -2377,7 +2431,7 @@ fn perform_attack_formation_damages_previous_players_team_and_moves_cards_to_dis
     let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     record.advance_automatic().unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p1"),
@@ -2411,7 +2465,7 @@ fn perform_attack_formation_damages_previous_players_team_and_moves_cards_to_dis
                 from: CardZone::Hand(PlayerId::new("p1")),
                 to: CardZone::Discard,
             }],
-            elemental_context_update: Some(LastElementalAttackUpdate {
+            elemental_context_update: atomic_context!(LastElementalAttackUpdate {
                 player: PlayerId::new("p1"),
                 attack: LastElementalAttack {
                     element: Element::Metal,
@@ -2597,7 +2651,7 @@ fn immediate_active_spell_resolves_through_perform_formation() {
         GameRecord::start(two_player_setup(), deck_starting_with(&[2, 7, 1, 4])).unwrap();
     record.advance_automatic().unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p1"),
@@ -2636,7 +2690,7 @@ fn generating_formation_heals_current_players_team_through_public_command_flow()
         GameRecord::start(two_player_setup_with_hp(20), deck_starting_with(&[1, 3, 2])).unwrap();
     record.advance_automatic().unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p1"),
@@ -2718,7 +2772,7 @@ fn generating_formation_targets_own_side_in_team_mode_without_declared_targets()
     let mut record = GameRecord::start(setup, deck_starting_with(&[1, 3, 2])).unwrap();
     record.advance_automatic().unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p1"),
@@ -2766,7 +2820,7 @@ fn generating_formation_targets_own_side_in_team_mode_without_declared_targets()
 #[test]
 fn overcoming_formation_damages_previous_players_team_through_public_command_flow() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(2), card(5)]),
         PlayerHand::new(PlayerId::new("p2"), Vec::new()),
@@ -2781,7 +2835,7 @@ fn overcoming_formation_damages_previous_players_team_through_public_command_flo
         },
     );
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         handle_command(
             &state,
             Command::PerformFormation {
@@ -2827,7 +2881,7 @@ fn overcoming_formation_damages_previous_players_team_through_public_command_flo
 #[test]
 fn radiance_prevents_next_player_action_and_draw_for_two_turns() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands = vec![
         PlayerHand::new(
             PlayerId::new("p1"),
@@ -2847,7 +2901,7 @@ fn radiance_prevents_next_player_action_and_draw_for_two_turns() {
     )
     .unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         events,
         vec![
             GameEvent::FormationPerformed {
@@ -2941,7 +2995,7 @@ fn radiance_records_a_private_snapshot_of_the_next_players_hand() {
 #[test]
 fn metamorphosis_ignores_a_base_formation_from_an_older_turn() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.turn_number = 4;
     state.hands = vec![
@@ -2998,7 +3052,7 @@ fn metamorphosis_copies_previous_players_last_base_formation_effect() {
         .unwrap();
     advance_record_to_next_main_after_turn_draw(&mut record, card(9));
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p2"),
@@ -3150,19 +3204,18 @@ fn metamorphosis_chain_copies_the_previous_resolved_effect_without_changing_name
         assert_eq!(formation.formation_id, "metamorphosis");
         assert_eq!(formation.effective_effect_id(), "weapon");
     }
-    assert_eq!(
+    assert!(matches!(
         state.status,
-        GameStatus::Finished {
-            outcome: GameOutcome::Team(TeamId::new("team:p1")),
-        }
-    );
+        GameStatus::Finished { ref conclusion }
+            if conclusion.outcome == GameOutcome::Winner(TeamId::new("team:p1"))
+    ));
     assert_eq!(record.replay().unwrap(), state);
 }
 
 #[test]
 fn metamorphosis_copies_five_streams_unites_damage_and_draw_bonus() {
     let mut state = GameState::from_setup(&two_player_setup_with_hp(100));
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.turn_number = 2;
     state.hands = vec![
@@ -3216,7 +3269,7 @@ fn metamorphosis_copies_five_streams_unites_damage_and_draw_bonus() {
 #[test]
 fn metamorphosis_copies_an_active_spell_and_records_its_resolved_effect() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.turn_number = 2;
     state.hands = vec![
@@ -3259,22 +3312,14 @@ fn metamorphosis_copies_an_active_spell_and_records_its_resolved_effect() {
 #[test]
 fn metamorphosis_copies_a_passive_effect_as_a_public_delayed_counter() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.turn_number = 2;
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), Vec::new()),
         PlayerHand::new(PlayerId::new("p2"), vec![card(5), card(10)]),
     ];
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "defense".to_string(),
-        cards: vec![card(2), card(7)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 1,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(&mut state, "p1", "defense", vec![card(2), card(7)], false);
     state.last_formation_by_player.insert(
         PlayerId::new("p1"),
         LastFormationUse {
@@ -3299,7 +3344,7 @@ fn metamorphosis_copies_a_passive_effect_as_a_public_delayed_counter() {
         apply_event(&mut state, event);
     }
 
-    assert!(state.covered_passives.is_empty());
+    assert!(no_covered(&state));
     assert_eq!(state.counter_effects.len(), 1);
     assert_eq!(state.counter_effects[0].owner, PlayerId::new("p2"));
     assert_eq!(state.counter_effects[0].effect_id, "defense");
@@ -3307,7 +3352,7 @@ fn metamorphosis_copies_a_passive_effect_as_a_public_delayed_counter() {
         assert!(state.discard.contains(&used_card));
     }
 
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 0;
     state.turn_number = 3;
     state.hands = vec![
@@ -3342,7 +3387,7 @@ fn metamorphosis_copies_a_passive_effect_as_a_public_delayed_counter() {
 #[test]
 fn metamorphosis_copying_empty_city_does_not_create_a_counter_effect() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.turn_number = 2;
     state.hands = vec![
@@ -3389,7 +3434,7 @@ fn chaos_requests_two_next_player_hand_cards_and_returns_them_to_deck_top() {
         GameRecord::start(two_player_setup(), deck_starting_with(&[5, 10, 2, 1])).unwrap();
     record.advance_automatic().unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p1"),
@@ -3449,7 +3494,7 @@ fn chaos_requests_two_next_player_hand_cards_and_returns_them_to_deck_top() {
         Err(GameError::Validation(ValidationError::InvalidChoiceAnswer))
     );
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         answer_record_choice(
             &mut record,
             PlayerId::new("p1"),
@@ -3502,7 +3547,7 @@ fn active_spell_intent_can_change_hp_through_public_command_flow() {
         GameRecord::start(two_player_setup(), deck_starting_with(&[3, 8, 5, 2])).unwrap();
     record.advance_automatic().unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p1"),
@@ -3545,7 +3590,7 @@ fn active_spell_intent_can_change_hp_through_public_command_flow() {
 #[test]
 fn five_elements_cycle_exchanges_team_hp_through_public_command_flow() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hp = vec![
         TeamHp {
             team: TeamId::new("team:p1"),
@@ -3575,7 +3620,7 @@ fn five_elements_cycle_exchanges_team_hp_through_public_command_flow() {
     )
     .unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         events,
         vec![
             GameEvent::FormationPerformed {
@@ -3644,7 +3689,7 @@ fn answering_effect_choice_resumes_resolution_deterministically() {
         })
         .unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         answer_record_choice(
             &mut record,
             PlayerId::new("p1"),
@@ -3727,7 +3772,7 @@ fn performing_passive_spell_covers_cards_and_consumes_action() {
     let mut record = GameRecord::start(two_player_setup(), defense_setup_deck()).unwrap();
     record.advance_automatic().unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p1"),
@@ -3751,18 +3796,9 @@ fn performing_passive_spell_covers_cards_and_consumes_action() {
         state.hand(&PlayerId::new("p1")),
         Some(vec![card(1), card(3)].as_slice())
     );
-    assert_eq!(
-        state.covered_passives,
-        vec![fewfc::domain::CoveredPassive {
-            owner: PlayerId::new("p1"),
-            formation_id: "defense".to_string(),
-            cards: vec![card(2), card(7)],
-            star_substitution: None,
-            sealed: false,
-            covered_on_turn: 1,
-            reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-        }]
-    );
+    let passive = state.covered_passive(&PlayerId::new("p1")).unwrap();
+    assert_eq!(passive.formation_id, "defense");
+    assert_eq!(passive.cards, vec![card(2), card(7)]);
     assert_eq!(record.replay().unwrap(), state);
 }
 
@@ -3801,7 +3837,7 @@ fn empty_city_flips_with_its_intentional_no_effect_outcome_and_is_discarded() {
         } if passive_id == "empty-city"
     )));
     let state = record.state().clone();
-    assert!(state.covered_passives.is_empty());
+    assert!(no_covered(&state));
     assert!(state.discard.contains(&card(1)));
     assert!(state.discard.contains(&card(2)));
     assert_eq!(record.replay().unwrap(), state);
@@ -3810,20 +3846,12 @@ fn empty_city_flips_with_its_intentional_no_effect_outcome_and_is_discarded() {
 #[test]
 fn player_cannot_cover_second_passive_while_one_is_pending() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), vec![card(2), card(7)]),
         PlayerHand::new(PlayerId::new("p2"), Vec::new()),
     ];
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "seal".to_string(),
-        cards: vec![card(3), card(8)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 1,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(&mut state, "p1", "seal", vec![card(3), card(8)], false);
     let state_before = state.clone();
 
     assert_eq!(
@@ -3849,7 +3877,7 @@ fn player_cannot_cover_second_passive_while_one_is_pending() {
 fn defense_prevents_incoming_attack_damage_and_records_action_modification() {
     let mut record = record_after_p1_covers_defense();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p2"),
@@ -3894,7 +3922,7 @@ fn defense_prevents_incoming_attack_damage_and_records_action_modification() {
                     from: CardZone::Hand(PlayerId::new("p2")),
                     to: CardZone::Discard,
                 }],
-                elemental_context_update: Some(LastElementalAttackUpdate {
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
                     player: PlayerId::new("p2"),
                     attack: LastElementalAttack {
                         element: Element::Fire,
@@ -3906,7 +3934,7 @@ fn defense_prevents_incoming_attack_damage_and_records_action_modification() {
     );
 
     let state = record.state().clone();
-    assert!(state.covered_passives.is_empty());
+    assert!(no_covered(&state));
     assert_eq!(state.discard, vec![card(10), card(2), card(7), card(9)]);
     assert_eq!(
         state.hp,
@@ -3929,7 +3957,7 @@ fn defense_prevents_five_streams_damage_but_not_its_draw_bonus() {
     let mut setup = two_player_setup_with_hp(100);
     setup.card_instances.push(card_instance(21, "metal"));
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.turn_number = 2;
     state.hands = vec![
@@ -3939,15 +3967,7 @@ fn defense_prevents_five_streams_damage_but_not_its_draw_bonus() {
             vec![card(1), card(6), card(11), card(16), card(21)],
         ),
     ];
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "defense".to_string(),
-        cards: vec![card(7), card(12)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 1,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(&mut state, "p1", "defense", vec![card(7), card(12)], false);
 
     let events = handle_command(
         &state,
@@ -4015,7 +4035,7 @@ fn countershock_rounds_each_players_half_of_odd_attack_damage_up() {
             },
         ]
     );
-    assert!(state.covered_passives.is_empty());
+    assert!(no_covered(&state));
     assert!(state.discard.contains(&card(4)));
     assert!(state.discard.contains(&card(9)));
     assert_eq!(record.replay().unwrap(), state);
@@ -4024,22 +4044,20 @@ fn countershock_rounds_each_players_half_of_odd_attack_damage_up() {
 #[test]
 fn countershock_splits_before_the_defenders_shield_absorbs_physical_damage() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.turn_number = 2;
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), Vec::new()),
         PlayerHand::new(PlayerId::new("p2"), vec![card(1), card(6)]),
     ];
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "countershock".to_string(),
-        cards: vec![card(4), card(9)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 1,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(
+        &mut state,
+        "p1",
+        "countershock",
+        vec![card(4), card(9)],
+        false,
+    );
     apply_event(
         &mut state,
         &GameEvent::ShieldChanged {
@@ -4083,7 +4101,7 @@ fn countershock_splits_before_the_defenders_shield_absorbs_physical_damage() {
 #[test]
 fn countershock_splits_a_generating_attack_and_both_sides_recover_hp() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.turn_number = 2;
     state.hp = vec![
@@ -4116,15 +4134,13 @@ fn countershock_splits_a_generating_attack_and_both_sides_recover_hp() {
             resolved_turn: 1,
         },
     );
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "countershock".to_string(),
-        cards: vec![card(4), card(9)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 1,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(
+        &mut state,
+        "p1",
+        "countershock",
+        vec![card(4), card(9)],
+        false,
+    );
 
     let events = handle_command(
         &state,
@@ -4158,22 +4174,20 @@ fn countershock_splits_a_generating_attack_and_both_sides_recover_hp() {
 #[test]
 fn countershock_finishes_as_a_draw_when_both_sides_reach_zero() {
     let mut state = GameState::from_setup(&two_player_setup_with_hp(4));
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.turn_number = 2;
     state.hands = vec![
         PlayerHand::new(PlayerId::new("p1"), Vec::new()),
         PlayerHand::new(PlayerId::new("p2"), vec![card(6)]),
     ];
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "countershock".to_string(),
-        cards: vec![card(4), card(9)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 1,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(
+        &mut state,
+        "p1",
+        "countershock",
+        vec![card(4), card(9)],
+        false,
+    );
 
     let events = handle_command(
         &state,
@@ -4189,12 +4203,10 @@ fn countershock_finishes_as_a_draw_when_both_sides_reach_zero() {
         apply_event(&mut state, event);
     }
 
-    assert_eq!(
+    assert!(matches!(
         state.status,
-        GameStatus::Finished {
-            outcome: GameOutcome::Draw,
-        }
-    );
+        GameStatus::Finished { ref conclusion } if conclusion.outcome == GameOutcome::Draw
+    ));
     assert!(state.hp.iter().all(|team_hp| team_hp.hp == 0));
 }
 
@@ -4212,7 +4224,7 @@ fn seal_passive_flips_as_no_effect_against_incoming_attack_and_is_discarded() {
         .unwrap();
 
     assert_eq!(
-        events.first(),
+        semantic_events(&events).first(),
         Some(&GameEvent::PassiveFlipped {
             owner: PlayerId::new("p1"),
             incoming_player: PlayerId::new("p2"),
@@ -4225,7 +4237,7 @@ fn seal_passive_flips_as_no_effect_against_incoming_attack_and_is_discarded() {
     );
 
     let state = record.state().clone();
-    assert!(state.covered_passives.is_empty());
+    assert!(no_covered(&state));
     assert_eq!(state.discard, vec![card(10), card(3), card(8), card(9)]);
     assert_eq!(
         state.hp,
@@ -4245,7 +4257,7 @@ fn seal_passive_flips_as_no_effect_against_incoming_attack_and_is_discarded() {
 #[test]
 fn seal_cancels_incoming_active_spell_effects_and_consumes_the_action() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.turn_number = 2;
     state.hands = vec![
@@ -4255,15 +4267,7 @@ fn seal_cancels_incoming_active_spell_effects_and_consumes_the_action() {
             vec![card(2), card(7), card(1), card(4)],
         ),
     ];
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "seal".to_string(),
-        cards: vec![card(3), card(8)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 1,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(&mut state, "p1", "seal", vec![card(3), card(8)], false);
 
     let events = handle_command(
         &state,
@@ -4276,7 +4280,7 @@ fn seal_cancels_incoming_active_spell_effects_and_consumes_the_action() {
     )
     .unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         events,
         vec![
             GameEvent::PassiveFlipped {
@@ -4304,13 +4308,13 @@ fn seal_cancels_incoming_active_spell_effects_and_consumes_the_action() {
 
     assert_eq!(state.shield(&PlayerId::new("p2")), Some(0));
     assert_eq!(state.phase, Phase::TurnDraw);
-    assert!(state.covered_passives.is_empty());
+    assert!(no_covered(&state));
 }
 
 #[test]
 fn seal_cancels_chaos_without_leaving_a_pending_choice() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.turn_number = 2;
     state.hands = vec![
@@ -4320,15 +4324,7 @@ fn seal_cancels_chaos_without_leaving_a_pending_choice() {
             vec![card(5), card(10), card(2), card(1)],
         ),
     ];
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "seal".to_string(),
-        cards: vec![card(8), card(13)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 1,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(&mut state, "p1", "seal", vec![card(8), card(13)], false);
 
     let events = handle_command(
         &state,
@@ -4345,7 +4341,7 @@ fn seal_cancels_chaos_without_leaving_a_pending_choice() {
     }
 
     assert!(state.pending_choice.is_none());
-    assert!(state.covered_passives.is_empty());
+    assert!(no_covered(&state));
     assert!(
         !events
             .iter()
@@ -4360,7 +4356,7 @@ fn seal_cancels_chaos_without_leaving_a_pending_choice() {
 fn seal_marks_incoming_passive_cover_as_sealed_without_exposing_the_marker() {
     let mut record = record_after_p1_covers_seal();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p2"),
@@ -4392,18 +4388,13 @@ fn seal_marks_incoming_passive_cover_as_sealed_without_exposing_the_marker() {
 
     let state = record.state().clone();
     assert_eq!(state.discard, vec![card(10), card(3), card(8)]);
-    assert_eq!(
-        state.covered_passives,
-        vec![fewfc::domain::CoveredPassive {
-            owner: PlayerId::new("p2"),
-            formation_id: "countershock".to_string(),
-            cards: vec![card(4), card(9)],
-            star_substitution: None,
-            sealed: true,
-            covered_on_turn: 2,
-            reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-        }]
-    );
+    let passive = state.covered_passive(&PlayerId::new("p2")).unwrap();
+    assert_eq!(passive.formation_id, "countershock");
+    assert_eq!(passive.cards, vec![card(4), card(9)]);
+    assert!(matches!(
+        passive.state,
+        FormationAreaState::FaceDownWaiting { sealed: true, .. }
+    ));
     assert_eq!(
         public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).covered_passives,
         vec![PublicCoveredPassive {
@@ -4457,7 +4448,7 @@ fn sealed_passive_later_flips_as_no_effect_and_is_discarded() {
         .unwrap();
 
     assert_eq!(
-        events.first(),
+        semantic_events(&events).first(),
         Some(&GameEvent::PassiveFlipped {
             owner: PlayerId::new("p2"),
             incoming_player: PlayerId::new("p1"),
@@ -4470,7 +4461,7 @@ fn sealed_passive_later_flips_as_no_effect_and_is_discarded() {
     );
 
     let state = record.state().clone();
-    assert!(state.covered_passives.is_empty());
+    assert!(no_covered(&state));
     assert!(state.discard.contains(&card(4)));
     assert!(state.discard.contains(&card(9)));
     assert_eq!(record.replay().unwrap(), state);
@@ -4517,7 +4508,10 @@ fn covered_passive_state_view_shows_cards_only_to_owner() {
             star_substitution: None,
         }]
     );
-    assert_eq!(state.covered_passives[0].cards, vec![card(2), card(7)]);
+    assert_eq!(
+        state.covered_passive(&PlayerId::new("p1")).unwrap().cards,
+        vec![card(2), card(7)]
+    );
     assert_eq!(record.replay().unwrap(), state);
 }
 
@@ -4658,15 +4652,7 @@ fn previous_turn_covered_formation_hides_details_from_other_players() {
             resolved_turn: 1,
         },
     );
-    state.covered_passives.push(fewfc::domain::CoveredPassive {
-        owner: PlayerId::new("p1"),
-        formation_id: "defense".to_string(),
-        cards: vec![card(2), card(7)],
-        star_substitution: None,
-        sealed: false,
-        covered_on_turn: 1,
-        reveal_timing: fewfc::domain::PassiveTriggerTiming::NextPlayerActionStart,
-    });
+    cover(&mut state, "p1", "defense", vec![card(2), card(7)], false);
 
     assert_eq!(
         public_view::state_for(&state, Viewer::Player(PlayerId::new("p1"))).previous_turn_formation,
@@ -5017,7 +5003,7 @@ fn invalid_perform_formation_commands_leave_events_and_state_unchanged() {
             declared_targets: Vec::new(),
         }),
         Err(GameError::Validation(ValidationError::WrongPhase {
-            expected: Phase::Main,
+            expected: Phase::ActiveEffects,
             actual: Phase::TurnStart,
         }))
     );
@@ -5095,7 +5081,7 @@ fn perform_formation_matches_cards_by_instance_definitions() {
         GameRecord::start(two_player_setup(), deck_starting_with(&[1, 6, 2, 3])).unwrap();
     record.advance_automatic().unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p1"),
@@ -5167,7 +5153,7 @@ fn attack_hp_delta_records_clamped_damage() {
     let mut record = GameRecord::start(two_player_setup_with_hp(5), official_deck()).unwrap();
     record.advance_automatic().unwrap();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p1"),
@@ -5201,7 +5187,7 @@ fn attack_hp_delta_records_clamped_damage() {
                 from: CardZone::Hand(PlayerId::new("p1")),
                 to: CardZone::Discard,
             }],
-            elemental_context_update: Some(LastElementalAttackUpdate {
+            elemental_context_update: atomic_context!(LastElementalAttackUpdate {
                 player: PlayerId::new("p1"),
                 attack: LastElementalAttack {
                     element: Element::Metal,
@@ -5242,12 +5228,11 @@ fn attack_that_reduces_a_team_to_zero_finishes_game_with_opposing_team_winner() 
         .unwrap();
 
     let state = record.state().clone();
-    assert_eq!(
+    assert!(matches!(
         state.status,
-        GameStatus::Finished {
-            outcome: GameOutcome::Team(TeamId::new("team:p1")),
-        }
-    );
+        GameStatus::Finished { ref conclusion }
+            if conclusion.outcome == GameOutcome::Winner(TeamId::new("team:p1"))
+    ));
     assert_eq!(
         state.hp,
         vec![
@@ -5313,7 +5298,7 @@ fn automatic_advance_stops_after_game_over() {
 fn hp_resolution_finishes_as_draw_when_no_team_remains_alive() {
     let setup = two_player_setup();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hp = vec![
         TeamHp {
             team: TeamId::new("team:p1"),
@@ -5351,20 +5336,30 @@ fn hp_resolution_finishes_as_draw_when_no_team_remains_alive() {
             elemental_context_update: None,
         },
     );
-
-    assert_eq!(
-        state.status,
-        GameStatus::Finished {
-            outcome: GameOutcome::Draw,
-        }
+    apply_event(
+        &mut state,
+        &GameEvent::GameEnded {
+            conclusion: GameConclusion::new(
+                GameOutcome::Draw,
+                vec![GameEndCause::TeamHpDepleted {
+                    teams: vec![TeamId::new("team:p1"), TeamId::new("team:p2")],
+                }],
+                None,
+            ),
+        },
     );
+
+    assert!(matches!(
+        state.status,
+        GameStatus::Finished { ref conclusion } if conclusion.outcome == GameOutcome::Draw
+    ));
 }
 
 #[test]
 fn elemental_attack_overcoming_previous_players_last_element_doubles_damage() {
     let mut record = record_after_p1_metal_attack_on_turn_1();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p2"),
@@ -5398,7 +5393,7 @@ fn elemental_attack_overcoming_previous_players_last_element_doubles_damage() {
                 from: CardZone::Hand(PlayerId::new("p2")),
                 to: CardZone::Discard,
             }],
-            elemental_context_update: Some(LastElementalAttackUpdate {
+            elemental_context_update: atomic_context!(LastElementalAttackUpdate {
                 player: PlayerId::new("p2"),
                 attack: LastElementalAttack {
                     element: Element::Fire,
@@ -5413,7 +5408,7 @@ fn elemental_attack_overcoming_previous_players_last_element_doubles_damage() {
 fn elemental_attack_generating_previous_players_last_element_heals_target_team() {
     let mut record = record_after_p1_metal_attack_on_turn_1();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p2"),
@@ -5447,7 +5442,7 @@ fn elemental_attack_generating_previous_players_last_element_heals_target_team()
                 from: CardZone::Hand(PlayerId::new("p2")),
                 to: CardZone::Discard,
             }],
-            elemental_context_update: Some(LastElementalAttackUpdate {
+            elemental_context_update: atomic_context!(LastElementalAttackUpdate {
                 player: PlayerId::new("p2"),
                 attack: LastElementalAttack {
                     element: Element::Earth,
@@ -5462,7 +5457,7 @@ fn elemental_attack_generating_previous_players_last_element_heals_target_team()
 fn elemental_attack_same_as_previous_players_last_element_halves_damage_rounding_up() {
     let mut record = record_after_p1_metal_attack_on_turn_1();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p2"),
@@ -5496,7 +5491,7 @@ fn elemental_attack_same_as_previous_players_last_element_halves_damage_rounding
                 from: CardZone::Hand(PlayerId::new("p2")),
                 to: CardZone::Discard,
             }],
-            elemental_context_update: Some(LastElementalAttackUpdate {
+            elemental_context_update: atomic_context!(LastElementalAttackUpdate {
                 player: PlayerId::new("p2"),
                 attack: LastElementalAttack {
                     element: Element::Metal,
@@ -5511,7 +5506,7 @@ fn elemental_attack_same_as_previous_players_last_element_halves_damage_rounding
 fn elemental_attack_without_relationship_to_previous_players_last_element_uses_normal_damage() {
     let mut record = record_after_p1_metal_attack_on_turn_1();
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: PlayerId::new("p2"),
@@ -5545,7 +5540,7 @@ fn elemental_attack_without_relationship_to_previous_players_last_element_uses_n
                 from: CardZone::Hand(PlayerId::new("p2")),
                 to: CardZone::Discard,
             }],
-            elemental_context_update: Some(LastElementalAttackUpdate {
+            elemental_context_update: atomic_context!(LastElementalAttackUpdate {
                 player: PlayerId::new("p2"),
                 attack: LastElementalAttack {
                     element: Element::Wood,
@@ -5559,7 +5554,7 @@ fn elemental_attack_without_relationship_to_previous_players_last_element_uses_n
 #[test]
 fn elemental_interaction_ignores_an_older_element_when_the_previous_formation_was_not_elemental() {
     let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.current_turn_index = 1;
     state.turn_number = 2;
     state.hands = vec![
@@ -5620,7 +5615,7 @@ fn shield_absorbs_attack_damage_before_hp_and_skips_element_interaction() {
         },
     );
 
-    assert_eq!(
+    assert_event_semantics_eq!(
         handle_command(
             &state,
             Command::PerformFormation {
@@ -5661,7 +5656,7 @@ fn shield_absorbs_attack_damage_before_hp_and_skips_element_interaction() {
                 from: CardZone::Hand(PlayerId::new("p2")),
                 to: CardZone::Discard,
             }],
-            elemental_context_update: Some(LastElementalAttackUpdate {
+            elemental_context_update: atomic_context!(LastElementalAttackUpdate {
                 player: PlayerId::new("p2"),
                 attack: LastElementalAttack {
                     element: Element::Fire,

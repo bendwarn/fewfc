@@ -8,10 +8,11 @@ mod formation_use;
 use crate::domain::{
     BaseRandomnessContinuation, CannotPerformFormationReason, CardInstanceId, CardMoveDelta,
     CardOrigin, CardZone, Command, DISCARD_RETRIEVAL_MODULE_ID, DeckPlacement,
-    EngineInvariantError, GameError, GameEvent, GameResult, GameSetup, GameState, GameStatus,
-    HpChangeDelta, PERSONAL_DECK_MODULE_ID, PassActionReason, Phase, Player, PlayerDeckList,
-    PlayerId, RandomnessContinuation, RandomnessDeck, RandomnessOperation, RulesetId, TeamHp,
-    TurnDrawSkipReason, ValidationError, validate_setup,
+    EngineInvariantError, GameConclusion, GameEndCause, GameError, GameEvent, GameOutcome,
+    GameResult, GameSetup, GameState, GameStatus, HpChangeDelta, PERSONAL_DECK_MODULE_ID,
+    PassActionReason, Phase, Player, PlayerDeckList, PlayerId, RandomnessContinuation,
+    RandomnessDeck, RandomnessOperation, RulesetId, TeamHp, TurnDrawSkipReason, ValidationError,
+    validate_setup,
 };
 use crate::rules::projection;
 use crate::rules::{
@@ -29,19 +30,17 @@ pub(crate) fn timed_effect_reductions(
     });
     reductions.extend(
         state
-            .covered_passives
-            .iter()
-            .filter(|passive| {
-                passive.owner == *target
-                    && !state
-                        .neutralized_covered_passive_owners
-                        .contains(&passive.owner)
-            })
-            .map(
-                |passive| crate::domain::TimedEffectReduction::CoveredPassive {
-                    owner: passive.owner.clone(),
-                },
-            ),
+            .covered_passive(target)
+            .and_then(|passive| match passive.state {
+                crate::domain::FormationAreaState::FaceDownWaiting { neutralized, .. }
+                    if !neutralized =>
+                {
+                    Some(crate::domain::TimedEffectReduction::CoveredPassive {
+                        owner: target.clone(),
+                    })
+                }
+                _ => None,
+            }),
     );
     reductions.extend(
         state
@@ -56,6 +55,69 @@ pub(crate) fn timed_effect_reductions(
             ),
     );
     reductions
+}
+
+/// Appends the one terminal canonical fact after all semantic consequences in
+/// a decision have been assembled.  Projection intentionally never infers a
+/// Finished status from an HP delta; this function is the only normal path
+/// that emits the conclusion event.
+pub(crate) fn append_terminal_game_end(state: &GameState, events: &mut Vec<GameEvent>) {
+    if events
+        .iter()
+        .any(|event| matches!(event, GameEvent::GameEnded { .. }))
+    {
+        return;
+    }
+
+    let direct_conclusion = events.iter().rev().find_map(|event| match event {
+        GameEvent::FiveStarAlignmentAchieved { team, .. } => Some(GameConclusion::new(
+            GameOutcome::Winner(team.clone()),
+            vec![GameEndCause::DirectVictory {
+                rule: "five-star-alignment".to_string(),
+                team: team.clone(),
+            }],
+            None,
+        )),
+        GameEvent::KingYamaDecreeVictoryAchieved { team, .. } => Some(GameConclusion::new(
+            GameOutcome::Winner(team.clone()),
+            vec![GameEndCause::DirectVictory {
+                rule: "king-yama-decree".to_string(),
+                team: team.clone(),
+            }],
+            None,
+        )),
+        _ => None,
+    });
+
+    let mut projected = state.clone();
+    for event in events.iter() {
+        projection::apply_event(&mut projected, event);
+    }
+    let mut semantic_projected = state.clone();
+    for event in events.iter().filter(|event| {
+        !matches!(
+            event,
+            GameEvent::ChoiceRequested { .. } | GameEvent::RandomnessRequested { .. }
+        )
+    }) {
+        projection::apply_event(&mut semantic_projected, event);
+    }
+    if let Some(conclusion) =
+        direct_conclusion.or_else(|| projection::game_conclusion_if_needed(&semantic_projected))
+    {
+        // A lethal simultaneous resolution cannot leave a follow-up choice in
+        // the record.  Those requests have no semantic consequence yet, so
+        // dropping them does not erase a resolved fact.
+        events.retain(|event| {
+            !matches!(
+                event,
+                GameEvent::ChoiceRequested { .. } | GameEvent::RandomnessRequested { .. }
+            )
+        });
+        events.push(GameEvent::GameEnded { conclusion });
+    } else if projected.pending_choice.is_some() || projected.pending_randomness.is_some() {
+        return;
+    }
 }
 
 /// Rule-specific choice facts kept beside the base spell resolvers.  This is
@@ -119,6 +181,7 @@ impl BaseRuleset {
     ) -> GameResult<Vec<GameEvent>> {
         let mut events = decide_command_with_base_ruleset(state, command)?;
         crate::rules::spirit::append_automatic_blooms(state, &mut events)?;
+        append_terminal_game_end(state, &mut events);
         Ok(events)
     }
 
@@ -457,7 +520,12 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
                         projection::apply_event(&mut projected, &event);
                         events.push(event);
                     }
-                    if matches!(projected.status, GameStatus::Finished { .. }) {
+                    append_terminal_game_end(state, &mut events);
+                    if matches!(events.last(), Some(GameEvent::GameEnded { .. })) {
+                        projection::apply_event(
+                            &mut projected,
+                            events.last().expect("terminal event was appended"),
+                        );
                         break;
                     }
                     if projected.pending_choice.is_some() || projected.pending_randomness.is_some()
@@ -511,7 +579,7 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
                             .clone(),
                     })
                 }),
-            Phase::Main | Phase::TurnDrawDiscardChoice => None,
+            Phase::ActiveEffects | Phase::Action => None,
         };
 
         let Some(event) = next_event else {
@@ -520,6 +588,10 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
 
         projection::apply_event(&mut projected, &event);
         events.push(event);
+        append_terminal_game_end(state, &mut events);
+        if matches!(events.last(), Some(GameEvent::GameEnded { .. })) {
+            break;
+        }
         if let Some(GameEvent::CardsDrawnForTurnDiscardChoice {
             player,
             allowed_discards,
@@ -721,7 +793,7 @@ fn decide_command_with_base_ruleset(
         }
         Command::PassAction { player, reason } => {
             ensure_current_player(state, &player)?;
-            ensure_phase(state, Phase::Main)?;
+            ensure_phase(state, Phase::ActiveEffects)?;
             if state.formation_requirements.iter().any(|requirement| {
                 requirement.player == player && requirement.applied_on_turn == state.turn_number
             }) {
@@ -773,7 +845,10 @@ fn decide_command_with_base_ruleset(
                     attack_points: None,
                 },
             );
-            let mut events = passive_trigger.events();
+            let mut events = vec![GameEvent::ActionStarted {
+                player: player.clone(),
+            }];
+            events.extend(passive_trigger.events());
             events.push(GameEvent::ActionPassed { player, reason });
             Ok(events)
         }
@@ -784,7 +859,7 @@ fn decide_command_with_base_ruleset(
             declared_targets,
         } => {
             ensure_current_player(state, &player)?;
-            ensure_phase(state, Phase::Main)?;
+            ensure_phase(state, Phase::ActiveEffects)?;
 
             formation_use::resolve(
                 state,
@@ -805,7 +880,7 @@ fn decide_command_with_base_ruleset(
             random_cards,
         } => {
             ensure_current_player(state, &player)?;
-            ensure_phase(state, Phase::Main)?;
+            ensure_phase(state, Phase::ActiveEffects)?;
 
             formation_use::resolve(
                 state,
@@ -824,7 +899,7 @@ fn decide_command_with_base_ruleset(
             cards,
         } => {
             ensure_current_player(state, &player)?;
-            ensure_phase(state, Phase::Main)?;
+            ensure_phase(state, Phase::ActiveEffects)?;
             if state.formation_requirements.iter().any(|requirement| {
                 requirement.player == player && requirement.applied_on_turn == state.turn_number
             }) {
@@ -879,7 +954,10 @@ fn decide_command_with_base_ruleset(
                     to: discard_zone_for_card(state, card),
                 })
                 .collect();
-            let mut events = passive_trigger.events();
+            let mut events = vec![GameEvent::ActionStarted {
+                player: player.clone(),
+            }];
+            events.extend(passive_trigger.events());
             let previous_profession = state.profession_for(&player).cloned();
             events.push(GameEvent::ProfessionChanged {
                 player: player.clone(),
@@ -917,7 +995,7 @@ fn decide_command_with_base_ruleset(
             declared_level,
         } => {
             ensure_current_player(state, &player)?;
-            ensure_phase(state, Phase::Main)?;
+            ensure_phase(state, Phase::ActiveEffects)?;
             if player_has_status(state, &player, "CannotAct") {
                 return Err(GameError::Validation(
                     ValidationError::ProfessionAbilityCannotResolve(ability_id),
@@ -981,7 +1059,7 @@ fn decide_command_with_base_ruleset(
             declared_level,
         } => {
             ensure_current_player(state, &player)?;
-            ensure_phase(state, Phase::Main)?;
+            ensure_phase(state, Phase::ActiveEffects)?;
             let events = crate::rules::spirit::use_skill(
                 state,
                 &player,
@@ -1009,7 +1087,7 @@ fn decide_command_with_base_ruleset(
             random_cards,
         } => {
             ensure_current_player(state, &player)?;
-            ensure_phase(state, Phase::Main)?;
+            ensure_phase(state, Phase::ActiveEffects)?;
             let events = crate::rules::spirit::use_skill(
                 state,
                 &player,
@@ -1036,7 +1114,7 @@ fn decide_command_with_base_ruleset(
         } => crate::rules::pending_choice::answer_events(state, player, choice_id, answer),
         Command::RetrievePreviousTurnDiscard { player } => {
             ensure_current_player(state, &player)?;
-            ensure_phase(state, Phase::Main)?;
+            ensure_phase(state, Phase::ActiveEffects)?;
             if !state.has_rule_module(DISCARD_RETRIEVAL_MODULE_ID) {
                 return Err(GameError::Validation(
                     ValidationError::DiscardRetrievalDisabled,
@@ -1145,15 +1223,28 @@ fn previous_player(state: &GameState, player: &PlayerId) -> GameResult<PlayerId>
 }
 
 fn ensure_engine_invariants(state: &GameState) -> GameResult<()> {
-    let mut covered_passive_owners = HashSet::new();
-    for passive in &state.covered_passives {
-        if !covered_passive_owners.insert(passive.owner.clone()) {
+    let mut formation_area_owners = HashSet::new();
+    for area in &state.formation_areas {
+        if !state.players.iter().any(|player| player.id == area.player)
+            || !formation_area_owners.insert(area.player.clone())
+        {
             return Err(GameError::EngineInvariant(
-                EngineInvariantError::DuplicateCoveredPassive {
-                    player: passive.owner.clone(),
+                EngineInvariantError::DuplicateFormationArea {
+                    player: area.player.clone(),
                 },
             ));
         }
+    }
+    if let Some(player) = state
+        .players
+        .iter()
+        .find(|player| !formation_area_owners.contains(&player.id))
+    {
+        return Err(GameError::EngineInvariant(
+            EngineInvariantError::FormationAreaMissing {
+                player: player.id.clone(),
+            },
+        ));
     }
 
     let mut profession_owners = HashSet::new();
@@ -1254,11 +1345,11 @@ fn ensure_can_query_playable_actions(
         ));
     }
 
-    if state.phase != Phase::Main {
+    if state.phase != Phase::ActiveEffects {
         return Err(GameError::Validation(
             ValidationError::CannotPerformFormation {
                 reason: CannotPerformFormationReason::WrongPhase {
-                    expected: Phase::Main,
+                    expected: Phase::ActiveEffects,
                     actual: state.phase,
                 },
             },
@@ -1292,14 +1383,21 @@ pub(crate) fn resolve_answered_choice(
             crate::domain::BaseChoiceContinuation::TurnDrawDiscard,
         ) => {
             ensure_current_player(&resolved_state, &player)?;
-            ensure_phase(&resolved_state, Phase::TurnDrawDiscardChoice)?;
+            ensure_phase(&resolved_state, Phase::TurnDraw)?;
             let crate::domain::ChoiceAnswer::Cards { cards } = answer else {
                 unreachable!("validated Turn Draw answer is a Card answer")
             };
             let discard = cards[0];
-            events.push(GameEvent::TurnDiscardChosen {
+            let kept_cards = resolved_state
+                .turn_draw_pool
+                .iter()
+                .copied()
+                .filter(|card| *card != discard)
+                .collect();
+            events.push(GameEvent::TurnDrawResolved {
                 player: player.clone(),
                 discard,
+                kept_cards,
             });
             if let Some(owned) = resolved_state.spirit_for(&player)
                 && owned.power < 6
@@ -1365,6 +1463,30 @@ pub(crate) fn resolve_answered_choice(
                 cards,
             )?);
         }
+    }
+    append_terminal_game_end(state, &mut events);
+    let mut projected = state.clone();
+    for event in &events {
+        projection::apply_event(&mut projected, event);
+    }
+    if projected.pending_choice.is_none()
+        && projected.pending_randomness.is_none()
+        && matches!(projected.status, GameStatus::InProgress)
+        && projected.phase == Phase::Action
+        && let Some(player) = projected.current_player().cloned()
+        && let Some(formation) = projected
+            .formation_area(&player)
+            .and_then(|area| area.formation.as_ref())
+        && matches!(
+            formation.state,
+            crate::domain::FormationAreaState::FaceUpResolving
+        )
+    {
+        events.push(GameEvent::FormationCardsDiscarded {
+            player,
+            formation_id: formation.formation_id.clone(),
+            cards: formation.cards.clone(),
+        });
     }
     Ok(events)
 }
@@ -1509,7 +1631,7 @@ mod tests {
     #[test]
     fn decide_command_accepts_action_pass_for_empty_hand() {
         let mut state = GameState::from_setup(&setup());
-        state.phase = Phase::Main;
+        state.phase = Phase::ActiveEffects;
         state.hands[0].cards.clear();
 
         assert_eq!(
@@ -1522,10 +1644,15 @@ mod tests {
                     },
                 )
                 .unwrap(),
-            vec![GameEvent::ActionPassed {
-                player: PlayerId::new("p1"),
-                reason: PassActionReason::NoCardsInHand,
-            }]
+            vec![
+                GameEvent::ActionStarted {
+                    player: PlayerId::new("p1"),
+                },
+                GameEvent::ActionPassed {
+                    player: PlayerId::new("p1"),
+                    reason: PassActionReason::NoCardsInHand,
+                },
+            ]
         );
     }
 }

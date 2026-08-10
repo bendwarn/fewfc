@@ -108,11 +108,15 @@ The internal domain state stores complete hidden information. Public/player-spec
 Internal state example:
 
 ```rust
-struct CoveredPassive {
-    owner: PlayerId,
-    cards: Vec<CardInstanceId>,
-    covered_on_turn: u64,
-    reveal_timing: PassiveRevealTiming,
+struct PlayerFormationArea {
+    player: PlayerId,
+    formation: Option<FormationInArea>,
+}
+
+enum FormationAreaState {
+    FaceUpResolving,
+    FaceDownResolving,
+    FaceDownWaiting { sealed: bool },
 }
 
 enum PublicCardRef {
@@ -121,11 +125,18 @@ enum PublicCardRef {
 }
 ```
 
-`PassiveCovered` events store the real `CardInstanceId` values so replay remains deterministic and complete.
+Every Player owns one Formation Area and it contains at most one Formation. A
+Covered Passive is the `FaceDownWaiting` state of a Formation in that area, not
+a separate Card container or zone. An incoming Player may therefore have a
+face-up Formation in their own area while the previous Player's Covered Passive
+still occupies the previous Player's area.
+
+`FormationCommitted` and `PassiveCovered` events store the real
+`CardInstanceId` values so replay remains deterministic and complete.
 
 External views are generated per viewer:
 
-- the owner can see their own covered cards
+- the Formation Area owner can see their own covered cards
 - other players only see hidden card counts
 
 Hidden information filtering is an API/presentation concern. It must not weaken the domain state or replay model.
@@ -144,11 +155,16 @@ When player A covers a passive on their action, it is checked at the start of th
 
 Resolution order:
 
-1. B submits a legal action command.
-2. Before B's action resolves, the engine checks A's covered passive.
-3. If present, the passive flips and attempts to affect B's action.
-4. The passive is discarded whether or not its effect applies.
-5. B's action continues resolving unless the passive effect changes or cancels it.
+1. Validate B's complete Action Command. Validation failure emits no events and
+   changes no state.
+2. If the command is `PerformFormation`, emit `FormationCommitted` to move its
+   physical Cards from B's hand to B's Formation Area. A successful Action
+   Command enters `Action`; commitment is not rolled back later.
+3. The engine checks A's Formation Area for a Covered Passive.
+4. If present, the passive flips and attempts to affect B's Action.
+5. The passive moves from A's Formation Area to the applicable origin Discard
+   Pile or Piles whether or not its effect applies.
+6. B's Action continues unless the passive changes or prevents its result.
 
 Do not implement separate passive trigger systems for attacks and active spells.
 
@@ -168,13 +184,13 @@ Validation failures include:
 
 Once validation succeeds and action resolution begins, the action is part of the game history and consumes the turn's action even if the final outcome is prevented or has no effect.
 
-Resolution outcomes can be represented in events:
+Resolution outcomes are recorded inside the semantic resolution that actually
+occurred, for example an Attack Resolution:
 
 ```rust
-GameEvent::ActionResolved {
-    player: PlayerId,
-    action_id: ActionId,
+struct AttackResolution {
     outcome: ActionOutcome,
+    // point breakdown and resolved consequences
 }
 
 enum ActionOutcome {
@@ -184,22 +200,32 @@ enum ActionOutcome {
 }
 ```
 
-This preserves exactly-one-action turn semantics without treating invalid commands as historical facts.
+This preserves exactly-one-action turn semantics without treating invalid
+commands as historical facts. Do not add an abstract `FormationUseCompleted`
+event: normal Formation completion is the real `FormationCardsDiscarded` or
+`PassiveCovered` fact, while terminal resolution ends with `GameEnded`.
 
 ### 10. Turn Draw Pending Choice
 
-Turn draw requires a pending choice state because the player draws `N + 1` cards and chooses one of the newly drawn cards to discard.
+Source basis: official rule 4-2.4d draws one more Card than the number that will
+be added to hand, has the Player choose one of those Cards to Discard, and only
+then adds the remaining Cards to hand.
 
-Use a dedicated phase:
+Implementation interpretation: the pre-discard Cards need a canonical zone
+that is neither hand nor Discard Pile, and waiting for this choice is state
+inside the official Turn Draw stage rather than a sixth Turn phase.
+
+Turn Draw requires a Pending Choice because the Player draws `N + 1` Cards and
+chooses one of those newly drawn Cards to discard. It remains entirely within
+the canonical `TurnDraw` phase; waiting for the choice is state within that
+phase, not another phase.
+
+Use one game-scoped Turn Draw Pool:
 
 ```rust
-enum Phase {
-    TurnStart,
-    ActiveWindow,
-    Action,
-    TurnDraw,
-    TurnDrawDiscardChoice,
-    TurnEnd,
+struct GameState {
+    turn_draw_pool: Vec<CardInstanceId>,
+    pending_choice: Option<PendingChoice>,
 }
 
 struct PendingChoice {
@@ -209,7 +235,6 @@ struct PendingChoice {
 
 enum PendingChoiceKind {
     TurnDrawDiscard {
-        drawn_cards: Vec<CardInstanceId>,
         allowed_discards: Vec<CardInstanceId>,
     },
 }
@@ -218,14 +243,22 @@ enum PendingChoiceKind {
 Flow:
 
 1. Enter `TurnDraw`.
-2. Draw `draw_count + 1`.
-3. Emit `CardsDrawnForTurnDiscardChoice`.
-4. Move to `TurnDrawDiscardChoice`.
-5. Accept `ChooseTurnDiscard`.
-6. Emit `TurnDiscardChosen`.
-7. Move to `TurnEnd`.
+2. Emit `CardsDrawnForTurnDiscardChoice` to move `N + 1` Cards from the
+   applicable Deck into the Turn Draw Pool and create its discard Pending
+   Choice. The Cards are not in the Player's hand.
+3. Accept `ChooseTurnDiscard` while the phase remains `TurnDraw`.
+4. Emit one atomic `TurnDrawResolved { discard, kept_cards }`. The selected Card
+   enters its applicable origin Discard Pile first; the remaining Cards then
+   enter the Player's hand. There is no Player input or canonical replay state
+   between those movements.
+5. Clear the Pool and enter `TurnEnd`.
 
 This supports mid-draw save/load, UI waiting states, online play, and deterministic replay.
+
+`TurnDrawResolved` replaces `TurnDiscardChosen` for the new canonical record
+version. Implementing this decision requires the explicit persisted-record
+migration already required for canonical event changes; snapshots are caches
+and may be rebuilt from migrated events.
 
 ### 11. Draw Limits, Hand Limit, And Discard Shuffles
 
@@ -235,9 +268,13 @@ If the player's hand is already at the hand limit, skip turn draw and do not cre
 
 Otherwise, turn draw uses the rule intent "draw `N + 1`, then choose 1 newly drawn card to discard", where `N = min(base_draw, available_hand_space)`.
 
-This means a player with at least one available hand slot may temporarily hold one card above the hand limit during `TurnDrawDiscardChoice`, then returns to the hand limit after choosing one card to discard.
+This means a Player with at least one available hand slot can have `N + 1` Cards
+waiting in the Turn Draw Pool while the existing hand remains unchanged. The
+Player never temporarily holds a Card above the hand limit.
 
-`allowed_discards` must contain only the cards drawn by that turn draw. Cards that were already in the player's hand before the draw are not legal choices for `ChooseTurnDiscard`.
+`allowed_discards` must contain only the Cards in that Turn Draw Pool. Cards
+that were already in the Player's hand before the draw are not legal choices
+for `ChooseTurnDiscard`.
 
 When the Deck is insufficient, perform a **Discard Shuffle (洗棄牌)** first:
 shuffle the complete applicable Discard Pile and place every shuffled Card at
@@ -257,9 +294,12 @@ resumes after the shuffle; it does not classify which kind of shuffle occurred.
 
 Cards are eligible for a Discard Shuffle based on their current zone.
 
-- formation cards that already moved to `discard` before `TurnDraw` may participate in a Discard Shuffle during that same turn's draw
-- cards currently being drawn or awaiting `ChooseTurnDiscard` are not in `discard` and cannot participate in that same Discard Shuffle
-- the card discarded by `ChooseTurnDiscard` enters `discard` only after that draw sequence has already completed
+- Formation Cards that already moved to a Discard Pile before `TurnDraw` may
+  participate in a Discard Shuffle during that same Turn Draw
+- Cards in the Turn Draw Pool are not in a Discard Pile and cannot participate
+  in that same Discard Shuffle
+- the Card selected by `ChooseTurnDiscard` enters its applicable origin Discard
+  Pile only when `TurnDrawResolved` applies
 
 If the player has available hand space but the Deck plus its applicable Discard
 Pile cannot satisfy the required draw count, report an engine error. Do not
@@ -286,50 +326,66 @@ Validation:
 - if the player has no cards in hand, `PassAction { reason: NoCardsInHand }` is legal
 - if the player has a `CannotAct` status, `PassAction { reason: CannotActByStatus }` is legal
 
-A successful pass consumes the turn's action, emits `ActionPassed { player, reason }`, and advances to `TurnDraw`.
+A successful pass enters `Action`, consumes the Turn's action, processes and
+discards the previous Player's Covered Passive, and emits
+`ActionPassed { player, reason }`. It advances to `TurnDraw` unless that Action
+ends the game.
 
-### 13. Active Window Completion
+### 13. Active Effects Completion
 
-Do not require or event-log an explicit `EndActiveWindow` command.
+Do not require or event-log an explicit `EndActiveEffects` command.
 
-`ActiveWindow` accepts zero or more active-effect commands. The first valid action command implicitly closes the active window and starts action resolution.
+`ActiveEffects` accepts zero or more Active-Effect Commands. The first valid
+Action Command ends `ActiveEffects` and enters `Action`.
 
 Implications:
 
 - successful active effects emit their own events
 - failed active-effect validation emits no events
-- there is no `ActiveWindowEnded` event
-- replay derives active-window completion from the first action event in that turn
-- `PassAction` is also an action command and therefore can implicitly close `ActiveWindow`
+- there is no `ActiveEffectsEnded` event
+- replay derives completion from the first Action event in that Turn
+- `PassAction` is also an Action Command and therefore enters `Action`
 
 ### 14. Public Phase Model
 
-Use a single public input phase for active effects and the turn action:
+Source basis: official rule 4-2 defines the Turn as Turn Start, Active Effects,
+Action, Turn Draw, and Turn End in that order.
+
+Implementation interpretation: expose those five rule stages directly as the
+canonical Phase values; a Pending Choice pauses its owning stage rather than
+creating a new stage.
+
+Use the official five-stage Turn flow as the canonical public phase model:
 
 ```rust
 enum Phase {
     TurnStart,
-    Main,
+    ActiveEffects,
+    Action,
     TurnDraw,
-    TurnDrawDiscardChoice,
     TurnEnd,
 }
 ```
 
-`Main` allows:
+`ActiveEffects` allows:
 
-- zero or more active-effect commands
-- exactly one action command
+- zero or more Active-Effect Commands
+- the first accepted Action Command, which enters `Action`
 
-Successful action commands immediately close the `Main` phase and advance toward turn draw. Action commands include `PerformFormation` and `PassAction`.
+`Action` carries that accepted command through previous-passive handling, all
+effects, and every effect-generated Pending Choice. It does not advance to
+`TurnDraw` until the Action completes or the game ends. Action Commands include
+`PerformFormation`, Profession Change, and `PassAction`.
 
-Rulebook timing names such as `ActiveWindow` and `Action` remain useful internally and in event metadata, but they are not separate public phases that require separate player commands.
+The Turn Draw discard Pending Choice remains in `TurnDraw`. Neither that choice
+nor an effect-generated choice adds a phase.
 
 ### 15. Automatic Advancement Through Non-Decision Phases
 
 The public API should stop only when player input is needed.
 
-Non-decision phases such as `TurnStart`, `TurnDraw` without a discard choice, and `TurnEnd` are advanced by the engine automatically while still emitting events.
+Non-decision work inside `TurnStart`, `ActiveEffects`, `Action`, `TurnDraw`, and
+`TurnEnd` is advanced by the engine automatically while still emitting events.
 
 Suggested API:
 
@@ -346,11 +402,15 @@ fn advance_until_decision(
 
 Engine stops at:
 
-- `Main`, when the current player may use active effects or perform an action
-- `TurnDrawDiscardChoice`, when the current player must choose a discard
-- terminal game-over state, if added
+- `ActiveEffects`, when the current Player may use Active Effects or perform an
+  Action
+- `Action`, when its Pending Choice requires Player input
+- `TurnDraw`, when its discard Pending Choice requires Player input
+- the terminal `Finished` state
 
-After `ChooseTurnDiscard`, the engine may automatically process `TurnEnd`, advance turn order, run the next player's `TurnStart`, and stop at the next decision point.
+After `ChooseTurnDiscard`, the engine may automatically process `TurnEnd`,
+advance Turn order, run the next Player's `TurnStart`, and stop at the next
+decision point.
 
 ### 16. Command Handling And Event Application
 
@@ -383,7 +443,12 @@ Command handling validates and decides events. State mutation happens through `a
 
 Validation failures return errors, emit no events, and do not mutate state.
 
-The online adapter stores a pending command draft only when `PerformFormation` produces an `EffectGenerated` choice that suspends formation resolution. The draft preserves the original command context until the choice continuation completes. `TurnDrawDiscard` is normal turn completion after the action has resolved, so it must not create or continue a formation command draft.
+The online adapter stores a pending command draft only when
+`PerformFormation` produces an `EffectGenerated` choice that suspends its
+owning `Action`. The draft preserves the original command context until the
+choice continuation completes. A Turn Draw discard choice belongs to
+`TurnDraw`, so it must not create or continue the preceding Action Command
+draft.
 
 ### 17. Formation Matching
 
@@ -433,6 +498,39 @@ Command::PerformFormation {
 The engine validates that the submitted cards can form the declared `formation_id`. It does not infer or auto-select a formation for the player.
 
 This keeps replay, UI behavior, and AI behavior deterministic when multiple legal interpretations exist.
+
+#### 18.1 Formation Commitment And Completion
+
+Source basis: official rules 5-2 and 5-3 display an accepted Formation before
+its effects resolve and Discard the Formation Cards after ordinary completion;
+rule 5-4 instead leaves a performed Passive Spell covered for the next Player's
+Action.
+
+Implementation interpretation: each Player owns one Formation Area and
+successful Formation validation commits the physical Cards to it before any
+incoming Counter Effect is processed.
+
+Complete all `PerformFormation` validation before committing any state. When
+validation succeeds, emit `FormationCommitted` to atomically move every
+submitted physical Card from the performing Player's hand into that Player's
+Formation Area and enter `Action`. Attacks and immediate Spells commit face-up;
+covered Passive Spells commit face-down.
+
+Commitment is irreversible within that Action. A Counter Effect, prevention,
+or no-effect result does not return the Cards to hand. Effect-generated Pending
+Choices suspend the same `Action` while the committed Formation remains in its
+area.
+
+After a non-passive Formation and all of its sequential choices and effects
+finish, emit `FormationCardsDiscarded` to move its physical Cards from the
+Formation Area directly to their applicable origin Discard Pile or Piles, then
+enter `TurnDraw`. A covered Passive instead emits `PassiveCovered`, remains
+face-down in its Formation Area, and enters `TurnDraw`. Do not add an abstract
+`FormationUseCompleted` event.
+
+If the Action emits `GameEnded`, neither of those ordinary completion paths
+runs. The committed Formation stays in the Formation Area because the rules
+stop further processing rather than performing terminal cleanup.
 
 ### 19. Attack Base Damage Target
 
@@ -514,14 +612,15 @@ enum DamageTransform {
 }
 ```
 
-Attack resolution events should include the point breakdown:
+An Attack Resolution includes the point breakdown together with all of its
+resolved consequences:
 
 ```rust
-GameEvent::AttackResolved {
-    attacker: PlayerId,
-    target: PlayerId,
-    formation_id: FormationId,
+struct AttackResolution {
+    outcome: ActionOutcome,
     point_breakdown: AttackPointBreakdown,
+    damage: AttackDamageResolution,
+    additional_effects: ResolvedAttackEffects,
 }
 ```
 
@@ -610,11 +709,12 @@ Passive resolution flow:
 3. The effect returns action modifications.
 4. The incoming action resolution applies those modifications.
 
-Once a formation is performed, its resulting effects are treated as one atomic,
-simultaneous resolution from the players' perspective. Event emission order is an
-implementation and replay detail, not an additional observable rule. Tests should
-assert the resolved game state rather than require an event sequence, except where
-the rules explicitly make an intermediate choice or separate action observable.
+Within an Attack Resolution, damage and every attached effect without another
+specified timing are one atomic, simultaneous result from the Players'
+perspective. They belong to one `AttackResolved` event so implementation,
+replay, and Public Views cannot invent an observable order. An explicitly timed
+effect remains outside that event, while a required intermediate choice is
+collected before emitting it.
 
 Countershock (`反震`) splits an incoming attack before defensive layers absorb
 damage. The attacking side receives its reflected share directly. The defending
@@ -661,13 +761,17 @@ This prevents a covered passive from being revealed early and preserves the next
 
 The sealed covered passive uses the same public view behavior as a normal covered passive. The engine stores the sealed marker internally for later resolution, but public/player views do not expose a separate sealed marker beyond the normal covered-card visibility rules.
 
-Each player can have at most one pending covered passive. Under normal turn flow, a player's covered passive must flip on the next player's action timing before that player can cover another passive.
+Each Player's Formation Area can contain at most one Formation. Under normal
+Turn flow, a Player's Covered Passive flips during the next Player's `Action`
+before its owner can commit another Formation.
 
-If a command attempts to cover a passive while that player already has a pending covered passive, report an error. Emit no event and do not consume the action.
+If a command attempts to commit a Formation while that Player's Formation Area
+is already occupied, report an error. Emit no event and do not consume the
+Action.
 
 Empty City (`空城`) is a covered passive with no additional action modification.
 It still consumes the formation cards and turn action, occupies the player's one
-covered-passive position, flips at the normal trigger timing, and moves its cards
+Formation Area, flips at the normal trigger timing, and moves its cards
 to discard. Its no-effect outcome is intentional rather than an unknown-passive
 fallback. Represent that outcome explicitly as
 `PassiveNoEffectReason::EmptyCity`. User-facing records should say only
@@ -809,7 +913,9 @@ struct EffectIntent {
 }
 ```
 
-Formation-use baseline zone movement is owned by the pipeline, not by individual effect resolvers.
+Formation-use baseline zone movement is owned by the pipeline, not by
+individual effect resolvers. It is emitted as `FormationCommitted` before
+effects and `FormationCardsDiscarded` after ordinary face-up completion.
 
 Effect intents describe additional consequences only, such as drawing cards, discarding selected cards, changing shields, changing statuses, modifying actions, or requesting further choices.
 
@@ -822,7 +928,6 @@ Effect choices must include enough serialized continuation data to resume determ
 ```rust
 enum PendingChoiceKind {
     TurnDrawDiscard {
-        drawn_cards: Vec<CardInstanceId>,
         allowed_discards: Vec<CardInstanceId>,
     },
     EffectChoice {
@@ -846,7 +951,7 @@ Only one pending choice may exist at a time.
 
 If a resolution needs multiple choices, it presents them sequentially. The first choice becomes `pending_choice`; remaining choice requirements are stored in `ResolutionContinuation`. After the player answers, the continuation resumes and may present the next choice.
 
-Creating and answering a pending choice are both game events:
+Creating and answering an effect-generated Pending Choice are both Game Events:
 
 ```rust
 GameEvent::ChoiceRequested {
@@ -863,6 +968,11 @@ GameEvent::ChoiceMade {
 ```
 
 `ChoiceRequested` must include enough serialized data to reconstruct the pending choice and its continuation during replay.
+
+Turn Draw uses its more specific semantic pair instead:
+`CardsDrawnForTurnDiscardChoice` creates the Pool and Pending Choice, and
+`TurnDrawResolved` records the answer and both resulting Card movements. It
+does not additionally emit generic `ChoiceRequested` or `ChoiceMade` events.
 
 Canonical events may contain hidden information required for deterministic replay, including hidden card ids, complete choice options, and serialized continuations.
 
@@ -882,23 +992,65 @@ not lose information they already inspected.
 
 ### 26. Game Over
 
-The game ends when a team's HP reaches 0 or lower.
+Source basis: official rule 7-3 ends the Game immediately when its end
+condition is established and stops unfinished effect processing.
+
+Implementation interpretation: finish only the simultaneous semantic
+resolution currently being applied, record an explicit terminal conclusion,
+and run no later effect or cleanup step.
+
+The game ends when a Team's HP reaches 0 or lower or another enabled rule
+produces a direct terminal outcome. Store an independent Game Conclusion:
 
 ```rust
 enum GameStatus {
     Ongoing,
-    Finished { winner: Winner },
+    Finished { conclusion: GameConclusion },
 }
 
-enum Winner {
-    Team(TeamId),
+struct GameConclusion {
+    outcome: GameOutcome,
+    causes: Vec<GameEndCause>,
+    source_formation: Option<ConcludingFormationSnapshot>,
+}
+
+enum GameOutcome {
+    Winner(TeamId),
     Draw,
+}
+
+enum GameEndCause {
+    TeamHpDepleted { teams: Vec<TeamId> },
+    DirectVictory { rule: RuleRef, team: TeamId },
+}
+
+GameEvent::GameEnded {
+    conclusion: GameConclusion,
 }
 ```
 
-2-player mode still uses teams: each player belongs to their own single-player team. If a team's HP reaches 0 or lower, the other team wins.
+`causes` is non-empty by invariant; the concrete Rust representation may use a
+non-empty collection type. `GameEnded` explicitly records the final outcome and
+reason instead of asking replay or presentation to infer them from an earlier
+damage, victory, Formation Area, or Last Formation event.
 
-If the same resolution causes all opposing teams to reach 0 or lower at the same time, the result is `Winner::Draw`.
+2-player mode still uses Teams: each Player belongs to their own single-player
+Team. If one Team's HP reaches 0 or lower, the other Team wins.
+
+If the same simultaneous resolution causes all opposing Teams to reach 0 or
+lower, the result is `GameOutcome::Draw`. Apply every delta in that simultaneous
+semantic resolution, including rule-defined automatic responses that precede
+Game Outcome evaluation, before deciding the conclusion.
+
+Emit `GameEnded { conclusion }` immediately after that evaluation and make it
+the last canonical event. Do not start a later sequential effect, discard a
+Formation merely as cleanup, enter `TurnDraw`, or enter `TurnEnd`. The Card
+zones already established remain unchanged, so a terminal current Formation
+can remain in its Player's Formation Area.
+
+The optional `source_formation` is a frozen summary for explanation and UI. A
+client may render it with Formation Area styling, but neither the current
+Formation Area nor `last_formation_by_player` is the canonical Game End Cause.
 
 Once `GameStatus::Finished` is reached, gameplay commands are rejected.
 
@@ -912,10 +1064,11 @@ Team HP is also capped at that match's initial HP. Every recovery source uses th
 same cap, including Generating Formation, Return to Origin, generating elemental
 attacks, and generating attacks divided by Countershock.
 
-HP change events should preserve enough detail for audit/debug:
+Every HP change fact should preserve enough detail for audit/debug, whether it
+is nested in an `AttackResolved` event or emitted by a non-Attack source:
 
 ```rust
-GameEvent::HpChanged {
+struct HpChangeDelta {
     team: TeamId,
     old_hp: i32,
     delta: i32,
@@ -1002,7 +1155,8 @@ struct GameSetup {
 }
 ```
 
-Deck, hand, discard, covered passives, and other zones store `CardInstanceId`.
+Decks, hands, Discard Piles, Formation Areas, the Turn Draw Pool, and other Card
+zones store `CardInstanceId`.
 
 Rules and matchers resolve `CardInstanceId -> CardDefId -> CardDef` through setup data and the card definition registry.
 
@@ -1064,7 +1218,9 @@ enum Duration {
 }
 ```
 
-Do not include `UntilNextAction` in the first version. Next-action passive behavior is modeled by pending covered passive state, not by generic status duration.
+Do not include `UntilNextAction` in the first version. Next-Action Passive
+behavior is modeled by the Covered Passive in a Player's Formation Area, not by
+generic status duration.
 
 Avoid generic `remaining_turns` / `remaining_rounds` counters as the core model because they are ambiguous in multiplayer and team mode. Rule resolvers can translate rule text into explicit expiry timing.
 
@@ -1098,6 +1254,14 @@ Canonical `GameEvent` and `PendingChoice` payloads are persisted record formats 
 
 ### 34. Event Granularity
 
+Source basis: official rules 2-5.3c and 5-2.4i make an Attack's damage and every
+attached effect without another specified timing simultaneous and unordered.
+
+Implementation interpretation: represent that complete Attack Resolution as
+one atomic `AttackResolved` event. A sequence of otherwise semantic events
+would still impose a canonical before-and-after relationship that the rule
+explicitly denies.
+
 Use semantic events that include explicit replayable deltas.
 
 Avoid events that are too vague to replay without recomputing rules:
@@ -1105,6 +1269,10 @@ Avoid events that are too vague to replay without recomputing rules:
 ```rust
 GameEvent::FormationPerformed { formation_id: FormationId }
 ```
+
+Do not add an abstract `FormationUseCompleted` event. Normal completion is the
+next rule-significant fact—`FormationCardsDiscarded` or `PassiveCovered`—and a
+terminal Formation instead ends with `GameEnded`.
 
 Also avoid reducing the whole log to only low-level mutation events with no domain meaning:
 
@@ -1121,26 +1289,79 @@ GameEvent::AttackResolved {
     attacker: PlayerId,
     target: PlayerId,
     formation_id: FormationId,
-    used_cards: Vec<CardInstanceId>,
+    resolution: AttackResolution,
+    elemental_context_update: Option<LastElementalAttackUpdate>,
+}
+
+struct AttackResolution {
+    outcome: ActionOutcome,
     point_breakdown: AttackPointBreakdown,
-    shield_change: Option<ShieldChangeDelta>,
-    hp_change: Option<HpChangeDelta>,
-    card_moves: Vec<CardMoveDelta>,
+    damage: AttackDamageResolution,
+    additional_effects: ResolvedAttackEffects,
+}
+
+GameEvent::TurnDrawResolved {
+    player: PlayerId,
+    discard: CardInstanceId,
+    kept_cards: Vec<CardInstanceId>,
+}
+
+GameEvent::GameEnded {
+    conclusion: GameConclusion,
 }
 ```
 
-This keeps the log understandable while allowing `apply_event` to mutate state directly from recorded facts rather than recomputing rule outcomes.
+This keeps the log understandable while allowing `apply_event` to mutate state
+directly from recorded facts rather than recomputing rule outcomes. Baseline
+Formation Card movement is represented by `FormationCommitted` and
+`FormationCardsDiscarded`, not duplicated inside each effect event.
+
+`AttackDamageResolution` contains every HP and Shield consequence of the
+Attack's damage, including split or reflected shares. `ResolvedAttackEffects`
+contains every replayable delta belonging to attached effects at the same
+timing, including additional Team HP or Shield changes, Status application,
+Card or Environment changes, or Turn Draw bonuses as applicable. Applying
+`AttackResolved` applies its complete `AttackResolution` atomically.
+
+Field layout and any collections inside `AttackResolution` use a stable
+canonical serialization order only. Their position never represents a rule
+processing order.
+
+Do not emit separate `HpChanged`, `ShieldChanged`, `StatusAdded`, `CardsMoved`,
+or module-specific effect events for consequences that belong to the same
+Attack Resolution. Such events remain valid for non-Attack sources and for
+Attack effects whose rules explicitly specify another timing.
+
+When an attached effect requires Player input, record its Pending Choice and
+continuation first without applying damage or another simultaneous consequence.
+After the final answer, emit the complete `AttackResolved` event. Game Outcome
+evaluation follows that event, so a lethal damage delta never suppresses
+another consequence in the same Attack Resolution.
+
+This changes a persisted event contract. Implementation requires an explicit
+record migration that folds legacy same-timing Attack consequence events into
+the corresponding `AttackResolved`; snapshots may then be rebuilt.
+
+`TurnDrawResolved` explicitly records both the chosen discard and all kept
+Cards. Applying that one event moves the discard from the Turn Draw Pool to its
+applicable origin Discard Pile before moving the kept Cards from the Pool to
+hand; there is no canonical intermediate state.
 
 A single command or automatic advancement may emit multiple semantic events.
 
 Example attack resolution may emit:
 
 ```rust
+GameEvent::FormationCommitted { ... }
 GameEvent::PassiveFlipped { ... }
 GameEvent::AttackResolved { ... }
-GameEvent::TurnDrawStarted { ... }
-GameEvent::ChoiceRequested { ... }
+GameEvent::FormationCardsDiscarded { ... }
+GameEvent::CardsDrawnForTurnDiscardChoice { ... }
 ```
+
+If `AttackResolved` produces a terminal conclusion, the sequence emits
+`GameEnded { conclusion }` immediately after it and stops; it does not emit
+`FormationCardsDiscarded`, `CardsDrawnForTurnDiscardChoice`, or any later event.
 
 Do not force all results into one large `CommandResolved` event. Event boundaries should follow meaningful domain moments, especially where resolution can pause for a pending choice.
 
@@ -1304,11 +1525,14 @@ a successful Profession Change, including First Wanderer.
 
 Profession Change is a distinct Action Command rather than a Formation Use. It
 validates the declared Profession, prerequisite Profession, and submitted Card
-Instances; then it enters the shared action-start pipeline, triggers the
-Previous Player's Counter Effect, records explicit Card movement, emits a
-semantic `ProfessionChanged` event, and consumes the current Player's action
-opportunity. Do not represent Profession Change as `PerformFormation` or confuse
-it with Metamorphosis.
+Instances; then it enters `Action` and processes the Previous Player's Covered
+Passive. The selected Cards remain canonically in hand during that preceding
+passive handling. If the change proceeds, one semantic `ProfessionChanged`
+event atomically records both the new Profession and direct movement of those
+Cards from hand to their applicable origin Discard Pile or Piles. There is no
+temporary Profession-Change Card zone. The command consumes the current
+Player's Action. Do not represent Profession Change as `PerformFormation` or
+confuse it with Metamorphosis.
 
 Game State stores only each Player's current `ProfessionId`, or no Profession,
 rather than copying the Profession's effective abilities into state.
@@ -1463,9 +1687,9 @@ the full Profession progression graph, requirements, and ability changes.
 
 The battlefield's current Formation control area is divided vertically at every
 viewport size. The upper **Ability** panel contains Active-Effect Commands and
-states that they do not end the turn action. The lower **Action** panel contains
+states that they do not enter `Action`. The lower **Action** panel contains
 Formation Uses, Profession Changes, and Pass Action, and states that choosing
-one ends the Main Phase. Do not add a separate Profession panel. Automatic
+one enters `Action`. Do not add a separate Profession panel. Automatic
 Profession Abilities and Formation Proficiencies appear through legal options
 and their explanations rather than as controls.
 
@@ -1835,7 +2059,7 @@ policies.
 Each of the five Tribulations is a variable-card-count Formation: it contains
 exactly its two specified overcoming elements, with one or more Cards of each
 element and an effective level sum of at least seven per element. In practice
-the five-Card hand limit permits four or five physical Cards. Under main rule
+the five-Card hand limit permits four or five physical Cards. Under official rule
 2-5.5c, a Tribulation never satisfies a rule that requires a fixed Formation
 card count, regardless of how many Cards were physically used.
 
@@ -1848,12 +2072,12 @@ The performing Player may select any of the five Environments, including the
 currently active one. A same-element selection still emits an Environment
 Transfer and still requires the Environment-matching discards.
 
-Main rule 5-2.4i makes an Attack's damage and additional effect simultaneous.
+Official rule 5-2.4i makes an Attack's damage and additional effect simultaneous.
 Earth-Rending Mountain Collapse therefore records the declared Environment and
 collects Player choices sequentially from the Next Player without applying
 Formation consequences between answers. After the last answer, one atomic
-resolution transfers the Environment, applies every discard or hand reveal,
-resolves the 60-point Attack, and only then evaluates Game Outcome. Choice
+`AttackResolved` transfers the Environment, applies every discard or hand
+reveal, resolves the 60-point Attack, and only then evaluates Game Outcome. Choice
 request and answer events remain replayable intermediate facts, not early
 application of the Formation effect.
 
@@ -1903,7 +2127,7 @@ Formation performed by a Player without Gale-Rain Status may still recover that
 Player's Team HP even when a teammate has the Status. Non-Formation recovery
 remains effective.
 
-Main rule 6-1 governs each Gale-Rain Status duration independently. The
+Official rule 6-1 governs each Gale-Rain Status duration independently. The
 performing Player's current Turn End counts as that Player's first affected
 turn; every other Player counts their next two Turn Ends. Repeated applications
 overlap as distinct two-turn effects rather than merging or extending one

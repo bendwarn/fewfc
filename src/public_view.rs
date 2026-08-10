@@ -215,6 +215,11 @@ fn public_randomness_operation(operation: &RandomnessOperation) -> PublicRandomn
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PublicGameEvent {
     Public(GameEvent),
     GamePreparationStarted,
@@ -242,10 +247,20 @@ pub enum PublicGameEvent {
         cards: PublicCardRefs,
         star_substitution: Option<crate::domain::StarElementSubstitution>,
     },
+    FormationCommitted {
+        player: PlayerId,
+        formation_id: Option<String>,
+        cards: PublicCardRefs,
+    },
     CardsDrawnForTurnDiscardChoice {
         player: PlayerId,
         drawn_cards: PublicCardRefs,
         allowed_discards: PublicCardRefs,
+    },
+    TurnDrawResolved {
+        player: PlayerId,
+        discard: CardInstanceId,
+        kept_cards: PublicCardRefs,
     },
     CardsDrawnForProfessionChoice {
         player: PlayerId,
@@ -314,10 +329,9 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
                 .find(|(_, formation)| formation.resolved_turn == previous_turn)
         })
         .map(|(player, formation)| {
-            let remains_covered = state.covered_passives.iter().any(|passive| {
-                passive.owner == *player
-                    && passive.formation_id == formation.formation_id
-                    && passive.covered_on_turn == formation.resolved_turn
+            let remains_covered = state.covered_passive(player).is_some_and(|passive| {
+                passive.formation_id == formation.formation_id
+                    && passive.cards == formation.used_cards
             });
             let can_see_details = !remains_covered || policy.can_see_player_hidden_cards(player);
 
@@ -405,15 +419,18 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             })
             .collect(),
         covered_passives: state
-            .covered_passives
+            .formation_areas
             .iter()
-            .map(|passive| {
-                let visible = policy.can_see_player_hidden_cards(&passive.owner)
-                    || state
-                        .revealed_covered_passive_owners
-                        .contains(&passive.owner);
-                PublicCoveredPassive {
-                    owner: passive.owner.clone(),
+            .filter_map(|area| {
+                let passive = area.formation.as_ref()?;
+                let crate::domain::FormationAreaState::FaceDownWaiting { revealed, .. } =
+                    passive.state
+                else {
+                    return None;
+                };
+                let visible = policy.can_see_player_hidden_cards(&area.player) || revealed;
+                Some(PublicCoveredPassive {
+                    owner: area.player.clone(),
                     formation_id: visible.then(|| passive.formation_id.clone()),
                     cards: if visible {
                         PublicCardRefs::Known(passive.cards.clone())
@@ -423,7 +440,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
                         }
                     },
                     star_substitution: visible.then(|| passive.star_substitution.clone()).flatten(),
-                }
+                })
             })
             .collect(),
         counter_effects: state.counter_effects.clone(),
@@ -598,6 +615,28 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
                 .then(|| star_substitution.clone())
                 .flatten(),
         },
+        GameEvent::FormationCommitted {
+            player,
+            formation_id,
+            cards,
+            state,
+            ..
+        } => {
+            let hidden = matches!(
+                state,
+                crate::domain::FormationAreaState::FaceDownResolving
+                    | crate::domain::FormationAreaState::FaceDownWaiting { .. }
+            ) && !policy.can_see_player_hidden_cards(player);
+            PublicGameEvent::FormationCommitted {
+                player: player.clone(),
+                formation_id: (!hidden).then(|| formation_id.clone()),
+                cards: if hidden {
+                    PublicCardRefs::Hidden { count: cards.len() }
+                } else {
+                    PublicCardRefs::Known(cards.clone())
+                },
+            }
+        }
         GameEvent::CardsDrawnForTurnDiscardChoice {
             player,
             drawn_cards,
@@ -616,6 +655,21 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
             } else {
                 PublicCardRefs::Hidden {
                     count: allowed_discards.len(),
+                }
+            },
+        },
+        GameEvent::TurnDrawResolved {
+            player,
+            discard,
+            kept_cards,
+        } => PublicGameEvent::TurnDrawResolved {
+            player: player.clone(),
+            discard: *discard,
+            kept_cards: if policy.can_see_player_hidden_cards(player) {
+                PublicCardRefs::Known(kept_cards.clone())
+            } else {
+                PublicCardRefs::Hidden {
+                    count: kept_cards.len(),
                 }
             },
         },
@@ -725,7 +779,9 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::PouchLevelBonusGranted { .. }
         | GameEvent::TemporaryStarEffectGranted { .. }
         | GameEvent::SpiritRevived { .. }
+        | GameEvent::ActionStarted { .. }
         | GameEvent::ActionPassed { .. }
+        | GameEvent::FormationCardsDiscarded { .. }
         | GameEvent::ProfessionChanged { .. }
         | GameEvent::ProfessionTransformed { .. }
         | GameEvent::ProfessionBroken { .. }
@@ -754,6 +810,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::VoidSpiritShatteringResolved { .. }
         | GameEvent::FiveStarAlignmentAchieved { .. }
         | GameEvent::KingYamaDecreeVictoryAchieved { .. }
+        | GameEvent::GameEnded { .. }
         | GameEvent::TurnDrawBonusChanged { .. }
         | GameEvent::ShieldChanged { .. }
         | GameEvent::HpChanged { .. }
@@ -1053,6 +1110,44 @@ mod tests {
                 cards: PublicCardRefs::Known(vec![CardInstanceId::new(8)]),
             }
         );
+    }
+
+    #[test]
+    fn formation_commit_and_turn_draw_resolution_keep_owner_cards_private() {
+        let alice = PlayerId::new("alice");
+        let commit = GameEvent::FormationCommitted {
+            player: alice.clone(),
+            formation_id: "defense".to_string(),
+            cards: vec![CardInstanceId::new(8)],
+            star_substitution: None,
+            state: crate::domain::FormationAreaState::FaceDownResolving,
+        };
+        assert_eq!(
+            event_for(&commit, Viewer::Observer),
+            PublicGameEvent::FormationCommitted {
+                player: alice.clone(),
+                formation_id: None,
+                cards: PublicCardRefs::Hidden { count: 1 },
+            }
+        );
+
+        let draw = GameEvent::TurnDrawResolved {
+            player: alice,
+            discard: CardInstanceId::new(1),
+            kept_cards: vec![CardInstanceId::new(2), CardInstanceId::new(3)],
+        };
+        assert_eq!(
+            event_for(&draw, Viewer::Observer),
+            PublicGameEvent::TurnDrawResolved {
+                player: PlayerId::new("alice"),
+                discard: CardInstanceId::new(1),
+                kept_cards: PublicCardRefs::Hidden { count: 2 },
+            }
+        );
+        let json = serde_json::to_value(event_for(&draw, Viewer::Observer)).unwrap();
+        assert_eq!(json["type"], "turnDrawResolved");
+        assert_eq!(json["keptCards"]["Hidden"]["count"], 2);
+        assert!(json.get("kept_cards").is_none());
     }
 
     #[test]

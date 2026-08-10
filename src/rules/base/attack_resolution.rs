@@ -1,9 +1,10 @@
 use crate::domain::{
-    AttackPointBreakdown, CardInstanceId, CardMoveDelta, CardZone, DamageTransform, Element,
-    ElementInteraction, EnvironmentAttackEffect, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
-    GameEvent, GameResult, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
+    AttackCounterEffect, AttackOutcome, AttackPointBreakdown, AttackResolutionEffects,
+    AttackStatusRemoval, CardInstanceId, DamageTransform, Element, ElementInteraction,
+    EnvironmentAttackEffect, EnvironmentTransferDelta, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
+    GameEvent, GameResult, GameState, HpChangeDelta, LastElementalAttack,
     LastElementalAttackUpdate, PlayerId, STAR_MODULE_ID, ShieldChangeDelta, StarBreakReason,
-    StarKind, TeamId, ValidationError,
+    StarKind, TeamId, TurnDrawBonusDelta, ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::{
@@ -27,6 +28,137 @@ pub(crate) struct AttackRequest {
     pub(crate) damage_prevented: bool,
     pub(crate) split_attack_damage: bool,
     pub(crate) mode: AttackResolutionMode,
+    pub(crate) pre_resolution_effects: AttackResolutionEffects,
+}
+
+/// Converts no-other-timing consequences into the payload of the enclosing
+/// attack.  Callers use this for legacy module resolvers while the canonical
+/// record remains one `AttackResolved` event.
+pub(crate) fn effects_from_events(events: &[GameEvent]) -> GameResult<AttackResolutionEffects> {
+    let mut effects = AttackResolutionEffects::default();
+    for event in events.iter().cloned() {
+        append_simultaneous_effect(&mut effects, event).map_err(|event| {
+            GameError::RuleImplementation(
+                crate::domain::RuleImplementationError::EffectNotImplemented(format!(
+                    "attack-side-effect:{}",
+                    event_name(&event)
+                )),
+            )
+        })?;
+    }
+    Ok(effects)
+}
+
+/// Pulls module-produced same-timing effects behind an attack into that
+/// attack's atomic payload.  Events that declare another rules timing remain
+/// separate canonical events.
+pub(crate) fn absorb_simultaneous_events(events: &mut Vec<GameEvent>) {
+    let Some(attack_index) = events
+        .iter()
+        .position(|event| matches!(event, GameEvent::AttackResolved { .. }))
+    else {
+        return;
+    };
+    let tail = events.split_off(attack_index + 1);
+    let mut effects = AttackResolutionEffects::default();
+    let mut retained = Vec::new();
+    for event in tail {
+        match append_simultaneous_effect(&mut effects, event) {
+            Ok(()) => {}
+            Err(event) => retained.push(event),
+        }
+    }
+    if !effects.is_empty()
+        && let GameEvent::AttackResolved {
+            elemental_context_update,
+            ..
+        } = &mut events[attack_index]
+    {
+        let target = elemental_context_update.get_or_insert_with(AttackResolutionEffects::default);
+        target.hp_changes.extend(effects.hp_changes);
+        target.shield_changes.extend(effects.shield_changes);
+        target.card_moves.extend(effects.card_moves);
+        target.statuses_added.extend(effects.statuses_added);
+        target.statuses_removed.extend(effects.statuses_removed);
+        target
+            .counter_effects_established
+            .extend(effects.counter_effects_established);
+        target
+            .turn_draw_bonus_changes
+            .extend(effects.turn_draw_bonus_changes);
+        target
+            .environment_transfers
+            .extend(effects.environment_transfers);
+    }
+    events.extend(retained);
+}
+
+fn append_simultaneous_effect(
+    effects: &mut AttackResolutionEffects,
+    event: GameEvent,
+) -> Result<(), GameEvent> {
+    match event {
+        GameEvent::HpChanged { change } => effects.hp_changes.push(change),
+        GameEvent::ShieldChanged {
+            player,
+            old_value,
+            delta,
+            new_value,
+        } => effects.shield_changes.push(ShieldChangeDelta {
+            player,
+            old_value,
+            delta,
+            new_value,
+        }),
+        GameEvent::CardsMoved { card_moves } => effects.card_moves.extend(card_moves),
+        GameEvent::StatusAdded { status } => effects.statuses_added.push(status),
+        GameEvent::StatusRemoved { status_id, owner } => effects
+            .statuses_removed
+            .push(AttackStatusRemoval { status_id, owner }),
+        GameEvent::CounterEffectEstablished { owner, effect_id } => effects
+            .counter_effects_established
+            .push(AttackCounterEffect { owner, effect_id }),
+        GameEvent::TurnDrawBonusChanged {
+            player,
+            old_value,
+            delta,
+            new_value,
+        } => effects.turn_draw_bonus_changes.push(TurnDrawBonusDelta {
+            player,
+            old_value,
+            delta,
+            new_value,
+        }),
+        GameEvent::EnvironmentTransferred {
+            player,
+            formation_id,
+            from,
+            to,
+        } => effects
+            .environment_transfers
+            .push(EnvironmentTransferDelta {
+                player,
+                formation_id,
+                from,
+                to,
+            }),
+        event => return Err(event),
+    }
+    Ok(())
+}
+
+fn event_name(event: &GameEvent) -> &'static str {
+    match event {
+        GameEvent::HpChanged { .. } => "hp-changed",
+        GameEvent::ShieldChanged { .. } => "shield-changed",
+        GameEvent::CardsMoved { .. } => "cards-moved",
+        GameEvent::StatusAdded { .. } => "status-added",
+        GameEvent::StatusRemoved { .. } => "status-removed",
+        GameEvent::CounterEffectEstablished { .. } => "counter-effect-established",
+        GameEvent::TurnDrawBonusChanged { .. } => "turn-draw-bonus-changed",
+        GameEvent::EnvironmentTransferred { .. } => "environment-transferred",
+        _ => "unsupported",
+    }
 }
 
 pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<Vec<GameEvent>> {
@@ -134,39 +266,23 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             point_breakdown.damage_transform,
         )?
     };
-    let card_moves = match request.mode {
-        AttackResolutionMode::FormationUse => request
-            .used_cards
-            .iter()
-            .copied()
-            .map(|card| CardMoveDelta {
-                card,
-                from: CardZone::Hand(request.attacker.clone()),
-                to: if state.uses_personal_decks() {
-                    match state.card_origin(card) {
-                        Some(crate::domain::CardOrigin::Player(owner)) => {
-                            CardZone::PlayerDiscard(owner.clone())
-                        }
-                        _ => CardZone::Discard,
-                    }
-                } else {
-                    CardZone::Discard
-                },
-            })
-            .collect(),
-        AttackResolutionMode::CopiedEffect => Vec::new(),
-    };
-    let elemental_context_update = elemental_context_update(&request.category, state.turn_number)
-        .map(|attack| LastElementalAttackUpdate {
-            player: request.attacker.clone(),
-            attack,
+    // Formation-card zone movement is owned by FormationCommitted and
+    // FormationCardsDiscarded.  AttackResolved contains only additional card
+    // deltas, never a duplicate hand-to-discard baseline movement.
+    let card_moves = Vec::new();
+    let mut resolution_effects = request.pre_resolution_effects.clone();
+    resolution_effects.elemental_context_update =
+        elemental_context_update(&request.category, state.turn_number).map(|attack| {
+            LastElementalAttackUpdate {
+                player: request.attacker.clone(),
+                attack,
+            }
         });
 
-    let mut events = Vec::new();
     if extreme_yang {
         let old_value = state.shield(&target).unwrap_or(0);
         if old_value > 0 {
-            events.push(GameEvent::ShieldChanged {
+            resolution_effects.shield_changes.push(ShieldChangeDelta {
                 player: target.clone(),
                 old_value,
                 delta: -old_value,
@@ -174,18 +290,6 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             });
         }
     }
-    events.push(GameEvent::AttackResolved {
-        attacker: request.attacker.clone(),
-        target: target.clone(),
-        formation_id: request.formation_id.clone(),
-        used_cards: request.used_cards.clone(),
-        point_breakdown,
-        hp_change,
-        shield_change,
-        card_moves,
-        elemental_context_update,
-    });
-
     if request.mode == AttackResolutionMode::FormationUse
         && split_attack_damage
         && !request.damage_prevented
@@ -200,14 +304,12 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             attacker_amount = (attacker_amount - 20).max(0);
         }
         if attacker_amount > 0 {
-            events.push(GameEvent::HpChanged {
-                change: apply_attack_amount(
-                    state,
-                    &attacker_team,
-                    attacker_amount,
-                    damage_transform,
-                )?,
-            });
+            resolution_effects.hp_changes.push(apply_attack_amount(
+                state,
+                &attacker_team,
+                attacker_amount,
+                damage_transform,
+            )?);
         }
     }
 
@@ -217,22 +319,45 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             .get(&request.attacker)
             .copied()
             .unwrap_or(0);
-        events.push(GameEvent::TurnDrawBonusChanged {
-            player: request.attacker.clone(),
-            old_value,
-            delta: 1,
-            new_value: old_value + 1,
-        });
+        resolution_effects
+            .turn_draw_bonus_changes
+            .push(TurnDrawBonusDelta {
+                player: request.attacker.clone(),
+                old_value,
+                delta: 1,
+                new_value: old_value + 1,
+            });
     }
 
     if let Some(environment) = sacred_beast_element(&request.formation_id) {
-        events.push(GameEvent::EnvironmentTransferred {
-            player: request.attacker.clone(),
-            formation_id: request.formation_id.clone(),
-            from: state.environment,
-            to: environment,
-        });
+        resolution_effects
+            .environment_transfers
+            .push(EnvironmentTransferDelta {
+                player: request.attacker.clone(),
+                formation_id: request.formation_id.clone(),
+                from: state.environment,
+                to: environment,
+            });
     }
+
+    resolution_effects.outcome = if request.damage_prevented {
+        AttackOutcome::DamagePrevented
+    } else if shield_change.is_some() {
+        AttackOutcome::AbsorbedByShield
+    } else {
+        AttackOutcome::Resolved
+    };
+    let mut events = vec![GameEvent::AttackResolved {
+        attacker: request.attacker.clone(),
+        target: target.clone(),
+        formation_id: request.formation_id.clone(),
+        used_cards: request.used_cards.clone(),
+        point_breakdown,
+        hp_change,
+        shield_change,
+        card_moves,
+        elemental_context_update: Some(resolution_effects),
+    }];
 
     if request.mode == AttackResolutionMode::FormationUse && state.has_rule_module(STAR_MODULE_ID) {
         if let Some(star) = star::summoning_formation_star(&request.formation_id)
@@ -278,7 +403,7 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
         for event in &events {
             crate::rules::projection::apply_event(&mut projected, event);
         }
-        projected.status == GameStatus::InProgress
+        crate::rules::projection::game_conclusion_if_needed(&projected).is_none()
     };
 
     if request.mode == AttackResolutionMode::FormationUse && game_continues {
@@ -322,6 +447,7 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             &projected,
             &request.attacker,
             &request.formation_id,
+            &request.used_cards,
         )?);
         events.extend(crate::rules::dark::post_attack_events(
             &projected,
@@ -346,9 +472,11 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             &projected,
             &request.attacker,
             &request.formation_id,
+            &request.used_cards,
         )?);
     }
 
+    absorb_simultaneous_events(&mut events);
     Ok(events)
 }
 

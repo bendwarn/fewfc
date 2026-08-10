@@ -59,7 +59,7 @@ fn state(player_count: usize) -> GameState {
         )
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
 }
 
@@ -130,7 +130,7 @@ fn dark_walker_transforms_before_its_dark_formation_resolves() {
     )
     .unwrap();
     assert!(matches!(
-        events.first(),
+        events.iter().find(|event| matches!(event, GameEvent::ProfessionTransformed { .. })),
         Some(GameEvent::ProfessionTransformed { profession, .. })
             if profession == &ProfessionId::new("dark:dark-spirit-envoy")
     ));
@@ -342,21 +342,21 @@ fn void_shattering_revives_broken_death_spirit_without_retroactive_shared_fate()
         },
     )
     .unwrap();
-    assert!(matches!(
-        events.as_slice(),
-        [GameEvent::VoidSpiritShatteringResolved {
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::VoidSpiritShatteringResolved {
             broken_professions,
             revived_spirits,
             shared_fate_hp_changes,
             ..
-        }] if broken_professions.len() == 1
+        } if broken_professions.len() == 1
             && revived_spirits == &vec![PlayerSpirit {
                 player: PlayerId::new("p2"),
                 spirit: SpiritKind::Death,
                 power: 2,
             }]
             && shared_fate_hp_changes.is_empty()
-    ));
+    )));
 }
 
 #[test]
@@ -382,14 +382,14 @@ fn surviving_death_spirit_triggers_shared_fate_during_void_shattering() {
         },
     )
     .unwrap();
-    assert!(matches!(
-        events.as_slice(),
-        [GameEvent::VoidSpiritShatteringResolved {
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::VoidSpiritShatteringResolved {
             shared_fate_hp_changes,
             ..
-        }] if shared_fate_hp_changes.len() == 1
+        } if shared_fate_hp_changes.len() == 1
             && shared_fate_hp_changes[0].delta == -10
-    ));
+    )));
 }
 
 #[test]

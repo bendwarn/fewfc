@@ -75,7 +75,7 @@ fn five_directions_legend_adds_sacred_beast_formations() {
     let mut state = fewfc::domain::GameState::from_setup(
         &setup().with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]),
     );
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands = vec![
         fewfc::domain::PlayerHand::new(
             PlayerId::new("p1"),
@@ -107,7 +107,7 @@ fn five_directions_legend_adds_void_meridian_severing_technique() {
     let mut state = fewfc::domain::GameState::from_setup(
         &setup().with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]),
     );
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands = vec![
         fewfc::domain::PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(2), card(3)]),
         fewfc::domain::PlayerHand::new(PlayerId::new("p2"), Vec::new()),
@@ -130,7 +130,7 @@ fn five_directions_legend_adds_void_meridian_severing_technique() {
 fn playable_actions_returns_formation_candidates_from_selected_hand_cards() {
     let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands = vec![
         fewfc::domain::PlayerHand::new(
             PlayerId::new("p1"),
@@ -163,7 +163,7 @@ fn playable_actions_returns_formation_candidates_from_selected_hand_cards() {
 fn playable_actions_does_not_return_matches_from_unselected_hand_cards() {
     let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.hands = vec![
         fewfc::domain::PlayerHand::new(
             PlayerId::new("p1"),
@@ -206,7 +206,7 @@ fn playable_actions_returns_error_when_player_cannot_act_now() {
         Err(GameError::Validation(
             ValidationError::CannotPerformFormation {
                 reason: CannotPerformFormationReason::WrongPhase {
-                    expected: Phase::Main,
+                    expected: Phase::ActiveEffects,
                     actual: Phase::TurnDraw,
                 },
             }
@@ -218,7 +218,7 @@ fn playable_actions_returns_error_when_player_cannot_act_now() {
 fn playable_actions_returns_error_for_non_current_player() {
     let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
 
     assert_eq!(
         rules.playable_actions(&state, &PlayerId::new("p2"), &[]),
@@ -237,7 +237,7 @@ fn playable_actions_returns_error_for_non_current_player() {
 fn playable_actions_returns_error_while_choice_is_pending() {
     let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.pending_choice = Some(PendingChoice {
         choice_id: ChoiceId::new(1),
         player: PlayerId::new("p1"),
@@ -266,7 +266,7 @@ fn playable_actions_returns_error_while_choice_is_pending() {
 fn playable_actions_returns_no_formations_when_player_has_cannot_act_status() {
     let rules = OfficialRules::new();
     let mut state = fewfc::domain::GameState::from_setup(&setup());
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.statuses.push(StatusEffect {
         id: "cannot-act-p1".to_string(),
         owner: StatusOwner::Player(PlayerId::new("p1")),

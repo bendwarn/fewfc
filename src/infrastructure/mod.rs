@@ -1,9 +1,13 @@
 //! Infrastructure adapters and deterministic setup helpers.
 
 use crate::application::{GameRecord, RecordedDecision, ReplayVerificationError, replay};
-use crate::domain::{CardInstanceId, GameError, GameSetup, GameState, RulesetId, ValidationError};
+use crate::domain::{
+    CardInstanceId, GameConclusion, GameEndCause, GameError, GameEvent, GameOutcome, GameSetup,
+    GameState, RulesetId, ValidationError,
+};
 use crate::ports::{DeckPreparation, EventLogStorage, GameRecordRepository, SnapshotStorage};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fs;
@@ -63,7 +67,52 @@ impl PersistedGameRecord {
     }
 
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
+        let mut value = serde_json::from_str(json)?;
+        migrate_legacy_wire_format(&mut value);
+        let mut persisted = serde_json::from_value::<Self>(value)?;
+        persisted.migrate_legacy_terminal_events();
+        Ok(persisted)
+    }
+
+    fn migrate_legacy_terminal_events(&mut self) {
+        let mut state = GameState::from_setup(&self.setup);
+        let mut finished = false;
+        for decision in &mut self.recorded_decisions {
+            for event in &decision.events {
+                crate::rules::projection::apply_event(&mut state, event);
+                finished |= matches!(event, GameEvent::GameEnded { .. });
+            }
+            if finished {
+                continue;
+            }
+            let direct_victory = decision.events.iter().rev().find_map(|event| match event {
+                GameEvent::FiveStarAlignmentAchieved { team, .. } => Some(GameConclusion::new(
+                    GameOutcome::Winner(team.clone()),
+                    vec![GameEndCause::DirectVictory {
+                        rule: "five-star-alignment".to_string(),
+                        team: team.clone(),
+                    }],
+                    None,
+                )),
+                GameEvent::KingYamaDecreeVictoryAchieved { team, .. } => Some(GameConclusion::new(
+                    GameOutcome::Winner(team.clone()),
+                    vec![GameEndCause::DirectVictory {
+                        rule: "king-yama-decree".to_string(),
+                        team: team.clone(),
+                    }],
+                    None,
+                )),
+                _ => None,
+            });
+            let conclusion = direct_victory
+                .or_else(|| crate::rules::projection::game_conclusion_if_needed(&state));
+            if let Some(conclusion) = conclusion {
+                let event = GameEvent::GameEnded { conclusion };
+                crate::rules::projection::apply_event(&mut state, &event);
+                decision.events.push(event);
+                finished = true;
+            }
+        }
     }
 }
 
@@ -98,8 +147,193 @@ impl PersistedSnapshot {
     }
 
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
+        let mut value = serde_json::from_str(json)?;
+        migrate_legacy_wire_format(&mut value);
+        if let Some(state) = value.get_mut("state") {
+            migrate_legacy_snapshot_state(state);
+        }
+        serde_json::from_value(value)
     }
+}
+
+/// Explicit wire-format compatibility at the persistence boundary.  Existing
+/// command/event logs continue to replay through the legacy event handlers
+/// (notably `FormationPerformed` and `TurnDiscardChosen`); new writers never
+/// emit them.  Snapshots are caches, so their old state-only shape is upgraded
+/// here before deserialization rather than guessed by the public projection.
+fn migrate_legacy_wire_format(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                migrate_legacy_wire_format(value);
+            }
+        }
+        Value::Object(values) => {
+            if let Some(Value::String(phase)) = values.get_mut("phase") {
+                match phase.as_str() {
+                    "Main" => *phase = "ActiveEffects".to_string(),
+                    "TurnDrawDiscardChoice" => *phase = "TurnDraw".to_string(),
+                    _ => {}
+                }
+            }
+            migrate_legacy_attack_resolution(values);
+            for value in values.values_mut() {
+                migrate_legacy_wire_format(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `AttackResolved.elemental_context_update` used to contain only the
+/// elemental context object.  The new field contains the complete atomic
+/// resolution payload, so wrap the old object without changing its effect.
+fn migrate_legacy_attack_resolution(values: &mut Map<String, Value>) {
+    let Some(Value::Object(attack)) = values.get_mut("AttackResolved") else {
+        return;
+    };
+    let Some(update) = attack.get_mut("elemental_context_update") else {
+        return;
+    };
+    if update.is_null()
+        || update
+            .as_object()
+            .is_some_and(|payload| payload.contains_key("outcome"))
+    {
+        return;
+    }
+
+    let old_context = std::mem::replace(update, Value::Null);
+    let mut payload = Map::new();
+    payload.insert("outcome".to_string(), Value::String("Resolved".to_string()));
+    payload.insert("elemental_context_update".to_string(), old_context);
+    *update = Value::Object(payload);
+}
+
+fn migrate_legacy_snapshot_state(state: &mut Value) {
+    let Some(values) = state.as_object_mut() else {
+        return;
+    };
+    values
+        .entry("turn_draw_pool".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    migrate_legacy_finished_status(values);
+    if values.contains_key("formation_areas") {
+        return;
+    }
+
+    let players = values
+        .get("players")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let covered = values
+        .get("covered_passives")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let areas = players
+        .into_iter()
+        .filter_map(|player| {
+            let player_id = player.get("id")?.clone();
+            let passive = covered.iter().find(|passive| {
+                passive
+                    .get("owner")
+                    .is_some_and(|owner| owner == &player_id)
+            });
+            let formation = passive.map(|passive| {
+                let mut waiting = Map::new();
+                waiting.insert(
+                    "sealed".to_string(),
+                    passive.get("sealed").cloned().unwrap_or(Value::Bool(false)),
+                );
+                waiting.insert("revealed".to_string(), Value::Bool(false));
+                waiting.insert("neutralized".to_string(), Value::Bool(false));
+                waiting.insert(
+                    "trigger_timing".to_string(),
+                    Value::String("NextPlayerActionStart".to_string()),
+                );
+                let mut state = Map::new();
+                state.insert("FaceDownWaiting".to_string(), Value::Object(waiting));
+                let mut formation = Map::new();
+                formation.insert(
+                    "formation_id".to_string(),
+                    passive
+                        .get("formation_id")
+                        .cloned()
+                        .unwrap_or(Value::String("legacy-covered-passive".to_string())),
+                );
+                formation.insert(
+                    "cards".to_string(),
+                    passive
+                        .get("cards")
+                        .cloned()
+                        .unwrap_or(Value::Array(Vec::new())),
+                );
+                formation.insert(
+                    "star_substitution".to_string(),
+                    passive
+                        .get("star_substitution")
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                );
+                formation.insert("state".to_string(), Value::Object(state));
+                Value::Object(formation)
+            });
+            let mut area = Map::new();
+            area.insert("player".to_string(), player_id);
+            area.insert("formation".to_string(), formation.unwrap_or(Value::Null));
+            Some(Value::Object(area))
+        })
+        .collect();
+    values.insert("formation_areas".to_string(), Value::Array(areas));
+}
+
+fn migrate_legacy_finished_status(state: &mut Map<String, Value>) {
+    let defeated = state
+        .get("hp")
+        .and_then(Value::as_array)
+        .map(|teams| {
+            teams
+                .iter()
+                .filter(|team| team.get("hp") == Some(&Value::from(0)))
+                .filter_map(|team| team.get("team").cloned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let Some(Value::Object(status)) = state.get_mut("status") else {
+        return;
+    };
+    let Some(Value::Object(finished)) = status.get_mut("Finished") else {
+        return;
+    };
+    if finished.contains_key("conclusion") {
+        return;
+    }
+    let mut outcome = finished
+        .remove("outcome")
+        .unwrap_or(Value::String("Draw".to_string()));
+    if let Value::Object(outcome_object) = &mut outcome
+        && let Some(team) = outcome_object.remove("Team")
+    {
+        outcome_object.insert("Winner".to_string(), team);
+    }
+    let mut cause = Map::new();
+    cause.insert(
+        "TeamHpDepleted".to_string(),
+        Value::Object(Map::from_iter([(
+            String::from("teams"),
+            Value::Array(defeated),
+        )])),
+    );
+    let mut conclusion = Map::new();
+    conclusion.insert("outcome".to_string(), outcome);
+    conclusion.insert(
+        "causes".to_string(),
+        Value::Array(vec![Value::Object(cause)]),
+    );
+    conclusion.insert("source_formation".to_string(), Value::Null);
+    finished.insert("conclusion".to_string(), Value::Object(conclusion));
 }
 
 #[derive(Debug)]

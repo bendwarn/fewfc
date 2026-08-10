@@ -130,6 +130,7 @@ pub(in crate::rules::base) fn effect_intent_events(
                         damage_prevented: false,
                         split_attack_damage: false,
                         mode: AttackResolutionMode::CopiedEffect,
+                        pre_resolution_effects: crate::domain::AttackResolutionEffects::default(),
                     },
                 )?);
                 continue;

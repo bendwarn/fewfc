@@ -227,7 +227,7 @@ impl GameRecord {
 
     fn sole_forced_pass_command(&self) -> GameResult<Option<Command>> {
         if !matches!(self.state().status, crate::domain::GameStatus::InProgress)
-            || self.state().phase != crate::domain::Phase::Main
+            || self.state().phase != crate::domain::Phase::ActiveEffects
             || self.state().pending_choice.is_some()
             || self.state().pending_randomness.is_some()
         {
@@ -548,7 +548,7 @@ mod tests {
         let deck = rules.official_deck_order(&setup).unwrap();
         let mut record = GameRecord::start(setup, deck).unwrap();
         record.advance_until_decision().unwrap();
-        assert_eq!(record.state().phase, Phase::Main);
+        assert_eq!(record.state().phase, Phase::ActiveEffects);
 
         let player = record.state().current_player().cloned().unwrap();
         let discarded = std::mem::take(record.fixture_state_mut().hand_mut(&player).unwrap());
@@ -576,7 +576,7 @@ mod tests {
         )));
         assert_ne!(
             (record.state().current_player(), record.state().phase),
-            (Some(&player), Phase::Main)
+            (Some(&player), Phase::ActiveEffects)
         );
     }
 

@@ -5,7 +5,7 @@ use fewfc::application::{
 use fewfc::domain::{
     BaseChoiceContinuation, BaseRandomnessContinuation, CardDef, CardDefId, CardInstanceDef,
     CardInstanceId, ChoiceContinuation, ChoiceId, Command, GameError, GameEvent, GameSetup,
-    HpChangeDelta, PendingChoice, PendingChoiceKind, PlayerId, RandomnessContinuation,
+    GameState, HpChangeDelta, PendingChoice, PendingChoiceKind, PlayerId, RandomnessContinuation,
     RandomnessOperation, RuleModuleId, RulesetId, TeamId, ValidationError,
 };
 use fewfc::infrastructure::{
@@ -315,6 +315,69 @@ fn persisted_event_log_json_round_trip_contains_decision_log_and_replays() {
 }
 
 #[test]
+fn legacy_snapshot_phase_names_are_upgraded_before_deserialization() {
+    let mut state = GameState::from_setup(&two_player_setup());
+    state.phase = fewfc::domain::Phase::ActiveEffects;
+    let snapshot = PersistedSnapshot::from_state(7, state);
+    let legacy_json = snapshot
+        .to_json()
+        .unwrap()
+        .replace("\"ActiveEffects\"", "\"Main\"");
+
+    let loaded = PersistedSnapshot::from_json(&legacy_json).unwrap();
+    assert_eq!(loaded.state.phase, fewfc::domain::Phase::ActiveEffects);
+    assert_eq!(loaded.state.turn_draw_pool, Vec::new());
+    assert_eq!(loaded.state.formation_areas.len(), 2);
+}
+
+#[test]
+fn legacy_attack_context_is_wrapped_in_the_atomic_resolution_payload() {
+    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1])).unwrap();
+    record.advance_automatic().unwrap();
+    record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    let persisted = PersistedGameRecord::from_record(
+        PersistenceMetadata {
+            ruleset_id: "base".to_string(),
+            engine_version: "test".to_string(),
+        },
+        &record,
+    );
+    let mut wire = serde_json::to_value(&persisted).unwrap();
+    assert!(unwrap_first_atomic_attack_context(&mut wire));
+    let json = serde_json::to_string(&wire).unwrap();
+
+    let loaded = PersistedGameRecord::from_json(&json).unwrap();
+    assert_eq!(loaded.replay().unwrap(), record.state().clone());
+}
+
+fn unwrap_first_atomic_attack_context(value: &mut serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(values) => {
+            values.iter_mut().any(unwrap_first_atomic_attack_context)
+        }
+        serde_json::Value::Object(values) => {
+            if let Some(serde_json::Value::Object(attack)) = values.get_mut("AttackResolved")
+                && let Some(serde_json::Value::Object(payload)) =
+                    attack.get_mut("elemental_context_update")
+                && let Some(old_context) = payload.remove("elemental_context_update")
+            {
+                attack.insert("elemental_context_update".to_string(), old_context);
+                return true;
+            }
+            values.values_mut().any(unwrap_first_atomic_attack_context)
+        }
+        _ => false,
+    }
+}
+
+#[test]
 fn persisted_replay_uses_event_order_and_payloads_not_decision_source() {
     let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1])).unwrap();
     record.advance_automatic().unwrap();
@@ -596,7 +659,11 @@ fn persistence_ports_round_trip_event_log_and_optional_snapshot_checkpoint() {
     assert_eq!(loaded_log.replay().unwrap(), record.state().clone());
     assert_eq!(loaded_snapshot.state, record.state().clone());
     assert_eq!(
-        loaded_snapshot.state.covered_passives[0].cards,
+        loaded_snapshot
+            .state
+            .covered_passive(&PlayerId::new("p1"))
+            .unwrap()
+            .cards,
         vec![card(2), card(7)]
     );
 }

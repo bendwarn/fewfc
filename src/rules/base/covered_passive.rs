@@ -71,25 +71,31 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
     let mut events = Vec::new();
     let mut all_modifications = Vec::new();
 
-    for passive in state
-        .covered_passives
-        .iter()
-        .filter(|passive| passive.owner == previous_player)
-    {
+    if let Some(passive) = state.covered_passive(&previous_player) {
+        let (sealed, neutralized) = match &passive.state {
+            crate::domain::FormationAreaState::FaceDownWaiting {
+                sealed,
+                neutralized,
+                ..
+            } => (*sealed, *neutralized),
+            _ => {
+                return PassiveTriggerResult {
+                    events,
+                    modifications: all_modifications,
+                };
+            }
+        };
         let ineffective_environment =
             environment_makes_formation_ineffective(state, &passive.formation_id)
                 .then_some(state.environment)
                 .flatten();
-        let neutralized = state
-            .neutralized_covered_passive_owners
-            .contains(&passive.owner);
         let modifications = if neutralized {
             Vec::new()
         } else {
             passive_spell_modifications(
                 &passive.formation_id,
                 request.incoming_kind,
-                passive.sealed,
+                sealed,
                 request.ignores_formation_effects,
                 request.ignores_counter_effects,
                 ineffective_environment,
@@ -98,7 +104,7 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
         };
         all_modifications.extend(modifications.iter().cloned());
         events.push(GameEvent::PassiveFlipped {
-            owner: passive.owner.clone(),
+            owner: previous_player.clone(),
             incoming_player: request.incoming_player.clone(),
             passive_id: passive.formation_id.clone(),
             cards: passive.cards.clone(),
@@ -110,7 +116,7 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
                 passive_outcome(
                     &passive.formation_id,
                     request.incoming_kind,
-                    passive.sealed,
+                    sealed,
                     request.ignores_formation_effects,
                     request.ignores_counter_effects,
                     ineffective_environment,

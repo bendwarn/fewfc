@@ -252,7 +252,7 @@ fn resolve_owned_pouch(
     }
     if !matches!(state.status, GameStatus::InProgress)
         || state.current_player() != Some(player)
-        || state.phase != crate::domain::Phase::Main
+        || state.phase != crate::domain::Phase::ActiveEffects
     {
         return Err(GameError::Validation(
             ValidationError::GamePreparationInProgress,
@@ -1402,7 +1402,7 @@ mod tests {
     fn steal_the_beam_snapshots_only_cards_already_in_hand() {
         let mut state = GameState::from_setup(&setup());
         state.status = GameStatus::InProgress;
-        state.phase = crate::domain::Phase::Main;
+        state.phase = crate::domain::Phase::ActiveEffects;
         let player = PlayerId::new("alice");
         let cards = state
             .card_instances
@@ -1758,7 +1758,7 @@ mod tests {
     fn strategy_catalog_resolves_typed_cross_module_effects() {
         let mut state = GameState::from_setup(&setup());
         state.status = GameStatus::InProgress;
-        state.phase = crate::domain::Phase::Main;
+        state.phase = crate::domain::Phase::ActiveEffects;
         let alice = PlayerId::new("alice");
         let bob = PlayerId::new("bob");
         let source = state
@@ -1935,7 +1935,7 @@ mod tests {
         let mut state = GameState::from_setup(&setup());
         let alice = PlayerId::new("alice");
         state.status = GameStatus::InProgress;
-        state.phase = crate::domain::Phase::Main;
+        state.phase = crate::domain::Phase::ActiveEffects;
         state.professions.push(PlayerProfession {
             player: alice.clone(),
             profession: ProfessionId::new(crate::rules::hero::IMMORTAL_ID),
@@ -1989,7 +1989,7 @@ mod tests {
         let mut state = GameState::from_setup(&setup());
         let alice = PlayerId::new("alice");
         state.status = GameStatus::InProgress;
-        state.phase = crate::domain::Phase::Main;
+        state.phase = crate::domain::Phase::ActiveEffects;
         state.team_stars.push(TeamStar {
             team: state.players[0].team.clone(),
             star: StarKind::Wood,
@@ -2011,15 +2011,18 @@ mod tests {
                 damage_prevented: true,
                 split_attack_damage: false,
                 mode: crate::rules::base::attack_resolution::AttackResolutionMode::FormationUse,
+                pre_resolution_effects: crate::domain::AttackResolutionEffects::default(),
             },
         )
         .unwrap();
 
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, GameEvent::TurnDrawBonusChanged { .. }))
-        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            GameEvent::AttackResolved {
+                elemental_context_update: Some(effects),
+                ..
+            } if !effects.turn_draw_bonus_changes.is_empty()
+        )));
         assert!(
             !events
                 .iter()
@@ -2032,7 +2035,7 @@ mod tests {
         let mut state = GameState::from_setup(&setup());
         let alice = PlayerId::new("alice");
         state.status = GameStatus::InProgress;
-        state.phase = crate::domain::Phase::Main;
+        state.phase = crate::domain::Phase::ActiveEffects;
         let alice_cards = state
             .card_instances
             .iter()

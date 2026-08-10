@@ -394,7 +394,7 @@ mod tests {
             )
             .expect("official default configuration must be valid");
         let mut state = GameState::from_setup(&setup);
-        state.phase = Phase::Main;
+        state.phase = Phase::ActiveEffects;
         let pending = PlayerFacingActionDetail::pending_composition();
         let actions = attach_to_actions(
             &state,

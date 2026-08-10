@@ -428,6 +428,11 @@ _Avoid_: record, save
 A canonical fact emitted by accepted setup, command, or automatic advancement and used for replay.
 _Avoid_: log message, notification
 
+**Game Outcome (遊戲結果)**:
+The terminal winner or Draw determined after all deltas in the applicable
+simultaneous resolution have been applied.
+_Avoid_: Game End Cause, score, inferred UI result
+
 **Game Conclusion (遊戲結論)**:
 The canonical terminal fact containing the Game Outcome and one or more Game
 End Causes. It persists independently of Card zones and previous-Turn queries.
@@ -709,6 +714,12 @@ _Avoid_: attack category
 **Attack**:
 A formation category that targets the previous player first and resolves HP impact through that player's team.
 _Avoid_: damage spell
+
+**Attack Resolution (攻擊解析)**:
+The simultaneous result of an Attack's damage and every attached effect that
+has no separately specified timing. Its consequences have no internal
+before-and-after order.
+_Avoid_: damage step, ordered attack effects, Attack completion
 
 **Spell**:
 A formation category whose effect may resolve immediately or be covered as a passive.
@@ -1010,7 +1021,15 @@ _Avoid_: callback response
   rules that require performing a Formation
 - 宮調‧裂土 makes only a matching **Formation Use** ineffective; it does not
   suppress the same Melody main effect when executed by **Echo** or 變宮‧植土
-- A **Formation Use** records zone changes through **Card Move Deltas** or equivalent replayable deltas
+- A validated **Formation Use** reaches **Formation Use Commitment** before its
+  effects resolve and moves its physical **Card Instances** from hand to its
+  Player's **Formation Area**
+- Each **Player** owns one **Formation Area**, which contains at most one
+  **Formation**
+- An ordinarily completed face-up **Formation Use** moves its physical **Card
+  Instances** from the **Formation Area** to the applicable **Discard Piles**
+- A **Covered Passive** is a face-down **Formation** state in its Player's
+  **Formation Area**, not another Card zone
 - A **Card Move Delta** moves one **Card Instance**
 - **Discard** moves a **Card Instance** to the **Discard Pile**
 - A **Card Instance** refers to one **Card Definition**
@@ -1018,6 +1037,8 @@ _Avoid_: callback response
 - A **Card Definition** has a level from 1 to 5
 - An **Attack Plan** may be elemental, physical, or special without changing the **Formation Category**
 - An **Attack** targets a **Previous Player** before resolving HP impact to that player's **Team**
+- An **Attack Resolution** contains the **Attack** damage and every attached
+  effect without another specified timing, all without an internal order
 - The **Active Effects Process** may accept multiple **Active-Effect Commands**
   before one **Action Command** begins the **Action Process**
 - Every legal Active Effects Process option is classified by the Rules Engine as either an
@@ -1057,6 +1078,15 @@ _Avoid_: callback response
 - A **Pending Choice** has exactly one **Choice ID**
 - A **Pending Choice** has exactly one **Choice Continuation**
 - A **Game Record** projects **Game Events** into **Game State**
+- A **Turn Draw** moves drawn **Card Instances** from a Deck into the one
+  game-scoped **Turn Draw Pool** before any of them enter a hand
+- Resolving a **Turn Draw** first moves the selected **Card Instance** from the
+  **Turn Draw Pool** to its applicable **Discard Pile**, then moves all remaining
+  Cards from the Pool to the current Player's hand
+- The terminal **Game Event** records one independent **Game Conclusion** with
+  at least one explicit **Game End Cause**
+- A **Game Conclusion** is not inferred from the **Formation Area** or a
+  previous-Turn **Formation Use**
 - A **Public View** is derived from canonical data and is not used for replay
 - A **Public Event Feed** is derived from **Game Events**
 - A **Public State View** is derived from **Game State**

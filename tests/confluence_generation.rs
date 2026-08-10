@@ -41,7 +41,7 @@ fn state(personal_deck: bool) -> GameState {
     let mut state = GameState::from_setup(&setup);
     state.current_turn_index = 1;
     state.turn_number = 2;
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
 }
 
@@ -105,7 +105,7 @@ fn team_state(extra_modules: Vec<RuleModuleId>) -> GameState {
     let mut state = GameState::from_setup(&setup);
     state.current_turn_index = 1;
     state.turn_number = 2;
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
 }
 
@@ -963,11 +963,6 @@ fn myriad_resonance_defers_game_outcome_until_mirror_choice_finishes() {
         },
     )
     .unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::HpChanged { change }
-            if change.team == TeamId::new("team:a") && change.new_hp == 0
-    )));
     assert!(
         events
             .iter()
@@ -986,6 +981,12 @@ fn myriad_resonance_defers_game_outcome_until_mirror_choice_finishes() {
         ChoiceAnswer::Cards { cards: inspected },
     )
     .unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::HpChanged { change }
+            if change.team == TeamId::new("team:a") && change.new_hp == 0
+    )));
+    assert!(matches!(events.last(), Some(GameEvent::GameEnded { .. })));
     for event in &events {
         apply_event(&mut game, event);
     }

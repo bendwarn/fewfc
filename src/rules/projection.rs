@@ -1,7 +1,8 @@
 use crate::domain::{
     CardInterpretationLayer, CardInterpretationSource, CardLevelInterpretation, CardMoveDelta,
-    CardOrigin, CardZone, DeckPlacement, GameEvent, GameOutcome, GameResult, GameSetup, GameState,
-    GameStatus, LastFormationUse, ShieldChangeDelta, validate_setup,
+    CardOrigin, CardZone, DeckPlacement, GameConclusion, GameEndCause, GameEvent, GameOutcome,
+    GameResult, GameSetup, GameState, GameStatus, LastFormationUse, ShieldChangeDelta,
+    validate_setup,
 };
 
 /// Projects the rules-specific semantic event into the one ordered Card
@@ -55,10 +56,63 @@ pub(crate) fn card_interpretation_layers_for_event(
 pub(crate) fn project(setup: &GameSetup, events: &[GameEvent]) -> GameResult<GameState> {
     validate_setup(setup)?;
     let mut state = GameState::from_setup(setup);
-    for event in events {
+    for (index, event) in events.iter().enumerate() {
+        if matches!(event, GameEvent::GameEnded { .. }) && index + 1 != events.len() {
+            return Err(crate::domain::GameError::Validation(
+                crate::domain::ValidationError::GameFinished,
+            ));
+        }
         apply_event(&mut state, event);
     }
     Ok(state)
+}
+
+/// Computes, but deliberately does not apply, an HP-based terminal fact.  A
+/// `GameEnded` event owns the state transition so a replay can never observe a
+/// finished Game without the corresponding canonical conclusion.
+pub(crate) fn game_conclusion_if_needed(state: &GameState) -> Option<GameConclusion> {
+    let alive_teams = state
+        .hp
+        .iter()
+        .filter(|team_hp| team_hp.hp > 0)
+        .map(|team_hp| team_hp.team.clone())
+        .collect::<Vec<_>>();
+    let defeated = state
+        .hp
+        .iter()
+        .filter(|team_hp| team_hp.hp == 0)
+        .map(|team_hp| team_hp.team.clone())
+        .collect::<Vec<_>>();
+
+    if defeated.is_empty() {
+        return None;
+    }
+    if state.has_rule_module(crate::domain::SPIRIT_MODULE_ID)
+        && defeated.iter().any(|team| {
+            state.spirits.iter().any(|owned| {
+                owned.spirit == crate::domain::SpiritKind::Wood
+                    && owned.power == 6
+                    && state
+                        .players
+                        .iter()
+                        .find(|player| player.id == owned.player)
+                        .is_some_and(|player| player.team == *team)
+            })
+        })
+    {
+        return None;
+    }
+
+    let outcome = if alive_teams.len() == 1 {
+        GameOutcome::Winner(alive_teams[0].clone())
+    } else {
+        GameOutcome::Draw
+    };
+    Some(GameConclusion::new(
+        outcome,
+        vec![GameEndCause::TeamHpDepleted { teams: defeated }],
+        None,
+    ))
 }
 
 pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
@@ -197,11 +251,11 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
         GameEvent::TurnStarted { player, .. } => {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, crate::domain::Phase::TurnStart);
-            state.phase = crate::domain::Phase::Main;
+            state.phase = crate::domain::Phase::ActiveEffects;
         }
         GameEvent::ActionPassed { player, .. } => {
             debug_assert_eq!(state.current_player(), Some(player));
-            debug_assert_eq!(state.phase, crate::domain::Phase::Main);
+            debug_assert_eq!(state.phase, crate::domain::Phase::Action);
             state.phase = crate::domain::Phase::TurnDraw;
             clear_prepared_ability(state, player);
         }
@@ -212,7 +266,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             ..
         } => {
             debug_assert_eq!(state.current_player(), Some(player));
-            debug_assert_eq!(state.phase, crate::domain::Phase::Main);
+            debug_assert_eq!(state.phase, crate::domain::Phase::Action);
             for card_move in card_moves {
                 apply_card_move(state, card_move);
             }
@@ -409,7 +463,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 team_hp.hp = resolution.hp_change.new_hp;
             }
             state.spirits.retain(|owned| owned.power > 0);
-            finish_game_if_needed(state);
         }
         GameEvent::FormationPerformed {
             player,
@@ -418,7 +471,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             ..
         } => {
             debug_assert_eq!(state.current_player(), Some(player));
-            debug_assert_eq!(state.phase, crate::domain::Phase::Main);
+            debug_assert_eq!(state.phase, crate::domain::Phase::ActiveEffects);
 
             for used_card in used_cards {
                 let hand = state
@@ -447,6 +500,81 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             state
                 .formation_requirements
                 .retain(|requirement| &requirement.player != player);
+        }
+        GameEvent::FormationCommitted {
+            player,
+            formation_id,
+            cards,
+            star_substitution,
+            state: formation_state,
+        } => {
+            debug_assert_eq!(state.current_player(), Some(player));
+            debug_assert_eq!(state.phase, crate::domain::Phase::ActiveEffects);
+            let area = state
+                .formation_area_mut(player)
+                .expect("canonical formation commitment must target a known player");
+            assert!(
+                area.formation.is_none(),
+                "a Formation Area may contain at most one Formation"
+            );
+            let hand = state
+                .hand_mut(player)
+                .expect("canonical formation commitment must target a known player");
+            for card in cards {
+                let position = hand
+                    .iter()
+                    .position(|hand_card| hand_card == card)
+                    .expect("canonical formation commitment must remove cards from hand");
+                hand.remove(position);
+            }
+            state
+                .formation_area_mut(player)
+                .expect("formation area must still exist")
+                .formation = Some(crate::domain::FormationInArea {
+                formation_id: formation_id.clone(),
+                cards: cards.clone(),
+                star_substitution: star_substitution.clone(),
+                state: formation_state.clone(),
+            });
+            state.last_formation_by_player.insert(
+                player.clone(),
+                LastFormationUse {
+                    formation_id: formation_id.clone(),
+                    resolved_effect_id: formation_id.clone(),
+                    used_cards: cards.clone(),
+                    resolved_turn: state.turn_number,
+                },
+            );
+            state.phase = crate::domain::Phase::Action;
+        }
+        GameEvent::FormationCardsDiscarded {
+            player,
+            formation_id,
+            cards,
+        } => {
+            let area = state
+                .formation_area_mut(player)
+                .expect("formation completion must target a known player");
+            let committed = area
+                .formation
+                .take()
+                .expect("formation completion requires an occupied Formation Area");
+            assert_eq!(committed.formation_id, *formation_id);
+            assert_eq!(committed.cards, *cards);
+            for card in cards {
+                push_to_origin_discard(state, *card);
+            }
+            clear_confluence_obligations_for_cards(state, player, cards);
+            state.phase = crate::domain::Phase::TurnDraw;
+            clear_prepared_ability(state, player);
+            state
+                .formation_requirements
+                .retain(|requirement| &requirement.player != player);
+        }
+        GameEvent::ActionStarted { player } => {
+            debug_assert_eq!(state.current_player(), Some(player));
+            debug_assert_eq!(state.phase, crate::domain::Phase::ActiveEffects);
+            state.phase = crate::domain::Phase::Action;
         }
         GameEvent::FormationMatchOptionDeclared { .. } => {}
         GameEvent::FormationEffectCopied { player, effect_id } => {
@@ -484,28 +612,50 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             sealed,
         } => {
             debug_assert_eq!(state.current_player(), Some(player));
-            debug_assert_eq!(state.phase, crate::domain::Phase::Main);
-
-            let hand = state
-                .hand_mut(player)
+            let area = state
+                .formation_area_mut(player)
                 .expect("canonical passive cover event must target a known player");
-            for card in cards {
-                let position = hand
-                    .iter()
-                    .position(|hand_card| hand_card == card)
-                    .expect("canonical passive cover event must remove cards from hand");
-                hand.remove(position);
+            if area.formation.is_none() {
+                // Legacy record compatibility: old records moved the cards as
+                // part of PassiveCovered rather than FormationCommitted.
+                let hand = state
+                    .hand_mut(player)
+                    .expect("canonical passive cover event must target a known player");
+                for card in cards {
+                    let position = hand
+                        .iter()
+                        .position(|hand_card| hand_card == card)
+                        .expect("canonical passive cover event must remove cards from hand");
+                    hand.remove(position);
+                }
+                state
+                    .formation_area_mut(player)
+                    .expect("formation area must still exist")
+                    .formation = Some(crate::domain::FormationInArea {
+                    formation_id: formation_id.clone(),
+                    cards: cards.clone(),
+                    star_substitution: star_substitution.clone(),
+                    state: crate::domain::FormationAreaState::FaceDownWaiting {
+                        sealed: *sealed,
+                        revealed: false,
+                        neutralized: false,
+                        trigger_timing: crate::domain::PassiveTriggerTiming::NextPlayerActionStart,
+                    },
+                });
+            } else {
+                let formation = state
+                    .formation_area_mut(player)
+                    .and_then(|area| area.formation.as_mut())
+                    .expect("committed passive must occupy its Formation Area");
+                assert_eq!(formation.formation_id, *formation_id);
+                assert_eq!(formation.cards, *cards);
+                formation.state = crate::domain::FormationAreaState::FaceDownWaiting {
+                    sealed: *sealed,
+                    revealed: false,
+                    neutralized: false,
+                    trigger_timing: crate::domain::PassiveTriggerTiming::NextPlayerActionStart,
+                };
             }
-
-            state.covered_passives.push(crate::domain::CoveredPassive {
-                owner: player.clone(),
-                formation_id: formation_id.clone(),
-                cards: cards.clone(),
-                star_substitution: star_substitution.clone(),
-                sealed: *sealed,
-                covered_on_turn: state.turn_number,
-                reveal_timing: crate::domain::PassiveTriggerTiming::NextPlayerActionStart,
-            });
             clear_confluence_obligations_for_cards(state, player, cards);
             state.last_formation_by_player.insert(
                 player.clone(),
@@ -525,25 +675,27 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             cards,
             ..
         } => {
-            let passive_position = state
-                .covered_passives
-                .iter()
-                .position(|passive| &passive.owner == owner)
+            let area = state
+                .formation_area_mut(owner)
+                .expect("canonical passive flip event must target a known Formation Area");
+            let passive = area
+                .formation
+                .take()
                 .expect("canonical passive flip event must target a covered passive");
-            state.covered_passives.remove(passive_position);
-            state
-                .neutralized_covered_passive_owners
-                .retain(|player| player != owner);
-            state
-                .revealed_covered_passive_owners
-                .retain(|player| player != owner);
+            assert_eq!(passive.cards, *cards);
             for card in cards {
                 push_to_origin_discard(state, *card);
             }
         }
         GameEvent::PassiveCoverRevealed { owner } => {
-            if !state.revealed_covered_passive_owners.contains(owner) {
-                state.revealed_covered_passive_owners.push(owner.clone());
+            if let Some(crate::domain::FormationInArea {
+                state: crate::domain::FormationAreaState::FaceDownWaiting { revealed, .. },
+                ..
+            }) = state
+                .formation_area_mut(owner)
+                .and_then(|area| area.formation.as_mut())
+            {
+                *revealed = true;
             }
         }
         GameEvent::AttackResolved {
@@ -559,16 +711,70 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             debug_assert_eq!(state.current_player(), Some(attacker));
             debug_assert!(matches!(
                 state.phase,
-                crate::domain::Phase::Main | crate::domain::Phase::TurnDraw
+                crate::domain::Phase::ActiveEffects
+                    | crate::domain::Phase::Action
+                    | crate::domain::Phase::TurnDraw
             ));
 
+            if let Some(effects) = elemental_context_update {
+                for change in &effects.hp_changes {
+                    let team_hp = state
+                        .hp
+                        .iter_mut()
+                        .find(|team_hp| team_hp.team == change.team)
+                        .expect("canonical attack side effect must target an existing team");
+                    team_hp.hp = change.new_hp;
+                }
+                for change in &effects.shield_changes {
+                    apply_shield_change(state, change);
+                }
+                for card_move in &effects.card_moves {
+                    apply_card_move(state, card_move);
+                }
+                state
+                    .statuses
+                    .extend(effects.statuses_added.iter().cloned());
+                for removal in &effects.statuses_removed {
+                    let position = state
+                        .statuses
+                        .iter()
+                        .position(|status| {
+                            status.id == removal.status_id && status.owner == removal.owner
+                        })
+                        .expect("canonical attack status removal must target an active Status");
+                    state.statuses.remove(position);
+                }
+                for counter in &effects.counter_effects_established {
+                    state.counter_effects.push(crate::domain::CounterEffect {
+                        owner: counter.owner.clone(),
+                        effect_id: counter.effect_id.clone(),
+                        established_on_turn: state.turn_number,
+                    });
+                }
+                for change in &effects.turn_draw_bonus_changes {
+                    state
+                        .turn_draw_bonus_by_player
+                        .insert(change.player.clone(), change.new_value);
+                }
+                for transfer in &effects.environment_transfers {
+                    state.environment = Some(transfer.to);
+                }
+                if let Some(update) = &effects.elemental_context_update {
+                    state
+                        .last_elemental_attack_by_player
+                        .insert(update.player.clone(), update.attack.clone());
+                }
+            }
+
+            // Deltas are one simultaneous semantic result, not separately
+            // replayable events.  Pre-attack effects are applied first only
+            // to reconstruct the snapshots recorded by the primary damage.
             let team_hp = state
                 .hp
                 .iter_mut()
                 .find(|team_hp| team_hp.team == hp_change.team)
                 .expect("canonical attack event must target an existing team");
             team_hp.hp = hp_change.new_hp;
-            finish_game_if_needed(state);
 
             if let Some(shield_change) = shield_change {
                 apply_shield_change(state, shield_change);
@@ -579,33 +785,12 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             }
             clear_confluence_obligations_for_cards(state, attacker, used_cards);
 
-            if let Some(update) = elemental_context_update {
-                state
-                    .last_elemental_attack_by_player
-                    .insert(update.player.clone(), update.attack.clone());
-            }
-
             if let Some(last_formation) = state.last_formation_by_player.get_mut(attacker)
                 && last_formation.resolved_turn == state.turn_number
                 && last_formation.formation_id == "metamorphosis"
             {
                 last_formation.resolved_effect_id = formation_id.clone();
-            } else {
-                state.last_formation_by_player.insert(
-                    attacker.clone(),
-                    LastFormationUse {
-                        formation_id: formation_id.clone(),
-                        resolved_effect_id: formation_id.clone(),
-                        used_cards: used_cards.clone(),
-                        resolved_turn: state.turn_number,
-                    },
-                );
             }
-            state.phase = crate::domain::Phase::TurnDraw;
-            clear_prepared_ability(state, attacker);
-            state
-                .formation_requirements
-                .retain(|requirement| &requirement.player != attacker);
         }
         GameEvent::EnvironmentTransferred { to, .. } => {
             state.environment = Some(*to);
@@ -620,7 +805,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     .expect("canonical environment clearing must target an existing team");
                 team_hp.hp = change.new_hp;
             }
-            finish_game_if_needed(state);
         }
         GameEvent::StarBroken {
             team,
@@ -660,9 +844,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 history.stars.push(*star);
             }
         }
-        GameEvent::VoidStarBreakingCompleted { .. } => {
-            finish_game_if_needed(state);
-        }
+        GameEvent::VoidStarBreakingCompleted { .. } => {}
         GameEvent::VoidReversionResolved {
             player,
             hp_change,
@@ -696,7 +878,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             state
                 .formation_requirements
                 .retain(|requirement| &requirement.player != player);
-            finish_game_if_needed(state);
         }
         GameEvent::VoidSpiritShatteringResolved {
             player,
@@ -761,22 +942,17 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             );
             state.phase = crate::domain::Phase::TurnDraw;
             clear_prepared_ability(state, player);
-            finish_game_if_needed(state);
         }
         GameEvent::FiveStarAlignmentAchieved { player, team } => {
             state.five_star_alignment = Some(crate::domain::FiveStarAlignment {
                 player: player.clone(),
                 team: team.clone(),
             });
-            state.status = GameStatus::Finished {
-                outcome: GameOutcome::Team(team.clone()),
-            };
         }
-        GameEvent::KingYamaDecreeVictoryAchieved { team, .. } => {
-            state.status = GameStatus::Finished {
-                outcome: GameOutcome::Team(team.clone()),
-            };
-        }
+        // These two events are retained only so older recorded rooms can be
+        // replayed.  They do not end a game themselves: the compatibility
+        // reader appends an explicit GameEnded conclusion.
+        GameEvent::KingYamaDecreeVictoryAchieved { .. } => {}
         GameEvent::TurnDrawBonusChanged {
             player, new_value, ..
         } => {
@@ -791,7 +967,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .find(|team_hp| team_hp.team == change.team)
                 .expect("canonical hp event must target an existing team");
             team_hp.hp = change.new_hp;
-            finish_game_if_needed(state);
         }
         GameEvent::CardsMoved { card_moves } => {
             for card_move in card_moves {
@@ -883,7 +1058,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 debug_assert_eq!(target_hp.hp, change.old_hp);
                 target_hp.hp = change.new_hp;
             }
-            finish_game_if_needed(state);
         }
         GameEvent::JianghuDelayedDamageResolved {
             owner,
@@ -915,7 +1089,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 debug_assert_eq!(target_hp.hp, change.old_hp);
                 target_hp.hp = change.new_hp;
             }
-            finish_game_if_needed(state);
         }
         GameEvent::LimitedUseChanged {
             owner,
@@ -975,7 +1148,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             crate::rules::pending_choice::validate_answer(choice, player, *choice_id, answer)
                 .expect("canonical choice answer must match the pending choice");
             state.pending_choice = None;
-            finish_game_if_needed(state);
         }
         GameEvent::RandomnessRequested { request } => {
             assert!(
@@ -1083,15 +1255,18 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                         }
                     }
                     crate::domain::TimedEffectReduction::CoveredPassive { owner } => {
-                        assert!(
-                            state
-                                .covered_passives
-                                .iter()
-                                .any(|passive| &passive.owner == owner),
-                            "timed reduction must target a Covered Passive"
-                        );
-                        if !state.neutralized_covered_passive_owners.contains(owner) {
-                            state.neutralized_covered_passive_owners.push(owner.clone());
+                        let passive = state
+                            .formation_area_mut(owner)
+                            .and_then(|area| area.formation.as_mut())
+                            .expect("timed reduction must target a Covered Passive");
+                        if let crate::domain::FormationAreaState::FaceDownWaiting {
+                            neutralized,
+                            ..
+                        } = &mut passive.state
+                        {
+                            *neutralized = true;
+                        } else {
+                            panic!("timed reduction must target a Covered Passive");
                         }
                     }
                     crate::domain::TimedEffectReduction::CounterEffect { owner, effect_id } => {
@@ -1286,30 +1461,45 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, crate::domain::Phase::TurnDraw);
 
-            let hand = state
-                .hand_mut(player)
-                .expect("canonical draw event must target a known player");
-            hand.extend(drawn_cards.iter().copied());
+            assert!(
+                state.turn_draw_pool.is_empty(),
+                "a game has at most one non-empty Turn Draw Pool"
+            );
+            state.turn_draw_pool.extend(drawn_cards.iter().copied());
             state
                 .deck_for_mut(player)
                 .expect("canonical draw event must target a known player deck")
                 .drain(0..drawn_cards.len());
-            state.phase = crate::domain::Phase::TurnDrawDiscardChoice;
+            // A discard choice suspends TurnDraw; it never creates a phase.
         }
         GameEvent::TurnDiscardChosen { player, discard } => {
             debug_assert_eq!(state.current_player(), Some(player));
-            debug_assert_eq!(state.phase, crate::domain::Phase::TurnDrawDiscardChoice);
-
-            let hand = state
-                .hand_mut(player)
-                .expect("canonical discard event must target a known player");
-            let discard_position = hand
-                .iter()
-                .position(|card| card == discard)
-                .expect("canonical discard event must remove a card from hand");
-            let discarded = hand.remove(discard_position);
-
+            debug_assert_eq!(state.phase, crate::domain::Phase::TurnDraw);
+            // Compatibility only: persisted records written before
+            // TurnDrawResolved used this event after drawing into the hand.
+            // New records never emit it.
+            let discarded = if let Some(position) =
+                state.turn_draw_pool.iter().position(|card| card == discard)
+            {
+                state.turn_draw_pool.remove(position)
+            } else {
+                let hand = state
+                    .hand_mut(player)
+                    .expect("canonical discard event must target a known player");
+                let discard_position = hand
+                    .iter()
+                    .position(|card| card == discard)
+                    .expect("canonical discard event must remove a card from hand");
+                hand.remove(discard_position)
+            };
             push_to_origin_discard(state, discarded);
+            if !state.turn_draw_pool.is_empty() {
+                let kept_cards = std::mem::take(&mut state.turn_draw_pool);
+                state
+                    .hand_mut(player)
+                    .expect("legacy Turn Draw pool must target a known player")
+                    .extend(kept_cards);
+            }
             state.last_turn_discard_by_player.insert(
                 player.clone(),
                 crate::domain::LastTurnDiscard {
@@ -1319,10 +1509,51 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             );
             state.phase = crate::domain::Phase::TurnEnd;
         }
+        GameEvent::TurnDrawResolved {
+            player,
+            discard,
+            kept_cards,
+        } => {
+            debug_assert_eq!(state.current_player(), Some(player));
+            debug_assert_eq!(state.phase, crate::domain::Phase::TurnDraw);
+            assert!(state.turn_draw_pool.contains(discard));
+            assert_eq!(
+                state.turn_draw_pool.len(),
+                kept_cards.len() + 1,
+                "TurnDrawResolved must account for every pooled card"
+            );
+            for card in kept_cards {
+                assert!(state.turn_draw_pool.contains(card));
+            }
+            state.turn_draw_pool.retain(|card| card != discard);
+            push_to_origin_discard(state, *discard);
+            state.last_turn_discard_by_player.insert(
+                player.clone(),
+                crate::domain::LastTurnDiscard {
+                    card: *discard,
+                    turn_number: state.turn_number,
+                },
+            );
+            state
+                .hand_mut(player)
+                .expect("canonical Turn Draw resolution must target a known player")
+                .extend(kept_cards.iter().copied());
+            state.turn_draw_pool.clear();
+            state.phase = crate::domain::Phase::TurnEnd;
+        }
         GameEvent::TurnDrawSkipped { player, .. } => {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, crate::domain::Phase::TurnDraw);
             state.phase = crate::domain::Phase::TurnEnd;
+        }
+        GameEvent::GameEnded { conclusion } => {
+            assert!(
+                !conclusion.causes.is_empty(),
+                "GameEnded requires a non-empty Game Conclusion"
+            );
+            state.status = GameStatus::Finished {
+                conclusion: conclusion.clone(),
+            };
         }
         GameEvent::DiscardRetrieved {
             hp_change,
@@ -1336,7 +1567,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .find(|team_hp| team_hp.team == hp_change.team)
                 .expect("canonical discard retrieval must target an existing team");
             team_hp.hp = hp_change.new_hp;
-            finish_game_if_needed(state);
         }
         GameEvent::TurnEnded { player } => {
             debug_assert_eq!(state.current_player(), Some(player));
@@ -1504,47 +1734,4 @@ fn apply_shield_change(state: &mut GameState, change: &ShieldChangeDelta) {
         .find(|shield| shield.player == change.player)
         .expect("canonical shield event must target an existing player");
     shield.value = change.new_value;
-}
-
-fn finish_game_if_needed(state: &mut GameState) {
-    let alive_teams = state
-        .hp
-        .iter()
-        .filter(|team_hp| team_hp.hp > 0)
-        .map(|team_hp| team_hp.team.clone())
-        .collect::<Vec<_>>();
-    let defeated_count = state.hp.iter().filter(|team_hp| team_hp.hp == 0).count();
-
-    if defeated_count == 0 {
-        return;
-    }
-    if state.has_rule_module(crate::domain::SPIRIT_MODULE_ID)
-        && state
-            .hp
-            .iter()
-            .filter(|team_hp| team_hp.hp == 0)
-            .any(|team_hp| {
-                state.spirits.iter().any(|owned| {
-                    owned.spirit == crate::domain::SpiritKind::Wood
-                        && owned.power == 6
-                        && state
-                            .players
-                            .iter()
-                            .find(|player| player.id == owned.player)
-                            .is_some_and(|player| player.team == team_hp.team)
-                })
-            })
-    {
-        return;
-    }
-
-    state.status = if alive_teams.len() == 1 {
-        GameStatus::Finished {
-            outcome: GameOutcome::Team(alive_teams[0].clone()),
-        }
-    } else {
-        GameStatus::Finished {
-            outcome: GameOutcome::Draw,
-        }
-    };
 }

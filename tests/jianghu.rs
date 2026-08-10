@@ -32,7 +32,7 @@ fn state() -> GameState {
         )
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state
 }
 
@@ -239,12 +239,12 @@ fn king_yama_decree_wins_directly_through_watch_fire_protection() {
         apply_event(&mut game, event);
     }
 
-    assert_eq!(
+    assert!(matches!(
         game.status,
         GameStatus::Finished {
-            outcome: GameOutcome::Team(TeamId::new("team:a")),
-        }
-    );
+            ref conclusion
+        } if conclusion.outcome == GameOutcome::Winner(TeamId::new("team:a"))
+    ));
     assert_eq!(
         game.hp
             .iter()
@@ -302,11 +302,15 @@ fn water_dotting_fan_only_reads_the_immediately_previous_turns_formation() {
     assert_eq!(
         fresh_events
             .iter()
-            .filter(|event| matches!(
-                event,
-                GameEvent::StatusAdded { status }
-                    if matches!(status.kind.as_str(), "CannotAct" | "CannotDraw")
-            ))
+            .filter_map(|event| match event {
+                GameEvent::AttackResolved {
+                    elemental_context_update: Some(effects),
+                    ..
+                } => Some(&effects.statuses_added),
+                _ => None,
+            })
+            .flatten()
+            .filter(|status| matches!(status.kind.as_str(), "CannotAct" | "CannotDraw"))
             .count(),
         2
     );
@@ -357,13 +361,14 @@ fn dancing_yang_uses_the_attack_attribute_and_formation_card_count() {
         events
             .iter()
             .filter_map(|event| match event {
-                GameEvent::TurnDrawBonusChanged {
-                    old_value,
-                    new_value,
+                GameEvent::AttackResolved {
+                    elemental_context_update: Some(effects),
                     ..
-                } => Some((*old_value, *new_value)),
+                } => Some(&effects.turn_draw_bonus_changes),
                 _ => None,
             })
+            .flatten()
+            .map(|change| (change.old_value, change.new_value))
             .collect::<Vec<_>>(),
         vec![(0, 1), (1, 2)],
         "歲星柱天陣 is a three-card 木行 attack, so its own bonus and 舞陽訣 both apply"

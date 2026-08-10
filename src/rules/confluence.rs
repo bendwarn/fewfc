@@ -334,19 +334,20 @@ pub(crate) fn active_spell_events(
         BLAZE_RESONANCE => vec![change_hp_event(state, &previous, -20)?],
         EARTH_RESONANCE => vec![set_shield_event(state, player, 15)],
         MYRIAD_RESONANCE => {
-            let mut events = vec![
-                change_hp_event(state, &previous, -20)?,
-                change_hp_event(state, player, 20)?,
-                set_shield_event(state, player, 15),
-                turn_draw_bonus_event(state, player, 1),
-            ];
-            events.extend(inspect_and_discard_events(
-                state,
-                player,
-                &previous,
-                resolver_id,
-            )?);
-            events
+            let inspected = inspect_and_discard_events(state, player, &previous, resolver_id)?;
+            // The inspected-card choice is part of one Myriad resolution.
+            // Do not apply its simultaneous HP/shield/draw consequences until
+            // that answer is known.
+            if inspected
+                .iter()
+                .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
+            {
+                inspected
+            } else {
+                let mut events = myriad_primary_events(state, player)?;
+                events.extend(inspected);
+                events
+            }
         }
         IMPRISONING_ARRAY => {
             let use_count = limited_use(state, player, IMPRISONING_ARRAY_USE)
@@ -621,8 +622,25 @@ pub(crate) fn after_choice_events(
                 after: Some(element),
             },
         ) => resonance_element_events(state, player, *element),
+        crate::domain::ChoiceContinuation::Confluence(
+            crate::domain::ConfluenceChoiceContinuation::DiscardInspectedCard {
+                resonance: crate::domain::ConfluenceResonance::Myriad,
+                ..
+            },
+        ) => myriad_primary_events(state, player),
         _ => Ok(Vec::new()),
     }
+}
+
+fn myriad_primary_events(state: &GameState, player: &PlayerId) -> GameResult<Vec<GameEvent>> {
+    let previous =
+        TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::PreviousPlayer)?;
+    Ok(vec![
+        change_hp_event(state, &previous, -20)?,
+        change_hp_event(state, player, 20)?,
+        set_shield_event(state, player, 15),
+        turn_draw_bonus_event(state, player, 1),
+    ])
 }
 
 fn change_hp_event(state: &GameState, player: &PlayerId, delta: i32) -> GameResult<GameEvent> {

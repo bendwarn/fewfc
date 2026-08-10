@@ -70,6 +70,7 @@ pub(crate) fn resolve_trusted_randomness(
         &request.continuation,
         request.operation.destination_deck(),
     )?);
+    crate::rules::base::append_terminal_game_end(state, &mut events);
     Ok(events)
 }
 

@@ -14,8 +14,8 @@ fn card(id: u64) -> CardInstanceId {
 fn accepted_answer_records_choice_made_before_domain_consequences_and_releases_the_lifecycle() {
     let setup = GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30);
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::TurnDrawDiscardChoice;
-    state.hands[0].cards = vec![card(1)];
+    state.phase = Phase::TurnDraw;
+    state.turn_draw_pool = vec![card(1)];
     state.pending_choice = Some(PendingChoice {
         choice_id: ChoiceId::new(1),
         player: PlayerId::new("p1"),
@@ -64,7 +64,7 @@ fn accepted_answer_records_choice_made_before_domain_consequences_and_releases_t
         events.as_slice(),
         [
             GameEvent::ChoiceMade { choice_id, .. },
-            GameEvent::TurnDiscardChosen { .. },
+            GameEvent::TurnDrawResolved { .. },
             ..
         ] if *choice_id == ChoiceId::new(1)
     ));

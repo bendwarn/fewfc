@@ -124,7 +124,7 @@ fn discard_retrieval_is_derived_and_remains_legal_under_cannot_act() {
         .value() as i32;
     let mut state = GameState::from_setup(&setup);
     state.current_turn_index = 1;
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.discard_for_mut(&p1).unwrap().push(card);
     state.last_turn_discard_by_player.insert(
         p1.clone(),
@@ -194,7 +194,7 @@ fn discard_retrieval_does_not_use_an_older_turns_discard() {
     let mut state = GameState::from_setup(&setup);
     state.current_turn_index = 1;
     state.turn_number = 4;
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.discard_for_mut(&p1).unwrap().push(card);
     state.last_turn_discard_by_player.insert(
         p1.clone(),

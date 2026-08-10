@@ -197,7 +197,7 @@ fn steal_the_beam_turns_printed_five_five_four_into_immortal_levels() {
         )
         .unwrap();
     let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::Main;
+    state.phase = Phase::ActiveEffects;
     state.professions.push(PlayerProfession {
         player: PlayerId::new("p1"),
         profession: ProfessionId::new("mage-guide"),
