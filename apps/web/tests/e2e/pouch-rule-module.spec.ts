@@ -90,7 +90,7 @@ async function completeIndependentInitialPouchSelection(host: Page, guest: Page,
   expect(otherViewerState.state.pouches[0]?.card).toBeNull()
 
   const guestCommand = waitForCommand(guest, 'chooseInitialPouch')
-  await guest.keyboard.press('r')
+  await guestChoice.click()
   await guestCommand
 }
 
@@ -179,6 +179,12 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     await reloadFastGameRoute(actor, roomId)
     const chainDialog = actor.getByRole('dialog', { name: '連環：選擇錦囊' })
     await expect(chainDialog).toBeVisible()
+    const chainHeadings = chainDialog.getByRole("heading", { level: 3 });
+    await expect(
+      chainDialog.locator(".choice-selection-summary"),
+    ).toContainText("錦囊給予：");
+    await expect(chainDialog.getByLabel("選擇錦囊持有者")).toHaveCount(0);
+    await expect(chainHeadings).toHaveText(["錦囊給予對象", "選擇錦囊牌"]);
     const state = await requestJson<{
       state: { pendingChoice: { visibility: 'visible'; choice: { type: 'chain'; deckCards: Array<{
         element: string | null
@@ -216,13 +222,23 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     }).first()
     await pouchButton.click()
     await expect(pouchButton).toHaveAttribute('aria-pressed', 'true')
+    await expect(chainHeadings).toHaveText([
+      "錦囊給予對象",
+      "選擇錦囊牌",
+      "選擇觸發牌（可選）",
+    ]);
     const triggerMatrix = chainDialog.getByLabel('連環觸發牌組矩陣')
     const triggerButton = triggerMatrix.getByRole('button', {
       name: new RegExp(`：${elementLabel(sheepTrigger!.trigger.element!)} ${sheepTrigger!.trigger.level} 級`),
     }).first()
     await triggerButton.click()
     await expect(triggerButton).toHaveAttribute('aria-pressed', 'true')
-    await chainDialog.getByLabel('選擇錦囊持有者').getByRole('button').first().click()
+    await expect(chainHeadings).toHaveText([
+      "錦囊給予對象",
+      "選擇錦囊牌",
+      "選擇觸發牌（可選）",
+      "觸發秘計",
+    ]);
     await chainDialog.getByLabel('選擇秘計').getByRole('button', { name: '牽羊' }).click()
     await expect(chainDialog.locator('.action-detail')).toContainText('從牌組與棄牌堆各選兩張交換，之後洗牌')
     const chainAnswer = waitForCommand(actor, 'answerChoice')
