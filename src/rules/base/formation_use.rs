@@ -91,7 +91,7 @@ pub(super) fn resolve(
         },
     );
     if state.formation_requirements.iter().any(|requirement| {
-        &requirement.player == &player && requirement.applied_on_turn == state.turn_number
+        requirement.player == player && requirement.applied_on_turn == state.turn_number
     }) {
         events.push(GameEvent::FormationRequirementFulfilled {
             player: player.clone(),
@@ -110,9 +110,9 @@ pub(super) fn resolve(
         events.push(event);
     }
     crate::rules::tribulation::suppress_formation_recovery(state, &player, &mut events);
+    crate::rules::pouch::suppress_watch_fire_formation_hp_changes(state, &player, &mut events);
     crate::rules::dark::append_shared_fate_events(state, &player, &formation_id, &mut events)?;
     crate::rules::dark::append_mischief_events(state, &mut events)?;
-    crate::rules::pouch::suppress_watch_fire_formation_hp_changes(state, &player, &mut events);
     if is_active_spell {
         append_post_formation_events(state, &player, &formation_id, &mut events)?;
     }

@@ -18,10 +18,10 @@ and the battlefield.
 - [x] Every Dark Glimmer Profession transition, inherited ability, Dark Formation, and Environment or 影遁 interaction conforms to the 5.16 PDF.
 - [x] Evil and Death Spirits occupy the existing single Spirit slot, use the zero-through-six Spirit Power model, and distinguish transformation from a new two-power summon.
 - [x] Mischief calculates from only the Cards actually inspected, and trusted random selection records complete canonical outcomes without leaking other hidden Cards.
-- [x] Shared Fate reads the Formation's Affected Player Set, expands Team targets to their Players, does not react to teammate-only targets, and cannot recursively trigger itself.
+- [x] Shared Fate follows an actual Formation-effect deduction from its Death Spirit owner's Team HP, excludes ordinary Attack damage, and cannot recursively trigger itself.
 - [x] Void Spirit-Shattering triggers Shared Fate for a surviving Death Spirit, suppresses it for a Death Spirit broken at zero power, and does not retroactively trigger a Spirit summoned by 魔靈復甦.
 - [x] Void Spirit-Shattering snapshots initial owners, resolves Spirit changes, revival, Team HP, Shared Fate, and Game Outcome atomically and replayably.
-- [x] Focused Rust, Web unit, and self-contained Brave Playwright tests cover all Professions, Dark Formations, both Spirits, two- and four-Player affected sets, dependencies, and all-enabled compatibility.
+- [x] Focused Rust, Web unit, and self-contained Brave Playwright tests cover all Professions, Dark Formations, both Spirits, two- and four-Player Team-HP interactions, dependencies, and all-enabled compatibility.
 
 ## Validation
 

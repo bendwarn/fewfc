@@ -1693,6 +1693,7 @@ impl RandomnessOperation {
 #[serde(tag = "type", content = "kind", rename_all = "camelCase")]
 pub enum RandomnessContinuation {
     Base(BaseRandomnessContinuation),
+    Spirit(SpiritRandomnessContinuation),
     Echo(EchoRandomnessContinuation),
     Hero(HeroRandomnessContinuation),
     Confluence(ConfluenceRandomnessContinuation),
@@ -1704,6 +1705,12 @@ pub enum RandomnessContinuation {
 #[serde(rename_all = "camelCase")]
 pub enum BaseRandomnessContinuation {
     TurnDraw,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SpiritRandomnessContinuation {
+    DeathOmen { player: PlayerId },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1821,6 +1828,10 @@ pub struct RustedForestResolution {
     pub split_attack_damage: bool,
 }
 
+// Canonical events intentionally remain unboxed: their variants are projected, replayed, and
+// serialized directly.  Indirection here would add allocation without changing the public
+// record shape.
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum GameEvent {
     GamePreparationStarted {

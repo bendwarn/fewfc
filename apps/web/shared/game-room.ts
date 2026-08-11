@@ -249,6 +249,7 @@ export interface TrustedRandomnessRequest {
     | { type: 'discardShuffle'; pile: 'Shared' | { Player: PlayerId }; placement: 'Bottom' }
   continuation:
     | { type: 'base'; kind: 'turnDraw' }
+    | { type: 'spirit'; kind: { deathOmen: { player: PlayerId } } }
     | { type: 'echo'; kind: 'ringingMetalRecycleDiscard' | 'ringingMetalPostSearch' }
     | { type: 'hero'; kind: 'revelation' }
     | { type: 'confluence'; kind: 'clearWindTenThousandMiles' }

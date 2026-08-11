@@ -654,6 +654,27 @@ the Attack still resolve, and the protection expires at the end of the next
 Player's next turn even if they do not Attack. Because it is a Spirit Skill
 rather than a Formation effect, it also prevents Sacred Beast attack damage.
 
+Dark Glimmer adds the Evil and Death Spirits to the same single-Spirit slot.
+暗行者's 暗行 prevents every ordinary Profession Change. 暗靈使 inherits 暗行,
+so it has the same restriction; the 暗行者 → 暗靈使 transition caused by using a
+Dark Formation is the named 暗行 effect, not an ordinary Profession Change.
+
+死精靈的 死兆 costs four Spirit Power, discards the next Player's top four Deck
+Cards, deducts that Player's Team HP by four times the highest level among
+those Cards, and gains one Spirit Power when at least one is level four. If the
+applicable Deck has fewer than four Cards and its Discard Pile is non-empty,
+the complete Discard Pile is Discard Shuffled first. The canonical record waits
+for that trusted randomness result before recording the Skill use, spending
+Spirit Power, moving Cards, or applying damage; the resumed resolution uses the
+complete resulting set of up to four Cards.
+
+死精靈的 同命 means: when the Death Spirit owner's Team HP is actually deducted
+by a Formation effect, that owner's next Player loses 10 HP. This condition is
+not derived from an Affected Player Set. Ordinary Attack damage does not trigger
+同命, although a Formation's separate HP-deduction effect can, including one
+recorded atomically beside an Attack. 同命 is resolved after the qualifying
+Formation deduction and does not recursively trigger another 同命.
+
 Fire Skills add a turn-scoped Card Interpretation Layer without mutating the
 Card Instance or Card Definition. Layers compose by dimension in effect order,
 and a later layer replaces only the dimensions it specifies. Sacred Art
@@ -1139,6 +1160,13 @@ A known formation with legal cards but missing resolver is a rule implementation
   never exceed six power.
 - Spirit Skills remain active effects under **Cannot Act**, consume power even
   when ineffective, and allow one successful use per Spirit instance per turn.
+- 暗行者 and 暗靈使 offer no ordinary Profession Change; the Dark Formation
+  transition from 暗行者 to 暗靈使 remains available.
+- 死兆 requests and records a Discard Shuffle before consuming its Skill when
+  fewer than four Deck Cards are available, then calculates every consequence
+  from the resulting inspected Cards.
+- 同命 follows an actual non-Attack Formation HP deduction to its Death Spirit
+  owner's Team and never follows ordinary Attack damage.
 - Public State exposes Spirit kind and power without exposing Fire's selected
   hidden Card or duplicating Skill-use history as presentation state.
 - Fire Card Interpretation Layers compose by dimension and expire at Turn End.

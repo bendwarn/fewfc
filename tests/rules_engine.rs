@@ -1,3 +1,6 @@
+// Single-event expectations stay as Vec<GameEvent> to match the event-log assertion helper.
+#![allow(clippy::useless_vec)]
+
 use fewfc::application::{
     AutomaticReason, CommandContext, CommandKind, EventSource, GameRecord, StartGame,
     advance_automatic as advance_state_automatic, apply_event, handle_command,

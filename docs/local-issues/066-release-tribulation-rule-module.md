@@ -17,7 +17,7 @@ behavior and interactions with existing Rule Modules.
 - [x] Tribulation is independently selectable, requires Star, Five Directions Legend, and Hero Schools, and is enabled by default in new games and rooms without changing persisted room configurations.
 - [x] The Formation Catalog exposes the five Tribulations and 神算 with their published names, categories, rule text, and exact matching rules.
 - [x] Every Tribulation is a variable-card-count Special Attack containing exactly its two specified overcoming elements with an effective level sum of at least seven per element; it never satisfies a fixed Formation card-count condition.
-- [x] 天雷劫火 resolves its 60-point Attack and one 15-point deduction per Team atomically, supplies the correct Affected Player Set, and triggers Shared Fate only for Teams that actually lose HP.
+- [x] 天雷劫火 resolves its 60-point Attack and one 15-point Formation-effect deduction per Team atomically, and triggers Shared Fate only for Death Spirit owners whose Teams actually lose HP.
 - [x] 烈風暴雨 applies independent two-turn Gale-Rain Status instances to every unprotected Player, counts each affected Player's Turn Ends under the main duration rules, and blocks only life recovery from Formations performed by that Player.
 - [x] 泥石轟流 deducts up to 20 points from every unprotected Shield, becomes an 80-point Attack only when that additional effect deducts at least one Shield point, and routes the Attack according to the target's resulting Shield.
 - [x] 裂地崩山 accepts any declared Environment, including the current one, and collects Environment-Element Card discards or hand reveals sequentially from the Next Player through the performer using printed Card elements.

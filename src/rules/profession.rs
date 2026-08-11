@@ -58,6 +58,9 @@ pub(crate) fn playable_profession_changes(
     player: &crate::domain::PlayerId,
     cards: &[crate::domain::CardInstanceId],
 ) -> crate::domain::GameResult<Vec<crate::rules::ProfessionChangeCandidate>> {
+    if !ordinary_profession_change_is_permitted(state, player) {
+        return Ok(Vec::new());
+    }
     let mut candidates = crate::rules::hero::playable_profession_changes(state, player, cards)?;
     candidates.extend(crate::rules::jianghu::playable_profession_changes(
         state, player, cards,
@@ -147,13 +150,7 @@ pub(crate) fn validate_profession_change(
     target: &ProfessionId,
     cards: &[crate::domain::CardInstanceId],
 ) -> crate::domain::GameResult<()> {
-    if state.profession_for(player).is_some_and(|profession| {
-        crate::rules::profession::inherits_from(
-            &state.enabled_rule_modules,
-            profession,
-            &ProfessionId::new(crate::rules::dark::DARK_WALKER_ID),
-        )
-    }) {
+    if !ordinary_profession_change_is_permitted(state, player) {
         return Err(crate::domain::GameError::Validation(
             crate::domain::ValidationError::ProfessionChangePatternMismatch {
                 profession: target.clone(),
@@ -189,6 +186,16 @@ pub(crate) fn validate_profession_change(
             crate::domain::ValidationError::UnknownProfession(target.clone()),
         )),
     }
+}
+
+fn ordinary_profession_change_is_permitted(state: &GameState, player: &PlayerId) -> bool {
+    !state.profession_for(player).is_some_and(|profession| {
+        inherits_from(
+            &state.enabled_rule_modules,
+            profession,
+            &ProfessionId::new(crate::rules::dark::DARK_WALKER_ID),
+        )
+    })
 }
 
 pub(crate) fn definition(

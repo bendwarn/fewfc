@@ -173,7 +173,7 @@ fn thunder_fire_deducts_each_team_then_resolves_its_special_attack() {
 }
 
 #[test]
-fn thunder_fire_shared_fate_uses_every_player_on_losing_teams_but_not_a_protected_team() {
+fn thunder_fire_triggers_shared_fate_only_for_death_spirits_on_actually_losing_teams() {
     let shape = GameSetup::team_mode(
         TeamId::new("a"),
         vec![PlayerId::new("p1"), PlayerId::new("p3")],
@@ -630,10 +630,12 @@ fn rusted_forest_reveals_discards_and_waits_for_the_trusted_shuffle() {
             .iter()
             .any(|event| matches!(event, GameEvent::AttackResolved { .. }))
     );
-    assert!(resolved.iter().any(|event| matches!(
-        event,
-        GameEvent::HpChanged { change } if change.effective_delta == -10
-    )));
+    assert!(
+        !resolved
+            .iter()
+            .any(|event| matches!(event, GameEvent::HpChanged { .. })),
+        "Rusted Forest's ordinary Attack damage must not trigger Shared Fate",
+    );
     assert!(
         resolved
             .iter()

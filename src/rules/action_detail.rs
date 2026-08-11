@@ -149,15 +149,16 @@ fn append_formation_specific_consequences(
     {
         consequences.append(&mut pouch);
     }
-    for specific in [
+    for mut clauses in [
         crate::rules::base::formation_action_detail_consequences(formation_id),
         crate::rules::dark::formation_action_detail_consequences(formation_id),
         crate::rules::tribulation::formation_action_detail_consequences(formation_id),
         crate::rules::confluence::formation_action_detail_consequences(formation_id),
-    ] {
-        if let Some(mut clauses) = specific {
-            consequences.append(&mut clauses);
-        }
+    ]
+    .into_iter()
+    .flatten()
+    {
+        consequences.append(&mut clauses);
     }
 }
 

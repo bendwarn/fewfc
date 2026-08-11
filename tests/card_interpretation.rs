@@ -36,8 +36,7 @@ fn resolver_state(printed: u32, operations: &[CardLevelInterpretation]) -> GameS
     let mut state = GameState::from_setup(&setup_with_levels(&[printed]));
     state.card_interpretation_layers = operations
         .iter()
-        .enumerate()
-        .map(|(_, level)| CardInterpretationLayer {
+        .map(|level| CardInterpretationLayer {
             source: CardInterpretationSource::PouchLevelBonusGranted,
             player: PlayerId::new("p1"),
             card: CardInstanceId::new(1),

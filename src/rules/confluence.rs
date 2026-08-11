@@ -592,11 +592,9 @@ fn confluence_resonance(effect_id: &str) -> GameResult<crate::domain::Confluence
         MIRROR_RESONANCE => Ok(crate::domain::ConfluenceResonance::Mirror),
         MYRIAD_RESONANCE => Ok(crate::domain::ConfluenceResonance::Myriad),
         THOUSAND_RESONANCE => Ok(crate::domain::ConfluenceResonance::Thousand),
-        _ => {
-            return Err(GameError::RuleImplementation(
-                crate::domain::RuleImplementationError::EffectNotImplemented(effect_id.to_string()),
-            ));
-        }
+        _ => Err(GameError::RuleImplementation(
+            crate::domain::RuleImplementationError::EffectNotImplemented(effect_id.to_string()),
+        )),
     }
 }
 

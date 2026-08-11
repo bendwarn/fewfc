@@ -2577,9 +2577,11 @@ impl WebPendingChoice {
                         formations,
                         can_decline,
                     } => WebChoice::Formation {
-                        formation_groups: split_earth
-                            .then(|| web_formation_choice_groups(&formations, enabled_rule_modules))
-                            .unwrap_or_default(),
+                        formation_groups: if split_earth {
+                            web_formation_choice_groups(&formations, enabled_rule_modules)
+                        } else {
+                            Default::default()
+                        },
                         formations,
                         can_decline,
                     },

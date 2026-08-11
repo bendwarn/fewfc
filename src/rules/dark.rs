@@ -626,54 +626,37 @@ pub(crate) fn post_attack_events(
 
 pub(crate) fn append_shared_fate_events(
     state: &GameState,
-    performer: &PlayerId,
+    _performer: &PlayerId,
     formation_id: &str,
     events: &mut Vec<GameEvent>,
 ) -> GameResult<()> {
     if formation_id == "void-spirit-shattering" {
         return Ok(());
     }
-    let mut affected = std::collections::HashSet::new();
+    let mut affected_teams = std::collections::HashSet::new();
     for event in events.iter() {
         match event {
             GameEvent::AttackResolved {
-                target,
-                hp_change,
-                elemental_context_update,
+                elemental_context_update: Some(effects),
                 ..
             } => {
-                if hp_change.effective_delta < 0 {
-                    affected.insert(target.clone());
-                }
-                if let Some(effects) = elemental_context_update {
-                    for change in effects
-                        .hp_changes
-                        .iter()
-                        .filter(|change| change.effective_delta < 0)
-                    {
-                        affected.extend(affected_players_for_hp_change(
-                            state,
-                            performer,
-                            formation_id,
-                            &change.team,
-                        )?);
-                    }
+                for change in effects
+                    .hp_changes
+                    .iter()
+                    .filter(|change| change.effective_delta < 0)
+                {
+                    affected_teams.insert(change.team.clone());
                 }
             }
             GameEvent::HpChanged { change } if change.effective_delta < 0 => {
-                affected.extend(affected_players_for_hp_change(
-                    state,
-                    performer,
-                    formation_id,
-                    &change.team,
-                )?);
+                affected_teams.insert(change.team.clone());
             }
             GameEvent::EnvironmentCleared { hp_changes, .. } => {
                 for change in hp_changes
                     .iter()
                     .filter(|change| change.effective_delta < 0)
                 {
-                    affected.extend(players_for_team(state, &change.team));
+                    affected_teams.insert(change.team.clone());
                 }
             }
             GameEvent::StarBroken {
@@ -681,20 +664,25 @@ pub(crate) fn append_shared_fate_events(
                 hp_change: Some(change),
                 ..
             } if change.effective_delta < 0 => {
-                affected.extend(players_for_team(state, team));
+                affected_teams.insert(team.clone());
             }
             GameEvent::VoidReversionResolved { hp_change, .. } if hp_change.effective_delta < 0 => {
-                affected.insert(performer.clone());
+                affected_teams.insert(hp_change.team.clone());
             }
             _ => {}
         }
     }
-    let death_owners = state
+    let mut death_owners = Vec::new();
+    for owned in state
         .spirits
         .iter()
-        .filter(|owned| owned.spirit == SpiritKind::Death && affected.contains(&owned.player))
-        .map(|owned| owned.player.clone())
-        .collect::<Vec<_>>();
+        .filter(|owned| owned.spirit == SpiritKind::Death)
+    {
+        let owner_team = TurnOrderTargets::new(state).team_of(&owned.player)?;
+        if affected_teams.contains(&owner_team) {
+            death_owners.push(owned.player.clone());
+        }
+    }
     if death_owners.is_empty() {
         return Ok(());
     }
@@ -778,63 +766,6 @@ pub(crate) fn append_mischief_events(
         events.push(event);
     }
     Ok(())
-}
-
-fn affected_players_for_hp_change(
-    state: &GameState,
-    performer: &PlayerId,
-    formation_id: &str,
-    changed_team: &crate::domain::TeamId,
-) -> GameResult<Vec<PlayerId>> {
-    let direct_target = if matches!(
-        formation_id,
-        DARK_RADIANCE
-            | DARK_CHAOS
-            | DARK_CYCLE
-            | crate::rules::jianghu::THOUSAND_POISON_HAND
-            | crate::rules::jianghu::KING_YAMA_DECREE
-            | "holy-wind"
-    ) {
-        Some(TurnOrderTargets::new(state).player_target(performer, RulePlayerTarget::NextPlayer)?)
-    } else if matches!(
-        formation_id,
-        AFTERIMAGE_SLASH
-            | BERSERK_AFTERIMAGE_SLASH
-            | crate::rules::jianghu::THOUSAND_BLADES_FLYING_FEATHER
-            | crate::rules::jianghu::FLOWING_SHADOW_CLOUD_BREAKING
-            | crate::rules::jianghu::FAN_BEYOND_HEAVEN
-            | crate::rules::confluence::BLAZE_RESONANCE
-            | crate::rules::confluence::THOUSAND_RESONANCE
-            | crate::rules::confluence::MYRIAD_RESONANCE
-            | "shadow-assault"
-            | "instant-shadow-death"
-    ) {
-        Some(
-            TurnOrderTargets::new(state)
-                .player_target(performer, RulePlayerTarget::PreviousPlayer)?,
-        )
-    } else {
-        None
-    };
-    Ok(direct_target
-        .filter(|target| {
-            state
-                .players
-                .iter()
-                .find(|entry| &entry.id == target)
-                .is_some_and(|entry| &entry.team == changed_team)
-        })
-        .map(|target| vec![target])
-        .unwrap_or_else(|| players_for_team(state, changed_team)))
-}
-
-fn players_for_team(state: &GameState, team: &crate::domain::TeamId) -> Vec<PlayerId> {
-    state
-        .players
-        .iter()
-        .filter(|entry| &entry.team == team)
-        .map(|entry| entry.id.clone())
-        .collect()
 }
 
 pub(crate) fn playable_profession_abilities(

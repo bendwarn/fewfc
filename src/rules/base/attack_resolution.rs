@@ -93,6 +93,10 @@ pub(crate) fn absorb_simultaneous_events(events: &mut Vec<GameEvent>) {
     events.extend(retained);
 }
 
+// Attack resolution uses GameEvent as a local control-flow signal so callers can retain an
+// event that cannot be represented in the atomic attack payload.  Boxing it would obscure
+// that intentionally event-shaped boundary without improving the canonical wire format.
+#[allow(clippy::result_large_err)]
 fn append_simultaneous_effect(
     effects: &mut AttackResolutionEffects,
     event: GameEvent,

@@ -1,8 +1,8 @@
 use crate::domain::{
     BaseRandomnessContinuation, ConfluenceRandomnessContinuation, GameError, GameEvent, GameResult,
     GameState, HeroRandomnessContinuation, PouchRandomnessContinuation, RandomnessContinuation,
-    RandomnessDeck, RandomnessOperation, TribulationRandomnessContinuation,
-    TrustedRandomnessAnswer, ValidationError,
+    RandomnessDeck, RandomnessOperation, SpiritRandomnessContinuation,
+    TribulationRandomnessContinuation, TrustedRandomnessAnswer, ValidationError,
 };
 
 pub(crate) fn trusted_random_hand_count_for_formation(formation_id: &str) -> Option<usize> {
@@ -97,6 +97,9 @@ fn after_randomness_events(
 ) -> GameResult<Vec<GameEvent>> {
     match continuation {
         RandomnessContinuation::Base(BaseRandomnessContinuation::TurnDraw) => Ok(Vec::new()),
+        RandomnessContinuation::Spirit(SpiritRandomnessContinuation::DeathOmen { player }) => {
+            crate::rules::spirit::after_death_omen_randomness_events(state, player)
+        }
         RandomnessContinuation::Echo(continuation) => {
             crate::rules::echo::after_randomness_events(state, continuation)
         }

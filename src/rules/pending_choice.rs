@@ -170,13 +170,12 @@ fn validate_request(request: &ChoiceRequest) -> GameResult<()> {
         maximum,
         can_decline,
     } = &request.kind
+        && (minimum > maximum
+            || (!can_decline && (*maximum > cards.len() || *minimum > cards.len())))
     {
-        if minimum > maximum || (!can_decline && (*maximum > cards.len() || *minimum > cards.len()))
-        {
-            return Err(GameError::EngineInvariant(
-                crate::domain::EngineInvariantError::InvalidPendingChoice,
-            ));
-        }
+        return Err(GameError::EngineInvariant(
+            crate::domain::EngineInvariantError::InvalidPendingChoice,
+        ));
     }
     Ok(())
 }

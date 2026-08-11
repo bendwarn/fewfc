@@ -1,8 +1,9 @@
 use crate::domain::{
-    CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Element, GameError, GameEvent, GameResult,
-    GameState, HpChangeDelta, PlayerId, PlayerSpirit, SpiritBreakReason, SpiritKind,
-    SpiritPowerDelta, SpiritSkill, StatusDuration, StatusEffect, StatusOwner, TeamBloomResolution,
-    ValidationError,
+    CardInstanceId, CardMoveDelta, CardOrigin, CardZone, DeckPlacement, Element, GameError,
+    GameEvent, GameResult, GameState, HpChangeDelta, PendingRandomness, PlayerId, PlayerSpirit,
+    RandomnessContinuation, RandomnessDeck, RandomnessOperation, SpiritBreakReason, SpiritKind,
+    SpiritPowerDelta, SpiritRandomnessContinuation, SpiritSkill, StatusDuration, StatusEffect,
+    StatusOwner, TeamBloomResolution, ValidationError,
 };
 
 use super::{
@@ -363,6 +364,31 @@ pub(crate) fn use_skill(
     }
     validate_input(state, player, skill, selected_card, declared_level)?;
 
+    if crate::rules::pouch::spirit_is_suppressed(state, player) {
+        return Ok(vec![GameEvent::SpiritSkillUsed {
+            player: player.clone(),
+            spirit: owned.spirit,
+            skill,
+            old_power: owned.power,
+            new_power: owned.power - definition.cost,
+            selected_card,
+            declared_level,
+        }]);
+    }
+    let effect_events = skill_effect_events(
+        state,
+        player,
+        skill,
+        selected_card,
+        declared_level,
+        trusted_random_cards,
+    )?;
+    if effect_events
+        .iter()
+        .any(|event| matches!(event, GameEvent::RandomnessRequested { .. }))
+    {
+        return Ok(effect_events);
+    }
     let new_power = owned.power - definition.cost;
     let mut events = vec![GameEvent::SpiritSkillUsed {
         player: player.clone(),
@@ -373,17 +399,7 @@ pub(crate) fn use_skill(
         selected_card,
         declared_level,
     }];
-    if crate::rules::pouch::spirit_is_suppressed(state, player) {
-        return Ok(events);
-    }
-    events.extend(skill_effect_events(
-        state,
-        player,
-        skill,
-        selected_card,
-        declared_level,
-        trusted_random_cards,
-    )?);
+    events.extend(effect_events);
     crate::rules::dark::append_mischief_events(state, &mut events)?;
     let mut projected = state.clone();
     for event in &events {
@@ -670,15 +686,39 @@ fn skill_effect_events(
         }
         SpiritSkill::DeathOmen => {
             let target = next_player(state, player)?;
-            let cards = state
-                .deck_for(&target)
-                .ok_or_else(|| {
-                    GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
-                })?
-                .iter()
-                .take(4)
-                .copied()
-                .collect::<Vec<_>>();
+            let deck = state.deck_for(&target).ok_or_else(|| {
+                GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
+            })?;
+            let discard = state.discard_for(&target).ok_or_else(|| {
+                GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
+            })?;
+            if deck.len() < 4 && !discard.is_empty() {
+                let pile = if state.uses_personal_decks() {
+                    RandomnessDeck::Player(target.clone())
+                } else {
+                    RandomnessDeck::Shared
+                };
+                return Ok(vec![GameEvent::RandomnessRequested {
+                    request: PendingRandomness {
+                        request_id: format!(
+                            "spirit:death-omen:discard:{}:{}",
+                            state.turn_number,
+                            player.as_str()
+                        ),
+                        operation: RandomnessOperation::DiscardShuffle {
+                            pile,
+                            placement: DeckPlacement::Bottom,
+                        },
+                        continuation: RandomnessContinuation::Spirit(
+                            SpiritRandomnessContinuation::DeathOmen {
+                                player: player.clone(),
+                            },
+                        ),
+                        current_order: discard.to_vec(),
+                    },
+                }]);
+            }
+            let cards = deck.iter().take(4).copied().collect::<Vec<_>>();
             let highest = cards
                 .iter()
                 .filter_map(|card| state.effective_card_facts(&target, *card))
@@ -726,6 +766,15 @@ fn skill_effect_events(
             Ok(events)
         }
     }
+}
+
+pub(crate) fn after_death_omen_randomness_events(
+    state: &GameState,
+    player: &PlayerId,
+) -> GameResult<Vec<GameEvent>> {
+    let mut events = use_skill(state, player, SpiritSkill::DeathOmen, None, None, None)?;
+    append_automatic_blooms(state, &mut events)?;
+    Ok(events)
 }
 
 fn hp_event(state: &GameState, team: &crate::domain::TeamId, delta: i32) -> GameResult<GameEvent> {

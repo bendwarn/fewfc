@@ -1,11 +1,13 @@
-use fewfc::application::{apply_event, handle_command};
+use fewfc::application::{apply_event, handle_command, replay, resolve_trusted_randomness};
 use fewfc::domain::{
-    CardInstanceId, Command, DARK_GLIMMER_MODULE_ID, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID,
-    GameError, GameEvent, GameState, HERO_SCHOOLS_MODULE_ID, Phase, Player, PlayerId,
-    PlayerProfession, PlayerSpirit, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID,
-    SpiritKind, SpiritSkill, TeamId, ValidationError,
+    CardInstanceId, CardMoveDelta, CardZone, Command, DARK_GLIMMER_MODULE_ID, Element,
+    FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError, GameEvent, GameSetup, GameState,
+    HERO_SCHOOLS_MODULE_ID, Phase, Player, PlayerId, PlayerProfession, PlayerSpirit, ProfessionId,
+    RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind, SpiritPowerChangeReason,
+    SpiritSkill, TeamId, TrustedRandomnessAnswer, ValidationError,
 };
-use fewfc::rules::OfficialRules;
+use fewfc::public_view::{PublicGameEvent, Viewer, event_for};
+use fewfc::rules::{OfficialRules, PlayableAction};
 
 #[test]
 fn dark_glimmer_is_default_on_and_requires_spirit_transitively() {
@@ -37,7 +39,7 @@ fn dark_glimmer_is_default_on_and_requires_spirit_transitively() {
     );
 }
 
-fn state(player_count: usize) -> GameState {
+fn game_setup(player_count: usize) -> GameSetup {
     let players = (1..=player_count)
         .map(|index| Player {
             id: PlayerId::new(format!("p{index}")),
@@ -45,7 +47,7 @@ fn state(player_count: usize) -> GameState {
         })
         .collect::<Vec<_>>();
     let turn_order = players.iter().map(|player| player.id.clone()).collect();
-    let setup = OfficialRules::new()
+    OfficialRules::new()
         .configure_game(
             players,
             turn_order,
@@ -57,7 +59,11 @@ fn state(player_count: usize) -> GameState {
                 RuleModuleId::new(DARK_GLIMMER_MODULE_ID),
             ],
         )
-        .unwrap();
+        .unwrap()
+}
+
+fn state(player_count: usize) -> GameState {
+    let setup = game_setup(player_count);
     let mut state = GameState::from_setup(&setup);
     state.phase = Phase::ActiveEffects;
     state
@@ -141,6 +147,65 @@ fn dark_walker_transforms_before_its_dark_formation_resolves() {
         game.profession_for(&PlayerId::new("p1")),
         Some(&ProfessionId::new("dark:dark-spirit-envoy"))
     );
+}
+
+#[test]
+fn dark_walking_professions_offer_no_ordinary_profession_changes() {
+    let mut game = state(2);
+    let selected = cards(&game, &[(Element::Metal, 1)]);
+    set_hand(&mut game, "p1", selected.clone());
+
+    for profession in ["dark:dark-walker", "dark:dark-spirit-envoy"] {
+        set_profession(&mut game, "p1", profession);
+        let actions = OfficialRules::new()
+            .playable_actions(&game, &PlayerId::new("p1"), &selected)
+            .unwrap();
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, PlayableAction::ChangeProfession(_))),
+            "{profession} must not offer a normal Profession Change",
+        );
+    }
+}
+
+#[test]
+fn dark_walking_professions_reject_direct_normal_profession_change_commands() {
+    let mut game = state(2);
+    set_profession(&mut game, "p1", "dark:dark-walker");
+    let selected = cards(&game, &[(Element::Metal, 1)]);
+    set_hand(&mut game, "p1", selected.clone());
+
+    assert!(matches!(
+        handle_command(
+            &game,
+            Command::ChangeProfession {
+                player: PlayerId::new("p1"),
+                profession: ProfessionId::new("first-wanderer"),
+                cards: selected,
+            },
+        ),
+        Err(GameError::Validation(
+            ValidationError::ProfessionChangePatternMismatch { .. }
+        ))
+    ));
+}
+
+#[test]
+fn other_professions_keep_their_legal_cross_system_profession_changes() {
+    let mut game = state(2);
+    set_profession(&mut game, "p1", "windwalker");
+    let selected = cards(&game, &[(Element::Metal, 1), (Element::Metal, 5)]);
+    set_hand(&mut game, "p1", selected.clone());
+
+    let actions = OfficialRules::new()
+        .playable_actions(&game, &PlayerId::new("p1"), &selected)
+        .unwrap();
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        PlayableAction::ChangeProfession(candidate)
+            if candidate.profession_id == ProfessionId::new("dark:shadow-warrior")
+    )));
 }
 
 #[test]
@@ -280,7 +345,7 @@ fn dark_chaos_accepts_only_a_trusted_selection_from_the_target_hand() {
 }
 
 #[test]
-fn shared_fate_uses_direct_affected_player_not_their_teammate() {
+fn shared_fate_triggers_when_a_formation_effect_deducts_the_death_owners_team_hp() {
     let mut game = state(4);
     game.current_turn_index = 3;
     set_profession(&mut game, "p4", "dark:dark-spirit-envoy");
@@ -314,8 +379,263 @@ fn shared_fate_uses_direct_affected_player_not_their_teammate() {
             .iter()
             .filter(|event| matches!(event, GameEvent::HpChanged { .. }))
             .count(),
-        1
+        2
     );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::HpChanged { change } if change.delta == -10
+    )));
+}
+
+#[test]
+fn shared_fate_does_not_trigger_from_attack_damage() {
+    let mut game = state(2);
+    game.spirits.push(PlayerSpirit {
+        player: PlayerId::new("p2"),
+        spirit: SpiritKind::Death,
+        power: 4,
+    });
+    let used = cards(&game, &[(Element::Metal, 1)]);
+    set_hand(&mut game, "p1", used.clone());
+
+    let events = handle_command(
+        &game,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: used,
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        events.iter().all(|event| !matches!(
+            event,
+            GameEvent::AttackResolved {
+                elemental_context_update: Some(effects),
+                ..
+            } if !effects.hp_changes.is_empty()
+        )),
+        "ordinary attack damage must not trigger Shared Fate",
+    );
+}
+
+#[test]
+fn death_omen_shuffles_discard_before_consuming_the_skill_then_discards_four_cards() {
+    let mut game = state(2);
+    game.spirits.push(PlayerSpirit {
+        player: PlayerId::new("p1"),
+        spirit: SpiritKind::Death,
+        power: 4,
+    });
+    let top = cards(&game, &[(Element::Metal, 1)])[0];
+    let discard = cards(
+        &game,
+        &[(Element::Wood, 2), (Element::Fire, 4), (Element::Water, 3)],
+    );
+    game.deck = vec![top];
+    game.discard = discard.clone();
+
+    let requested = handle_command(
+        &game,
+        Command::UseSpiritSkill {
+            player: PlayerId::new("p1"),
+            skill: SpiritSkill::DeathOmen,
+            selected_card: None,
+            declared_level: None,
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        requested.as_slice(),
+        [GameEvent::RandomnessRequested { request }]
+            if request.operation.is_discard_shuffle() && request.current_order == discard
+    ));
+    assert!(matches!(
+        event_for(requested.first().unwrap(), Viewer::Observer),
+        PublicGameEvent::RandomnessRequested {
+            card_count: 3,
+            operation: fewfc::public_view::PublicRandomnessOperation::DiscardShuffle,
+            ..
+        }
+    ));
+    assert!(
+        !requested.iter().any(|event| matches!(
+            event,
+            GameEvent::SpiritSkillUsed { .. } | GameEvent::SpiritPowerChanged { .. }
+        )),
+        "the pending shuffle must not consume Death Omen or Spirit Power",
+    );
+
+    for event in &requested {
+        apply_event(&mut game, event);
+    }
+    assert_eq!(game.spirit_for(&PlayerId::new("p1")).unwrap().power, 4);
+    assert!(game.spirit_skill_use_turns.is_empty());
+    assert_eq!(game.deck, vec![top]);
+    assert_eq!(game.discard, discard);
+
+    let request = game.pending_randomness.clone().unwrap();
+    let completed = resolve_trusted_randomness(
+        &game,
+        &TrustedRandomnessAnswer {
+            request_id: request.request_id,
+            shuffled_order: request.current_order.into_iter().rev().collect(),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        completed.first(),
+        Some(GameEvent::RandomnessResolved { .. })
+    ));
+    assert!(completed.iter().any(|event| matches!(
+        event,
+        GameEvent::CardsMoved { card_moves } if card_moves.len() == 4
+    )));
+    assert!(completed.iter().any(|event| matches!(
+        event,
+        GameEvent::HpChanged { change } if change.delta == -16
+    )));
+
+    for event in &completed {
+        apply_event(&mut game, event);
+    }
+    assert_eq!(game.spirit_for(&PlayerId::new("p1")).unwrap().power, 1);
+    assert!(game.deck.is_empty());
+    assert_eq!(game.discard.len(), 4);
+}
+
+#[test]
+fn death_omen_discard_shuffle_replays_from_the_canonical_events() {
+    let setup = game_setup(2);
+    let blank = GameState::from_setup(&setup);
+    let top = cards(&blank, &[(Element::Metal, 1)])[0];
+    let discard = cards(
+        &blank,
+        &[(Element::Wood, 2), (Element::Fire, 4), (Element::Water, 3)],
+    );
+    let mut events = vec![
+        GameEvent::DeckPrepared {
+            deck_order: std::iter::once(top)
+                .chain(discard.iter().copied())
+                .collect(),
+        },
+        GameEvent::CardsMoved {
+            card_moves: discard
+                .iter()
+                .map(|card| CardMoveDelta {
+                    card: *card,
+                    from: CardZone::DeckTop,
+                    to: CardZone::Discard,
+                })
+                .collect(),
+        },
+        GameEvent::SpiritSummoned {
+            player: PlayerId::new("p1"),
+            previous: None,
+            spirit: SpiritKind::Death,
+        },
+        GameEvent::SpiritPowerChanged {
+            player: PlayerId::new("p1"),
+            spirit: SpiritKind::Death,
+            old_power: 2,
+            delta: 2,
+            new_power: 4,
+            reason: SpiritPowerChangeReason::SkillEffect,
+        },
+        GameEvent::TurnStarted {
+            player: PlayerId::new("p1"),
+            turn_number: 1,
+        },
+    ];
+    let mut game = replay(&setup, &events).unwrap();
+
+    let requested = handle_command(
+        &game,
+        Command::UseSpiritSkill {
+            player: PlayerId::new("p1"),
+            skill: SpiritSkill::DeathOmen,
+            selected_card: None,
+            declared_level: None,
+        },
+    )
+    .unwrap();
+    for event in &requested {
+        apply_event(&mut game, event);
+    }
+    events.extend(requested);
+
+    let request = game.pending_randomness.clone().unwrap();
+    let completed = resolve_trusted_randomness(
+        &game,
+        &TrustedRandomnessAnswer {
+            request_id: request.request_id,
+            shuffled_order: request.current_order.into_iter().rev().collect(),
+        },
+    )
+    .unwrap();
+    for event in &completed {
+        apply_event(&mut game, event);
+    }
+    events.extend(completed);
+
+    assert_eq!(replay(&setup, &events).unwrap(), game);
+}
+
+#[test]
+fn death_omen_with_four_deck_cards_keeps_the_existing_immediate_resolution() {
+    let mut game = state(2);
+    game.spirits.push(PlayerSpirit {
+        player: PlayerId::new("p1"),
+        spirit: SpiritKind::Death,
+        power: 4,
+    });
+    let deck = cards(
+        &game,
+        &[
+            (Element::Metal, 1),
+            (Element::Wood, 2),
+            (Element::Fire, 4),
+            (Element::Water, 3),
+        ],
+    );
+    game.deck = deck.clone();
+
+    let events = handle_command(
+        &game,
+        Command::UseSpiritSkill {
+            player: PlayerId::new("p1"),
+            skill: SpiritSkill::DeathOmen,
+            selected_card: None,
+            declared_level: None,
+        },
+    )
+    .unwrap();
+
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, GameEvent::RandomnessRequested { .. }))
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::CardsMoved { card_moves }
+            if card_moves.iter().map(|move_| move_.card).collect::<Vec<_>>() == deck
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::HpChanged { change } if change.delta == -16
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::SpiritPowerChanged {
+            old_power: 0,
+            new_power: 1,
+            ..
+        }
+    )));
 }
 
 #[test]

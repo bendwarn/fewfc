@@ -115,8 +115,6 @@ pub(crate) fn append_terminal_game_end(state: &GameState, events: &mut Vec<GameE
             )
         });
         events.push(GameEvent::GameEnded { conclusion });
-    } else if projected.pending_choice.is_some() || projected.pending_randomness.is_some() {
-        return;
     }
 }
 
@@ -777,14 +775,14 @@ fn decide_command_with_base_ruleset(
             },
         ));
     }
-    if let Some(choice) = &state.pending_choice {
-        if !matches!(command, Command::AnswerChoice { .. }) {
-            return Err(GameError::Validation(
-                ValidationError::PendingChoiceInProgress {
-                    player: choice.player.clone(),
-                },
-            ));
-        }
+    if let Some(choice) = &state.pending_choice
+        && !matches!(command, Command::AnswerChoice { .. })
+    {
+        return Err(GameError::Validation(
+            ValidationError::PendingChoiceInProgress {
+                player: choice.player.clone(),
+            },
+        ));
     }
 
     match command {

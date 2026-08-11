@@ -1952,23 +1952,33 @@ that fixed this distinction: command 39 consumes player-2's Tailwind, and
 command 72 performs Rusted Iron Withered Forest against player-2's Personal
 Deck. Its trusted shuffle is a Deck Shuffle, so Tailwind must remain exhausted.
 
-Death Spirit's Shared Fate (`同命`) reads the resolved Formation's Affected
-Player Set, not the Team HP delta by itself. A direct Player target contributes
-only that Player, so a Death Spirit does not trigger merely because its owner's
-teammate was hit by Shadow Assault. Team targets such as 我方, 對方, and 雙方
-expand to every Player on the targeted Team; Star Breaking and a successful
-Environment Clearing therefore include each Player on every Team whose HP is
-deducted. Shared Fate triggers once for each included Death Spirit owner when
-the Formation actually deducts HP. Under Void Spirit-Shattering, a Death Spirit
-that remains owned after losing two Spirit Power triggers Shared Fate normally;
-a Death Spirit reduced to zero and broken by that Technique does not. A Spirit
-newly summoned by 魔靈復甦 did not exist for the triggering HP deduction and
-does not trigger retroactively.
+Death Spirit's Shared Fate (`同命`) is **not** derived from the resolved
+Formation's Affected Player Set. The confirmed rule is: when a Formation effect
+actually deducts the Death Spirit owner's Team HP, that owner's next Player's
+Team loses 10 HP. The effective Team HP delta is therefore the relevant fact in
+this Team-HP model. An `AttackResolved` event's base Attack damage does not
+qualify. A Formation's separate HP-deduction effect does qualify after immunity
+or prevention has made its effective delta known, including when atomic event
+serialization places that separate effect beside its Attack result. Shared Fate
+is appended after that qualifying deduction, groups multiple
+owners that share a target Team into its single resulting HP change, and cannot
+recursively trigger another Shared Fate.
 
-The Affected Player Set is recorded or deterministically derivable from the
-resolved semantic event even when one Team HP delta represents the result.
-Shared Fate itself is a Spirit Skill consequence rather than a Formation, so it
-cannot recursively trigger another Shared Fate.
+Under Void Spirit-Shattering, a Death Spirit that remains owned after losing two
+Spirit Power triggers Shared Fate only when that Technique's Formation effect
+deducts its owner's Team HP. A Death Spirit reduced to zero and broken by that
+Technique does not trigger, and a Spirit newly summoned by 魔靈復甦 did not exist
+for the triggering deduction and does not trigger retroactively.
+
+Death Omen (`死兆`) uses the existing trusted Discard Shuffle boundary when the
+next Player's applicable Deck has one to three Cards and its Discard Pile is
+non-empty. Its `RandomnessRequested` contains a typed Spirit `deathOmen`
+continuation and is the only initial canonical fact: it does not consume the
+Skill's once-per-turn allowance or Spirit Power, move Cards, change HP, or
+break the Spirit. After `RandomnessResolved` has moved the shuffled complete
+Discard Pile to the bottom of that Deck, the continuation emits the ordinary
+Skill-use and resolution facts. Thus replay, the Online Room canonical record,
+and Public Views observe the same waiting state and recorded shuffled order.
 
 #### Jianghu execution model
 
@@ -2040,6 +2050,12 @@ without changing power; 魔靈復甦 and the two summoning Formations summon a n
 Spirit at the published initial power. Persistent Spirit Skills execute through
 typed hooks and never consume the once-per-Spirit-per-turn activated Skill
 allowance.
+
+暗行 is one shared ordinary-Profession-Change permission predicate. Both
+playable-action generation and command validation use it, so 暗行者 and its
+inheriting 暗靈使 offer and accept no ordinary Profession Change. The automatic
+暗行者 → 暗靈使 transition is a Dark Formation consequence and remains outside
+that ordinary command predicate.
 
 Random hand selection and inspection use the trusted application randomness
 boundary; canonical events record the selected Card Instances and their order,
@@ -2137,10 +2153,10 @@ Tribulation it answers and does not remove an older Gale-Rain Status.
 Earth-Rending Mountain Collapse makes a Player **reveal** their hand when no
 Environment-Element Card exists; it does not let another Player **inspect** that
 hand and therefore does not trigger Evil Spirit's Mischief. Thunder-Fire
-Tribulation's `both Teams` HP deduction expands through the existing Affected
-Player Set rule, so Shared Fate triggers once for each included Death Spirit
-owner only when that Team actually loses HP. A Team protected by Divine
-Calculation has no such HP deduction or Shared Fate trigger.
+Tribulation's `both Teams` HP deduction is a Formation effect: Shared Fate
+triggers for each surviving Death Spirit owner whose Team actually loses HP.
+A Team protected by Divine Calculation has no such HP deduction or Shared Fate
+trigger.
 
 Playable action detail is an optional, contextual player-facing decision
 contract rather than Formation Catalog `rule_text` or a standalone restatement

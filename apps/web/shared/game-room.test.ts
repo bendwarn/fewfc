@@ -4,6 +4,7 @@ import {
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
 } from './game-room'
+import type { TrustedRandomnessRequest } from './game-room'
 import { isDevelopmentScenario } from './development-scenarios'
 
 test('development fixtures expose only the closed named scenario catalog', () => {
@@ -30,6 +31,20 @@ test('trusted randomness actions are not player-submittable', () => {
     choiceId: 7,
     answer: { type: 'decline' },
   })).toBe(true)
+})
+
+test('Death Omen pending randomness keeps the Rust camelCase continuation contract', () => {
+  const request: TrustedRandomnessRequest = {
+    requestId: 'spirit:death-omen:1:p1',
+    operation: { type: 'discardShuffle', pile: 'Shared', placement: 'Bottom' },
+    continuation: { type: 'spirit', kind: { deathOmen: { player: 'p1' } } },
+    currentOrder: [4, 3, 2],
+  }
+
+  expect(request.continuation).toStrictEqual({
+    type: 'spirit',
+    kind: { deathOmen: { player: 'p1' } },
+  })
 })
 
 test('online command transaction fields keep the exact camelCase wire contract', () => {

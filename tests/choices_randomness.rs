@@ -4,7 +4,8 @@ use fewfc::application::{
 use fewfc::domain::{
     CardInstanceId, ChoiceAnswer, ChoiceId, Command, GameError, GameEvent, GameSetup, GameState,
     PassActionReason, PendingChoiceKind, PendingRandomness, PlayerId, PouchRandomnessContinuation,
-    RandomnessContinuation, RandomnessDeck, TrustedRandomnessAnswer, ValidationError,
+    RandomnessContinuation, RandomnessDeck, SpiritRandomnessContinuation, TrustedRandomnessAnswer,
+    ValidationError,
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, event_for, state_for};
 
@@ -296,6 +297,18 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
     assert_eq!(
         serde_json::to_value(PouchRandomnessContinuation::ChainRecycle).unwrap(),
         serde_json::json!("chainRecycle")
+    );
+    assert_eq!(
+        serde_json::to_value(RandomnessContinuation::Spirit(
+            SpiritRandomnessContinuation::DeathOmen {
+                player: PlayerId::new("p1"),
+            },
+        ))
+        .unwrap(),
+        serde_json::json!({
+            "type": "spirit",
+            "kind": { "deathOmen": { "player": "p1" } }
+        })
     );
     assert_eq!(
         serde_json::to_value(PendingRandomness {

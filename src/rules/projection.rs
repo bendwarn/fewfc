@@ -334,13 +334,13 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
         GameEvent::FormationRequirementSet { requirement } => {
             state
                 .formation_requirements
-                .retain(|existing| &existing.player != &requirement.player);
+                .retain(|existing| existing.player != requirement.player);
             state.formation_requirements.push(requirement.clone());
         }
         GameEvent::FormationRequirementFulfilled { player, .. } => {
             state
                 .formation_requirements
-                .retain(|requirement| &requirement.player != player);
+                .retain(|requirement| requirement.player != *player);
         }
         GameEvent::SpiritSummoned { player, spirit, .. } => {
             state.spirit_skill_use_turns.remove(player);

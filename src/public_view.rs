@@ -224,6 +224,9 @@ fn public_randomness_operation(operation: &RandomnessOperation) -> PublicRandomn
     }
 }
 
+// Keep the canonical event payload by value so public projection remains a transparent,
+// allocation-free view of the record.
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(
     tag = "type",

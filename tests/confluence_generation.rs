@@ -795,7 +795,7 @@ fn voluntary_non_action_effect_cannot_consume_the_only_tuning_completion_path() 
 }
 
 #[test]
-fn blaze_resonance_affects_previous_player_not_their_death_spirit_teammate() {
+fn blaze_resonance_triggers_shared_fate_for_a_death_spirit_on_the_losing_team() {
     let mut game = team_state(vec![
         RuleModuleId::new(SPIRIT_MODULE_ID),
         RuleModuleId::new(DARK_GLIMMER_MODULE_ID),
@@ -829,7 +829,7 @@ fn blaze_resonance_affects_previous_player_not_their_death_spirit_teammate() {
         GameEvent::HpChanged { change }
             if change.team == TeamId::new("team:a") && change.effective_delta == -20
     )));
-    assert!(!events.iter().any(|event| matches!(
+    assert!(events.iter().any(|event| matches!(
         event,
         GameEvent::HpChanged { change }
             if change.team == TeamId::new("team:b") && change.delta == -10
