@@ -3275,14 +3275,14 @@ fn event_presentation_with_vocabulary(
         } => (
             "陣法義務完成".to_string(),
             virtual_card.as_ref().map_or_else(
-                || format!("{} 已以 {} 完成陣法義務。", player.as_str(), formation_id),
+                || formation_requirement_fulfillment_summary(player, formation_id, formation_names),
                 |card| {
                     format!(
-                        "{} 以 {} {} 級虛擬牌完成 {}。",
+                        "{} 以 {} {} 級虛擬牌完成「{}」。",
                         player.as_str(),
                         element_short_name(card.element),
                         card.level,
-                        formation_id
+                        formation_name(formation_names, formation_id)
                     )
                 },
             ),
@@ -3680,7 +3680,7 @@ fn game_event_presentation_with_vocabulary(
             ..
         } => (
             "陣法義務完成".to_string(),
-            format!("{} 已以 {} 完成陣法義務。", player.as_str(), formation_id),
+            formation_requirement_fulfillment_summary(player, formation_id, formation_names),
         ),
         GameEvent::SpiritSummoned {
             player,
@@ -4528,6 +4528,18 @@ fn formation_name(formation_names: &HashMap<String, String>, formation_id: &str)
         .get(formation_id)
         .cloned()
         .unwrap_or_else(|| "未知陣法".to_string())
+}
+
+fn formation_requirement_fulfillment_summary(
+    player: &PlayerId,
+    formation_id: &str,
+    formation_names: &HashMap<String, String>,
+) -> String {
+    format!(
+        "{} 已以「{}」完成陣法義務。",
+        player.as_str(),
+        formation_name(formation_names, formation_id)
+    )
 }
 
 fn card_summary(card: &CardInstanceId, labels: &HashMap<CardInstanceId, String>) -> String {
@@ -6412,6 +6424,7 @@ mod tests {
         let formations = HashMap::from([
             ("echo:ringing-metal".to_string(), "商調‧鳴金".to_string()),
             ("echo:plant-earth".to_string(), "變宮‧植土".to_string()),
+            ("taibai-star-strike".to_string(), "太白星擊".to_string()),
         ]);
         let vocabulary = PlayerVocabulary::for_modules(
             &[
@@ -6493,9 +6506,17 @@ mod tests {
             },
             GameEvent::RingingMetalCardRevealed {
                 selection: crate::domain::RingingMetalSelection {
-                    player: alice,
+                    player: alice.clone(),
                     card: CardInstanceId::new(42),
                     deck: crate::domain::RandomnessDeck::Shared,
+                },
+            },
+            GameEvent::FormationRequirementFulfilled {
+                player: alice.clone(),
+                formation_id: "taibai-star-strike".to_string(),
+                composition: crate::domain::FormationComposition {
+                    physical_cards: vec![CardInstanceId::new(42)],
+                    virtual_card: None,
                 },
             },
         ];
@@ -6519,6 +6540,7 @@ mod tests {
             "Death",
             "CardInstanceId",
             " 42",
+            "taibai-star-strike",
         ] {
             assert!(!joined.contains(forbidden), "leaked {forbidden}: {joined}");
         }
@@ -6533,6 +6555,7 @@ mod tests {
         assert!(summaries[8].contains("商調‧鳴金"));
         assert!(summaries[9].contains("變宮‧植土"));
         assert!(summaries[10].contains("火 3"));
+        assert!(summaries[11].contains("太白星擊"));
 
         let public_event = WebPublicGameEvent::from_public(
             1,
@@ -6564,6 +6587,32 @@ mod tests {
         );
         assert!(choice_event.summary.contains("需要作出選擇"));
         assert!(!choice_event.summary.contains("echo:"));
+
+        for (sequence, virtual_card) in [
+            (3, None),
+            (
+                4,
+                Some(crate::domain::VirtualFormationCard {
+                    source_ability_id: "hero:prepared-formation".to_string(),
+                    element: Element::Metal,
+                    level: crate::domain::EffectiveCardLevel::new(1),
+                }),
+            ),
+        ] {
+            let requirement_event = WebPublicGameEvent::from_public(
+                sequence,
+                PublicGameEvent::FormationRequirementFulfilled {
+                    player: PlayerId::new("alice"),
+                    formation_id: "taibai-star-strike".to_string(),
+                    virtual_card,
+                },
+                &labels,
+                &formations,
+                &vocabulary,
+            );
+            assert!(requirement_event.summary.contains("太白星擊"));
+            assert!(!requirement_event.summary.contains("taibai-star-strike"));
+        }
     }
 
     #[test]
