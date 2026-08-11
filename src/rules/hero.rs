@@ -1917,7 +1917,9 @@ fn player_facing_formation_effect(id: &str) -> FormationEffect {
     match id {
         "reincarnation" => FormationEffect::RecoverHp,
         "purple-light-shield" => FormationEffect::CreateShield,
-        "shadow-assault" | "instant-shadow-death" | "holy-wind" => FormationEffect::ApplyStatus,
+        "shadow-assault" => FormationEffect::DamagePreviousTeamByLevelSumTimes { multiplier: 3 },
+        "instant-shadow-death" => FormationEffect::HalvePreviousTeamHp,
+        "holy-wind" => FormationEffect::DamageNextTeamAndTakeHighestLevelHandCard { damage: 20 },
         "void-reversion" => FormationEffect::BreakProfession,
         _ => panic!("Hero formation `{id}` is missing a player-facing effect fact"),
     }

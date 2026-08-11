@@ -148,8 +148,11 @@ fn player_facing_formation_effect(id: &str) -> FormationEffect {
         STREAM_RESONANCE | WIND_DANCE | CLEAR_WIND_TEN_THOUSAND_MILES => FormationEffect::DrawCards,
         BLAZE_RESONANCE => FormationEffect::ReturnTeamHp,
         EARTH_RESONANCE => FormationEffect::CreateShield,
-        THOUSAND_RESONANCE | MYRIAD_RESONANCE => FormationEffect::ApplyStatus,
-        IMPRISONING_ARRAY => FormationEffect::ApplyStatus,
+        THOUSAND_RESONANCE => FormationEffect::PerformResidualAndSelectedResonance,
+        MYRIAD_RESONANCE => FormationEffect::PerformAllFiveResonanceEffects,
+        IMPRISONING_ARRAY => {
+            FormationEffect::PreventOtherPlayersFromActingOrDrawing { duration_turns: 1 }
+        }
         ENDLESS_ARRAY => FormationEffect::LimitedUseRecovery,
         VOID_BARRIER => FormationEffect::ReduceShield,
         VOID_RETURN_TO_NOTHING => FormationEffect::ReturnTeamHp,

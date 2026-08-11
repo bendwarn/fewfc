@@ -309,6 +309,9 @@ pub enum PublicGameEvent {
     ChoiceRequested {
         choice: PublicPendingChoice,
     },
+    ChoiceMade {
+        player: PlayerId,
+    },
     RandomnessRequested {
         request_id: String,
         deck: RandomnessDeck,
@@ -718,6 +721,9 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         GameEvent::ChoiceRequested { choice } => PublicGameEvent::ChoiceRequested {
             choice: public_pending_choice(choice, &policy),
         },
+        GameEvent::ChoiceMade { player, .. } => PublicGameEvent::ChoiceMade {
+            player: player.clone(),
+        },
         GameEvent::RandomnessRequested { request } => PublicGameEvent::RandomnessRequested {
             request_id: request.request_id.clone(),
             deck: request.operation.destination_deck().clone(),
@@ -854,7 +860,6 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::LimitedUseChanged { .. }
         | GameEvent::ConfluenceCardObligationSet { .. }
         | GameEvent::ConfluenceCardObligationCleared { .. }
-        | GameEvent::ChoiceMade { .. }
         | GameEvent::EchoCostPaid { .. }
         | GameEvent::EchoDeclined { .. }
         | GameEvent::EchoScheduled { .. }

@@ -8,7 +8,7 @@ use fewfc::domain::{
     SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind, SpiritSkill, TargetDecl, TeamId,
     TrustedRandomnessAnswer,
 };
-use fewfc::public_view::{Viewer, state_for};
+use fewfc::public_view::{PublicGameEvent, Viewer, event_for, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
 
 fn state(personal_deck: bool) -> GameState {
@@ -432,6 +432,26 @@ fn clear_wind_ten_thousand_miles_allows_keeping_no_cards() {
 
     assert_eq!(game.hand(&player).unwrap(), &[remaining_card]);
     assert!(drawn_cards.iter().all(|card| game.discard.contains(card)));
+}
+
+#[test]
+fn clear_wind_ten_thousand_miles_kept_cards_are_hidden_from_other_players() {
+    let (mut game, player, used_cards, _, drawn_cards) = clear_wind_ten_thousand_miles_game(false);
+    request_clear_wind_ten_thousand_miles(&mut game, &player, used_cards);
+    let kept_cards = drawn_cards[..4].to_vec();
+
+    let events = answer_choice(&game, player, ChoiceAnswer::Cards { cards: kept_cards }).unwrap();
+
+    let answer = events
+        .iter()
+        .find(|event| matches!(event, GameEvent::ChoiceMade { .. }))
+        .unwrap();
+    assert_eq!(
+        event_for(answer, Viewer::Player(PlayerId::new("p1"))),
+        PublicGameEvent::ChoiceMade {
+            player: PlayerId::new("p2")
+        }
+    );
 }
 
 #[test]

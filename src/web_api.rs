@@ -3173,6 +3173,7 @@ fn event_type(event: &PublicGameEvent) -> String {
             "CardsDrawnForProfessionChoice".to_string()
         }
         PublicGameEvent::ChoiceRequested { .. } => "ChoiceRequested".to_string(),
+        PublicGameEvent::ChoiceMade { .. } => "ChoiceMade".to_string(),
         PublicGameEvent::RandomnessRequested { .. } => "RandomnessRequested".to_string(),
         PublicGameEvent::RandomnessResolved { .. } => "RandomnessResolved".to_string(),
         PublicGameEvent::HandInspected { .. } => "HandInspected".to_string(),
@@ -3379,6 +3380,10 @@ fn event_presentation_with_vocabulary(
         PublicGameEvent::ChoiceRequested { choice } => (
             "效果選擇".to_string(),
             format!("{} 需要作出選擇。", public_choice_player(choice).as_str(),),
+        ),
+        PublicGameEvent::ChoiceMade { player } => (
+            "效果選擇".to_string(),
+            format!("{} 已完成效果選擇。", player.as_str()),
         ),
         PublicGameEvent::RandomnessRequested {
             card_count,
@@ -4614,7 +4619,7 @@ mod tests {
         PlayerFacingActionDetail::composed(vec![crate::rules::RuleConsequence::ImmediateEffect {
             certainty: crate::rules::ConsequenceCertainty::Guaranteed,
             effect: crate::rules::ImmediateEffect::ResolveFormationEffect {
-                effect: crate::rules::FormationEffect::ApplyStatus,
+                effect: crate::rules::FormationEffect::PoisonNextPlayer { duration_turns: 1 },
             },
         }])
     }

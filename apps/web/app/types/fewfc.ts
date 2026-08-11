@@ -445,7 +445,42 @@ export type EffectFormula =
   | { type: 'levelSumTimes'; multiplier: number }
   | { type: 'targetHandCountTimes'; multiplier: number }
   | { type: 'elementProductTimes'; element: Element; multiplier: number }
-export type FormationEffect = 'coverCounter' | 'copyPreviousTurnFormation' | 'recoverHp' | 'reduceShield' | 'inspectHand' | 'createShield' | 'returnTeamHp' | 'drawCards' | 'swapTeamHp' | 'summonSpirit' | 'clearEnvironment' | 'applyStatus' | 'changeEnvironment' | 'breakProfession' | 'limitedUseRecovery' | 'resolveMelodyMainEffect' | 'beginChainChoice' | 'shatterSpirits' | 'breakStars' | 'damageEachTeamBy15' | 'applyGaleRain' | 'reduceEveryShieldBy20' | 'attackIncreasesTo80IfShieldReduced' | 'chooseEnvironmentAndRequireMatchingCardOrRevealHand' | 'revealTopEightDiscardLevelThreeOrHigherThenShuffle' | 'transferEnvironmentToUsedElement'
+export type FormationEffect =
+  | 'coverCounter'
+  | 'copyPreviousTurnFormation'
+  | 'recoverHp'
+  | 'reduceShield'
+  | 'inspectHand'
+  | 'createShield'
+  | 'returnTeamHp'
+  | 'drawCards'
+  | 'swapTeamHp'
+  | 'summonSpirit'
+  | 'clearEnvironment'
+  | { type: 'damagePreviousTeamByLevelSumTimes'; multiplier: number }
+  | 'halvePreviousTeamHp'
+  | { type: 'damageNextTeamAndTakeHighestLevelHandCard'; damage: number }
+  | 'performResidualAndSelectedResonance'
+  | 'performAllFiveResonanceEffects'
+  | { type: 'preventOtherPlayersFromActingOrDrawing'; durationTurns: number }
+  | 'gainDivineCalculationProtection'
+  | { type: 'poisonNextPlayer'; durationTurns: number }
+  | { type: 'damageNextTeamAndPoisonNextPlayer'; damage: number; durationTurns: number }
+  | { type: 'winIfNextTeamHpAtMost'; hpThreshold: number }
+  | 'changeEnvironment'
+  | 'breakProfession'
+  | 'limitedUseRecovery'
+  | 'resolveMelodyMainEffect'
+  | 'beginChainChoice'
+  | 'shatterSpirits'
+  | 'breakStars'
+  | 'damageEachTeamBy15'
+  | 'applyGaleRain'
+  | 'reduceEveryShieldBy20'
+  | 'attackIncreasesTo80IfShieldReduced'
+  | 'chooseEnvironmentAndRequireMatchingCardOrRevealHand'
+  | 'revealTopEightDiscardLevelThreeOrHigherThenShuffle'
+  | 'transferEnvironmentToUsedElement'
 export type SecretStrategyEffect = 'protectTriggeringPlayer' | 'increaseHandLevels' | 'increaseTurnDraw' | 'negateNextPlayerFormationHpChanges' | 'suppressPlayerAbilitiesAndSpiritPower' | 'summonSpiritFromPouch' | 'swapDeckAndDiscard' | 'directProfessionChange' | 'breakOrGainStar' | 'clearOrChangeEnvironment'
 export type ProfessionAbilityEffect =
   | { type: 'damagePreviousTeamByCardLevelTimes'; multiplier: number }

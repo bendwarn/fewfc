@@ -103,6 +103,53 @@ function presentSpiritSkillEffect(effect: SpiritSkillEffect): string {
   }
 }
 
+function presentFormationEffect(effect: Extract<ImmediateEffect, { type: 'resolveFormationEffect' }>['effect']): string | null {
+  if (typeof effect === 'object') {
+    switch (effect.type) {
+      case 'damagePreviousTeamByLevelSumTimes': return `上家隊伍扣除所用牌等級總和×${effect.multiplier}點生命`
+      case 'damageNextTeamAndTakeHighestLevelHandCard': return `下家隊伍扣除 ${effect.damage} 點生命；檢視下家手牌後，若有手牌則取得其中一張最高等級牌`
+      case 'preventOtherPlayersFromActingOrDrawing': return `所有其他玩家 ${effect.durationTurns} 回合內無法行動及抽牌`
+      case 'poisonNextPlayer': return `下家中毒 ${effect.durationTurns} 回合`
+      case 'damageNextTeamAndPoisonNextPlayer': return `下家隊伍扣除 ${effect.damage} 點生命，並使下家中毒 ${effect.durationTurns} 回合`
+      case 'winIfNextTeamHpAtMost': return `下家隊伍生命值不超過 ${effect.hpThreshold} 時，立即獲勝`
+      default: return assertNever(effect)
+    }
+  }
+
+  switch (effect) {
+    case 'coverCounter': return '覆蓋反制術式，於下一位玩家行動時結算'
+    case 'copyPreviousTurnFormation': return '複製上家上回合基礎陣法的類別與效果'
+    case 'recoverHp': return '回復生命'
+    case 'reduceShield': return '扣除防護罩'
+    case 'inspectHand': return '檢視指定手牌'
+    case 'createShield': return '建構防護罩'
+    case 'returnTeamHp': return '改變隊伍生命'
+    case 'drawCards': return '增加本回合抽牌'
+    case 'swapTeamHp': return '交換隊伍生命'
+    case 'summonSpirit': return '召喚或強化精靈'
+    case 'clearEnvironment': return '破除環境'
+    case 'halvePreviousTeamHp': return '上家隊伍目前生命值減半'
+    case 'performResidualAndSelectedResonance': return '同時發動餘行的五鳴術與指定的另一種五鳴術（鏡鳴：檢視上家手牌並捨棄一張；森鳴：自己隊伍回復 20 點生命；淙鳴：本回合抽牌＋2；煌鳴：上家隊伍扣除 20 點生命；垠鳴：自己的防護罩設為 15）'
+    case 'performAllFiveResonanceEffects': return '檢視上家手牌並捨棄一張，並使上家隊伍扣除 20 點生命、自己隊伍回復 20 點生命、自己的防護罩設為 15，且本回合抽牌＋1'
+    case 'gainDivineCalculationProtection': return '取得神算保護；下一次任一玩家發動天劫時，免受該天劫影響，之後消耗此狀態'
+    case 'changeEnvironment': return '轉移環境'
+    case 'breakProfession': return '破除職業'
+    case 'limitedUseRecovery': return '回復使用次數'
+    case 'resolveMelodyMainEffect': return '結算此曲調的主效果'
+    case 'beginChainChoice': return null
+    case 'shatterSpirits': return '削減所有精靈靈力並處理受影響隊伍生命'
+    case 'breakStars': return '破除所有星辰並處理受影響隊伍生命'
+    case 'damageEachTeamBy15': return '每支隊伍各扣除 15 點生命'
+    case 'applyGaleRain': return '使所有未受神算保護的玩家獲得烈風暴雨狀態'
+    case 'reduceEveryShieldBy20': return '所有未受神算保護的防護罩各扣除 20'
+    case 'attackIncreasesTo80IfShieldReduced': return '若實際扣除了任一防護罩，此攻擊點數改為 80'
+    case 'chooseEnvironmentAndRequireMatchingCardOrRevealHand': return '選擇環境後，各玩家捨棄一張相同屬性的牌，否則展示手牌'
+    case 'revealTopEightDiscardLevelThreeOrHigherThenShuffle': return '依序處理牌組頂最多八張牌，捨棄等級 3 以上者後洗牌'
+    case 'transferEnvironmentToUsedElement': return '傷害後將環境轉移為此陣法屬性'
+    default: return assertNever(effect)
+  }
+}
+
 function presentImmediateEffect(effect: ImmediateEffect): string | null {
   switch (effect.type) {
     case 'attack': {
@@ -114,24 +161,7 @@ function presentImmediateEffect(effect: ImmediateEffect): string | null {
       }[effect.target]
       return `對${target}進行${category}攻擊（點數：${presentAmount(effect.points)}）`
     }
-    case 'resolveFormationEffect': {
-      const labels = {
-        coverCounter: '覆蓋反制術式，於下一位玩家行動時結算',
-        copyPreviousTurnFormation: '複製上家上回合基礎陣法的類別與效果', recoverHp: '回復生命',
-        reduceShield: '扣除防護罩', inspectHand: '檢視指定手牌', createShield: '建構防護罩',
-        returnTeamHp: '改變隊伍生命', drawCards: '增加本回合抽牌', swapTeamHp: '交換隊伍生命',
-        summonSpirit: '召喚或強化精靈', clearEnvironment: '破除環境', applyStatus: '取得狀態',
-        changeEnvironment: '轉移環境', breakProfession: '破除職業', limitedUseRecovery: '回復有限使用次數',
-        resolveMelodyMainEffect: '結算此曲調的主效果', beginChainChoice: null,
-        shatterSpirits: '削減所有精靈靈力並處理受影響隊伍生命', breakStars: '破除所有星辰並處理受影響隊伍生命',
-        damageEachTeamBy15: '每支隊伍各扣除 15 點生命', applyGaleRain: '使所有未受神算保護的玩家獲得烈風暴雨狀態',
-        reduceEveryShieldBy20: '所有未受神算保護的防護罩各扣除 20', attackIncreasesTo80IfShieldReduced: '若實際扣除了任一防護罩，此攻擊點數改為 80',
-        chooseEnvironmentAndRequireMatchingCardOrRevealHand: '選擇環境後，各玩家捨棄一張相同屬性的牌，否則展示手牌',
-        revealTopEightDiscardLevelThreeOrHigherThenShuffle: '依序處理牌組頂最多八張牌，捨棄等級 3 以上者後洗牌',
-        transferEnvironmentToUsedElement: '傷害後將環境轉移為此陣法屬性',
-      } satisfies Record<typeof effect.effect, string | null>
-      return labels[effect.effect]
-    }
+    case 'resolveFormationEffect': return presentFormationEffect(effect.effect)
     case 'activateProfessionAbility': return presentProfessionAbilityEffect(effect.effect)
     case 'useSpiritSkill': return presentSpiritSkillEffect(effect.effect)
     case 'triggerSecretStrategy': {

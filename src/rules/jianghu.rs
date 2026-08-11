@@ -253,9 +253,13 @@ fn spell(
 
 fn player_facing_formation_effect(id: &str) -> FormationEffect {
     match id {
-        POISON_DART | THOUSAND_POISON_HAND => FormationEffect::ApplyStatus,
+        POISON_DART => FormationEffect::PoisonNextPlayer { duration_turns: 1 },
         POISON_SMOKE | LINGERING_FROST_HAND => FormationEffect::CoverCounter,
-        KING_YAMA_DECREE => FormationEffect::ApplyStatus,
+        THOUSAND_POISON_HAND => FormationEffect::DamageNextTeamAndPoisonNextPlayer {
+            damage: 10,
+            duration_turns: 2,
+        },
+        KING_YAMA_DECREE => FormationEffect::WinIfNextTeamHpAtMost { hp_threshold: 40 },
         _ => panic!("Jianghu formation `{id}` is missing a player-facing effect fact"),
     }
 }

@@ -78,7 +78,7 @@ pub(crate) fn formation_specs() -> Vec<BaseFormationSpec> {
                 id: DIVINE_CALCULATION.to_string(),
                 plan: EffectPlan::ActiveSpell(SpellPlanDef {
                     resolver_id: DIVINE_CALCULATION.to_string(),
-                    player_facing_effect: FormationEffect::ApplyStatus,
+                    player_facing_effect: FormationEffect::GainDivineCalculationProtection,
                 }),
             },
         },

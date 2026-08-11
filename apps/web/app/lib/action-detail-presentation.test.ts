@@ -27,8 +27,18 @@ const everyConsequence: RuleConsequence[] = [
   { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'attack', target: 'selfTeam', category: 'special', points: { type: 'formula', formula: { type: 'levelSumTimes', multiplier: 3 } } } },
   { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'attack', target: 'allPlayers', category: 'special', points: { type: 'formula', formula: { type: 'targetHandCountTimes', multiplier: 15 } } } },
   { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'attack', target: 'eachTeam', category: 'special', points: { type: 'formula', formula: { type: 'elementProductTimes', element: 'Fire', multiplier: 5 } } } },
-  ...(['coverCounter', 'copyPreviousTurnFormation', 'recoverHp', 'reduceShield', 'inspectHand', 'createShield', 'returnTeamHp', 'drawCards', 'swapTeamHp', 'summonSpirit', 'clearEnvironment', 'applyStatus', 'changeEnvironment', 'breakProfession', 'limitedUseRecovery', 'resolveMelodyMainEffect', 'beginChainChoice', 'shatterSpirits', 'breakStars', 'damageEachTeamBy15', 'applyGaleRain', 'reduceEveryShieldBy20', 'attackIncreasesTo80IfShieldReduced', 'chooseEnvironmentAndRequireMatchingCardOrRevealHand', 'revealTopEightDiscardLevelThreeOrHigherThenShuffle', 'transferEnvironmentToUsedElement'] as const)
+  ...(['coverCounter', 'copyPreviousTurnFormation', 'recoverHp', 'reduceShield', 'inspectHand', 'createShield', 'returnTeamHp', 'drawCards', 'swapTeamHp', 'summonSpirit', 'clearEnvironment', 'halvePreviousTeamHp', 'performResidualAndSelectedResonance', 'performAllFiveResonanceEffects', 'gainDivineCalculationProtection', 'changeEnvironment', 'breakProfession', 'limitedUseRecovery', 'resolveMelodyMainEffect', 'beginChainChoice', 'shatterSpirits', 'breakStars', 'damageEachTeamBy15', 'applyGaleRain', 'reduceEveryShieldBy20', 'attackIncreasesTo80IfShieldReduced', 'chooseEnvironmentAndRequireMatchingCardOrRevealHand', 'revealTopEightDiscardLevelThreeOrHigherThenShuffle', 'transferEnvironmentToUsedElement'] as const)
     .map(effect => ({ type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'resolveFormationEffect', effect } }) as const),
+  ...([
+    { type: 'damagePreviousTeamByLevelSumTimes', multiplier: 3 },
+    { type: 'damageNextTeamAndTakeHighestLevelHandCard', damage: 20 },
+    { type: 'preventOtherPlayersFromActingOrDrawing', durationTurns: 1 },
+    { type: 'poisonNextPlayer', durationTurns: 1 },
+    { type: 'damageNextTeamAndPoisonNextPlayer', damage: 10, durationTurns: 2 },
+    { type: 'winIfNextTeamHpAtMost', hpThreshold: 40 },
+  ] as const).map(effect => (
+    { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'resolveFormationEffect', effect } } as const
+  )),
   ...([
     { type: 'damagePreviousTeamByCardLevelTimes', multiplier: 2 },
     { type: 'increaseTurnDraw', amount: 2 },
