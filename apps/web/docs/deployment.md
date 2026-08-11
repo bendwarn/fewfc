@@ -78,8 +78,10 @@ profile belongs to multiple accounts, set the non-secret
 `LEGACY_PURGE_SECRET` in the operator's environment; do not set
 `FEWFC_*` target variables.
 
-Run staging first. Deploy the release with `MAINTENANCE_MODE=true` as explicit
-Worker configuration, then take and review a dry-run inventory:
+Run staging first. Use the **Set Worker maintenance mode** GitHub Action with
+`staging` and `enable` (preferred), or deploy the release with
+`MAINTENANCE_MODE=true` as explicit Worker configuration. Then take and review
+a dry-run inventory:
 
 ```bash
 bun run build:staging
@@ -99,7 +101,8 @@ bun run purge:legacy-games --env staging --epoch issue-75-2026-08-11 --confirm
 Keep maintenance enabled if either command fails. The script verifies that no
 Game Record remains in enumerated rooms, active/finished rooms are waiting, both
 replay D1 tables are empty, and every enumerated ReplayArchive is empty. Reopen
-traffic only after that verification succeeds:
+traffic only after that verification succeeds using the GitHub Action with
+`staging` and `disable` (preferred), or:
 
 ```bash
 wrangler deploy --env staging --var MAINTENANCE_MODE:false
@@ -113,6 +116,21 @@ account, profile, Deck List, and public-room index rows are preserved.
 
 CI/CD supplies this secret from the matching GitHub Environment instead. Do not
 commit the value to this repository.
+
+### GitHub Actions maintenance switch
+
+Use **Actions → Set Worker maintenance mode → Run workflow** from `main` to
+choose `staging` or `production` and `enable` or `disable`. The workflow uses
+the matching GitHub Environment, so its required reviewers and environment
+secrets still apply. It validates and builds the Worker, then deploys one new
+version with `MAINTENANCE_MODE` explicitly set to the requested value. It never
+runs a D1 migration or the purge script.
+
+Select `enable` before the dry-run and confirmed purge. Select `disable` only
+after the script's verification succeeds. Do not run the ordinary deployment
+workflow or push a deployment-triggering change while maintenance is enabled:
+the checked-in environment configuration sets `MAINTENANCE_MODE=false`, so a
+normal deployment would reopen traffic.
 
 Before deployment:
 
@@ -151,8 +169,8 @@ before deploying the Worker.
   `workflow_dispatch` action. Protect the GitHub `production` Environment with
   required reviewers.
 - Each deployment builds the environment-specific Nuxt/Wasm output, uploads
-  `BETTER_AUTH_SECRET`, applies pending remote D1 migrations, and then deploys
-  the Worker.
+  `BETTER_AUTH_SECRET` and `LEGACY_PURGE_SECRET`, applies pending remote D1
+  migrations, and then deploys the Worker.
 
 Create GitHub Environments named `staging` and `production`. Add these encrypted
 secrets to both environments:
@@ -160,6 +178,7 @@ secrets to both environments:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 - `BETTER_AUTH_SECRET`
+- `LEGACY_PURGE_SECRET`
 
 Use different `BETTER_AUTH_SECRET` values for staging and production. The
 Cloudflare token needs Workers Scripts write access, D1 edit access, and Account

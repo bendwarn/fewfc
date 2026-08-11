@@ -656,42 +656,39 @@
             <div>
               <h2>{{ pouchChoiceKind === 'chain' ? '連環：選擇牌組牌' : '牽羊：交換牌' }}</h2>
               <p v-if="pouchChoiceKind === 'chain'">
-                先依五行與等級選一張作為錦囊；也可再選一張公開觸發秘計。
+                先選擇錦囊給予對象，再依五行與等級選一張作為錦囊；也可再選一張公開觸發秘計。
               </p>
               <p v-else>各選 {{ pouchSwapRequiredCount }} 張牌組牌與棄牌交換，之後洗牌。</p>
 
               <template v-if="pouchChoiceKind === 'chain'">
-                <h3>選擇錦囊牌</h3>
-                <p v-if="chainPouchCard" class="choice-selection-summary">
-                  已選：{{ chainPouchCard.label }}
-                  <button type="button" @click="clearChainPouchCard">重新選擇</button>
-                </p>
-                <CardChoiceMatrix
-                  class="chain-composition"
-                  :cards="chainPouchCards"
-                  :selected-cards="pouchDeckSelection.slice(0, 1)"
-                  label="連環錦囊牌組矩陣"
-                  caption="依五行與等級選擇連環錦囊牌"
-                  action-label="選擇作為連環錦囊"
-                  @choose="chooseChainPouchCard"
+                <ChainChoice
+                  :pouch-owners="chainPouchOwners"
+                  :pouch-owner="pouchOwnerSelection"
+                  :pouch-cards="chainPouchCards"
+                  :pouch-card="chainPouchCard"
+                  :trigger-cards="chainTriggerCards"
+                  :trigger-card="chainTriggerCard"
+                  :strategy-options="chainStrategyOptions"
+                  :selected-strategy="chainStrategySelection"
+                  :selected-strategy-action="selectedChainStrategyAction"
+                  :selected-target="strategyTargetSelection"
+                  :selected-star="strategyStarSelection"
+                  :break-star="strategyBreakStar"
+                  :selected-retreat-card="strategyDiscardCard"
+                  :hand-cards="ownHandCards"
+                  :player-label="playerLabel"
+                  :strategy-label="strategyLabel"
+                  :star-label="starLabel"
+                  @select-pouch-owner="pouchOwnerSelection = $event"
+                  @choose-pouch-card="chooseChainPouchCard"
+                  @clear-pouch-card="clearChainPouchCard"
+                  @choose-trigger-card="chooseChainTriggerCard"
+                  @clear-trigger-card="clearChainTriggerCard"
+                  @select-strategy="chainStrategySelection = $event"
+                  @select-target="strategyTargetSelection = $event"
+                  @select-star="selectChainStar"
+                  @select-retreat-card="strategyDiscardCard = $event"
                 />
-
-                <template v-if="chainPouchCard">
-                  <h3>選擇觸發牌（可選）</h3>
-                  <p v-if="chainTriggerCard" class="choice-selection-summary">
-                    已選：{{ chainTriggerCard.label }}
-                    <button type="button" @click="clearChainTriggerCard">不觸發秘計</button>
-                  </p>
-                  <CardChoiceMatrix
-                    class="chain-composition"
-                    :cards="chainTriggerCards"
-                    :selected-cards="pouchDeckSelection.slice(1, 2)"
-                    label="連環觸發牌組矩陣"
-                    caption="依五行與等級選擇連環觸發牌"
-                    action-label="選擇作為連環觸發牌"
-                    @choose="chooseChainTriggerCard"
-                  />
-                </template>
               </template>
 
               <template v-else>
@@ -716,115 +713,6 @@
                   action-label="選擇牽羊回收牌"
                   @choose="togglePouchCard('pouchDiscard', $event, pouchSwapRequiredCount)"
                 />
-              </template>
-
-              <template v-if="pouchChoiceKind === 'chain'">
-                <h3>錦囊持有者</h3>
-                <div class="choice-options" aria-label="選擇錦囊持有者">
-                  <button
-                    v-for="player in chainPouchOwners"
-                    :key="`pouch-owner-${player}`"
-                    type="button"
-                    :class="{ selected: pouchOwnerSelection === player }"
-                    :aria-pressed="pouchOwnerSelection === player"
-                    @click="pouchOwnerSelection = player"
-                  >
-                    {{ playerLabel(player) }}
-                  </button>
-                </div>
-
-                <template v-if="chainTriggerCard">
-                  <h3>觸發秘計</h3>
-                  <div class="choice-options" aria-label="選擇秘計">
-                    <button
-                      v-for="option in chainStrategyOptions"
-                      :key="`chain-strategy-${option.strategy}`"
-                      type="button"
-                      :class="{ selected: chainStrategySelection === option.strategy }"
-                      :aria-pressed="chainStrategySelection === option.strategy"
-                      @click="chainStrategySelection = option.strategy"
-                    >
-                      {{ strategyLabel(option.strategy) }}
-                    </button>
-                  </div>
-
-                  <p v-if="selectedChainStrategyAction" class="action-detail">
-                    {{ presentSecretStrategyOption(selectedChainStrategyAction) }}
-                  </p>
-
-                  <div
-                    v-if="selectedChainStrategyAction?.input === 'targetPlayer'"
-                    class="choice-options"
-                    aria-label="離山目標"
-                  >
-                    <button
-                      v-for="player in selectedChainStrategyAction.targetPlayers"
-                      :key="`strategy-target-${player}`"
-                      type="button"
-                      :class="{ selected: strategyTargetSelection === player }"
-                      :aria-pressed="strategyTargetSelection === player"
-                      @click="strategyTargetSelection = player"
-                    >
-                      {{ playerLabel(player) }}
-                    </button>
-                  </div>
-
-                  <p v-if="selectedChainStrategyAction?.input === 'deckDiscardSwap'">
-                    確認後會先依當前牌組狀態洗棄牌（若需要），再選擇牽羊交換的牌。
-                  </p>
-
-                  <template v-if="selectedChainStrategyAction?.input === 'star'">
-                    <h3>瞞天：取得星辰效果或破除星辰</h3>
-                    <div class="choice-options" aria-label="瞞天選擇">
-                      <button
-                        v-for="star in selectedChainStrategyAction.stars"
-                        :key="`strategy-star-${star}`"
-                        type="button"
-                        :class="{ selected: strategyStarSelection === star && !strategyBreakStar }"
-                        :aria-pressed="strategyStarSelection === star && !strategyBreakStar"
-                        @click="strategyStarSelection = star; strategyBreakStar = false"
-                      >
-                        取得 {{ starLabel(star) }}
-                      </button>
-                      <button
-                        v-for="star in selectedChainStrategyAction.breakStars"
-                        :key="`strategy-break-star-${star}`"
-                        type="button"
-                        :class="{ selected: strategyStarSelection === star && strategyBreakStar }"
-                        :aria-pressed="strategyStarSelection === star && strategyBreakStar"
-                        @click="strategyStarSelection = star; strategyBreakStar = true"
-                      >
-                        破除 {{ starLabel(star) }}
-                      </button>
-                    </div>
-                  </template>
-
-                  <template v-if="selectedChainStrategyAction?.input === 'retreat'">
-                    <h3>走為：破除環境或捨棄手牌</h3>
-                    <div class="choice-options" aria-label="走為選擇">
-                      <button
-                        type="button"
-                        :class="{ selected: strategyDiscardCard === null }"
-                        :aria-pressed="strategyDiscardCard === null"
-                        @click="strategyDiscardCard = null"
-                      >
-                        破除環境
-                      </button>
-                      <button
-                        v-for="card in ownHandCards.filter(
-                          candidate => selectedChainStrategyAction?.handCards.includes(candidate.id),
-                        )"
-                        :key="`strategy-hand-${card.id}`"
-                        type="button"
-                        :class="{ selected: strategyDiscardCard === card.id }"
-                        :aria-pressed="strategyDiscardCard === card.id"
-                        @click="strategyDiscardCard = card.id"
-                      >
-                        捨棄 {{ card.label }}
-                      </button>
-                    </div>
-                  </template>
-                </template>
               </template>
 
               <div class="choice-options choice-actions">
@@ -1464,6 +1352,11 @@ function resetChainStrategyChoice() {
   strategyStarSelection.value = null
   strategyBreakStar.value = false
   strategyDiscardCard.value = null
+}
+
+function selectChainStar(star: StarKind, breakStar: boolean) {
+  strategyStarSelection.value = star
+  strategyBreakStar.value = breakStar
 }
 
 function startPouchAction(action: PouchStrategyAction) {

@@ -1,0 +1,156 @@
+name: Set Worker maintenance mode
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment whose Worker should enter or leave maintenance
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      mode:
+        description: Enable before the legacy-purge verification; disable only after it succeeds
+        required: true
+        type: choice
+        options:
+          - enable
+          - disable
+
+permissions:
+  contents: read
+
+jobs:
+  require-main:
+    name: Require main
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Reject non-main refs
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Maintenance mode may only be changed from main; received $GITHUB_REF" >&2
+            exit 1
+          fi
+
+  set-staging-maintenance:
+    name: Set staging maintenance mode
+    if: inputs.environment == 'staging'
+    needs: require-main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: write
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run validate:deploy staging
+      - run: bun run build:staging
+      - name: Validate requested maintenance mode
+        id: mode
+        env:
+          REQUESTED_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_MODE" in
+            enable) echo "value=true" >> "$GITHUB_OUTPUT" ;;
+            disable) echo "value=false" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "Unexpected maintenance mode: $REQUESTED_MODE" >&2
+              exit 1
+              ;;
+          esac
+      - name: Deploy requested maintenance mode
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          packageManager: bun
+          workingDirectory: apps/web
+          environment: staging
+          secrets: |
+            BETTER_AUTH_SECRET
+            LEGACY_PURGE_SECRET
+          command: deploy --env staging --var MAINTENANCE_MODE:${{ steps.mode.outputs.value }}
+        env:
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          LEGACY_PURGE_SECRET: ${{ secrets.LEGACY_PURGE_SECRET }}
+
+  set-production-maintenance:
+    name: Set production maintenance mode
+    if: inputs.environment == 'production'
+    needs: require-main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: write
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run validate:deploy production
+      - run: bun run build:production
+      - name: Validate requested maintenance mode
+        id: mode
+        env:
+          REQUESTED_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_MODE" in
+            enable) echo "value=true" >> "$GITHUB_OUTPUT" ;;
+            disable) echo "value=false" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "Unexpected maintenance mode: $REQUESTED_MODE" >&2
+              exit 1
+              ;;
+          esac
+      - name: Deploy requested maintenance mode
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          packageManager: bun
+          workingDirectory: apps/web
+          environment: production
+          secrets: |
+            BETTER_AUTH_SECRET
+            LEGACY_PURGE_SECRET
+          command: deploy --env production --var MAINTENANCE_MODE:${{ steps.mode.outputs.value }}
+        env:
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          LEGACY_PURGE_SECRET: ${{ secrets.LEGACY_PURGE_SECRET }}

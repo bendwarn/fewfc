@@ -1,6 +1,7 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import CardChoiceMatrix from '~/components/CardChoiceMatrix.vue'
+import ChainChoice from '~/components/ChainChoice.vue'
 import GameCard from '~/components/GameCard.vue'
 import SplitEarthFormationChoice from '~/components/SplitEarthFormationChoice.vue'
 import ThemeSelector from '~/components/ThemeSelector.vue'
@@ -83,6 +84,55 @@ describe('CardChoiceMatrix', () => {
     expect(wrapper.get('[role="group"]').attributes('aria-label')).toBe('商調‧鳴金牌組矩陣')
     await metalTwo.trigger('click')
     expect(wrapper.emitted('choose')).toStrictEqual([[11]])
+  })
+})
+
+describe('ChainChoice', () => {
+  const chainProps = {
+    pouchOwners: ['p1'],
+    pouchOwner: 'p1',
+    pouchCards: cards,
+    pouchCard: cards[0],
+    triggerCards: [cards[1]],
+    triggerCard: cards[1],
+    strategyOptions: [],
+    selectedStrategy: null,
+    selectedStrategyAction: null,
+    selectedTarget: null,
+    selectedStar: null,
+    breakStar: false,
+    selectedRetreatCard: null,
+    handCards: [],
+    playerLabel: (player: string) => ({ p1: '甲', p2: '乙' })[player] ?? player,
+    strategyLabel: (strategy: string) => strategy,
+    starLabel: (star: string) => star,
+  }
+
+  it('summarizes one pouch recipient before the cards without a redundant selector', async () => {
+    const wrapper = await mountSuspended(ChainChoice, { props: chainProps })
+
+    expect(wrapper.find('.choice-selection-summary').text()).toContain('錦囊給予：甲')
+    expect(wrapper.find('[aria-label="選擇錦囊持有者"]').exists()).toBe(false)
+    expect(wrapper.findAll('h3').map(heading => heading.text())).toEqual([
+      '錦囊給予對象',
+      '選擇錦囊牌',
+      '選擇觸發牌（可選）',
+      '觸發秘計',
+    ])
+  })
+
+  it('keeps the existing selected owner and selector when multiple recipients are available', async () => {
+    const wrapper = await mountSuspended(ChainChoice, {
+      props: {
+        ...chainProps,
+        pouchOwners: ['p1', 'p2'],
+      },
+    })
+
+    const owners = wrapper.get('[aria-label="選擇錦囊持有者"]')
+    expect(owners.get('button').attributes('aria-pressed')).toBe('true')
+    await owners.findAll('button')[1].trigger('click')
+    expect(wrapper.emitted('select-pouch-owner')).toStrictEqual([['p2']])
   })
 })
 
