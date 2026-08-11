@@ -34,6 +34,20 @@ interface ReplayArchiveCreateRequest {
 export class ReplayArchive extends DurableObject {
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
+    if (request.method === 'POST' && url.pathname.endsWith('/manage/purge-legacy')) {
+      const body = await request.json() as { epoch?: unknown }
+      if (typeof body.epoch !== 'string' || !body.epoch.trim()) {
+        return Response.json({ error: 'a purge epoch is required' }, { status: 400 })
+      }
+      return await this.purgeLegacyArchive(body.epoch.trim())
+    }
+    if (request.method === 'POST' && url.pathname.endsWith('/manage/verify-legacy')) {
+      const [archive, lifecycle] = await Promise.all([
+        this.ctx.storage.get('archive'),
+        this.ctx.storage.get('lifecycle'),
+      ])
+      return Response.json({ keyCount: Number(Boolean(archive)) + Number(Boolean(lifecycle)) })
+    }
     if (request.method === 'POST' && url.pathname.endsWith('/create')) {
       return await this.create(await request.json() as ReplayArchiveCreateRequest)
     }
@@ -76,6 +90,13 @@ export class ReplayArchive extends DurableObject {
     await this.ctx.storage.delete('archive')
     await this.ctx.storage.put('lifecycle', lifecycle)
     return new Response(null, { status: 204 })
+  }
+
+  /** Clearing the attached storage is idempotent and removes every legacy
+   * archive key, including values that no longer have a surviving D1 reference. */
+  private async purgeLegacyArchive(epoch: string): Promise<Response> {
+    await this.ctx.storage.deleteAll()
+    return Response.json({ purged: true, epoch })
   }
 
   private async frame(step: number): Promise<Response> {

@@ -687,13 +687,21 @@ Pouch is a Theme Rule Module from the
 permits it only when Personal Deck and Spirit are enabled; Spirit transitively
 requires all three Advanced Rule Modules.
 
-Before initial hands are dealt, Players choose starting Pouches in Turn Order
-from their unshuffled Personal Decks. Each choice removes one Card Instance from
-that Deck and places it face down under its Pouch Owner. After all choices, a
-trusted adapter shuffles the remaining Personal Decks and the engine records
-those orders before dealing. Pouch identity is visible only to its owner until
-the Card is revealed, while canonical events retain enough information for
-replay.
+Before initial hands are dealt, every Player may independently choose their
+starting Pouch from their unshuffled Personal Deck while Initial Pouch Selection
+is open. A Player may choose exactly once. Each accepted choice immediately
+removes one Card Instance from that Player's Deck and places it face down under
+its Pouch Owner; no Player waits for an earlier Player in Turn Order. The
+canonical event log records accepted choices in server arrival order, but the
+resulting game state is the same for every arrival order because the choices
+affect disjoint Player-owned Decks and Pouches.
+
+Initial Pouch Selection completes only after every Player has chosen. The
+trusted adapter then shuffles the remaining Personal Decks in Turn Order and
+the engine records those orders before dealing. Pouch identity is visible only
+to its owner until the Card is revealed. Public State identifies which
+Players have or have not completed selection, while canonical events retain the
+private Card identities required for replay.
 
 This is a public, reconnectable Game Preparation lifecycle:
 `InitialPouchSelection -> PendingDeckShuffle -> InitialDeal -> Ongoing`. It does

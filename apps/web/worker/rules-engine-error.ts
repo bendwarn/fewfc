@@ -2,14 +2,14 @@ type ErrorRecord = Record<string, unknown>
 
 export class RulesEngineError extends Error {
   readonly statusCode: 400 | 500
-  readonly code: 'rulesValidation' | 'rulesEngineFailure'
+  readonly code: string
 
   constructor(readonly detail: unknown) {
-    const validation = containsValidationError(detail)
+    const validation = validationErrorCode(detail)
     super(validation ? '選擇無效，請重新選擇。' : '規則引擎處理失敗，請稍後再試。')
     this.name = 'RulesEngineError'
     this.statusCode = validation ? 400 : 500
-    this.code = validation ? 'rulesValidation' : 'rulesEngineFailure'
+    this.code = validation ?? 'rulesEngineFailure'
   }
 }
 
@@ -27,12 +27,22 @@ function parseSerializedDetail(detail: unknown): unknown {
   }
 }
 
-function containsValidationError(detail: unknown): boolean {
-  if (!isRecord(detail)) return false
+function validationErrorCode(detail: unknown): string | undefined {
+  if (!isRecord(detail)) return undefined
 
-  return Object.entries(detail).some(([key, value]) => (
-    key.toLowerCase() === 'validation' || containsValidationError(value)
-  ))
+  for (const [key, value] of Object.entries(detail)) {
+    if (key.toLowerCase() === 'validation') {
+      return firstVariantName(value) ?? 'rulesValidation'
+    }
+    const nested = validationErrorCode(value)
+    if (nested) return nested
+  }
+  return undefined
+}
+
+function firstVariantName(detail: unknown): string | undefined {
+  if (!isRecord(detail)) return undefined
+  return Object.keys(detail)[0]
 }
 
 function isRecord(value: unknown): value is ErrorRecord {

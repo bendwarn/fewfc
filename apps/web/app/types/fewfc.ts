@@ -267,7 +267,7 @@ export interface PublicGameState {
   playerDecks: Array<{ player: PlayerId; cards: PublicCardRefs }>
   playerDiscards: Array<{ player: PlayerId; cards: PublicCard[] }>
   pouches: Array<{ owner: PlayerId; card: PublicCard | null }>
-  preparationPlayer: PlayerId | null
+  initialPouchSelection: { remainingPlayers: PlayerId[] } | null
   coveredPassives: PublicCoveredPassive[]
   counterEffects: Array<{ owner: PlayerId; effectId: string; effectName: string }>
   pendingChoice: PublicPendingChoice | null

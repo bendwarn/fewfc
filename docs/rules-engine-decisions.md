@@ -2161,3 +2161,81 @@ records write the Fire Spirit Skill that created the Card Interpretation;
 records created before this field existed deserialize it as absent. Replay
 preserves those records and the Public View presents the absent value as a
 legacy Fire Skill interpretation instead of guessing between 螢光 and 絢爛.
+
+### 41. Independent Initial Pouch Selection And Hard Cutover
+
+Initial Pouch Selection remains a public, reconnectable Game Preparation stage
+owned by the Rules Engine, but it no longer names one expected Player. Every
+Player who has not yet placed an initial Pouch may submit `ChooseInitialPouch`
+immediately. Each accepted command commits its canonical events independently
+in server arrival order. Do not represent the group as one Pending Choice or
+one open multi-Player resolution Transaction.
+
+Derive the Players who have not chosen from Turn Order minus the owners of
+already placed initial Pouches. Do not persist a second `remaining_players`
+collection in canonical Game State. Validate that the actor is in Turn Order,
+has not already chosen, and selected a Card Instance in their own current
+Personal Deck. A second command with a new Command ID returns the specific
+`InitialPouchAlreadyChosen` Validation Failure and emits no events. A retry with
+the same Command ID remains governed by the Online Command Transaction receipt.
+
+Each accepted choice emits `PouchPlaced` followed by
+`InitialPouchChosen { player, card }`; remove `next_player` from the latter.
+The last outstanding choice additionally emits
+`InitialPouchSelectionCompleted` before the first `RandomnessRequested`. Only
+that completion event advances Game Preparation to `PendingDeckShuffle`.
+Shuffle the remaining Personal Decks and perform the initial deal in Turn Order
+exactly as before. This policy applies to both supported capacities, two and
+four Players.
+
+The choice command batches commute: canonical storage still serializes commits
+and validates `expectedSequence`, while the final Rules Engine projection is
+independent of accepted choice order because every choice changes a distinct
+Player-owned Deck and Pouch. No canonical rollback or order-normalization layer
+is required. The event log deliberately retains arrival order for audit and
+replay, and replay must project the same final state for every legal order.
+
+Public State exposes the stage as the exact camelCase contract
+`initialPouchSelection: { remainingPlayers: PlayerId[] } | null`. Completed
+Players are derived from Turn Order minus `remainingPlayers`; Card identity is
+never added to this public progress object. The viewer-specific interaction
+allows choosing exactly when that viewer remains outstanding. The Pouch Owner
+may inspect their chosen Card after submission and reconnect, while every other
+viewer sees a Card Back. The Web interaction keeps immediate Card-click and
+random-shortcut submission without a confirmation step.
+
+Online active-game responses carry an active-game version consisting of
+`gameInstanceId` and `recordSequence`. For the same Game Instance, the browser
+ignores a response whose sequence is lower than the highest response already
+applied. This is a delivery-order guard for HTTP and WebSocket snapshots, not a
+canonical concurrency mechanism. Do not add a global room revision as part of
+this change.
+
+This release is a hard cutover. It does not read, migrate, repair, or preserve
+active legacy Game Records, and it does not preserve completed legacy Replays.
+Waiting rooms remain available with their room identity, owner, members, seats,
+invitation, enabled Rule Modules, readiness, and Locked Deck Lists. Active and
+Finished rooms return to Waiting, clear `gameInstanceId`, and mark every member
+unready and disconnected while preserving the room configuration. Legacy game
+records, replay drafts, locked Deck Lists belonging to reset games, canonical
+room events, Command and trusted-randomness receipts, and resolution
+transactions are removed. Each surviving room starts a fresh room-event log
+with `LegacyGamePurged { epoch }`, presented once as
+`系統版本更新，上一局已清除，請重新準備。` Legacy replay archives and their
+D1 references are deleted permanently; the existing ReplayArchive class and
+namespace continue storing Replays created by the new version.
+
+Perform the cutover through a protected, one-time management CLI rather than a
+D1 or Durable Object migration. The CLI requires an explicit staging or
+production environment, defaults to dry-run, requires a separate confirmation
+flag for mutation, reads credentials only from the environment, supports a
+stable purge epoch, and is safe to rerun. It uses a protected GameRoom purge
+operation for partial room cleanup, a ReplayArchive purge operation backed by
+Durable Object `storage.deleteAll()`, D1 cleanup of only replay-reference and
+lifecycle rows, and the Cloudflare Durable Objects Objects API to find stored
+objects that D1 references may not cover. The application remains in explicit
+maintenance mode throughout mutation and verification; command submission and
+Replay creation are unavailable, and any partial failure leaves maintenance
+enabled for a safe retry. Reopen traffic only after verifying that legacy Game
+Records are absent, replay D1 tables are empty, replay Durable Object storage is
+empty, old Replay IDs return not found, and preserved rooms still exist.

@@ -113,21 +113,27 @@ fn choose_initial_pouch(
     if !state.has_rule_module(POUCH_MODULE_ID) {
         return Err(GameError::Validation(ValidationError::PouchRuleDisabled));
     }
-    let expected = match &state.status {
+    if !matches!(
+        state.status,
         GameStatus::Preparing {
-            stage: GamePreparationStage::InitialPouchSelection { player },
-        } => player,
-        _ => {
-            return Err(GameError::Validation(
-                ValidationError::InitialPouchSelectionUnavailable,
-            ));
+            stage: GamePreparationStage::InitialPouchSelection,
         }
-    };
-    if expected != player {
-        return Err(GameError::Validation(ValidationError::WrongPlayer {
-            expected: expected.clone(),
-            actual: player.clone(),
-        }));
+    ) {
+        return Err(GameError::Validation(
+            ValidationError::InitialPouchSelectionUnavailable,
+        ));
+    }
+    if !state.turn_order.contains(player) {
+        return Err(GameError::Validation(ValidationError::UnknownPlayer(
+            player.clone(),
+        )));
+    }
+    if state.pouch_for(player).is_some() {
+        return Err(GameError::Validation(
+            ValidationError::InitialPouchAlreadyChosen {
+                player: player.clone(),
+            },
+        ));
     }
     if !state
         .deck_for(player)
@@ -137,12 +143,6 @@ fn choose_initial_pouch(
             card,
         )));
     }
-    let index = state
-        .turn_order
-        .iter()
-        .position(|candidate| candidate == player)
-        .expect("preparation player must be in Turn Order");
-    let next_player = state.turn_order.get(index + 1).cloned();
     let mut events = vec![
         GameEvent::PouchPlaced {
             source: player.clone(),
@@ -154,10 +154,14 @@ fn choose_initial_pouch(
         GameEvent::InitialPouchChosen {
             player: player.clone(),
             card,
-            next_player: next_player.clone(),
         },
     ];
-    if next_player.is_none() {
+    if state
+        .turn_order
+        .iter()
+        .all(|candidate| candidate == player || state.pouch_for(candidate).is_some())
+    {
+        events.push(GameEvent::InitialPouchSelectionCompleted);
         let first = state
             .turn_order
             .first()
@@ -1348,8 +1352,8 @@ mod tests {
         assert!(matches!(
             state.status,
             GameStatus::Preparing {
-                stage: GamePreparationStage::InitialPouchSelection { ref player }
-            } if player == &PlayerId::new("bob")
+                stage: GamePreparationStage::InitialPouchSelection
+            }
         ));
 
         let bob_card = state.deck_for(&PlayerId::new("bob")).unwrap()[0];
@@ -1371,6 +1375,15 @@ mod tests {
             state.pouch_for(&PlayerId::new("bob")).unwrap().card,
             bob_card
         );
+        assert!(matches!(
+            bob_events.as_slice(),
+            [
+                GameEvent::PouchPlaced { .. },
+                GameEvent::InitialPouchChosen { .. },
+                GameEvent::InitialPouchSelectionCompleted,
+                GameEvent::RandomnessRequested { request },
+            ] if request.request_id == "pouch:initial-shuffle:alice"
+        ));
 
         for player in [PlayerId::new("alice"), PlayerId::new("bob")] {
             let request = state.pending_randomness.clone().unwrap();
@@ -1396,6 +1409,157 @@ mod tests {
         assert_eq!(state.hand(&PlayerId::new("bob")).unwrap().len(), 5);
         assert_eq!(state.deck_for(&PlayerId::new("alice")).unwrap().len(), 55);
         assert_eq!(state.deck_for(&PlayerId::new("bob")).unwrap().len(), 54);
+    }
+
+    #[test]
+    fn initial_pouch_choices_are_independent_and_converge_in_two_and_four_player_games() {
+        for setup in [setup(), four_player_setup()] {
+            let turn_order = setup.turn_order.clone();
+            let forward = complete_initial_pouch_selection(&setup, turn_order.clone());
+            let reverse =
+                complete_initial_pouch_selection(&setup, turn_order.into_iter().rev().collect());
+
+            assert_eq!(forward.state(), reverse.state());
+            assert_eq!(forward.verify_replay().unwrap(), forward.state().clone());
+            assert_eq!(reverse.verify_replay().unwrap(), reverse.state().clone());
+            assert_eq!(
+                forward
+                    .events()
+                    .iter()
+                    .filter(|event| matches!(event, GameEvent::InitialPouchSelectionCompleted))
+                    .count(),
+                1,
+            );
+            assert_eq!(
+                forward
+                    .events()
+                    .iter()
+                    .filter(
+                        |event| matches!(event, GameEvent::RandomnessRequested { request }
+                        if request.request_id == "pouch:initial-shuffle:alice")
+                    )
+                    .count(),
+                1,
+            );
+            assert_eq!(
+                forward
+                    .events()
+                    .iter()
+                    .filter_map(|event| match event {
+                        GameEvent::RandomnessRequested { request } => match &request.operation {
+                            crate::domain::RandomnessOperation::DeckShuffle {
+                                deck: RandomnessDeck::Player(player),
+                            } if request.request_id.starts_with("pouch:initial-shuffle:") => {
+                                Some(player.clone())
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                setup.turn_order,
+            );
+            assert_eq!(
+                forward
+                    .events()
+                    .iter()
+                    .filter_map(|event| match event {
+                        GameEvent::CardsDealt { player, .. } => Some(player.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                setup.turn_order,
+            );
+        }
+    }
+
+    #[test]
+    fn initial_pouch_choice_is_immutable_after_a_successful_independent_submission() {
+        let setup = setup();
+        let mut record = crate::application::GameRecord::start(setup, Vec::new()).unwrap();
+        let alice = PlayerId::new("alice");
+        let card = record.state().deck_for(&alice).unwrap()[0];
+        record
+            .handle(Command::ChooseInitialPouch {
+                player: alice.clone(),
+                card,
+            })
+            .unwrap();
+        let event_count = record.events().len();
+
+        assert_eq!(
+            record.handle(Command::ChooseInitialPouch {
+                player: alice.clone(),
+                card,
+            }),
+            Err(GameError::Validation(
+                ValidationError::InitialPouchAlreadyChosen { player: alice }
+            )),
+        );
+        assert_eq!(record.events().len(), event_count);
+    }
+
+    fn four_player_setup() -> crate::domain::GameSetup {
+        let rules = OfficialRules::new();
+        let players = crate::domain::GameSetup::team_mode(
+            crate::domain::TeamId::new("a"),
+            vec![PlayerId::new("alice"), PlayerId::new("cara")],
+            crate::domain::TeamId::new("b"),
+            vec![PlayerId::new("bob"), PlayerId::new("drew")],
+            200,
+        )
+        .players;
+        let order = vec![
+            PlayerId::new("alice"),
+            PlayerId::new("bob"),
+            PlayerId::new("cara"),
+            PlayerId::new("drew"),
+        ];
+        let decks = order
+            .iter()
+            .cloned()
+            .map(|player| rules.preconstructed_deck(player))
+            .collect();
+        rules
+            .configure_game_with_decks(
+                players,
+                order,
+                [
+                    PERSONAL_DECK_MODULE_ID,
+                    STAR_MODULE_ID,
+                    FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+                    HERO_SCHOOLS_MODULE_ID,
+                    SPIRIT_MODULE_ID,
+                    POUCH_MODULE_ID,
+                ]
+                .into_iter()
+                .map(RuleModuleId::new)
+                .collect(),
+                decks,
+            )
+            .unwrap()
+    }
+
+    fn complete_initial_pouch_selection(
+        setup: &crate::domain::GameSetup,
+        selection_order: Vec<PlayerId>,
+    ) -> crate::application::GameRecord {
+        let mut record = crate::application::GameRecord::start(setup.clone(), Vec::new()).unwrap();
+        for player in selection_order {
+            let card = record.state().deck_for(&player).unwrap()[0];
+            record
+                .handle(Command::ChooseInitialPouch { player, card })
+                .unwrap();
+        }
+        while let Some(request) = record.state().pending_randomness.clone() {
+            record
+                .resolve_randomness(TrustedRandomnessAnswer {
+                    request_id: request.request_id,
+                    shuffled_order: request.current_order,
+                })
+                .unwrap();
+        }
+        record
     }
 
     #[test]

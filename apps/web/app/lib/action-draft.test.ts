@@ -17,7 +17,7 @@ function state(overrides: Partial<PublicGameState> = {}): PublicGameState {
     playerDecks: [],
     playerDiscards: [],
     pouches: [],
-    preparationPlayer: null,
+    initialPouchSelection: null,
     coveredPassives: [],
     counterEffects: [],
     pendingChoice: null,

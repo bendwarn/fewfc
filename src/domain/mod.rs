@@ -623,7 +623,7 @@ pub enum GameStatus {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum GamePreparationStage {
-    InitialPouchSelection { player: PlayerId },
+    InitialPouchSelection,
     PendingDeckShuffle,
     InitialDeal,
 }
@@ -1097,13 +1097,7 @@ impl GameState {
     pub fn from_setup(setup: &GameSetup) -> Self {
         let status = if setup.has_rule_module(POUCH_MODULE_ID) {
             GameStatus::Preparing {
-                stage: GamePreparationStage::InitialPouchSelection {
-                    player: setup
-                        .turn_order
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| PlayerId::new("missing-player")),
-                },
+                stage: GamePreparationStage::InitialPouchSelection,
             }
         } else {
             GameStatus::InProgress
@@ -1835,8 +1829,8 @@ pub enum GameEvent {
     InitialPouchChosen {
         player: PlayerId,
         card: CardInstanceId,
-        next_player: Option<PlayerId>,
     },
+    InitialPouchSelectionCompleted,
     GamePreparationCompleted,
     PouchPlaced {
         source: PlayerId,
@@ -2651,6 +2645,9 @@ pub enum ValidationError {
     GameFinished,
     GamePreparationInProgress,
     InitialPouchSelectionUnavailable,
+    InitialPouchAlreadyChosen {
+        player: PlayerId,
+    },
     InvalidInitialPouch(CardInstanceId),
     PouchRuleDisabled,
     NoPouch {

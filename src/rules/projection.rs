@@ -123,17 +123,10 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
         GameEvent::GamePreparationStarted { player_decks } => {
             state.player_decks = player_decks.clone();
         }
-        GameEvent::InitialPouchChosen { next_player, .. } => {
-            state.status = if let Some(player) = next_player {
-                GameStatus::Preparing {
-                    stage: crate::domain::GamePreparationStage::InitialPouchSelection {
-                        player: player.clone(),
-                    },
-                }
-            } else {
-                GameStatus::Preparing {
-                    stage: crate::domain::GamePreparationStage::PendingDeckShuffle,
-                }
+        GameEvent::InitialPouchChosen { .. } => {}
+        GameEvent::InitialPouchSelectionCompleted => {
+            state.status = GameStatus::Preparing {
+                stage: crate::domain::GamePreparationStage::PendingDeckShuffle,
             };
         }
         GameEvent::GamePreparationCompleted => {
@@ -167,6 +160,13 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 owner: owner.clone(),
                 card: *card,
                 known_by: known_by.clone(),
+            });
+            state.pouches.sort_by_key(|pouch| {
+                state
+                    .turn_order
+                    .iter()
+                    .position(|player| player == &pouch.owner)
+                    .expect("canonical Pouch owner must be in Turn Order")
             });
         }
         GameEvent::PouchRevealed {

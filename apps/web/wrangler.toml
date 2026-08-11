@@ -6,9 +6,10 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 APP_ENV = "development"
 BETTER_AUTH_URL = "http://localhost:8787"
+MAINTENANCE_MODE = "false"
 
 [secrets]
-required = ["BETTER_AUTH_SECRET"]
+required = ["BETTER_AUTH_SECRET", "LEGACY_PURGE_SECRET"]
 
 [assets]
 directory = ".output/public"
@@ -50,9 +51,10 @@ name = "fewfc-web-staging"
 [env.staging.vars]
 APP_ENV = "staging"
 BETTER_AUTH_URL = "https://fewfc-web-staging.febcg.workers.dev"
+MAINTENANCE_MODE = "false"
 
 [env.staging.secrets]
-required = ["BETTER_AUTH_SECRET"]
+required = ["BETTER_AUTH_SECRET", "LEGACY_PURGE_SECRET"]
 
 [[env.staging.d1_databases]]
 binding = "DB"
@@ -90,9 +92,10 @@ name = "fewfc"
 [env.production.vars]
 APP_ENV = "production"
 BETTER_AUTH_URL = "https://fewfc.febcg.workers.dev"
+MAINTENANCE_MODE = "false"
 
 [env.production.secrets]
-required = ["BETTER_AUTH_SECRET"]
+required = ["BETTER_AUTH_SECRET", "LEGACY_PURGE_SECRET"]
 
 [[env.production.d1_databases]]
 binding = "DB"

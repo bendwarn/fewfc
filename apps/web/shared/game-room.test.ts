@@ -49,6 +49,17 @@ test('online command transaction fields keep the exact camelCase wire contract',
   expect(wire).not.toContain('transaction_id')
 })
 
+test('active Game Record versions keep the exact camelCase delivery contract', () => {
+  const wire = JSON.stringify({
+    activeGameVersion: { gameInstanceId: 'game-1', recordSequence: 8 },
+  })
+
+  expect(wire).toContain('activeGameVersion')
+  expect(wire).toContain('gameInstanceId')
+  expect(wire).toContain('recordSequence')
+  expect(wire).not.toContain('record_sequence')
+})
+
 describe('normalizeGameRoomMetadata', () => {
   test('restores the first member as owner when persisted owner flags are false', () => {
     const metadata = normalizeGameRoomMetadata({

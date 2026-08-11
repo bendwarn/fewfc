@@ -34,6 +34,7 @@ pub struct PublicGameState {
     pub player_decks: Vec<PublicPlayerDeck>,
     pub player_discards: Vec<PublicPlayerDiscard>,
     pub pouches: Vec<PublicPouch>,
+    pub initial_pouch_selection: Option<PublicInitialPouchSelection>,
     pub covered_passives: Vec<PublicCoveredPassive>,
     pub counter_effects: Vec<CounterEffect>,
     pub pending_choice: Option<PublicPendingChoice>,
@@ -109,6 +110,15 @@ pub struct PublicPlayerDiscard {
 pub struct PublicPouch {
     pub owner: PlayerId,
     pub card: Option<CardInstanceId>,
+}
+
+/// Public progress for the shared Initial Pouch Selection stage.  It carries
+/// completion only; the selected Card remains within the normal Pouch privacy
+/// boundary.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicInitialPouchSelection {
+    pub remaining_players: Vec<PlayerId>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -226,6 +236,7 @@ pub enum PublicGameEvent {
     InitialPouchChosen {
         player: PlayerId,
     },
+    InitialPouchSelectionCompleted,
     PouchPlaced {
         owner: PlayerId,
         card: Option<CardInstanceId>,
@@ -350,6 +361,20 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
 
     let uses_personal_decks = state.uses_personal_decks();
     let uses_stars = state.has_rule_module(crate::domain::STAR_MODULE_ID);
+    let initial_pouch_selection = matches!(
+        &state.status,
+        GameStatus::Preparing {
+            stage: crate::domain::GamePreparationStage::InitialPouchSelection,
+        }
+    )
+    .then(|| PublicInitialPouchSelection {
+        remaining_players: state
+            .turn_order
+            .iter()
+            .filter(|player| state.pouch_for(player).is_none())
+            .cloned()
+            .collect(),
+    });
 
     PublicGameState {
         enabled_rule_modules: state.enabled_rule_modules.clone(),
@@ -418,6 +443,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
                 },
             })
             .collect(),
+        initial_pouch_selection,
         covered_passives: state
             .formation_areas
             .iter()
@@ -560,6 +586,9 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         GameEvent::InitialPouchChosen { player, .. } => PublicGameEvent::InitialPouchChosen {
             player: player.clone(),
         },
+        GameEvent::InitialPouchSelectionCompleted => {
+            PublicGameEvent::InitialPouchSelectionCompleted
+        }
         GameEvent::PouchPlaced {
             owner,
             card,
@@ -1109,6 +1138,42 @@ mod tests {
             PublicGameEvent::CardsMoved {
                 cards: PublicCardRefs::Known(vec![CardInstanceId::new(8)]),
             }
+        );
+    }
+
+    #[test]
+    fn initial_pouch_progress_is_public_without_the_selected_card_identity() {
+        let alice = PlayerId::new("alice");
+        let bob = PlayerId::new("bob");
+        let mut state = GameState::from_setup(&crate::domain::GameSetup::two_player(
+            alice.clone(),
+            bob.clone(),
+            30,
+        ));
+        state.status = GameStatus::Preparing {
+            stage: crate::domain::GamePreparationStage::InitialPouchSelection,
+        };
+        state.pouches.push(crate::domain::PlayerPouch {
+            owner: alice.clone(),
+            card: CardInstanceId::new(7),
+            known_by: vec![alice],
+        });
+
+        let observer = state_for(&state, Viewer::Observer);
+        assert_eq!(
+            observer.initial_pouch_selection,
+            Some(PublicInitialPouchSelection {
+                remaining_players: vec![bob],
+            }),
+        );
+        assert_eq!(observer.pouches[0].card, None);
+        assert_eq!(
+            serde_json::to_value(event_for(
+                &GameEvent::InitialPouchSelectionCompleted,
+                Viewer::Observer,
+            ))
+            .unwrap(),
+            serde_json::json!({"type": "initialPouchSelectionCompleted"}),
         );
     }
 

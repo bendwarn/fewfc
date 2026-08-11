@@ -382,6 +382,11 @@ export interface GameRoomResponse extends Omit<
   savableReplay?: SavableReplay
   /** Present only while the canonical Game Record is waiting for a continuation. */
   activeTransactionId?: string
+  /** Present whenever the response is backed by the current Game Record. */
+  activeGameVersion?: {
+    gameInstanceId: string
+    recordSequence: number
+  }
   receipt?: CommandReceipt
 }
 
@@ -460,7 +465,7 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     playerDecks: [],
     playerDiscards: [],
     pouches: [],
-    preparationPlayer: null,
+    initialPouchSelection: null,
     coveredPassives: [],
     counterEffects: [],
     pendingChoice: null,

@@ -15,6 +15,7 @@
     "db:migrate:staging": "wrangler d1 migrations apply fewfc-auth-staging --remote --env staging",
     "db:migrate:production": "wrangler d1 migrations apply fewfc-auth-production --remote --env production",
     "room:delete": "bun scripts/delete-room.ts",
+    "purge:legacy-games": "bun scripts/purge-legacy-games.ts",
     "dev": "wrangler dev",
     "generate": "nuxt generate --dotenv .env.production",
     "preview": "nuxt preview --dotenv .env.production",

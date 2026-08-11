@@ -535,10 +535,15 @@
           >
             <div>
               <h2>等待選擇錦囊</h2>
-              <p v-if="state.preparationPlayer">
-                等待 {{ playerLabel(state.preparationPlayer) }} 完成選擇。
-              </p>
-              <p v-else>伺服器正在洗牌與發牌。</p>
+              <template v-if="state.initialPouchSelection">
+                <p>
+                  等待 {{ state.initialPouchSelection.remainingPlayers.map(playerLabel).join('、') }} 完成選擇。
+                </p>
+                <p>
+                  已完成：{{ state.turnOrder.filter(player => !state.initialPouchSelection!.remainingPlayers.includes(player)).map(playerLabel).join('、') || '尚無' }}
+                </p>
+              </template>
+              <p v-else>所有玩家已完成選擇，伺服器正在洗牌與發牌。</p>
             </div>
           </div>
 

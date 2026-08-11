@@ -119,9 +119,10 @@ Player's Spirit, Team, Team Star, or the shared Environment.
 _Avoid_: Team protection, Spirit protection, global Secret immunity
 
 **Initial Pouch Selection**:
-The pre-deal stage in which each Player privately chooses their starting
-Pouch from their unshuffled Personal Deck. After every Player has chosen, the
-remaining Personal Decks are shuffled before the initial hands are dealt.
+The pre-deal stage in which every Player independently and privately chooses
+one starting Pouch from their unshuffled Personal Deck. The stage remains open
+until every Player has chosen, after which the remaining Personal Decks are
+shuffled before the initial hands are dealt.
 _Avoid_: room configuration, starting hand choice
 
 **Game Preparation**:

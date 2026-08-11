@@ -577,11 +577,8 @@ fn response_for(
                 matches!(
                     &record.state().status,
                     crate::domain::GameStatus::Preparing {
-                        stage:
-                            crate::domain::GamePreparationStage::InitialPouchSelection {
-                                player: expected,
-                            },
-                    } if expected == player
+                        stage: crate::domain::GamePreparationStage::InitialPouchSelection,
+                    } if record.state().pouch_for(player).is_none()
                 )
             }),
         },
@@ -1259,10 +1256,19 @@ fn complete_pouch_chain_development_preparation(
     record: &mut GameRecord,
     scenario_player: &PlayerId,
 ) -> Result<(), ApiError> {
-    while let GameStatus::Preparing {
-        stage: GamePreparationStage::InitialPouchSelection { player },
-    } = record.state().status.clone()
-    {
+    while matches!(
+        &record.state().status,
+        GameStatus::Preparing {
+            stage: GamePreparationStage::InitialPouchSelection,
+        }
+    ) {
+        let player = record
+            .state()
+            .turn_order
+            .iter()
+            .find(|player| record.state().pouch_for(player).is_none())
+            .cloned()
+            .expect("Initial Pouch Selection must have an outstanding Player");
         let card = record
             .state()
             .deck_for(&player)
@@ -1685,7 +1691,7 @@ struct WebPublicGameState {
     player_decks: Vec<WebPlayerDeck>,
     player_discards: Vec<WebPlayerDiscard>,
     pouches: Vec<WebPouch>,
-    preparation_player: Option<String>,
+    initial_pouch_selection: Option<WebInitialPouchSelection>,
     covered_passives: Vec<WebCoveredPassive>,
     counter_effects: Vec<WebCounterEffect>,
     pending_choice: Option<WebPendingChoice>,
@@ -1710,6 +1716,12 @@ struct WebPublicGameState {
     previous_turn_formation: Option<WebPreviousTurnFormation>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebInitialPouchSelection {
+    remaining_players: Vec<String>,
+}
+
 impl WebPublicGameState {
     fn from_public(
         state: PublicGameState,
@@ -1718,12 +1730,6 @@ impl WebPublicGameState {
         formation_names: &HashMap<String, String>,
     ) -> Self {
         let enabled_rule_modules = state.enabled_rule_modules.clone();
-        let preparation_player = match &state.status {
-            crate::domain::GameStatus::Preparing {
-                stage: crate::domain::GamePreparationStage::InitialPouchSelection { player },
-            } => Some(player.as_str().to_string()),
-            _ => None,
-        };
         let winner_team = match &state.status {
             crate::domain::GameStatus::Finished {
                 conclusion:
@@ -1823,7 +1829,15 @@ impl WebPublicGameState {
                         .map(|card| WebCard::from_id(card, labels, card_facts)),
                 })
                 .collect(),
-            preparation_player,
+            initial_pouch_selection: state.initial_pouch_selection.map(|selection| {
+                WebInitialPouchSelection {
+                    remaining_players: selection
+                        .remaining_players
+                        .into_iter()
+                        .map(|player| player.as_str().to_string())
+                        .collect(),
+                }
+            }),
             covered_passives: state
                 .covered_passives
                 .into_iter()
@@ -3136,6 +3150,9 @@ fn event_type(event: &PublicGameEvent) -> String {
     match event {
         PublicGameEvent::GamePreparationStarted => "GamePreparationStarted".to_string(),
         PublicGameEvent::InitialPouchChosen { .. } => "InitialPouchChosen".to_string(),
+        PublicGameEvent::InitialPouchSelectionCompleted => {
+            "InitialPouchSelectionCompleted".to_string()
+        }
         PublicGameEvent::PouchPlaced { .. } => "PouchPlaced".to_string(),
         PublicGameEvent::Public(event) => format!("{event:?}")
             .split_whitespace()
@@ -3196,6 +3213,10 @@ fn event_presentation_with_vocabulary(
         PublicGameEvent::InitialPouchChosen { player } => (
             "選擇錦囊".to_string(),
             format!("{} 已完成錦囊選擇。", player.as_str()),
+        ),
+        PublicGameEvent::InitialPouchSelectionCompleted => (
+            "錦囊選擇完成".to_string(),
+            "所有玩家已完成初始錦囊選擇，正在洗牌。".to_string(),
         ),
         PublicGameEvent::PouchPlaced { owner, card } => (
             "覆蓋錦囊".to_string(),
@@ -3499,6 +3520,10 @@ fn game_event_presentation_with_vocabulary(
         GameEvent::InitialPouchChosen { player, .. } => (
             "選擇錦囊".to_string(),
             format!("{} 已選擇初始錦囊。", player.as_str()),
+        ),
+        GameEvent::InitialPouchSelectionCompleted => (
+            "錦囊選擇完成".to_string(),
+            "所有玩家已完成初始錦囊選擇，正在洗牌。".to_string(),
         ),
         GameEvent::GamePreparationCompleted => (
             "準備完成".to_string(),
@@ -5497,6 +5522,38 @@ mod tests {
 
         assert_eq!(json["status"], "Finished");
         assert_eq!(json["winnerTeam"], setup.players[0].team.as_str());
+    }
+
+    #[test]
+    fn initial_pouch_selection_uses_the_exact_camel_case_public_contract() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let mut state = crate::domain::GameState::from_setup(&setup);
+        let alice = setup.players[0].id.clone();
+        let bob = setup.players[1].id.clone();
+        state.status = crate::domain::GameStatus::Preparing {
+            stage: crate::domain::GamePreparationStage::InitialPouchSelection,
+        };
+        state.pouches.push(crate::domain::PlayerPouch {
+            owner: alice.clone(),
+            card: CardInstanceId::new(1),
+            known_by: vec![alice],
+        });
+
+        let web_state = WebPublicGameState::from_public(
+            crate::public_view::state_for(&state, Viewer::Player(bob.clone())),
+            &rules.card_labels(&setup).unwrap(),
+            &card_facts_for_setup(&setup),
+            &rules.formation_names(&setup).unwrap(),
+        );
+        let json = serde_json::to_value(web_state).unwrap();
+
+        assert_eq!(
+            json["initialPouchSelection"]["remainingPlayers"],
+            serde_json::json!([bob.as_str()])
+        );
+        assert!(json.get("initial_pouch_selection").is_none());
+        assert!(json.get("preparationPlayer").is_none());
     }
 
     #[test]

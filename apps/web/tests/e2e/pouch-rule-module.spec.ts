@@ -39,7 +39,7 @@ async function waitForCommand(page: Page, actionType: string) {
   return response
 }
 
-async function chooseVisibleInitialPouch(host: Page, guest: Page) {
+async function completeIndependentInitialPouchSelection(host: Page, guest: Page, roomId: string) {
   const hostChoice = host.getByRole('dialog', { name: '選擇初始錦囊' })
     .getByRole('button', { name: /作為初始錦囊/ })
     .first()
@@ -47,18 +47,51 @@ async function chooseVisibleInitialPouch(host: Page, guest: Page) {
     .getByRole('button', { name: /作為初始錦囊/ })
     .first()
 
-  await expect.poll(async () => (
-    Number(await hostChoice.isVisible()) + Number(await guestChoice.isVisible())
-  )).toBe(1)
-
-  const page = await hostChoice.isVisible() ? host : guest
-  const choice = page === host ? hostChoice : guestChoice
-  const dialog = page.getByRole('dialog', { name: '選擇初始錦囊' })
+  await expect(hostChoice).toBeVisible()
+  await expect(guestChoice).toBeVisible()
+  const dialog = host.getByRole('dialog', { name: '選擇初始錦囊' })
   await expect(dialog.locator('.pouch-composition')).toBeVisible()
   await expect(dialog.locator('tbody td')).toHaveCount(25)
-  const command = waitForCommand(page, 'chooseInitialPouch')
-  await choice.click()
+  const command = waitForCommand(host, 'chooseInitialPouch')
+  await hostChoice.click()
   await command
+  await expect(host.getByRole('dialog', { name: '選擇初始錦囊' })).toHaveCount(0)
+  await expect(
+    host.getByRole('region', { name: '五行戰鬥牌對戰桌' }).getByRole('status'),
+  ).toContainText('等待')
+  await expect(guestChoice).toBeVisible()
+
+  // A fresh owner response retains the selected Card, while the other Player
+  // receives only public completion progress and a Card Back.
+  await reloadFastGameRoute(host, roomId)
+  const [ownerState, otherViewerState] = await Promise.all([
+    requestJson<{
+      state: {
+        initialPouchSelection: { remainingPlayers: string[] } | null
+        pouches: Array<{ card: unknown | null }>
+      }
+    }>(
+      `GET /api/games/${roomId} as owner`,
+      host.context().request.get(`/api/games/${roomId}`),
+    ),
+    requestJson<{
+      state: {
+        initialPouchSelection: { remainingPlayers: string[] } | null
+        pouches: Array<{ card: unknown | null }>
+      }
+    }>(
+      `GET /api/games/${roomId} as other viewer`,
+      guest.context().request.get(`/api/games/${roomId}`),
+    ),
+  ])
+  expect(ownerState.state.initialPouchSelection?.remainingPlayers).toHaveLength(1)
+  expect(otherViewerState.state.initialPouchSelection?.remainingPlayers).toHaveLength(1)
+  expect(ownerState.state.pouches[0]?.card).not.toBeNull()
+  expect(otherViewerState.state.pouches[0]?.card).toBeNull()
+
+  const guestCommand = waitForCommand(guest, 'chooseInitialPouch')
+  await guest.keyboard.press('r')
+  await guestCommand
 }
 
 async function chooseTwoMatrixCards(page: Page, label: string) {
@@ -81,9 +114,7 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
   const { host, guest, pages, gameId: roomId } = game
 
   try {
-    for (let selection = 0; selection < 2; selection += 1) {
-      await chooseVisibleInitialPouch(host, guest)
-    }
+    await completeIndependentInitialPouchSelection(host, guest, roomId)
 
     await Promise.all(pages.map(async (page) => {
       await expect(page.getByRole('region', { name: '啟用規則' }))

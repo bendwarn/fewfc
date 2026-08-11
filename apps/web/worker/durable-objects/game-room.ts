@@ -79,6 +79,20 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
 
+    if (request.method === 'POST' && url.pathname.endsWith('/manage/purge-legacy')) {
+      const body = await request.json() as { epoch?: unknown }
+      return await this.serialized(async () => {
+        if (typeof body.epoch !== 'string' || !body.epoch.trim()) {
+          return this.json({ error: 'a purge epoch is required' }, 400)
+        }
+        return this.json(await this.purgeLegacyGameData(body.epoch.trim()))
+      })
+    }
+
+    if (request.method === 'POST' && url.pathname.endsWith('/manage/verify-legacy')) {
+      return await this.serialized(async () => this.json(await this.legacyPurgeVerification()))
+    }
+
     if (request.method === 'GET' && url.pathname.endsWith('/socket')) {
       return await this.serialized(() => this.connect(request))
     }
@@ -1680,6 +1694,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       playableActions: playableActions ?? publicRules.playableActions,
       interaction: publicRules.interaction,
       activeTransactionId,
+      activeGameVersion: {
+        gameInstanceId: snapshot.gameInstanceId,
+        recordSequence: snapshot.sequence,
+      },
       receipt,
     }
   }
@@ -1814,6 +1832,103 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return snapshot
   }
 
+  /**
+   * One-way management cutover for a legacy Game Record. This is intentionally
+   * an operation on the existing room object so room identity and waiting-room
+   * configuration remain intact. The epoch marker makes a retry a no-op even
+   * after Players have prepared a replacement game.
+   */
+  private async purgeLegacyGameData(epoch: string): Promise<{
+    status: 'purged' | 'alreadyPurged' | 'dissolved' | 'absent'
+    gameId?: string
+  }> {
+    const metadata = await this.metadata()
+    if (!metadata) {
+      // An object without room metadata cannot be a surviving room. Clear any
+      // stranded record rather than allowing an orphaned legacy Game Record to
+      // evade the namespace inventory.
+      await this.ctx.storage.deleteAll()
+      return { status: 'absent' }
+    }
+    if (metadata.status === 'Dissolved') return { status: 'dissolved', gameId: metadata.gameId }
+
+    const previousEpoch = await this.ctx.storage.get<string>('legacyPurgeEpoch')
+    if (previousEpoch === epoch) {
+      return { status: 'alreadyPurged', gameId: metadata.gameId }
+    }
+
+    const activeOrFinished = metadata.status === 'Active' || metadata.status === 'Finished'
+    const now = new Date().toISOString()
+    const replacementMetadata: GameRoomMetadata = activeOrFinished
+      ? {
+          ...metadata,
+          gameInstanceId: undefined,
+          status: 'Waiting',
+          members: metadata.members.map(member => ({
+            ...member,
+            ready: false,
+            connected: false,
+          })),
+          updatedAt: now,
+        }
+      : {
+          ...metadata,
+          updatedAt: now,
+        }
+
+    const eventEntries = await this.ctx.storage.list({ prefix: 'event:' })
+    const replacementEvent: StoredGameEvent = {
+      sequence: 1,
+      type: 'LegacyGamePurged',
+      payload: { epoch },
+      createdAt: now,
+    }
+    const entries: Record<string, unknown> = {
+      metadata: replacementMetadata,
+      nextSequence: 2,
+      legacyPurgeEpoch: epoch,
+      [this.eventKey(1)]: replacementEvent,
+    }
+    await this.ctx.storage.put(entries)
+    await this.ctx.storage.delete([...eventEntries.keys()])
+    // Put the replacement event again because the old log may have contained
+    // sequence one.
+    await this.ctx.storage.put(this.eventKey(1), replacementEvent)
+    await this.ctx.storage.delete('lastCompletedReplayDraft')
+
+    if (activeOrFinished) {
+      await this.ctx.storage.delete('gameRecord')
+      for (const member of metadata.members) {
+        await this.ctx.storage.delete(this.lockedDeckKey(member.userId))
+      }
+      for (const prefix of ['commandReceipt:', 'trustedReceipt:', 'transaction:']) {
+        const transactionEntries = await this.ctx.storage.list({ prefix })
+        await this.ctx.storage.delete([...transactionEntries.keys()])
+      }
+    }
+
+    return { status: 'purged', gameId: metadata.gameId }
+  }
+
+  private async legacyPurgeVerification(): Promise<{
+    status: GameRoomMetadata['status'] | 'Absent'
+    gameInstanceId?: string
+    hasGameRecord: boolean
+    eventTypes: string[]
+  }> {
+    const metadata = await this.metadata()
+    if (!metadata) {
+      return { status: 'Absent', hasGameRecord: false, eventTypes: [] }
+    }
+    const events = await this.events()
+    return {
+      status: metadata.status,
+      gameInstanceId: metadata.gameInstanceId,
+      hasGameRecord: Boolean(await this.ctx.storage.get<GameRecord>('gameRecord')),
+      eventTypes: events.map(event => event.type),
+    }
+  }
+
   private async metadata(): Promise<GameRoomMetadata | undefined> {
     const stored = await this.ctx.storage.get<GameRoomMetadata>('metadata')
 
@@ -1868,6 +1983,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       PlayerUnready: `${event.actor ?? '玩家'} 已取消準備。`,
       RuleModulesChanged: '房主已更新選用規則，所有玩家需重新準備。',
       PlayersReturnedToRoom: '玩家已返回等待房間。',
+      LegacyGamePurged: '系統版本更新，上一局已清除，請重新準備。',
     }
 
     if (event.type in labels) {

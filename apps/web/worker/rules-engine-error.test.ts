@@ -20,6 +20,14 @@ describe('rulesEngineError', () => {
     expect(error.statusCode).toBe(400)
   })
 
+  test('preserves the initial-pouch duplicate code for browser reconciliation', () => {
+    const error = rulesEngineError({
+      game: { Validation: { InitialPouchAlreadyChosen: { player: 'alice' } } },
+    })
+
+    expect(error).toMatchObject({ statusCode: 400, code: 'InitialPouchAlreadyChosen' })
+  })
+
   test('keeps implementation failures internal', () => {
     const error = rulesEngineError({ game: { EngineInvariant: 'MissingState' } })
 

@@ -42,6 +42,60 @@ bunx wrangler secret put BETTER_AUTH_SECRET --env staging
 bunx wrangler secret put BETTER_AUTH_SECRET --env production
 ```
 
+## Legacy game cutover (issue #75)
+
+The independent Initial Pouch Selection release deliberately does not read old
+Game Records or Replays. The one-time purge is manual, dry-run-first, and is
+never run by deployment, migration, or tests. It preserves waiting-room identity
+and configuration; it resets only active and finished matches.
+
+Before the cutover, configure a dedicated `LEGACY_PURGE_SECRET` for both
+environments. Do not put its value in a file or command argument:
+
+```bash
+bunx wrangler secret put LEGACY_PURGE_SECRET --env staging
+bunx wrangler secret put LEGACY_PURGE_SECRET --env production
+```
+
+The management script reads all credentials only from environment variables.
+For each environment set `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`,
+`LEGACY_PURGE_SECRET`, and the matching `FEWFC_STAGING_*` or
+`FEWFC_PRODUCTION_*` values for `WORKER_URL`, `D1_DATABASE_ID`,
+`GAME_ROOM_NAMESPACE_ID`, and `REPLAY_NAMESPACE_ID`.
+
+Run staging first. Deploy the release with `MAINTENANCE_MODE=true` as explicit
+Worker configuration, then take and review a dry-run inventory:
+
+```bash
+bun run build:staging
+wrangler deploy --env staging --var MAINTENANCE_MODE:true
+bun run purge:legacy-games --env staging --epoch issue-75-2026-08-11
+```
+
+Only after confirming room identities and object counts, run the mutation and
+its idempotency verification. A successful second confirmed run reports
+`mutationCount: 0`:
+
+```bash
+bun run purge:legacy-games --env staging --epoch issue-75-2026-08-11 --confirm
+bun run purge:legacy-games --env staging --epoch issue-75-2026-08-11 --confirm
+```
+
+Keep maintenance enabled if either command fails. The script verifies that no
+Game Record remains in enumerated rooms, active/finished rooms are waiting, both
+replay D1 tables are empty, and every enumerated ReplayArchive is empty. Reopen
+traffic only after that verification succeeds:
+
+```bash
+wrangler deploy --env staging --var MAINTENANCE_MODE:false
+```
+
+Repeat the same sequence with `production` only after staging verification is
+complete. The script follows the Cloudflare Durable Objects Objects API cursors
+for both namespaces, so ReplayArchives without a surviving D1 reference are
+included. It deletes only `player_saved_replay` and `replay_archive_lifecycle`;
+account, profile, Deck List, and public-room index rows are preserved.
+
 CI/CD supplies this secret from the matching GitHub Environment instead. Do not
 commit the value to this repository.
 

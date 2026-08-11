@@ -35,6 +35,11 @@ import {
   visiblePendingChoice,
 } from '~/lib/pending-choice-interaction'
 import { reconcileActionDraft, toggleActionDraftCard } from '~/lib/action-draft'
+import {
+  nextHighestActiveGameVersion,
+  shouldApplyActiveGameVersion,
+} from '~/lib/active-game-version'
+import { isInitialPouchAlreadyChosen } from '~/lib/initial-pouch-selection'
 import { presentApiError } from '~/lib/api-error-presentation'
 import { createSubmissionController } from '~/lib/submission-controller'
 
@@ -56,7 +61,7 @@ function emptyState(): PublicGameState {
     playerDecks: [],
     playerDiscards: [],
     pouches: [],
-    preparationPlayer: null,
+    initialPouchSelection: null,
     coveredPassives: [],
     counterEffects: [],
     pendingChoice: null,
@@ -144,6 +149,7 @@ export function useGameRoom(viewer: ViewerRef) {
   let playableQueryRevision = 0
   let playableQueryInFlight = false
   let activeTransactionId: string | null = null
+  let highestAppliedActiveGameVersion: GameRoomResponse['activeGameVersion']
   let retryableSubmission: {
     actionIdentity: string
     gameInstanceId: string
@@ -192,6 +198,14 @@ export function useGameRoom(viewer: ViewerRef) {
     preservePlayableActionsForSameState = false,
     resetPendingChoiceDraft = false,
   ) {
+    const version = response.activeGameVersion
+    if (!shouldApplyActiveGameVersion(highestAppliedActiveGameVersion, version)) {
+      return
+    }
+    highestAppliedActiveGameVersion = nextHighestActiveGameVersion(
+      highestAppliedActiveGameVersion,
+      version,
+    )
     const preservePlayableActions = preservePlayableActionsForSameState
       && selectedCards.value.length > 0
       && JSON.stringify(state.value) === JSON.stringify(response.state)
@@ -277,6 +291,11 @@ export function useGameRoom(viewer: ViewerRef) {
       retryableSubmission = null
       return true
     } catch (error) {
+      if (action.type === 'chooseInitialPouch' && isInitialPouchAlreadyChosen(error)) {
+        retryableSubmission = null
+        await refreshOnlineGame()
+        return true
+      }
       errorMessage.value = presentApiError(error, '無法完成遊戲操作，請稍後再試。')
       return false
     } finally {
@@ -850,6 +869,8 @@ export function useGameRoom(viewer: ViewerRef) {
     isSubmittingCommand.value = false
     isQueryingPlayableActions.value = false
     playableQueryInFlight = false
+    activeTransactionId = null
+    highestAppliedActiveGameVersion = undefined
     roomDissolved.value = false
   }
 

@@ -178,6 +178,7 @@ pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         | GameEvent::PlayerDeckPrepared { .. }
         | GameEvent::GamePreparationStarted { .. }
         | GameEvent::InitialPouchChosen { .. }
+        | GameEvent::InitialPouchSelectionCompleted
         | GameEvent::GamePreparationCompleted
         | GameEvent::PouchPlaced { .. }
         | GameEvent::PouchRevealed { .. }
