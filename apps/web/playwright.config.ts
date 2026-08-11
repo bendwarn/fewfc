@@ -33,7 +33,7 @@ const e2eServerCommand =
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  workers: 1,
+  workers: process.env.CI ? undefined : 1,
   use: {
     baseURL: "http://localhost:8727",
     browserName,

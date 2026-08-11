@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { H3Event } from 'h3'
-import { Miniflare } from 'miniflare'
+import { convertV4MiniflareOptions, Miniflare } from 'miniflare'
 import type { GameRoomMember, GameRoomResponse } from '../../shared/game-room'
 import { listPlayerRooms, listPublicRooms, upsertPublicRoom } from './public-room-index'
 import type { WorkerEnv } from './worker-env'
@@ -51,11 +51,11 @@ describe('public room index', () => {
   let notificationCount = 0
 
   beforeEach(async () => {
-    miniflare = new Miniflare({
+    miniflare = new Miniflare(convertV4MiniflareOptions({
       modules: true,
       script: "export default { fetch() { return new Response('ok') } }",
       d1Databases: ['DB'],
-    })
+    }))
     const DB = await miniflare.getD1Database('DB')
     previousEnv = globalThis.__env__
     notificationCount = 0
@@ -75,7 +75,7 @@ describe('public room index', () => {
       PLAYER_NOTIFICATIONS: notifications,
       REPLAY: notifications,
     }
-  })
+  }, { timeout: 15_000 })
 
   afterEach(async () => {
     if (previousEnv) globalThis.__env__ = previousEnv

@@ -57,11 +57,26 @@ bunx wrangler secret put LEGACY_PURGE_SECRET --env staging
 bunx wrangler secret put LEGACY_PURGE_SECRET --env production
 ```
 
-The management script reads all credentials only from environment variables.
-For each environment set `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`,
-`LEGACY_PURGE_SECRET`, and the matching `FEWFC_STAGING_*` or
-`FEWFC_PRODUCTION_*` values for `WORKER_URL`, `D1_DATABASE_ID`,
-`GAME_ROOM_NAMESPACE_ID`, and `REPLAY_NAMESPACE_ID`.
+The management script reuses the local Wrangler login instead of requiring a
+`CLOUDFLARE_API_TOKEN`. Authenticate and confirm the intended account before
+the dry run:
+
+```bash
+bunx wrangler login
+bunx wrangler whoami
+```
+
+The script reads the selected `[env.staging]` or `[env.production]` block of
+the checked-in `wrangler.toml` for the Worker name, `BETTER_AUTH_URL`, and the
+`DB` D1 binding. It then resolves the two Durable Object namespace IDs through
+Cloudflare's read-only namespace listing by the configured Worker and
+`GAME_ROOM`/`REPLAY` class names. The script obtains its account from `wrangler
+whoami --json` and temporary Cloudflare authorization from `wrangler auth token
+--json`; both remain only in memory and are never printed. If the logged-in
+profile belongs to multiple accounts, set the non-secret
+`CLOUDFLARE_ACCOUNT_ID` to select the intended account explicitly. Set only
+`LEGACY_PURGE_SECRET` in the operator's environment; do not set
+`FEWFC_*` target variables.
 
 Run staging first. Deploy the release with `MAINTENANCE_MODE=true` as explicit
 Worker configuration, then take and review a dry-run inventory:

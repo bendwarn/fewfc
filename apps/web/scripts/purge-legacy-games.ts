@@ -17,17 +17,25 @@ export interface PurgeConfig {
   epoch: string
   confirm: boolean
   accountId: string
-  apiToken: string
+  /** Ephemeral OAuth/API token obtained from the operator's Wrangler profile. */
+  authorizationToken: string
+  workerName: string
   workerUrl: string
   d1DatabaseId: string
-  gameRoomNamespaceId: string
-  replayNamespaceId: string
+  gameRoomClassName: string
+  replayClassName: string
   managementSecret?: string
 }
 
 export interface DurableObjectInventoryItem {
   id: string
   hasStoredData: boolean
+}
+
+export interface DurableObjectNamespace {
+  id: string
+  className: string
+  scriptName: string
 }
 
 export interface PurgeInventory {
@@ -54,7 +62,46 @@ export interface FetchResponse {
 
 export type Fetcher = (input: string, init?: RequestInit) => Promise<FetchResponse>
 
+export interface WranglerCommandResult {
+  exitCode: number
+  stdout: string
+}
+
+export type WranglerCommandRunner = (
+  arguments_: string[],
+) => Promise<WranglerCommandResult>
+
+export type WranglerAccountIdResolver = (
+  configuredAccountId?: string,
+) => Promise<string>
+
+export type WranglerTomlReader = () => Promise<string>
+
 const apiBase = 'https://api.cloudflare.com/client/v4'
+
+/**
+ * Wrangler's JSON commands normally write one JSON object, but local
+ * credential-store diagnostics can precede it. Keep only a valid object and
+ * do not surface the raw output: it can contain operator account details.
+ */
+function parseWranglerJson(stdout: string, unreadableMessage: string): Record<string, unknown> {
+  const output = stdout
+    .replace(/^\uFEFF/, '')
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
+    .trim()
+  const end = output.lastIndexOf('}')
+  for (let start = output.indexOf('{'); start >= 0 && start < end; start = output.indexOf('{', start + 1)) {
+    try {
+      const parsed = JSON.parse(output.slice(start, end + 1))
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      // Try a later object start in case Wrangler emitted a diagnostic first.
+    }
+  }
+  throw new Error(unreadableMessage)
+}
 
 export function parsePurgeArguments(argv: string[]): PurgeArguments {
   let environment: PurgeEnvironment | undefined
@@ -95,31 +142,189 @@ export function parsePurgeArguments(argv: string[]): PurgeArguments {
   return { environment, epoch, confirm }
 }
 
-export function configFromEnvironment(
+export function localWranglerExecutable(): string {
+  return decodeURIComponent(
+    new URL('../node_modules/.bin/wrangler', import.meta.url).pathname,
+  )
+}
+
+async function runWrangler(arguments_: string[]): Promise<WranglerCommandResult> {
+  const executable = localWranglerExecutable()
+  const child = Bun.spawn([executable, ...arguments_], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    // Capture both streams: Wrangler credential-store diagnostics can use
+    // either one, and consuming stderr prevents a failed child from blocking.
+    new Response(child.stderr).text(),
+  ])
+  return { exitCode, stdout: `${stdout}\n${stderr}` }
+}
+
+/**
+ * Reuse the authenticated Wrangler profile rather than asking an operator to
+ * copy an API token into their shell. `wrangler auth token` refreshes OAuth
+ * credentials when needed, while this tool retains the result only in memory.
+ */
+export async function authorizationTokenFromWrangler(
+  run: WranglerCommandRunner = runWrangler,
+): Promise<string> {
+  const result = await run(['auth', 'token', '--json'])
+  if (result.exitCode !== 0) {
+    throw new Error('Wrangler authentication is unavailable; run `bunx wrangler login` first')
+  }
+  const credential = parseWranglerJson(
+    result.stdout,
+    'Wrangler returned an unreadable authentication response',
+  )
+  if (
+    (credential.type === 'oauth' || credential.type === 'api_token')
+    && typeof credential.token === 'string'
+    && credential.token.trim()
+  ) {
+    return credential.token.trim()
+  }
+  throw new Error('Wrangler did not provide an OAuth or API token; run `bunx wrangler login` first')
+}
+
+/**
+ * Resolve the account from the logged-in Wrangler profile. Selecting an
+ * account automatically is safe only when the profile belongs to one account;
+ * a multi-account profile must name its intended account explicitly.
+ */
+export async function accountIdFromWrangler(
+  run: WranglerCommandRunner = runWrangler,
+  configuredAccountId?: string,
+): Promise<string> {
+  const result = await run(['whoami', '--json'])
+  if (result.exitCode !== 0) {
+    throw new Error('Wrangler authentication is unavailable; run `bunx wrangler login` first')
+  }
+  const identity = parseWranglerJson(
+    result.stdout,
+    'Wrangler returned an unreadable account response',
+  )
+  if (identity.loggedIn !== true || !Array.isArray(identity.accounts)) {
+    throw new Error('Wrangler did not provide authenticated account information')
+  }
+  const accountIds = [...new Set(identity.accounts.flatMap((account): string[] => {
+    if (typeof account !== 'object' || account === null) return []
+    const id = (account as { id?: unknown }).id
+    return typeof id === 'string' && id.trim() ? [id.trim()] : []
+  }))]
+  if (configuredAccountId) {
+    if (accountIds.includes(configuredAccountId)) return configuredAccountId
+    throw new Error('CLOUDFLARE_ACCOUNT_ID is not available to the authenticated Wrangler profile')
+  }
+  if (accountIds.length === 1) return accountIds[0]!
+  if (accountIds.length === 0) {
+    throw new Error('Wrangler did not provide an account; run `bunx wrangler login` first')
+  }
+  throw new Error('Wrangler profile has multiple accounts; set CLOUDFLARE_ACCOUNT_ID to the intended account')
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function requiredTomlString(value: unknown, description: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`wrangler.toml is missing ${description}`)
+  }
+  return value.trim()
+}
+
+/** Read only named deployment-environment values; never inherit development. */
+export function purgeTargetFromWranglerToml(
+  toml: string,
+  environment: PurgeEnvironment,
+): Pick<PurgeConfig, 'workerName' | 'workerUrl' | 'd1DatabaseId' | 'gameRoomClassName' | 'replayClassName'> {
+  const root = record(Bun.TOML.parse(toml))
+  const environments = record(root?.env)
+  const target = record(environments?.[environment])
+  if (!target) throw new Error(`wrangler.toml is missing env.${environment}`)
+
+  const workerName = requiredTomlString(target.name, `env.${environment}.name`)
+  const vars = record(target.vars)
+  const workerUrl = requiredTomlString(
+    vars?.BETTER_AUTH_URL,
+    `env.${environment}.vars.BETTER_AUTH_URL`,
+  ).replace(/\/$/, '')
+  try {
+    const url = new URL(workerUrl)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error()
+  } catch {
+    throw new Error(`wrangler.toml has an invalid env.${environment}.vars.BETTER_AUTH_URL`)
+  }
+
+  const d1Databases = target.d1_databases
+  const database = Array.isArray(d1Databases)
+    ? d1Databases.map(record).find(item => item?.binding === 'DB')
+    : undefined
+  const d1DatabaseId = requiredTomlString(
+    database?.database_id,
+    `env.${environment}.d1_databases DB database_id`,
+  )
+  if (d1DatabaseId.startsWith('REPLACE_WITH_')) {
+    throw new Error(`wrangler.toml has a placeholder env.${environment} D1 database ID`)
+  }
+
+  const bindings = record(target.durable_objects)?.bindings
+  const binding = (name: string): Record<string, unknown> | undefined =>
+    Array.isArray(bindings) ? bindings.map(record).find(item => item?.name === name) : undefined
+  return {
+    workerName,
+    workerUrl,
+    d1DatabaseId,
+    gameRoomClassName: requiredTomlString(
+      binding('GAME_ROOM')?.class_name,
+      `env.${environment}.durable_objects GAME_ROOM class_name`,
+    ),
+    replayClassName: requiredTomlString(
+      binding('REPLAY')?.class_name,
+      `env.${environment}.durable_objects REPLAY class_name`,
+    ),
+  }
+}
+
+export function localWranglerTomlPath(): string {
+  return decodeURIComponent(new URL('../wrangler.toml', import.meta.url).pathname)
+}
+
+async function readWranglerToml(): Promise<string> {
+  return await Bun.file(localWranglerTomlPath()).text()
+}
+
+export async function configFromEnvironment(
   args: PurgeArguments,
   source: Record<string, string | undefined> = Bun.env,
-): PurgeConfig {
-  const prefix = args.environment === 'staging' ? 'FEWFC_STAGING' : 'FEWFC_PRODUCTION'
-  const required = (key: string): string => {
-    const value = source[key]?.trim()
-    if (!value) throw new Error(`missing required environment variable ${key}`)
-    return value
+  resolveAuthorizationToken: () => Promise<string> = authorizationTokenFromWrangler,
+  resolveAccountId: WranglerAccountIdResolver = configuredAccountId =>
+    accountIdFromWrangler(runWrangler, configuredAccountId),
+  readToml: WranglerTomlReader = readWranglerToml,
+): Promise<PurgeConfig> {
+  const target = purgeTargetFromWranglerToml(await readToml(), args.environment)
+  const managementSecret = source.LEGACY_PURGE_SECRET?.trim()
+  if (args.confirm && !managementSecret) {
+    throw new Error('missing required environment variable LEGACY_PURGE_SECRET')
   }
 
   return {
     ...args,
-    accountId: required('CLOUDFLARE_ACCOUNT_ID'),
-    apiToken: required('CLOUDFLARE_API_TOKEN'),
-    workerUrl: required(`${prefix}_WORKER_URL`).replace(/\/$/, ''),
-    d1DatabaseId: required(`${prefix}_D1_DATABASE_ID`),
-    gameRoomNamespaceId: required(`${prefix}_GAME_ROOM_NAMESPACE_ID`),
-    replayNamespaceId: required(`${prefix}_REPLAY_NAMESPACE_ID`),
-    managementSecret: args.confirm ? required('LEGACY_PURGE_SECRET') : undefined,
+    accountId: await resolveAccountId(source.CLOUDFLARE_ACCOUNT_ID?.trim() || undefined),
+    authorizationToken: await resolveAuthorizationToken(),
+    ...target,
+    managementSecret: args.confirm ? managementSecret : undefined,
   }
 }
 
 export async function listDurableObjects(
-  config: Pick<PurgeConfig, 'accountId' | 'apiToken'>,
+  config: Pick<PurgeConfig, 'accountId' | 'authorizationToken'>,
   namespaceId: string,
   fetcher: Fetcher = fetch,
 ): Promise<DurableObjectInventoryItem[]> {
@@ -131,7 +336,7 @@ export async function listDurableObjects(
     const response = await cloudflareFetch(
       fetcher,
       `${apiBase}/accounts/${encodeURIComponent(config.accountId)}/workers/durable_objects/namespaces/${encodeURIComponent(namespaceId)}/objects?${search}`,
-      config.apiToken,
+      config.authorizationToken,
     ) as {
       result?: Array<{ id?: unknown, hasStoredData?: unknown }>
       result_info?: { cursor?: unknown }
@@ -148,15 +353,77 @@ export async function listDurableObjects(
   return objects
 }
 
+export async function listDurableObjectNamespaces(
+  config: Pick<PurgeConfig, 'accountId' | 'authorizationToken'>,
+  fetcher: Fetcher = fetch,
+): Promise<DurableObjectNamespace[]> {
+  const namespaces: DurableObjectNamespace[] = []
+  let page = 1
+  let totalPages = 1
+  do {
+    const search = new URLSearchParams({ page: String(page), per_page: '100' })
+    const response = await cloudflareFetch(
+      fetcher,
+      `${apiBase}/accounts/${encodeURIComponent(config.accountId)}/workers/durable_objects/namespaces?${search}`,
+      config.authorizationToken,
+    ) as {
+      result?: Array<{ id?: unknown, class?: unknown, script?: unknown }>
+      result_info?: { total_pages?: unknown }
+    }
+    for (const namespace of response.result ?? []) {
+      if (
+        typeof namespace.id === 'string'
+        && namespace.id
+        && typeof namespace.class === 'string'
+        && namespace.class
+        && typeof namespace.script === 'string'
+        && namespace.script
+      ) {
+        namespaces.push({
+          id: namespace.id,
+          className: namespace.class,
+          scriptName: namespace.script,
+        })
+      }
+    }
+    totalPages = Number.isInteger(response.result_info?.total_pages)
+      ? Number(response.result_info?.total_pages)
+      : page
+    page += 1
+  } while (page <= totalPages)
+  return namespaces
+}
+
+async function purgeNamespaceIds(
+  config: Pick<PurgeConfig, 'accountId' | 'authorizationToken' | 'workerName' | 'gameRoomClassName' | 'replayClassName'>,
+  fetcher: Fetcher,
+): Promise<{ gameRoomNamespaceId: string, replayNamespaceId: string }> {
+  const namespaces = await listDurableObjectNamespaces(config, fetcher)
+  const idFor = (className: string): string => {
+    const matches = namespaces.filter(namespace =>
+      namespace.scriptName === config.workerName && namespace.className === className,
+    )
+    if (matches.length !== 1) {
+      throw new Error(`expected one Durable Object namespace for ${config.workerName}/${className}`)
+    }
+    return matches[0]!.id
+  }
+  return {
+    gameRoomNamespaceId: idFor(config.gameRoomClassName),
+    replayNamespaceId: idFor(config.replayClassName),
+  }
+}
+
 export async function purgeInventory(
-  config: Pick<PurgeConfig, 'accountId' | 'apiToken' | 'd1DatabaseId' | 'gameRoomNamespaceId' | 'replayNamespaceId'>,
+  config: Pick<PurgeConfig, 'accountId' | 'authorizationToken' | 'workerName' | 'd1DatabaseId' | 'gameRoomClassName' | 'replayClassName'>,
   fetcher: Fetcher = fetch,
 ): Promise<PurgeInventory> {
+  const namespaces = await purgeNamespaceIds(config, fetcher)
   const [roomRows, replayRows, gameRoomObjects, replayObjects] = await Promise.all([
     d1Query<{ game_id?: unknown }>(config, 'SELECT game_id FROM public_game_room ORDER BY game_id', fetcher),
     d1Query<{ replay_id?: unknown }>(config, 'SELECT replay_id FROM player_saved_replay ORDER BY replay_id', fetcher),
-    listDurableObjects(config, config.gameRoomNamespaceId, fetcher),
-    listDurableObjects(config, config.replayNamespaceId, fetcher),
+    listDurableObjects(config, namespaces.gameRoomNamespaceId, fetcher),
+    listDurableObjects(config, namespaces.replayNamespaceId, fetcher),
   ])
   return {
     roomIds: roomRows
@@ -307,14 +574,14 @@ async function managementPost(
 }
 
 async function d1Query<T>(
-  config: Pick<PurgeConfig, 'accountId' | 'apiToken' | 'd1DatabaseId'>,
+  config: Pick<PurgeConfig, 'accountId' | 'authorizationToken' | 'd1DatabaseId'>,
   sql: string,
   fetcher: Fetcher,
 ): Promise<T[]> {
   const response = await cloudflareFetch(
     fetcher,
     `${apiBase}/accounts/${encodeURIComponent(config.accountId)}/d1/database/${encodeURIComponent(config.d1DatabaseId)}/query`,
-    config.apiToken,
+    config.authorizationToken,
     { method: 'POST', body: JSON.stringify({ sql }) },
   ) as Array<{ results?: T[] }> | { result?: Array<{ results?: T[] }> }
   if (Array.isArray(response)) return response[0]?.results ?? []
@@ -324,13 +591,13 @@ async function d1Query<T>(
 async function cloudflareFetch(
   fetcher: Fetcher,
   url: string,
-  apiToken: string,
+  authorizationToken: string,
   init: RequestInit = {},
 ): Promise<unknown> {
   const response = await fetcher(url, {
     ...init,
     headers: {
-      authorization: `Bearer ${apiToken}`,
+      authorization: `Bearer ${authorizationToken}`,
       'content-type': 'application/json',
       ...(init.headers ?? {}),
     },
@@ -348,18 +615,18 @@ function usage(): string {
 }
 
 if (import.meta.main) {
+  const sensitiveValues: Array<string | undefined> = [Bun.env.LEGACY_PURGE_SECRET]
   try {
     const args = parsePurgeArguments(Bun.argv.slice(2))
-    const result = await runLegacyPurge(configFromEnvironment(args))
+    const config = await configFromEnvironment(args)
+    sensitiveValues.push(config.authorizationToken)
+    const result = await runLegacyPurge(config)
     console.log(JSON.stringify(purgeRunSummary(result)))
   } catch (error) {
     // Never interpolate configuration or error objects here: an SDK/fetch
     // error can retain request headers, including management credentials.
     const message = error instanceof Error ? error.message : 'legacy purge failed'
-    console.error(`Error: ${redactSecrets(message, [
-      Bun.env.CLOUDFLARE_API_TOKEN,
-      Bun.env.LEGACY_PURGE_SECRET,
-    ])}`)
+    console.error(`Error: ${redactSecrets(message, sensitiveValues)}`)
     console.error(usage())
     process.exitCode = 1
   }

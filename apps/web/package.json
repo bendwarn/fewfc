@@ -32,30 +32,30 @@
     "test:integration": "bun test server"
   },
   "dependencies": {
-    "@better-auth/drizzle-adapter": "^1.6.25",
-    "better-auth": "^1.6.25",
+    "@better-auth/drizzle-adapter": "^1.6.26",
+    "better-auth": "^1.6.26",
     "drizzle-orm": "^0.45.2",
-    "nuxt": "^4.5.1",
-    "vue": "^3.5.40",
+    "nuxt": "^4.5.2",
+    "vue": "^3.5.41",
     "vue-router": "^5.2.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260731.1",
+    "@cloudflare/workers-types": "^5.20260811.1",
     "@nuxt/test-utils": "^4.1.0",
-    "@playwright/cli": "^0.1.17",
+    "@playwright/cli": "^0.1.18",
     "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/bun": "^1.3.14",
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.2.0",
     "@vue/test-utils": "^2.4.11",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "happy-dom": "^20.11.2",
-    "miniflare": "^5.20260801.1-alpha",
+    "miniflare": "^5.20260804.0-alpha",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10",
     "vue-tsc": "^3.3.9",
-    "wrangler": "^4.116.0"
+    "wrangler": "^4.120.1"
   }
 }
