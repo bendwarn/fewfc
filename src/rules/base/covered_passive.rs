@@ -1,6 +1,6 @@
 use crate::domain::{
     ActionModification, Element, GameEvent, GameResult, GameState, PassiveFlipOutcome,
-    PassiveNoEffectReason, PlayerId,
+    PassiveNoEffectGround, PlayerId,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::environment_makes_formation_ineffective;
@@ -19,7 +19,8 @@ pub(super) struct TriggerRequest {
     pub(super) incoming_player: PlayerId,
     pub(super) incoming_kind: IncomingActionKind,
     pub(super) ignores_formation_effects: bool,
-    pub(super) ignores_counter_effects: bool,
+    pub(super) ignores_counter_effects_by_profession_ability: bool,
+    pub(super) ignores_counter_effects_by_golden_cicada: bool,
     pub(super) attack_points: Option<i32>,
 }
 
@@ -97,7 +98,8 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
                 request.incoming_kind,
                 sealed,
                 request.ignores_formation_effects,
-                request.ignores_counter_effects,
+                request.ignores_counter_effects_by_profession_ability,
+                request.ignores_counter_effects_by_golden_cicada,
                 ineffective_environment,
                 request.attack_points,
             )
@@ -108,21 +110,18 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
             incoming_player: request.incoming_player.clone(),
             passive_id: passive.formation_id.clone(),
             cards: passive.cards.clone(),
-            outcome: if neutralized {
-                PassiveFlipOutcome::NoEffect {
-                    reason: crate::domain::PassiveNoEffectReason::Neutralized,
-                }
-            } else {
-                passive_outcome(
-                    &passive.formation_id,
-                    request.incoming_kind,
-                    sealed,
-                    request.ignores_formation_effects,
-                    request.ignores_counter_effects,
-                    ineffective_environment,
-                    &modifications,
-                )
-            },
+            outcome: passive_outcome(
+                &passive.formation_id,
+                request.incoming_kind,
+                sealed,
+                neutralized,
+                request.ignores_formation_effects,
+                request.ignores_counter_effects_by_profession_ability,
+                request.ignores_counter_effects_by_golden_cicada,
+                ineffective_environment,
+                request.attack_points,
+                &modifications,
+            ),
         });
     }
 
@@ -136,7 +135,8 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
             request.incoming_kind,
             false,
             request.ignores_formation_effects,
-            request.ignores_counter_effects,
+            request.ignores_counter_effects_by_profession_ability,
+            request.ignores_counter_effects_by_golden_cicada,
             None,
             request.attack_points,
         );
@@ -149,9 +149,12 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
                 &counter.effect_id,
                 request.incoming_kind,
                 false,
+                false,
                 request.ignores_formation_effects,
-                request.ignores_counter_effects,
+                request.ignores_counter_effects_by_profession_ability,
+                request.ignores_counter_effects_by_golden_cicada,
                 None,
+                request.attack_points,
                 &modifications,
             ),
         });
@@ -172,13 +175,15 @@ fn passive_spell_modifications(
     incoming_kind: IncomingActionKind,
     sealed: bool,
     ignores_formation_effects: bool,
-    ignores_counter_effects: bool,
+    ignores_counter_effects_by_profession_ability: bool,
+    ignores_counter_effects_by_golden_cicada: bool,
     ineffective_environment: Option<Element>,
     attack_points: Option<i32>,
 ) -> Vec<ActionModification> {
     if sealed
         || ignores_formation_effects
-        || ignores_counter_effects
+        || ignores_counter_effects_by_profession_ability
+        || ignores_counter_effects_by_golden_cicada
         || ineffective_environment.is_some()
     {
         return Vec::new();
@@ -211,68 +216,94 @@ fn passive_outcome(
     passive_id: &str,
     incoming_kind: IncomingActionKind,
     sealed: bool,
+    neutralized: bool,
     ignores_formation_effects: bool,
-    ignores_counter_effects: bool,
+    ignores_counter_effects_by_profession_ability: bool,
+    ignores_counter_effects_by_golden_cicada: bool,
     ineffective_environment: Option<Element>,
+    attack_points: Option<i32>,
     modifications: &[ActionModification],
 ) -> PassiveFlipOutcome {
+    // A counter effect must first be applicable. An unrelated Defense facing a
+    // Spell therefore has only NotAnAttack, even if an immunity is present.
+    if let Some(ground) = inapplicability_ground(passive_id, incoming_kind, attack_points) {
+        return PassiveFlipOutcome::NoEffect {
+            grounds: vec![ground],
+        };
+    }
+
+    let mut grounds = Vec::new();
+    if neutralized {
+        grounds.push(PassiveNoEffectGround::Neutralized);
+    }
     if ignores_formation_effects {
-        return PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::IgnoredBySacredBeast,
-        };
+        grounds.push(PassiveNoEffectGround::IgnoredBySacredBeast);
     }
-    if ignores_counter_effects {
-        return PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::IgnoredByProfessionAbility,
-        };
+    if ignores_counter_effects_by_profession_ability {
+        grounds.push(PassiveNoEffectGround::IgnoredByProfessionAbility);
     }
-
+    if ignores_counter_effects_by_golden_cicada {
+        grounds.push(PassiveNoEffectGround::IgnoredByGoldenCicada);
+    }
     if let Some(environment) = ineffective_environment {
-        return PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::IneffectiveInEnvironment { environment },
-        };
+        grounds.push(PassiveNoEffectGround::IneffectiveInEnvironment { environment });
     }
-
     if sealed {
-        return PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::Sealed,
-        };
+        grounds.push(PassiveNoEffectGround::Sealed);
+    }
+    if passive_id == "empty-city" {
+        grounds.push(PassiveNoEffectGround::EmptyCity);
+    }
+    if !grounds.is_empty() {
+        return PassiveFlipOutcome::NoEffect { grounds };
     }
 
-    if !modifications.is_empty() {
+    if !modifications.is_empty() || passive_id == crate::rules::jianghu::POISON_SMOKE {
         return PassiveFlipOutcome::Applied {
             effect_id: passive_id.to_string(),
             modifications: modifications.to_vec(),
         };
     }
 
-    match (passive_id, incoming_kind) {
-        ("empty-city", _) => PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::EmptyCity,
-        },
-        (
-            "defense",
-            IncomingActionKind::ActiveSpell
-            | IncomingActionKind::PassiveSpell
-            | IncomingActionKind::ProfessionChange
-            | IncomingActionKind::Pass,
-        ) => PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::NotAnAttack,
-        },
-        (
-            "countershock",
-            IncomingActionKind::ActiveSpell
-            | IncomingActionKind::PassiveSpell
-            | IncomingActionKind::ProfessionChange
-            | IncomingActionKind::Pass,
-        ) => PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::NotAnAttack,
-        },
-        ("seal", IncomingActionKind::Attack) => PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::NotASpell,
-        },
-        _ => PassiveFlipOutcome::NoEffect {
-            reason: PassiveNoEffectReason::NotASpell,
-        },
+    unreachable!("an applicable passive either has a ground or a modification")
+}
+
+fn inapplicability_ground(
+    passive_id: &str,
+    incoming_kind: IncomingActionKind,
+    attack_points: Option<i32>,
+) -> Option<PassiveNoEffectGround> {
+    match passive_id {
+        "empty-city" => None,
+        "defense" | "dao-defense" | "countershock" | "magic-shock"
+            if incoming_kind != IncomingActionKind::Attack =>
+        {
+            Some(PassiveNoEffectGround::NotAnAttack)
+        }
+        crate::rules::jianghu::FLOWING_SHADOW_SWORD
+            if incoming_kind != IncomingActionKind::Attack =>
+        {
+            Some(PassiveNoEffectGround::NotAnAttack)
+        }
+        crate::rules::jianghu::FLOWING_SHADOW_SWORD
+            if attack_points.is_none_or(|points| points > 40) =>
+        {
+            Some(PassiveNoEffectGround::AttackPointsExceedLimit { maximum: 40 })
+        }
+        "seal"
+            if !matches!(
+                incoming_kind,
+                IncomingActionKind::ActiveSpell | IncomingActionKind::PassiveSpell
+            ) =>
+        {
+            Some(PassiveNoEffectGround::NotASpell)
+        }
+        "magic-seal" if incoming_kind != IncomingActionKind::ActiveSpell => {
+            Some(PassiveNoEffectGround::NotASpell)
+        }
+        "holy-light-break" if incoming_kind != IncomingActionKind::PassiveSpell => {
+            Some(PassiveNoEffectGround::NotASpell)
+        }
+        _ => None,
     }
 }

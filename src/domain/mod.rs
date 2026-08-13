@@ -2442,7 +2442,10 @@ pub enum PassiveFlipOutcome {
         modifications: Vec<ActionModification>,
     },
     NoEffect {
-        reason: PassiveNoEffectReason,
+        /// Every independently sufficient reason why this otherwise applicable
+        /// counter effect had no effect. The wire order is deterministic, but
+        /// it has no domain priority.
+        grounds: Vec<PassiveNoEffectGround>,
     },
 }
 
@@ -2455,8 +2458,8 @@ pub enum ActionModification {
     RevealCoveredPassive,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PassiveNoEffectReason {
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PassiveNoEffectGround {
     NotAnAttack,
     NotASpell,
     Sealed,
@@ -2464,6 +2467,8 @@ pub enum PassiveNoEffectReason {
     EmptyCity,
     IgnoredBySacredBeast,
     IgnoredByProfessionAbility,
+    IgnoredByGoldenCicada,
+    AttackPointsExceedLimit { maximum: i32 },
     IneffectiveInEnvironment { environment: Element },
 }
 

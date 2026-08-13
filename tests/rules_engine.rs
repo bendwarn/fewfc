@@ -6,16 +6,17 @@ use fewfc::application::{
     advance_automatic as advance_state_automatic, apply_event, handle_command,
 };
 use fewfc::domain::{
-    ActionModification, AttackPointBreakdown, AttackResolutionEffects, CardDef, CardDefId,
-    CardInstanceDef, CardInstanceId, CardMoveDelta, CardZone, ChoiceAnswer, ChoiceContinuation,
-    ChoiceId, Command, CommandId, DamageTransform, ElementInteraction, EngineInvariantError,
-    EnvironmentAttackEffect, FormationAreaState, FormationInArea, GameConclusion, GameEndCause,
-    GameError, GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta,
-    LastElementalAttack, LastElementalAttackUpdate, LastFormationUse, PassActionReason,
-    PassiveFlipOutcome, PassiveNoEffectReason, PendingChoice, PendingChoiceKind, Phase, Player,
-    PlayerFormationArea, PlayerHand, PlayerId, PlayerShield, RuleModuleId, RulesetId,
-    ShieldChangeDelta, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp,
-    TeamId, TurnDrawSkipReason, ValidationError,
+    ActionModification, AttackPointBreakdown, AttackResolutionEffects,
+    CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
+    CardMoveDelta, CardZone, ChoiceAnswer, ChoiceContinuation, ChoiceId, Command, CommandId,
+    DamageTransform, ElementInteraction, EngineInvariantError, EnvironmentAttackEffect,
+    FormationAreaState, FormationInArea, GameConclusion, GameEndCause, GameError, GameEvent,
+    GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
+    LastElementalAttackUpdate, LastFormationUse, PassActionReason, PassiveFlipOutcome,
+    PassiveNoEffectGround, PendingChoice, PendingChoiceKind, Phase, Player, PlayerFormationArea,
+    PlayerHand, PlayerId, PlayerShield, RuleModuleId, RulesetId, ShieldChangeDelta, StatusDuration,
+    StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId, TurnDrawSkipReason,
+    ValidationError,
 };
 use fewfc::public_view::{
     self, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
@@ -302,17 +303,23 @@ fn answer_record_choice(
     })
 }
 
-fn advance_record_to_next_main_after_turn_draw(record: &mut GameRecord, discard: CardInstanceId) {
-    record.advance_automatic().unwrap();
-    answer_record_choice(
-        record,
-        PlayerId::new("p1"),
-        ChoiceAnswer::Cards {
-            cards: vec![discard],
-        },
-    )
-    .unwrap();
-    record.advance_automatic().unwrap();
+fn advance_record_to_next_main_after_turn_draw(
+    record: &mut GameRecord,
+    discard: CardInstanceId,
+) -> Vec<GameEvent> {
+    let mut events = record.advance_automatic().unwrap();
+    events.extend(
+        answer_record_choice(
+            record,
+            PlayerId::new("p1"),
+            ChoiceAnswer::Cards {
+                cards: vec![discard],
+            },
+        )
+        .unwrap(),
+    );
+    events.extend(record.advance_automatic().unwrap());
+    events
 }
 
 fn record_after_p1_metal_attack_on_turn_1() -> GameRecord {
@@ -731,13 +738,12 @@ fn sacred_beast_consumes_defense_without_preventing_damage() {
     )
     .unwrap();
 
+    let semantic = semantic_events(&events);
     assert!(matches!(
-        semantic_events(&events).as_slice(),
+        semantic.as_slice(),
         [
             GameEvent::PassiveFlipped {
-                outcome: PassiveFlipOutcome::NoEffect {
-                    reason: PassiveNoEffectReason::IgnoredBySacredBeast,
-                },
+                outcome: PassiveFlipOutcome::NoEffect { .. },
                 ..
             },
             GameEvent::AttackResolved {
@@ -746,6 +752,13 @@ fn sacred_beast_consumes_defense_without_preventing_damage() {
             },
             GameEvent::EnvironmentTransferred { .. },
         ]
+    ));
+    assert!(matches!(
+        &semantic[0],
+        GameEvent::PassiveFlipped {
+            outcome: PassiveFlipOutcome::NoEffect { grounds },
+            ..
+        } if grounds == &vec![PassiveNoEffectGround::IgnoredBySacredBeast]
     ));
 }
 
@@ -872,15 +885,12 @@ fn ineffective_defense_flips_and_is_consumed_without_preventing_damage() {
     )
     .unwrap();
 
+    let semantic = semantic_events(&events);
     assert!(matches!(
-        semantic_events(&events).as_slice(),
+        semantic.as_slice(),
         [
             GameEvent::PassiveFlipped {
-                outcome: PassiveFlipOutcome::NoEffect {
-                    reason: PassiveNoEffectReason::IneffectiveInEnvironment {
-                        environment: Element::Metal,
-                    },
-                },
+                outcome: PassiveFlipOutcome::NoEffect { .. },
                 ..
             },
             GameEvent::AttackResolved {
@@ -888,6 +898,15 @@ fn ineffective_defense_flips_and_is_consumed_without_preventing_damage() {
                 ..
             },
         ]
+    ));
+    assert!(matches!(
+        &semantic[0],
+        GameEvent::PassiveFlipped {
+            outcome: PassiveFlipOutcome::NoEffect { grounds },
+            ..
+        } if grounds == &vec![PassiveNoEffectGround::IneffectiveInEnvironment {
+            environment: Element::Metal,
+        }]
     ));
 }
 
@@ -1280,6 +1299,155 @@ fn game_record_facade_applies_commands_and_verifies_replay() {
 
     let view = record.public_view(Viewer::Observer).unwrap();
     assert_eq!(view.phase, Phase::TurnDraw);
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
+}
+
+#[test]
+fn base_start_turn_lifecycle_matrix_commits_an_action_then_resolves_draw_choice_and_next_turn() {
+    // This is the command-level lifecycle matrix for the Base Rules start
+    // boundary.  The fixed deck order is background only: every transition
+    // after Start is an actual command or automatic canonical transition.
+    let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+
+    assert_eq!(
+        record.events(),
+        [
+            GameEvent::DeckPrepared {
+                deck_order: official_deck(),
+            },
+            GameEvent::CardsDealt {
+                player: p1.clone(),
+                cards: vec![card(1), card(2), card(3), card(4)],
+            },
+            GameEvent::CardsDealt {
+                player: p2.clone(),
+                cards: vec![card(5), card(6), card(7), card(8), card(9)],
+            },
+        ]
+    );
+
+    assert_eq!(
+        record.advance_automatic().unwrap(),
+        vec![GameEvent::TurnStarted {
+            player: p1.clone(),
+            turn_number: 1,
+        }]
+    );
+    let action = record
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        action.as_slice(),
+        [
+            GameEvent::FormationCommitted {
+                player,
+                formation_id,
+                cards,
+                state: FormationAreaState::FaceUpResolving,
+                ..
+            },
+            GameEvent::AttackResolved {
+                attacker,
+                target,
+                formation_id: attack_formation,
+                point_breakdown: AttackPointBreakdown { final_amount: 7, .. },
+                hp_change: HpChangeDelta { old_hp: 30, delta: -7, new_hp: 23, .. },
+                ..
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: discarded_by,
+                formation_id: discarded,
+                cards: discarded_cards,
+            },
+        ] if player == &p1
+            && formation_id == "metal-strike"
+            && cards == &vec![card(1)]
+            && attacker == &p1
+            && target == &p2
+            && attack_formation == "metal-strike"
+            && discarded_by == &p1
+            && discarded == "metal-strike"
+            && discarded_cards == &vec![card(1)]
+    ));
+    assert_eq!(record.state().phase, Phase::TurnDraw);
+    assert_eq!(
+        record
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p2"))
+            .map(|entry| entry.hp),
+        Some(23)
+    );
+    assert!(record.state().discard.contains(&card(1)));
+
+    let draw_events = record.advance_automatic().unwrap();
+    let (choice_id, drawn_cards) = match draw_events.as_slice() {
+        [
+            GameEvent::CardsDrawnForTurnDiscardChoice {
+                player,
+                drawn_cards,
+                allowed_discards,
+            },
+            GameEvent::ChoiceRequested { choice },
+        ] if player == &p1 && drawn_cards == allowed_discards && choice.player == p1 => {
+            (choice.choice_id, drawn_cards.clone())
+        }
+        _ => panic!("expected canonical turn-draw Card choice, got {draw_events:?}"),
+    };
+    assert_eq!(drawn_cards, vec![card(10), card(11), card(12)]);
+
+    let chosen_discard = card(12);
+    assert_eq!(
+        record
+            .handle(Command::AnswerChoice {
+                player: p1.clone(),
+                choice_id,
+                answer: ChoiceAnswer::Cards {
+                    cards: vec![chosen_discard],
+                },
+            })
+            .unwrap(),
+        vec![
+            GameEvent::ChoiceMade {
+                player: p1.clone(),
+                choice_id,
+                answer: ChoiceAnswer::Cards {
+                    cards: vec![chosen_discard],
+                },
+            },
+            GameEvent::TurnDrawResolved {
+                player: p1.clone(),
+                discard: chosen_discard,
+                kept_cards: vec![card(10), card(11)],
+            },
+        ]
+    );
+    assert_eq!(
+        record.advance_automatic().unwrap(),
+        vec![
+            GameEvent::TurnEnded { player: p1.clone() },
+            GameEvent::TurnStarted {
+                player: p2.clone(),
+                turn_number: 2,
+            },
+        ]
+    );
+    assert_eq!(record.state().current_player(), Some(&p2));
+    assert_eq!(record.state().phase, Phase::ActiveEffects);
+    assert_eq!(
+        record.state().hand(&p1),
+        Some(vec![card(2), card(3), card(4), card(10), card(11)].as_slice())
+    );
+    assert!(record.state().discard.contains(&chosen_discard));
+    assert_eq!(record.replay().unwrap(), record.state().clone());
     assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }
 
@@ -2145,10 +2313,12 @@ fn pass_action_still_flips_and_discards_the_previous_players_covered_passive() {
             owner,
             passive_id,
             outcome: PassiveFlipOutcome::NoEffect {
-                reason: PassiveNoEffectReason::NotAnAttack,
+                grounds,
             },
             ..
-        } if owner == &PlayerId::new("p1") && passive_id == "defense"
+        } if owner == &PlayerId::new("p1")
+            && passive_id == "defense"
+            && grounds == &vec![PassiveNoEffectGround::NotAnAttack]
     )));
     assert!(no_covered(&state));
     assert!(state.discard.contains(&card(2)));
@@ -2951,6 +3121,133 @@ fn radiance_prevents_next_player_action_and_draw_for_two_turns() {
 
     assert_eq!(state.statuses.len(), 2);
     assert_eq!(state.phase, Phase::TurnDraw);
+}
+
+#[test]
+fn radiance_cannot_act_matrix_blocks_a_usable_formation_but_keeps_status_specific_pass_legal() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+
+    // Baseline: P2 has a legal Wood Strike after P1 finishes an ordinary turn.
+    let mut baseline = GameRecord::start(
+        two_player_setup(),
+        deck_starting_with(&[1, 6, 4, 3, 2, 5, 7, 8, 9]),
+    )
+    .unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(10));
+    let baseline_events = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "wood-strike".to_string(),
+            cards: vec![card(2)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(
+        baseline_events
+            .iter()
+            .any(|event| matches!(event, GameEvent::AttackResolved { .. }))
+    );
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+
+    // Modifier: Radiance is established through the complete Formation command;
+    // P2 still holds the same usable Wood Card but may only take the
+    // status-specific Pass action.
+    let mut radiance = GameRecord::start(
+        two_player_setup(),
+        deck_starting_with(&[1, 6, 4, 3, 2, 5, 7, 8, 9]),
+    )
+    .unwrap();
+    radiance.advance_automatic().unwrap();
+    let radiance_cards = vec![card(1), card(6), card(4), card(3)];
+    let radiance_events = radiance
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "radiance".to_string(),
+            cards: radiance_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(radiance_events.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCommitted { formation_id, cards, .. }
+            if formation_id == "radiance" && cards == &radiance_cards
+    )));
+    assert!(radiance_events.iter().any(|event| matches!(
+        event,
+        GameEvent::StatusAdded { status }
+            if status.owner == StatusOwner::Player(p2.clone()) && status.kind == "CannotAct"
+    )));
+    assert!(radiance_events.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCardsDiscarded { formation_id, cards, .. }
+            if formation_id == "radiance" && cards == &radiance_cards
+    )));
+    // Advance a copy through the canonical events caused by the legal
+    // Radiance command. It reaches P2 ActiveEffects before GameRecord's
+    // convenience loop submits the forced pass, without hand-making status.
+    let mut p2_turn = radiance.state().clone();
+    while p2_turn.current_player() != Some(&p2) || p2_turn.phase != Phase::ActiveEffects {
+        let automatic_events = advance_state_automatic(&p2_turn).unwrap();
+        assert!(
+            !automatic_events.is_empty(),
+            "automatic progression must reach P2's command boundary"
+        );
+        for event in automatic_events {
+            apply_event(&mut p2_turn, &event);
+        }
+        if let Some(choice) = p2_turn.pending_choice.clone() {
+            let PendingChoiceKind::Card { cards, .. } = choice.kind else {
+                panic!("P1's normal Turn Draw must use a Card choice");
+            };
+            for event in answer_choice(
+                &p2_turn,
+                choice.player,
+                ChoiceAnswer::Cards {
+                    cards: vec![cards[0]],
+                },
+            )
+            .unwrap()
+            {
+                apply_event(&mut p2_turn, &event);
+            }
+        }
+    }
+    assert!(p2_turn.hand(&p2).unwrap().contains(&card(2)));
+    assert_eq!(
+        handle_command(
+            &p2_turn,
+            Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "wood-strike".to_string(),
+                cards: vec![card(2)],
+                declared_targets: Vec::new(),
+            },
+        ),
+        Err(GameError::Validation(
+            ValidationError::CannotPerformFormation {
+                reason: CannotPerformFormationReason::CannotActByStatus { player: p2.clone() },
+            }
+        ))
+    );
+
+    let progression_events = advance_record_to_next_main_after_turn_draw(&mut radiance, card(10));
+    assert!(progression_events.iter().any(|event| matches!(
+        event,
+        GameEvent::ActionPassed { player, reason }
+            if player == &p2 && reason == &PassActionReason::CannotActByStatus
+    )));
+    assert_eq!(radiance.replay().unwrap(), radiance.state().clone());
+    assert_eq!(radiance.verify_replay().unwrap(), radiance.state().clone());
 }
 
 #[test]
@@ -3834,10 +4131,10 @@ fn empty_city_flips_with_its_intentional_no_effect_outcome_and_is_discarded() {
         GameEvent::PassiveFlipped {
             passive_id,
             outcome: PassiveFlipOutcome::NoEffect {
-                reason: PassiveNoEffectReason::EmptyCity,
+                grounds,
             },
             ..
-        } if passive_id == "empty-city"
+        } if passive_id == "empty-city" && grounds == &vec![PassiveNoEffectGround::EmptyCity]
     )));
     let state = record.state().clone();
     assert!(no_covered(&state));
@@ -3874,6 +4171,169 @@ fn player_cannot_cover_second_passive_while_one_is_pending() {
         ))
     );
     assert_eq!(state, state_before);
+}
+
+#[test]
+fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+
+    // Baseline: the same incoming Fire Strike damages P1 after P1 has used a
+    // normal legal action and completed Turn Draw.
+    let mut baseline = GameRecord::start(two_player_setup(), defense_setup_deck()).unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(10));
+    let baseline_hp = baseline
+        .state()
+        .hp
+        .iter()
+        .find(|entry| entry.team == TeamId::new("team:p1"))
+        .unwrap()
+        .hp;
+    let baseline_events = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(baseline_events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved { hp_change, .. } if hp_change.effective_delta < 0
+    )));
+    assert!(baseline_events.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCommitted { formation_id, cards, .. }
+            if formation_id == "fire-strike" && cards == &vec![card(9)]
+    )));
+    assert!(baseline_events.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCardsDiscarded { formation_id, cards, .. }
+            if formation_id == "fire-strike" && cards == &vec![card(9)]
+    )));
+    assert!(
+        baseline
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p1"))
+            .unwrap()
+            .hp
+            < baseline_hp
+    );
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+
+    // Modifier: Defense is established only by P1's legal passive Formation.
+    let mut interaction = GameRecord::start(two_player_setup(), defense_setup_deck()).unwrap();
+    interaction.advance_automatic().unwrap();
+    let defense_cards = vec![card(2), card(7)];
+    let defense_events = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "defense".to_string(),
+            cards: defense_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        defense_events.as_slice(),
+        [
+            GameEvent::FormationCommitted { formation_id, cards, .. },
+            GameEvent::PassiveCovered { player, formation_id: covered, cards: covered_cards, sealed: false, .. },
+        ] if formation_id == "defense"
+            && cards == &defense_cards
+            && player == &p1
+            && covered == "defense"
+            && covered_cards == &defense_cards
+    ));
+    assert!(matches!(
+        public_view::state_for(interaction.state(), Viewer::Player(p1.clone())).covered_passives.as_slice(),
+        [PublicCoveredPassive { owner, formation_id: Some(formation_id), cards: PublicCardRefs::Known(cards), .. }]
+            if owner == &p1 && formation_id == "defense" && cards == &defense_cards
+    ));
+    assert!(matches!(
+        public_view::state_for(interaction.state(), Viewer::Player(p2.clone())).covered_passives.as_slice(),
+        [PublicCoveredPassive { owner, formation_id: None, cards: PublicCardRefs::Hidden { count: 2 }, .. }]
+            if owner == &p1
+    ));
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(10));
+    assert_eq!(interaction.state().current_player(), Some(&p2));
+
+    // Interaction: the passive flips exactly once, prevents only damage, and
+    // still lets the incoming Formation commit and move its Cards.
+    let interaction_hp = interaction
+        .state()
+        .hp
+        .iter()
+        .find(|entry| entry.team == TeamId::new("team:p1"))
+        .unwrap()
+        .hp;
+    let interaction_events = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(interaction_events.iter().any(|event| matches!(
+        event,
+        GameEvent::PassiveFlipped {
+            owner,
+            incoming_player,
+            passive_id,
+            cards,
+            outcome: PassiveFlipOutcome::Applied { effect_id, modifications },
+        } if owner == &p1
+            && incoming_player == &p2
+            && passive_id == "defense"
+            && cards == &defense_cards
+            && effect_id == "defense"
+            && modifications == &vec![ActionModification::PreventDamage]
+    )));
+    assert!(interaction_events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved { hp_change, .. }
+            if hp_change.delta == 0 && hp_change.effective_delta == 0
+    )));
+    assert!(interaction_events.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCommitted { formation_id, cards, .. }
+            if formation_id == "fire-strike" && cards == &vec![card(9)]
+    )));
+    assert!(interaction_events.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCardsDiscarded { formation_id, cards, .. }
+            if formation_id == "fire-strike" && cards == &vec![card(9)]
+    )));
+    assert_eq!(
+        interaction
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p1"))
+            .unwrap()
+            .hp,
+        interaction_hp
+    );
+    assert!(interaction.state().covered_passive(&p1).is_none());
+    for card in defense_cards.into_iter().chain([card(9)]) {
+        assert!(interaction.state().discard.contains(&card));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
 }
 
 #[test]
@@ -3956,59 +4416,167 @@ fn defense_prevents_incoming_attack_damage_and_records_action_modification() {
 }
 
 #[test]
-fn defense_prevents_five_streams_damage_but_not_its_draw_bonus() {
+fn five_streams_defense_matrix_keeps_the_turn_draw_bonus_when_damage_is_prevented() {
+    // The Deck order only gives each Player the Cards required by their legal
+    // Commands. P1 establishes the modifier through Defense; no covered
+    // passive or action outcome is injected by this matrix.
     let mut setup = two_player_setup_with_hp(100);
     setup.card_instances.push(card_instance(21, "metal"));
-    let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::ActiveEffects;
-    state.current_turn_index = 1;
-    state.turn_number = 2;
-    state.hands = vec![
-        PlayerHand::new(PlayerId::new("p1"), vec![card(2), card(3)]),
-        PlayerHand::new(
-            PlayerId::new("p2"),
-            vec![card(1), card(6), card(11), card(16), card(21)],
-        ),
-    ];
-    cover(&mut state, "p1", "defense", vec![card(7), card(12)], false);
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
 
-    let events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p2"),
+    // Baseline: five same-level Cards form Five Streams and deal damage while
+    // committing the Formation and recording its draw bonus.
+    let mut baseline = GameRecord::start(
+        setup.clone(),
+        deck_starting_with(&[2, 3, 4, 5, 1, 6, 11, 16, 21, 7, 8]),
+    )
+    .unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "empty-city".to_string(),
+            cards: vec![card(2), card(3)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(7));
+    let baseline_hp = baseline
+        .state()
+        .hp
+        .iter()
+        .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
+        .unwrap()
+        .hp;
+    let baseline_events = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
             formation_id: "five-streams-unite".to_string(),
             cards: vec![card(1), card(6), card(11), card(16), card(21)],
             declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    for event in &events {
-        apply_event(&mut state, event);
-    }
-
+        })
+        .unwrap();
+    assert!(baseline_events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved { hp_change, .. } if hp_change.effective_delta < 0
+    )));
+    assert!(baseline_events.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCommitted { formation_id, .. } if formation_id == "five-streams-unite"
+    )));
     assert_eq!(
-        state
+        baseline
+            .state()
             .hp
             .iter()
             .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
-            .map(|team_hp| team_hp.hp),
-        Some(100)
+            .unwrap()
+            .hp,
+        baseline_hp - 60
     );
     assert_eq!(
-        state.turn_draw_bonus_by_player.get(&PlayerId::new("p2")),
+        baseline.state().turn_draw_bonus_by_player.get(&p2),
         Some(&1)
     );
-    for used_card in [
-        card(7),
-        card(12),
-        card(1),
-        card(6),
-        card(11),
-        card(16),
-        card(21),
-    ] {
-        assert!(state.discard.contains(&used_card));
-    }
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+
+    // Modifier and interaction: P1 legally covers Defense. The next attack
+    // flips exactly that passive, prevents the affected HP loss, and leaves
+    // Five Streams' independent Turn Draw bonus intact.
+    let mut interaction = GameRecord::start(
+        setup,
+        deck_starting_with(&[2, 7, 4, 5, 1, 6, 11, 16, 21, 3, 8]),
+    )
+    .unwrap();
+    interaction.advance_automatic().unwrap();
+    let defense_events = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "defense".to_string(),
+            cards: vec![card(2), card(7)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        defense_events.as_slice(),
+        [
+            GameEvent::FormationCommitted { formation_id, cards, .. },
+            GameEvent::PassiveCovered { player, formation_id: covered, cards: covered_cards, sealed: false, .. },
+        ] if formation_id == "defense"
+            && cards == &vec![card(2), card(7)]
+            && player == &p1
+            && covered == "defense"
+            && covered_cards == &vec![card(2), card(7)]
+    ));
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(3));
+    assert_eq!(interaction.state().current_player(), Some(&p2));
+    let interaction_hp = interaction
+        .state()
+        .hp
+        .iter()
+        .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
+        .unwrap()
+        .hp;
+    let interaction_events = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "five-streams-unite".to_string(),
+            cards: vec![card(1), card(6), card(11), card(16), card(21)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(interaction_events.iter().any(|event| matches!(
+        event,
+        GameEvent::PassiveFlipped {
+            owner,
+            passive_id,
+            outcome: PassiveFlipOutcome::Applied { .. },
+            ..
+        } if owner == &p1 && passive_id == "defense"
+    )));
+    assert!(interaction_events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved { hp_change, .. }
+            if hp_change.delta == 0 && hp_change.effective_delta == 0
+    )));
+    assert!(interaction_events.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCommitted { formation_id, cards, .. }
+            if formation_id == "five-streams-unite"
+                && cards == &vec![card(1), card(6), card(11), card(16), card(21)]
+    )));
+    assert_eq!(
+        interaction
+            .state()
+            .hp
+            .iter()
+            .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
+            .unwrap()
+            .hp,
+        interaction_hp
+    );
+    assert_eq!(
+        interaction.state().turn_draw_bonus_by_player.get(&p2),
+        Some(&1)
+    );
+    interaction.advance_automatic().unwrap();
+    assert!(matches!(
+        &interaction.state().pending_choice,
+        Some(PendingChoice {
+            player,
+            kind: PendingChoiceKind::Card { cards, .. },
+            ..
+        }) if player == &p2 && cards.len() == 4
+    ));
+    assert!(interaction.state().discard.contains(&card(2)));
+    assert!(interaction.state().discard.contains(&card(7)));
+    assert!(interaction.state().formation_area(&p2).is_some());
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
 }
 
 #[test]
@@ -4234,7 +4802,7 @@ fn seal_passive_flips_as_no_effect_against_incoming_attack_and_is_discarded() {
             passive_id: "seal".to_string(),
             cards: vec![card(3), card(8)],
             outcome: PassiveFlipOutcome::NoEffect {
-                reason: PassiveNoEffectReason::NotASpell,
+                grounds: vec![PassiveNoEffectGround::NotASpell],
             },
         })
     );
@@ -4458,7 +5026,7 @@ fn sealed_passive_later_flips_as_no_effect_and_is_discarded() {
             passive_id: "countershock".to_string(),
             cards: vec![card(4), card(9)],
             outcome: PassiveFlipOutcome::NoEffect {
-                reason: PassiveNoEffectReason::Sealed,
+                grounds: vec![PassiveNoEffectGround::Sealed],
             },
         })
     );

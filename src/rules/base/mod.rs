@@ -837,9 +837,9 @@ fn decide_command_with_base_ruleset(
                     incoming_player: player.clone(),
                     incoming_kind: covered_passive::IncomingActionKind::Pass,
                     ignores_formation_effects: false,
-                    ignores_counter_effects: crate::rules::pouch::player_is_protected(
-                        state, &player,
-                    ),
+                    ignores_counter_effects_by_profession_ability: false,
+                    ignores_counter_effects_by_golden_cicada:
+                        crate::rules::pouch::player_is_protected(state, &player),
                     attack_points: None,
                 },
             );
@@ -937,9 +937,9 @@ fn decide_command_with_base_ruleset(
                     incoming_player: player.clone(),
                     incoming_kind: covered_passive::IncomingActionKind::ProfessionChange,
                     ignores_formation_effects: false,
-                    ignores_counter_effects: crate::rules::pouch::player_is_protected(
-                        state, &player,
-                    ),
+                    ignores_counter_effects_by_profession_ability: false,
+                    ignores_counter_effects_by_golden_cicada:
+                        crate::rules::pouch::player_is_protected(state, &player),
                     attack_points: None,
                 },
             );

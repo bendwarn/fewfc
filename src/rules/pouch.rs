@@ -1220,7 +1220,7 @@ pub(crate) fn suppress_watch_fire_formation_hp_changes(
     player: &PlayerId,
     events: &mut [GameEvent],
 ) {
-    if !has_status(state, player, WATCH_FIRE_STATUS) {
+    if !has_status(state, player, WATCH_FIRE_STATUS) || player_is_protected(state, player) {
         return;
     }
     for event in events {

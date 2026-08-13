@@ -625,6 +625,7 @@ pub(crate) fn poison_smoke_flip_events(state: &GameState, events: &[GameEvent]) 
             GameEvent::PassiveFlipped {
                 incoming_player,
                 passive_id,
+                outcome: crate::domain::PassiveFlipOutcome::Applied { .. },
                 ..
             } if passive_id == POISON_SMOKE => Some(poison_event(state, incoming_player, 1)),
             _ => None,
@@ -929,16 +930,14 @@ pub(crate) fn activate_profession_ability(
     }];
     match ability_id {
         "jianghu:heavenly-yang-aura" => {
-            let expires_on = TurnOrderTargets::new(state).nth_future_turn_for_player(player, 1)?;
             events.push(GameEvent::StatusAdded {
                 status: StatusEffect {
                     id: format!("jianghu-heavenly-yang-aura-{}", state.turn_number),
                     owner: StatusOwner::Player(player.clone()),
                     kind: "JianghuYangAura".to_string(),
                     value: None,
-                    duration: StatusDuration::UntilTurnEndNumber {
+                    duration: StatusDuration::UntilTurnStart {
                         player: player.clone(),
-                        turn_number: expires_on,
                     },
                 },
             });

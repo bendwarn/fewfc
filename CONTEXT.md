@@ -114,9 +114,19 @@ the Card's immutable Card Origin when Chain gives a Card to a teammate.
 _Avoid_: Card Origin, Pile Owner
 
 **Player-Only Secret Protection**:
-Golden Cicada's protection of its triggering Player. It does not extend to that
-Player's Spirit, Team, Team Star, or the shared Environment.
+Golden Cicada's protection of its triggering Player from the listed
+Player-facing effects and other Players' Secret Strategies. It makes Watch the
+Fire ineffective against that Player's Turn, so their Formation's Attack damage
+and Formation-caused HP changes resolve normally, but it does not
+independently protect their Spirit, Team, Team Star, or the shared Environment.
 _Avoid_: Team protection, Spirit protection, global Secret immunity
+
+**Watch the Fire Protection (觀火保護)**:
+The Secret Strategy effect that protects the Next Player's next Turn from
+Attack damage and Formation-caused HP changes. Golden Cicada leaves this
+effect present and visible until its ordinary expiry while making it
+ineffective against the protected Player.
+_Avoid_: Attack prohibition, hidden protection, removed by Golden Cicada
 
 **Initial Pouch Selection**:
 The pre-deal stage in which every Player independently and privately chooses
@@ -631,6 +641,18 @@ _Avoid_: 護盾, team shield
 The circular player sequence used to decide the current player, previous player, next player, and passive trigger relationships.
 _Avoid_: team order
 
+**Turn (回合)**:
+One Player's complete turn-flow from Turn Start through Turn End. For a
+time-limited effect measured in Turns, one Turn elapses only when the affected
+Player reaches Turn End; other Players' Turns do not decrement it.
+_Avoid_: global turn number, table rotation
+
+**Round (輪)**:
+One affected Player's Turn Start boundary for a time-limited effect measured in
+Rounds. It is distinct from a Turn because it elapses at that Player's Turn
+Start, not Turn End, and is not a count of every Player taking a Turn.
+_Avoid_: full-table rotation, global round counter
+
 **Turn Start (回合開始)**:
 The opening timing of a Player's turn, when due expirations resolve before
 delayed rule effects. All Turn Start effects finish before the Active Effects
@@ -699,6 +721,12 @@ _Avoid_: Action Card Selection, Pending Choice, effect completion
 An accepted Formation Use whose Formation effects do not execute. It still
 consumes its action and Cards and satisfies rules based only on performing it.
 _Avoid_: Validation Failure, unperformed Formation
+
+**No-Effect Ground (無效依據)**:
+A rule fact independently sufficient to make an otherwise applicable resolving
+effect have no effect. Multiple grounds may hold simultaneously without
+creating repeated outcomes or imposing a rule priority among those grounds.
+_Avoid_: first cause, cancellation order, Validation Failure
 
 **Formation Category**:
 The official top-level kind of a formation: attack or spell.
@@ -1110,7 +1138,7 @@ _Avoid_: callback response
   a **Formation Composition** identifies any Virtual Formation Card separately,
   and zone changes still require explicit replayable deltas.
 - Turn draw discard and effect-generated selections are both **Pending Choices**, even when events keep more specific semantic names.
-- `CannotAct` is the implementation spelling of **Cannot Act**, a canonical **Status Kind**, not arbitrary metadata.
+- `CannotAct` is the implementation spelling of **Cannot Act**, a canonical **Status Kind**, not arbitrary metadata. It blocks Formation, Profession Change, and activated Profession Ability Commands; the affected Player uses the canonical status-specific Pass instead. Player-Only Secret Protection may make it ineffective only for its triggering Player.
 - Public event data is a **Public Event Feed**, not a replayable **Game Event** log.
 - A known formation with a legal declaration but missing resolver is a **Rule Implementation Error**, not a **Validation Failure**.
 - "card" is ambiguous; use **Card Instance** for zone membership and **Card Definition** for immutable printed-card data.

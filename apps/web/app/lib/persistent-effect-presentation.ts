@@ -44,7 +44,7 @@ const statusLabels: Record<StatusPresentation, string> = {
   lureSpirit: '離山（精靈）',
   spiritStoneShield: '石盾',
   jianghuFanBeyondHeaven: '天外飛扇',
-  jianghuYangAura: '天陽氣',
+  jianghuYangAura: '天陽罡',
   jianghuDancingYang: '舞陽訣',
   jianghuMeteor: '流星步',
   unclassified: '效果持續中',
@@ -58,26 +58,38 @@ const limitedUseLabels: Record<LimitedUsePresentation, string> = {
   unclassified: '限次效果',
 }
 
-function turnsUntilPlayer(
+function remainingTurnsThrough(
   state: PersistentEffectState,
   player: PlayerId,
-  nextOccurrence: boolean,
+  turnNumber: number,
 ): number | null {
   if (!state.currentPlayer || state.turnOrder.length === 0) return null
   const currentIndex = state.turnOrder.indexOf(state.currentPlayer)
   const targetIndex = state.turnOrder.indexOf(player)
   if (currentIndex < 0 || targetIndex < 0) return null
 
-  const distance = (targetIndex - currentIndex + state.turnOrder.length) % state.turnOrder.length
-  return nextOccurrence && distance === 0 ? state.turnOrder.length : distance
+  const firstDistance = (targetIndex - currentIndex + state.turnOrder.length) % state.turnOrder.length
+  const firstTurn = state.turnNumber + firstDistance
+  if (firstTurn > turnNumber) return 0
+  return Math.floor((turnNumber - firstTurn) / state.turnOrder.length) + 1
 }
 
-function turnEndExpiry(state: PersistentEffectState, turnNumber: number): PresentedExpiry {
-  const turns = Math.max(0, turnNumber - state.turnNumber)
+function turnExpiry(player: PlayerId, turns: number): PresentedExpiry {
   return {
-    key: `turn-end:${turnNumber}`,
-    label: turns === 0 ? '本回合結束' : `再 ${turns} 回合結束`,
+    key: `turn:${player}:${turns}`,
+    label: `剩餘 ${turns} 回合`,
   }
+}
+
+function numberedTurnEndExpiry(
+  state: PersistentEffectState,
+  player: PlayerId,
+  turnNumber: number,
+): PresentedExpiry {
+  const turns = remainingTurnsThrough(state, player, turnNumber)
+  return turns === null
+    ? { key: `turn-end:${player}:${turnNumber}`, label: '至自身回合結束' }
+    : turnExpiry(player, turns)
 }
 
 function presentDuration(
@@ -86,21 +98,17 @@ function presentDuration(
 ): PresentedExpiry {
   switch (duration.type) {
     case 'untilTurnStart': {
-      const turns = turnsUntilPlayer(state, duration.player, true)
       return {
-        key: turns === null
-          ? `next-turn-start:${duration.player}`
-          : `turn-start:${state.turnNumber + turns}`,
-        label: turns === null ? '下次回合開始時結束' : `再 ${turns} 回合開始時結束`,
+        key: `round:${duration.player}:1`,
+        label: '剩餘 1 輪',
       }
     }
     case 'untilTurnEnd': {
-      const turns = turnsUntilPlayer(state, duration.player, false)
-      return turns === null
-        ? { key: `next-turn-end:${duration.player}`, label: '下次回合結束' }
-        : turnEndExpiry(state, state.turnNumber + turns)
+      return turnExpiry(duration.player, 1)
     }
-    case 'untilTurnEndNumber': return turnEndExpiry(state, duration.turnNumber)
+    case 'untilTurnEndNumber': {
+      return numberedTurnEndExpiry(state, duration.player, duration.turnNumber)
+    }
     case 'permanent': return { key: 'permanent', label: '持續生效' }
   }
   const exhaustive: never = duration
@@ -153,23 +161,17 @@ export function presentPersistentEffects(
       SnowTreading: '踏雪',
       Poison: '中毒',
     }[active.kind]
-    let dueTurn = active.expiresOnTurn
     if (active.kind === 'Poison') {
-      const firstTurn = turnsUntilPlayer(state, active.owner, false)
-      dueTurn = firstTurn === null
-        ? null
-        : state.turnNumber
-          + firstTurn
-          + Math.max(0, active.remainingTurns - 1) * state.turnOrder.length
-    }
-    if (dueTurn === null) {
-      effects.push({
-        key: `jianghu:${active.kind}`,
-        label: `剩餘 ${active.remainingTurns} 回合 · 江湖狀態：${label}`,
-      })
+      addExpiringEffect(
+        turnExpiry(active.owner, active.remainingTurns),
+        `江湖狀態：${label}`,
+        `jianghu:${active.kind}`,
+      )
+    } else if (active.expiresOnTurn === null) {
+      effects.push({ key: `jianghu:${active.kind}`, label: `江湖狀態：${label}` })
     } else {
       addExpiringEffect(
-        turnEndExpiry(state, dueTurn),
+        numberedTurnEndExpiry(state, active.owner, active.expiresOnTurn),
         `江湖狀態：${label}`,
         `jianghu:${active.kind}`,
       )
@@ -177,7 +179,7 @@ export function presentPersistentEffects(
   }
   for (const suppression of state.formationSuppressions.filter(active => active.target === player)) {
     addExpiringEffect(
-      turnEndExpiry(state, suppression.expiresOnTurnNumber),
+      numberedTurnEndExpiry(state, suppression.target, suppression.expiresOnTurnNumber),
       `裂土：壓制 ${suppression.formationName}`,
       `suppression:${suppression.formationName}`,
     )

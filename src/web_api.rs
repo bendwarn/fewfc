@@ -6287,7 +6287,7 @@ mod tests {
             passive_id: "empty-city".to_string(),
             cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
             outcome: crate::domain::PassiveFlipOutcome::NoEffect {
-                reason: crate::domain::PassiveNoEffectReason::EmptyCity,
+                grounds: vec![crate::domain::PassiveNoEffectGround::EmptyCity],
             },
         };
 

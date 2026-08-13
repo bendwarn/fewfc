@@ -3,7 +3,8 @@ use fewfc::domain::{
     CardInstanceId, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameOutcome,
     GameState, GameStatus, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState,
     JianghuStateKind, LastFormationUse, Phase, Player, PlayerId, PlayerProfession, ProfessionId,
-    RuleModuleId, STAR_MODULE_ID, StatusDuration, StatusEffect, StatusOwner, TeamId, TeamStar,
+    RuleModuleId, STAR_MODULE_ID, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner,
+    TeamId, TeamStar,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -124,6 +125,63 @@ fn jianghu_profession_changes_use_the_published_patterns() {
         PlayableAction::ChangeProfession(candidate)
             if candidate.profession_id == ProfessionId::new("jianghu:swordsman")
     )));
+}
+
+#[test]
+fn heavenly_yang_aura_lasts_one_round_and_expires_at_its_owners_next_turn_start() {
+    let mut game = state();
+    set_profession(&mut game, "p1", "jianghu:qi-cultivator");
+    let revealed = cards(&game, &[(Element::Wood, 1)]);
+    set_hand(&mut game, "p1", revealed.clone());
+
+    let events = handle_command(
+        &game,
+        Command::ActivateProfessionAbility {
+            player: PlayerId::new("p1"),
+            ability_id: "jianghu:heavenly-yang-aura".to_string(),
+            cards: revealed,
+            target_card: None,
+            declared_element: None,
+            declared_level: None,
+        },
+    )
+    .unwrap();
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::StatusAdded { status }
+            if status.kind == "JianghuYangAura"
+                && status.duration == StatusDuration::UntilTurnStart {
+                    player: PlayerId::new("p1"),
+                }
+    )));
+    for event in &events {
+        apply_event(&mut game, event);
+    }
+
+    game.current_turn_index = 1;
+    game.turn_number = 2;
+    game.phase = Phase::TurnStart;
+    let next_player_events = advance_automatic(&game).unwrap();
+    assert!(
+        !next_player_events
+            .iter()
+            .any(|event| matches!(event, GameEvent::StatusExpired { .. }))
+    );
+
+    game.current_turn_index = 0;
+    game.turn_number = 3;
+    let owner_events = advance_automatic(&game).unwrap();
+    assert!(matches!(
+        owner_events.first(),
+        Some(GameEvent::StatusExpired {
+            status_id,
+            owner: StatusOwner::Player(owner),
+            expired_at: StatusExpiryTiming::TurnStart { player },
+        }) if status_id.starts_with("jianghu-heavenly-yang-aura-")
+            && owner == &PlayerId::new("p1")
+            && player == &PlayerId::new("p1")
+    ));
 }
 
 #[test]

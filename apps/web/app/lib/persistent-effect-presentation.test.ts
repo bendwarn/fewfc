@@ -57,8 +57,8 @@ test('presents typed persistent effects without leaking internal IDs', () => {
     | 'scheduledPlantEarth'>
 
   expect(presentPersistentEffects(state, 'p1', 'team-a').map(effect => effect.label)).toStrictEqual([
-      '本回合結束 · 金蟬、觀火',
-      '再 2 回合結束 · 江湖狀態：中毒、裂土：壓制 兵器',
+      '剩餘 1 回合 · 金蟬、觀火',
+      '剩餘 2 回合 · 江湖狀態：中毒、裂土：壓制 兵器',
       '天響 · 0/1',
       '迴響 · 角調‧落木 · 第 8 回合',
       '流水 · 2 層',
@@ -154,18 +154,102 @@ test('exhaustively presents every closed status, duration, limited use, and Echo
     | 'scheduledPlantEarth'>
 
   const labels = presentPersistentEffects(state, 'p1', 'team-a').map(effect => effect.label)
-  expect(labels.length).toBe(5 + 5 + 2 + 7 + 1 + 1)
+  expect(labels.length).toBe(4 + 5 + 2 + 7 + 1 + 1)
   expect(labels.every(label => !label.includes('internal-'))).toBeTruthy()
   expect(labels.some(label => (
-    label.startsWith('本回合結束 · ')
+    label.startsWith('剩餘 1 回合 · ')
     && label.includes('江湖狀態：千鋒')
     && label.includes('江湖狀態：中毒')
   ))).toBeTruthy()
-  expect(labels.some(label => label === '再 1 回合結束 · 江湖狀態：踏雪')).toBeTruthy()
-  expect(labels.some(label => label.startsWith('再 2 回合開始時結束 · '))).toBeTruthy()
   expect(labels.some(label => (
-    label.startsWith('再 3 回合結束 · ')
+    label.startsWith('剩餘 1 回合 · ')
+    && label.includes('江湖狀態：踏雪')
+  ))).toBeTruthy()
+  expect(labels.some(label => label.startsWith('剩餘 1 輪 · '))).toBeTruthy()
+  expect(labels.some(label => (
+    label.startsWith('剩餘 2 回合 · ')
     && label.includes('裂土：壓制 防禦')
   ))).toBeTruthy()
   expect(labels.some(label => label.startsWith('持續生效 · '))).toBeTruthy()
+})
+
+test('counts only the affected player turns in two- and four-player games', () => {
+  const stateFor = (turnOrder: string[], expiresOnTurn: number) => ({
+    turnNumber: 1,
+    currentPlayer: 'p1',
+    turnOrder,
+    statuses: [{
+      id: 'cannot-act-p2',
+      owner: { kind: 'player' as const, id: 'p2' },
+      kind: 'CannotAct',
+      presentation: 'cannotAct' as const,
+      duration: {
+        type: 'untilTurnEndNumber' as const,
+        player: 'p2',
+        turnNumber: expiresOnTurn,
+      },
+    }],
+    jianghuStates: [],
+    limitedUses: [],
+    confluenceCardObligations: [],
+    scheduledEchoes: [],
+    flowStates: [],
+    formationSuppressions: [],
+    scheduledPlantEarth: [],
+  }) satisfies Pick<PublicGameState,
+    | 'turnNumber'
+    | 'currentPlayer'
+    | 'turnOrder'
+    | 'statuses'
+    | 'jianghuStates'
+    | 'limitedUses'
+    | 'confluenceCardObligations'
+    | 'scheduledEchoes'
+    | 'flowStates'
+    | 'formationSuppressions'
+    | 'scheduledPlantEarth'>
+
+  const twoPlayer = stateFor(['p1', 'p2'], 4)
+  const fourPlayer = stateFor(['p1', 'p2', 'p3', 'p4'], 6)
+
+  expect(presentPersistentEffects(twoPlayer, 'p2', 'team-b')[0]?.label)
+    .toBe('剩餘 2 回合 · 無法行動')
+  expect(presentPersistentEffects(fourPlayer, 'p2', 'team-b')[0]?.label)
+    .toBe('剩餘 2 回合 · 無法行動')
+})
+
+test('presents a turn-start status duration directly in rounds', () => {
+  const state = {
+    turnNumber: 1,
+    currentPlayer: 'p1',
+    turnOrder: ['p1', 'p2'],
+    statuses: [{
+      id: 'yang-aura-p1',
+      owner: { kind: 'player' as const, id: 'p1' },
+      kind: 'JianghuYangAura',
+      presentation: 'jianghuYangAura' as const,
+      duration: { type: 'untilTurnStart' as const, player: 'p1' },
+    }],
+    jianghuStates: [],
+    limitedUses: [],
+    confluenceCardObligations: [],
+    scheduledEchoes: [],
+    flowStates: [],
+    formationSuppressions: [],
+    scheduledPlantEarth: [],
+  } satisfies Pick<PublicGameState,
+    | 'turnNumber'
+    | 'currentPlayer'
+    | 'turnOrder'
+    | 'statuses'
+    | 'jianghuStates'
+    | 'limitedUses'
+    | 'confluenceCardObligations'
+    | 'scheduledEchoes'
+    | 'flowStates'
+    | 'formationSuppressions'
+    | 'scheduledPlantEarth'>
+
+  expect(presentPersistentEffects(state, 'p1', 'team-a')[0]?.label)
+    .toBe('剩餘 1 輪 · 天陽罡')
 })

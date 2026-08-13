@@ -196,9 +196,15 @@ struct AttackResolution {
 enum ActionOutcome {
     Applied,
     Prevented { reason: PreventionReason },
-    NoEffect { reason: NoEffectReason },
+    NoEffect { grounds: Vec<NoEffectGround> },
 }
 ```
+
+An applicable effect produces exactly one outcome. `grounds` contains every
+independently sufficient No-Effect Ground; it has a deterministic serialized
+order only, never a primary cause or domain priority. Check applicability before
+collecting grounds, so an inapplicable Defense facing a Spell records only
+`NotAnAttack` rather than unrelated immunity grounds.
 
 This preserves exactly-one-action turn semantics without treating invalid
 commands as historical facts. Do not add an abstract `FormationUseCompleted`
@@ -744,7 +750,9 @@ GameEvent::PassiveFlipped {
     owner: PlayerId,
     incoming_player: PlayerId,
     passive_id: FormationId,
-    outcome: PassiveOutcome::NoEffect { reason: PassiveNoEffectReason::NotASpell },
+    outcome: PassiveOutcome::NoEffect {
+        grounds: vec![PassiveNoEffectGround::NotASpell],
+    },
 }
 ```
 
@@ -774,7 +782,7 @@ It still consumes the formation cards and turn action, occupies the player's one
 Formation Area, flips at the normal trigger timing, and moves its cards
 to discard. Its no-effect outcome is intentional rather than an unknown-passive
 fallback. Represent that outcome explicitly as
-`PassiveNoEffectReason::EmptyCity`. User-facing records should say only
+`PassiveNoEffectGround::EmptyCity`. User-facing records should say only
 `空城翻開`; they must not add redundant wording about producing no effect.
 
 Metamorphosis (`幻化`) is a basic formation, not a special standalone action command and not a special formation category/tag.
@@ -1214,6 +1222,7 @@ Use explicit expiry timing for status durations:
 enum Duration {
     UntilTurnStart { player: PlayerId },
     UntilTurnEnd { player: PlayerId },
+    UntilTurnEndNumber { player: PlayerId, turn_number: u64 },
     Permanent,
 }
 ```
@@ -1223,6 +1232,14 @@ behavior is modeled by the Covered Passive in a Player's Formation Area, not by
 generic status duration.
 
 Avoid generic `remaining_turns` / `remaining_rounds` counters as the core model because they are ambiguous in multiplayer and team mode. Rule resolvers can translate rule text into explicit expiry timing.
+
+Rules 6-1 and 6-2 give the presentation units distinct owner-relative timing:
+a Turn elapses at the affected Player's Turn End, while a Round elapses at that
+Player's Turn Start. Therefore Web presentation counts only that Player's
+matching boundaries. It must not subtract the current global `turn_number`
+from an expiry ordinal and label that difference as remaining Turns. A status
+with `UntilTurnStart` displays its duration in Rounds; 天陽罡 uses this duration
+because its published duration is one Round.
 
 Status expiration is event-logged:
 

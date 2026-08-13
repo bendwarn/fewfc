@@ -8,7 +8,7 @@ use fewfc::domain::{
     FIVE_DIRECTIONS_LEGEND_MODULE_ID, FormationAreaState, FormationInArea, FormationSuppression,
     GameError, GameEvent, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID,
     JianghuState, JianghuStateKind, PERSONAL_DECK_MODULE_ID, PassiveFlipOutcome,
-    PassiveNoEffectReason, PassiveTriggerTiming, Phase, PlayerId, PreparedProfessionAbility,
+    PassiveNoEffectGround, PassiveTriggerTiming, Phase, PlayerId, PreparedProfessionAbility,
     RandomnessContinuation, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, ScheduledEcho,
     StarKind, StatusDuration, StatusEffect, StatusOwner, TeamId, TeamStar, TimedEffectReduction,
     TrustedRandomnessAnswer, ValidationError,
@@ -1135,10 +1135,10 @@ fn pure_fire_atomically_reduces_eligible_effects_and_preserves_hidden_passive_un
         event,
         GameEvent::PassiveFlipped {
             outcome: PassiveFlipOutcome::NoEffect {
-                reason: PassiveNoEffectReason::Neutralized,
+                grounds,
             },
             ..
-        }
+        } if grounds == &vec![PassiveNoEffectGround::Neutralized]
     )));
 }
 

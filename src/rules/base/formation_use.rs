@@ -1,6 +1,6 @@
 use crate::domain::{
-    CardInstanceId, CardMoveDelta, CardZone, GameError, GameEvent, GameResult, GameState, PlayerId,
-    TargetDecl, TeamId, ValidationError,
+    CannotPerformFormationReason, CardInstanceId, CardMoveDelta, CardZone, GameError, GameEvent,
+    GameResult, GameState, PlayerId, TargetDecl, TeamId, ValidationError,
     targeting::{RulePlayerTarget, RuleTeamTarget, TurnOrderTargets},
 };
 use crate::rules::{
@@ -38,6 +38,15 @@ pub(super) fn resolve(
     state: &GameState,
     request: FormationUseRequest,
 ) -> GameResult<Vec<GameEvent>> {
+    if super::player_has_status(state, &request.player, "CannotAct") {
+        return Err(GameError::Validation(
+            ValidationError::CannotPerformFormation {
+                reason: CannotPerformFormationReason::CannotActByStatus {
+                    player: request.player,
+                },
+            },
+        ));
+    }
     let player = request.player.clone();
     let formation_id = request.formation_id.clone();
     let plan = BaseFormationPlanner::new().plan_use(state, request)?;
@@ -324,14 +333,14 @@ impl BaseEffectResolver {
                         incoming_player: plan.player.clone(),
                         incoming_kind: IncomingActionKind::Attack,
                         ignores_formation_effects,
-                        ignores_counter_effects: crate::rules::hero::windwalking_applies(
-                            state,
-                            &plan.player,
-                            attack_points,
-                        ) || crate::rules::pouch::player_is_protected(
-                            state,
-                            &plan.player,
-                        ),
+                        ignores_counter_effects_by_profession_ability:
+                            crate::rules::hero::windwalking_applies(
+                                state,
+                                &plan.player,
+                                attack_points,
+                            ),
+                        ignores_counter_effects_by_golden_cicada:
+                            crate::rules::pouch::player_is_protected(state, &plan.player),
                         attack_points: Some(attack_points),
                     },
                 );
@@ -351,11 +360,11 @@ impl BaseEffectResolver {
                     || environment_ineffective
                     || formation_suppressed
                     || crate::rules::spirit::stone_shield_prevents_attack(state, &plan.player)
-                    || crate::rules::pouch::has_status(
+                    || (crate::rules::pouch::has_status(
                         state,
                         &plan.player,
                         crate::rules::pouch::WATCH_FIRE_STATUS,
-                    );
+                    ) && !crate::rules::pouch::player_is_protected(state, &plan.player));
                 let split_attack_damage = passive_trigger.splits_attack_damage();
                 let mut events = crate::rules::dark::pre_formation_events(
                     state,
@@ -487,13 +496,10 @@ impl BaseEffectResolver {
                         incoming_player: plan.player.clone(),
                         incoming_kind: IncomingActionKind::PassiveSpell,
                         ignores_formation_effects: false,
-                        ignores_counter_effects: crate::rules::hero::spell_counter_immunity(
-                            state,
-                            &plan.player,
-                        ) || crate::rules::pouch::player_is_protected(
-                            state,
-                            &plan.player,
-                        ),
+                        ignores_counter_effects_by_profession_ability:
+                            crate::rules::hero::spell_counter_immunity(state, &plan.player),
+                        ignores_counter_effects_by_golden_cicada:
+                            crate::rules::pouch::player_is_protected(state, &plan.player),
                         attack_points: None,
                     },
                 );
@@ -556,13 +562,10 @@ impl BaseEffectResolver {
                         incoming_player: plan.player.clone(),
                         incoming_kind: IncomingActionKind::ActiveSpell,
                         ignores_formation_effects: false,
-                        ignores_counter_effects: crate::rules::hero::spell_counter_immunity(
-                            state,
-                            &plan.player,
-                        ) || crate::rules::pouch::player_is_protected(
-                            state,
-                            &plan.player,
-                        ),
+                        ignores_counter_effects_by_profession_ability:
+                            crate::rules::hero::spell_counter_immunity(state, &plan.player),
+                        ignores_counter_effects_by_golden_cicada:
+                            crate::rules::pouch::player_is_protected(state, &plan.player),
                         attack_points: None,
                     },
                 );

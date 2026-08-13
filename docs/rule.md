@@ -208,19 +208,35 @@ Notes:
 
 ### 2.1 Status Effects
 
+Official rules 6-1 and 6-2 distinguish the two duration units by the affected
+Player's timing: one **Turn (回合)** elapses at that Player's Turn End, while one
+**Round (輪)** elapses at that Player's Turn Start. Other Players taking Turns
+does not decrement either duration. ([cfecards.org][1])
+
 Status duration uses explicit expiry timing:
 
 ```rust
 enum StatusDuration {
     UntilTurnStart { player: PlayerId },
     UntilTurnEnd { player: PlayerId },
+    UntilTurnEndNumber { player: PlayerId, turn_number: u64 },
     Permanent,
 }
 ```
 
 Avoid generic `remaining_turns`, `remaining_rounds`, and `untilNextAction` in the core model. They are ambiguous in multiplayer and team mode. Rule resolvers translate rule text into explicit expiry timing.
 
+Public status presentation derives `remaining Turns` by counting only the
+affected Player's Turn Ends and presents a Turn-Start duration as `remaining
+Rounds`. It never presents the difference between global Turn ordinals as a
+remaining duration.
+
 `CannotAct` is the implementation spelling of the canonical status kind **Cannot Act**.
+While it applies, the Player cannot perform a Formation, change Profession, or
+activate a Profession Ability; with a nonempty hand their legal action is the
+status-specific `PassAction { reason: CannotActByStatus }`. Golden Cicada's
+Player-Only Secret Protection makes that status ineffective only for its
+triggering Player during the protected Turn.
 
 ### 2.2 Game Conclusion
 
@@ -853,8 +869,13 @@ protected Player's action during that Turn.
 Its protection applies only to the Player, not their Spirit, Team, Team Star, or
 the shared Environment.
 
+Golden Cicada also makes an existing Watch the Fire protection ineffective
+against the triggering Player's Turn. Attack damage and Formation-caused HP
+changes therefore resolve normally. Watch the Fire remains present and visible
+until its ordinary expiry; Golden Cicada does not remove or consume it.
+
 Watch the Fire prevents all attack damage during the next Player's next Turn,
-including damage that a Shield would otherwise absorb. It also prevents Team HP
+including damage that a Shield would otherwise absorb. It also prevents HP
 loss or recovery caused by Formations during that Turn. Other Formation effects,
 Card movement, non-damage Shield reduction, and performance costs still resolve.
 Effects from Spirit Skills, Secret Strategies, and other non-Formation sources
@@ -1103,6 +1124,32 @@ All errors are atomic:
 A known formation with legal cards but missing resolver is a rule implementation error, not a validation failure.
 
 ## 9) Testing Checklist
+
+Rules behavior is evidenced through named interaction matrices rather than by
+isolated effect helpers alone:
+
+- give each matrix independently failing baseline, modifier, and interaction
+  cases, sharing a scenario builder where useful
+- establish every effect under test through legal Commands; fixtures may create
+  only unrelated background state such as fixed Cards, HP, or Deck order
+- assert the complete canonical typed outcome, affected and expressly unaffected
+  consequences, Formation Use commitment, costs, Card movement, final Game
+  State, and replay equality
+- when an applicable effect has no effect, record every independently sufficient
+  **No-Effect Ground** in one outcome; compare grounds as a set because their
+  serialized position carries no rule priority
+- require reasonable within-module and cross-module interactions for
+  ineffectiveness, immunity, prevention, protection, Counter Effects,
+  suppression, prohibition, ignoring, copying, substitution, timing, duration,
+  simultaneous resolution, and partial effects when those paths exist
+- select cases by distinct typed hook, scope, source, or lifecycle instead of
+  enumerating a complete Cartesian product
+- retain narrow invariant, matcher, catalog, serialization, and atomic-failure
+  tests when they prove contracts distinct from rules behavior
+- inventory every unique claim in an existing Rust rules test before removing
+  it, and name the matrix case that replaces each removed claim
+- use Playwright for representative Player-visible Web seams, never as the sole
+  evidence for Rules Engine behavior
 
 - Public phase flow stops only when player input is needed.
 - `ActiveEffects` allows zero or more Active-Effect Commands before one Action

@@ -557,10 +557,10 @@ fn seeker_cost_counter_resistance_and_spell_protection_are_typed() {
         event,
         GameEvent::CounterEffectResolved {
             outcome: fewfc::domain::PassiveFlipOutcome::NoEffect {
-                reason: fewfc::domain::PassiveNoEffectReason::IgnoredByProfessionAbility,
+                grounds,
             },
             ..
-        }
+        } if grounds == &vec![fewfc::domain::PassiveNoEffectGround::IgnoredByProfessionAbility]
     )));
 
     let wood = cards(&state, &[(Element::Wood, 5)]);
