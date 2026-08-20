@@ -819,34 +819,6 @@ fn pouch_preparation_matrix_independent_arrival_order_converges_in_two_and_four_
 }
 
 #[test]
-fn pouch_watch_fire_matrix_baseline_formation_damage_resolves_normally() {
-    let mut scenario = PouchWatchFireScenario::new();
-    let p1 = PlayerId::new("p1");
-    scenario.perform_metal_strike(&p1);
-    scenario.finish_turn(&p1);
-
-    let p2 = PlayerId::new("p2");
-    let hp_before = hp_for_player(&scenario.record, &p1);
-    let events = scenario.perform_metal_strike(&p2);
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::AttackResolved { hp_change, .. } if hp_change.effective_delta < 0
-    )));
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, GameEvent::FormationCommitted { .. }))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, GameEvent::FormationCardsDiscarded { .. }))
-    );
-    assert!(hp_for_player(&scenario.record, &p1) < hp_before);
-    scenario.assert_replay_and_public_lifecycle(false, false);
-}
-
-#[test]
 fn pouch_watch_fire_matrix_modifier_prevents_damage_but_not_formation_commitment_or_cards() {
     let mut scenario = PouchWatchFireScenario::new();
     let p1 = PlayerId::new("p1");

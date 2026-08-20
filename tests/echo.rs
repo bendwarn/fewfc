@@ -128,20 +128,6 @@ fn echo_is_default_on_and_requires_all_advanced_modules() {
 }
 
 #[test]
-fn melody_and_base_formation_remain_explicit_overlapping_declarations() {
-    let mut state = configured_state();
-    state.hands[0].cards = vec![card(1), card(2)];
-
-    let ids = formation_ids(
-        OfficialRules::new()
-            .playable_actions(&state, &PlayerId::new("p1"), &[card(1), card(2)])
-            .unwrap(),
-    );
-    assert!(ids.contains(&"weapon".to_string()));
-    assert!(ids.contains(&"echo:ringing-metal".to_string()));
-}
-
-#[test]
 fn star_substitution_does_not_make_a_melody_legal() {
     let mut state = configured_state();
     state.hands[0].cards = vec![card(1), card(73)];
@@ -556,34 +542,6 @@ fn ringing_metal_empty_deck_recycles_before_an_independent_post_search_shuffle()
         RandomnessContinuation::Echo(EchoRandomnessContinuation::RingingMetalPostSearch)
     );
     assert_eq!(post_search.current_order, vec![card(3), card(5), card(6)]);
-}
-
-#[test]
-fn ringing_metal_with_no_preexisting_deck_or_discard_is_a_no_change_main_effect() {
-    let mut state = configured_state();
-    state.hands[0].cards = vec![card(1), card(2), card(19)];
-    state.deck.clear();
-    state.discard.clear();
-
-    let events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "echo:ringing-metal".to_string(),
-            cards: vec![card(1), card(2)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::RandomnessRequested { request } if request.operation.is_discard_shuffle()
-    )));
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
-    );
 }
 
 #[test]

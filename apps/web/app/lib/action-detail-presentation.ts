@@ -104,19 +104,13 @@ function presentSpiritSkillEffect(effect: SpiritSkillEffect): string {
 }
 
 function presentFormationEffect(effect: Extract<ImmediateEffect, { type: 'resolveFormationEffect' }>['effect']): string | null {
-  if (typeof effect === 'object') {
-    switch (effect.type) {
-      case 'damagePreviousTeamByLevelSumTimes': return `上家隊伍扣除所用牌等級總和×${effect.multiplier}點生命`
-      case 'damageNextTeamAndTakeHighestLevelHandCard': return `下家隊伍扣除 ${effect.damage} 點生命；檢視下家手牌後，若有手牌則取得其中一張最高等級牌`
-      case 'preventOtherPlayersFromActingOrDrawing': return `所有其他玩家 ${effect.durationTurns} 回合內無法行動及抽牌`
-      case 'poisonNextPlayer': return `下家中毒 ${effect.durationTurns} 回合`
-      case 'damageNextTeamAndPoisonNextPlayer': return `下家隊伍扣除 ${effect.damage} 點生命，並使下家中毒 ${effect.durationTurns} 回合`
-      case 'winIfNextTeamHpAtMost': return `下家隊伍生命值不超過 ${effect.hpThreshold} 時，立即獲勝`
-      default: return assertNever(effect)
-    }
-  }
-
-  switch (effect) {
+  switch (effect.type) {
+    case 'damagePreviousTeamByLevelSumTimes': return `上家隊伍扣除所用牌等級總和×${effect.multiplier}點生命`
+    case 'damageNextTeamAndTakeHighestLevelHandCard': return `下家隊伍扣除 ${effect.damage} 點生命；檢視下家手牌後，若有手牌則取得其中一張最高等級牌`
+    case 'preventOtherPlayersFromActingOrDrawing': return `所有其他玩家 ${effect.durationTurns} 回合內無法行動及抽牌`
+    case 'poisonNextPlayer': return `下家中毒 ${effect.durationTurns} 回合`
+    case 'damageNextTeamAndPoisonNextPlayer': return `下家隊伍扣除 ${effect.damage} 點生命，並使下家中毒 ${effect.durationTurns} 回合`
+    case 'winIfNextTeamHpAtMost': return `下家隊伍生命值不超過 ${effect.hpThreshold} 時，立即獲勝`
     case 'coverCounter': return '覆蓋反制術式，於下一位玩家行動時結算'
     case 'copyPreviousTurnFormation': return '複製上家上回合基礎陣法的類別與效果'
     case 'recoverHp': return '回復生命'
@@ -252,7 +246,7 @@ export function presentActionDetail(
 
     if (consequence.type === 'immediateEffect'
       && consequence.effect.type === 'resolveFormationEffect'
-      && consequence.effect.effect === 'inspectHand'
+      && consequence.effect.effect.type === 'inspectHand'
       && detail.consequences.some(candidate => (
         candidate.type === 'trustedRandomness'
         && candidate.operation.type === 'selectHiddenHandCards'

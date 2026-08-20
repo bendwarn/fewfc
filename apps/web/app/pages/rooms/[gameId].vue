@@ -663,7 +663,7 @@
               <template v-if="pouchChoiceKind === 'chain'">
                 <ChainChoice
                   :pouch-owners="chainPouchOwners"
-                  :pouch-owner="pouchOwnerSelection"
+                  :pouch-owner="effectiveChainPouchOwner"
                   :pouch-cards="chainPouchCards"
                   :pouch-card="chainPouchCard"
                   :trigger-cards="chainTriggerCards"
@@ -1195,6 +1195,10 @@ const chainPouchOwners = computed(() => {
     ? choice.choice.pouchOwners
     : []
 })
+const effectiveChainPouchOwner = computed(() => (
+  pouchOwnerSelection.value
+  ?? (chainPouchOwners.value.length === 1 ? chainPouchOwners.value[0] ?? null : null)
+))
 const chainPouchCard = computed(() => (
   pouchChoiceKind.value === 'chain' && pouchDeckSelection.value.length >= 1
     ? chainPouchCards.value.find(card => card.id === pouchDeckSelection.value[0]) ?? null
@@ -1266,7 +1270,7 @@ const canSubmitPouchChoice = computed(() => {
       && containsSelectedCards(pouchSwapReturnCards.value, pouchDiscardSelection.value)
   }
   if (pouchChoiceKind.value !== 'chain'
-    || !pouchOwnerSelection.value
+    || !effectiveChainPouchOwner.value
     || pouchDeckSelection.value.length < 1
     || pouchDeckSelection.value.length > 2) return false
   if (pouchDeckSelection.value.length === 1) return true
@@ -1384,7 +1388,6 @@ function startPlayableAction(action: PlayableAction) {
     void game.performPlayableAction(action).then((submitted) => {
       if (submitted) {
         pouchChoiceKind.value = 'chain'
-        pouchOwnerSelection.value = null
       }
     })
     return
@@ -1402,7 +1405,7 @@ async function submitPouchChoice() {
     if (submitted !== false) resetPouchChoice()
     return
   }
-  const owner = pouchOwnerSelection.value
+  const owner = effectiveChainPouchOwner.value
   const pouchCard = pouchDeckSelection.value[0]
   if (!owner || pouchCard === undefined) return
   const submitted = await game.answerChainChoice(chainChoiceAnswer({

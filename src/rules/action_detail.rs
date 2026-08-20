@@ -282,7 +282,7 @@ pub(crate) fn discard_retrieval_detail(hp_cost: i32) -> PlayerFacingActionDetail
 mod tests {
     use super::*;
     use crate::domain::{CardInstanceId, Element, GameSetup, Phase};
-    use crate::rules::{ProfessionChangeCandidate, TrustedRandomness};
+    use crate::rules::{FormationEffect, ProfessionChangeCandidate, TrustedRandomness};
 
     #[test]
     fn consequence_contract_uses_tagged_variants_and_camel_case_fields() {
@@ -379,6 +379,25 @@ mod tests {
             serde_json::to_value(TrustedRandomness::ShuffleDiscardIntoDeck)
                 .expect("randomness operation must serialize"),
             serde_json::json!({ "type": "shuffleDiscardIntoDeck" })
+        );
+    }
+
+    #[test]
+    fn formation_effect_contract_uses_tagged_variants_and_camel_case_fields() {
+        assert_eq!(
+            serde_json::to_value(FormationEffect::PreventOtherPlayersFromActingOrDrawing {
+                duration_turns: 1,
+            })
+            .expect("formation effect must serialize"),
+            serde_json::json!({
+                "type": "preventOtherPlayersFromActingOrDrawing",
+                "durationTurns": 1,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(FormationEffect::InspectHand)
+                .expect("unit formation effect must serialize"),
+            serde_json::json!({ "type": "inspectHand" })
         );
     }
 

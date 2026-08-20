@@ -3,8 +3,8 @@ use fewfc::domain::{
     ActionModification, AttackOutcome, AttackPointBreakdown, AttackResolutionEffects,
     CardInstanceId, ChoiceAnswer, Command, DamageTransform, Element, ElementInteraction,
     EnvironmentAttackEffect, FormationAreaState, GameEvent, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, PassiveFlipOutcome, Player, PlayerId, RuleModuleId, STAR_MODULE_ID,
-    StarElementSubstitution, StarKind, TargetDecl, TeamId, TeamStar,
+    LastElementalAttackUpdate, PassiveFlipOutcome, Player, PlayerId, RuleModuleId, StarBreakReason,
+    StarElementSubstitution, StarKind, TargetDecl, TeamId, TeamStar, STAR_MODULE_ID,
 };
 use fewfc::public_view::{PublicCardRefs, PublicCoveredPassive, Viewer};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -393,11 +393,9 @@ fn owned_star_defense_matrix_records_selected_substitution_and_preserves_star_li
         4,
         190,
     );
-    assert!(
-        !defended_attack
-            .iter()
-            .any(|event| matches!(event, GameEvent::StarBroken { .. }))
-    );
+    assert!(!defended_attack
+        .iter()
+        .any(|event| matches!(event, GameEvent::StarBroken { .. })));
     assert_eq!(
         interaction
             .record
@@ -419,6 +417,258 @@ fn owned_star_defense_matrix_records_selected_substitution_and_preserves_star_li
         assert!(interaction.record.state().discard.contains(&card));
     }
     interaction.assert_replay();
+}
+
+#[test]
+fn three_card_star_formation_defense_matrix_prevents_damage_but_keeps_draw_and_star_consumption() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let p3 = PlayerId::new("p3");
+    let p4 = PlayerId::new("p4");
+    let metal_team = TeamId::new("team:metal");
+    let water_team = TeamId::new("team:water");
+    let setup = OfficialRules::new()
+        .configure_game(
+            vec![
+                Player {
+                    id: p1.clone(),
+                    team: metal_team.clone(),
+                },
+                Player {
+                    id: p2.clone(),
+                    team: water_team.clone(),
+                },
+                Player {
+                    id: p3.clone(),
+                    team: metal_team.clone(),
+                },
+                Player {
+                    id: p4.clone(),
+                    team: water_team.clone(),
+                },
+            ],
+            vec![p1.clone(), p2.clone(), p3.clone(), p4.clone()],
+            vec![RuleModuleId::new(STAR_MODULE_ID)],
+        )
+        .unwrap();
+    let metal_one = card_from_setup(&setup, Element::Metal, 1);
+    let metal_two = card_from_setup(&setup, Element::Metal, 2);
+    let metal_three = card_from_setup(&setup, Element::Metal, 3);
+    let metal_four = card_from_setup(&setup, Element::Metal, 4);
+    let metal_five = card_from_setup(&setup, Element::Metal, 5);
+    let earth_four = card_from_setup(&setup, Element::Earth, 4);
+    let wood_one = card_from_setup(&setup, Element::Wood, 1);
+    let wood_two = card_from_setup(&setup, Element::Wood, 2);
+
+    // Baseline: the fixed legal input is in the current player's hand, but
+    // the action does not exist until a Metal Star has been summoned.
+    let baseline_opening = vec![
+        metal_one,
+        metal_two,
+        earth_four,
+        card_from_setup(&setup, Element::Fire, 2),
+    ];
+    let mut baseline =
+        GameRecord::start(setup.clone(), deck_starting_with(&setup, &baseline_opening)).unwrap();
+    baseline.advance_automatic().unwrap();
+    let taibai_cards = vec![metal_one, metal_two, earth_four];
+    let without_star = baseline.playable_actions(&p1, &taibai_cards).unwrap();
+    assert!(!without_star.iter().any(|action| matches!(
+        action,
+        PlayableAction::PerformFormation(candidate)
+            if candidate.formation_id == "taibai-heaven-forging"
+    )));
+
+    let opening = vec![
+        metal_three,
+        metal_four,
+        metal_five,
+        card_from_setup(&setup, Element::Wood, 4),
+        wood_one,
+        wood_two,
+        card_from_setup(&setup, Element::Water, 1),
+        card_from_setup(&setup, Element::Fire, 1),
+        card_from_setup(&setup, Element::Earth, 1),
+        metal_two,
+        earth_four,
+        metal_one,
+        card_from_setup(&setup, Element::Wood, 3),
+        card_from_setup(&setup, Element::Fire, 2),
+        card_from_setup(&setup, Element::Water, 2),
+        card_from_setup(&setup, Element::Fire, 3),
+        card_from_setup(&setup, Element::Earth, 3),
+        card_from_setup(&setup, Element::Wood, 5),
+        card_from_setup(&setup, Element::Earth, 5),
+    ];
+    let mut record =
+        GameRecord::start(setup.clone(), deck_starting_with(&setup, &opening)).unwrap();
+    record.advance_automatic().unwrap();
+
+    // Modifier: P1 legally summons the team-owned Metal Star and commits /
+    // discards its source Cards. P3 will consume that same shared Star.
+    let summon_cards = vec![metal_three, metal_four, metal_five];
+    let summoned = record
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "triple-metal".to_string(),
+            cards: summon_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        summoned.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, .. },
+            GameEvent::AttackResolved { attacker, formation_id: attack_formation, point_breakdown, .. },
+            GameEvent::StarSummoned { player: summoner, team, star: StarKind::Metal },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p1
+            && formation_id == "triple-metal"
+            && cards == &summon_cards
+            && attacker == &p1
+            && attack_formation == "triple-metal"
+            && point_breakdown.base_points == 36
+            && summoner == &p1
+            && team == &metal_team
+            && discarded_by == &p1
+            && discarded == "triple-metal"
+            && discarded_cards == &summon_cards
+    ));
+    assert_eq!(
+        record.state().star_for_team(&metal_team),
+        Some(StarKind::Metal)
+    );
+    assert_eq!(
+        record.public_view(Viewer::Observer).unwrap().team_stars,
+        vec![TeamStar {
+            team: metal_team.clone(),
+            star: StarKind::Metal,
+        }]
+    );
+    finish_turn_for_star_matrix(&mut record, &p1);
+
+    // P2 establishes the modifier through a legal Defense command, rather
+    // than direct covered-passive setup.
+    let defense = record
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "defense".to_string(),
+            cards: vec![wood_one, wood_two],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        defense.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+            GameEvent::PassiveCovered { player: covered_by, formation_id: covered, cards: covered_cards, .. },
+        ] if player == &p2
+            && formation_id == "defense"
+            && cards == &vec![wood_one, wood_two]
+            && covered_by == &p2
+            && covered == "defense"
+            && covered_cards == &vec![wood_one, wood_two]
+    ));
+    assert!(matches!(
+        record.public_view(Viewer::Player(p1.clone())).unwrap().covered_passives.as_slice(),
+        [PublicCoveredPassive { owner, formation_id: None, cards: PublicCardRefs::Hidden { count: 2 }, star_substitution: None }]
+            if owner == &p2
+    ));
+    finish_turn_for_star_matrix(&mut record, &p2);
+    assert_eq!(record.state().current_player(), Some(&p3));
+
+    // Interaction: P3's own legal three-Card use can consume the Metal Star
+    // that P1 summoned for their shared team. Defense prevents its affected
+    // damage only; Taibai's independent draw bonus and Star consumption stay.
+    let with_star = record.playable_actions(&p3, &taibai_cards).unwrap();
+    assert!(with_star.iter().any(|action| matches!(
+        action,
+        PlayableAction::PerformFormation(candidate)
+            if candidate.formation_id == "taibai-heaven-forging" && candidate.cards == taibai_cards
+    )));
+    let forged = record
+        .handle(Command::PerformFormation {
+            player: p3.clone(),
+            formation_id: "taibai-heaven-forging".to_string(),
+            cards: taibai_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(forged.iter().any(|event| matches!(
+        event,
+        GameEvent::PassiveFlipped {
+            owner,
+            passive_id,
+            outcome: PassiveFlipOutcome::Applied { modifications, .. },
+            ..
+        } if owner == &p2
+            && passive_id == "defense"
+            && modifications == &vec![ActionModification::PreventDamage]
+    )));
+    assert!(forged.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            attacker,
+            formation_id,
+            point_breakdown: AttackPointBreakdown { base_points: 21, final_amount: 21, .. },
+            hp_change: HpChangeDelta { team, delta: 0, effective_delta: 0, .. },
+            elemental_context_update: Some(AttackResolutionEffects { turn_draw_bonus_changes, .. }),
+            ..
+        } if attacker == &p3
+            && formation_id == "taibai-heaven-forging"
+            && team == &water_team
+            && turn_draw_bonus_changes
+                == &vec![fewfc::domain::TurnDrawBonusDelta {
+                    player: p3.clone(),
+                    old_value: 0,
+                    delta: 1,
+                    new_value: 1,
+                }]
+    )));
+    assert!(forged.iter().any(|event| matches!(
+        event,
+        GameEvent::StarBroken {
+            team,
+            star: StarKind::Metal,
+            reason: StarBreakReason::StarFormationUsed { formation_id },
+            hp_change: None,
+        } if team == &metal_team && formation_id == "taibai-heaven-forging"
+    )));
+    assert!(forged.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCardsDiscarded { player, formation_id, cards }
+            if player == &p3 && formation_id == "taibai-heaven-forging" && cards == &taibai_cards
+    )));
+    assert!(record.state().covered_passive(&p2).is_none());
+    assert!(record.state().team_stars.is_empty());
+    assert_eq!(record.state().turn_draw_bonus_by_player.get(&p3), Some(&1));
+    for card in taibai_cards.iter().chain([wood_one, wood_two].iter()) {
+        assert!(record.state().discard.contains(card));
+    }
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
+}
+
+fn finish_turn_for_star_matrix(record: &mut GameRecord, player: &PlayerId) {
+    record.advance_automatic().unwrap();
+    let choice = record
+        .state()
+        .pending_choice
+        .as_ref()
+        .expect("a legal Formation must reach the canonical Turn Draw choice");
+    let fewfc::domain::PendingChoiceKind::Card { cards, .. } = &choice.kind else {
+        panic!("Turn Draw must request a Card discard");
+    };
+    record
+        .handle(Command::AnswerChoice {
+            player: player.clone(),
+            choice_id: choice.choice_id,
+            answer: ChoiceAnswer::Cards {
+                cards: vec![*cards.last().unwrap()],
+            },
+        })
+        .unwrap();
+    record.advance_automatic().unwrap();
 }
 
 fn assert_cover_commitment(

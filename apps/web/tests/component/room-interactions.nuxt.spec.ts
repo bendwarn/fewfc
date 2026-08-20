@@ -108,8 +108,13 @@ describe('ChainChoice', () => {
     starLabel: (star: string) => star,
   }
 
-  it('summarizes one pouch recipient before the cards without a redundant selector', async () => {
-    const wrapper = await mountSuspended(ChainChoice, { props: chainProps })
+  it('summarizes the sole pouch recipient before the cards when no local recipient draft exists', async () => {
+    const wrapper = await mountSuspended(ChainChoice, {
+      props: {
+        ...chainProps,
+        pouchOwner: null,
+      },
+    })
 
     expect(wrapper.find('.choice-selection-summary').text()).toContain('錦囊給予：甲')
     expect(wrapper.find('[aria-label="選擇錦囊持有者"]').exists()).toBe(false)

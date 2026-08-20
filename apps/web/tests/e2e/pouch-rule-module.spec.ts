@@ -135,7 +135,7 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     await goldenCicada.click()
     await command
     await expect(active.getByRole('button', { name: /秘計‧金蟬/ })).toHaveCount(0)
-    await expect(active.locator('.persistent-effect')).toContainText('本回合結束 · 金蟬')
+    await expect(active.locator('.persistent-effect')).toContainText('剩餘 1 回合 · 金蟬')
   } finally {
     await game.close()
   }
@@ -155,28 +155,20 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     }>(host, { name: 'pouch-chain-sheep' })
     const actor = host
     await reloadFastGameRoute(actor, roomId)
-    const commandId = `chain-sheep-${Date.now()}`
-    const gameInstanceId = fixture.metadata.gameInstanceId
-    expect(gameInstanceId).toBeTruthy()
-    const chain = await requestJson<{ state: { pendingChoice?: { choice: { type: string } } } }>(
-      `POST /api/games/${roomId}/commands`,
-      actor.context().request.post(`/api/games/${roomId}/commands`, {
-        data: {
-          commandId,
-          gameInstanceId,
-          transactionId: `transaction:${commandId}`,
-          action: {
-            type: 'performFormation',
-            player: fixture.fixtureAction.player,
-            formationId: fixture.fixtureAction.formationId,
-            cards: fixture.fixtureAction.cards,
-          },
-        },
-      }),
-    )
-    expect(chain.state.pendingChoice?.choice.type).toBe('chain')
+    expect(fixture.metadata.gameInstanceId).toBeTruthy()
+    const battlefield = actor.getByRole('region', { name: '五行戰鬥牌對戰桌' })
+    for (const card of fixture.fixtureAction.cards) {
+      const cardButton = battlefield.locator(`[data-card-id="${card}"]`)
+      await expect(cardButton).toBeVisible()
+      await cardButton.click()
+    }
+    const chainAction = actor.getByRole('region', { name: '行動' })
+      .getByRole('button', { name: /^連環/ })
+    await expect(chainAction).toBeVisible()
+    const chainCommand = waitForCommand(actor, 'performFormation')
+    await chainAction.click()
+    await chainCommand
 
-    await reloadFastGameRoute(actor, roomId)
     const chainDialog = actor.getByRole('dialog', { name: '連環：選擇錦囊' })
     await expect(chainDialog).toBeVisible()
     const chainHeadings = chainDialog.getByRole("heading", { level: 3 });
@@ -222,6 +214,7 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     }).first()
     await pouchButton.click()
     await expect(pouchButton).toHaveAttribute('aria-pressed', 'true')
+    await expect(chainDialog.getByRole('button', { name: '確認' })).toBeEnabled()
     await expect(chainHeadings).toHaveText([
       "錦囊給予對象",
       "選擇錦囊牌",

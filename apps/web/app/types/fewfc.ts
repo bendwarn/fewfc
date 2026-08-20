@@ -446,41 +446,41 @@ export type EffectFormula =
   | { type: 'targetHandCountTimes'; multiplier: number }
   | { type: 'elementProductTimes'; element: Element; multiplier: number }
 export type FormationEffect =
-  | 'coverCounter'
-  | 'copyPreviousTurnFormation'
-  | 'recoverHp'
-  | 'reduceShield'
-  | 'inspectHand'
-  | 'createShield'
-  | 'returnTeamHp'
-  | 'drawCards'
-  | 'swapTeamHp'
-  | 'summonSpirit'
-  | 'clearEnvironment'
+  | { type: 'coverCounter' }
+  | { type: 'copyPreviousTurnFormation' }
+  | { type: 'recoverHp' }
+  | { type: 'reduceShield' }
+  | { type: 'inspectHand' }
+  | { type: 'createShield' }
+  | { type: 'returnTeamHp' }
+  | { type: 'drawCards' }
+  | { type: 'swapTeamHp' }
+  | { type: 'summonSpirit' }
+  | { type: 'clearEnvironment' }
   | { type: 'damagePreviousTeamByLevelSumTimes'; multiplier: number }
-  | 'halvePreviousTeamHp'
+  | { type: 'halvePreviousTeamHp' }
   | { type: 'damageNextTeamAndTakeHighestLevelHandCard'; damage: number }
-  | 'performResidualAndSelectedResonance'
-  | 'performAllFiveResonanceEffects'
+  | { type: 'performResidualAndSelectedResonance' }
+  | { type: 'performAllFiveResonanceEffects' }
   | { type: 'preventOtherPlayersFromActingOrDrawing'; durationTurns: number }
-  | 'gainDivineCalculationProtection'
+  | { type: 'gainDivineCalculationProtection' }
   | { type: 'poisonNextPlayer'; durationTurns: number }
   | { type: 'damageNextTeamAndPoisonNextPlayer'; damage: number; durationTurns: number }
   | { type: 'winIfNextTeamHpAtMost'; hpThreshold: number }
-  | 'changeEnvironment'
-  | 'breakProfession'
-  | 'limitedUseRecovery'
-  | 'resolveMelodyMainEffect'
-  | 'beginChainChoice'
-  | 'shatterSpirits'
-  | 'breakStars'
-  | 'damageEachTeamBy15'
-  | 'applyGaleRain'
-  | 'reduceEveryShieldBy20'
-  | 'attackIncreasesTo80IfShieldReduced'
-  | 'chooseEnvironmentAndRequireMatchingCardOrRevealHand'
-  | 'revealTopEightDiscardLevelThreeOrHigherThenShuffle'
-  | 'transferEnvironmentToUsedElement'
+  | { type: 'changeEnvironment' }
+  | { type: 'breakProfession' }
+  | { type: 'limitedUseRecovery' }
+  | { type: 'resolveMelodyMainEffect' }
+  | { type: 'beginChainChoice' }
+  | { type: 'shatterSpirits' }
+  | { type: 'breakStars' }
+  | { type: 'damageEachTeamBy15' }
+  | { type: 'applyGaleRain' }
+  | { type: 'reduceEveryShieldBy20' }
+  | { type: 'attackIncreasesTo80IfShieldReduced' }
+  | { type: 'chooseEnvironmentAndRequireMatchingCardOrRevealHand' }
+  | { type: 'revealTopEightDiscardLevelThreeOrHigherThenShuffle' }
+  | { type: 'transferEnvironmentToUsedElement' }
 export type SecretStrategyEffect = 'protectTriggeringPlayer' | 'increaseHandLevels' | 'increaseTurnDraw' | 'negateNextPlayerFormationHpChanges' | 'suppressPlayerAbilitiesAndSpiritPower' | 'summonSpiritFromPouch' | 'swapDeckAndDiscard' | 'directProfessionChange' | 'breakOrGainStar' | 'clearOrChangeEnvironment'
 export type ProfessionAbilityEffect =
   | { type: 'damagePreviousTeamByCardLevelTimes'; multiplier: number }

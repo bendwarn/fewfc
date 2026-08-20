@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import type {
+  FormationEffect,
   PlayerFacingActionDetail,
   PlayableAction,
   ProfessionAbilityEffect,
@@ -28,7 +29,7 @@ const everyConsequence: RuleConsequence[] = [
   { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'attack', target: 'allPlayers', category: 'special', points: { type: 'formula', formula: { type: 'targetHandCountTimes', multiplier: 15 } } } },
   { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'attack', target: 'eachTeam', category: 'special', points: { type: 'formula', formula: { type: 'elementProductTimes', element: 'Fire', multiplier: 5 } } } },
   ...(['coverCounter', 'copyPreviousTurnFormation', 'recoverHp', 'reduceShield', 'inspectHand', 'createShield', 'returnTeamHp', 'drawCards', 'swapTeamHp', 'summonSpirit', 'clearEnvironment', 'halvePreviousTeamHp', 'performResidualAndSelectedResonance', 'performAllFiveResonanceEffects', 'gainDivineCalculationProtection', 'changeEnvironment', 'breakProfession', 'limitedUseRecovery', 'resolveMelodyMainEffect', 'beginChainChoice', 'shatterSpirits', 'breakStars', 'damageEachTeamBy15', 'applyGaleRain', 'reduceEveryShieldBy20', 'attackIncreasesTo80IfShieldReduced', 'chooseEnvironmentAndRequireMatchingCardOrRevealHand', 'revealTopEightDiscardLevelThreeOrHigherThenShuffle', 'transferEnvironmentToUsedElement'] as const)
-    .map(effect => ({ type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'resolveFormationEffect', effect } }) as const),
+    .map(type => ({ type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'resolveFormationEffect', effect: { type } as FormationEffect } }) as const),
   ...([
     { type: 'damagePreviousTeamByLevelSumTimes', multiplier: 3 },
     { type: 'damageNextTeamAndTakeHighestLevelHandCard', damage: 20 },
@@ -112,10 +113,36 @@ test('allows actions with no contextual supplement', () => {
   expect(presentActionDetail({ consequences: [] })).toBe('')
 })
 
+test('presents the tagged Imprisoning Array effect from the Web contract', () => {
+  const action: PlayableAction = {
+    type: 'performFormation',
+    commandRole: 'action',
+    id: 'confluence:imprisoning-array',
+    name: '禁錮法陣',
+    category: 'Spell',
+    detail: { consequences: [{
+      type: 'immediateEffect',
+      certainty: 'guaranteed',
+      effect: {
+        type: 'resolveFormationEffect',
+        effect: {
+          type: 'preventOtherPlayersFromActingOrDrawing',
+          durationTurns: 1,
+        },
+      },
+    }] },
+    cards: [1],
+    starSubstitution: null,
+    matchOption: null,
+  }
+
+  expect(presentPlayableAction(action)).toBe('所有其他玩家 1 回合內無法行動及抽牌。')
+})
+
 test('composes related Echo facts into reader-facing clauses', () => {
   const detail: PlayerFacingActionDetail = {
     consequences: [
-      { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'resolveFormationEffect', effect: 'resolveMelodyMainEffect' } },
+      { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'resolveFormationEffect', effect: { type: 'resolveMelodyMainEffect' } } },
       { type: 'cost', certainty: 'conditional', cost: { type: 'optionalDiscardByPrintedElement', allowedPrintedElements: ['Metal', 'Earth'] } },
       { type: 'delayedEffect', certainty: 'conditional', timing: 'nextTurnStart', effect: 'repeatMelodyMainEffect' },
       { type: 'followUpChoice', certainty: 'followUp', choice: { type: 'selectDeckCard' } },
@@ -141,7 +168,7 @@ test('composes related Echo facts into reader-facing clauses', () => {
 
 test('presents Chain, direct Pouch, and Discard Retrieval without repeating their selected inputs', () => {
   expect(presentActionDetail({ consequences: [
-    { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'resolveFormationEffect', effect: 'beginChainChoice' } },
+    { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'resolveFormationEffect', effect: { type: 'beginChainChoice' } } },
     { type: 'followUpChoice', certainty: 'followUp', choice: { type: 'selectPouchOwnerAndOptionalStrategy' } },
   ] })).toBe('結算時選擇錦囊持有者，並可選擇第二張牌觸發秘計。')
 

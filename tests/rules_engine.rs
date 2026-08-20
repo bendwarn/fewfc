@@ -4144,6 +4144,129 @@ fn empty_city_flips_with_its_intentional_no_effect_outcome_and_is_discarded() {
 }
 
 #[test]
+fn empty_city_next_action_matrix_consumes_its_intentional_no_effect_while_attack_resolves() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let deck = deck_starting_with(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+
+    // Baseline: the next legal Fire Strike has no passive to trigger and
+    // damages normally after P1 completes an ordinary action / Turn Draw.
+    let mut baseline = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(10));
+    let baseline_attack = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(!baseline_attack
+        .iter()
+        .any(|event| matches!(event, GameEvent::PassiveFlipped { .. })));
+    assert!(baseline_attack.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved { hp_change: HpChangeDelta { effective_delta, .. }, .. }
+            if *effective_delta < 0
+    )));
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+
+    // Empty City is established by the legal passive command. Its intentional
+    // no-effect outcome must not suppress the next incoming Attack.
+    let mut interaction = GameRecord::start(two_player_setup(), deck).unwrap();
+    interaction.advance_automatic().unwrap();
+    let cover = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "empty-city".to_string(),
+            cards: vec![card(1), card(2)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        cover.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+            GameEvent::PassiveCovered { player: owner, formation_id: covered, cards: covered_cards, sealed: false, .. },
+        ] if player == &p1
+            && formation_id == "empty-city"
+            && cards == &vec![card(1), card(2)]
+            && owner == &p1
+            && covered == "empty-city"
+            && covered_cards == &vec![card(1), card(2)]
+    ));
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(10));
+    let hp_before = interaction
+        .state()
+        .hp
+        .iter()
+        .find(|team| team.team == TeamId::new("team:p1"))
+        .map(|team| team.hp)
+        .unwrap();
+    let attack = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        attack.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, .. },
+            GameEvent::PassiveFlipped {
+                owner,
+                incoming_player,
+                passive_id,
+                cards: passive_cards,
+                outcome: PassiveFlipOutcome::NoEffect { grounds },
+            },
+            GameEvent::AttackResolved { attacker, target, hp_change: HpChangeDelta { team, effective_delta, .. }, .. },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "fire-strike"
+            && cards == &vec![card(9)]
+            && owner == &p1
+            && incoming_player == &p2
+            && passive_id == "empty-city"
+            && passive_cards == &vec![card(1), card(2)]
+            && grounds == &vec![PassiveNoEffectGround::EmptyCity]
+            && attacker == &p2
+            && target == &p1
+            && team == &TeamId::new("team:p1")
+            && *effective_delta < 0
+            && discarded_by == &p2
+            && discarded == "fire-strike"
+            && discarded_cards == &vec![card(9)]
+    ));
+    assert!(interaction.state().covered_passive(&p1).is_none());
+    assert!(interaction
+        .state()
+        .hp
+        .iter()
+        .find(|team| team.team == TeamId::new("team:p1"))
+        .is_some_and(|team| team.hp < hp_before));
+    for card in [card(1), card(2), card(9)] {
+        assert!(interaction.state().discard.contains(&card));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
+}
+
+#[test]
 fn player_cannot_cover_second_passive_while_one_is_pending() {
     let mut state = GameState::from_setup(&two_player_setup());
     state.phase = Phase::ActiveEffects;
@@ -4328,6 +4451,576 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
     assert!(interaction.state().covered_passive(&p1).is_none());
     for card in defense_cards.into_iter().chain([card(9)]) {
         assert!(interaction.state().discard.contains(&card));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
+}
+
+#[test]
+fn defense_metal_environment_matrix_records_the_ground_but_keeps_attack_damage() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut setup = two_player_setup_with_hp(200)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    setup
+        .card_instances
+        .extend([card_instance(21, "metal"), card_instance(26, "metal")]);
+    let opening = vec![
+        card(1),
+        card(2),
+        card(3),
+        card(4), // P1 opening: legal initial Metal Strike
+        card(6),
+        card(11),
+        card(16),
+        card(21),
+        card(26), // P2 opening: legal West White Tiger
+        card(7),
+        card(8), // P1 first Turn Draw; retain both Wood Cards
+        card(9), // P1's mandatory third draw/discard candidate
+        card(14),
+        card(10),
+        card(12), // P2 draw after Sacred Beast; retain Fire 14
+        card(13),
+        card(19), // P1 draw after its tested action
+    ];
+    let mut deck = opening.clone();
+    deck.extend(
+        (1..=20)
+            .map(card)
+            .filter(|candidate| !opening.contains(candidate)),
+    );
+
+    fn finish_turn(record: &mut GameRecord, player: &PlayerId, discard: CardInstanceId) {
+        record.advance_automatic().unwrap();
+        answer_record_choice(
+            record,
+            player.clone(),
+            ChoiceAnswer::Cards {
+                cards: vec![discard],
+            },
+        )
+        .unwrap();
+        record.advance_automatic().unwrap();
+    }
+
+    fn establish_metal_environment(record: &mut GameRecord, p1: &PlayerId, p2: &PlayerId) {
+        record.advance_automatic().unwrap();
+        record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap();
+        finish_turn(record, p1, card(8));
+        let sacred_beast = record
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "west-white-tiger".to_string(),
+                cards: vec![card(6), card(11), card(16), card(21), card(26)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap();
+        assert!(sacred_beast.iter().any(|event| matches!(
+            event,
+            GameEvent::AttackResolved {
+                elemental_context_update: Some(AttackResolutionEffects { environment_transfers, .. }),
+                ..
+            } if environment_transfers == &vec![fewfc::domain::EnvironmentTransferDelta {
+                player: p2.clone(),
+                formation_id: "west-white-tiger".to_string(),
+                from: None,
+                to: Element::Metal,
+            }]
+        )));
+        assert_eq!(record.state().environment, Some(Element::Metal));
+        finish_turn(record, p2, card(12));
+        assert_eq!(record.state().current_player(), Some(p1));
+    }
+
+    // Modifier-only branch: Metal Environment is a legal Sacred-Beast result.
+    // An unrelated Empty City has its normal intentional lifecycle, while the
+    // subsequent Fire Attack still damages P1 normally under Metal Environment.
+    let mut environment_only = GameRecord::start(setup.clone(), deck.clone()).unwrap();
+    establish_metal_environment(&mut environment_only, &p1, &p2);
+    environment_only
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "empty-city".to_string(),
+            cards: vec![card(3), card(4)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut environment_only, &p1, card(19));
+    let environment_attack = environment_only
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(14)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(environment_attack.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            point_breakdown: AttackPointBreakdown { base_points: 8, final_amount: 8, .. },
+            hp_change: HpChangeDelta { team, effective_delta: -8, .. },
+            ..
+        } if team == &TeamId::new("team:p1")
+    )));
+
+    // Interaction: the same legal environment now coexists with a legally
+    // covered Defense. Defense flips exactly once with the environment ground;
+    // it does not prevent the incoming Fire Attack or suppress its lifecycle.
+    let mut interaction = GameRecord::start(setup, deck).unwrap();
+    establish_metal_environment(&mut interaction, &p1, &p2);
+    let defense = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "defense".to_string(),
+            cards: vec![card(2), card(7)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        defense.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+            GameEvent::PassiveCovered { player: owner, formation_id: covered, cards: covered_cards, .. },
+        ] if player == &p1
+            && formation_id == "defense"
+            && cards == &vec![card(2), card(7)]
+            && owner == &p1
+            && covered == "defense"
+            && covered_cards == &vec![card(2), card(7)]
+    ));
+    finish_turn(&mut interaction, &p1, card(19));
+    let attack = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(14)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        attack.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, .. },
+            GameEvent::PassiveFlipped {
+                owner,
+                incoming_player,
+                passive_id,
+                cards: defense_cards,
+                outcome: PassiveFlipOutcome::NoEffect { grounds },
+            },
+            GameEvent::AttackResolved {
+                attacker,
+                target,
+                point_breakdown: AttackPointBreakdown { base_points: 8, final_amount: 8, .. },
+                hp_change: HpChangeDelta { team, effective_delta: -8, .. },
+                ..
+            },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "fire-strike"
+            && cards == &vec![card(14)]
+            && owner == &p1
+            && incoming_player == &p2
+            && passive_id == "defense"
+            && defense_cards == &vec![card(2), card(7)]
+            && grounds == &vec![PassiveNoEffectGround::IneffectiveInEnvironment { environment: Element::Metal }]
+            && attacker == &p2
+            && target == &p1
+            && team == &TeamId::new("team:p1")
+            && discarded_by == &p2
+            && discarded == "fire-strike"
+            && discarded_cards == &vec![card(14)]
+    ));
+    assert_eq!(interaction.state().environment, Some(Element::Metal));
+    assert!(interaction.state().covered_passive(&p1).is_none());
+    for card in [card(2), card(7), card(14)] {
+        assert!(interaction.state().discard.contains(&card));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
+}
+
+#[test]
+fn defense_sacred_beast_matrix_consumes_defense_but_keeps_the_beasts_damage_and_environment() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut setup = two_player_setup_with_hp(200)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    setup
+        .card_instances
+        .extend([
+            card_instance(21, "metal"),
+            card_instance(26, "metal"),
+            card_instance(31, "metal"),
+        ]);
+    let deck = {
+        let opening = vec![
+            card(2),
+            card(7),
+            card(1),
+            card(31), // P1: legal Defense or baseline physical Weapon
+            card(6),
+            card(11),
+            card(16),
+            card(21),
+            card(26), // P2: legal West White Tiger
+            card(3),
+            card(4),
+            card(5), // P1 Turn Draw
+        ];
+        let mut cards = opening.clone();
+        cards.extend(
+            (1..=20)
+                .map(card)
+                .filter(|candidate| !opening.contains(candidate)),
+        );
+        cards
+    };
+    let beast_cards = vec![card(6), card(11), card(16), card(21), card(26)];
+
+    // Baseline: a Sacred Beast has its normal 81-point attack and canonical
+    // environment transfer when no previous-player passive exists. P1's
+    // physical Weapon deliberately leaves no elemental prior-action context.
+    let mut baseline = GameRecord::start(setup.clone(), deck.clone()).unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(1), card(31)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(4));
+    let baseline_beast = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "west-white-tiger".to_string(),
+            cards: beast_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(baseline_beast.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            point_breakdown: AttackPointBreakdown { base_points: 81, final_amount: 81, .. },
+            hp_change: HpChangeDelta { team, effective_delta: -81, .. },
+            elemental_context_update: Some(AttackResolutionEffects { environment_transfers, .. }),
+            ..
+        } if team == &TeamId::new("team:p1")
+            && environment_transfers == &vec![fewfc::domain::EnvironmentTransferDelta {
+                player: p2.clone(),
+                formation_id: "west-white-tiger".to_string(),
+                from: None,
+                to: Element::Metal,
+            }]
+    )));
+    assert_eq!(baseline.state().environment, Some(Element::Metal));
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+
+    // Modifier itself: Defense is established by its real passive command,
+    // then remains hidden from the non-owner until P2's next action.
+    let mut interaction = GameRecord::start(setup, deck).unwrap();
+    interaction.advance_automatic().unwrap();
+    let defense = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "defense".to_string(),
+            cards: vec![card(2), card(7)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        defense.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+            GameEvent::PassiveCovered { player: owner, formation_id: covered, cards: covered_cards, sealed: false, .. },
+        ] if player == &p1
+            && formation_id == "defense"
+            && cards == &vec![card(2), card(7)]
+            && owner == &p1
+            && covered == "defense"
+            && covered_cards == &vec![card(2), card(7)]
+    ));
+    assert!(matches!(
+        interaction.public_view(Viewer::Player(p2.clone())).unwrap().covered_passives.as_slice(),
+        [PublicCoveredPassive { owner, formation_id: None, cards: PublicCardRefs::Hidden { count: 2 }, star_substitution: None }]
+            if owner == &p1
+    ));
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(4));
+
+    // Interaction: the Beast's rule exception makes Defense a single
+    // no-effect outcome, while its unrelated 81 damage, transfer, commitment,
+    // and physical card movement all remain intact.
+    let beast = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "west-white-tiger".to_string(),
+            cards: beast_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        beast.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
+            GameEvent::PassiveFlipped {
+                owner,
+                incoming_player,
+                passive_id,
+                cards: defense_cards,
+                outcome: PassiveFlipOutcome::NoEffect { grounds },
+            },
+            GameEvent::AttackResolved {
+                attacker,
+                target,
+                point_breakdown: AttackPointBreakdown { base_points: 81, final_amount: 81, .. },
+                hp_change: HpChangeDelta { team, effective_delta: -81, .. },
+                elemental_context_update: Some(AttackResolutionEffects { environment_transfers, .. }),
+                ..
+            },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "west-white-tiger"
+            && cards == &beast_cards
+            && owner == &p1
+            && incoming_player == &p2
+            && passive_id == "defense"
+            && defense_cards == &vec![card(2), card(7)]
+            && grounds == &vec![PassiveNoEffectGround::IgnoredBySacredBeast]
+            && attacker == &p2
+            && target == &p1
+            && team == &TeamId::new("team:p1")
+            && environment_transfers == &vec![fewfc::domain::EnvironmentTransferDelta {
+                player: p2.clone(),
+                formation_id: "west-white-tiger".to_string(),
+                from: None,
+                to: Element::Metal,
+            }]
+            && discarded_by == &p2
+            && discarded == "west-white-tiger"
+            && discarded_cards == &beast_cards
+    ));
+    assert_eq!(interaction.state().environment, Some(Element::Metal));
+    assert!(interaction.state().covered_passive(&p1).is_none());
+    for used in [card(2), card(7), card(6), card(11), card(16), card(21), card(26)] {
+        assert!(interaction.state().discard.contains(&used));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
+}
+
+#[test]
+fn metal_environment_barrier_matrix_keeps_commitment_and_cards_when_its_shield_is_ineffective() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut setup = two_player_setup_with_hp(200)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    setup.card_instances.extend([
+        card_instance(21, "metal"),
+        card_instance(26, "metal"),
+        card_instance(31, "metal"),
+    ]);
+    let barrier_cards = vec![card(2), card(7), card(31), card(4)];
+
+    // Baseline: Barrier itself applies its 44-point Shield and completes the
+    // normal formation/card lifecycle without an Environment modifier.
+    let mut baseline = GameRecord::start(
+        setup.clone(),
+        {
+            let opening = vec![
+                card(2),
+                card(7),
+                card(31),
+                card(4), // P1: Barrier
+                card(1),
+                card(6),
+                card(11),
+                card(16),
+                card(21),
+                card(26),
+            ];
+            let mut cards = opening.clone();
+            cards.extend(
+                (1..=20)
+                    .map(card)
+                    .filter(|candidate| !opening.contains(candidate)),
+            );
+            cards
+        },
+    )
+    .unwrap();
+    baseline.advance_automatic().unwrap();
+    let baseline_barrier = baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "barrier".to_string(),
+            cards: barrier_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        baseline_barrier.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
+            GameEvent::ShieldChanged { player: shield_owner, old_value: 0, delta: 44, new_value: 44 },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p1
+            && formation_id == "barrier"
+            && cards == &barrier_cards
+            && shield_owner == &p1
+            && discarded_by == &p1
+            && discarded == "barrier"
+            && discarded_cards == &barrier_cards
+    ));
+    assert_eq!(baseline.state().shield(&p1), Some(44));
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+    assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
+
+    // Modifier: P2's legal Sacred Beast is the sole origin of the shared
+    // Metal Environment. P1 then still uses the same physically legal Barrier
+    // Cards on its next action.
+    let mut interaction = GameRecord::start(
+        setup,
+        {
+            let opening = vec![
+                card(1),
+                card(2),
+                card(7),
+                card(4), // P1: first action then Barrier after Turn Draw
+                card(6),
+                card(11),
+                card(16),
+                card(21),
+                card(26), // P2: West White Tiger
+                card(31),
+                card(8),
+                card(9), // P1 Turn Draw; retain Metal 31
+                card(10),
+                card(12),
+                card(13), // P2 Turn Draw
+            ];
+            let mut cards = opening.clone();
+            cards.extend(
+                (1..=20)
+                    .map(card)
+                    .filter(|candidate| !opening.contains(candidate)),
+            );
+            cards
+        },
+    )
+    .unwrap();
+    interaction.advance_automatic().unwrap();
+    interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(8));
+    let sacred_beast = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "west-white-tiger".to_string(),
+            cards: vec![card(6), card(11), card(16), card(21), card(26)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(sacred_beast.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            elemental_context_update: Some(AttackResolutionEffects { environment_transfers, .. }),
+            ..
+        } if environment_transfers == &vec![fewfc::domain::EnvironmentTransferDelta {
+            player: p2.clone(),
+            formation_id: "west-white-tiger".to_string(),
+            from: None,
+            to: Element::Metal,
+        }]
+    )));
+    assert_eq!(interaction.state().environment, Some(Element::Metal));
+    interaction.advance_automatic().unwrap();
+    answer_record_choice(
+        &mut interaction,
+        p2.clone(),
+        ChoiceAnswer::Cards {
+            cards: vec![card(10)],
+        },
+    )
+    .unwrap();
+    interaction.advance_automatic().unwrap();
+
+    // Interaction: Metal Environment makes Barrier's Shield effect inapplicable
+    // but cannot undo its accepted command, Formation commitment, or discard.
+    let ignored_barrier = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "barrier".to_string(),
+            cards: barrier_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(ignored_barrier.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. }
+            if player == &p1 && formation_id == "barrier" && cards == &barrier_cards
+    )));
+    assert!(ignored_barrier.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationEffectIgnored {
+            player,
+            formation_id,
+            reason: fewfc::domain::FormationNoEffectReason::IneffectiveInEnvironment {
+                environment: Element::Metal,
+            },
+        } if player == &p1 && formation_id == "barrier"
+    )));
+    assert!(ignored_barrier.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCardsDiscarded { player, formation_id, cards }
+            if player == &p1 && formation_id == "barrier" && cards == &barrier_cards
+    )));
+    assert!(!ignored_barrier.iter().any(|event| matches!(
+        event,
+        GameEvent::ShieldChanged { player, .. } if player == &p1
+    )));
+    assert_eq!(interaction.state().shield(&p1), Some(0));
+    assert_eq!(interaction.state().environment, Some(Element::Metal));
+    assert_eq!(
+        interaction
+            .public_view(Viewer::Player(p1.clone()))
+            .unwrap()
+            .environment,
+        Some(Element::Metal)
+    );
+    assert_eq!(
+        interaction
+            .public_view(Viewer::Player(p2.clone()))
+            .unwrap()
+            .environment,
+        Some(Element::Metal)
+    );
+    for used in barrier_cards {
+        assert!(interaction.state().discard.contains(&used));
     }
     assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
     assert_eq!(
@@ -4580,6 +5273,549 @@ fn five_streams_defense_matrix_keeps_the_turn_draw_bonus_when_damage_is_prevente
 }
 
 #[test]
+fn countershock_attack_matrix_splits_damage_after_legal_cover_and_preserves_attack_lifecycle() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let deck = deck_starting_with(&[4, 9, 1, 2, 5, 10, 3, 6, 7]);
+
+    // Baseline: without the modifier, the same ordinary Metal Strike damages
+    // only P1. P1's Fire Strike is a legal prior action, not injected turn
+    // history.
+    let mut baseline = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(4)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(8));
+    let baseline_attack = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(6)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        baseline_attack.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, .. },
+            GameEvent::AttackResolved {
+                attacker,
+                target,
+                point_breakdown: AttackPointBreakdown { base_points: 7, final_amount: 7, .. },
+                hp_change: HpChangeDelta { team, old_hp: 30, delta: -7, new_hp: 23, effective_delta: -7 },
+                ..
+            },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "metal-strike"
+            && cards == &vec![card(6)]
+            && attacker == &p2
+            && target == &p1
+            && team == &TeamId::new("team:p1")
+            && discarded_by == &p2
+            && discarded == "metal-strike"
+            && discarded_cards == &vec![card(6)]
+    ));
+    assert_eq!(
+        baseline
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p1"))
+            .map(|entry| entry.hp),
+        Some(23)
+    );
+    assert_eq!(
+        baseline
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p2"))
+            .map(|entry| entry.hp),
+        Some(22)
+    );
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+
+    // Modifier: Countershock is established by P1's legal Formation command.
+    let mut interaction = GameRecord::start(two_player_setup(), deck).unwrap();
+    interaction.advance_automatic().unwrap();
+    let cover_events = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "countershock".to_string(),
+            cards: vec![card(4), card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        cover_events.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+            GameEvent::PassiveCovered { player: covered_by, formation_id: covered, cards: covered_cards, star_substitution: None, sealed: false },
+        ] if player == &p1
+            && formation_id == "countershock"
+            && cards == &vec![card(4), card(9)]
+            && covered_by == &p1
+            && covered == "countershock"
+            && covered_cards == &vec![card(4), card(9)]
+    ));
+    assert_eq!(
+        public_view::state_for(interaction.state(), Viewer::Player(p1.clone())).covered_passives,
+        vec![PublicCoveredPassive {
+            owner: p1.clone(),
+            formation_id: Some("countershock".to_string()),
+            cards: PublicCardRefs::Known(vec![card(4), card(9)]),
+            star_substitution: None,
+        }]
+    );
+    assert_eq!(
+        public_view::state_for(interaction.state(), Viewer::Player(p2.clone())).covered_passives,
+        vec![PublicCoveredPassive {
+            owner: p1.clone(),
+            formation_id: None,
+            cards: PublicCardRefs::Hidden { count: 2 },
+            star_substitution: None,
+        }]
+    );
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(8));
+
+    // Interaction: the identical Attack flips Countershock. It splits the
+    // seven points into two rounded-up four-point losses, while retaining the
+    // attack commitment and both sides' canonical Card movement.
+    let attack = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(6)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        attack.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
+            GameEvent::PassiveFlipped {
+                owner,
+                incoming_player,
+                passive_id,
+                cards: passive_cards,
+                outcome: PassiveFlipOutcome::Applied { effect_id, modifications },
+            },
+            GameEvent::AttackResolved {
+                attacker,
+                target,
+                formation_id: attack_formation,
+                used_cards,
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 7,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 7,
+                },
+                hp_change: HpChangeDelta { team, old_hp: 30, delta: -4, new_hp: 26, effective_delta: -4 },
+                shield_change: None,
+                card_moves,
+                elemental_context_update: Some(AttackResolutionEffects {
+                    outcome: fewfc::domain::AttackOutcome::Resolved,
+                    elemental_context_update: Some(LastElementalAttackUpdate {
+                        player: context_player,
+                        attack: LastElementalAttack { element: Element::Metal, resolved_turn: 2 },
+                    }),
+                    hp_changes,
+                    shield_changes,
+                    card_moves: effect_card_moves,
+                    statuses_added,
+                    statuses_removed,
+                    counter_effects_established,
+                    turn_draw_bonus_changes,
+                    environment_transfers,
+                }),
+            },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "metal-strike"
+            && cards == &vec![card(6)]
+            && owner == &p1
+            && incoming_player == &p2
+            && passive_id == "countershock"
+            && passive_cards == &vec![card(4), card(9)]
+            && effect_id == "countershock"
+            && modifications == &vec![ActionModification::SplitAttackDamage]
+            && attacker == &p2
+            && target == &p1
+            && attack_formation == "metal-strike"
+            && used_cards == &vec![card(6)]
+            && team == &TeamId::new("team:p1")
+            && card_moves.is_empty()
+            && context_player == &p2
+            && hp_changes == &vec![HpChangeDelta {
+                team: TeamId::new("team:p2"),
+                old_hp: 30,
+                delta: -4,
+                new_hp: 26,
+                effective_delta: -4,
+            }]
+            && shield_changes.is_empty()
+            && effect_card_moves.is_empty()
+            && statuses_added.is_empty()
+            && statuses_removed.is_empty()
+            && counter_effects_established.is_empty()
+            && turn_draw_bonus_changes.is_empty()
+            && environment_transfers.is_empty()
+            && discarded_by == &p2
+            && discarded == "metal-strike"
+            && discarded_cards == &vec![card(6)]
+    ));
+    assert!(interaction.state().covered_passive(&p1).is_none());
+    assert_eq!(
+        interaction
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p1"))
+            .map(|entry| entry.hp),
+        Some(26)
+    );
+    assert_eq!(
+        interaction
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p2"))
+            .map(|entry| entry.hp),
+        Some(26)
+    );
+    for card in [card(4), card(9), card(6)] {
+        assert!(interaction.state().discard.contains(&card));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
+}
+
+#[test]
+fn countershock_shield_matrix_splits_before_physical_shield_absorption_through_legal_turns() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let deck = deck_starting_with(&[
+        2, 7, 1, 4, // P1 Barrier
+        6, 11, 16, 5, 10, // P2 opening; Metal Strike then Weapon
+        9, 14, 3, // P1 receives Fire/Fire plus a Turn Draw discard
+        8, 12, 13, // P2 first Turn Draw
+        15, 17, 18, // P1 second Turn Draw
+    ]);
+
+    fn advance_p2_turn(record: &mut GameRecord, discard: CardInstanceId) {
+        record.advance_automatic().unwrap();
+        answer_record_choice(
+            record,
+            PlayerId::new("p2"),
+            ChoiceAnswer::Cards {
+                cards: vec![discard],
+            },
+        )
+        .unwrap();
+        record.advance_automatic().unwrap();
+    }
+
+    fn establish_barrier_and_take_opening_attack(
+        record: &mut GameRecord,
+        p1: &PlayerId,
+        p2: &PlayerId,
+    ) {
+        record.advance_automatic().unwrap();
+        record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "barrier".to_string(),
+                cards: vec![card(2), card(7), card(1), card(4)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(record.state().shield(p1), Some(44));
+        advance_record_to_next_main_after_turn_draw(record, card(3));
+        let opening_attack = record
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(6)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap();
+        assert!(opening_attack.iter().any(|event| matches!(
+            event,
+            GameEvent::AttackResolved {
+                hp_change: HpChangeDelta { delta: 0, effective_delta: 0, .. },
+                shield_change: Some(ShieldChangeDelta { player, old_value: 44, delta: -7, new_value: 37 }),
+                ..
+            } if player == p1
+        )));
+        advance_p2_turn(record, card(8));
+        assert_eq!(record.state().current_player(), Some(p1));
+        assert_eq!(record.state().shield(p1), Some(37));
+    }
+
+    // Baseline: Barrier alone lets the eventual physical Weapon consume twice
+    // its twelve-point damage from Shield and leaves both Teams' HP unchanged
+    // except for P1's intervening ordinary Fire Strike.
+    let mut baseline = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
+    establish_barrier_and_take_opening_attack(&mut baseline, &p1, &p2);
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(15));
+    let baseline_weapon = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(11), card(16)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        baseline_weapon.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, .. },
+            GameEvent::AttackResolved {
+                point_breakdown: AttackPointBreakdown { base_points: 12, final_amount: 12, .. },
+                hp_change: HpChangeDelta { team, delta: 0, effective_delta: 0, .. },
+                shield_change: Some(ShieldChangeDelta { player: shield_owner, old_value: 37, delta: -24, new_value: 13 }),
+                ..
+            },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "weapon"
+            && cards == &vec![card(11), card(16)]
+            && team == &TeamId::new("team:p1")
+            && shield_owner == &p1
+            && discarded_by == &p2
+            && discarded == "weapon"
+            && discarded_cards == &vec![card(11), card(16)]
+    ));
+    assert_eq!(baseline.state().shield(&p1), Some(13));
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+
+    // Modifier: P1 covers Countershock through a legal passive Formation after
+    // the same Barrier and intervening P2 turn; no Shield or covered state is
+    // injected.
+    let mut interaction = GameRecord::start(two_player_setup(), deck).unwrap();
+    establish_barrier_and_take_opening_attack(&mut interaction, &p1, &p2);
+    let countershock = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "countershock".to_string(),
+            cards: vec![card(9), card(14)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        countershock.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+            GameEvent::PassiveCovered { player: covered_by, formation_id: covered, cards: covered_cards, .. },
+        ] if player == &p1
+            && formation_id == "countershock"
+            && cards == &vec![card(9), card(14)]
+            && covered_by == &p1
+            && covered == "countershock"
+            && covered_cards == &vec![card(9), card(14)]
+    ));
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(15));
+
+    // Interaction: Countershock first halves the incoming twelve. The target
+    // half is then physical damage to Shield and therefore doubles to twelve;
+    // the reciprocal half damages P2's HP. Both Formation lifecycles remain.
+    let weapon = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(11), card(16)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(weapon.iter().any(|event| matches!(
+        event,
+        GameEvent::PassiveFlipped {
+            owner,
+            passive_id,
+            outcome: PassiveFlipOutcome::Applied { modifications, .. },
+            ..
+        } if owner == &p1
+            && passive_id == "countershock"
+            && modifications == &vec![ActionModification::SplitAttackDamage]
+    )));
+    assert!(weapon.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            point_breakdown: AttackPointBreakdown { base_points: 12, final_amount: 12, .. },
+            hp_change: HpChangeDelta { team, delta: 0, effective_delta: 0, .. },
+            shield_change: Some(ShieldChangeDelta { player, old_value: 37, delta: -12, new_value: 25 }),
+            elemental_context_update: Some(effects),
+            ..
+        } if team == &TeamId::new("team:p1")
+            && effects.hp_changes == vec![HpChangeDelta {
+                team: TeamId::new("team:p2"),
+                old_hp: 30,
+                delta: -6,
+                new_hp: 24,
+                effective_delta: -6,
+            }]
+    )));
+    assert!(interaction.state().covered_passive(&p1).is_none());
+    assert_eq!(interaction.state().shield(&p1), Some(25));
+    assert_eq!(
+        interaction
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p1"))
+            .map(|entry| entry.hp),
+        Some(30)
+    );
+    assert_eq!(
+        interaction
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p2"))
+            .map(|entry| entry.hp),
+        Some(24)
+    );
+    for card in [card(9), card(14), card(11), card(16)] {
+        assert!(interaction.state().discard.contains(&card));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
+}
+
+#[test]
+fn countershock_lethal_matrix_resolves_both_split_losses_before_declaring_a_draw() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let deck = deck_starting_with(&[
+        4, 9, 1, 2, // P1: legal Countershock
+        6, 11, 16, 5, 10, // P2: legal Metal Strike
+        3, 7, // P1 Turn Draw, with Card 7 discarded below
+    ]);
+    let mut record = GameRecord::start(two_player_setup_with_hp(4), deck).unwrap();
+    record.advance_automatic().unwrap();
+
+    // Modifier: the covered Countershock reaches the next player's Action
+    // through its actual Turn Draw lifecycle.
+    let covered = record
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "countershock".to_string(),
+            cards: vec![card(4), card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        covered.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+            GameEvent::PassiveCovered { player: covered_by, formation_id: covered_id, cards: covered_cards, .. },
+        ] if player == &p1
+            && formation_id == "countershock"
+            && cards == &vec![card(4), card(9)]
+            && covered_by == &p1
+            && covered_id == "countershock"
+            && covered_cards == &vec![card(4), card(9)]
+    ));
+    advance_record_to_next_main_after_turn_draw(&mut record, card(7));
+    assert_eq!(record.state().current_player(), Some(&p2));
+
+    // Interaction: a seven-point Attack splits to two rounded-up four-point
+    // losses. Both deltas must be recorded before the terminal Draw, while
+    // the passive and incoming Formation Cards still reach Discard.
+    let attack = record
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(6)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        attack.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, .. },
+            GameEvent::PassiveFlipped {
+                owner,
+                incoming_player,
+                passive_id,
+                outcome: PassiveFlipOutcome::Applied { modifications, .. },
+                ..
+            },
+            GameEvent::AttackResolved {
+                attacker,
+                target,
+                point_breakdown: AttackPointBreakdown { base_points: 7, final_amount: 7, .. },
+                hp_change: HpChangeDelta { team, old_hp: 4, delta: -4, new_hp: 0, effective_delta: -4 },
+                elemental_context_update: Some(AttackResolutionEffects { hp_changes, .. }),
+                ..
+            },
+            GameEvent::GameEnded { conclusion },
+        ] if player == &p2
+            && formation_id == "metal-strike"
+            && cards == &vec![card(6)]
+            && owner == &p1
+            && incoming_player == &p2
+            && passive_id == "countershock"
+            && modifications == &vec![ActionModification::SplitAttackDamage]
+            && attacker == &p2
+            && target == &p1
+            && team == &TeamId::new("team:p1")
+            && hp_changes == &vec![HpChangeDelta {
+                team: TeamId::new("team:p2"),
+                old_hp: 4,
+                delta: -4,
+                new_hp: 0,
+                effective_delta: -4,
+            }]
+            && conclusion.outcome == GameOutcome::Draw
+            && conclusion.causes == vec![GameEndCause::TeamHpDepleted {
+                teams: vec![TeamId::new("team:p1"), TeamId::new("team:p2")],
+            }]
+    ));
+    assert!(matches!(
+        record.state().status,
+        GameStatus::Finished { ref conclusion } if conclusion.outcome == GameOutcome::Draw
+    ));
+    assert!(record.state().hp.iter().all(|team| team.hp == 0));
+    assert!(record.state().covered_passive(&p1).is_none());
+    for card in [card(4), card(9)] {
+        assert!(record.state().discard.contains(&card));
+    }
+    assert!(matches!(
+        record.state().formation_area(&p2),
+        Some(PlayerFormationArea {
+            formation: Some(FormationInArea { formation_id, cards, state: FormationAreaState::FaceUpResolving, .. }),
+            ..
+        }) if formation_id == "metal-strike" && cards == &vec![card(6)]
+    ));
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
+}
+
+#[test]
 fn countershock_rounds_each_players_half_of_odd_attack_damage_up() {
     let mut record = record_after_p1_covers_countershock();
 
@@ -4826,6 +6062,116 @@ fn seal_passive_flips_as_no_effect_against_incoming_attack_and_is_discarded() {
 }
 
 #[test]
+fn seal_attack_matrix_records_not_a_spell_but_keeps_the_attack_outcome() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let deck = deck_starting_with(&[3, 8, 1, 6, 9, 10, 4, 5, 7, 11, 12]);
+
+    // Baseline: the legal Fire Strike resolves normally without a covered
+    // passive, establishing the exact unaffected attack outcome.
+    let mut baseline = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(1), card(6)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(11));
+    let baseline_attack = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(baseline_attack.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            point_breakdown: AttackPointBreakdown { base_points: 8, final_amount: 8, .. },
+            hp_change: HpChangeDelta { team, old_hp: 30, delta: -8, new_hp: 22, effective_delta: -8 },
+            ..
+        } if team == &TeamId::new("team:p1")
+    )));
+
+    // Modifier: P1 legally covers Seal before the same incoming Attack.
+    let mut interaction = GameRecord::start(two_player_setup(), deck).unwrap();
+    interaction.advance_automatic().unwrap();
+    interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "seal".to_string(),
+            cards: vec![card(3), card(8)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(11));
+    let attack = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        attack.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, .. },
+            GameEvent::PassiveFlipped {
+                owner,
+                incoming_player,
+                passive_id,
+                cards: seal_cards,
+                outcome: PassiveFlipOutcome::NoEffect { grounds },
+            },
+            GameEvent::AttackResolved {
+                attacker,
+                target,
+                point_breakdown: AttackPointBreakdown { base_points: 8, final_amount: 8, .. },
+                hp_change: HpChangeDelta { team, old_hp: 30, delta: -8, new_hp: 22, effective_delta: -8 },
+                ..
+            },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "fire-strike"
+            && cards == &vec![card(9)]
+            && owner == &p1
+            && incoming_player == &p2
+            && passive_id == "seal"
+            && seal_cards == &vec![card(3), card(8)]
+            && grounds == &vec![PassiveNoEffectGround::NotASpell]
+            && attacker == &p2
+            && target == &p1
+            && team == &TeamId::new("team:p1")
+            && discarded_by == &p2
+            && discarded == "fire-strike"
+            && discarded_cards == &vec![card(9)]
+    ));
+    assert!(interaction.state().covered_passive(&p1).is_none());
+    assert_eq!(
+        interaction
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p1"))
+            .map(|entry| entry.hp),
+        Some(22)
+    );
+    for card in [card(3), card(8), card(9)] {
+        assert!(interaction.state().discard.contains(&card));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
+}
+
+#[test]
 fn seal_cancels_incoming_active_spell_effects_and_consumes_the_action() {
     let mut state = GameState::from_setup(&two_player_setup());
     state.phase = Phase::ActiveEffects;
@@ -4883,6 +6229,139 @@ fn seal_cancels_incoming_active_spell_effects_and_consumes_the_action() {
 }
 
 #[test]
+fn seal_barrier_matrix_cancels_the_spell_but_keeps_formation_commitment_and_card_movement() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let deck = deck_starting_with(&[3, 8, 1, 2, 7, 12, 4, 5, 6, 10, 11, 13]);
+    let barrier_cards = vec![card(7), card(12), card(4), card(6)];
+
+    // Baseline: Barrier's own effect gives P2 a 44-point Shield after P1's
+    // ordinary legal Metal Strike. It establishes the exact action and card
+    // lifecycle which must survive cancellation in the interaction.
+    let mut baseline = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(10));
+    let baseline_barrier = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "barrier".to_string(),
+            cards: barrier_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        baseline_barrier.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
+            GameEvent::ShieldChanged { player: shield_owner, old_value: 0, delta: 44, new_value: 44 },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "barrier"
+            && cards == &barrier_cards
+            && shield_owner == &p2
+            && discarded_by == &p2
+            && discarded == "barrier"
+            && discarded_cards == &barrier_cards
+    ));
+    assert_eq!(baseline.state().shield(&p2), Some(44));
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+
+    // Modifier: P1 covers Seal legally. Its owner sees the covered Cards,
+    // while P2 sees only the count prior to triggering it.
+    let mut interaction = GameRecord::start(two_player_setup(), deck).unwrap();
+    interaction.advance_automatic().unwrap();
+    let seal = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "seal".to_string(),
+            cards: vec![card(3), card(8)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        seal.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+            GameEvent::PassiveCovered { player: covered_by, formation_id: covered, cards: covered_cards, star_substitution: None, sealed: false },
+        ] if player == &p1
+            && formation_id == "seal"
+            && cards == &vec![card(3), card(8)]
+            && covered_by == &p1
+            && covered == "seal"
+            && covered_cards == &vec![card(3), card(8)]
+    ));
+    assert_eq!(
+        public_view::state_for(interaction.state(), Viewer::Player(p2.clone())).covered_passives,
+        vec![PublicCoveredPassive {
+            owner: p1.clone(),
+            formation_id: None,
+            cards: PublicCardRefs::Hidden { count: 2 },
+            star_substitution: None,
+        }]
+    );
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(10));
+
+    // Interaction: Seal flips once and cancels Barrier's Shield result. The
+    // Barrier still commits and discards its four physical Cards; Seal itself
+    // is consumed, so there is no latent counter or fabricated Shield.
+    let canceled_barrier = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "barrier".to_string(),
+            cards: barrier_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(canceled_barrier.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. }
+            if player == &p2 && formation_id == "barrier" && cards == &barrier_cards
+    )));
+    assert!(canceled_barrier.iter().any(|event| matches!(
+        event,
+        GameEvent::PassiveFlipped {
+            owner,
+            incoming_player,
+            passive_id,
+            cards,
+            outcome: PassiveFlipOutcome::Applied { effect_id, modifications },
+        } if owner == &p1
+            && incoming_player == &p2
+            && passive_id == "seal"
+            && cards == &vec![card(3), card(8)]
+            && effect_id == "seal"
+            && modifications == &vec![ActionModification::CancelSpell]
+    )));
+    assert!(canceled_barrier.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCardsDiscarded { player, formation_id, cards }
+            if player == &p2 && formation_id == "barrier" && cards == &barrier_cards
+    )));
+    assert!(!canceled_barrier.iter().any(|event| matches!(
+        event,
+        GameEvent::ShieldChanged { player, .. } if player == &p2
+    )));
+    assert_eq!(interaction.state().shield(&p2), Some(0));
+    assert!(interaction.state().covered_passive(&p1).is_none());
+    for card in [card(3), card(8), card(7), card(12), card(4), card(6)] {
+        assert!(interaction.state().discard.contains(&card));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
+}
+
+#[test]
 fn seal_cancels_chaos_without_leaving_a_pending_choice() {
     let mut state = GameState::from_setup(&two_player_setup());
     state.phase = Phase::ActiveEffects;
@@ -4913,14 +6392,168 @@ fn seal_cancels_chaos_without_leaving_a_pending_choice() {
 
     assert!(state.pending_choice.is_none());
     assert!(no_covered(&state));
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
-    );
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, GameEvent::ChoiceRequested { .. })));
     for used_card in [card(8), card(13), card(5), card(10), card(2), card(1)] {
         assert!(state.discard.contains(&used_card));
     }
+}
+
+#[test]
+fn seal_chaos_matrix_cancels_the_choice_but_keeps_spell_commitment_and_cards() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let chaos_cards = vec![card(5), card(10), card(7), card(6)];
+
+    // Baseline: Chaos normally exposes its typed continuation only to P2, who
+    // selects exactly two of P1's inspected Cards and returns them to DeckTop.
+    let mut baseline = GameRecord::start(
+        two_player_setup(),
+        deck_starting_with(&[1, 2, 3, 4, 5, 10, 7, 6, 9, 11, 12, 13]),
+    )
+    .unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(13));
+    let baseline_chaos = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "chaos".to_string(),
+            cards: chaos_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(baseline_chaos.iter().any(|event| matches!(
+        event,
+        GameEvent::ChoiceRequested { choice }
+            if choice.player == p2
+                && matches!(choice.continuation, ChoiceContinuation::Base(fewfc::domain::BaseChoiceContinuation::ChaosReturnTwo))
+    )));
+    let baseline_choice = baseline
+        .state()
+        .pending_choice
+        .as_ref()
+        .expect("unsuppressed Chaos must create its canonical choice")
+        .clone();
+    let PendingChoiceKind::Card {
+        cards: allowed,
+        minimum,
+        maximum,
+        ..
+    } = &baseline_choice.kind
+    else {
+        panic!("Chaos must request a typed Card choice");
+    };
+    assert_eq!((*minimum, *maximum), (2, 2));
+    let chosen = vec![allowed[0], allowed[1]];
+    let baseline_answer = baseline
+        .handle(Command::AnswerChoice {
+            player: p2.clone(),
+            choice_id: baseline_choice.choice_id,
+            answer: ChoiceAnswer::Cards {
+                cards: chosen.clone(),
+            },
+        })
+        .unwrap();
+    assert!(baseline_answer.iter().any(|event| matches!(
+        event,
+        GameEvent::CardsMoved { card_moves }
+            if card_moves.len() == 2 && card_moves.iter().all(|movement| {
+                movement.from == CardZone::Hand(p1.clone()) && movement.to == CardZone::DeckTop
+            })
+    )));
+    assert!(baseline.state().pending_choice.is_none());
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+
+    // Interaction: P1 legally covers Seal. P2's same legal Chaos formation
+    // triggers it, consumes both formations, and cannot create a choice or
+    // inspect P1's hand despite retaining Chaos's commitment / card movement.
+    let mut interaction = GameRecord::start(
+        two_player_setup(),
+        deck_starting_with(&[3, 8, 1, 2, 5, 10, 7, 6, 4, 9, 11, 12, 13]),
+    )
+    .unwrap();
+    interaction.advance_automatic().unwrap();
+    let seal = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "seal".to_string(),
+            cards: vec![card(3), card(8)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        seal.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, .. },
+            GameEvent::PassiveCovered { player: owner, formation_id: covered, cards: covered_cards, .. },
+        ] if player == &p1
+            && formation_id == "seal"
+            && cards == &vec![card(3), card(8)]
+            && owner == &p1
+            && covered == "seal"
+            && covered_cards == &vec![card(3), card(8)]
+    ));
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(12));
+    let p1_hand_before = interaction.state().hand(&p1).unwrap().to_vec();
+    let canceled = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "chaos".to_string(),
+            cards: chaos_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        canceled.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
+            GameEvent::PassiveFlipped {
+                owner,
+                incoming_player,
+                passive_id,
+                cards: seal_cards,
+                outcome: PassiveFlipOutcome::Applied { modifications, .. },
+            },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "chaos"
+            && cards == &chaos_cards
+            && owner == &p1
+            && incoming_player == &p2
+            && passive_id == "seal"
+            && seal_cards == &vec![card(3), card(8)]
+            && modifications == &vec![ActionModification::CancelSpell]
+            && discarded_by == &p2
+            && discarded == "chaos"
+            && discarded_cards == &chaos_cards
+    ));
+    assert!(!canceled.iter().any(|event| matches!(
+        event,
+        GameEvent::ChoiceRequested { .. } | GameEvent::HandInspected { .. }
+    )));
+    assert!(interaction.state().pending_choice.is_none());
+    assert_eq!(
+        interaction.state().hand(&p1),
+        Some(p1_hand_before.as_slice())
+    );
+    assert!(interaction.state().covered_passive(&p1).is_none());
+    for card in [card(3), card(8), card(5), card(10), card(7), card(6)] {
+        assert!(interaction.state().discard.contains(&card));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
 }
 
 #[test]
@@ -5036,6 +6669,486 @@ fn sealed_passive_later_flips_as_no_effect_and_is_discarded() {
     assert!(state.discard.contains(&card(4)));
     assert!(state.discard.contains(&card(9)));
     assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn seal_incoming_covered_passive_matrix_commits_sealed_counter_then_consumes_it_on_attack() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut record = GameRecord::start(
+        two_player_setup(),
+        deck_starting_with(&[3, 8, 1, 2, 4, 5, 6, 7, 9, 10, 11, 12, 13]),
+    )
+    .unwrap();
+    record.advance_automatic().unwrap();
+
+    // Modifier: P1 legally covers Seal, completes the real Turn Draw, and
+    // leaves P2's counter-formation as the next command under test.
+    let seal = record
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "seal".to_string(),
+            cards: vec![card(3), card(8)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        seal.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+            GameEvent::PassiveCovered { player: owner, formation_id: covered, cards: covered_cards, sealed: false, .. },
+        ] if player == &p1
+            && formation_id == "seal"
+            && cards == &vec![card(3), card(8)]
+            && owner == &p1
+            && covered == "seal"
+            && covered_cards == &vec![card(3), card(8)]
+    ));
+    advance_record_to_next_main_after_turn_draw(&mut record, card(10));
+    assert_eq!(record.state().current_player(), Some(&p2));
+
+    // Baseline counterpart: without an incoming Seal, Countershock covers
+    // normally. This leaves the exact legal use distinguishable from the
+    // sealed interaction below.
+    let mut baseline = GameRecord::start(
+        two_player_setup(),
+        deck_starting_with(&[1, 2, 3, 11, 4, 9, 5, 6, 7, 8, 10]),
+    )
+    .unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(8));
+    let unsealed = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "countershock".to_string(),
+            cards: vec![card(4), card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        unsealed.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, .. },
+            GameEvent::PassiveCovered { player: owner, formation_id: covered, cards: covered_cards, sealed: false, .. },
+        ] if player == &p2
+            && formation_id == "countershock"
+            && cards == &vec![card(4), card(9)]
+            && owner == &p2
+            && covered == "countershock"
+            && covered_cards == &vec![card(4), card(9)]
+    ));
+
+    // Interaction: Seal is consumed to make the legal covered Countershock
+    // sealed. Its owner sees identity/cards, while P1 sees only the count;
+    // neither public projection leaks the sealed marker.
+    let countershock = record
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "countershock".to_string(),
+            cards: vec![card(4), card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        countershock.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+            GameEvent::PassiveFlipped {
+                owner,
+                incoming_player,
+                passive_id,
+                cards: seal_cards,
+                outcome: PassiveFlipOutcome::Applied { modifications, .. },
+            },
+            GameEvent::PassiveCovered { player: covered_by, formation_id: covered, cards: covered_cards, sealed: true, .. },
+        ] if player == &p2
+            && formation_id == "countershock"
+            && cards == &vec![card(4), card(9)]
+            && owner == &p1
+            && incoming_player == &p2
+            && passive_id == "seal"
+            && seal_cards == &vec![card(3), card(8)]
+            && modifications == &vec![ActionModification::SealCoveredPassive]
+            && covered_by == &p2
+            && covered == "countershock"
+            && covered_cards == &vec![card(4), card(9)]
+    ));
+    assert!(matches!(
+        record.public_view(Viewer::Player(p2.clone())).unwrap().covered_passives.as_slice(),
+        [PublicCoveredPassive { owner, formation_id: Some(formation_id), cards: PublicCardRefs::Known(cards), star_substitution: None }]
+            if owner == &p2 && formation_id == "countershock" && cards == &vec![card(4), card(9)]
+    ));
+    assert!(matches!(
+        record.public_view(Viewer::Player(p1.clone())).unwrap().covered_passives.as_slice(),
+        [PublicCoveredPassive { owner, formation_id: None, cards: PublicCardRefs::Hidden { count: 2 }, star_substitution: None }]
+            if owner == &p2
+    ));
+
+    // The next P1 Attack flips the sealed passive exactly once. It has no
+    // Countershock modification, so the attacker pays no reflected damage and
+    // P2 still takes the normal Metal Strike loss.
+    record.advance_automatic().unwrap();
+    answer_record_choice(
+        &mut record,
+        p2.clone(),
+        ChoiceAnswer::Cards {
+            cards: vec![card(13)],
+        },
+    )
+    .unwrap();
+    record.advance_automatic().unwrap();
+    let attack = record
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(attack.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. }
+            if player == &p1 && formation_id == "metal-strike" && cards == &vec![card(1)]
+    )));
+    assert!(attack.iter().any(|event| matches!(
+        event,
+        GameEvent::PassiveFlipped {
+            owner,
+            incoming_player,
+            passive_id,
+            cards: passive_cards,
+            outcome: PassiveFlipOutcome::NoEffect { grounds },
+        } if owner == &p2
+            && incoming_player == &p1
+            && passive_id == "countershock"
+            && passive_cards == &vec![card(4), card(9)]
+            && grounds == &vec![PassiveNoEffectGround::Sealed]
+    )));
+    assert!(attack.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            attacker,
+            target,
+            point_breakdown: AttackPointBreakdown { base_points: 7, final_amount: 7, .. },
+            hp_change: HpChangeDelta { team, old_hp: 30, delta: -7, new_hp: 23, effective_delta: -7 },
+            ..
+        } if attacker == &p1 && target == &p2 && team == &TeamId::new("team:p2")
+    )));
+    assert!(attack.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCardsDiscarded { player, formation_id, cards }
+            if player == &p1 && formation_id == "metal-strike" && cards == &vec![card(1)]
+    )));
+    assert!(record.state().covered_passive(&p2).is_none());
+    for card in [card(3), card(8), card(4), card(9), card(1)] {
+        assert!(record.state().discard.contains(&card));
+    }
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
+}
+
+#[test]
+fn seal_void_meridian_matrix_cancels_environment_clearing_but_keeps_spell_commitment_and_cards() {
+    let p0 = PlayerId::new("p0");
+    let p3 = PlayerId::new("p3");
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut setup = two_player_setup_with_hp(300)
+        .with_rule_modules(vec![RuleModuleId::new("five-directions-legend")]);
+    setup.players = vec![
+        Player {
+            id: p0.clone(),
+            team: TeamId::new("team:a"),
+        },
+        Player {
+            id: p3.clone(),
+            team: TeamId::new("team:b"),
+        },
+        Player {
+            id: p1.clone(),
+            team: TeamId::new("team:a"),
+        },
+        Player {
+            id: p2.clone(),
+            team: TeamId::new("team:b"),
+        },
+    ];
+    setup.turn_order = vec![p0.clone(), p3.clone(), p1.clone(), p2.clone()];
+    setup.hp = vec![
+        TeamHp {
+            team: TeamId::new("team:a"),
+            hp: 300,
+        },
+        TeamHp {
+            team: TeamId::new("team:b"),
+            hp: 300,
+        },
+    ];
+    // The three extra Metal Cards are only fixed background: their shared
+    // printed level is what makes the later, legal Void Meridian use valid.
+    setup.card_instances.extend([
+        card_instance(21, "metal"),
+        card_instance(26, "metal"),
+        card_instance(31, "metal"),
+        card_instance(36, "metal"),
+        card_instance(41, "metal"),
+        card_instance(46, "earth"),
+        card_instance(47, "wood"),
+        card_instance(48, "fire"),
+    ]);
+    let opening = vec![
+        card(1),
+        card(2),
+        card(3),
+        card(4), // P0 opening
+        card(6),
+        card(11),
+        card(16),
+        card(21),
+        card(26), // P3 opening: West White Tiger
+        card(8),
+        card(13),
+        card(5),
+        card(7),
+        card(9), // P1 opening: Seal
+        card(31),
+        card(36),
+        card(41),
+        card(14),
+        card(15), // P2 opening: Void Meridian
+        card(10),
+        card(12),
+        card(17),
+        card(18),
+        card(19),
+        card(20), // P0/P3 Turn Draw
+        card(46),
+        card(47),
+        card(48), // P1 interaction Turn Draw
+    ];
+    let mut deck = opening.clone();
+    deck.extend(
+        (1..=20)
+            .map(card)
+            .filter(|candidate| !opening.contains(candidate)),
+    );
+
+    fn finish_turn(record: &mut GameRecord, player: PlayerId, discard: CardInstanceId) {
+        record.advance_automatic().unwrap();
+        answer_record_choice(
+            record,
+            player,
+            ChoiceAnswer::Cards {
+                cards: vec![discard],
+            },
+        )
+        .unwrap();
+        record.advance_automatic().unwrap();
+    }
+
+    fn record_before_modifier(
+        setup: &GameSetup,
+        deck: &[CardInstanceId],
+        p0: &PlayerId,
+        p3: &PlayerId,
+        p1: &PlayerId,
+        p2: &PlayerId,
+    ) -> GameRecord {
+        let mut record = GameRecord::start(setup.clone(), deck.to_vec()).unwrap();
+        record.advance_automatic().unwrap();
+
+        // P0 only advances the turn.  P3 then establishes the Environment,
+        // P1 gets a distinct legal action, and P2 arrives with Void Meridian
+        // already in its real opening hand.
+        record
+            .handle(Command::PerformFormation {
+                player: p0.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap();
+        finish_turn(&mut record, p0.clone(), card(10));
+
+        // The shared Metal Environment is created only by a legal Sacred
+        // Beast command, not by a fixture mutation.
+        let west_white_tiger = record
+            .handle(Command::PerformFormation {
+                player: p3.clone(),
+                formation_id: "west-white-tiger".to_string(),
+                cards: vec![card(6), card(11), card(16), card(21), card(26)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap();
+        assert!(west_white_tiger.iter().any(|event| matches!(
+            event,
+            GameEvent::AttackResolved {
+                elemental_context_update: Some(AttackResolutionEffects { environment_transfers, .. }),
+                ..
+            } if environment_transfers == &vec![fewfc::domain::EnvironmentTransferDelta {
+                player: p3.clone(),
+                formation_id: "west-white-tiger".to_string(),
+                from: None,
+                to: Element::Metal,
+            }]
+        )));
+        assert_eq!(record.state().environment, Some(Element::Metal));
+        finish_turn(&mut record, p3.clone(), card(18));
+
+        assert_eq!(record.state().current_player(), Some(p1));
+        assert_eq!(record.state().environment, Some(Element::Metal));
+        assert!(record.state().hand(p2).unwrap().contains(&card(31)));
+        assert!(record.state().hand(p2).unwrap().contains(&card(36)));
+        assert!(record.state().hand(p2).unwrap().contains(&card(41)));
+        record
+    }
+
+    // Baseline: the applicable Void Meridian spell clears the shared
+    // Environment and changes both teams' HP once.  Its commitment and card
+    // movement are the reference lifecycle for the canceled branch.
+    let mut baseline = record_before_modifier(&setup, &deck, &p0, &p3, &p1, &p2);
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "water-strike".to_string(),
+            cards: vec![card(8)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut baseline, p1.clone(), card(46));
+    let baseline_before_void = baseline.state().hp.clone();
+    let void_baseline = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "void-meridian-severing".to_string(),
+            cards: vec![card(31), card(36), card(41)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        void_baseline.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
+            GameEvent::EnvironmentCleared { player: clearer, formation_id: cleared_by, environment: Element::Metal, hp_changes },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "void-meridian-severing"
+            && cards == &vec![card(31), card(36), card(41)]
+            && clearer == &p2
+            && cleared_by == "void-meridian-severing"
+            && hp_changes.len() == 2
+            && hp_changes.iter().zip(&baseline_before_void).all(|(change, before)| {
+                change.team == before.team
+                    && change.old_hp == before.hp
+                    && change.new_hp == before.hp - 20
+                    && change.effective_delta == -20
+            })
+            && discarded_by == &p2
+            && discarded == "void-meridian-severing"
+            && discarded_cards == &vec![card(31), card(36), card(41)]
+    ));
+    assert_eq!(baseline.state().environment, None);
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+    assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
+
+    // Modifier itself: Seal is established with the complete legal command
+    // and remains privately identified until P2 performs its next action.
+    let mut interaction = record_before_modifier(&setup, &deck, &p0, &p3, &p1, &p2);
+    let seal = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "seal".to_string(),
+            cards: vec![card(8), card(13)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        seal.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+            GameEvent::PassiveCovered { player: owner, formation_id: covered, cards: covered_cards, sealed: false, .. },
+        ] if player == &p1
+            && formation_id == "seal"
+            && cards == &vec![card(8), card(13)]
+            && owner == &p1
+            && covered == "seal"
+            && covered_cards == &vec![card(8), card(13)]
+    ));
+    assert!(matches!(
+        interaction.public_view(Viewer::Player(p1.clone())).unwrap().covered_passives.as_slice(),
+        [PublicCoveredPassive { owner, formation_id: Some(formation_id), cards: PublicCardRefs::Known(cards), star_substitution: None }]
+            if owner == &p1 && formation_id == "seal" && cards == &vec![card(8), card(13)]
+    ));
+    assert!(matches!(
+        interaction.public_view(Viewer::Player(p2.clone())).unwrap().covered_passives.as_slice(),
+        [PublicCoveredPassive { owner, formation_id: None, cards: PublicCardRefs::Hidden { count: 2 }, star_substitution: None }]
+            if owner == &p1
+    ));
+    finish_turn(&mut interaction, p1.clone(), card(46));
+    let interaction_before_void = interaction.state().hp.clone();
+
+    // Interaction: Seal cancels the applicable spell effect but not its
+    // canonical commitment or physical card movement.  The Environment and
+    // both teams' HP consequently remain as they were before Void Meridian.
+    let void_canceled = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "void-meridian-severing".to_string(),
+            cards: vec![card(31), card(36), card(41)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(void_canceled.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. }
+            if player == &p2
+                && formation_id == "void-meridian-severing"
+                && cards == &vec![card(31), card(36), card(41)]
+    )));
+    assert!(void_canceled.iter().any(|event| matches!(
+        event,
+        GameEvent::PassiveFlipped {
+            owner,
+            incoming_player,
+            passive_id,
+            cards,
+            outcome: PassiveFlipOutcome::Applied { effect_id, modifications },
+        } if owner == &p1
+            && incoming_player == &p2
+            && passive_id == "seal"
+            && cards == &vec![card(8), card(13)]
+            && effect_id == "seal"
+            && modifications == &vec![ActionModification::CancelSpell]
+    )));
+    assert!(!void_canceled
+        .iter()
+        .any(|event| matches!(event, GameEvent::EnvironmentCleared { .. })));
+    assert!(void_canceled.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCardsDiscarded { player, formation_id, cards }
+            if player == &p2
+                && formation_id == "void-meridian-severing"
+                && cards == &vec![card(31), card(36), card(41)]
+    )));
+    assert_eq!(interaction.state().environment, Some(Element::Metal));
+    assert_eq!(interaction.state().hp, interaction_before_void);
+    assert!(interaction.state().covered_passive(&p1).is_none());
+    for used in [card(8), card(13), card(31), card(36), card(41)] {
+        assert!(interaction.state().discard.contains(&used));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
 }
 
 #[test]
@@ -5927,6 +8040,177 @@ fn hp_resolution_finishes_as_draw_when_no_team_remains_alive() {
 }
 
 #[test]
+fn elemental_attack_previous_element_matrix_distinguishes_physical_baseline_from_overcoming() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+
+    // Baseline: a real physical Weapon use is an immediate prior Formation,
+    // but it establishes no elemental context. The next Fire Strike therefore
+    // resolves its normal eight damage.
+    let mut baseline = GameRecord::start(
+        two_player_setup(),
+        deck_starting_with(&[1, 6, 2, 3, 9, 4, 5, 7, 8]),
+    )
+    .unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(1), card(6)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(10));
+    let ordinary_fire = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(
+        ordinary_fire,
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "fire-strike".to_string(),
+                cards: vec![card(9)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p2.clone(),
+                target: p1.clone(),
+                formation_id: "fire-strike".to_string(),
+                used_cards: vec![card(9)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 8,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 8,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 30,
+                    delta: -8,
+                    new_hp: 22,
+                    effective_delta: -8,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p2.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Fire,
+                        resolved_turn: 2,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "fire-strike".to_string(),
+                cards: vec![card(9)],
+            },
+        ]
+    );
+    assert!(baseline
+        .state()
+        .last_elemental_attack_by_player
+        .get(&p1)
+        .is_none());
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+
+    // Modifier: P1 uses the same public command path to create immediate
+    // Metal context. It is not hand-written into last-elemental state.
+    let mut interaction = record_after_p1_metal_attack_on_turn_1();
+    assert_eq!(
+        interaction.state().last_elemental_attack_by_player.get(&p1),
+        Some(&LastElementalAttack {
+            element: Element::Metal,
+            resolved_turn: 1,
+        })
+    );
+    assert_eq!(interaction.state().current_player(), Some(&p2));
+
+    // Interaction: Fire overcomes the immediately previous Metal attack,
+    // doubling exactly the same base eight. Formation commitment, Card
+    // movement, typed context, final state, and replay remain canonical.
+    let overcoming_fire = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(
+        overcoming_fire,
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "fire-strike".to_string(),
+                cards: vec![card(9)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p2.clone(),
+                target: p1.clone(),
+                formation_id: "fire-strike".to_string(),
+                used_cards: vec![card(9)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 8,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::Overcoming,
+                    damage_transform: DamageTransform::DoubleDamage,
+                    final_amount: 16,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 30,
+                    delta: -16,
+                    new_hp: 14,
+                    effective_delta: -16,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p2.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Fire,
+                        resolved_turn: 2,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "fire-strike".to_string(),
+                cards: vec![card(9)],
+            },
+        ]
+    );
+    assert_eq!(
+        interaction
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p1"))
+            .map(|entry| entry.hp),
+        Some(14)
+    );
+    assert!(interaction.state().discard.contains(&card(1)));
+    assert!(interaction.state().discard.contains(&card(9)));
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
+}
+
+#[test]
 fn elemental_attack_overcoming_previous_players_last_element_doubles_damage() {
     let mut record = record_after_p1_metal_attack_on_turn_1();
 
@@ -6332,4 +8616,164 @@ fn physical_attack_deals_double_damage_to_a_player_shield() {
         Some(30)
     );
     assert_eq!(record.replay().unwrap(), state);
+}
+
+#[test]
+fn barrier_weapon_matrix_applies_physical_double_shield_damage_without_hp_loss() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let deck = deck_starting_with(&[2, 7, 1, 4, 6, 11, 3, 5, 8]);
+
+    // Baseline: the same physical Weapon command has no Shield to absorb its
+    // damage after P1's ordinary legal action.
+    let mut baseline = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(9));
+    let baseline_weapon = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(6), card(11)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        baseline_weapon.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
+            GameEvent::AttackResolved {
+                attacker,
+                target,
+                formation_id: attack_formation,
+                used_cards,
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 12,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 12,
+                },
+                hp_change: HpChangeDelta { team, old_hp: 30, delta: -12, new_hp: 18, effective_delta: -12 },
+                shield_change: None,
+                ..
+            },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "weapon"
+            && cards == &vec![card(6), card(11)]
+            && attacker == &p2
+            && target == &p1
+            && attack_formation == "weapon"
+            && used_cards == &vec![card(6), card(11)]
+            && team == &TeamId::new("team:p1")
+            && discarded_by == &p2
+            && discarded == "weapon"
+            && discarded_cards == &vec![card(6), card(11)]
+    ));
+    assert_eq!(baseline.state().shield(&p1), Some(0));
+    assert_eq!(
+        baseline
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p1"))
+            .map(|entry| entry.hp),
+        Some(18)
+    );
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+
+    // Modifier: P1 establishes Barrier through the same legal Action slot;
+    // its four-card level sum gives a 44-point Shield.
+    let mut interaction = GameRecord::start(two_player_setup(), deck).unwrap();
+    interaction.advance_automatic().unwrap();
+    let barrier = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "barrier".to_string(),
+            cards: vec![card(2), card(7), card(1), card(4)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        barrier.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
+            GameEvent::ShieldChanged { player: shield_owner, old_value: 0, delta: 44, new_value: 44 },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p1
+            && formation_id == "barrier"
+            && cards == &vec![card(2), card(7), card(1), card(4)]
+            && shield_owner == &p1
+            && discarded_by == &p1
+            && discarded == "barrier"
+            && discarded_cards == &vec![card(2), card(7), card(1), card(4)]
+    ));
+    assert_eq!(interaction.state().shield(&p1), Some(44));
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(9));
+
+    // Interaction: physical damage is doubled only against the Shield. The
+    // Weapon Formation nevertheless commits/discards normally and keeps HP
+    // untouched while reducing 44 to 20.
+    let weapon = interaction
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(6), card(11)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        weapon.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
+            GameEvent::AttackResolved {
+                attacker,
+                target,
+                formation_id: attack_formation,
+                used_cards,
+                point_breakdown: AttackPointBreakdown { base_points: 12, final_amount: 12, .. },
+                hp_change: HpChangeDelta { team, old_hp: 30, delta: 0, new_hp: 30, effective_delta: 0 },
+                shield_change: Some(ShieldChangeDelta { player: shield_owner, old_value: 44, delta: -24, new_value: 20 }),
+                ..
+            },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "weapon"
+            && cards == &vec![card(6), card(11)]
+            && attacker == &p2
+            && target == &p1
+            && attack_formation == "weapon"
+            && used_cards == &vec![card(6), card(11)]
+            && team == &TeamId::new("team:p1")
+            && shield_owner == &p1
+            && discarded_by == &p2
+            && discarded == "weapon"
+            && discarded_cards == &vec![card(6), card(11)]
+    ));
+    assert_eq!(interaction.state().shield(&p1), Some(20));
+    assert_eq!(
+        interaction
+            .state()
+            .hp
+            .iter()
+            .find(|entry| entry.team == TeamId::new("team:p1"))
+            .map(|entry| entry.hp),
+        Some(30)
+    );
+    for card in [card(2), card(7), card(1), card(4), card(6), card(11)] {
+        assert!(interaction.state().discard.contains(&card));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
 }

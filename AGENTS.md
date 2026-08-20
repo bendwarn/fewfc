@@ -3,7 +3,6 @@
 ## Repository Validation
 
 - This repository is a Rust crate. Prefer `cargo test` for the main validation path unless the task specifically touches package tooling.
-- ./tmp 可以放不用加到repo的檔案，避免需要在repo建立檔案
 
 ## Online Game Commands
 
@@ -15,7 +14,9 @@
   action fields; Rust field names otherwise default to snake_case and can turn
   a valid UI action into a server error.
 
-## Agent Skills
+## 雜項
+- ./tmp 可以放不用加到repo的檔案，避免需要在repo建立檔案
+- 城市註解使用中文
 
 ### Issue tracker
 

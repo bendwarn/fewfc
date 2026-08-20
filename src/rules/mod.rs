@@ -207,7 +207,11 @@ pub enum EffectFormula {
 /// must choose one explicit fact; there is deliberately no generic
 /// "resolve spell" fallback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum FormationEffect {
     CoverCounter,
     CopyPreviousTurnFormation,
