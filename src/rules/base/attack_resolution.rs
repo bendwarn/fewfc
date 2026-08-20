@@ -31,9 +31,8 @@ pub(crate) struct AttackRequest {
     pub(crate) pre_resolution_effects: AttackResolutionEffects,
 }
 
-/// Converts no-other-timing consequences into the payload of the enclosing
-/// attack.  Callers use this for legacy module resolvers while the canonical
-/// record remains one `AttackResolved` event.
+/// 將沒有其他時序的後果轉換為外層攻擊的負載。呼叫端用它支援舊版模組解析器，
+/// 同時標準記錄仍維持單一 `AttackResolved` 事件。
 pub(crate) fn effects_from_events(events: &[GameEvent]) -> GameResult<AttackResolutionEffects> {
     let mut effects = AttackResolutionEffects::default();
     for event in events.iter().cloned() {
@@ -49,9 +48,8 @@ pub(crate) fn effects_from_events(events: &[GameEvent]) -> GameResult<AttackReso
     Ok(effects)
 }
 
-/// Pulls module-produced same-timing effects behind an attack into that
-/// attack's atomic payload.  Events that declare another rules timing remain
-/// separate canonical events.
+/// 將模組產生、與攻擊同時序的效果收納進攻擊的原子負載。宣告其他規則時序的
+/// 事件仍會是分開的標準事件。
 pub(crate) fn absorb_simultaneous_events(events: &mut Vec<GameEvent>) {
     let Some(attack_index) = events
         .iter()
@@ -93,9 +91,9 @@ pub(crate) fn absorb_simultaneous_events(events: &mut Vec<GameEvent>) {
     events.extend(retained);
 }
 
-// Attack resolution uses GameEvent as a local control-flow signal so callers can retain an
-// event that cannot be represented in the atomic attack payload.  Boxing it would obscure
-// that intentionally event-shaped boundary without improving the canonical wire format.
+// 攻擊解析使用 GameEvent 作為區域控制流程訊號，讓呼叫端可以保留無法表示在
+// 原子攻擊負載中的事件。裝箱不會改善標準線上格式，反而會模糊這個特意採用
+// 事件形狀的邊界。
 #[allow(clippy::result_large_err)]
 fn append_simultaneous_effect(
     effects: &mut AttackResolutionEffects,
@@ -270,9 +268,8 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             point_breakdown.damage_transform,
         )?
     };
-    // Formation-card zone movement is owned by FormationCommitted and
-    // FormationCardsDiscarded.  AttackResolved contains only additional card
-    // deltas, never a duplicate hand-to-discard baseline movement.
+    // 陣形卡牌的區域移動由 FormationCommitted 與 FormationCardsDiscarded 擁有。
+    // AttackResolved 只包含額外的卡牌差異，絕不重複手牌到棄牌堆的基準移動。
     let card_moves = Vec::new();
     let mut resolution_effects = request.pre_resolution_effects.clone();
     resolution_effects.elemental_context_update =

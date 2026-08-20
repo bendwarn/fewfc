@@ -1,4 +1,4 @@
-//! Infrastructure adapters and deterministic setup helpers.
+//! 基礎設施轉接器與確定性的設定輔助工具。
 
 use crate::application::{GameRecord, RecordedDecision, ReplayVerificationError, replay};
 use crate::domain::{
@@ -156,11 +156,10 @@ impl PersistedSnapshot {
     }
 }
 
-/// Explicit wire-format compatibility at the persistence boundary.  Existing
-/// command/event logs continue to replay through the legacy event handlers
-/// (notably `FormationPerformed` and `TurnDiscardChosen`); new writers never
-/// emit them.  Snapshots are caches, so their old state-only shape is upgraded
-/// here before deserialization rather than guessed by the public projection.
+/// 持久化邊界上的明確線上格式相容處理。既有的命令/事件日誌仍會透過舊版
+/// 事件處理器（特別是 `FormationPerformed` 與 `TurnDiscardChosen`）回放；
+/// 新的寫入端不會產生它們。快照是快取，因此會在這裡反序列化前升級舊的
+/// 僅含狀態格式，而不是交由公開投影猜測。
 fn migrate_legacy_wire_format(value: &mut Value) {
     match value {
         Value::Array(values) => {
@@ -185,9 +184,8 @@ fn migrate_legacy_wire_format(value: &mut Value) {
     }
 }
 
-/// `AttackResolved.elemental_context_update` used to contain only the
-/// elemental context object.  The new field contains the complete atomic
-/// resolution payload, so wrap the old object without changing its effect.
+/// `AttackResolved.elemental_context_update` 過去只包含元素脈絡物件。新的
+/// 欄位包含完整的原子解析負載，因此包裝舊物件即可，不改變其效果。
 fn migrate_legacy_attack_resolution(values: &mut Map<String, Value>) {
     let Some(Value::Object(attack)) = values.get_mut("AttackResolved") else {
         return;

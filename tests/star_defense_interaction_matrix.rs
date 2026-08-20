@@ -74,10 +74,8 @@ impl StarDefenseScenario {
         let first_attack_card = card_from_setup(&setup, Element::Metal, 1);
         let defended_attack_card = card_from_setup(&setup, Element::Earth, 1);
 
-        // P1's first four Cards permit the qualifying summon; P2's five Cards
-        // and the following Water 2 only provide legal turn actions and the
-        // later selected substitution. No Star, passive, or outcome is
-        // injected into state.
+        // P1 的前四張卡牌允許符合資格的召喚；P2 的五張卡牌與後續水 2 只提供
+        // 合法回合行動及後續選取的替代。狀態中沒有注入星、被動或結果。
         let opening = vec![
             summoning_cards[0],
             summoning_cards[1],
@@ -172,9 +170,8 @@ impl StarDefenseScenario {
 
 #[test]
 fn owned_star_defense_matrix_records_selected_substitution_and_preserves_star_lifecycle() {
-    // Baseline: ordinary two-Wood Defense is legal without a Star and records
-    // no substitution. Its familiar passive lifecycle remains separate proof
-    // from the owned-Star modifier.
+    // 基準：普通兩張木防禦在沒有星時合法，且不記錄替代。其既有的被動生命週期
+    // 與擁有星的修飾是分開的證據。
     let mut baseline = StarDefenseScenario::ordinary_defense();
     let owner = baseline.owner.clone();
     let attacker = baseline.attacker.clone();
@@ -215,8 +212,8 @@ fn owned_star_defense_matrix_records_selected_substitution_and_preserves_star_li
     assert!(baseline.record.state().covered_passive(&owner).is_none());
     baseline.assert_replay();
 
-    // Modifier: P1 legally summons Wood Star using a qualifying triple-wood
-    // Formation before the Star can make Water 2 count as Wood for Defense.
+    // 修飾：P1 先透過符合資格的三木陣形合法召喚木星，之後星才能讓水 2 在防禦
+    // 中算作木。
     let mut interaction = StarDefenseScenario::with_wood_star_substitution();
     let owner = interaction.owner.clone();
     let attacker = interaction.attacker.clone();
@@ -267,8 +264,8 @@ fn owned_star_defense_matrix_records_selected_substitution_and_preserves_star_li
     interaction.finish_turn(&owner);
     interaction.advance_to_main(&attacker);
 
-    // P2's legal Metal Strike advances normal turn history; it does not alter
-    // P1's Star or fabricate the later passive.
+    // P2 的合法 Metal Strike 推進正常回合歷史；它不會改變 P1 的星，也不會捏造
+    // 後續被動。
     let first_attack = interaction.perform(
         &attacker,
         "metal-strike",
@@ -375,8 +372,8 @@ fn owned_star_defense_matrix_records_selected_substitution_and_preserves_star_li
     interaction.finish_turn(&owner);
     interaction.advance_to_main(&attacker);
 
-    // Interaction: the normal legal Attack flips and consumes Defense, but a
-    // Base Ruleset substitute never consumes the Wood Star that authorized it.
+    // 互動：正常合法攻擊會翻開並消耗防禦，但基礎規則集的替代永遠不會消耗授權
+    // 它的木星。
     let defended_attack = interaction.perform(
         &attacker,
         "earth-strike",
@@ -460,8 +457,7 @@ fn three_card_star_formation_defense_matrix_prevents_damage_but_keeps_draw_and_s
     let wood_one = card_from_setup(&setup, Element::Wood, 1);
     let wood_two = card_from_setup(&setup, Element::Wood, 2);
 
-    // Baseline: the fixed legal input is in the current player's hand, but
-    // the action does not exist until a Metal Star has been summoned.
+    // 基準：固定的合法輸入在目前玩家手中，但在召喚金星前該行動不存在。
     let baseline_opening = vec![
         metal_one,
         metal_two,
@@ -504,8 +500,8 @@ fn three_card_star_formation_defense_matrix_prevents_damage_but_keeps_draw_and_s
         GameRecord::start(setup.clone(), deck_starting_with(&setup, &opening)).unwrap();
     record.advance_automatic().unwrap();
 
-    // Modifier: P1 legally summons the team-owned Metal Star and commits /
-    // discards its source Cards. P3 will consume that same shared Star.
+    // 修飾：P1 合法召喚隊伍擁有的金星，並提交/棄置其來源卡牌。P3 會消耗同一顆
+    // 共用的星。
     let summon_cards = vec![metal_three, metal_four, metal_five];
     let summoned = record
         .handle(Command::PerformFormation {
@@ -547,8 +543,7 @@ fn three_card_star_formation_defense_matrix_prevents_damage_but_keeps_draw_and_s
     );
     finish_turn_for_star_matrix(&mut record, &p1);
 
-    // P2 establishes the modifier through a legal Defense command, rather
-    // than direct covered-passive setup.
+    // P2 透過合法防禦命令建立修飾，而不是直接設定覆蓋被動。
     let defense = record
         .handle(Command::PerformFormation {
             player: p2.clone(),
@@ -577,9 +572,8 @@ fn three_card_star_formation_defense_matrix_prevents_damage_but_keeps_draw_and_s
     finish_turn_for_star_matrix(&mut record, &p2);
     assert_eq!(record.state().current_player(), Some(&p3));
 
-    // Interaction: P3's own legal three-Card use can consume the Metal Star
-    // that P1 summoned for their shared team. Defense prevents its affected
-    // damage only; Taibai's independent draw bonus and Star consumption stay.
+    // 互動：P3 自己合法使用三張卡牌時，可以消耗 P1 為共用隊伍召喚的金星。防禦
+    // 只防止受影響的傷害；Taibai 獨立的抽牌獎勵與星的消耗仍然保留。
     let with_star = record.playable_actions(&p3, &taibai_cards).unwrap();
     assert!(with_star.iter().any(|action| matches!(
         action,

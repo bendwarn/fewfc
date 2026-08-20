@@ -173,10 +173,8 @@ export async function saveReplayReference(
     userId, draft.replayId, draft.sourceGameId, draft.roomName,
     JSON.stringify(draft.players), JSON.stringify(draft.result), draft.finishedAt, new Date().toISOString(), userId,
   )
-  // D1 is the source of truth for both the player reference and the
-  // monotonic lifecycle. Keeping these statements in one batch means a
-  // replacement cannot publish a new reference while leaving the old archive
-  // count behind (or vice versa).
+  // D1 是玩家參照與單調生命週期的真實來源。將這些陳述式放在同一批次中，
+  // 可避免替代操作發布新參照卻留下舊封存數量（或反過來）。
   const retain = database.prepare(
     `INSERT INTO replay_archive_lifecycle (replay_id, reference_count, version)
      SELECT ?, 1, 1 WHERE changes() = 1

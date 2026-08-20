@@ -26,10 +26,9 @@ export default defineNuxtRouteMiddleware(async (to) => {
   })
 
   if ('redirect' in decision) {
-    // The public homepage and authenticated application use different layout
-    // provider trees. A signed-in root visit crosses that boundary before the
-    // target Page can mount, so start /rooms as a fresh document instead of
-    // briefly mounting it under the landing layout.
+    // 公開首頁與已驗證應用程式使用不同的版面提供者樹。已登入的根路徑造訪會
+    // 在目標頁面掛載前跨越該邊界，因此以新文件啟動 /rooms，避免短暫掛載在
+    // 登陸版面下。
     return navigateTo(decision.redirect, {
       replace: true,
       external: to.path === '/' && decision.redirect === '/rooms',

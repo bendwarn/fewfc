@@ -88,9 +88,8 @@ fn falling_wood_echo_matrix_pays_cost_schedules_then_resolves_at_its_next_legal_
         GameRecord::start(setup.clone(), deck_starting_with(&setup, &leading)).unwrap();
     record.advance_automatic().unwrap();
 
-    // Baseline: the Formation itself resolves its recovery and exposes an
-    // optional printed-element cost through the canonical pending choice. No
-    // schedule or delayed effect is inserted by a fixture.
+    // 基準：陣形本身會解析恢復，並透過標準待選擇狀態公開可選的印製元素費用。
+    // 測試固定資料沒有插入排程或延遲效果。
     let falling_wood = record
         .handle(Command::PerformFormation {
             player: p1.clone(),
@@ -162,9 +161,8 @@ fn falling_wood_echo_matrix_pays_cost_schedules_then_resolves_at_its_next_legal_
         }]
     );
 
-    // Establish a real, affected sibling: P2's legal elemental Attack lowers
-    // P1 before turn three. The Echo recovery then visibly changes HP rather
-    // than being hidden by the 200-point cap.
+    // 建立真實且受影響的同隊玩家：P2 的合法元素攻擊會在第三回合前降低 P1 的
+    // 生命值。如此 Echo 恢復會明確改變生命值，而不是被 200 點上限遮蔽。
     finish_turn_draw(&mut record, &p1, card(7));
     let p2_attack_card = record.state().hand(&p2).unwrap()[0];
     let p2_attack = record
@@ -200,9 +198,8 @@ fn falling_wood_echo_matrix_pays_cost_schedules_then_resolves_at_its_next_legal_
         })
         .unwrap();
 
-    // Interaction: automatic Turn Start resolves exactly the schedule created
-    // above, never offers a fresh Echo cost, completes the record, then starts
-    // P1's Turn normally.
+    // 互動：自動回合開始會精確解析上方建立的排程，絕不提供新的 Echo 費用，
+    // 完成記錄後再正常開始 P1 的回合。
     let echoed = record.advance_automatic().unwrap();
     assert!(matches!(
         echoed.as_slice(),

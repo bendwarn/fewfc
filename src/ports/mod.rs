@@ -1,4 +1,4 @@
-//! Ports for external persistence or integration boundaries.
+//! 外部持久化或整合邊界的連接埠。
 
 use crate::application::GameRecord;
 use crate::domain::{CardInstanceId, GameSetup};

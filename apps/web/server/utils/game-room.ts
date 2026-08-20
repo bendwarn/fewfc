@@ -53,7 +53,7 @@ async function readGameRoomError(response: Response): Promise<{ message: string,
       }
     }
   } catch {
-    // A malformed internal response must not be copied into a public error message.
+    // 格式錯誤的內部回應絕不能複製到公開錯誤訊息中。
   }
 
   return { message: '房間服務暫時無法處理要求，請稍後再試。' }

@@ -226,9 +226,8 @@ fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
         }
         ApiAction::PlayableActions { player, cards } => {
             let player = PlayerId::new(player);
-            // Action details may mention the querying player's Card instances
-            // and legal constraints.  They are an owner-only snapshot, never
-            // an observer or another player's public projection.
+            // 行動詳細資料可能提及查詢玩家的卡牌實例與合法限制。它們是只有
+            // 擁有者可見的快照，絕不是觀察者或其他玩家的公開投影。
             let candidates = if matches!(&viewer, Viewer::Player(viewer_player) if viewer_player == &player)
             {
                 record
@@ -2923,8 +2922,8 @@ impl WebPublicGameEvent {
     }
 }
 
-/// The only boundary where stable rule identities become player-facing language.
-/// Canonical events deliberately retain IDs for deterministic replay.
+/// 穩定規則識別轉換為面向玩家語言的唯一邊界。標準事件特意保留識別碼以供
+/// 確定性回放。
 struct PlayerVocabulary {
     professions: HashMap<ProfessionId, String>,
 }

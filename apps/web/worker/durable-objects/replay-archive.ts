@@ -28,8 +28,8 @@ interface ReplayArchiveCreateRequest {
 }
 
 /**
- * Immutable canonical archive. Its interface is deliberately limited to
- * create/frame/delete; the canonical payload never crosses the browser seam.
+ * 不可變的標準封存。其介面特意限制為 create/frame/delete；標準負載永遠不會
+ * 穿越瀏覽器接縫。
  */
 export class ReplayArchive extends DurableObject {
   override async fetch(request: Request): Promise<Response> {
@@ -92,8 +92,8 @@ export class ReplayArchive extends DurableObject {
     return new Response(null, { status: 204 })
   }
 
-  /** Clearing the attached storage is idempotent and removes every legacy
-   * archive key, including values that no longer have a surviving D1 reference. */
+  /** 清除附加儲存空間具冪等性，會移除每個舊版封存鍵，包括已沒有存活 D1
+   * 參照的值。 */
   private async purgeLegacyArchive(epoch: string): Promise<Response> {
     await this.ctx.storage.deleteAll()
     return Response.json({ purged: true, epoch })

@@ -20,7 +20,7 @@ export interface WorkerEnv {
 }
 
 declare global {
-  // Nitro exposes Cloudflare bindings here in the module Worker preset.
+  // 在模組 Worker 預設設定中，Nitro 會在此公開 Cloudflare bindings。
   // eslint-disable-next-line no-var
   var __env__: WorkerEnv | undefined
 }

@@ -33,9 +33,8 @@ export function pendingChoiceKey(choice: PublicPendingChoice | null): string {
 }
 
 /**
- * A choice draft belongs to the choice instance, not merely to its shape.  A
- * reconnect intentionally starts a fresh local draft even when the server is
- * still waiting for the same choice.
+ * 選擇草稿屬於選擇實例，而不只是屬於其形狀。重新連線時，即使伺服器仍在
+ * 等待相同選擇，也特意開始新的本機草稿。
  */
 export function shouldResetPendingChoiceDraft(
   previous: PublicPendingChoice | null,
@@ -55,9 +54,8 @@ export function toggleChoiceCard(
 }
 
 /**
- * Card choices with one maximum result are answers, rather than local drafts.
- * Clear Wind retains its canonical zero-or-one Cards encoding, but presents
- * the revealed Card as the keep-on-deck outcome.
+ * 具有單一最大結果的卡牌選擇是答案，而不是本機草稿。Clear Wind 保留其標準
+ * 零或一張卡牌的編碼，但將揭露的卡牌呈現為保留在牌堆上的結果。
  */
 export function isImmediateCardChoice(choice: CardPendingChoice): boolean {
   return choice.maximum === 1

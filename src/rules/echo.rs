@@ -115,9 +115,8 @@ pub(crate) fn melody(id: &str) -> Option<MelodyDef> {
     melody_catalog().into_iter().find(|melody| melody.id == id)
 }
 
-/// Reusable player-facing clauses for a Melody.  These facts sit beside the
-/// same policy that schedules and resolves its Echo, rather than in a Web
-/// Formation-ID presentation table.
+/// Melody 可重用且面向玩家的條款。這些事實放在排程與解析其 Echo 的相同政策
+/// 旁邊，而不是放在 Web 陣形識別碼呈現表中。
 pub(crate) fn action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence>> {
     let melody = melody(id)?;
     let mut consequences = Vec::new();

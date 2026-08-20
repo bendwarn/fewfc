@@ -1,7 +1,6 @@
 /**
- * Deliberately narrow D1 mutations for the issue #75 hard cutover.  Keeping
- * the statements named and data-free makes the management surface auditable:
- * room discovery data survives, while only legacy replay references disappear.
+ * 專為 issue #75 硬切換設計的精簡 D1 變更。讓陳述式具名且不攜帶資料，可使
+ * 管理介面易於稽核：房間探索資料會保留，只有舊版回放參照會消失。
  */
 export const legacyReplayDeleteStatements = [
   'DELETE FROM player_saved_replay',

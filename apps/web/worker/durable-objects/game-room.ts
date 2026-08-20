@@ -523,7 +523,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'not all joined players are ready' }, 409)
     }
 
-    // A completed draft is only saveable until the next match starts.
+    // 已完成的草稿只能儲存到下一場對局開始前。
     await this.ctx.storage.delete('lastCompletedReplayDraft')
 
     await this.ctx.storage.put(this.lockedDeckKey(actorUserId), deckList)
@@ -1083,9 +1083,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       rulesRecord: rules.record,
     } satisfies GameRecord)
 
-    // A Pending Choice is a canonical transaction checkpoint.  Create it by
-    // exercising the same command path as a player, so the fixture also has
-    // the durable transaction that authorizes the later choice response.
+    // 待選擇狀態是標準交易檢查點。透過與玩家相同的命令路徑建立它，讓測試
+    // 固定資料也擁有授權後續選擇回應的持久交易。
     const commandId = `development:${scenario}:${crypto.randomUUID()}`
     const response = await this.submitCommand({
       type: 'submitCommand',
@@ -1833,10 +1832,9 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   }
 
   /**
-   * One-way management cutover for a legacy Game Record. This is intentionally
-   * an operation on the existing room object so room identity and waiting-room
-   * configuration remain intact. The epoch marker makes a retry a no-op even
-   * after Players have prepared a replacement game.
+   * 舊版遊戲記錄的單向管理切換。此操作特意在既有房間物件上執行，讓房間識別
+   * 與等待房間設定保持不變。時代標記讓重試即使發生在玩家準備好替代遊戲後，
+   * 也會成為無操作。
    */
   private async purgeLegacyGameData(epoch: string): Promise<{
     status: 'purged' | 'alreadyPurged' | 'dissolved' | 'absent'
@@ -1844,9 +1842,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   }> {
     const metadata = await this.metadata()
     if (!metadata) {
-      // An object without room metadata cannot be a surviving room. Clear any
-      // stranded record rather than allowing an orphaned legacy Game Record to
-      // evade the namespace inventory.
+      // 沒有房間中繼資料的物件不可能是存活中的房間。清除擱置的記錄，不讓孤立
+      // 的舊版遊戲記錄逃過命名空間盤點。
       await this.ctx.storage.deleteAll()
       return { status: 'absent' }
     }
@@ -1891,8 +1888,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
     await this.ctx.storage.put(entries)
     await this.ctx.storage.delete([...eventEntries.keys()])
-    // Put the replacement event again because the old log may have contained
-    // sequence one.
+    // 再次放入替代事件，因為舊日誌可能已經包含序列一。
     await this.ctx.storage.put(this.eventKey(1), replacementEvent)
     await this.ctx.storage.delete('lastCompletedReplayDraft')
 

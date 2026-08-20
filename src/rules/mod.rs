@@ -1,4 +1,4 @@
-//! Rule registries: formations, effects, matchers, and formula resolvers.
+//! 規則註冊表：陣形、效果、比對器與公式解析器。
 
 pub(crate) mod action_detail;
 pub(crate) mod base;
@@ -31,12 +31,10 @@ pub use crate::domain::Element;
 use serde::Serialize;
 use std::collections::HashMap;
 
-/// Optional player-visible, state-specific facts supplementing an offered action.
+/// 補充已提供行動的可選、玩家可見且與狀態相關的事實。
 ///
-/// This deliberately excludes action identity and models commitments, not the
-/// canonical events that will eventually be emitted. In particular it never
-/// contains a Choice ID, continuation, hidden card, or a prediction of trusted
-/// randomness.
+/// 此處特意排除行動識別，描述的是承諾，而不是最終會產生的標準事件。它
+/// 特別不會包含選擇識別碼、延續、隱藏卡牌或對受信任隨機性的預測。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayerFacingActionDetail {
@@ -49,9 +47,8 @@ impl PlayerFacingActionDetail {
     }
 
     pub(crate) fn pending_composition() -> Self {
-        // Candidates are first assembled by their rule modules and then
-        // completed by the single action-detail composer before they leave
-        // `BaseRuleset::playable_actions`.
+        // 候選行動先由各規則模組組成，再由單一行動詳細資料組合器完成，
+        // 然後才離開 `BaseRuleset::playable_actions`。
         Self {
             consequences: Vec::new(),
         }
@@ -62,9 +59,8 @@ impl PlayerFacingActionDetail {
     }
 }
 
-/// The certainty of a clause.  This is separate from the consequence kind so
-/// presentation cannot accidentally turn a choice, random outcome, or delayed
-/// result into a guaranteed final state.
+/// 條款的確定性。它與後果種類分離，避免呈現層意外將選擇、隨機結果或延遲
+/// 結果變成保證的最終狀態。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ConsequenceCertainty {
@@ -203,9 +199,8 @@ pub enum EffectFormula {
     ElementProductTimes { element: Element, multiplier: u32 },
 }
 
-/// Semantic main-effect facts reused by every action family.  A spell plan
-/// must choose one explicit fact; there is deliberately no generic
-/// "resolve spell" fallback.
+/// 所有行動家族共用的語意主要效果事實。法術計畫必須選擇一個明確事實；
+/// 特意不存在通用的「解析法術」後備路徑。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(
     tag = "type",
@@ -265,9 +260,8 @@ pub enum SecretStrategyEffect {
     ClearOrChangeEnvironment,
 }
 
-/// The semantic commitment made by an activated Profession Ability.  The
-/// ability id remains an action identity for command validation; presentation
-/// must use this closed effect fact instead of a browser-side id-to-prose map.
+/// 啟用職業能力所做的語意承諾。能力識別碼仍是命令驗證用的行動識別；呈現
+/// 層必須使用這個封閉的效果事實，而不是瀏覽器端的識別碼轉文字對照表。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(
     tag = "type",
@@ -299,8 +293,8 @@ pub enum VirtualFormationScope {
     AnyFormation,
 }
 
-/// The semantic main effect of a Spirit Skill.  Inputs and costs are separate
-/// consequences so the same fact can be reused without hiding a commitment.
+/// 靈技的語意主要效果。輸入與費用是分開的後果，因此可以重複使用相同事實，
+/// 而不會隱藏承諾。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(
     tag = "type",
@@ -549,8 +543,8 @@ pub(crate) struct AttackPlanDef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SpellPlanDef {
     pub resolver_id: String,
-    /// Required semantic action-detail fact.  This sits with the rule plan,
-    /// not in a generic Formation-ID presentation fallback.
+    /// 必要的語意行動詳細資料事實。它與規則計畫放在一起，而不是放在通用的
+    /// 陣形識別碼呈現後備路徑中。
     pub player_facing_effect: FormationEffect,
 }
 

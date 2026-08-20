@@ -1,4 +1,4 @@
-//! Viewer-filtered Public View derivation from canonical game data.
+//! 從標準遊戲資料衍生經檢視者過濾的公開視圖。
 
 use crate::domain::{
     CardInstanceId, ChoiceContinuation, ChoiceId, CounterEffect, Element, FormationSuppression,
@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 pub enum Viewer {
     Player(PlayerId),
     Observer,
-    /// Read-only completed-match viewer. It may inspect historical player-owned
-    /// information, but never deck order or trusted randomness answers.
+    /// 已完成對局的唯讀檢視器。它可以查看玩家擁有的歷史資訊，但永遠不能
+    /// 查看牌堆順序或受信任的隨機性答案。
     Replay,
 }
 
@@ -112,9 +112,8 @@ pub struct PublicPouch {
     pub card: Option<CardInstanceId>,
 }
 
-/// Public progress for the shared Initial Pouch Selection stage.  It carries
-/// completion only; the selected Card remains within the normal Pouch privacy
-/// boundary.
+/// 共用初始袋牌選擇階段的公開進度。此處只攜帶完成狀態；選取的卡牌仍留在
+/// 一般袋牌隱私邊界內。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicInitialPouchSelection {
@@ -224,8 +223,7 @@ fn public_randomness_operation(operation: &RandomnessOperation) -> PublicRandomn
     }
 }
 
-// Keep the canonical event payload by value so public projection remains a transparent,
-// allocation-free view of the record.
+// 以值保留標準事件負載，讓公開投影維持記錄的透明且零配置視圖。
 #[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(
@@ -410,8 +408,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .iter()
             .filter(|_| uses_personal_decks)
             .map(|pile| {
-                // Replay intentionally reveals player areas but preserves every
-                // deck as an unordered count-only pile.
+                // 回放特意揭露玩家區域，但仍將每個牌堆保留為無順序、只有數量的牌堆。
                 let visible = !matches!(&policy.viewer, Viewer::Replay)
                     && state.has_rule_module(crate::domain::POUCH_MODULE_ID)
                     && policy.can_see_player_hidden_cards(&pile.player);
@@ -796,8 +793,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         GameEvent::FormationRequirementSet { requirement } => {
             PublicGameEvent::FormationRequirementSet {
                 player: requirement.player.clone(),
-                // A Dark Spirit target remains hidden until a normal card movement
-                // reveals it; virtual facts are public when they are created.
+                // 暗靈目標在一般卡牌移動揭露前仍保持隱藏；虛擬事實在建立時即為公開。
                 virtual_card: requirement.virtual_card.clone(),
             }
         }

@@ -496,8 +496,8 @@ pub(crate) fn playable_owned_strategy_actions(
         .collect()
 }
 
-/// Chain has its own Pending Choice lifecycle.  This explains the known
-/// commitment before it starts, without carrying a Choice ID or continuation.
+/// Chain 擁有自己的待選擇生命週期。此處說明開始前已知的承諾，但不攜帶
+/// Choice ID 或延續。
 pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence>> {
     (id == CHAIN_ID).then(|| {
         vec![RuleConsequence::FollowUpChoice {
@@ -1010,9 +1010,8 @@ fn sheep_stealing_events(
         .deck_for(player)
         .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
     if deck.len() < 2 {
-        // The typed exchange choice is emitted only after `sheep_choice_events`
-        // has ensured that two deck cards exist.  Do not create a second recycle
-        // request while accepting that choice: a stale answer must be rejected.
+        // 具型別的交換選擇只有在 `sheep_choice_events` 確認存在兩張牌堆卡牌後
+        // 才會產生。接受該選擇時不要建立第二個回收請求：過期答案必須被拒絕。
         return Err(GameError::Validation(
             ValidationError::SecretStrategyInputInvalid,
         ));

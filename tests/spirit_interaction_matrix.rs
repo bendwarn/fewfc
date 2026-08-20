@@ -122,8 +122,7 @@ fn metal_spirit_flying_blade_matrix_summons_legally_then_spends_power_for_damage
     let mut record = GameRecord::start(setup, deck).unwrap();
     record.advance_automatic().unwrap();
 
-    // Baseline: the two Metal Cards establish the Spirit through the normal
-    // Formation command; fixed opening Cards do not manufacture Spirit state.
+    // 基準：兩張金卡透過正常陣形命令建立靈；固定起始牌不會捏造靈狀態。
     let summon = record
         .handle(Command::PerformFormation {
             player: p1.clone(),
@@ -169,9 +168,8 @@ fn metal_spirit_flying_blade_matrix_summons_legally_then_spends_power_for_damage
         })
     );
 
-    // The summoning Formation used P1's action.  Advance with actual Turn
-    // Draw choices and P2's ordinary Formation so the skill is available on
-    // P1's next legal action, rather than resetting phase in a fixture.
+    // 召喚陣形使用了 P1 的行動。透過實際的回合抽牌選擇與 P2 的普通陣形推進，
+    // 讓靈技在 P1 下一個合法行動中可用，而不是在固定資料中重設階段。
     finish_turn_with_legal_discard(&mut record, &p1);
     let p2_card = record.state().hand(&p2).unwrap()[0];
     record
@@ -185,10 +183,8 @@ fn metal_spirit_flying_blade_matrix_summons_legally_then_spends_power_for_damage
         .unwrap();
     finish_turn_with_legal_discard(&mut record, &p2);
 
-    // Interaction: Flying Blade is a legal, distinct skill command. It
-    // consumes exactly two power, damages only the previous Team, and leaves
-    // any legally acquired Turn Draw charge intact without undoing the
-    // summoning card movement.
+    // 互動：Flying Blade 是合法且獨立的靈技命令。它精確消耗兩點力量，只傷害
+    // 上一個隊伍，保留合法取得的回合抽牌蓄力，且不撤銷召喚卡牌的移動。
     let blade = record
         .handle(Command::UseSpiritSkill {
             player: p1.clone(),

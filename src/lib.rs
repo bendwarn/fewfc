@@ -1,8 +1,7 @@
-//! Deterministic rules engine for CFECards.
+//! CFECards 的確定性規則引擎。
 //!
-//! The crate is split by Clean Architecture boundaries: domain model,
-//! application orchestration, rule registries, ports, and infrastructure
-//! adapters.
+//! 此 crate 依照整潔架構邊界分為：領域模型、應用程式編排、規則註冊表、
+//! 連接埠，以及基礎設施轉接器。
 
 pub mod application;
 pub mod domain;

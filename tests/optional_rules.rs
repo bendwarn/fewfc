@@ -72,10 +72,9 @@ fn take_element_card(
     remaining.remove(position)
 }
 
-/// Fixed Deck order is background only: it deals the legal four-card Radiance
-/// composition to P1, leaves five Cards for P2's initial hand, and gives P1 a
-/// known Turn Draw discard.  The tested effect is still established by real
-/// Formation/Turn Draw Commands below.
+/// 固定牌堆順序僅是背景：它將合法的四張 Radiance 組合發給 P1，為 P2 留下五張
+/// 初始手牌，並給 P1 一張已知的回合抽牌棄牌。下方測試的效果仍由真正的
+/// 陣形/回合抽牌命令建立。
 fn shared_deck_order_for_radiance(setup: &GameSetup) -> (Vec<CardInstanceId>, CardInstanceId) {
     let mut remaining = OfficialRules::new().official_deck_order(setup).unwrap();
     let mut deck = vec![
@@ -84,7 +83,7 @@ fn shared_deck_order_for_radiance(setup: &GameSetup) -> (Vec<CardInstanceId>, Ca
         take_element_card(setup, &mut remaining, Element::Fire),
         take_element_card(setup, &mut remaining, Element::Water),
     ];
-    // P2's normal initial deal is unrelated background for this interaction.
+    // P2 的正常初始發牌是此互動無關的背景。
     for _ in 0..5 {
         deck.push(remaining.remove(0));
     }
@@ -221,9 +220,8 @@ fn personal_deck_start_prepares_and_deals_from_each_players_pile() {
 
 #[test]
 fn personal_deck_start_matrix_prepares_owned_piles_deals_opening_hands_and_replays() {
-    // The deck order is fixed background. The asserted evidence is the
-    // canonical Start lifecycle: every opening Card comes from its owner's
-    // pile, never the shared Deck, and replay reaches the live state.
+    // 牌堆順序是固定背景。斷言的證據是標準 Start 生命週期：每張起手卡牌都來自
+    // 其擁有者的牌堆，絕不來自共用牌堆，且回放會抵達目前狀態。
     let rules = OfficialRules::new();
     let setup = personal_setup();
     let p1 = PlayerId::new("p1");
@@ -371,8 +369,8 @@ fn radiance_discard_retrieval_matrix_keeps_the_active_effect_legal_under_cannot_
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
 
-    // Baseline: the immediately preceding legal Turn Draw discard can be
-    // retrieved in P2's Active Effects without Radiance.
+    // 基準：沒有 Radiance 時，可以在 P2 的作用中效果中取回緊接之前的合法回合
+    // 抽牌棄牌。
     let mut baseline = GameRecord::start(setup.clone(), deck_order.clone()).unwrap();
     baseline.advance_automatic().unwrap();
     let metal = baseline.state().hand(&p1).unwrap()[0];
@@ -406,9 +404,8 @@ fn radiance_discard_retrieval_matrix_keeps_the_active_effect_legal_under_cannot_
     ));
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Modifier and interaction: only the legal Radiance Formation establishes
-    // CannotAct/CannotDraw.  P2 cannot take a Formation action, but the
-    // separately scoped Discard Retrieval remains available and public.
+    // 修飾與互動：只有合法的 Radiance 陣形會建立 CannotAct/CannotDraw。P2 不能
+    // 執行陣形行動，但分開定義的棄牌取回仍可用且公開。
     let mut interaction = GameRecord::start(setup, deck_order).unwrap();
     interaction.advance_automatic().unwrap();
     let radiance_cards = interaction.state().hand(&p1).unwrap().to_vec();
@@ -447,8 +444,7 @@ fn radiance_discard_retrieval_matrix_keeps_the_active_effect_legal_under_cannot_
             .any(|status| status.owner == StatusOwner::Player(p2.clone())
                 && status.kind == "CannotAct")
     );
-    // CannotDraw leaves P2's opening five-card hand unchanged; it does not
-    // suppress the non-Action retrieval command below.
+    // CannotDraw 讓 P2 的五張起手牌保持不變；它不會抑制下方的非行動取回命令。
     assert_eq!(interaction.state().hand(&p2).unwrap().len(), 5);
 
     let interaction_events = interaction
@@ -519,8 +515,8 @@ fn discard_retrieval_matrix_uses_only_the_immediate_previous_turn_discard() {
     let mut record = GameRecord::start(setup, deck_order).unwrap();
     record.advance_automatic().unwrap();
 
-    // P1's first legal turn creates an older discard. P2 then completes a
-    // normal turn, so P1's next legal turn can establish the eligible sibling.
+    // P1 的第一個合法回合建立較舊的棄牌。P2 接著完成正常回合，因此 P1 的下一個
+    // 合法回合可以建立符合資格的同隊卡牌。
     perform_first_elemental_attack(&mut record, &p1);
     record.advance_automatic().unwrap();
     let first_p1_discard = match &record.state().pending_choice {
@@ -558,8 +554,8 @@ fn discard_retrieval_matrix_uses_only_the_immediate_previous_turn_discard() {
     assert!(record.state().discard.contains(&first_p1_discard));
     assert!(record.state().discard.contains(&latest_p1_discard));
 
-    // The command derives the current P1 discard rather than accepting a Card
-    // parameter: only the immediately previous turn's Card moves to the deck.
+    // 命令會推導目前 P1 的棄牌，而不是接受卡牌參數：只有緊接前一回合的卡牌會
+    // 移回牌堆。
     let retrieve_events = record
         .handle(Command::RetrievePreviousTurnDiscard { player: p2.clone() })
         .unwrap();
@@ -579,9 +575,8 @@ fn discard_retrieval_matrix_uses_only_the_immediate_previous_turn_discard() {
     assert!(record.state().discard.contains(&first_p1_discard));
     assert!(!record.state().discard.contains(&latest_p1_discard));
 
-    // The older card alone must not become a fallback candidate after the
-    // eligible Card has moved; the typed rejection records no decision or
-    // state mutation.
+    // 符合資格的卡牌移動後，較舊卡牌本身不能成為後備候選；具型別的拒絕不會
+    // 記錄決策或改變狀態。
     let state_before_rejection = record.state().clone();
     let decisions_before_rejection = record.recorded_decisions();
     assert_eq!(

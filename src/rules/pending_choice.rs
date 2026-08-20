@@ -4,9 +4,8 @@ use crate::domain::{
 };
 use std::collections::HashSet;
 
-/// The single owner of canonical Pending Choice allocation and answer-shape
-/// validation. Rule modules submit `ChoiceRequest`; they never allocate IDs or
-/// assemble a waiting state themselves.
+/// 標準待選擇狀態配置與答案形狀驗證的唯一擁有者。規則模組提交
+/// `ChoiceRequest`；它們絕不自行配置識別碼或組合等待狀態。
 pub(crate) fn request_event(state: &GameState, request: ChoiceRequest) -> GameResult<GameEvent> {
     if state.pending_choice.is_some() {
         return Err(GameError::EngineInvariant(
@@ -116,10 +115,9 @@ pub(crate) fn validate_answer(
             },
         ) => {
             cards_are_valid(deck_cards, 2, 2, selected_deck)
-                // Sheep Stealing first moves the selected deck cards to the
-                // discard pile, then lets the player choose two cards to
-                // return. The typed answer therefore permits the original
-                // discard cards plus precisely those selected deck cards.
+                // Sheep Stealing 先將選取的牌堆卡牌移至棄牌堆，再讓玩家選擇兩張
+                // 卡牌送回。因此具型別的答案允許原本的棄牌卡牌，加上且僅加上
+                // 那些選取的牌堆卡牌。
                 && cards_are_valid(
                     &discard_cards
                         .iter()
@@ -139,10 +137,9 @@ pub(crate) fn validate_answer(
         .ok_or(GameError::Validation(ValidationError::InvalidChoiceAnswer))
 }
 
-/// Dispatches the one public choice-answer command after validating the active
-/// `ChoiceId`, owner, and typed answer. Consequence planning remains in the
-/// rule modules, but every continuation is entered through this lifecycle
-/// boundary so a raw continuation can never be invoked directly by a command.
+/// 驗證作用中的 `ChoiceId`、擁有者與具型別答案後，分派唯一的公開選擇回答命令。
+/// 後果規劃仍在規則模組中，但所有延續都必須經過此生命週期邊界進入，因此
+/// 命令永遠不能直接呼叫原始延續。
 pub(crate) fn answer_events(
     state: &GameState,
     player: PlayerId,

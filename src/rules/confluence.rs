@@ -338,9 +338,8 @@ pub(crate) fn active_spell_events(
         EARTH_RESONANCE => vec![set_shield_event(state, player, 15)],
         MYRIAD_RESONANCE => {
             let inspected = inspect_and_discard_events(state, player, &previous, resolver_id)?;
-            // The inspected-card choice is part of one Myriad resolution.
-            // Do not apply its simultaneous HP/shield/draw consequences until
-            // that answer is known.
+            // 被檢視卡牌的選擇是同一次 Myriad 解析的一部分。在知道答案前，
+            // 不要套用其同時發生的生命值/護盾/抽牌後果。
             if inspected
                 .iter()
                 .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
@@ -1058,7 +1057,7 @@ pub(crate) fn profession_acquired_events(
         _ => {}
     }
     if previous == Some(profession) {
-        // Reacquiring a Profession intentionally follows the same reset path.
+        // 重新取得職業特意沿用相同的重設路徑。
     }
     events
 }
@@ -1175,9 +1174,8 @@ pub(crate) fn set_limited_use(
     }
 }
 
-/// Explicit Tailwind recovery records.  This is called only after a canonical
-/// Discard Shuffle has been projected, so replay never infers recovery from a
-/// continuation or from a Deck Shuffle.
+/// 明確的 Tailwind 恢復記錄。此函式只會在標準棄牌洗牌完成投影後呼叫，因此
+/// 回放永遠不會從延續或牌堆洗牌推斷恢復。
 pub(crate) fn tailwind_recovery_events(
     state: &GameState,
     shuffled_deck: &RandomnessDeck,
@@ -1457,8 +1455,7 @@ pub(crate) fn playable_profession_abilities(
     Ok(candidates)
 }
 
-/// Kept next to the activation resolver so a new offer cannot silently reuse
-/// a generic browser description.
+/// 與啟用解析器放在一起，避免新的已提供行動偷偷重用通用的瀏覽器描述。
 pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbilityEffect> {
     Some(match id {
         "confluence:tuning" => {

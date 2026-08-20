@@ -1025,9 +1025,8 @@ fn no_effect_ground_matrix_benevolent_and_golden_cicada_both_preserve_sealed_gen
     let p2 = PlayerId::new("p2");
     let mut record = ordered_pouch_record_for_benevolent_seal_matrix();
 
-    // Each Profession is acquired by a legal Command on its own Turn. Fixed
-    // deck order supplies only the unrelated background Cards needed for the
-    // three legal transitions.
+    // 每個職業都在自己的回合透過合法命令取得。固定牌堆順序只提供三次合法
+    // 轉換所需、與測試無關的背景卡牌。
     let transitions = ["seeker", "expounder", "benevolent"];
     for profession in transitions {
         perform_elemental_attack(&mut record, &p1, Element::Metal);

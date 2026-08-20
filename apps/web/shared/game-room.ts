@@ -32,7 +32,7 @@ export interface GameRoomMember {
 export interface GameRoomMetadata {
   schemaVersion: 4
   gameId: string
-  /** Undefined only while the room is waiting for its next Game Instance. */
+  /** 只有房間等待下一個遊戲實例時才是未定義。 */
   gameInstanceId?: string
   name: string
   access: GameRoomAccess
@@ -127,8 +127,8 @@ export interface StoredGameEvent {
 }
 
 /**
- * The one authoritative, durable checkpoint for an active Game Instance.
- * Transaction metadata deliberately never contains another copy of this record.
+ * 作用中遊戲實例唯一權威且持久的檢查點。
+ * 交易中繼資料特意不包含此記錄的另一份副本。
  */
 export interface GameRecord {
   schemaVersion: 6
@@ -147,7 +147,7 @@ export interface SavableReplay {
   finishedAt: string
 }
 
-/** Canonical-only object: never include this in a browser room response. */
+/** 僅供標準記錄使用的物件：絕不要將它放入瀏覽器房間回應。 */
 export interface CompletedReplayDraft extends SavableReplay {
   schemaVersion: 1
   setup: RulesGameSetup
@@ -381,9 +381,9 @@ export interface GameRoomResponse extends Omit<
   invitation?: GameRoomInvitation
   lockedDeckName?: string
   savableReplay?: SavableReplay
-  /** Present only while the canonical Game Record is waiting for a continuation. */
+  /** 只有標準遊戲記錄等待延續時才存在。 */
   activeTransactionId?: string
-  /** Present whenever the response is backed by the current Game Record. */
+  /** 只要回應由目前的標準遊戲記錄支援，就會存在。 */
   activeGameVersion?: {
     gameInstanceId: string
     recordSequence: number
@@ -402,9 +402,9 @@ export interface CommandReceipt {
   actor: PlayerId
   payloadIdentity: string
   outcome: 'accepted' | 'rejected'
-  /** Present for accepted Commands; it is the Game Record checkpoint sequence. */
+  /** 對已接受的命令存在；它是遊戲記錄的檢查點序列。 */
   committedSequence?: number
-  /** Present for deterministic Validation Failures; it does not advance canonical sequence. */
+  /** 對確定性的驗證失敗存在；它不會推進標準序列。 */
   observedSequence?: number
   transactionStatus?: CommandTransactionStatus
   errorCode?: string

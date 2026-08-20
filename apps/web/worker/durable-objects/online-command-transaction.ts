@@ -38,9 +38,8 @@ interface TransactionStorage {
 }
 
 /**
- * The Game Room supplies application-specific rules and response adapters.  The
- * transaction module owns the command protocol and never exposes storage as a
- * public repository.
+ * Game Room 提供應用程式專屬規則與回應轉接器。交易模組擁有命令協定，絕不將
+ * 儲存空間公開成公用儲存庫。
  */
 interface OnlineCommandTransactionHost {
   storage: TransactionStorage
@@ -83,9 +82,8 @@ export class OnlineCommandTransactionError extends Error {
 }
 
 /**
- * Executes the complete Player-command transaction through one interface.
- * It commits each canonical checkpoint before any trusted randomness work and
- * returns the current room response only after the durable result is known.
+ * 透過單一介面執行完整的玩家命令交易。它會在任何受信任隨機性工作前提交每個
+ * 標準檢查點，並只在得知持久結果後回傳目前的房間回應。
  */
 export async function executePlayerCommand(
   host: OnlineCommandTransactionHost,

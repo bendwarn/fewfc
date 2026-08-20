@@ -61,8 +61,7 @@ async function completeIndependentInitialPouchSelection(host: Page, guest: Page,
   ).toContainText('等待')
   await expect(guestChoice).toBeVisible()
 
-  // A fresh owner response retains the selected Card, while the other Player
-  // receives only public completion progress and a Card Back.
+  // 新的擁有者回應會保留選取的卡牌，而另一位玩家只會收到公開完成進度與牌背。
   await reloadFastGameRoute(host, roomId)
   const [ownerState, otherViewerState] = await Promise.all([
     requestJson<{

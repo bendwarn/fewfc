@@ -19,9 +19,9 @@ interface WorkerEnv {
   PLAYER_NOTIFICATIONS: DurableObjectNamespace
   REPLAY: DurableObjectNamespace
   APP_ENV: 'development' | 'staging' | 'production'
-  /** Explicit deployment-time gate for the one-way legacy cutover. */
+  /** 部署時明確控制單向舊版切換的閘門。 */
   MAINTENANCE_MODE?: string
-  /** Dedicated secret for the legacy-purge management endpoints. */
+  /** 舊版清除管理端點專用的密鑰。 */
   LEGACY_PURGE_SECRET?: string
 }
 
@@ -119,9 +119,8 @@ function managementAuthorized(request: Request, env: WorkerEnv): boolean {
   if (!supplied) return false
   const expectedBytes = new TextEncoder().encode(env.LEGACY_PURGE_SECRET)
   const suppliedBytes = new TextEncoder().encode(supplied)
-  // `timingSafeEqual` requires equal lengths. Still perform a constant-time
-  // comparison on mismatched input so an unauthorised caller cannot use the
-  // response timing to learn the secret length.
+  // `timingSafeEqual` 要求長度相同。輸入長度不同時仍執行固定時間比較，讓
+  // 未授權呼叫端無法利用回應時間推測密鑰長度。
   const lengthsMatch = expectedBytes.byteLength === suppliedBytes.byteLength
   return lengthsMatch
     ? crypto.subtle.timingSafeEqual(expectedBytes, suppliedBytes)
@@ -134,8 +133,8 @@ async function managementResponse(
   url: URL,
 ): Promise<Response | null> {
   if (!url.pathname.startsWith('/internal/legacy-purge/')) return null
-  // Return 404 for both a disabled gate and a bad secret so this protected
-  // control surface is not discoverable during normal player traffic.
+  // 對停用的閘門與錯誤密鑰都回傳 404，讓這個受保護的控制介面不會在一般
+  // 玩家流量中被發現。
   if (!managementAuthorized(request, env)) {
     return Response.json({ error: 'not found' }, { status: 404 })
   }

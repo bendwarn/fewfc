@@ -817,8 +817,8 @@ pub(crate) fn playable_profession_abilities(
         .collect())
 }
 
-/// The only currently activated Dark ability prepares a specific existing
-/// card; its declared element and level are separate action-detail facts.
+/// 目前唯一啟用的暗系能力會準備特定的既有卡牌；其宣告的元素與等級是分開的
+/// 行動詳細資料事實。
 pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbilityEffect> {
     (id == "dark:dark-spirit").then_some(ProfessionAbilityEffect::PrepareCardAtDeclaredLevel)
 }

@@ -870,8 +870,8 @@ pub(crate) fn playable_profession_abilities(
     Ok(candidates)
 }
 
-/// Mirrors the activated-ability resolver below.  Each currently offerable
-/// Jianghu ability must choose one closed player-facing semantic effect.
+/// 與下方的能力啟用解析器保持一致。目前每個可提供的江湖能力都必須選擇一個
+/// 封閉且面向玩家的語意效果。
 pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbilityEffect> {
     Some(match id {
         "jianghu:heavenly-yang-aura" => ProfessionAbilityEffect::ApplyYangAura,

@@ -23,9 +23,8 @@ export interface SecretStrategyDraftAction {
 }
 
 /**
- * Converts local Secret Strategy input into the exact command payload only
- * after it satisfies the server-projected choices. Cancelling is represented
- * by discarding this result, so it cannot submit a command.
+ * 只有在符合伺服器投影的選擇後，才將本機 Secret Strategy 輸入轉換為精確的
+ * 命令負載。取消會以丟棄此結果表示，因此不可能提交命令。
  */
 export function secretStrategyDraftAction(
   draft: SecretStrategyOption,

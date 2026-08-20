@@ -5,9 +5,8 @@ use crate::domain::{
     validate_setup,
 };
 
-/// Projects the rules-specific semantic event into the one ordered Card
-/// Interpretation Layer collection. The event itself remains the canonical
-/// record; this is derived state only.
+/// 將規則專屬的語意事件投影到唯一且有順序的卡牌解讀層集合。事件本身仍是
+/// 標準記錄；這裡只有衍生狀態。
 pub(crate) fn card_interpretation_layers_for_event(
     event: &GameEvent,
 ) -> Vec<CardInterpretationLayer> {
@@ -67,9 +66,8 @@ pub(crate) fn project(setup: &GameSetup, events: &[GameEvent]) -> GameResult<Gam
     Ok(state)
 }
 
-/// Computes, but deliberately does not apply, an HP-based terminal fact.  A
-/// `GameEnded` event owns the state transition so a replay can never observe a
-/// finished Game without the corresponding canonical conclusion.
+/// 計算但特意不套用以生命值為基礎的終止事實。狀態轉換由 `GameEnded` 事件
+/// 擁有，讓回放永遠不會在沒有相應標準結論的情況下觀察到已完成的遊戲。
 pub(crate) fn game_conclusion_if_needed(state: &GameState) -> Option<GameConclusion> {
     let alive_teams = state
         .hp
@@ -616,8 +614,8 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .formation_area_mut(player)
                 .expect("canonical passive cover event must target a known player");
             if area.formation.is_none() {
-                // Legacy record compatibility: old records moved the cards as
-                // part of PassiveCovered rather than FormationCommitted.
+                // 舊記錄相容性：舊記錄將卡牌作為 PassiveCovered 的一部分移動，
+                // 而不是透過 FormationCommitted 移動。
                 let hand = state
                     .hand_mut(player)
                     .expect("canonical passive cover event must target a known player");
@@ -766,9 +764,8 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 }
             }
 
-            // Deltas are one simultaneous semantic result, not separately
-            // replayable events.  Pre-attack effects are applied first only
-            // to reconstruct the snapshots recorded by the primary damage.
+            // 差異是一個同時發生的語意結果，不是可以分開回放的事件。攻擊前效果
+            // 先套用，只是為了重建主要傷害所記錄的快照。
             let team_hp = state
                 .hp
                 .iter_mut()
@@ -949,9 +946,8 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 team: team.clone(),
             });
         }
-        // These two events are retained only so older recorded rooms can be
-        // replayed.  They do not end a game themselves: the compatibility
-        // reader appends an explicit GameEnded conclusion.
+        // 保留這兩個事件只是為了讓較舊的已記錄房間可以回放。它們本身不會結束
+        // 遊戲：相容性讀取器會附加明確的 GameEnded 結論。
         GameEvent::KingYamaDecreeVictoryAchieved { .. } => {}
         GameEvent::TurnDrawBonusChanged {
             player, new_value, ..
@@ -1470,14 +1466,13 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .deck_for_mut(player)
                 .expect("canonical draw event must target a known player deck")
                 .drain(0..drawn_cards.len());
-            // A discard choice suspends TurnDraw; it never creates a phase.
+            // 棄牌選擇會暫停 TurnDraw，但永遠不會建立一個階段。
         }
         GameEvent::TurnDiscardChosen { player, discard } => {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, crate::domain::Phase::TurnDraw);
-            // Compatibility only: persisted records written before
-            // TurnDrawResolved used this event after drawing into the hand.
-            // New records never emit it.
+            // 僅供相容：在 TurnDrawResolved 啟用前寫入的持久化記錄，會在將牌抽入
+            // 手牌後使用此事件。新記錄永遠不會產生它。
             let discarded = if let Some(position) =
                 state.turn_draw_pool.iter().position(|card| card == discard)
             {

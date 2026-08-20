@@ -57,10 +57,8 @@ pub(crate) fn timed_effect_reductions(
     reductions
 }
 
-/// Appends the one terminal canonical fact after all semantic consequences in
-/// a decision have been assembled.  Projection intentionally never infers a
-/// Finished status from an HP delta; this function is the only normal path
-/// that emits the conclusion event.
+/// 在決策組合完所有語意後果後，附加唯一的終止標準事實。投影特意不從生命
+/// 值差異推斷完成狀態；此函式是產生結論事件的唯一正常路徑。
 pub(crate) fn append_terminal_game_end(state: &GameState, events: &mut Vec<GameEvent>) {
     if events
         .iter()
@@ -105,9 +103,8 @@ pub(crate) fn append_terminal_game_end(state: &GameState, events: &mut Vec<GameE
     if let Some(conclusion) =
         direct_conclusion.or_else(|| projection::game_conclusion_if_needed(&semantic_projected))
     {
-        // A lethal simultaneous resolution cannot leave a follow-up choice in
-        // the record.  Those requests have no semantic consequence yet, so
-        // dropping them does not erase a resolved fact.
+        // 致命的同時解析不能在記錄中留下後續選擇。這些請求尚未有語意後果，
+        // 因此丟棄它們不會抹除已解析的事實。
         events.retain(|event| {
             !matches!(
                 event,
@@ -118,8 +115,8 @@ pub(crate) fn append_terminal_game_end(state: &GameState, events: &mut Vec<GameE
     }
 }
 
-/// Rule-specific choice facts kept beside the base spell resolvers.  This is
-/// explanatory only; the actual Pending Choice remains owned by resolution.
+/// 保留在基礎法術解析器旁的規則專屬選擇事實。這裡僅供說明；實際的待選擇
+/// 狀態仍由解析流程擁有。
 pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence>> {
     let immediate = |effect| RuleConsequence::ImmediateEffect {
         certainty: ConsequenceCertainty::Guaranteed,
@@ -1369,10 +1366,9 @@ pub(crate) fn resolve_answered_choice(
         choice_id,
         answer: answer.clone(),
     }];
-    // Consequences are planned from the canonical state after Choice Made.
-    // This lets a continuation request the next Choice without replacing the
-    // active one in the planning state, while the returned event sequence
-    // remains replayable from the pre-answer state.
+    // 後果是從「選擇已完成」後的標準狀態規劃而來。如此一來，延續可以要求
+    // 下一個選擇，而不必在規劃狀態中替換目前的選擇；回傳的事件序列仍可從
+    // 回答前的狀態回放。
     let mut resolved_state = state.clone();
     crate::rules::projection::apply_event(&mut resolved_state, &events[0]);
 

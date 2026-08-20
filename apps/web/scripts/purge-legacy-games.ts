@@ -1,7 +1,6 @@
 /**
- * One-off, deliberately remote-only management tool for issue #75's hard
- * cutover.  It never enables maintenance or deploys a Worker: an operator must
- * first deploy the maintenance configuration explicitly, then run this tool.
+ * 專為 issue #75 硬切換設計的一次性、刻意僅操作遠端的管理工具。它永遠不會
+ * 啟用維護或部署 Worker：操作人員必須先明確部署維護設定，再執行此工具。
  */
 
 export type PurgeEnvironment = 'staging' | 'production'
@@ -17,7 +16,7 @@ export interface PurgeConfig {
   epoch: string
   confirm: boolean
   accountId: string
-  /** Ephemeral OAuth/API token obtained from the operator's Wrangler profile. */
+  /** 從操作人員 Wrangler 設定檔取得的暫時性 OAuth/API 權杖。 */
   authorizationToken: string
   workerName: string
   workerUrl: string
@@ -80,9 +79,8 @@ export type WranglerTomlReader = () => Promise<string>
 const apiBase = 'https://api.cloudflare.com/client/v4'
 
 /**
- * Wrangler's JSON commands normally write one JSON object, but local
- * credential-store diagnostics can precede it. Keep only a valid object and
- * do not surface the raw output: it can contain operator account details.
+ * Wrangler 的 JSON 命令通常會寫入一個 JSON 物件，但本機憑證儲存診斷可能出現
+ * 在它之前。只保留有效物件，不呈現原始輸出：其中可能包含操作人員帳戶詳細資料。
  */
 function parseWranglerJson(stdout: string, unreadableMessage: string): Record<string, unknown> {
   const output = stdout
@@ -97,7 +95,7 @@ function parseWranglerJson(stdout: string, unreadableMessage: string): Record<st
         return parsed as Record<string, unknown>
       }
     } catch {
-      // Try a later object start in case Wrangler emitted a diagnostic first.
+      // 如果 Wrangler 先輸出診斷訊息，嘗試尋找後面的物件起點。
     }
   }
   throw new Error(unreadableMessage)
@@ -157,17 +155,16 @@ async function runWrangler(arguments_: string[]): Promise<WranglerCommandResult>
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
-    // Capture both streams: Wrangler credential-store diagnostics can use
-    // either one, and consuming stderr prevents a failed child from blocking.
+    // 擷取兩個串流：Wrangler 憑證儲存診斷可能使用任一串流，消費 stderr 也能
+    // 避免失敗的子程序阻塞。
     new Response(child.stderr).text(),
   ])
   return { exitCode, stdout: `${stdout}\n${stderr}` }
 }
 
 /**
- * Reuse the authenticated Wrangler profile rather than asking an operator to
- * copy an API token into their shell. `wrangler auth token` refreshes OAuth
- * credentials when needed, while this tool retains the result only in memory.
+ * 重用已驗證的 Wrangler 設定檔，而不是要求操作人員將 API 權杖複製到 shell。
+ * `wrangler auth token` 會在需要時更新 OAuth 憑證，而此工具只在記憶體中保留結果。
  */
 export async function authorizationTokenFromWrangler(
   run: WranglerCommandRunner = runWrangler,
@@ -191,9 +188,8 @@ export async function authorizationTokenFromWrangler(
 }
 
 /**
- * Resolve the account from the logged-in Wrangler profile. Selecting an
- * account automatically is safe only when the profile belongs to one account;
- * a multi-account profile must name its intended account explicitly.
+ * 從已登入的 Wrangler 設定檔解析帳戶。只有在設定檔屬於單一帳戶時，自動選擇
+ * 帳戶才安全；多帳戶設定檔必須明確指定目標帳戶。
  */
 export async function accountIdFromWrangler(
   run: WranglerCommandRunner = runWrangler,
@@ -239,7 +235,7 @@ function requiredTomlString(value: unknown, description: string): string {
   return value.trim()
 }
 
-/** Read only named deployment-environment values; never inherit development. */
+/** 只讀取具名的部署環境值；絕不繼承開發環境設定。 */
 export function purgeTargetFromWranglerToml(
   toml: string,
   environment: PurgeEnvironment,
@@ -469,7 +465,7 @@ export async function runLegacyPurge(
   return { inventory, mutated: true, mutationCount }
 }
 
-/** The only CLI output shape: deliberately inventory-only, never credentials. */
+/** CLI 唯一的輸出形狀：刻意只包含盤點資料，絕不包含憑證。 */
 export function purgeRunSummary(
   result: Awaited<ReturnType<typeof runLegacyPurge>>,
 ): PurgeRunSummary {
@@ -623,8 +619,8 @@ if (import.meta.main) {
     const result = await runLegacyPurge(config)
     console.log(JSON.stringify(purgeRunSummary(result)))
   } catch (error) {
-    // Never interpolate configuration or error objects here: an SDK/fetch
-    // error can retain request headers, including management credentials.
+    // 絕不要在這裡插入設定或錯誤物件：SDK/fetch 錯誤可能保留請求標頭，
+    // 包括管理憑證。
     const message = error instanceof Error ? error.message : 'legacy purge failed'
     console.error(`Error: ${redactSecrets(message, sensitiveValues)}`)
     console.error(usage())

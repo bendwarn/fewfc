@@ -9,7 +9,7 @@ export interface FewfcRulesEngineBridge {
 }
 
 declare global {
-  // The outer Cloudflare Worker installs the WASM bridge before dispatching to Nitro.
+  // 外層 Cloudflare Worker 會在分派到 Nitro 前安裝 WASM 橋接器。
   // eslint-disable-next-line no-var
   var __fewfcRulesEngine__: FewfcRulesEngineBridge | undefined
 }

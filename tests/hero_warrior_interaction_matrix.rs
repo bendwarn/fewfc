@@ -43,8 +43,7 @@ impl WarriorDefenseScenario {
             take_card(&setup, &mut remaining, Element::Wood, 1),
             take_card(&setup, &mut remaining, Element::Metal, 3),
         ];
-        // P2's five opening Cards are unrelated fixed background; their later
-        // elemental actions establish the trigger timing by legal Commands.
+        // P2 的五張起手卡是無關的固定背景；後續元素行動透過合法命令建立觸發時機。
         let mut deck = warrior_cards
             .iter()
             .chain(defense_cards.iter())
@@ -197,8 +196,8 @@ fn elemental_formation_id(element: Element) -> &'static str {
 #[test]
 fn warrior_defense_proficiency_matrix_establishes_and_consumes_defense_without_empty_city_fallback()
 {
-    // Baseline: the exact Wood+non-Wood selection is not basic Defense. It
-    // legally resolves only as Empty City before the Warrior transition.
+    // 基準：確切的木加非木選擇不是基本防禦。在 Warrior 轉換前，它合法解析的
+    // 只有 Empty City。
     let mut baseline = WarriorDefenseScenario::new();
     baseline.advance_to_first_action();
     let baseline_actions = baseline
@@ -229,9 +228,8 @@ fn warrior_defense_proficiency_matrix_establishes_and_consumes_defense_without_e
     )));
     baseline.assert_replay();
 
-    // Modifier: Warrior is reached through its own legal all-Metal profession
-    // command; the later Wood+non-Wood pair now offers Defense and no longer
-    // falls back to Empty City.
+    // 修飾：Warrior 透過自己的合法全金職業命令取得；後續木加非木組合現在會
+    // 提供 Defense，不再退回 Empty City。
     let mut interaction = WarriorDefenseScenario::new();
     interaction.advance_to_first_action();
     let warrior_events = interaction.change_to_warrior();
@@ -309,8 +307,8 @@ fn warrior_defense_proficiency_matrix_establishes_and_consumes_defense_without_e
         Some(&interaction.p2)
     );
 
-    // Interaction: P2's next real Attack flips and consumes the proficient
-    // Defense, prevents only HP loss, and still commits/discards P2's Card.
+    // 互動：P2 下一次真正的攻擊會翻開並消耗熟練防禦，只防止生命值損失，仍會
+    // 提交/棄置 P2 的卡牌。
     let hp_before = interaction
         .record
         .state()
@@ -440,7 +438,7 @@ fn metal_profession_ladder_matrix_changes_warrior_to_war_god_to_hero_through_leg
     let mut record = GameRecord::start(setup, deck).unwrap();
     record.advance_automatic().unwrap();
 
-    // Baseline: no profession state exists before the first valid transition.
+    // 基準：第一次有效轉換前不存在職業狀態。
     assert!(record.state().professions.is_empty());
     assert!(
         state_for(record.state(), Viewer::Observer)
@@ -489,9 +487,8 @@ fn metal_profession_ladder_matrix_changes_warrior_to_war_god_to_hero_through_leg
         .unwrap();
     finish_turn_discarding(&mut record, &p2, p2_first_draw[0]);
 
-    // Modifier then interaction: the prerequisites and Card sums are checked
-    // by legal commands. No profession, action availability, or history is
-    // directly arranged in state.
+    // 修飾與互動：前置條件與卡牌總和由合法命令檢查。狀態中沒有直接安排職業、
+    // 行動可用性或歷史。
     let war_god_cards = vec![war_god_metal_one, war_god_metal_five];
     assert!(
         record
@@ -624,8 +621,8 @@ fn war_god_weapon_mastery_matrix_keeps_weapon_identity_and_adds_turn_draw_throug
         )
         .unwrap();
 
-    // Baseline: ordinary Weapon has its normal identity and no Hero turn-draw
-    // modifier. These Cards are fixed background, not a profession fixture.
+    // 基準：普通 Weapon 保有正常識別，沒有 Hero 回合抽牌修飾。這些卡牌是固定
+    // 背景，不是職業固定資料。
     let mut baseline_remaining = OfficialRules::new().official_deck_order(&setup).unwrap();
     let baseline_weapon_cards = vec![
         take_card(&setup, &mut baseline_remaining, Element::Metal, 1),
@@ -674,9 +671,8 @@ fn war_god_weapon_mastery_matrix_keeps_weapon_identity_and_adds_turn_draw_throug
     )));
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Modifier: build Warrior then War God through the actual two-player turn
-    // lifecycle. P1's profession Cards, P2's intervening actions, and each
-    // discard choice are all canonical commands.
+    // 修飾：透過實際的雙人回合生命週期建立 Warrior，再建立 War God。P1 的職業
+    // 卡牌、P2 的介入行動與每次棄牌選擇全都是標準命令。
     let mut remaining = OfficialRules::new().official_deck_order(&setup).unwrap();
     let warrior_cards = vec![
         take_card(&setup, &mut remaining, Element::Metal, 1),
@@ -768,9 +764,8 @@ fn war_god_weapon_mastery_matrix_keeps_weapon_identity_and_adds_turn_draw_throug
         .unwrap();
     finish_turn_discarding(&mut interaction, &p2, p2_second_draw[0]);
 
-    // Interaction: Warrior's inherited Weapon proficiency allows Metal+Wood,
-    // but the committed Formation remains `weapon`; War God's mastery appends
-    // exactly one typed turn-draw bonus to that same Attack outcome.
+    // 互動：Warrior 繼承的 Weapon 熟練允許金加木，但已提交的陣形仍是 `weapon`；
+    // War God 的精通會對同一攻擊結果附加恰好一個具型別的回合抽牌獎勵。
     let weapon_cards = vec![weapon_metal, weapon_wood];
     let actions = interaction.playable_actions(&p1, &weapon_cards).unwrap();
     assert!(actions.iter().any(|action| matches!(

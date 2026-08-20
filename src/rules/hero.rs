@@ -1217,8 +1217,8 @@ pub(crate) fn playable_profession_abilities(
     Ok(candidates)
 }
 
-/// Mirrors the activated-ability resolver below.  The browser renders this
-/// typed fact, never an ability-id prose lookup.
+/// 與下方的能力啟用解析器保持一致。瀏覽器會呈現這個具型別的事實，絕不透過
+/// 能力識別碼查找文字。
 pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbilityEffect> {
     Some(match id {
         "shadow-cut" => {

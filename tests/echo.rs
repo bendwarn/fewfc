@@ -493,9 +493,8 @@ fn ringing_metal_empty_deck_recycles_before_an_independent_post_search_shuffle()
     let mut state = configured_state();
     state.hands[0].cards = vec![card(1), card(2), card(19)];
     state.deck.clear();
-    // Formation cards remain in the Formation Area while the randomness
-    // request is pending, so the recyclable discard alone must satisfy the
-    // requested draw.
+    // 隨機性請求等待期間，陣形卡牌仍留在陣形區，因此只有可回收的棄牌必須
+    // 滿足要求的抽牌數量。
     state.discard = vec![card(3), card(4), card(5), card(6)];
 
     let performed = handle_command(

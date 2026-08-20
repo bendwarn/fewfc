@@ -221,7 +221,7 @@ impl ChainSheepScenario {
                     .collect(),
             )
             .unwrap();
-        // Background only: several legal attack turns must not end the game before Chain.
+        // 僅是背景：在 Chain 前，數個合法攻擊回合不能結束遊戲。
         for team_hp in &mut setup.hp {
             team_hp.hp = 10_000;
         }
@@ -522,8 +522,7 @@ impl StealTheBeamMageGuideScenario {
                     .collect(),
             )
             .unwrap();
-        // Background only: the two legal profession turns and their opponent turns must not end
-        // the game before the interaction under test.
+        // 僅是背景：兩個合法職業回合及對手回合不能在測試互動前結束遊戲。
         for team_hp in &mut setup.hp {
             team_hp.hp = 10_000;
         }
@@ -882,8 +881,8 @@ impl LureReturnSoulScenario {
                     .collect(),
             )
             .unwrap();
-        // Background only: the legal action turns used to establish the two scopes must not end
-        // before P2 resolves Return Soul.
+        // 僅是背景：用來建立兩個範圍的合法行動回合不能在 P2 解析 Return Soul 前
+        // 結束。
         for team_hp in &mut setup.hp {
             team_hp.hp = 10_000;
         }
@@ -1289,7 +1288,7 @@ impl DeceiveHeavenScenario {
                     .collect(),
             )
             .unwrap();
-        // Background only: qualifying attacks must not end the game before the direct break.
+        // 僅是背景：符合資格的攻擊不能在直接突破前結束遊戲。
         for team_hp in &mut setup.hp {
             team_hp.hp = 10_000;
         }

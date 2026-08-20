@@ -61,9 +61,8 @@ pub(super) fn resolve(
     let is_passive = matches!(plan.effect_plan, EffectPlan::PassiveSpell(_));
     let is_active_spell = matches!(&plan.effect_plan, EffectPlan::ActiveSpell(_));
     let mut events = BaseEffectResolver::new().resolve(state, plan)?;
-    // Composite Formation effects historically carried their own formation
-    // cards as Hand-to-Discard deltas.  Under Formation Areas those are the
-    // pipeline's responsibility, so retain only genuinely additional moves.
+    // 複合陣形效果過去會將自己的陣形卡牌作為手牌到棄牌堆的差異攜帶。在陣形
+    // 區架構下，那些移動由流程負責，因此只保留真正額外的移動。
     for event in &mut events {
         match event {
             GameEvent::VoidReversionResolved { card_moves, .. }
@@ -73,13 +72,11 @@ pub(super) fn resolve(
             _ => {}
         }
     }
-    // Validation has already succeeded.  Formation Commitment is consequently
-    // the first resolution fact and cannot be rolled back by prevention,
-    // sealing, or an ineffective outcome.
+    // 驗證已經成功。因此陣形提交是第一個解析事實，不會被防止、封印或無效
+    // 結果回滾。
     events.retain(|event| !matches!(event, GameEvent::FormationPerformed { .. }));
-    // A Pending Randomness request is part of the still-active Action.  Its
-    // source pile must not pretend that the committed Formation cards have
-    // already reached a discard pile.
+    // 待處理隨機性請求仍是作用中行動的一部分。它的來源牌堆不能假裝已提交的
+    // 陣形卡牌已經抵達棄牌堆。
     for event in &mut events {
         if let GameEvent::RandomnessRequested { request } = event
             && request.operation.is_discard_shuffle()
@@ -210,9 +207,8 @@ pub(super) fn append_post_formation_events(
         return Ok(());
     }
 
-    // Test terminality without mutating the actual event stream: the terminal
-    // fact must remain last, so a post-Formation consequence can never follow
-    // it.
+    // 在不改變實際事件流的情況下測試是否終止：終止事實必須保持在最後，因而
+    // 陣形後果永遠不能出現在它之後。
     let mut terminal_probe = events.clone();
     super::append_terminal_game_end(state, &mut terminal_probe);
     if terminal_probe
@@ -428,9 +424,8 @@ impl BaseEffectResolver {
                 for event in &events {
                     crate::rules::projection::apply_event(&mut projected, event);
                 }
-                // Tribulation's pre-attack deltas participate in the same
-                // canonical AttackResolved event, but its attack math must
-                // still see their resolved state (notably Mudslide shields).
+                // Tribulation 的攻擊前差異會參與同一個標準 AttackResolved 事件，
+                // 但攻擊計算仍必須看到它們解析後的狀態（特別是 Mudslide 護盾）。
                 let mut attack_state = projected.clone();
                 for event in &tribulation_pre_events {
                     crate::rules::projection::apply_event(&mut attack_state, event);

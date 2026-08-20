@@ -1,4 +1,4 @@
-// Single-event expectations stay as Vec<GameEvent> to match the event-log assertion helper.
+// 單一事件預期維持為 Vec<GameEvent>，以符合事件日誌斷言輔助工具。
 #![allow(clippy::useless_vec)]
 
 use fewfc::application::{
@@ -34,9 +34,8 @@ macro_rules! atomic_context {
     };
 }
 
-/// Older behavior assertions describe the semantic effect of a command rather
-/// than the new zone/terminal lifecycle facts.  Compare that invariant view
-/// on both sides while dedicated tests below assert the lifecycle itself.
+/// 舊行為斷言描述命令的語意效果，而不是新的區域/終止生命週期事實。兩側都
+/// 比較該不變量視圖，生命週期本身則由下方的專用測試斷言。
 fn semantic_events(events: &[GameEvent]) -> Vec<GameEvent> {
     let mut semantic = Vec::new();
     for event in events {
@@ -61,8 +60,8 @@ fn semantic_events(events: &[GameEvent]) -> Vec<GameEvent> {
                     ..
                 } = &mut attack
                 {
-                    // Formation cards now move through the Formation Area,
-                    // rather than the attack's old hand-to-discard payload.
+                    // 陣形卡牌現在會經過陣形區，而不是使用攻擊舊有的手牌到棄牌堆
+                    // 負載。
                     card_moves.clear();
                     if let Some(effects) = elemental_context_update {
                         effects.outcome = Default::default();
@@ -1304,9 +1303,8 @@ fn game_record_facade_applies_commands_and_verifies_replay() {
 
 #[test]
 fn base_start_turn_lifecycle_matrix_commits_an_action_then_resolves_draw_choice_and_next_turn() {
-    // This is the command-level lifecycle matrix for the Base Rules start
-    // boundary.  The fixed deck order is background only: every transition
-    // after Start is an actual command or automatic canonical transition.
+    // 這是基礎規則開始邊界的命令層級生命週期矩陣。固定牌堆順序僅是背景：Start
+    // 之後的每個轉換都是實際命令或自動標準轉換。
     let mut record = GameRecord::start(two_player_setup(), official_deck()).unwrap();
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
@@ -3128,7 +3126,7 @@ fn radiance_cannot_act_matrix_blocks_a_usable_formation_but_keeps_status_specifi
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
 
-    // Baseline: P2 has a legal Wood Strike after P1 finishes an ordinary turn.
+    // 基準：P1 完成普通回合後，P2 擁有合法的 Wood Strike。
     let mut baseline = GameRecord::start(
         two_player_setup(),
         deck_starting_with(&[1, 6, 4, 3, 2, 5, 7, 8, 9]),
@@ -3159,9 +3157,8 @@ fn radiance_cannot_act_matrix_blocks_a_usable_formation_but_keeps_status_specifi
     );
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Modifier: Radiance is established through the complete Formation command;
-    // P2 still holds the same usable Wood Card but may only take the
-    // status-specific Pass action.
+    // 修飾：Radiance 透過完整陣形命令建立；P2 仍持有相同可用的木卡，但只能
+    // 執行狀態專屬的 Pass 行動。
     let mut radiance = GameRecord::start(
         two_player_setup(),
         deck_starting_with(&[1, 6, 4, 3, 2, 5, 7, 8, 9]),
@@ -3192,9 +3189,8 @@ fn radiance_cannot_act_matrix_blocks_a_usable_formation_but_keeps_status_specifi
         GameEvent::FormationCardsDiscarded { formation_id, cards, .. }
             if formation_id == "radiance" && cards == &radiance_cards
     )));
-    // Advance a copy through the canonical events caused by the legal
-    // Radiance command. It reaches P2 ActiveEffects before GameRecord's
-    // convenience loop submits the forced pass, without hand-making status.
+    // 讓副本經過合法 Radiance 命令造成的標準事件。在 GameRecord 的便利迴圈提交
+    // 強制 pass 前，它會抵達 P2 的 ActiveEffects，沒有手動製造狀態。
     let mut p2_turn = radiance.state().clone();
     while p2_turn.current_player() != Some(&p2) || p2_turn.phase != Phase::ActiveEffects {
         let automatic_events = advance_state_automatic(&p2_turn).unwrap();
@@ -4149,8 +4145,8 @@ fn empty_city_next_action_matrix_consumes_its_intentional_no_effect_while_attack
     let p2 = PlayerId::new("p2");
     let deck = deck_starting_with(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 
-    // Baseline: the next legal Fire Strike has no passive to trigger and
-    // damages normally after P1 completes an ordinary action / Turn Draw.
+    // 基準：下一個合法 Fire Strike 沒有被動可觸發，P1 完成普通行動/回合抽牌後
+    // 正常造成傷害。
     let mut baseline = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
     baseline.advance_automatic().unwrap();
     baseline
@@ -4180,8 +4176,8 @@ fn empty_city_next_action_matrix_consumes_its_intentional_no_effect_while_attack
     )));
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Empty City is established by the legal passive command. Its intentional
-    // no-effect outcome must not suppress the next incoming Attack.
+    // Empty City 由合法被動命令建立。它刻意的無效果結果不能抑制下一個 incoming
+    // Attack。
     let mut interaction = GameRecord::start(two_player_setup(), deck).unwrap();
     interaction.advance_automatic().unwrap();
     let cover = interaction
@@ -4301,8 +4297,8 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
 
-    // Baseline: the same incoming Fire Strike damages P1 after P1 has used a
-    // normal legal action and completed Turn Draw.
+    // 基準：P1 使用正常合法行動並完成回合抽牌後，同一個 incoming Fire Strike
+    // 會傷害 P1。
     let mut baseline = GameRecord::start(two_player_setup(), defense_setup_deck()).unwrap();
     baseline.advance_automatic().unwrap();
     baseline
@@ -4355,7 +4351,7 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
     );
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Modifier: Defense is established only by P1's legal passive Formation.
+    // 修飾：Defense 只能由 P1 的合法被動陣形建立。
     let mut interaction = GameRecord::start(two_player_setup(), defense_setup_deck()).unwrap();
     interaction.advance_automatic().unwrap();
     let defense_cards = vec![card(2), card(7)];
@@ -4391,8 +4387,8 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
     advance_record_to_next_main_after_turn_draw(&mut interaction, card(10));
     assert_eq!(interaction.state().current_player(), Some(&p2));
 
-    // Interaction: the passive flips exactly once, prevents only damage, and
-    // still lets the incoming Formation commit and move its Cards.
+    // 互動：被動恰好翻開一次，只防止傷害，仍讓 incoming Formation 提交並移動其
+    // 卡牌。
     let interaction_hp = interaction
         .state()
         .hp
@@ -4472,20 +4468,20 @@ fn defense_metal_environment_matrix_records_the_ground_but_keeps_attack_damage()
         card(1),
         card(2),
         card(3),
-        card(4), // P1 opening: legal initial Metal Strike
+        card(4), // P1 起手：合法的初始 Metal Strike
         card(6),
         card(11),
         card(16),
         card(21),
-        card(26), // P2 opening: legal West White Tiger
+        card(26), // P2 起手：合法的 West White Tiger
         card(7),
-        card(8), // P1 first Turn Draw; retain both Wood Cards
-        card(9), // P1's mandatory third draw/discard candidate
+        card(8), // P1 第一次回合抽牌；保留兩張木卡
+        card(9), // P1 必須進行的第三次抽牌/棄牌候選
         card(14),
         card(10),
-        card(12), // P2 draw after Sacred Beast; retain Fire 14
+        card(12), // Sacred Beast 後 P2 抽牌；保留 Fire 14
         card(13),
-        card(19), // P1 draw after its tested action
+        card(19), // P1 測試行動後的抽牌
     ];
     let mut deck = opening.clone();
     deck.extend(
@@ -4543,9 +4539,9 @@ fn defense_metal_environment_matrix_records_the_ground_but_keeps_attack_damage()
         assert_eq!(record.state().current_player(), Some(p1));
     }
 
-    // Modifier-only branch: Metal Environment is a legal Sacred-Beast result.
-    // An unrelated Empty City has its normal intentional lifecycle, while the
-    // subsequent Fire Attack still damages P1 normally under Metal Environment.
+    // 僅修飾分支：Metal Environment 是合法 Sacred-Beast 結果。無關的 Empty City
+    // 仍有正常且刻意的生命週期，而後續 Fire Attack 在 Metal Environment 下仍會
+    // 正常傷害 P1。
     let mut environment_only = GameRecord::start(setup.clone(), deck.clone()).unwrap();
     establish_metal_environment(&mut environment_only, &p1, &p2);
     environment_only
@@ -4574,9 +4570,8 @@ fn defense_metal_environment_matrix_records_the_ground_but_keeps_attack_damage()
         } if team == &TeamId::new("team:p1")
     )));
 
-    // Interaction: the same legal environment now coexists with a legally
-    // covered Defense. Defense flips exactly once with the environment ground;
-    // it does not prevent the incoming Fire Attack or suppress its lifecycle.
+    // 互動：相同的合法環境現在與合法覆蓋的 Defense 共存。Defense 會隨環境地面
+    // 恰好翻開一次；它不會防止 incoming Fire Attack，也不會抑制其生命週期。
     let mut interaction = GameRecord::start(setup, deck).unwrap();
     establish_metal_environment(&mut interaction, &p1, &p2);
     let defense = interaction
@@ -4672,15 +4667,15 @@ fn defense_sacred_beast_matrix_consumes_defense_but_keeps_the_beasts_damage_and_
             card(2),
             card(7),
             card(1),
-            card(31), // P1: legal Defense or baseline physical Weapon
+            card(31), // P1：合法 Defense 或基準實體 Weapon
             card(6),
             card(11),
             card(16),
             card(21),
-            card(26), // P2: legal West White Tiger
+            card(26), // P2：合法 West White Tiger
             card(3),
             card(4),
-            card(5), // P1 Turn Draw
+            card(5), // P1 回合抽牌
         ];
         let mut cards = opening.clone();
         cards.extend(
@@ -4692,9 +4687,8 @@ fn defense_sacred_beast_matrix_consumes_defense_but_keeps_the_beasts_damage_and_
     };
     let beast_cards = vec![card(6), card(11), card(16), card(21), card(26)];
 
-    // Baseline: a Sacred Beast has its normal 81-point attack and canonical
-    // environment transfer when no previous-player passive exists. P1's
-    // physical Weapon deliberately leaves no elemental prior-action context.
+    // 基準：沒有前一位玩家被動時，Sacred Beast 具有正常的 81 點攻擊與標準環境
+    // 轉移。P1 的實體 Weapon 特意不留下元素前置行動脈絡。
     let mut baseline = GameRecord::start(setup.clone(), deck.clone()).unwrap();
     baseline.advance_automatic().unwrap();
     baseline
@@ -4732,8 +4726,8 @@ fn defense_sacred_beast_matrix_consumes_defense_but_keeps_the_beasts_damage_and_
     assert_eq!(baseline.state().environment, Some(Element::Metal));
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Modifier itself: Defense is established by its real passive command,
-    // then remains hidden from the non-owner until P2's next action.
+    // 修飾本身：Defense 由真正的被動命令建立，接著對非擁有者保持隱藏，直到
+    // P2 的下一個行動。
     let mut interaction = GameRecord::start(setup, deck).unwrap();
     interaction.advance_automatic().unwrap();
     let defense = interaction
@@ -4763,9 +4757,8 @@ fn defense_sacred_beast_matrix_consumes_defense_but_keeps_the_beasts_damage_and_
     ));
     advance_record_to_next_main_after_turn_draw(&mut interaction, card(4));
 
-    // Interaction: the Beast's rule exception makes Defense a single
-    // no-effect outcome, while its unrelated 81 damage, transfer, commitment,
-    // and physical card movement all remain intact.
+    // 互動：Beast 的規則例外讓 Defense 產生單一無效果結果，但無關的 81 點傷害、
+    // 轉移、提交與實體卡牌移動都保持完整。
     let beast = interaction
         .handle(Command::PerformFormation {
             player: p2.clone(),
@@ -4840,8 +4833,8 @@ fn metal_environment_barrier_matrix_keeps_commitment_and_cards_when_its_shield_i
     ]);
     let barrier_cards = vec![card(2), card(7), card(31), card(4)];
 
-    // Baseline: Barrier itself applies its 44-point Shield and completes the
-    // normal formation/card lifecycle without an Environment modifier.
+    // 基準：Barrier 本身套用 44 點護盾，並在沒有 Environment 修飾時完成正常的
+    // 陣形/卡牌生命週期。
     let mut baseline = GameRecord::start(
         setup.clone(),
         {
@@ -4849,7 +4842,7 @@ fn metal_environment_barrier_matrix_keeps_commitment_and_cards_when_its_shield_i
                 card(2),
                 card(7),
                 card(31),
-                card(4), // P1: Barrier
+                card(4), // P1：Barrier
                 card(1),
                 card(6),
                 card(11),
@@ -4894,9 +4887,8 @@ fn metal_environment_barrier_matrix_keeps_commitment_and_cards_when_its_shield_i
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
     assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
 
-    // Modifier: P2's legal Sacred Beast is the sole origin of the shared
-    // Metal Environment. P1 then still uses the same physically legal Barrier
-    // Cards on its next action.
+    // 修飾：P2 的合法 Sacred Beast 是共用 Metal Environment 的唯一來源。P1 接著
+    // 仍在下一次行動中使用相同且實體上合法的 Barrier 卡牌。
     let mut interaction = GameRecord::start(
         setup,
         {
@@ -4904,18 +4896,18 @@ fn metal_environment_barrier_matrix_keeps_commitment_and_cards_when_its_shield_i
                 card(1),
                 card(2),
                 card(7),
-                card(4), // P1: first action then Barrier after Turn Draw
+                card(4), // P1：第一次行動，接著在回合抽牌後使用 Barrier
                 card(6),
                 card(11),
                 card(16),
                 card(21),
-                card(26), // P2: West White Tiger
+                card(26), // P2：West White Tiger
                 card(31),
                 card(8),
-                card(9), // P1 Turn Draw; retain Metal 31
+                card(9), // P1 回合抽牌；保留 Metal 31
                 card(10),
                 card(12),
-                card(13), // P2 Turn Draw
+                card(13), // P2 回合抽牌
             ];
             let mut cards = opening.clone();
             cards.extend(
@@ -4969,8 +4961,8 @@ fn metal_environment_barrier_matrix_keeps_commitment_and_cards_when_its_shield_i
     .unwrap();
     interaction.advance_automatic().unwrap();
 
-    // Interaction: Metal Environment makes Barrier's Shield effect inapplicable
-    // but cannot undo its accepted command, Formation commitment, or discard.
+    // 互動：Metal Environment 讓 Barrier 的護盾效果不適用，但不能撤銷已接受的
+    // 命令、陣形提交或棄牌。
     let ignored_barrier = interaction
         .handle(Command::PerformFormation {
             player: p1.clone(),
@@ -5110,16 +5102,15 @@ fn defense_prevents_incoming_attack_damage_and_records_action_modification() {
 
 #[test]
 fn five_streams_defense_matrix_keeps_the_turn_draw_bonus_when_damage_is_prevented() {
-    // The Deck order only gives each Player the Cards required by their legal
-    // Commands. P1 establishes the modifier through Defense; no covered
-    // passive or action outcome is injected by this matrix.
+    // 牌堆順序只提供每位玩家合法命令所需的卡牌。P1 透過 Defense 建立修飾；此
+    // 矩陣沒有注入覆蓋被動或行動結果。
     let mut setup = two_player_setup_with_hp(100);
     setup.card_instances.push(card_instance(21, "metal"));
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
 
-    // Baseline: five same-level Cards form Five Streams and deal damage while
-    // committing the Formation and recording its draw bonus.
+    // 基準：五張同等級卡牌組成 Five Streams 並造成傷害，同時提交陣形並記錄其
+    // 抽牌獎勵。
     let mut baseline = GameRecord::start(
         setup.clone(),
         deck_starting_with(&[2, 3, 4, 5, 1, 6, 11, 16, 21, 7, 8]),
@@ -5174,9 +5165,8 @@ fn five_streams_defense_matrix_keeps_the_turn_draw_bonus_when_damage_is_prevente
     );
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Modifier and interaction: P1 legally covers Defense. The next attack
-    // flips exactly that passive, prevents the affected HP loss, and leaves
-    // Five Streams' independent Turn Draw bonus intact.
+    // 修飾與互動：P1 合法覆蓋 Defense。下一次攻擊會恰好翻開該被動，防止受影響
+    // 的生命值損失，並保留 Five Streams 獨立的回合抽牌獎勵。
     let mut interaction = GameRecord::start(
         setup,
         deck_starting_with(&[2, 7, 4, 5, 1, 6, 11, 16, 21, 3, 8]),
@@ -5278,9 +5268,8 @@ fn countershock_attack_matrix_splits_damage_after_legal_cover_and_preserves_atta
     let p2 = PlayerId::new("p2");
     let deck = deck_starting_with(&[4, 9, 1, 2, 5, 10, 3, 6, 7]);
 
-    // Baseline: without the modifier, the same ordinary Metal Strike damages
-    // only P1. P1's Fire Strike is a legal prior action, not injected turn
-    // history.
+    // 基準：沒有修飾時，相同的普通 Metal Strike 只會傷害 P1。P1 的 Fire Strike
+    // 是合法的先前行動，不是注入的回合歷史。
     let mut baseline = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
     baseline.advance_automatic().unwrap();
     baseline
@@ -5342,7 +5331,7 @@ fn countershock_attack_matrix_splits_damage_after_legal_cover_and_preserves_atta
     );
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Modifier: Countershock is established by P1's legal Formation command.
+    // 修飾：Countershock 由 P1 的合法陣形命令建立。
     let mut interaction = GameRecord::start(two_player_setup(), deck).unwrap();
     interaction.advance_automatic().unwrap();
     let cover_events = interaction
@@ -5385,9 +5374,8 @@ fn countershock_attack_matrix_splits_damage_after_legal_cover_and_preserves_atta
     );
     advance_record_to_next_main_after_turn_draw(&mut interaction, card(8));
 
-    // Interaction: the identical Attack flips Countershock. It splits the
-    // seven points into two rounded-up four-point losses, while retaining the
-    // attack commitment and both sides' canonical Card movement.
+    // 互動：相同的 Attack 會翻開 Countershock。它將七點分成兩個向上取整的四點
+    // 損失，同時保留攻擊提交與雙方標準卡牌移動。
     let attack = interaction
         .handle(Command::PerformFormation {
             player: p2.clone(),
@@ -5508,10 +5496,10 @@ fn countershock_shield_matrix_splits_before_physical_shield_absorption_through_l
     let p2 = PlayerId::new("p2");
     let deck = deck_starting_with(&[
         2, 7, 1, 4, // P1 Barrier
-        6, 11, 16, 5, 10, // P2 opening; Metal Strike then Weapon
-        9, 14, 3, // P1 receives Fire/Fire plus a Turn Draw discard
-        8, 12, 13, // P2 first Turn Draw
-        15, 17, 18, // P1 second Turn Draw
+        6, 11, 16, 5, 10, // P2 起手；先 Metal Strike 再 Weapon
+        9, 14, 3, // P1 收到 Fire/Fire，另有一張回合抽牌棄牌
+        8, 12, 13, // P2 第一次回合抽牌
+        15, 17, 18, // P1 第二次回合抽牌
     ]);
 
     fn advance_p2_turn(record: &mut GameRecord, discard: CardInstanceId) {
@@ -5564,9 +5552,8 @@ fn countershock_shield_matrix_splits_before_physical_shield_absorption_through_l
         assert_eq!(record.state().shield(p1), Some(37));
     }
 
-    // Baseline: Barrier alone lets the eventual physical Weapon consume twice
-    // its twelve-point damage from Shield and leaves both Teams' HP unchanged
-    // except for P1's intervening ordinary Fire Strike.
+    // 基準：只有 Barrier 時，最終實體 Weapon 會讓護盾消耗兩倍的十二點傷害，
+    // 並讓兩隊生命值保持不變；P1 中間的普通 Fire Strike 除外。
     let mut baseline = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
     establish_barrier_and_take_opening_attack(&mut baseline, &p1, &p2);
     baseline
@@ -5609,9 +5596,8 @@ fn countershock_shield_matrix_splits_before_physical_shield_absorption_through_l
     assert_eq!(baseline.state().shield(&p1), Some(13));
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Modifier: P1 covers Countershock through a legal passive Formation after
-    // the same Barrier and intervening P2 turn; no Shield or covered state is
-    // injected.
+    // 修飾：相同 Barrier 與中間的 P2 回合後，P1 透過合法被動陣形覆蓋 Countershock；
+    // 沒有注入護盾或覆蓋狀態。
     let mut interaction = GameRecord::start(two_player_setup(), deck).unwrap();
     establish_barrier_and_take_opening_attack(&mut interaction, &p1, &p2);
     let countershock = interaction
@@ -5636,9 +5622,9 @@ fn countershock_shield_matrix_splits_before_physical_shield_absorption_through_l
     ));
     advance_record_to_next_main_after_turn_draw(&mut interaction, card(15));
 
-    // Interaction: Countershock first halves the incoming twelve. The target
-    // half is then physical damage to Shield and therefore doubles to twelve;
-    // the reciprocal half damages P2's HP. Both Formation lifecycles remain.
+    // 互動：Countershock 先將 incoming 的十二點減半。目標方的一半接著是對護盾
+    // 的實體傷害，因此加倍為十二點；另一半傷害 P2 的生命值。兩個陣形生命週期
+    // 都保持不變。
     let weapon = interaction
         .handle(Command::PerformFormation {
             player: p2.clone(),
@@ -5710,15 +5696,14 @@ fn countershock_lethal_matrix_resolves_both_split_losses_before_declaring_a_draw
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
     let deck = deck_starting_with(&[
-        4, 9, 1, 2, // P1: legal Countershock
-        6, 11, 16, 5, 10, // P2: legal Metal Strike
-        3, 7, // P1 Turn Draw, with Card 7 discarded below
+        4, 9, 1, 2, // P1：合法 Countershock
+        6, 11, 16, 5, 10, // P2：合法 Metal Strike
+        3, 7, // P1 回合抽牌，以下棄置卡牌 7
     ]);
     let mut record = GameRecord::start(two_player_setup_with_hp(4), deck).unwrap();
     record.advance_automatic().unwrap();
 
-    // Modifier: the covered Countershock reaches the next player's Action
-    // through its actual Turn Draw lifecycle.
+    // 修飾：覆蓋的 Countershock 透過實際回合抽牌生命週期抵達下一位玩家的行動。
     let covered = record
         .handle(Command::PerformFormation {
             player: p1.clone(),
@@ -5742,9 +5727,8 @@ fn countershock_lethal_matrix_resolves_both_split_losses_before_declaring_a_draw
     advance_record_to_next_main_after_turn_draw(&mut record, card(7));
     assert_eq!(record.state().current_player(), Some(&p2));
 
-    // Interaction: a seven-point Attack splits to two rounded-up four-point
-    // losses. Both deltas must be recorded before the terminal Draw, while
-    // the passive and incoming Formation Cards still reach Discard.
+    // 互動：七點 Attack 分成兩個向上取整的四點損失。兩個差異都必須在終止抽牌
+    // 前記錄，同時被動與 incoming Formation 卡牌仍會抵達棄牌堆。
     let attack = record
         .handle(Command::PerformFormation {
             player: p2.clone(),
@@ -6067,8 +6051,8 @@ fn seal_attack_matrix_records_not_a_spell_but_keeps_the_attack_outcome() {
     let p2 = PlayerId::new("p2");
     let deck = deck_starting_with(&[3, 8, 1, 6, 9, 10, 4, 5, 7, 11, 12]);
 
-    // Baseline: the legal Fire Strike resolves normally without a covered
-    // passive, establishing the exact unaffected attack outcome.
+    // 基準：合法 Fire Strike 在沒有覆蓋被動時正常解析，建立確切的未受影響攻擊
+    // 結果。
     let mut baseline = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
     baseline.advance_automatic().unwrap();
     baseline
@@ -6097,7 +6081,7 @@ fn seal_attack_matrix_records_not_a_spell_but_keeps_the_attack_outcome() {
         } if team == &TeamId::new("team:p1")
     )));
 
-    // Modifier: P1 legally covers Seal before the same incoming Attack.
+    // 修飾：P1 在相同的 incoming Attack 前合法覆蓋 Seal。
     let mut interaction = GameRecord::start(two_player_setup(), deck).unwrap();
     interaction.advance_automatic().unwrap();
     interaction
@@ -6235,9 +6219,8 @@ fn seal_barrier_matrix_cancels_the_spell_but_keeps_formation_commitment_and_card
     let deck = deck_starting_with(&[3, 8, 1, 2, 7, 12, 4, 5, 6, 10, 11, 13]);
     let barrier_cards = vec![card(7), card(12), card(4), card(6)];
 
-    // Baseline: Barrier's own effect gives P2 a 44-point Shield after P1's
-    // ordinary legal Metal Strike. It establishes the exact action and card
-    // lifecycle which must survive cancellation in the interaction.
+    // 基準：P1 普通合法的 Metal Strike 後，Barrier 自身效果給 P2 44 點護盾。
+    // 它建立互動中必須在取消後仍存活的確切行動與卡牌生命週期。
     let mut baseline = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
     baseline.advance_automatic().unwrap();
     baseline
@@ -6274,8 +6257,8 @@ fn seal_barrier_matrix_cancels_the_spell_but_keeps_formation_commitment_and_card
     assert_eq!(baseline.state().shield(&p2), Some(44));
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Modifier: P1 covers Seal legally. Its owner sees the covered Cards,
-    // while P2 sees only the count prior to triggering it.
+    // 修飾：P1 合法覆蓋 Seal。其擁有者看得到覆蓋的卡牌，而 P2 在觸發前只看得到
+    // 數量。
     let mut interaction = GameRecord::start(two_player_setup(), deck).unwrap();
     interaction.advance_automatic().unwrap();
     let seal = interaction
@@ -6309,9 +6292,8 @@ fn seal_barrier_matrix_cancels_the_spell_but_keeps_formation_commitment_and_card
     );
     advance_record_to_next_main_after_turn_draw(&mut interaction, card(10));
 
-    // Interaction: Seal flips once and cancels Barrier's Shield result. The
-    // Barrier still commits and discards its four physical Cards; Seal itself
-    // is consumed, so there is no latent counter or fabricated Shield.
+    // 互動：Seal 翻開一次並取消 Barrier 的護盾結果。Barrier 仍會提交並棄置四張
+    // 實體卡牌；Seal 本身被消耗，因此沒有潛在反制或捏造的護盾。
     let canceled_barrier = interaction
         .handle(Command::PerformFormation {
             player: p2.clone(),
@@ -6406,8 +6388,8 @@ fn seal_chaos_matrix_cancels_the_choice_but_keeps_spell_commitment_and_cards() {
     let p2 = PlayerId::new("p2");
     let chaos_cards = vec![card(5), card(10), card(7), card(6)];
 
-    // Baseline: Chaos normally exposes its typed continuation only to P2, who
-    // selects exactly two of P1's inspected Cards and returns them to DeckTop.
+    // 基準：Chaos 正常只向 P2 公開其具型別延續；P2 會從檢視的 P1 卡牌中精確
+    // 選擇兩張並送回 DeckTop。
     let mut baseline = GameRecord::start(
         two_player_setup(),
         deck_starting_with(&[1, 2, 3, 4, 5, 10, 7, 6, 9, 11, 12, 13]),
@@ -6473,9 +6455,8 @@ fn seal_chaos_matrix_cancels_the_choice_but_keeps_spell_commitment_and_cards() {
     assert!(baseline.state().pending_choice.is_none());
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Interaction: P1 legally covers Seal. P2's same legal Chaos formation
-    // triggers it, consumes both formations, and cannot create a choice or
-    // inspect P1's hand despite retaining Chaos's commitment / card movement.
+    // 互動：P1 合法覆蓋 Seal。P2 相同的合法 Chaos 陣形會觸發它、消耗兩個陣形，
+    // 且即使保留 Chaos 的提交/卡牌移動，也不能建立選擇或檢視 P1 手牌。
     let mut interaction = GameRecord::start(
         two_player_setup(),
         deck_starting_with(&[3, 8, 1, 2, 5, 10, 7, 6, 4, 9, 11, 12, 13]),
@@ -6682,8 +6663,8 @@ fn seal_incoming_covered_passive_matrix_commits_sealed_counter_then_consumes_it_
     .unwrap();
     record.advance_automatic().unwrap();
 
-    // Modifier: P1 legally covers Seal, completes the real Turn Draw, and
-    // leaves P2's counter-formation as the next command under test.
+    // 修飾：P1 合法覆蓋 Seal，完成真正的回合抽牌，並讓 P2 的反制陣形成為下一個
+    // 待測命令。
     let seal = record
         .handle(Command::PerformFormation {
             player: p1.clone(),
@@ -6707,9 +6688,8 @@ fn seal_incoming_covered_passive_matrix_commits_sealed_counter_then_consumes_it_
     advance_record_to_next_main_after_turn_draw(&mut record, card(10));
     assert_eq!(record.state().current_player(), Some(&p2));
 
-    // Baseline counterpart: without an incoming Seal, Countershock covers
-    // normally. This leaves the exact legal use distinguishable from the
-    // sealed interaction below.
+    // 基準對照：沒有 incoming Seal 時，Countershock 正常覆蓋。這讓確切的合法
+    // 使用可與下方的封印互動區分。
     let mut baseline = GameRecord::start(
         two_player_setup(),
         deck_starting_with(&[1, 2, 3, 11, 4, 9, 5, 6, 7, 8, 10]),
@@ -6746,9 +6726,8 @@ fn seal_incoming_covered_passive_matrix_commits_sealed_counter_then_consumes_it_
             && covered_cards == &vec![card(4), card(9)]
     ));
 
-    // Interaction: Seal is consumed to make the legal covered Countershock
-    // sealed. Its owner sees identity/cards, while P1 sees only the count;
-    // neither public projection leaks the sealed marker.
+    // 互動：Seal 被消耗，使合法覆蓋的 Countershock 被封印。其擁有者看得到識別
+    // 與卡牌，而 P1 只看得到數量；兩個公開投影都不會洩漏封印標記。
     let countershock = record
         .handle(Command::PerformFormation {
             player: p2.clone(),
@@ -6792,9 +6771,8 @@ fn seal_incoming_covered_passive_matrix_commits_sealed_counter_then_consumes_it_
             if owner == &p2
     ));
 
-    // The next P1 Attack flips the sealed passive exactly once. It has no
-    // Countershock modification, so the attacker pays no reflected damage and
-    // P2 still takes the normal Metal Strike loss.
+    // 下一次 P1 Attack 會恰好翻開被封印的被動。它沒有 Countershock 修飾，因此
+    // 攻擊者不承受反射傷害，而 P2 仍承受正常的 Metal Strike 損失。
     record.advance_automatic().unwrap();
     answer_record_choice(
         &mut record,
@@ -6892,8 +6870,8 @@ fn seal_void_meridian_matrix_cancels_environment_clearing_but_keeps_spell_commit
             hp: 300,
         },
     ];
-    // The three extra Metal Cards are only fixed background: their shared
-    // printed level is what makes the later, legal Void Meridian use valid.
+    // 額外的三張金卡只是固定背景：它們共同的印製等級使後續合法的 Void Meridian
+    // 使用有效。
     setup.card_instances.extend([
         card_instance(21, "metal"),
         card_instance(26, "metal"),
@@ -6908,31 +6886,31 @@ fn seal_void_meridian_matrix_cancels_environment_clearing_but_keeps_spell_commit
         card(1),
         card(2),
         card(3),
-        card(4), // P0 opening
+        card(4), // P0 起手
         card(6),
         card(11),
         card(16),
         card(21),
-        card(26), // P3 opening: West White Tiger
+        card(26), // P3 起手：West White Tiger
         card(8),
         card(13),
         card(5),
         card(7),
-        card(9), // P1 opening: Seal
+        card(9), // P1 起手：Seal
         card(31),
         card(36),
         card(41),
         card(14),
-        card(15), // P2 opening: Void Meridian
+        card(15), // P2 起手：Void Meridian
         card(10),
         card(12),
         card(17),
         card(18),
         card(19),
-        card(20), // P0/P3 Turn Draw
+        card(20), // P0/P3 回合抽牌
         card(46),
         card(47),
-        card(48), // P1 interaction Turn Draw
+        card(48), // P1 互動回合抽牌
     ];
     let mut deck = opening.clone();
     deck.extend(
@@ -6965,9 +6943,8 @@ fn seal_void_meridian_matrix_cancels_environment_clearing_but_keeps_spell_commit
         let mut record = GameRecord::start(setup.clone(), deck.to_vec()).unwrap();
         record.advance_automatic().unwrap();
 
-        // P0 only advances the turn.  P3 then establishes the Environment,
-        // P1 gets a distinct legal action, and P2 arrives with Void Meridian
-        // already in its real opening hand.
+        // P0 只推進回合。接著 P3 建立 Environment，P1 取得獨立的合法行動，而 P2
+        // 以真正已持有 Void Meridian 的起手牌抵達。
         record
             .handle(Command::PerformFormation {
                 player: p0.clone(),
@@ -6978,8 +6955,8 @@ fn seal_void_meridian_matrix_cancels_environment_clearing_but_keeps_spell_commit
             .unwrap();
         finish_turn(&mut record, p0.clone(), card(10));
 
-        // The shared Metal Environment is created only by a legal Sacred
-        // Beast command, not by a fixture mutation.
+        // 共用 Metal Environment 只能由合法 Sacred Beast 命令建立，而不是由固定
+        // 資料變更注入。
         let west_white_tiger = record
             .handle(Command::PerformFormation {
                 player: p3.clone(),
@@ -7011,9 +6988,8 @@ fn seal_void_meridian_matrix_cancels_environment_clearing_but_keeps_spell_commit
         record
     }
 
-    // Baseline: the applicable Void Meridian spell clears the shared
-    // Environment and changes both teams' HP once.  Its commitment and card
-    // movement are the reference lifecycle for the canceled branch.
+    // 基準：適用的 Void Meridian 法術會清除共用 Environment，並各改變兩隊生命值
+    // 一次。其提交與卡牌移動是取消分支的參考生命週期。
     let mut baseline = record_before_modifier(&setup, &deck, &p0, &p3, &p1, &p2);
     baseline
         .handle(Command::PerformFormation {
@@ -7059,8 +7035,8 @@ fn seal_void_meridian_matrix_cancels_environment_clearing_but_keeps_spell_commit
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
     assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
 
-    // Modifier itself: Seal is established with the complete legal command
-    // and remains privately identified until P2 performs its next action.
+    // 修飾本身：Seal 透過完整合法命令建立，並維持私有識別，直到 P2 執行下一個
+    // 行動。
     let mut interaction = record_before_modifier(&setup, &deck, &p0, &p3, &p1, &p2);
     let seal = interaction
         .handle(Command::PerformFormation {
@@ -7095,9 +7071,8 @@ fn seal_void_meridian_matrix_cancels_environment_clearing_but_keeps_spell_commit
     finish_turn(&mut interaction, p1.clone(), card(46));
     let interaction_before_void = interaction.state().hp.clone();
 
-    // Interaction: Seal cancels the applicable spell effect but not its
-    // canonical commitment or physical card movement.  The Environment and
-    // both teams' HP consequently remain as they were before Void Meridian.
+    // 互動：Seal 取消適用的法術效果，但不取消其標準提交或實體卡牌移動。因此
+    // Environment 與兩隊生命值都維持在 Void Meridian 之前的狀態。
     let void_canceled = interaction
         .handle(Command::PerformFormation {
             player: p2.clone(),
@@ -8044,9 +8019,8 @@ fn elemental_attack_previous_element_matrix_distinguishes_physical_baseline_from
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
 
-    // Baseline: a real physical Weapon use is an immediate prior Formation,
-    // but it establishes no elemental context. The next Fire Strike therefore
-    // resolves its normal eight damage.
+    // 基準：真正的實體 Weapon 使用是立即的前一個陣形，但不建立元素脈絡。因此
+    // 下一個 Fire Strike 會解析正常的八點傷害。
     let mut baseline = GameRecord::start(
         two_player_setup(),
         deck_starting_with(&[1, 6, 2, 3, 9, 4, 5, 7, 8]),
@@ -8123,8 +8097,8 @@ fn elemental_attack_previous_element_matrix_distinguishes_physical_baseline_from
         .is_none());
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Modifier: P1 uses the same public command path to create immediate
-    // Metal context. It is not hand-written into last-elemental state.
+    // 修飾：P1 使用相同的公開命令路徑建立立即的金元素脈絡。它不是手動寫入
+    // 最後元素狀態。
     let mut interaction = record_after_p1_metal_attack_on_turn_1();
     assert_eq!(
         interaction.state().last_elemental_attack_by_player.get(&p1),
@@ -8135,9 +8109,8 @@ fn elemental_attack_previous_element_matrix_distinguishes_physical_baseline_from
     );
     assert_eq!(interaction.state().current_player(), Some(&p2));
 
-    // Interaction: Fire overcomes the immediately previous Metal attack,
-    // doubling exactly the same base eight. Formation commitment, Card
-    // movement, typed context, final state, and replay remain canonical.
+    // 互動：Fire 克制緊接之前的金攻擊，將相同的基礎八點精確加倍。陣形提交、
+    // 卡牌移動、具型別脈絡、最終狀態與回放仍然是標準的。
     let overcoming_fire = interaction
         .handle(Command::PerformFormation {
             player: p2.clone(),
@@ -8624,8 +8597,7 @@ fn barrier_weapon_matrix_applies_physical_double_shield_damage_without_hp_loss()
     let p2 = PlayerId::new("p2");
     let deck = deck_starting_with(&[2, 7, 1, 4, 6, 11, 3, 5, 8]);
 
-    // Baseline: the same physical Weapon command has no Shield to absorb its
-    // damage after P1's ordinary legal action.
+    // 基準：P1 普通合法行動後，相同的實體 Weapon 命令沒有護盾吸收其傷害。
     let mut baseline = GameRecord::start(two_player_setup(), deck.clone()).unwrap();
     baseline.advance_automatic().unwrap();
     baseline
@@ -8690,8 +8662,8 @@ fn barrier_weapon_matrix_applies_physical_double_shield_damage_without_hp_loss()
     );
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
-    // Modifier: P1 establishes Barrier through the same legal Action slot;
-    // its four-card level sum gives a 44-point Shield.
+    // 修飾：P1 透過相同的合法行動位置建立 Barrier；四張卡牌的等級總和提供
+    // 44 點護盾。
     let mut interaction = GameRecord::start(two_player_setup(), deck).unwrap();
     interaction.advance_automatic().unwrap();
     let barrier = interaction
@@ -8719,9 +8691,8 @@ fn barrier_weapon_matrix_applies_physical_double_shield_damage_without_hp_loss()
     assert_eq!(interaction.state().shield(&p1), Some(44));
     advance_record_to_next_main_after_turn_draw(&mut interaction, card(9));
 
-    // Interaction: physical damage is doubled only against the Shield. The
-    // Weapon Formation nevertheless commits/discards normally and keeps HP
-    // untouched while reducing 44 to 20.
+    // 互動：實體傷害只會對護盾加倍。Weapon 陣形仍正常提交/棄置，並在將 44 降至
+    // 20 的同時讓生命值保持不變。
     let weapon = interaction
         .handle(Command::PerformFormation {
             player: p2.clone(),

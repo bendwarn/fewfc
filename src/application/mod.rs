@@ -1,4 +1,4 @@
-//! Application services: command handling, automatic advancement, and replay.
+//! 應用程式服務：命令處理、自動推進與回放。
 
 mod recorded_event_log;
 
@@ -64,12 +64,11 @@ pub struct GameRecord {
     current_state: GameState,
 }
 
-/// A prefix of a canonical record suitable for a read-only replay viewer.
+/// 適合唯讀回放檢視器使用的標準記錄前綴。
 ///
-/// `step` is deliberately expressed in player commands, not canonical events:
-/// setup and every decision before the first command are step zero; each later
-/// step contains one command and all following automatic/randomness decisions
-/// until the next command.
+/// `step` 特意以玩家命令表示，而不是標準事件：設定階段與第一個命令前的
+/// 所有決策都屬於第零步；之後每一步包含一個命令，以及直到下一個命令前
+/// 所有後續的自動/隨機性決策。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayFrame {
     pub step: usize,
@@ -362,9 +361,8 @@ pub fn replay(setup: &GameSetup, events: &[GameEvent]) -> Result<GameState, Game
     crate::rules::projection::project(setup, events)
 }
 
-/// Projects a canonical decision record without re-running commands, automatic
-/// advancement, or trusted randomness.  Verification is intentionally a
-/// separate operation (`verify_recorded_decisions`).
+/// 投影標準決策記錄，不重新執行命令、自動推進或受信任的隨機性。驗證特意
+/// 作為獨立操作（`verify_recorded_decisions`）。
 pub fn replay_frame(
     setup: &GameSetup,
     recorded_decisions: &[RecordedDecision],
@@ -399,8 +397,8 @@ pub fn replay_frame(
     })
 }
 
-/// Keeps decision grouping in the application layer so the archive adapter
-/// never has to understand canonical sources or trusted randomness payloads.
+/// 將決策分組保留在應用程式層，讓封存轉接器不必理解標準來源或受信任的
+/// 隨機性負載。
 pub fn replay_decision_groups(
     recorded_decisions: &[RecordedDecision],
 ) -> Vec<Vec<&RecordedDecision>> {
@@ -583,9 +581,8 @@ mod tests {
     #[test]
     fn replay_frames_group_trailing_automatic_decisions_without_redeciding_commands() {
         let setup = GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30);
-        // This command cannot be legal in the untouched setup. Pure replay must
-        // still project the recorded (empty) event batch rather than attempting
-        // verification and rejecting it.
+        // 這個命令在未變更的設定狀態下不可能合法。純回放仍必須投影已記錄的
+        //（空）事件批次，而不是嘗試驗證後拒絕它。
         let decisions = vec![
             RecordedDecision {
                 source: RecordedDecisionSource::Setup,

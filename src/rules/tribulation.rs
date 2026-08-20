@@ -548,9 +548,8 @@ fn finish_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> GameR
             to: discard_zone(state, card),
         })
         .collect::<Vec<_>>();
-    // `continue_earth_rending` passes its projected state here after applying
-    // the current answer. Replaying `events` again would consume the final
-    // player twice and create a false ordered-answer violation.
+    // `continue_earth_rending` 套用目前答案後，會將其投影狀態傳到這裡。再次
+    // 回放 `events` 會重複消耗最後一位玩家，並造成虛假的順序答案違規。
     let attack_state = state.clone();
     let mut pre_resolution_events = vec![environment_transfer];
     if !card_moves.is_empty() {

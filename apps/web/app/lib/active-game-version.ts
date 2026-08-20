@@ -3,7 +3,7 @@ export interface ActiveGameVersion {
   recordSequence: number
 }
 
-/** A browser-only delivery-order guard; canonical commits remain server-owned. */
+/** 僅供瀏覽器使用的傳遞順序防護；標準提交仍由伺服器擁有。 */
 export function shouldApplyActiveGameVersion(
   highest: ActiveGameVersion | undefined,
   incoming: ActiveGameVersion | undefined,

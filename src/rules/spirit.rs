@@ -494,8 +494,8 @@ pub(crate) fn skill_cost(skill: SpiritSkill) -> u32 {
     skill_definition(skill).cost
 }
 
-/// Kept beside `skill_effect_events`: changing a skill's resolver requires an
-/// explicit player-facing semantic fact as well.
+/// 與 `skill_effect_events` 放在一起：變更靈技解析器時，也必須明確提供面向
+/// 玩家的語意事實。
 pub(crate) fn player_facing_effect(skill: SpiritSkill) -> SpiritSkillEffect {
     match skill {
         SpiritSkill::FlyingBlade => SpiritSkillEffect::DamagePreviousTeam { amount: 10 },

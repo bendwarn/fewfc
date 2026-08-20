@@ -224,8 +224,8 @@ fn passive_outcome(
     attack_points: Option<i32>,
     modifications: &[ActionModification],
 ) -> PassiveFlipOutcome {
-    // A counter effect must first be applicable. An unrelated Defense facing a
-    // Spell therefore has only NotAnAttack, even if an immunity is present.
+    // 反制效果首先必須可適用。因此，不相關的防禦面對法術時，即使存在免疫
+    // 效果，也只有 NotAnAttack。
     if let Some(ground) = inapplicability_ground(passive_id, incoming_kind, attack_points) {
         return PassiveFlipOutcome::NoEffect {
             grounds: vec![ground],

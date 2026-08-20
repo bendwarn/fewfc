@@ -1,9 +1,8 @@
-//! Composition of player-facing action-detail supplements.
+//! 玩家可見行動詳細資料補充內容的組合。
 //!
-//! Rule modules keep their reusable rule-specific clauses beside execution
-//! (`echo`, `pouch`, and `spirit` currently contribute here).  This module is
-//! the one place that joins those clauses to a legal offered action and orders
-//! them. Action identity remains on the offer, and an empty supplement is valid.
+//! 規則模組將可重用的規則專屬條款放在執行邏輯旁邊（目前由 `echo`、`pouch`
+//! 與 `spirit` 提供）。此模組是唯一將這些條款接到合法已提供行動並排序的
+//! 位置。行動識別仍保留在已提供行動上，空的補充內容也是合法的。
 
 use crate::domain::{GameState, PlayerId, SecretStrategy, SpiritSkill};
 

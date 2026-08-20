@@ -2003,7 +2003,7 @@ function handlePageKeydown(event: KeyboardEvent) {
 
 async function restartGame() {
   await game.resetOnlineRoom()
-  // Reset replay save state when returning to the room for a new game
+  // 返回房間開始新遊戲時重設回放儲存狀態。
   replaySaved.value = false
   replayError.value = ''
 }

@@ -1,4 +1,4 @@
-//! Domain model: game state, ids, events, commands, and rule invariants.
+//! 領域模型：遊戲狀態、識別碼、事件、命令與規則不變量。
 
 pub mod targeting;
 
@@ -45,7 +45,7 @@ pub const ECHO_MODULE_ID: &str = "echo";
 pub const TRIBULATION_MODULE_ID: &str = "tribulation";
 pub const POUCH_MODULE_ID: &str = "pouch";
 
-/// The Base Ruleset's immutable bounds for every consumable Card Level.
+/// 基礎規則集中每個可消耗卡牌等級的不可變界限。
 pub const MIN_CARD_LEVEL: u32 = 1;
 pub const MAX_CARD_LEVEL: u32 = 5;
 
@@ -64,9 +64,9 @@ impl std::fmt::Display for CardLevelOutOfBounds {
     }
 }
 
-/// The immutable level printed on a Card Definition.
+/// 卡牌定義上印製的不可變等級。
 ///
-/// This intentionally is not interchangeable with [`EffectiveCardLevel`].
+/// 此型別特意不能與 [`EffectiveCardLevel`] 互換。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct PrintedCardLevel(u32);
@@ -118,8 +118,7 @@ impl<'de> Deserialize<'de> for PrintedCardLevel {
     }
 }
 
-/// The bounded level exposed to ordinary rules after Card Interpretation Layers
-/// have fully composed.
+/// 卡牌解讀層完全組合後，提供給一般規則的受限等級。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct EffectiveCardLevel(u32);
@@ -226,7 +225,7 @@ pub enum CardInterpretationSource {
     ProfessionAbilityActivated,
 }
 
-/// One ordered projection of a semantic canonical event onto a physical Card.
+/// 將一個語意標準事件依順序投影到實體卡牌上的結果。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CardInterpretationLayer {
     pub source: CardInterpretationSource,
@@ -298,9 +297,8 @@ pub struct PreparedProfessionAbility {
     pub interpretation_revision: u64,
 }
 
-/// A non-physical component supplied by an activated profession ability.
-/// It deliberately has neither an instance id nor an origin: only formation
-/// resolution may consume it.
+/// 由已啟用職業能力提供的非實體元件。它特意沒有實例識別碼或來源：只有
+/// 陣形成形解析可以消耗它。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct VirtualFormationCard {
     pub source_ability_id: String,
@@ -634,9 +632,8 @@ pub enum GameOutcome {
     Draw,
 }
 
-/// The immutable terminal fact for a Game.  This deliberately does not borrow
-/// from a Formation Area or previous-turn query: those are mutable projections,
-/// while a conclusion is part of the canonical record.
+/// 遊戲的不可變終止事實。此處特意不從陣形區或上一回合查詢借用資料：那些
+/// 都是可變投影，而結論是標準記錄的一部分。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GameConclusion {
     pub outcome: GameOutcome,
@@ -1015,8 +1012,8 @@ pub struct GameState {
     pub exposed_foreign_cards: Vec<CardInstanceId>,
     #[serde(default)]
     pub last_turn_discard_by_player: HashMap<PlayerId, LastTurnDiscard>,
-    /// The sole game-scoped holding zone for the N+1 cards waiting for the
-    /// Turn Draw discard answer.  Cards here are in neither a hand nor a pile.
+    /// 遊戲範圍內唯一存放等待回合抽牌棄牌答案之 N+1 張卡牌的區域。這裡的
+    /// 卡牌既不在手牌中，也不在任何牌堆中。
     #[serde(default)]
     pub turn_draw_pool: Vec<CardInstanceId>,
     pub pending_choice: Option<PendingChoice>,
@@ -1024,8 +1021,8 @@ pub struct GameState {
     #[serde(default)]
     pub pending_randomness: Option<PendingRandomness>,
     pub shields: Vec<PlayerShield>,
-    /// Every Player owns exactly one Formation Area.  Covered Passives are a
-    /// face-down state of a Formation in this collection, never a second zone.
+    /// 每位玩家恰好擁有一個陣形區。覆蓋的被動效果是此集合中陣形的覆蓋狀態，
+    /// 絕不是第二個區域。
     #[serde(default)]
     pub formation_areas: Vec<PlayerFormationArea>,
     #[serde(default)]
@@ -1073,9 +1070,8 @@ pub struct GameState {
     pub spirit_skill_use_turns: HashMap<PlayerId, u64>,
     #[serde(default)]
     pub spirit_level_interpretations: Vec<SpiritLevelInterpretation>,
-    /// Ordered Card Interpretation Layers projected from semantic canonical
-    /// events. Ordinary rule consumers must resolve physical card facts through
-    /// this collection instead of reading or recomposing event-specific state.
+    /// 從語意標準事件投影而來、具順序的卡牌解讀層。一般規則使用者必須透過
+    /// 此集合解析實體卡牌事實，而不是讀取或重新組合事件專屬狀態。
     #[serde(default)]
     pub card_interpretation_layers: Vec<CardInterpretationLayer>,
     #[serde(default)]
@@ -1368,11 +1364,10 @@ impl GameState {
         self.spirits.iter().find(|owned| &owned.player == player)
     }
 
-    /// Resolves the one effective element and level exposed by a physical Card.
+    /// 解析實體卡牌所呈現的唯一有效元素與等級。
     ///
-    /// Layer order is canonical event order. Relative adjustments may leave the
-    /// Base Ruleset range while composing; the range is applied exactly once to
-    /// the final composed level.
+    /// 層的順序就是標準事件順序。相對調整在組合期間可能離開基礎規則集範圍；
+    /// 此範圍只會對最終組合等級套用一次。
     pub fn effective_card_facts(
         &self,
         player: &PlayerId,
@@ -1407,8 +1402,8 @@ impl GameState {
         })
     }
 
-    /// A compatibility convenience for callers that require only the bounded
-    /// effective level. It delegates exclusively to `effective_card_facts`.
+    /// 提供給只需要受限有效等級之呼叫端的相容便利方法。它只委派給
+    /// `effective_card_facts`。
     pub fn card_level_for(
         &self,
         player: &PlayerId,
@@ -1652,11 +1647,10 @@ pub struct PendingRandomness {
     pub current_order: Vec<CardInstanceId>,
 }
 
-/// The pile mutation performed by a trusted randomness decision.
+/// 受信任的隨機性決策所執行的牌堆變更。
 ///
-/// This deliberately lives beside, rather than inside, the continuation: a
-/// continuation says which rule flow resumes, while this value says exactly
-/// which pile supplied the permutation and where its result is placed.
+/// 此型別特意與延續並列，而不是放在延續內：延續說明要恢復哪個規則流程，
+/// 而此值精確說明哪個牌堆提供排列，以及結果放置的位置。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum RandomnessOperation {
@@ -1828,9 +1822,8 @@ pub struct RustedForestResolution {
     pub split_attack_damage: bool,
 }
 
-// Canonical events intentionally remain unboxed: their variants are projected, replayed, and
-// serialized directly.  Indirection here would add allocation without changing the public
-// record shape.
+// 標準事件特意維持未裝箱形式：其變體會直接被投影、回放與序列化。在此處
+// 加入間接層只會增加配置，不會改變公開記錄形狀。
 #[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum GameEvent {
@@ -1965,9 +1958,8 @@ pub enum GameEvent {
     AutomaticBloomsResolved {
         resolutions: Vec<TeamBloomResolution>,
     },
-    /// Commits physical Formation cards from the performer's hand into that
-    /// Player's Formation Area after validation succeeds.  Subsequent
-    /// prevention or ineffectiveness never reverses this fact.
+    /// 驗證成功後，將執行者手牌中的實體陣形卡牌提交到該玩家的陣形區。後續
+    /// 的防止或無效結果永遠不會撤銷此事實。
     FormationCommitted {
         player: PlayerId,
         formation_id: String,
@@ -1976,15 +1968,15 @@ pub enum GameEvent {
         star_substitution: Option<StarElementSubstitution>,
         state: FormationAreaState,
     },
-    /// The normal face-up completion boundary for a Formation.  Replay moves
-    /// every listed card from the owner's Formation Area to its origin discard.
+    /// 陣形正常正面完成的邊界。回放會將列出的每張卡牌從擁有者的陣形區移至
+    /// 其來源棄牌堆。
     FormationCardsDiscarded {
         player: PlayerId,
         formation_id: String,
         cards: Vec<CardInstanceId>,
     },
-    /// Marks the first accepted non-Formation Action Command. Formation
-    /// actions enter Action through FormationCommitted.
+    /// 標記第一個被接受的非陣形行動命令。陣形行動會透過
+    /// `FormationCommitted` 進入行動狀態。
     ActionStarted {
         player: PlayerId,
     },
@@ -2002,8 +1994,8 @@ pub enum GameEvent {
         player: PlayerId,
         discard: CardInstanceId,
     },
-    /// Atomic Turn Draw completion.  `discard` is moved to its origin discard
-    /// before `kept_cards` enter the hand, with no replay state between them.
+    /// 原子的回合抽牌完成事件。`discard` 會先移至其來源棄牌堆，再將
+    /// `kept_cards` 放入手牌，中間不會留下任何回放狀態。
     TurnDrawResolved {
         player: PlayerId,
         discard: CardInstanceId,
@@ -2061,14 +2053,12 @@ pub enum GameEvent {
         hp_change: HpChangeDelta,
         shield_change: Option<ShieldChangeDelta>,
         card_moves: Vec<CardMoveDelta>,
-        /// The complete simultaneous semantic result for this attack.  It is
-        /// optional only for backward-compatible decoding of records written
-        /// before attack resolutions became atomic.
+        /// 此攻擊完整的同時語意結果。之所以可選，僅是為了向後相容地解碼攻擊
+        /// 解析改為原子化之前寫入的記錄。
         #[serde(default)]
         elemental_context_update: Option<AttackResolutionEffects>,
     },
-    /// A terminal conclusion is always the final canonical event.  It is
-    /// intentionally separate from card zones and previous-Formation state.
+    /// 終止結論永遠是最後一個標準事件。它特意與卡牌區域及先前陣形狀態分離。
     GameEnded {
         conclusion: GameConclusion,
     },
@@ -2442,9 +2432,8 @@ pub enum PassiveFlipOutcome {
         modifications: Vec<ActionModification>,
     },
     NoEffect {
-        /// Every independently sufficient reason why this otherwise applicable
-        /// counter effect had no effect. The wire order is deterministic, but
-        /// it has no domain priority.
+        /// 此原本可適用的反制效果未生效時，每個獨立且充分的原因。線上順序是
+        /// 確定的，但不代表領域優先順序。
         grounds: Vec<PassiveNoEffectGround>,
     },
 }
@@ -2528,10 +2517,9 @@ pub struct LastElementalAttackUpdate {
     pub attack: LastElementalAttack,
 }
 
-/// Canonical deltas that occur at the same resolution point as an attack.
-/// The vectors have stable serialization order for replay, but their order is
-/// not a rules-processing priority: every delta is computed from the state
-/// before the enclosing `AttackResolved` event.
+/// 與攻擊在同一解析點發生的標準差異。各向量具有穩定的序列化順序以供回放，
+/// 但該順序不是規則處理優先級：每個差異都從外層 `AttackResolved` 事件前的
+/// 狀態計算而來。
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct AttackResolutionEffects {
     #[serde(default)]

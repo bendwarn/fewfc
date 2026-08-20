@@ -21,15 +21,13 @@ async function waitForClientRoute(page: Page, navigate: () => Promise<unknown>) 
 }
 
 /**
- * Playwright's document-navigation load event precedes Nuxt hydration. The
- * global auth middleware refreshes the session while establishing every client
- * route, giving this Worker-backed suite an observable route-ready boundary
- * without coupling tests to Nuxt internals.
+ * Playwright 的文件導覽載入事件早於 Nuxt 水合。全域驗證中介軟體會在建立每個
+ * 用戶端路由時更新工作階段，為這個由 Worker 支援的測試套件提供可觀察的路由
+ * 就緒邊界，而不讓測試耦合到 Nuxt 內部實作。
  */
 export async function gotoAppRoute(page: Page, path: string) {
-  // Auth-only tests exercise a route whose form mounts after the client-side
-  // session refresh. Use that route's own observable response so fields are
-  // not filled into the pre-refresh instance and then discarded on remount.
+  // 僅驗證測試會執行表單在用戶端工作階段更新後才掛載的路由。使用該路由自身
+  // 可觀察的回應，避免欄位填入更新前的實例後，在重新掛載時被丟棄。
   const sessionRefresh = page.waitForResponse(response => (
     response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/auth/get-session'
@@ -132,9 +130,8 @@ function gameIdFromResponse(body: { gameId?: unknown }, operation: string): stri
 }
 
 /**
- * A deterministic API-only room setup for gameplay tests. It deliberately
- * bypasses login, lobby, create, join, ready, and start UI only when those
- * controls are not the behavior under test.
+ * 供遊戲測試使用的確定性、僅 API 房間設定。只有在登入、大廳、建立、加入、
+ * 準備與開始介面不是測試行為時，才會刻意略過這些介面。
  */
 export type FastTwoPlayerGameOptions = {
   roomName?: string
@@ -224,11 +221,9 @@ async function waitForFastGameRoute(
   gameId: string,
   navigate: () => Promise<unknown>,
 ) {
-  // Do not wait for the document load event: it includes nonessential font
-  // downloads and turns six independent player pages into a cold-load herd.
-  // Request through the same context avoids making the route's client-side
-  // hydration compete with the test's ready boundary; both responses still
-  // prove the signed-in page can observe its current game.
+  // 不要等待文件載入事件：它包含非必要的字型下載，會讓六個獨立玩家頁面
+  // 同時進行冷載入。透過相同內容呼叫請求，避免路由的用戶端水合與測試的
+  // 就緒邊界競爭；兩個回應仍能證明已登入頁面可觀察目前的遊戲。
   await Promise.all([
     navigate(),
     apiText(
@@ -250,8 +245,8 @@ async function gotoFastGameRoute(page: Page, gameId: string) {
 }
 
 /**
- * Reconnect a page produced by setupFastTwoPlayerGame without changing the
- * full-load semantics used by ordinary UI flow helpers.
+ * 重新連線由 setupFastTwoPlayerGame 產生的頁面，不改變一般 UI 流程輔助工具
+ * 使用的完整載入語意。
  */
 export async function reloadFastGameRoute(page: Page, gameId: string) {
   await waitForFastGameRoute(page, gameId, () => (
@@ -261,16 +256,15 @@ export async function reloadFastGameRoute(page: Page, gameId: string) {
 }
 
 async function waitForActiveMatch(page: Page) {
-  // Unlike the enabled-rules event, this overlay is present while the room is
-  // still waiting. Its disappearance therefore proves that the page consumed
-  // the Active room update rather than merely rendering stale game data.
+  // 與啟用規則事件不同，房間仍在等待時會顯示此覆蓋層。因此它消失就能證明
+  // 頁面已消費 Active 房間更新，而不只是呈現過期的遊戲資料。
   await expect(page.locator('.waiting-overlay')).toBeHidden()
   await expect(page.getByRole('region', { name: '啟用規則' })).toBeVisible()
 }
 
 /**
- * API-only setup for room-configuration tests that need one signed-in owner,
- * but do not exercise the lobby or a second player's gameplay.
+ * 供房間設定測試使用的僅 API 設定；這些測試需要一位已登入擁有者，但不會
+ * 執行大廳或第二位玩家的遊戲流程。
  */
 export async function setupFastWaitingRoom(
   browser: Browser,
@@ -353,21 +347,19 @@ export async function setupFastTwoPlayerGame(
       guestContext.request.post(`/api/games/${gameId}/join`, { data: {} }),
     )
 
-    // Each context's request client shares that context's cookies, so the
-    // directly navigated page begins signed in as its own player without
-    // sharing a session with the other player. Ready/start must follow this
-    // navigation because the product contract requires both players' room
-    // WebSockets to be connected before either endpoint accepts the request.
+    // 每個內容的請求用戶端會共用該內容的 Cookie，因此直接導覽的頁面會以自己
+    // 的玩家身分登入，不會與另一位玩家共用工作階段。準備/開始必須在此導覽
+    // 後執行，因為產品協定要求兩位玩家的房間 WebSocket 連線後，任一端點才會
+    // 接受請求。
     const host = await hostContext.newPage()
     const guest = await guestContext.newPage()
-    // With three workers this intentionally keeps at most one cold room route
-    // per match in flight. Loading both players together creates six concurrent
-    // browser renderers and is slower than the small host-to-guest handoff.
+    // 使用三個 worker 時，這會刻意讓每場對局最多只有一個冷房間路由在處理中。
+    // 同時載入兩位玩家會建立六個並行瀏覽器渲染器，比小型的主機到訪客交接更慢。
     await gotoFastGameRoute(host, gameId)
     await gotoFastGameRoute(guest, gameId)
-    // The guest view receives the joined room-state after both sockets are
-    // accepted. Waiting there proves the guest is ready to call /ready while
-    // avoiding a stale host broadcast race in local Durable Object delivery.
+    // 兩個 Socket 都被接受後，訪客視圖會收到已加入的房間狀態。在此等待可證明
+    // 訪客已準備好呼叫 /ready，同時避免本機 Durable Object 傳遞中的過期主機
+    // 廣播競爭。
     await expect(guest.locator('.connection-dot.connected')).toHaveCount(2)
 
     const readyGuest = async () => {
@@ -420,8 +412,8 @@ export async function setupFastTwoPlayerGame(
 }
 
 /**
- * API-only setup for an active four-player team game. Every player retains a
- * distinct BrowserContext and its own request cookie jar.
+ * 供作用中四人團隊遊戲使用的僅 API 設定。每位玩家都保有獨立的 BrowserContext
+ * 與自己的請求 Cookie 罐。
  */
 export async function setupFastFourPlayerGame(
   browser: Browser,
@@ -534,10 +526,9 @@ export async function startTwoPlayerMatch(
 export { expect }
 
 /**
- * A signed-in one-player page for tests whose subject is not login. The page
- * still exercises the product's lobby and room UI, while its own isolated
- * BrowserContext receives the session through the same request/cookie path as
- * setupFastTwoPlayerGame.
+ * 供主題不是登入的測試使用的單一已登入玩家頁面。該頁面仍會執行產品的大廳與
+ * 房間 UI，而其隔離的 BrowserContext 會透過與 setupFastTwoPlayerGame 相同的
+ * 請求/Cookie 路徑取得工作階段。
  */
 export const fastPageTest = base.extend({
   page: async ({ browser }, use) => {

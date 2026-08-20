@@ -4,9 +4,8 @@ export interface SubmissionController<T> {
 }
 
 /**
- * Serializes a user-visible command submission. A failed request releases the
- * same local choice for an explicit retry; a second click while it is pending
- * cannot create another command.
+ * 序列化玩家可見的命令提交。失敗的請求會釋放相同的本機選擇以便明確重試；
+ * 等待期間的第二次點擊不能建立另一個命令。
  */
 export function createSubmissionController<T>(
   submit: (value: T) => Promise<boolean>,

@@ -39,9 +39,8 @@ function playerDeckDefinition(
 }
 
 /**
- * Parses the compact deck-editor format without applying any deck-rule
- * validation. A syntactically valid import may intentionally be an invalid
- * deck draft, so the existing deck validation can explain the rule errors.
+ * 解析精簡的牌組編輯器格式，但不套用任何牌組規則驗證。語法有效的匯入可能
+ * 特意是無效的牌組草稿，讓既有牌組驗證可以說明規則錯誤。
  */
 export function parsePlayerDeckCounts(input: string): PlayerDeckImportResult {
   const trimmed = input.trim()

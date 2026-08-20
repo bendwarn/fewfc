@@ -7,8 +7,7 @@ export default defineEventHandler(async (event) => {
   if (!body.sourceGameId?.trim()) {
     throw createError({ statusCode: 400, statusMessage: 'Missing sourceGameId.' })
   }
-  // Fetch the source before changing a reference: an expired source must never
-  // evict an existing favourite in replacement mode.
+  // 變更參照前先取得來源：過期來源絕不能在替代模式中驅逐既有的最愛項目。
   const draft = await completedReplayDraft(event, body.sourceGameId, session.user.id)
   return await saveReplayReference(event, session.user.id, draft, body.replaceReplayId)
 })
