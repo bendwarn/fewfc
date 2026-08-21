@@ -1,8 +1,7 @@
 use fewfc::domain::{
     BaseChoiceContinuation, CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef,
     CardInstanceId, ChoiceContinuation, ChoiceId, GameError, GameSetup, PendingChoice,
-    PendingChoiceKind, Phase, PlayerId, RuleModuleId, StatusDuration, StatusEffect, StatusOwner,
-    ValidationError,
+    PendingChoiceKind, Phase, PlayerId, RuleModuleId, ValidationError,
 };
 use fewfc::rules::{
     Element, FormationCandidate, FormationCategory, ImmediateEffect, OfficialRules, PlayableAction,
@@ -260,28 +259,4 @@ fn playable_actions_returns_error_while_choice_is_pending() {
             }
         ))
     );
-}
-
-#[test]
-fn playable_actions_returns_no_formations_when_player_has_cannot_act_status() {
-    let rules = OfficialRules::new();
-    let mut state = fewfc::domain::GameState::from_setup(&setup());
-    state.phase = Phase::ActiveEffects;
-    state.statuses.push(StatusEffect {
-        id: "cannot-act-p1".to_string(),
-        owner: StatusOwner::Player(PlayerId::new("p1")),
-        kind: "CannotAct".to_string(),
-        value: None,
-        duration: StatusDuration::Permanent,
-    });
-
-    assert!(matches!(
-        rules
-            .playable_actions(&state, &PlayerId::new("p1"), &[])
-            .unwrap()
-            .as_slice(),
-        [PlayableAction::Pass {
-            reason: fewfc::domain::PassActionReason::NoCardsInHand,
-        }]
-    ));
 }

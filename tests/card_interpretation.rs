@@ -1,11 +1,9 @@
-use fewfc::application::{apply_event, replay};
+use fewfc::application::replay;
 use fewfc::domain::{
     CardDef, CardDefId, CardInstanceDef, CardInstanceId, CardInterpretationLayer,
     CardInterpretationSource, CardLevelInterpretation, EffectiveCardLevel, Element, GameEvent,
-    GameSetup, GameState, HERO_SCHOOLS_MODULE_ID, Phase, PlayerId, PlayerProfession,
-    PouchLevelBonus, PrintedCardLevel, ProfessionId, RuleModuleId,
+    GameSetup, GameState, PlayerId, PouchLevelBonus, PrintedCardLevel,
 };
-use fewfc::rules::{OfficialRules, PlayableAction};
 use proptest::prelude::*;
 
 fn setup_with_levels(levels: &[u32]) -> GameSetup {
@@ -173,101 +171,6 @@ fn semantic_events_project_to_the_unified_ordered_layers() {
                 level: Some(CardLevelInterpretation::Set(EffectiveCardLevel::new(5))),
             },
         ],
-    );
-}
-
-#[test]
-fn steal_the_beam_turns_printed_five_five_four_into_immortal_levels() {
-    let rules = OfficialRules::new();
-    let setup = rules
-        .configure_game(
-            vec![
-                fewfc::domain::Player {
-                    id: PlayerId::new("p1"),
-                    team: fewfc::domain::TeamId::new("team:p1"),
-                },
-                fewfc::domain::Player {
-                    id: PlayerId::new("p2"),
-                    team: fewfc::domain::TeamId::new("team:p2"),
-                },
-            ],
-            vec![PlayerId::new("p1"), PlayerId::new("p2")],
-            vec![RuleModuleId::new(HERO_SCHOOLS_MODULE_ID)],
-        )
-        .unwrap();
-    let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::ActiveEffects;
-    state.professions.push(PlayerProfession {
-        player: PlayerId::new("p1"),
-        profession: ProfessionId::new("mage-guide"),
-    });
-    let mut used = Vec::new();
-    let cards = [5, 5, 4]
-        .into_iter()
-        .map(|level| {
-            let card = state
-                .card_instances
-                .iter()
-                .map(|instance| instance.instance)
-                .find(|card| {
-                    !used.contains(card)
-                        && state.card_def(*card).is_some_and(|definition| {
-                            definition.element == Element::Wood && definition.level.value() == level
-                        })
-                })
-                .unwrap();
-            used.push(card);
-            card
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        cards
-            .iter()
-            .filter_map(|card| state
-                .card_def(*card)
-                .map(|definition| definition.level.value()))
-            .collect::<Vec<_>>(),
-        vec![5, 5, 4],
-    );
-    *state.hand_mut(&PlayerId::new("p1")).unwrap() = cards.clone();
-    let current_turn = state.turn_number;
-    apply_event(
-        &mut state,
-        &GameEvent::PouchLevelBonusGranted {
-            bonus: PouchLevelBonus {
-                player: PlayerId::new("p1"),
-                cards: cards.clone(),
-                applied_on_turn: current_turn,
-            },
-        },
-    );
-
-    assert_eq!(
-        cards
-            .iter()
-            .map(|card| {
-                state
-                    .effective_card_facts(&PlayerId::new("p1"), *card)
-                    .unwrap()
-                    .level
-            })
-            .collect::<Vec<_>>(),
-        vec![
-            EffectiveCardLevel::new(5),
-            EffectiveCardLevel::new(5),
-            EffectiveCardLevel::new(5),
-        ],
-    );
-    assert!(
-        rules
-            .playable_actions(&state, &PlayerId::new("p1"), &cards)
-            .unwrap()
-            .iter()
-            .any(|action| matches!(
-                action,
-                PlayableAction::ChangeProfession(candidate)
-                    if candidate.profession_id == ProfessionId::new("immortal")
-            ))
     );
 }
 

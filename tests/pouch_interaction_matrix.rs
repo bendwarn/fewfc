@@ -367,6 +367,47 @@ impl PouchWatchFireScenario {
     }
 }
 
+fn assert_generating_watch_fire_matrix_outcome(
+    events: &[GameEvent],
+    player: &PlayerId,
+    cards: &[CardInstanceId],
+    old_hp: i32,
+    expected_delta: i32,
+    expected_effective_delta: i32,
+) {
+    let matches_expected = matches!(
+        events,
+        [
+            GameEvent::FormationCommitted {
+                player: committed_by,
+                formation_id,
+                cards: committed_cards,
+                ..
+            },
+            GameEvent::HpChanged { change },
+            GameEvent::FormationCardsDiscarded {
+                player: discarded_by,
+                formation_id: discarded_formation,
+                cards: discarded_cards,
+            },
+        ] if committed_by == player
+            && formation_id == "generating-formation"
+            && committed_cards == cards
+            && change.team == TeamId::new("team:p2")
+            && change.old_hp == old_hp
+            && change.delta == expected_delta
+            && change.new_hp == old_hp + expected_effective_delta
+            && change.effective_delta == expected_effective_delta
+            && discarded_by == player
+            && discarded_formation == "generating-formation"
+            && discarded_cards == cards
+    );
+    assert!(
+        matches_expected,
+        "unexpected generating outcome: {events:#?}"
+    );
+}
+
 fn trigger_secret_strategy(player: &PlayerId, strategy: SecretStrategy) -> Command {
     Command::TriggerSecretStrategy {
         player: player.clone(),
@@ -473,6 +514,174 @@ fn assert_ground_set(
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(actual, expected);
+}
+
+fn assert_magic_seal_established(
+    events: &[GameEvent],
+    player: &PlayerId,
+    cards: &[CardInstanceId],
+) {
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCommitted {
+            player: committed_by,
+            formation_id,
+            cards: committed_cards,
+            ..
+        } if committed_by == player
+            && formation_id == "magic-seal"
+            && committed_cards == cards
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved {
+            elemental_context_update: Some(effects),
+            ..
+        } if effects.counter_effects_established.iter().any(|counter| counter.effect_id == "magic-seal")
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::FormationCardsDiscarded {
+            player: discarded_by,
+            formation_id,
+            cards: discarded_cards,
+        } if discarded_by == player
+            && formation_id == "magic-seal"
+            && discarded_cards == cards
+    )));
+}
+
+fn assert_generating_magic_seal_no_effect_outcome(
+    events: &[GameEvent],
+    counter_owner: &PlayerId,
+    player: &PlayerId,
+    cards: &[CardInstanceId],
+    old_hp: i32,
+    expected_delta: i32,
+    expected_grounds: impl IntoIterator<Item = PassiveNoEffectGround>,
+) {
+    assert!(
+        matches!(
+            events,
+            [
+                GameEvent::FormationCommitted {
+                    player: committed_by,
+                    formation_id,
+                    cards: committed_cards,
+                    ..
+                },
+                GameEvent::CounterEffectResolved {
+                    owner,
+                    incoming_player,
+                    effect_id,
+                    outcome: fewfc::domain::PassiveFlipOutcome::NoEffect { .. },
+                },
+                GameEvent::HpChanged { change },
+                GameEvent::FormationCardsDiscarded {
+                    player: discarded_by,
+                    formation_id: discarded_formation,
+                    cards: discarded_cards,
+                },
+            ] if committed_by == player
+                && formation_id == "generating-formation"
+                && committed_cards == cards
+                && owner == counter_owner
+                && incoming_player == player
+                && effect_id == "magic-seal"
+                && change.old_hp == old_hp
+                && change.delta == expected_delta
+                && change.new_hp == old_hp + change.effective_delta
+                && change.effective_delta == (200 - old_hp).min(expected_delta)
+                && discarded_by == player
+                && discarded_formation == "generating-formation"
+                && discarded_cards == cards
+        ),
+        "unexpected Magic Seal resolution: {events:#?}"
+    );
+
+    let GameEvent::CounterEffectResolved {
+        outcome: fewfc::domain::PassiveFlipOutcome::NoEffect { grounds },
+        ..
+    } = &events[1]
+    else {
+        unreachable!("the complete canonical shape above requires Magic Seal NoEffect");
+    };
+    assert_ground_set(grounds, expected_grounds);
+}
+
+fn assert_magic_seal_public_lifecycle(
+    record: &GameRecord,
+    viewer: &PlayerId,
+    owner: &PlayerId,
+    expected_present: bool,
+) {
+    assert_eq!(
+        state_for(record.state(), Viewer::Player(viewer.clone()))
+            .counter_effects
+            .iter()
+            .any(|effect| effect.owner == *owner && effect.effect_id == "magic-seal"),
+        expected_present
+    );
+}
+
+fn assert_generating_seal_no_effect_outcome(
+    events: &[GameEvent],
+    seal_owner: &PlayerId,
+    player: &PlayerId,
+    seal_cards: &[CardInstanceId],
+    cards: &[CardInstanceId],
+    old_hp: i32,
+    expected_grounds: impl IntoIterator<Item = PassiveNoEffectGround>,
+) {
+    assert!(
+        matches!(
+            events,
+            [
+                GameEvent::FormationCommitted {
+                    player: committed_by,
+                    formation_id,
+                    cards: committed_cards,
+                    ..
+                },
+                GameEvent::PassiveFlipped {
+                    owner,
+                    incoming_player,
+                    passive_id,
+                    cards: covered_cards,
+                    outcome: fewfc::domain::PassiveFlipOutcome::NoEffect { .. },
+                },
+                GameEvent::HpChanged { change },
+                GameEvent::FormationCardsDiscarded {
+                    player: discarded_by,
+                    formation_id: discarded_formation,
+                    cards: discarded_cards,
+                },
+            ] if committed_by == player
+                && formation_id == "generating-formation"
+                && committed_cards == cards
+                && owner == seal_owner
+                && incoming_player == player
+                && passive_id == "seal"
+                && covered_cards == seal_cards
+                && change.old_hp == old_hp
+                && change.delta == 18
+                && change.new_hp == old_hp + change.effective_delta
+                && change.effective_delta > 0
+                && discarded_by == player
+                && discarded_formation == "generating-formation"
+                && discarded_cards == cards
+        ),
+        "unexpected Seal resolution: {events:#?}"
+    );
+
+    let GameEvent::PassiveFlipped {
+        outcome: fewfc::domain::PassiveFlipOutcome::NoEffect { grounds },
+        ..
+    } = &events[1]
+    else {
+        unreachable!("the complete canonical shape above requires Seal NoEffect");
+    };
+    assert_ground_set(grounds, expected_grounds);
 }
 
 fn hp_for_player(record: &GameRecord, player: &PlayerId) -> i32 {
@@ -749,6 +958,66 @@ fn change_to(
         .unwrap();
 }
 
+fn establish_spirit_mesmer_magic_seal(
+    record: &mut GameRecord,
+    p1: &PlayerId,
+    p2: &PlayerId,
+    benevolent_target: bool,
+) {
+    let mesmer = vec![card_with_level_in_hand(record, p1, Element::Water, 3)];
+    change_to(record, p1, "mesmer", mesmer);
+    finish_turn_discarding_element(record, p1, Element::Metal);
+    let seeker = vec![card_with_level_in_hand(record, p2, Element::Wood, 3)];
+    change_to(record, p2, "seeker", seeker);
+    finish_turn_discarding_element(record, p2, Element::Metal);
+
+    let spirit_mesmer = vec![
+        card_with_level_in_hand(record, p1, Element::Water, 1),
+        card_with_level_in_hand(record, p1, Element::Water, 5),
+    ];
+    change_to(record, p1, "spirit-mesmer", spirit_mesmer);
+    finish_turn_discarding_element(record, p1, Element::Fire);
+    let expounder = vec![
+        card_with_level_in_hand(record, p2, Element::Wood, 1),
+        card_with_level_in_hand(record, p2, Element::Wood, 5),
+    ];
+    change_to(record, p2, "expounder", expounder);
+    finish_turn_discarding_element(record, p2, Element::Metal);
+
+    if benevolent_target {
+        perform_elemental_attack(record, p1, Element::Metal);
+        finish_turn_discarding_element(record, p1, Element::Fire);
+        let benevolent = vec![
+            card_with_level_in_hand(record, p2, Element::Wood, 4),
+            card_with_level_in_hand(record, p2, Element::Wood, 5),
+        ];
+        change_to(record, p2, "benevolent", benevolent);
+        finish_turn_discarding_element(record, p2, Element::Metal);
+    }
+
+    let magic_seal_cards = vec![
+        card_with_level_in_hand(record, p1, Element::Water, 3),
+        card_in_hand_with_after(record, p1, Element::Water, 1),
+    ];
+    let magic_seal_events = record
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "magic-seal".to_string(),
+            cards: magic_seal_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert_magic_seal_established(&magic_seal_events, p1, &magic_seal_cards);
+    assert!(
+        magic_seal_cards
+            .iter()
+            .all(|card| record.state().discard_for(p1).unwrap().contains(card))
+    );
+    assert_magic_seal_public_lifecycle(record, p2, p1, true);
+    finish_turn_discarding_element(record, p1, Element::Fire);
+    assert_eq!(record.state().current_player(), Some(p2));
+}
+
 #[test]
 fn pouch_preparation_matrix_selection_completion_shuffles_deal_and_replay() {
     let mut scenario = PouchPreparationScenario::two_player();
@@ -783,6 +1052,92 @@ fn pouch_preparation_matrix_selection_completion_shuffles_deal_and_replay() {
             && chosen == &p2
             && request.request_id == "pouch:initial-shuffle:p1"
     ));
+    assert_eq!(scenario.resolve_initial_shuffles(), vec![p1, p2]);
+    scenario.assert_completed();
+}
+
+#[test]
+fn pouch_preparation_matrix_redacts_the_initial_pouch_state_and_event_feed_by_viewer() {
+    let mut scenario = PouchPreparationScenario::two_player();
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let selected = scenario.record.state().deck_for(&p1).unwrap()[0];
+
+    // 僅透過第一個合法初始選擇建立未揭示的 Pouch；P2 尚未選擇，遊戲不得離開
+    // 初始選擇階段。
+    let first_events = scenario.choose(&p1);
+    assert_eq!(
+        first_events,
+        vec![
+            GameEvent::PouchPlaced {
+                source: p1.clone(),
+                owner: p1.clone(),
+                card: selected,
+                known_by: vec![p1.clone()],
+                previous: None,
+            },
+            GameEvent::InitialPouchChosen {
+                player: p1.clone(),
+                card: selected,
+            },
+        ]
+    );
+    assert!(matches!(
+        scenario.record.state().status,
+        GameStatus::Preparing {
+            stage: GamePreparationStage::InitialPouchSelection,
+        }
+    ));
+    assert_eq!(
+        scenario.record.state().pouch_for(&p1).unwrap().card,
+        selected
+    );
+
+    for (viewer, expected_card) in [
+        (Viewer::Player(p1.clone()), Some(selected)),
+        (Viewer::Player(p2.clone()), None),
+        (Viewer::Observer, None),
+    ] {
+        let public_state = scenario.record.public_view(viewer).unwrap();
+        assert_eq!(
+            public_state.pouches,
+            vec![fewfc::public_view::PublicPouch {
+                owner: p1.clone(),
+                card: expected_card,
+            }]
+        );
+    }
+
+    let owner_events = scenario
+        .record
+        .public_events_for(Viewer::Player(p1.clone()));
+    assert_eq!(
+        owner_events,
+        vec![
+            fewfc::public_view::PublicGameEvent::GamePreparationStarted,
+            fewfc::public_view::PublicGameEvent::PouchPlaced {
+                owner: p1.clone(),
+                card: Some(selected),
+            },
+            fewfc::public_view::PublicGameEvent::InitialPouchChosen { player: p1.clone() },
+        ]
+    );
+    for viewer in [Viewer::Player(p2.clone()), Viewer::Observer] {
+        assert_eq!(
+            scenario.record.public_events_for(viewer),
+            vec![
+                fewfc::public_view::PublicGameEvent::GamePreparationStarted,
+                fewfc::public_view::PublicGameEvent::PouchPlaced {
+                    owner: p1.clone(),
+                    card: None,
+                },
+                fewfc::public_view::PublicGameEvent::InitialPouchChosen { player: p1.clone() },
+            ]
+        );
+    }
+
+    // 繼續走完合法準備流程，確保隱私投影沒有取代 canonical replay source。
+    scenario.choose(&p2);
     assert_eq!(scenario.resolve_initial_shuffles(), vec![p1, p2]);
     scenario.assert_completed();
 }
@@ -888,21 +1243,8 @@ fn pouch_watch_fire_matrix_baseline_formation_hp_change_resolves_normally() {
     let p2 = PlayerId::new("p2");
     let hp_before = hp_for_player(&scenario.record, &p2);
     let (cards, events) = scenario.perform_generating_formation(&p2);
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::HpChanged { change } if change.effective_delta > 0
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCommitted { formation_id, cards: committed, .. }
-            if formation_id == "generating-formation" && committed == &cards
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCardsDiscarded { formation_id, cards: discarded, .. }
-            if formation_id == "generating-formation" && discarded == &cards
-    )));
-    assert!(hp_for_player(&scenario.record, &p2) > hp_before);
+    assert_generating_watch_fire_matrix_outcome(&events, &p2, &cards, hp_before, 18, 5);
+    assert_eq!(hp_for_player(&scenario.record, &p2), hp_before + 5);
     scenario.assert_replay_and_public_lifecycle(false, false);
 }
 
@@ -914,21 +1256,7 @@ fn pouch_watch_fire_matrix_modifier_prevents_formation_hp_change_but_not_commitm
     let p2 = PlayerId::new("p2");
     let hp_before = hp_for_player(&scenario.record, &p2);
     let (cards, events) = scenario.perform_generating_formation(&p2);
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::HpChanged { change }
-            if change.delta == 0 && change.effective_delta == 0
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCommitted { formation_id, cards: committed, .. }
-            if formation_id == "generating-formation" && committed == &cards
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCardsDiscarded { formation_id, cards: discarded, .. }
-            if formation_id == "generating-formation" && discarded == &cards
-    )));
+    assert_generating_watch_fire_matrix_outcome(&events, &p2, &cards, hp_before, 0, 0);
     assert_eq!(hp_for_player(&scenario.record, &p2), hp_before);
     scenario.assert_replay_and_public_lifecycle(true, false);
     scenario.finish_turn(&p2);
@@ -945,21 +1273,8 @@ fn pouch_watch_fire_matrix_golden_cicada_restores_formation_hp_change_without_co
     let p2 = PlayerId::new("p2");
     let hp_before = hp_for_player(&scenario.record, &p2);
     let (cards, events) = scenario.perform_generating_formation(&p2);
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::HpChanged { change } if change.effective_delta > 0
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCommitted { formation_id, cards: committed, .. }
-            if formation_id == "generating-formation" && committed == &cards
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCardsDiscarded { formation_id, cards: discarded, .. }
-            if formation_id == "generating-formation" && discarded == &cards
-    )));
-    assert!(hp_for_player(&scenario.record, &p2) > hp_before);
+    assert_generating_watch_fire_matrix_outcome(&events, &p2, &cards, hp_before, 18, 5);
+    assert_eq!(hp_for_player(&scenario.record, &p2), hp_before + 5);
     scenario.assert_replay_and_public_lifecycle(true, true);
     scenario.finish_turn(&p2);
     scenario.assert_replay_and_public_lifecycle(false, false);
@@ -1104,38 +1419,18 @@ fn no_effect_ground_matrix_benevolent_and_golden_cicada_both_preserve_sealed_gen
         })
         .unwrap();
 
-    let grounds = events
-        .iter()
-        .find_map(|event| match event {
-            GameEvent::PassiveFlipped {
-                passive_id,
-                outcome: fewfc::domain::PassiveFlipOutcome::NoEffect { grounds },
-                ..
-            } if passive_id == "seal" => Some(grounds),
-            _ => None,
-        })
-        .expect("Seal must flip once with its complete no-effect grounds");
-    assert_ground_set(
-        grounds,
+    assert_generating_seal_no_effect_outcome(
+        &events,
+        &p1,
+        &p2,
+        &water_cards,
+        &generating_cards,
+        hp_before,
         [
             PassiveNoEffectGround::IgnoredByProfessionAbility,
             PassiveNoEffectGround::IgnoredByGoldenCicada,
         ],
     );
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCommitted { formation_id, cards, .. }
-            if formation_id == "generating-formation" && cards == &generating_cards
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::HpChanged { change } if change.effective_delta > 0
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCardsDiscarded { formation_id, cards, .. }
-            if formation_id == "generating-formation" && cards == &generating_cards
-    )));
     assert!(record.state().covered_passive(&p1).is_none());
     assert!(
         water_cards
@@ -1174,61 +1469,7 @@ fn no_effect_ground_matrix_benevolent_and_golden_cicada_both_consume_magic_seal(
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
     let mut record = ordered_pouch_record_for_benevolent_magic_seal_matrix();
-
-    let mesmer = vec![card_with_level_in_hand(&record, &p1, Element::Water, 3)];
-    change_to(&mut record, &p1, "mesmer", mesmer);
-    finish_turn_discarding_element(&mut record, &p1, Element::Metal);
-    let seeker = vec![card_with_level_in_hand(&record, &p2, Element::Wood, 3)];
-    change_to(&mut record, &p2, "seeker", seeker);
-    finish_turn_discarding_element(&mut record, &p2, Element::Metal);
-
-    let spirit_mesmer = vec![
-        card_with_level_in_hand(&record, &p1, Element::Water, 1),
-        card_with_level_in_hand(&record, &p1, Element::Water, 5),
-    ];
-    change_to(&mut record, &p1, "spirit-mesmer", spirit_mesmer);
-    finish_turn_discarding_element(&mut record, &p1, Element::Fire);
-    let expounder = vec![
-        card_with_level_in_hand(&record, &p2, Element::Wood, 1),
-        card_with_level_in_hand(&record, &p2, Element::Wood, 5),
-    ];
-    change_to(&mut record, &p2, "expounder", expounder);
-    finish_turn_discarding_element(&mut record, &p2, Element::Metal);
-
-    perform_elemental_attack(&mut record, &p1, Element::Metal);
-    finish_turn_discarding_element(&mut record, &p1, Element::Fire);
-    let benevolent = vec![
-        card_with_level_in_hand(&record, &p2, Element::Wood, 4),
-        card_with_level_in_hand(&record, &p2, Element::Wood, 5),
-    ];
-    change_to(&mut record, &p2, "benevolent", benevolent);
-    finish_turn_discarding_element(&mut record, &p2, Element::Metal);
-
-    let magic_seal_cards = vec![
-        card_with_level_in_hand(&record, &p1, Element::Water, 3),
-        card_in_hand_with_after(&record, &p1, Element::Water, 1),
-    ];
-    let magic_seal_events = record
-        .handle(Command::PerformFormation {
-            player: p1.clone(),
-            formation_id: "magic-seal".to_string(),
-            cards: magic_seal_cards.clone(),
-            declared_targets: Vec::new(),
-        })
-        .unwrap();
-    assert!(magic_seal_events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCommitted { formation_id, cards, .. }
-            if formation_id == "magic-seal" && cards == &magic_seal_cards
-    )));
-    assert!(magic_seal_events.iter().any(|event| matches!(
-        event,
-        GameEvent::AttackResolved {
-            elemental_context_update: Some(effects),
-            ..
-        } if effects.counter_effects_established.iter().any(|counter| counter.effect_id == "magic-seal")
-    )));
-    finish_turn_discarding_element(&mut record, &p1, Element::Fire);
+    establish_spirit_mesmer_magic_seal(&mut record, &p1, &p2, true);
 
     record
         .handle(trigger_secret_strategy(&p2, SecretStrategy::GoldenCicada))
@@ -1248,33 +1489,18 @@ fn no_effect_ground_matrix_benevolent_and_golden_cicada_both_consume_magic_seal(
         })
         .unwrap();
 
-    let grounds = events
-        .iter()
-        .find_map(|event| match event {
-            GameEvent::CounterEffectResolved {
-                effect_id,
-                outcome: fewfc::domain::PassiveFlipOutcome::NoEffect { grounds },
-                ..
-            } if effect_id == "magic-seal" => Some(grounds),
-            _ => None,
-        })
-        .expect("Magic Seal must resolve once and expose every sufficient ground");
-    assert_ground_set(
-        grounds,
+    assert_generating_magic_seal_no_effect_outcome(
+        &events,
+        &p1,
+        &p2,
+        &generating_cards,
+        hp_before,
+        18,
         [
             PassiveNoEffectGround::IgnoredByProfessionAbility,
             PassiveNoEffectGround::IgnoredByGoldenCicada,
         ],
     );
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::HpChanged { change } if change.effective_delta > 0
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCardsDiscarded { formation_id, cards, .. }
-            if formation_id == "generating-formation" && cards == &generating_cards
-    )));
     assert!(hp_for_player(&record, &p2) > hp_before);
     assert!(
         !record
@@ -1283,6 +1509,120 @@ fn no_effect_ground_matrix_benevolent_and_golden_cicada_both_consume_magic_seal(
             .iter()
             .any(|counter| counter.effect_id == "magic-seal")
     );
+    assert_magic_seal_public_lifecycle(&record, &p1, &p1, false);
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
+}
+
+#[test]
+fn magic_seal_matrix_baseline_cancels_generating_formation_but_keeps_commitment_and_cards() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut record = ordered_pouch_record_for_benevolent_magic_seal_matrix();
+    establish_spirit_mesmer_magic_seal(&mut record, &p1, &p2, false);
+
+    let generating_cards = vec![
+        card_in_hand_with(&record, &p2, Element::Wood),
+        card_with_level_in_hand(&record, &p2, Element::Fire, 2),
+        card_with_level_in_hand(&record, &p2, Element::Earth, 3),
+    ];
+    let hp_before = hp_for_player(&record, &p2);
+    let events = record
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "generating-formation".to_string(),
+            cards: generating_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::FormationCommitted {
+                player,
+                formation_id,
+                cards,
+                ..
+            },
+            GameEvent::CounterEffectResolved {
+                owner,
+                incoming_player,
+                effect_id,
+                outcome:
+                    fewfc::domain::PassiveFlipOutcome::Applied {
+                        effect_id: applied_effect,
+                        modifications,
+                    },
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: discarded_by,
+                formation_id: discarded_formation,
+                cards: discarded_cards,
+            },
+        ] if player == &p2
+            && formation_id == "generating-formation"
+            && cards == &generating_cards
+            && owner == &p1
+            && incoming_player == &p2
+            && effect_id == "magic-seal"
+            && applied_effect == "magic-seal"
+            && modifications == &vec![fewfc::domain::ActionModification::CancelSpell]
+            && discarded_by == &p2
+            && discarded_formation == "generating-formation"
+            && discarded_cards == &generating_cards
+    ));
+    assert_eq!(hp_for_player(&record, &p2), hp_before);
+    assert!(
+        generating_cards
+            .iter()
+            .all(|card| record.state().discard_for(&p2).unwrap().contains(card))
+    );
+    assert_magic_seal_public_lifecycle(&record, &p1, &p1, false);
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
+}
+
+#[test]
+fn no_effect_ground_matrix_benevolent_alone_consumes_magic_seal_with_only_profession_ground() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut record = ordered_pouch_record_for_benevolent_magic_seal_matrix();
+    establish_spirit_mesmer_magic_seal(&mut record, &p1, &p2, true);
+
+    let generating_cards = vec![
+        card_with_level_in_hand(&record, &p2, Element::Wood, 1),
+        card_with_level_in_hand(&record, &p2, Element::Fire, 2),
+        card_with_level_in_hand(&record, &p2, Element::Earth, 3),
+    ];
+    let hp_before = hp_for_player(&record, &p2);
+    let events = record
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "generating-formation".to_string(),
+            cards: generating_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+
+    assert_generating_magic_seal_no_effect_outcome(
+        &events,
+        &p1,
+        &p2,
+        &generating_cards,
+        hp_before,
+        18,
+        [PassiveNoEffectGround::IgnoredByProfessionAbility],
+    );
+    assert!(hp_for_player(&record, &p2) > hp_before);
+    assert!(
+        !record
+            .state()
+            .counter_effects
+            .iter()
+            .any(|counter| counter.effect_id == "magic-seal")
+    );
+    assert_magic_seal_public_lifecycle(&record, &p1, &p1, false);
     assert_eq!(record.replay().unwrap(), record.state().clone());
     assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }
@@ -1292,47 +1632,7 @@ fn no_effect_ground_matrix_golden_cicada_alone_does_not_implicate_profession_abi
     let p1 = PlayerId::new("p1");
     let p2 = PlayerId::new("p2");
     let mut record = ordered_pouch_record_for_benevolent_magic_seal_matrix();
-
-    let mesmer = vec![card_with_level_in_hand(&record, &p1, Element::Water, 3)];
-    change_to(&mut record, &p1, "mesmer", mesmer);
-    finish_turn_discarding_element(&mut record, &p1, Element::Metal);
-    let seeker = vec![card_with_level_in_hand(&record, &p2, Element::Wood, 3)];
-    change_to(&mut record, &p2, "seeker", seeker);
-    finish_turn_discarding_element(&mut record, &p2, Element::Metal);
-
-    let spirit_mesmer = vec![
-        card_with_level_in_hand(&record, &p1, Element::Water, 1),
-        card_with_level_in_hand(&record, &p1, Element::Water, 5),
-    ];
-    change_to(&mut record, &p1, "spirit-mesmer", spirit_mesmer);
-    finish_turn_discarding_element(&mut record, &p1, Element::Fire);
-    let expounder = vec![
-        card_with_level_in_hand(&record, &p2, Element::Wood, 1),
-        card_with_level_in_hand(&record, &p2, Element::Wood, 5),
-    ];
-    change_to(&mut record, &p2, "expounder", expounder);
-    finish_turn_discarding_element(&mut record, &p2, Element::Metal);
-
-    let magic_seal_cards = vec![
-        card_with_level_in_hand(&record, &p1, Element::Water, 3),
-        card_in_hand_with_after(&record, &p1, Element::Water, 1),
-    ];
-    let magic_seal_events = record
-        .handle(Command::PerformFormation {
-            player: p1.clone(),
-            formation_id: "magic-seal".to_string(),
-            cards: magic_seal_cards.clone(),
-            declared_targets: Vec::new(),
-        })
-        .unwrap();
-    assert!(magic_seal_events.iter().any(|event| matches!(
-        event,
-        GameEvent::AttackResolved {
-            elemental_context_update: Some(effects),
-            ..
-        } if effects.counter_effects_established.iter().any(|counter| counter.effect_id == "magic-seal")
-    )));
-    finish_turn_discarding_element(&mut record, &p1, Element::Fire);
+    establish_spirit_mesmer_magic_seal(&mut record, &p1, &p2, false);
 
     record
         .handle(trigger_secret_strategy(&p2, SecretStrategy::GoldenCicada))
@@ -1351,27 +1651,15 @@ fn no_effect_ground_matrix_golden_cicada_alone_does_not_implicate_profession_abi
             declared_targets: Vec::new(),
         })
         .unwrap();
-    let grounds = events
-        .iter()
-        .find_map(|event| match event {
-            GameEvent::CounterEffectResolved {
-                effect_id,
-                outcome: fewfc::domain::PassiveFlipOutcome::NoEffect { grounds },
-                ..
-            } if effect_id == "magic-seal" => Some(grounds),
-            _ => None,
-        })
-        .expect("Magic Seal must resolve once against Golden Cicada");
-    assert_ground_set(grounds, [PassiveNoEffectGround::IgnoredByGoldenCicada]);
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::HpChanged { change } if change.effective_delta > 0
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCardsDiscarded { formation_id, cards, .. }
-            if formation_id == "generating-formation" && cards == &generating_cards
-    )));
+    assert_generating_magic_seal_no_effect_outcome(
+        &events,
+        &p1,
+        &p2,
+        &generating_cards,
+        hp_before,
+        27,
+        [PassiveNoEffectGround::IgnoredByGoldenCicada],
+    );
     assert!(hp_for_player(&record, &p2) > hp_before);
     assert!(
         !record
@@ -1380,6 +1668,7 @@ fn no_effect_ground_matrix_golden_cicada_alone_does_not_implicate_profession_abi
             .iter()
             .any(|counter| counter.effect_id == "magic-seal")
     );
+    assert_magic_seal_public_lifecycle(&record, &p1, &p1, false);
     assert_eq!(record.replay().unwrap(), record.state().clone());
     assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }

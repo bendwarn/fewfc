@@ -1595,35 +1595,6 @@ mod tests {
     }
 
     #[test]
-    fn start_game_emits_initial_setup_events() {
-        let events = BaseRuleset::new()
-            .start_game(&setup(), (1..=10).map(card).collect())
-            .unwrap();
-
-        assert!(matches!(
-            events.first(),
-            Some(GameEvent::DeckPrepared { .. })
-        ));
-        assert_eq!(events.len(), 3);
-    }
-
-    #[test]
-    fn advance_automatic_stops_at_main_decision() {
-        let events = BaseRuleset::new()
-            .start_game(&setup(), (1..=10).map(card).collect())
-            .unwrap();
-        let state = projection::project(&setup(), &events).unwrap();
-
-        assert_eq!(
-            BaseRuleset::new().advance_automatic(&state).unwrap(),
-            vec![GameEvent::TurnStarted {
-                player: PlayerId::new("p1"),
-                turn_number: 1,
-            }]
-        );
-    }
-
-    #[test]
     fn decide_command_accepts_action_pass_for_empty_hand() {
         let mut state = GameState::from_setup(&setup());
         state.phase = Phase::ActiveEffects;

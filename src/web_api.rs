@@ -4244,14 +4244,18 @@ fn game_event_presentation_with_vocabulary(
         ),
         GameEvent::VoidReversionResolved {
             player,
+            hp_change,
             broken_professions,
             retained_legendary_professions,
             ..
         } => (
             "虛空返璞".to_string(),
             format!(
-                "{} 破除 {} 個職業，保留 {} 個低等級保護的傳說職業。",
+                "{} 使隊伍生命值由 {} 降至 {}（扣除 {} 點），破除 {} 個職業，保留 {} 個低等級保護的傳說職業。",
                 player.as_str(),
+                hp_change.old_hp,
+                hp_change.new_hp,
+                -hp_change.effective_delta,
                 broken_professions.len(),
                 retained_legendary_professions.len()
             ),

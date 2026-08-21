@@ -3,8 +3,8 @@ use fewfc::domain::{
     ActionModification, AttackOutcome, AttackPointBreakdown, AttackResolutionEffects,
     CardInstanceId, ChoiceAnswer, Command, DamageTransform, Element, ElementInteraction,
     EnvironmentAttackEffect, FormationAreaState, GameEvent, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, PassiveFlipOutcome, Player, PlayerId, RuleModuleId, StarBreakReason,
-    StarElementSubstitution, StarKind, TargetDecl, TeamId, TeamStar, STAR_MODULE_ID,
+    LastElementalAttackUpdate, PassiveFlipOutcome, Player, PlayerId, RuleModuleId, STAR_MODULE_ID,
+    StarBreakReason, StarElementSubstitution, StarKind, TargetDecl, TeamId, TeamStar,
 };
 use fewfc::public_view::{PublicCardRefs, PublicCoveredPassive, Viewer};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -390,9 +390,11 @@ fn owned_star_defense_matrix_records_selected_substitution_and_preserves_star_li
         4,
         190,
     );
-    assert!(!defended_attack
-        .iter()
-        .any(|event| matches!(event, GameEvent::StarBroken { .. })));
+    assert!(
+        !defended_attack
+            .iter()
+            .any(|event| matches!(event, GameEvent::StarBroken { .. }))
+    );
     assert_eq!(
         interaction
             .record

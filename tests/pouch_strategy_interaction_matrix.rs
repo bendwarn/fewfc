@@ -5,7 +5,7 @@ use fewfc::domain::{
     POUCH_MODULE_ID, Player, PlayerId, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID,
     STAR_MODULE_ID, SecretStrategy, SpiritKind, StarBreakReason, StarKind, TeamId,
 };
-use fewfc::public_view::{PublicGameEvent, Viewer};
+use fewfc::public_view::{PublicGameEvent, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
 
 const POUCH_STRATEGY_MODULES: [&str; 6] = [
@@ -497,6 +497,7 @@ struct StealTheBeamMageGuideScenario {
     mage_cards: Vec<CardInstanceId>,
     mage_guide_cards: Vec<CardInstanceId>,
     immortal_cards: Vec<CardInstanceId>,
+    later_entrant: CardInstanceId,
 }
 
 impl StealTheBeamMageGuideScenario {
@@ -554,6 +555,9 @@ impl StealTheBeamMageGuideScenario {
         );
         let turn_two_discard = card_in_deck(&record, &player, Element::Metal, 1);
         let turn_two_kept_sibling = card_in_deck(&record, &player, Element::Earth, 1);
+        // 這張牌刻意排在兩次職業變更後才會抽到的位置；它不能被偷梁換柱
+        // 在觸發當下的手牌快照誤納入加成。
+        let later_entrant = card_in_deck(&record, &player, Element::Earth, 2);
         let mut ordered_player_deck = mage_cards.clone();
         ordered_player_deck.extend(immortal_cards[..2].iter().copied());
         ordered_player_deck.extend(mage_guide_cards.iter().copied());
@@ -561,6 +565,7 @@ impl StealTheBeamMageGuideScenario {
         ordered_player_deck.push(immortal_cards[2]);
         ordered_player_deck.push(turn_two_discard);
         ordered_player_deck.push(turn_two_kept_sibling);
+        ordered_player_deck.push(later_entrant);
 
         while let Some(request) = record.state().pending_randomness.clone() {
             let fewfc::domain::RandomnessOperation::DeckShuffle { deck } = &request.operation
@@ -597,6 +602,7 @@ impl StealTheBeamMageGuideScenario {
             mage_cards,
             mage_guide_cards,
             immortal_cards,
+            later_entrant,
         }
     }
 
@@ -830,6 +836,146 @@ impl StealTheBeamMageGuideScenario {
                 .and_then(|area| area.formation.as_ref())
                 .is_none()
         );
+    }
+
+    fn resolve_turn_draw_with_a_later_entrant_outside_the_bonus_snapshot(&mut self) {
+        let turn_draw_events = self.record.advance_automatic().unwrap();
+        let (choice_id, drawn_cards) = match turn_draw_events.as_slice() {
+            [
+                GameEvent::CardsDrawnForTurnDiscardChoice {
+                    player,
+                    drawn_cards,
+                    allowed_discards,
+                },
+                GameEvent::ChoiceRequested { choice },
+            ] if player == &self.player
+                && drawn_cards == allowed_discards
+                && drawn_cards.contains(&self.later_entrant)
+                && choice.player == self.player
+                && matches!(
+                    &choice.kind,
+                    fewfc::domain::PendingChoiceKind::Card {
+                        cards,
+                        minimum: 1,
+                        maximum: 1,
+                        can_decline: false,
+                    } if cards == drawn_cards
+                ) =>
+            {
+                (choice.choice_id, drawn_cards.clone())
+            }
+            _ => panic!(
+                "expected canonical Turn Draw choice with the later entrant, got {turn_draw_events:?}"
+            ),
+        };
+        let discarded = drawn_cards
+            .iter()
+            .copied()
+            .find(|card| *card != self.later_entrant)
+            .expect("the legal Turn Draw pool must retain the planned later entrant");
+        let answer_events = self
+            .record
+            .handle(Command::AnswerChoice {
+                player: self.player.clone(),
+                choice_id,
+                answer: ChoiceAnswer::Cards {
+                    cards: vec![discarded],
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            answer_events,
+            vec![
+                GameEvent::ChoiceMade {
+                    player: self.player.clone(),
+                    choice_id,
+                    answer: ChoiceAnswer::Cards {
+                        cards: vec![discarded],
+                    },
+                },
+                GameEvent::TurnDrawResolved {
+                    player: self.player.clone(),
+                    discard: discarded,
+                    kept_cards: drawn_cards
+                        .iter()
+                        .copied()
+                        .filter(|card| *card != discarded)
+                        .collect(),
+                },
+            ]
+        );
+
+        // 合法 Turn Draw 解答把保留牌放入手牌，但仍在同一回合的 TurnEnd；
+        // 因此可直接對比觸發時快照牌與後入牌的有效等級。
+        assert!(
+            self.record
+                .state()
+                .hand(&self.player)
+                .unwrap()
+                .contains(&self.later_entrant)
+        );
+        assert!(
+            self.record
+                .state()
+                .discard_for(&self.player)
+                .unwrap()
+                .contains(&discarded)
+        );
+        assert!(
+            !self
+                .record
+                .state()
+                .deck_for(&self.player)
+                .unwrap()
+                .contains(&self.later_entrant)
+        );
+        let bonus = self
+            .record
+            .state()
+            .pouch_level_bonuses
+            .iter()
+            .find(|bonus| bonus.player == self.player)
+            .expect("Steal the Beam bonus must survive until the natural turn end");
+        assert!(!bonus.cards.contains(&self.later_entrant));
+        let snapshot_card = self.immortal_cards[2];
+        assert!(bonus.cards.contains(&snapshot_card));
+        let snapshot_printed = self.record.state().card_def(snapshot_card).unwrap().level;
+        let later_printed = self
+            .record
+            .state()
+            .card_def(self.later_entrant)
+            .unwrap()
+            .level;
+        assert_eq!(
+            self.record
+                .state()
+                .effective_card_facts(&self.player, snapshot_card)
+                .unwrap()
+                .level,
+            EffectiveCardLevel::new(snapshot_printed.value() + 1)
+        );
+        assert_eq!(
+            self.record
+                .state()
+                .effective_card_facts(&self.player, self.later_entrant)
+                .unwrap()
+                .level,
+            EffectiveCardLevel::new(later_printed.value())
+        );
+
+        assert_eq!(
+            self.record.advance_automatic().unwrap(),
+            vec![
+                GameEvent::TurnEnded {
+                    player: self.player.clone(),
+                },
+                GameEvent::TurnStarted {
+                    player: self.opponent.clone(),
+                    turn_number: 6,
+                },
+            ]
+        );
+        assert!(self.record.state().pouch_level_bonuses.is_empty());
     }
 
     fn finish_opponent_turn(&mut self) {
@@ -1216,6 +1362,326 @@ impl LureReturnSoulScenario {
         assert_eq!(self.record.state().current_player(), Some(&self.lurer));
         perform_first_elemental_attack(&mut self.record, &self.lurer);
         finish_turn(&mut self.record, &self.lurer);
+    }
+
+    fn assert_replay(&self) {
+        assert_eq!(self.record.replay().unwrap(), self.record.state().clone());
+        assert_eq!(
+            self.record.verify_replay().unwrap(),
+            self.record.state().clone()
+        );
+    }
+}
+
+/// 以合法轉職取得仙者，再讓地行錦囊在下一個回合壓制其冥思。牌序只安排
+/// 轉職與成本所需的背景手牌；職業與 Lure 狀態一律由命令產生。
+struct LureMeditationScenario {
+    record: GameRecord,
+    lurer: PlayerId,
+    target: PlayerId,
+    lure_source: CardInstanceId,
+    mage_cards: Vec<CardInstanceId>,
+    mage_guide_cards: Vec<CardInstanceId>,
+    immortal_cards: Vec<CardInstanceId>,
+    meditation_card: CardInstanceId,
+    mage_turn_discard: CardInstanceId,
+    mage_guide_turn_discard: CardInstanceId,
+}
+
+impl LureMeditationScenario {
+    fn new() -> Self {
+        let lurer = PlayerId::new("p1");
+        let target = PlayerId::new("p2");
+        let mut setup = OfficialRules::new()
+            .configure_game(
+                vec![
+                    Player {
+                        id: lurer.clone(),
+                        team: TeamId::new("team:p1"),
+                    },
+                    Player {
+                        id: target.clone(),
+                        team: TeamId::new("team:p2"),
+                    },
+                ],
+                vec![lurer.clone(), target.clone()],
+                POUCH_STRATEGY_MODULES
+                    .into_iter()
+                    .map(RuleModuleId::new)
+                    .collect(),
+            )
+            .unwrap();
+        // 僅是背景：多個合法轉職與橋接回合不能在 Lure／冥思交互前結束。
+        for team_hp in &mut setup.hp {
+            team_hp.hp = 10_000;
+        }
+        let mut record = GameRecord::start(setup, Vec::new()).unwrap();
+
+        let lure_source = card_in_deck(&record, &lurer, Element::Earth, 2);
+        let target_pouch = card_in_deck(&record, &target, Element::Metal, 5);
+        record
+            .handle(Command::ChooseInitialPouch {
+                player: lurer.clone(),
+                card: lure_source,
+            })
+            .unwrap();
+        record
+            .handle(Command::ChooseInitialPouch {
+                player: target.clone(),
+                card: target_pouch,
+            })
+            .unwrap();
+
+        let mage_cards = cards_in_deck(&record, &target, &[(Element::Fire, 1), (Element::Fire, 2)]);
+        let immortal_cards = cards_in_deck(
+            &record,
+            &target,
+            &[(Element::Wood, 5), (Element::Fire, 5), (Element::Earth, 5)],
+        );
+        let mage_guide_cards =
+            cards_in_deck(&record, &target, &[(Element::Fire, 3), (Element::Fire, 3)]);
+        let mage_turn_discard = card_in_deck(&record, &target, Element::Wood, 4);
+        let meditation_card = card_in_deck(&record, &target, Element::Water, 4);
+        let target_bridge_card = card_in_deck(&record, &target, Element::Metal, 1);
+        let mage_guide_turn_discard = card_in_deck(&record, &target, Element::Earth, 1);
+        let mut target_order = mage_cards.clone();
+        target_order.extend(immortal_cards.iter().copied());
+        target_order.extend(mage_guide_cards.iter().copied());
+        target_order.push(mage_turn_discard);
+        target_order.push(meditation_card);
+        target_order.push(target_bridge_card);
+        target_order.push(mage_guide_turn_discard);
+
+        while let Some(request) = record.state().pending_randomness.clone() {
+            let fewfc::domain::RandomnessOperation::DeckShuffle { deck } = &request.operation
+            else {
+                unreachable!("Pouch preparation only requests Personal Deck shuffles");
+            };
+            let shuffled_order = if matches!(deck, fewfc::domain::RandomnessDeck::Player(owner) if owner == &target)
+            {
+                append_remaining_cards(target_order.clone(), &request.current_order)
+            } else {
+                request.current_order.clone()
+            };
+            record
+                .resolve_randomness(fewfc::domain::TrustedRandomnessAnswer {
+                    request_id: request.request_id,
+                    shuffled_order,
+                })
+                .unwrap();
+        }
+        record.advance_automatic().unwrap();
+        assert_eq!(record.state().current_player(), Some(&lurer));
+
+        Self {
+            record,
+            lurer,
+            target,
+            lure_source,
+            mage_cards,
+            mage_guide_cards,
+            immortal_cards,
+            meditation_card,
+            mage_turn_discard,
+            mage_guide_turn_discard,
+        }
+    }
+
+    fn finish_lurers_ordinary_turn(&mut self) {
+        assert_eq!(self.record.state().current_player(), Some(&self.lurer));
+        perform_first_elemental_attack(&mut self.record, &self.lurer);
+        finish_turn(&mut self.record, &self.lurer);
+    }
+
+    fn change_target_profession(
+        &mut self,
+        profession: &str,
+        cards: &[CardInstanceId],
+        previous: Option<&str>,
+    ) {
+        assert_eq!(self.record.state().current_player(), Some(&self.target));
+        let events = self
+            .record
+            .handle(Command::ChangeProfession {
+                player: self.target.clone(),
+                profession: ProfessionId::new(profession),
+                cards: cards.to_vec(),
+            })
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                GameEvent::ActionStarted { player },
+                GameEvent::ProfessionChanged {
+                    player: changed,
+                    previous: actual_previous,
+                    profession: changed_to,
+                    card_moves,
+                },
+            ] if player == &self.target
+                && changed == &self.target
+                && actual_previous.as_ref().map(ProfessionId::as_str) == previous
+                && changed_to == &ProfessionId::new(profession)
+                && has_hand_to_discard_moves(card_moves, &self.target, cards)
+        ));
+        assert_eq!(
+            self.record.state().profession_for(&self.target),
+            Some(&ProfessionId::new(profession))
+        );
+    }
+
+    fn establish_immortal_through_legal_turns(&mut self) {
+        self.finish_lurers_ordinary_turn();
+        self.change_target_profession("mage", &self.mage_cards.clone(), None);
+        let mage_turn_discard_level = self
+            .record
+            .state()
+            .card_def(self.mage_turn_discard)
+            .unwrap()
+            .level
+            .value();
+        finish_turn_discarding_fact(
+            &mut self.record,
+            &self.target,
+            Element::Wood,
+            mage_turn_discard_level,
+        );
+
+        self.finish_lurers_ordinary_turn();
+        self.change_target_profession("mage-guide", &self.mage_guide_cards.clone(), Some("mage"));
+        let mage_guide_turn_discard_level = self
+            .record
+            .state()
+            .card_def(self.mage_guide_turn_discard)
+            .unwrap()
+            .level
+            .value();
+        finish_turn_discarding_fact(
+            &mut self.record,
+            &self.target,
+            Element::Earth,
+            mage_guide_turn_discard_level,
+        );
+
+        self.finish_lurers_ordinary_turn();
+        assert!(self.immortal_cards.iter().all(|card| {
+            self.record
+                .state()
+                .hand(&self.target)
+                .unwrap()
+                .contains(card)
+        }));
+        self.change_target_profession("immortal", &self.immortal_cards.clone(), Some("mage-guide"));
+        finish_turn(&mut self.record, &self.target);
+        assert_eq!(self.record.state().current_player(), Some(&self.lurer));
+    }
+
+    fn trigger_lure(&mut self) -> Vec<GameEvent> {
+        assert_eq!(self.record.state().current_player(), Some(&self.lurer));
+        self.record
+            .handle(Command::TriggerSecretStrategy {
+                player: self.lurer.clone(),
+                strategy: SecretStrategy::LureTheTigerAway,
+                target_player: Some(self.target.clone()),
+                star: None,
+                break_star: false,
+                discard_card: None,
+                deck_cards: Vec::new(),
+                discard_cards: Vec::new(),
+            })
+            .unwrap()
+    }
+
+    fn assert_lure_lifecycle(&self, events: &[GameEvent]) {
+        assert!(matches!(
+            events,
+            [
+                GameEvent::PouchRevealed {
+                    player,
+                    owner: Some(owner),
+                    card,
+                    strategy: SecretStrategy::LureTheTigerAway,
+                },
+                GameEvent::StatusAdded { status: player_scope },
+                GameEvent::StatusAdded { status: spirit_scope },
+                GameEvent::PouchConsumed {
+                    owner: Some(consumed_owner),
+                    card: consumed_card,
+                },
+            ] if player == &self.lurer
+                && owner == &self.lurer
+                && *card == self.lure_source
+                && matches!(player_scope, fewfc::domain::StatusEffect {
+                    owner: fewfc::domain::StatusOwner::Player(owner),
+                    kind,
+                    duration: fewfc::domain::StatusDuration::UntilTurnEnd { player: expires },
+                    ..
+                } if owner == &self.target && kind == "PouchLurePlayer" && expires == &self.target)
+                && matches!(spirit_scope, fewfc::domain::StatusEffect {
+                    owner: fewfc::domain::StatusOwner::Player(owner),
+                    kind,
+                    duration: fewfc::domain::StatusDuration::UntilTurnEnd { player: expires },
+                    ..
+                } if owner == &self.target && kind == "PouchLureSpirit" && expires == &self.target)
+                && consumed_owner == &self.lurer
+                && *consumed_card == self.lure_source
+        ));
+        assert!(has_player_status(
+            self.record.state(),
+            &self.target,
+            "PouchLurePlayer"
+        ));
+        assert!(has_player_status(
+            self.record.state(),
+            &self.target,
+            "PouchLureSpirit"
+        ));
+        assert!(self.record.state().pouch_for(&self.lurer).is_none());
+        assert!(
+            self.record
+                .state()
+                .discard_for(&self.lurer)
+                .unwrap()
+                .contains(&self.lure_source)
+        );
+        let public = state_for(self.record.state(), Viewer::Observer);
+        assert!(public.statuses.iter().any(|status| {
+            status.owner == fewfc::domain::StatusOwner::Player(self.target.clone())
+                && status.kind == "PouchLurePlayer"
+        }));
+        assert!(public.statuses.iter().any(|status| {
+            status.owner == fewfc::domain::StatusOwner::Player(self.target.clone())
+                && status.kind == "PouchLureSpirit"
+        }));
+    }
+
+    fn offers_meditation(&self) -> bool {
+        self.record
+            .playable_actions(&self.target, &[self.meditation_card])
+            .unwrap()
+            .iter()
+            .any(|action| {
+                matches!(
+                    action,
+                    PlayableAction::ActivateProfessionAbility(candidate)
+                        if candidate.ability_id == "meditation" && candidate.cards == vec![self.meditation_card]
+                )
+            })
+    }
+
+    fn activate_meditation(&mut self) -> Vec<GameEvent> {
+        assert_eq!(self.record.state().current_player(), Some(&self.target));
+        assert!(self.offers_meditation());
+        self.record
+            .handle(Command::ActivateProfessionAbility {
+                player: self.target.clone(),
+                ability_id: "meditation".to_string(),
+                cards: vec![self.meditation_card],
+                target_card: None,
+                declared_element: None,
+                declared_level: None,
+            })
+            .unwrap()
     }
 
     fn assert_replay(&self) {
@@ -2132,6 +2598,20 @@ fn pouch_steal_the_beam_mage_guide_matrix_turns_wood_five_five_four_into_a_legal
 }
 
 #[test]
+fn pouch_steal_the_beam_matrix_keeps_a_same_turn_later_entrant_outside_its_snapshot() {
+    let mut scenario = StealTheBeamMageGuideScenario::new();
+    scenario.change_to_mage_guide_through_legal_turns();
+
+    scenario.assert_printed_five_five_four_cannot_change_to_immortal();
+    let trigger_events = scenario.trigger_steal_the_beam();
+    scenario.assert_steal_the_beam_bonus_snapshot(&trigger_events);
+    scenario.assert_effective_five_five_five_offers_immortal();
+    scenario.change_to_immortal_and_assert_canonical_commitment();
+    scenario.resolve_turn_draw_with_a_later_entrant_outside_the_bonus_snapshot();
+    scenario.assert_replay();
+}
+
+#[test]
 fn pouch_lure_return_soul_matrix_suppresses_profession_and_spirit_scopes_but_revives_at_one_power()
 {
     let mut scenario = LureReturnSoulScenario::new();
@@ -2148,6 +2628,794 @@ fn pouch_lure_return_soul_matrix_suppresses_profession_and_spirit_scopes_but_rev
     let return_soul_events = scenario.trigger_return_soul();
     scenario.assert_return_soul_replaces_water_with_metal_at_one_power(&return_soul_events);
     scenario.assert_replay();
+}
+
+#[test]
+fn pouch_lure_meditation_matrix_keeps_the_legal_cost_and_use_but_suppresses_its_draw_bonus() {
+    // baseline：仙者以合法命令啟用冥思時，成本、使用記錄與抽牌加成都必須完整
+    // 解析。
+    let mut baseline = LureMeditationScenario::new();
+    baseline.establish_immortal_through_legal_turns();
+    baseline.finish_lurers_ordinary_turn();
+    let baseline_turn = baseline.record.state().turn_number;
+    let baseline_events = baseline.activate_meditation();
+    assert!(matches!(
+        baseline_events.as_slice(),
+        [
+            GameEvent::ProfessionAbilityActivated {
+                player,
+                ability_id,
+                prepared: None,
+            },
+            GameEvent::CardsMoved { card_moves },
+            GameEvent::TurnDrawBonusChanged {
+                player: bonus_player,
+                old_value: 0,
+                delta: 1,
+                new_value: 1,
+            },
+        ] if player == &baseline.target
+            && ability_id == "meditation"
+            && bonus_player == &baseline.target
+            && has_hand_to_discard_moves(card_moves, &baseline.target, &[baseline.meditation_card])
+    ));
+    assert_eq!(
+        baseline
+            .record
+            .state()
+            .activated_profession_ability_turns
+            .get(&baseline.target),
+        Some(&baseline_turn)
+    );
+    assert_eq!(
+        baseline
+            .record
+            .state()
+            .turn_draw_bonus_by_player
+            .get(&baseline.target),
+        Some(&1)
+    );
+    assert!(
+        baseline
+            .record
+            .state()
+            .discard_for(&baseline.target)
+            .unwrap()
+            .contains(&baseline.meditation_card)
+    );
+    baseline.assert_replay();
+
+    // modifier + interaction：Lure 以合法錦囊取得兩個獨立 scope；冥思仍是可用
+    // 的 ActiveEffect，卻只留下啟用和成本，不能虛構一個 passive NoEffect。
+    let mut interaction = LureMeditationScenario::new();
+    interaction.establish_immortal_through_legal_turns();
+    let lure_events = interaction.trigger_lure();
+    interaction.assert_lure_lifecycle(&lure_events);
+    interaction.finish_lurers_ordinary_turn();
+
+    let interaction_turn = interaction.record.state().turn_number;
+    let interaction_events = interaction.activate_meditation();
+    assert!(matches!(
+        interaction_events.as_slice(),
+        [
+            GameEvent::ProfessionAbilityActivated {
+                player,
+                ability_id,
+                prepared: None,
+            },
+            GameEvent::CardsMoved { card_moves },
+        ] if player == &interaction.target
+            && ability_id == "meditation"
+            && has_hand_to_discard_moves(card_moves, &interaction.target, &[interaction.meditation_card])
+    ));
+    assert_eq!(
+        interaction
+            .record
+            .state()
+            .activated_profession_ability_turns
+            .get(&interaction.target),
+        Some(&interaction_turn)
+    );
+    assert!(
+        !interaction
+            .record
+            .state()
+            .turn_draw_bonus_by_player
+            .contains_key(&interaction.target)
+    );
+    assert!(
+        interaction
+            .record
+            .state()
+            .discard_for(&interaction.target)
+            .unwrap()
+            .contains(&interaction.meditation_card)
+    );
+    assert_eq!(
+        interaction.record.state().phase,
+        fewfc::domain::Phase::ActiveEffects
+    );
+
+    // 冥思不消耗 Formation Use；仍在可提交 Formation 的 ActiveEffects，目標能完成
+    // Action，兩個 Lure scope 都在目標回合自然到期。
+    assert_eq!(
+        interaction.record.state().phase,
+        fewfc::domain::Phase::ActiveEffects
+    );
+    perform_first_elemental_attack(&mut interaction.record, &interaction.target);
+    finish_turn(&mut interaction.record, &interaction.target);
+    assert_eq!(
+        interaction.record.state().current_player(),
+        Some(&interaction.lurer)
+    );
+    assert!(!has_player_status(
+        interaction.record.state(),
+        &interaction.target,
+        "PouchLurePlayer"
+    ));
+    assert!(!has_player_status(
+        interaction.record.state(),
+        &interaction.target,
+        "PouchLureSpirit"
+    ));
+    assert_eq!(
+        interaction
+            .record
+            .state()
+            .profession_for(&interaction.target),
+        Some(&ProfessionId::new("immortal"))
+    );
+    interaction.assert_replay();
+}
+
+#[test]
+fn golden_cicada_lure_matrix_protects_only_player_scope_when_chain_triggers_lure() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut setup = OfficialRules::new()
+        .configure_game(
+            vec![
+                Player {
+                    id: p1.clone(),
+                    team: TeamId::new("team:p1"),
+                },
+                Player {
+                    id: p2.clone(),
+                    team: TeamId::new("team:p2"),
+                },
+            ],
+            vec![p1.clone(), p2.clone()],
+            POUCH_STRATEGY_MODULES
+                .into_iter()
+                .map(RuleModuleId::new)
+                .collect(),
+        )
+        .unwrap();
+    // 僅是背景：此矩陣需要多個合法轉職、召喚與 Chain 回合，不能在中途結束。
+    for team_hp in &mut setup.hp {
+        team_hp.hp = 10_000;
+    }
+    let mut record = GameRecord::start(setup, Vec::new()).unwrap();
+
+    let p1_pouch = card_in_deck(&record, &p1, Element::Earth, 2);
+    let golden_source = card_in_deck(&record, &p2, Element::Metal, 1);
+    record
+        .handle(Command::ChooseInitialPouch {
+            player: p1.clone(),
+            card: p1_pouch,
+        })
+        .unwrap();
+    record
+        .handle(Command::ChooseInitialPouch {
+            player: p2.clone(),
+            card: golden_source,
+        })
+        .unwrap();
+
+    let mage_cards = cards_in_deck(&record, &p2, &[(Element::Fire, 1), (Element::Fire, 2)]);
+    let water_summon_cards =
+        cards_in_deck(&record, &p2, &[(Element::Water, 1), (Element::Water, 2)]);
+    let chain_cards = cards_in_deck(
+        &record,
+        &p2,
+        &[(Element::Metal, 2), (Element::Wood, 3), (Element::Water, 4)],
+    );
+    let first_draw_discard = card_in_deck(&record, &p2, Element::Wood, 5);
+    let second_draw = cards_in_deck(
+        &record,
+        &p2,
+        &[(Element::Fire, 3), (Element::Metal, 3), (Element::Earth, 2)],
+    );
+    let chain_pouch = card_in_deck(&record, &p2, Element::Fire, 5);
+    let lure_trigger = card_in_deck(&record, &p2, Element::Earth, 1);
+    let mut target_order = mage_cards.clone();
+    target_order.extend(water_summon_cards.iter().copied());
+    target_order.push(chain_cards[0]);
+    target_order.extend(chain_cards[1..].iter().copied());
+    target_order.push(first_draw_discard);
+    target_order.extend(second_draw.iter().copied());
+    target_order.push(chain_pouch);
+    target_order.push(lure_trigger);
+
+    while let Some(request) = record.state().pending_randomness.clone() {
+        let fewfc::domain::RandomnessOperation::DeckShuffle { deck } = &request.operation else {
+            unreachable!("Pouch preparation only requests Personal Deck shuffles");
+        };
+        let shuffled_order = if matches!(deck, fewfc::domain::RandomnessDeck::Player(owner) if owner == &p2)
+        {
+            append_remaining_cards(target_order.clone(), &request.current_order)
+        } else {
+            request.current_order.clone()
+        };
+        record
+            .resolve_randomness(fewfc::domain::TrustedRandomnessAnswer {
+                request_id: request.request_id,
+                shuffled_order,
+            })
+            .unwrap();
+    }
+    record.advance_automatic().unwrap();
+    assert_eq!(record.state().current_player(), Some(&p1));
+
+    // P2 先合法成為 Mage 並召喚 Water Spirit；這些是 Lure 兩個獨立範圍的
+    // 真實受測前置，而不是直接安排職業或 Spirit。
+    perform_first_elemental_attack(&mut record, &p1);
+    finish_turn(&mut record, &p1);
+    let mage_events = record
+        .handle(Command::ChangeProfession {
+            player: p2.clone(),
+            profession: ProfessionId::new("mage"),
+            cards: mage_cards.clone(),
+        })
+        .unwrap();
+    assert!(matches!(
+        mage_events.as_slice(),
+        [
+            GameEvent::ActionStarted { player },
+            GameEvent::ProfessionChanged {
+                player: changed,
+                previous: None,
+                profession,
+                card_moves,
+            },
+        ] if player == &p2
+            && changed == &p2
+            && profession == &ProfessionId::new("mage")
+            && has_hand_to_discard_moves(card_moves, &p2, &mage_cards)
+    ));
+    finish_turn_discarding_fact(&mut record, &p2, Element::Wood, 5);
+    assert_eq!(record.state().current_player(), Some(&p1));
+    perform_first_elemental_attack(&mut record, &p1);
+    finish_turn(&mut record, &p1);
+
+    let summon_events = record
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "water-spirit-summoning".to_string(),
+            cards: water_summon_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        summon_events.as_slice(),
+        [
+            GameEvent::FormationCommitted {
+                player,
+                formation_id,
+                cards,
+                ..
+            },
+            GameEvent::SpiritSummoned {
+                player: summoned,
+                previous: None,
+                spirit: SpiritKind::Water,
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: discarded_by,
+                formation_id: discarded_formation,
+                cards: discarded_cards,
+            },
+        ] if player == &p2
+            && formation_id == "water-spirit-summoning"
+            && cards == &water_summon_cards
+            && summoned == &p2
+            && discarded_by == &p2
+            && discarded_formation == "water-spirit-summoning"
+            && discarded_cards == cards
+    ));
+    finish_turn_discarding_fact(&mut record, &p2, Element::Earth, 2);
+    perform_first_elemental_attack(&mut record, &p1);
+    finish_turn(&mut record, &p1);
+    assert_eq!(record.state().current_player(), Some(&p2));
+    assert!(chain_cards.iter().all(|card| {
+        record
+            .state()
+            .hand(&p2)
+            .is_some_and(|hand| hand.contains(card))
+    }));
+    assert!(record.state().deck_for(&p2).unwrap().contains(&chain_pouch));
+    assert!(
+        record
+            .state()
+            .deck_for(&p2)
+            .unwrap()
+            .contains(&lure_trigger)
+    );
+
+    // Golden is an Active Effect in P2's protected turn. Chain is then its one
+    // legal Formation Use and triggers an Earth Lure while Golden is still live.
+    let golden_events = record
+        .handle(Command::TriggerSecretStrategy {
+            player: p2.clone(),
+            strategy: SecretStrategy::GoldenCicada,
+            target_player: None,
+            star: None,
+            break_star: false,
+            discard_card: None,
+            deck_cards: Vec::new(),
+            discard_cards: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        golden_events.as_slice(),
+        [
+            GameEvent::PouchRevealed {
+                player,
+                owner: Some(owner),
+                card,
+                strategy: SecretStrategy::GoldenCicada,
+            },
+            GameEvent::StatusAdded { status },
+            GameEvent::PouchConsumed {
+                owner: Some(consumed_owner),
+                card: consumed_card,
+            },
+        ] if player == &p2
+            && owner == &p2
+            && *card == golden_source
+            && matches!(
+                status,
+                fewfc::domain::StatusEffect {
+                    owner: fewfc::domain::StatusOwner::Player(status_owner),
+                    kind,
+                    duration: fewfc::domain::StatusDuration::UntilTurnEnd { player: expires },
+                    ..
+                } if status_owner == &p2 && kind == "PouchGoldenCicada" && expires == &p2
+            )
+            && consumed_owner == &p2
+            && *consumed_card == golden_source
+    ));
+    assert!(has_player_status(record.state(), &p2, "PouchGoldenCicada"));
+
+    let chain_events = record
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "pouch:chain".to_string(),
+            cards: chain_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        chain_events.as_slice(),
+        [
+            GameEvent::FormationCommitted {
+                player,
+                formation_id,
+                cards,
+                state: fewfc::domain::FormationAreaState::FaceUpResolving,
+                ..
+            },
+            GameEvent::ChoiceRequested { choice },
+        ] if player == &p2
+            && formation_id == "pouch:chain"
+            && cards == &chain_cards
+            && matches!(
+                choice.kind,
+                fewfc::domain::PendingChoiceKind::Chain { ref pouch_owners, ref deck_cards }
+                    if pouch_owners == &vec![p2.clone()]
+                        && deck_cards.contains(&chain_pouch)
+                        && deck_cards.contains(&lure_trigger)
+            )
+    ));
+    let choice_id = record
+        .state()
+        .pending_choice
+        .as_ref()
+        .expect("Chain must create its typed choice")
+        .choice_id;
+    let lure_events = record
+        .handle(Command::AnswerChoice {
+            player: p2.clone(),
+            choice_id,
+            answer: ChoiceAnswer::Chain {
+                pouch_owner: p2.clone(),
+                pouch_card: chain_pouch,
+                trigger_card: Some(lure_trigger),
+                strategy: Some(SecretStrategy::LureTheTigerAway),
+                target_player: Some(p2.clone()),
+                star: None,
+                break_star: false,
+                discard_card: None,
+            },
+        })
+        .unwrap();
+    assert!(
+        matches!(
+            lure_events.as_slice(),
+            [
+                GameEvent::ChoiceMade {
+                    player,
+                    answer: ChoiceAnswer::Chain {
+                        pouch_owner,
+                        pouch_card,
+                        trigger_card: Some(trigger),
+                        strategy: Some(SecretStrategy::LureTheTigerAway),
+                        target_player: Some(target),
+                        ..
+                    },
+                    ..
+                },
+                GameEvent::PouchPlaced {
+                    source,
+                    owner,
+                    card: placed_card,
+                    known_by,
+                    previous: None,
+                },
+                GameEvent::PouchRevealed {
+                    player: revealer,
+                    owner: None,
+                    card: revealed_card,
+                    strategy: SecretStrategy::LureTheTigerAway,
+                },
+                GameEvent::StatusAdded { status: spirit_scope },
+                GameEvent::PouchConsumed {
+                    owner: None,
+                    card: consumed_card,
+                },
+                GameEvent::FormationCardsDiscarded {
+                    player: discarded_by,
+                    formation_id: discarded_formation,
+                    cards: discarded_cards,
+                },
+            ] if player == &p2
+                && pouch_owner == &p2
+                && *pouch_card == chain_pouch
+                && *trigger == lure_trigger
+                && target == &p2
+                && source == &p2
+                && owner == &p2
+                && *placed_card == chain_pouch
+                && known_by == &vec![p2.clone()]
+                && revealer == &p2
+                && *revealed_card == lure_trigger
+                && matches!(
+                    spirit_scope,
+                    fewfc::domain::StatusEffect {
+                        owner: fewfc::domain::StatusOwner::Player(status_owner),
+                        kind,
+                        duration: fewfc::domain::StatusDuration::UntilTurnEnd { player: expires },
+                        ..
+                    } if status_owner == &p2 && kind == "PouchLureSpirit" && expires == &p2
+                )
+                && *consumed_card == lure_trigger
+                && discarded_by == &p2
+                && discarded_formation == "pouch:chain"
+                && discarded_cards == &chain_cards
+        ),
+        "unexpected Golden × Lure Chain outcome: {lure_events:#?}"
+    );
+
+    // 交互：Golden 讓 Lure 不建立 Player scope，卻不擴張保護到 P2 的 Water
+    // Spirit。既有 Lure-only matrix 以同樣合法 Mage/Water 前置證明此 Spirit
+    // scope 的實際 Return Soul 解析；此處證明 Golden 不會改寫其 canonical scope。
+    assert!(!has_player_status(record.state(), &p2, "PouchLurePlayer"));
+    assert!(has_player_status(record.state(), &p2, "PouchLureSpirit"));
+    assert!(has_player_status(record.state(), &p2, "PouchGoldenCicada"));
+    assert_eq!(
+        record.state().profession_for(&p2),
+        Some(&ProfessionId::new("mage"))
+    );
+    assert_eq!(
+        record.state().spirit_for(&p2),
+        Some(&fewfc::domain::PlayerSpirit {
+            player: p2.clone(),
+            spirit: SpiritKind::Water,
+            power: 2,
+        })
+    );
+    assert_eq!(record.state().pouch_for(&p2).unwrap().card, chain_pouch);
+    assert!(
+        record
+            .state()
+            .discard_for(&p2)
+            .unwrap()
+            .contains(&golden_source)
+    );
+    assert!(
+        record
+            .state()
+            .discard_for(&p2)
+            .unwrap()
+            .contains(&lure_trigger)
+    );
+    assert!(
+        record
+            .public_events_for(Viewer::Player(p2.clone()))
+            .iter()
+            .any(|event| matches!(
+                event,
+                PublicGameEvent::PouchPlaced { owner, card: Some(card) }
+                    if owner == &p2 && *card == chain_pouch
+            ))
+    );
+    assert!(
+        record
+            .public_events_for(Viewer::Player(p1.clone()))
+            .iter()
+            .any(|event| matches!(
+                event,
+                PublicGameEvent::PouchPlaced { owner, card: None }
+                    if owner == &p2
+            ))
+    );
+
+    assert!(
+        chain_cards
+            .iter()
+            .all(|card| { record.state().discard_for(&p2).unwrap().contains(card) })
+    );
+    finish_turn(&mut record, &p2);
+    assert_eq!(record.state().current_player(), Some(&p1));
+    assert!(!has_player_status(record.state(), &p2, "PouchGoldenCicada"));
+    assert!(!has_player_status(record.state(), &p2, "PouchLureSpirit"));
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
+}
+
+#[test]
+fn pouch_chain_deceive_heaven_matrix_places_before_triggering_the_typed_temporary_star_effect() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut setup = OfficialRules::new()
+        .configure_game(
+            vec![
+                Player {
+                    id: p1.clone(),
+                    team: TeamId::new("team:p1"),
+                },
+                Player {
+                    id: p2.clone(),
+                    team: TeamId::new("team:p2"),
+                },
+            ],
+            vec![p1.clone(), p2.clone()],
+            POUCH_STRATEGY_MODULES
+                .into_iter()
+                .map(RuleModuleId::new)
+                .collect(),
+        )
+        .unwrap();
+    // 僅是背景：Chain 與其 typed continuation 必須在同一個合法 Action 回合
+    // 完成，不能因攻擊提早結束。
+    for hp in &mut setup.hp {
+        hp.hp = 10_000;
+    }
+    let mut record = GameRecord::start(setup, Vec::new()).unwrap();
+    let initial_pouch = card_in_deck(&record, &p1, Element::Earth, 5);
+    let opponent_pouch = card_in_deck(&record, &p2, Element::Metal, 5);
+    record
+        .handle(Command::ChooseInitialPouch {
+            player: p1.clone(),
+            card: initial_pouch,
+        })
+        .unwrap();
+    record
+        .handle(Command::ChooseInitialPouch {
+            player: p2.clone(),
+            card: opponent_pouch,
+        })
+        .unwrap();
+
+    let chain_cards = cards_in_deck(
+        &record,
+        &p1,
+        &[(Element::Metal, 1), (Element::Wood, 2), (Element::Water, 3)],
+    );
+    let initial_hand_sibling = card_in_deck(&record, &p1, Element::Earth, 4);
+    let placed_pouch = card_in_deck(&record, &p1, Element::Metal, 2);
+    let deceive_trigger = card_in_deck(&record, &p1, Element::Fire, 4);
+    let mut p1_order = chain_cards.clone();
+    p1_order.push(initial_hand_sibling);
+    p1_order.push(placed_pouch);
+    p1_order.push(deceive_trigger);
+
+    while let Some(request) = record.state().pending_randomness.clone() {
+        let fewfc::domain::RandomnessOperation::DeckShuffle { deck } = &request.operation else {
+            unreachable!("Pouch preparation only requests Personal Deck shuffles");
+        };
+        let shuffled_order = if matches!(deck, fewfc::domain::RandomnessDeck::Player(owner) if owner == &p1)
+        {
+            append_remaining_cards(p1_order.clone(), &request.current_order)
+        } else {
+            request.current_order.clone()
+        };
+        record
+            .resolve_randomness(fewfc::domain::TrustedRandomnessAnswer {
+                request_id: request.request_id,
+                shuffled_order,
+            })
+            .unwrap();
+    }
+    record.advance_automatic().unwrap();
+    assert_eq!(record.state().current_player(), Some(&p1));
+    assert!(
+        chain_cards
+            .iter()
+            .all(|card| record.state().hand(&p1).unwrap().contains(card))
+    );
+
+    // baseline：合法 Chain 先把其選擇變成 canonical typed Pending Choice。
+    let chain_events = record
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "pouch:chain".to_string(),
+            cards: chain_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        chain_events.as_slice(),
+        [
+            GameEvent::FormationCommitted {
+                player,
+                formation_id,
+                cards,
+                state: fewfc::domain::FormationAreaState::FaceUpResolving,
+                ..
+            },
+            GameEvent::ChoiceRequested { choice },
+        ] if player == &p1
+            && formation_id == "pouch:chain"
+            && cards == &chain_cards
+            && matches!(
+                choice.kind,
+                fewfc::domain::PendingChoiceKind::Chain { ref pouch_owners, ref deck_cards }
+                    if pouch_owners == &vec![p1.clone()]
+                        && deck_cards.contains(&placed_pouch)
+                        && deck_cards.contains(&deceive_trigger)
+            )
+    ));
+    let choice_id = record
+        .state()
+        .pending_choice
+        .as_ref()
+        .expect("legal Chain must create its typed choice")
+        .choice_id;
+
+    // interaction：同一個 AnswerChoice 先替換 Pouch，才用不同的四級火行 trigger
+    // 解析 Deceive Heaven；兩張牌絕不能是同一張。
+    let events = record
+        .handle(Command::AnswerChoice {
+            player: p1.clone(),
+            choice_id,
+            answer: ChoiceAnswer::Chain {
+                pouch_owner: p1.clone(),
+                pouch_card: placed_pouch,
+                trigger_card: Some(deceive_trigger),
+                strategy: Some(SecretStrategy::DeceiveHeaven),
+                target_player: None,
+                star: Some(StarKind::Fire),
+                break_star: false,
+                discard_card: None,
+            },
+        })
+        .unwrap();
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::ChoiceMade {
+                player,
+                answer: ChoiceAnswer::Chain {
+                    pouch_owner,
+                    pouch_card,
+                    trigger_card: Some(trigger),
+                    strategy: Some(SecretStrategy::DeceiveHeaven),
+                    star: Some(StarKind::Fire),
+                    break_star: false,
+                    ..
+                },
+                ..
+            },
+            GameEvent::PouchPlaced {
+                source,
+                owner,
+                card,
+                known_by,
+                previous: Some(previous),
+            },
+            GameEvent::PouchRevealed {
+                player: revealer,
+                owner: None,
+                card: revealed,
+                strategy: SecretStrategy::DeceiveHeaven,
+            },
+            GameEvent::TemporaryStarEffectGranted { effect },
+            GameEvent::PouchConsumed {
+                owner: None,
+                card: consumed,
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: discarded_by,
+                formation_id,
+                cards,
+            },
+        ] if player == &p1
+            && pouch_owner == &p1
+            && *pouch_card == placed_pouch
+            && *trigger == deceive_trigger
+            && source == &p1
+            && owner == &p1
+            && *card == placed_pouch
+            && known_by == &vec![p1.clone()]
+            && *previous == initial_pouch
+            && revealer == &p1
+            && *revealed == deceive_trigger
+            && effect.player == p1
+            && effect.star == StarKind::Fire
+            && effect.applied_on_turn == record.state().turn_number
+            && *consumed == deceive_trigger
+            && discarded_by == &p1
+            && formation_id == "pouch:chain"
+            && cards == &chain_cards
+    ));
+    assert_eq!(record.state().pouch_for(&p1).unwrap().card, placed_pouch);
+    assert!(record.state().temporary_star_effects.iter().any(|effect| {
+        effect.player == p1
+            && effect.star == StarKind::Fire
+            && effect.applied_on_turn == record.state().turn_number
+    }));
+    assert!(
+        record
+            .state()
+            .discard_for(&p1)
+            .unwrap()
+            .contains(&initial_pouch)
+    );
+    assert!(
+        record
+            .state()
+            .discard_for(&p1)
+            .unwrap()
+            .contains(&deceive_trigger)
+    );
+    assert!(
+        chain_cards
+            .iter()
+            .all(|card| { record.state().discard_for(&p1).unwrap().contains(card) })
+    );
+    assert!(
+        record
+            .public_view(Viewer::Player(p1.clone()))
+            .unwrap()
+            .pouches
+            .iter()
+            .any(|pouch| pouch.owner == p1 && pouch.card == Some(placed_pouch))
+    );
+    assert!(
+        record
+            .public_view(Viewer::Player(p2.clone()))
+            .unwrap()
+            .pouches
+            .iter()
+            .any(|pouch| pouch.owner == p1 && pouch.card.is_none())
+    );
+
+    finish_turn(&mut record, &p1);
+    assert_eq!(record.state().current_player(), Some(&p2));
+    assert!(record.state().temporary_star_effects.is_empty());
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }
 
 #[test]
@@ -2169,4 +3437,369 @@ fn pouch_deceive_heaven_matrix_breaks_the_selected_legal_star_but_keeps_the_unaf
     let events = scenario.trigger_deceive_heaven(StarKind::Metal, true);
     scenario.assert_direct_break(&events);
     scenario.assert_replay();
+}
+
+#[test]
+fn pouch_deceive_heaven_temporary_fire_star_matrix_keeps_draw_under_defense_and_preserves_water_star()
+ {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let p1_team = TeamId::new("team:p1");
+    let mut setup = OfficialRules::new()
+        .configure_game(
+            vec![
+                Player {
+                    id: p1.clone(),
+                    team: p1_team.clone(),
+                },
+                Player {
+                    id: p2.clone(),
+                    team: TeamId::new("team:p2"),
+                },
+            ],
+            vec![p1.clone(), p2.clone()],
+            POUCH_STRATEGY_MODULES
+                .into_iter()
+                .map(RuleModuleId::new)
+                .collect(),
+        )
+        .unwrap();
+    // 僅是背景：先合法召喚異名水星、再由對手覆蓋防禦的回合不能提早結束。
+    for hp in &mut setup.hp {
+        hp.hp = 10_000;
+    }
+    let mut record = GameRecord::start(setup, Vec::new()).unwrap();
+    let deceive_source = card_in_deck(&record, &p1, Element::Fire, 4);
+    let target_pouch = card_in_deck(&record, &p2, Element::Earth, 5);
+    record
+        .handle(Command::ChooseInitialPouch {
+            player: p1.clone(),
+            card: deceive_source,
+        })
+        .unwrap();
+    record
+        .handle(Command::ChooseInitialPouch {
+            player: p2.clone(),
+            card: target_pouch,
+        })
+        .unwrap();
+
+    let water_summon_cards = cards_in_deck(
+        &record,
+        &p1,
+        &[
+            (Element::Water, 3),
+            (Element::Water, 4),
+            (Element::Water, 5),
+        ],
+    );
+    let fire_star_cards = cards_in_deck(
+        &record,
+        &p1,
+        &[(Element::Fire, 1), (Element::Fire, 2), (Element::Wood, 3)],
+    );
+    let p1_turn_draw_background = card_in_deck(&record, &p1, Element::Earth, 1);
+    let defense_cards = cards_in_deck(&record, &p2, &[(Element::Wood, 1), (Element::Wood, 2)]);
+    let mut p1_order = water_summon_cards.clone();
+    p1_order.push(fire_star_cards[0]);
+    p1_order.extend(fire_star_cards[1..].iter().copied());
+    p1_order.push(p1_turn_draw_background);
+    let mut p2_order = defense_cards.clone();
+    p2_order.extend(cards_in_deck(
+        &record,
+        &p2,
+        &[(Element::Fire, 1), (Element::Metal, 1), (Element::Water, 1)],
+    ));
+
+    while let Some(request) = record.state().pending_randomness.clone() {
+        let fewfc::domain::RandomnessOperation::DeckShuffle { deck } = &request.operation else {
+            unreachable!("Pouch preparation only requests Personal Deck shuffles");
+        };
+        let shuffled_order = match deck {
+            fewfc::domain::RandomnessDeck::Player(owner) if owner == &p1 => {
+                append_remaining_cards(p1_order.clone(), &request.current_order)
+            }
+            fewfc::domain::RandomnessDeck::Player(owner) if owner == &p2 => {
+                append_remaining_cards(p2_order.clone(), &request.current_order)
+            }
+            _ => unreachable!("Pouch preparation has one Personal Deck per Player"),
+        };
+        record
+            .resolve_randomness(fewfc::domain::TrustedRandomnessAnswer {
+                request_id: request.request_id,
+                shuffled_order,
+            })
+            .unwrap();
+    }
+    record.advance_automatic().unwrap();
+    assert_eq!(record.state().current_player(), Some(&p1));
+
+    // 修飾本身：P1 用合法三張水行 Formation 召喚異名水星。
+    let summon_events = record
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "triple-water".to_string(),
+            cards: water_summon_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        summon_events.as_slice(),
+        [
+            GameEvent::FormationCommitted {
+                player,
+                formation_id,
+                cards,
+                ..
+            },
+            GameEvent::AttackResolved {
+                attacker,
+                formation_id: attack_formation,
+                ..
+            },
+            GameEvent::StarSummoned {
+                player: summoner,
+                team,
+                star: StarKind::Water,
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: discarded_by,
+                formation_id: discarded_formation,
+                cards: discarded_cards,
+            },
+        ] if player == &p1
+            && formation_id == "triple-water"
+            && cards == &water_summon_cards
+            && attacker == &p1
+            && attack_formation == "triple-water"
+            && summoner == &p1
+            && team == &p1_team
+            && discarded_by == &p1
+            && discarded_formation == "triple-water"
+            && discarded_cards == &water_summon_cards
+    ));
+    assert_eq!(
+        record.state().star_for_team(&p1_team),
+        Some(StarKind::Water)
+    );
+    assert_eq!(
+        record.public_view(Viewer::Observer).unwrap().team_stars,
+        vec![fewfc::domain::TeamStar {
+            team: p1_team.clone(),
+            star: StarKind::Water,
+        }]
+    );
+    finish_turn(&mut record, &p1);
+
+    // P2 的 Defense 也由完整命令流程覆蓋，並對 P1 保持蓋牌隱私。
+    assert_eq!(record.state().current_player(), Some(&p2));
+    let defense_events = record
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "defense".to_string(),
+            cards: defense_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        defense_events.as_slice(),
+        [
+            GameEvent::FormationCommitted {
+                player,
+                formation_id,
+                cards,
+                state: fewfc::domain::FormationAreaState::FaceDownResolving,
+                ..
+            },
+            GameEvent::PassiveCovered {
+                player: covered_by,
+                formation_id: covered,
+                cards: covered_cards,
+                sealed: false,
+                ..
+            },
+        ] if player == &p2
+            && formation_id == "defense"
+            && cards == &defense_cards
+            && covered_by == &p2
+            && covered == "defense"
+            && covered_cards == &defense_cards
+    ));
+    assert!(matches!(
+        record
+            .public_view(Viewer::Player(p1.clone()))
+            .unwrap()
+            .covered_passives
+            .as_slice(),
+        [fewfc::public_view::PublicCoveredPassive {
+            owner,
+            formation_id: None,
+            cards: fewfc::public_view::PublicCardRefs::Hidden { count: 2 },
+            star_substitution: None,
+        }] if owner == &p2
+    ));
+    finish_turn(&mut record, &p2);
+    assert_eq!(record.state().current_player(), Some(&p1));
+
+    // baseline：異名水星不會讓火星 Formation 出現在可用行動中。
+    assert!(
+        !record
+            .playable_actions(&p1, &fire_star_cards)
+            .unwrap()
+            .iter()
+            .any(|action| matches!(
+                action,
+                PlayableAction::PerformFormation(candidate)
+                    if candidate.formation_id == "yinghuo-heaven-blazing"
+            ))
+    );
+
+    // interaction：四級火行錦囊合法給予當回合火星；Defense 只阻止傷害，而不
+    // 阻止星陣自身的抽牌＋1，也不會破除異名水星。
+    let deceive_events = record
+        .handle(Command::TriggerSecretStrategy {
+            player: p1.clone(),
+            strategy: SecretStrategy::DeceiveHeaven,
+            target_player: None,
+            star: Some(StarKind::Fire),
+            break_star: false,
+            discard_card: None,
+            deck_cards: Vec::new(),
+            discard_cards: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        deceive_events.as_slice(),
+        [
+            GameEvent::PouchRevealed {
+                player,
+                owner: Some(owner),
+                card,
+                strategy: SecretStrategy::DeceiveHeaven,
+            },
+            GameEvent::TemporaryStarEffectGranted { effect },
+            GameEvent::PouchConsumed {
+                owner: Some(consumed_owner),
+                card: consumed_card,
+            },
+        ] if player == &p1
+            && owner == &p1
+            && *card == deceive_source
+            && effect.player == p1
+            && effect.star == StarKind::Fire
+            && effect.applied_on_turn == record.state().turn_number
+            && consumed_owner == &p1
+            && *consumed_card == deceive_source
+    ));
+    assert!(record.state().temporary_star_effects.iter().any(|effect| {
+        effect.player == p1
+            && effect.star == StarKind::Fire
+            && effect.applied_on_turn == record.state().turn_number
+    }));
+    assert!(record
+        .playable_actions(&p1, &fire_star_cards)
+        .unwrap()
+        .iter()
+        .any(|action| matches!(
+            action,
+            PlayableAction::PerformFormation(candidate)
+                if candidate.formation_id == "yinghuo-heaven-blazing" && candidate.cards == fire_star_cards
+        )));
+
+    let star_formation_events = record
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "yinghuo-heaven-blazing".to_string(),
+            cards: fire_star_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        star_formation_events.as_slice(),
+        [
+            GameEvent::FormationCommitted {
+                player,
+                formation_id,
+                cards,
+                ..
+            },
+            GameEvent::PassiveFlipped {
+                owner,
+                passive_id,
+                outcome: fewfc::domain::PassiveFlipOutcome::Applied { modifications, .. },
+                ..
+            },
+            GameEvent::AttackResolved {
+                attacker,
+                formation_id: attack_formation,
+                point_breakdown,
+                hp_change,
+                elemental_context_update: Some(effects),
+                ..
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: discarded_by,
+                formation_id: discarded_formation,
+                cards: discarded_cards,
+            },
+        ] if player == &p1
+            && formation_id == "yinghuo-heaven-blazing"
+            && cards == &fire_star_cards
+            && owner == &p2
+            && passive_id == "defense"
+            && modifications == &vec![fewfc::domain::ActionModification::PreventDamage]
+            && attacker == &p1
+            && attack_formation == "yinghuo-heaven-blazing"
+            && point_breakdown.base_points == 18
+            && point_breakdown.final_amount == 18
+            && hp_change.effective_delta == 0
+            && effects.turn_draw_bonus_changes
+                == vec![fewfc::domain::TurnDrawBonusDelta {
+                    player: p1.clone(),
+                    old_value: 0,
+                    delta: 1,
+                    new_value: 1,
+                }]
+            && discarded_by == &p1
+            && discarded_formation == "yinghuo-heaven-blazing"
+            && discarded_cards == &fire_star_cards
+    ));
+    assert!(
+        !star_formation_events
+            .iter()
+            .any(|event| matches!(event, GameEvent::StarBroken { .. }))
+    );
+    assert!(record.state().covered_passive(&p2).is_none());
+    assert_eq!(
+        record.state().star_for_team(&p1_team),
+        Some(StarKind::Water)
+    );
+    assert_eq!(record.state().turn_draw_bonus_by_player.get(&p1), Some(&1));
+    for card in water_summon_cards
+        .iter()
+        .chain(fire_star_cards.iter())
+        .chain(defense_cards.iter())
+        .chain(std::iter::once(&deceive_source))
+    {
+        assert!(
+            record
+                .state()
+                .discard_for(&p1)
+                .is_some_and(|discard| discard.contains(card))
+                || record
+                    .state()
+                    .discard_for(&p2)
+                    .is_some_and(|discard| discard.contains(card))
+        );
+    }
+
+    finish_turn(&mut record, &p1);
+    assert_eq!(record.state().current_player(), Some(&p2));
+    assert!(record.state().temporary_star_effects.is_empty());
+    assert_eq!(
+        record.state().star_for_team(&p1_team),
+        Some(StarKind::Water)
+    );
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }
