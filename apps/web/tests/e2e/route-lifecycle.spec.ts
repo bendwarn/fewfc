@@ -1,5 +1,5 @@
 import { expect as bareExpect, test as bareTest, type Page } from '@playwright/test'
-import { expect, fastPageTest, gotoAppRoute, test } from './fixtures'
+import { expect, fastPageTest, gotoAppRoute, setupFastTwoPlayerGame, test } from './fixtures'
 
 async function createWaitingRoomViaRequest(page: Page, roomName: string): Promise<string> {
   const response = await page.context().request.post('/api/games', {
@@ -130,52 +130,60 @@ test('Lobby exposes its route-local loading state before rooms arrive', async ({
   await page.unroute('**/api/games')
 })
 
-test('Lobby navigation reloads Game state, resets parameter-local state, and tears down the room session before re-entry', async ({ page }) => {
-  await page.setViewportSize({ width: 600, height: 900 })
-  const gameId = await createWaitingRoomViaRequest(page, `路由生命週期 ${Date.now()}`)
-  const nextGameId = await createWaitingRoomViaRequest(page, `路由生命週期下一局 ${Date.now()}`)
-  await gotoAppRoute(page, '/rooms')
-
-  const openedSockets: string[] = []
-  page.on('websocket', socket => {
-    if (
-      socket.url().includes(`/api/games/${gameId}/socket`)
-      || socket.url().includes(`/api/games/${nextGameId}/socket`)
-    ) {
-      openedSockets.push(socket.url())
-    }
+test('Lobby navigation reloads Game state, resets parameter-local state, and tears down the room session before re-entry', async ({ browser }) => {
+  test.setTimeout(60_000)
+  const game = await setupFastTwoPlayerGame(browser, {
+    roomName: `路由生命週期 ${Date.now()}`,
   })
+  const { host: page, gameId } = game
 
-  await page.locator('.my-rooms-card .public-room-list button').filter({ hasText: gameId.slice(0, 8) }).click()
-  await expect(page).toHaveURL(new RegExp(`/rooms/${gameId}$`))
-  await expect(page.locator('.waiting-overlay')).toBeVisible()
-  await expect.poll(() => openedSockets.filter(url => url.includes(`/api/games/${gameId}/socket`)).length).toBe(1)
+  try {
+    await page.setViewportSize({ width: 600, height: 900 })
+    const nextGameId = await createWaitingRoomViaRequest(page, `路由生命週期下一局 ${Date.now()}`)
 
-  await page.getByRole('button', { name: '完整紀錄' }).click()
-  await expect(page.locator('.event-panel.expanded')).toBeVisible()
-  await page.evaluate((path) => {
-    history.replaceState(history.state, '', path)
-    window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }))
-  }, `/rooms/${nextGameId}`)
-  await expect(page).toHaveURL(new RegExp(`/rooms/${nextGameId}$`))
-  await expect(page.locator('.waiting-overlay')).toBeVisible()
-  await expect(page.locator('.event-panel.expanded')).toHaveCount(0)
-  await expect.poll(() => openedSockets.some(url => url.includes(`/api/games/${nextGameId}/socket`))).toBe(true)
+    const openedSockets: string[] = []
+    page.on('websocket', socket => {
+      if (
+        socket.url().includes(`/api/games/${gameId}/socket`)
+        || socket.url().includes(`/api/games/${nextGameId}/socket`)
+      ) {
+        openedSockets.push(socket.url())
+      }
+    })
 
-  await gotoAppRoute(page, '/rooms')
-  await expect(page.getByRole('heading', { name: '公開房間' })).toBeVisible()
-  await expect.poll(async () => {
-    const response = await page.context().request.get(`/api/games/${nextGameId}`)
-    if (!response.ok()) return undefined
-    const room = await response.json() as {
-      metadata: { members: Array<{ owner: boolean, connected: boolean }> }
-    }
-    return room.metadata.members.find(member => member.owner)?.connected
-  }).toBe(false)
+    const eventSummary = page.locator('.mobile-event-summary')
+    await expect(eventSummary).toBeVisible()
+    await eventSummary.click()
+    await expect(page.getByRole('dialog', { name: '戰局紀錄' })).toBeVisible()
 
-  await gotoAppRoute(page, `/rooms/${gameId}`)
-  await expect(page.locator('.waiting-overlay')).toBeVisible()
-  await expect.poll(() => openedSockets.filter(url => url.includes(`/api/games/${gameId}/socket`)).length).toBe(2)
+    await page.evaluate((path) => {
+      history.replaceState(history.state, '', path)
+      window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }))
+    }, `/rooms/${nextGameId}`)
+    await expect(page).toHaveURL(new RegExp(`/rooms/${nextGameId}$`))
+    await expect(page.locator('.waiting-overlay')).toBeVisible()
+    await expect(page.getByRole('dialog', { name: '戰局紀錄' })).toHaveCount(0)
+    await expect(eventSummary).toHaveCount(0)
+    await expect.poll(() => openedSockets.some(url => url.includes(`/api/games/${nextGameId}/socket`))).toBe(true)
+
+    await gotoAppRoute(page, '/rooms')
+    await expect(page.getByRole('heading', { name: '公開房間' })).toBeVisible()
+    await expect.poll(async () => {
+      const response = await page.context().request.get(`/api/games/${nextGameId}`)
+      if (!response.ok()) return undefined
+      const room = await response.json() as {
+        metadata: { members: Array<{ owner: boolean, connected: boolean }> }
+      }
+      return room.metadata.members.find(member => member.owner)?.connected
+    }).toBe(false)
+
+    await gotoAppRoute(page, `/rooms/${gameId}`)
+    await expect(page.getByRole('region', { name: '五行戰鬥牌對戰桌' })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: '戰局紀錄' })).toHaveCount(0)
+    await expect.poll(() => openedSockets.filter(url => url.includes(`/api/games/${gameId}/socket`)).length).toBe(1)
+  } finally {
+    await game.close()
+  }
 })
 
 fastPageTest('leaving a loading Game route cannot recreate its room session', async ({ page }) => {

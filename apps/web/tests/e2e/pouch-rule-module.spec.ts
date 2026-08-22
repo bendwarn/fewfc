@@ -134,7 +134,11 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     await goldenCicada.click()
     await command
     await expect(active.getByRole('button', { name: /秘計‧金蟬/ })).toHaveCount(0)
-    await expect(active.locator('.persistent-effect')).toContainText('剩餘 1 回合 · 金蟬')
+    const effectSummary = active.locator('.effect-summary')
+    await expect(effectSummary).toHaveText(/效果 1/)
+    await effectSummary.click()
+    const effectDetail = active.getByRole('dialog', { name: /的效果 1$/ })
+    await expect(effectDetail).toContainText('剩餘 1 回合 · 金蟬')
   } finally {
     await game.close()
   }
