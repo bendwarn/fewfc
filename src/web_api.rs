@@ -1678,6 +1678,7 @@ struct WebPublicGameState {
     enabled_rule_modules: Vec<String>,
     status: String,
     winner_team: Option<String>,
+    game_conclusion: Option<WebGameConclusion>,
     turn_number: u64,
     phase: String,
     current_player: Option<String>,
@@ -1717,6 +1718,35 @@ struct WebPublicGameState {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct WebGameConclusion {
+    outcome: WebGameOutcome,
+    causes: Vec<WebGameEndCause>,
+}
+
+#[derive(Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum WebGameOutcome {
+    Winner { team: String },
+    Draw,
+}
+
+#[derive(Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum WebGameEndCause {
+    TeamHpDepleted { teams: Vec<String> },
+    DirectVictory { rule: String, team: String },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WebInitialPouchSelection {
     remaining_players: Vec<String>,
 }
@@ -1739,6 +1769,34 @@ impl WebPublicGameState {
             } => Some(team.as_str().to_string()),
             _ => None,
         };
+        let game_conclusion = match &state.status {
+            crate::domain::GameStatus::Finished { conclusion } => Some(WebGameConclusion {
+                outcome: match &conclusion.outcome {
+                    crate::domain::GameOutcome::Winner(team) => WebGameOutcome::Winner {
+                        team: team.as_str().to_string(),
+                    },
+                    crate::domain::GameOutcome::Draw => WebGameOutcome::Draw,
+                },
+                causes: conclusion
+                    .causes
+                    .iter()
+                    .map(|cause| match cause {
+                        crate::domain::GameEndCause::TeamHpDepleted { teams } => {
+                            WebGameEndCause::TeamHpDepleted {
+                                teams: teams.iter().map(|team| team.as_str().to_string()).collect(),
+                            }
+                        }
+                        crate::domain::GameEndCause::DirectVictory { rule, team } => {
+                            WebGameEndCause::DirectVictory {
+                                rule: rule.clone(),
+                                team: team.as_str().to_string(),
+                            }
+                        }
+                    })
+                    .collect(),
+            }),
+            _ => None,
+        };
         Self {
             enabled_rule_modules: enabled_rule_modules
                 .iter()
@@ -1750,6 +1808,7 @@ impl WebPublicGameState {
                 crate::domain::GameStatus::Finished { .. } => "Finished".to_string(),
             },
             winner_team,
+            game_conclusion,
             turn_number: state.turn_number,
             phase: format!("{:?}", state.phase),
             current_player: state
@@ -3334,21 +3393,21 @@ fn event_presentation_with_vocabulary(
             formation_id,
             cards,
         } => (
-            "承諾陣法".to_string(),
+            "施展陣法".to_string(),
             formation_id.as_deref().map_or_else(
                 || {
                     format!(
-                        "{} 承諾了 {}。",
+                        "{} 以 {} 施展陣法。",
                         player.as_str(),
-                        card_refs_summary(cards, labels)
+                        card_refs_summary(cards, labels),
                     )
                 },
                 |formation_id| {
                     format!(
-                        "{} 承諾「{}」，使用 {}。",
+                        "{} 以 {} 施展「{}」。",
                         player.as_str(),
+                        card_refs_summary(cards, labels),
                         formation_name(formation_names, formation_id),
-                        card_refs_summary(cards, labels)
                     )
                 },
             ),
@@ -3796,12 +3855,12 @@ fn game_event_presentation_with_vocabulary(
             cards,
             ..
         } => (
-            "承諾陣法".to_string(),
+            "施展陣法".to_string(),
             format!(
-                "{} 承諾「{}」，使用 {}。",
+                "{} 以 {} 施展「{}」。",
                 player.as_str(),
+                cards_summary(cards, labels),
                 formation_name(formation_names, formation_id),
-                cards_summary(cards, labels)
             ),
         ),
         GameEvent::FormationCardsDiscarded { player, cards, .. } => (
@@ -5544,6 +5603,20 @@ mod tests {
 
         assert_eq!(json["status"], "Finished");
         assert_eq!(json["winnerTeam"], setup.players[0].team.as_str());
+        assert_eq!(
+            json["gameConclusion"],
+            serde_json::json!({
+                "outcome": {
+                    "type": "winner",
+                    "team": setup.players[0].team.as_str(),
+                },
+                "causes": [{
+                    "type": "directVictory",
+                    "rule": "test",
+                    "team": setup.players[0].team.as_str(),
+                }],
+            })
+        );
     }
 
     #[test]

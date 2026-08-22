@@ -629,19 +629,20 @@ pub(crate) fn chain_events(
             ));
         }
     }
-    let previous = state.pouch_for(&owner).map(|pouch| pouch.card);
-    let mut known_by = vec![player.clone()];
-    if owner != *player {
-        known_by.push(owner.clone());
-    }
-    let mut events = vec![GameEvent::PouchPlaced {
-        source: player.clone(),
-        owner: owner.clone(),
-        card: pouch_card,
-        known_by,
-        previous,
-    }];
-    if let Some(source_card) = trigger_card {
+    let (strategy_target, strategy_star, strategy_break_star, strategy_discard_card) = targets
+        .iter()
+        .find_map(|target| match target {
+            crate::domain::TargetDecl::SecretStrategyOptions {
+                target_player,
+                star,
+                break_star,
+                discard_card,
+                ..
+            } => Some((target_player.clone(), *star, *break_star, *discard_card)),
+            _ => None,
+        })
+        .unwrap_or((None, None, false, None));
+    let strategy = if let Some(source_card) = trigger_card {
         let strategy = targets
             .iter()
             .find_map(|target| match target {
@@ -659,62 +660,98 @@ pub(crate) fn chain_events(
                 ValidationError::SecretStrategyConditionMismatch,
             ));
         }
-        let mut projected = state.clone();
-        crate::rules::projection::apply_event(&mut projected, &events[0]);
-        let (
-            strategy_target,
-            strategy_star,
-            strategy_break_star,
-            strategy_discard_card,
-            strategy_deck_cards,
-            strategy_discard_cards,
-        ) = targets
-            .iter()
-            .find_map(|target| match target {
-                crate::domain::TargetDecl::SecretStrategyOptions {
-                    target_player,
-                    star,
-                    break_star,
-                    discard_card,
-                    deck_cards,
-                    discard_cards,
-                } => Some((
-                    target_player.as_ref(),
-                    *star,
-                    *break_star,
-                    *discard_card,
-                    deck_cards.as_slice(),
-                    discard_cards.as_slice(),
-                )),
-                _ => None,
-            })
-            .unwrap_or((None, None, false, None, &[], &[]));
+        Some(strategy)
+    } else {
+        None
+    };
+    let previous = state.pouch_for(&owner).map(|pouch| pouch.card);
+    let mut known_by = vec![player.clone()];
+    if owner != *player {
+        known_by.push(owner.clone());
+    }
+    let mut events = vec![GameEvent::PouchPlaced {
+        source: player.clone(),
+        owner: owner.clone(),
+        card: pouch_card,
+        known_by,
+        previous,
+    }];
+    if let Some(source_card) = trigger_card {
+        let strategy = strategy.ok_or(GameError::Validation(
+            ValidationError::SecretStrategyInputInvalid,
+        ))?;
         let revealed = GameEvent::PouchRevealed {
             player: player.clone(),
             owner: None,
             card: source_card,
             strategy,
         };
-        crate::rules::projection::apply_event(&mut projected, &revealed);
         events.push(revealed);
-        events.extend(strategy_events(
+    }
+    let mut projected = state.clone();
+    for event in &events {
+        crate::rules::projection::apply_event(&mut projected, event);
+    }
+
+    if let (Some(source_card), Some(strategy)) = (trigger_card, strategy) {
+        let strategy_events = strategy_events(
             &projected,
             player,
             source_card,
             strategy,
-            strategy_target.or(Some(&owner)),
+            strategy_target.as_ref().or(Some(&owner)),
             strategy_star,
             strategy_break_star,
             strategy_discard_card,
-            strategy_deck_cards,
-            strategy_discard_cards,
-        )?);
-        if strategy != SecretStrategy::SheepStealing {
-            events.push(GameEvent::PouchConsumed {
-                owner: None,
-                card: source_card,
-            });
+            &[],
+            &[],
+        )?;
+        let has_pending = strategy_events.iter().any(|event| {
+            matches!(
+                event,
+                GameEvent::ChoiceRequested { .. } | GameEvent::RandomnessRequested { .. }
+            )
+        });
+        events.extend(strategy_events);
+
+        // 牽羊會自行建立交換後的 Deck Shuffle，不能再追加一次連環洗牌。
+        if strategy == SecretStrategy::SheepStealing || has_pending {
+            return Ok(events);
         }
+        events.push(GameEvent::PouchConsumed {
+            owner: None,
+            card: source_card,
+        });
+    }
+
+    projected = state.clone();
+    for event in &events {
+        crate::rules::projection::apply_event(&mut projected, event);
+    }
+    let remainder = projected
+        .deck_for(player)
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?
+        .to_vec();
+    let continuation = PouchRandomnessContinuation::ChainPostSearch {
+        player: player.clone(),
+    };
+    if remainder.is_empty() {
+        events.extend(chain_completion_events(&projected, player));
+    } else {
+        events.push(GameEvent::RandomnessRequested {
+            request: crate::domain::PendingRandomness {
+                request_id: format!(
+                    "pouch:chain:post-search:{}:{}",
+                    player.as_str(),
+                    state.turn_number
+                ),
+                operation: crate::domain::RandomnessOperation::DeckShuffle {
+                    deck: RandomnessDeck::Player(player.clone()),
+                },
+                continuation: RandomnessContinuation::Pouch(continuation),
+                current_order: remainder,
+            },
+        });
     }
     Ok(events)
 }
@@ -1193,6 +1230,41 @@ pub(crate) fn after_chain_recycle_randomness_events(
         .current_player()
         .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?;
     chain_events(state, player, &[])
+}
+
+pub(crate) fn after_chain_post_search_randomness_events(
+    state: &GameState,
+    continuation: &PouchRandomnessContinuation,
+) -> GameResult<Vec<GameEvent>> {
+    let PouchRandomnessContinuation::ChainPostSearch { player } = continuation else {
+        return Err(GameError::RuleImplementation(
+            crate::domain::RuleImplementationError::EffectNotImplemented(
+                "pouch:chain:missing-post-search-continuation".to_string(),
+            ),
+        ));
+    };
+
+    Ok(chain_completion_events(state, player))
+}
+
+fn chain_completion_events(state: &GameState, player: &PlayerId) -> Vec<GameEvent> {
+    state
+        .formation_area(player)
+        .and_then(|area| area.formation.as_ref())
+        .filter(|formation| {
+            matches!(
+                formation.state,
+                crate::domain::FormationAreaState::FaceUpResolving
+            )
+        })
+        .map(|formation| {
+            vec![GameEvent::FormationCardsDiscarded {
+                player: player.clone(),
+                formation_id: formation.formation_id.clone(),
+                cards: formation.cards.clone(),
+            }]
+        })
+        .unwrap_or_default()
 }
 
 pub(crate) fn has_status(state: &GameState, player: &PlayerId, kind: &str) -> bool {

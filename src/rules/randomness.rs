@@ -115,6 +115,9 @@ fn after_randomness_events(
         RandomnessContinuation::Pouch(PouchRandomnessContinuation::ChainRecycle) => {
             crate::rules::pouch::after_chain_recycle_randomness_events(state)
         }
+        RandomnessContinuation::Pouch(
+            continuation @ PouchRandomnessContinuation::ChainPostSearch { .. },
+        ) => crate::rules::pouch::after_chain_post_search_randomness_events(state, continuation),
         RandomnessContinuation::Pouch(PouchRandomnessContinuation::SheepStealingRecycle {
             source_card,
         }) => crate::rules::pouch::after_sheep_recycle_randomness_events(state, *source_card),

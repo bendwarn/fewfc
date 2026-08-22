@@ -161,6 +161,8 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
 
     await Promise.all(pages.map(async (page) => {
       await expect(page.locator('.result-panel')).toBeVisible()
+      await expect(page.locator('.result-reason')).toContainText('終局原因')
+      await expect(page.locator('.result-reason')).toContainText('生命值歸零')
       await expect(page.getByRole('region', { name: '啟用規則' }))
         .toContainText('星辰圖記')
     }))

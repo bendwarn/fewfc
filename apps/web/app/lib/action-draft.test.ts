@@ -36,6 +36,7 @@ function state(overrides: Partial<PublicGameState> = {}): PublicGameState {
     starHistories: [],
     fiveStarAlignment: null,
     winnerTeam: null,
+    gameConclusion: null,
     professions: [],
     professionCatalog: [],
     cardInterpretations: [],

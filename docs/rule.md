@@ -808,12 +808,16 @@ selected by Sheep Stealing.
 
 Pouch ownership does not change Card Origin. A Pouch given to a teammate by
 Chain enters the origin Player's Discard Pile when it is triggered or replaced.
-Chain does not shuffle after searching. Its private choice options expose
+Chain resolves the triggered Secret Strategy first, then shuffles the remaining
+Personal Deck through a trusted Deck Shuffle. Its private choice options expose
 eligible Card Instances without revealing their Deck positions, and selected
-Cards are removed while the relative order of the remaining Deck is preserved.
-If the Deck contains fewer than two Cards when Chain begins, a Discard Shuffle
-runs before the search as required by the published rule; the Player makes the
-Chain selection only after that shuffle has completed.
+Cards are removed before that shuffle. If the triggered strategy is Sheep
+Stealing, its own post-exchange Deck Shuffle satisfies Chain's shuffle
+requirement, so Chain does not request a duplicate shuffle. If the Deck
+contains fewer than two Cards when Chain begins, a Discard Shuffle runs before
+the search as required by the published rule; the Player makes the Chain
+selection only after that shuffle has completed. A post-search Deck Shuffle is
+not requested when no Cards remain.
 
 Sheep Stealing first discards two selected Cards from the Player's Personal
 Deck, then returns two selected Cards from that Player's Discard Pile and

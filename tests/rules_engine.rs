@@ -15,8 +15,8 @@ use fewfc::domain::{
     LastElementalAttackUpdate, LastFormationUse, PassActionReason, PassiveFlipOutcome,
     PassiveNoEffectGround, PendingChoice, PendingChoiceKind, Phase, Player, PlayerFormationArea,
     PlayerHand, PlayerId, PlayerShield, RuleModuleId, RulesetId, ShieldChangeDelta, StatusDuration,
-    StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId, TurnDrawSkipReason,
-    ValidationError,
+    StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId, TurnDrawBonusDelta,
+    TurnDrawSkipReason, ValidationError,
 };
 use fewfc::public_view::{
     self, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
@@ -2392,66 +2392,94 @@ fn team_mode_builder_produces_valid_alternating_setup() {
 }
 
 #[test]
-fn team_mode_attack_resolves_previous_player_and_opposing_team_without_declared_targets() {
+fn four_player_metal_strike_matrix_targets_the_cyclic_previous_opposing_team() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let p3 = PlayerId::new("p3");
+    let p4 = PlayerId::new("p4");
     let card_setup = two_player_setup();
-    let setup = GameSetup::team_mode(
+    let mut setup = GameSetup::team_mode(
         TeamId::new("A"),
-        vec![PlayerId::new("p1"), PlayerId::new("p3")],
+        vec![p1.clone(), p3.clone()],
         TeamId::new("B"),
-        vec![PlayerId::new("p2"), PlayerId::new("p4")],
+        vec![p2.clone(), p4.clone()],
         30,
     )
     .with_cards(card_setup.card_defs, card_setup.card_instances);
-    let mut record = GameRecord::start(setup, official_deck()).unwrap();
+    setup.card_instances.extend((21..=30).map(|id| {
+        card_instance(
+            id,
+            match id % 5 {
+                1 => "metal",
+                2 => "wood",
+                3 => "water",
+                4 => "fire",
+                _ => "earth",
+            },
+        )
+    }));
+    let mut record = GameRecord::start(setup, (1..=30).map(card).collect()).unwrap();
     record.advance_automatic().unwrap();
 
-    assert_event_semantics_eq!(
+    // 在 A/B 交錯座次 P1、P2、P3、P4 中，不宣告 target 的 Metal Strike 必須以
+    // 環狀上一位 P4 為 target，並只扣除其 Team B 的 HP。
+    assert_eq!(
         record
             .handle(Command::PerformFormation {
-                player: PlayerId::new("p1"),
+                player: p1.clone(),
                 formation_id: "metal-strike".to_string(),
                 cards: vec![card(1)],
                 declared_targets: Vec::new(),
             })
             .unwrap(),
-        vec![GameEvent::AttackResolved {
-            attacker: PlayerId::new("p1"),
-            target: PlayerId::new("p4"),
-            formation_id: "metal-strike".to_string(),
-            used_cards: vec![card(1)],
-            point_breakdown: AttackPointBreakdown {
-                base_points: 7,
-                environment_effect: EnvironmentAttackEffect::None,
-                interaction: ElementInteraction::None,
-                damage_transform: DamageTransform::NormalDamage,
-                final_amount: 7,
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
             },
-            hp_change: HpChangeDelta {
-                team: TeamId::new("B"),
-                old_hp: 30,
-                delta: -7,
-                new_hp: 23,
-                effective_delta: -7,
-            },
-            shield_change: None,
-            card_moves: vec![CardMoveDelta {
-                card: card(1),
-                from: CardZone::Hand(PlayerId::new("p1")),
-                to: CardZone::Discard,
-            }],
-            elemental_context_update: atomic_context!(LastElementalAttackUpdate {
-                player: PlayerId::new("p1"),
-                attack: LastElementalAttack {
-                    element: Element::Metal,
-                    resolved_turn: 1,
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p4.clone(),
+                formation_id: "metal-strike".to_string(),
+                used_cards: vec![card(1)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 7,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 7,
                 },
-            }),
-        }]
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("B"),
+                    old_hp: 30,
+                    delta: -7,
+                    new_hp: 23,
+                    effective_delta: -7,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p1.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Metal,
+                        resolved_turn: 1,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+            },
+        ]
     );
-
-    let state = record.state().clone();
+    assert_eq!(record.state().phase, Phase::TurnDraw);
+    assert_eq!(record.state().current_player(), Some(&p1));
     assert_eq!(
-        state.hp,
+        record.state().hp,
         vec![
             TeamHp {
                 team: TeamId::new("A"),
@@ -2463,70 +2491,481 @@ fn team_mode_attack_resolves_previous_player_and_opposing_team_without_declared_
             },
         ]
     );
-    assert_eq!(record.replay().unwrap(), state);
+    assert_eq!(record.state().hand(&p2).unwrap().len(), 5);
+    assert_eq!(record.state().hand(&p3).unwrap().len(), 5);
+    assert_eq!(record.state().hand(&p4).unwrap().len(), 5);
+    assert_eq!(record.state().discard, vec![card(1)]);
+    let observer_before_turn_end = record.public_view(Viewer::Observer).unwrap();
+    assert_eq!(observer_before_turn_end.phase, Phase::TurnDraw);
+    assert_eq!(
+        observer_before_turn_end.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("A"),
+                hp: 30,
+            },
+            TeamHp {
+                team: TeamId::new("B"),
+                hp: 23,
+            },
+        ]
+    );
+    assert_eq!(
+        observer_before_turn_end.hands,
+        vec![
+            PublicPlayerHand {
+                player: p1.clone(),
+                cards: PublicCardRefs::Hidden { count: 3 },
+            },
+            PublicPlayerHand {
+                player: p2.clone(),
+                cards: PublicCardRefs::Hidden { count: 5 },
+            },
+            PublicPlayerHand {
+                player: p3.clone(),
+                cards: PublicCardRefs::Hidden { count: 5 },
+            },
+            PublicPlayerHand {
+                player: p4.clone(),
+                cards: PublicCardRefs::Hidden { count: 5 },
+            },
+        ]
+    );
+
+    // 以合法 Turn Draw choice 結束 P1 回合，讓 Public View 也保留此四人座次下的
+    // 前一回合 Formation；P2/P3/P4 的手牌仍沒有被這次攻擊碰觸。
+    advance_record_to_next_main_after_turn_draw(&mut record, card(20));
+    assert_eq!(record.state().phase, Phase::ActiveEffects);
+    assert_eq!(record.state().current_player(), Some(&p2));
+    assert_eq!(
+        record
+            .public_view(Viewer::Observer)
+            .unwrap()
+            .previous_turn_formation,
+        Some(PublicPreviousTurnFormation {
+            player: p1.clone(),
+            formation_id: Some("metal-strike".to_string()),
+            cards: PublicCardRefs::Known(vec![card(1)]),
+        })
+    );
+    assert_eq!(record.state().hand(&p2).unwrap().len(), 5);
+    assert_eq!(record.state().hand(&p3).unwrap().len(), 5);
+    assert_eq!(record.state().hand(&p4).unwrap().len(), 5);
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }
 
 #[test]
-fn team_mode_attack_uses_only_the_previous_players_personal_shield() {
-    let card_setup = two_player_setup();
-    let setup = GameSetup::team_mode(
-        TeamId::new("A"),
-        vec![PlayerId::new("p1"), PlayerId::new("p3")],
-        TeamId::new("B"),
-        vec![PlayerId::new("p2"), PlayerId::new("p4")],
-        30,
-    )
-    .with_cards(card_setup.card_defs, card_setup.card_instances);
-    let mut state = GameState::from_setup(&setup);
-    state.phase = Phase::ActiveEffects;
-    state.hands = vec![
-        PlayerHand::new(PlayerId::new("p1"), vec![card(1)]),
-        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
-        PlayerHand::new(PlayerId::new("p3"), Vec::new()),
-        PlayerHand::new(PlayerId::new("p4"), Vec::new()),
-    ];
-    apply_event(
-        &mut state,
-        &GameEvent::ShieldChanged {
-            player: PlayerId::new("p2"),
-            old_value: 0,
-            delta: 20,
-            new_value: 20,
-        },
-    );
-    apply_event(
-        &mut state,
-        &GameEvent::ShieldChanged {
-            player: PlayerId::new("p4"),
-            old_value: 0,
-            delta: 5,
-            new_value: 5,
-        },
-    );
+fn four_player_metal_strike_matrix_consumes_only_the_cyclic_previous_players_shield() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let p3 = PlayerId::new("p3");
+    let p4 = PlayerId::new("p4");
 
-    let events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "metal-strike".to_string(),
-            cards: vec![card(1)],
-            declared_targets: Vec::new(),
-        },
+    let setup = || {
+        let card_setup = two_player_setup();
+        let mut setup = GameSetup::team_mode(
+            TeamId::new("A"),
+            vec![p1.clone(), p3.clone()],
+            TeamId::new("B"),
+            vec![p2.clone(), p4.clone()],
+            100,
+        )
+        .with_cards(card_setup.card_defs, card_setup.card_instances);
+        setup.card_instances.extend((21..=60).map(|id| {
+            card_instance(
+                id,
+                match id % 5 {
+                    1 => "metal",
+                    2 => "wood",
+                    3 => "water",
+                    4 => "fire",
+                    _ => "earth",
+                },
+            )
+        }));
+        setup
+    };
+    let complete_deck = |prefix: &[u64]| {
+        let mut deck = prefix.iter().copied().map(card).collect::<Vec<_>>();
+        for id in 1..=60 {
+            let candidate = card(id);
+            if !deck.contains(&candidate) {
+                deck.push(candidate);
+            }
+        }
+        deck
+    };
+    let finish_turn = |record: &mut GameRecord, player: &PlayerId| {
+        record.advance_automatic().unwrap();
+        let discard = match record.state().pending_choice.as_ref() {
+            Some(PendingChoice {
+                kind: PendingChoiceKind::Card { cards, .. },
+                ..
+            }) => cards[0],
+            other => panic!("expected Turn Draw card choice, got {other:?}"),
+        };
+        answer_record_choice(
+            record,
+            player.clone(),
+            ChoiceAnswer::Cards {
+                cards: vec![discard],
+            },
+        )
+        .unwrap();
+        record.advance_automatic().unwrap();
+    };
+
+    let initial_generating = vec![card(1), card(3), card(2)];
+
+    // 無 modifier 基準：同一個完整 P1→P2→P3→P4 cycle 中，P4 以 physical
+    // Weapon 收尾，不會留下元素脈絡或 Shield；P1 第二回合的 Metal Strike 因而
+    // 正常傷害 cyclic previous P4 所在的 Team B。
+    let mut baseline = GameRecord::start(
+        setup(),
+        complete_deck(&[
+            1, 3, 2, 6, // P1: Generating 後保留 Metal。
+            21, 5, 7, 8, 9, // P2: Metal Strike bridge。
+            15, 11, 13, 14, 20, // P3: Generating bridge。
+            26, 16, 17, 18, 19, // P4: physical Weapon bridge。
+        ]),
     )
     .unwrap();
-    for event in &events {
-        apply_event(&mut state, event);
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "generating-formation".to_string(),
+            cards: initial_generating.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut baseline, &p1);
+    baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(21)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut baseline, &p2);
+    baseline
+        .handle(Command::PerformFormation {
+            player: p3.clone(),
+            formation_id: "generating-formation".to_string(),
+            cards: vec![card(15), card(11), card(13)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut baseline, &p3);
+    baseline
+        .handle(Command::PerformFormation {
+            player: p4.clone(),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(26), card(16)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut baseline, &p4);
+    assert_eq!(baseline.state().current_player(), Some(&p1));
+    assert_eq!(
+        baseline
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(6)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(6)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p4.clone(),
+                formation_id: "metal-strike".to_string(),
+                used_cards: vec![card(6)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 7,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 7,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("B"),
+                    old_hp: 100,
+                    delta: -7,
+                    new_hp: 93,
+                    effective_delta: -7,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p1.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Metal,
+                        resolved_turn: 5,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(6)],
+            },
+        ]
+    );
+    assert_eq!(baseline.state().shield(&p2), Some(0));
+    assert_eq!(baseline.state().shield(&p4), Some(0));
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+    assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
+
+    let p2_barrier = vec![card(7), card(22), card(21), card(24)];
+    let p4_barrier = vec![card(17), card(27), card(26), card(29)];
+    // 修飾本身：P2 與 P4 都以合法 Barrier 各自建立 44 Shield；P3 的非攻擊
+    // bridge 不會翻開或消耗 P2 的 Shield。
+    let mut interaction = GameRecord::start(
+        setup(),
+        complete_deck(&[
+            1, 3, 2, 6, // P1
+            7, 22, 21, 24, 5, // P2 Barrier
+            15, 11, 13, 14, 20, // P3 Generating
+            17, 27, 26, 29, 16, // P4 Barrier
+        ]),
+    )
+    .unwrap();
+    interaction.advance_automatic().unwrap();
+    interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "generating-formation".to_string(),
+            cards: initial_generating,
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut interaction, &p1);
+    assert_eq!(
+        interaction
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "barrier".to_string(),
+                cards: p2_barrier.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "barrier".to_string(),
+                cards: p2_barrier.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::ShieldChanged {
+                player: p2.clone(),
+                old_value: 0,
+                delta: 44,
+                new_value: 44,
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "barrier".to_string(),
+                cards: p2_barrier.clone(),
+            },
+        ]
+    );
+    finish_turn(&mut interaction, &p2);
+    interaction
+        .handle(Command::PerformFormation {
+            player: p3.clone(),
+            formation_id: "generating-formation".to_string(),
+            cards: vec![card(15), card(11), card(13)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut interaction, &p3);
+    assert_eq!(
+        interaction
+            .handle(Command::PerformFormation {
+                player: p4.clone(),
+                formation_id: "barrier".to_string(),
+                cards: p4_barrier.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p4.clone(),
+                formation_id: "barrier".to_string(),
+                cards: p4_barrier.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::ShieldChanged {
+                player: p4.clone(),
+                old_value: 0,
+                delta: 44,
+                new_value: 44,
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p4.clone(),
+                formation_id: "barrier".to_string(),
+                cards: p4_barrier.clone(),
+            },
+        ]
+    );
+    finish_turn(&mut interaction, &p4);
+    assert_eq!(interaction.state().current_player(), Some(&p1));
+    for viewer in [
+        Viewer::Player(p1.clone()),
+        Viewer::Player(p2.clone()),
+        Viewer::Player(p3.clone()),
+        Viewer::Player(p4.clone()),
+        Viewer::Observer,
+    ] {
+        assert_eq!(
+            interaction.public_view(viewer).unwrap().shields,
+            vec![
+                PlayerShield {
+                    player: p1.clone(),
+                    value: 0,
+                },
+                PlayerShield {
+                    player: p2.clone(),
+                    value: 44,
+                },
+                PlayerShield {
+                    player: p3.clone(),
+                    value: 0,
+                },
+                PlayerShield {
+                    player: p4.clone(),
+                    value: 44,
+                },
+            ]
+        );
     }
 
-    assert_eq!(state.shield(&PlayerId::new("p2")), Some(20));
-    assert_eq!(state.shield(&PlayerId::new("p4")), Some(0));
+    // 互動：P1 的第二回合 Metal Strike 只命中 cyclic previous P4 的 Shield。P2
+    // 是同隊 sibling，仍完整保留 44；Team B 亦因 Shield absorption 維持 100 HP。
     assert_eq!(
-        state
-            .hp
-            .iter()
-            .find(|team_hp| team_hp.team == TeamId::new("B"))
-            .map(|team_hp| team_hp.hp),
-        Some(30)
+        interaction
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(6)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(6)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p4.clone(),
+                formation_id: "metal-strike".to_string(),
+                used_cards: vec![card(6)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 7,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 7,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("B"),
+                    old_hp: 100,
+                    delta: 0,
+                    new_hp: 100,
+                    effective_delta: 0,
+                },
+                shield_change: Some(ShieldChangeDelta {
+                    player: p4.clone(),
+                    old_value: 44,
+                    delta: -7,
+                    new_value: 37,
+                }),
+                card_moves: Vec::new(),
+                elemental_context_update: Some(AttackResolutionEffects {
+                    outcome: AttackOutcome::AbsorbedByShield,
+                    elemental_context_update: Some(LastElementalAttackUpdate {
+                        player: p1.clone(),
+                        attack: LastElementalAttack {
+                            element: Element::Metal,
+                            resolved_turn: 5,
+                        },
+                    }),
+                    ..Default::default()
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(6)],
+            },
+        ]
+    );
+    assert_eq!(interaction.state().phase, Phase::TurnDraw);
+    assert_eq!(interaction.state().current_player(), Some(&p1));
+    assert_eq!(interaction.state().shield(&p2), Some(44));
+    assert_eq!(interaction.state().shield(&p4), Some(37));
+    assert_eq!(
+        interaction.state().hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("A"),
+                hp: 100,
+            },
+            TeamHp {
+                team: TeamId::new("B"),
+                hp: 100,
+            },
+        ]
+    );
+    for used in p2_barrier
+        .iter()
+        .chain(p4_barrier.iter())
+        .chain([card(6)].iter())
+    {
+        assert!(interaction.state().discard.contains(used));
+    }
+    assert_eq!(
+        interaction.public_view(Viewer::Observer).unwrap().shields,
+        vec![
+            PlayerShield {
+                player: p1.clone(),
+                value: 0,
+            },
+            PlayerShield {
+                player: p2.clone(),
+                value: 44,
+            },
+            PlayerShield {
+                player: p3.clone(),
+                value: 0,
+            },
+            PlayerShield {
+                player: p4.clone(),
+                value: 37,
+            },
+        ]
+    );
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
     );
 }
 
@@ -3001,7 +3440,9 @@ fn turn_draw_recycles_discard_to_deck_bottom_when_deck_is_insufficient() {
 }
 
 #[test]
-fn triple_fire_uses_level_sum_times_three_and_replays() {
+fn triple_fire_level_sum_matrix_commits_resolves_and_replays() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
     let mut record = GameRecord::start(
         two_player_setup_with_hp(100),
         deck_starting_with(&[4, 9, 14, 1]),
@@ -3009,30 +3450,96 @@ fn triple_fire_uses_level_sum_times_three_and_replays() {
     .unwrap();
     record.advance_automatic().unwrap();
 
-    record
+    // 三張 Fire 等級都是四；這個無 modifier 基準必須以完整合法 Command 產生
+    // 等級總和十二乘三後的三十六點傷害。
+    let events = record
         .handle(Command::PerformFormation {
-            player: PlayerId::new("p1"),
+            player: p1.clone(),
             formation_id: "triple-fire".to_string(),
             cards: vec![card(4), card(9), card(14)],
             declared_targets: Vec::new(),
         })
         .unwrap();
-
-    let state = record.state().clone();
     assert_eq!(
-        state
-            .hp
-            .iter()
-            .find(|team_hp| team_hp.team == TeamId::new("team:p2"))
-            .map(|team_hp| team_hp.hp),
-        Some(64)
+        events,
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "triple-fire".to_string(),
+                cards: vec![card(4), card(9), card(14)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p2.clone(),
+                formation_id: "triple-fire".to_string(),
+                used_cards: vec![card(4), card(9), card(14)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 36,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 36,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 100,
+                    delta: -36,
+                    new_hp: 64,
+                    effective_delta: -36,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p1.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Fire,
+                        resolved_turn: 1,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "triple-fire".to_string(),
+                cards: vec![card(4), card(9), card(14)],
+            },
+        ]
     );
-    assert_eq!(state.discard, vec![card(4), card(9), card(14)]);
-    assert_eq!(record.replay().unwrap(), state);
+    assert_eq!(record.state().phase, Phase::TurnDraw);
+    assert_eq!(record.state().current_player(), Some(&p1));
+    assert_eq!(record.state().discard, vec![card(4), card(9), card(14)]);
+    assert_eq!(
+        record.state().last_elemental_attack_by_player.get(&p1),
+        Some(&LastElementalAttack {
+            element: Element::Fire,
+            resolved_turn: 1,
+        })
+    );
+    let observer_view = record.public_view(Viewer::Observer).unwrap();
+    assert_eq!(observer_view.phase, Phase::TurnDraw);
+    assert_eq!(
+        observer_view.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 100,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 64,
+            },
+        ]
+    );
+    assert_eq!(observer_view.discard, vec![card(4), card(9), card(14)]);
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }
 
 #[test]
-fn shock_burst_uses_level_sum_times_four_without_elemental_context() {
+fn shock_burst_level_sum_matrix_has_no_elemental_context() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
     let mut record = GameRecord::start(
         two_player_setup_with_hp(100),
         deck_starting_with(&[4, 9, 3, 5]),
@@ -3040,187 +3547,380 @@ fn shock_burst_uses_level_sum_times_four_without_elemental_context() {
     .unwrap();
     record.advance_automatic().unwrap();
 
-    record
+    // Shock Burst 是非元素攻擊：四張已提交卡牌的等級總和十四乘四為五十六，但
+    // 不能藉此寫入任何最後元素脈絡。
+    let events = record
         .handle(Command::PerformFormation {
-            player: PlayerId::new("p1"),
+            player: p1.clone(),
             formation_id: "shock-burst".to_string(),
             cards: vec![card(4), card(9), card(3), card(5)],
             declared_targets: Vec::new(),
         })
         .unwrap();
-
-    let state = record.state().clone();
     assert_eq!(
-        state
-            .hp
-            .iter()
-            .find(|team_hp| team_hp.team == TeamId::new("team:p2"))
-            .map(|team_hp| team_hp.hp),
-        Some(44)
-    );
-    assert!(
-        !state
-            .last_elemental_attack_by_player
-            .contains_key(&PlayerId::new("p1"))
-    );
-    assert_eq!(state.discard, vec![card(4), card(9), card(3), card(5)]);
-    assert_eq!(record.replay().unwrap(), state);
-}
-
-#[test]
-fn five_streams_unite_uses_target_hand_count_and_increases_the_same_turn_draw() {
-    let mut setup = two_player_setup_with_hp(100);
-    setup.card_instances.push(card_instance(21, "metal"));
-    let mut record =
-        GameRecord::start(setup, deck_starting_with(&[2, 3, 4, 5, 1, 6, 11, 16, 21])).unwrap();
-    record.advance_automatic().unwrap();
-    record
-        .handle(Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "empty-city".to_string(),
-            cards: vec![card(2), card(3)],
-            declared_targets: Vec::new(),
-        })
-        .unwrap();
-    advance_record_to_next_main_after_turn_draw(&mut record, card(7));
-
-    record
-        .handle(Command::PerformFormation {
-            player: PlayerId::new("p2"),
-            formation_id: "five-streams-unite".to_string(),
-            cards: vec![card(1), card(6), card(11), card(16), card(21)],
-            declared_targets: Vec::new(),
-        })
-        .unwrap();
-    assert_eq!(
-        record
-            .state()
-            .turn_draw_bonus_by_player
-            .get(&PlayerId::new("p2")),
-        Some(&1)
-    );
-    assert_eq!(
-        record
-            .state()
-            .hp
-            .iter()
-            .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
-            .map(|team_hp| team_hp.hp),
-        Some(40)
-    );
-
-    record.advance_automatic().unwrap();
-    assert!(matches!(
-        &record.state().pending_choice,
-        Some(PendingChoice {
-            player,
-            kind: PendingChoiceKind::Card { cards, .. },
-            ..
-        }) if player == &PlayerId::new("p2") && cards.len() == 4
-    ));
-    answer_record_choice(
-        &mut record,
-        PlayerId::new("p2"),
-        ChoiceAnswer::Cards {
-            cards: vec![card(10)],
-        },
-    )
-    .unwrap();
-    record.advance_automatic().unwrap();
-
-    let state = record.state().clone();
-    assert_eq!(
-        state
-            .hand(&PlayerId::new("p2"))
-            .map(<[CardInstanceId]>::len),
-        Some(3)
-    );
-    assert_eq!(record.replay().unwrap(), state);
-}
-
-#[test]
-fn immediate_active_spell_resolves_through_perform_formation() {
-    let mut record =
-        GameRecord::start(two_player_setup(), deck_starting_with(&[2, 7, 1, 4])).unwrap();
-    record.advance_automatic().unwrap();
-
-    assert_event_semantics_eq!(
-        record
-            .handle(Command::PerformFormation {
-                player: PlayerId::new("p1"),
-                formation_id: "barrier".to_string(),
-                cards: vec![card(2), card(7), card(1), card(4)],
-                declared_targets: Vec::new(),
-            })
-            .unwrap(),
+        events,
         vec![
-            GameEvent::FormationPerformed {
-                player: PlayerId::new("p1"),
-                formation_id: "barrier".to_string(),
-                used_cards: vec![card(2), card(7), card(1), card(4)],
-                declared_targets: Vec::new(),
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "shock-burst".to_string(),
+                cards: vec![card(4), card(9), card(3), card(5)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
             },
-            GameEvent::ShieldChanged {
-                player: PlayerId::new("p1"),
-                old_value: 0,
-                delta: 44,
-                new_value: 44,
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p2.clone(),
+                formation_id: "shock-burst".to_string(),
+                used_cards: vec![card(4), card(9), card(3), card(5)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 56,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 56,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 100,
+                    delta: -56,
+                    new_hp: 44,
+                    effective_delta: -56,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: Some(AttackResolutionEffects {
+                    outcome: AttackOutcome::Resolved,
+                    ..Default::default()
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "shock-burst".to_string(),
+                cards: vec![card(4), card(9), card(3), card(5)],
             },
         ]
     );
-
-    let state = record.state().clone();
-    assert_eq!(state.phase, Phase::TurnDraw);
-    assert_eq!(state.hand(&PlayerId::new("p1")), Some([].as_slice()));
-    assert_eq!(state.discard, vec![card(2), card(7), card(1), card(4)]);
-    assert_eq!(state.shield(&PlayerId::new("p1")), Some(44));
-    assert_eq!(record.replay().unwrap(), state);
+    assert_eq!(record.state().phase, Phase::TurnDraw);
+    assert_eq!(record.state().current_player(), Some(&p1));
+    assert!(
+        !record
+            .state()
+            .last_elemental_attack_by_player
+            .contains_key(&p1)
+    );
+    assert_eq!(
+        record.state().discard,
+        vec![card(4), card(9), card(3), card(5)]
+    );
+    let observer_view = record.public_view(Viewer::Observer).unwrap();
+    assert_eq!(observer_view.phase, Phase::TurnDraw);
+    assert_eq!(
+        observer_view.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 100,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 44,
+            },
+        ]
+    );
+    assert_eq!(
+        observer_view.discard,
+        vec![card(4), card(9), card(3), card(5)]
+    );
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }
 
 #[test]
-fn generating_formation_heals_current_players_team_through_public_command_flow() {
-    let mut record =
-        GameRecord::start(two_player_setup_with_hp(20), deck_starting_with(&[1, 3, 2])).unwrap();
-    record.advance_automatic().unwrap();
+fn generating_formation_recovery_matrix_clamps_at_full_hp_and_heals_after_legal_damage() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let setup = two_player_setup_with_hp(100);
+    let deck = deck_starting_with(&[1, 3, 2, 6, 4, 9, 14, 5, 11]);
+    let initial_generating_cards = vec![card(1), card(3), card(2)];
+    let recovery_generating_cards = vec![card(6), card(7), card(8)];
 
-    assert_event_semantics_eq!(
-        record
+    // 無修飾基準：Generating 的完整合法流程仍會記錄請求的十八點回復；滿血的
+    // effective delta 則正確為零，這與 HP clamp 不變量是分開的行為證據。
+    let mut baseline = GameRecord::start(setup.clone(), deck.clone()).unwrap();
+    baseline.advance_automatic().unwrap();
+    assert_eq!(
+        baseline
             .handle(Command::PerformFormation {
-                player: PlayerId::new("p1"),
+                player: p1.clone(),
                 formation_id: "generating-formation".to_string(),
-                cards: vec![card(1), card(3), card(2)],
+                cards: initial_generating_cards.clone(),
                 declared_targets: Vec::new(),
             })
             .unwrap(),
         vec![
-            GameEvent::FormationPerformed {
-                player: PlayerId::new("p1"),
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
                 formation_id: "generating-formation".to_string(),
-                used_cards: vec![card(1), card(3), card(2)],
-                declared_targets: Vec::new(),
+                cards: initial_generating_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::HpChanged {
                 change: HpChangeDelta {
                     team: TeamId::new("team:p1"),
-                    old_hp: 20,
+                    old_hp: 100,
                     delta: 18,
-                    new_hp: 20,
+                    new_hp: 100,
                     effective_delta: 0,
                 },
             },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "generating-formation".to_string(),
+                cards: initial_generating_cards.clone(),
+            },
         ]
     );
-
-    let state = record.state().clone();
+    assert_eq!(baseline.state().phase, Phase::TurnDraw);
+    assert_eq!(baseline.state().current_player(), Some(&p1));
+    assert_eq!(baseline.state().discard, initial_generating_cards);
     assert_eq!(
-        state
+        baseline.public_view(Viewer::Observer).unwrap().hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 100,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 100,
+            },
+        ]
+    );
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+    assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
+
+    let advance_turn =
+        |record: &mut GameRecord, player: &PlayerId, cards_to_keep: &[CardInstanceId]| {
+            record.advance_automatic().unwrap();
+            let discard = match record.state().pending_choice.as_ref() {
+                Some(PendingChoice {
+                    kind: PendingChoiceKind::Card { cards, .. },
+                    ..
+                }) => cards
+                    .iter()
+                    .copied()
+                    .find(|card| !cards_to_keep.contains(card))
+                    .expect("Turn Draw must offer a discard outside the next Formation"),
+                other => panic!("expected Turn Draw card choice, got {other:?}"),
+            };
+            answer_record_choice(
+                record,
+                player.clone(),
+                ChoiceAnswer::Cards {
+                    cards: vec![discard],
+                },
+            )
+            .unwrap();
+            record.advance_automatic().unwrap();
+        };
+
+    let perform_injury_setup = |record: &mut GameRecord| {
+        record.advance_automatic().unwrap();
+        let initial_generating = record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "generating-formation".to_string(),
+                cards: initial_generating_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap();
+        advance_turn(record, &p1, &recovery_generating_cards);
+        let triple_fire = record
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "triple-fire".to_string(),
+                cards: vec![card(4), card(9), card(14)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap();
+        (initial_generating, triple_fire)
+    };
+
+    // 修飾本身：先以合法 Generating 作為非元素 bridge，再由 Triple Fire 建立 P1
+    // 的受傷狀態；因 bridge 沒有元素攻擊脈絡，完整 attack outcome 是正常三十六點。
+    let mut modifier = GameRecord::start(setup.clone(), deck.clone()).unwrap();
+    let (initial_generating, triple_fire) = perform_injury_setup(&mut modifier);
+    assert_eq!(
+        initial_generating,
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "generating-formation".to_string(),
+                cards: initial_generating_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::HpChanged {
+                change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 100,
+                    delta: 18,
+                    new_hp: 100,
+                    effective_delta: 0,
+                },
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "generating-formation".to_string(),
+                cards: initial_generating_cards.clone(),
+            },
+        ]
+    );
+    assert_eq!(
+        triple_fire,
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "triple-fire".to_string(),
+                cards: vec![card(4), card(9), card(14)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p2.clone(),
+                target: p1.clone(),
+                formation_id: "triple-fire".to_string(),
+                used_cards: vec![card(4), card(9), card(14)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 36,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 36,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 100,
+                    delta: -36,
+                    new_hp: 64,
+                    effective_delta: -36,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p2.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Fire,
+                        resolved_turn: 2,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "triple-fire".to_string(),
+                cards: vec![card(4), card(9), card(14)],
+            },
+        ]
+    );
+    assert_eq!(
+        modifier
+            .state()
             .hp
             .iter()
-            .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
-            .map(|team_hp| team_hp.hp),
-        Some(20)
+            .find(|entry| entry.team == TeamId::new("team:p1"))
+            .map(|entry| entry.hp),
+        Some(64)
     );
-    assert_eq!(record.replay().unwrap(), state);
+    assert_eq!(modifier.replay().unwrap(), modifier.state().clone());
+    assert_eq!(modifier.verify_replay().unwrap(), modifier.state().clone());
+
+    // 互動：以相同合法歷史抵達 P1 的下一個回合，第二組 Generating 現在完整回復
+    // 十八點；P2 的既有 100 HP 及其他 side effect 都不受影響。
+    let mut interaction = GameRecord::start(setup, deck).unwrap();
+    perform_injury_setup(&mut interaction);
+    advance_turn(&mut interaction, &p2, &[]);
+    assert_eq!(interaction.state().current_player(), Some(&p1));
+    let recovery = interaction
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "generating-formation".to_string(),
+            cards: recovery_generating_cards.clone(),
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(
+        recovery,
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "generating-formation".to_string(),
+                cards: recovery_generating_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::HpChanged {
+                change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 64,
+                    delta: 18,
+                    new_hp: 82,
+                    effective_delta: 18,
+                },
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "generating-formation".to_string(),
+                cards: recovery_generating_cards.clone(),
+            },
+        ]
+    );
+    assert_eq!(interaction.state().phase, Phase::TurnDraw);
+    assert_eq!(interaction.state().current_player(), Some(&p1));
+    assert_eq!(
+        interaction.state().hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 82,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 100,
+            },
+        ]
+    );
+    for used in [
+        card(1),
+        card(3),
+        card(2),
+        card(4),
+        card(9),
+        card(14),
+        card(6),
+        card(7),
+        card(8),
+    ] {
+        assert!(interaction.state().discard.contains(&used));
+    }
+    assert_eq!(
+        interaction.public_view(Viewer::Observer).unwrap().hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 82,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 100,
+            },
+        ]
+    );
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
 }
 
 #[test]
@@ -3252,195 +3952,638 @@ fn recovery_cannot_raise_team_hp_above_its_initial_value() {
 }
 
 #[test]
-fn generating_formation_targets_own_side_in_team_mode_without_declared_targets() {
+fn four_player_generating_matrix_recovers_only_its_own_team_after_previous_player_damage() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let p3 = PlayerId::new("p3");
+    let p4 = PlayerId::new("p4");
     let card_setup = two_player_setup();
-    let setup = GameSetup::team_mode(
+    let mut setup = GameSetup::team_mode(
         TeamId::new("A"),
-        vec![PlayerId::new("p1"), PlayerId::new("p3")],
+        vec![p1.clone(), p3.clone()],
         TeamId::new("B"),
-        vec![PlayerId::new("p2"), PlayerId::new("p4")],
-        20,
+        vec![p2.clone(), p4.clone()],
+        100,
     )
     .with_cards(card_setup.card_defs, card_setup.card_instances);
-    let mut record = GameRecord::start(setup, deck_starting_with(&[1, 3, 2])).unwrap();
+    setup.card_instances.extend((21..=40).map(|id| {
+        card_instance(
+            id,
+            match id % 5 {
+                1 => "metal",
+                2 => "wood",
+                3 => "water",
+                4 => "fire",
+                _ => "earth",
+            },
+        )
+    }));
+    let mut deck = vec![
+        // P1: 初始 Generating，並保留第二組 Generating 的 Metal 牌。
+        1, 3, 2, 26, // P2、P3：各自合法的非攻擊 Generating bridge。
+        5, 6, 8, 9, 10, 15, 11, 13, 14, 20, // P4: 兩張 Metal Weapon；其餘是背景。
+        16, 21, 17, 18, 19,
+        // P1 的第一個 Turn Draw：第二組 Generating 與可捨棄背景牌。
+        27, 28, 25, 22,
+    ]
+    .into_iter()
+    .map(card)
+    .collect::<Vec<_>>();
+    for id in 1..=40 {
+        let candidate = card(id);
+        if !deck.contains(&candidate) {
+            deck.push(candidate);
+        }
+    }
+    let initial_generating = vec![card(1), card(3), card(2)];
+    let recovery_generating = vec![card(26), card(27), card(28)];
+
+    let finish_turn =
+        |record: &mut GameRecord, player: &PlayerId, cards_to_keep: &[CardInstanceId]| {
+            record.advance_automatic().unwrap();
+            let discard = match record.state().pending_choice.as_ref() {
+                Some(PendingChoice {
+                    kind: PendingChoiceKind::Card { cards, .. },
+                    ..
+                }) => cards
+                    .iter()
+                    .copied()
+                    .find(|card| !cards_to_keep.contains(card))
+                    .expect("Turn Draw must offer a discard outside the next Formation"),
+                other => panic!("expected Turn Draw card choice, got {other:?}"),
+            };
+            answer_record_choice(
+                record,
+                player.clone(),
+                ChoiceAnswer::Cards {
+                    cards: vec![discard],
+                },
+            )
+            .unwrap();
+            record.advance_automatic().unwrap();
+        };
+
+    let mut record = GameRecord::start(setup, deck).unwrap();
     record.advance_automatic().unwrap();
 
-    assert_event_semantics_eq!(
+    // 無修飾基準：P1 的 Generating 只能作用於 own Team A。滿血時仍保留請求的
+    // 十八點回復，但 effective delta 為零，Team B 完全不受影響。
+    assert_eq!(
         record
             .handle(Command::PerformFormation {
-                player: PlayerId::new("p1"),
+                player: p1.clone(),
                 formation_id: "generating-formation".to_string(),
-                cards: vec![card(1), card(3), card(2)],
+                cards: initial_generating.clone(),
                 declared_targets: Vec::new(),
             })
             .unwrap(),
         vec![
-            GameEvent::FormationPerformed {
-                player: PlayerId::new("p1"),
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
                 formation_id: "generating-formation".to_string(),
-                used_cards: vec![card(1), card(3), card(2)],
-                declared_targets: Vec::new(),
+                cards: initial_generating.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::HpChanged {
                 change: HpChangeDelta {
                     team: TeamId::new("A"),
-                    old_hp: 20,
+                    old_hp: 100,
                     delta: 18,
-                    new_hp: 20,
+                    new_hp: 100,
                     effective_delta: 0,
                 },
             },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "generating-formation".to_string(),
+                cards: initial_generating.clone(),
+            },
         ]
     );
+    finish_turn(&mut record, &p1, &recovery_generating);
 
-    let state = record.state().clone();
+    // P2/P3 只用合法非攻擊 bridge 推進四人回合；它們不改變任何 Team HP。
+    record
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "generating-formation".to_string(),
+            cards: vec![card(5), card(6), card(8)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut record, &p2, &[]);
+    record
+        .handle(Command::PerformFormation {
+            player: p3.clone(),
+            formation_id: "generating-formation".to_string(),
+            cards: vec![card(15), card(11), card(13)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut record, &p3, &[]);
+
+    // 修飾本身：在相同的交錯 Team 座次，P4 的 Weapon 必須傷害 cyclic previous
+    // P3 所在 Team A，而不是 P2 或 Team B。
+    assert_eq!(record.state().current_player(), Some(&p4));
     assert_eq!(
-        state.hp,
+        record
+            .handle(Command::PerformFormation {
+                player: p4.clone(),
+                formation_id: "weapon".to_string(),
+                cards: vec![card(16), card(21)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p4.clone(),
+                formation_id: "weapon".to_string(),
+                cards: vec![card(16), card(21)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p4.clone(),
+                target: p3.clone(),
+                formation_id: "weapon".to_string(),
+                used_cards: vec![card(16), card(21)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 12,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 12,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("A"),
+                    old_hp: 100,
+                    delta: -12,
+                    new_hp: 88,
+                    effective_delta: -12,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: Some(AttackResolutionEffects {
+                    outcome: AttackOutcome::Resolved,
+                    ..Default::default()
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p4.clone(),
+                formation_id: "weapon".to_string(),
+                cards: vec![card(16), card(21)],
+            },
+        ]
+    );
+    finish_turn(&mut record, &p4, &[]);
+    assert_eq!(record.state().current_player(), Some(&p1));
+    assert_eq!(
+        record
+            .public_view(Viewer::Observer)
+            .unwrap()
+            .previous_turn_formation,
+        Some(PublicPreviousTurnFormation {
+            player: p4.clone(),
+            formation_id: Some("weapon".to_string()),
+            cards: PublicCardRefs::Known(vec![card(16), card(21)]),
+        })
+    );
+
+    // 互動：P1 的第二組合法 Generating 只回復受 P4 影響的 Team A。它請求十八點，
+    // 但由 100 HP cap 將 effective delta 精確限制為十二；Team B 仍是 100。
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "generating-formation".to_string(),
+                cards: recovery_generating.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "generating-formation".to_string(),
+                cards: recovery_generating.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::HpChanged {
+                change: HpChangeDelta {
+                    team: TeamId::new("A"),
+                    old_hp: 88,
+                    delta: 18,
+                    new_hp: 100,
+                    effective_delta: 12,
+                },
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "generating-formation".to_string(),
+                cards: recovery_generating.clone(),
+            },
+        ]
+    );
+    assert_eq!(record.state().phase, Phase::TurnDraw);
+    assert_eq!(record.state().current_player(), Some(&p1));
+    assert_eq!(
+        record.state().hp,
         vec![
             TeamHp {
                 team: TeamId::new("A"),
-                hp: 20,
+                hp: 100,
             },
             TeamHp {
                 team: TeamId::new("B"),
-                hp: 20,
+                hp: 100,
             },
         ]
     );
-    assert_eq!(record.replay().unwrap(), state);
+    for used in initial_generating
+        .iter()
+        .chain([card(5), card(6), card(8)].iter())
+        .chain([card(15), card(11), card(13)].iter())
+        .chain([card(16), card(21)].iter())
+        .chain(recovery_generating.iter())
+    {
+        assert!(record.state().discard.contains(used));
+    }
+    assert_eq!(
+        record.public_view(Viewer::Observer).unwrap().hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("A"),
+                hp: 100,
+            },
+            TeamHp {
+                team: TeamId::new("B"),
+                hp: 100,
+            },
+        ]
+    );
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }
 
 #[test]
-fn overcoming_formation_damages_previous_players_team_through_public_command_flow() {
-    let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::ActiveEffects;
-    state.hands = vec![
-        PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(2), card(5)]),
-        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
-    ];
-    apply_event(
-        &mut state,
-        &GameEvent::ShieldChanged {
-            player: PlayerId::new("p2"),
-            old_value: 0,
-            delta: 12,
-            new_value: 12,
-        },
-    );
-
-    assert_event_semantics_eq!(
-        handle_command(
-            &state,
-            Command::PerformFormation {
-                player: PlayerId::new("p1"),
-                formation_id: "overcoming-formation".to_string(),
-                cards: vec![card(1), card(2), card(5)],
-                declared_targets: Vec::new(),
-            }
+fn overcoming_formation_four_player_matrix_reduces_only_the_next_players_personal_shield() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let p3 = PlayerId::new("p3");
+    let p4 = PlayerId::new("p4");
+    let setup = || {
+        let card_setup = two_player_setup();
+        let mut setup = GameSetup::team_mode(
+            TeamId::new("A"),
+            vec![p1.clone(), p3.clone()],
+            TeamId::new("B"),
+            vec![p2.clone(), p4.clone()],
+            100,
         )
-        .unwrap(),
-        vec![
-            GameEvent::FormationPerformed {
-                player: PlayerId::new("p1"),
-                formation_id: "overcoming-formation".to_string(),
-                used_cards: vec![card(1), card(2), card(5)],
+        .with_cards(card_setup.card_defs, card_setup.card_instances);
+        setup.card_instances.extend((21..=40).map(|id| {
+            card_instance(
+                id,
+                match id % 5 {
+                    1 => "metal",
+                    2 => "wood",
+                    3 => "water",
+                    4 => "fire",
+                    _ => "earth",
+                },
+            )
+        }));
+        setup
+    };
+    let complete_deck = |p3_barrier: bool| {
+        let p3_cards = if p3_barrier {
+            vec![12, 17, 11, 14, 13]
+        } else {
+            vec![11, 13, 12, 14, 17]
+        };
+        let mut deck = [
+            vec![2, 7, 1, 4],         // P1 Barrier
+            vec![10, 15, 26, 27, 30], // P2 Meta，之後保留剋陣
+            p3_cards,
+            vec![36, 37, 38, 19, 20], // P4 生陣 bridge
+            vec![31, 6, 5],           // P1 第一個 Turn Draw，保留 Metal 31
+        ]
+        .concat()
+        .into_iter()
+        .map(card)
+        .collect::<Vec<_>>();
+        for id in 1..=40 {
+            let candidate = card(id);
+            if !deck.contains(&candidate) {
+                deck.push(candidate);
+            }
+        }
+        deck
+    };
+    let finish_turn =
+        |record: &mut GameRecord, player: &PlayerId, discard: Option<CardInstanceId>| {
+            record.advance_automatic().unwrap();
+            let discard = discard.unwrap_or_else(|| match record.state().pending_choice.as_ref() {
+                Some(PendingChoice {
+                    kind: PendingChoiceKind::Card { cards, .. },
+                    ..
+                }) => cards[0],
+                other => panic!("expected Turn Draw Card choice, got {other:?}"),
+            });
+            answer_record_choice(
+                record,
+                player.clone(),
+                ChoiceAnswer::Cards {
+                    cards: vec![discard],
+                },
+            )
+            .unwrap();
+            record.advance_automatic().unwrap();
+        };
+    let p1_barrier = vec![card(2), card(7), card(1), card(4)];
+    let p2_meta = vec![card(10), card(15)];
+    let p2_overcoming = vec![card(26), card(27), card(30)];
+    let p3_barrier = vec![card(12), card(17), card(11), card(14)];
+
+    let record_before_overcoming = |p3_uses_barrier: bool| {
+        let mut record = GameRecord::start(setup(), complete_deck(p3_uses_barrier)).unwrap();
+        record.advance_automatic().unwrap();
+        assert_eq!(
+            record
+                .handle(Command::PerformFormation {
+                    player: p1.clone(),
+                    formation_id: "barrier".to_string(),
+                    cards: p1_barrier.clone(),
+                    declared_targets: Vec::new(),
+                })
+                .unwrap(),
+            vec![
+                GameEvent::FormationCommitted {
+                    player: p1.clone(),
+                    formation_id: "barrier".to_string(),
+                    cards: p1_barrier.clone(),
+                    star_substitution: None,
+                    state: FormationAreaState::FaceUpResolving,
+                },
+                GameEvent::ShieldChanged {
+                    player: p1.clone(),
+                    old_value: 0,
+                    delta: 44,
+                    new_value: 44,
+                },
+                GameEvent::FormationCardsDiscarded {
+                    player: p1.clone(),
+                    formation_id: "barrier".to_string(),
+                    cards: p1_barrier.clone(),
+                },
+            ]
+        );
+        finish_turn(&mut record, &p1, Some(card(6)));
+        assert_eq!(record.state().current_player(), Some(&p2));
+        assert_eq!(
+            record
+                .handle(Command::PerformFormation {
+                    player: p2.clone(),
+                    formation_id: "metamorphosis".to_string(),
+                    cards: p2_meta.clone(),
+                    declared_targets: Vec::new(),
+                })
+                .unwrap(),
+            vec![
+                GameEvent::FormationCommitted {
+                    player: p2.clone(),
+                    formation_id: "metamorphosis".to_string(),
+                    cards: p2_meta.clone(),
+                    star_substitution: None,
+                    state: FormationAreaState::FaceUpResolving,
+                },
+                GameEvent::FormationEffectCopied {
+                    player: p2.clone(),
+                    effect_id: "barrier".to_string(),
+                },
+                GameEvent::ShieldChanged {
+                    player: p2.clone(),
+                    old_value: 0,
+                    delta: 40,
+                    new_value: 40,
+                },
+                GameEvent::FormationCardsDiscarded {
+                    player: p2.clone(),
+                    formation_id: "metamorphosis".to_string(),
+                    cards: p2_meta.clone(),
+                },
+            ]
+        );
+        finish_turn(&mut record, &p2, None);
+
+        if p3_uses_barrier {
+            assert_eq!(
+                record
+                    .handle(Command::PerformFormation {
+                        player: p3.clone(),
+                        formation_id: "barrier".to_string(),
+                        cards: p3_barrier.clone(),
+                        declared_targets: Vec::new(),
+                    })
+                    .unwrap(),
+                vec![
+                    GameEvent::FormationCommitted {
+                        player: p3.clone(),
+                        formation_id: "barrier".to_string(),
+                        cards: p3_barrier.clone(),
+                        star_substitution: None,
+                        state: FormationAreaState::FaceUpResolving,
+                    },
+                    GameEvent::ShieldChanged {
+                        player: p3.clone(),
+                        old_value: 0,
+                        delta: 44,
+                        new_value: 44,
+                    },
+                    GameEvent::FormationCardsDiscarded {
+                        player: p3.clone(),
+                        formation_id: "barrier".to_string(),
+                        cards: p3_barrier.clone(),
+                    },
+                ]
+            );
+        } else {
+            assert_eq!(
+                record
+                    .handle(Command::PerformFormation {
+                        player: p3.clone(),
+                        formation_id: "generating-formation".to_string(),
+                        cards: vec![card(11), card(13), card(12)],
+                        declared_targets: Vec::new(),
+                    })
+                    .unwrap(),
+                vec![
+                    GameEvent::FormationCommitted {
+                        player: p3.clone(),
+                        formation_id: "generating-formation".to_string(),
+                        cards: vec![card(11), card(13), card(12)],
+                        star_substitution: None,
+                        state: FormationAreaState::FaceUpResolving,
+                    },
+                    GameEvent::HpChanged {
+                        change: HpChangeDelta {
+                            team: TeamId::new("A"),
+                            old_hp: 100,
+                            delta: 18,
+                            new_hp: 100,
+                            effective_delta: 0,
+                        },
+                    },
+                    GameEvent::FormationCardsDiscarded {
+                        player: p3.clone(),
+                        formation_id: "generating-formation".to_string(),
+                        cards: vec![card(11), card(13), card(12)],
+                    },
+                ]
+            );
+        }
+        finish_turn(&mut record, &p3, None);
+        record
+            .handle(Command::PerformFormation {
+                player: p4.clone(),
+                formation_id: "generating-formation".to_string(),
+                cards: vec![card(36), card(38), card(37)],
                 declared_targets: Vec::new(),
+            })
+            .unwrap();
+        finish_turn(&mut record, &p4, None);
+        assert_eq!(record.state().current_player(), Some(&p1));
+        assert!(record.state().hand(&p1).unwrap().contains(&card(31)));
+        record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(31)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap();
+        finish_turn(&mut record, &p1, None);
+        assert_eq!(record.state().current_player(), Some(&p2));
+        record
+    };
+
+    // 基準：P1/P2 都有自己合法建立的 Shield，但 P2 的下家 P3 沒有 Shield；剋陣
+    // 仍完整提交，且不會誤傷任一其他 Player 的 Shield。
+    let mut baseline = record_before_overcoming(false);
+    assert_eq!(
+        baseline
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "overcoming-formation".to_string(),
+                cards: p2_overcoming.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "overcoming-formation".to_string(),
+                cards: p2_overcoming.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "overcoming-formation".to_string(),
+                cards: p2_overcoming.clone(),
+            },
+        ]
+    );
+    assert_eq!(baseline.state().shield(&p1), Some(44));
+    assert_eq!(baseline.state().shield(&p2), Some(40));
+    assert_eq!(baseline.state().shield(&p3), Some(0));
+    assert_eq!(baseline.state().shield(&p4), Some(0));
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+    assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
+
+    // 互動：P3 是 P2 在四人交替座次中的下家。P3 的 44 Shield 被三十點剋陣削為
+    // 14；P1 的同隊 Shield 與 P2 自己的 Shield 都必須保持原值。
+    let mut interaction = record_before_overcoming(true);
+    assert_eq!(
+        interaction
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "overcoming-formation".to_string(),
+                cards: p2_overcoming.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "overcoming-formation".to_string(),
+                cards: p2_overcoming.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::ShieldChanged {
-                player: PlayerId::new("p2"),
-                old_value: 12,
-                delta: -12,
-                new_value: 0,
+                player: p3.clone(),
+                old_value: 44,
+                delta: -30,
+                new_value: 14,
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "overcoming-formation".to_string(),
+                cards: p2_overcoming.clone(),
             },
         ]
     );
-
-    for event in handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "overcoming-formation".to_string(),
-            cards: vec![card(1), card(2), card(5)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap()
+    assert_eq!(interaction.state().phase, Phase::TurnDraw);
+    assert_eq!(interaction.state().current_player(), Some(&p2));
+    assert_eq!(interaction.state().shield(&p1), Some(44));
+    assert_eq!(interaction.state().shield(&p2), Some(40));
+    assert_eq!(interaction.state().shield(&p3), Some(14));
+    assert_eq!(interaction.state().shield(&p4), Some(0));
+    for used in p1_barrier
+        .iter()
+        .chain(p2_meta.iter())
+        .chain(p3_barrier.iter())
+        .chain([card(36), card(38), card(37), card(31)].iter())
+        .chain(p2_overcoming.iter())
     {
-        apply_event(&mut state, &event);
+        assert!(interaction.state().discard.contains(used));
     }
-    assert_eq!(state.shield(&PlayerId::new("p2")), Some(0));
-}
-
-#[test]
-fn radiance_prevents_next_player_action_and_draw_for_two_turns() {
-    let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::ActiveEffects;
-    state.hands = vec![
-        PlayerHand::new(
-            PlayerId::new("p1"),
-            vec![card(1), card(6), card(4), card(3)],
-        ),
-        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
-    ];
-
-    let events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "radiance".to_string(),
-            cards: vec![card(1), card(6), card(4), card(3)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-
-    assert_event_semantics_eq!(
-        events,
-        vec![
-            GameEvent::FormationPerformed {
-                player: PlayerId::new("p1"),
-                formation_id: "radiance".to_string(),
-                used_cards: vec![card(1), card(6), card(4), card(3)],
-                declared_targets: Vec::new(),
-            },
-            GameEvent::HandInspected {
-                viewer: PlayerId::new("p1"),
-                target: PlayerId::new("p2"),
-                cards: Vec::new(),
-            },
-            GameEvent::StatusAdded {
-                status: StatusEffect {
-                    id: "radiance-cannot-act-p2-turn-1".to_string(),
-                    owner: StatusOwner::Player(PlayerId::new("p2")),
-                    kind: "CannotAct".to_string(),
-                    value: None,
-                    duration: StatusDuration::UntilTurnEndNumber {
-                        player: PlayerId::new("p2"),
-                        turn_number: 4,
-                    },
+    for viewer in [
+        Viewer::Player(p1.clone()),
+        Viewer::Player(p2.clone()),
+        Viewer::Player(p3.clone()),
+        Viewer::Player(p4.clone()),
+        Viewer::Observer,
+    ] {
+        assert_eq!(
+            interaction.public_view(viewer).unwrap().shields,
+            vec![
+                PlayerShield {
+                    player: p1.clone(),
+                    value: 44,
                 },
-            },
-            GameEvent::StatusAdded {
-                status: StatusEffect {
-                    id: "radiance-cannot-draw-p2-turn-1".to_string(),
-                    owner: StatusOwner::Player(PlayerId::new("p2")),
-                    kind: "CannotDraw".to_string(),
-                    value: None,
-                    duration: StatusDuration::UntilTurnEndNumber {
-                        player: PlayerId::new("p2"),
-                        turn_number: 4,
-                    },
+                PlayerShield {
+                    player: p2.clone(),
+                    value: 40,
                 },
-            },
-        ]
+                PlayerShield {
+                    player: p3.clone(),
+                    value: 14,
+                },
+                PlayerShield {
+                    player: p4.clone(),
+                    value: 0,
+                },
+            ]
+        );
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
     );
-
-    for event in events {
-        apply_event(&mut state, &event);
-    }
-
-    assert_eq!(state.statuses.len(), 2);
-    assert_eq!(state.phase, Phase::TurnDraw);
 }
 
 #[test]
@@ -3496,21 +4639,60 @@ fn radiance_cannot_act_matrix_blocks_a_usable_formation_but_keeps_status_specifi
             declared_targets: Vec::new(),
         })
         .unwrap();
-    assert!(radiance_events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCommitted { formation_id, cards, .. }
-            if formation_id == "radiance" && cards == &radiance_cards
-    )));
-    assert!(radiance_events.iter().any(|event| matches!(
-        event,
-        GameEvent::StatusAdded { status }
-            if status.owner == StatusOwner::Player(p2.clone()) && status.kind == "CannotAct"
-    )));
-    assert!(radiance_events.iter().any(|event| matches!(
-        event,
-        GameEvent::FormationCardsDiscarded { formation_id, cards, .. }
-            if formation_id == "radiance" && cards == &radiance_cards
-    )));
+    let inspected_cards = vec![card(2), card(5), card(7), card(8), card(9)];
+    assert!(matches!(
+        radiance_events.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, .. },
+            GameEvent::HandInspected { viewer, target, cards: snapshot },
+            GameEvent::StatusAdded { status: cannot_act },
+            GameEvent::StatusAdded { status: cannot_draw },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p1
+            && formation_id == "radiance"
+            && cards == &radiance_cards
+            && viewer == &p1
+            && target == &p2
+            && snapshot == &inspected_cards
+            && cannot_act.owner == StatusOwner::Player(p2.clone())
+            && cannot_act.kind == "CannotAct"
+            && cannot_draw.owner == StatusOwner::Player(p2.clone())
+            && cannot_draw.kind == "CannotDraw"
+            && discarded_by == &p1
+            && discarded == "radiance"
+            && discarded_cards == &radiance_cards
+    ));
+    let inspected = &radiance_events[1];
+    assert_eq!(
+        public_view::event_for(inspected, Viewer::Player(p1.clone())),
+        PublicGameEvent::HandInspected {
+            viewer: p1.clone(),
+            target: p2.clone(),
+            cards: PublicCardRefs::Known(inspected_cards.clone()),
+        }
+    );
+    for viewer in [Viewer::Player(p2.clone()), Viewer::Observer] {
+        assert_eq!(
+            public_view::event_for(inspected, viewer),
+            PublicGameEvent::HandInspected {
+                viewer: p1.clone(),
+                target: p2.clone(),
+                cards: PublicCardRefs::Hidden { count: 5 },
+            }
+        );
+    }
+    let public_statuses = radiance.state().statuses.clone();
+    assert_eq!(public_statuses.len(), 2);
+    for viewer in [
+        Viewer::Player(p1.clone()),
+        Viewer::Player(p2.clone()),
+        Viewer::Observer,
+    ] {
+        assert_eq!(
+            radiance.public_view(viewer).unwrap().statuses,
+            public_statuses
+        );
+    }
     // 讓副本經過合法 Radiance 命令造成的標準事件。在 GameRecord 的便利迴圈提交
     // 強制 pass 前，它會抵達 P2 的 ActiveEffects，沒有手動製造狀態。
     let mut p2_turn = radiance.state().clone();
@@ -3564,6 +4746,143 @@ fn radiance_cannot_act_matrix_blocks_a_usable_formation_but_keeps_status_specifi
         GameEvent::ActionPassed { player, reason }
             if player == &p2 && reason == &PassActionReason::CannotActByStatus
     )));
+    assert!(progression_events.iter().any(|event| matches!(
+        event,
+        GameEvent::TurnDrawSkipped {
+            player,
+            reason: TurnDrawSkipReason::CannotDrawByStatus,
+        } if player == &p2
+    )));
+    assert!(!progression_events.iter().any(|event| {
+        matches!(
+            event,
+            GameEvent::CardsDrawnForTurnDiscardChoice { player, .. } if player == &p2
+        ) || matches!(
+            event,
+            GameEvent::TurnDrawResolved { player, .. } if player == &p2
+        )
+    }));
+    assert_eq!(radiance.state().hand(&p2), Some(inspected_cards.as_slice()));
+
+    // P1 在兩個受影響的 P2 回合之間仍以合法 Command 行動；第二次 P2 Pass
+    // 應再次跳過抽牌，並在 Turn End 一起讓兩個 Radiance status 自然到期。
+    radiance
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "wood-strike".to_string(),
+            cards: vec![card(12)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    let second_pass_events = advance_record_to_next_main_after_turn_draw(&mut radiance, card(13));
+    assert!(matches!(
+        second_pass_events.as_slice(),
+        [
+            GameEvent::CardsDrawnForTurnDiscardChoice { player: draw_player, .. },
+            GameEvent::ChoiceRequested { choice },
+            GameEvent::ChoiceMade { player: answered_by, .. },
+            GameEvent::TurnDrawResolved { player: resolved_player, .. },
+            GameEvent::TurnEnded { player: p1_ended },
+            GameEvent::TurnStarted { player: p2_started, turn_number: 4 },
+            GameEvent::ActionStarted { player: p2_action },
+            GameEvent::ActionPassed { player: passed_by, reason: PassActionReason::CannotActByStatus },
+            GameEvent::TurnDrawSkipped { player: skipped_by, reason: TurnDrawSkipReason::CannotDrawByStatus },
+            GameEvent::StatusExpired { status_id: cannot_act_id, owner: StatusOwner::Player(cannot_act_owner), expired_at: StatusExpiryTiming::TurnEnd { player: cannot_act_expiry_player } },
+            GameEvent::StatusExpired { status_id: cannot_draw_id, owner: StatusOwner::Player(cannot_draw_owner), expired_at: StatusExpiryTiming::TurnEnd { player: cannot_draw_expiry_player } },
+            GameEvent::TurnEnded { player: p2_ended },
+            GameEvent::TurnStarted { player: p1_started, turn_number: 5 },
+        ] if draw_player == &p1
+            && choice.player == p1
+            && answered_by == &p1
+            && resolved_player == &p1
+            && p1_ended == &p1
+            && p2_started == &p2
+            && p2_action == &p2
+            && passed_by == &p2
+            && skipped_by == &p2
+            && cannot_act_id == "radiance-cannot-act-p2-turn-1"
+            && cannot_act_owner == &p2
+            && cannot_act_expiry_player == &p2
+            && cannot_draw_id == "radiance-cannot-draw-p2-turn-1"
+            && cannot_draw_owner == &p2
+            && cannot_draw_expiry_player == &p2
+            && p2_ended == &p2
+            && p1_started == &p1
+    ));
+    assert!(radiance.state().statuses.is_empty());
+    for viewer in [
+        Viewer::Player(p1.clone()),
+        Viewer::Player(p2.clone()),
+        Viewer::Observer,
+    ] {
+        assert!(radiance.public_view(viewer).unwrap().statuses.is_empty());
+    }
+    assert_eq!(radiance.state().hand(&p2), Some(inspected_cards.as_slice()));
+
+    // 修飾過期後，P1 的合法 bridge 讓 P2 回到正常 Action boundary；同一張先前
+    // 被禁止的 Wood Card 現在必須完整解析，而非僅以可用 actions 查詢側面證明。
+    radiance
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(11)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_after_turn_draw(&mut radiance, card(16));
+    assert_eq!(
+        radiance
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "wood-strike".to_string(),
+                cards: vec![card(2)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "wood-strike".to_string(),
+                cards: vec![card(2)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p2.clone(),
+                target: p1.clone(),
+                formation_id: "wood-strike".to_string(),
+                used_cards: vec![card(2)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 6,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 6,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 30,
+                    delta: -6,
+                    new_hp: 24,
+                    effective_delta: -6,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p2.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Wood,
+                        resolved_turn: 6,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "wood-strike".to_string(),
+                cards: vec![card(2)],
+            },
+        ]
+    );
     assert_eq!(radiance.replay().unwrap(), radiance.state().clone());
     assert_eq!(radiance.verify_replay().unwrap(), radiance.state().clone());
 }
@@ -3934,48 +5253,6 @@ fn defense_cannot_act_pass_matrix_flips_the_covered_passive_on_radiances_second_
 }
 
 #[test]
-fn radiance_records_a_private_snapshot_of_the_next_players_hand() {
-    let mut record = GameRecord::start(
-        two_player_setup(),
-        deck_starting_with(&[1, 6, 4, 3, 2, 5, 7, 8, 9]),
-    )
-    .unwrap();
-    record.advance_automatic().unwrap();
-    let events = record
-        .handle(Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "radiance".to_string(),
-            cards: vec![card(1), card(6), card(4), card(3)],
-            declared_targets: Vec::new(),
-        })
-        .unwrap();
-    let inspected = events
-        .iter()
-        .find(|event| matches!(event, GameEvent::HandInspected { .. }))
-        .unwrap();
-
-    assert_eq!(
-        public_view::event_for(inspected, Viewer::Player(PlayerId::new("p1"))),
-        PublicGameEvent::HandInspected {
-            viewer: PlayerId::new("p1"),
-            target: PlayerId::new("p2"),
-            cards: PublicCardRefs::Known(vec![card(2), card(5), card(7), card(8), card(9),]),
-        }
-    );
-    for viewer in [Viewer::Player(PlayerId::new("p2")), Viewer::Observer] {
-        assert_eq!(
-            public_view::event_for(inspected, viewer),
-            PublicGameEvent::HandInspected {
-                viewer: PlayerId::new("p1"),
-                target: PlayerId::new("p2"),
-                cards: PublicCardRefs::Hidden { count: 5 },
-            }
-        );
-    }
-    assert_eq!(record.replay().unwrap(), record.state().clone());
-}
-
-#[test]
 fn metamorphosis_ignores_a_base_formation_from_an_older_turn() {
     let mut state = GameState::from_setup(&two_player_setup());
     state.phase = Phase::ActiveEffects;
@@ -4018,48 +5295,92 @@ fn metamorphosis_ignores_a_base_formation_from_an_older_turn() {
 }
 
 #[test]
-fn metamorphosis_copies_previous_players_last_base_formation_effect() {
+fn metamorphosis_weapon_matrix_copies_a_legal_source_without_losing_its_own_identity() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
     let mut record = GameRecord::start(
         two_player_setup(),
         deck_starting_with(&[1, 6, 2, 3, 5, 10, 4, 7, 8]),
     )
     .unwrap();
     record.advance_automatic().unwrap();
-    record
-        .handle(Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "weapon".to_string(),
-            cards: vec![card(1), card(6)],
-            declared_targets: Vec::new(),
-        })
-        .unwrap();
-    advance_record_to_next_main_after_turn_draw(&mut record, card(9));
-
-    assert_event_semantics_eq!(
+    let weapon_cards = vec![card(1), card(6)];
+    assert_eq!(
         record
             .handle(Command::PerformFormation {
-                player: PlayerId::new("p2"),
-                formation_id: "metamorphosis".to_string(),
-                cards: vec![card(5), card(10)],
+                player: p1.clone(),
+                formation_id: "weapon".to_string(),
+                cards: weapon_cards.clone(),
                 declared_targets: Vec::new(),
             })
             .unwrap(),
         vec![
-            GameEvent::FormationPerformed {
-                player: PlayerId::new("p2"),
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "weapon".to_string(),
+                cards: weapon_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p2.clone(),
+                formation_id: "weapon".to_string(),
+                used_cards: weapon_cards.clone(),
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 12,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 12,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 30,
+                    delta: -12,
+                    new_hp: 18,
+                    effective_delta: -12,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: Some(AttackResolutionEffects::default()),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "weapon".to_string(),
+                cards: weapon_cards.clone(),
+            },
+        ]
+    );
+    advance_record_to_next_main_after_turn_draw(&mut record, card(9));
+
+    let metamorphosis_cards = vec![card(5), card(10)];
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
                 formation_id: "metamorphosis".to_string(),
-                used_cards: vec![card(5), card(10)],
+                cards: metamorphosis_cards.clone(),
                 declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::FormationEffectCopied {
-                player: PlayerId::new("p2"),
+                player: p2.clone(),
                 effect_id: "weapon".to_string(),
             },
             GameEvent::AttackResolved {
-                attacker: PlayerId::new("p2"),
-                target: PlayerId::new("p1"),
+                attacker: p2.clone(),
+                target: p1.clone(),
                 formation_id: "weapon".to_string(),
-                used_cards: vec![card(5), card(10)],
+                used_cards: metamorphosis_cards.clone(),
                 point_breakdown: AttackPointBreakdown {
                     base_points: 20,
                     environment_effect: EnvironmentAttackEffect::None,
@@ -4076,7 +5397,12 @@ fn metamorphosis_copies_previous_players_last_base_formation_effect() {
                 },
                 shield_change: None,
                 card_moves: Vec::new(),
-                elemental_context_update: None,
+                elemental_context_update: Some(AttackResolutionEffects::default()),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
             },
         ]
     );
@@ -4084,331 +5410,1384 @@ fn metamorphosis_copies_previous_players_last_base_formation_effect() {
     let state = record.state().clone();
     assert!(state.pending_choice.is_none());
     assert_eq!(state.phase, Phase::TurnDraw);
-    assert_eq!(state.shield(&PlayerId::new("p2")), Some(0));
+    assert_eq!(state.shield(&p2), Some(0));
+    assert_eq!(
+        state.last_formation_by_player.get(&p2),
+        Some(&LastFormationUse {
+            formation_id: "metamorphosis".to_string(),
+            resolved_effect_id: "weapon".to_string(),
+            used_cards: metamorphosis_cards.clone(),
+            resolved_turn: 2,
+        })
+    );
+    assert_eq!(
+        state.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 10,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 18,
+            },
+        ]
+    );
+    for used in weapon_cards.iter().chain(metamorphosis_cards.iter()) {
+        assert!(state.discard.contains(used));
+    }
+    assert_eq!(
+        record
+            .public_view(Viewer::Observer)
+            .unwrap()
+            .previous_turn_formation,
+        Some(PublicPreviousTurnFormation {
+            player: p1.clone(),
+            formation_id: Some("weapon".to_string()),
+            cards: PublicCardRefs::Known(weapon_cards),
+        })
+    );
     assert_eq!(record.replay().unwrap(), state);
+    assert_eq!(record.verify_replay().unwrap(), state);
 }
 
 #[test]
-fn metamorphosis_recomputes_a_copied_elemental_attack_and_keeps_its_own_identity() {
+fn metamorphosis_metal_strike_matrix_recomputes_the_copied_elemental_effect() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
     let mut record = GameRecord::start(
         two_player_setup(),
         deck_starting_with(&[1, 2, 3, 4, 5, 10, 6, 7, 8]),
     )
     .unwrap();
     record.advance_automatic().unwrap();
-    record
-        .handle(Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "metal-strike".to_string(),
-            cards: vec![card(1)],
-            declared_targets: Vec::new(),
-        })
-        .unwrap();
+    let source_cards = vec![card(1)];
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: source_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: source_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p2.clone(),
+                formation_id: "metal-strike".to_string(),
+                used_cards: source_cards.clone(),
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 7,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 7,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 30,
+                    delta: -7,
+                    new_hp: 23,
+                    effective_delta: -7,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p1.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Metal,
+                        resolved_turn: 1,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: source_cards.clone(),
+            },
+        ]
+    );
     advance_record_to_next_main_after_turn_draw(&mut record, card(9));
 
-    record
-        .handle(Command::PerformFormation {
-            player: PlayerId::new("p2"),
-            formation_id: "metamorphosis".to_string(),
-            cards: vec![card(5), card(10)],
-            declared_targets: Vec::new(),
-        })
-        .unwrap();
+    let metamorphosis_cards = vec![card(5), card(10)];
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::FormationEffectCopied {
+                player: p2.clone(),
+                effect_id: "metal-strike".to_string(),
+            },
+            GameEvent::AttackResolved {
+                attacker: p2.clone(),
+                target: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                used_cards: metamorphosis_cards.clone(),
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 14,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::Same,
+                    damage_transform: DamageTransform::HalfDamageRoundUp,
+                    final_amount: 7,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 30,
+                    delta: -7,
+                    new_hp: 23,
+                    effective_delta: -7,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p2.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Metal,
+                        resolved_turn: 2,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+            },
+        ]
+    );
 
     let state = record.state().clone();
+    assert_eq!(state.phase, Phase::TurnDraw);
     assert_eq!(
-        state
-            .hp
-            .iter()
-            .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
-            .map(|team_hp| team_hp.hp),
-        Some(23)
+        state.last_formation_by_player.get(&p2),
+        Some(&LastFormationUse {
+            formation_id: "metamorphosis".to_string(),
+            resolved_effect_id: "metal-strike".to_string(),
+            used_cards: metamorphosis_cards.clone(),
+            resolved_turn: 2,
+        })
     );
     assert_eq!(
-        state
-            .last_formation_by_player
-            .get(&PlayerId::new("p2"))
-            .map(|formation| formation.formation_id.as_str()),
-        Some("metamorphosis")
+        state.hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 23,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 23,
+            },
+        ]
+    );
+    for used in source_cards.iter().chain(metamorphosis_cards.iter()) {
+        assert!(state.discard.contains(used));
+    }
+    assert_eq!(
+        record
+            .public_view(Viewer::Observer)
+            .unwrap()
+            .previous_turn_formation,
+        Some(PublicPreviousTurnFormation {
+            player: p1.clone(),
+            formation_id: Some("metal-strike".to_string()),
+            cards: PublicCardRefs::Known(source_cards),
+        })
     );
     assert_eq!(record.replay().unwrap(), state);
+    assert_eq!(record.verify_replay().unwrap(), state);
 }
 
 #[test]
-fn metamorphosis_chain_copies_the_previous_resolved_effect_without_changing_names() {
+fn metamorphosis_weapon_chain_matrix_preserves_effect_identity_through_a_terminal_copy() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let weapon_cards = vec![card(1), card(6)];
+    let p2_metamorphosis_cards = vec![card(15), card(20)];
+    let p1_metamorphosis_cards = vec![card(5), card(10)];
     let mut record = GameRecord::start(
         two_player_setup(),
         deck_starting_with(&[1, 6, 5, 10, 15, 20, 2, 3, 4]),
     )
     .unwrap();
     record.advance_automatic().unwrap();
-    record
-        .handle(Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "weapon".to_string(),
-            cards: vec![card(1), card(6)],
-            declared_targets: Vec::new(),
-        })
-        .unwrap();
+
+    // 基準來源：P1 的真實 Weapon 建立可被下一位複製的 resolved effect。
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "weapon".to_string(),
+                cards: weapon_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "weapon".to_string(),
+                cards: weapon_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p2.clone(),
+                formation_id: "weapon".to_string(),
+                used_cards: weapon_cards.clone(),
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 12,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 12,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 30,
+                    delta: -12,
+                    new_hp: 18,
+                    effective_delta: -12,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: Some(AttackResolutionEffects::default()),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "weapon".to_string(),
+                cards: weapon_cards.clone(),
+            },
+        ]
+    );
     advance_record_to_next_main_after_turn_draw(&mut record, card(7));
-    record
-        .handle(Command::PerformFormation {
-            player: PlayerId::new("p2"),
+
+    // 修飾本身：P2 的 Meta 以自己的 cards 重算 Weapon，卻保有 Meta 的 formation
+    // identity；這也是下一個 Meta 必須看見的 immediate resolved effect。
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: p2_metamorphosis_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: p2_metamorphosis_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::FormationEffectCopied {
+                player: p2.clone(),
+                effect_id: "weapon".to_string(),
+            },
+            GameEvent::AttackResolved {
+                attacker: p2.clone(),
+                target: p1.clone(),
+                formation_id: "weapon".to_string(),
+                used_cards: p2_metamorphosis_cards.clone(),
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 20,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 20,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 30,
+                    delta: -20,
+                    new_hp: 10,
+                    effective_delta: -20,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: Some(AttackResolutionEffects::default()),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: p2_metamorphosis_cards.clone(),
+            },
+        ]
+    );
+    assert_eq!(
+        record.state().last_formation_by_player.get(&p2),
+        Some(&LastFormationUse {
             formation_id: "metamorphosis".to_string(),
-            cards: vec![card(15), card(20)],
-            declared_targets: Vec::new(),
+            resolved_effect_id: "weapon".to_string(),
+            used_cards: p2_metamorphosis_cards.clone(),
+            resolved_turn: 2,
         })
-        .unwrap();
-    record.advance_automatic().unwrap();
-    answer_record_choice(
-        &mut record,
-        PlayerId::new("p2"),
-        ChoiceAnswer::Cards {
-            cards: vec![card(11)],
-        },
-    )
-    .unwrap();
-    record.advance_automatic().unwrap();
-    record
-        .handle(Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "metamorphosis".to_string(),
-            cards: vec![card(5), card(10)],
-            declared_targets: Vec::new(),
-        })
-        .unwrap();
+    );
+    advance_record_to_next_main_discarding_first_turn_draw_card(&mut record, &p2);
+
+    // 互動：P1 不可回溯到原始 Weapon；它合法複製 P2 剛解析的 Weapon effect。終局
+    // GameEnded 直接接在攻擊後，因此 incoming Meta cards 仍留在 formation area。
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: p1_metamorphosis_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: p1_metamorphosis_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::FormationEffectCopied {
+                player: p1.clone(),
+                effect_id: "weapon".to_string(),
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p2.clone(),
+                formation_id: "weapon".to_string(),
+                used_cards: p1_metamorphosis_cards.clone(),
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 20,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 20,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 18,
+                    delta: -20,
+                    new_hp: 0,
+                    effective_delta: -18,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: Some(AttackResolutionEffects::default()),
+            },
+            GameEvent::GameEnded {
+                conclusion: GameConclusion::new(
+                    GameOutcome::Winner(TeamId::new("team:p1")),
+                    vec![GameEndCause::TeamHpDepleted {
+                        teams: vec![TeamId::new("team:p2")],
+                    }],
+                    None,
+                ),
+            },
+        ]
+    );
 
     let state = record.state().clone();
-    for player in ["p1", "p2"] {
-        let formation = state
-            .last_formation_by_player
-            .get(&PlayerId::new(player))
-            .unwrap();
-        assert_eq!(formation.formation_id, "metamorphosis");
-        assert_eq!(formation.effective_effect_id(), "weapon");
+    for (player, cards, turn) in [
+        (p1.clone(), p1_metamorphosis_cards.clone(), 3),
+        (p2.clone(), p2_metamorphosis_cards.clone(), 2),
+    ] {
+        assert_eq!(
+            state.last_formation_by_player.get(&player),
+            Some(&LastFormationUse {
+                formation_id: "metamorphosis".to_string(),
+                resolved_effect_id: "weapon".to_string(),
+                used_cards: cards,
+                resolved_turn: turn,
+            })
+        );
     }
     assert!(matches!(
         state.status,
         GameStatus::Finished { ref conclusion }
             if conclusion.outcome == GameOutcome::Winner(TeamId::new("team:p1"))
     ));
+    assert_eq!(
+        state.formation_area(&p1),
+        Some(&PlayerFormationArea {
+            player: p1.clone(),
+            formation: Some(FormationInArea {
+                formation_id: "metamorphosis".to_string(),
+                cards: p1_metamorphosis_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            }),
+        })
+    );
+    for used in weapon_cards.iter().chain(p2_metamorphosis_cards.iter()) {
+        assert!(state.discard.contains(used));
+    }
+    for used in &p1_metamorphosis_cards {
+        assert!(!state.discard.contains(used));
+    }
+    assert_eq!(
+        record
+            .public_view(Viewer::Observer)
+            .unwrap()
+            .previous_turn_formation,
+        Some(PublicPreviousTurnFormation {
+            player: p2,
+            formation_id: Some("metamorphosis".to_string()),
+            cards: PublicCardRefs::Known(p2_metamorphosis_cards),
+        })
+    );
     assert_eq!(record.replay().unwrap(), state);
+    assert_eq!(record.verify_replay().unwrap(), state);
 }
 
 #[test]
-fn metamorphosis_copies_five_streams_unites_damage_and_draw_bonus() {
-    let mut state = GameState::from_setup(&two_player_setup_with_hp(100));
-    state.phase = Phase::ActiveEffects;
-    state.current_turn_index = 1;
-    state.turn_number = 2;
-    state.hands = vec![
-        PlayerHand::new(PlayerId::new("p1"), vec![card(1), card(2), card(3)]),
-        PlayerHand::new(PlayerId::new("p2"), vec![card(5), card(10)]),
-    ];
-    state.last_formation_by_player.insert(
-        PlayerId::new("p1"),
-        LastFormationUse {
-            formation_id: "five-streams-unite".to_string(),
+fn metamorphosis_five_streams_matrix_copies_target_hand_damage_and_independent_draw_bonus() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let bridge_cards = vec![card(11), card(16)];
+    let source_cards = vec![card(1), card(6), card(21), card(26), card(31)];
+    let metamorphosis_cards = vec![card(5), card(10)];
+    let mut setup = two_player_setup_with_hp(100);
+    // P2 先手用兩張 Weapon 作為不共享的合法 bridge；P1 隨後才拿到完整的
+    // Five Streams。額外實體卡只固定合法手牌背景，不安排任何受測歷史或結果。
+    setup.turn_order = vec![p2.clone(), p1.clone()];
+    setup.card_instances.extend([
+        card_instance(21, "metal"),
+        card_instance(26, "metal"),
+        card_instance(31, "metal"),
+    ]);
+    let mut record = GameRecord::start(
+        setup,
+        deck_starting_with(&[11, 16, 5, 10, 1, 6, 21, 26, 31]),
+    )
+    .unwrap();
+    record.advance_automatic().unwrap();
+
+    // 背景 bridge 仍走完整命令：它保留 P2 的 Meta cards，並讓 P2 在第一次
+    // Turn Draw 後恰有四張手牌，作為來源 Five Streams 的 target-hand baseline。
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "weapon".to_string(),
+                cards: bridge_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "weapon".to_string(),
+                cards: bridge_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p2.clone(),
+                target: p1.clone(),
+                formation_id: "weapon".to_string(),
+                used_cards: bridge_cards.clone(),
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 12,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 12,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 100,
+                    delta: -12,
+                    new_hp: 88,
+                    effective_delta: -12,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: Some(AttackResolutionEffects::default()),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "weapon".to_string(),
+                cards: bridge_cards.clone(),
+            },
+        ]
+    );
+    advance_record_to_next_main_discarding_first_turn_draw_card(&mut record, &p2);
+    assert_eq!(record.state().current_player(), Some(&p1));
+    assert_eq!(record.state().hand(&p2).unwrap().len(), 4);
+
+    // 基準來源：P1 以合法五張同等級卡片解析 Five Streams。P2 的四張手牌使
+    // 傷害為 60；其獨立的 +1 draw bonus 必須進入同一個 AttackResolved outcome。
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "five-streams-unite".to_string(),
+                cards: source_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "five-streams-unite".to_string(),
+                cards: source_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p2.clone(),
+                formation_id: "five-streams-unite".to_string(),
+                used_cards: source_cards.clone(),
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 60,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 60,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 100,
+                    delta: -60,
+                    new_hp: 40,
+                    effective_delta: -60,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: Some(AttackResolutionEffects {
+                    turn_draw_bonus_changes: vec![TurnDrawBonusDelta {
+                        player: p1.clone(),
+                        old_value: 0,
+                        delta: 1,
+                        new_value: 1,
+                    }],
+                    ..Default::default()
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "five-streams-unite".to_string(),
+                cards: source_cards.clone(),
+            },
+        ]
+    );
+    assert_eq!(record.state().turn_draw_bonus_by_player.get(&p1), Some(&1));
+
+    let source_draw_events = record.advance_automatic().unwrap();
+    let source_choice = record
+        .state()
+        .pending_choice
+        .as_ref()
+        .expect("Five Streams source must reach Turn Draw choice")
+        .clone();
+    let source_drawn_cards = match &source_choice.kind {
+        PendingChoiceKind::Card { cards, .. } => cards.clone(),
+        other => panic!("expected source turn-draw cards, got {other:?}"),
+    };
+    assert_eq!(source_drawn_cards.len(), 4);
+    assert_eq!(
+        source_draw_events,
+        vec![
+            GameEvent::CardsDrawnForTurnDiscardChoice {
+                player: p1.clone(),
+                drawn_cards: source_drawn_cards.clone(),
+                allowed_discards: source_drawn_cards.clone(),
+            },
+            GameEvent::ChoiceRequested {
+                choice: source_choice.clone(),
+            },
+        ]
+    );
+    let source_discard = source_drawn_cards[0];
+    assert_eq!(
+        record
+            .handle(Command::AnswerChoice {
+                player: p1.clone(),
+                choice_id: source_choice.choice_id,
+                answer: ChoiceAnswer::Cards {
+                    cards: vec![source_discard],
+                },
+            })
+            .unwrap(),
+        vec![
+            GameEvent::ChoiceMade {
+                player: p1.clone(),
+                choice_id: source_choice.choice_id,
+                answer: ChoiceAnswer::Cards {
+                    cards: vec![source_discard],
+                },
+            },
+            GameEvent::TurnDrawResolved {
+                player: p1.clone(),
+                discard: source_discard,
+                kept_cards: source_drawn_cards[1..].to_vec(),
+            },
+        ]
+    );
+    assert_eq!(record.state().hand(&p1).unwrap().len(), 3);
+    assert_eq!(record.state().turn_draw_bonus_by_player.get(&p1), Some(&1));
+    assert!(matches!(
+        record.advance_automatic().unwrap().as_slice(),
+        [
+            GameEvent::TurnEnded { player: ended },
+            GameEvent::TurnStarted { player: started, .. },
+        ] if ended == &p1 && started == &p2
+    ));
+    assert!(record.state().turn_draw_bonus_by_player.get(&p1).is_none());
+    assert_eq!(record.state().current_player(), Some(&p2));
+
+    // 互動：P2 以自己合法的 Meta cards 複製 Five Streams。複製後重新讀取 P1
+    // 剛保留的三張手牌，因此傷害是 45，且 P2 自己再取得一份 draw bonus。
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::FormationEffectCopied {
+                player: p2.clone(),
+                effect_id: "five-streams-unite".to_string(),
+            },
+            GameEvent::AttackResolved {
+                attacker: p2.clone(),
+                target: p1.clone(),
+                formation_id: "five-streams-unite".to_string(),
+                used_cards: metamorphosis_cards.clone(),
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 45,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 45,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 88,
+                    delta: -45,
+                    new_hp: 43,
+                    effective_delta: -45,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: Some(AttackResolutionEffects {
+                    turn_draw_bonus_changes: vec![TurnDrawBonusDelta {
+                        player: p2.clone(),
+                        old_value: 0,
+                        delta: 1,
+                        new_value: 1,
+                    }],
+                    ..Default::default()
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+            },
+        ]
+    );
+    assert_eq!(
+        record.state().last_formation_by_player.get(&p2),
+        Some(&LastFormationUse {
+            formation_id: "metamorphosis".to_string(),
             resolved_effect_id: "five-streams-unite".to_string(),
-            used_cards: Vec::new(),
-            resolved_turn: 1,
-        },
+            used_cards: metamorphosis_cards.clone(),
+            resolved_turn: 3,
+        })
     );
+    assert_eq!(record.state().turn_draw_bonus_by_player.get(&p2), Some(&1));
 
-    let events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p2"),
-            formation_id: "metamorphosis".to_string(),
-            cards: vec![card(5), card(10)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    for event in &events {
-        apply_event(&mut state, event);
-    }
-
+    let copied_draw_events = record.advance_automatic().unwrap();
+    let copied_choice = record
+        .state()
+        .pending_choice
+        .as_ref()
+        .expect("copied Five Streams must reach Turn Draw choice")
+        .clone();
+    let copied_drawn_cards = match &copied_choice.kind {
+        PendingChoiceKind::Card { cards, .. } => cards.clone(),
+        other => panic!("expected copied turn-draw cards, got {other:?}"),
+    };
+    assert_eq!(copied_drawn_cards.len(), 4);
     assert_eq!(
-        state
-            .hp
-            .iter()
-            .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
-            .map(|team_hp| team_hp.hp),
-        Some(55)
+        copied_draw_events,
+        vec![
+            GameEvent::CardsDrawnForTurnDiscardChoice {
+                player: p2.clone(),
+                drawn_cards: copied_drawn_cards.clone(),
+                allowed_discards: copied_drawn_cards.clone(),
+            },
+            GameEvent::ChoiceRequested {
+                choice: copied_choice.clone(),
+            },
+        ]
     );
-    assert_eq!(
-        state.turn_draw_bonus_by_player.get(&PlayerId::new("p2")),
-        Some(&1)
-    );
-    let formation = state
-        .last_formation_by_player
-        .get(&PlayerId::new("p2"))
+    let copied_discard = copied_drawn_cards[0];
+    record
+        .handle(Command::AnswerChoice {
+            player: p2.clone(),
+            choice_id: copied_choice.choice_id,
+            answer: ChoiceAnswer::Cards {
+                cards: vec![copied_discard],
+            },
+        })
         .unwrap();
-    assert_eq!(formation.formation_id, "metamorphosis");
-    assert_eq!(formation.effective_effect_id(), "five-streams-unite");
+    assert_eq!(record.state().turn_draw_bonus_by_player.get(&p2), Some(&1));
+    assert!(matches!(
+        record.advance_automatic().unwrap().as_slice(),
+        [
+            GameEvent::TurnEnded { player: ended },
+            GameEvent::TurnStarted { player: started, .. },
+        ] if ended == &p2 && started == &p1
+    ));
+    assert!(record.state().turn_draw_bonus_by_player.get(&p2).is_none());
+
+    let state = record.state().clone();
+    assert_eq!(state.current_player(), Some(&p1));
+    assert_eq!(state.phase, Phase::ActiveEffects);
+    for used in bridge_cards
+        .iter()
+        .chain(source_cards.iter())
+        .chain(metamorphosis_cards.iter())
+        .chain([source_discard, copied_discard].iter())
+    {
+        assert!(state.discard.contains(used));
+    }
+    assert_eq!(
+        record
+            .public_view(Viewer::Observer)
+            .unwrap()
+            .previous_turn_formation,
+        Some(PublicPreviousTurnFormation {
+            player: p2,
+            formation_id: Some("metamorphosis".to_string()),
+            cards: PublicCardRefs::Known(metamorphosis_cards),
+        })
+    );
+    assert_eq!(record.replay().unwrap(), state);
+    assert_eq!(record.verify_replay().unwrap(), state);
 }
 
 #[test]
-fn metamorphosis_copies_an_active_spell_and_records_its_resolved_effect() {
-    let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::ActiveEffects;
-    state.current_turn_index = 1;
-    state.turn_number = 2;
-    state.hands = vec![
-        PlayerHand::new(PlayerId::new("p1"), Vec::new()),
-        PlayerHand::new(PlayerId::new("p2"), vec![card(5), card(10)]),
-    ];
-    state.last_formation_by_player.insert(
-        PlayerId::new("p1"),
-        LastFormationUse {
-            formation_id: "barrier".to_string(),
+fn metamorphosis_barrier_matrix_copies_the_spell_with_its_own_card_levels() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let source_cards = vec![card(2), card(7), card(1), card(4)];
+    let mut record = GameRecord::start(
+        two_player_setup(),
+        deck_starting_with(&[2, 7, 1, 4, 5, 10, 6, 8, 9]),
+    )
+    .unwrap();
+    record.advance_automatic().unwrap();
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "barrier".to_string(),
+                cards: source_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "barrier".to_string(),
+                cards: source_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::ShieldChanged {
+                player: p1.clone(),
+                old_value: 0,
+                delta: 44,
+                new_value: 44,
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "barrier".to_string(),
+                cards: source_cards.clone(),
+            },
+        ]
+    );
+    advance_record_to_next_main_after_turn_draw(&mut record, card(3));
+
+    let metamorphosis_cards = vec![card(5), card(10)];
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::FormationEffectCopied {
+                player: p2.clone(),
+                effect_id: "barrier".to_string(),
+            },
+            GameEvent::ShieldChanged {
+                player: p2.clone(),
+                old_value: 0,
+                delta: 40,
+                new_value: 40,
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+            },
+        ]
+    );
+
+    let state = record.state().clone();
+    assert_eq!(state.phase, Phase::TurnDraw);
+    assert_eq!(state.shield(&p1), Some(44));
+    assert_eq!(state.shield(&p2), Some(40));
+    assert_eq!(
+        state.last_formation_by_player.get(&p2),
+        Some(&LastFormationUse {
+            formation_id: "metamorphosis".to_string(),
             resolved_effect_id: "barrier".to_string(),
-            used_cards: Vec::new(),
-            resolved_turn: 1,
-        },
+            used_cards: metamorphosis_cards.clone(),
+            resolved_turn: 2,
+        })
     );
-
-    let events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p2"),
-            formation_id: "metamorphosis".to_string(),
-            cards: vec![card(5), card(10)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    for event in &events {
-        apply_event(&mut state, event);
+    for used in source_cards.iter().chain(metamorphosis_cards.iter()) {
+        assert!(state.discard.contains(used));
     }
-
-    assert_eq!(state.shield(&PlayerId::new("p2")), Some(40));
-    let formation = state
-        .last_formation_by_player
-        .get(&PlayerId::new("p2"))
-        .unwrap();
-    assert_eq!(formation.formation_id, "metamorphosis");
-    assert_eq!(formation.effective_effect_id(), "barrier");
+    for viewer in [
+        Viewer::Player(p1.clone()),
+        Viewer::Player(p2.clone()),
+        Viewer::Observer,
+    ] {
+        let view = record.public_view(viewer).unwrap();
+        assert_eq!(
+            view.shields,
+            vec![
+                PlayerShield {
+                    player: p1.clone(),
+                    value: 44,
+                },
+                PlayerShield {
+                    player: p2.clone(),
+                    value: 40,
+                },
+            ]
+        );
+        assert_eq!(
+            view.previous_turn_formation,
+            Some(PublicPreviousTurnFormation {
+                player: p1.clone(),
+                formation_id: Some("barrier".to_string()),
+                cards: PublicCardRefs::Known(source_cards.clone()),
+            })
+        );
+    }
+    assert_eq!(record.replay().unwrap(), state);
+    assert_eq!(record.verify_replay().unwrap(), state);
 }
 
 #[test]
-fn metamorphosis_copies_a_passive_effect_as_a_public_delayed_counter() {
-    let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::ActiveEffects;
-    state.current_turn_index = 1;
-    state.turn_number = 2;
-    state.hands = vec![
-        PlayerHand::new(PlayerId::new("p1"), Vec::new()),
-        PlayerHand::new(PlayerId::new("p2"), vec![card(5), card(10)]),
-    ];
-    cover(&mut state, "p1", "defense", vec![card(2), card(7)], false);
-    state.last_formation_by_player.insert(
-        PlayerId::new("p1"),
-        LastFormationUse {
-            formation_id: "defense".to_string(),
-            resolved_effect_id: "defense".to_string(),
-            used_cards: vec![card(2), card(7)],
-            resolved_turn: 1,
-        },
-    );
+fn metamorphosis_defense_matrix_establishes_and_consumes_a_public_delayed_counter() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
 
-    let copy_events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p2"),
-            formation_id: "metamorphosis".to_string(),
-            cards: vec![card(5), card(10)],
-            declared_targets: Vec::new(),
-        },
+    // 基準：同一張合法 Metal Strike 沒有 counter 時正常傷害 P2。
+    let mut baseline = GameRecord::start(
+        two_player_setup_with_hp(100),
+        deck_starting_with(&[1, 6, 4, 3, 2, 5, 7, 8, 9]),
     )
     .unwrap();
-    for event in &copy_events {
-        apply_event(&mut state, event);
-    }
-
-    assert!(no_covered(&state));
-    assert_eq!(state.counter_effects.len(), 1);
-    assert_eq!(state.counter_effects[0].owner, PlayerId::new("p2"));
-    assert_eq!(state.counter_effects[0].effect_id, "defense");
-    for used_card in [card(2), card(7), card(5), card(10)] {
-        assert!(state.discard.contains(&used_card));
-    }
-
-    state.phase = Phase::ActiveEffects;
-    state.current_turn_index = 0;
-    state.turn_number = 3;
-    state.hands = vec![
-        PlayerHand::new(PlayerId::new("p1"), vec![card(1)]),
-        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
-    ];
-    let attack_events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "metal-strike".to_string(),
-            cards: vec![card(1)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    for event in &attack_events {
-        apply_event(&mut state, event);
-    }
-
-    assert!(state.counter_effects.is_empty());
+    baseline.advance_automatic().unwrap();
     assert_eq!(
-        state
-            .hp
-            .iter()
-            .find(|team_hp| team_hp.team == TeamId::new("team:p2"))
-            .map(|team_hp| team_hp.hp),
-        Some(30)
+        baseline
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p2.clone(),
+                formation_id: "metal-strike".to_string(),
+                used_cards: vec![card(1)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 7,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 7,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 100,
+                    delta: -7,
+                    new_hp: 93,
+                    effective_delta: -7,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p1.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Metal,
+                        resolved_turn: 1,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+            },
+        ]
+    );
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+    assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
+
+    let defense_cards = vec![card(2), card(7)];
+    let metamorphosis_cards = vec![card(5), card(10)];
+    let mut interaction = GameRecord::start(
+        two_player_setup_with_hp(100),
+        deck_starting_with(&[2, 7, 3, 4, 5, 10, 6, 8, 9, 1, 11, 12]),
+    )
+    .unwrap();
+    interaction.advance_automatic().unwrap();
+
+    // 修飾本身：P1 只能用完整合法 Defense command 建立原始 covered passive。
+    assert_eq!(
+        interaction
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "defense".to_string(),
+                cards: defense_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "defense".to_string(),
+                cards: defense_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceDownResolving,
+            },
+            GameEvent::PassiveCovered {
+                player: p1.clone(),
+                formation_id: "defense".to_string(),
+                cards: defense_cards.clone(),
+                star_substitution: None,
+                sealed: false,
+            },
+        ]
+    );
+    assert_eq!(
+        interaction
+            .public_view(Viewer::Player(p1.clone()))
+            .unwrap()
+            .covered_passives,
+        vec![PublicCoveredPassive {
+            owner: p1.clone(),
+            formation_id: Some("defense".to_string()),
+            cards: PublicCardRefs::Known(defense_cards.clone()),
+            star_substitution: None,
+        }]
+    );
+    for viewer in [Viewer::Player(p2.clone()), Viewer::Observer] {
+        assert_eq!(
+            interaction.public_view(viewer).unwrap().covered_passives,
+            vec![PublicCoveredPassive {
+                owner: p1.clone(),
+                formation_id: None,
+                cards: PublicCardRefs::Hidden { count: 2 },
+                star_substitution: None,
+            }]
+        );
+    }
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(11));
+
+    // Meta 是 P2 的合法下一個 Action：P1 原 Defense 會以 NotAnAttack 正常翻開並
+    // 消耗；P2 取得的是獨立、公開的 delayed counter，而非重用 P1 的 covered card。
+    assert_eq!(
+        interaction
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::PassiveFlipped {
+                owner: p1.clone(),
+                incoming_player: p2.clone(),
+                passive_id: "defense".to_string(),
+                cards: defense_cards.clone(),
+                outcome: PassiveFlipOutcome::NoEffect {
+                    grounds: vec![PassiveNoEffectGround::NotAnAttack],
+                },
+            },
+            GameEvent::FormationEffectCopied {
+                player: p2.clone(),
+                effect_id: "defense".to_string(),
+            },
+            GameEvent::CounterEffectEstablished {
+                owner: p2.clone(),
+                effect_id: "defense".to_string(),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+            },
+        ]
+    );
+    assert!(interaction.state().covered_passive(&p1).is_none());
+    for viewer in [
+        Viewer::Player(p1.clone()),
+        Viewer::Player(p2.clone()),
+        Viewer::Observer,
+    ] {
+        assert!(
+            interaction
+                .public_view(viewer)
+                .unwrap()
+                .counter_effects
+                .iter()
+                .any(|counter| counter.owner == p2 && counter.effect_id == "defense")
+        );
+    }
+
+    // 互動：P2 結束自己的合法 Turn Draw 後，P1 的 Metal Strike 觸發並消耗 P2
+    // counter；攻擊依舊完整 commitment/discard，但只有傷害變為零。
+    advance_record_to_next_main_discarding_first_turn_draw_card(&mut interaction, &p2);
+    assert_eq!(interaction.state().current_player(), Some(&p1));
+    assert_eq!(
+        interaction
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::CounterEffectResolved {
+                owner: p2.clone(),
+                incoming_player: p1.clone(),
+                effect_id: "defense".to_string(),
+                outcome: PassiveFlipOutcome::Applied {
+                    effect_id: "defense".to_string(),
+                    modifications: vec![ActionModification::PreventDamage],
+                },
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p2.clone(),
+                formation_id: "metal-strike".to_string(),
+                used_cards: vec![card(1)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 7,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 7,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 100,
+                    delta: 0,
+                    new_hp: 100,
+                    effective_delta: 0,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: Some(AttackResolutionEffects {
+                    outcome: AttackOutcome::DamagePrevented,
+                    elemental_context_update: Some(LastElementalAttackUpdate {
+                        player: p1.clone(),
+                        attack: LastElementalAttack {
+                            element: Element::Metal,
+                            resolved_turn: 3,
+                        },
+                    }),
+                    ..Default::default()
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+            },
+        ]
+    );
+    assert!(interaction.state().counter_effects.is_empty());
+    for viewer in [
+        Viewer::Player(p1.clone()),
+        Viewer::Player(p2.clone()),
+        Viewer::Observer,
+    ] {
+        assert!(
+            interaction
+                .public_view(viewer)
+                .unwrap()
+                .counter_effects
+                .is_empty()
+        );
+    }
+    assert_eq!(interaction.state().phase, Phase::TurnDraw);
+    assert_eq!(interaction.state().current_player(), Some(&p1));
+    for used in defense_cards
+        .iter()
+        .chain(metamorphosis_cards.iter())
+        .chain([card(1)].iter())
+    {
+        assert!(interaction.state().discard.contains(used));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
     );
 }
 
 #[test]
-fn metamorphosis_copying_empty_city_does_not_create_a_counter_effect() {
-    let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::ActiveEffects;
-    state.current_turn_index = 1;
-    state.turn_number = 2;
-    state.hands = vec![
-        PlayerHand::new(PlayerId::new("p1"), Vec::new()),
-        PlayerHand::new(PlayerId::new("p2"), vec![card(5), card(10)]),
-    ];
-    state.last_formation_by_player.insert(
-        PlayerId::new("p1"),
-        LastFormationUse {
-            formation_id: "empty-city".to_string(),
+fn metamorphosis_empty_city_matrix_copies_without_establishing_a_delayed_counter() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let empty_city_cards = vec![card(1), card(2)];
+    let metamorphosis_cards = vec![card(5), card(10)];
+    let mut record = GameRecord::start(
+        two_player_setup_with_hp(100),
+        deck_starting_with(&[1, 2, 3, 4, 5, 10, 7, 8, 9, 6, 11, 12]),
+    )
+    .unwrap();
+    record.advance_automatic().unwrap();
+
+    // 修飾本身：空城必須由 P1 的合法 covered passive command 建立；P1 保留後續
+    // Metal Strike 所需的 card 6，不能以 fixture 塞入 last formation。
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "empty-city".to_string(),
+                cards: empty_city_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "empty-city".to_string(),
+                cards: empty_city_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceDownResolving,
+            },
+            GameEvent::PassiveCovered {
+                player: p1.clone(),
+                formation_id: "empty-city".to_string(),
+                cards: empty_city_cards.clone(),
+                star_substitution: None,
+                sealed: false,
+            },
+        ]
+    );
+    advance_record_to_next_main_after_turn_draw(&mut record, card(11));
+
+    // 互動：Meta 合法翻開並複製空城的 effect identity，但空城沒有可建立的 delayed
+    // counter。Defense positive sibling 在 metamorphosis_defense_matrix_... 已證明同一
+    // lifecycle 確實會建立及消耗 counter。
+    assert_eq!(
+        record
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::PassiveFlipped {
+                owner: p1.clone(),
+                incoming_player: p2.clone(),
+                passive_id: "empty-city".to_string(),
+                cards: empty_city_cards.clone(),
+                outcome: PassiveFlipOutcome::NoEffect {
+                    grounds: vec![PassiveNoEffectGround::EmptyCity],
+                },
+            },
+            GameEvent::FormationEffectCopied {
+                player: p2.clone(),
+                effect_id: "empty-city".to_string(),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "metamorphosis".to_string(),
+                cards: metamorphosis_cards.clone(),
+            },
+        ]
+    );
+    assert!(record.state().covered_passive(&p1).is_none());
+    assert_eq!(
+        record.state().last_formation_by_player.get(&p2),
+        Some(&LastFormationUse {
+            formation_id: "metamorphosis".to_string(),
             resolved_effect_id: "empty-city".to_string(),
-            used_cards: vec![card(1), card(2)],
-            resolved_turn: 1,
-        },
+            used_cards: metamorphosis_cards.clone(),
+            resolved_turn: 2,
+        })
     );
-
-    let events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p2"),
-            formation_id: "metamorphosis".to_string(),
-            cards: vec![card(5), card(10)],
-            declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    for event in &events {
-        apply_event(&mut state, event);
+    for viewer in [
+        Viewer::Player(p1.clone()),
+        Viewer::Player(p2.clone()),
+        Viewer::Observer,
+    ] {
+        assert!(
+            record
+                .public_view(viewer)
+                .unwrap()
+                .counter_effects
+                .is_empty()
+        );
     }
 
-    assert!(state.counter_effects.is_empty());
+    // 空城複製後 P1 的下一個合法 Metal Strike 仍完整正常傷害；此 exact outcome
+    // 同時排除 hidden counter 被消耗、或只檢查 final state 而漏掉的 canonical event。
+    advance_record_to_next_main_discarding_first_turn_draw_card(&mut record, &p2);
+    assert_eq!(record.state().current_player(), Some(&p1));
     assert_eq!(
-        state
-            .last_formation_by_player
-            .get(&PlayerId::new("p2"))
-            .map(LastFormationUse::effective_effect_id),
-        Some("empty-city")
+        record
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(6)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(6)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p2.clone(),
+                formation_id: "metal-strike".to_string(),
+                used_cards: vec![card(6)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 7,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 7,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 100,
+                    delta: -7,
+                    new_hp: 93,
+                    effective_delta: -7,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p1.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Metal,
+                        resolved_turn: 3,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(6)],
+            },
+        ]
     );
+    assert!(record.state().counter_effects.is_empty());
+    assert_eq!(record.state().phase, Phase::TurnDraw);
+    for used in empty_city_cards
+        .iter()
+        .chain(metamorphosis_cards.iter())
+        .chain([card(6)].iter())
+    {
+        assert!(record.state().discard.contains(used));
+    }
+    assert_eq!(record.replay().unwrap(), record.state().clone());
+    assert_eq!(record.verify_replay().unwrap(), record.state().clone());
 }
 
 #[test]
@@ -4525,92 +6904,398 @@ fn chaos_requests_two_next_player_hand_cards_and_returns_them_to_deck_top() {
 }
 
 #[test]
-fn active_spell_intent_can_change_hp_through_public_command_flow() {
-    let mut record =
-        GameRecord::start(two_player_setup(), deck_starting_with(&[3, 8, 5, 2])).unwrap();
-    record.advance_automatic().unwrap();
+fn return_to_origin_recovery_matrix_heals_after_a_legal_previous_player_attack() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let return_cards = vec![card(3), card(8), card(5), card(2)];
 
-    assert_event_semantics_eq!(
-        record
+    // 無修飾基準：Return to Origin 的完整 active-spell lifecycle 請求三十六點
+    // 回復；滿 HP 時可觀察到 requested/effective delta 的差異。
+    let mut baseline = GameRecord::start(
+        two_player_setup_with_hp(100),
+        deck_starting_with(&[3, 8, 5, 2]),
+    )
+    .unwrap();
+    baseline.advance_automatic().unwrap();
+    assert_eq!(
+        baseline
             .handle(Command::PerformFormation {
-                player: PlayerId::new("p1"),
+                player: p1.clone(),
                 formation_id: "return-to-origin".to_string(),
-                cards: vec![card(3), card(8), card(5), card(2)],
+                cards: return_cards.clone(),
                 declared_targets: Vec::new(),
             })
             .unwrap(),
         vec![
-            GameEvent::FormationPerformed {
-                player: PlayerId::new("p1"),
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
                 formation_id: "return-to-origin".to_string(),
-                used_cards: vec![card(3), card(8), card(5), card(2)],
-                declared_targets: Vec::new(),
+                cards: return_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::HpChanged {
                 change: HpChangeDelta {
                     team: TeamId::new("team:p1"),
-                    old_hp: 30,
+                    old_hp: 100,
                     delta: 36,
-                    new_hp: 30,
+                    new_hp: 100,
                     effective_delta: 0,
                 },
             },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "return-to-origin".to_string(),
+                cards: return_cards.clone(),
+            },
         ]
     );
+    assert_eq!(baseline.state().phase, Phase::TurnDraw);
+    assert_eq!(baseline.state().current_player(), Some(&p1));
+    assert_eq!(baseline.state().discard, return_cards.clone());
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+    assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
 
-    let state = record.state().clone();
+    // 修飾本身：調整合法 turn order，讓 P2 先以 Triple Fire 完整傷害 P1；這不是
+    // fixture 直接寫入 HP 或上一回合結果。
+    let mut p2_first_setup = two_player_setup_with_hp(100);
+    p2_first_setup.turn_order = vec![p2.clone(), p1.clone()];
+    let mut interaction = GameRecord::start(
+        p2_first_setup,
+        deck_starting_with(&[4, 9, 14, 1, 3, 8, 5, 2, 6]),
+    )
+    .unwrap();
+    interaction.advance_automatic().unwrap();
     assert_eq!(
-        state
-            .hp
-            .iter()
-            .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
-            .map(|team_hp| team_hp.hp),
-        Some(30)
+        interaction
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "triple-fire".to_string(),
+                cards: vec![card(4), card(9), card(14)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "triple-fire".to_string(),
+                cards: vec![card(4), card(9), card(14)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p2.clone(),
+                target: p1.clone(),
+                formation_id: "triple-fire".to_string(),
+                used_cards: vec![card(4), card(9), card(14)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 36,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 36,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 100,
+                    delta: -36,
+                    new_hp: 64,
+                    effective_delta: -36,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p2.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Fire,
+                        resolved_turn: 1,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "triple-fire".to_string(),
+                cards: vec![card(4), card(9), card(14)],
+            },
+        ]
     );
-    assert_eq!(record.replay().unwrap(), state);
+    advance_record_to_next_main_discarding_first_turn_draw_card(&mut interaction, &p2);
+    assert_eq!(interaction.state().current_player(), Some(&p1));
+
+    // 互動：P1 的合法 Return to Origin 回復自身 Team 的三十六點；P2 沒有受影響。
+    assert_eq!(
+        interaction
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "return-to-origin".to_string(),
+                cards: return_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "return-to-origin".to_string(),
+                cards: return_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::HpChanged {
+                change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 64,
+                    delta: 36,
+                    new_hp: 100,
+                    effective_delta: 36,
+                },
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "return-to-origin".to_string(),
+                cards: return_cards.clone(),
+            },
+        ]
+    );
+    assert_eq!(interaction.state().phase, Phase::TurnDraw);
+    assert_eq!(interaction.state().current_player(), Some(&p1));
+    assert_eq!(
+        interaction.state().hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 100,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 100,
+            },
+        ]
+    );
+    for used in [
+        card(4),
+        card(9),
+        card(14),
+        card(3),
+        card(8),
+        card(5),
+        card(2),
+    ] {
+        assert!(interaction.state().discard.contains(&used));
+    }
+    assert_eq!(
+        interaction.public_view(Viewer::Observer).unwrap().hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 100,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 100,
+            },
+        ]
+    );
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
 }
 
 #[test]
-fn five_elements_cycle_exchanges_team_hp_through_public_command_flow() {
-    let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::ActiveEffects;
-    state.hp = vec![
-        TeamHp {
-            team: TeamId::new("team:p1"),
-            hp: 12,
-        },
-        TeamHp {
-            team: TeamId::new("team:p2"),
-            hp: 27,
-        },
-    ];
-    state.hands = vec![
-        PlayerHand::new(
-            PlayerId::new("p1"),
-            vec![card(1), card(2), card(3), card(4), card(5)],
-        ),
-        PlayerHand::new(PlayerId::new("p2"), Vec::new()),
-    ];
+fn five_elements_cycle_matrix_swaps_hp_after_a_legal_low_point_triple_fire() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let p2_first_setup = || {
+        let mut setup = two_player_setup_with_hp(27);
+        setup.turn_order = vec![p2.clone(), p1.clone()];
+        setup
+    };
+    let cycle_cards = vec![card(1), card(2), card(3), card(4), card(5)];
 
-    let events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p1"),
-            formation_id: "five-elements-cycle".to_string(),
-            cards: vec![card(1), card(2), card(3), card(4), card(5)],
-            declared_targets: Vec::new(),
-        },
+    // 無修飾基準：P2 合法 Generating bridge 後，兩個 Team 都是 27，因此 Cycle
+    // 仍完整提交；沒有實際變化時 canonical record 不會製造零值 HP event。
+    let mut baseline = GameRecord::start(
+        p2_first_setup(),
+        deck_starting_with(&[6, 8, 7, 9, 1, 2, 3, 4, 5]),
     )
     .unwrap();
-
-    assert_event_semantics_eq!(
-        events,
-        vec![
-            GameEvent::FormationPerformed {
-                player: PlayerId::new("p1"),
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "generating-formation".to_string(),
+            cards: vec![card(6), card(8), card(7)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    advance_record_to_next_main_discarding_first_turn_draw_card(&mut baseline, &p2);
+    assert_eq!(
+        baseline
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
                 formation_id: "five-elements-cycle".to_string(),
-                used_cards: vec![card(1), card(2), card(3), card(4), card(5)],
+                cards: cycle_cards.clone(),
                 declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "five-elements-cycle".to_string(),
+                cards: cycle_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "five-elements-cycle".to_string(),
+                cards: cycle_cards.clone(),
+            },
+        ]
+    );
+    assert_eq!(
+        baseline.state().hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 27,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 27,
+            },
+        ]
+    );
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+    assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
+
+    // 修飾本身：三張自訂 printed-level Fire 卡仍透過真實 Command 組成 Triple
+    // Fire；等級 1+1+3 的十五點傷害把 P1 從 27 合法降為 12。
+    let mut interaction_setup = p2_first_setup();
+    interaction_setup.card_defs.extend([
+        CardDef {
+            id: CardDefId::new("fire-one"),
+            name: "fire-one".to_string(),
+            element: Element::Fire,
+            level: fewfc::domain::PrintedCardLevel::new(1),
+        },
+        CardDef {
+            id: CardDefId::new("fire-three"),
+            name: "fire-three".to_string(),
+            element: Element::Fire,
+            level: fewfc::domain::PrintedCardLevel::new(3),
+        },
+    ]);
+    interaction_setup.card_instances.extend([
+        CardInstanceDef {
+            instance: card(21),
+            definition: CardDefId::new("fire-one"),
+            origin: Default::default(),
+        },
+        CardInstanceDef {
+            instance: card(22),
+            definition: CardDefId::new("fire-one"),
+            origin: Default::default(),
+        },
+        CardInstanceDef {
+            instance: card(23),
+            definition: CardDefId::new("fire-three"),
+            origin: Default::default(),
+        },
+    ]);
+    let mut deck = vec![
+        card(21),
+        card(22),
+        card(23),
+        card(6),
+        card(1),
+        card(2),
+        card(3),
+        card(4),
+        card(5),
+    ];
+    for id in 1..=23 {
+        let candidate = card(id);
+        if !deck.contains(&candidate) {
+            deck.push(candidate);
+        }
+    }
+    let mut interaction = GameRecord::start(interaction_setup, deck).unwrap();
+    interaction.advance_automatic().unwrap();
+    assert_eq!(
+        interaction
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "triple-fire".to_string(),
+                cards: vec![card(21), card(22), card(23)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "triple-fire".to_string(),
+                cards: vec![card(21), card(22), card(23)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p2.clone(),
+                target: p1.clone(),
+                formation_id: "triple-fire".to_string(),
+                used_cards: vec![card(21), card(22), card(23)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 15,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 15,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 27,
+                    delta: -15,
+                    new_hp: 12,
+                    effective_delta: -15,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p2.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Fire,
+                        resolved_turn: 1,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "triple-fire".to_string(),
+                cards: vec![card(21), card(22), card(23)],
+            },
+        ]
+    );
+    advance_record_to_next_main_discarding_first_turn_draw_card(&mut interaction, &p2);
+
+    // 互動：P1 Cycle 的兩個 typed HP changes 要同時交換目前的兩隊值，不只是
+    // 以最終 state 側面證明結果。
+    assert_eq!(
+        interaction
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "five-elements-cycle".to_string(),
+                cards: cycle_cards.clone(),
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "five-elements-cycle".to_string(),
+                cards: cycle_cards.clone(),
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::HpChanged {
                 change: HpChangeDelta {
@@ -4630,20 +7315,17 @@ fn five_elements_cycle_exchanges_team_hp_through_public_command_flow() {
                     effective_delta: -15,
                 },
             },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "five-elements-cycle".to_string(),
+                cards: cycle_cards.clone(),
+            },
         ]
     );
-
-    for event in &events {
-        apply_event(&mut state, event);
-    }
-
-    assert_eq!(state.hand(&PlayerId::new("p1")), Some([].as_slice()));
+    assert_eq!(interaction.state().phase, Phase::TurnDraw);
+    assert_eq!(interaction.state().current_player(), Some(&p1));
     assert_eq!(
-        state.discard,
-        vec![card(1), card(2), card(3), card(4), card(5)]
-    );
-    assert_eq!(
-        state.hp,
+        interaction.state().hp,
         vec![
             TeamHp {
                 team: TeamId::new("team:p1"),
@@ -4655,7 +7337,36 @@ fn five_elements_cycle_exchanges_team_hp_through_public_command_flow() {
             },
         ]
     );
-    assert_eq!(state.phase, Phase::TurnDraw);
+    for used in [
+        card(21),
+        card(22),
+        card(23),
+        card(1),
+        card(2),
+        card(3),
+        card(4),
+        card(5),
+    ] {
+        assert!(interaction.state().discard.contains(&used));
+    }
+    assert_eq!(
+        interaction.public_view(Viewer::Observer).unwrap().hp,
+        vec![
+            TeamHp {
+                team: TeamId::new("team:p1"),
+                hp: 27,
+            },
+            TeamHp {
+                team: TeamId::new("team:p2"),
+                hp: 12,
+            },
+        ]
+    );
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
+    );
 }
 
 #[test]
@@ -6453,6 +9164,9 @@ fn five_streams_defense_matrix_keeps_the_turn_draw_bonus_when_damage_is_prevente
             && discarded_cards == &vec![card(5), card(10)]
     ));
     advance_record_to_next_main_after_turn_draw(&mut baseline, card(7));
+    let baseline_target_hand_count = baseline.state().hand(&p1).unwrap().len();
+    assert_eq!(baseline_target_hand_count, 4);
+    assert_eq!(baseline_target_hand_count * 15, 60);
     let baseline_hp = baseline
         .state()
         .hp
@@ -6572,6 +9286,9 @@ fn five_streams_defense_matrix_keeps_the_turn_draw_bonus_when_damage_is_prevente
     ));
     advance_record_to_next_main_after_turn_draw(&mut interaction, card(3));
     assert_eq!(interaction.state().current_player(), Some(&p2));
+    let interaction_target_hand_count = interaction.state().hand(&p1).unwrap().len();
+    assert_eq!(interaction_target_hand_count, 4);
+    assert_eq!(interaction_target_hand_count * 15, 60);
     let interaction_hp = interaction
         .state()
         .hp
@@ -9857,103 +12574,515 @@ fn metal_environment_generating_matrix_recovers_once_when_both_grounds_apply() {
 }
 
 #[test]
-fn elemental_attack_without_relationship_to_previous_players_last_element_uses_normal_damage() {
-    let mut record = record_after_p1_metal_attack_on_turn_1();
+fn elemental_attack_unrelated_previous_element_matrix_keeps_normal_damage() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let setup = two_player_setup_with_hp(100);
+    let deck = deck_starting_with(&[1, 6, 2, 3, 9, 4, 5, 7, 8]);
 
-    assert_event_semantics_eq!(
-        record
+    let weapon_events = || {
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "weapon".to_string(),
+                cards: vec![card(1), card(6)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p2.clone(),
+                formation_id: "weapon".to_string(),
+                used_cards: vec![card(1), card(6)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 12,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 12,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 100,
+                    delta: -12,
+                    new_hp: 88,
+                    effective_delta: -12,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: Some(AttackResolutionEffects {
+                    outcome: AttackOutcome::Resolved,
+                    ..Default::default()
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "weapon".to_string(),
+                cards: vec![card(1), card(6)],
+            },
+        ]
+    };
+    let metal_events = || {
+        vec![
+            GameEvent::FormationCommitted {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p1.clone(),
+                target: p2.clone(),
+                formation_id: "metal-strike".to_string(),
+                used_cards: vec![card(1)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 7,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 7,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p2"),
+                    old_hp: 100,
+                    delta: -7,
+                    new_hp: 93,
+                    effective_delta: -7,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p1.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Metal,
+                        resolved_turn: 1,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+            },
+        ]
+    };
+    let wood_events = || {
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "wood-strike".to_string(),
+                cards: vec![card(7)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::AttackResolved {
+                attacker: p2.clone(),
+                target: p1.clone(),
+                formation_id: "wood-strike".to_string(),
+                used_cards: vec![card(7)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 6,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 6,
+                },
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 100,
+                    delta: -6,
+                    new_hp: 94,
+                    effective_delta: -6,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p2.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Wood,
+                        resolved_turn: 2,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "wood-strike".to_string(),
+                cards: vec![card(7)],
+            },
+        ]
+    };
+
+    // 無修飾基準：實體 Weapon 是合法的立即前一個 Formation，但不建立元素脈絡；
+    // Wood Strike 因此正常造成六點傷害。
+    let mut baseline = GameRecord::start(setup.clone(), deck.clone()).unwrap();
+    baseline.advance_automatic().unwrap();
+    assert_eq!(
+        baseline
             .handle(Command::PerformFormation {
-                player: PlayerId::new("p2"),
+                player: p1.clone(),
+                formation_id: "weapon".to_string(),
+                cards: vec![card(1), card(6)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        weapon_events()
+    );
+    advance_record_to_next_main_after_turn_draw(&mut baseline, card(10));
+    assert_eq!(
+        baseline
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
                 formation_id: "wood-strike".to_string(),
                 cards: vec![card(7)],
                 declared_targets: Vec::new(),
             })
             .unwrap(),
-        vec![GameEvent::AttackResolved {
-            attacker: PlayerId::new("p2"),
-            target: PlayerId::new("p1"),
-            formation_id: "wood-strike".to_string(),
-            used_cards: vec![card(7)],
-            point_breakdown: AttackPointBreakdown {
-                base_points: 6,
-                environment_effect: EnvironmentAttackEffect::None,
-                interaction: ElementInteraction::None,
-                damage_transform: DamageTransform::NormalDamage,
-                final_amount: 6,
+        wood_events()
+    );
+    for used in [card(1), card(6), card(7)] {
+        assert!(baseline.state().discard.contains(&used));
+    }
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+    assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
+
+    // 修飾本身：同一張 Fire Strike 面對 P1 的合法立即 Metal Strike 時，正確取得
+    // Overcoming 並從八點加倍為十六點。
+    let mut modifier = GameRecord::start(setup.clone(), deck.clone()).unwrap();
+    modifier.advance_automatic().unwrap();
+    assert_eq!(
+        modifier
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        metal_events()
+    );
+    advance_record_to_next_main_after_turn_draw(&mut modifier, card(10));
+    let overcoming_fire = modifier
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(
+        overcoming_fire,
+        vec![
+            GameEvent::FormationCommitted {
+                player: p2.clone(),
+                formation_id: "fire-strike".to_string(),
+                cards: vec![card(9)],
+                star_substitution: None,
+                state: FormationAreaState::FaceUpResolving,
             },
-            hp_change: HpChangeDelta {
-                team: TeamId::new("team:p1"),
-                old_hp: 30,
-                delta: -6,
-                new_hp: 24,
-                effective_delta: -6,
-            },
-            shield_change: None,
-            card_moves: vec![CardMoveDelta {
-                card: card(7),
-                from: CardZone::Hand(PlayerId::new("p2")),
-                to: CardZone::Discard,
-            }],
-            elemental_context_update: atomic_context!(LastElementalAttackUpdate {
-                player: PlayerId::new("p2"),
-                attack: LastElementalAttack {
-                    element: Element::Wood,
-                    resolved_turn: 2,
+            GameEvent::AttackResolved {
+                attacker: p2.clone(),
+                target: p1.clone(),
+                formation_id: "fire-strike".to_string(),
+                used_cards: vec![card(9)],
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 8,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::Overcoming,
+                    damage_transform: DamageTransform::DoubleDamage,
+                    final_amount: 16,
                 },
-            }),
-        }]
+                hp_change: HpChangeDelta {
+                    team: TeamId::new("team:p1"),
+                    old_hp: 100,
+                    delta: -16,
+                    new_hp: 84,
+                    effective_delta: -16,
+                },
+                shield_change: None,
+                card_moves: Vec::new(),
+                elemental_context_update: atomic_context!(LastElementalAttackUpdate {
+                    player: p2.clone(),
+                    attack: LastElementalAttack {
+                        element: Element::Fire,
+                        resolved_turn: 2,
+                    },
+                }),
+            },
+            GameEvent::FormationCardsDiscarded {
+                player: p2.clone(),
+                formation_id: "fire-strike".to_string(),
+                cards: vec![card(9)],
+            },
+        ]
+    );
+    for used in [card(1), card(9)] {
+        assert!(modifier.state().discard.contains(&used));
+    }
+    assert_eq!(modifier.replay().unwrap(), modifier.state().clone());
+    assert_eq!(modifier.verify_replay().unwrap(), modifier.state().clone());
+
+    // 互動：Metal 記錄確實存在且是立即前一個元素，但 Wood 與 Metal 無關；Wood
+    // 仍維持六點正常傷害，而不會錯用任何元素交互規則。
+    let mut interaction = GameRecord::start(setup, deck).unwrap();
+    interaction.advance_automatic().unwrap();
+    assert_eq!(
+        interaction
+            .handle(Command::PerformFormation {
+                player: p1.clone(),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        metal_events()
+    );
+    advance_record_to_next_main_after_turn_draw(&mut interaction, card(10));
+    assert_eq!(
+        interaction
+            .handle(Command::PerformFormation {
+                player: p2.clone(),
+                formation_id: "wood-strike".to_string(),
+                cards: vec![card(7)],
+                declared_targets: Vec::new(),
+            })
+            .unwrap(),
+        wood_events()
+    );
+    assert_eq!(
+        interaction.state().last_elemental_attack_by_player.get(&p1),
+        Some(&LastElementalAttack {
+            element: Element::Metal,
+            resolved_turn: 1,
+        })
+    );
+    assert_eq!(
+        interaction.state().last_elemental_attack_by_player.get(&p2),
+        Some(&LastElementalAttack {
+            element: Element::Wood,
+            resolved_turn: 2,
+        })
+    );
+    for used in [card(1), card(7)] {
+        assert!(interaction.state().discard.contains(&used));
+    }
+    assert_eq!(interaction.replay().unwrap(), interaction.state().clone());
+    assert_eq!(
+        interaction.verify_replay().unwrap(),
+        interaction.state().clone()
     );
 }
 
 #[test]
-fn elemental_interaction_ignores_an_older_element_when_the_previous_formation_was_not_elemental() {
-    let mut state = GameState::from_setup(&two_player_setup());
-    state.phase = Phase::ActiveEffects;
-    state.current_turn_index = 1;
-    state.turn_number = 2;
-    state.hands = vec![
-        PlayerHand::new(PlayerId::new("p1"), Vec::new()),
-        PlayerHand::new(PlayerId::new("p2"), vec![card(9)]),
-    ];
-    state.last_elemental_attack_by_player.insert(
-        PlayerId::new("p1"),
-        LastElementalAttack {
-            element: Element::Metal,
-            resolved_turn: 1,
-        },
-    );
-    state.last_formation_by_player.insert(
-        PlayerId::new("p1"),
-        LastFormationUse {
-            formation_id: "weapon".to_string(),
-            resolved_effect_id: "weapon".to_string(),
-            used_cards: vec![card(1), card(6)],
-            resolved_turn: 1,
-        },
-    );
+fn elemental_history_non_elemental_matrix_blocks_stale_metal_context() {
+    let p1 = PlayerId::new("p1");
+    let p2 = PlayerId::new("p2");
+    let mut setup = two_player_setup_with_hp(100);
+    setup
+        .card_instances
+        .extend([card_instance(21, "metal"), card_instance(26, "metal")]);
+    let deck = vec![
+        1, 6, 2, 3, // P1：Metal/Weapon 的共同開局
+        9, 11, 16, 4, 5, // P2：Fire 或 Weapon
+        21, 26, 7, // P1 第一輪 Turn Draw
+        8, 10, 12, // P2 Weapon 後 Turn Draw
+        13, 14, 15, // P1 第二輪 Turn Draw
+    ]
+    .into_iter()
+    .map(card)
+    .collect::<Vec<_>>();
 
-    let events = handle_command(
-        &state,
-        Command::PerformFormation {
-            player: PlayerId::new("p2"),
+    fn finish_turn(record: &mut GameRecord, player: PlayerId, discard: CardInstanceId) {
+        record.advance_automatic().unwrap();
+        answer_record_choice(
+            record,
+            player,
+            ChoiceAnswer::Cards {
+                cards: vec![discard],
+            },
+        )
+        .unwrap();
+        record.advance_automatic().unwrap();
+    }
+
+    // 無修飾基準：P1 的 Weapon 並不留下元素脈絡，P2 Fire 保持八點正常傷害。
+    let mut baseline = GameRecord::start(setup.clone(), deck.clone()).unwrap();
+    baseline.advance_automatic().unwrap();
+    baseline
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(1), card(6)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut baseline, p1.clone(), card(7));
+    let normal_fire = baseline
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
             formation_id: "fire-strike".to_string(),
             cards: vec![card(9)],
             declared_targets: Vec::new(),
-        },
-    )
-    .unwrap();
-    for event in &events {
-        apply_event(&mut state, event);
-    }
+        })
+        .unwrap();
+    assert!(matches!(
+        normal_fire.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
+            GameEvent::AttackResolved {
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 8,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 8,
+                },
+                hp_change: HpChangeDelta { team, old_hp: 100, delta: -8, effective_delta: -8, new_hp: 92, .. },
+                ..
+            },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "fire-strike"
+            && cards == &vec![card(9)]
+            && team == &TeamId::new("team:p1")
+            && discarded_by == &p2
+            && discarded == "fire-strike"
+            && discarded_cards == &vec![card(9)]
+    ));
+    assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
+    assert_eq!(baseline.verify_replay().unwrap(), baseline.state().clone());
 
+    // 修飾本身：P1 的合法 Metal Strike 是 Fire 的直接前置，因此同一張 Fire
+    // 會克制 Metal 並造成十六點。
+    let mut immediate = GameRecord::start(setup.clone(), deck.clone()).unwrap();
+    immediate.advance_automatic().unwrap();
+    immediate
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut immediate, p1.clone(), card(7));
+    let overcoming_fire = immediate
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        overcoming_fire.as_slice(),
+        [
+            GameEvent::FormationCommitted { .. },
+            GameEvent::AttackResolved {
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 8,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::Overcoming,
+                    damage_transform: DamageTransform::DoubleDamage,
+                    final_amount: 16,
+                },
+                hp_change: HpChangeDelta { team, old_hp: 100, delta: -16, effective_delta: -16, new_hp: 84, .. },
+                ..
+            },
+            GameEvent::FormationCardsDiscarded { .. },
+        ] if team == &TeamId::new("team:p1")
+    ));
+    assert_eq!(immediate.replay().unwrap(), immediate.state().clone());
     assert_eq!(
-        state
-            .hp
-            .iter()
-            .find(|team_hp| team_hp.team == TeamId::new("team:p1"))
-            .map(|team_hp| team_hp.hp),
-        Some(22)
+        immediate.verify_replay().unwrap(),
+        immediate.state().clone()
     );
+
+    // 互動：Metal 記錄仍留在 state 的 turn 1，但 P1 Weapon（turn 3）已成為 P2
+    // Fire 的立即上一個 Formation；Fire 因此不能再使用這個舊的 Metal ground。
+    let mut stale = GameRecord::start(setup, deck).unwrap();
+    stale.advance_automatic().unwrap();
+    stale
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut stale, p1.clone(), card(7));
+    stale
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(11), card(16)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut stale, p2.clone(), card(12));
+    stale
+        .handle(Command::PerformFormation {
+            player: p1.clone(),
+            formation_id: "weapon".to_string(),
+            cards: vec![card(21), card(26)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    finish_turn(&mut stale, p1.clone(), card(15));
+    assert_eq!(
+        stale.state().last_elemental_attack_by_player.get(&p1),
+        Some(&LastElementalAttack {
+            element: Element::Metal,
+            resolved_turn: 1,
+        })
+    );
+    assert_eq!(
+        stale
+            .public_view(Viewer::Observer)
+            .unwrap()
+            .previous_turn_formation,
+        Some(PublicPreviousTurnFormation {
+            player: p1.clone(),
+            formation_id: Some("weapon".to_string()),
+            cards: PublicCardRefs::Known(vec![card(21), card(26)]),
+        })
+    );
+    let stale_fire = stale
+        .handle(Command::PerformFormation {
+            player: p2.clone(),
+            formation_id: "fire-strike".to_string(),
+            cards: vec![card(9)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    assert!(matches!(
+        stale_fire.as_slice(),
+        [
+            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
+            GameEvent::AttackResolved {
+                point_breakdown: AttackPointBreakdown {
+                    base_points: 8,
+                    environment_effect: EnvironmentAttackEffect::None,
+                    interaction: ElementInteraction::None,
+                    damage_transform: DamageTransform::NormalDamage,
+                    final_amount: 8,
+                },
+                hp_change: HpChangeDelta { team, old_hp: 88, delta: -8, effective_delta: -8, new_hp: 80, .. },
+                ..
+            },
+            GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
+        ] if player == &p2
+            && formation_id == "fire-strike"
+            && cards == &vec![card(9)]
+            && team == &TeamId::new("team:p1")
+            && discarded_by == &p2
+            && discarded == "fire-strike"
+            && discarded_cards == &vec![card(9)]
+    ));
+    for used in [card(1), card(11), card(16), card(21), card(26), card(9)] {
+        assert!(stale.state().discard.contains(&used));
+    }
+    assert_eq!(stale.replay().unwrap(), stale.state().clone());
+    assert_eq!(stale.verify_replay().unwrap(), stale.state().clone());
 }
 
 #[test]
@@ -10081,6 +13210,36 @@ fn barrier_weapon_matrix_applies_physical_double_shield_damage_without_hp_loss()
             && discarded_cards == &vec![card(2), card(7), card(1), card(4)]
     ));
     assert_eq!(interaction.state().shield(&p1), Some(44));
+    assert_eq!(interaction.state().phase, Phase::TurnDraw);
+    assert_eq!(interaction.state().current_player(), Some(&p1));
+    assert_eq!(interaction.state().hand(&p1), Some([].as_slice()));
+    assert_eq!(
+        interaction.state().discard,
+        vec![card(2), card(7), card(1), card(4)]
+    );
+    let expected_public_shields = vec![
+        PlayerShield {
+            player: p1.clone(),
+            value: 44,
+        },
+        PlayerShield {
+            player: p2.clone(),
+            value: 0,
+        },
+    ];
+    for viewer in [
+        Viewer::Player(p1.clone()),
+        Viewer::Player(p2.clone()),
+        Viewer::Observer,
+    ] {
+        let view = interaction.public_view(viewer).unwrap();
+        assert_eq!(view.phase, Phase::TurnDraw);
+        assert_eq!(view.current_player, Some(p1.clone()));
+        assert_eq!(view.shields, expected_public_shields);
+    }
+    let barrier_state = interaction.state().clone();
+    assert_eq!(interaction.replay().unwrap(), barrier_state);
+    assert_eq!(interaction.verify_replay().unwrap(), barrier_state);
     advance_record_to_next_main_after_turn_draw(&mut interaction, card(9));
 
     // 互動：實體傷害只會對護盾加倍。Weapon 陣形仍正常提交/棄置，並在將 44 降至

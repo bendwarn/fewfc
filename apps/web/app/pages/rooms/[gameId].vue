@@ -999,6 +999,7 @@
         <aside class="game-sidebar" :class="{ finished: gameFinished }">
           <section v-if="gameFinished" class="result-panel">
             <h2>{{ gameResultText }}</h2>
+            <p class="result-reason"><strong>終局原因</strong>{{ gameEndReasonText }}</p>
             <p>{{ firstTurnText }}，本局已結束。</p>
             <div class="result-actions">
               <button class="primary-button" type="button" :disabled="game.isLoading.value" @click="restartGame">
@@ -1636,6 +1637,15 @@ const showSkip = computed(() => (
   && game.playablePass.value !== null
 ))
 const gameResultText = computed(() => {
+  const conclusion = state.value.gameConclusion
+  if (conclusion?.outcome.type === 'winner') {
+    return `${teamLabel(conclusion.outcome.team)} 勝利`
+  }
+
+  if (conclusion?.outcome.type === 'draw') {
+    return '平局'
+  }
+
   if (state.value.fiveStarAlignment) {
     return `五星連珠 · ${teamLabel(state.value.fiveStarAlignment.team)} 勝利`
   }
@@ -1651,6 +1661,24 @@ const gameResultText = computed(() => {
   }
 
   return '戰局結束'
+})
+const gameEndReasonText = computed(() => {
+  const conclusion = state.value.gameConclusion
+  if (!conclusion) return '終局結論尚未載入。'
+
+  return conclusion.causes.map((cause) => {
+    if (cause.type === 'teamHpDepleted') {
+      const teams = cause.teams.map(teamLabel)
+      return teams.length ? `${teams.join('、')} 的生命值歸零` : '隊伍生命值歸零'
+    }
+
+    const directVictoryLabels: Record<string, string> = {
+      'five-star-alignment': '達成五星連珠',
+      'king-yama-decree': '施展閻王令',
+    }
+    return directVictoryLabels[cause.rule]
+      ?? `${teamLabel(cause.team)} 達成「${cause.rule}」的直接勝利條件`
+  }).join('；')
 })
 let actionDetailTimer: ReturnType<typeof setTimeout> | undefined
 let setupRevealTimer: ReturnType<typeof setTimeout> | undefined
@@ -2712,6 +2740,8 @@ function formationChoiceLabel(formationId: string): string {
 .result-panel { @apply border-b border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-5; }
 .result-panel h2 { @apply font-serif text-2xl text-gold-light; }
 .result-panel p { @apply mt-1 text-xs text-muted; }
+.result-panel .result-reason { @apply mt-3 border-l-2 border-[var(--app-accent)] pl-2 text-[var(--app-text)]; }
+.result-reason strong { @apply mr-2 text-gold-light; }
 .result-panel .result-actions { @apply grid-cols-1; }
 .panel-title { @apply flex items-start justify-between; }
 .event-panel { @apply min-h-0 overflow-auto border-b border-line p-5; }

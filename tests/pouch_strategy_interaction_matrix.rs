@@ -3073,11 +3073,7 @@ fn golden_cicada_lure_matrix_protects_only_player_scope_when_chain_triggers_lure
                     owner: None,
                     card: consumed_card,
                 },
-                GameEvent::FormationCardsDiscarded {
-                    player: discarded_by,
-                    formation_id: discarded_formation,
-                    cards: discarded_cards,
-                },
+                GameEvent::RandomnessRequested { request },
             ] if player == &p2
                 && pouch_owner == &p2
                 && *pouch_card == chain_pouch
@@ -3099,13 +3095,38 @@ fn golden_cicada_lure_matrix_protects_only_player_scope_when_chain_triggers_lure
                     } if status_owner == &p2 && kind == "PouchLureSpirit" && expires == &p2
                 )
                 && *consumed_card == lure_trigger
-                && discarded_by == &p2
-                && discarded_formation == "pouch:chain"
-                && discarded_cards == &chain_cards
+                && matches!(
+                    request.continuation,
+                    fewfc::domain::RandomnessContinuation::Pouch(
+                        fewfc::domain::PouchRandomnessContinuation::ChainPostSearch { .. }
+                    )
+                )
         ),
-        "unexpected Golden × Lure Chain outcome: {lure_events:#?}"
+        "unexpected Golden × Lure Chain request: {lure_events:#?}"
     );
-
+    let request = record.state().pending_randomness.clone().unwrap();
+    let mut shuffled_order = request.current_order.clone();
+    shuffled_order.reverse();
+    let lure_resolution_events = record
+        .resolve_randomness(fewfc::domain::TrustedRandomnessAnswer {
+            request_id: request.request_id,
+            shuffled_order,
+        })
+        .unwrap()
+        .into_events();
+    assert!(matches!(
+        lure_resolution_events.as_slice(),
+        [
+            GameEvent::RandomnessResolved { .. },
+            GameEvent::FormationCardsDiscarded {
+                player: discarded_by,
+                formation_id: discarded_formation,
+                cards: discarded_cards,
+            },
+        ] if discarded_by == &p2
+            && discarded_formation == "pouch:chain"
+            && discarded_cards == &chain_cards
+    ));
     // 交互：Golden 讓 Lure 不建立 Player scope，卻不擴張保護到 P2 的 Water
     // Spirit。既有 Lure-only matrix 以同樣合法 Mage/Water 前置證明此 Spirit
     // scope 的實際 Return Soul 解析；此處證明 Golden 不會改寫其 canonical scope。
@@ -3334,23 +3355,19 @@ fn pouch_chain_deceive_heaven_matrix_places_before_triggering_the_typed_temporar
                 known_by,
                 previous: Some(previous),
             },
-            GameEvent::PouchRevealed {
-                player: revealer,
-                owner: None,
-                card: revealed,
-                strategy: SecretStrategy::DeceiveHeaven,
-            },
-            GameEvent::TemporaryStarEffectGranted { effect },
-            GameEvent::PouchConsumed {
-                owner: None,
-                card: consumed,
-            },
-            GameEvent::FormationCardsDiscarded {
-                player: discarded_by,
-                formation_id,
-                cards,
-            },
-        ] if player == &p1
+                GameEvent::PouchRevealed {
+                    player: revealer,
+                    owner: None,
+                    card: revealed,
+                    strategy: SecretStrategy::DeceiveHeaven,
+                },
+                GameEvent::TemporaryStarEffectGranted { effect },
+                GameEvent::PouchConsumed {
+                    owner: None,
+                    card: consumed,
+                },
+                GameEvent::RandomnessRequested { request },
+            ] if player == &p1
             && pouch_owner == &p1
             && *pouch_card == placed_pouch
             && *trigger == deceive_trigger
@@ -3365,7 +3382,33 @@ fn pouch_chain_deceive_heaven_matrix_places_before_triggering_the_typed_temporar
             && effect.star == StarKind::Fire
             && effect.applied_on_turn == record.state().turn_number
             && *consumed == deceive_trigger
-            && discarded_by == &p1
+            && matches!(
+                request.continuation,
+                fewfc::domain::RandomnessContinuation::Pouch(
+                    fewfc::domain::PouchRandomnessContinuation::ChainPostSearch { .. }
+                )
+            )
+    ));
+    let request = record.state().pending_randomness.clone().unwrap();
+    let mut shuffled_order = request.current_order.clone();
+    shuffled_order.reverse();
+    let shuffle_events = record
+        .resolve_randomness(fewfc::domain::TrustedRandomnessAnswer {
+            request_id: request.request_id,
+            shuffled_order,
+        })
+        .unwrap()
+        .into_events();
+    assert!(matches!(
+        shuffle_events.as_slice(),
+        [
+            GameEvent::RandomnessResolved { .. },
+            GameEvent::FormationCardsDiscarded {
+                player: discarded_by,
+                formation_id,
+                cards,
+            },
+        ] if discarded_by == &p1
             && formation_id == "pouch:chain"
             && cards == &chain_cards
     ));

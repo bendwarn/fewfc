@@ -485,6 +485,7 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     starHistories: [],
     fiveStarAlignment: null,
     winnerTeam: null,
+    gameConclusion: null,
     professions: [],
     professionCatalog: [],
     cardInterpretations: [],

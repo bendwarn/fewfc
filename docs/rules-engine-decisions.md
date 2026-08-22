@@ -1903,11 +1903,14 @@ only after the Player selects it for discard. This is an interaction projection
 of the ordered effect, not a new canonical Pending Choice.
 
 Chain's ownerless `PouchRevealed` event sets the triggering source Card aside
-from its Player's Deck before projecting the Secret Strategy. The later
-`PouchConsumed` event moves that set-aside Card to its origin Discard Pile. A
-Deck shuffle requested by the strategy therefore excludes the source Card, and
-its recorded `currentOrder` still matches the Deck when trusted randomness is
-resolved after the complete command event batch.
+from its Player's Deck. The selected Pouch Card is removed by `PouchPlaced` in
+the same event batch. Chain then projects the selected Secret Strategy before
+requesting its post-search Deck Shuffle; the later `PouchConsumed` event moves
+the set-aside source Card to its origin Discard Pile. The shuffle's recorded
+`currentOrder` therefore excludes both selected Cards and still matches the
+Deck when trusted randomness is resolved. Sheep Stealing is the exception to
+the additional Chain request: its own post-exchange Deck Shuffle is reused, so
+the Chain flow does not issue a duplicate shuffle.
 
 The Jianghu term **State (狀態)** is narrower than the engine's established
 generic `StatusEffect` concept. Define a separate typed Jianghu State collection

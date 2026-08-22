@@ -255,6 +255,7 @@ export interface PublicGameState {
   enabledRuleModules: string[]
   status: 'Preparing' | 'InProgress' | 'Finished'
   winnerTeam: TeamId | null
+  gameConclusion: GameConclusion | null
   turnNumber: number
   phase: 'TurnStart' | 'ActiveEffects' | 'Action' | 'TurnDraw' | 'TurnEnd'
   currentPlayer: PlayerId | null
@@ -347,6 +348,19 @@ export interface PublicGameState {
   }>
   previousTurnFormation: PublicPreviousTurnFormation | null
 }
+
+export interface GameConclusion {
+  outcome: GameOutcome
+  causes: GameEndCause[]
+}
+
+export type GameOutcome =
+  | { type: 'winner'; team: TeamId }
+  | { type: 'draw' }
+
+export type GameEndCause =
+  | { type: 'teamHpDepleted'; teams: TeamId[] }
+  | { type: 'directVictory'; rule: string; team: TeamId }
 
 export type StatusPresentation =
   | 'cannotAct'

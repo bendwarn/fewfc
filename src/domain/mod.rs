@@ -1731,6 +1731,9 @@ pub enum ConfluenceRandomnessContinuation {
 pub enum PouchRandomnessContinuation {
     InitialShuffle,
     ChainRecycle,
+    ChainPostSearch {
+        player: PlayerId,
+    },
     SheepStealingRecycle {
         #[serde(rename = "sourceCard")]
         source_card: CardInstanceId,

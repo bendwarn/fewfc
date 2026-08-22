@@ -80,6 +80,7 @@ function emptyState(): PublicGameState {
     starHistories: [],
     fiveStarAlignment: null,
     winnerTeam: null,
+    gameConclusion: null,
     professions: [],
     professionCatalog: [],
     cardInterpretations: [],

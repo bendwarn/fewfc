@@ -711,7 +711,7 @@ The accepted use of a Formation Composition, including its semantic resolution
 and explicit movement of its physical Cards.
 _Avoid_: implicit card discard
 
-**Formation Use Commitment (陣法施展承諾)**:
+**Formation Use Establishment (陣法施展成立)**:
 The irreversible boundary reached when a complete Formation command passes
 validation and its physical Cards enter the performing Player's Formation Area.
 Later prevention or ineffectiveness changes only the resolution outcome.
@@ -1050,7 +1050,7 @@ _Avoid_: callback response
   rules that require performing a Formation
 - 宮調‧裂土 makes only a matching **Formation Use** ineffective; it does not
   suppress the same Melody main effect when executed by **Echo** or 變宮‧植土
-- A validated **Formation Use** reaches **Formation Use Commitment** before its
+- A validated **Formation Use** reaches **Formation Use Establishment** before its
   effects resolve and moves its physical **Card Instances** from hand to its
   Player's **Formation Area**
 - Each **Player** owns one **Formation Area**, which contains at most one
