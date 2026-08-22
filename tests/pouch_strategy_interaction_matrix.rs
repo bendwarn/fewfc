@@ -2549,7 +2549,14 @@ fn pouch_chain_sheep_stealing_matrix_recycles_then_sets_aside_the_trigger_from_i
         [
             GameEvent::RandomnessResolved { .. },
             GameEvent::PouchConsumed { owner: None, card },
+            GameEvent::FormationCardsDiscarded {
+                player,
+                formation_id,
+                ..
+            },
         ] if *card == scenario.sheep_trigger
+            && player == &scenario.player
+            && formation_id == "pouch:chain"
     ));
     assert!(
         scenario

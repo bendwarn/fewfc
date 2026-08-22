@@ -56,6 +56,7 @@ pub struct PublicGameState {
     pub card_interpretations: Vec<PublicCardInterpretation>,
     pub spirits: Vec<crate::domain::PlayerSpirit>,
     pub previous_turn_formation: Option<PublicPreviousTurnFormation>,
+    pub last_completed_turn_discards: Vec<PublicLastCompletedTurnDiscard>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -133,6 +134,15 @@ pub struct PublicPreviousTurnFormation {
     pub player: PlayerId,
     pub formation_id: Option<String>,
     pub cards: PublicCardRefs,
+}
+
+/// 每位玩家最近一個已完成回合的 Turn Draw 棄牌。`player` 是執行該回合的
+/// 玩家；卡牌的不可變來源不會改變這個回合歸屬。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicLastCompletedTurnDiscard {
+    pub player: PlayerId,
+    pub card: CardInstanceId,
+    pub turn_number: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -379,6 +389,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             .cloned()
             .collect(),
     });
+    let last_completed_turn_discards = public_last_completed_turn_discards(state);
 
     PublicGameState {
         enabled_rule_modules: state.enabled_rule_modules.clone(),
@@ -566,7 +577,37 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             Vec::new()
         },
         previous_turn_formation,
+        last_completed_turn_discards,
     }
+}
+
+fn public_last_completed_turn_discards(state: &GameState) -> Vec<PublicLastCompletedTurnDiscard> {
+    let player_count = state.turn_order.len() as u64;
+    if player_count == 0 {
+        return Vec::new();
+    }
+
+    state
+        .turn_order
+        .iter()
+        .enumerate()
+        .filter_map(|(index, player)| {
+            // 當前玩家的本回合尚未完成；其他玩家則依座次回推至最近完成的回合。
+            let distance = (state.current_turn_index + state.turn_order.len() - index)
+                % state.turn_order.len();
+            let completed_turn = state.turn_number.checked_sub(if distance == 0 {
+                player_count
+            } else {
+                distance as u64
+            })?;
+            let discard = state.last_turn_discard_by_player.get(player)?;
+            (discard.turn_number == completed_turn).then(|| PublicLastCompletedTurnDiscard {
+                player: player.clone(),
+                card: discard.card,
+                turn_number: discard.turn_number,
+            })
+        })
+        .collect()
 }
 
 fn public_flow_states(state: &GameState) -> Vec<PublicFlowState> {
@@ -1217,6 +1258,104 @@ mod tests {
         assert_eq!(json["type"], "turnDrawResolved");
         assert_eq!(json["keptCards"]["Hidden"]["count"], 2);
         assert!(json.get("kept_cards").is_none());
+    }
+
+    #[test]
+    fn last_completed_turn_discards_are_turn_ordered_and_keep_the_turn_actor() {
+        let alice = PlayerId::new("alice");
+        let bob = PlayerId::new("bob");
+        let mut state = GameState::from_setup(&crate::domain::GameSetup::two_player(
+            alice.clone(),
+            bob.clone(),
+            30,
+        ));
+        state
+            .enabled_rule_modules
+            .push(crate::domain::RuleModuleId::new(
+                crate::domain::PERSONAL_DECK_MODULE_ID,
+            ));
+        state.card_instances.push(crate::domain::CardInstanceDef {
+            instance: CardInstanceId::new(7),
+            definition: crate::domain::CardDefId::new("foreign-origin"),
+            origin: crate::domain::CardOrigin::Player(bob.clone()),
+        });
+        state.turn_number = 6;
+        state.current_turn_index = 0;
+        state.last_turn_discard_by_player.insert(
+            alice.clone(),
+            crate::domain::LastTurnDiscard {
+                // 此牌來源是 bob，但回合棄牌者仍是 alice。
+                card: CardInstanceId::new(7),
+                turn_number: 4,
+            },
+        );
+        state.last_turn_discard_by_player.insert(
+            bob.clone(),
+            crate::domain::LastTurnDiscard {
+                card: CardInstanceId::new(8),
+                turn_number: 5,
+            },
+        );
+
+        let view = state_for(&state, Viewer::Observer);
+        assert_eq!(
+            view.last_completed_turn_discards,
+            vec![
+                PublicLastCompletedTurnDiscard {
+                    player: alice,
+                    card: CardInstanceId::new(7),
+                    turn_number: 4,
+                },
+                PublicLastCompletedTurnDiscard {
+                    player: bob,
+                    card: CardInstanceId::new(8),
+                    turn_number: 5,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn skipped_turn_does_not_project_a_stale_last_turn_discard() {
+        let alice = PlayerId::new("alice");
+        let bob = PlayerId::new("bob");
+        let mut state = GameState::from_setup(&crate::domain::GameSetup::two_player(
+            alice.clone(),
+            bob.clone(),
+            30,
+        ));
+        state.turn_number = 6;
+        state.current_turn_index = 0;
+        // alice 在第 4 回合跳過 Turn Draw，因此僅剩更早的舊記錄。
+        state.last_turn_discard_by_player.insert(
+            alice,
+            crate::domain::LastTurnDiscard {
+                card: CardInstanceId::new(7),
+                turn_number: 2,
+            },
+        );
+        state.last_turn_discard_by_player.insert(
+            bob.clone(),
+            crate::domain::LastTurnDiscard {
+                card: CardInstanceId::new(8),
+                turn_number: 5,
+            },
+        );
+
+        let live = state_for(&state, Viewer::Observer);
+        let replay = state_for(&state, Viewer::Replay);
+        assert_eq!(
+            live.last_completed_turn_discards,
+            replay.last_completed_turn_discards
+        );
+        assert_eq!(
+            live.last_completed_turn_discards,
+            vec![PublicLastCompletedTurnDiscard {
+                player: bob,
+                card: CardInstanceId::new(8),
+                turn_number: 5,
+            }]
+        );
     }
 
     #[test]

@@ -94,7 +94,8 @@ onBeforeUnmount(() => {
 <style>
 @reference "../assets/css/main.css";
 
-.app-shell { @apply min-h-screen bg-ink; color: var(--app-text); }
+.app-shell { @apply flex min-h-screen flex-col bg-ink; color: var(--app-text); }
+.app-shell:has(> .game-page) { @apply h-dvh min-h-0 overflow-hidden; }
 .site-header { @apply relative z-20 flex min-h-[84px] items-center justify-between border-b border-line; padding: 10px clamp(14px, 4vw, 64px); background: var(--app-header); box-shadow: var(--app-shadow-sm); }
 .brand { @apply flex min-w-0 items-center border-0 bg-transparent p-0; }
 .brand-banner { @apply block h-auto w-[min(52vw,456px)] max-w-full rounded-md shadow-[0_10px_28px_rgba(0,0,0,.32)]; }

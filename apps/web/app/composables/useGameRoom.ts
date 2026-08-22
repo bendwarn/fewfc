@@ -86,6 +86,7 @@ function emptyState(): PublicGameState {
     cardInterpretations: [],
     spirits: [],
     previousTurnFormation: null,
+    lastCompletedTurnDiscards: [],
   }
 }
 

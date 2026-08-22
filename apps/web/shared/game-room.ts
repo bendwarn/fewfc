@@ -491,5 +491,6 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
     cardInterpretations: [],
     spirits: [],
     previousTurnFormation: null,
+    lastCompletedTurnDiscards: [],
   }
 }

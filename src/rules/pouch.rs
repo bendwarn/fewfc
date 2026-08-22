@@ -735,9 +735,7 @@ pub(crate) fn chain_events(
     let continuation = PouchRandomnessContinuation::ChainPostSearch {
         player: player.clone(),
     };
-    if remainder.is_empty() {
-        events.extend(chain_completion_events(&projected, player));
-    } else {
+    if !remainder.is_empty() {
         events.push(GameEvent::RandomnessRequested {
             request: crate::domain::PendingRandomness {
                 request_id: format!(
@@ -1233,10 +1231,10 @@ pub(crate) fn after_chain_recycle_randomness_events(
 }
 
 pub(crate) fn after_chain_post_search_randomness_events(
-    state: &GameState,
+    _state: &GameState,
     continuation: &PouchRandomnessContinuation,
 ) -> GameResult<Vec<GameEvent>> {
-    let PouchRandomnessContinuation::ChainPostSearch { player } = continuation else {
+    let PouchRandomnessContinuation::ChainPostSearch { player: _ } = continuation else {
         return Err(GameError::RuleImplementation(
             crate::domain::RuleImplementationError::EffectNotImplemented(
                 "pouch:chain:missing-post-search-continuation".to_string(),
@@ -1244,27 +1242,7 @@ pub(crate) fn after_chain_post_search_randomness_events(
         ));
     };
 
-    Ok(chain_completion_events(state, player))
-}
-
-fn chain_completion_events(state: &GameState, player: &PlayerId) -> Vec<GameEvent> {
-    state
-        .formation_area(player)
-        .and_then(|area| area.formation.as_ref())
-        .filter(|formation| {
-            matches!(
-                formation.state,
-                crate::domain::FormationAreaState::FaceUpResolving
-            )
-        })
-        .map(|formation| {
-            vec![GameEvent::FormationCardsDiscarded {
-                player: player.clone(),
-                formation_id: formation.formation_id.clone(),
-                cards: formation.cards.clone(),
-            }]
-        })
-        .unwrap_or_default()
+    Ok(Vec::new())
 }
 
 pub(crate) fn has_status(state: &GameState, player: &PlayerId, kind: &str) -> bool {

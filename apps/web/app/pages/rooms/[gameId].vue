@@ -7,184 +7,23 @@
   </main>
   <main v-else class="game-page">
     <div class="battle-layout">
-        <section
+        <BattlefieldBoard
           ref="battlefield"
-          class="battlefield"
-          :class="{
-            'four-player': playerSeats.length === 4,
-            'discard-open': discardOpen,
-          }"
-          aria-label="五行戰鬥牌對戰桌"
+          :state="state"
+          :display-names="displayNames"
+          :anchor-player="ownPlayer || null"
+          mode="live"
+          :selected-card-ids="game.selectedCards.value"
+          :selectable-player="game.canSelectCard(ownPlayer) ? ownPlayer : null"
+          :cards-disabled="!roomConnected"
+          :connected-players="connectedPlayers"
+          :reconnecting-player="game.connectionState.value === 'reconnecting' ? ownPlayer : null"
+          @select-card="game.toggleCardSelection"
         >
-          <button
-            class="back-button battlefield-back"
-            type="button"
-            aria-label="返回房間列表"
-            title="返回房間列表"
-            @click="leaveGame"
-          >
-            ←
-          </button>
-
-          <div
-            v-for="seat in playerSeats"
-            :key="seat.player"
-            class="player-seat"
-            :class="[
-              `seat-${seat.position}`,
-              { acting: !gameFinished && state.currentPlayer === seat.player },
-            ]"
-          >
-            <div class="player-identity">
-              <span
-                class="connection-dot"
-                :class="{ connected: playerConnected(seat.player) }"
-                :title="playerConnected(seat.player) ? '已連線' : '已斷線'"
-              />
-              <span class="avatar">{{ playerInitialFor(seat.player) }}</span>
-              <div>
-                <strong>{{ playerLabel(seat.player) }}</strong>
-                <small>{{ teamHp(teamForPlayer(seat.player)) }} HP</small>
-                <small v-if="teamStar(teamForPlayer(seat.player))">
-                  星辰 · {{ starLabel(teamStar(teamForPlayer(seat.player))!) }}
-                </small>
-                <small
-                  v-if="state.enabledRuleModules.includes('star') && starHistoryLabel(seat.player)"
-                >
-                  召星 · {{ starHistoryLabel(seat.player) }}
-                </small>
-                <small v-if="spiritFor(seat.player)" class="spirit-status">
-                  精靈 · {{ spiritLabel(spiritFor(seat.player)!.spirit) }}
-                  · 靈力 {{ spiritFor(seat.player)!.power }} / 6
-                </small>
-                <small v-if="state.pouches.some(pouch => pouch.owner === seat.player)">
-                  錦囊 ·
-                  {{ state.pouches.find(pouch => pouch.owner === seat.player)?.card?.label ?? '覆蓋牌' }}
-                </small>
-                <span
-                  v-if="professionFor(seat.player)"
-                  class="profession-badge"
-                  tabindex="0"
-                  :aria-label="professionSummaryLabel(seat.player)"
-                >
-                  職業 · {{ professionFor(seat.player)!.name }}
-                  <span class="profession-summary" role="note">
-                    <b>{{ professionFor(seat.player)!.name }}</b>
-                    <small
-                      v-for="ability in professionFor(seat.player)!.abilities"
-                      :key="ability"
-                    >
-                      {{ ability }}
-                    </small>
-                  </span>
-                </span>
-                <small v-if="state.enabledRuleModules.includes('personal-deck')">
-                  牌庫 {{ playerDeckCount(seat.player) }} · 棄牌 {{ playerDiscardCount(seat.player) }}
-                </small>
-                <small
-                  v-for="card in exposedDeckCards(seat.player)"
-                  :key="`exposed-deck-${seat.player}-${card.id}`"
-                >
-                  公開牌：{{ card.label }}
-                </small>
-              </div>
-              <span
-                v-if="seat.player === ownPlayer && game.connectionState.value === 'reconnecting'"
-                class="reconnecting-label"
-              >
-                重新連線中
-              </span>
-              <span
-                v-if="state.currentPlayer === seat.player && !roomWaiting && !gameFinished"
-                class="turn-badge"
-              >
-                行動中 · {{ phaseLabel(state.phase) }}
-              </span>
-              <span
-                v-for="counter in counterEffectsFor(seat.player)"
-                :key="`${seat.player}-${counter.effectId}`"
-                class="counter-badge"
-              >
-                反制 · {{ counter.effectName }}
-              </span>
-              <span
-                v-if="shieldFor(seat.player) > 0"
-                class="shield-badge"
-              >
-                防護罩 · {{ shieldFor(seat.player) }}
-              </span>
-              <span
-                v-for="effect in persistentEffectsFor(seat.player)"
-                :key="`${seat.player}-${effect.key}`"
-                class="status-badge persistent-effect"
-              >
-                {{ effect.label }}
-              </span>
-              <span class="side-hand-count">{{ handCount(seat.player) }} 張</span>
-            </div>
-
-            <div class="hand fan seat-hand">
-              <GameCard
-                v-for="(card, cardIndex) in cardsFor(seat.player)"
-                :key="card.id"
-                :card="card.card"
-                :hidden="card.hidden"
-                :selectable="card.selectable"
-                :selected="card.selected"
-                :disabled="!roomConnected"
-                :interpretations="state.cardInterpretations"
-                :data-card-id="card.cardId"
-                :shortcut="card.selectable
-                  ? shortcutLabel(HAND_SHORTCUT_KEYS, cardIndex)
-                  : undefined"
-                @select="game.toggleCardSelection(seat.player, card.cardId)"
-              />
-            </div>
-          </div>
-
-          <div class="board-center">
-            <div
-              class="discard-piles"
-              :class="{ personal: state.playerDiscards.length > 0 }"
-              aria-label="棄牌堆"
-            >
-              <DiscardPileControl
-                v-for="pile in visibleDiscardPiles"
-                :key="pile.owner ?? 'shared'"
-                :owner="pile.owner"
-                :owner-label="pile.owner ? playerLabel(pile.owner) : ''"
-                :count="pile.cards.length"
-                :unavailable="discardPileUnavailable(pile.cards)"
-                :open="discardOpen && activeDiscardOwner === pile.owner"
-                :position="pile.position"
-                @toggle="toggleDiscardComposition(pile.owner, $event)"
-              />
-            </div>
-            <div class="formation-field">
-              <div class="formation-field-heading">
-                <span class="formation-field-label">陣法區</span>
-                <span v-if="state.environment" class="environment-badge" aria-live="polite">
-                  環境 · {{ environmentLabel(state.environment) }}
-                </span>
-              </div>
-              <div class="previous-formation">
-                <template v-if="state.previousTurnFormation">
-                  <small>上一回合 · {{ playerLabel(state.previousTurnFormation.player) }}</small>
-                  <strong>{{ state.previousTurnFormation.formationName ?? '蓋牌' }}</strong>
-                  <div class="formation-cards">
-                    <GameCard
-                      v-for="card in previousFormationCards"
-                      :key="card.id"
-                      class="formation-card"
-                      :card="card.card"
-                      :hidden="card.hidden"
-                      :interpretations="state.cardInterpretations"
-                    />
-                  </div>
-                </template>
-                <p v-else>上一回合未發動陣法</p>
-              </div>
-
+          <template #before>
+            <button class="back-button battlefield-back" type="button" aria-label="返回房間列表" title="返回房間列表" @click="leaveGame">←</button>
+          </template>
+          <template #turn-controls>
               <div
                 v-if="!roomWaiting && !gameFinished && viewer === state.currentPlayer"
                 class="turn-controls"
@@ -404,49 +243,8 @@
 
                 <p v-if="actionDetail" class="action-detail">{{ actionDetail }}</p>
               </div>
-            </div>
-            <div
-              v-if="discardOpen"
-              class="discard-composition-layer"
-            >
-                <section
-                  id="discard-composition"
-                  class="card-composition discard-composition"
-                  role="dialog"
-                  aria-labelledby="discard-composition-title"
-                >
-                  <h2 id="discard-composition-title">棄牌內容</h2>
-                  <table>
-                    <caption class="sr-only">依五行與等級統計棄牌張數。列為五行，欄為等級。</caption>
-                    <thead>
-                      <tr>
-                        <th scope="col"><span class="sr-only">五行</span></th>
-                        <th
-                          v-for="level in CARD_LEVELS"
-                          :key="`discard-heading-${level}`"
-                          scope="col"
-                        >
-                          {{ level }} 級
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="row in discardComposition" :key="`discard-element-${row.element}`">
-                        <th scope="row">{{ row.element }}</th>
-                        <td
-                          v-for="cell in row.cells"
-                          :key="`${cell.element}-${cell.level}`"
-                          :class="{ empty: cell.count === 0 }"
-                        >
-                          <span class="sr-only">{{ cell.element }} {{ cell.level }} 級，共 {{ cell.count }} 張</span>
-                          <strong aria-hidden="true">{{ cell.count }}</strong>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </section>
-            </div>
-          </div>
+          </template>
+          <template #overlay>
 
           <div
             v-if="virtualFormationCardDraft"
@@ -907,6 +705,23 @@
             </div>
           </div>
 
+          </template>
+        </BattlefieldBoard>
+
+        <button
+          v-if="!roomWaiting && latestVisibleEvent"
+          ref="eventSheetTrigger"
+          class="mobile-event-summary"
+          type="button"
+          aria-haspopup="dialog"
+          :aria-expanded="eventSheetOpen"
+          aria-controls="mobile-event-sheet"
+          @click="openEventSheet"
+        >
+          <strong>戰局紀錄</strong>
+          <span>{{ latestVisibleEvent.title }} · {{ latestVisibleEvent.summary }}</span>
+        </button>
+
           <WaitingRoomLayout v-if="roomWaiting">
             <template #main>
                 <h2>{{ activeRoomName }}</h2>
@@ -994,8 +809,6 @@
             </template>
           </WaitingRoomLayout>
 
-        </section>
-
         <aside class="game-sidebar" :class="{ finished: gameFinished }">
           <section v-if="gameFinished" class="result-panel">
             <h2>{{ gameResultText }}</h2>
@@ -1008,12 +821,9 @@
             </div>
           </section>
 
-          <section class="event-panel" :class="{ expanded: eventExpanded }">
+          <section class="event-panel">
             <div class="panel-title">
               <h2>戰局紀錄 <button v-if="roomWaiting && game.savableReplay.value" class="ghost-button" type="button" :disabled="replaySaving" @click="saveCurrentReplay">{{ replaySaved ? '已儲存' : '儲存本局' }}</button></h2>
-              <button class="event-expand-button" type="button" @click="eventExpanded = !eventExpanded">
-                {{ eventExpanded ? '收合' : '完整紀錄' }}
-              </button>
             </div>
             <p v-if="replayError" class="form-error" role="alert">
               {{ replayError }}
@@ -1034,6 +844,34 @@
           </section>
         </aside>
       </div>
+
+      <Teleport to="body">
+        <div v-if="eventSheetOpen" class="event-sheet-portal">
+          <button class="event-sheet-backdrop" type="button" tabindex="-1" aria-label="關閉戰局紀錄" @click="closeEventSheet" />
+          <section
+            id="mobile-event-sheet"
+            class="event-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mobile-event-sheet-title"
+            @keydown.stop="handleEventSheetKeydown"
+          >
+            <header>
+              <h2 id="mobile-event-sheet-title">戰局紀錄</h2>
+              <button ref="eventSheetClose" type="button" aria-label="關閉戰局紀錄" @click="closeEventSheet">×</button>
+            </header>
+            <button v-if="unseenEventCount" class="new-event-button" type="button" @click="scrollEventSheetToBottom">
+              {{ unseenEventCount }} 筆新紀錄
+            </button>
+            <ol ref="eventSheetFeed" class="event-feed event-sheet-feed" @scroll.passive="updateEventSheetFollow">
+              <li v-for="event in visibleEvents" :key="`mobile-${event.id}`">
+                <i />
+                <div><span>{{ event.title }}</span><p>{{ event.summary }}</p></div>
+              </li>
+            </ol>
+          </section>
+        </div>
+      </Teleport>
   </main>
 </template>
 
@@ -1044,22 +882,17 @@ import type {
   PlayableAction,
   PlayerId,
   PublicCard,
-  PublicCardRefs,
   PublicGameEvent,
   PublicGameState,
   SecretStrategy,
   SecretStrategyOption,
-  SpiritKind,
   StarKind,
   TeamId,
   ViewerId,
 } from '~/types/fewfc'
 import type { GameRoomMember, GameRoomResponse } from '#shared/game-room'
 import { createRuleModulePolicy, presentationForRuleModule } from '#shared/utils/rule-modules'
-import { buildCardComposition, CARD_LEVELS } from '~/lib/card-composition'
-import { cardElementGlyph } from '~/lib/card-face-presentation'
 import { presentPendingChoice } from '~/lib/pending-choice-presentation'
-import { presentPersistentEffects } from '~/lib/persistent-effect-presentation'
 import { presentDirectSecretStrategyAction, presentDiscardRetrievalAction, presentPlayableAction, presentSecretStrategyOption } from '~/lib/action-detail-presentation'
 import { splitEarthChoiceKey, usesSplitEarthFormationGroups } from '#shared/utils/split-earth-formation-choice'
 import { roomRouteResult } from '~/lib/navigation'
@@ -1097,7 +930,11 @@ const roomCode = ref('')
 const replaySaving = ref(false)
 const replaySaved = ref(false)
 const replayError = ref('')
-const battlefield = ref<HTMLElement | null>(null)
+const battlefield = ref<{
+  root: HTMLElement | null
+  hasOpenDetail: () => boolean
+  closeDetail: () => void
+} | null>(null)
 
 const viewer = ref<ViewerId>('observer')
 const game = useGameRoom(viewer)
@@ -1481,11 +1318,13 @@ const darkSpiritMenuTrigger = ref<HTMLButtonElement | null>(null)
 const virtualFormationCardDraft = ref<VirtualFormationCardOffer | null>(null)
 const virtualFormationCardDialog = ref<HTMLElement | null>(null)
 let virtualFormationCardReturnFocus: HTMLElement | null = null
-const eventExpanded = ref(false)
 const showSetupReveal = ref(false)
-const discardOpen = ref(false)
-const activeDiscardOwner = ref<PlayerId | null>(null)
-const discardTrigger = ref<HTMLButtonElement | null>(null)
+const eventSheetOpen = ref(false)
+const eventSheetTrigger = ref<HTMLButtonElement | null>(null)
+const eventSheetClose = ref<HTMLButtonElement | null>(null)
+const eventSheetFeed = ref<HTMLOListElement | null>(null)
+const eventSheetFollowing = ref(true)
+const unseenEventCount = ref(0)
 
 watch(
   [
@@ -1561,6 +1400,12 @@ const currentMember = computed(() => onlineMetadata.value?.members.find(
 const ownPlayer = computed(() => currentMember.value?.player ?? '')
 const isRoomOwner = computed(() => currentMember.value?.owner === true)
 const roomConnected = computed(() => game.connectionState.value === 'connected')
+const displayNames = computed<Record<string, string>>(() => Object.fromEntries(
+  (onlineMetadata.value?.members ?? []).map(member => [member.player, member.displayName]),
+))
+const connectedPlayers = computed(() => (onlineMetadata.value?.members ?? [])
+  .filter(member => member.connected)
+  .map(member => member.player))
 const enabledRuleLabels = computed(() => [
   '基礎規則',
   ...(onlineMetadata.value?.enabledRuleModules ?? [])
@@ -1577,6 +1422,7 @@ const visibleEvents = computed<PublicGameEvent[]>(() => roomWaiting.value
       title: '啟用規則',
       summary: enabledRuleLabels.value.join(' · '),
     }])
+const latestVisibleEvent = computed(() => game.publicEvents.value.at(-1) ?? visibleEvents.value.at(-1) ?? null)
 const canStartOnlineRoom = computed(() => {
   const metadata = onlineMetadata.value
 
@@ -1588,49 +1434,6 @@ const canStartOnlineRoom = computed(() => {
     && metadata.members.every((member) => member.owner || member.ready),
   )
 })
-type SeatPosition = 'top' | 'right' | 'bottom' | 'left'
-
-interface PlayerSeat {
-  player: PlayerId
-  position: SeatPosition
-}
-
-const playerSeats = computed<PlayerSeat[]>(() => {
-  const order = state.value.turnOrder
-  const ownIndex = order.indexOf(ownPlayer.value)
-  const startIndex = ownIndex >= 0 ? ownIndex : 0
-  const relativeOrder = [...order.slice(startIndex), ...order.slice(0, startIndex)]
-  const positions: SeatPosition[] = relativeOrder.length === 4
-    ? ['bottom', 'left', 'top', 'right']
-    : ['bottom', 'top']
-
-  return relativeOrder.map((player, index) => ({
-    player,
-    position: positions[index] ?? 'top',
-  }))
-})
-
-const previousFormationCards = computed(() => (
-  cardTokensForRefs(state.value.previousTurnFormation?.cards, 'previous-formation')
-))
-const activeDiscardCards = computed(() => {
-  if (!state.value.playerDiscards.length) return state.value.discard
-  const owner = activeDiscardOwner.value
-    ?? (ownPlayer.value || undefined)
-    ?? state.value.currentPlayer
-    ?? state.value.playerDiscards[0]?.player
-  return state.value.playerDiscards.find(pile => pile.player === owner)?.cards ?? []
-})
-const visibleDiscardPiles = computed(() => (
-  state.value.playerDiscards.length
-    ? state.value.playerDiscards.map(pile => ({
-        owner: pile.player,
-        cards: pile.cards,
-        position: playerSeats.value.find(seat => seat.player === pile.player)?.position ?? 'top',
-      }))
-    : [{ owner: null, cards: state.value.discard, position: null }]
-))
-const discardComposition = computed(() => buildCardComposition(activeDiscardCards.value))
 const activeTeams = computed(() => [...new Set(state.value.players.map((player) => player.team))])
 const showSkip = computed(() => (
   roomConnected.value
@@ -1682,17 +1485,6 @@ const gameEndReasonText = computed(() => {
 })
 let actionDetailTimer: ReturnType<typeof setTimeout> | undefined
 let setupRevealTimer: ReturnType<typeof setTimeout> | undefined
-interface CardToken {
-  id: string
-  cardId: number
-  card: PublicCard | null
-  label: string
-  element?: Element | null
-  level?: number | null
-  hidden: boolean
-  selectable: boolean
-  selected: boolean
-}
 
 function leaveGame() {
   game.clearRoom()
@@ -1717,40 +1509,10 @@ function resetRoomRouteState() {
   virtualFormationCardDraft.value = null
   virtualFormationCardDialog.value = null
   virtualFormationCardReturnFocus = null
-  eventExpanded.value = false
   showSetupReveal.value = false
-  discardOpen.value = false
-  activeDiscardOwner.value = null
-  discardTrigger.value = null
-}
-
-function discardPileUnavailable(cards: readonly unknown[]): boolean {
-  return cards.length === 0 || Boolean(state.value.pendingChoice)
-}
-
-function toggleDiscardComposition(owner: PlayerId | null, trigger: HTMLButtonElement) {
-  if (discardOpen.value && activeDiscardOwner.value === owner) {
-    closeDiscardComposition()
-    return
-  }
-
-  const pile = visibleDiscardPiles.value.find(candidate => candidate.owner === owner)
-  if (!pile || discardPileUnavailable(pile.cards)) {
-    return
-  }
-
-  discardTrigger.value = trigger
-  activeDiscardOwner.value = owner
-  discardOpen.value = true
-}
-
-function closeDiscardComposition() {
-  if (!discardOpen.value) {
-    return
-  }
-
-  discardOpen.value = false
-  void nextTick(() => discardTrigger.value?.focus())
+  eventSheetOpen.value = false
+  eventSheetFollowing.value = true
+  unseenEventCount.value = 0
 }
 
 function closeSplendorMenu(returnFocus = false) {
@@ -1832,9 +1594,61 @@ function chooseVirtualFormationCard(element: Element, level: number) {
 }
 
 function handlePageClick() {
-  closeDiscardComposition()
+  battlefield.value?.closeDetail()
   closeSplendorMenu()
   closeDarkSpiritMenu()
+}
+
+function openEventSheet() {
+  eventSheetOpen.value = true
+  eventSheetFollowing.value = true
+  unseenEventCount.value = 0
+  void nextTick(() => {
+    scrollEventSheetToBottom()
+    eventSheetClose.value?.focus()
+  })
+}
+
+function closeEventSheet() {
+  if (!eventSheetOpen.value) return
+  eventSheetOpen.value = false
+  void nextTick(() => eventSheetTrigger.value?.focus())
+}
+
+function scrollEventSheetToBottom() {
+  const feed = eventSheetFeed.value
+  if (feed) feed.scrollTop = feed.scrollHeight
+  eventSheetFollowing.value = true
+  unseenEventCount.value = 0
+}
+
+function updateEventSheetFollow() {
+  const feed = eventSheetFeed.value
+  if (!feed) return
+  eventSheetFollowing.value = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 20
+  if (eventSheetFollowing.value) unseenEventCount.value = 0
+}
+
+function handleEventSheetKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeEventSheet()
+    return
+  }
+  if (event.key !== 'Tab') return
+  const focusable = Array.from(document.querySelectorAll<HTMLElement>(
+    '#mobile-event-sheet button:not([disabled]), #mobile-event-sheet [href], #mobile-event-sheet [tabindex]:not([tabindex="-1"])',
+  ))
+  if (!focusable.length) return
+  const first = focusable[0]!
+  const last = focusable.at(-1)!
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
 }
 
 function targetsEditableControl(target: EventTarget | null) {
@@ -1850,7 +1664,7 @@ function shortcutHasModifier(event: KeyboardEvent) {
 
 function hasKeyboardBlockingLayer() {
   return Boolean(
-    discardOpen.value
+    battlefield.value?.hasOpenDetail()
     || virtualFormationCardDraft.value
     || darkSpiritMenuOpen.value
     || splendorMenuOpen.value
@@ -1885,7 +1699,7 @@ function canUseCommandShortcut() {
 }
 
 function shortcutButton(group: 'ability' | 'action', index: number) {
-  const buttons = battlefield.value?.querySelectorAll<HTMLButtonElement>(
+  const buttons = battlefield.value?.root?.querySelectorAll<HTMLButtonElement>(
     `button[data-keyboard-shortcut="${group}"]`,
   )
   if (!buttons) return undefined
@@ -1995,6 +1809,12 @@ function handlePageKeydown(event: KeyboardEvent) {
     return
   }
 
+  if (eventSheetOpen.value) {
+    event.preventDefault()
+    closeEventSheet()
+    return
+  }
+
   if (secretStrategyDraft.value) {
     event.preventDefault()
     resetSecretStrategyDraft()
@@ -2019,9 +1839,9 @@ function handlePageKeydown(event: KeyboardEvent) {
     return
   }
 
-  if (discardOpen.value) {
+  if (battlefield.value?.hasOpenDetail()) {
     event.preventDefault()
-    closeDiscardComposition()
+    battlefield.value.closeDetail()
     return
   }
 
@@ -2091,7 +1911,6 @@ function applyRoomResponse(response: GameRoomResponse) {
   const ownMember = response.metadata.members.find(member => member.userId === session.userId.value)
   viewer.value = ownMember?.player ?? 'observer'
   roomCode.value = response.gameId
-  eventExpanded.value = false
   notifications.dismissRoom(response.gameId)
   game.applyRoomResponse(response)
 }
@@ -2163,11 +1982,6 @@ watch(
 )
 
 watch(
-  () => state.value.discard.length + state.value.playerDiscards.reduce((total, pile) => total + pile.cards.length, 0),
-  (length) => { if (length === 0) closeDiscardComposition() },
-)
-watch(() => state.value.pendingChoice, choice => { if (choice) closeDiscardComposition() })
-watch(
   () => onlineMetadata.value?.status,
   (status, previous) => {
     if (status !== 'Active' || previous === 'Active') return
@@ -2177,169 +1991,14 @@ watch(
   },
 )
 watch(() => game.roomDissolved.value, dissolved => { if (dissolved) void router.replace('/rooms') })
-
-function cardsFor(player: PlayerId): CardToken[] {
-  const hand = state.value.hands.find((entry) => entry.player === player)
-  if (!hand) return []
-
-  if (hand.cards.kind === 'known') {
-    return hand.cards.cards.map((card, index) => ({
-      id: `${player}-known-${index}-${card.id}`,
-      cardId: card.id,
-      card,
-      label: card.label,
-      element: card.element,
-      level: card.level,
-      hidden: false,
-      selectable: game.canSelectCard(player),
-      selected: game.selectedCards.value.includes(card.id),
-    }))
+watch(() => visibleEvents.value.length, (length, previous = length) => {
+  if (!eventSheetOpen.value || length <= previous) return
+  if (!eventSheetFollowing.value) {
+    unseenEventCount.value += length - previous
+    return
   }
-
-  if (hand.cards.kind === 'partiallyKnown') {
-    return hand.cards.cards.map((card, index) => card
-      ? {
-          id: `${player}-known-${index}-${card.id}`,
-          cardId: card.id,
-          card,
-          label: card.label,
-          element: card.element,
-          level: card.level,
-          hidden: false,
-          selectable: false,
-          selected: false,
-        }
-      : {
-          id: `${player}-hidden-${index}`,
-          cardId: -index - 1,
-          card: null,
-          label: '',
-          hidden: true,
-          selectable: false,
-          selected: false,
-        })
-  }
-
-  return Array.from({ length: hand.cards.count }, (_, index) => ({
-    id: `${player}-hidden-${index}`,
-    cardId: -index - 1,
-    card: null,
-    label: '',
-    hidden: true,
-    selectable: false,
-    selected: false,
-  }))
-}
-
-function cardTokensForRefs(cards: PublicCardRefs | undefined, prefix: string): CardToken[] {
-  if (!cards) return []
-
-  if (cards.kind === 'known') {
-    return cards.cards.map((card, index) => ({
-      id: `${prefix}-known-${index}-${card.id}`,
-      cardId: card.id,
-      card,
-      label: card.label,
-      element: card.element,
-      level: card.level,
-      hidden: false,
-      selectable: false,
-      selected: false,
-    }))
-  }
-
-  if (cards.kind === 'partiallyKnown') {
-    return cards.cards.map((card, index) => card
-      ? {
-          id: `${prefix}-known-${index}-${card.id}`,
-          cardId: card.id,
-          card,
-          label: card.label,
-          element: card.element,
-          level: card.level,
-          hidden: false,
-          selectable: false,
-          selected: false,
-        }
-      : {
-          id: `${prefix}-hidden-${index}`,
-          cardId: -index - 1,
-          card: null,
-          label: '',
-          hidden: true,
-          selectable: false,
-          selected: false,
-        })
-  }
-
-  return Array.from({ length: cards.count }, (_, index) => ({
-    id: `${prefix}-hidden-${index}`,
-    cardId: -index - 1,
-    card: null,
-    label: '',
-    hidden: true,
-    selectable: false,
-    selected: false,
-  }))
-}
-
-function handCount(player: PlayerId): number {
-  const hand = state.value.hands.find((entry) => entry.player === player)
-  if (!hand) return 0
-  return hand.cards.kind === 'hidden' ? hand.cards.count : hand.cards.cards.length
-}
-
-function playerDeckCount(player: PlayerId): number {
-  const pile = state.value.playerDecks.find(entry => entry.player === player)
-  if (!pile) return 0
-  return pile.cards.kind === 'hidden' ? pile.cards.count : pile.cards.cards.length
-}
-
-function playerDiscardCount(player: PlayerId): number {
-  return state.value.playerDiscards.find(entry => entry.player === player)?.cards.length ?? 0
-}
-
-function teamStar(team: TeamId) {
-  return state.value.teamStars.find(owned => owned.team === team)?.star
-}
-
-function starHistoryLabel(player: PlayerId): string {
-  const stars = state.value.starHistories.find(history => history.player === player)?.stars ?? []
-  if (!stars.length) return ''
-
-  return stars.map(star => cardElementGlyph(star)).join('、')
-}
-
-function spiritFor(player: PlayerId) {
-  return state.value.spirits.find(owned => owned.player === player)
-}
-
-function spiritLabel(spirit: SpiritKind): string {
-  return {
-    Metal: '金精靈',
-    Wood: '木精靈',
-    Water: '水精靈',
-    Fire: '火精靈',
-    Earth: '土精靈',
-    Evil: '惡精靈',
-    Death: '死精靈',
-  }[spirit]
-}
-
-function professionFor(player: PlayerId) {
-  return state.value.professions.find(profession => profession.player === player)
-}
-
-function persistentEffectsFor(player: PlayerId) {
-  return presentPersistentEffects(state.value, player, teamForPlayer(player))
-}
-
-function professionSummaryLabel(player: PlayerId): string {
-  const profession = professionFor(player)
-  return profession
-    ? `職業 ${profession.name}。能力：${profession.abilities.join('；')}`
-    : ''
-}
+  void nextTick(scrollEventSheetToBottom)
+})
 
 function starLabel(star: import('~/types/fewfc').StarKind): string {
   return {
@@ -2366,31 +2025,6 @@ function strategyLabel(strategy: SecretStrategy): string {
   }[strategy]
 }
 
-function exposedDeckCards(player: PlayerId) {
-  const cards = state.value.playerDecks.find(entry => entry.player === player)?.cards
-  return cards?.kind === 'partiallyKnown' ? cards.cards.filter(card => card !== null) : []
-}
-
-function counterEffectsFor(player: PlayerId) {
-  return state.value.counterEffects.filter((counter) => counter.owner === player)
-}
-
-function shieldFor(player: PlayerId): number {
-  return state.value.shields.find((shield) => shield.player === player)?.value ?? 0
-}
-
-function playerConnected(player: PlayerId): boolean {
-  if (player === ownPlayer.value) {
-    return roomConnected.value
-  }
-
-  return memberForPlayer(player)?.connected ?? false
-}
-
-function teamHp(team: TeamId): number {
-  return state.value.hp.find((entry) => entry.team === team)?.hp ?? 0
-}
-
 function teamLabel(team: TeamId): string {
   if (team === 'team-a') return 'A 隊'
   if (team === 'team-b') return 'B 隊'
@@ -2406,14 +2040,6 @@ function memberForPlayer(player: PlayerId): GameRoomMember | undefined {
 function playerLabel(value: PlayerId | null): string {
   if (!value) return '準備開始'
   return memberForPlayer(value)?.displayName ?? value
-}
-
-function playerInitialFor(player: PlayerId): string {
-  return playerLabel(player).trim().charAt(0).toUpperCase() || '玩'
-}
-
-function teamForPlayer(player: PlayerId): TeamId {
-  return state.value.players.find((candidate) => candidate.id === player)?.team ?? ''
 }
 
 function teamMembers(team: TeamId): string[] {
@@ -2580,80 +2206,11 @@ function formationChoiceLabel(formationId: string): string {
 @reference "../../assets/css/main.css";
 
 @scope (.game-page) {
-:scope { @apply flex h-[calc(100vh-84px)] flex-col overflow-hidden max-[900px]:h-auto max-[900px]:overflow-visible; }
+:scope { @apply flex min-h-0 flex-1 flex-col overflow-hidden; }
 .back-button { @apply grid size-9 place-items-center border border-[var(--app-border-strong)] bg-[rgba(17,23,19,.88)] text-base text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light; }
 .battlefield-back { @apply absolute top-4 left-4 z-20; }
-.battle-layout { @apply grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px] max-[900px]:grid-cols-1 max-[900px]:overflow-auto; }
-.battlefield {
-  --card-back-base: #232e28;
-  --card-back-stripe: #344039;
-  --card-back-border: #85714a;
-  position: relative;
-  min-width: 0;
-  display: grid;
-  grid-template-areas:
-    "top top top"
-    "left center right"
-    "bottom bottom bottom";
-  grid-template-columns: minmax(108px, .6fr) minmax(300px, 1.8fr) minmax(108px, .6fr);
-  grid-template-rows: minmax(150px, .8fr) minmax(230px, 1.15fr) minmax(175px, 1fr);
-  gap: 8px 14px;
-  padding: 22px 36px;
-  overflow: hidden;
-  background: radial-gradient(ellipse at center, var(--app-battlefield-center) 0%, var(--app-battlefield-mid) 58%, var(--app-battlefield-edge) 100%);
-}
-.battlefield::before { content: ""; position: absolute; inset: 22px; border: 1px solid rgba(175, 143, 79, .18); pointer-events: none; }
-.battlefield::after { content: "五 行"; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 270px; height: 270px; border: 1px solid rgba(183, 148, 77, .1); border-radius: 50%; display: grid; place-items: center; color: rgba(204, 171, 100, .06); font-family: serif; font-size: 70px; pointer-events: none; }
-.player-seat { @apply relative z-1 flex min-h-0 min-w-0 items-center justify-center gap-4; }
-.seat-top { grid-area: top; }
-.seat-bottom { grid-area: bottom; flex-direction: row-reverse; }
-.seat-left { grid-area: left; flex-direction: column; }
-.seat-right { grid-area: right; flex-direction: column; }
-.player-identity { @apply flex min-w-0 flex-wrap items-center gap-2.5; }
-.player-identity div { @apply grid; }
-.player-identity strong { @apply max-w-36 truncate text-xs; }
-.player-identity small { @apply text-[11px] text-[#d0a450]; }
-.profession-badge { @apply relative cursor-help border border-[var(--app-accent)] bg-[var(--app-surface-raised)] px-1.5 py-0.5 text-[10px] text-gold-light outline-none focus-visible:border-[#d1ad62]; }
-.profession-summary { @apply invisible absolute top-[calc(100%+6px)] left-0 z-20 grid w-64 gap-1 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-2.5 text-left opacity-0 shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
-.profession-summary b { @apply font-serif text-xs text-gold-light; }
-.profession-summary small { @apply whitespace-normal text-[10px]! leading-4 text-muted!; }
-.profession-badge:hover .profession-summary, .profession-badge:focus .profession-summary, .profession-badge:focus-within .profession-summary { @apply visible opacity-100; }
-.connection-dot { @apply size-2 shrink-0 rounded-full border border-[#76524b] bg-[#6f3c34]; }
-.connection-dot.connected { @apply border-[#477557] bg-[#63a979]; }
-.reconnecting-label { @apply text-[9px] text-[#d0aa5e]; }
-.turn-badge { @apply border border-[#477557] bg-[#16251b] px-[7px] py-[3px] text-[9px]! whitespace-nowrap text-[#77bd8d]!; }
-.counter-badge { @apply border border-[#8a733b] bg-[#292415] px-[7px] py-[3px] text-[9px]! whitespace-nowrap text-[#d5b868]!; }
-.shield-badge { @apply border border-[#557684] bg-[#17262c] px-[7px] py-[3px] text-[9px]! whitespace-nowrap text-[#8fc1d5]!; }
-.status-badge { @apply border border-[#765557] bg-[#28191b] px-[7px] py-[3px] text-[9px]! whitespace-nowrap text-[#d49a9a]!; }
-.side-hand-count { @apply hidden text-[9px] text-muted; }
-.hand { @apply flex min-w-0 items-center justify-center gap-2; }
-.seat-top .playing-card { width: clamp(48px, 5vw, 68px); }
-.seat-top .card-element { @apply size-7 text-sm; }
-.seat-left .seat-hand, .seat-right .seat-hand { @apply flex-col gap-1; }
-.seat-left .playing-card, .seat-right .playing-card { width: 30px; }
-.seat-left .card-level, .seat-right .card-level { @apply top-0.5 text-[8px]; }
-.seat-left .card-element, .seat-right .card-element { @apply size-4 text-[10px]; }
-.board-center { grid-area: center; @apply relative z-1 grid min-w-0 grid-cols-[90px_minmax(220px,1fr)_90px] items-center justify-items-center; }
-.battlefield.discard-open { z-index: 25; overflow: visible; }
-.battlefield.discard-open .board-center { z-index: 16; }
-.discard-piles { @apply z-2 flex w-full justify-end; grid-column: 1 / -1; grid-row: 1; }
-.discard-piles.personal { @apply pointer-events-none absolute inset-0 block; }
-.discard-composition-layer { @apply absolute right-0 z-20; bottom: calc(50% + 48px); }
-.discard-composition {
-  @apply w-[300px] border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3.5 text-[var(--app-text)] shadow-[0_18px_48px_rgba(0,0,0,.52)];
-}
-.discard-composition h2 { @apply mb-2.5 font-serif text-sm text-gold-light; }
-.card-composition table { @apply w-full table-fixed border-collapse; }
-.card-composition th, .card-composition td { @apply h-8 border border-[var(--app-border)] text-center; }
-.card-composition thead th { @apply text-[10px] font-bold text-[var(--app-text)]; }
-.card-composition tbody th { @apply w-7 text-[10px] font-normal text-muted; }
-.card-composition td strong { @apply font-serif text-sm text-[#e4c47d]; }
-.card-composition td.empty strong { color: var(--app-text-soft); }
-.card-composition tbody tr:nth-child(1) > th { color: #ded5ba; }
-.card-composition tbody tr:nth-child(2) > th { color: #77a980; }
-.card-composition tbody tr:nth-child(3) > th { color: #75a8bd; }
-.card-composition tbody tr:nth-child(4) > th { color: #d17a6c; }
-.card-composition tbody tr:nth-child(5) > th { color: #c8a265; }
+.battle-layout { @apply grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px]; }
+.mobile-event-summary { @apply hidden; }
 .pouch-composition { @apply mx-auto mt-5 w-[min(390px,calc(100vw-64px))] border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3.5 text-[var(--app-text)] shadow-[0_18px_48px_rgba(0,0,0,.52)]; }
 .pouch-composition td { @apply p-0; }
 .pouch-composition td button { @apply grid size-full min-h-8 place-items-center border-0 bg-transparent text-[#e4c47d] hover:bg-[rgba(185,149,80,.16)] disabled:cursor-not-allowed disabled:opacity-45; }
@@ -2662,16 +2219,6 @@ function formationChoiceLabel(formationId: string): string {
 .chain-composition { @apply mt-2; }
 .choice-selection-summary { @apply mx-auto mb-1 flex max-w-[390px] items-center justify-between gap-3 text-xs text-gold-light; }
 .choice-selection-summary button { @apply border border-[var(--app-accent)] bg-[var(--app-surface-raised)] px-2 py-1 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
-.formation-field { @apply relative z-3 grid min-h-48 w-full min-w-0 grid-rows-[auto_1fr_auto] items-center border-x border-[rgba(166,141,86,.14)] px-3 py-2 text-center text-[10px] text-[var(--app-text-muted)]; grid-column: 2; grid-row: 1; }
-.formation-field-heading { @apply flex flex-wrap items-center justify-center gap-2; }
-.formation-field-label { @apply text-[#9a8251]; letter-spacing: .2em; }
-.environment-badge { @apply border border-[var(--app-accent)] bg-[var(--app-surface-raised)] px-2 py-1 text-[9px] text-gold-light; }
-.previous-formation { @apply grid min-h-24 content-center justify-items-center gap-1.5; }
-.previous-formation small { @apply text-[9px] text-muted; }
-.previous-formation strong { @apply font-serif text-sm text-gold-light; }
-.previous-formation p { @apply text-[10px] text-[var(--app-text-muted)]; }
-.formation-cards { @apply flex min-h-12 items-center justify-center; }
-.formation-card { width: 34px; margin-left: -4px; }
 .turn-controls { @apply relative grid min-h-14 content-center gap-2 border-t border-[rgba(166,141,86,.14)] pt-2; }
 .ability-panel, .action-panel { @apply grid gap-1.5 border p-2; border-color: color-mix(in srgb, var(--app-accent) 24%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--app-surface-muted) 84%, transparent); }
 .ability-panel header, .action-panel header { @apply flex flex-wrap items-baseline justify-between gap-x-2 text-left; }
@@ -2746,64 +2293,43 @@ function formationChoiceLabel(formationId: string): string {
 .panel-title { @apply flex items-start justify-between; }
 .event-panel { @apply min-h-0 overflow-auto border-b border-line p-5; }
 .panel-title h2 { @apply font-serif text-[15px]; }
-.event-panel .event-expand-button { @apply hidden border-0 bg-transparent text-[10px] text-gold-light; }
 .event-feed { @apply mt-4 grid list-none gap-[13px] p-0; }
 .event-feed li { @apply grid grid-cols-[10px_1fr] gap-[7px]; }
 .event-feed li > i { width: 5px; height: 5px; border-radius: 50%; background: #b79550; margin-top: 6px; box-shadow: 0 0 0 4px rgba(183, 149, 80, .08); }
 .event-feed span { color: var(--app-text); font-size: 10px; font-weight: 700; }
 .event-feed p { color: var(--app-text-muted); font-size: 9px; line-height: 1.45; margin-top: 2px; }
 @media (min-width: 901px) {
-  .player-identity strong { font-size: 14px; }
-  .player-identity small { font-size: 12px; }
-  .reconnecting-label, .turn-badge, .counter-badge, .shield-badge, .status-badge, .side-hand-count { font-size: 11px!important; }
-  .formation-field { font-size: 12px; }
-  .previous-formation small { font-size: 11px; }
-  .previous-formation p, .action-candidates button { font-size: 12px; }
+  .action-candidates button { font-size: 12px; }
   .panel-title h2 { font-size: 17px; }
   .event-feed span { font-size: 12px; }
   .event-feed p { font-size: 11px; }
 }
 
 @media (max-width: 900px) {
-  .battle-layout { grid-template-columns: 1fr; overflow: auto; }
-  .game-page { height: auto; overflow: visible; }
-  .battlefield { min-height: 720px; padding: 22px; }
-  .discard-composition-layer {
-    @apply fixed inset-0 grid place-items-center bg-[var(--app-overlay)] p-4 backdrop-blur-[3px];
-  }
-  .discard-composition { width: min(330px, calc(100vw - 32px)); }
-  .game-sidebar { border-left: 0; }
-  .event-panel .event-expand-button { display: block; }
-  .event-panel:not(.expanded) .event-feed li:nth-child(n+4) { display: none; }
+  .battle-layout { @apply grid-cols-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden; }
+  .game-sidebar { @apply hidden; }
+  .mobile-event-summary { @apply flex min-w-0 items-center gap-2 border-x-0 border-b-0 border-t border-line bg-panel px-3 py-2 text-left; }
+  .mobile-event-summary strong { @apply shrink-0 font-serif text-[11px] text-gold-light; }
+  .mobile-event-summary span { @apply min-w-0 flex-1 truncate text-[9px] text-muted; }
 }
 
 @media (max-width: 600px) {
-  .battlefield {
-    min-height: 690px;
-    grid-template-columns: 76px minmax(0, 1fr) 76px;
-    grid-template-rows: 165px minmax(250px, 1fr) 185px;
-    gap: 4px;
-    padding: 46px 8px 12px;
-  }
-  .battlefield::before { inset: 8px; }
   .battlefield-back { top: 10px; left: 10px; }
-  .player-seat { gap: 7px; }
-  .seat-top, .seat-bottom { flex-direction: column; }
-  .seat-top .player-identity, .seat-bottom .player-identity { order: 2; }
-  .seat-left .seat-hand, .seat-right .seat-hand { display: none; }
-  .seat-left .player-identity, .seat-right .player-identity { @apply flex-col gap-1 text-center; }
-  .seat-left .player-identity strong, .seat-right .player-identity strong { @apply max-w-18 text-[9px]; }
-  .seat-left .player-identity small, .seat-right .player-identity small { @apply text-[9px]; }
-  .seat-left .turn-badge, .seat-right .turn-badge, .seat-left .counter-badge, .seat-right .counter-badge, .seat-left .shield-badge, .seat-right .shield-badge, .seat-left .status-badge, .seat-right .status-badge { @apply max-w-18 whitespace-normal px-1 py-0.5 text-[8px]!; }
-  .seat-left .side-hand-count, .seat-right .side-hand-count { @apply block; }
-  .board-center { grid-template-columns: 48px minmax(0, 1fr) 48px; width: 100%; }
-  .formation-field { min-width: 0; width: 100%; }
-  .playing-card { width: 54px; }
-  .seat-top .playing-card { width: 43px; }
-  .player-identity strong { max-width: 110px; }
-  .turn-badge { font-size: 8px!important; }
   .action-candidates button { min-height: 30px; padding: 4px 7px; }
   .waiting-members { grid-template-columns: 1fr 1fr; }
 }
 }
+
+.event-sheet-portal { @apply fixed inset-0 z-50; }
+.event-sheet-backdrop { @apply absolute inset-0 size-full cursor-default border-0 bg-[var(--app-overlay)] p-0 backdrop-blur-[3px]; }
+.event-sheet { @apply fixed right-0 bottom-0 left-0 z-1 grid max-h-[72dvh] grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden rounded-t-2xl border-x-0 border-b-0 border-t border-[var(--app-accent)] bg-[var(--app-surface-raised)] text-[var(--app-text)] shadow-[0_-18px_48px_rgba(0,0,0,.45)]; }
+.event-sheet > header { @apply flex items-center justify-between border-b border-line px-4 py-3; }
+.event-sheet h2 { @apply font-serif text-base text-gold-light; }
+.event-sheet header button { @apply grid size-8 place-items-center border border-[var(--app-border-strong)] bg-transparent text-xl text-muted; }
+.event-sheet-feed { @apply m-0 grid min-h-0 list-none gap-3 overflow-y-auto p-4; overscroll-behavior: contain; }
+.event-sheet-feed li { @apply grid grid-cols-[10px_1fr] gap-2; }
+.event-sheet-feed li > i { @apply mt-1.5 size-[5px] rounded-full bg-[#b79550] shadow-[0_0_0_4px_rgba(183,149,80,.08)]; }
+.event-sheet-feed span { @apply text-[11px] font-bold text-[var(--app-text)]; }
+.event-sheet-feed p { @apply mt-0.5 text-[10px] leading-5 text-[var(--app-text-muted)]; }
+.new-event-button { @apply mx-auto mt-2 border border-[var(--app-accent)] bg-[var(--app-surface-muted)] px-3 py-1.5 text-[10px] text-gold-light; }
 </style>

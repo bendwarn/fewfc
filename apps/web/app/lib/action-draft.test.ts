@@ -42,6 +42,7 @@ function state(overrides: Partial<PublicGameState> = {}): PublicGameState {
     cardInterpretations: [],
     spirits: [],
     previousTurnFormation: null,
+    lastCompletedTurnDiscards: [],
     ...overrides,
   }
 }

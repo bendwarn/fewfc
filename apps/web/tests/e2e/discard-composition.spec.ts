@@ -7,9 +7,9 @@ import {
   test,
 } from './fixtures'
 
-const discardDialog = (page: Page) => page.getByRole('dialog', { name: '棄牌內容' })
+const discardDialog = (page: Page) => page.locator('#discard-composition')
 const discardTrigger = (page: Page, count: number) => page.getByRole('button', {
-  name: `查看棄牌內容，共 ${count} 張`,
+  name: new RegExp(`查看共用棄牌詳情。目前棄牌 ${count} 張`),
 })
 const matrixElements = [
   ['金', 'Metal'],
@@ -96,6 +96,7 @@ async function expectDiscardTotal(pages: Page[], count: number) {
 async function expectStableComposition(page: Page, total: number) {
   const dialog = discardDialog(page)
   await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('heading')).toHaveText(new RegExp(`^目前棄牌 ${total} · 牌庫 \\d+$`))
   await expect(dialog.getByRole('columnheader')).toHaveText([
     '五行',
     '1 級',
@@ -134,6 +135,7 @@ async function expectDiscardMatrixMatchesGameState(page: Page) {
 }
 
 test('players can inspect a synchronized discard composition throughout a match', async ({ browser }) => {
+  test.setTimeout(60_000)
   const game = await setupFastTwoPlayerGame(browser, {
     roomName: `同步棄牌測試 ${Date.now()}`,
     disabledRuleModules: ['five-directions-legend', 'personal-deck'],
@@ -197,12 +199,12 @@ test('players can inspect a synchronized discard composition throughout a match'
     await expectStableComposition(observer, 2)
     await expectDiscardMatrixMatchesGameState(observer)
 
-    await discardDialog(observer).getByRole('heading', { name: '棄牌內容' }).click()
+    await discardDialog(observer).getByRole('button', { name: '關閉詳情' }).click()
     await expect(discardDialog(observer)).toBeHidden()
     await expect(trigger).toBeFocused()
 
     await trigger.click()
-    await trigger.click()
+    await discardDialog(observer).getByRole('button', { name: '關閉詳情' }).click()
     await expect(discardDialog(observer)).toBeHidden()
     await expect(trigger).toBeFocused()
 
@@ -212,7 +214,7 @@ test('players can inspect a synchronized discard composition throughout a match'
     await expect(trigger).toBeFocused()
 
     await trigger.click()
-    await observer.locator('.formation-field').click()
+    await observer.locator('.battlefield-detail-backdrop').click({ position: { x: 4, y: 4 } })
     await expect(discardDialog(observer)).toBeHidden()
     await expect(trigger).toBeFocused()
 
@@ -221,13 +223,20 @@ test('players can inspect a synchronized discard composition throughout a match'
     await expectStableComposition(observer, 2)
     const mobileBox = await discardDialog(observer).boundingBox()
     expect(mobileBox).not.toBeNull()
-    expect(Math.abs(mobileBox!.x + mobileBox!.width / 2 - 377 / 2)).toBeLessThanOrEqual(2)
-    expect(Math.abs(mobileBox!.y + mobileBox!.height / 2 - 734 / 2)).toBeLessThanOrEqual(2)
-    expect(mobileBox!.x).toBeGreaterThanOrEqual(0)
+    expect(mobileBox!.x).toBe(0)
+    expect(mobileBox!.width).toBe(377)
     expect(mobileBox!.y).toBeGreaterThanOrEqual(0)
-    expect(mobileBox!.x + mobileBox!.width).toBeLessThanOrEqual(377)
-    expect(mobileBox!.y + mobileBox!.height).toBeLessThanOrEqual(734)
-    await discardDialog(observer).click()
+    await expect.poll(async () => {
+      const box = await discardDialog(observer).boundingBox()
+      return box ? Math.abs(box.y + box.height - 734) : Number.POSITIVE_INFINITY
+    }).toBeLessThanOrEqual(1)
+    const mobileOverflow = await observer.evaluate(() => ({
+      horizontal: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      vertical: document.querySelector('.game-page')!.scrollHeight - document.querySelector('.game-page')!.clientHeight,
+    }))
+    expect(mobileOverflow.horizontal).toBeLessThanOrEqual(0)
+    expect(mobileOverflow.vertical).toBeLessThanOrEqual(0)
+    await discardDialog(observer).getByRole('button', { name: '關閉詳情' }).click()
 
     await observer.setViewportSize({ width: 1280, height: 720 })
     await trigger.click()
@@ -235,7 +244,7 @@ test('players can inspect a synchronized discard composition throughout a match'
     const triggerBox = await trigger.boundingBox()
     expect(desktopBox).not.toBeNull()
     expect(triggerBox).not.toBeNull()
-    expect(desktopBox!.y + desktopBox!.height).toBeLessThanOrEqual(triggerBox!.y)
+    expect(desktopBox!.y).toBeGreaterThanOrEqual(triggerBox!.y)
     expect(desktopBox!.x).toBeGreaterThanOrEqual(0)
     expect(desktopBox!.x + desktopBox!.width).toBeLessThanOrEqual(1280)
     await observer.keyboard.press('Escape')

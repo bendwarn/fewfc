@@ -113,7 +113,9 @@ test('default room rules lock preconstructed decks and start personal piles', as
 
     await game.start()
 
-    await expect(host.locator('.player-identity').filter({ hasText: /牌庫 5[56] · 棄牌 0/ })).toHaveCount(2)
+    const pileCounts = host.locator('.seat-discard-control .discard-counts')
+    await expect(pileCounts).toHaveCount(2)
+    for (const text of await pileCounts.allTextContents()) expect(text).toMatch(/^0—5[56]$/)
   } finally {
     await game.close()
   }

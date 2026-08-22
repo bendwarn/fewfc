@@ -115,6 +115,53 @@ pub(crate) fn append_terminal_game_end(state: &GameState, events: &mut Vec<GameE
     }
 }
 
+/// 隨機性 continuation 完成作用中陣形後，補上陣形後果與實體卡牌收尾。
+pub(crate) fn append_completed_formation_events(
+    state: &GameState,
+    events: &mut Vec<GameEvent>,
+) -> GameResult<()> {
+    formation_use::append_completed_active_spell_post_formation_events(state, events)?;
+    append_terminal_game_end(state, events);
+    if events
+        .iter()
+        .any(|event| matches!(event, GameEvent::GameEnded { .. }))
+    {
+        return Ok(());
+    }
+
+    let mut projected = state.clone();
+    for event in events.iter() {
+        projection::apply_event(&mut projected, event);
+    }
+    if projected.pending_choice.is_some()
+        || projected.pending_randomness.is_some()
+        || !matches!(projected.status, GameStatus::InProgress)
+        || projected.phase != Phase::Action
+    {
+        return Ok(());
+    }
+    let Some(player) = projected.current_player().cloned() else {
+        return Ok(());
+    };
+    let Some(formation) = projected
+        .formation_area(&player)
+        .and_then(|area| area.formation.as_ref())
+    else {
+        return Ok(());
+    };
+    if matches!(
+        formation.state,
+        crate::domain::FormationAreaState::FaceUpResolving
+    ) {
+        events.push(GameEvent::FormationCardsDiscarded {
+            player,
+            formation_id: formation.formation_id.clone(),
+            cards: formation.cards.clone(),
+        });
+    }
+    Ok(())
+}
+
 /// 保留在基礎法術解析器旁的規則專屬選擇事實。這裡僅供說明；實際的待選擇
 /// 狀態仍由解析流程擁有。
 pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleConsequence>> {

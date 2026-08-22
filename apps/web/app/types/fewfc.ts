@@ -66,6 +66,12 @@ export interface PublicPreviousTurnFormation {
   cards: PublicCardRefs
 }
 
+export interface PublicLastCompletedTurnDiscard {
+  player: PlayerId
+  card: PublicCard
+  turnNumber: number
+}
+
 export type PublicPendingChoice = VisiblePendingChoice | HiddenPendingChoice
 
 export interface VisiblePendingChoice {
@@ -347,6 +353,7 @@ export interface PublicGameState {
     power: number
   }>
   previousTurnFormation: PublicPreviousTurnFormation | null
+  lastCompletedTurnDiscards: PublicLastCompletedTurnDiscard[]
 }
 
 export interface GameConclusion {

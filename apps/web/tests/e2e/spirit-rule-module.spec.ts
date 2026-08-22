@@ -13,12 +13,12 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
   const { host, guest, gameId: roomId } = game
 
   try {
-    await expect(host.getByLabel('棄牌堆').locator('.discard-pile')).toHaveCount(2)
+    await expect(host.locator('.seat-discard-control')).toHaveCount(2)
     await expect(host.locator('.discard-position-top')).toHaveCount(1)
     await expect(host.locator('.discard-position-bottom')).toHaveCount(1)
-    const discardOverlapsFormation = await host.locator('.board-center').evaluate((center) => {
-      const formation = center.querySelector('.formation-field')!.getBoundingClientRect()
-      return [...center.querySelectorAll('.discard-pile')].some((pile) => {
+    const discardOverlapsFormation = await host.locator('.battlefield').evaluate((battlefield) => {
+      const formation = battlefield.querySelector('.formation-field')!.getBoundingClientRect()
+      return [...battlefield.querySelectorAll('.seat-discard-control')].some((pile) => {
         const box = pile.getBoundingClientRect()
         return box.left < formation.right
           && box.right > formation.left

@@ -1714,6 +1714,7 @@ struct WebPublicGameState {
     card_interpretations: Vec<WebCardInterpretationPresentation>,
     spirits: Vec<WebPlayerSpirit>,
     previous_turn_formation: Option<WebPreviousTurnFormation>,
+    last_completed_turn_discards: Vec<WebLastCompletedTurnDiscard>,
 }
 
 #[derive(Serialize)]
@@ -2196,6 +2197,15 @@ impl WebPublicGameState {
                     cards: WebCardRefs::from_public(formation.cards, labels, card_facts),
                 }
             }),
+            last_completed_turn_discards: state
+                .last_completed_turn_discards
+                .into_iter()
+                .map(|discard| WebLastCompletedTurnDiscard {
+                    player: discard.player.as_str().to_string(),
+                    card: WebCard::from_id(discard.card, labels, card_facts),
+                    turn_number: discard.turn_number,
+                })
+                .collect(),
         }
     }
 
@@ -2447,6 +2457,14 @@ struct WebPreviousTurnFormation {
     formation_id: Option<String>,
     formation_name: Option<String>,
     cards: WebCardRefs,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebLastCompletedTurnDiscard {
+    player: String,
+    card: WebCard,
+    turn_number: u64,
 }
 
 #[derive(Serialize)]
@@ -5649,6 +5667,58 @@ mod tests {
         );
         assert!(json.get("initial_pouch_selection").is_none());
         assert!(json.get("preparationPlayer").is_none());
+    }
+
+    #[test]
+    fn last_completed_turn_discards_use_the_exact_camel_case_public_contract() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let mut state = crate::domain::GameState::from_setup(&setup);
+        let alice = setup.players[0].id.clone();
+        let bob = setup.players[1].id.clone();
+        let alice_card = setup.card_instances[0].instance;
+        let bob_card = setup.card_instances[1].instance;
+        state.turn_number = 6;
+        state.current_turn_index = 0;
+        state.last_turn_discard_by_player.insert(
+            alice.clone(),
+            crate::domain::LastTurnDiscard {
+                card: alice_card,
+                turn_number: 4,
+            },
+        );
+        state.last_turn_discard_by_player.insert(
+            bob.clone(),
+            crate::domain::LastTurnDiscard {
+                card: bob_card,
+                turn_number: 5,
+            },
+        );
+
+        let web_state = WebPublicGameState::from_public(
+            crate::public_view::state_for(&state, Viewer::Observer),
+            &rules.card_labels(&setup).unwrap(),
+            &card_facts_for_setup(&setup),
+            &rules.formation_names(&setup).unwrap(),
+        );
+        let json = serde_json::to_value(web_state).unwrap();
+
+        assert_eq!(
+            json["lastCompletedTurnDiscards"][0]["player"],
+            alice.as_str()
+        );
+        assert_eq!(
+            json["lastCompletedTurnDiscards"][0]["card"]["id"],
+            alice_card.as_u64()
+        );
+        assert_eq!(json["lastCompletedTurnDiscards"][0]["turnNumber"], 4);
+        assert_eq!(json["lastCompletedTurnDiscards"][1]["player"], bob.as_str());
+        assert_eq!(
+            json["lastCompletedTurnDiscards"][1]["card"]["id"],
+            bob_card.as_u64()
+        );
+        assert_eq!(json["lastCompletedTurnDiscards"][1]["turnNumber"], 5);
+        assert!(json.get("last_completed_turn_discards").is_none());
     }
 
     #[test]

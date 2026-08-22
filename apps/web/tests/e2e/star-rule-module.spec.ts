@@ -122,7 +122,7 @@ test('a four-player team room starts with one shared immutable Star configuratio
       await expect(page.getByRole('region', { name: '啟用規則' }))
         .toContainText('星辰圖記')
       await expect(page.locator('.player-seat')).toHaveCount(4)
-      await expect(page.getByLabel('棄牌堆').locator('.discard-pile')).toHaveCount(4)
+      await expect(page.locator('.seat-discard-control')).toHaveCount(4)
       await expect(page.locator('.discard-position-top')).toHaveCount(1)
       await expect(page.locator('.discard-position-left')).toHaveCount(1)
       await expect(page.locator('.discard-position-right')).toHaveCount(1)
