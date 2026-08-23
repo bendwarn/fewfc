@@ -40,7 +40,7 @@ describe('BattlefieldBoard', () => {
 
     expect(wrapper.findAll('.player-seat')).toHaveLength(2)
     expect(wrapper.get('.player-seat[aria-current="true"]').attributes('aria-label')).toContain('小華')
-    expect(wrapper.get('.effect-summary').text()).toContain('效果 1')
+    expect(wrapper.get('.effect-summary').text()).toBe('效果 1')
     const handButton = wrapper.get('.compact-hand-button')
     expect(handButton.text()).toBe('手牌 1')
     await handButton.trigger('click')

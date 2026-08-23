@@ -70,7 +70,7 @@
             :aria-expanded="effectDetailPlayer === seat.player"
             @click.stop="openEffectDetail(seat.player, $event.currentTarget as HTMLButtonElement)"
           >
-            效果 {{ persistentEffectsFor(seat.player).length }}<span class="effect-preview">｜{{ persistentEffectsFor(seat.player).map(effect => effect.label).join('、') }}</span>
+            效果 {{ persistentEffectsFor(seat.player).length }}
           </button>
         </div>
       </div>
@@ -563,7 +563,6 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .player-seat:not(.seat-bottom) .player-facts { @apply w-full text-[8px]; }
   .player-seat:not(.seat-bottom) .player-statuses { @apply w-full flex-nowrap overflow-hidden; }
   .player-seat:not(.seat-bottom) .profession-badge, .player-seat:not(.seat-bottom) .counter-badge, .player-seat:not(.seat-bottom) .shield-badge, .player-seat:not(.seat-bottom) .effect-summary { @apply shrink-0 px-1 py-0.5 text-[8px]; }
-  .effect-preview { @apply hidden; }
   .player-seat:not(.seat-bottom) .seat-hand { @apply hidden; }
   .player-seat:not(.seat-bottom) .compact-hand-count { @apply block; }
   .player-seat:not(.seat-bottom) .seat-discard-control { @apply absolute right-1 bottom-1; }

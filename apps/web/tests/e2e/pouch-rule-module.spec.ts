@@ -135,7 +135,7 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     await command
     await expect(active.getByRole('button', { name: /秘計‧金蟬/ })).toHaveCount(0)
     const effectSummary = active.locator('.effect-summary')
-    await expect(effectSummary).toHaveText(/效果 1/)
+    await expect(effectSummary).toHaveText(/^\s*效果 1\s*$/)
     await effectSummary.click()
     const effectDetail = active.getByRole('dialog', { name: /的效果 1$/ })
     await expect(effectDetail).toContainText('剩餘 1 回合 · 金蟬')
