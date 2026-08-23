@@ -63,12 +63,22 @@ async function expectCompactFourPlayerTable(page: Page, width: number, height: n
     const actions = battlefield.locator('.turn-controls')
     await expect(actions).toBeVisible()
     const actionBox = await box(battlefield.locator('.action-dock'))
-    expect(actionBox.y + actionBox.height).toBeLessThanOrEqual(ownSeat.y + 1)
+    const formationBox = await box(battlefield.locator('.formation-field'))
+    expect(actionBox.x).toBeGreaterThanOrEqual(formationBox.x + formationBox.width - 1)
+    expect(Math.abs(actionBox.y - formationBox.y)).toBeLessThanOrEqual(1)
+    expect(Math.abs(actionBox.height - formationBox.height)).toBeLessThanOrEqual(1)
+    const scrollState = await battlefield.locator('.action-dock').evaluate(element => ({
+      overflowY: getComputedStyle(element).overflowY,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+    }))
+    expect(scrollState.overflowY).toBe('auto')
+    expect(scrollState.clientHeight).toBeGreaterThan(0)
+    expect(scrollState.scrollHeight).toBeGreaterThanOrEqual(scrollState.clientHeight)
   }
 
   const actingSeat = battlefield.locator('.player-seat[aria-current="true"]')
   await expect(actingSeat).toHaveCount(1)
-  await expect(actingSeat.locator('.acting-marker')).toBeVisible()
   const actingStyle = await actingSeat.evaluate(element => ({
     outline: getComputedStyle(element).outlineStyle,
     shadow: getComputedStyle(element).boxShadow,

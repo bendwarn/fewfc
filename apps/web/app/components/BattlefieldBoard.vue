@@ -34,7 +34,6 @@
             <strong :title="playerLabel(seat.player)">{{ playerLabel(seat.player) }}</strong>
             <small>{{ teamHp(teamForPlayer(seat.player)) }} HP</small>
           </span>
-          <span v-if="isActing(seat.player)" class="acting-marker" aria-hidden="true">▶</span>
         </div>
 
         <div class="player-facts" :title="playerFacts(seat.player)">
@@ -132,7 +131,7 @@
       />
     </div>
 
-    <div class="center-stack">
+    <div class="center-stack" :class="{ 'controls-visible': showTurnControls }">
       <div class="board-center">
         <div class="formation-field">
           <div class="formation-field-heading">
@@ -159,7 +158,7 @@
         </div>
         <slot name="board-overlay" />
       </div>
-      <div class="action-dock"><slot name="turn-controls" /></div>
+      <div v-if="showTurnControls" class="action-dock"><slot name="turn-controls" /></div>
     </div>
 
     <slot name="overlay" />
@@ -242,12 +241,14 @@ const props = withDefaults(defineProps<{
   cardsDisabled?: boolean
   connectedPlayers?: readonly PlayerId[]
   reconnectingPlayer?: PlayerId | null
+  showTurnControls?: boolean
 }>(), {
   selectedCardIds: () => [],
   selectablePlayer: null,
   cardsDisabled: false,
   connectedPlayers: () => [],
   reconnectingPlayer: null,
+  showTurnControls: false,
 })
 
 const emit = defineEmits<{ 'select-card': [player: PlayerId, card: number] }>()
@@ -469,7 +470,6 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 .player-name-block strong { @apply max-w-40 truncate text-xs; }
 .player-name-block small { @apply text-[11px] text-[#d0a450]; }
 .avatar { @apply grid size-[34px] shrink-0 place-items-center rounded-full bg-[#b48a47] font-extrabold text-[#141813]; }
-.acting-marker { @apply ml-auto shrink-0 text-xs text-[#f1d485]; }
 .connection-dot { @apply size-2 shrink-0 rounded-full border border-[#76524b] bg-[#6f3c34]; }
 .connection-dot.connected { @apply border-[#477557] bg-[#63a979]; }
 .player-facts { @apply flex min-w-0 max-w-full gap-2 overflow-hidden text-[10px] whitespace-nowrap text-[#d0a450]; }
@@ -486,15 +486,16 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 .profession-summary small { @apply whitespace-normal text-[10px] leading-4 text-muted; }
 .profession-badge:hover .profession-summary, .profession-badge:focus .profession-summary { @apply visible opacity-100; }
 .hand { @apply flex min-w-0 items-center justify-center gap-2; }
-.seat-top :deep(.playing-card) { width: clamp(48px, 5vw, 68px); }
+.seat-top .seat-hand :deep(.playing-card) { width: clamp(48px, 5vw, 68px); }
 .seat-left .seat-hand, .seat-right .seat-hand { @apply flex-col gap-1; }
-.seat-left :deep(.playing-card), .seat-right :deep(.playing-card) { width: 30px; }
+.seat-left .seat-hand :deep(.playing-card), .seat-right .seat-hand :deep(.playing-card) { width: 30px; }
 .compact-hand-count { @apply hidden text-[10px] whitespace-nowrap text-muted; }
 .compact-hand-button { @apply border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2 py-1 hover:border-[var(--app-accent)] hover:text-gold-light; }
 .seat-discard-control { @apply shrink-0; }
 .shared-discard-dock { @apply absolute top-4 right-4 z-8; }
-.center-stack { grid-area: center; @apply relative z-2 grid min-h-0 min-w-0 grid-rows-[minmax(112px,1fr)_auto] gap-2; }
-.board-center { @apply relative grid min-h-0 min-w-0 place-items-center; }
+.center-stack { grid-area: center; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); @apply relative z-2 grid min-h-0 min-w-0 gap-2; }
+.center-stack.controls-visible { grid-template-columns: minmax(0, 1fr) minmax(220px, .72fr); }
+.board-center { @apply relative grid size-full min-h-0 min-w-0 place-items-center; }
 .formation-field { @apply relative grid size-full min-h-28 min-w-0 grid-rows-[auto_1fr] items-center border-x border-[rgba(166,141,86,.14)] px-3 py-2 text-center text-[10px] text-[var(--app-text-muted)]; }
 .formation-field-heading { @apply flex flex-wrap items-center justify-center gap-2; }
 .formation-field-label { @apply text-[#9a8251]; letter-spacing: .2em; }
@@ -505,7 +506,7 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 .previous-formation p { @apply text-[10px] text-[var(--app-text-muted)]; }
 .formation-cards { @apply flex min-h-10 items-center justify-center; }
 .formation-card { width: 34px; margin-left: -4px; }
-.action-dock { @apply relative z-5 min-h-0 min-w-0 overflow-y-auto; overscroll-behavior: contain; }
+.action-dock { @apply relative z-5 size-full min-h-0 min-w-0 overflow-y-auto; overscroll-behavior: contain; }
 .card-composition table { @apply w-full table-fixed border-collapse; }
 .card-composition th, .card-composition td { @apply h-8 border border-[var(--app-border)] text-center; }
 .card-composition thead th { @apply text-[10px] font-bold text-[var(--app-text)]; }
@@ -547,13 +548,13 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .player-seat { @apply rounded-lg p-1.5; }
   .player-seat:not(.seat-bottom) { grid-row: 1; grid-column: var(--compact-column); @apply h-[104px] flex-col gap-1 overflow-hidden; }
   .seat-bottom { grid-row: 3; grid-column: 1 / -1; @apply min-h-0 flex-row-reverse; }
-  .center-stack { grid-row: 2; grid-column: 1 / -1; @apply grid min-h-0 grid-rows-[minmax(88px,1fr)_auto] gap-1; }
+  .center-stack { grid-row: 2; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); @apply grid min-h-0 gap-1; }
+  .center-stack.controls-visible { grid-template-columns: minmax(0, 1fr) minmax(144px, .72fr); }
   .board-center { @apply min-h-0; }
   .formation-field { @apply min-h-0 py-1; }
   .previous-formation { @apply min-h-12; }
   .formation-cards { @apply min-h-8; }
   .formation-card { width: 28px; }
-  .action-dock { max-height: 150px; }
   .player-seat:not(.seat-bottom) .avatar { @apply hidden; }
   .player-seat:not(.seat-bottom) .player-heading { @apply w-full gap-1; }
   .player-seat:not(.seat-bottom) .player-name-block { @apply min-w-0; }
@@ -569,7 +570,7 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .player-seat:not(.seat-bottom) .seat-discard-control :deep(.discard-pile-label) { @apply hidden; }
   .player-seat:not(.seat-bottom) .seat-discard-control :deep(.discard-pile-trigger) { width: 30px; }
   .seat-bottom .player-identity { @apply max-w-[42%]; }
-  .seat-bottom :deep(.playing-card) { width: clamp(48px, 13vw, 64px); }
+  .seat-bottom .seat-hand :deep(.playing-card) { width: clamp(48px, 13vw, 64px); }
   .shared-discard-dock { @apply top-1.5 right-2; }
   .shared-discard-dock :deep(.discard-pile-label) { @apply hidden; }
   .shared-discard-dock :deep(.discard-pile-trigger) { width: 34px; }
@@ -583,8 +584,7 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .seat-bottom .player-identity { @apply max-w-[38%]; }
   .seat-bottom .player-facts { @apply text-[8px]; }
   .seat-bottom .player-statuses { @apply max-h-10 overflow-hidden; }
-  .seat-bottom :deep(.playing-card) { width: clamp(44px, 12vw, 56px); }
-  .action-dock { max-height: 132px; }
+  .seat-bottom .seat-hand :deep(.playing-card) { width: clamp(44px, 12vw, 56px); }
 }
 
 @media (prefers-reduced-motion: reduce) {

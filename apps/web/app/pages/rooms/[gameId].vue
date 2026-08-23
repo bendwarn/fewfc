@@ -18,6 +18,7 @@
           :cards-disabled="!roomConnected"
           :connected-players="connectedPlayers"
           :reconnecting-player="game.connectionState.value === 'reconnecting' ? ownPlayer : null"
+          :show-turn-controls="!roomWaiting && !gameFinished && viewer === state.currentPlayer"
           @select-card="game.toggleCardSelection"
         >
           <template #before>
@@ -2219,13 +2220,13 @@ function formationChoiceLabel(formationId: string): string {
 .chain-composition { @apply mt-2; }
 .choice-selection-summary { @apply mx-auto mb-1 flex max-w-[390px] items-center justify-between gap-3 text-xs text-gold-light; }
 .choice-selection-summary button { @apply border border-[var(--app-accent)] bg-[var(--app-surface-raised)] px-2 py-1 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
-.turn-controls { @apply relative grid min-h-14 content-center gap-2 border-t border-[rgba(166,141,86,.14)] pt-2; }
-.ability-panel, .action-panel { @apply grid gap-1.5 border p-2; border-color: color-mix(in srgb, var(--app-accent) 24%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--app-surface-muted) 84%, transparent); }
+.turn-controls { @apply relative grid min-h-full min-w-0 content-start gap-2 border-l border-[rgba(166,141,86,.14)] pl-2; }
+.ability-panel, .action-panel { @apply grid min-w-0 gap-1.5 border p-2; border-color: color-mix(in srgb, var(--app-accent) 24%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--app-surface-muted) 84%, transparent); }
 .ability-panel header, .action-panel header { @apply flex flex-wrap items-baseline justify-between gap-x-2 text-left; }
 .ability-panel h3, .action-panel h3 { @apply font-serif text-xs text-gold-light; }
 .ability-panel small, .action-panel small { @apply text-[9px] text-muted; }
-.action-candidates { @apply flex max-w-full flex-wrap justify-center gap-1.5; }
-.action-candidates button { @apply min-h-8 border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2.5 py-1.5 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
+.action-candidates { @apply flex min-w-0 max-w-full flex-wrap justify-center gap-1.5; }
+.action-candidates button { @apply min-h-8 max-w-full border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2.5 py-1.5 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
 .action-candidates p { @apply text-[9px] text-[var(--app-text-muted)]; }
 .spirit-level-picker { @apply relative; }
 .spirit-level-trigger { @apply grid min-h-8 min-w-12 place-items-center border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2.5 py-1.5 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
@@ -2236,7 +2237,7 @@ function formationChoiceLabel(formationId: string): string {
 .action-processing { @apply text-[#d0aa5e]; }
 .action-error { @apply text-[#d79587]; }
 .action-prompt { @apply text-[var(--app-text-muted)]; }
-.action-detail { @apply absolute right-0 bottom-[calc(100%+8px)] left-0 z-8 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
+.action-detail { @apply pointer-events-none sticky bottom-0 z-8 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
 .action-detail strong { @apply mr-2 text-gold-light; }
 .choice-overlay,
 .choice-waiting-overlay { @apply absolute inset-0 z-12 grid place-items-center bg-[var(--app-choice-overlay)] text-center; }

@@ -193,8 +193,14 @@ _Avoid_: mana, Player resource
 
 **Spirit Skill (精靈技能)**:
 An ability granted by a Player's Spirit, normally used during the active-effect
-timing by spending Spirit Power. Bloom may also trigger automatically.
+timing by spending Spirit Power. 綻放 may also trigger automatically.
 _Avoid_: Formation, Profession Ability
+
+**Temporary Ability Loss (暫時失去能力)**:
+The product rule condition caused by 離山 in which a Player continues to own an
+affected Profession or Spirit. The Player temporarily lacks that Profession's
+**Profession Ability Set** or that Spirit's Spirit Skills.
+_Avoid_: 職業能力無效, 精靈技能無效, Profession Breaking, Spirit Breaking, Cannot Act
 
 **Spirit Summoning (召喚精靈)**:
 The acquisition of a specified Spirit with two initial Spirit Power. It replaces
@@ -255,6 +261,12 @@ The removal of a Player's current Profession without replacing it, returning
 that Player to having no Profession.
 _Avoid_: Profession Change, profession expiry
 
+**Profession Ability Set (該職業之能力)**:
+The official collective term for a Profession's Automatic, Formation
+Proficiency, and Activated Profession Abilities, Profession Formations, and
+other Profession rules.
+_Avoid_: Profession Ability when referring to the complete set
+
 **Automatic Profession Ability (普通能力)**:
 A Profession Ability that applies automatically and continuously while the
 Player owns the granting Profession.
@@ -264,6 +276,10 @@ _Avoid_: passive spell, Covered Passive, Status Effect
 An automatic Profession Ability that gives its Player an alternative way to
 match a specified Formation.
 _Avoid_: Formation replacement, card mutation
+
+**Profession Formation (職業陣法)**:
+A Formation made available by the performing Player's current Profession.
+_Avoid_: Profession Ability, Formation Proficiency
 
 **Formation Match Option**:
 One legal interpretation of submitted Card Instances for a declared Formation,
@@ -907,8 +923,26 @@ _Avoid_: callback response
 - A **Player** starts without a **Profession** and owns at most one
 - A successful **Profession Change** replaces the Player's previous **Profession**
 - **Profession Breaking** removes a Player's current **Profession** without replacement
-- A **Profession** grants Automatic Profession Abilities, Formation
-  Proficiencies, and Activated Profession Abilities
+- A **Profession** grants one complete **Profession Ability Set**
+- A **Profession Ability Set** includes Profession Abilities, Profession
+  Formations, and other Profession rules
+- **Temporary Ability Loss** does not remove the affected **Profession** or
+  **Spirit**, but the affected **Profession Ability Set** and Spirit Skills do
+  not apply while the loss lasts
+- **Temporary Ability Loss** removes **Profession Change** paths contributed by
+  a **Profession Ability Set** but does not remove the Profession identity used
+  by ordinary Profession Change prerequisites
+- A Command that requires a temporarily lost **Profession Ability Set** or a
+  Spirit Skill is a **Validation Failure**, not a **Playable Action**, and
+  consumes no cost or usage allowance
+- **Temporary Ability Loss** does not undo a **Prepared Profession Ability**,
+  **Formation Requirement**, **Card Interpretation Layer**, or other consequence
+  already established by an accepted ability use
+- **Temporary Ability Loss** neither refunds nor resets an already paid cost,
+  spent Spirit Power, per-turn usage allowance, or **Limited Use**
+- A Profession Change or **Spirit Summoning** during **Temporary Ability Loss**
+  does not restore abilities; every ability granted by the new source remains
+  lost until the same condition expires
 - A successful **Activated Profession Ability** use consumes that Player's
   shared once-per-turn activation allowance
 - A **Prepared Profession Ability** expires after the Player's action or at the

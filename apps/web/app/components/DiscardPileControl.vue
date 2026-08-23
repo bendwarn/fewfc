@@ -80,10 +80,10 @@ function requestToggle(event: MouseEvent) {
 
 .discard-pile-control { @apply grid justify-items-center gap-1.5 text-[9px] text-[var(--app-text-muted)]; }
 .discard-pile-label { @apply text-center; }
-.discard-pile-trigger { @apply grid w-[52px] place-items-center border border-[var(--app-accent)] bg-[var(--app-surface-raised)] font-serif text-xl text-[#a68d56] p-0 hover:border-[var(--app-accent)] hover:text-gold-light; }
+.discard-pile-trigger { @apply grid w-[52px] place-items-center overflow-hidden border border-[var(--app-accent)] bg-[var(--app-surface-raised)] font-serif text-xl text-[#a68d56] p-0 hover:border-[var(--app-accent)] hover:text-gold-light; aspect-ratio: 5 / 7; }
 .discard-pile-trigger:focus-visible { outline: 2px solid #d1ad62; outline-offset: 3px; }
 .discard-pile-control.disabled .discard-pile-trigger { @apply cursor-not-allowed opacity-45; }
-.featured-discard-card { width: 100%; }
+.discard-pile-trigger > .featured-discard-card { width: auto; max-width: calc(100% - 4px); height: calc(100% - 4px); box-shadow: none; }
 .discard-counts { @apply grid w-full place-items-center py-1 leading-none; aspect-ratio: 5 / 7; }
 .discard-count-divider { @apply text-sm text-[var(--app-text-muted)]; }
 

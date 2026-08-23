@@ -148,6 +148,8 @@ test('players can inspect a synchronized discard composition throughout a match'
       await expect(page.locator('.seat-top .playing-card.hidden')).not.toHaveCount(0)
       await expect(page.locator('.seat-top .playing-card:not(.hidden)')).toHaveCount(0)
     }))
+    const emptyDiscardBox = await discardTrigger(host, 0).boundingBox()
+    expect(emptyDiscardBox).not.toBeNull()
 
     const desktopTextSizes = await host.locator('.game-page').evaluate((gamePage) => {
       const selectors = [
@@ -195,6 +197,10 @@ test('players can inspect a synchronized discard composition throughout a match'
 
     const observer = pages.find(page => page !== active)!
     const trigger = discardTrigger(observer, 2)
+    const featuredDiscardBox = await trigger.boundingBox()
+    expect(featuredDiscardBox).not.toBeNull()
+    expect(Math.abs(featuredDiscardBox!.width - emptyDiscardBox!.width)).toBeLessThanOrEqual(1)
+    expect(Math.abs(featuredDiscardBox!.height - emptyDiscardBox!.height)).toBeLessThanOrEqual(1)
     await trigger.click()
     await expectStableComposition(observer, 2)
     await expectDiscardMatrixMatchesGameState(observer)
