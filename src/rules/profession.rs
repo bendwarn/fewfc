@@ -53,6 +53,13 @@ pub(crate) fn ability_ids_in_effect(state: &GameState, player: &PlayerId) -> Vec
         .unwrap_or_default()
 }
 
+pub(crate) fn is_profession_granted_formation(formation_id: &str) -> bool {
+    (formation_id != "void-reversion" && crate::rules::hero::is_profession_formation(formation_id))
+        || crate::rules::jianghu::is_profession_formation(formation_id)
+        || crate::rules::confluence::is_profession_formation(formation_id)
+        || crate::rules::dark::is_profession_formation(formation_id)
+}
+
 pub(crate) fn playable_profession_changes(
     state: &crate::domain::GameState,
     player: &crate::domain::PlayerId,
@@ -79,6 +86,9 @@ pub(crate) fn playable_profession_abilities(
     player: &crate::domain::PlayerId,
     cards: &[crate::domain::CardInstanceId],
 ) -> crate::domain::GameResult<Vec<crate::rules::ProfessionAbilityCandidate>> {
+    if crate::rules::pouch::profession_is_suppressed(state, player) {
+        return Ok(Vec::new());
+    }
     let mut candidates = crate::rules::hero::playable_profession_abilities(state, player, cards)?;
     candidates.extend(crate::rules::jianghu::playable_profession_abilities(
         state, player, cards,
@@ -101,6 +111,11 @@ pub(crate) fn activate_profession_ability(
     declared_element: Option<crate::domain::Element>,
     declared_level: Option<u32>,
 ) -> crate::domain::GameResult<Vec<crate::domain::GameEvent>> {
+    if crate::rules::pouch::profession_is_suppressed(state, player) {
+        return Err(crate::domain::GameError::Validation(
+            crate::domain::ValidationError::ProfessionAbilityUnavailable(ability_id.to_string()),
+        ));
+    }
     if ability_id.starts_with("jianghu:") {
         crate::rules::jianghu::activate_profession_ability(
             state,
@@ -189,6 +204,9 @@ pub(crate) fn validate_profession_change(
 }
 
 fn ordinary_profession_change_is_permitted(state: &GameState, player: &PlayerId) -> bool {
+    if crate::rules::pouch::profession_is_suppressed(state, player) {
+        return true;
+    }
     !state.profession_for(player).is_some_and(|profession| {
         inherits_from(
             &state.enabled_rule_modules,

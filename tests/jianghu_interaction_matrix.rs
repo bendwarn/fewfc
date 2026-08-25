@@ -170,13 +170,10 @@ impl PoisonSmokeScenario {
             .record
             .handle(Command::TriggerSecretStrategy {
                 player: self.p2.clone(),
-                strategy: SecretStrategy::GoldenCicada,
-                target_player: None,
-                star: None,
-                break_star: false,
-                discard_card: None,
-                deck_cards: Vec::new(),
-                discard_cards: Vec::new(),
+                decision: fewfc::domain::SecretStrategyDecision::NoInput {
+                    source_card: self.p2_golden_pouch,
+                    strategy: SecretStrategy::GoldenCicada,
+                },
             })
             .unwrap();
         assert!(matches!(

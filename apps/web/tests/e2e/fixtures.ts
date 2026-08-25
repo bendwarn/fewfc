@@ -256,10 +256,25 @@ export async function reloadFastGameRoute(page: Page, gameId: string) {
 }
 
 async function waitForActiveMatch(page: Page) {
-  // 與啟用規則事件不同，房間仍在等待時會顯示此覆蓋層。因此它消失就能證明
-  // 頁面已消費 Active 房間更新，而不只是呈現過期的遊戲資料。
+  // 等待房間仍會顯示此覆蓋層；對局開始後，戰局紀錄的準備組會先列出本局規則。
+  // 兩者一起確認頁面已消費 Active 更新，而非呈現過期的等待房間。
   await expect(page.locator('.waiting-overlay')).toBeHidden()
-  await expect(page.getByRole('region', { name: '啟用規則' })).toBeVisible()
+  await battleRecordRuleEntry(page)
+}
+
+/** 戰局紀錄的準備組是開局後向玩家說明規則配置的公開介面。 */
+export async function battleRecordEntry(page: Page, title: string) {
+  await expect(page.getByRole('heading', { name: '戰局紀錄' })).toBeVisible()
+  const entry = page.getByRole('listitem').filter({
+    has: page.getByText(title, { exact: true }),
+  })
+  await expect(entry).toBeVisible()
+  return entry
+}
+
+/** 戰局紀錄的準備組是開局後向玩家說明規則配置的公開介面。 */
+export async function battleRecordRuleEntry(page: Page) {
+  return await battleRecordEntry(page, '本局規則')
 }
 
 /**
@@ -518,8 +533,8 @@ export async function startTwoPlayerMatch(
   await joinListedRoom(guest, roomName)
   await guest.getByRole('button', { name: '準備 →' }).click()
   await host.getByRole('button', { name: '開始遊戲 →' }).click()
-  await expect(host.getByRole('region', { name: '啟用規則' })).toBeVisible()
-  await expect(guest.getByRole('region', { name: '啟用規則' })).toBeVisible()
+  await battleRecordRuleEntry(host)
+  await battleRecordRuleEntry(guest)
   return new URL(host.url()).pathname.split('/').at(-1) ?? ''
 }
 

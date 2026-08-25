@@ -1,6 +1,6 @@
 use crate::domain::{
-    ChoiceAnswer, ChoiceId, ChoiceRequest, GameError, GameEvent, GameResult, GameState,
-    PendingChoice, PendingChoiceKind, PlayerId, ValidationError,
+    ChoiceAnswer, ChoiceContinuation, ChoiceId, ChoiceRequest, GameError, GameEvent, GameResult,
+    GameState, PendingChoice, PendingChoiceKind, PlayerId, ValidationError,
 };
 use std::collections::HashSet;
 
@@ -92,16 +92,15 @@ pub(crate) fn validate_answer(
                 pouch_owners,
                 deck_cards,
             },
-            ChoiceAnswer::Chain {
-                pouch_owner,
-                pouch_card,
-                trigger_card,
-                ..
-            },
+            ChoiceAnswer::Chain { decision },
         ) => {
-            pouch_owners.contains(pouch_owner)
-                && deck_cards.contains(pouch_card)
-                && trigger_card.is_none_or(|card| deck_cards.contains(&card) && card != *pouch_card)
+            let pouch_card = decision.pouch_card();
+            let trigger_card = decision
+                .trigger_decision()
+                .map(crate::domain::SecretStrategyDecision::source_card);
+            pouch_owners.contains(decision.pouch_owner())
+                && deck_cards.contains(&pouch_card)
+                && trigger_card.is_none_or(|card| deck_cards.contains(&card) && card != pouch_card)
         }
         (
             PendingChoiceKind::SheepStealing {
@@ -157,6 +156,13 @@ pub(crate) fn answer_events(
         };
     };
     validate_answer(choice, &player, choice_id, &answer)?;
+    if let (
+        ChoiceContinuation::Pouch(crate::domain::PouchChoiceContinuation::Chain),
+        ChoiceAnswer::Chain { decision },
+    ) = (&choice.continuation, &answer)
+    {
+        crate::rules::pouch::validate_chain_decision(state, &player, decision)?;
+    }
     crate::rules::base::resolve_answered_choice(state, choice, player, choice_id, answer)
 }
 
@@ -271,24 +277,20 @@ mod tests {
                     deck_cards: vec![card(1), card(2)],
                 }),
                 ChoiceAnswer::Chain {
-                    pouch_owner: PlayerId::new("p2"),
-                    pouch_card: card(1),
-                    trigger_card: Some(card(2)),
-                    strategy: None,
-                    target_player: None,
-                    star: None,
-                    break_star: false,
-                    discard_card: None,
+                    decision: crate::domain::ChainPouchDecision::PlaceAndTrigger {
+                        pouch_owner: PlayerId::new("p2"),
+                        pouch_card: card(1),
+                        decision: crate::domain::SecretStrategyDecision::NoInput {
+                            source_card: card(2),
+                            strategy: crate::domain::SecretStrategy::GoldenCicada,
+                        },
+                    },
                 },
                 ChoiceAnswer::Chain {
-                    pouch_owner: PlayerId::new("p3"),
-                    pouch_card: card(1),
-                    trigger_card: None,
-                    strategy: None,
-                    target_player: None,
-                    star: None,
-                    break_star: false,
-                    discard_card: None,
+                    decision: crate::domain::ChainPouchDecision::PlaceOnly {
+                        pouch_owner: PlayerId::new("p3"),
+                        pouch_card: card(1),
+                    },
                 },
             ),
             (

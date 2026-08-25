@@ -149,10 +149,9 @@ describe('Pending Choice interaction', () => {
     expect(formationChoiceAnswer('split-earth')).toEqual({ type: 'formation', formationId: 'split-earth' })
     expect(environmentChoiceAnswer('Fire')).toEqual({ type: 'environment', environment: 'Fire' })
     expect(declineChoiceAnswer()).toEqual({ type: 'decline' })
-    expect(chainChoiceAnswer({ pouchOwner: 'p1', pouchCard: 1 })).toEqual({
+    expect(chainChoiceAnswer({ decision: { type: 'placeOnly', pouchOwner: 'p1', pouchCard: 1 } })).toEqual({
       type: 'chain',
-      pouchOwner: 'p1',
-      pouchCard: 1,
+      decision: { type: 'placeOnly', pouchOwner: 'p1', pouchCard: 1 },
     })
     expect(sheepStealingChoiceAnswer([1, 2], [3, 4])).toEqual({
       type: 'sheepStealing',

@@ -608,24 +608,29 @@ fn profession_change_matches(
                 return false;
             }
             if is_first_tier(&profession.id) {
-                return facts.len() == 1 && facts[0].level == 1;
+                return crate::rules::profession::ability_ids_in_effect(state, player)
+                    .contains(&ProfessionAbility::Choice.id())
+                    && facts.len() == 1
+                    && facts[0].level == 1;
             }
             if is_second_tier(&profession.id) {
-                return facts.iter().enumerate().any(|(choice_index, choice)| {
-                    choice.level == 1
-                        && facts
-                            .iter()
-                            .enumerate()
-                            .filter(|(index, _)| *index != choice_index)
-                            .all(|(_, card)| card.element == profession.required_element)
-                        && facts
-                            .iter()
-                            .enumerate()
-                            .filter(|(index, _)| *index != choice_index)
-                            .map(|(_, card)| card.level)
-                            .sum::<u32>()
-                            >= profession.minimum_level_sum
-                });
+                return crate::rules::profession::ability_ids_in_effect(state, player)
+                    .contains(&ProfessionAbility::Breakthrough.id())
+                    && facts.iter().enumerate().any(|(choice_index, choice)| {
+                        choice.level == 1
+                            && facts
+                                .iter()
+                                .enumerate()
+                                .filter(|(index, _)| *index != choice_index)
+                                .all(|(_, card)| card.element == profession.required_element)
+                            && facts
+                                .iter()
+                                .enumerate()
+                                .filter(|(index, _)| *index != choice_index)
+                                .map(|(_, card)| card.level)
+                                .sum::<u32>()
+                                >= profession.minimum_level_sum
+                    });
             }
             false
         }

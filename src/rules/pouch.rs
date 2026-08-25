@@ -1,16 +1,22 @@
 use crate::domain::{
-    CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Command, Element, GameError, GameEvent,
-    GamePreparationStage, GameResult, GameState, GameStatus, POUCH_MODULE_ID, PlayerCardPile,
-    PlayerId, PouchLevelBonus, PouchRandomnessContinuation, ProfessionId, RandomnessContinuation,
-    RandomnessDeck, SecretStrategy, SpiritKind, StarBreakReason, StarKind, StatusDuration,
-    StatusEffect, StatusOwner, TemporaryStarEffect, ValidationError,
+    CardInstanceId, CardMoveDelta, CardOrigin, CardZone, ChainPouchDecision, Command, Element,
+    GameError, GameEvent, GamePreparationStage, GameResult, GameState, GameStatus, POUCH_MODULE_ID,
+    PlayerCardPile, PlayerId, PouchRandomnessContinuation, ProfessionId, RandomnessContinuation,
+    RandomnessDeck, SecretStrategy, SecretStrategyDecision, SpiritKind, StatusOwner,
+    ValidationError,
 };
 use crate::rules::{
     BaseFormationSpec, ConsequenceCertainty, EffectDef, EffectPlan, FollowUpChoice,
-    FormationCategory, FormationDef, FormationEffect, FormationPattern, PlayerFacingActionDetail,
-    PointFormula, RuleConsequence, SpellPlanDef,
+    FormationCategory, FormationDef, FormationEffect, FormationPattern, PointFormula,
+    RuleConsequence, SpellPlanDef,
 };
-use serde::Serialize;
+
+mod secret_strategy;
+
+pub use secret_strategy::SecretStrategyOption;
+pub(crate) use secret_strategy::{
+    SecretStrategyCardOption, strategy_action_options, strategy_options_for_card, validate_decision,
+};
 
 pub(crate) const CHAIN_ID: &str = "pouch:chain";
 pub(crate) const GOLDEN_CICADA_STATUS: &str = "PouchGoldenCicada";
@@ -53,7 +59,7 @@ pub(crate) fn initial_events(
 ) -> GameResult<Option<Vec<GameEvent>>> {
     if !setup.has_rule_module(POUCH_MODULE_ID) {
         return Ok(None);
-    }
+    };
     let player_decks = setup
         .turn_order
         .iter()
@@ -80,27 +86,9 @@ pub(crate) fn decide_command(
         Command::ChooseInitialPouch { player, card } => {
             choose_initial_pouch(state, player, *card).map(Some)
         }
-        Command::TriggerSecretStrategy {
-            player,
-            strategy,
-            target_player,
-            star,
-            break_star,
-            discard_card,
-            deck_cards,
-            discard_cards,
-        } => resolve_owned_pouch(
-            state,
-            player,
-            *strategy,
-            target_player.as_ref(),
-            *star,
-            *break_star,
-            *discard_card,
-            deck_cards,
-            discard_cards,
-        )
-        .map(Some),
+        Command::TriggerSecretStrategy { player, decision } => {
+            resolve_owned_pouch(state, player, decision).map(Some)
+        }
         _ => Ok(None),
     }
 }
@@ -239,17 +227,10 @@ pub(crate) fn after_initial_shuffle_randomness_events(
     Ok(events)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn resolve_owned_pouch(
     state: &GameState,
     player: &PlayerId,
-    strategy: SecretStrategy,
-    target_player: Option<&PlayerId>,
-    star: Option<StarKind>,
-    break_star: bool,
-    discard_card: Option<CardInstanceId>,
-    deck_cards: &[CardInstanceId],
-    discard_cards: &[CardInstanceId],
+    decision: &SecretStrategyDecision,
 ) -> GameResult<Vec<GameEvent>> {
     if !state.has_rule_module(POUCH_MODULE_ID) {
         return Err(GameError::Validation(ValidationError::PouchRuleDisabled));
@@ -267,32 +248,15 @@ fn resolve_owned_pouch(
             player: player.clone(),
         })
     })?;
-    let definition = state.card_def(pouch.card).ok_or(GameError::Validation(
-        ValidationError::MissingCardInstanceDefinition(pouch.card),
-    ))?;
-    if !strategy_matches(strategy, definition.element, definition.level.value()) {
-        return Err(GameError::Validation(
-            ValidationError::SecretStrategyConditionMismatch,
-        ));
-    }
+    validate_decision(state, player, pouch.card, decision)?;
+    let strategy = decision.strategy();
     let mut events = vec![GameEvent::PouchRevealed {
         player: player.clone(),
         owner: Some(player.clone()),
         card: pouch.card,
         strategy,
     }];
-    events.extend(strategy_events(
-        state,
-        player,
-        pouch.card,
-        strategy,
-        target_player,
-        star,
-        break_star,
-        discard_card,
-        deck_cards,
-        discard_cards,
-    )?);
+    events.extend(secret_strategy::strategy_events(state, player, decision)?);
     if strategy != SecretStrategy::SheepStealing {
         events.push(GameEvent::PouchConsumed {
             owner: Some(player.clone()),
@@ -300,171 +264,6 @@ fn resolve_owned_pouch(
         });
     }
     Ok(events)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SecretStrategyInputRequirement {
-    None,
-    TargetPlayer,
-    DeckDiscardSwap,
-    Star,
-    Retreat,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SecretStrategyCardOption {
-    pub strategy: SecretStrategy,
-    pub input: SecretStrategyInputRequirement,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SecretStrategyOption {
-    pub source_card: CardInstanceId,
-    pub strategy: SecretStrategy,
-    pub input: SecretStrategyInputRequirement,
-    pub target_players: Vec<PlayerId>,
-    pub stars: Vec<StarKind>,
-    pub break_stars: Vec<StarKind>,
-    pub deck_cards: Vec<CardInstanceId>,
-    pub discard_cards: Vec<CardInstanceId>,
-    pub hand_cards: Vec<CardInstanceId>,
-    pub required_card_count: usize,
-    pub detail: PlayerFacingActionDetail,
-}
-
-pub(crate) fn strategy_options_for_card(
-    element: Element,
-    level: u32,
-) -> Vec<SecretStrategyCardOption> {
-    let elemental = match element {
-        Element::Metal => SecretStrategy::GoldenCicada,
-        Element::Wood => SecretStrategy::StealTheBeam,
-        Element::Water => SecretStrategy::MuddyWaters,
-        Element::Fire => SecretStrategy::WatchTheFire,
-        Element::Earth => SecretStrategy::LureTheTigerAway,
-    };
-    let leveled = match level {
-        1 => Some(SecretStrategy::ReturnSoul),
-        2 => Some(SecretStrategy::SheepStealing),
-        3 => Some(SecretStrategy::DarkCrossing),
-        4 => Some(SecretStrategy::DeceiveHeaven),
-        5 => Some(SecretStrategy::Retreat),
-        _ => None,
-    };
-    std::iter::once(elemental)
-        .chain(leveled)
-        .map(|strategy| SecretStrategyCardOption {
-            input: match strategy {
-                SecretStrategy::LureTheTigerAway => SecretStrategyInputRequirement::TargetPlayer,
-                SecretStrategy::SheepStealing => SecretStrategyInputRequirement::DeckDiscardSwap,
-                SecretStrategy::DeceiveHeaven => SecretStrategyInputRequirement::Star,
-                SecretStrategy::Retreat => SecretStrategyInputRequirement::Retreat,
-                _ => SecretStrategyInputRequirement::None,
-            },
-            strategy,
-        })
-        .collect()
-}
-
-pub(crate) fn strategy_matches(strategy: SecretStrategy, element: Element, level: u32) -> bool {
-    strategy_options_for_card(element, level)
-        .iter()
-        .any(|option| option.strategy == strategy)
-}
-
-fn sheep_deck_card_options(
-    state: &GameState,
-    player: &PlayerId,
-    source_card: CardInstanceId,
-) -> Vec<CardInstanceId> {
-    state
-        .deck_for(player)
-        .unwrap_or_default()
-        .iter()
-        .copied()
-        .filter(|card| *card != source_card)
-        .collect()
-}
-
-fn sheep_return_card_options(
-    state: &GameState,
-    player: &PlayerId,
-    source_card: CardInstanceId,
-) -> Vec<CardInstanceId> {
-    let mut cards = state.discard_for(player).unwrap_or_default().to_vec();
-    cards.extend(
-        sheep_deck_card_options(state, player, source_card)
-            .into_iter()
-            .filter(|card| {
-                matches!(state.card_origin(*card), Some(CardOrigin::Player(owner)) if owner == player)
-            }),
-    );
-    cards
-}
-
-pub(crate) fn strategy_action_options(
-    state: &GameState,
-    player: &PlayerId,
-    source_card: CardInstanceId,
-) -> Vec<SecretStrategyOption> {
-    let Some(definition) = state.card_def(source_card) else {
-        return Vec::new();
-    };
-    strategy_options_for_card(definition.element, definition.level.value())
-        .into_iter()
-        .map(|option| {
-            let input = option.input;
-            SecretStrategyOption {
-                source_card,
-                strategy: option.strategy,
-                input,
-                target_players: matches!(
-                    option.input,
-                    SecretStrategyInputRequirement::TargetPlayer
-                )
-                .then(|| state.turn_order.clone())
-                .unwrap_or_default(),
-                stars: matches!(option.input, SecretStrategyInputRequirement::Star)
-                    .then(|| {
-                        vec![
-                            StarKind::Metal,
-                            StarKind::Wood,
-                            StarKind::Water,
-                            StarKind::Fire,
-                            StarKind::Earth,
-                        ]
-                    })
-                    .unwrap_or_default(),
-                break_stars: matches!(option.input, SecretStrategyInputRequirement::Star)
-                    .then(|| state.team_stars.iter().map(|owned| owned.star).collect())
-                    .unwrap_or_default(),
-                deck_cards: matches!(
-                    option.input,
-                    SecretStrategyInputRequirement::DeckDiscardSwap
-                )
-                .then(|| sheep_deck_card_options(state, player, source_card))
-                .unwrap_or_default(),
-                discard_cards: matches!(
-                    option.input,
-                    SecretStrategyInputRequirement::DeckDiscardSwap
-                )
-                .then(|| sheep_return_card_options(state, player, source_card))
-                .unwrap_or_default(),
-                hand_cards: matches!(option.input, SecretStrategyInputRequirement::Retreat)
-                    .then(|| state.hand(player).unwrap_or_default().to_vec())
-                    .unwrap_or_default(),
-                required_card_count: matches!(
-                    option.input,
-                    SecretStrategyInputRequirement::DeckDiscardSwap
-                )
-                .then_some(2)
-                .unwrap_or_default(),
-                detail: crate::rules::action_detail::secret_strategy_detail(option.strategy),
-            }
-        })
-        .collect()
 }
 
 pub(crate) fn playable_owned_strategy_actions(
@@ -476,24 +275,6 @@ pub(crate) fn playable_owned_strategy_actions(
     };
 
     strategy_action_options(state, player, source_card)
-        .into_iter()
-        .filter(|option| {
-            let target_player = option.target_players.first();
-            let star = option.stars.first().copied();
-            resolve_owned_pouch(
-                state,
-                player,
-                option.strategy,
-                target_player,
-                star,
-                false,
-                None,
-                &[],
-                &[],
-            )
-            .is_ok()
-        })
-        .collect()
 }
 
 /// Chain 擁有自己的待選擇生命週期。此處說明開始前已知的承諾，但不攜帶
@@ -510,9 +291,9 @@ pub(crate) fn formation_action_detail_consequences(id: &str) -> Option<Vec<RuleC
 pub(crate) fn chain_events(
     state: &GameState,
     player: &PlayerId,
-    targets: &[crate::domain::TargetDecl],
+    decision: Option<&ChainPouchDecision>,
 ) -> GameResult<Vec<GameEvent>> {
-    if targets.is_empty() {
+    let Some(decision) = decision else {
         let deck = state
             .deck_for(player)
             .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
@@ -568,144 +349,19 @@ pub(crate) fn chain_events(
                 ),
             },
         )?]);
-    }
-    let owner = targets
-        .iter()
-        .find_map(|target| match target {
-            crate::domain::TargetDecl::Player(player) => Some(player.clone()),
-            _ => None,
-        })
-        .unwrap_or_else(|| player.clone());
-    let player_team = state
-        .players
-        .iter()
-        .find(|candidate| &candidate.id == player)
-        .map(|candidate| &candidate.team);
-    let owner_team = state
-        .players
-        .iter()
-        .find(|candidate| candidate.id == owner)
-        .map(|candidate| &candidate.team);
-    if player_team.is_none() || player_team != owner_team {
-        return Err(GameError::Validation(
-            ValidationError::SecretStrategyInputInvalid,
-        ));
-    }
-    let pouch_card = targets
-        .iter()
-        .find_map(|target| match target {
-            crate::domain::TargetDecl::FormationRole { role, card } if role == "pouch" => {
-                Some(*card)
-            }
-            _ => None,
-        })
-        .ok_or(GameError::Validation(
-            ValidationError::SecretStrategyInputInvalid,
-        ))?;
-    let trigger_card = targets.iter().find_map(|target| match target {
-        crate::domain::TargetDecl::FormationRole { role, card } if role == "trigger" => Some(*card),
-        _ => None,
-    });
-    let deck = state
-        .deck_for(player)
-        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
-    if !deck.contains(&pouch_card)
-        || trigger_card.is_some_and(|card| !deck.contains(&card) || card == pouch_card)
-    {
-        return Err(GameError::Validation(
-            ValidationError::SecretStrategyInputInvalid,
-        ));
-    }
-    if let Some(trigger) = trigger_card {
-        let pouch_def = state.card_def(pouch_card).ok_or(GameError::Validation(
-            ValidationError::SecretStrategyInputInvalid,
-        ))?;
-        let trigger_def = state.card_def(trigger).ok_or(GameError::Validation(
-            ValidationError::SecretStrategyInputInvalid,
-        ))?;
-        if pouch_def.element == trigger_def.element || pouch_def.level == trigger_def.level {
-            return Err(GameError::Validation(
-                ValidationError::SecretStrategyInputInvalid,
-            ));
-        }
-    }
-    let (strategy_target, strategy_star, strategy_break_star, strategy_discard_card) = targets
-        .iter()
-        .find_map(|target| match target {
-            crate::domain::TargetDecl::SecretStrategyOptions {
-                target_player,
-                star,
-                break_star,
-                discard_card,
-                ..
-            } => Some((target_player.clone(), *star, *break_star, *discard_card)),
-            _ => None,
-        })
-        .unwrap_or((None, None, false, None));
-    let strategy = if let Some(source_card) = trigger_card {
-        let strategy = targets
-            .iter()
-            .find_map(|target| match target {
-                crate::domain::TargetDecl::SecretStrategy(strategy) => Some(*strategy),
-                _ => None,
-            })
-            .ok_or(GameError::Validation(
-                ValidationError::SecretStrategyInputInvalid,
-            ))?;
-        let definition = state.card_def(source_card).ok_or(GameError::Validation(
-            ValidationError::SecretStrategyInputInvalid,
-        ))?;
-        if !strategy_matches(strategy, definition.element, definition.level.value()) {
-            return Err(GameError::Validation(
-                ValidationError::SecretStrategyConditionMismatch,
-            ));
-        }
-        Some(strategy)
-    } else {
-        None
     };
-    let previous = state.pouch_for(&owner).map(|pouch| pouch.card);
-    let mut known_by = vec![player.clone()];
-    if owner != *player {
-        known_by.push(owner.clone());
-    }
-    let mut events = vec![GameEvent::PouchPlaced {
-        source: player.clone(),
-        owner: owner.clone(),
-        card: pouch_card,
-        known_by,
-        previous,
-    }];
-    if let Some(source_card) = trigger_card {
-        let strategy = strategy.ok_or(GameError::Validation(
-            ValidationError::SecretStrategyInputInvalid,
-        ))?;
-        let revealed = GameEvent::PouchRevealed {
-            player: player.clone(),
-            owner: None,
-            card: source_card,
-            strategy,
-        };
+    let plan = chain_decision_plan(state, player, decision)?;
+    let trigger_decision = plan.trigger_decision;
+    let trigger_card = trigger_decision.map(SecretStrategyDecision::source_card);
+    let strategy = plan.strategy;
+    let mut events = vec![plan.placed];
+    if let Some(revealed) = plan.revealed {
         events.push(revealed);
     }
-    let mut projected = state.clone();
-    for event in &events {
-        crate::rules::projection::apply_event(&mut projected, event);
-    }
-
-    if let (Some(source_card), Some(strategy)) = (trigger_card, strategy) {
-        let strategy_events = strategy_events(
-            &projected,
-            player,
-            source_card,
-            strategy,
-            strategy_target.as_ref().or(Some(&owner)),
-            strategy_star,
-            strategy_break_star,
-            strategy_discard_card,
-            &[],
-            &[],
-        )?;
+    if let (Some(source_card), Some(strategy), Some(decision)) =
+        (trigger_card, strategy, trigger_decision)
+    {
+        let strategy_events = secret_strategy::strategy_events(&plan.projected, player, decision)?;
         let has_pending = strategy_events.iter().any(|event| {
             matches!(
                 event,
@@ -724,7 +380,7 @@ pub(crate) fn chain_events(
         });
     }
 
-    projected = state.clone();
+    let mut projected = state.clone();
     for event in &events {
         crate::rules::projection::apply_event(&mut projected, event);
     }
@@ -754,284 +410,123 @@ pub(crate) fn chain_events(
     Ok(events)
 }
 
-pub(crate) fn answer_chain_choice(
+/// 在建立 `ChoiceMade` 前檢查連環 envelope 與巢狀秘計 Decision。這個入口同時
+/// 由 Pending Choice 邊界與實際事件規劃使用，保證無效答案不會先留下選擇事件。
+pub(crate) fn validate_chain_decision(
     state: &GameState,
     player: &PlayerId,
-    answer: &crate::domain::ChoiceAnswer,
-) -> GameResult<Option<Vec<GameEvent>>> {
-    let crate::domain::ChoiceAnswer::Chain {
-        pouch_owner,
-        pouch_card,
-        trigger_card,
-        strategy,
-        target_player,
-        star,
-        break_star,
-        discard_card,
-    } = answer
-    else {
-        return Ok(None);
-    };
-    let mut targets = vec![
-        crate::domain::TargetDecl::Player(pouch_owner.clone()),
-        crate::domain::TargetDecl::FormationRole {
-            role: "pouch".to_string(),
-            card: *pouch_card,
-        },
-    ];
-    if let (Some(trigger), Some(strategy)) = (trigger_card, strategy) {
-        let target_is_player = target_player.as_ref().is_some_and(|target| {
-            state
-                .players
-                .iter()
-                .any(|candidate| candidate.id == *target)
-        });
-        let input_is_valid = match strategy {
-            SecretStrategy::LureTheTigerAway => {
-                target_is_player && star.is_none() && !*break_star && discard_card.is_none()
-            }
-            SecretStrategy::DeceiveHeaven => {
-                target_player.is_none() && star.is_some() && discard_card.is_none()
-            }
-            SecretStrategy::Retreat => target_player.is_none() && star.is_none() && !*break_star,
-            SecretStrategy::SheepStealing
-            | SecretStrategy::GoldenCicada
-            | SecretStrategy::StealTheBeam
-            | SecretStrategy::MuddyWaters
-            | SecretStrategy::WatchTheFire
-            | SecretStrategy::ReturnSoul
-            | SecretStrategy::DarkCrossing => {
-                target_player.is_none() && star.is_none() && !*break_star && discard_card.is_none()
-            }
-        };
-        if !input_is_valid {
-            return Err(GameError::Validation(
-                ValidationError::SecretStrategyInputInvalid,
-            ));
-        }
-        targets.push(crate::domain::TargetDecl::FormationRole {
-            role: "trigger".to_string(),
-            card: *trigger,
-        });
-        targets.push(crate::domain::TargetDecl::SecretStrategy(*strategy));
-        targets.push(crate::domain::TargetDecl::SecretStrategyOptions {
-            target_player: target_player.clone(),
-            star: *star,
-            break_star: *break_star,
-            discard_card: *discard_card,
-            deck_cards: Vec::new(),
-            discard_cards: Vec::new(),
-        });
-    } else if trigger_card.is_some()
-        || strategy.is_some()
-        || target_player.is_some()
-        || star.is_some()
-        || *break_star
-        || discard_card.is_some()
+    decision: &ChainPouchDecision,
+) -> GameResult<()> {
+    chain_decision_plan(state, player, decision).map(|_| ())
+}
+
+struct ChainDecisionPlan<'a> {
+    trigger_decision: Option<&'a SecretStrategyDecision>,
+    strategy: Option<SecretStrategy>,
+    placed: GameEvent,
+    revealed: Option<GameEvent>,
+    projected: GameState,
+}
+
+fn chain_decision_plan<'a>(
+    state: &GameState,
+    player: &PlayerId,
+    decision: &'a ChainPouchDecision,
+) -> GameResult<ChainDecisionPlan<'a>> {
+    let owner = decision.pouch_owner().clone();
+    let player_team = state
+        .players
+        .iter()
+        .find(|candidate| &candidate.id == player)
+        .map(|candidate| &candidate.team);
+    let owner_team = state
+        .players
+        .iter()
+        .find(|candidate| candidate.id == owner)
+        .map(|candidate| &candidate.team);
+    if player_team.is_none() || player_team != owner_team {
+        return Err(GameError::Validation(
+            ValidationError::SecretStrategyInputInvalid,
+        ));
+    }
+    let pouch_card = decision.pouch_card();
+    let trigger_decision = decision.trigger_decision();
+    let trigger_card = trigger_decision.map(SecretStrategyDecision::source_card);
+    let deck = state
+        .deck_for(player)
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
+    if !deck.contains(&pouch_card)
+        || trigger_card.is_some_and(|card| !deck.contains(&card) || card == pouch_card)
     {
         return Err(GameError::Validation(
             ValidationError::SecretStrategyInputInvalid,
         ));
     }
-    Ok(Some(chain_events(state, player, &targets)?))
+    if let Some(trigger) = trigger_card {
+        let pouch_def = state.card_def(pouch_card).ok_or(GameError::Validation(
+            ValidationError::SecretStrategyInputInvalid,
+        ))?;
+        let trigger_def = state.card_def(trigger).ok_or(GameError::Validation(
+            ValidationError::SecretStrategyInputInvalid,
+        ))?;
+        if pouch_def.element == trigger_def.element || pouch_def.level == trigger_def.level {
+            return Err(GameError::Validation(
+                ValidationError::SecretStrategyInputInvalid,
+            ));
+        }
+    }
+    let strategy = trigger_decision.map(SecretStrategyDecision::strategy);
+    let previous = state.pouch_for(&owner).map(|pouch| pouch.card);
+    let mut known_by = vec![player.clone()];
+    if owner != *player {
+        known_by.push(owner.clone());
+    }
+    let placed = GameEvent::PouchPlaced {
+        source: player.clone(),
+        owner: owner.clone(),
+        card: pouch_card,
+        known_by,
+        previous,
+    };
+    let mut projected = state.clone();
+    crate::rules::projection::apply_event(&mut projected, &placed);
+    let revealed =
+        trigger_card
+            .zip(strategy)
+            .map(|(source_card, strategy)| GameEvent::PouchRevealed {
+                player: player.clone(),
+                owner: None,
+                card: source_card,
+                strategy,
+            });
+    if let Some(revealed) = &revealed {
+        crate::rules::projection::apply_event(&mut projected, revealed);
+    }
+
+    // 所有可立即決定的輸入先在尚未提交的投影上驗證；任何失敗都不會輸出
+    // PouchPlaced 或 PouchRevealed。
+    if let Some(decision) = trigger_decision {
+        validate_decision(&projected, player, decision.source_card(), decision)?;
+    }
+
+    Ok(ChainDecisionPlan {
+        trigger_decision,
+        strategy,
+        placed,
+        revealed,
+        projected,
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn strategy_events(
+pub(crate) fn answer_chain_choice(
     state: &GameState,
     player: &PlayerId,
-    source_card: CardInstanceId,
-    strategy: SecretStrategy,
-    target_player: Option<&PlayerId>,
-    star: Option<StarKind>,
-    break_star: bool,
-    discard_card: Option<CardInstanceId>,
-    _deck_cards: &[CardInstanceId],
-    _discard_cards: &[CardInstanceId],
-) -> GameResult<Vec<GameEvent>> {
-    let status = |kind: &str, owner: PlayerId, duration: StatusDuration| GameEvent::StatusAdded {
-        status: StatusEffect {
-            id: format!("{kind}:{}:{}", owner.as_str(), state.turn_number),
-            owner: StatusOwner::Player(owner),
-            kind: kind.to_string(),
-            value: None,
-            duration,
-        },
+    answer: &crate::domain::ChoiceAnswer,
+) -> GameResult<Option<Vec<GameEvent>>> {
+    let crate::domain::ChoiceAnswer::Chain { decision } = answer else {
+        return Ok(None);
     };
-    Ok(match strategy {
-        SecretStrategy::GoldenCicada => vec![status(
-            GOLDEN_CICADA_STATUS,
-            player.clone(),
-            StatusDuration::UntilTurnEnd {
-                player: player.clone(),
-            },
-        )],
-        SecretStrategy::StealTheBeam => vec![GameEvent::PouchLevelBonusGranted {
-            bonus: PouchLevelBonus {
-                player: player.clone(),
-                cards: state.hand(player).unwrap_or_default().to_vec(),
-                applied_on_turn: state.turn_number,
-            },
-        }],
-        SecretStrategy::MuddyWaters => {
-            let old = state
-                .turn_draw_bonus_by_player
-                .get(player)
-                .copied()
-                .unwrap_or(0);
-            vec![GameEvent::TurnDrawBonusChanged {
-                player: player.clone(),
-                old_value: old,
-                delta: 1,
-                new_value: old + 1,
-            }]
-        }
-        SecretStrategy::WatchTheFire => {
-            let index = state
-                .turn_order
-                .iter()
-                .position(|candidate| candidate == player)
-                .ok_or_else(|| {
-                    GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
-                })?;
-            let next = state.turn_order[(index + 1) % state.turn_order.len()].clone();
-            vec![status(
-                WATCH_FIRE_STATUS,
-                next.clone(),
-                StatusDuration::UntilTurnEnd { player: next },
-            )]
-        }
-        SecretStrategy::LureTheTigerAway => {
-            let target = target_player.ok_or(GameError::Validation(
-                ValidationError::SecretStrategyInputInvalid,
-            ))?;
-            let mut events = Vec::new();
-            if !player_is_protected(state, target) {
-                events.push(status(
-                    LURE_PLAYER_STATUS,
-                    target.clone(),
-                    StatusDuration::UntilTurnEnd {
-                        player: target.clone(),
-                    },
-                ));
-            }
-            events.push(status(
-                LURE_SPIRIT_STATUS,
-                target.clone(),
-                StatusDuration::UntilTurnEnd {
-                    player: target.clone(),
-                },
-            ));
-            events
-        }
-        SecretStrategy::ReturnSoul => {
-            let element = state
-                .card_element(source_card)
-                .ok_or(GameError::Validation(
-                    ValidationError::SecretStrategyInputInvalid,
-                ))?;
-            let spirit = spirit_for_element(element);
-            let previous = state.spirit_for(player);
-            let lure_blocks_gain = has_status(state, player, LURE_SPIRIT_STATUS);
-            let power = if lure_blocks_gain {
-                1
-            } else {
-                1 + previous.map_or(0, |owned| owned.power).min(5)
-            };
-            vec![GameEvent::SpiritRevived {
-                player: player.clone(),
-                previous: previous.map(|owned| owned.spirit),
-                spirit,
-                power,
-            }]
-        }
-        SecretStrategy::SheepStealing => sheep_choice_events(state, player, source_card)?,
-        SecretStrategy::DarkCrossing => {
-            if has_status(state, player, "CannotChangeProfession") {
-                Vec::new()
-            } else {
-                let element = state
-                    .card_element(source_card)
-                    .ok_or(GameError::Validation(
-                        ValidationError::SecretStrategyInputInvalid,
-                    ))?;
-                let profession = profession_for_element(element);
-                vec![GameEvent::ProfessionTransformed {
-                    player: player.clone(),
-                    previous: state.profession_for(player).cloned(),
-                    profession,
-                    reason: "pouch:dark-crossing".to_string(),
-                }]
-            }
-        }
-        SecretStrategy::DeceiveHeaven => {
-            let selected = star.ok_or(GameError::Validation(
-                ValidationError::SecretStrategyInputInvalid,
-            ))?;
-            if break_star {
-                state
-                    .team_stars
-                    .iter()
-                    .find(|owned| owned.star == selected)
-                    .map(|owned| {
-                        vec![GameEvent::StarBroken {
-                            team: owned.team.clone(),
-                            star: selected,
-                            reason: StarBreakReason::SecretStrategy,
-                            hp_change: None,
-                        }]
-                    })
-                    .unwrap_or_default()
-            } else {
-                vec![GameEvent::TemporaryStarEffectGranted {
-                    effect: TemporaryStarEffect {
-                        player: player.clone(),
-                        star: selected,
-                        applied_on_turn: state.turn_number,
-                    },
-                }]
-            }
-        }
-        SecretStrategy::Retreat => {
-            if let Some(card) = discard_card {
-                if !state.hand(player).is_some_and(|hand| hand.contains(&card)) {
-                    return Err(GameError::Validation(
-                        ValidationError::SecretStrategyInputInvalid,
-                    ));
-                }
-                let element = state.card_element(card).ok_or(GameError::Validation(
-                    ValidationError::SecretStrategyInputInvalid,
-                ))?;
-                vec![
-                    GameEvent::CardsMoved {
-                        card_moves: vec![CardMoveDelta {
-                            card,
-                            from: CardZone::Hand(player.clone()),
-                            to: discard_zone(state, card),
-                        }],
-                    },
-                    GameEvent::EnvironmentTransferred {
-                        player: player.clone(),
-                        formation_id: "pouch:retreat".to_string(),
-                        from: state.environment,
-                        to: element,
-                    },
-                ]
-            } else {
-                state
-                    .environment
-                    .map(|environment| {
-                        vec![GameEvent::EnvironmentCleared {
-                            player: player.clone(),
-                            formation_id: "pouch:retreat".to_string(),
-                            environment,
-                            hp_changes: Vec::new(),
-                        }]
-                    })
-                    .unwrap_or_default()
-            }
-        }
-    })
+    Ok(Some(chain_events(state, player, Some(decision))?))
 }
 
 fn sheep_stealing_events(
@@ -1227,7 +722,7 @@ pub(crate) fn after_chain_recycle_randomness_events(
     let player = state
         .current_player()
         .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?;
-    chain_events(state, player, &[])
+    chain_events(state, player, None)
 }
 
 pub(crate) fn after_chain_post_search_randomness_events(
@@ -1524,19 +1019,23 @@ mod tests {
     }
 
     #[test]
-    fn pouch_command_serializes_multiword_fields_as_camel_case() {
+    fn pouch_command_serializes_closed_decision_as_camel_case() {
         let command = Command::TriggerSecretStrategy {
             player: PlayerId::new("alice"),
-            strategy: SecretStrategy::DeceiveHeaven,
-            target_player: Some(PlayerId::new("bob")),
-            star: Some(StarKind::Fire),
-            break_star: true,
-            discard_card: Some(CardInstanceId::new(7)),
-            deck_cards: vec![CardInstanceId::new(8)],
-            discard_cards: vec![CardInstanceId::new(9)],
+            decision: SecretStrategyDecision::Environment {
+                source_card: CardInstanceId::new(7),
+                operation: crate::domain::SecretStrategyEnvironmentOperation::TransferByDiscard {
+                    card: CardInstanceId::new(8),
+                },
+            },
         };
         let json = serde_json::to_value(command).unwrap();
-        assert!(json.get("TriggerSecretStrategy").is_some());
+        let decision = &json["TriggerSecretStrategy"]["decision"];
+        assert_eq!(decision["type"], "environment");
+        assert_eq!(decision["sourceCard"], 7);
+        assert_eq!(decision["operation"]["type"], "transferByDiscard");
+        assert_eq!(decision["operation"]["card"], 8);
+        assert!(decision.get("source_card").is_none());
     }
 
     #[test]

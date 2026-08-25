@@ -656,6 +656,28 @@ fn tuning_is_offered_only_when_the_retrieved_card_can_complete_a_profession_chan
 }
 
 #[test]
+fn tuning_is_not_offered_when_the_retrieved_card_cannot_complete_a_profession_change() {
+    let mut game = state(false);
+    game.professions.push(PlayerProfession {
+        player: PlayerId::new("p2"),
+        profession: ProfessionId::new("confluence:tuner"),
+    });
+    let residual = cards(&game, &[(Element::Metal, 2)])[0];
+    set_residual(&mut game, residual);
+    let hand = cards(&game, &[(Element::Fire, 3), (Element::Water, 4)]);
+    set_hand(&mut game, hand.clone());
+
+    let actions = OfficialRules::new()
+        .playable_actions(&game, &PlayerId::new("p2"), &[hand[0]])
+        .unwrap();
+    assert!(!actions.iter().any(|action| matches!(
+        action,
+        PlayableAction::ActivateProfessionAbility(candidate)
+            if candidate.ability_id == "confluence:tuning"
+    )));
+}
+
+#[test]
 fn tuning_is_offered_when_easy_string_can_complete_an_inherited_profession_formation() {
     let mut game = state(false);
     game.professions.push(PlayerProfession {

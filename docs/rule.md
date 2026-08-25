@@ -62,12 +62,13 @@ Turn Draw follows official rule 4-2.4d exactly:
    base draw, and applicable modifiers.
 2. Draw `N + 1` Cards from the applicable Deck into the single game-scoped
    Turn Draw Pool. These Cards are not yet in the Player's hand.
-3. Request one Pending Choice whose legal discards are exactly the Cards in the
-   Turn Draw Pool.
-4. Resolve one atomic `TurnDrawResolved` fact that explicitly records the
-   chosen `discard` and all `kept_cards`. Its rule meaning is that the chosen
-   Card is Discarded first and only then do the kept Cards enter the hand; no
-   Player input or replay state exists between those movements.
+3. Emit `ChoiceRequested` for one Pending Choice whose legal discards are
+   exactly the Cards in the Turn Draw Pool.
+4. The answering Command emits `ChoiceMade`, then one atomic
+   `TurnDrawResolved` fact that explicitly records the chosen `discard` and all
+   `kept_cards`. Its rule meaning is that the chosen Card is Discarded first and
+   only then do the kept Cards enter the hand; no Player input or replay state
+   exists between those movements.
 
 If Turn Draw is skipped because the hand is full or the Player cannot draw, no
 Turn Draw Pool or discard Pending Choice is created.
@@ -529,17 +530,17 @@ operation continues. The Deck need not be empty; having fewer Cards than the
 operation requires is sufficient. This is distinct from a **Deck Shuffle**,
 which reorders Cards already in a Deck.
 
-Fair Wind's Tailwind (`順風`) recovers only when a Discard Shuffle completes,
-never from a Deck Shuffle. A shared-Deck Discard Shuffle recovers Tailwind for
-every Player who currently owns that ability and whose Profession Abilities are
-effective. With Personal Deck enabled, it recovers Tailwind only for the owner
-of the shuffled Discard Pile, under the same conditions. A Player whose
-Tailwind is already at its maximum has no recovery change.
+晴風使的順風只在 Discard Shuffle 完成時回復使用次數，Deck Shuffle 不會使其
+回復。Shared-Deck Discard Shuffle 會為目前擁有順風且其 Profession Ability
+Set 可用的每位 Player 回復順風使用次數。啟用 Personal Deck 時，只有被洗入
+牌堆的 Discard Pile owner 能在相同條件下回復順風使用次數。順風已達使用次數
+上限時不產生回復變化。
 
 Initial preparation shuffles, Rusted Iron Withered Forest, Sheep Stealing's
 post-exchange shuffle, and 商調‧鳴金's post-search shuffle are Deck Shuffles and
-therefore do not recover Tailwind. Any Discard Shuffle that those flows require
-before drawing, inspecting, or searching remains a Tailwind recovery trigger.
+therefore do not recover the use count of 順風. Any Discard Shuffle that those
+flows require before drawing, inspecting, or searching remains a trigger for
+順風回復使用次數.
 
 ### 5.3 Star
 
@@ -705,16 +706,16 @@ until ordinary Card movement makes it public. Spirit Skill uses remain visible
 in the Public Event Feed; Public State does not duplicate them as an
 `already used` presentation field.
 
-Automatic Bloom resolves before HP-based Game Outcome evaluation. Every
+The automatic use of 綻放 resolves before HP-based Game Outcome evaluation. Every
 eligible six-power Wood Spirit owned by the defeated Team triggers
 simultaneously; one canonical resolution consumes all triggering power and
 recovers 40 HP per trigger, capped at initial Team HP. Direct victory such as
-Five-Star Alignment does not trigger Bloom.
+Five-Star Alignment does not trigger 綻放.
 
 虛空碎靈術 is an Active Spell made from three same-level Cards. It atomically
 reduces every Spirit's power by two before directly removing 20 HP for each
 Spirit owner. All Spirit and Team deltas resolve before Game Outcome evaluation.
-Bloom observes the reduced power, so a Wood Spirit reduced from six to four
+綻放 observes the reduced power, so a Wood Spirit reduced from six to four
 cannot answer HP loss caused by that same resolution.
 
 ### 5.6 Pouch
@@ -765,6 +766,16 @@ cancelled; any remaining target, Card, or branch choices are completed through
 typed Pending Choices and replayable continuations. A validation failure emits
 no reveal and leaves the Pouch in place.
 
+Each submission carries one complete **Secret Strategy Decision**: the source
+Card, the selected Secret Strategy, and exactly one of five closed input
+families. The families are no extra input; one target Player; one Star operation
+(`Gain` or `Break`); one Environment operation (`Clear` or
+`TransferByDiscard`); and beginning Sheep Stealing. Direct Pouch triggering and
+Chain use this same decision shape inside their distinct outer lifecycles.
+Beginning Sheep Stealing does not include its Deck and Discard Pile selections;
+those remain the existing later typed Pending Choice after any required
+preliminary Discard Shuffle.
+
 A Secret Strategy that was legally triggered still reveals and discards its
 source Card when prevention or current state makes its effect ineffective. For
 example, Dark Crossing under an effect that forbids Profession Change performs
@@ -781,7 +792,7 @@ The ten Secret Strategies use printed Pouch values:
 | 偷梁 | Wood | Cards in the triggering hand snapshot have level +1 until Turn End |
 | 混水 | Water | Turn Draw bonus +1 this Turn |
 | 觀火 | Fire | Protect the next Player's next Turn from attack damage and Formation-caused Team HP changes |
-| 離山 | Earth | Suppress one Player's Profession Abilities and Spirit Skills and prevent Spirit Power gain for one Turn |
+| 離山 | Earth | Give one Player Temporary Ability Loss for their Profession Ability Set and Spirit Skills, and prevent Spirit Power gain for one Turn |
 | 還魂 | Level 1 | Summon the source element's Spirit at one power plus the replaced Spirit's power, capped at six |
 | 牽羊 | Level 2 | Exchange two selected Deck Cards for two selected Discard Pile Cards, then shuffle |
 | 暗渡 | Level 3 | Directly change to the source element's first-tier Hero School Profession |
@@ -827,9 +838,10 @@ the return selection, so either or both may be selected and returned
 immediately. If the Deck contains fewer than two Cards when resolution begins,
 its existing Discard Pile is Discard Shuffled first, and the Player selects the
 exchange Cards only after that shuffle has completed. This preliminary Discard
-Shuffle may recover Tailwind; Sheep Stealing's later post-exchange Deck Shuffle
-does not. The Secret Strategy source Card enters the Discard Pile only after the
-complete effect resolves and is therefore never one of the returned Cards.[6]
+Shuffle may recover the use count of 順風; Sheep Stealing's later post-exchange Deck
+Shuffle does not. The Secret Strategy source Card enters the Discard Pile only
+after the complete effect resolves and is therefore never one of the returned
+Cards.[6]
 
 Dark Crossing causes a Direct Profession Change based on the source Card's
 printed element: Metal to Warrior, Wood to Seeker, Water to Mesmer, Fire to
@@ -848,17 +860,60 @@ Team; it never breaks an opposing Team's Star. If that Team does not own the
 same-named Star, the breaking has no effect and the Temporary Star Effect still
 lasts until Turn End. Deceive Heaven's alternative direct-breaking option is
 different: it may target any existing Star, including one owned by either Team.
+A submitted direct-breaking Decision for a Star that no longer exists is a
+Validation Failure: it reveals and consumes no Pouch and emits no canonical
+events.
 
-Lure the Tiger Away makes the selected Player's Profession Abilities and Spirit
-Skills ineffective for its duration rather than prohibiting their use.
-Activated Abilities and Skills may still be used, pay their costs, and consume
-their usage allowances, but their effects do not execute. Automatic,
-proficiency, and persistent abilities are suppressed. The affected Spirit also
-cannot gain Spirit Power during that duration, including after replacement.
-Return Soul may still replace or summon that Spirit at one initial power, but
-the old Spirit's additional power cannot be inherited. Golden Cicada can protect
-the Player-facing part of Lure the Tiger Away, but it does not restore Spirit
-Skills or Spirit Power gain.
+Retreat's `Clear` operation remains legal when no Environment exists. It then
+reveals and consumes the Pouch without emitting an Environment-clearing event.
+Its `TransferByDiscard` operation requires one current hand Card Instance, uses
+that Card's printed element, and moves it to its Card Origin Discard Pile before
+transferring to the matching Environment. An Exposed Foreign Card is legal, as
+are transfer with no current Environment and transfer to the current
+Environment's same element.
+
+離山 is a deliberate product-rule interpretation of official 5.16's
+「指定玩家職業能力無效、精靈技能無效且靈力無法增加１回合」wording. It gives
+the selected Player **Temporary Ability Loss** instead of allowing those
+abilities to be used with ineffective results. Official rule 4-7's broad
+「該職業之能力」scope applies: the Player temporarily lacks every Automatic,
+Formation Proficiency, and Activated Profession Ability, every Profession
+Formation, and every other rule granted by that Profession, together with all
+Spirit Skills. The Player retains the Profession and Spirit identities.
+[ADR-0033](adr/0033-treat-lure-as-temporary-ability-loss.md) records why this
+product rule replaces the previous ineffective-result interpretation.
+
+An offer that requires the lost Profession Ability Set or Spirit Skill is not a
+Playable Action. A stale or direct Command for one is a Validation Failure that
+emits no Game Events and consumes no Cards, Spirit Power, per-turn allowance, or
+Limited Use. Ordinary Profession Change remains available when its path is
+independent of the lost Profession Ability Set: the 抉擇 and 突破 paths granted
+by 初行客 are absent, while the owned Profession still satisfies ordinary
+prerequisite checks.
+Permissions and prohibitions are both lost, so 暗行 does not prohibit an
+ordinary Profession Change while its owner is affected. Profession Formations
+and profession-granted transitions or acquisition consequences are unavailable.
+
+Temporary Ability Loss does not undo a consequence already established by an
+accepted ability use. Prepared Profession Abilities, Formation Requirements,
+Card Interpretation Layers, granted bonuses, and granted Status Effects remain
+and expire by their own rules. Costs and usage allowances already consumed are
+not refunded or reset when the loss begins or expires. Automatic and continuous
+checks made during the loss do not use the absent ability: for example 綻放 does
+not automatically trigger and 順風 does not recover its use count.
+
+The loss follows the Player for its complete duration. A Profession Change or
+Spirit Summoning during that duration does not restore abilities from the new
+source. The affected Spirit also cannot gain Spirit Power, including after a
+replacement. 還魂 may still replace or summon that Spirit at one initial power,
+but the old Spirit's additional power cannot be inherited. 金蟬 protects the
+Player-facing Profession scope of 離山, but it does not restore Spirit Skills or
+Spirit Power gain.
+
+Public State retains the owned Profession, Spirit, and their ordinary read-only
+summaries. The existing visible 離山 Status communicates the temporary loss;
+presentation does not add a duplicate ability-loss marker, and actionable
+controls continue to derive only from Playable Actions.
 
 Steal the Beam snapshots the Card Instances in the triggering Player's hand and
 gives those Cards level +1 until Turn End. Cards that enter the hand after the
@@ -922,7 +977,7 @@ evaluation.
 Rusted Iron Withered Forest processes a shared Deck once. With Personal Deck
 enabled, it processes each Player-owned Deck separately. In either mode it
 reorders Cards already in each applicable Deck, so it is a Deck Shuffle and
-never recovers Tailwind.
+never recovers the use count of 順風.
 
 Gale-Rain Status makes life recovery from Formations performed by its owner
 ineffective; it does not block non-Formation recovery or Formations performed by
@@ -1085,7 +1140,9 @@ Formation Card movement has its own semantic boundaries:
   face-down and waiting in its owner's Formation Area.
 - `TurnDrawResolved` records both the selected discard and every Card kept from
   the Turn Draw Pool. Replay applies the discard before moving kept Cards into
-  hand, but no canonical event exists between those moves.
+  hand, but no canonical event exists between those moves. The ordinary
+  `ChoiceRequested` and `ChoiceMade` events surround this Turn Draw answer;
+  they do not split the atomic Card movements inside `TurnDrawResolved`.
 - `GameEnded` records the independent Game Conclusion and is always the last
   canonical event.
 
@@ -1209,8 +1266,9 @@ isolated effect helpers alone:
 - Spirit Summoning replaces the old Player-owned Spirit at two power.
 - Matching Turn Draw discards charge only the discarding Player's Spirit and
   never exceed six power.
-- Spirit Skills remain active effects under **Cannot Act**, consume power even
-  when ineffective, and allow one successful use per Spirit instance per turn.
+- Spirit Skills remain active effects under **Cannot Act** and, when otherwise
+  available, consume power even when their resolved effect has no benefit.
+  Temporary Ability Loss instead makes them unavailable.
 - 暗行者 and 暗靈使 offer no ordinary Profession Change; the Dark Formation
   transition from 暗行者 to 暗靈使 remains available.
 - 死兆 requests and records a Discard Shuffle before consuming its Skill when
@@ -1225,8 +1283,17 @@ isolated effect helpers alone:
   two match slots independent interpretations.
 - Stone Shield expires after the next Player's next turn, prevents only attack
   damage, and applies to Sacred Beast damage.
-- Simultaneous Bloom and Void Spirit-Shattering replay without transient
+- Simultaneous 綻放 and Void Spirit-Shattering replay without transient
   winners or event-order-dependent outcomes.
+- 離山 removes every offer that depends on the affected Profession Ability Set
+  or Spirit Skills, while independent ordinary Profession Changes and other
+  non-ability actions remain available.
+- Direct or stale Commands that require abilities lost to 離山 fail atomically
+  without costs, usage consumption, or canonical events.
+- 離山 interaction coverage includes 初行客的抉擇與突破, Profession
+  Formations, 暗行, Activated Profession Abilities, active and persistent Spirit
+  Skills, 綻放, 順風, already established consequences, new Profession and Spirit
+  sources, expiry, and 金蟬's split Profession-versus-Spirit protection.
 - Pouch requires Personal Deck and Spirit, with all three Advanced Rule Modules
   inherited through Spirit.
 - Game Preparation records private initial Pouch choices, trusted per-Player

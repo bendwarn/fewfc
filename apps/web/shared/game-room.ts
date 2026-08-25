@@ -1,14 +1,14 @@
 import type {
   Element,
   ChoiceAnswer,
+  BattleRecord,
   LocalGameResponse,
   PlayerId,
   PlayableAction,
   PublicGameState,
   RecordedDecision,
   PassActionReason,
-  SecretStrategy,
-  StarKind,
+  SecretStrategyDecision,
 } from '../app/types/fewfc'
 import type { DevelopmentScenario } from './development-scenarios'
 export interface PlayerDeckList {
@@ -126,6 +126,19 @@ export interface StoredGameEvent {
   createdAt: string
 }
 
+/** 等待房間沒有標準戰局時，仍保留使用者看得見的系統房間紀錄。 */
+export function systemBattleRecord(
+  events: StoredGameEvent[],
+  present: (event: StoredGameEvent) => { title: string, summary?: string },
+): BattleRecord {
+  return {
+    preparation: {
+      entries: events.map(event => ({ id: `room-event-${event.sequence}`, ...present(event) })),
+    },
+    turns: [],
+  }
+}
+
 /**
  * 作用中遊戲實例唯一權威且持久的檢查點。
  * 交易中繼資料特意不包含此記錄的另一份副本。
@@ -182,13 +195,7 @@ export type OnlineGameAction =
   | {
       type: 'triggerSecretStrategy'
       player: PlayerId
-      strategy: SecretStrategy
-      targetPlayer?: PlayerId
-      star?: StarKind
-      breakStar?: boolean
-      discardCard?: number
-      deckCards?: number[]
-      discardCards?: number[]
+      decision: SecretStrategyDecision
     }
   | {
       type: 'performFormation'

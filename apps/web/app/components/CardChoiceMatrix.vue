@@ -1,6 +1,10 @@
 <template>
   <div
-    class="card-composition pouch-composition choice-card-matrix"
+    :class="[
+      'card-composition',
+      'choice-card-matrix',
+      { 'pouch-composition': !readonly },
+    ]"
     role="group"
     :aria-label="label"
   >
@@ -23,7 +27,7 @@
             :class="{ empty: cell.count === 0 }"
           >
             <button
-              v-if="cell.count > 0"
+              v-if="!readonly && cell.count > 0"
               type="button"
               :disabled="cellDisabled(cell.cardIds)"
               :aria-pressed="selectedCount(cell.cardIds) > 0"
@@ -35,6 +39,7 @@
                 已選 {{ selectedCount(cell.cardIds) }}
               </small>
             </button>
+            <strong v-else-if="readonly">{{ cell.count }}</strong>
             <strong v-else aria-hidden="true">0</strong>
           </td>
         </tr>
@@ -55,17 +60,22 @@ import {
 const props = withDefaults(defineProps<{
   cards: PublicCard[]
   selectedCards?: CardInstanceId[]
+  disabledCardIds?: CardInstanceId[]
   maximum?: number
   mode?: CardCompositionSelectionMode
   disabled?: boolean
+  readonly?: boolean
   label: string
   caption: string
-  actionLabel: string
+  actionLabel?: string
 }>(), {
   selectedCards: () => [],
+  disabledCardIds: () => [],
   maximum: 1,
   mode: 'replace',
   disabled: false,
+  readonly: false,
+  actionLabel: '選擇牌',
 })
 
 const emit = defineEmits<{
@@ -79,7 +89,9 @@ function selectedCount(cardIds: CardInstanceId[]): number {
 }
 
 function cellDisabled(cardIds: CardInstanceId[]): boolean {
-  return props.disabled || (
+  return props.disabled
+    || cardIds.every(card => props.disabledCardIds.includes(card))
+    || (
     props.mode === 'toggle'
     && props.selectedCards.length >= props.maximum
     && selectedCount(cardIds) === 0
@@ -92,6 +104,7 @@ function cellLabel(element: string, level: number, cardIds: CardInstanceId[]): s
 }
 
 function selectCell(cardIds: CardInstanceId[]) {
+  if (props.readonly) return
   const card = cardForCompositionSelection(
     cardIds,
     props.selectedCards,
@@ -101,3 +114,14 @@ function selectCell(cardIds: CardInstanceId[]) {
   if (card !== undefined) emit('choose', card)
 }
 </script>
+
+<style scoped>
+@reference "../assets/css/main.css";
+
+.card-composition table { @apply w-full table-fixed border-collapse; }
+.card-composition th, .card-composition td { @apply h-8 border border-[var(--app-border)] text-center; }
+.card-composition thead th { @apply text-[10px] font-bold text-[var(--app-text)]; }
+.card-composition tbody th { @apply w-7 text-[10px] font-normal text-muted; }
+.card-composition td strong { @apply font-serif text-sm text-[#e4c47d]; }
+.card-composition td.empty strong { color: var(--app-text-soft); }
+</style>

@@ -133,18 +133,13 @@ impl<'a> FormationSelection<'a> {
             registry: official_formation_registry(&state.enabled_rule_modules),
             team_star,
             available_stars,
-            prepared: (!crate::rules::pouch::profession_is_suppressed(state, player))
-                .then(|| {
-                    state
-                        .prepared_profession_abilities
-                        .iter()
-                        .find(|prepared| {
-                            &prepared.player == player
-                                && prepared.prepared_on_turn == state.turn_number
-                        })
-                        .cloned()
+            prepared: state
+                .prepared_profession_abilities
+                .iter()
+                .find(|prepared| {
+                    &prepared.player == player && prepared.prepared_on_turn == state.turn_number
                 })
-                .flatten(),
+                .cloned(),
             residual_card_facts: crate::rules::confluence::residual_card_facts(state, player),
             limited_uses: state
                 .limited_uses
@@ -326,9 +321,7 @@ impl<'a> FormationSelection<'a> {
             TargetDecl::Player(_)
             | TargetDecl::Team(_)
             | TargetDecl::FormationRole { .. }
-            | TargetDecl::CardMultiplicity { .. }
-            | TargetDecl::SecretStrategy(_)
-            | TargetDecl::SecretStrategyOptions { .. } => None,
+            | TargetDecl::CardMultiplicity { .. } => None,
         });
         let star_substitution = match declared_substitution {
             Some(card) => options
@@ -425,6 +418,12 @@ impl<'a> FormationSelection<'a> {
             return Vec::new();
         }
         if formation.id == "empty-city" && self.matches_passive_proficiency() {
+            return Vec::new();
+        }
+
+        if self.profession_abilities_suppressed
+            && crate::rules::profession::is_profession_granted_formation(&formation.id)
+        {
             return Vec::new();
         }
 

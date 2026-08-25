@@ -2,9 +2,10 @@ use fewfc::application::{
     advance_automatic, apply_event, handle_command, replay, resolve_trusted_randomness,
 };
 use fewfc::domain::{
-    CardInstanceId, ChoiceAnswer, ChoiceId, Command, GameError, GameEvent, GameSetup, GameState,
-    PassActionReason, PendingChoiceKind, PendingRandomness, PlayerId, PouchRandomnessContinuation,
-    RandomnessContinuation, RandomnessDeck, SpiritRandomnessContinuation, TrustedRandomnessAnswer,
+    CardInstanceId, ChainPouchDecision, ChoiceAnswer, ChoiceId, Command, GameError, GameEvent,
+    GameSetup, GameState, PassActionReason, PendingChoiceKind, PendingRandomness, PlayerId,
+    PouchRandomnessContinuation, RandomnessContinuation, RandomnessDeck, SecretStrategyDecision,
+    SecretStrategyStarOperation, SpiritRandomnessContinuation, TrustedRandomnessAnswer,
     ValidationError,
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, event_for, state_for};
@@ -191,26 +192,30 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
     );
     assert_eq!(
         serde_json::to_value(ChoiceAnswer::Chain {
-            pouch_owner: PlayerId::new("p2"),
-            pouch_card: card(2),
-            trigger_card: Some(card(3)),
-            strategy: Some(fewfc::domain::SecretStrategy::DeceiveHeaven),
-            target_player: Some(PlayerId::new("p1")),
-            star: Some(fewfc::domain::StarKind::Fire),
-            break_star: true,
-            discard_card: Some(card(4)),
+            decision: ChainPouchDecision::PlaceAndTrigger {
+                pouch_owner: PlayerId::new("p2"),
+                pouch_card: card(2),
+                decision: SecretStrategyDecision::Star {
+                    source_card: card(3),
+                    operation: SecretStrategyStarOperation::Break {
+                        star: fewfc::domain::StarKind::Fire,
+                    },
+                },
+            },
         })
         .unwrap(),
         serde_json::json!({
             "type": "chain",
-            "pouchOwner": "p2",
-            "pouchCard": 2,
-            "triggerCard": 3,
-            "strategy": "DeceiveHeaven",
-            "targetPlayer": "p1",
-            "star": "Fire",
-            "breakStar": true,
-            "discardCard": 4
+            "decision": {
+                "type": "placeAndTrigger",
+                "pouchOwner": "p2",
+                "pouchCard": 2,
+                "decision": {
+                    "type": "star",
+                    "sourceCard": 3,
+                    "operation": { "type": "break", "star": "Fire" }
+                }
+            }
         })
     );
     assert_eq!(
@@ -234,14 +239,10 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
             player: PlayerId::new("p1"),
             choice_id: ChoiceId::new(7),
             answer: ChoiceAnswer::Chain {
-                pouch_owner: PlayerId::new("p2"),
-                pouch_card: card(2),
-                trigger_card: Some(card(3)),
-                strategy: None,
-                target_player: Some(PlayerId::new("p1")),
-                star: None,
-                break_star: true,
-                discard_card: Some(card(4)),
+                decision: ChainPouchDecision::PlaceOnly {
+                    pouch_owner: PlayerId::new("p2"),
+                    pouch_card: card(2),
+                },
             },
         })
         .unwrap(),
@@ -251,12 +252,11 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
                 "choiceId": 7,
                 "answer": {
                     "type": "chain",
-                    "pouchOwner": "p2",
-                    "pouchCard": 2,
-                    "triggerCard": 3,
-                    "targetPlayer": "p1",
-                    "breakStar": true,
-                    "discardCard": 4
+                    "decision": {
+                        "type": "placeOnly",
+                        "pouchOwner": "p2",
+                        "pouchCard": 2
+                    }
                 }
             }
         })

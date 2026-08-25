@@ -17,7 +17,7 @@
               class="replay-battlefield"
               :state="replayFrame.state"
               :display-names="replayDisplayNames"
-              :anchor-player="replayFrame.firstPlayer"
+              :anchor-player="replayPerspective"
               mode="replay"
             >
               <template #overlay>
@@ -27,7 +27,10 @@
               </template>
             </BattlefieldBoard>
           </div>
-          <section class="event-panel expanded"><div class="panel-title"><h2>戰局紀錄</h2></div><ol class="event-feed"><li v-for="event in replayFrame.events" :key="event.id"><div><span>{{ event.title }}</span><p>{{ event.summary }}</p></div></li></ol></section>
+          <section ref="battleRecordFeed" class="event-panel expanded">
+            <div class="panel-title"><h2>戰局紀錄</h2><label>視角 <select v-model="replayPerspective" @change="loadReplayFrame(replayFrame.currentStep)"><option v-for="player in replayFrame.players" :key="player.player" :value="player.player">{{ player.displayName }}</option></select></label></div>
+            <ol class="event-feed"><template v-for="group in battleRecordGroups" :key="group.id"><li class="event-group-title"><strong>{{ group.title }}</strong></li><li v-for="entry in group.entries" :key="entry.id"><i /><div><span>{{ entry.title }}</span><p v-if="entry.summary">{{ entry.summary }}</p></div></li></template></ol>
+          </section>
         </template>
         <div v-else class="replay-route-error" role="alert">
           <p class="muted">{{ replayError }}</p>
@@ -40,15 +43,16 @@
 <script setup lang="ts">
 import type {
   PlayerId,
-  PublicGameEvent,
+  BattleRecord,
   PublicGameState,
 } from '~/types/fewfc'
+import { scrollBattleRecordToLatest } from '~/lib/battle-record-scroll'
 
 interface ReplayFrame {
   currentStep: number
   totalSteps: number
   state: PublicGameState
-  events: PublicGameEvent[]
+  battleRecord: BattleRecord
   players: Array<{ player: PlayerId, displayName: string }>
   firstPlayer: PlayerId
 }
@@ -58,10 +62,20 @@ const router = useRouter()
 const replayFrame = ref<ReplayFrame | null>(null)
 const replayLoading = ref(false)
 const replayError = ref('')
+const replayPerspective = ref<PlayerId>('')
+const battleRecordFeed = ref<HTMLElement | null>(null)
 const replayRouteId = computed(() => typeof route.params.replayId === 'string' ? route.params.replayId : '')
 const replayDisplayNames = computed<Record<string, string>>(() => Object.fromEntries(
   (replayFrame.value?.players ?? []).map(player => [player.player, player.displayName]),
 ))
+const battleRecordGroups = computed(() => {
+  const record = replayFrame.value?.battleRecord
+  if (!record) return []
+  return [
+    { id: 'preparation', title: '對局準備', entries: record.preparation.entries },
+    ...record.turns.map(group => ({ id: `turn-${group.turnNumber}`, title: group.title, entries: group.entries })),
+  ].filter(group => group.entries.length > 0)
+})
 let replayLoadRevision = 0
 
 async function loadReplayFrame(step = 0) {
@@ -74,9 +88,12 @@ async function loadReplayFrame(step = 0) {
   try {
     const frame = await $fetch<ReplayFrame>(
       `/api/replays/${encodeURIComponent(replayId)}`,
-      { query: { step } },
+      { query: { step, perspective: replayPerspective.value || undefined } },
     )
-    if (revision === replayLoadRevision) replayFrame.value = frame
+    if (revision === replayLoadRevision) {
+      replayFrame.value = frame
+      if (!replayPerspective.value) replayPerspective.value = frame.firstPlayer
+    }
   } catch (error) {
     if (revision === replayLoadRevision) {
       const status = (error as { statusCode?: number, status?: number, response?: { status?: number } }).statusCode
@@ -107,7 +124,14 @@ onMounted(() => {
 })
 
 watch(replayRouteId, () => {
+  replayPerspective.value = ''
   void loadReplayFrame(0)
+})
+
+watch(() => battleRecordGroups.value.flatMap(group => group.entries).length, () => {
+  void nextTick(() => {
+    scrollBattleRecordToLatest(battleRecordFeed.value)
+  })
 })
 </script>
 
@@ -116,5 +140,6 @@ watch(replayRouteId, () => {
 
 .lobby-page { @apply mx-auto max-w-[1180px] px-[30px] pt-15 pb-[90px] max-[600px]:px-4 max-[600px]:py-9; }
 .lobby-content { @apply grid gap-5; }.lobby-heading { @apply flex items-center justify-between gap-4; }.lobby-heading h1 { @apply font-serif text-3xl text-gold-light; }.result-actions { @apply mt-2 grid grid-cols-2 gap-3; }.result-actions .ghost-button { @apply border-[var(--app-border-strong)] text-[var(--app-text)]; }
-.replay-layout { @apply block; }.replay-battlefield { @apply min-h-[620px] rounded-[18px] shadow-[var(--app-shadow-md)]; }.action-detail { @apply absolute right-0 bottom-[calc(100%+8px)] left-0 z-8 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }.event-panel { @apply min-h-0 overflow-auto border-b border-line bg-panel p-5; }.panel-title { @apply flex items-start justify-between; }.panel-title h2 { @apply font-serif text-[15px]; }.event-feed { @apply mt-4 grid list-none gap-[13px] p-0; }.event-feed li { @apply grid grid-cols-[10px_1fr] gap-[7px]; }.event-feed span { @apply text-[10px] font-bold text-[var(--app-text)]; }.event-feed p { @apply mt-0.5 text-[9px] leading-5 text-[var(--app-text-muted)]; }
+.replay-layout { @apply block; }.replay-battlefield { @apply min-h-[620px] rounded-[18px] shadow-[var(--app-shadow-md)]; }.action-detail { @apply absolute right-0 bottom-[calc(100%+8px)] left-0 z-8 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }.event-panel { @apply min-h-0 overflow-auto border-b border-line bg-panel p-5; }.panel-title { @apply flex items-start justify-between; }.panel-title h2 { @apply font-serif text-[15px]; }.event-feed { @apply mt-4 grid list-none gap-[13px] p-0; }.event-feed li { @apply grid grid-cols-[10px_1fr] gap-[7px]; }.event-feed li > i { @apply mt-1.5 size-[5px] rounded-full bg-[#b79550] shadow-[0_0_0_4px_rgba(183,149,80,.08)]; }.event-feed span { @apply text-[10px] font-bold text-[var(--app-text)]; }.event-feed p { @apply mt-0.5 text-[9px] leading-5 text-[var(--app-text-muted)]; }
+.event-feed li.event-group-title { grid-template-columns: minmax(0, 1fr); }
 </style>

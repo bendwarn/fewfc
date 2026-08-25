@@ -2,14 +2,16 @@ import { DurableObject } from 'cloudflare:workers'
 import type {
   CompletedReplayDraft,
 } from '../../shared/game-room'
-import type { PublicGameEvent, PublicGameState } from '../../app/types/fewfc'
+import type { BattleRecord, PublicGameState } from '../../app/types/fewfc'
+import { replaceBattleRecordPlayerLabels } from '../../shared/utils/battle-record-display'
+import { resolveReplayPerspective } from '../../shared/utils/replay-perspective'
 import { callRulesEngine } from '../rules-engine'
 
 export interface ReplayFrame {
   currentStep: number
   totalSteps: number
   state: PublicGameState
-  events: PublicGameEvent[]
+  battleRecord: BattleRecord
   interaction: {
     canChooseInitialPouch: false
   }
@@ -56,7 +58,7 @@ export class ReplayArchive extends DurableObject {
       if (!Number.isInteger(step) || step < 0) {
         return Response.json({ error: 'invalid replay step' }, { status: 400 })
       }
-      return await this.frame(step)
+      return await this.frame(step, url.searchParams.get('perspective') ?? undefined)
     }
     if (request.method === 'DELETE') {
       return await this.delete(await request.json() as ReplayArchiveLifecycle)
@@ -99,19 +101,28 @@ export class ReplayArchive extends DurableObject {
     return Response.json({ purged: true, epoch })
   }
 
-  private async frame(step: number): Promise<Response> {
+  private async frame(step: number, perspective?: string): Promise<Response> {
     const archive = await this.ctx.storage.get<CompletedReplayDraft>('archive')
     if (!archive) return Response.json({ error: 'replay not found' }, { status: 404 })
+    const effectivePerspective = resolveReplayPerspective(
+      perspective,
+      archive.firstPlayer,
+      archive.players.map(player => player.player),
+    )
+    if (!effectivePerspective) {
+      return Response.json({ error: 'invalid replay perspective' }, { status: 400 })
+    }
 
     try {
       const frame = await callRulesEngine({
-        action: { type: 'replayFrame', step },
+        action: { type: 'replayFrame', step, perspective: effectivePerspective },
         viewer: 'replay',
         setup: archive.setup,
         record: archive.record,
       }) as unknown as ReplayFrame
       return Response.json({
         ...frame,
+        battleRecord: replaceBattleRecordPlayerLabels(frame.battleRecord, archive.players),
         players: archive.players,
         firstPlayer: archive.firstPlayer,
       } satisfies ReplayFrame)

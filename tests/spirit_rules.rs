@@ -785,6 +785,45 @@ fn all_eligible_teammate_wood_spirits_bloom_atomically_and_cap_recovery() {
 }
 
 #[test]
+fn temporary_ability_loss_prevents_automatic_bloom() {
+    let mut state = team_spirit_state();
+    state.spirits = vec![
+        PlayerSpirit {
+            player: PlayerId::new("p1"),
+            spirit: SpiritKind::Metal,
+            power: 2,
+        },
+        PlayerSpirit {
+            player: PlayerId::new("p2"),
+            spirit: SpiritKind::Wood,
+            power: 6,
+        },
+    ];
+    state
+        .hp
+        .iter_mut()
+        .find(|owned| owned.team == TeamId::new("team:b"))
+        .unwrap()
+        .hp = 10;
+    state.statuses.push(StatusEffect {
+        id: "lure-spirit-p2".to_string(),
+        owner: StatusOwner::Player(PlayerId::new("p2")),
+        kind: "PouchLureSpirit".to_string(),
+        value: None,
+        duration: StatusDuration::UntilTurnEnd {
+            player: PlayerId::new("p2"),
+        },
+    });
+
+    let events = use_skill(&state, SpiritSkill::FlyingBlade, None, None).unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, GameEvent::AutomaticBloomsResolved { .. }))
+    );
+}
+
+#[test]
 fn five_star_direct_victory_takes_priority_over_automatic_bloom() {
     let mut state = team_spirit_state();
     state.spirits.push(PlayerSpirit {

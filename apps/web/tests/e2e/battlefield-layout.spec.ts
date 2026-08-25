@@ -27,6 +27,17 @@ async function expectViewportLocked(page: Page) {
   expect(overflow.battlefieldVertical).toBeLessThanOrEqual(0)
 }
 
+async function expectEventGroupTitleSingleLine(page: Page, feedSelector: string) {
+  const title = page.locator(`${feedSelector} .event-group-title strong`).first()
+  await expect(title).toBeVisible()
+  const metrics = await title.evaluate((element) => {
+    const style = getComputedStyle(element)
+    const rect = element.getBoundingClientRect()
+    return { height: rect.height, lineHeight: Number.parseFloat(style.lineHeight) }
+  })
+  expect(metrics.height).toBeLessThanOrEqual(metrics.lineHeight * 1.5)
+}
+
 async function activePlayerPage(pages: readonly Page[]) {
   await expect.poll(async () => Math.max(...await Promise.all(
     pages.map(page => page.locator('.turn-controls').count()),
@@ -91,6 +102,7 @@ async function expectCompactFourPlayerTable(page: Page, width: number, height: n
   await eventSummary.click()
   const eventSheet = page.getByRole('dialog', { name: '戰局紀錄' })
   await expect(eventSheet).toBeVisible()
+  await expectEventGroupTitleSingleLine(page, '.event-sheet-feed')
   await eventSheet.getByRole('button', { name: '關閉戰局紀錄' }).click()
   await expect(eventSummary).toBeFocused()
   await expectViewportLocked(page)
@@ -116,6 +128,7 @@ test('four-player table keeps desktop compass seats and one-row compact opponent
     expect(top.y + top.height).toBeLessThanOrEqual(center.y + 1)
     expect(bottom.y).toBeGreaterThanOrEqual(center.y + center.height - 1)
     expect(center.width).toBeGreaterThan(300)
+    await expectEventGroupTitleSingleLine(desktop, '.game-sidebar .event-feed')
     await expectViewportLocked(desktop)
 
     const activePage = await activePlayerPage(game.pages)

@@ -168,17 +168,7 @@ export type ChoiceAnswer =
   | { type: 'player'; player: PlayerId }
   | { type: 'formation'; formationId: string }
   | { type: 'environment'; environment: Element }
-  | {
-      type: 'chain'
-      pouchOwner: PlayerId
-      pouchCard: CardInstanceId
-      triggerCard?: CardInstanceId
-      strategy?: SecretStrategy
-      targetPlayer?: PlayerId
-      star?: StarKind
-      breakStar?: boolean
-      discardCard?: CardInstanceId
-    }
+  | { type: 'chain'; decision: ChainPouchDecision }
   | { type: 'sheepStealing'; deckCards: CardInstanceId[]; discardCards: CardInstanceId[] }
   | { type: 'decline' }
 
@@ -196,7 +186,6 @@ export interface PublicCard {
   level: number | null
   secretStrategies: Array<{
     strategy: SecretStrategy
-    input: 'none' | 'targetPlayer' | 'deckDiscardSwap' | 'star' | 'retreat'
   }>
 }
 
@@ -415,11 +404,33 @@ export type CardInterpretationPresentation =
       level: number
     }
 
+/** 舊型別僅供歷史測試資料遷移；玩家畫面改用 BattleRecord。 */
 export interface PublicGameEvent {
   id: string
   eventType: string
   title: string
   summary: string
+}
+
+export interface BattleRecordEntry {
+  id: string
+  title: string
+  summary?: string
+}
+
+export interface BattleRecordPreparationGroup {
+  entries: BattleRecordEntry[]
+}
+
+export interface BattleRecordTurnGroup {
+  turnNumber: number
+  title: string
+  entries: BattleRecordEntry[]
+}
+
+export interface BattleRecord {
+  preparation: BattleRecordPreparationGroup
+  turns: BattleRecordTurnGroup[]
 }
 
 export interface PlayerFacingActionDetail {
@@ -593,10 +604,11 @@ export type PlayableAction =
       selectedCard: CardInstanceId | null
       declaredLevel: number | null
     }
-  | ({
+  | {
       type: 'triggerSecretStrategy'
       commandRole: 'activeEffect'
-    } & SecretStrategyOption)
+      option: SecretStrategyOption
+    }
   | {
       type: 'retrievePreviousTurnDiscard'
       commandRole: 'activeEffect'
@@ -613,24 +625,66 @@ export type PassActionReason = 'NoCardsInHand' | 'CannotActByStatus'
 
 export type RecordedDecision = unknown
 
-export interface SecretStrategyOption {
-  sourceCard: CardInstanceId
-  strategy: SecretStrategy
-  input: 'none' | 'targetPlayer' | 'deckDiscardSwap' | 'star' | 'retreat'
-  targetPlayers: PlayerId[]
-  stars: StarKind[]
-  breakStars: StarKind[]
-  deckCards: CardInstanceId[]
-  discardCards: CardInstanceId[]
-  handCards: CardInstanceId[]
-  requiredCardCount: number
-  detail: PlayerFacingActionDetail
-}
+export type SecretStrategyDecision =
+  | { type: 'noInput'; sourceCard: CardInstanceId; strategy: SecretStrategy }
+  | { type: 'targetPlayer'; sourceCard: CardInstanceId; targetPlayer: PlayerId }
+  | { type: 'star'; sourceCard: CardInstanceId; operation: SecretStrategyStarOperation }
+  | { type: 'environment'; sourceCard: CardInstanceId; operation: SecretStrategyEnvironmentOperation }
+  | { type: 'sheepStealing'; sourceCard: CardInstanceId }
+
+export type SecretStrategyStarOperation =
+  | { type: 'gain'; star: StarKind }
+  | { type: 'break'; star: StarKind }
+
+export type SecretStrategyEnvironmentOperation =
+  | { type: 'clear' }
+  | { type: 'transferByDiscard'; card: CardInstanceId }
+
+export type ChainPouchDecision =
+  | { type: 'placeOnly'; pouchOwner: PlayerId; pouchCard: CardInstanceId }
+  | {
+      type: 'placeAndTrigger'
+      pouchOwner: PlayerId
+      pouchCard: CardInstanceId
+      decision: SecretStrategyDecision
+    }
+
+export type SecretStrategyOption =
+  | {
+      type: 'noInput'
+      sourceCard: CardInstanceId
+      strategy: SecretStrategy
+      detail: PlayerFacingActionDetail
+    }
+  | {
+      type: 'targetPlayer'
+      sourceCard: CardInstanceId
+      targetPlayers: PlayerId[]
+      detail: PlayerFacingActionDetail
+    }
+  | {
+      type: 'star'
+      sourceCard: CardInstanceId
+      gainStars: StarKind[]
+      breakStars: StarKind[]
+      detail: PlayerFacingActionDetail
+    }
+  | {
+      type: 'environment'
+      sourceCard: CardInstanceId
+      handCards: CardInstanceId[]
+      detail: PlayerFacingActionDetail
+    }
+  | {
+      type: 'sheepStealing'
+      sourceCard: CardInstanceId
+      detail: PlayerFacingActionDetail
+    }
 
 export interface LocalGameResponse {
   record: RecordedDecision[]
   state: PublicGameState
-  events: PublicGameEvent[]
+  battleRecord: BattleRecord
   playableActions: PlayableAction[]
   interaction: {
     canChooseInitialPouch: boolean

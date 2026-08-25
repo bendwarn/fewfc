@@ -174,15 +174,7 @@ test('presents Chain, direct Pouch, and Discard Retrieval without repeating thei
 
   const pouch: SecretStrategyOption = {
     sourceCard: 8,
-    strategy: 'SheepStealing',
-    input: 'deckDiscardSwap',
-    targetPlayers: [],
-    stars: [],
-    breakStars: [],
-    deckCards: [],
-    discardCards: [],
-    handCards: [],
-    requiredCardCount: 2,
+    type: 'sheepStealing',
     detail: { consequences: [
       { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'triggerSecretStrategy', effect: 'swapDeckAndDiscard' } },
       { type: 'cost', certainty: 'guaranteed', cost: { type: 'consumePouch' } },
@@ -190,10 +182,10 @@ test('presents Chain, direct Pouch, and Discard Retrieval without repeating thei
   }
   expect(presentSecretStrategyOption(pouch)).toBe('從牌組與棄牌堆各選兩張交換，之後洗牌。')
   expect(presentDirectSecretStrategyAction(pouch)).toBe('點擊後立即發動，接著選擇牌組與棄牌堆各兩張牌。從牌組與棄牌堆各選兩張交換，之後洗牌。')
-  expect(presentDirectSecretStrategyAction({ ...pouch, input: 'none' })).toBe('點擊後立即發動。從牌組與棄牌堆各選兩張交換，之後洗牌。')
-  expect(presentDirectSecretStrategyAction({ ...pouch, input: 'targetPlayer' })).toBe('點擊後需要先選擇目標玩家。從牌組與棄牌堆各選兩張交換，之後洗牌。')
-  expect(presentDirectSecretStrategyAction({ ...pouch, input: 'star' })).toBe('點擊後需要先選擇取得或破除的星辰。從牌組與棄牌堆各選兩張交換，之後洗牌。')
-  expect(presentDirectSecretStrategyAction({ ...pouch, input: 'retreat' })).toBe('點擊後需要先選擇破除環境或捨棄手牌。從牌組與棄牌堆各選兩張交換，之後洗牌。')
+  expect(presentDirectSecretStrategyAction({ ...pouch, type: 'noInput', strategy: 'GoldenCicada' })).toBe('點擊後立即發動。從牌組與棄牌堆各選兩張交換，之後洗牌。')
+  expect(presentDirectSecretStrategyAction({ ...pouch, type: 'targetPlayer', targetPlayers: [] })).toBe('點擊後需要先選擇目標玩家。從牌組與棄牌堆各選兩張交換，之後洗牌。')
+  expect(presentDirectSecretStrategyAction({ ...pouch, type: 'star', gainStars: [], breakStars: [] })).toBe('點擊後需要先選擇取得或破除的星辰。從牌組與棄牌堆各選兩張交換，之後洗牌。')
+  expect(presentDirectSecretStrategyAction({ ...pouch, type: 'environment', handCards: [] })).toBe('點擊後需要先選擇破除環境或捨棄手牌。從牌組與棄牌堆各選兩張交換，之後洗牌。')
 
   expect(presentDiscardRetrievalAction({ detail: { consequences: [
     { type: 'immediateEffect', certainty: 'guaranteed', effect: { type: 'movePreviousTurnDiscardToDeckTop' } },

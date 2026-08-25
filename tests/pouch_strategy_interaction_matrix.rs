@@ -1,9 +1,13 @@
-use fewfc::application::GameRecord;
+use fewfc::application::{GameRecord, apply_event, handle_command};
 use fewfc::domain::{
-    CardInstanceId, CardZone, ChoiceAnswer, Command, EffectiveCardLevel, Element,
-    FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, HERO_SCHOOLS_MODULE_ID, PERSONAL_DECK_MODULE_ID,
-    POUCH_MODULE_ID, Player, PlayerId, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID,
-    STAR_MODULE_ID, SecretStrategy, SpiritKind, StarBreakReason, StarKind, TeamId,
+    CardInstanceId, CardOrigin, CardZone, ChainPouchDecision, ChoiceAnswer, ChoiceContinuation,
+    ChoiceId, Command, EffectiveCardLevel, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
+    GameEvent, GameState, GameStatus, HERO_SCHOOLS_MODULE_ID, PERSONAL_DECK_MODULE_ID,
+    POUCH_MODULE_ID, PendingChoice, PendingChoiceKind, Phase, Player, PlayerId, PlayerPouch,
+    PouchChoiceContinuation, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID,
+    SecretStrategy, SecretStrategyDecision, SecretStrategyEnvironmentOperation,
+    SecretStrategyStarOperation, SpiritKind, SpiritSkill, StarBreakReason, StarKind, TeamId,
+    ValidationError,
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -93,13 +97,9 @@ impl PouchStrategyScenario {
         self.record
             .handle(Command::TriggerSecretStrategy {
                 player: self.player.clone(),
-                strategy: SecretStrategy::SheepStealing,
-                target_player: None,
-                star: None,
-                break_star: false,
-                discard_card: None,
-                deck_cards: Vec::new(),
-                discard_cards: Vec::new(),
+                decision: SecretStrategyDecision::SheepStealing {
+                    source_card: self.sheep_source,
+                },
             })
             .unwrap()
     }
@@ -426,14 +426,13 @@ impl ChainSheepScenario {
                 player: self.player.clone(),
                 choice_id,
                 answer: ChoiceAnswer::Chain {
-                    pouch_owner: self.player.clone(),
-                    pouch_card,
-                    trigger_card: Some(self.sheep_trigger),
-                    strategy: Some(SecretStrategy::SheepStealing),
-                    target_player: None,
-                    star: None,
-                    break_star: false,
-                    discard_card: None,
+                    decision: ChainPouchDecision::PlaceAndTrigger {
+                        pouch_owner: self.player.clone(),
+                        pouch_card,
+                        decision: SecretStrategyDecision::SheepStealing {
+                            source_card: self.sheep_trigger,
+                        },
+                    },
                 },
             })
             .unwrap()
@@ -713,13 +712,10 @@ impl StealTheBeamMageGuideScenario {
         self.record
             .handle(Command::TriggerSecretStrategy {
                 player: self.player.clone(),
-                strategy: SecretStrategy::StealTheBeam,
-                target_player: None,
-                star: None,
-                break_star: false,
-                discard_card: None,
-                deck_cards: Vec::new(),
-                discard_cards: Vec::new(),
+                decision: SecretStrategyDecision::NoInput {
+                    source_card: self.record.state().pouch_for(&self.player).unwrap().card,
+                    strategy: SecretStrategy::StealTheBeam,
+                },
             })
             .unwrap()
     }
@@ -1218,13 +1214,10 @@ impl LureReturnSoulScenario {
         self.record
             .handle(Command::TriggerSecretStrategy {
                 player: self.lurer.clone(),
-                strategy: SecretStrategy::LureTheTigerAway,
-                target_player: Some(self.target.clone()),
-                star: None,
-                break_star: false,
-                discard_card: None,
-                deck_cards: Vec::new(),
-                discard_cards: Vec::new(),
+                decision: SecretStrategyDecision::TargetPlayer {
+                    source_card: self.record.state().pouch_for(&self.lurer).unwrap().card,
+                    target_player: self.target.clone(),
+                },
             })
             .unwrap()
     }
@@ -1306,13 +1299,10 @@ impl LureReturnSoulScenario {
         self.record
             .handle(Command::TriggerSecretStrategy {
                 player: self.target.clone(),
-                strategy: SecretStrategy::ReturnSoul,
-                target_player: None,
-                star: None,
-                break_star: false,
-                discard_card: None,
-                deck_cards: Vec::new(),
-                discard_cards: Vec::new(),
+                decision: SecretStrategyDecision::NoInput {
+                    source_card: self.record.state().pouch_for(&self.target).unwrap().card,
+                    strategy: SecretStrategy::ReturnSoul,
+                },
             })
             .unwrap()
     }
@@ -1581,13 +1571,10 @@ impl LureMeditationScenario {
         self.record
             .handle(Command::TriggerSecretStrategy {
                 player: self.lurer.clone(),
-                strategy: SecretStrategy::LureTheTigerAway,
-                target_player: Some(self.target.clone()),
-                star: None,
-                break_star: false,
-                discard_card: None,
-                deck_cards: Vec::new(),
-                discard_cards: Vec::new(),
+                decision: SecretStrategyDecision::TargetPlayer {
+                    source_card: self.record.state().pouch_for(&self.lurer).unwrap().card,
+                    target_player: self.target.clone(),
+                },
             })
             .unwrap()
     }
@@ -1831,13 +1818,14 @@ impl DeceiveHeavenScenario {
         self.record
             .handle(Command::TriggerSecretStrategy {
                 player: self.deceiver.clone(),
-                strategy: SecretStrategy::DeceiveHeaven,
-                target_player: None,
-                star: Some(star),
-                break_star,
-                discard_card: None,
-                deck_cards: Vec::new(),
-                discard_cards: Vec::new(),
+                decision: SecretStrategyDecision::Star {
+                    source_card: self.pouch_source,
+                    operation: if break_star {
+                        SecretStrategyStarOperation::Break { star }
+                    } else {
+                        SecretStrategyStarOperation::Gain { star }
+                    },
+                },
             })
             .unwrap()
     }
@@ -2434,7 +2422,16 @@ fn pouch_chain_sheep_stealing_matrix_recycles_then_sets_aside_the_trigger_from_i
     assert!(matches!(
         chain_events.as_slice(),
         [
-            GameEvent::ChoiceMade { answer: ChoiceAnswer::Chain { pouch_owner, pouch_card: placed, trigger_card: Some(trigger), strategy: Some(SecretStrategy::SheepStealing), .. }, .. },
+            GameEvent::ChoiceMade {
+                answer: ChoiceAnswer::Chain {
+                    decision: ChainPouchDecision::PlaceAndTrigger {
+                        pouch_owner,
+                        pouch_card: placed,
+                        decision: SecretStrategyDecision::SheepStealing { source_card: trigger },
+                    },
+                },
+                ..
+            },
             GameEvent::PouchPlaced { source, owner, card, previous: Some(_), .. },
             GameEvent::PouchRevealed { player, owner: None, card: revealed, strategy: SecretStrategy::SheepStealing },
             GameEvent::ChoiceRequested { choice },
@@ -2619,8 +2616,7 @@ fn pouch_steal_the_beam_matrix_keeps_a_same_turn_later_entrant_outside_its_snaps
 }
 
 #[test]
-fn pouch_lure_return_soul_matrix_suppresses_profession_and_spirit_scopes_but_revives_at_one_power()
-{
+fn pouch_lure_return_soul_matrix_removes_spirit_skill_actions_and_revives_at_one_power() {
     let mut scenario = LureReturnSoulScenario::new();
     scenario.change_to_mage_through_legal_turns();
     scenario.assert_mage_proficiency_baseline();
@@ -2632,13 +2628,43 @@ fn pouch_lure_return_soul_matrix_suppresses_profession_and_spirit_scopes_but_rev
     scenario.advance_to_the_lured_players_turn();
     scenario.assert_lure_suppresses_mage_proficiency();
 
+    let selected_card = scenario.mage_proficiency_cards[0];
+    let actions = scenario
+        .record
+        .playable_actions(&scenario.target, &[selected_card])
+        .unwrap();
+    assert!(!actions.iter().any(|action| {
+        matches!(
+            action,
+            PlayableAction::UseSpiritSkill(candidate) if candidate.skill == SpiritSkill::Flow
+        )
+    }));
+    let state_before_stale_command = scenario.record.state().clone();
+    let stale_command = scenario
+        .record
+        .handle(Command::UseSpiritSkill {
+            player: scenario.target.clone(),
+            skill: SpiritSkill::Flow,
+            selected_card: Some(selected_card),
+            declared_level: None,
+        })
+        .unwrap_err();
+    assert!(matches!(
+        stale_command,
+        GameError::Validation(ValidationError::SpiritSkillUnavailable {
+            spirit: SpiritKind::Water,
+            skill: SpiritSkill::Flow,
+        })
+    ));
+    assert_eq!(scenario.record.state(), &state_before_stale_command);
+
     let return_soul_events = scenario.trigger_return_soul();
     scenario.assert_return_soul_replaces_water_with_metal_at_one_power(&return_soul_events);
     scenario.assert_replay();
 }
 
 #[test]
-fn pouch_lure_meditation_matrix_keeps_the_legal_cost_and_use_but_suppresses_its_draw_bonus() {
+fn pouch_lure_meditation_matrix_removes_the_option_and_rejects_a_stale_command() {
     // baseline：仙者以合法命令啟用冥思時，成本、使用記錄與抽牌加成都必須完整
     // 解析。
     let mut baseline = LureMeditationScenario::new();
@@ -2692,52 +2718,33 @@ fn pouch_lure_meditation_matrix_keeps_the_legal_cost_and_use_but_suppresses_its_
     );
     baseline.assert_replay();
 
-    // modifier + interaction：Lure 以合法錦囊取得兩個獨立 scope；冥思仍是可用
-    // 的 ActiveEffect，卻只留下啟用和成本，不能虛構一個 passive NoEffect。
+    // modifier + interaction：離山以合法錦囊取得兩個獨立 scope；冥思不再是
+    // 可採取動作，過期頁面提交同一命令也不得支付成本或留下使用紀錄。
     let mut interaction = LureMeditationScenario::new();
     interaction.establish_immortal_through_legal_turns();
     let lure_events = interaction.trigger_lure();
     interaction.assert_lure_lifecycle(&lure_events);
     interaction.finish_lurers_ordinary_turn();
 
-    let interaction_turn = interaction.record.state().turn_number;
-    let interaction_events = interaction.activate_meditation();
+    assert!(!interaction.offers_meditation());
+    let state_before_stale_command = interaction.record.state().clone();
+    let stale_command = interaction
+        .record
+        .handle(Command::ActivateProfessionAbility {
+            player: interaction.target.clone(),
+            ability_id: "meditation".to_string(),
+            cards: vec![interaction.meditation_card],
+            target_card: None,
+            declared_element: None,
+            declared_level: None,
+        })
+        .unwrap_err();
     assert!(matches!(
-        interaction_events.as_slice(),
-        [
-            GameEvent::ProfessionAbilityActivated {
-                player,
-                ability_id,
-                prepared: None,
-            },
-            GameEvent::CardsMoved { card_moves },
-        ] if player == &interaction.target
-            && ability_id == "meditation"
-            && has_hand_to_discard_moves(card_moves, &interaction.target, &[interaction.meditation_card])
+        stale_command,
+        GameError::Validation(ValidationError::ProfessionAbilityUnavailable(ability_id))
+            if ability_id == "meditation"
     ));
-    assert_eq!(
-        interaction
-            .record
-            .state()
-            .activated_profession_ability_turns
-            .get(&interaction.target),
-        Some(&interaction_turn)
-    );
-    assert!(
-        !interaction
-            .record
-            .state()
-            .turn_draw_bonus_by_player
-            .contains_key(&interaction.target)
-    );
-    assert!(
-        interaction
-            .record
-            .state()
-            .discard_for(&interaction.target)
-            .unwrap()
-            .contains(&interaction.meditation_card)
-    );
+    assert_eq!(interaction.record.state(), &state_before_stale_command);
     assert_eq!(
         interaction.record.state().phase,
         fewfc::domain::Phase::ActiveEffects
@@ -2954,13 +2961,10 @@ fn golden_cicada_lure_matrix_protects_only_player_scope_when_chain_triggers_lure
     let golden_events = record
         .handle(Command::TriggerSecretStrategy {
             player: p2.clone(),
-            strategy: SecretStrategy::GoldenCicada,
-            target_player: None,
-            star: None,
-            break_star: false,
-            discard_card: None,
-            deck_cards: Vec::new(),
-            discard_cards: Vec::new(),
+            decision: SecretStrategyDecision::NoInput {
+                source_card: record.state().pouch_for(&p2).unwrap().card,
+                strategy: SecretStrategy::GoldenCicada,
+            },
         })
         .unwrap();
     assert!(matches!(
@@ -3035,14 +3039,14 @@ fn golden_cicada_lure_matrix_protects_only_player_scope_when_chain_triggers_lure
             player: p2.clone(),
             choice_id,
             answer: ChoiceAnswer::Chain {
-                pouch_owner: p2.clone(),
-                pouch_card: chain_pouch,
-                trigger_card: Some(lure_trigger),
-                strategy: Some(SecretStrategy::LureTheTigerAway),
-                target_player: Some(p2.clone()),
-                star: None,
-                break_star: false,
-                discard_card: None,
+                decision: ChainPouchDecision::PlaceAndTrigger {
+                    pouch_owner: p2.clone(),
+                    pouch_card: chain_pouch,
+                    decision: SecretStrategyDecision::TargetPlayer {
+                        source_card: lure_trigger,
+                        target_player: p2.clone(),
+                    },
+                },
             },
         })
         .unwrap();
@@ -3053,12 +3057,14 @@ fn golden_cicada_lure_matrix_protects_only_player_scope_when_chain_triggers_lure
                 GameEvent::ChoiceMade {
                     player,
                     answer: ChoiceAnswer::Chain {
-                        pouch_owner,
-                        pouch_card,
-                        trigger_card: Some(trigger),
-                        strategy: Some(SecretStrategy::LureTheTigerAway),
-                        target_player: Some(target),
-                        ..
+                        decision: ChainPouchDecision::PlaceAndTrigger {
+                            pouch_owner,
+                            pouch_card,
+                            decision: SecretStrategyDecision::TargetPlayer {
+                                source_card: trigger,
+                                target_player: target,
+                            },
+                        },
                     },
                     ..
                 },
@@ -3328,14 +3334,16 @@ fn pouch_chain_deceive_heaven_matrix_places_before_triggering_the_typed_temporar
             player: p1.clone(),
             choice_id,
             answer: ChoiceAnswer::Chain {
-                pouch_owner: p1.clone(),
-                pouch_card: placed_pouch,
-                trigger_card: Some(deceive_trigger),
-                strategy: Some(SecretStrategy::DeceiveHeaven),
-                target_player: None,
-                star: Some(StarKind::Fire),
-                break_star: false,
-                discard_card: None,
+                decision: ChainPouchDecision::PlaceAndTrigger {
+                    pouch_owner: p1.clone(),
+                    pouch_card: placed_pouch,
+                    decision: SecretStrategyDecision::Star {
+                        source_card: deceive_trigger,
+                        operation: SecretStrategyStarOperation::Gain {
+                            star: StarKind::Fire,
+                        },
+                    },
+                },
             },
         })
         .unwrap();
@@ -3345,13 +3353,16 @@ fn pouch_chain_deceive_heaven_matrix_places_before_triggering_the_typed_temporar
             GameEvent::ChoiceMade {
                 player,
                 answer: ChoiceAnswer::Chain {
-                    pouch_owner,
-                    pouch_card,
-                    trigger_card: Some(trigger),
-                    strategy: Some(SecretStrategy::DeceiveHeaven),
-                    star: Some(StarKind::Fire),
-                    break_star: false,
-                    ..
+                    decision: ChainPouchDecision::PlaceAndTrigger {
+                        pouch_owner,
+                        pouch_card,
+                        decision: SecretStrategyDecision::Star {
+                            source_card: trigger,
+                            operation: SecretStrategyStarOperation::Gain {
+                                star: StarKind::Fire,
+                            },
+                        },
+                    },
                 },
                 ..
             },
@@ -3709,13 +3720,12 @@ fn pouch_deceive_heaven_temporary_fire_star_matrix_keeps_draw_under_defense_and_
     let deceive_events = record
         .handle(Command::TriggerSecretStrategy {
             player: p1.clone(),
-            strategy: SecretStrategy::DeceiveHeaven,
-            target_player: None,
-            star: Some(StarKind::Fire),
-            break_star: false,
-            discard_card: None,
-            deck_cards: Vec::new(),
-            discard_cards: Vec::new(),
+            decision: SecretStrategyDecision::Star {
+                source_card: record.state().pouch_for(&p1).unwrap().card,
+                operation: SecretStrategyStarOperation::Gain {
+                    star: StarKind::Fire,
+                },
+            },
         })
         .unwrap();
     assert!(matches!(
@@ -3852,4 +3862,386 @@ fn pouch_deceive_heaven_temporary_fire_star_matrix_keeps_draw_under_defense_and_
     );
     assert_eq!(record.replay().unwrap(), record.state().clone());
     assert_eq!(record.verify_replay().unwrap(), record.state().clone());
+}
+
+/// 以最小可互動狀態固定決策邊界：這些測試不依賴 UI offer，直接驗證 Rust
+/// Rules Engine 對封閉 Decision 的重新驗證、事件順序與 Card Origin。
+fn ready_direct_pouch_state(
+    pouch_element: Element,
+    pouch_level: u32,
+) -> (GameState, PlayerId, PlayerId, CardInstanceId) {
+    let player = PlayerId::new("p1");
+    let opponent = PlayerId::new("p2");
+    let setup = OfficialRules::new()
+        .configure_game(
+            vec![
+                Player {
+                    id: player.clone(),
+                    team: TeamId::new("team:p1"),
+                },
+                Player {
+                    id: opponent.clone(),
+                    team: TeamId::new("team:p2"),
+                },
+            ],
+            vec![player.clone(), opponent.clone()],
+            POUCH_STRATEGY_MODULES
+                .into_iter()
+                .map(RuleModuleId::new)
+                .collect(),
+        )
+        .unwrap();
+    let mut state = GameState::from_setup(&setup);
+    state.status = GameStatus::InProgress;
+    state.phase = Phase::ActiveEffects;
+
+    for owner in [&player, &opponent] {
+        let deck = state
+            .card_instances
+            .iter()
+            .filter_map(|instance| {
+                matches!(&instance.origin, CardOrigin::Player(card_owner) if card_owner == owner)
+                    .then_some(instance.instance)
+            })
+            .collect();
+        *state.deck_for_mut(owner).unwrap() = deck;
+    }
+
+    let source_card = card_in_state_deck(&state, &player, pouch_element, pouch_level);
+    state
+        .deck_for_mut(&player)
+        .unwrap()
+        .retain(|card| *card != source_card);
+    state.pouches.push(PlayerPouch {
+        owner: player.clone(),
+        card: source_card,
+        known_by: vec![player.clone()],
+    });
+    (state, player, opponent, source_card)
+}
+
+fn move_owned_deck_card_to_hand(
+    state: &mut GameState,
+    player: &PlayerId,
+    element: Element,
+) -> CardInstanceId {
+    let card = state
+        .deck_for(player)
+        .unwrap()
+        .iter()
+        .copied()
+        .find(|card| state.card_element(*card) == Some(element))
+        .expect("fixture requires an owned card of the requested element");
+    state
+        .deck_for_mut(player)
+        .unwrap()
+        .retain(|candidate| *candidate != card);
+    state.hand_mut(player).unwrap().push(card);
+    card
+}
+
+fn chain_choice(state: &mut GameState, player: &PlayerId, deck_cards: Vec<CardInstanceId>) {
+    state.pending_choice = Some(PendingChoice {
+        choice_id: ChoiceId::new(1),
+        player: player.clone(),
+        kind: PendingChoiceKind::Chain {
+            pouch_owners: vec![player.clone()],
+            deck_cards,
+        },
+        continuation: ChoiceContinuation::Pouch(PouchChoiceContinuation::Chain),
+    });
+}
+
+#[test]
+fn pouch_retreat_matrix_preserves_no_change_cases_and_card_origin() {
+    let (clear_state, player, _, source_card) = ready_direct_pouch_state(Element::Fire, 5);
+    let clear_events = handle_command(
+        &clear_state,
+        Command::TriggerSecretStrategy {
+            player: player.clone(),
+            decision: SecretStrategyDecision::Environment {
+                source_card,
+                operation: SecretStrategyEnvironmentOperation::Clear,
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        clear_events,
+        vec![
+            GameEvent::PouchRevealed {
+                player: player.clone(),
+                owner: Some(player.clone()),
+                card: source_card,
+                strategy: SecretStrategy::Retreat,
+            },
+            GameEvent::PouchConsumed {
+                owner: Some(player.clone()),
+                card: source_card,
+            },
+        ],
+        "Clear without an Environment is legal, reveals, and consumes without a clear event",
+    );
+
+    let (mut no_environment, player, _, source_card) = ready_direct_pouch_state(Element::Fire, 5);
+    let ordinary_card = move_owned_deck_card_to_hand(&mut no_environment, &player, Element::Wood);
+    let transfer_events = handle_command(
+        &no_environment,
+        Command::TriggerSecretStrategy {
+            player: player.clone(),
+            decision: SecretStrategyDecision::Environment {
+                source_card,
+                operation: SecretStrategyEnvironmentOperation::TransferByDiscard {
+                    card: ordinary_card,
+                },
+            },
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        transfer_events.as_slice(),
+        [
+            GameEvent::PouchRevealed { strategy: SecretStrategy::Retreat, .. },
+            GameEvent::CardsMoved { card_moves },
+            GameEvent::EnvironmentTransferred { from: None, to: Element::Wood, .. },
+            GameEvent::PouchConsumed { .. },
+        ] if card_moves == &vec![fewfc::domain::CardMoveDelta {
+            card: ordinary_card,
+            from: CardZone::Hand(player.clone()),
+            to: CardZone::PlayerDiscard(player.clone()),
+        }]
+    ));
+    for event in &transfer_events {
+        apply_event(&mut no_environment, event);
+    }
+    assert_eq!(no_environment.environment, Some(Element::Wood));
+    assert!(
+        no_environment
+            .discard_for(&player)
+            .is_some_and(|discard| discard.contains(&ordinary_card))
+    );
+
+    let (mut same_environment, player, _, source_card) = ready_direct_pouch_state(Element::Fire, 5);
+    same_environment.environment = Some(Element::Fire);
+    let same_element_card =
+        move_owned_deck_card_to_hand(&mut same_environment, &player, Element::Fire);
+    let same_element_events = handle_command(
+        &same_environment,
+        Command::TriggerSecretStrategy {
+            player: player.clone(),
+            decision: SecretStrategyDecision::Environment {
+                source_card,
+                operation: SecretStrategyEnvironmentOperation::TransferByDiscard {
+                    card: same_element_card,
+                },
+            },
+        },
+    )
+    .unwrap();
+    assert!(same_element_events.iter().any(|event| matches!(
+        event,
+        GameEvent::EnvironmentTransferred {
+            from: Some(Element::Fire),
+            to: Element::Fire,
+            ..
+        }
+    )));
+
+    let (mut foreign_state, player, opponent, source_card) =
+        ready_direct_pouch_state(Element::Fire, 5);
+    let foreign_card = foreign_state.deck_for(&opponent).unwrap()[0];
+    foreign_state
+        .deck_for_mut(&opponent)
+        .unwrap()
+        .retain(|card| *card != foreign_card);
+    foreign_state.hand_mut(&player).unwrap().push(foreign_card);
+    foreign_state.exposed_foreign_cards.push(foreign_card);
+    let foreign_events = handle_command(
+        &foreign_state,
+        Command::TriggerSecretStrategy {
+            player: player.clone(),
+            decision: SecretStrategyDecision::Environment {
+                source_card,
+                operation: SecretStrategyEnvironmentOperation::TransferByDiscard {
+                    card: foreign_card,
+                },
+            },
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        foreign_events.as_slice(),
+        [
+            GameEvent::PouchRevealed { strategy: SecretStrategy::Retreat, .. },
+            GameEvent::CardsMoved { card_moves },
+            GameEvent::EnvironmentTransferred { .. },
+            GameEvent::PouchConsumed { .. },
+        ] if card_moves == &vec![fewfc::domain::CardMoveDelta {
+            card: foreign_card,
+            from: CardZone::Hand(player.clone()),
+            to: CardZone::PlayerDiscard(opponent.clone()),
+        }]
+    ));
+    for event in &foreign_events {
+        apply_event(&mut foreign_state, event);
+    }
+    assert!(
+        foreign_state
+            .discard_for(&opponent)
+            .is_some_and(|discard| discard.contains(&foreign_card))
+    );
+    assert!(!foreign_state.exposed_foreign_cards.contains(&foreign_card));
+}
+
+#[test]
+fn pouch_secret_strategy_validation_failures_are_atomic_before_reveal_or_choice_made() {
+    let (star_state, player, _, source_card) = ready_direct_pouch_state(Element::Fire, 4);
+    let before_star = star_state.clone();
+    assert_eq!(
+        handle_command(
+            &star_state,
+            Command::TriggerSecretStrategy {
+                player: player.clone(),
+                decision: SecretStrategyDecision::Star {
+                    source_card,
+                    operation: SecretStrategyStarOperation::Break {
+                        star: StarKind::Fire
+                    },
+                },
+            },
+        ),
+        Err(GameError::Validation(
+            ValidationError::SecretStrategyInputInvalid
+        )),
+        "a stale Deceive Heaven Break must not become a legal no-op",
+    );
+    assert_eq!(star_state, before_star);
+
+    let forged_source = card_in_state_deck(&star_state, &player, Element::Metal, 1);
+    assert_eq!(
+        handle_command(
+            &star_state,
+            Command::TriggerSecretStrategy {
+                player: player.clone(),
+                decision: SecretStrategyDecision::NoInput {
+                    source_card: forged_source,
+                    strategy: SecretStrategy::GoldenCicada,
+                },
+            },
+        ),
+        Err(GameError::Validation(
+            ValidationError::SecretStrategyInputInvalid
+        )),
+        "a Decision source must exactly match the current Pouch",
+    );
+    assert_eq!(
+        handle_command(
+            &star_state,
+            Command::TriggerSecretStrategy {
+                player: player.clone(),
+                decision: SecretStrategyDecision::NoInput {
+                    source_card,
+                    strategy: SecretStrategy::GoldenCicada,
+                },
+            },
+        ),
+        Err(GameError::Validation(
+            ValidationError::SecretStrategyConditionMismatch
+        )),
+        "a closed input family still revalidates its strategy against the source card",
+    );
+    assert_eq!(star_state, before_star);
+
+    let (mut chain_state, player, _, _) = ready_direct_pouch_state(Element::Metal, 1);
+    let pouch_card = card_in_state_deck(&chain_state, &player, Element::Wood, 2);
+    let trigger_card = card_in_state_deck(&chain_state, &player, Element::Fire, 4);
+    chain_choice(&mut chain_state, &player, vec![pouch_card, trigger_card]);
+    let before_chain = chain_state.clone();
+    assert_eq!(
+        handle_command(
+            &chain_state,
+            Command::AnswerChoice {
+                player: player.clone(),
+                choice_id: ChoiceId::new(1),
+                answer: ChoiceAnswer::Chain {
+                    decision: ChainPouchDecision::PlaceAndTrigger {
+                        pouch_owner: player.clone(),
+                        pouch_card,
+                        decision: SecretStrategyDecision::Star {
+                            source_card: trigger_card,
+                            operation: SecretStrategyStarOperation::Break {
+                                star: StarKind::Fire
+                            },
+                        },
+                    },
+                },
+            },
+        ),
+        Err(GameError::Validation(
+            ValidationError::SecretStrategyInputInvalid
+        )),
+        "the Chain envelope must validate before ChoiceMade, PouchPlaced, or PouchRevealed",
+    );
+    assert_eq!(chain_state, before_chain);
+}
+
+#[test]
+fn pouch_chain_place_only_uses_its_closed_envelope_without_a_strategy_decision() {
+    let (mut state, player, _, previous_pouch) = ready_direct_pouch_state(Element::Metal, 1);
+    let pouch_card = card_in_state_deck(&state, &player, Element::Wood, 2);
+    chain_choice(&mut state, &player, vec![pouch_card]);
+
+    let events = handle_command(
+        &state,
+        Command::AnswerChoice {
+            player: player.clone(),
+            choice_id: ChoiceId::new(1),
+            answer: ChoiceAnswer::Chain {
+                decision: ChainPouchDecision::PlaceOnly {
+                    pouch_owner: player.clone(),
+                    pouch_card,
+                },
+            },
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::ChoiceMade {
+                answer: ChoiceAnswer::Chain {
+                    decision: ChainPouchDecision::PlaceOnly { .. },
+                },
+                ..
+            },
+            GameEvent::PouchPlaced { card, previous: Some(previous), .. },
+            GameEvent::RandomnessRequested { request },
+        ] if *card == pouch_card
+            && *previous == previous_pouch
+            && matches!(
+                request.continuation,
+                fewfc::domain::RandomnessContinuation::Pouch(
+                    fewfc::domain::PouchRandomnessContinuation::ChainPostSearch { .. }
+                )
+            )
+    ));
+}
+
+fn card_in_state_deck(
+    state: &GameState,
+    player: &PlayerId,
+    element: Element,
+    level: u32,
+) -> CardInstanceId {
+    state
+        .deck_for(player)
+        .unwrap()
+        .iter()
+        .copied()
+        .find(|card| {
+            state.card_def(*card).is_some_and(|definition| {
+                definition.element == element && definition.level.value() == level
+            })
+        })
+        .expect("fixture requires a matching personal-deck card")
 }

@@ -977,10 +977,12 @@ GameEvent::ChoiceMade {
 
 `ChoiceRequested` must include enough serialized data to reconstruct the pending choice and its continuation during replay.
 
-Turn Draw uses its more specific semantic pair instead:
-`CardsDrawnForTurnDiscardChoice` creates the Pool and Pending Choice, and
-`TurnDrawResolved` records the answer and both resulting Card movements. It
-does not additionally emit generic `ChoiceRequested` or `ChoiceMade` events.
+Turn Draw retains its specific Card-movement events while using the ordinary
+Pending Choice lifecycle. `CardsDrawnForTurnDiscardChoice` creates the Pool,
+then `ChoiceRequested` creates its Pending Choice. The answering Command emits
+`ChoiceMade` before `TurnDrawResolved`, which records the answer's Discard and
+kept-Card movements atomically. No Player input or replay state exists between
+those two movements inside `TurnDrawResolved`.
 
 Canonical events may contain hidden information required for deterministic replay, including hidden card ids, complete choice options, and serialized continuations.
 
@@ -1912,6 +1914,44 @@ Deck when trusted randomness is resolved. Sheep Stealing is the exception to
 the additional Chain request: its own post-exchange Deck Shuffle is reused, so
 the Chain flow does not issue a duplicate shuffle.
 
+離山 deliberately replaces official 5.16's ineffective-result interpretation
+with **Temporary Ability Loss**. Official rule 4-7's broad
+「該職業之能力」boundary is authoritative: the affected Player retains their
+Profession identity but temporarily lacks its complete Profession Ability Set,
+including Automatic, Formation Proficiency, and Activated Profession Abilities,
+Profession Formations, inherited rules, and other Profession rules. The Spirit
+scope likewise removes active, automatic, and persistent Spirit Skills and
+continues to prevent Spirit Power gain. See
+[ADR-0033](adr/0033-treat-lure-as-temporary-ability-loss.md).
+
+Playable-action generation and Command validation use the same current-ability
+authority. An option requiring a lost Profession Ability Set or Spirit Skill is
+not offered, and a stale or direct submission is a Validation Failure that
+emits no canonical events or costs. Ordinary Profession Change remains legal
+when its path is independent of the lost set: the 抉擇 and 突破 permissions
+granted by 初行客 are absent, the retained Profession identity may still satisfy
+an ordinary prerequisite, and the absent 暗行 prohibition no longer blocks an
+ordinary Profession Change. Profession Formations and profession-granted
+transitions or acquisition consequences remain unavailable for the duration.
+
+Temporary Ability Loss is prospective rather than retroactive. An already
+accepted ability use retains its Prepared Profession Ability, Formation
+Requirement, Card Interpretation Layer, bonus, Status Effect, cost, and consumed
+usage; neither applying nor expiring 離山 rolls those facts back or resets them.
+Automatic checks during the loss do not use the absent ability, including 綻放
+and 順風回復使用次數. Profession Change, Spirit Summoning, and other
+source replacement do not escape the Player-scoped duration.
+
+The existing Profession-scope and Spirit-scope 離山 Status Effects remain the
+canonical and Public State representation; no event or Pending Choice shape
+changes. 金蟬 continues to protect only the Player-facing Profession scope, not
+Spirit Skills or Spirit Power gain. Public presentation retains the owned
+Profession, Spirit, and read-only summaries, relies on the existing visible 離山
+Status, and derives actionable controls only from Playable Actions. Pure replay
+continues to apply older canonical events exactly, including an ability use that
+was accepted under the previous interpretation; live decision logic carries no
+compatibility branch for submitting that action now.
+
 The Jianghu term **State (狀態)** is narrower than the engine's established
 generic `StatusEffect` concept. Define a separate typed Jianghu State collection
 containing only 千鋒, 踏雪, and 中毒; do not rename or change the generic model or
@@ -1958,19 +1998,20 @@ effect that inspects a complete hand uses that complete hand. Canonical events
 record the inspected set, but viewer filtering reveals it only to the inspecting
 Player and never supplements it with uninspected hidden Cards.
 
-Fair Wind's Tailwind (`順風`) recovers only when a Discard Shuffle completes;
-reordering Cards already in a Deck never recovers it. A shared-Deck Discard
-Shuffle recovers Tailwind for every Player who currently owns that ability and
-whose Profession Abilities are effective. With Personal Deck enabled, only the
-owner of the shuffled Discard Pile can recover it. Recovery records an explicit
-`LimitedUseChanged` only for an actual increase from zero to the current
-maximum; a Player already at maximum, whose Profession Abilities are
-ineffective, or who no longer owns Tailwind receives no recovery event.
+晴風使的順風只在 Discard Shuffle 完成時回復使用次數；reordering Cards already
+in a Deck never recovers it. A shared-Deck Discard Shuffle recovers the use count
+of 順風 for every
+Player who currently owns that ability and whose Profession Ability Set is
+available. With Personal Deck enabled, only the owner of the shuffled Discard
+Pile can recover it. Recovery records an explicit `LimitedUseChanged` only for
+an actual increase from zero to the current maximum; a Player already at
+maximum, whose Profession Ability Set is unavailable, or who no longer owns
+順風 receives no recovery event.
 
 Local room `44e4b60f-89c9-4e7e-a832-521af4a5aa3c` is the regression scenario
-that fixed this distinction: command 39 consumes player-2's Tailwind, and
+that fixed this distinction: command 39 consumes player-2's 順風, and
 command 72 performs Rusted Iron Withered Forest against player-2's Personal
-Deck. Its trusted shuffle is a Deck Shuffle, so Tailwind must remain exhausted.
+Deck. Its trusted shuffle is a Deck Shuffle, so 順風 must remain exhausted.
 
 Death Spirit's Shared Fate (`同命`) is **not** derived from the resolved
 Formation's Affected Player Set. The confirmed rule is: when a Formation effect
@@ -2121,7 +2162,7 @@ For Rusted Iron Withered Forest (`鏽鐵枯林`), a shared Deck is processed onc
 reveal its top eight Cards, discard Cards of level three or higher, then shuffle
 the rest back into that shared Deck. With Personal Deck enabled, each Player's
 Deck is processed separately. Both paths reorder Cards already in a Deck and
-therefore never recover Tailwind.
+therefore never recover the use count of 順風.
 
 In team play, Divine Calculation Status makes Thunder-Fire Tribulation's
 (`天雷劫火`) 15-point global HP deduction ineffective for the Status owner's
@@ -2275,3 +2316,90 @@ Replay creation are unavailable, and any partial failure leaves maintenance
 enabled for a safe retry. Reopen traffic only after verifying that legacy Game
 Records are absent, replay D1 tables are empty, replay Durable Object storage is
 empty, old Replay IDs return not found, and preserved rooms still exist.
+
+### 42. Deep Secret Strategy Decisions And Hard Cutover
+
+Deepen Secret Strategy resolution as an internal child module of the Rust Pouch
+Rule Module. It owns Secret Strategy offer construction, complete Decision
+validation, immediate strategy effect events, and strategy-specific
+continuations. The outer Pouch module retains source acquisition, Pouch reveal,
+placement and consumption, the direct-versus-Chain lifecycle, and Chain's
+post-search shuffle. Keep the external `OfficialRules` interface unchanged and
+do not create a public plug-in or per-strategy extension seam.
+
+Replace the current wide optional-field command bag with one closed algebraic
+Command/Parameter Object. A `SecretStrategyDecision` retains its source Card and
+one answer-shaped selection from exactly five families:
+
+- a no-input Secret Strategy, covering 金蟬, 偷梁, 混水, 觀火, 還魂, and 暗渡;
+- 離山 with one target Player;
+- 瞞天 with `Gain(star)` or `Break(star)`;
+- 走為 with `Clear` or `TransferByDiscard(card)`;
+- beginning 牽羊, with no Deck or Discard Pile Card selections.
+
+The closed variants must make irrelevant fields and invalid field combinations
+unrepresentable. In particular, replace `star + breakStar` with the Star
+operation and replace an optional discard Card with the Environment operation.
+Use exhaustive typed Rust dispatch rather than ten shallow Strategy objects.
+Direct Pouch triggering carries the complete Decision. Chain's answer is a
+separate closed outer envelope: `PlaceOnly`, or `PlaceAndTrigger` containing the
+same complete Decision. The two paths share Secret Strategy semantics without
+merging their outer lifecycles.
+
+Secret Strategy offers follow the same answer-shaped families. Each option
+contains only the candidates relevant to its answer: no-input strategies have
+no empty candidate collections, 離山 exposes target Players, 瞞天 exposes legal
+Star operations, 走為 exposes legal Environment operations, and 牽羊 exposes
+only the fact that its deferred exchange can begin. Remove generic
+`requiredCardCount` and unrelated empty option fields. These private
+interaction projections may cross the Rust-to-TypeScript boundary, but the
+Decision is not canonical Game State and is not added to Public State or the
+Public Event Feed.
+
+Submission revalidates the complete Decision against current canonical state;
+there is no opaque Option ID and no trust in an earlier offer snapshot. Validate
+the source Card, selected strategy eligibility from its printed value, current
+actor and target authority, and every typed operation before emitting any
+event. A stale, forged, mismatched, or otherwise illegal Decision is a
+Validation Failure with zero canonical events and no reveal, consume, cost, or
+movement. A Decision created internally after successful validation that the
+module cannot resolve is instead a Rule Implementation Error.
+
+瞞天 `Break(star)` requires that Star to exist when submitted. A nonexistent or
+stale target is a Validation Failure rather than a legal no-effect resolution.
+This differs from a granted Temporary Star Effect whose Formation later tries
+to break a same-named Star its Team does not own; that later break remains a
+legal no-effect consequence. 走為 `Clear` is legal without a current
+Environment and resolves as no change. `TransferByDiscard(card)` requires a
+current hand Card Instance, reads its printed element, permits an Exposed
+Foreign Card, returns the Card to its Card Origin Discard Pile, and remains
+legal with no current Environment or with a same-element current Environment.
+
+牽羊's initial Decision only begins its continuation. After any required
+preliminary Discard Shuffle, retain the later typed Sheep Stealing Pending
+Choice: select exactly two current Deck Cards, project those ordered moves into
+the Discard Pile, then select exactly two Cards from that projected Discard
+Pile. The existing sequential validation allows either newly discarded Card to
+return. The Secret Strategy source Card remains set aside and ineligible until
+the exchange and trusted Deck Shuffle complete.
+
+All immediately decidable validation precedes canonical output. A direct valid
+resolution orders `PouchRevealed`, the strategy effect, then `PouchConsumed`.
+Chain orders `ChoiceMade`, `PouchPlaced`, `PouchRevealed`, the strategy effect,
+then `PouchConsumed`, followed by its ordinary post-search shuffle when
+required. A deferred 牽羊 resolution reveals first and consumes only after its
+typed continuation and shuffle finish; its shuffle continues to replace
+Chain's otherwise additional post-search shuffle.
+
+TypeScript is only the browser-local adapter from a draft to the closed command
+DTO. It must not reproduce strategy eligibility or Rules Engine validation.
+Rust-to-TypeScript tagged variants and every new multiword field use exact
+camelCase serialization contracts with explicit tests.
+
+This is an atomic hard cutover. Remove the legacy optional-field command and
+option shapes in the same change, without dual reads, compatibility variants,
+or fallback parsing. Preserve all unique behavioral evidence. Before deleting
+or consolidating existing Pouch tests, inventory every assertion claim and name
+its replacement evidence as required by ADR-0032. Keep the interaction matrices
+and representative Online Game Room and Playwright seams while adding focused
+atomic-validation, canonical-order, replay, and serialization coverage.

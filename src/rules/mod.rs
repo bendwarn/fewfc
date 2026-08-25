@@ -24,7 +24,7 @@ pub use base::deck_composition::{
     SharedDeckComposition,
 };
 pub use official::{OfficialRuleModuleCategory, OfficialRuleModuleSpec, OfficialRules};
-pub use pouch::{SecretStrategyInputRequirement, SecretStrategyOption};
+pub use pouch::SecretStrategyOption;
 
 use crate::domain::EffectiveCardLevel;
 pub use crate::domain::Element;

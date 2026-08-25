@@ -21,5 +21,5 @@ Discard Shuffle (`洗棄牌`) shuffles the complete applicable Discard Pile and
 places every result at the bottom of that same Deck. The continuation states
 only what resumes after randomness resolves and never determines the source
 pile or destination. This structural distinction keeps replay validation and
-Tailwind recovery consistent across Turn Draw, Profession Abilities,
+順風回復使用次數 consistent across Turn Draw, Profession Abilities,
 Formations, Echoes, and Pouch strategies.

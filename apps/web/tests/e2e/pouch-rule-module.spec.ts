@@ -1,5 +1,6 @@
 import type { APIResponse, Page } from '@playwright/test'
 import {
+  battleRecordRuleEntry,
   expect,
   reloadFastGameRoute,
   seedDevelopmentScenario,
@@ -116,8 +117,7 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     await completeIndependentInitialPouchSelection(host, guest, roomId)
 
     await Promise.all(pages.map(async (page) => {
-      await expect(page.getByRole('region', { name: '啟用規則' }))
-        .toContainText('錦囊')
+      await expect(await battleRecordRuleEntry(page)).toContainText('錦囊規則')
       await expect(page.getByRole('dialog', { name: '選擇初始錦囊' })).toHaveCount(0)
     }))
 
@@ -132,7 +132,15 @@ test('Pouch preparation is private, reconnectable, and triggers through the Abil
     await expect(active.locator('.action-detail')).toContainText('點擊後立即發動')
     const command = waitForCommand(active, 'triggerSecretStrategy')
     await goldenCicada.click()
-    await command
+    const triggerResponse = await command
+    expect(triggerResponse.request().postDataJSON()?.action).toMatchObject({
+      type: 'triggerSecretStrategy',
+      decision: {
+        type: 'noInput',
+        sourceCard: expect.any(Number),
+        strategy: 'GoldenCicada',
+      },
+    })
     await expect(active.getByRole('button', { name: /秘計‧金蟬/ })).toHaveCount(0)
     const effectSummary = active.locator('.effect-summary')
     await expect(effectSummary).toHaveText(/^\s*效果 1\s*$/)
@@ -239,7 +247,22 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     await expect(chainDialog.locator('.action-detail')).toContainText('從牌組與棄牌堆各選兩張交換，之後洗牌')
     const chainAnswer = waitForCommand(actor, 'answerChoice')
     await chainDialog.getByRole('button', { name: '確認' }).click()
-    await chainAnswer
+    const chainResponse = await chainAnswer
+    expect(chainResponse.request().postDataJSON()?.action).toMatchObject({
+      type: 'answerChoice',
+      answer: {
+        type: 'chain',
+        decision: {
+          type: 'placeAndTrigger',
+          pouchOwner: expect.any(String),
+          pouchCard: expect.any(Number),
+          decision: {
+            type: 'sheepStealing',
+            sourceCard: expect.any(Number),
+          },
+        },
+      },
+    })
 
     const sheepDialog = actor.getByRole('dialog', { name: '牽羊：交換牌' })
     await expect(sheepDialog).toBeVisible()

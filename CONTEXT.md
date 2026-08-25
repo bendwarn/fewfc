@@ -152,6 +152,14 @@ direct Pouch trigger or appear inside a Chain Pending Choice, so it is not
 necessarily an independently committable Action.
 _Avoid_: Secret Strategy Action, resolved Secret Strategy effect
 
+**Secret Strategy Decision**:
+A completed selection of one Secret Strategy Option that retains its source
+Card, selected Secret Strategy, and exactly the input required by that Option.
+It may be carried by a direct Pouch trigger or a Chain answer, but it is neither
+the outer Action or Pending Choice lifecycle nor the resolved Secret Strategy
+effect.
+_Avoid_: Secret Strategy Option, option bag, Secret Strategy Action, resolved effect
+
 **Chain Formation (連環)**:
 The active Spell that searches a Deck for one or two Cards with different
 elements and levels. One becomes a friendly Player's Pouch; when a second is
@@ -493,6 +501,81 @@ _Avoid_: canonical state
 **Public Event Feed**:
 A viewer-filtered event stream derived from canonical events.
 _Avoid_: canonical event log
+
+**Public Decision Feed**:
+A viewer-filtered stream that preserves Player Decision boundaries while
+carrying only the public events and immediate consequences within each boundary.
+_Avoid_: flattened event list, canonical decision log
+
+**Battle Record (戰局紀錄)**:
+A viewer-relative account of Player-visible actions and outcomes during a Game,
+written in player language without Rules Engine processing details.
+_Avoid_: canonical event log, engine trace, debug log
+
+**Battle Record Entry (戰局紀錄項目)**:
+One accepted Player Decision together with its immediate Player-meaningful
+consequences through the next Decision boundary, or one Player-meaningful
+automatic outcome at a meaningful Game timing.
+_Avoid_: Game Event, engine lifecycle step, state delta
+
+**Battle Record Entry ID**:
+The stable identity of one Battle Record Entry within a Game Record. It remains
+unchanged when Pending Randomness enriches that Entry.
+_Avoid_: Game Event type, rendered-text hash, list position after filtering
+
+**Battle Record Turn Group (戰局紀錄回合組)**:
+The chronological Battle Record Entries belonging to one Turn, labeled by that
+Turn and its Player without creating another Entry.
+_Avoid_: Turn Started Entry, Turn Phase log
+
+**Battle Record Preparation Group (戰局紀錄準備組)**:
+The chronological Battle Record Entries before the first Turn, including public
+configuration, each accepted Player setup Decision, and preparation completion.
+_Avoid_: one merged setup Entry, shuffle log, deal log
+
+**Player Decision (玩家決策)**:
+A Player's accepted commitment of one legal Game Preparation choice, Action,
+ability, or Pending Choice answer. Uncommitted interaction and Rules Engine
+processing are not Decisions.
+_Avoid_: UI click, command draft, engine lifecycle step
+
+**Viewer Player (你)**:
+The participating Player from whose perspective a Battle Record is presented.
+Other Players retain their display names unless a rule relationship specifically
+requires Previous Player or Next Player.
+_Avoid_: the viewer's display name, current Player
+
+**Observer (旁觀者)**:
+A Battle Record viewer without a Player perspective in the viewed Game.
+_Avoid_: Viewer Player, non-current Player
+
+**Replay Perspective (重播視角)**:
+The Player viewpoint freely selected by a Replay viewer, independent of the
+viewer's account identity or participation in the original Game.
+_Avoid_: authenticated Replay owner, inferred original Player
+
+**Replay Omniscience (重播全知資訊)**:
+The Replay visibility policy that reveals every Player's private Game
+information while continuing to hide Deck order. It is independent of the
+selected Replay Perspective.
+_Avoid_: Player visibility, canonical Game Record access, visible Deck order
+
+**Own Side (我方)**:
+The viewer-relative label for the Team to which a participating viewer belongs.
+_Avoid_: Team A, team-a
+
+**Opposing Side (對方)**:
+The viewer-relative label for the other Team from a participating viewer's perspective.
+_Avoid_: Team B, team-b, opponent
+
+**First Side (先手方)**:
+The neutral label for the Team containing the first Player in Turn Order when
+the Battle Record viewer is an Observer.
+_Avoid_: Team A, team-a, 我方
+
+**Second Side (後手方)**:
+The neutral label for the other Team when the Battle Record viewer is an Observer.
+_Avoid_: Team B, team-b, 對方
 
 **Card Move Delta**:
 An explicit recorded movement of a card instance from one zone to another.
@@ -929,6 +1012,8 @@ _Avoid_: callback response
 - **Temporary Ability Loss** does not remove the affected **Profession** or
   **Spirit**, but the affected **Profession Ability Set** and Spirit Skills do
   not apply while the loss lasts
+- **Temporary Ability Loss** suspends permissions and prohibitions in the
+  affected **Profession Ability Set** alike
 - **Temporary Ability Loss** removes **Profession Change** paths contributed by
   a **Profession Ability Set** but does not remove the Profession identity used
   by ordinary Profession Change prerequisites
@@ -958,6 +1043,10 @@ _Avoid_: callback response
 - A **Card Instance's** current zone does not change its **Card Origin**
 - A **Pouch** has exactly one **Pouch Owner**, which may differ from its Card
   Origin
+- A **Secret Strategy Decision** retains its source **Card Instance** and
+  contains exactly the input required by its selected **Secret Strategy**
+- Direct Pouch triggering and **Chain Formation** carry the same **Secret
+  Strategy Decision** inside distinct outer lifecycles
 - Every Deck and **Discard Pile** has exactly one **Pile Owner**
 - A **Deck List** contains exactly 60 Card Definitions with total level at most
   170 and official per-definition copy limits
@@ -1152,6 +1241,70 @@ _Avoid_: callback response
   previous-Turn **Formation Use**
 - A **Public View** is derived from canonical data and is not used for replay
 - A **Public Event Feed** is derived from **Game Events**
+- A **Public Decision Feed** preserves **Player Decision** grouping within a
+  **Public Event Feed**
+- A **Battle Record** presents a **Public Decision Feed** consistently during the
+  live Game and its Replay
+- A **Battle Record** consumes only an already viewer-filtered **Public Decision
+  Feed**; it neither consumes canonical hidden facts nor defines visibility
+- A **Battle Record** contains **Battle Record Entries**, not a one-to-one
+  rendering of **Game Events**
+- A **Battle Record** orders its **Battle Record Turn Groups** and their Entries
+  chronologically in both the live Game and its Replay
+- A **Battle Record Preparation Group** precedes every **Battle Record Turn
+  Group**; each Initial Pouch Selection is its own viewer-filtered **Player
+  Decision**, while automatic shuffling and dealing are summarized only by
+  preparation completion
+- The first Entry in a **Battle Record Preparation Group** names the enabled
+  **Rule Modules** in official player language without engine or Deck-order data
+- A **Battle Record Entry** has an accessible title naming the Decision or
+  outcome and an optional summary for its choices, consequences, and reasons
+- A material numeric consequence in a **Battle Record Entry** states both its
+  effective change and the resulting value
+- A **Battle Record Entry** expresses simultaneous consequences as simultaneous
+  and never treats canonical serialization order as game timing
+- A **Battle Record Entry** exposes its **Battle Record Entry ID**, title, and
+  optional summary without exposing a canonical Game Event type
+- Each accepted **Player Decision** adds its own **Battle Record Entry** with
+  every immediate consequence before the next Decision, including replacement
+  of an existing game object such as a **Pouch**
+- A later **Player Decision** in the same rule flow adds a later **Battle Record
+  Entry** instead of merging the complete flow into one Entry
+- When a **Player Decision** creates a **Pending Choice**, its Entry retains the
+  public requirement and next deciding Player; the answering Decision adds the
+  next Entry
+- Declining an optional offered effect is an accepted **Player Decision** and
+  adds its own concise Entry
+- **Pending Randomness** that directly continues a **Player Decision** enriches
+  that Decision's existing **Battle Record Entry** and never creates a separate
+  Rules Engine processing Entry
+- Covering a **Covered Passive** is a **Player Decision** and adds an Entry;
+  revealing that Passive is automatic processing included in the triggering
+  Action's summary rather than a separate Entry
+- Every Card entering a **Discard Pile** is identified in at least one
+  viewer-visible **Battle Record Entry**: face-up Formation Cards when performed,
+  Covered Passive Cards when revealed, and other Cards in the Decision or
+  outcome that causes their Discard
+- Routine movement to a **Discard Pile** adds no separate Entry after its Cards
+  have already been identified
+- A forced **Action Pass** and a skipped **Turn Draw** are Player-meaningful
+  automatic outcomes whose Entries state their game reason
+- A **Battle Record Entry** explains every viewer-visible **No-Effect Ground**
+  in official game language; 空城 is presented only as being revealed
+- A terminal **Game Conclusion** is presented as its own final **Battle Record
+  Entry** after the Entry for the Action or automatic outcome that caused it
+- A participating **Viewer Player** is addressed as **你** in their **Battle
+  Record**
+- A participating viewer's **Team** is presented as **Own Side** and the other
+  Team as **Opposing Side** in that viewer's **Battle Record**
+- An **Observer's** **Battle Record** presents the Team containing the first
+  Player in **Turn Order** as **First Side** and the other Team as **Second Side**
+- A Replay viewer may freely select any Player as the **Replay Perspective**;
+  the Replay never infers a Player from that viewer's account identity
+- Replay defaults its **Replay Perspective** to the first Player in **Turn
+  Order**; changing it rotates the board and makes that Player **Viewer Player**
+  for **Battle Record** language
+- Changing **Replay Perspective** does not change **Replay Omniscience**
 - A **Public State View** is derived from **Game State**
 - A **Rule Implementation Error** emits no **Game Events** and does not mutate **Game State**
 - A **Validation Failure** emits no **Game Events** and does not mutate **Game State**

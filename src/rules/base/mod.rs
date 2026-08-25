@@ -1043,7 +1043,7 @@ fn decide_command_with_base_ruleset(
                     ValidationError::ProfessionAbilityCannotResolve(ability_id),
                 ));
             }
-            let mut events = crate::rules::profession::activate_profession_ability(
+            let events = crate::rules::profession::activate_profession_ability(
                 state,
                 &player,
                 &ability_id,
@@ -1052,37 +1052,6 @@ fn decide_command_with_base_ruleset(
                 declared_element,
                 declared_level,
             )?;
-            if crate::rules::pouch::profession_is_suppressed(state, &player) {
-                for event in &mut events {
-                    match event {
-                        GameEvent::ProfessionAbilityActivated { prepared, .. } => {
-                            *prepared = None;
-                        }
-                        GameEvent::CardsMoved { card_moves } => {
-                            card_moves.retain(|movement| {
-                                cards.contains(&movement.card)
-                                    && movement.from == CardZone::Hand(player.clone())
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-                events.retain(|event| {
-                    matches!(event, GameEvent::ProfessionAbilityActivated { .. })
-                        || matches!(
-                            event,
-                            GameEvent::CardsMoved { card_moves } if !card_moves.is_empty()
-                        )
-                        || matches!(
-                        event,
-                        GameEvent::LimitedUseChanged {
-                            old_remaining,
-                            new_remaining,
-                            ..
-                        } if new_remaining < old_remaining
-                        )
-                });
-            }
             if !crate::rules::confluence::events_preserve_tuning_completion(
                 state, &player, &events,
             )? {

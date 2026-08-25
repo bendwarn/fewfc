@@ -3,8 +3,9 @@ import {
   isOnlineGameAction,
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
+  systemBattleRecord,
 } from './game-room'
-import type { TrustedRandomnessRequest } from './game-room'
+import type { OnlineGameAction, TrustedRandomnessRequest } from './game-room'
 import { isDevelopmentScenario } from './development-scenarios'
 
 test('development fixtures expose only the closed named scenario catalog', () => {
@@ -19,6 +20,25 @@ test('development fixtures expose only the closed named scenario catalog', () =>
   expect(isDevelopmentScenario({ record: [] })).toBe(false)
 })
 
+test('waiting room retains visible legacy system notices in its preparation record', () => {
+  const record = systemBattleRecord([{
+    sequence: 7,
+    type: 'LegacyGamePurged',
+    payload: {},
+    createdAt: '2026-08-24T00:00:00Z',
+  }], () => ({
+    title: '房間更新',
+    summary: '系統版本更新，上一局已清除，請重新準備。',
+  }))
+
+  expect(record.preparation.entries).toEqual([{
+    id: 'room-event-7',
+    title: '房間更新',
+    summary: '系統版本更新，上一局已清除，請重新準備。',
+  }])
+  expect(record.turns).toEqual([])
+})
+
 test('trusted randomness actions are not player-submittable', () => {
   expect(isOnlineGameAction({
     type: 'resolveRandomness',
@@ -31,6 +51,56 @@ test('trusted randomness actions are not player-submittable', () => {
     choiceId: 7,
     answer: { type: 'decline' },
   })).toBe(true)
+})
+
+test('Secret Strategy uses the closed direct and Chain Decision wire shapes', () => {
+  const direct: OnlineGameAction = {
+    type: 'triggerSecretStrategy',
+    player: 'alice',
+    decision: {
+      type: 'environment',
+      sourceCard: 7,
+      operation: { type: 'transferByDiscard', card: 8 },
+    },
+  }
+  const chain: OnlineGameAction = {
+    type: 'answerChoice',
+    player: 'alice',
+    choiceId: 9,
+    answer: {
+      type: 'chain',
+      decision: {
+        type: 'placeAndTrigger',
+        pouchOwner: 'alice',
+        pouchCard: 10,
+        decision: { type: 'sheepStealing', sourceCard: 11 },
+      },
+    },
+  }
+
+  expect(direct).toStrictEqual({
+    type: 'triggerSecretStrategy',
+    player: 'alice',
+    decision: {
+      type: 'environment',
+      sourceCard: 7,
+      operation: { type: 'transferByDiscard', card: 8 },
+    },
+  })
+  expect(chain).toStrictEqual({
+    type: 'answerChoice',
+    player: 'alice',
+    choiceId: 9,
+    answer: {
+      type: 'chain',
+      decision: {
+        type: 'placeAndTrigger',
+        pouchOwner: 'alice',
+        pouchCard: 10,
+        decision: { type: 'sheepStealing', sourceCard: 11 },
+      },
+    },
+  })
 })
 
 test('Death Omen pending randomness keeps the Rust camelCase continuation contract', () => {

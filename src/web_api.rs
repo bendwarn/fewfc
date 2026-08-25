@@ -1,11 +1,11 @@
-use crate::application::{GameRecord, RecordedDecision, replay_frame};
+use crate::application::{GameRecord, RecordedDecision, RecordedDecisionSource, replay_frame};
 use crate::domain::targeting::{RulePlayerTarget, TurnOrderTargets};
 use crate::domain::{
     CardDefId, CardInstanceId, CardOrigin, ChoiceAnswer, ChoiceId, Command, Element, GameError,
     GameEvent, GamePreparationStage, GameSetup, GameState, GameStatus, PassActionReason,
     PendingChoiceKind, PendingRandomness, Phase, Player, PlayerDeckList, PlayerId, ProfessionId,
-    RuleModuleId, SecretStrategy, SpiritKind, SpiritSkill, StarKind, StatusDuration, StatusOwner,
-    TargetDecl, TeamHp, TeamId, TrustedRandomnessAnswer, TurnDrawSkipReason,
+    RuleModuleId, SecretStrategy, SecretStrategyDecision, SpiritKind, SpiritSkill, StatusDuration,
+    StatusOwner, TargetDecl, TeamHp, TeamId, TrustedRandomnessAnswer, TurnDrawSkipReason,
 };
 use crate::public_view::{
     PublicCardInterpretation, PublicCardRefs, PublicGameEvent, PublicGameState,
@@ -144,10 +144,18 @@ fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
     let formation_names = rules.formation_names(&setup).map_err(ApiError::Game)?;
     let viewer = viewer_from_request(request.viewer.as_deref());
     let deck_seed = request.deck_seed.clone();
-    if let ApiAction::ReplayFrame { step } = request.action {
-        let frame = replay_frame(&setup, &request.record.unwrap_or_default(), step)
-            .map_err(ApiError::Game)?;
-        return replay_response_for(frame, &card_labels, &card_facts, &formation_names);
+    if let ApiAction::ReplayFrame { step, perspective } = request.action {
+        let recorded_decisions = request.record.unwrap_or_default();
+        let frame = replay_frame(&setup, &recorded_decisions, step).map_err(ApiError::Game)?;
+        return replay_response_for(
+            frame,
+            &setup,
+            &recorded_decisions,
+            perspective.map(PlayerId::new),
+            &card_labels,
+            &card_facts,
+            &formation_names,
+        );
     }
     let mut record = record_from_request(&rules, &setup, request.record, deck_seed.as_deref())?;
 
@@ -182,26 +190,11 @@ fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
                 })
                 .map_err(ApiError::Game)?;
         }
-        ApiAction::TriggerSecretStrategy {
-            player,
-            strategy,
-            target_player,
-            star,
-            break_star,
-            discard_card,
-            deck_cards,
-            discard_cards,
-        } => {
+        ApiAction::TriggerSecretStrategy { player, decision } => {
             let _ = record
                 .handle(Command::TriggerSecretStrategy {
                     player: PlayerId::new(player),
-                    strategy,
-                    target_player: target_player.map(PlayerId::new),
-                    star,
-                    break_star,
-                    discard_card,
-                    deck_cards,
-                    discard_cards,
+                    decision,
                 })
                 .map_err(ApiError::Game)?;
             advance_after_command(&mut record)?;
@@ -547,29 +540,14 @@ fn response_for(
     Ok(ApiResponse {
         record: record.recorded_decisions(),
         state,
-        events: record
-            .public_events_for(viewer)
-            .into_iter()
-            .enumerate()
-            .filter(|(_, event)| {
-                !matches!(
-                    event,
-                    PublicGameEvent::DeckPrepared { .. }
-                        | PublicGameEvent::PlayerDeckPrepared { .. }
-                        | PublicGameEvent::CardsDealt { .. }
-                )
-            })
-            .rev()
-            .map(|(index, event)| {
-                WebPublicGameEvent::from_public(
-                    index + 1,
-                    event,
-                    card_labels,
-                    formation_names,
-                    &vocabulary,
-                )
-            })
-            .collect(),
+        battle_record: battle_record_for(
+            public_decision_feed(&record.recorded_decisions(), viewer.clone()),
+            record.state(),
+            viewer_player.clone(),
+            card_labels,
+            formation_names,
+            &vocabulary,
+        ),
         playable_actions,
         interaction: WebInteraction {
             can_choose_initial_pouch: viewer_player.as_ref().is_some_and(|player| {
@@ -607,12 +585,14 @@ fn pending_chain_strategy_options_for(
     source_cards
         .into_iter()
         .flat_map(|card| crate::rules::pouch::strategy_action_options(state, player, card))
-        .map(WebSecretStrategyOption::from)
         .collect()
 }
 
 fn replay_response_for(
     frame: crate::application::ReplayFrame,
+    setup: &GameSetup,
+    recorded_decisions: &[RecordedDecision],
+    perspective: Option<PlayerId>,
     card_labels: &HashMap<CardInstanceId, String>,
     card_facts: &HashMap<CardInstanceId, WebCardFact>,
     formation_names: &HashMap<String, String>,
@@ -624,33 +604,43 @@ fn replay_response_for(
         card_facts,
         formation_names,
     );
-    let events = crate::public_view::events_for(&frame.events, Viewer::Replay)
-        .into_iter()
-        .enumerate()
-        .filter(|(_, event)| {
-            !matches!(
-                event,
-                PublicGameEvent::DeckPrepared { .. } | PublicGameEvent::PlayerDeckPrepared { .. }
-            )
-        })
-        .map(|(index, event)| {
-            WebPublicGameEvent::from_public(
-                index + 1,
-                event,
-                card_labels,
-                formation_names,
-                &vocabulary,
-            )
-        })
-        .collect();
-
     Ok(ApiResult::ReplayFrame {
         current_step: frame.step,
         total_steps: frame.total_steps,
         state,
-        events,
+        battle_record: battle_record_for(
+            public_decision_feed(
+                &recorded_decision_prefix(recorded_decisions, frame.events.len()),
+                Viewer::Replay,
+            ),
+            &frame.state,
+            perspective.or_else(|| setup.turn_order.first().cloned()),
+            card_labels,
+            formation_names,
+            &vocabulary,
+        ),
         interaction: WebInteraction::disabled(),
     })
+}
+
+fn recorded_decision_prefix(
+    recorded_decisions: &[RecordedDecision],
+    event_count: usize,
+) -> Vec<RecordedDecision> {
+    let mut remaining = event_count;
+    let mut prefix = Vec::new();
+    for decision in recorded_decisions {
+        if remaining == 0 {
+            break;
+        }
+        let count = decision.events.len().min(remaining);
+        prefix.push(RecordedDecision {
+            source: decision.source.clone(),
+            events: decision.events[..count].to_vec(),
+        });
+        remaining -= count;
+    }
+    prefix
 }
 
 #[derive(Serialize, Deserialize)]
@@ -705,6 +695,8 @@ struct WebSetupDeckList {
 enum ApiAction {
     ReplayFrame {
         step: usize,
+        #[serde(default)]
+        perspective: Option<String>,
     },
     Start,
     StartDevelopmentScenario {
@@ -719,19 +711,7 @@ enum ApiAction {
     },
     TriggerSecretStrategy {
         player: String,
-        strategy: SecretStrategy,
-        #[serde(default, rename = "targetPlayer")]
-        target_player: Option<String>,
-        #[serde(default)]
-        star: Option<StarKind>,
-        #[serde(default, rename = "breakStar")]
-        break_star: bool,
-        #[serde(default, rename = "discardCard")]
-        discard_card: Option<CardInstanceId>,
-        #[serde(default, rename = "deckCards")]
-        deck_cards: Vec<CardInstanceId>,
-        #[serde(default, rename = "discardCards")]
-        discard_cards: Vec<CardInstanceId>,
+        decision: SecretStrategyDecision,
     },
     PassAction {
         reason: PassActionReason,
@@ -1464,7 +1444,7 @@ fn web_playable_action(candidate: PlayableAction) -> WebPlayableAction {
         PlayableAction::TriggerSecretStrategy(candidate) => {
             WebPlayableAction::TriggerSecretStrategy {
                 command_role,
-                option: WebSecretStrategyOption::from(candidate),
+                option: candidate,
             }
         }
         PlayableAction::RetrievePreviousTurnDiscard(candidate) => {
@@ -1639,7 +1619,7 @@ enum ApiResult {
         #[serde(rename = "totalSteps")]
         total_steps: usize,
         state: WebPublicGameState,
-        events: Vec<WebPublicGameEvent>,
+        battle_record: WebBattleRecord,
         interaction: WebInteraction,
     },
 }
@@ -1649,7 +1629,7 @@ enum ApiResult {
 struct ApiResponse {
     record: Vec<RecordedDecision>,
     state: WebPublicGameState,
-    events: Vec<WebPublicGameEvent>,
+    battle_record: WebBattleRecord,
     playable_actions: Vec<WebPlayableAction>,
     interaction: WebInteraction,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2901,102 +2881,562 @@ impl WebCard {
 #[serde(rename_all = "camelCase")]
 struct WebSecretStrategyCardOption {
     strategy: SecretStrategy,
-    input: WebSecretStrategyInputRequirement,
 }
 
-#[derive(Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct WebSecretStrategyOption {
-    source_card: CardInstanceId,
-    strategy: SecretStrategy,
-    input: WebSecretStrategyInputRequirement,
-    target_players: Vec<PlayerId>,
-    stars: Vec<StarKind>,
-    break_stars: Vec<StarKind>,
-    deck_cards: Vec<CardInstanceId>,
-    discard_cards: Vec<CardInstanceId>,
-    hand_cards: Vec<CardInstanceId>,
-    required_card_count: usize,
-    detail: PlayerFacingActionDetail,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-enum WebSecretStrategyInputRequirement {
-    None,
-    TargetPlayer,
-    DeckDiscardSwap,
-    Star,
-    Retreat,
-}
+type WebSecretStrategyOption = crate::rules::pouch::SecretStrategyOption;
 
 impl From<crate::rules::pouch::SecretStrategyCardOption> for WebSecretStrategyCardOption {
     fn from(option: crate::rules::pouch::SecretStrategyCardOption) -> Self {
-        use crate::rules::pouch::SecretStrategyInputRequirement as Input;
         Self {
             strategy: option.strategy,
-            input: match option.input {
-                Input::None => WebSecretStrategyInputRequirement::None,
-                Input::TargetPlayer => WebSecretStrategyInputRequirement::TargetPlayer,
-                Input::DeckDiscardSwap => WebSecretStrategyInputRequirement::DeckDiscardSwap,
-                Input::Star => WebSecretStrategyInputRequirement::Star,
-                Input::Retreat => WebSecretStrategyInputRequirement::Retreat,
-            },
         }
     }
 }
 
-impl From<crate::rules::pouch::SecretStrategyOption> for WebSecretStrategyOption {
-    fn from(option: crate::rules::pouch::SecretStrategyOption) -> Self {
-        use crate::rules::pouch::SecretStrategyInputRequirement as Input;
-        Self {
-            source_card: option.source_card,
-            strategy: option.strategy,
-            input: match option.input {
-                Input::None => WebSecretStrategyInputRequirement::None,
-                Input::TargetPlayer => WebSecretStrategyInputRequirement::TargetPlayer,
-                Input::DeckDiscardSwap => WebSecretStrategyInputRequirement::DeckDiscardSwap,
-                Input::Star => WebSecretStrategyInputRequirement::Star,
-                Input::Retreat => WebSecretStrategyInputRequirement::Retreat,
-            },
-            target_players: option.target_players,
-            stars: option.stars,
-            break_stars: option.break_stars,
-            deck_cards: option.deck_cards,
-            discard_cards: option.discard_cards,
-            hand_cards: option.hand_cards,
-            required_card_count: option.required_card_count,
-            detail: option.detail,
+/// 給戰局紀錄的內部公開決策資料。它只保存已套用檢視者遮罩的事件；標準命令
+/// 與其分組資訊在這個接縫後不會序列化到瀏覽器。
+#[derive(Clone)]
+struct PublicDecisionFeed {
+    decisions: Vec<PublicDecision>,
+}
+
+#[derive(Clone)]
+struct PublicDecision {
+    id: String,
+    turn_number: Option<u64>,
+    turn_player: Option<PlayerId>,
+    source: PublicDecisionSource,
+    events: Vec<PublicGameEvent>,
+}
+
+#[derive(Clone)]
+enum PublicDecisionSource {
+    Setup,
+    Player {
+        player: PlayerId,
+        kind: PlayerDecisionKind,
+    },
+    Automatic,
+    ForcedPass,
+}
+
+/// 決策來源只保留公開可說的行動種類與行動者。命令的牌、陣法與選項可能
+/// 比事件投影知道得更多，絕不能跨越公開視圖接縫。
+#[derive(Clone, Copy)]
+enum PlayerDecisionKind {
+    ChooseInitialPouch,
+    TriggerSecretStrategy,
+    PerformFormation,
+    ChangeProfession,
+    ActivateProfessionAbility,
+    UseSpiritSkill,
+    AnswerChoice,
+    RetrievePreviousTurnDiscard,
+}
+
+fn player_decision_source(command: &Command) -> PublicDecisionSource {
+    let (player, kind) = match command {
+        Command::ChooseInitialPouch { player, .. } => {
+            (player, PlayerDecisionKind::ChooseInitialPouch)
         }
+        Command::TriggerSecretStrategy { player, .. } => {
+            (player, PlayerDecisionKind::TriggerSecretStrategy)
+        }
+        Command::PerformFormation { player, .. }
+        | Command::PerformFormationWithTrustedRandomness { player, .. } => {
+            (player, PlayerDecisionKind::PerformFormation)
+        }
+        Command::ChangeProfession { player, .. } => (player, PlayerDecisionKind::ChangeProfession),
+        Command::ActivateProfessionAbility { player, .. } => {
+            (player, PlayerDecisionKind::ActivateProfessionAbility)
+        }
+        Command::UseSpiritSkill { player, .. }
+        | Command::UseSpiritSkillWithTrustedRandomness { player, .. } => {
+            (player, PlayerDecisionKind::UseSpiritSkill)
+        }
+        Command::AnswerChoice { player, .. } => (player, PlayerDecisionKind::AnswerChoice),
+        Command::RetrievePreviousTurnDiscard { player } => {
+            (player, PlayerDecisionKind::RetrievePreviousTurnDiscard)
+        }
+        // Pass 是強制流程，已在上游轉為 ForcedPass。
+        Command::PassAction { .. } => unreachable!("pass decisions are never player decisions"),
+    };
+    PublicDecisionSource::Player {
+        player: player.clone(),
+        kind,
     }
+}
+
+/// 戰局紀錄是獨立於標準事件的玩家投影。介面只輸出穩定項目、準備組與回合組，
+/// 不讓呼叫端理解事件型別或處理生命週期。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebBattleRecord {
+    preparation: WebBattleRecordPreparationGroup,
+    turns: Vec<WebBattleRecordTurnGroup>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WebPublicGameEvent {
-    id: String,
-    event_type: String,
-    title: String,
-    summary: String,
+struct WebBattleRecordPreparationGroup {
+    entries: Vec<WebBattleRecordEntry>,
 }
 
-impl WebPublicGameEvent {
-    fn from_public(
-        sequence: usize,
-        event: PublicGameEvent,
-        labels: &HashMap<CardInstanceId, String>,
-        formation_names: &HashMap<String, String>,
-        vocabulary: &PlayerVocabulary,
-    ) -> Self {
-        let (title, summary) =
-            event_presentation_with_vocabulary(&event, labels, formation_names, vocabulary);
-        Self {
-            id: format!("event-{sequence}"),
-            event_type: event_type(&event),
-            title,
-            summary,
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebBattleRecordTurnGroup {
+    turn_number: u64,
+    title: String,
+    entries: Vec<WebBattleRecordEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebBattleRecordEntry {
+    id: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+}
+
+fn public_decision_feed(
+    recorded_decisions: &[RecordedDecision],
+    viewer: Viewer,
+) -> PublicDecisionFeed {
+    let mut decisions = Vec::new();
+    let mut turn_number = None;
+    let mut turn_player = None;
+
+    for (index, decision) in recorded_decisions.iter().enumerate() {
+        let source = match &decision.source {
+            RecordedDecisionSource::Setup => PublicDecisionSource::Setup,
+            RecordedDecisionSource::Command {
+                command: Command::PassAction { .. },
+                ..
+            } => {
+                // 唯一合法的 pass 是引擎提供的強制結果；雖以 Command 記錄，
+                // 戰局紀錄不能把它說成玩家主動決策。
+                PublicDecisionSource::ForcedPass
+            }
+            RecordedDecisionSource::Command { command, .. } => player_decision_source(command),
+            RecordedDecisionSource::Automatic | RecordedDecisionSource::Randomness { .. } => {
+                PublicDecisionSource::Automatic
+            }
+        };
+        let public_events = crate::public_view::events_for(&decision.events, viewer.clone());
+        let mut segment = Vec::new();
+        for (raw, public) in decision.events.iter().zip(public_events) {
+            if let GameEvent::TurnStarted {
+                player,
+                turn_number: number,
+            } = raw
+            {
+                append_public_decision(
+                    &mut decisions,
+                    format!("decision-{}", index + 1),
+                    turn_number,
+                    turn_player.clone(),
+                    source.clone(),
+                    std::mem::take(&mut segment),
+                );
+                turn_number = Some(*number);
+                turn_player = Some(player.clone());
+                continue;
+            }
+            segment.push(public);
+        }
+        append_public_decision(
+            &mut decisions,
+            format!("decision-{}", index + 1),
+            turn_number,
+            turn_player.clone(),
+            source,
+            segment,
+        );
+    }
+
+    PublicDecisionFeed { decisions }
+}
+
+fn append_public_decision(
+    decisions: &mut Vec<PublicDecision>,
+    id: String,
+    turn_number: Option<u64>,
+    turn_player: Option<PlayerId>,
+    source: PublicDecisionSource,
+    events: Vec<PublicGameEvent>,
+) {
+    if events.is_empty() {
+        return;
+    }
+    let append_to_previous = matches!(source, PublicDecisionSource::Automatic)
+        && turn_number.is_some()
+        && decisions.last().is_some_and(|previous| {
+            previous.turn_number == turn_number
+                && matches!(previous.source, PublicDecisionSource::Player { .. })
+        });
+    if append_to_previous {
+        // 可信隨機與同回合的自動推進延續原決策；跨 TurnStarted 永不倒灌。
+        decisions
+            .last_mut()
+            .expect("checked above")
+            .events
+            .extend(events);
+    } else {
+        decisions.push(PublicDecision {
+            id,
+            turn_number,
+            turn_player,
+            source,
+            events,
+        });
+    }
+}
+
+fn battle_record_for(
+    feed: PublicDecisionFeed,
+    state: &GameState,
+    perspective: Option<PlayerId>,
+    labels: &HashMap<CardInstanceId, String>,
+    formation_names: &HashMap<String, String>,
+    vocabulary: &PlayerVocabulary,
+) -> WebBattleRecord {
+    let narrator = BattleRecordNarrator::new(state, perspective);
+    let mut preparation = WebBattleRecordPreparationGroup {
+        entries: vec![WebBattleRecordEntry {
+            id: "preparation-rules".to_string(),
+            title: "本局規則".to_string(),
+            summary: Some(enabled_rule_modules_summary(&state.enabled_rule_modules)),
+        }],
+    };
+    let mut turns: Vec<WebBattleRecordTurnGroup> = Vec::new();
+
+    for decision in feed.decisions {
+        let entries =
+            battle_entries_for_decision(&decision, &narrator, labels, formation_names, vocabulary);
+        if entries.is_empty() {
+            continue;
+        }
+        match decision.turn_number {
+            None => preparation.entries.extend(entries),
+            Some(turn_number) => {
+                let title = format!(
+                    "第 {} 回合・{}",
+                    turn_number,
+                    narrator.player(decision.turn_player.as_ref())
+                );
+                match turns.last_mut() {
+                    Some(group) if group.turn_number == turn_number => {
+                        group.entries.extend(entries)
+                    }
+                    _ => turns.push(WebBattleRecordTurnGroup {
+                        turn_number,
+                        title,
+                        entries,
+                    }),
+                }
+            }
         }
     }
+
+    WebBattleRecord { preparation, turns }
+}
+
+fn battle_entries_for_decision(
+    decision: &PublicDecision,
+    narrator: &BattleRecordNarrator,
+    labels: &HashMap<CardInstanceId, String>,
+    formation_names: &HashMap<String, String>,
+    vocabulary: &PlayerVocabulary,
+) -> Vec<WebBattleRecordEntry> {
+    if matches!(
+        decision.source,
+        PublicDecisionSource::Automatic | PublicDecisionSource::ForcedPass
+    ) {
+        let mut title = None;
+        let mut summaries = Vec::new();
+        let mut terminal = Vec::new();
+        for event in &decision.events {
+            if let PublicGameEvent::Public(GameEvent::GameEnded { conclusion }) = event {
+                terminal.push(WebBattleRecordEntry {
+                    id: format!("{}-conclusion", decision.id),
+                    title: "對局結束".to_string(),
+                    summary: Some(narrator.text(game_conclusion_summary(conclusion))),
+                });
+                continue;
+            }
+            if let PublicGameEvent::Public(GameEvent::EchoResolutionStarted { schedule }) = event {
+                title.get_or_insert_with(|| "迴響".to_string());
+                summaries.push(narrator.text(format!("{} 的曲調迴響。", schedule.player.as_str())));
+                continue;
+            }
+            if let PublicGameEvent::Public(GameEvent::PlantEarthResolutionStarted { schedule }) =
+                event
+            {
+                title.get_or_insert_with(|| "植土效果".to_string());
+                summaries
+                    .push(narrator.text(format!("{} 的植土效果發動。", schedule.player.as_str())));
+                continue;
+            }
+            if battle_record_event_is_meaningful(event) {
+                let (event_title, summary) =
+                    event_presentation_with_vocabulary(event, labels, formation_names, vocabulary);
+                title.get_or_insert(event_title);
+                if !summary.is_empty() {
+                    summaries.push(narrator.text(summary));
+                }
+            }
+        }
+        let mut entries = title
+            .map(|title| WebBattleRecordEntry {
+                id: format!("{}-automatic", decision.id),
+                title: narrator.text(title),
+                summary: (!summaries.is_empty()).then(|| summaries.join(" ")),
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        entries.extend(terminal);
+        return entries;
+    }
+    let mut terminal = Vec::new();
+    let mut details = Vec::new();
+    let mut first_title = None;
+
+    for event in &decision.events {
+        if let PublicGameEvent::Public(GameEvent::GameEnded { conclusion }) = event {
+            terminal.push(WebBattleRecordEntry {
+                id: format!("{}-conclusion", decision.id),
+                title: "對局結束".to_string(),
+                summary: Some(narrator.text(game_conclusion_summary(conclusion))),
+            });
+            continue;
+        }
+        if !battle_record_event_is_meaningful(event) {
+            continue;
+        }
+        let (title, summary) =
+            event_presentation_with_vocabulary(event, labels, formation_names, vocabulary);
+        first_title.get_or_insert(title);
+        if !summary.is_empty() {
+            details.push(narrator.text(summary));
+        }
+    }
+
+    let title = command_title(
+        &decision.source,
+        &decision.events,
+        narrator,
+        labels,
+        formation_names,
+    )
+    .or_else(|| first_title.map(|title| narrator.text(title)));
+    let mut entries = title
+        .map(|title| WebBattleRecordEntry {
+            id: decision.id.clone(),
+            title,
+            summary: (!details.is_empty()).then(|| details.join(" ")),
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    entries.extend(terminal);
+    entries
+}
+
+fn command_title(
+    source: &PublicDecisionSource,
+    events: &[PublicGameEvent],
+    narrator: &BattleRecordNarrator,
+    labels: &HashMap<CardInstanceId, String>,
+    formation_names: &HashMap<String, String>,
+) -> Option<String> {
+    let PublicDecisionSource::Player { player, kind } = source else {
+        return None;
+    };
+    let verb = match kind {
+        PlayerDecisionKind::PerformFormation => events
+            .iter()
+            .find_map(|event| match event {
+                PublicGameEvent::FormationCommitted {
+                    formation_id: Some(id),
+                    ..
+                } => Some(format!("施展「{}」", formation_name(formation_names, id))),
+                _ => None,
+            })
+            .unwrap_or_else(|| "施展陣法".to_string()),
+        PlayerDecisionKind::AnswerChoice => events
+            .iter()
+            .find_map(|event| match event {
+                PublicGameEvent::PouchPlaced {
+                    owner,
+                    card: Some(card),
+                } => Some(format!(
+                    "將{}放入{}的錦囊",
+                    card_summary(card, labels),
+                    owner.as_str()
+                )),
+                PublicGameEvent::Public(GameEvent::EarthRendingEnvironmentChosen {
+                    environment,
+                }) => Some(format!("選擇{}環境", element_name(*environment))),
+                _ => None,
+            })
+            .unwrap_or_else(|| "作出選擇".to_string()),
+        PlayerDecisionKind::ChooseInitialPouch => "選定初始錦囊".to_string(),
+        PlayerDecisionKind::TriggerSecretStrategy => "發動秘計".to_string(),
+        PlayerDecisionKind::ChangeProfession => "改變職業".to_string(),
+        PlayerDecisionKind::ActivateProfessionAbility => "發動職業能力".to_string(),
+        PlayerDecisionKind::UseSpiritSkill => "使用精靈技能".to_string(),
+        PlayerDecisionKind::RetrievePreviousTurnDiscard => "取回上回合棄牌".to_string(),
+    };
+    Some(narrator.text(format!("{}{}", narrator.player(Some(player)), verb)))
+}
+
+fn battle_record_event_is_meaningful(event: &PublicGameEvent) -> bool {
+    match event {
+        PublicGameEvent::DeckPrepared { .. }
+        | PublicGameEvent::PlayerDeckPrepared { .. }
+        | PublicGameEvent::CardsDealt { .. }
+        | PublicGameEvent::ChoiceMade { .. }
+        | PublicGameEvent::RandomnessRequested { .. }
+        | PublicGameEvent::RandomnessResolved { .. } => false,
+        PublicGameEvent::Public(event) => !matches!(
+            event,
+            GameEvent::TurnStarted { .. }
+                | GameEvent::GamePreparationStarted { .. }
+                | GameEvent::ActionStarted { .. }
+                | GameEvent::FormationCardsDiscarded { .. }
+                | GameEvent::ChoiceMade { .. }
+                | GameEvent::RandomnessRequested { .. }
+                | GameEvent::RandomnessResolved { .. }
+                | GameEvent::TurnEnded { .. }
+                | GameEvent::FormationPerformed { .. }
+                | GameEvent::FormationMatchOptionDeclared { .. }
+                | GameEvent::VoidStarBreakingCompleted { .. }
+                | GameEvent::EchoResolutionStarted { .. }
+                | GameEvent::EchoResolutionCompleted { .. }
+                | GameEvent::RingingMetalCompleted { .. }
+                | GameEvent::PlantEarthResolutionStarted { .. }
+                | GameEvent::PlantEarthResolutionCompleted { .. }
+                | GameEvent::EarthRendingStarted { .. }
+                | GameEvent::EarthRendingCompleted { .. }
+                | GameEvent::RustedForestStarted { .. }
+                | GameEvent::RustedForestDeckProcessed { .. }
+                | GameEvent::RustedForestCompleted { .. }
+        ),
+        _ => true,
+    }
+}
+
+struct BattleRecordNarrator {
+    player_labels: HashMap<String, String>,
+    team_labels: HashMap<String, String>,
+}
+
+impl BattleRecordNarrator {
+    fn new(state: &GameState, perspective: Option<PlayerId>) -> Self {
+        let perspective_team = perspective.as_ref().and_then(|player| {
+            state
+                .players
+                .iter()
+                .find(|entry| &entry.id == player)
+                .map(|entry| &entry.team)
+        });
+        let first_team = state.turn_order.first().and_then(|first| {
+            state
+                .players
+                .iter()
+                .find(|entry| &entry.id == first)
+                .map(|entry| &entry.team)
+        });
+        let mut player_labels = HashMap::new();
+        for player in &state.players {
+            player_labels.insert(
+                player.id.as_str().to_string(),
+                if perspective.as_ref() == Some(&player.id) {
+                    "你".to_string()
+                } else {
+                    player.id.as_str().to_string()
+                },
+            );
+        }
+        let mut team_labels = HashMap::new();
+        for team in &state.hp {
+            let label = match perspective_team {
+                Some(own) if own == &team.team => "我方",
+                Some(_) => "對方",
+                None if first_team == Some(&team.team) => "先手方",
+                None => "後手方",
+            };
+            team_labels.insert(team.team.as_str().to_string(), label.to_string());
+        }
+        Self {
+            player_labels,
+            team_labels,
+        }
+    }
+
+    fn player(&self, player: Option<&PlayerId>) -> String {
+        player
+            .and_then(|player| self.player_labels.get(player.as_str()))
+            .cloned()
+            .unwrap_or_else(|| "未知玩家".to_string())
+    }
+
+    fn text(&self, text: String) -> String {
+        let mut team_labels = self.team_labels.iter().collect::<Vec<_>>();
+        team_labels.sort_by_key(|(id, _)| std::cmp::Reverse(id.len()));
+        let text = team_labels
+            .into_iter()
+            .fold(text, |text, (id, label)| text.replace(id, label));
+        let mut player_labels = self.player_labels.iter().collect::<Vec<_>>();
+        player_labels.sort_by_key(|(id, _)| std::cmp::Reverse(id.len()));
+        player_labels
+            .into_iter()
+            .fold(text, |text, (id, label)| text.replace(id, label))
+    }
+}
+
+fn enabled_rule_modules_summary(enabled: &[RuleModuleId]) -> String {
+    let mut names = vec!["基礎規則"];
+    names.extend(enabled.iter().map(|module| match module.as_str() {
+        crate::domain::STAR_MODULE_ID => "星辰圖記規則",
+        crate::domain::FIVE_DIRECTIONS_LEGEND_MODULE_ID => "五方傳說規則",
+        crate::domain::HERO_SCHOOLS_MODULE_ID => "英雄學派規則",
+        crate::domain::SPIRIT_MODULE_ID => "精靈規則",
+        crate::domain::POUCH_MODULE_ID => "錦囊規則",
+        crate::domain::ECHO_MODULE_ID => "迴響規則",
+        crate::domain::TRIBULATION_MODULE_ID => "天劫規則",
+        crate::domain::JIANGHU_MODULE_ID => "江湖規則",
+        crate::domain::CONFLUENCE_GENERATION_MODULE_ID => "匯流世代規則",
+        crate::domain::DARK_GLIMMER_MODULE_ID => "黑暗微光規則",
+        _ => "選用規則",
+    }));
+    names.join("、")
+}
+
+fn game_conclusion_summary(conclusion: &crate::domain::GameConclusion) -> String {
+    let outcome = match &conclusion.outcome {
+        crate::domain::GameOutcome::Winner(team) => format!("{}獲勝", team.as_str()),
+        crate::domain::GameOutcome::Draw => "平局".to_string(),
+    };
+    let causes = conclusion
+        .causes
+        .iter()
+        .map(|cause| match cause {
+            crate::domain::GameEndCause::TeamHpDepleted { teams } => format!(
+                "{}生命值歸零",
+                teams
+                    .iter()
+                    .map(|team| team.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、"),
+            ),
+            crate::domain::GameEndCause::DirectVictory { team, .. } => {
+                format!("{}達成特殊勝利條件", team.as_str())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("；");
+    format!("{}：{}。", outcome, causes)
 }
 
 /// 穩定規則識別轉換為面向玩家語言的唯一邊界。標準事件特意保留識別碼以供
@@ -3193,7 +3633,6 @@ enum WebPlayableAction {
     TriggerSecretStrategy {
         #[serde(rename = "commandRole")]
         command_role: crate::rules::MainPhaseCommandRole,
-        #[serde(flatten)]
         option: WebSecretStrategyOption,
     },
     RetrievePreviousTurnDiscard {
@@ -3220,47 +3659,6 @@ impl From<FormationCategory> for WebFormationCategory {
         match category {
             FormationCategory::Attack => Self::Attack,
             FormationCategory::Spell => Self::Spell,
-        }
-    }
-}
-
-fn event_type(event: &PublicGameEvent) -> String {
-    match event {
-        PublicGameEvent::GamePreparationStarted => "GamePreparationStarted".to_string(),
-        PublicGameEvent::InitialPouchChosen { .. } => "InitialPouchChosen".to_string(),
-        PublicGameEvent::InitialPouchSelectionCompleted => {
-            "InitialPouchSelectionCompleted".to_string()
-        }
-        PublicGameEvent::PouchPlaced { .. } => "PouchPlaced".to_string(),
-        PublicGameEvent::Public(event) => format!("{event:?}")
-            .split_whitespace()
-            .next()
-            .unwrap_or("Event")
-            .trim_end_matches('{')
-            .to_string(),
-        PublicGameEvent::DeckPrepared { .. } => "DeckPrepared".to_string(),
-        PublicGameEvent::PlayerDeckPrepared { .. } => "PlayerDeckPrepared".to_string(),
-        PublicGameEvent::CardsDealt { .. } => "CardsDealt".to_string(),
-        PublicGameEvent::PassiveCovered { .. } => "PassiveCovered".to_string(),
-        PublicGameEvent::FormationCommitted { .. } => "FormationCommitted".to_string(),
-        PublicGameEvent::CardsDrawnForTurnDiscardChoice { .. } => {
-            "CardsDrawnForTurnDiscardChoice".to_string()
-        }
-        PublicGameEvent::TurnDrawResolved { .. } => "TurnDrawResolved".to_string(),
-        PublicGameEvent::CardsDrawnForProfessionChoice { .. } => {
-            "CardsDrawnForProfessionChoice".to_string()
-        }
-        PublicGameEvent::ChoiceRequested { .. } => "ChoiceRequested".to_string(),
-        PublicGameEvent::ChoiceMade { .. } => "ChoiceMade".to_string(),
-        PublicGameEvent::RandomnessRequested { .. } => "RandomnessRequested".to_string(),
-        PublicGameEvent::RandomnessResolved { .. } => "RandomnessResolved".to_string(),
-        PublicGameEvent::HandInspected { .. } => "HandInspected".to_string(),
-        PublicGameEvent::SpiritSkillUsed { .. } => "SpiritSkillUsed".to_string(),
-        PublicGameEvent::SpiritLevelInterpreted { .. } => "SpiritLevelInterpreted".to_string(),
-        PublicGameEvent::CardsMoved { .. } => "CardsMoved".to_string(),
-        PublicGameEvent::FormationRequirementSet { .. } => "FormationRequirementSet".to_string(),
-        PublicGameEvent::FormationRequirementFulfilled { .. } => {
-            "FormationRequirementFulfilled".to_string()
         }
     }
 }
@@ -3456,8 +3854,12 @@ fn event_presentation_with_vocabulary(
             ),
         ),
         PublicGameEvent::ChoiceRequested { choice } => (
-            "效果選擇".to_string(),
-            format!("{} 需要作出選擇。", public_choice_player(choice).as_str(),),
+            "等待選擇".to_string(),
+            format!(
+                "接著由{}{}。",
+                public_choice_player(choice).as_str(),
+                public_choice_requirement(choice)
+            ),
         ),
         PublicGameEvent::ChoiceMade { player } => (
             "效果選擇".to_string(),
@@ -3566,6 +3968,22 @@ fn event_presentation_with_vocabulary(
         PublicGameEvent::CardsMoved { cards } => {
             ("卡牌移動".to_string(), card_movement_summary(cards, labels))
         }
+    }
+}
+
+fn public_choice_requirement(choice: &crate::public_view::PublicPendingChoice) -> &'static str {
+    use crate::public_view::PublicPendingChoicePresentation as Choice;
+    match choice {
+        crate::public_view::PublicPendingChoice::Hidden { .. } => "作出一項未公開的選擇",
+        crate::public_view::PublicPendingChoice::Visible { reason, .. } => match reason {
+            Choice::TurnDrawDiscard => "選擇一張牌捨棄",
+            Choice::EarthRendingEnvironment => "選擇環境",
+            Choice::EarthRendingCard => "選擇一張手牌，或翻開手牌",
+            Choice::Chain => "選擇錦囊與是否觸發秘計",
+            Choice::SheepStealing => "選擇要交換的牌",
+            Choice::EchoCost { .. } => "決定是否支付迴響代價",
+            _ => "作出選擇",
+        },
     }
 }
 
@@ -3803,16 +4221,18 @@ fn game_event_presentation_with_vocabulary(
         GameEvent::SpiritPowerChanged {
             player,
             spirit,
-            old_power,
+            old_power: _,
+            delta,
             new_power,
             ..
         } => (
             "精靈靈力增加".to_string(),
             format!(
-                "{} 的{}精靈靈力由 {} 增加為 {}。",
+                "{} 的{}精靈靈力{} {} 點，剩餘 {}。",
                 player.as_str(),
                 spirit_name(*spirit),
-                old_power,
+                if *delta >= 0 { "增加" } else { "減少" },
+                delta.unsigned_abs(),
                 new_power
             ),
         ),
@@ -4035,12 +4455,28 @@ fn game_event_presentation_with_vocabulary(
             ..
         } => {
             let result = shield_change.as_ref().map_or_else(
-                || format!("生命值由 {} 變為 {}", hp_change.old_hp, hp_change.new_hp),
+                || {
+                    format!(
+                        "生命值{} {} 點，剩餘 {}",
+                        if hp_change.effective_delta >= 0 {
+                            "增加"
+                        } else {
+                            "減少"
+                        },
+                        hp_change.effective_delta.unsigned_abs(),
+                        hp_change.new_hp
+                    )
+                },
                 |change| {
                     format!(
-                        "{} 的防護罩由 {} 變為 {}",
+                        "{} 的防護罩{} {} 點，剩餘 {}",
                         target.as_str(),
-                        change.old_value,
+                        if change.delta >= 0 {
+                            "增加"
+                        } else {
+                            "減少"
+                        },
+                        change.delta.unsigned_abs(),
                         change.new_value
                     )
                 },
@@ -4071,19 +4507,32 @@ fn game_event_presentation_with_vocabulary(
         ),
         GameEvent::ShieldChanged {
             player,
-            old_value,
+            old_value: _,
+            delta,
             new_value,
             ..
         } => (
             "防護罩變化".to_string(),
             format!(
-                "{} 的防護罩由 {old_value} 變為 {new_value}。",
-                player.as_str()
+                "{} 的防護罩{} {} 點，剩餘 {new_value}。",
+                player.as_str(),
+                if *delta >= 0 { "增加" } else { "減少" },
+                delta.unsigned_abs()
             ),
         ),
         GameEvent::HpChanged { change } => (
             "生命變化".to_string(),
-            format!("隊伍生命值由 {} 變為 {}。", change.old_hp, change.new_hp),
+            format!(
+                "{}生命值{} {} 點，剩餘 {}。",
+                change.team.as_str(),
+                if change.effective_delta >= 0 {
+                    "增加"
+                } else {
+                    "減少"
+                },
+                change.effective_delta.unsigned_abs(),
+                change.new_hp
+            ),
         ),
         GameEvent::CardsMoved { card_moves } => (
             "卡牌移動".to_string(),
@@ -4222,16 +4671,33 @@ fn game_event_presentation_with_vocabulary(
             format!("{} 的蓋牌改為正面展示。", owner.as_str()),
         ),
         GameEvent::PassiveFlipped {
-            owner, passive_id, ..
+            owner,
+            passive_id,
+            cards,
+            outcome,
+            ..
         } => {
             let detail = if passive_id == "empty-city" {
                 format!("{} 的「空城」翻開。", owner.as_str())
             } else {
-                format!(
-                    "{} 的「{}」已翻開並完成結算。",
+                let base = format!(
+                    "{} 的「{}」以{}翻開並完成結算。",
                     owner.as_str(),
-                    formation_name(formation_names, passive_id)
-                )
+                    formation_name(formation_names, passive_id),
+                    cards_summary(cards, labels)
+                );
+                match outcome {
+                    crate::domain::PassiveFlipOutcome::Applied { .. } => base,
+                    crate::domain::PassiveFlipOutcome::NoEffect { grounds } => format!(
+                        "{} 未生效：{}。",
+                        base.trim_end_matches('。'),
+                        grounds
+                            .iter()
+                            .map(passive_no_effect_ground_name)
+                            .collect::<Vec<_>>()
+                            .join("、")
+                    ),
+                }
             };
             ("蓋牌翻開".to_string(), detail)
         }
@@ -4531,6 +4997,27 @@ fn game_event_presentation_with_vocabulary(
             "回合結束".to_string(),
             format!("{} 的回合結束。", player.as_str()),
         ),
+    }
+}
+
+fn passive_no_effect_ground_name(ground: &crate::domain::PassiveNoEffectGround) -> String {
+    match ground {
+        crate::domain::PassiveNoEffectGround::NotAnAttack => "不是攻擊".to_string(),
+        crate::domain::PassiveNoEffectGround::NotASpell => "不是術式".to_string(),
+        crate::domain::PassiveNoEffectGround::Sealed => "已被封印".to_string(),
+        crate::domain::PassiveNoEffectGround::Neutralized => "已被無效化".to_string(),
+        crate::domain::PassiveNoEffectGround::EmptyCity => "空城".to_string(),
+        crate::domain::PassiveNoEffectGround::IgnoredBySacredBeast => "受聖獸保護".to_string(),
+        crate::domain::PassiveNoEffectGround::IgnoredByProfessionAbility => {
+            "受職業能力保護".to_string()
+        }
+        crate::domain::PassiveNoEffectGround::IgnoredByGoldenCicada => "受金蟬保護".to_string(),
+        crate::domain::PassiveNoEffectGround::AttackPointsExceedLimit { maximum } => {
+            format!("攻擊點超過 {maximum}")
+        }
+        crate::domain::PassiveNoEffectGround::IneffectiveInEnvironment { environment } => {
+            format!("{}環境下無效", element_name(*environment))
+        }
     }
 }
 
@@ -5083,10 +5570,11 @@ mod tests {
             .unwrap();
 
         let chain_actions = pending_chain_strategy_options_for(record.state(), &alice);
-        assert!(chain_actions.iter().any(|action| {
-            action.strategy == SecretStrategy::SheepStealing
-                && action.input == WebSecretStrategyInputRequirement::DeckDiscardSwap
-        }));
+        assert!(
+            chain_actions
+                .iter()
+                .any(|action| { matches!(action, WebSecretStrategyOption::SheepStealing { .. }) })
+        );
         assert!(
             pending_chain_strategy_options_for(record.state(), &PlayerId::new("bob")).is_empty(),
             "a private Chain choice must not disclose its strategy options to another player"
@@ -5574,26 +6062,603 @@ mod tests {
     }
 
     #[test]
-    fn start_request_consolidates_setup_events_into_plain_language() {
+    fn start_request_groups_setup_as_player_battle_record() {
         let response = handle_request_json(r#"{"action":{"type":"start"},"viewer":"alice"}"#)
             .expect("start request should succeed");
         let json: serde_json::Value =
             serde_json::from_str(&response).expect("response should be valid JSON");
-        let events = json["events"]
+        let entries = json["battleRecord"]["preparation"]["entries"]
             .as_array()
-            .expect("response should contain events");
+            .expect("response should contain a preparation group");
 
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["title"], "對局開始");
-        assert!(
-            events[0]["summary"]
-                .as_str()
-                .is_some_and(|summary| summary.contains("已完成洗牌與發牌"))
+        assert!(entries.iter().any(|entry| entry["title"] == "本局規則"));
+        let record = serde_json::to_string(entries).expect("battle record should serialize");
+        assert!(!record.contains("eventType"));
+        assert!(!record.contains("DeckPrepared"));
+        assert!(!record.contains("CardsDealt"));
+    }
+
+    #[test]
+    fn battle_record_keeps_automatic_events_after_turn_started_in_the_new_turn() {
+        let player = PlayerId::new("p1");
+        let decisions = vec![
+            RecordedDecision {
+                source: RecordedDecisionSource::Command {
+                    command_id: crate::domain::CommandId::new(1),
+                    command: Command::ChooseInitialPouch {
+                        player: player.clone(),
+                        card: CardInstanceId::new(1),
+                    },
+                },
+                events: vec![GameEvent::GamePreparationStarted {
+                    player_decks: Vec::new(),
+                }],
+            },
+            RecordedDecision {
+                source: RecordedDecisionSource::Automatic,
+                events: vec![
+                    GameEvent::TurnStarted {
+                        player: player.clone(),
+                        turn_number: 1,
+                    },
+                    GameEvent::TurnDrawSkipped {
+                        player,
+                        reason: TurnDrawSkipReason::HandLimitReached,
+                    },
+                ],
+            },
+        ];
+        let feed = public_decision_feed(&decisions, Viewer::Observer);
+        assert_eq!(feed.decisions.len(), 2);
+        assert_eq!(feed.decisions[0].turn_number, None);
+        assert_eq!(feed.decisions[1].turn_number, Some(1));
+        assert!(matches!(
+            feed.decisions[1].source,
+            PublicDecisionSource::Automatic
+        ));
+    }
+
+    #[test]
+    fn battle_record_treats_sole_pass_as_a_reasoned_automatic_outcome() {
+        let player = PlayerId::new("p1");
+        let decisions = vec![RecordedDecision {
+            source: RecordedDecisionSource::Command {
+                command_id: crate::domain::CommandId::new(1),
+                command: Command::PassAction {
+                    player: player.clone(),
+                    reason: PassActionReason::NoCardsInHand,
+                },
+            },
+            events: vec![GameEvent::ActionPassed {
+                player,
+                reason: PassActionReason::NoCardsInHand,
+            }],
+        }];
+        let feed = public_decision_feed(&decisions, Viewer::Observer);
+        assert!(matches!(
+            feed.decisions[0].source,
+            PublicDecisionSource::ForcedPass
+        ));
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let record = battle_record_for(
+            feed,
+            &GameState::from_setup(&setup),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &PlayerVocabulary::all_official(),
         );
-        let visible_events =
-            serde_json::to_string(events).expect("visible events should serialize");
-        assert!(!visible_events.contains("DeckPrepared"));
-        assert!(!visible_events.contains("CardsDealt"));
+        assert!(record.preparation.entries.iter().any(|entry| {
+            entry
+                .summary
+                .as_deref()
+                .is_some_and(|text| text.contains("手中沒有牌"))
+        }));
+    }
+
+    #[test]
+    fn battle_record_enriches_a_player_decision_with_randomness_without_changing_its_id() {
+        let player = PlayerId::new("p1");
+        let decisions = vec![
+            RecordedDecision {
+                source: RecordedDecisionSource::Automatic,
+                events: vec![GameEvent::TurnStarted {
+                    player: player.clone(),
+                    turn_number: 1,
+                }],
+            },
+            RecordedDecision {
+                source: RecordedDecisionSource::Command {
+                    command_id: crate::domain::CommandId::new(1),
+                    command: Command::ChooseInitialPouch {
+                        player: player.clone(),
+                        card: CardInstanceId::new(1),
+                    },
+                },
+                events: vec![GameEvent::InitialPouchChosen {
+                    player: player.clone(),
+                    card: CardInstanceId::new(1),
+                }],
+            },
+            RecordedDecision {
+                source: RecordedDecisionSource::Randomness {
+                    answer: TrustedRandomnessAnswer {
+                        request_id: "r".to_string(),
+                        shuffled_order: Vec::new(),
+                    },
+                },
+                events: vec![GameEvent::RandomnessResolved {
+                    request_id: "r".to_string(),
+                    operation: crate::domain::RandomnessOperation::DeckShuffle {
+                        deck: crate::domain::RandomnessDeck::Shared,
+                    },
+                    shuffled_order: Vec::new(),
+                }],
+            },
+        ];
+        let feed = public_decision_feed(&decisions, Viewer::Player(player));
+        assert_eq!(feed.decisions.len(), 1);
+        assert_eq!(feed.decisions[0].id, "decision-2");
+    }
+
+    #[test]
+    fn battle_record_terminal_entry_includes_outcome_and_cause_without_debug_rule_id() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let conclusion = crate::domain::GameConclusion::new(
+            crate::domain::GameOutcome::Winner(setup.players[0].team.clone()),
+            vec![crate::domain::GameEndCause::DirectVictory {
+                rule: "internal:win".to_string(),
+                team: setup.players[0].team.clone(),
+            }],
+            None,
+        );
+        let feed = PublicDecisionFeed {
+            decisions: vec![PublicDecision {
+                id: "decision-1".to_string(),
+                turn_number: Some(1),
+                turn_player: Some(setup.players[0].id.clone()),
+                source: PublicDecisionSource::Automatic,
+                events: vec![PublicGameEvent::Public(GameEvent::GameEnded { conclusion })],
+            }],
+        };
+        let record = battle_record_for(
+            feed,
+            &GameState::from_setup(&setup),
+            Some(setup.players[0].id.clone()),
+            &HashMap::new(),
+            &HashMap::new(),
+            &PlayerVocabulary::all_official(),
+        );
+        let terminal = record.turns[0].entries.last().unwrap();
+        assert_eq!(terminal.title, "對局結束");
+        let summary = terminal.summary.as_deref().unwrap();
+        assert!(
+            summary.contains("我方獲勝") && summary.contains("特殊勝利條件"),
+            "{summary}"
+        );
+        assert!(!summary.contains("internal:win"));
+    }
+
+    #[test]
+    fn battle_record_uses_viewer_side_labels_and_keeps_redacted_cards_redacted() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let actor = setup.players[0].id.clone();
+        let observer_feed = PublicDecisionFeed {
+            decisions: vec![PublicDecision {
+                id: "decision-1".to_string(),
+                turn_number: Some(1),
+                turn_player: Some(actor.clone()),
+                source: player_decision_source(&Command::PerformFormation {
+                    player: actor.clone(),
+                    formation_id: "defense".to_string(),
+                    cards: vec![CardInstanceId::new(9)],
+                    declared_targets: Vec::new(),
+                }),
+                events: vec![PublicGameEvent::FormationCommitted {
+                    player: actor.clone(),
+                    formation_id: None,
+                    cards: PublicCardRefs::Hidden { count: 1 },
+                }],
+            }],
+        };
+        let state = GameState::from_setup(&setup);
+        let names = HashMap::from([("defense".to_string(), "幽冥陣".to_string())]);
+        let observer = battle_record_for(
+            observer_feed.clone(),
+            &state,
+            None,
+            &HashMap::from([(CardInstanceId::new(9), "金 1".to_string())]),
+            &names,
+            &PlayerVocabulary::all_official(),
+        );
+        let entry = &observer.turns[0].entries[0];
+        let text = entry.summary.as_deref().unwrap();
+        assert!(entry.title.contains("施展陣法") && !entry.title.contains("幽冥陣"));
+        assert!(text.contains("1 張牌") && !text.contains("金 1") && !text.contains("幽冥陣"));
+        let participant = battle_record_for(
+            observer_feed,
+            &state,
+            Some(actor),
+            &HashMap::new(),
+            &names,
+            &PlayerVocabulary::all_official(),
+        );
+        assert!(participant.turns[0].entries[0].title.starts_with("你施展"));
+    }
+
+    #[test]
+    fn battle_record_choice_titles_keep_chain_and_earth_rending_decisions_distinct() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let actor = setup.players[0].id.clone();
+        let target = setup.players[1].id.clone();
+        let state = GameState::from_setup(&setup);
+        let feed = PublicDecisionFeed {
+            decisions: vec![
+                PublicDecision {
+                    id: "chain".to_string(),
+                    turn_number: Some(1),
+                    turn_player: Some(actor.clone()),
+                    source: player_decision_source(&Command::AnswerChoice {
+                        player: actor.clone(),
+                        choice_id: ChoiceId::new(1),
+                        answer: ChoiceAnswer::Chain {
+                            decision: crate::domain::ChainPouchDecision::PlaceOnly {
+                                pouch_owner: target.clone(),
+                                pouch_card: CardInstanceId::new(7),
+                            },
+                        },
+                    }),
+                    events: vec![
+                        PublicGameEvent::PouchPlaced {
+                            owner: target.clone(),
+                            card: Some(CardInstanceId::new(7)),
+                        },
+                        PublicGameEvent::Public(GameEvent::PouchRevealed {
+                            player: actor.clone(),
+                            owner: Some(target.clone()),
+                            card: CardInstanceId::new(7),
+                            strategy: crate::domain::SecretStrategy::GoldenCicada,
+                        }),
+                    ],
+                },
+                PublicDecision {
+                    id: "earth".to_string(),
+                    turn_number: Some(1),
+                    turn_player: Some(actor.clone()),
+                    source: player_decision_source(&Command::AnswerChoice {
+                        player: actor,
+                        choice_id: ChoiceId::new(2),
+                        answer: ChoiceAnswer::Environment {
+                            environment: Element::Fire,
+                        },
+                    }),
+                    events: vec![PublicGameEvent::Public(
+                        GameEvent::EarthRendingEnvironmentChosen {
+                            environment: Element::Fire,
+                        },
+                    )],
+                },
+            ],
+        };
+        let record = battle_record_for(
+            feed.clone(),
+            &state,
+            Some(setup.players[0].id.clone()),
+            &HashMap::from([(CardInstanceId::new(7), "土 2".to_string())]),
+            &HashMap::new(),
+            &PlayerVocabulary::all_official(),
+        );
+        let chain_title = &record.turns[0].entries[0].title;
+        assert!(
+            chain_title.starts_with("你將土 2放入") && chain_title.contains("錦囊"),
+            "{chain_title}"
+        );
+        assert!(
+            record.turns[0].entries[1].title.contains("選擇")
+                && record.turns[0].entries[1].title.contains("火")
+        );
+        assert_eq!(record.turns[0].entries.len(), 2);
+        assert!(
+            record.turns[0].entries[0]
+                .summary
+                .as_deref()
+                .is_some_and(|text| text.contains("觸發「金蟬」"))
+        );
+        let target_view = battle_record_for(
+            feed,
+            &state,
+            Some(target.clone()),
+            &HashMap::from([(CardInstanceId::new(7), "土 2".to_string())]),
+            &HashMap::new(),
+            &PlayerVocabulary::all_official(),
+        );
+        let title = &target_view.turns[0].entries[0].title;
+        assert!(
+            title.contains("你") && !title.contains(target.as_str()),
+            "{title}"
+        );
+    }
+
+    #[test]
+    fn battle_record_never_reads_concealed_chain_cards_from_the_raw_command() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let actor = setup.players[0].id.clone();
+        let owner = setup.players[1].id.clone();
+        let raw_card = CardInstanceId::new(7);
+        let feed = PublicDecisionFeed {
+            decisions: vec![PublicDecision {
+                id: "concealed-chain".to_string(),
+                turn_number: Some(1),
+                turn_player: Some(actor.clone()),
+                source: player_decision_source(&Command::AnswerChoice {
+                    player: actor,
+                    choice_id: ChoiceId::new(1),
+                    answer: ChoiceAnswer::Chain {
+                        decision: crate::domain::ChainPouchDecision::PlaceAndTrigger {
+                            pouch_owner: owner.clone(),
+                            pouch_card: raw_card,
+                            decision: crate::domain::SecretStrategyDecision::SheepStealing {
+                                source_card: CardInstanceId::new(8),
+                            },
+                        },
+                    },
+                }),
+                events: vec![PublicGameEvent::PouchPlaced { owner, card: None }],
+            }],
+        };
+        let record = battle_record_for(
+            feed,
+            &GameState::from_setup(&setup),
+            Some(setup.players[1].id.clone()),
+            &HashMap::from([(raw_card, "土 2".to_string())]),
+            &HashMap::new(),
+            &PlayerVocabulary::all_official(),
+        );
+        let entry = &record.turns[0].entries[0];
+        assert!(entry.title.contains("作出選擇") && !entry.title.contains("土 2"));
+        assert!(
+            entry
+                .summary
+                .as_deref()
+                .is_some_and(|text| !text.contains("土 2"))
+        );
+    }
+
+    #[test]
+    fn battle_record_merges_passive_flip_into_triggering_action_and_names_non_empty_card() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let actor = setup.players[0].id.clone();
+        let owner = setup.players[1].id.clone();
+        let feed = PublicDecisionFeed {
+            decisions: vec![PublicDecision {
+                id: "attack".to_string(),
+                turn_number: Some(1),
+                turn_player: Some(actor.clone()),
+                source: player_decision_source(&Command::PerformFormation {
+                    player: actor.clone(),
+                    formation_id: "weapon".to_string(),
+                    cards: Vec::new(),
+                    declared_targets: Vec::new(),
+                }),
+                events: vec![PublicGameEvent::Public(GameEvent::PassiveFlipped {
+                    owner,
+                    incoming_player: actor,
+                    passive_id: "defense".to_string(),
+                    cards: vec![CardInstanceId::new(3)],
+                    outcome: crate::domain::PassiveFlipOutcome::Applied {
+                        effect_id: "defense".to_string(),
+                        modifications: Vec::new(),
+                    },
+                })],
+            }],
+        };
+        let record = battle_record_for(
+            feed,
+            &GameState::from_setup(&setup),
+            None,
+            &HashMap::from([(CardInstanceId::new(3), "土 3".to_string())]),
+            &HashMap::from([
+                ("weapon".to_string(), "武器".to_string()),
+                ("defense".to_string(), "防禦".to_string()),
+            ]),
+            &PlayerVocabulary::all_official(),
+        );
+        assert_eq!(record.turns[0].entries.len(), 1);
+        assert!(
+            record.turns[0].entries[0]
+                .summary
+                .as_deref()
+                .is_some_and(|text| text.contains("土 3"))
+        );
+    }
+
+    #[test]
+    fn battle_record_lists_all_public_passive_no_effect_grounds_but_keeps_empty_city_concise() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let actor = setup.players[0].id.clone();
+        let owner = setup.players[1].id.clone();
+        let source = player_decision_source(&Command::PerformFormation {
+            player: actor.clone(),
+            formation_id: "weapon".to_string(),
+            cards: Vec::new(),
+            declared_targets: Vec::new(),
+        });
+        let build = |passive_id: &str, grounds| PublicDecisionFeed {
+            decisions: vec![PublicDecision {
+                id: passive_id.to_string(),
+                turn_number: Some(1),
+                turn_player: Some(actor.clone()),
+                source: source.clone(),
+                events: vec![PublicGameEvent::Public(GameEvent::PassiveFlipped {
+                    owner: owner.clone(),
+                    incoming_player: actor.clone(),
+                    passive_id: passive_id.to_string(),
+                    cards: vec![CardInstanceId::new(1)],
+                    outcome: crate::domain::PassiveFlipOutcome::NoEffect { grounds },
+                })],
+            }],
+        };
+        let names = HashMap::from([
+            ("weapon".to_string(), "武器".to_string()),
+            ("defense".to_string(), "防禦".to_string()),
+        ]);
+        let state = GameState::from_setup(&setup);
+        let ineffective = battle_record_for(
+            build(
+                "defense",
+                vec![
+                    crate::domain::PassiveNoEffectGround::Sealed,
+                    crate::domain::PassiveNoEffectGround::NotAnAttack,
+                ],
+            ),
+            &state,
+            None,
+            &HashMap::new(),
+            &names,
+            &PlayerVocabulary::all_official(),
+        );
+        let summary = ineffective.turns[0].entries[0].summary.as_deref().unwrap();
+        assert!(summary.contains("已被封印") && summary.contains("不是攻擊"));
+        let empty = battle_record_for(
+            build(
+                "empty-city",
+                vec![crate::domain::PassiveNoEffectGround::EmptyCity],
+            ),
+            &state,
+            None,
+            &HashMap::new(),
+            &names,
+            &PlayerVocabulary::all_official(),
+        );
+        assert_eq!(
+            empty.turns[0].entries[0].summary.as_deref().unwrap(),
+            format!("{} 的「空城」翻開。", owner.as_str())
+        );
+    }
+
+    #[test]
+    fn battle_record_aggregates_delayed_echo_and_keeps_status_expiry_as_its_own_outcome() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let player = setup.players[0].id.clone();
+        let status = PublicDecision {
+            id: "status".to_string(),
+            turn_number: Some(2),
+            turn_player: Some(player.clone()),
+            source: PublicDecisionSource::Automatic,
+            events: vec![PublicGameEvent::Public(GameEvent::StatusExpired {
+                status_id: "temporary".to_string(),
+                owner: StatusOwner::Player(player.clone()),
+                expired_at: crate::domain::StatusExpiryTiming::TurnStart {
+                    player: player.clone(),
+                },
+            })],
+        };
+        let echo = PublicDecision {
+            id: "echo".to_string(),
+            turn_number: Some(2),
+            turn_player: Some(player.clone()),
+            source: PublicDecisionSource::Automatic,
+            events: vec![
+                PublicGameEvent::Public(GameEvent::EchoResolutionStarted {
+                    schedule: crate::domain::ScheduledEcho {
+                        player: player.clone(),
+                        melody_id: "echo:ringing-metal".to_string(),
+                        due_turn_number: 2,
+                    },
+                }),
+                PublicGameEvent::Public(GameEvent::HpChanged {
+                    change: crate::domain::HpChangeDelta {
+                        team: setup.players[0].team.clone(),
+                        old_hp: 20,
+                        delta: -5,
+                        new_hp: 15,
+                        effective_delta: -5,
+                    },
+                }),
+                PublicGameEvent::Public(GameEvent::EchoResolutionCompleted {
+                    player,
+                    melody_id: "echo:ringing-metal".to_string(),
+                    due_turn_number: 2,
+                }),
+            ],
+        };
+        let record = battle_record_for(
+            PublicDecisionFeed {
+                decisions: vec![status, echo],
+            },
+            &GameState::from_setup(&setup),
+            Some(setup.players[0].id.clone()),
+            &HashMap::new(),
+            &HashMap::new(),
+            &PlayerVocabulary::all_official(),
+        );
+        assert_eq!(record.turns[0].entries.len(), 2);
+        assert_eq!(record.turns[0].entries[0].title, "狀態結束");
+        assert_eq!(record.turns[0].entries[1].title, "迴響");
+        assert!(
+            record.turns[0].entries[1]
+                .summary
+                .as_deref()
+                .is_some_and(|text| text.contains("減少 5 點，剩餘 15"))
+        );
+    }
+
+    #[test]
+    fn battle_record_preparation_keeps_each_initial_pouch_and_completion_separate() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let first = setup.players[0].id.clone();
+        let second = setup.players[1].id.clone();
+        let decisions = vec![
+            RecordedDecision {
+                source: RecordedDecisionSource::Command {
+                    command_id: crate::domain::CommandId::new(1),
+                    command: Command::ChooseInitialPouch {
+                        player: first.clone(),
+                        card: CardInstanceId::new(1),
+                    },
+                },
+                events: vec![GameEvent::InitialPouchChosen {
+                    player: first,
+                    card: CardInstanceId::new(1),
+                }],
+            },
+            RecordedDecision {
+                source: RecordedDecisionSource::Command {
+                    command_id: crate::domain::CommandId::new(2),
+                    command: Command::ChooseInitialPouch {
+                        player: second.clone(),
+                        card: CardInstanceId::new(2),
+                    },
+                },
+                events: vec![GameEvent::InitialPouchChosen {
+                    player: second,
+                    card: CardInstanceId::new(2),
+                }],
+            },
+            RecordedDecision {
+                source: RecordedDecisionSource::Automatic,
+                events: vec![GameEvent::GamePreparationCompleted],
+            },
+        ];
+        let record = battle_record_for(
+            public_decision_feed(&decisions, Viewer::Observer),
+            &GameState::from_setup(&setup),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &PlayerVocabulary::all_official(),
+        );
+        assert_eq!(record.preparation.entries.len(), 4);
+        assert_eq!(record.preparation.entries[3].title, "準備完成");
     }
 
     #[test]
@@ -6420,7 +7485,7 @@ mod tests {
             game_event_presentation(&event, &HashMap::new(), &formation_names),
             (
                 "攻擊結算".to_string(),
-                "alice 以「武器」攻擊 bob，bob 的防護罩由 30 變為 6。".to_string()
+                "alice 以「武器」攻擊 bob，bob 的防護罩減少 24 點，剩餘 6。".to_string()
             )
         );
     }
@@ -6710,9 +7775,8 @@ mod tests {
         assert!(summaries[10].contains("火 3"));
         assert!(summaries[11].contains("太白星擊"));
 
-        let public_event = WebPublicGameEvent::from_public(
-            1,
-            PublicGameEvent::SpiritLevelInterpreted {
+        let (_, summary) = event_presentation_with_vocabulary(
+            &PublicGameEvent::SpiritLevelInterpreted {
                 player: PlayerId::new("alice"),
                 skill: Some(SpiritSkill::EvilGaze),
                 card: Some(CardInstanceId::new(42)),
@@ -6723,12 +7787,11 @@ mod tests {
             &formations,
             &vocabulary,
         );
-        assert!(public_event.summary.contains("火 3"));
-        assert!(!public_event.summary.contains("42"));
+        assert!(summary.contains("火 3"));
+        assert!(!summary.contains("42"));
 
-        let choice_event = WebPublicGameEvent::from_public(
-            2,
-            PublicGameEvent::ChoiceRequested {
+        let (_, summary) = event_presentation_with_vocabulary(
+            &PublicGameEvent::ChoiceRequested {
                 choice: crate::public_view::PublicPendingChoice::Hidden {
                     player: PlayerId::new("alice"),
                     reason: PublicPendingChoicePresentation::EchoRingingMetalDeckCard,
@@ -6738,10 +7801,10 @@ mod tests {
             &formations,
             &vocabulary,
         );
-        assert!(choice_event.summary.contains("需要作出選擇"));
-        assert!(!choice_event.summary.contains("echo:"));
+        assert!(summary.contains("未公開的選擇"));
+        assert!(!summary.contains("echo:"));
 
-        for (sequence, virtual_card) in [
+        for (_, virtual_card) in [
             (3, None),
             (
                 4,
@@ -6752,9 +7815,8 @@ mod tests {
                 }),
             ),
         ] {
-            let requirement_event = WebPublicGameEvent::from_public(
-                sequence,
-                PublicGameEvent::FormationRequirementFulfilled {
+            let (_, summary) = event_presentation_with_vocabulary(
+                &PublicGameEvent::FormationRequirementFulfilled {
                     player: PlayerId::new("alice"),
                     formation_id: "taibai-star-strike".to_string(),
                     virtual_card,
@@ -6763,8 +7825,8 @@ mod tests {
                 &formations,
                 &vocabulary,
             );
-            assert!(requirement_event.summary.contains("太白星擊"));
-            assert!(!requirement_event.summary.contains("taibai-star-strike"));
+            assert!(summary.contains("太白星擊"));
+            assert!(!summary.contains("taibai-star-strike"));
         }
     }
 
@@ -6833,27 +7895,88 @@ mod tests {
         let action: ApiAction = serde_json::from_value(serde_json::json!({
             "type": "triggerSecretStrategy",
             "player": "alice",
-            "strategy": "DeceiveHeaven",
-            "targetPlayer": "bob",
-            "star": "Fire",
-            "breakStar": true,
-            "discardCard": 7,
-            "deckCards": [8, 9],
-            "discardCards": [10, 11]
+            "decision": {
+                "type": "environment",
+                "sourceCard": 7,
+                "operation": { "type": "transferByDiscard", "card": 8 }
+            }
         }))
         .unwrap();
         assert!(matches!(
             action,
             ApiAction::TriggerSecretStrategy {
-                target_player: Some(player),
-                star: Some(crate::domain::StarKind::Fire),
-                break_star: true,
-                discard_card: Some(_),
-                ref deck_cards,
-                ref discard_cards,
+                decision: SecretStrategyDecision::Environment {
+                    source_card,
+                    operation: crate::domain::SecretStrategyEnvironmentOperation::TransferByDiscard { card },
+                },
                 ..
-            } if player == "bob" && deck_cards.len() == 2 && discard_cards.len() == 2
+            } if source_card == CardInstanceId::new(7) && card == CardInstanceId::new(8)
         ));
+
+        let playable = serde_json::to_value(WebPlayableAction::TriggerSecretStrategy {
+            command_role: crate::rules::MainPhaseCommandRole::ActiveEffect,
+            option: WebSecretStrategyOption::TargetPlayer {
+                source_card: CardInstanceId::new(7),
+                target_players: vec![PlayerId::new("bob")],
+                detail: PlayerFacingActionDetail::composed(Vec::new()),
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            playable,
+            serde_json::json!({
+                "type": "triggerSecretStrategy",
+                "commandRole": "activeEffect",
+                "option": {
+                    "type": "targetPlayer",
+                    "sourceCard": 7,
+                    "targetPlayers": ["bob"],
+                    "detail": { "consequences": [] }
+                }
+            })
+        );
+        assert!(playable.get("sourceCard").is_none());
+
+        let irrelevant_input = serde_json::from_value::<ApiAction>(serde_json::json!({
+            "type": "triggerSecretStrategy",
+            "player": "alice",
+            "decision": {
+                "type": "noInput",
+                "sourceCard": 7,
+                "strategy": "GoldenCicada",
+                "star": "Fire"
+            }
+        }));
+        assert!(
+            irrelevant_input.is_err(),
+            "closed Decision must reject unrelated fields"
+        );
+
+        let legacy_direct = serde_json::from_value::<ApiAction>(serde_json::json!({
+            "type": "triggerSecretStrategy",
+            "player": "alice",
+            "strategy": "DeceiveHeaven",
+            "star": "Fire"
+        }));
+        assert!(
+            legacy_direct.is_err(),
+            "legacy optional-field action must be rejected"
+        );
+
+        let legacy_chain_answer = serde_json::from_value::<ApiAction>(serde_json::json!({
+            "type": "answerChoice",
+            "player": "alice",
+            "choiceId": 3,
+            "answer": {
+                "type": "chain",
+                "pouchOwner": "alice",
+                "pouchCard": 7
+            }
+        }));
+        assert!(
+            legacy_chain_answer.is_err(),
+            "legacy Chain option bag must be rejected"
+        );
 
         let stale_chain = serde_json::from_value::<ApiAction>(serde_json::json!({
             "type": "performFormation",

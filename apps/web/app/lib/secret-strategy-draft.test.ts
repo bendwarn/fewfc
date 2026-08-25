@@ -1,61 +1,54 @@
 import { describe, expect, test } from 'bun:test'
-import type { SecretStrategyOption } from '../types/fewfc'
+import type { PlayerFacingActionDetail, SecretStrategyOption } from '../types/fewfc'
 import { secretStrategyDraftAction } from './secret-strategy-draft'
 
-const baseDraft: Omit<SecretStrategyOption, 'strategy' | 'input'> = {
+const detail: PlayerFacingActionDetail = { consequences: [] }
+const targetDraft: SecretStrategyOption = {
   sourceCard: 10,
   targetPlayers: ['alice', 'bob'],
-  stars: ['Metal', 'Wood'],
-  breakStars: ['Fire'],
-  deckCards: [],
-  discardCards: [],
-  handCards: [41, 42],
-  requiredCardCount: 0,
-  detail: { consequences: [] },
+  type: 'targetPlayer',
+  detail,
 }
 
 describe('secretStrategyDraftAction', () => {
-  test('does not produce a command until a legal local input is selected', () => {
+  test('does not produce a Decision until an answer-shaped input is complete', () => {
     for (const draft of [
-      { ...baseDraft, strategy: 'LureTheTigerAway' as const, input: 'targetPlayer' as const },
-      { ...baseDraft, strategy: 'DeceiveHeaven' as const, input: 'star' as const },
-      { ...baseDraft, strategy: 'Retreat' as const, input: 'retreat' as const },
-    ]) {
+      targetDraft,
+      { type: 'star', sourceCard: 10, gainStars: ['Metal'], breakStars: ['Fire'], detail },
+      { type: 'environment', sourceCard: 10, handCards: [41], detail },
+    ] satisfies SecretStrategyOption[]) {
       expect(secretStrategyDraftAction(draft, {})).toBeUndefined()
     }
   })
 
-  test('produces the exact typed action inputs for target, star, and retreat drafts', () => {
+  test('maps every answer family to its closed Decision', () => {
     expect(secretStrategyDraftAction(
-      { ...baseDraft, strategy: 'LureTheTigerAway', input: 'targetPlayer' },
+      targetDraft,
       { targetPlayer: 'bob' },
-    )).toEqual({ strategy: 'LureTheTigerAway', options: { targetPlayer: 'bob' } })
+    )).toEqual({ type: 'targetPlayer', sourceCard: 10, targetPlayer: 'bob' })
     expect(secretStrategyDraftAction(
-      { ...baseDraft, strategy: 'DeceiveHeaven', input: 'star' },
+      { type: 'star', sourceCard: 10, gainStars: ['Metal'], breakStars: ['Fire'], detail },
       { star: 'Fire', breakStar: true },
-    )).toEqual({ strategy: 'DeceiveHeaven', options: { star: 'Fire', breakStar: true } })
+    )).toEqual({ type: 'star', sourceCard: 10, operation: { type: 'break', star: 'Fire' } })
     expect(secretStrategyDraftAction(
-      { ...baseDraft, strategy: 'Retreat', input: 'retreat' },
+      { type: 'environment', sourceCard: 10, handCards: [41], detail },
       { retreat: 41 },
-    )).toEqual({ strategy: 'Retreat', options: { discardCard: 41 } })
+    )).toEqual({
+      type: 'environment',
+      sourceCard: 10,
+      operation: { type: 'transferByDiscard', card: 41 },
+    })
     expect(secretStrategyDraftAction(
-      { ...baseDraft, strategy: 'Retreat', input: 'retreat' },
+      { type: 'environment', sourceCard: 10, handCards: [41], detail },
       { retreat: 'clearEnvironment' },
-    )).toEqual({ strategy: 'Retreat', options: {} })
-  })
-
-  test('rejects stale or forbidden local selections instead of creating a command', () => {
+    )).toEqual({ type: 'environment', sourceCard: 10, operation: { type: 'clear' } })
     expect(secretStrategyDraftAction(
-      { ...baseDraft, strategy: 'LureTheTigerAway', input: 'targetPlayer' },
-      { targetPlayer: 'mallory' },
-    )).toBeUndefined()
+      { type: 'noInput', sourceCard: 10, strategy: 'GoldenCicada', detail },
+      {},
+    )).toEqual({ type: 'noInput', sourceCard: 10, strategy: 'GoldenCicada' })
     expect(secretStrategyDraftAction(
-      { ...baseDraft, strategy: 'DeceiveHeaven', input: 'star' },
-      { star: 'Metal', breakStar: true },
-    )).toBeUndefined()
-    expect(secretStrategyDraftAction(
-      { ...baseDraft, strategy: 'Retreat', input: 'retreat' },
-      { retreat: 99 },
-    )).toBeUndefined()
+      { type: 'sheepStealing', sourceCard: 10, detail },
+      {},
+    )).toEqual({ type: 'sheepStealing', sourceCard: 10 })
   })
 })

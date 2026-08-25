@@ -139,6 +139,32 @@ describe('ChainChoice', () => {
     await owners.findAll('button')[1].trigger('click')
     expect(wrapper.emitted('select-pouch-owner')).toStrictEqual([['p2']])
   })
+
+  it('disables second-card cells that match the pouch card element or level', async () => {
+    const chainCards = [
+      { id: 21, label: '金 2 級', element: 'Metal' as const, level: 2, secretStrategies: [] },
+      { id: 22, label: '金 4 級', element: 'Metal' as const, level: 4, secretStrategies: [] },
+      { id: 23, label: '火 2 級', element: 'Fire' as const, level: 2, secretStrategies: [] },
+      { id: 24, label: '木 3 級', element: 'Wood' as const, level: 3, secretStrategies: [] },
+    ]
+    const wrapper = await mountSuspended(ChainChoice, {
+      props: {
+        ...chainProps,
+        pouchCards: chainCards,
+        pouchCard: chainCards[0],
+        triggerCards: chainCards,
+        triggerCard: null,
+      },
+    })
+
+    const triggerMatrix = wrapper.get('[aria-label="連環觸發牌組矩陣"]')
+    expect(triggerMatrix.get('[aria-label="選擇作為連環觸發牌：金 4 級，共 1 張，已選 0 張"]').attributes('disabled')).toBeDefined()
+    expect(triggerMatrix.get('[aria-label="選擇作為連環觸發牌：火 2 級，共 1 張，已選 0 張"]').attributes('disabled')).toBeDefined()
+    const legalCard = triggerMatrix.get('[aria-label="選擇作為連環觸發牌：木 3 級，共 1 張，已選 0 張"]')
+    expect(legalCard.attributes('disabled')).toBeUndefined()
+    await legalCard.trigger('click')
+    expect(wrapper.emitted('choose-trigger-card')).toStrictEqual([[24]])
+  })
 })
 
 describe('SplitEarthFormationChoice', () => {

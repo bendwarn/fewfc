@@ -4,10 +4,9 @@ import type {
   Element,
   PlayableAction,
   PlayerId,
-  PublicGameEvent,
+  BattleRecord,
   PublicGameState,
-  SecretStrategy,
-  StarKind,
+  SecretStrategyDecision,
   ViewerId,
 } from '~/types/fewfc'
 import type {
@@ -97,7 +96,7 @@ export function useGameRoom(viewer: ViewerRef) {
   const lockedDeckName = ref<string | null>(null)
   const savableReplay = ref<GameRoomResponse['savableReplay']>()
   const onlineGameId = ref<string | null>(null)
-  const publicEvents = ref<PublicGameEvent[]>([])
+  const battleRecord = ref<BattleRecord>({ preparation: { entries: [] }, turns: [] })
   const selectedCards = ref<CardInstanceId[]>([])
   const selectedChoiceCards = ref<CardInstanceId[]>([])
   const pendingChoiceDraftEpoch = ref(0)
@@ -129,11 +128,9 @@ export function useGameRoom(viewer: ViewerRef) {
     ) ?? null
   ))
   const playableSecretStrategies = computed(() => (
-    playableActions.value.filter(
-      (action): action is Extract<PlayableAction, { type: 'triggerSecretStrategy' }> => (
-        action.type === 'triggerSecretStrategy'
-      ),
-    )
+    playableActions.value.flatMap(action => (
+      action.type === 'triggerSecretStrategy' ? [action.option] : []
+    ))
   ))
   const errorMessage = ref<string | null>(null)
   const isLoading = ref(false)
@@ -234,7 +231,7 @@ export function useGameRoom(viewer: ViewerRef) {
     if (reconciledDraft.length !== selectedCards.value.length) {
       selectedCards.value = reconciledDraft
     }
-    publicEvents.value = response.events
+    battleRecord.value = response.battleRecord
     if (!preservePlayableActions) {
       playableActions.value = response.playableActions
     }
@@ -441,23 +438,12 @@ export function useGameRoom(viewer: ViewerRef) {
     })
   }
 
-  async function triggerSecretStrategy(
-    strategy: SecretStrategy,
-    options: {
-      targetPlayer?: PlayerId
-      star?: StarKind
-      breakStar?: boolean
-      discardCard?: CardInstanceId
-      deckCards?: CardInstanceId[]
-      discardCards?: CardInstanceId[]
-    } = {},
-  ) {
+  async function triggerSecretStrategy(decision: SecretStrategyDecision) {
     if (viewer.value === 'observer') return false
     return await submitOnline({
       type: 'triggerSecretStrategy',
       player: viewer.value,
-      strategy,
-      ...options,
+      decision,
     })
   }
 
@@ -861,7 +847,7 @@ export function useGameRoom(viewer: ViewerRef) {
     savableReplay.value = undefined
     onlineGameId.value = null
     state.value = emptyState()
-    publicEvents.value = []
+    battleRecord.value = { preparation: { entries: [] }, turns: [] }
     selectedCards.value = []
     selectedChoiceCards.value = []
     pendingChoiceDraftEpoch.value += 1
@@ -885,7 +871,7 @@ export function useGameRoom(viewer: ViewerRef) {
     savableReplay,
     onlineGameId,
     state,
-    publicEvents,
+    battleRecord,
     selectedCards,
     selectedChoiceCards,
     pendingChoiceDraftEpoch,

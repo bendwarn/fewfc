@@ -278,12 +278,10 @@ fn command_context(command: &Command) -> CommandContext {
             player: player.clone(),
             kind: CommandKind::ChooseInitialPouch,
         },
-        Command::TriggerSecretStrategy {
-            player, strategy, ..
-        } => CommandContext {
+        Command::TriggerSecretStrategy { player, decision } => CommandContext {
             player: player.clone(),
             kind: CommandKind::TriggerSecretStrategy {
-                strategy: *strategy,
+                strategy: decision.strategy(),
             },
         },
         Command::PassAction { player, .. } => CommandContext {

@@ -4,6 +4,7 @@ import {
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
   requireReadyRulesResult,
+  systemBattleRecord,
   type GameRoomAccess,
   type GameRoomCapacity,
   type CommandReceipt,
@@ -22,7 +23,8 @@ import {
   type RulesReadyResult,
   type StoredGameEvent,
 } from '../../shared/game-room'
-import type { PlayableAction, PlayerId } from '../../app/types/fewfc'
+import type { BattleRecord, PlayableAction, PlayerId } from '../../app/types/fewfc'
+import { replacePlayerLabels } from '../../shared/utils/battle-record-display'
 import {
   callRuleModuleResolution,
   callRulesEngine as callRulesEngineResult,
@@ -1645,12 +1647,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
             }
           : undefined,
         state: emptyPublicState(currentMetadata.players),
-        events: (await this.events()).map((event) => ({
-          id: `room-event-${event.sequence}`,
-          eventType: event.type,
+        battleRecord: systemBattleRecord(await this.events(), event => ({
           title: this.eventTitle(event),
           summary: this.displaySummary(currentMetadata, this.eventSummary(event)),
-        })).reverse(),
+        })),
         playableActions: playableActions ?? [],
         interaction: {
           canChooseInitialPouch: false,
@@ -1686,10 +1686,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       invitation: await this.invitationFor(currentMetadata, actorUserId),
       lockedDeckName,
       state: publicRules.state,
-      events: publicRules.events.map((event) => ({
-        ...event,
-        summary: this.displaySummary(currentMetadata, event.summary),
-      })),
+      battleRecord: this.displayBattleRecord(currentMetadata, publicRules.battleRecord),
       playableActions: playableActions ?? publicRules.playableActions,
       interaction: publicRules.interaction,
       activeTransactionId,
@@ -2034,10 +2031,23 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   }
 
   private displaySummary(metadata: GameRoomMetadata, summary: string): string {
-    return metadata.members.reduce(
-      (text, member) => text.replaceAll(member.player, member.displayName),
-      summary,
-    )
+    return replacePlayerLabels(summary, metadata.members)
+  }
+
+  private displayBattleRecord(metadata: GameRoomMetadata, record: BattleRecord): BattleRecord {
+    const entry = (value: BattleRecord['preparation']['entries'][number]) => ({
+      ...value,
+      title: this.displaySummary(metadata, value.title),
+      summary: value.summary ? this.displaySummary(metadata, value.summary) : undefined,
+    })
+    return {
+      preparation: { entries: record.preparation.entries.map(entry) },
+      turns: record.turns.map(group => ({
+        ...group,
+        title: this.displaySummary(metadata, group.title),
+        entries: group.entries.map(entry),
+      })),
+    }
   }
 
   private payloadValue(payload: unknown, key: string): string | undefined {

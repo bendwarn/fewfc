@@ -1,6 +1,8 @@
 import type {
   CardInstanceId,
   PlayerId,
+  SecretStrategy,
+  SecretStrategyDecision,
   SecretStrategyOption,
   StarKind,
 } from '../types/fewfc'
@@ -12,48 +14,53 @@ export interface SecretStrategyDraftSelection {
   retreat?: CardInstanceId | 'clearEnvironment' | null
 }
 
-export interface SecretStrategyDraftAction {
-  strategy: SecretStrategyOption['strategy']
-  options: {
-    targetPlayer?: PlayerId
-    star?: StarKind
-    breakStar?: boolean
-    discardCard?: CardInstanceId
-  }
-}
-
 /**
- * 只有在符合伺服器投影的選擇後，才將本機 Secret Strategy 輸入轉換為精確的
- * 命令負載。取消會以丟棄此結果表示，因此不可能提交命令。
+ * 瀏覽器只把目前草稿轉成封閉 Decision；候選是否合法、印製值與過期狀態一律
+ * 由 Rules Engine 在提交時重驗。取消以丟棄結果表示，不會提交命令。
  */
 export function secretStrategyDraftAction(
   draft: SecretStrategyOption,
   selection: SecretStrategyDraftSelection,
-): SecretStrategyDraftAction | undefined {
-  if (draft.input === 'targetPlayer') {
-    if (!selection.targetPlayer || !draft.targetPlayers.includes(selection.targetPlayer)) return undefined
-    return { strategy: draft.strategy, options: { targetPlayer: selection.targetPlayer } }
+): SecretStrategyDecision | undefined {
+  switch (draft.type) {
+    case 'noInput':
+      return { type: 'noInput', sourceCard: draft.sourceCard, strategy: draft.strategy }
+    case 'targetPlayer':
+      return selection.targetPlayer
+        ? { type: 'targetPlayer', sourceCard: draft.sourceCard, targetPlayer: selection.targetPlayer }
+        : undefined
+    case 'star':
+      return selection.star
+        ? {
+            type: 'star',
+            sourceCard: draft.sourceCard,
+            operation: selection.breakStar
+              ? { type: 'break', star: selection.star }
+              : { type: 'gain', star: selection.star },
+          }
+        : undefined
+    case 'environment':
+      if (selection.retreat === 'clearEnvironment') {
+        return { type: 'environment', sourceCard: draft.sourceCard, operation: { type: 'clear' } }
+      }
+      return typeof selection.retreat === 'number'
+        ? {
+            type: 'environment',
+            sourceCard: draft.sourceCard,
+            operation: { type: 'transferByDiscard', card: selection.retreat },
+          }
+        : undefined
+    case 'sheepStealing':
+      return { type: 'sheepStealing', sourceCard: draft.sourceCard }
   }
+}
 
-  if (draft.input === 'star') {
-    if (!selection.star) return undefined
-    const allowed = selection.breakStar ? draft.breakStars : draft.stars
-    if (!allowed.includes(selection.star)) return undefined
-    return {
-      strategy: draft.strategy,
-      options: { star: selection.star, breakStar: Boolean(selection.breakStar) },
-    }
+export function secretStrategyOptionStrategy(option: SecretStrategyOption): SecretStrategy {
+  switch (option.type) {
+    case 'noInput': return option.strategy
+    case 'targetPlayer': return 'LureTheTigerAway'
+    case 'star': return 'DeceiveHeaven'
+    case 'environment': return 'Retreat'
+    case 'sheepStealing': return 'SheepStealing'
   }
-
-  if (draft.input === 'retreat') {
-    if (selection.retreat === 'clearEnvironment') {
-      return { strategy: draft.strategy, options: {} }
-    }
-    if (selection.retreat === null || selection.retreat === undefined || !draft.handCards.includes(selection.retreat)) {
-      return undefined
-    }
-    return { strategy: draft.strategy, options: { discardCard: selection.retreat } }
-  }
-
-  return undefined
 }

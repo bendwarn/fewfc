@@ -3,7 +3,8 @@ use fewfc::domain::{
     CardInstanceId, CardOrigin, ChoiceAnswer, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID,
     GameError, GameEvent, GameState, HERO_SCHOOLS_MODULE_ID, PERSONAL_DECK_MODULE_ID,
     PassiveTriggerTiming, Phase, Player, PlayerId, PlayerProfession, ProfessionId, RuleModuleId,
-    STAR_MODULE_ID, TargetDecl, TeamId, TrustedRandomnessAnswer, ValidationError,
+    STAR_MODULE_ID, StatusDuration, StatusEffect, StatusOwner, TargetDecl, TeamId,
+    TrustedRandomnessAnswer, ValidationError,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{ActionInputRequirement, OfficialRules, PlayableAction};
@@ -66,6 +67,19 @@ fn set_profession(state: &mut GameState, player: &str, profession: &str) {
     state.professions.push(PlayerProfession {
         player: PlayerId::new(player),
         profession: ProfessionId::new(profession),
+    });
+}
+
+fn give_temporary_profession_ability_loss(state: &mut GameState, player: &str) {
+    let player = PlayerId::new(player);
+    state.statuses.push(StatusEffect {
+        id: format!("test-lure-{}", player.as_str()),
+        owner: StatusOwner::Player(player.clone()),
+        kind: "PouchLurePlayer".to_string(),
+        value: None,
+        duration: StatusDuration::UntilTurnEnd {
+            player: player.clone(),
+        },
     });
 }
 
@@ -442,6 +456,72 @@ fn all_school_transitions_and_unaffiliated_routes_are_queryable() {
                     if candidate.profession_id == ProfessionId::new("immortal")
             ))
     );
+}
+
+#[test]
+fn temporary_ability_loss_removes_first_wanderer_choice_and_breakthrough_paths() {
+    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
+    set_profession(&mut state, "p1", "first-wanderer");
+    let choice = cards(&state, &[(Element::Water, 1)]);
+    set_hand(&mut state, "p1", choice.clone());
+    give_temporary_profession_ability_loss(&mut state, "p1");
+
+    let actions = OfficialRules::new()
+        .playable_actions(&state, &PlayerId::new("p1"), &choice)
+        .unwrap();
+    assert!(!actions.iter().any(|action| {
+        matches!(
+            action,
+            PlayableAction::ChangeProfession(candidate)
+                if candidate.profession_id == ProfessionId::new("seeker")
+        )
+    }));
+    let state_before_choice = state.clone();
+    assert!(matches!(
+        handle_command(
+            &state,
+            Command::ChangeProfession {
+                player: PlayerId::new("p1"),
+                profession: ProfessionId::new("seeker"),
+                cards: choice,
+            },
+        ),
+        Err(GameError::Validation(
+            ValidationError::ProfessionChangePatternMismatch { profession }
+        )) if profession == ProfessionId::new("seeker")
+    ));
+    assert_eq!(state, state_before_choice);
+
+    let breakthrough = cards(
+        &state,
+        &[(Element::Water, 1), (Element::Fire, 1), (Element::Fire, 5)],
+    );
+    set_hand(&mut state, "p1", breakthrough.clone());
+    let actions = OfficialRules::new()
+        .playable_actions(&state, &PlayerId::new("p1"), &breakthrough)
+        .unwrap();
+    assert!(!actions.iter().any(|action| {
+        matches!(
+            action,
+            PlayableAction::ChangeProfession(candidate)
+                if candidate.profession_id == ProfessionId::new("mage-guide")
+        )
+    }));
+    let state_before_breakthrough = state.clone();
+    assert!(matches!(
+        handle_command(
+            &state,
+            Command::ChangeProfession {
+                player: PlayerId::new("p1"),
+                profession: ProfessionId::new("mage-guide"),
+                cards: breakthrough,
+            },
+        ),
+        Err(GameError::Validation(
+            ValidationError::ProfessionChangePatternMismatch { profession }
+        )) if profession == ProfessionId::new("mage-guide")
+    ));
+    assert_eq!(state, state_before_breakthrough);
 }
 
 #[test]
@@ -825,6 +905,33 @@ fn mage_and_windwalker_profession_formations_keep_stage_semantics() {
         event,
         GameEvent::HpChanged { change } if change.new_hp == 100 && change.delta == -100
     )));
+}
+
+#[test]
+fn temporary_ability_loss_removes_profession_formation_options_and_stale_commands() {
+    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
+    set_profession(&mut state, "p1", "sage");
+    let cards = cards(
+        &state,
+        &[
+            (Element::Fire, 3),
+            (Element::Fire, 4),
+            (Element::Metal, 1),
+            (Element::Water, 1),
+        ],
+    );
+    set_hand(&mut state, "p1", cards.clone());
+    give_temporary_profession_ability_loss(&mut state, "p1");
+
+    assert!(formation_candidates(&state, &cards, "magic-reflection-flash").is_empty());
+    let state_before_stale_command = state.clone();
+    assert!(matches!(
+        perform(&state, "magic-reflection-flash", cards, Vec::new()),
+        Err(GameError::Validation(
+            ValidationError::FormationPatternMismatch { formation_id }
+        )) if formation_id == "magic-reflection-flash"
+    ));
+    assert_eq!(state, state_before_stale_command);
 }
 
 #[test]

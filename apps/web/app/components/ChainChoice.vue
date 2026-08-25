@@ -34,6 +34,7 @@
 
     <template v-if="pouchCard">
       <h3>選擇觸發牌（可選）</h3>
+      <p class="choice-selection-summary">觸發牌須與錦囊牌的五行、等級都不同；不符合的格子無法選擇。</p>
       <p v-if="triggerCard" class="choice-selection-summary">
         已選：{{ triggerCard.label }}
         <button type="button" @click="emit('clear-trigger-card')">不觸發秘計</button>
@@ -42,6 +43,7 @@
         class="chain-composition"
         :cards="triggerCards"
         :selected-cards="triggerCard ? [triggerCard.id] : []"
+        :disabled-card-ids="disabledTriggerCardIds"
         label="連環觸發牌組矩陣"
         caption="依五行與等級選擇連環觸發牌"
         action-label="選擇作為連環觸發牌"
@@ -54,13 +56,13 @@
       <div class="choice-options" aria-label="選擇秘計">
         <button
           v-for="option in strategyOptions"
-          :key="`chain-strategy-${option.strategy}`"
+          :key="`chain-strategy-${secretStrategyOptionStrategy(option)}`"
           type="button"
-          :class="{ selected: selectedStrategy === option.strategy }"
-          :aria-pressed="selectedStrategy === option.strategy"
-          @click="emit('select-strategy', option.strategy)"
+          :class="{ selected: selectedStrategy === secretStrategyOptionStrategy(option) }"
+          :aria-pressed="selectedStrategy === secretStrategyOptionStrategy(option)"
+          @click="emit('select-strategy', secretStrategyOptionStrategy(option))"
         >
-          {{ strategyLabel(option.strategy) }}
+          {{ strategyLabel(secretStrategyOptionStrategy(option)) }}
         </button>
       </div>
 
@@ -69,7 +71,7 @@
       </p>
 
       <div
-        v-if="selectedStrategyAction?.input === 'targetPlayer'"
+        v-if="selectedStrategyAction?.type === 'targetPlayer'"
         class="choice-options"
         aria-label="離山目標"
       >
@@ -85,15 +87,15 @@
         </button>
       </div>
 
-      <p v-if="selectedStrategyAction?.input === 'deckDiscardSwap'">
+      <p v-if="selectedStrategyAction?.type === 'sheepStealing'">
         確認後會先依當前牌組狀態洗棄牌（若需要），再選擇牽羊交換的牌。
       </p>
 
-      <template v-if="selectedStrategyAction?.input === 'star'">
+      <template v-if="selectedStrategyAction?.type === 'star'">
         <h3>瞞天：取得星辰效果或破除星辰</h3>
         <div class="choice-options" aria-label="瞞天選擇">
           <button
-            v-for="star in selectedStrategyAction.stars"
+            v-for="star in selectedStrategyAction.gainStars"
             :key="`strategy-star-${star}`"
             type="button"
             :class="{ selected: selectedStar === star && !breakStar }"
@@ -115,7 +117,7 @@
         </div>
       </template>
 
-      <template v-if="selectedStrategyAction?.input === 'retreat'">
+      <template v-if="selectedStrategyAction?.type === 'environment'">
         <h3>走為：破除環境或捨棄手牌</h3>
         <div class="choice-options" aria-label="走為選擇">
           <button
@@ -127,9 +129,7 @@
             破除環境
           </button>
           <button
-            v-for="card in handCards.filter(
-              candidate => selectedStrategyAction?.handCards.includes(candidate.id),
-            )"
+            v-for="card in handCards"
             :key="`strategy-hand-${card.id}`"
             type="button"
             :class="{ selected: selectedRetreatCard === card.id }"
@@ -154,9 +154,10 @@ import type {
   StarKind,
 } from '~/types/fewfc'
 import { presentSecretStrategyOption } from '~/lib/action-detail-presentation'
+import { secretStrategyOptionStrategy } from '~/lib/secret-strategy-draft'
 import CardChoiceMatrix from './CardChoiceMatrix.vue'
 
-defineProps<{
+const props = defineProps<{
   pouchOwners: PlayerId[]
   pouchOwner: PlayerId | null
   pouchCards: PublicCard[]
@@ -175,6 +176,13 @@ defineProps<{
   strategyLabel: (strategy: SecretStrategy) => string
   starLabel: (star: StarKind) => string
 }>()
+
+const disabledTriggerCardIds = computed(() => {
+  if (!props.pouchCard) return []
+  return props.triggerCards
+    .filter(card => card.element === props.pouchCard?.element || card.level === props.pouchCard?.level)
+    .map(card => card.id)
+})
 
 const emit = defineEmits<{
   'select-pouch-owner': [player: PlayerId]

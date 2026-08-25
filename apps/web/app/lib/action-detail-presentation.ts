@@ -290,26 +290,27 @@ export function presentActionDetail(
 }
 
 export function presentPlayableAction(action: PlayableAction): string {
-  return presentActionDetail(action.detail)
+  return action.type === 'triggerSecretStrategy'
+    ? presentSecretStrategyOption(action.option)
+    : presentActionDetail(action.detail)
 }
 
 export function presentSecretStrategyOption(action: SecretStrategyOption): string {
   return presentActionDetail(action.detail)
 }
 
-function presentDirectSecretStrategyActivation(input: SecretStrategyOption['input']): string {
-  switch (input) {
-    case 'none': return '點擊後立即發動'
-    case 'deckDiscardSwap': return '點擊後立即發動，接著選擇牌組與棄牌堆各兩張牌'
+function presentDirectSecretStrategyActivation(action: SecretStrategyOption): string {
+  switch (action.type) {
+    case 'noInput': return '點擊後立即發動'
+    case 'sheepStealing': return '點擊後立即發動，接著選擇牌組與棄牌堆各兩張牌'
     case 'targetPlayer': return '點擊後需要先選擇目標玩家'
     case 'star': return '點擊後需要先選擇取得或破除的星辰'
-    case 'retreat': return '點擊後需要先選擇破除環境或捨棄手牌'
-    default: return assertNever(input)
+    case 'environment': return '點擊後需要先選擇破除環境或捨棄手牌'
   }
 }
 
 export function presentDirectSecretStrategyAction(action: SecretStrategyOption): string {
-  return `${presentDirectSecretStrategyActivation(action.input)}。${presentSecretStrategyOption(action)}`
+  return `${presentDirectSecretStrategyActivation(action)}。${presentSecretStrategyOption(action)}`
 }
 
 export function presentDiscardRetrievalAction(

@@ -96,6 +96,7 @@ pub(crate) fn append_automatic_blooms(
             .filter(|owned| {
                 owned.spirit == SpiritKind::Wood
                     && owned.power == 6
+                    && !crate::rules::pouch::spirit_is_suppressed(&projected, &owned.player)
                     && team_for_player(&projected, &owned.player)
                         .is_ok_and(|team| team == team_hp.team)
             })
@@ -284,6 +285,9 @@ pub(crate) fn playable_skills(
     player: &PlayerId,
     selected_cards: &[CardInstanceId],
 ) -> Vec<SpiritSkillCandidate> {
+    if crate::rules::pouch::spirit_is_suppressed(state, player) {
+        return Vec::new();
+    }
     let Some(owned) = state.spirit_for(player) else {
         return Vec::new();
     };
@@ -346,6 +350,14 @@ pub(crate) fn use_skill(
             },
         ));
     }
+    if crate::rules::pouch::spirit_is_suppressed(state, player) {
+        return Err(GameError::Validation(
+            ValidationError::SpiritSkillUnavailable {
+                spirit: owned.spirit,
+                skill,
+            },
+        ));
+    }
     if state.spirit_skill_use_turns.get(player) == Some(&state.turn_number) {
         return Err(GameError::Validation(
             ValidationError::SpiritSkillAlreadyUsed {
@@ -364,17 +376,6 @@ pub(crate) fn use_skill(
     }
     validate_input(state, player, skill, selected_card, declared_level)?;
 
-    if crate::rules::pouch::spirit_is_suppressed(state, player) {
-        return Ok(vec![GameEvent::SpiritSkillUsed {
-            player: player.clone(),
-            spirit: owned.spirit,
-            skill,
-            old_power: owned.power,
-            new_power: owned.power - definition.cost,
-            selected_card,
-            declared_level,
-        }]);
-    }
     let effect_events = skill_effect_events(
         state,
         player,

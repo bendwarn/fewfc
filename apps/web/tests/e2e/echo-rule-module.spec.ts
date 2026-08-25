@@ -32,7 +32,7 @@ test('Pure Fire target choice is private, accessible, and reconnectable', async 
       targets.nth(1).click(),
     ])
     expect(answer.ok(), await answer.text()).toBe(true)
-    await expect(host.getByText('淨火', { exact: true })).toBeVisible()
+    await expect(host.getByText('你施展「變徵‧淨火」', { exact: true })).toBeVisible()
     await host.locator('.choice-overlay .choice-cards button:enabled').first().click()
     await expect(host.locator('.choice-overlay')).toBeHidden()
     const effectSummary = host.getByRole('button', { name: /^\s*效果 1\s*$/ })

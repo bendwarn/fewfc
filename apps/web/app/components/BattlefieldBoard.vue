@@ -171,18 +171,13 @@
       :anchor="discardAnchor"
       @close="closeDiscardDetail"
     >
-      <div v-if="discardComposition.length" class="card-composition">
-        <table>
-          <caption class="sr-only">依五行與等級統計棄牌張數。列為五行，欄為等級。</caption>
-          <thead><tr><th scope="col"><span class="sr-only">五行</span></th><th v-for="level in CARD_LEVELS" :key="level" scope="col">{{ level }} 級</th></tr></thead>
-          <tbody>
-            <tr v-for="row in discardComposition" :key="row.element">
-              <th scope="row">{{ row.element }}</th>
-              <td v-for="cell in row.cells" :key="`${cell.element}-${cell.level}`" :class="{ empty: cell.count === 0 }"><strong>{{ cell.count }}</strong></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <CardChoiceMatrix
+        v-if="activeDiscardCards.length"
+        readonly
+        :cards="activeDiscardCards"
+        label="棄牌組成"
+        caption="依五行與等級統計棄牌張數"
+      />
       <p v-else class="empty-detail">目前沒有棄牌。</p>
     </BattlefieldDetailLayer>
 
@@ -216,7 +211,6 @@
 
 <script setup lang="ts">
 import type { CardInstanceId, Element, PlayerId, PublicCard, PublicCardRefs, PublicGameState, SpiritKind, TeamId } from '~/types/fewfc'
-import { buildCardComposition, CARD_LEVELS } from '~/lib/card-composition'
 import { cardElementGlyph } from '~/lib/card-face-presentation'
 import {
   lastCompletedTurnDiscardForPlayer,
@@ -295,7 +289,6 @@ const discardDetailTitle = computed(() => {
   const prefix = owner ? `${playerLabel(owner)}` : ''
   return `${prefix}目前棄牌 ${activeDiscardCounts.value.discard} · 牌庫 ${activeDiscardCounts.value.deck}`
 })
-const discardComposition = computed(() => activeDiscardCards.value.length ? buildCardComposition(activeDiscardCards.value) : [])
 const activeEffects = computed(() => effectDetailPlayer.value ? persistentEffectsFor(effectDetailPlayer.value) : [])
 const effectDetailTitle = computed(() => effectDetailPlayer.value ? `${playerLabel(effectDetailPlayer.value)}的效果 ${activeEffects.value.length}` : '效果')
 const activeVisibleHandCards = computed(() => handDetailPlayer.value ? visibleHandCards(handDetailPlayer.value) : [])
@@ -507,12 +500,6 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 .formation-cards { @apply flex min-h-10 items-center justify-center; }
 .formation-card { width: 34px; margin-left: -4px; }
 .action-dock { @apply relative z-5 size-full min-h-0 min-w-0 overflow-y-auto; overscroll-behavior: contain; }
-.card-composition table { @apply w-full table-fixed border-collapse; }
-.card-composition th, .card-composition td { @apply h-8 border border-[var(--app-border)] text-center; }
-.card-composition thead th { @apply text-[10px] font-bold text-[var(--app-text)]; }
-.card-composition tbody th { @apply w-7 text-[10px] font-normal text-muted; }
-.card-composition td strong { @apply font-serif text-sm text-[#e4c47d]; }
-.card-composition td.empty strong { color: var(--app-text-soft); }
 .effect-detail-list { @apply grid list-none gap-2 p-0; }
 .effect-detail-list li { @apply border-l-2 border-[#8f5f63] bg-[rgba(118,85,87,.12)] px-3 py-2 text-xs leading-5; }
 .hand-detail-cards { @apply flex flex-wrap justify-center gap-2; }

@@ -350,14 +350,14 @@
             v-if="secretStrategyDraft"
             class="choice-overlay"
             role="dialog"
-            :aria-label="`秘計‧${strategyLabel(secretStrategyDraft.strategy)}：選擇輸入`"
+            :aria-label="`秘計‧${strategyLabel(secretStrategyOptionStrategy(secretStrategyDraft))}：選擇輸入`"
           >
             <div>
-              <h2>秘計‧{{ strategyLabel(secretStrategyDraft.strategy) }}</h2>
+              <h2>秘計‧{{ strategyLabel(secretStrategyOptionStrategy(secretStrategyDraft)) }}</h2>
               <p class="action-detail">{{ presentSecretStrategyOption(secretStrategyDraft) }}</p>
 
               <div
-                v-if="secretStrategyDraft.input === 'targetPlayer'"
+                v-if="secretStrategyDraft.type === 'targetPlayer'"
                 class="choice-options"
                 aria-label="離山目標"
               >
@@ -374,11 +374,11 @@
                 </button>
               </div>
 
-              <template v-if="secretStrategyDraft.input === 'star'">
+              <template v-if="secretStrategyDraft.type === 'star'">
                 <h3>瞞天：取得星辰效果或破除星辰</h3>
                 <div class="choice-options" aria-label="瞞天選擇">
                   <button
-                    v-for="star in secretStrategyDraft.stars"
+                    v-for="star in secretStrategyDraft.gainStars"
                     :key="`secret-strategy-star-${star}`"
                     type="button"
                     :class="{ selected: secretStrategyStarSelection === star && !secretStrategyBreakStar }"
@@ -402,7 +402,7 @@
                 </div>
               </template>
 
-              <template v-if="secretStrategyDraft.input === 'retreat'">
+              <template v-if="secretStrategyDraft.type === 'environment'">
                 <h3>走為：破除環境或捨棄手牌</h3>
                 <div class="choice-options" aria-label="走為選擇">
                   <button
@@ -415,9 +415,7 @@
                     破除環境
                   </button>
                   <button
-                    v-for="card in ownHandCards.filter(
-                      candidate => secretStrategyDraft?.handCards.includes(candidate.id),
-                    )"
+                    v-for="card in ownHandCards"
                     :key="`secret-strategy-hand-${card.id}`"
                     type="button"
                     :class="{ selected: secretStrategyRetreatSelection === card.id }"
@@ -822,7 +820,7 @@
             </div>
           </section>
 
-          <section class="event-panel">
+          <section ref="desktopEventFeed" class="event-panel">
             <div class="panel-title">
               <h2>戰局紀錄 <button v-if="roomWaiting && game.savableReplay.value" class="ghost-button" type="button" :disabled="replaySaving" @click="saveCurrentReplay">{{ replaySaved ? '已儲存' : '儲存本局' }}</button></h2>
             </div>
@@ -831,16 +829,10 @@
               <button class="ghost-button" type="button" :disabled="replaySaving" @click="saveCurrentReplay">重試</button>
             </p>
             <ol class="event-feed">
-              <li v-for="event in visibleEvents" :key="event.id">
-                <i />
-                <div
-                  :role="event.eventType === 'EnabledRules' ? 'region' : undefined"
-                  :aria-label="event.eventType === 'EnabledRules' ? '啟用規則' : undefined"
-                >
-                  <span>{{ event.title }}</span>
-                  <p>{{ event.summary }}</p>
-                </div>
-              </li>
+              <template v-for="group in battleRecordGroups" :key="group.id">
+                <li class="event-group-title"><strong>{{ group.title }}</strong></li>
+                <li v-for="entry in group.entries" :key="entry.id"><i /><div><span>{{ entry.title }}</span><p v-if="entry.summary">{{ entry.summary }}</p></div></li>
+              </template>
             </ol>
           </section>
         </aside>
@@ -865,10 +857,10 @@
               {{ unseenEventCount }} 筆新紀錄
             </button>
             <ol ref="eventSheetFeed" class="event-feed event-sheet-feed" @scroll.passive="updateEventSheetFollow">
-              <li v-for="event in visibleEvents" :key="`mobile-${event.id}`">
-                <i />
-                <div><span>{{ event.title }}</span><p>{{ event.summary }}</p></div>
-              </li>
+              <template v-for="group in battleRecordGroups" :key="`mobile-${group.id}`">
+                <li class="event-group-title"><strong>{{ group.title }}</strong></li>
+                <li v-for="entry in group.entries" :key="`mobile-${entry.id}`"><i /><div><span>{{ entry.title }}</span><p v-if="entry.summary">{{ entry.summary }}</p></div></li>
+              </template>
             </ol>
           </section>
         </div>
@@ -883,7 +875,6 @@ import type {
   PlayableAction,
   PlayerId,
   PublicCard,
-  PublicGameEvent,
   PublicGameState,
   SecretStrategy,
   SecretStrategyOption,
@@ -898,12 +889,13 @@ import { presentDirectSecretStrategyAction, presentDiscardRetrievalAction, prese
 import { splitEarthChoiceKey, usesSplitEarthFormationGroups } from '#shared/utils/split-earth-formation-choice'
 import { roomRouteResult } from '~/lib/navigation'
 import { cardChoiceDraftCount, chainChoiceAnswer, isImmediateCardChoice, toggleChoiceCard } from '~/lib/pending-choice-interaction'
-import { secretStrategyDraftAction } from '~/lib/secret-strategy-draft'
-import { isLegalChainTrigger, sheepReturnCards } from '~/lib/pouch-choice'
+import { secretStrategyDraftAction, secretStrategyOptionStrategy } from '~/lib/secret-strategy-draft'
+import { sheepReturnCards } from '~/lib/pouch-choice'
 import { useLayoutNotifications } from '~/lib/player-notifications-context'
 import { useRulesCatalog } from '~/lib/rules-catalog'
 import { presentApiError } from '~/lib/api-error-presentation'
 import { abilityLevelPicker } from '~/lib/ability-level-picker'
+import { scrollBattleRecordToLatest } from '~/lib/battle-record-scroll'
 import {
   completeVirtualFormationCardOffer,
   isVirtualFormationCardOffer,
@@ -975,21 +967,16 @@ const pouchStrategyActions = computed<PouchStrategyAction[]>(() => {
   if (viewer.value === 'observer') return []
   const pouch = state.value.pouches.find(entry => entry.owner === viewer.value)?.card
   if (!pouch) return []
-  const strategies = new Set<SecretStrategy>()
   const requirements = game.playableSecretStrategies.value
     .filter(requirement => requirement.sourceCard === pouch.id)
-  return requirements.flatMap((requirement) => {
-    if (strategies.has(requirement.strategy)
-      || (requirement.input === 'deckDiscardSwap'
-        && requirement.discardCards.length < requirement.requiredCardCount)) return []
-
-    strategies.add(requirement.strategy)
-    return [{
-      label: `秘計‧${strategyLabel(requirement.strategy)}`,
+  return requirements.map((requirement) => {
+    const strategy = secretStrategyOptionStrategy(requirement)
+    return {
+      label: `秘計‧${strategyLabel(strategy)}`,
       detail: presentDirectSecretStrategyAction(requirement),
-      strategy: requirement.strategy,
+      strategy,
       requirement,
-    }]
+    }
   })
 })
 const directAbilityShortcutOffset = computed(() => pouchStrategyActions.value.length)
@@ -1055,11 +1042,7 @@ const chainPouchCards = computed(() => (
     : ownDeckCards.value
   )
 ))
-const chainTriggerCards = computed(() => (
-  chainPouchCards.value.filter(card => (
-    isLegalChainTrigger(chainPouchCard.value, card)
-  ))
-))
+const chainTriggerCards = computed(() => chainPouchCards.value)
 const pouchSwapSelectableDeckCards = computed(() => {
   const choice = state.value.pendingChoice
   const cards = choice?.visibility === 'visible' && choice.choice.type === 'sheepStealing'
@@ -1078,15 +1061,23 @@ const chainStrategyOptions = computed(() => {
   if (!card) return []
   const choice = state.value.pendingChoice
   if (choice?.visibility !== 'visible' || choice.choice.type !== 'chain') return []
-  const prospectiveDeckCount = ownDeckCards.value.length - 2
-  const sheepCanComplete = prospectiveDeckCount + ownDiscardCards.value.length >= 2
   return choice.choice.strategyOptions
     .filter(option => option.sourceCard === card.id)
-    .filter(option => option.strategy !== 'SheepStealing' || sheepCanComplete)
 })
 const selectedChainStrategyAction = computed(() => chainStrategyOptions.value.find(
-  option => option.strategy === chainStrategySelection.value,
+  option => secretStrategyOptionStrategy(option) === chainStrategySelection.value,
 ) ?? null)
+const chainStrategyDecision = computed(() => {
+  const option = selectedChainStrategyAction.value
+  return option
+    ? secretStrategyDraftAction(option, {
+        targetPlayer: strategyTargetSelection.value,
+        star: strategyStarSelection.value,
+        breakStar: strategyBreakStar.value,
+        retreat: strategyDiscardCard.value ?? 'clearEnvironment',
+      })
+    : undefined
+})
 const secretStrategyAction = computed(() => {
   const draft = secretStrategyDraft.value
   return draft
@@ -1113,12 +1104,7 @@ const canSubmitPouchChoice = computed(() => {
     || pouchDeckSelection.value.length < 1
     || pouchDeckSelection.value.length > 2) return false
   if (pouchDeckSelection.value.length === 1) return true
-  const requirement = selectedChainStrategyAction.value
-  if (!requirement) return false
-  if (requirement.input === 'targetPlayer') return !!strategyTargetSelection.value
-  if (requirement.input === 'star') return !!strategyStarSelection.value
-  if (requirement.input === 'deckDiscardSwap') return true
-  return true
+  return chainStrategyDecision.value !== undefined
 })
 
 function containsSelectedCards(cards: PublicCard[], selected: CardInstanceId[]): boolean {
@@ -1203,8 +1189,9 @@ function selectChainStar(star: StarKind, breakStar: boolean) {
 }
 
 function startPouchAction(action: PouchStrategyAction) {
-  if (action.requirement.input === 'none' || action.requirement.input === 'deckDiscardSwap') {
-    void game.triggerSecretStrategy(action.strategy)
+  if (action.requirement.type === 'noInput' || action.requirement.type === 'sheepStealing') {
+    const decision = secretStrategyDraftAction(action.requirement, {})
+    if (decision) void game.triggerSecretStrategy(decision)
     return
   }
 
@@ -1216,7 +1203,7 @@ async function submitSecretStrategyDraft() {
   const action = secretStrategyAction.value
   if (!action) return
 
-  if (await game.triggerSecretStrategy(action.strategy, action.options)) {
+  if (await game.triggerSecretStrategy(action)) {
     resetSecretStrategyDraft()
   }
 }
@@ -1247,15 +1234,13 @@ async function submitPouchChoice() {
   const owner = effectiveChainPouchOwner.value
   const pouchCard = pouchDeckSelection.value[0]
   if (!owner || pouchCard === undefined) return
+  const trigger = pouchDeckSelection.value[1]
+  const decision = trigger ? chainStrategyDecision.value : undefined
+  if (trigger && !decision) return
   const submitted = await game.answerChainChoice(chainChoiceAnswer({
-    pouchOwner: owner,
-    pouchCard,
-    triggerCard: pouchDeckSelection.value[1],
-    strategy: chainStrategySelection.value ?? undefined,
-    targetPlayer: strategyTargetSelection.value ?? undefined,
-    star: strategyStarSelection.value ?? undefined,
-    breakStar: strategyBreakStar.value,
-    discardCard: strategyDiscardCard.value ?? undefined,
+    decision: decision
+      ? { type: 'placeAndTrigger', pouchOwner: owner, pouchCard, decision }
+      : { type: 'placeOnly', pouchOwner: owner, pouchCard },
   }))
   const nextChoice = state.value.pendingChoice
   if (
@@ -1324,6 +1309,7 @@ const eventSheetOpen = ref(false)
 const eventSheetTrigger = ref<HTMLButtonElement | null>(null)
 const eventSheetClose = ref<HTMLButtonElement | null>(null)
 const eventSheetFeed = ref<HTMLOListElement | null>(null)
+const desktopEventFeed = ref<HTMLElement | null>(null)
 const eventSheetFollowing = ref(true)
 const unseenEventCount = ref(0)
 
@@ -1407,23 +1393,14 @@ const displayNames = computed<Record<string, string>>(() => Object.fromEntries(
 const connectedPlayers = computed(() => (onlineMetadata.value?.members ?? [])
   .filter(member => member.connected)
   .map(member => member.player))
-const enabledRuleLabels = computed(() => [
-  '基礎規則',
-  ...(onlineMetadata.value?.enabledRuleModules ?? [])
-    .flatMap(moduleId => {
-      const label = ruleLabelById.value.get(moduleId)
-      return label ? [label] : []
-    }),
-])
-const visibleEvents = computed<PublicGameEvent[]>(() => roomWaiting.value
-  ? game.publicEvents.value
-  : [...game.publicEvents.value, {
-      id: 'enabled-rules',
-      eventType: 'EnabledRules',
-      title: '啟用規則',
-      summary: enabledRuleLabels.value.join(' · '),
-    }])
-const latestVisibleEvent = computed(() => game.publicEvents.value.at(-1) ?? visibleEvents.value.at(-1) ?? null)
+const battleRecordGroups = computed(() => {
+  const record = game.battleRecord.value
+  return [
+    { id: 'preparation', title: '對局準備', entries: record.preparation.entries },
+    ...record.turns.map(group => ({ id: `turn-${group.turnNumber}`, title: group.title, entries: group.entries })),
+  ].filter(group => group.entries.length > 0)
+})
+const latestVisibleEvent = computed(() => battleRecordGroups.value.flatMap(group => group.entries).at(-1) ?? null)
 const canStartOnlineRoom = computed(() => {
   const metadata = onlineMetadata.value
 
@@ -1992,7 +1969,12 @@ watch(
   },
 )
 watch(() => game.roomDissolved.value, dissolved => { if (dissolved) void router.replace('/rooms') })
-watch(() => visibleEvents.value.length, (length, previous = length) => {
+watch(() => battleRecordGroups.value.flatMap(group => group.entries).length, (length, previous = length) => {
+  if (length > previous) {
+    void nextTick(() => {
+      scrollBattleRecordToLatest(desktopEventFeed.value)
+    })
+  }
   if (!eventSheetOpen.value || length <= previous) return
   if (!eventSheetFollowing.value) {
     unseenEventCount.value += length - previous
@@ -2064,7 +2046,7 @@ function playableActionName(action: PlayableAction): string {
     return '棄牌回收'
   }
   if (action.type === 'triggerSecretStrategy') {
-    return `秘計‧${strategyLabel(action.strategy)}`
+    return `秘計‧${strategyLabel(secretStrategyOptionStrategy(action.option))}`
   }
   if (action.type === 'changeProfession') {
     return `轉職：${action.name}`
@@ -2296,6 +2278,7 @@ function formationChoiceLabel(formationId: string): string {
 .panel-title h2 { @apply font-serif text-[15px]; }
 .event-feed { @apply mt-4 grid list-none gap-[13px] p-0; }
 .event-feed li { @apply grid grid-cols-[10px_1fr] gap-[7px]; }
+.event-feed li.event-group-title { grid-template-columns: minmax(0, 1fr); }
 .event-feed li > i { width: 5px; height: 5px; border-radius: 50%; background: #b79550; margin-top: 6px; box-shadow: 0 0 0 4px rgba(183, 149, 80, .08); }
 .event-feed span { color: var(--app-text); font-size: 10px; font-weight: 700; }
 .event-feed p { color: var(--app-text-muted); font-size: 9px; line-height: 1.45; margin-top: 2px; }
@@ -2329,6 +2312,7 @@ function formationChoiceLabel(formationId: string): string {
 .event-sheet header button { @apply grid size-8 place-items-center border border-[var(--app-border-strong)] bg-transparent text-xl text-muted; }
 .event-sheet-feed { @apply m-0 grid min-h-0 list-none gap-3 overflow-y-auto p-4; overscroll-behavior: contain; }
 .event-sheet-feed li { @apply grid grid-cols-[10px_1fr] gap-2; }
+.event-sheet-feed li.event-group-title { grid-template-columns: minmax(0, 1fr); }
 .event-sheet-feed li > i { @apply mt-1.5 size-[5px] rounded-full bg-[#b79550] shadow-[0_0_0_4px_rgba(183,149,80,.08)]; }
 .event-sheet-feed span { @apply text-[11px] font-bold text-[var(--app-text)]; }
 .event-sheet-feed p { @apply mt-0.5 text-[10px] leading-5 text-[var(--app-text-muted)]; }

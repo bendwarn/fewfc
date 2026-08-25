@@ -616,7 +616,7 @@ impl BaseEffectResolver {
                         events.extend(crate::rules::pouch::chain_events(
                             state,
                             &plan.player,
-                            &plan.declared_targets,
+                            None,
                         )?);
                         return Ok(events);
                     }

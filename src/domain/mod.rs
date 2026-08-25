@@ -1452,7 +1452,7 @@ pub struct ChoiceRequest {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ChoiceAnswer {
     Cards {
         cards: Vec<CardInstanceId>,
@@ -1468,34 +1468,7 @@ pub enum ChoiceAnswer {
         environment: Element,
     },
     Chain {
-        #[serde(rename = "pouchOwner")]
-        pouch_owner: PlayerId,
-        #[serde(rename = "pouchCard")]
-        pouch_card: CardInstanceId,
-        #[serde(
-            rename = "triggerCard",
-            default,
-            skip_serializing_if = "Option::is_none"
-        )]
-        trigger_card: Option<CardInstanceId>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        strategy: Option<SecretStrategy>,
-        #[serde(
-            rename = "targetPlayer",
-            default,
-            skip_serializing_if = "Option::is_none"
-        )]
-        target_player: Option<PlayerId>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        star: Option<StarKind>,
-        #[serde(rename = "breakStar", default)]
-        break_star: bool,
-        #[serde(
-            rename = "discardCard",
-            default,
-            skip_serializing_if = "Option::is_none"
-        )]
-        discard_card: Option<CardInstanceId>,
+        decision: ChainPouchDecision,
     },
     SheepStealing {
         #[serde(rename = "deckCards")]
@@ -1504,6 +1477,129 @@ pub enum ChoiceAnswer {
         discard_cards: Vec<CardInstanceId>,
     },
     Decline,
+}
+
+/// 錦囊秘計的完整回答。每個變體只保留該秘計可解釋的輸入，避免跨策略的
+/// option bag 在命令邊界流通。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SecretStrategyDecision {
+    NoInput {
+        source_card: CardInstanceId,
+        strategy: SecretStrategy,
+    },
+    TargetPlayer {
+        source_card: CardInstanceId,
+        target_player: PlayerId,
+    },
+    Star {
+        source_card: CardInstanceId,
+        operation: SecretStrategyStarOperation,
+    },
+    Environment {
+        source_card: CardInstanceId,
+        operation: SecretStrategyEnvironmentOperation,
+    },
+    SheepStealing {
+        source_card: CardInstanceId,
+    },
+}
+
+impl SecretStrategyDecision {
+    pub fn source_card(&self) -> CardInstanceId {
+        match self {
+            Self::NoInput { source_card, .. }
+            | Self::TargetPlayer { source_card, .. }
+            | Self::Star { source_card, .. }
+            | Self::Environment { source_card, .. }
+            | Self::SheepStealing { source_card } => *source_card,
+        }
+    }
+
+    pub fn strategy(&self) -> SecretStrategy {
+        match self {
+            Self::NoInput { strategy, .. } => *strategy,
+            Self::TargetPlayer { .. } => SecretStrategy::LureTheTigerAway,
+            Self::Star { .. } => SecretStrategy::DeceiveHeaven,
+            Self::Environment { .. } => SecretStrategy::Retreat,
+            Self::SheepStealing { .. } => SecretStrategy::SheepStealing,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SecretStrategyStarOperation {
+    Gain { star: StarKind },
+    Break { star: StarKind },
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SecretStrategyEnvironmentOperation {
+    Clear,
+    TransferByDiscard { card: CardInstanceId },
+}
+
+/// 連環的外層選擇與秘計 Decision 故意分離：放置錦囊不需要偽造一個秘計，
+/// 而公開觸發時則必須攜帶完整的同一個封閉 Decision。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ChainPouchDecision {
+    PlaceOnly {
+        pouch_owner: PlayerId,
+        pouch_card: CardInstanceId,
+    },
+    PlaceAndTrigger {
+        pouch_owner: PlayerId,
+        pouch_card: CardInstanceId,
+        decision: SecretStrategyDecision,
+    },
+}
+
+impl ChainPouchDecision {
+    pub fn pouch_owner(&self) -> &PlayerId {
+        match self {
+            Self::PlaceOnly { pouch_owner, .. } | Self::PlaceAndTrigger { pouch_owner, .. } => {
+                pouch_owner
+            }
+        }
+    }
+
+    pub fn pouch_card(&self) -> CardInstanceId {
+        match self {
+            Self::PlaceOnly { pouch_card, .. } | Self::PlaceAndTrigger { pouch_card, .. } => {
+                *pouch_card
+            }
+        }
+    }
+
+    pub fn trigger_decision(&self) -> Option<&SecretStrategyDecision> {
+        match self {
+            Self::PlaceOnly { .. } => None,
+            Self::PlaceAndTrigger { decision, .. } => Some(decision),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2341,13 +2437,7 @@ pub enum Command {
     },
     TriggerSecretStrategy {
         player: PlayerId,
-        strategy: SecretStrategy,
-        target_player: Option<PlayerId>,
-        star: Option<StarKind>,
-        break_star: bool,
-        discard_card: Option<CardInstanceId>,
-        deck_cards: Vec<CardInstanceId>,
-        discard_cards: Vec<CardInstanceId>,
+        decision: SecretStrategyDecision,
     },
     PassAction {
         player: PlayerId,
@@ -2409,23 +2499,8 @@ pub enum TargetDecl {
     Player(PlayerId),
     Team(TeamId),
     Card(CardInstanceId),
-    FormationRole {
-        role: String,
-        card: CardInstanceId,
-    },
-    CardMultiplicity {
-        card: CardInstanceId,
-        slots: usize,
-    },
-    SecretStrategy(SecretStrategy),
-    SecretStrategyOptions {
-        target_player: Option<PlayerId>,
-        star: Option<StarKind>,
-        break_star: bool,
-        discard_card: Option<CardInstanceId>,
-        deck_cards: Vec<CardInstanceId>,
-        discard_cards: Vec<CardInstanceId>,
-    },
+    FormationRole { role: String, card: CardInstanceId },
+    CardMultiplicity { card: CardInstanceId, slots: usize },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

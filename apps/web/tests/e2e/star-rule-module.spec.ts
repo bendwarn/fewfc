@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import {
+  battleRecordRuleEntry,
   expect,
   reloadFastGameRoute,
   seedDevelopmentScenario,
@@ -41,9 +42,9 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
     await game.start()
 
     await Promise.all([host, guest].map(async (page) => {
-      const rules = page.getByRole('region', { name: '啟用規則' })
+      const rules = await battleRecordRuleEntry(page)
       await expect(rules).toContainText('基礎規則')
-      await expect(rules).toContainText('星辰圖記')
+      await expect(rules).toContainText('星辰圖記規則')
       await expect(page.locator('.player-identity').filter({ hasText: '召星' })).toHaveCount(0)
     }))
 
@@ -53,8 +54,7 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
     expect(updateResponse.status()).toBe(409)
 
     await reloadFastGameRoute(guest, roomId)
-    await expect(guest.getByRole('region', { name: '啟用規則' }))
-      .toContainText('星辰圖記')
+    await expect(await battleRecordRuleEntry(guest)).toContainText('星辰圖記規則')
   } finally {
     await game.close()
   }
@@ -81,8 +81,8 @@ test('disabling Star invalidates readiness and locked decks while preserving Bas
     await game.start()
 
     await Promise.all([host, guest].map(async (page) => {
-      await expect(page.getByRole('region', { name: '啟用規則' }))
-        .not.toContainText('星辰圖記')
+      await expect(await battleRecordRuleEntry(page))
+        .not.toContainText('星辰圖記規則')
       await expect(page.locator('.player-identity').filter({ hasText: '召星' })).toHaveCount(0)
     }))
 
@@ -119,8 +119,8 @@ test('a four-player team room starts with one shared immutable Star configuratio
 
   try {
     await Promise.all(pages.map(async (page) => {
-      await expect(page.getByRole('region', { name: '啟用規則' }))
-        .toContainText('星辰圖記')
+      await expect(await battleRecordRuleEntry(page))
+        .toContainText('星辰圖記規則')
       await expect(page.locator('.player-seat')).toHaveCount(4)
       await expect(page.locator('.seat-discard-control')).toHaveCount(4)
       await expect(page.locator('.discard-position-top')).toHaveCount(1)
@@ -163,8 +163,8 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
       await expect(page.locator('.result-panel')).toBeVisible()
       await expect(page.locator('.result-reason')).toContainText('終局原因')
       await expect(page.locator('.result-reason')).toContainText('生命值歸零')
-      await expect(page.getByRole('region', { name: '啟用規則' }))
-        .toContainText('星辰圖記')
+      await expect(await battleRecordRuleEntry(page))
+        .toContainText('星辰圖記規則')
     }))
 
     await host.getByRole('button', { name: '返回房間 →' }).click()

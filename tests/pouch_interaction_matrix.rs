@@ -220,7 +220,11 @@ impl PouchWatchFireScenario {
         let p2 = PlayerId::new("p2");
         let watch_events = self
             .record
-            .handle(trigger_secret_strategy(&p1, SecretStrategy::WatchTheFire))
+            .handle(trigger_secret_strategy(
+                &self.record,
+                &p1,
+                SecretStrategy::WatchTheFire,
+            ))
             .unwrap();
         assert!(matches!(
             watch_events.as_slice(),
@@ -250,7 +254,11 @@ impl PouchWatchFireScenario {
         let p2 = PlayerId::new("p2");
         let events = self
             .record
-            .handle(trigger_secret_strategy(&p2, SecretStrategy::GoldenCicada))
+            .handle(trigger_secret_strategy(
+                &self.record,
+                &p2,
+                SecretStrategy::GoldenCicada,
+            ))
             .unwrap();
         assert!(matches!(
             events.as_slice(),
@@ -408,16 +416,17 @@ fn assert_generating_watch_fire_matrix_outcome(
     );
 }
 
-fn trigger_secret_strategy(player: &PlayerId, strategy: SecretStrategy) -> Command {
+fn trigger_secret_strategy(
+    record: &GameRecord,
+    player: &PlayerId,
+    strategy: SecretStrategy,
+) -> Command {
     Command::TriggerSecretStrategy {
         player: player.clone(),
-        strategy,
-        target_player: None,
-        star: None,
-        break_star: false,
-        discard_card: None,
-        deck_cards: Vec::new(),
-        discard_cards: Vec::new(),
+        decision: fewfc::domain::SecretStrategyDecision::NoInput {
+            source_card: record.state().pouch_for(player).unwrap().card,
+            strategy,
+        },
     }
 }
 
@@ -1390,7 +1399,11 @@ fn no_effect_ground_matrix_benevolent_and_golden_cicada_both_preserve_sealed_gen
     assert_eq!(record.state().current_player(), Some(&p2));
 
     let golden_events = record
-        .handle(trigger_secret_strategy(&p2, SecretStrategy::GoldenCicada))
+        .handle(trigger_secret_strategy(
+            &record,
+            &p2,
+            SecretStrategy::GoldenCicada,
+        ))
         .unwrap();
     assert!(matches!(
         golden_events.as_slice(),
@@ -1472,7 +1485,11 @@ fn no_effect_ground_matrix_benevolent_and_golden_cicada_both_consume_magic_seal(
     establish_spirit_mesmer_magic_seal(&mut record, &p1, &p2, true);
 
     record
-        .handle(trigger_secret_strategy(&p2, SecretStrategy::GoldenCicada))
+        .handle(trigger_secret_strategy(
+            &record,
+            &p2,
+            SecretStrategy::GoldenCicada,
+        ))
         .unwrap();
     let generating_cards = vec![
         card_with_level_in_hand(&record, &p2, Element::Wood, 1),
@@ -1635,7 +1652,11 @@ fn no_effect_ground_matrix_golden_cicada_alone_does_not_implicate_profession_abi
     establish_spirit_mesmer_magic_seal(&mut record, &p1, &p2, false);
 
     record
-        .handle(trigger_secret_strategy(&p2, SecretStrategy::GoldenCicada))
+        .handle(trigger_secret_strategy(
+            &record,
+            &p2,
+            SecretStrategy::GoldenCicada,
+        ))
         .unwrap();
     let generating_cards = vec![
         card_in_hand_with(&record, &p2, Element::Wood),
