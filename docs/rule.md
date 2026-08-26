@@ -1,4 +1,4 @@
-> 規則依據：官方「遊戲規則（完整規則書）」中的回合流程、施展陣法步驟、目標定義、被動術式（蓋牌）觸發點、以及基礎規則陣法列表。([cfecards.org][1])
+> 規則依據：官方「遊戲規則（完整規則書）」中的回合流程、施展陣法步驟、目標定義、被動術式（蓋牌）觸發點、以及基礎規則陣法列表。([cfecards.org][1])也可從專案下的 tmp 查詢。
 
 ---
 
@@ -1081,6 +1081,11 @@ and emitted as events:
 - all other players receive 5 cards
 
 Canonical events may contain hidden information needed for replay. Public views and public event feeds filter hidden information per viewer and are not replay sources.
+
+The Battle Record is a viewer-filtered player-language projection of that Public
+Decision Feed. It does not add canonical events, alter replay state, or become
+the persisted source of truth; its presentation rules are recorded in
+[`rules-engine-decisions.md`](./rules-engine-decisions.md).
 
 Canonical event and pending-choice payloads are persisted record formats. Adding or changing their fields requires an explicit record migration that preserves replay verification for existing rooms. Presentation-only metadata, such as the number of cards required by an effect choice, is derived by the Web projection instead of being added to canonical payloads.
 

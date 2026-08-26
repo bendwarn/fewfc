@@ -934,10 +934,8 @@ fn prepare_development_scenario(
                 ));
             };
             if !matches!(
-                choice.continuation,
-                crate::domain::ChoiceContinuation::Base(
-                    crate::domain::BaseChoiceContinuation::TurnDrawDiscard
-                )
+                record.state().pending_resolution,
+                Some(crate::domain::PendingResolution::TurnDrawDiscard)
             ) {
                 return Err(ApiError::Message(
                     "development scenario cannot answer pending choice".to_string(),
@@ -2912,6 +2910,8 @@ struct PublicDecision {
 #[derive(Clone)]
 enum PublicDecisionSource {
     Setup,
+    /// 僅供投影保留 TurnStarted 的回合邊界，絕不產生戰局紀錄項目。
+    TurnBoundary,
     Player {
         player: PlayerId,
         kind: PlayerDecisionKind,
@@ -3025,6 +3025,7 @@ fn public_decision_feed(
         };
         let public_events = crate::public_view::events_for(&decision.events, viewer.clone());
         let mut segment = Vec::new();
+        let mut segment_source = source.clone();
         for (raw, public) in decision.events.iter().zip(public_events) {
             if let GameEvent::TurnStarted {
                 player,
@@ -3036,11 +3037,23 @@ fn public_decision_feed(
                     format!("decision-{}", index + 1),
                     turn_number,
                     turn_player.clone(),
-                    source.clone(),
+                    segment_source.clone(),
                     std::mem::take(&mut segment),
                 );
                 turn_number = Some(*number);
                 turn_player = Some(player.clone());
+                // 命令也可能在最後一個事件啟動下一回合。邊界不能依賴原決策的
+                // source，否則沒有後續事件時會遺失空回合組。
+                decisions.push(PublicDecision {
+                    id: format!("decision-{}-turn-{}", index + 1, number),
+                    turn_number,
+                    turn_player: turn_player.clone(),
+                    source: PublicDecisionSource::TurnBoundary,
+                    events: Vec::new(),
+                });
+                // TurnStarted 後的事實屬於新回合的自動推進，不能沿用觸發
+                // TurnEnded 的上一個玩家命令，否則會把舊決策投影成新決策。
+                segment_source = PublicDecisionSource::Automatic;
                 continue;
             }
             segment.push(public);
@@ -3050,7 +3063,7 @@ fn public_decision_feed(
             format!("decision-{}", index + 1),
             turn_number,
             turn_player.clone(),
-            source,
+            segment_source,
             segment,
         );
     }
@@ -3114,11 +3127,9 @@ fn battle_record_for(
     for decision in feed.decisions {
         let entries =
             battle_entries_for_decision(&decision, &narrator, labels, formation_names, vocabulary);
-        if entries.is_empty() {
-            continue;
-        }
         match decision.turn_number {
-            None => preparation.entries.extend(entries),
+            None if !entries.is_empty() => preparation.entries.extend(entries),
+            None => {}
             Some(turn_number) => {
                 let title = format!(
                     "第 {} 回合・{}",
@@ -3156,7 +3167,11 @@ fn battle_entries_for_decision(
         let mut title = None;
         let mut summaries = Vec::new();
         let mut terminal = Vec::new();
+        let mut announced_turn_draw_choice_for = None;
         for event in &decision.events {
+            if consumes_announced_turn_draw_choice(event, &mut announced_turn_draw_choice_for) {
+                continue;
+            }
             if let PublicGameEvent::Public(GameEvent::GameEnded { conclusion }) = event {
                 terminal.push(WebBattleRecordEntry {
                     id: format!("{}-conclusion", decision.id),
@@ -3167,20 +3182,31 @@ fn battle_entries_for_decision(
             }
             if let PublicGameEvent::Public(GameEvent::EchoResolutionStarted { schedule }) = event {
                 title.get_or_insert_with(|| "迴響".to_string());
-                summaries.push(narrator.text(format!("{} 的曲調迴響。", schedule.player.as_str())));
+                summaries.push(format!(
+                    "{} 的曲調迴響。",
+                    narrator.player(Some(&schedule.player))
+                ));
                 continue;
             }
             if let PublicGameEvent::Public(GameEvent::PlantEarthResolutionStarted { schedule }) =
                 event
             {
                 title.get_or_insert_with(|| "植土效果".to_string());
-                summaries
-                    .push(narrator.text(format!("{} 的植土效果發動。", schedule.player.as_str())));
+                summaries.push(format!(
+                    "{} 的植土效果發動。",
+                    narrator.player(Some(&schedule.player))
+                ));
                 continue;
             }
             if battle_record_event_is_meaningful(event) {
-                let (event_title, summary) =
-                    event_presentation_with_vocabulary(event, labels, formation_names, vocabulary);
+                let (event_title, summary) = battle_event_presentation(
+                    event,
+                    narrator,
+                    decision.turn_player.as_ref(),
+                    labels,
+                    formation_names,
+                    vocabulary,
+                );
                 title.get_or_insert(event_title);
                 if !summary.is_empty() {
                     summaries.push(narrator.text(summary));
@@ -3201,8 +3227,12 @@ fn battle_entries_for_decision(
     let mut terminal = Vec::new();
     let mut details = Vec::new();
     let mut first_title = None;
+    let mut announced_turn_draw_choice_for = None;
 
     for event in &decision.events {
+        if consumes_announced_turn_draw_choice(event, &mut announced_turn_draw_choice_for) {
+            continue;
+        }
         if let PublicGameEvent::Public(GameEvent::GameEnded { conclusion }) = event {
             terminal.push(WebBattleRecordEntry {
                 id: format!("{}-conclusion", decision.id),
@@ -3214,8 +3244,38 @@ fn battle_entries_for_decision(
         if !battle_record_event_is_meaningful(event) {
             continue;
         }
-        let (title, summary) =
-            event_presentation_with_vocabulary(event, labels, formation_names, vocabulary);
+        if matches!(
+            decision.source,
+            PublicDecisionSource::Player {
+                kind: PlayerDecisionKind::PerformFormation,
+                ..
+            }
+        ) && decision.events.iter().any(|candidate| {
+            matches!(
+                (event, candidate),
+                (
+                    PublicGameEvent::FormationCommitted { cards, .. },
+                    PublicGameEvent::PassiveCovered { cards: covered, .. },
+                ) if cards == covered
+            )
+        }) {
+            // 被動術式的覆蓋已由同一份公開牌面說明；避免在同一決策摘要重述。
+            continue;
+        }
+        if let Some(summary) = decision_event_summary(&decision.source, event, labels) {
+            if !summary.is_empty() {
+                details.push(summary);
+            }
+            continue;
+        }
+        let (title, summary) = battle_event_presentation(
+            event,
+            narrator,
+            decision.turn_player.as_ref(),
+            labels,
+            formation_names,
+            vocabulary,
+        );
         first_title.get_or_insert(title);
         if !summary.is_empty() {
             details.push(narrator.text(summary));
@@ -3226,8 +3286,10 @@ fn battle_entries_for_decision(
         &decision.source,
         &decision.events,
         narrator,
+        decision.turn_player.as_ref(),
         labels,
         formation_names,
+        vocabulary,
     )
     .or_else(|| first_title.map(|title| narrator.text(title)));
     let mut entries = title
@@ -3246,8 +3308,10 @@ fn command_title(
     source: &PublicDecisionSource,
     events: &[PublicGameEvent],
     narrator: &BattleRecordNarrator,
+    turn_player: Option<&PlayerId>,
     labels: &HashMap<CardInstanceId, String>,
     formation_names: &HashMap<String, String>,
+    vocabulary: &PlayerVocabulary,
 ) -> Option<String> {
     let PublicDecisionSource::Player { player, kind } = source else {
         return None;
@@ -3256,11 +3320,20 @@ fn command_title(
         PlayerDecisionKind::PerformFormation => events
             .iter()
             .find_map(|event| match event {
-                PublicGameEvent::FormationCommitted {
+                PublicGameEvent::PassiveCovered {
                     formation_id: Some(id),
                     ..
-                } => Some(format!("施展「{}」", formation_name(formation_names, id))),
+                } => Some(format!("覆蓋「{}」", formation_name(formation_names, id))),
                 _ => None,
+            })
+            .or_else(|| {
+                events.iter().find_map(|event| match event {
+                    PublicGameEvent::FormationCommitted {
+                        formation_id: Some(id),
+                        ..
+                    } => Some(format!("施展「{}」", formation_name(formation_names, id))),
+                    _ => None,
+                })
             })
             .unwrap_or_else(|| "施展陣法".to_string()),
         PlayerDecisionKind::AnswerChoice => events
@@ -3276,18 +3349,885 @@ fn command_title(
                 )),
                 PublicGameEvent::Public(GameEvent::EarthRendingEnvironmentChosen {
                     environment,
-                }) => Some(format!("選擇{}環境", element_name(*environment))),
+                }) => Some(format!("選擇{}", element_name(*environment))),
                 _ => None,
             })
             .unwrap_or_else(|| "作出選擇".to_string()),
         PlayerDecisionKind::ChooseInitialPouch => "選定初始錦囊".to_string(),
-        PlayerDecisionKind::TriggerSecretStrategy => "發動秘計".to_string(),
-        PlayerDecisionKind::ChangeProfession => "改變職業".to_string(),
-        PlayerDecisionKind::ActivateProfessionAbility => "發動職業能力".to_string(),
-        PlayerDecisionKind::UseSpiritSkill => "使用精靈技能".to_string(),
-        PlayerDecisionKind::RetrievePreviousTurnDiscard => "取回上回合棄牌".to_string(),
+        PlayerDecisionKind::TriggerSecretStrategy => events
+            .iter()
+            .find_map(|event| match event {
+                PublicGameEvent::Public(GameEvent::PouchRevealed { strategy, .. }) => {
+                    Some(format!("發動秘計「{}」", secret_strategy_name(*strategy)))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| "發動秘計".to_string()),
+        PlayerDecisionKind::ChangeProfession => events
+            .iter()
+            .find_map(|event| match event {
+                PublicGameEvent::Public(GameEvent::ProfessionChanged {
+                    previous,
+                    profession,
+                    ..
+                }) => Some(format!(
+                    "由「{}」轉職為「{}」",
+                    vocabulary.previous_profession(previous.as_ref()),
+                    vocabulary.profession(profession)
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| "改變職業".to_string()),
+        PlayerDecisionKind::ActivateProfessionAbility => events
+            .iter()
+            .find_map(|event| match event {
+                PublicGameEvent::Public(GameEvent::ProfessionAbilityActivated {
+                    ability_id,
+                    ..
+                }) => Some(format!("發動「{}」", vocabulary.ability(ability_id))),
+                _ => None,
+            })
+            .unwrap_or_else(|| "發動職業能力".to_string()),
+        PlayerDecisionKind::UseSpiritSkill => events
+            .iter()
+            .find_map(|event| match event {
+                PublicGameEvent::SpiritSkillUsed { skill, .. } => {
+                    Some(format!("使用「{}」", spirit_skill_name(*skill)))
+                }
+                PublicGameEvent::Public(GameEvent::SpiritSkillUsed { skill, .. }) => {
+                    Some(format!("使用「{}」", spirit_skill_name(*skill)))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| "使用精靈技能".to_string()),
+        PlayerDecisionKind::RetrievePreviousTurnDiscard => events
+            .iter()
+            .find_map(|event| match event {
+                PublicGameEvent::Public(GameEvent::DiscardRetrieved {
+                    previous_player,
+                    card,
+                    ..
+                }) => Some(format!(
+                    "取回 {} 的 {}",
+                    narrator.player(Some(previous_player)),
+                    card_summary(card, labels)
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| "取回上回合棄牌".to_string()),
     };
-    Some(narrator.text(format!("{}{}", narrator.player(Some(player)), verb)))
+    Some(format!(
+        "{}{}",
+        narrator.clause_subject(player, turn_player),
+        narrator.text(verb)
+    ))
+}
+
+/// 決策標題已命名動作時，摘要只補玩家作出決策時投入的公開資料或後果。
+/// 此處使用事件攜帶的型別化欄位，不從已完成的句子刪除人名或動詞。
+fn decision_event_summary(
+    source: &PublicDecisionSource,
+    event: &PublicGameEvent,
+    labels: &HashMap<CardInstanceId, String>,
+) -> Option<String> {
+    let PublicDecisionSource::Player { kind, .. } = source else {
+        return None;
+    };
+    match (kind, event) {
+        (PlayerDecisionKind::ChooseInitialPouch, PublicGameEvent::InitialPouchChosen { .. }) => {
+            Some(String::new())
+        }
+        (
+            PlayerDecisionKind::PerformFormation,
+            PublicGameEvent::FormationCommitted { cards, .. },
+        ) => Some(format!("使用 {}。", card_refs_summary(cards, labels))),
+        (PlayerDecisionKind::PerformFormation, PublicGameEvent::PassiveCovered { cards, .. }) => {
+            Some(format!("使用 {}。", card_refs_summary(cards, labels)))
+        }
+        (
+            PlayerDecisionKind::UseSpiritSkill,
+            PublicGameEvent::SpiritSkillUsed {
+                old_power,
+                new_power,
+                selected_card,
+                declared_level,
+                ..
+            },
+        ) => Some(format!(
+            "靈力由 {} 變為 {}{}{}。",
+            old_power,
+            new_power,
+            selected_card
+                .map(|card| format!("，指定牌 {}", card_summary(&card, labels)))
+                .unwrap_or_default(),
+            declared_level
+                .map(|level| format!("，宣告 {level} 級"))
+                .unwrap_or_default(),
+        )),
+        (
+            PlayerDecisionKind::TriggerSecretStrategy,
+            PublicGameEvent::Public(GameEvent::PouchRevealed { .. }),
+        ) => Some(String::new()),
+        (PlayerDecisionKind::AnswerChoice, PublicGameEvent::PouchPlaced { card: Some(_), .. }) => {
+            Some(String::new())
+        }
+        (
+            PlayerDecisionKind::AnswerChoice,
+            PublicGameEvent::Public(GameEvent::EarthRendingEnvironmentChosen { .. }),
+        ) => Some(String::new()),
+        (
+            PlayerDecisionKind::ChangeProfession,
+            PublicGameEvent::Public(GameEvent::ProfessionChanged { .. }),
+        ) => Some(String::new()),
+        (
+            PlayerDecisionKind::ActivateProfessionAbility,
+            PublicGameEvent::Public(GameEvent::ProfessionAbilityActivated {
+                prepared: Some(prepared),
+                ..
+            }),
+        ) => Some(format!(
+            "將牌 {} 準備為 {} {} 級。",
+            card_summary(&prepared.card, labels),
+            element_short_name(prepared.element),
+            prepared.level
+        )),
+        (
+            PlayerDecisionKind::ActivateProfessionAbility,
+            PublicGameEvent::Public(GameEvent::ProfessionAbilityActivated { .. }),
+        ) => Some(String::new()),
+        (
+            PlayerDecisionKind::RetrievePreviousTurnDiscard,
+            PublicGameEvent::Public(GameEvent::DiscardRetrieved { hp_change, .. }),
+        ) => Some(format!(
+            "支付生命值（{} → {}）。",
+            hp_change.old_hp, hp_change.new_hp
+        )),
+        _ => None,
+    }
+}
+
+/// 戰局紀錄專用的句型。標準事件呈現仍保留完整主詞；只有這個投影接縫同時
+/// 擁有型別化事件角色與回合玩家，才可選擇省略主詞的句子。
+fn battle_event_presentation(
+    event: &PublicGameEvent,
+    narrator: &BattleRecordNarrator,
+    turn_player: Option<&PlayerId>,
+    labels: &HashMap<CardInstanceId, String>,
+    formation_names: &HashMap<String, String>,
+    vocabulary: &PlayerVocabulary,
+) -> (String, String) {
+    let action = |player: &PlayerId, predicate: String| {
+        format!(
+            "{}{}",
+            narrator.clause_subject(player, turn_player),
+            predicate
+        )
+    };
+    let owner = |player: &PlayerId| narrator.player(Some(player));
+    let possessor = |player: &PlayerId| narrator.possessive_player(player);
+
+    match event {
+        PublicGameEvent::InitialPouchChosen { player } => (
+            "選擇錦囊".to_string(),
+            action(player, "已完成錦囊選擇。".to_string()),
+        ),
+        PublicGameEvent::CardsDrawnForProfessionChoice { player, cards, .. } => (
+            "職業能力抽牌".to_string(),
+            action(
+                player,
+                format!("因職業能力抽取 {}。", card_refs_summary(cards, labels)),
+            ),
+        ),
+        PublicGameEvent::PouchPlaced {
+            owner: pouch_owner,
+            card,
+        } => (
+            "覆蓋錦囊".to_string(),
+            card.as_ref().map_or_else(
+                || format!("{}獲得一個覆蓋錦囊。", owner(pouch_owner)),
+                |card| {
+                    format!(
+                        "{}的錦囊為 {}。",
+                        owner(pouch_owner),
+                        card_summary(card, labels)
+                    )
+                },
+            ),
+        ),
+        PublicGameEvent::FormationRequirementSet {
+            player,
+            virtual_card,
+        } => (
+            "陣法義務".to_string(),
+            virtual_card.as_ref().map_or_else(
+                || action(player, "必須在本回合完成指定陣法。".to_string()),
+                |card| {
+                    action(
+                        player,
+                        format!(
+                            "建立了 {} {} 級虛擬牌。",
+                            element_short_name(card.element),
+                            card.level
+                        ),
+                    )
+                },
+            ),
+        ),
+        PublicGameEvent::FormationRequirementFulfilled {
+            player,
+            formation_id,
+            virtual_card,
+        } => (
+            "陣法義務完成".to_string(),
+            virtual_card.as_ref().map_or_else(
+                || {
+                    action(
+                        player,
+                        format!(
+                            "完成「{}」。",
+                            formation_name(formation_names, formation_id)
+                        ),
+                    )
+                },
+                |card| {
+                    action(
+                        player,
+                        format!(
+                            "以 {} {} 級虛擬牌完成「{}」。",
+                            element_short_name(card.element),
+                            card.level,
+                            formation_name(formation_names, formation_id)
+                        ),
+                    )
+                },
+            ),
+        ),
+        PublicGameEvent::PassiveCovered {
+            player,
+            formation_id,
+            cards,
+            ..
+        } => (
+            "蓋牌".to_string(),
+            formation_id.as_deref().map_or_else(
+                || {
+                    action(
+                        player,
+                        format!("蓋下 {}。", card_refs_summary(cards, labels)),
+                    )
+                },
+                |formation_id| {
+                    action(
+                        player,
+                        format!(
+                            "蓋下「{}」，使用 {}。",
+                            formation_name(formation_names, formation_id),
+                            card_refs_summary(cards, labels)
+                        ),
+                    )
+                },
+            ),
+        ),
+        PublicGameEvent::FormationCommitted {
+            player,
+            formation_id,
+            cards,
+        } => (
+            "施展陣法".to_string(),
+            formation_id.as_deref().map_or_else(
+                || {
+                    action(
+                        player,
+                        format!("以 {} 施展陣法。", card_refs_summary(cards, labels)),
+                    )
+                },
+                |formation_id| {
+                    action(
+                        player,
+                        format!(
+                            "以 {} 施展「{}」。",
+                            card_refs_summary(cards, labels),
+                            formation_name(formation_names, formation_id)
+                        ),
+                    )
+                },
+            ),
+        ),
+        PublicGameEvent::CardsDrawnForTurnDiscardChoice {
+            player,
+            drawn_cards,
+            ..
+        } => (
+            "回合抽牌".to_string(),
+            action(
+                player,
+                format!(
+                    "進行回合抽牌，抽取 {}，需選擇一張捨棄。",
+                    card_refs_summary(drawn_cards, labels)
+                ),
+            ),
+        ),
+        PublicGameEvent::TurnDrawResolved {
+            player,
+            discard,
+            kept_cards,
+        } => (
+            "完成回合抽牌".to_string(),
+            action(
+                player,
+                format!(
+                    "捨棄 {}，保留 {}。",
+                    card_summary(discard, labels),
+                    card_refs_summary(kept_cards, labels)
+                ),
+            ),
+        ),
+        PublicGameEvent::HandInspected {
+            viewer,
+            target,
+            cards,
+        } => (
+            "檢視手牌".to_string(),
+            match cards {
+                PublicCardRefs::Known(_) | PublicCardRefs::PartiallyKnown { .. } => action(
+                    viewer,
+                    format!(
+                        "檢視{}{}手牌：{}。",
+                        narrator.possessive_separator(target),
+                        possessor(target),
+                        card_refs_summary(cards, labels)
+                    ),
+                ),
+                PublicCardRefs::Hidden { count } => action(
+                    viewer,
+                    format!(
+                        "檢視了{}{} {} 張手牌。",
+                        narrator.possessive_separator(target),
+                        possessor(target),
+                        count
+                    ),
+                ),
+            },
+        ),
+        PublicGameEvent::SpiritSkillUsed {
+            player,
+            skill,
+            old_power,
+            new_power,
+            selected_card,
+            declared_level,
+            ..
+        } => (
+            "使用精靈技能".to_string(),
+            action(
+                player,
+                format!(
+                    "使用「{}」，靈力由 {} 變為 {}{}{}。",
+                    spirit_skill_name(*skill),
+                    old_power,
+                    new_power,
+                    selected_card
+                        .map(|card| format!("，指定牌 {}", card_summary(&card, labels)))
+                        .unwrap_or_default(),
+                    declared_level
+                        .map(|level| format!("，宣告 {level} 級"))
+                        .unwrap_or_default(),
+                ),
+            ),
+        ),
+        PublicGameEvent::SpiritLevelInterpreted {
+            player,
+            card,
+            level,
+            ..
+        } => (
+            "精靈改變等級".to_string(),
+            card.map_or_else(
+                || action(player, format!("指定一張手牌本回合視為 {} 級。", level)),
+                |card| {
+                    action(
+                        player,
+                        format!(
+                            "指定牌 {} 本回合視為 {} 級。",
+                            card_summary(&card, labels),
+                            level
+                        ),
+                    )
+                },
+            ),
+        ),
+        PublicGameEvent::Public(game_event) => match game_event {
+            GameEvent::PouchRevealed {
+                player, strategy, ..
+            } => (
+                "觸發秘計".to_string(),
+                action(
+                    player,
+                    format!("觸發「{}」。", secret_strategy_name(*strategy)),
+                ),
+            ),
+            GameEvent::SpiritRevived { player, spirit, .. } => (
+                "秘計‧還魂".to_string(),
+                action(player, format!("召喚{}精靈。", spirit_name(*spirit))),
+            ),
+            GameEvent::TemporaryStarEffectGranted { effect } => (
+                "秘計‧瞞天".to_string(),
+                action(
+                    &effect.player,
+                    format!("暫時獲得{}效果。", star_name(effect.star)),
+                ),
+            ),
+            GameEvent::ActionPassed { player, reason } => (
+                "跳過行動".to_string(),
+                action(
+                    player,
+                    format!(
+                        "因{}而跳過行動。",
+                        match reason {
+                            PassActionReason::NoCardsInHand => "手中沒有牌",
+                            PassActionReason::CannotActByStatus => "目前狀態無法行動",
+                        }
+                    ),
+                ),
+            ),
+            GameEvent::ProfessionChanged {
+                player,
+                previous,
+                profession,
+                ..
+            } => (
+                "轉職".to_string(),
+                action(
+                    player,
+                    format!(
+                        "由{}轉職為{}。",
+                        vocabulary.previous_profession(previous.as_ref()),
+                        vocabulary.profession(profession)
+                    ),
+                ),
+            ),
+            GameEvent::ProfessionTransformed {
+                player,
+                previous,
+                profession,
+                reason,
+                ..
+            } => (
+                "職業轉化".to_string(),
+                action(
+                    player,
+                    format!(
+                        "因「{}」由{}轉化為{}。",
+                        vocabulary.reason(reason),
+                        vocabulary.previous_profession(previous.as_ref()),
+                        vocabulary.profession(profession)
+                    ),
+                ),
+            ),
+            GameEvent::ProfessionAbilityActivated {
+                player,
+                ability_id,
+                prepared,
+            } => (
+                "發動職業能力".to_string(),
+                prepared.as_ref().map_or_else(
+                    || {
+                        action(
+                            player,
+                            format!("發動「{}」。", vocabulary.ability(ability_id)),
+                        )
+                    },
+                    |prepared| {
+                        action(
+                            player,
+                            format!(
+                                "發動「{}」，將牌 {} 準備為 {} {} 級。",
+                                vocabulary.ability(ability_id),
+                                card_summary(&prepared.card, labels),
+                                element_short_name(prepared.element),
+                                prepared.level
+                            ),
+                        )
+                    },
+                ),
+            ),
+            GameEvent::FormationCommitted {
+                player,
+                formation_id,
+                cards,
+                ..
+            } => (
+                "施展陣法".to_string(),
+                action(
+                    player,
+                    format!(
+                        "以 {} 施展「{}」。",
+                        cards_summary(cards, labels),
+                        formation_name(formation_names, formation_id)
+                    ),
+                ),
+            ),
+            GameEvent::CounterEffectEstablished {
+                owner: effect_owner,
+                effect_id,
+            } => (
+                "建立反制".to_string(),
+                action(
+                    effect_owner,
+                    format!(
+                        "建立了公開的「{}」效果。",
+                        formation_name(formation_names, effect_id)
+                    ),
+                ),
+            ),
+            GameEvent::FormationRequirementSet { requirement } => (
+                "陣法義務".to_string(),
+                action(
+                    &requirement.player,
+                    "必須在本回合完成已準備的陣法。".to_string(),
+                ),
+            ),
+            GameEvent::FormationRequirementFulfilled {
+                player,
+                formation_id,
+                ..
+            } => (
+                "陣法義務完成".to_string(),
+                action(
+                    player,
+                    format!(
+                        "完成「{}」。",
+                        formation_name(formation_names, formation_id)
+                    ),
+                ),
+            ),
+            GameEvent::SpiritSummoned {
+                player,
+                previous,
+                spirit,
+            } => (
+                "召喚精靈".to_string(),
+                previous.as_ref().map_or_else(
+                    || {
+                        action(
+                            player,
+                            format!("召喚{}精靈，靈力為 2。", spirit_name(*spirit)),
+                        )
+                    },
+                    |previous| {
+                        action(
+                            player,
+                            format!(
+                                "以{}精靈取代{}精靈，靈力為 2。",
+                                spirit_name(*spirit),
+                                spirit_name(*previous)
+                            ),
+                        )
+                    },
+                ),
+            ),
+            GameEvent::SpiritSkillUsed {
+                player,
+                skill,
+                old_power,
+                new_power,
+                ..
+            } => (
+                "使用精靈技能".to_string(),
+                action(
+                    player,
+                    format!(
+                        "使用「{}」，靈力由 {} 變為 {}。",
+                        spirit_skill_name(*skill),
+                        old_power,
+                        new_power
+                    ),
+                ),
+            ),
+            GameEvent::SpiritLevelInterpreted {
+                player,
+                card,
+                level,
+                ..
+            } => (
+                "精靈改變等級".to_string(),
+                action(
+                    player,
+                    format!(
+                        "指定牌 {} 本回合視為 {} 級。",
+                        card_summary(card, labels),
+                        level
+                    ),
+                ),
+            ),
+            GameEvent::TurnDrawSkipped { player, reason } => (
+                "略過抽牌".to_string(),
+                action(
+                    player,
+                    format!(
+                        "因{}而未抽牌。",
+                        match reason {
+                            TurnDrawSkipReason::HandLimitReached => "手牌已達上限",
+                            TurnDrawSkipReason::CannotDrawByStatus => "目前狀態無法抽牌",
+                        }
+                    ),
+                ),
+            ),
+            GameEvent::TurnDiscardChosen { player, discard } => (
+                "捨棄".to_string(),
+                action(
+                    player,
+                    format!("捨棄了 {}。", card_summary(discard, labels)),
+                ),
+            ),
+            GameEvent::TurnDrawResolved {
+                player,
+                discard,
+                kept_cards,
+            } => (
+                "完成回合抽牌".to_string(),
+                action(
+                    player,
+                    format!(
+                        "捨棄 {}，保留 {} 張牌。",
+                        card_summary(discard, labels),
+                        kept_cards.len()
+                    ),
+                ),
+            ),
+            GameEvent::HandInspected { viewer, target, .. } => (
+                "檢視手牌".to_string(),
+                action(
+                    viewer,
+                    format!(
+                        "檢視了{}{}手牌。",
+                        narrator.possessive_separator(target),
+                        possessor(target)
+                    ),
+                ),
+            ),
+            GameEvent::DeckTopRevealed { player, card } => (
+                "晴風".to_string(),
+                action(
+                    player,
+                    format!("展示牌堆最上方的 {}。", cards_summary(&[*card], labels)),
+                ),
+            ),
+            GameEvent::AttackResolved {
+                attacker,
+                target,
+                formation_id,
+                hp_change,
+                shield_change,
+                ..
+            } => {
+                let result = shield_change.as_ref().map_or_else(
+                    || {
+                        format!(
+                            "生命值{} {} 點，剩餘 {}",
+                            if hp_change.effective_delta >= 0 {
+                                "增加"
+                            } else {
+                                "減少"
+                            },
+                            hp_change.effective_delta.unsigned_abs(),
+                            hp_change.new_hp
+                        )
+                    },
+                    |change| {
+                        format!(
+                            "{}防護罩{} {} 點，剩餘 {}",
+                            possessor(target),
+                            if change.delta >= 0 {
+                                "增加"
+                            } else {
+                                "減少"
+                            },
+                            change.delta.unsigned_abs(),
+                            change.new_value
+                        )
+                    },
+                );
+                (
+                    "攻擊結算".to_string(),
+                    action(
+                        attacker,
+                        format!(
+                            "以「{}」攻擊 {}，{}。",
+                            formation_name(formation_names, formation_id),
+                            owner(target),
+                            result
+                        ),
+                    ),
+                )
+            }
+            GameEvent::EchoCostPaid { player, .. } => (
+                "支付迴響代價".to_string(),
+                action(player, "捨棄一張牌並排定迴響。".to_string()),
+            ),
+            GameEvent::EchoDeclined { player, .. } => (
+                "放棄迴響".to_string(),
+                action(player, "選擇不觸發迴響。".to_string()),
+            ),
+            GameEvent::JianghuStateApplied { state } => (
+                "江湖狀態生效".to_string(),
+                action(
+                    &state.owner,
+                    format!("進入{}狀態。", jianghu_state_name(state.kind)),
+                ),
+            ),
+            GameEvent::JianghuPoisonTicked {
+                owner: poisoned,
+                damage,
+                remaining_turns,
+                ..
+            } => (
+                "中毒".to_string(),
+                action(
+                    poisoned,
+                    format!("因中毒扣除 {damage} 點生命，剩餘 {remaining_turns} 回合。"),
+                ),
+            ),
+            GameEvent::JianghuDelayedDamageResolved {
+                owner: delayed,
+                hp_change,
+                ..
+            } => (
+                "天外飛扇".to_string(),
+                action(
+                    delayed,
+                    format!("行動後扣除 {} 點生命。", -hp_change.effective_delta),
+                ),
+            ),
+            GameEvent::ConfluenceCardObligationSet { obligation } => (
+                "調律".to_string(),
+                action(
+                    &obligation.owner,
+                    "取得的牌須於本回合依調律限制使用。".to_string(),
+                ),
+            ),
+            GameEvent::ConfluenceCardObligationCleared { owner: cleared, .. } => (
+                "調律完成".to_string(),
+                action(cleared, "已完成調律牌義務。".to_string()),
+            ),
+            GameEvent::TimedEffectsReduced {
+                source,
+                target,
+                reductions,
+            } => (
+                "淨火".to_string(),
+                action(
+                    source,
+                    format!(
+                        "使{}{} {} 個合格時效效果減少一回合或一層。",
+                        narrator.possessive_separator(target),
+                        possessor(target),
+                        reductions.len()
+                    ),
+                ),
+            ),
+            GameEvent::FlowStateTriggered { player, .. } => (
+                "流水觸發".to_string(),
+                action(player, "消耗一層流水，使本回合抽牌＋１。".to_string()),
+            ),
+            GameEvent::FormationSuppressionSet { suppression } => (
+                "裂土指定".to_string(),
+                action(
+                    &suppression.source,
+                    format!(
+                        "指定 {}陣法「{}」於下回合無效。",
+                        possessor(&suppression.target),
+                        formation_name(formation_names, &suppression.formation_id)
+                    ),
+                ),
+            ),
+            GameEvent::HandRevealed { player, cards } => (
+                "展示手牌".to_string(),
+                action(player, format!("展示了 {}。", cards_summary(cards, labels))),
+            ),
+            GameEvent::RingingMetalCardRevealed { selection } => (
+                "鳴金檢索".to_string(),
+                action(
+                    &selection.player,
+                    format!("展示了牌 {}。", card_summary(&selection.card, labels)),
+                ),
+            ),
+            GameEvent::StarSummoned { player, star, .. } => (
+                "召喚星辰".to_string(),
+                action(player, format!("召喚了{}。", star_name(*star))),
+            ),
+            GameEvent::VoidReversionResolved {
+                player,
+                hp_change,
+                broken_professions,
+                retained_legendary_professions,
+                ..
+            } => (
+                "虛空返璞".to_string(),
+                action(
+                    player,
+                    format!(
+                        "使隊伍生命值由 {} 降至 {}（扣除 {} 點），破除 {} 個職業，保留 {} 個低等級保護的傳說職業。",
+                        hp_change.old_hp,
+                        hp_change.new_hp,
+                        -hp_change.effective_delta,
+                        broken_professions.len(),
+                        retained_legendary_professions.len()
+                    ),
+                ),
+            ),
+            GameEvent::VoidSpiritShatteringResolved {
+                player,
+                spirit_changes,
+                broken_spirits,
+                hp_changes,
+                ..
+            } => (
+                "虛空碎靈".to_string(),
+                action(
+                    player,
+                    format!(
+                        "使 {} 個精靈靈力下降、破除 {} 個精靈；{}。",
+                        spirit_changes.len(),
+                        broken_spirits.len(),
+                        hp_changes
+                            .iter()
+                            .map(|change| format!(
+                                "{} 生命值 {} → {}",
+                                change.team.as_str(),
+                                change.old_hp,
+                                change.new_hp
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("、")
+                    ),
+                ),
+            ),
+            GameEvent::FiveStarAlignmentAchieved { player, .. } => (
+                "五星連珠".to_string(),
+                action(player, "完成五星連珠，所屬隊伍獲勝。".to_string()),
+            ),
+            GameEvent::KingYamaDecreeVictoryAchieved { player, .. } => (
+                "閻王令".to_string(),
+                action(player, "施展閻王令，所屬隊伍直接獲勝。".to_string()),
+            ),
+            GameEvent::EarthRendingPlayerAnswered { answer } => (
+                "裂地崩山選擇".to_string(),
+                action(
+                    &answer.player,
+                    if answer.protected {
+                        "受神算保護。".to_string()
+                    } else if answer.card.is_some() {
+                        "選擇捨棄一張環行牌。".to_string()
+                    } else {
+                        "沒有環行牌並展示手牌。".to_string()
+                    },
+                ),
+            ),
+            _ => event_presentation_with_vocabulary(event, labels, formation_names, vocabulary),
+        },
+        _ => event_presentation_with_vocabulary(event, labels, formation_names, vocabulary),
+    }
 }
 
 fn battle_record_event_is_meaningful(event: &PublicGameEvent) -> bool {
@@ -3379,6 +4319,31 @@ impl BattleRecordNarrator {
             .and_then(|player| self.player_labels.get(player.as_str()))
             .cloned()
             .unwrap_or_else(|| "未知玩家".to_string())
+    }
+
+    /// 所有格不把「你」拆成「你 的」，同時保留其他玩家顯示名稱的可讀空格。
+    fn possessive_player(&self, player: &PlayerId) -> String {
+        let label = self.player(Some(player));
+        if label == "你" {
+            "你的".to_string()
+        } else {
+            format!("{label} 的")
+        }
+    }
+
+    fn possessive_separator(&self, player: &PlayerId) -> &'static str {
+        (self.player(Some(player)) != "你")
+            .then_some(" ")
+            .unwrap_or("")
+    }
+
+    /// 回合組標題已標示回合玩家，僅該玩家作為句子的主詞時才可省略。
+    fn clause_subject(&self, player: &PlayerId, turn_player: Option<&PlayerId>) -> String {
+        if turn_player == Some(player) {
+            String::new()
+        } else {
+            self.player(Some(player))
+        }
     }
 
     fn text(&self, text: String) -> String {
@@ -3991,6 +4956,36 @@ fn public_choice_player(choice: &crate::public_view::PublicPendingChoice) -> &Pl
     match choice {
         crate::public_view::PublicPendingChoice::Visible { player, .. }
         | crate::public_view::PublicPendingChoice::Hidden { player, .. } => player,
+    }
+}
+
+/// 回合抽牌事件已公開同一玩家必須捨棄一張牌；緊接的同型選擇不再重述。
+/// 任一 ChoiceRequested 都會消耗這個最近前文，避免跨越另一個選擇誤吞後續流程。
+fn consumes_announced_turn_draw_choice(
+    event: &PublicGameEvent,
+    announced_for: &mut Option<PlayerId>,
+) -> bool {
+    match event {
+        PublicGameEvent::CardsDrawnForTurnDiscardChoice { player, .. } => {
+            *announced_for = Some(player.clone());
+            false
+        }
+        PublicGameEvent::ChoiceRequested { choice } => {
+            let suppress = announced_for.as_ref() == Some(public_choice_player(choice))
+                && matches!(
+                    choice,
+                    crate::public_view::PublicPendingChoice::Visible {
+                        reason: PublicPendingChoicePresentation::TurnDrawDiscard,
+                        ..
+                    } | crate::public_view::PublicPendingChoice::Hidden {
+                        reason: PublicPendingChoicePresentation::TurnDrawDiscard,
+                        ..
+                    }
+                );
+            *announced_for = None;
+            suppress
+        }
+        _ => false,
     }
 }
 
@@ -4629,7 +5624,7 @@ fn game_event_presentation_with_vocabulary(
             "調律完成".to_string(),
             format!("{} 已完成調律牌義務。", owner.as_str()),
         ),
-        GameEvent::ChoiceRequested { choice } => (
+        GameEvent::ChoiceRequested { choice, .. } => (
             "效果選擇".to_string(),
             format!("{} 需要選擇效果。", choice.player.as_str()),
         ),
@@ -4654,7 +5649,7 @@ fn game_event_presentation_with_vocabulary(
                 format!("{} 選擇了 {}。", player.as_str(), selection),
             )
         }
-        GameEvent::RandomnessRequested { request } => (
+        GameEvent::RandomnessRequested { request, .. } => (
             "等待洗牌".to_string(),
             format!("正在重新排列 {} 張牌。", request.current_order.len()),
         ),
@@ -5598,7 +6593,7 @@ mod tests {
     }
 
     #[test]
-    fn legal_rusted_forest_returns_only_a_camel_case_randomness_continuation() {
+    fn legal_rusted_forest_returns_only_public_randomness_input() {
         let rules = OfficialRules::new();
         let alice = PlayerId::new("alice");
         let bob = PlayerId::new("bob");
@@ -5688,7 +6683,7 @@ mod tests {
             },
         });
         let response = handle_request_json(&request.to_string())
-            .expect("a legal Rusted Forest should return a randomness continuation");
+            .expect("a legal Rusted Forest should return a randomness input request");
         let json: serde_json::Value = serde_json::from_str(&response).unwrap();
 
         let root_fields = json
@@ -5718,7 +6713,7 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
             request_fields,
-            ["continuation", "currentOrder", "operation", "requestId"]
+            ["currentOrder", "operation", "requestId"]
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
@@ -5731,13 +6726,7 @@ mod tests {
             json["request"]["operation"],
             serde_json::json!({"type": "deckShuffle", "deck": "Shared"})
         );
-        assert_eq!(
-            json["request"]["continuation"],
-            serde_json::json!({
-                "type": "tribulation",
-                "kind": "rustedForestShuffle",
-            })
-        );
+        assert!(json["request"].get("continuation").is_none());
         assert!(json["request"]["currentOrder"].as_array().is_some());
         for player_ready_field in ["state", "events", "playableActions", "interaction"] {
             assert!(json.get(player_ready_field).is_none());
@@ -6072,6 +7061,14 @@ mod tests {
             .expect("response should contain a preparation group");
 
         assert!(entries.iter().any(|entry| entry["title"] == "本局規則"));
+        assert_eq!(
+            json["battleRecord"]["turns"],
+            serde_json::json!([{
+                "turnNumber": 1,
+                "title": "第 1 回合・你",
+                "entries": []
+            }])
+        );
         let record = serde_json::to_string(entries).expect("battle record should serialize");
         assert!(!record.contains("eventType"));
         assert!(!record.contains("DeckPrepared"));
@@ -6109,13 +7106,219 @@ mod tests {
             },
         ];
         let feed = public_decision_feed(&decisions, Viewer::Observer);
-        assert_eq!(feed.decisions.len(), 2);
-        assert_eq!(feed.decisions[0].turn_number, None);
-        assert_eq!(feed.decisions[1].turn_number, Some(1));
-        assert!(matches!(
-            feed.decisions[1].source,
-            PublicDecisionSource::Automatic
-        ));
+        let record = battle_record_for(
+            feed,
+            &GameState::from_setup(&fixture_setup(&OfficialRules::new(), None).unwrap()),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &PlayerVocabulary::all_official(),
+        );
+        assert_eq!(record.turns.len(), 1);
+        assert_eq!(record.turns[0].turn_number, 1);
+        assert_eq!(record.turns[0].entries[0].title, "略過抽牌");
+    }
+
+    #[test]
+    fn battle_record_does_not_repeat_the_current_turn_draw_choice_notice() {
+        let setup = fixture_setup(&OfficialRules::new(), None).unwrap();
+        let actor = setup.players[0].id.clone();
+        let other = setup.players[1].id.clone();
+        let project = |source, events| {
+            battle_record_for(
+                PublicDecisionFeed {
+                    decisions: vec![PublicDecision {
+                        id: "turn-draw".to_string(),
+                        turn_number: Some(1),
+                        turn_player: Some(actor.clone()),
+                        source,
+                        events,
+                    }],
+                },
+                &GameState::from_setup(&setup),
+                Some(actor.clone()),
+                &HashMap::new(),
+                &HashMap::new(),
+                &PlayerVocabulary::all_official(),
+            )
+        };
+        let draw = || PublicGameEvent::CardsDrawnForTurnDiscardChoice {
+            player: actor.clone(),
+            drawn_cards: PublicCardRefs::Hidden { count: 3 },
+            allowed_discards: PublicCardRefs::Hidden { count: 3 },
+        };
+        let visible_turn_draw = || PublicGameEvent::ChoiceRequested {
+            choice: crate::public_view::PublicPendingChoice::Visible {
+                choice_id: ChoiceId::new(1),
+                player: actor.clone(),
+                reason: PublicPendingChoicePresentation::TurnDrawDiscard,
+                choice: PendingChoiceKind::Card {
+                    cards: Vec::new(),
+                    minimum: 1,
+                    maximum: 1,
+                    can_decline: false,
+                },
+            },
+        };
+        let hidden_turn_draw = || PublicGameEvent::ChoiceRequested {
+            choice: crate::public_view::PublicPendingChoice::Hidden {
+                player: actor.clone(),
+                reason: PublicPendingChoicePresentation::TurnDrawDiscard,
+            },
+        };
+
+        for record in [
+            project(
+                PublicDecisionSource::Automatic,
+                vec![draw(), visible_turn_draw()],
+            ),
+            project(
+                PublicDecisionSource::Automatic,
+                vec![draw(), hidden_turn_draw()],
+            ),
+            project(
+                PublicDecisionSource::Player {
+                    player: actor.clone(),
+                    kind: PlayerDecisionKind::ChangeProfession,
+                },
+                vec![draw(), visible_turn_draw()],
+            ),
+            project(
+                PublicDecisionSource::Player {
+                    player: actor.clone(),
+                    kind: PlayerDecisionKind::ChangeProfession,
+                },
+                vec![draw(), hidden_turn_draw()],
+            ),
+        ] {
+            let summary = record.turns[0].entries[0].summary.as_deref().unwrap();
+            assert!(summary.contains("進行回合抽牌，抽取 3 張牌，需選擇一張捨棄。"));
+            assert!(!summary.contains("接著由"));
+        }
+
+        let other_player = project(
+            PublicDecisionSource::Automatic,
+            vec![
+                draw(),
+                PublicGameEvent::ChoiceRequested {
+                    choice: crate::public_view::PublicPendingChoice::Hidden {
+                        player: other,
+                        reason: PublicPendingChoicePresentation::TurnDrawDiscard,
+                    },
+                },
+            ],
+        );
+        assert!(
+            other_player.turns[0].entries[0]
+                .summary
+                .as_deref()
+                .is_some_and(|summary| summary.contains("接著由bob作出一項未公開的選擇。"))
+        );
+
+        let no_draw_context = project(PublicDecisionSource::Automatic, vec![hidden_turn_draw()]);
+        assert!(
+            no_draw_context.turns[0].entries[0]
+                .summary
+                .as_deref()
+                .is_some_and(|summary| summary.contains("接著由你作出一項未公開的選擇。"))
+        );
+
+        let consumed_by_other_choice = project(
+            PublicDecisionSource::Automatic,
+            vec![
+                draw(),
+                PublicGameEvent::ChoiceRequested {
+                    choice: crate::public_view::PublicPendingChoice::Hidden {
+                        player: actor.clone(),
+                        reason: PublicPendingChoicePresentation::Chaos,
+                    },
+                },
+                hidden_turn_draw(),
+            ],
+        );
+        let summary = consumed_by_other_choice.turns[0].entries[0]
+            .summary
+            .as_deref()
+            .unwrap();
+        assert!(summary.contains("作出一項未公開的選擇"));
+        assert_eq!(summary.matches("接著由").count(), 2);
+    }
+
+    #[test]
+    fn battle_record_preserves_a_turn_boundary_at_the_end_of_a_player_command() {
+        let setup = fixture_setup(&OfficialRules::new(), None).unwrap();
+        let first = setup.players[0].id.clone();
+        let second = setup.players[1].id.clone();
+        let decisions = vec![RecordedDecision {
+            source: RecordedDecisionSource::Command {
+                command_id: crate::domain::CommandId::new(1),
+                command: Command::PassAction {
+                    player: first,
+                    reason: PassActionReason::NoCardsInHand,
+                },
+            },
+            events: vec![GameEvent::TurnStarted {
+                player: second.clone(),
+                turn_number: 2,
+            }],
+        }];
+
+        let feed = public_decision_feed(&decisions, Viewer::Observer);
+        let record = battle_record_for(
+            feed,
+            &GameState::from_setup(&setup),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &PlayerVocabulary::all_official(),
+        );
+
+        assert_eq!(record.turns.len(), 1);
+        assert_eq!(record.turns[0].turn_number, 2);
+        assert_eq!(
+            record.turns[0].title,
+            format!("第 2 回合・{}", second.as_str())
+        );
+        assert!(record.turns[0].entries.is_empty());
+    }
+
+    #[test]
+    fn battle_record_projects_post_turn_boundary_events_as_automatic_outcomes() {
+        let setup = fixture_setup(&OfficialRules::new(), None).unwrap();
+        let first = setup.players[0].id.clone();
+        let second = setup.players[1].id.clone();
+        let decisions = vec![RecordedDecision {
+            source: RecordedDecisionSource::Command {
+                command_id: crate::domain::CommandId::new(1),
+                command: Command::PassAction {
+                    player: first,
+                    reason: PassActionReason::NoCardsInHand,
+                },
+            },
+            events: vec![
+                GameEvent::TurnStarted {
+                    player: second.clone(),
+                    turn_number: 2,
+                },
+                GameEvent::TurnDrawSkipped {
+                    player: second,
+                    reason: TurnDrawSkipReason::HandLimitReached,
+                },
+            ],
+        }];
+
+        let feed = public_decision_feed(&decisions, Viewer::Observer);
+        let record = battle_record_for(
+            feed,
+            &GameState::from_setup(&setup),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &PlayerVocabulary::all_official(),
+        );
+
+        assert_eq!(record.turns[0].turn_number, 2);
+        assert_eq!(record.turns[0].entries[0].title, "略過抽牌");
     }
 
     #[test]
@@ -6159,7 +7362,8 @@ mod tests {
 
     #[test]
     fn battle_record_enriches_a_player_decision_with_randomness_without_changing_its_id() {
-        let player = PlayerId::new("p1");
+        let setup = fixture_setup(&OfficialRules::new(), None).unwrap();
+        let player = setup.players[0].id.clone();
         let decisions = vec![
             RecordedDecision {
                 source: RecordedDecisionSource::Automatic,
@@ -6188,18 +7392,42 @@ mod tests {
                         shuffled_order: Vec::new(),
                     },
                 },
-                events: vec![GameEvent::RandomnessResolved {
-                    request_id: "r".to_string(),
-                    operation: crate::domain::RandomnessOperation::DeckShuffle {
-                        deck: crate::domain::RandomnessDeck::Shared,
+                events: vec![
+                    GameEvent::RandomnessResolved {
+                        request_id: "r".to_string(),
+                        operation: crate::domain::RandomnessOperation::DeckShuffle {
+                            deck: crate::domain::RandomnessDeck::Shared,
+                        },
+                        shuffled_order: Vec::new(),
                     },
-                    shuffled_order: Vec::new(),
-                }],
+                    GameEvent::HpChanged {
+                        change: crate::domain::HpChangeDelta {
+                            team: setup.players[0].team.clone(),
+                            old_hp: 20,
+                            delta: -1,
+                            new_hp: 19,
+                            effective_delta: -1,
+                        },
+                    },
+                ],
             },
         ];
-        let feed = public_decision_feed(&decisions, Viewer::Player(player));
-        assert_eq!(feed.decisions.len(), 1);
-        assert_eq!(feed.decisions[0].id, "decision-2");
+        let record = battle_record_for(
+            public_decision_feed(&decisions, Viewer::Player(player.clone())),
+            &GameState::from_setup(&setup),
+            Some(player),
+            &HashMap::new(),
+            &HashMap::new(),
+            &PlayerVocabulary::all_official(),
+        );
+        assert_eq!(record.turns[0].entries.len(), 1);
+        assert_eq!(record.turns[0].entries[0].id, "decision-2");
+        assert!(
+            record.turns[0].entries[0]
+                .summary
+                .as_deref()
+                .is_some_and(|summary| summary.contains("生命值減少 1 點，剩餘 19"))
+        );
     }
 
     #[test]
@@ -6286,7 +7514,132 @@ mod tests {
             &names,
             &PlayerVocabulary::all_official(),
         );
-        assert!(participant.turns[0].entries[0].title.starts_with("你施展"));
+        assert_eq!(participant.turns[0].entries[0].title, "施展陣法");
+        assert_eq!(
+            participant.turns[0].entries[0].summary.as_deref(),
+            Some("使用 1 張牌。")
+        );
+    }
+
+    #[test]
+    fn battle_record_uses_typed_turn_relative_subjects_without_hiding_targets_or_other_actors() {
+        let rules = OfficialRules::new();
+        let setup = fixture_setup(&rules, None).unwrap();
+        let actor = setup.players[0].id.clone();
+        let other = setup.players[1].id.clone();
+        let state = GameState::from_setup(&setup);
+        let skill_source = |player: PlayerId| {
+            player_decision_source(&Command::UseSpiritSkill {
+                player,
+                skill: SpiritSkill::EvilGaze,
+                selected_card: None,
+                declared_level: None,
+            })
+        };
+        let project = |source, event| {
+            battle_record_for(
+                PublicDecisionFeed {
+                    decisions: vec![PublicDecision {
+                        id: "decision-1".to_string(),
+                        turn_number: Some(1),
+                        turn_player: Some(actor.clone()),
+                        source,
+                        events: vec![PublicGameEvent::Public(event)],
+                    }],
+                },
+                &state,
+                Some(actor.clone()),
+                &HashMap::new(),
+                &HashMap::new(),
+                &PlayerVocabulary::all_official(),
+            )
+        };
+
+        let turn_actor = project(
+            skill_source(actor.clone()),
+            GameEvent::TimedEffectsReduced {
+                source: actor.clone(),
+                target: other.clone(),
+                reductions: Vec::new(),
+            },
+        );
+        assert_eq!(
+            turn_actor.turns[0].entries[0].summary.as_deref(),
+            Some("使 bob 的 0 個合格時效效果減少一回合或一層。")
+        );
+
+        let other_actor = project(
+            skill_source(other.clone()),
+            GameEvent::TimedEffectsReduced {
+                source: other.clone(),
+                target: actor.clone(),
+                reductions: Vec::new(),
+            },
+        );
+        assert_eq!(
+            other_actor.turns[0].entries[0].summary.as_deref(),
+            Some("bob使你的 0 個合格時效效果減少一回合或一層。")
+        );
+
+        let turn_actor_spirit = project(
+            PublicDecisionSource::Automatic,
+            GameEvent::SpiritSummoned {
+                player: actor.clone(),
+                previous: Some(SpiritKind::Water),
+                spirit: SpiritKind::Fire,
+            },
+        );
+        assert_eq!(
+            turn_actor_spirit.turns[0].entries[0].summary.as_deref(),
+            Some("以火精靈取代水精靈，靈力為 2。")
+        );
+
+        let other_actor_spirit = project(
+            PublicDecisionSource::Automatic,
+            GameEvent::SpiritSummoned {
+                player: other.clone(),
+                previous: Some(SpiritKind::Water),
+                spirit: SpiritKind::Fire,
+            },
+        );
+        assert_eq!(
+            other_actor_spirit.turns[0].entries[0].summary.as_deref(),
+            Some("bob以火精靈取代水精靈，靈力為 2。")
+        );
+
+        let actor_as_target = project(
+            skill_source(other.clone()),
+            GameEvent::HandInspected {
+                viewer: other,
+                target: actor.clone(),
+                cards: Vec::new(),
+            },
+        );
+        assert_eq!(
+            actor_as_target.turns[0].entries[0].summary.as_deref(),
+            Some("bob檢視了你的手牌。")
+        );
+
+        let automatic = project(
+            PublicDecisionSource::Automatic,
+            GameEvent::JianghuPoisonTicked {
+                owner: actor.clone(),
+                damage: 2,
+                remaining_turns: 1,
+                hp_change: crate::domain::HpChangeDelta {
+                    team: setup.players[0].team.clone(),
+                    old_hp: 20,
+                    delta: -2,
+                    new_hp: 18,
+                    effective_delta: -2,
+                },
+                shared_fate_hp_change: None,
+            },
+        );
+        assert_eq!(
+            automatic.turns[0].entries[0].summary.as_deref(),
+            Some("因中毒扣除 2 點生命，剩餘 1 回合。")
+        );
     }
 
     #[test]
@@ -6330,7 +7683,7 @@ mod tests {
                     turn_number: Some(1),
                     turn_player: Some(actor.clone()),
                     source: player_decision_source(&Command::AnswerChoice {
-                        player: actor,
+                        player: target.clone(),
                         choice_id: ChoiceId::new(2),
                         answer: ChoiceAnswer::Environment {
                             environment: Element::Fire,
@@ -6353,14 +7706,9 @@ mod tests {
             &PlayerVocabulary::all_official(),
         );
         let chain_title = &record.turns[0].entries[0].title;
-        assert!(
-            chain_title.starts_with("你將土 2放入") && chain_title.contains("錦囊"),
-            "{chain_title}"
-        );
-        assert!(
-            record.turns[0].entries[1].title.contains("選擇")
-                && record.turns[0].entries[1].title.contains("火")
-        );
+        assert_eq!(chain_title, "將土 2放入bob的錦囊");
+        assert_eq!(record.turns[0].entries[1].title, "bob選擇火行環境");
+        assert_eq!(record.turns[0].entries[1].summary, None);
         assert_eq!(record.turns[0].entries.len(), 2);
         assert!(
             record.turns[0].entries[0]
@@ -6376,11 +7724,8 @@ mod tests {
             &HashMap::new(),
             &PlayerVocabulary::all_official(),
         );
-        let title = &target_view.turns[0].entries[0].title;
-        assert!(
-            title.contains("你") && !title.contains(target.as_str()),
-            "{title}"
-        );
+        assert_eq!(target_view.turns[0].entries[0].title, "將土 2放入你的錦囊");
+        assert_eq!(target_view.turns[0].entries[1].title, "你選擇火行環境");
     }
 
     #[test]
@@ -7537,7 +8882,7 @@ mod tests {
     }
 
     #[test]
-    fn chaos_choice_serializes_exact_card_bounds_without_internal_continuations() {
+    fn chaos_choice_serializes_exact_card_bounds_without_internal_resolutions() {
         let choice = PendingChoiceKind::Card {
             cards: vec![
                 CardInstanceId::new(1),

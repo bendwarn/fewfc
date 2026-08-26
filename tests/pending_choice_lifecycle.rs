@@ -1,8 +1,7 @@
 use fewfc::application::{apply_event, handle_command};
 use fewfc::domain::{
-    BaseChoiceContinuation, CardInstanceId, ChoiceAnswer, ChoiceContinuation, ChoiceId, Command,
-    GameEvent, GameSetup, GameState, PendingChoice, PendingChoiceKind, Phase, PlayerId,
-    ValidationError,
+    CardInstanceId, ChoiceAnswer, ChoiceId, Command, GameEvent, GameSetup, GameState,
+    PendingChoice, PendingChoiceKind, PendingResolution, Phase, PlayerId, ValidationError,
 };
 use fewfc::public_view::{PublicPendingChoice, Viewer, state_for};
 
@@ -25,8 +24,8 @@ fn accepted_answer_records_choice_made_before_domain_consequences_and_releases_t
             maximum: 1,
             can_decline: false,
         },
-        continuation: ChoiceContinuation::Base(BaseChoiceContinuation::TurnDrawDiscard),
     });
+    state.pending_resolution = Some(PendingResolution::TurnDrawDiscard);
     state.next_choice_id = ChoiceId::new(2);
 
     assert_eq!(
@@ -96,7 +95,7 @@ fn accepted_answer_records_choice_made_before_domain_consequences_and_releases_t
 }
 
 #[test]
-fn public_pending_choice_redacts_choice_id_options_and_continuation_from_non_owners() {
+fn public_pending_choice_redacts_choice_id_options_and_resolution_from_non_owners() {
     let setup = GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30);
     let mut state = GameState::from_setup(&setup);
     state.pending_choice = Some(PendingChoice {
@@ -108,8 +107,8 @@ fn public_pending_choice_redacts_choice_id_options_and_continuation_from_non_own
             maximum: 2,
             can_decline: false,
         },
-        continuation: ChoiceContinuation::Base(BaseChoiceContinuation::ChaosReturnTwo),
     });
+    state.pending_resolution = Some(PendingResolution::ChaosReturnTwo);
 
     assert!(matches!(
         state_for(&state, Viewer::Player(PlayerId::new("p1"))).pending_choice,

@@ -931,41 +931,40 @@ Effect-generated pending choices are required in the first version because base 
 
 Only one pending choice may be active at a time. When an effect creates a pending choice, the engine stops until the required player submits the corresponding choice command.
 
-Effect choices must include enough serialized continuation data to resume deterministic resolution after the choice:
+Effect choices and randomness requests carry one serializable resolution owner. The input
+objects themselves remain only input requirements:
 
 ```rust
-enum PendingChoiceKind {
-    TurnDrawDiscard {
-        allowed_discards: Vec<CardInstanceId>,
-    },
-    EffectChoice {
-        source_effect: EffectId,
-        chooser: PlayerId,
-        options: ChoiceOptions,
-        continuation: ResolutionContinuation,
-    },
+enum PendingResolution {
+    TurnDrawDiscard,
+    ChaosReturnTwo,
+    // ... one explicit variant for every paused rule flow
 }
 ```
 
-`ResolutionContinuation` must be serializable and replay-safe. It cannot contain closures, trait objects, borrowed references, or non-deterministic runtime state.
+`PendingResolution` must be serializable and replay-safe. It cannot contain closures, trait
+objects, borrowed references, or non-deterministic runtime state.
 
-Pending choice invariant:
+Pending input invariant:
 
 ```rust
 pending_choice: Option<PendingChoice>
+pending_randomness: Option<PendingRandomness>
+pending_resolution: Option<PendingResolution>
 ```
 
-Only one pending choice may exist at a time.
+At most one input requirement and exactly its matching `PendingResolution` may exist at a
+time. The public view never exposes `PendingResolution`.
 
-If a resolution needs multiple choices, it presents them sequentially. The first choice becomes `pending_choice`; remaining choice requirements are stored in `ResolutionContinuation`. After the player answers, the continuation resumes and may present the next choice.
+If a resolution needs multiple choices, it presents them sequentially. After an answer or a
+randomness result, the engine resumes from `PendingResolution` and may request the next input.
 
 Creating and answering an effect-generated Pending Choice are both Game Events:
 
 ```rust
 GameEvent::ChoiceRequested {
-    choice_id: ChoiceId,
-    player: PlayerId,
-    kind: PendingChoiceKind,
+    choice: PendingChoice,
+    resolution: PendingResolution,
 }
 
 GameEvent::ChoiceMade {
@@ -975,7 +974,8 @@ GameEvent::ChoiceMade {
 }
 ```
 
-`ChoiceRequested` must include enough serialized data to reconstruct the pending choice and its continuation during replay.
+`ChoiceRequested` must include enough serialized data to reconstruct both the pending choice
+and its resolution owner during replay. `RandomnessRequested` follows the same pattern.
 
 Turn Draw retains its specific Card-movement events while using the ordinary
 Pending Choice lifecycle. `CardsDrawnForTurnDiscardChoice` creates the Pool,
@@ -984,7 +984,8 @@ then `ChoiceRequested` creates its Pending Choice. The answering Command emits
 kept-Card movements atomically. No Player input or replay state exists between
 those two movements inside `TurnDrawResolved`.
 
-Canonical events may contain hidden information required for deterministic replay, including hidden card ids, complete choice options, and serialized continuations.
+Canonical events may contain hidden information required for deterministic replay, including
+hidden card ids, complete choice options, and serialized resolutions.
 
 External event feeds must be viewer-filtered:
 
@@ -2403,3 +2404,42 @@ or consolidating existing Pouch tests, inventory every assertion claim and name
 its replacement evidence as required by ADR-0032. Keep the interaction matrices
 and representative Online Game Room and Playwright seams while adding focused
 atomic-validation, canonical-order, replay, and serialization coverage.
+
+### 43. Battle Record Turn-Relative Narration
+
+Project the viewer-filtered Public Decision Feed into a deterministic Battle
+Record for both live rooms and Replays. A `TurnStarted` fact immediately creates
+its labeled Turn Group, including when that group has no Entries; it is a
+boundary, not a separate Battle Record Entry. Preparation remains a distinct
+pre-Turn group and may retain its existing empty-group display policy.
+Room and Replay views display that empty Turn Group without a placeholder
+Entry; a new group is new visible content for automatic scrolling.
+
+Within a Turn Group, omit the subject only where the typed semantic subject is
+the Turn Player. Do not derive this by globally deleting rendered names. The
+narrator instead chooses the sentence at each typed Player role boundary, so
+another decision maker and every Player needed as a target, owner, source, Team
+reference, or next decision maker remains explicit and keeps normal
+viewer-relative labels (`你`, display name, `我方`/`對方`, or observer labels).
+Preparation has no Turn Player and therefore omits no Player subject.
+
+Each accepted Player Decision remains one Entry; a later Decision by another
+Player starts a later Entry, while its automatic consequences, passive flips,
+and Pending Randomness remain with their existing Decision boundary. The Entry
+title names the complete Decision using public typed facts (for example the
+Formation, Spirit Skill, Profession Ability, or Secret Strategy). Its summary
+only supplements public costs, selections, reasons, and consequences, and must
+use the official element-card label format (`金`/`木`/`水`/`火`/`土`, a space,
+then level). Do not restate the Decision already named by the title: a Formation
+title can be followed by `使用火 2、水 1。`, and a named Spirit Skill title by
+its Spirit Power change and other public consequences.
+
+The Battle Record is not persisted rendered text. Old Replays project their
+canonical viewer-filtered inputs through the current deterministic narration
+rules, so equal viewer-filtered input and perspective always produce equal
+wording. Do not add NLG, LLM, or Fluent dependencies for this projection.
+
+Validate this behavior by extending the existing Battle Record and start-API
+tests, scroll tests, and battlefield layout scenario. Cover Turn start before
+the first Entry and the same Player in subject, target, and owner roles. A
+dedicated TurnStarted integration test or new E2E spec is not required.

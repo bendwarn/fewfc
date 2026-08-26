@@ -1120,7 +1120,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .confluence_card_obligations
                 .retain(|active| &active.owner != owner || active.card != *card);
         }
-        GameEvent::ChoiceRequested { choice } => {
+        GameEvent::ChoiceRequested { choice, resolution } => {
             if matches!(state.status, GameStatus::Finished { .. }) {
                 state.status = GameStatus::InProgress;
             }
@@ -1128,9 +1128,14 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 state.pending_choice.is_none(),
                 "canonical choice request cannot replace a pending choice"
             );
+            assert!(
+                state.pending_resolution.is_none(),
+                "canonical choice request cannot replace a pending resolution"
+            );
             assert_eq!(choice.choice_id, state.next_choice_id);
             state.next_choice_id = choice.choice_id.next();
             state.pending_choice = Some(choice.clone());
+            state.pending_resolution = Some(resolution.clone());
         }
         GameEvent::ChoiceMade {
             player,
@@ -1144,13 +1149,22 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             crate::rules::pending_choice::validate_answer(choice, player, *choice_id, answer)
                 .expect("canonical choice answer must match the pending choice");
             state.pending_choice = None;
+            state.pending_resolution = None;
         }
-        GameEvent::RandomnessRequested { request } => {
+        GameEvent::RandomnessRequested {
+            request,
+            resolution,
+        } => {
             assert!(
                 state.pending_randomness.is_none(),
                 "canonical randomness request cannot replace a pending request"
             );
+            assert!(
+                state.pending_resolution.is_none(),
+                "canonical randomness request cannot replace a pending resolution"
+            );
             state.pending_randomness = Some(request.clone());
+            state.pending_resolution = Some(resolution.clone());
         }
         GameEvent::RandomnessResolved {
             request_id,
@@ -1210,6 +1224,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 }
             }
             state.pending_randomness = None;
+            state.pending_resolution = None;
         }
         GameEvent::EchoCostPaid { card_move, .. } => {
             apply_card_move(state, card_move);

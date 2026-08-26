@@ -1,9 +1,8 @@
 use crate::domain::{
     CardInstanceId, CardMoveDelta, CardOrigin, CardZone, DeckPlacement, Element, GameError,
-    GameEvent, GameResult, GameState, HpChangeDelta, PendingRandomness, PlayerId, PlayerSpirit,
-    RandomnessContinuation, RandomnessDeck, RandomnessOperation, SpiritBreakReason, SpiritKind,
-    SpiritPowerDelta, SpiritRandomnessContinuation, SpiritSkill, StatusDuration, StatusEffect,
-    StatusOwner, TeamBloomResolution, ValidationError,
+    GameEvent, GameResult, GameState, HpChangeDelta, PendingResolution, PlayerId, PlayerSpirit,
+    RandomnessDeck, SpiritBreakReason, SpiritKind, SpiritPowerDelta, SpiritSkill, StatusDuration,
+    StatusEffect, StatusOwner, TeamBloomResolution, ValidationError,
 };
 
 use super::{
@@ -687,38 +686,30 @@ fn skill_effect_events(
         }
         SpiritSkill::DeathOmen => {
             let target = next_player(state, player)?;
+            let pile = if state.uses_personal_decks() {
+                RandomnessDeck::Player(target.clone())
+            } else {
+                RandomnessDeck::Shared
+            };
+            if let Some(event) = crate::rules::deck_supply::request_if_needed(
+                state,
+                &pile,
+                4,
+                DeckPlacement::Bottom,
+                format!(
+                    "spirit:death-omen:discard:{}:{}",
+                    state.turn_number,
+                    player.as_str()
+                ),
+                PendingResolution::SpiritDeathOmen {
+                    player: player.clone(),
+                },
+            )? {
+                return Ok(vec![event]);
+            }
             let deck = state.deck_for(&target).ok_or_else(|| {
                 GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
             })?;
-            let discard = state.discard_for(&target).ok_or_else(|| {
-                GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
-            })?;
-            if deck.len() < 4 && !discard.is_empty() {
-                let pile = if state.uses_personal_decks() {
-                    RandomnessDeck::Player(target.clone())
-                } else {
-                    RandomnessDeck::Shared
-                };
-                return Ok(vec![GameEvent::RandomnessRequested {
-                    request: PendingRandomness {
-                        request_id: format!(
-                            "spirit:death-omen:discard:{}:{}",
-                            state.turn_number,
-                            player.as_str()
-                        ),
-                        operation: RandomnessOperation::DiscardShuffle {
-                            pile,
-                            placement: DeckPlacement::Bottom,
-                        },
-                        continuation: RandomnessContinuation::Spirit(
-                            SpiritRandomnessContinuation::DeathOmen {
-                                player: player.clone(),
-                            },
-                        ),
-                        current_order: discard.to_vec(),
-                    },
-                }]);
-            }
             let cards = deck.iter().take(4).copied().collect::<Vec<_>>();
             let highest = cards
                 .iter()

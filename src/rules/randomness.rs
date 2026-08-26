@@ -1,8 +1,6 @@
 use crate::domain::{
-    BaseRandomnessContinuation, ConfluenceRandomnessContinuation, GameError, GameEvent, GameResult,
-    GameState, HeroRandomnessContinuation, PouchRandomnessContinuation, RandomnessContinuation,
-    RandomnessDeck, RandomnessOperation, SpiritRandomnessContinuation,
-    TribulationRandomnessContinuation, TrustedRandomnessAnswer, ValidationError,
+    GameError, GameEvent, GameResult, GameState, PendingResolution, RandomnessDeck,
+    RandomnessOperation, TrustedRandomnessAnswer, ValidationError,
 };
 
 pub(crate) fn trusted_random_hand_count_for_formation(formation_id: &str) -> Option<usize> {
@@ -30,6 +28,12 @@ pub(crate) fn resolve_trusted_randomness(
             ValidationError::MissingPendingRandomness,
         ));
     }
+    let resolution = state
+        .pending_resolution
+        .as_ref()
+        .ok_or(GameError::Validation(
+            ValidationError::MissingPendingRandomness,
+        ))?;
 
     let current_order = current_order_for_request(state, &request.operation)?;
     if request.current_order != current_order {
@@ -67,7 +71,7 @@ pub(crate) fn resolve_trusted_randomness(
     }
     events.extend(after_randomness_events(
         &projected,
-        &request.continuation,
+        resolution,
         request.operation.destination_deck(),
     )?);
     crate::rules::base::append_completed_formation_events(state, &mut events)?;
@@ -92,47 +96,53 @@ fn current_order_for_request<'a>(
 
 fn after_randomness_events(
     state: &GameState,
-    continuation: &RandomnessContinuation,
+    resolution: &PendingResolution,
     resolved_deck: &RandomnessDeck,
 ) -> GameResult<Vec<GameEvent>> {
-    match continuation {
-        RandomnessContinuation::Base(BaseRandomnessContinuation::TurnDraw) => Ok(Vec::new()),
-        RandomnessContinuation::Spirit(SpiritRandomnessContinuation::DeathOmen { player }) => {
+    match resolution {
+        PendingResolution::TurnDraw => Ok(Vec::new()),
+        PendingResolution::SpiritDeathOmen { player } => {
             crate::rules::spirit::after_death_omen_randomness_events(state, player)
         }
-        RandomnessContinuation::Echo(continuation) => {
-            crate::rules::echo::after_randomness_events(state, continuation)
+        PendingResolution::EchoRingingMetalRecycleDiscard
+        | PendingResolution::EchoRingingMetalPostSearch => {
+            crate::rules::echo::after_randomness_events(state, resolution)
         }
-        RandomnessContinuation::Hero(HeroRandomnessContinuation::Revelation) => {
+        PendingResolution::HeroRevelation => {
             crate::rules::hero::after_revelation_randomness_events(state)
         }
-        RandomnessContinuation::Confluence(
-            ConfluenceRandomnessContinuation::ClearWindTenThousandMiles,
-        ) => crate::rules::confluence::after_clear_wind_randomness_events(state),
-        RandomnessContinuation::Pouch(PouchRandomnessContinuation::InitialShuffle) => {
+        PendingResolution::ConfluenceClearWindTenThousandMiles => {
+            crate::rules::confluence::after_clear_wind_randomness_events(state)
+        }
+        PendingResolution::ConfluenceClearWindRevealTop => {
+            crate::rules::confluence::after_clear_wind_supply_events(state)
+        }
+        PendingResolution::PouchInitialShuffle => {
             crate::rules::pouch::after_initial_shuffle_randomness_events(state, resolved_deck)
         }
-        RandomnessContinuation::Pouch(PouchRandomnessContinuation::ChainRecycle) => {
+        PendingResolution::PouchChainRecycle => {
             crate::rules::pouch::after_chain_recycle_randomness_events(state)
         }
-        RandomnessContinuation::Pouch(
-            continuation @ PouchRandomnessContinuation::ChainPostSearch { .. },
-        ) => crate::rules::pouch::after_chain_post_search_randomness_events(state, continuation),
-        RandomnessContinuation::Pouch(PouchRandomnessContinuation::SheepStealingRecycle {
-            source_card,
-        }) => crate::rules::pouch::after_sheep_recycle_randomness_events(state, *source_card),
-        RandomnessContinuation::Pouch(PouchRandomnessContinuation::SheepStealing {
-            source_card,
-            owner,
-        }) => Ok(vec![GameEvent::PouchConsumed {
-            owner: owner.clone(),
-            card: *source_card,
-        }]),
-        RandomnessContinuation::Tribulation(
-            TribulationRandomnessContinuation::RustedForestDiscardShuffle,
-        ) => crate::rules::tribulation::after_rusted_forest_discard_shuffle_events(state),
-        RandomnessContinuation::Tribulation(
-            TribulationRandomnessContinuation::RustedForestShuffle,
-        ) => crate::rules::tribulation::after_rusted_forest_randomness_events(state),
+        PendingResolution::PouchChainPostSearch { player } => {
+            crate::rules::pouch::after_chain_post_search_randomness_events(state, player)
+        }
+        PendingResolution::PouchSheepStealingRecycle { source_card } => {
+            crate::rules::pouch::after_sheep_recycle_randomness_events(state, *source_card)
+        }
+        PendingResolution::PouchSheepStealing { source_card, owner } => {
+            Ok(vec![GameEvent::PouchConsumed {
+                owner: owner.clone(),
+                card: *source_card,
+            }])
+        }
+        PendingResolution::TribulationRustedForestDiscardShuffle => {
+            crate::rules::tribulation::after_rusted_forest_discard_shuffle_events(state)
+        }
+        PendingResolution::TribulationRustedForestShuffle => {
+            crate::rules::tribulation::after_rusted_forest_randomness_events(state)
+        }
+        _ => Err(GameError::Validation(
+            ValidationError::MissingPendingRandomness,
+        )),
     }
 }

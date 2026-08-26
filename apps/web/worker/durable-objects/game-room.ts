@@ -558,7 +558,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       createdAt: now,
     }
     const snapshot: GameRecord = {
-      schemaVersion: 6,
+      schemaVersion: 7,
       gameInstanceId,
       sequence,
       firstPlayer,
@@ -1819,13 +1819,17 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   }
 
   private async requireGameRecord(): Promise<GameRecord> {
-    const snapshot = await this.ctx.storage.get<GameRecord>('gameRecord')
+    const snapshot = await this.ctx.storage.get<Partial<GameRecord>>('gameRecord')
 
     if (!snapshot) {
       throw new Error('game room Game Record is missing')
     }
 
-    return snapshot
+    if (snapshot.schemaVersion !== 7) {
+      throw new Error('legacy game record must be purged before it can be used')
+    }
+
+    return snapshot as GameRecord
   }
 
   /**

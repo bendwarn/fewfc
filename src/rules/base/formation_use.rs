@@ -1,6 +1,6 @@
 use crate::domain::{
     CannotPerformFormationReason, CardInstanceId, CardMoveDelta, CardZone, GameError, GameEvent,
-    GameResult, GameState, PlayerId, TargetDecl, TeamId, ValidationError,
+    GameResult, GameState, PendingResolution, PlayerId, TargetDecl, TeamId, ValidationError,
     targeting::{RulePlayerTarget, RuleTeamTarget, TurnOrderTargets},
 };
 use crate::rules::{
@@ -78,7 +78,7 @@ pub(super) fn resolve(
     // 待處理隨機性請求仍是作用中行動的一部分。它的來源牌堆不能假裝已提交的
     // 陣形卡牌已經抵達棄牌堆。
     for event in &mut events {
-        if let GameEvent::RandomnessRequested { request } = event
+        if let GameEvent::RandomnessRequested { request, .. } = event
             && request.operation.is_discard_shuffle()
         {
             request
@@ -253,15 +253,13 @@ pub(crate) fn answer_choice(
     state: &GameState,
     choice: &crate::domain::PendingChoice,
     player: &PlayerId,
-    continuation: &crate::domain::ChoiceContinuation,
+    resolution: &PendingResolution,
     selected_cards: &[CardInstanceId],
 ) -> GameResult<Vec<GameEvent>> {
-    let intents = resume_choice_intents(state, choice, player, continuation, selected_cards)?;
+    let intents = resume_choice_intents(state, choice, player, resolution, selected_cards)?;
     let mut events = effect_intent_events(state, intents)?;
     events.extend(crate::rules::confluence::after_choice_events(
-        state,
-        player,
-        continuation,
+        state, player, resolution,
     )?);
     Ok(events)
 }
@@ -1027,9 +1025,7 @@ fn active_spell_intents(
                             maximum: 1,
                             can_decline: false,
                         },
-                        continuation: crate::domain::ChoiceContinuation::Base(
-                            crate::domain::BaseChoiceContinuation::HolyWindTakeHighest,
-                        ),
+                        resolution: PendingResolution::HolyWindTakeHighest,
                     },
                 });
             }
@@ -1137,9 +1133,7 @@ fn active_spell_intents(
                             cards: allowed_cards,
                             can_decline: false,
                         },
-                        continuation: crate::domain::ChoiceContinuation::Base(
-                            crate::domain::BaseChoiceContinuation::ChaosReturnTwo,
-                        ),
+                        resolution: PendingResolution::ChaosReturnTwo,
                     },
                 },
             ])
@@ -1263,13 +1257,11 @@ fn resume_choice_intents(
     state: &GameState,
     choice: &crate::domain::PendingChoice,
     player: &PlayerId,
-    continuation: &crate::domain::ChoiceContinuation,
+    resolution: &PendingResolution,
     selected_cards: &[CardInstanceId],
 ) -> GameResult<Vec<EffectIntent>> {
-    match continuation {
-        crate::domain::ChoiceContinuation::Confluence(
-            crate::domain::ConfluenceChoiceContinuation::ClearWindDiscardTop,
-        ) => {
+    match resolution {
+        PendingResolution::ConfluenceClearWindDiscardTop => {
             let Some(card) = selected_cards.first().copied() else {
                 return Ok(Vec::new());
             };
@@ -1285,9 +1277,7 @@ fn resume_choice_intents(
                 }],
             }])
         }
-        crate::domain::ChoiceContinuation::Base(
-            crate::domain::BaseChoiceContinuation::ChaosReturnTwo,
-        ) => {
+        PendingResolution::ChaosReturnTwo => {
             let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
             let target_hand = state.hand(&target).ok_or_else(|| {
                 GameError::Validation(ValidationError::UnknownPlayer(target.clone()))
@@ -1314,9 +1304,7 @@ fn resume_choice_intents(
                     .collect(),
             }])
         }
-        crate::domain::ChoiceContinuation::Base(
-            crate::domain::BaseChoiceContinuation::HolyWindTakeHighest,
-        ) => {
+        PendingResolution::HolyWindTakeHighest => {
             let target = resolve_rule_player_target(state, player, RulePlayerTarget::NextPlayer)?;
             let card = *selected_cards
                 .first()
@@ -1329,9 +1317,7 @@ fn resume_choice_intents(
                 }],
             }])
         }
-        crate::domain::ChoiceContinuation::Hero(
-            crate::domain::HeroChoiceContinuation::RevelationKeepOne,
-        ) => {
+        PendingResolution::HeroRevelationKeepOne => {
             let allowed_cards = match &choice.kind {
                 crate::domain::PendingChoiceKind::Card { cards, .. } => cards,
                 _ => return Err(GameError::Validation(ValidationError::MissingPendingChoice)),
@@ -1349,16 +1335,9 @@ fn resume_choice_intents(
                     .collect(),
             }])
         }
-        crate::domain::ChoiceContinuation::Jianghu(
-            crate::domain::JianghuChoiceContinuation::AzureCloudStepReturnOne,
-        ) => {
-            let allowed_cards = match (&choice.kind, &choice.continuation) {
-                (
-                    crate::domain::PendingChoiceKind::Card { cards, .. },
-                    crate::domain::ChoiceContinuation::Jianghu(
-                        crate::domain::JianghuChoiceContinuation::AzureCloudStepReturnOne,
-                    ),
-                ) => cards,
+        PendingResolution::JianghuAzureCloudStepReturnOne => {
+            let allowed_cards = match &choice.kind {
+                crate::domain::PendingChoiceKind::Card { cards, .. } => cards,
                 _ => {
                     return Err(GameError::Validation(ValidationError::MissingPendingChoice));
                 }
@@ -1387,9 +1366,7 @@ fn resume_choice_intents(
                     .collect(),
             }])
         }
-        crate::domain::ChoiceContinuation::Confluence(
-            crate::domain::ConfluenceChoiceContinuation::DiscardInspectedCard { .. },
-        ) => {
+        PendingResolution::ConfluenceDiscardInspectedCard { .. } => {
             let target =
                 resolve_rule_player_target(state, player, RulePlayerTarget::PreviousPlayer)?;
             let card = *selected_cards
@@ -1403,16 +1380,9 @@ fn resume_choice_intents(
                 }],
             }])
         }
-        crate::domain::ChoiceContinuation::Confluence(
-            crate::domain::ConfluenceChoiceContinuation::ClearWindKeepCards,
-        ) => {
-            let allowed_cards = match (&choice.kind, &choice.continuation) {
-                (
-                    crate::domain::PendingChoiceKind::Card { cards, .. },
-                    crate::domain::ChoiceContinuation::Confluence(
-                        crate::domain::ConfluenceChoiceContinuation::ClearWindKeepCards,
-                    ),
-                ) => cards,
+        PendingResolution::ConfluenceClearWindKeepCards => {
+            let allowed_cards = match &choice.kind {
+                crate::domain::PendingChoiceKind::Card { cards, .. } => cards,
                 _ => {
                     return Err(GameError::Validation(ValidationError::MissingPendingChoice));
                 }
@@ -1432,7 +1402,7 @@ fn resume_choice_intents(
         }
         _ => Err(GameError::RuleImplementation(
             crate::domain::RuleImplementationError::EffectNotImplemented(
-                "unsupported choice continuation".to_string(),
+                "不支援的待處理規則流程".to_string(),
             ),
         )),
     }

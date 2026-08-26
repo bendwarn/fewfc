@@ -91,7 +91,7 @@ function fakeRoom() {
     ], status: 'Active' as const, createdAt: 'now', updatedAt: 'now',
   }
   const record = {
-    schemaVersion: 6 as const, gameInstanceId: 'game-1', sequence: 7, firstPlayer: 'alice', deckSeed: 'seed',
+    schemaVersion: 7 as const, gameInstanceId: 'game-1', sequence: 7, firstPlayer: 'alice', deckSeed: 'seed',
     setup: { players: [], turnOrder: [], enabledRuleModules: [], deckLists: [] }, rulesRecord: [],
   }
   values.set('nextSequence', 8)
@@ -129,7 +129,7 @@ function randomnessRoom() {
     ], status: 'Active' as const, createdAt: 'now', updatedAt: 'now',
   }
   const record = {
-    schemaVersion: 6 as const, gameInstanceId: 'game-1', sequence: 7, firstPlayer: 'alice', deckSeed: 'seed',
+    schemaVersion: 7 as const, gameInstanceId: 'game-1', sequence: 7, firstPlayer: 'alice', deckSeed: 'seed',
     setup: { players: [], turnOrder: [], enabledRuleModules: [], deckLists: [] }, rulesRecord: [],
   }
   const randomnessRequests: string[] = []
@@ -144,7 +144,6 @@ function randomnessRoom() {
     request: {
       requestId,
       operation: { type: 'deckShuffle' as const, deck: 'Shared' as const },
-      continuation: { type: 'base' as const, kind: 'turnDraw' as const },
       currentOrder,
     },
   })

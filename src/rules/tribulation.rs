@@ -1,9 +1,8 @@
 use crate::domain::{
-    CardInstanceId, CardMoveDelta, CardOrigin, CardZone, ChoiceAnswer, ChoiceContinuation,
-    ChoiceRequest, EarthRendingPlayerAnswer, EarthRendingResolution, Element, GameError, GameEvent,
-    GameResult, GameState, HpChangeDelta, PendingChoiceKind, PendingRandomness, PlayerId,
-    RandomnessContinuation, RandomnessDeck, RustedForestResolution, StatusDuration, StatusEffect,
-    StatusOwner, TeamId, TribulationChoiceContinuation, TribulationRandomnessContinuation,
+    CardInstanceId, CardMoveDelta, CardOrigin, CardZone, ChoiceAnswer, ChoiceRequest,
+    EarthRendingPlayerAnswer, EarthRendingResolution, Element, GameError, GameEvent, GameResult,
+    GameState, HpChangeDelta, PendingChoiceKind, PendingRandomness, PendingResolution, PlayerId,
+    RandomnessDeck, RustedForestResolution, StatusDuration, StatusEffect, StatusOwner, TeamId,
     ValidationError, targeting::TurnOrderTargets,
 };
 use crate::rules::{
@@ -404,9 +403,7 @@ pub(crate) fn earth_rending_start_events(
                     ],
                     can_decline: false,
                 },
-                continuation: ChoiceContinuation::Tribulation(
-                    TribulationChoiceContinuation::EarthRendingEnvironment,
-                ),
+                resolution: PendingResolution::TribulationEarthRendingEnvironment,
             },
         )?,
     ])
@@ -414,14 +411,14 @@ pub(crate) fn earth_rending_start_events(
 
 pub(crate) fn answer_choice(
     state: &GameState,
-    continuation: &TribulationChoiceContinuation,
+    resolution: &PendingResolution,
     answer: &ChoiceAnswer,
 ) -> GameResult<Option<Vec<GameEvent>>> {
     let Some(active) = state.active_earth_rending_resolution.as_ref() else {
         return Ok(None);
     };
-    let mut events = match continuation {
-        TribulationChoiceContinuation::EarthRendingEnvironment => {
+    let mut events = match resolution {
+        PendingResolution::TribulationEarthRendingEnvironment => {
             let ChoiceAnswer::Environment { environment } = answer else {
                 return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
             };
@@ -429,7 +426,7 @@ pub(crate) fn answer_choice(
                 environment: *environment,
             }]
         }
-        TribulationChoiceContinuation::EarthRendingCard => {
+        PendingResolution::TribulationEarthRendingCard => {
             let ChoiceAnswer::Cards { cards } = answer else {
                 return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
             };
@@ -448,6 +445,7 @@ pub(crate) fn answer_choice(
                 },
             }]
         }
+        _ => return Ok(None),
     };
     continue_earth_rending(state, &mut events)?;
     Ok(Some(events))
@@ -462,7 +460,7 @@ fn continue_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
         let active = projected
             .active_earth_rending_resolution
             .clone()
-            .expect("Earth Rending continuation requires active state");
+            .expect("Earth Rending resolution requires active state");
         let Some(player) = active.remaining_players.first().cloned() else {
             finish_earth_rending(&projected, events)?;
             return Ok(());
@@ -500,9 +498,7 @@ fn continue_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
                         maximum: 1,
                         can_decline: false,
                     },
-                    continuation: ChoiceContinuation::Tribulation(
-                        TribulationChoiceContinuation::EarthRendingCard,
-                    ),
+                    resolution: PendingResolution::TribulationEarthRendingCard,
                 },
             )?);
             return Ok(());
@@ -670,7 +666,7 @@ fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
         let active = projected
             .active_rusted_forest_resolution
             .clone()
-            .expect("Rusted Forest continuation requires active state");
+            .expect("Rusted Forest resolution requires active state");
         let Some(deck_kind) = active.remaining_decks.first().cloned() else {
             finish_rusted_forest(&projected, events)?;
             return Ok(());
@@ -679,44 +675,30 @@ fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
             RandomnessDeck::Shared => &active.attacker,
             RandomnessDeck::Player(player) => player,
         };
+        if let Some(event) = crate::rules::deck_supply::request_if_needed(
+            &projected,
+            &deck_kind,
+            8,
+            crate::domain::DeckPlacement::Bottom,
+            format!(
+                "tribulation:rusted-forest:discard:{}:{}",
+                projected.turn_number,
+                match &deck_kind {
+                    RandomnessDeck::Shared => "shared",
+                    RandomnessDeck::Player(player) => player.as_str(),
+                }
+            ),
+            PendingResolution::TribulationRustedForestDiscardShuffle,
+        )? {
+            events.push(event);
+            return Ok(());
+        }
         let deck = projected
             .deck_for(deck_owner)
             .ok_or_else(|| {
                 GameError::Validation(ValidationError::UnknownPlayer(deck_owner.clone()))
             })?
             .to_vec();
-        let discard = match &deck_kind {
-            RandomnessDeck::Shared => projected.discard.clone(),
-            RandomnessDeck::Player(player) => projected
-                .discard_for(player)
-                .ok_or_else(|| {
-                    GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
-                })?
-                .to_vec(),
-        };
-        if deck.len() < 8 && !discard.is_empty() {
-            events.push(GameEvent::RandomnessRequested {
-                request: PendingRandomness {
-                    request_id: format!(
-                        "tribulation:rusted-forest:discard:{}:{}",
-                        projected.turn_number,
-                        match &deck_kind {
-                            RandomnessDeck::Shared => "shared",
-                            RandomnessDeck::Player(player) => player.as_str(),
-                        }
-                    ),
-                    operation: crate::domain::RandomnessOperation::DiscardShuffle {
-                        pile: deck_kind,
-                        placement: crate::domain::DeckPlacement::Bottom,
-                    },
-                    continuation: RandomnessContinuation::Tribulation(
-                        TribulationRandomnessContinuation::RustedForestDiscardShuffle,
-                    ),
-                    current_order: discard,
-                },
-            });
-            return Ok(());
-        }
         let revealed = deck.iter().take(8).copied().collect::<Vec<_>>();
         let discarded = revealed
             .iter()
@@ -765,11 +747,9 @@ fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
                         }
                     ),
                     operation: crate::domain::RandomnessOperation::DeckShuffle { deck: deck_kind },
-                    continuation: RandomnessContinuation::Tribulation(
-                        TribulationRandomnessContinuation::RustedForestShuffle,
-                    ),
                     current_order,
                 },
+                resolution: PendingResolution::TribulationRustedForestShuffle,
             });
             return Ok(());
         }

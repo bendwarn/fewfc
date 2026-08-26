@@ -42,12 +42,13 @@ bunx wrangler secret put BETTER_AUTH_SECRET --env staging
 bunx wrangler secret put BETTER_AUTH_SECRET --env production
 ```
 
-## Legacy game cutover (issue #75)
+## Legacy game cutover (schema 7)
 
-The independent Initial Pouch Selection release deliberately does not read old
-Game Records or Replays. The one-time purge is manual, dry-run-first, and is
-never run by deployment, migration, or tests. It preserves waiting-room identity
-and configuration; it resets only active and finished matches.
+Schema 7 centralizes card supply and the serialized pending rule flow. It does
+not read, migrate, or replay schema 6 Game Records. The one-time purge is
+manual, dry-run-first, and is never run by deployment, migration, or tests. It
+preserves waiting-room identity and configuration; it resets only active and
+finished matches.
 
 Before the cutover, configure a dedicated `LEGACY_PURGE_SECRET` for both
 environments. Do not put its value in a file or command argument:
@@ -86,7 +87,7 @@ a dry-run inventory:
 ```bash
 bun run build:staging
 wrangler deploy --env staging --var MAINTENANCE_MODE:true
-bun run purge:legacy-games --env staging --epoch issue-75-2026-08-11
+bun run purge:legacy-games --env staging --epoch schema-7-2026-08-26
 ```
 
 Only after confirming room identities and object counts, run the mutation and
@@ -94,8 +95,8 @@ its idempotency verification. A successful second confirmed run reports
 `mutationCount: 0`:
 
 ```bash
-bun run purge:legacy-games --env staging --epoch issue-75-2026-08-11 --confirm
-bun run purge:legacy-games --env staging --epoch issue-75-2026-08-11 --confirm
+bun run purge:legacy-games --env staging --epoch schema-7-2026-08-26 --confirm
+bun run purge:legacy-games --env staging --epoch schema-7-2026-08-26 --confirm
 ```
 
 Keep maintenance enabled if either command fails. The script verifies that no

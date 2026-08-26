@@ -1017,6 +1017,10 @@ pub struct GameState {
     #[serde(default)]
     pub turn_draw_pool: Vec<CardInstanceId>,
     pub pending_choice: Option<PendingChoice>,
+    /// 唯一持有等待中規則流程的序列化狀態。待選擇與待隨機性只保存各自的輸入，
+    /// 絕不再各自攜帶另一份流程路由。
+    #[serde(default)]
+    pub pending_resolution: Option<PendingResolution>,
     pub next_choice_id: ChoiceId,
     #[serde(default)]
     pub pending_randomness: Option<PendingRandomness>,
@@ -1141,6 +1145,7 @@ impl GameState {
             last_turn_discard_by_player: HashMap::new(),
             turn_draw_pool: Vec::new(),
             pending_choice: None,
+            pending_resolution: None,
             next_choice_id: ChoiceId::new(1),
             pending_randomness: None,
             shields: setup
@@ -1441,14 +1446,13 @@ pub struct PendingChoice {
     pub choice_id: ChoiceId,
     pub player: PlayerId,
     pub kind: PendingChoiceKind,
-    pub continuation: ChoiceContinuation,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ChoiceRequest {
     pub player: PlayerId,
     pub kind: PendingChoiceKind,
-    pub continuation: ChoiceContinuation,
+    pub resolution: PendingResolution,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1659,57 +1663,61 @@ impl PendingChoiceKind {
     }
 }
 
+/// 所有暫停中的規則流程都由這個型別單獨持有。變體描述的是要恢復的規則，
+/// 而不是它剛好在等待玩家輸入或可信隨機性。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(tag = "type", content = "kind", rename_all = "camelCase")]
-pub enum ChoiceContinuation {
-    Base(BaseChoiceContinuation),
-    Echo(EchoChoiceContinuation),
-    Hero(HeroChoiceContinuation),
-    Jianghu(JianghuChoiceContinuation),
-    Confluence(ConfluenceChoiceContinuation),
-    Pouch(PouchChoiceContinuation),
-    Tribulation(TribulationChoiceContinuation),
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum BaseChoiceContinuation {
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum PendingResolution {
+    TurnDraw,
     TurnDrawDiscard,
     HolyWindTakeHighest,
     ChaosReturnTwo,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum EchoChoiceContinuation {
-    PureFireTarget,
-    SplitEarthFormation,
-    RingingMetalDeckCard,
-    PlantEarthMelody,
-    Cost { melody_id: String },
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum HeroChoiceContinuation {
-    RevelationKeepOne,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum JianghuChoiceContinuation {
-    AzureCloudStepReturnOne,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ConfluenceChoiceContinuation {
-    DiscardInspectedCard {
+    EchoPureFireTarget,
+    EchoSplitEarthFormation,
+    EchoRingingMetalDeckCard,
+    EchoPlantEarthMelody,
+    EchoCost {
+        melody_id: String,
+    },
+    HeroRevelation,
+    HeroRevelationKeepOne,
+    JianghuAzureCloudStepReturnOne,
+    ConfluenceDiscardInspectedCard {
         resonance: ConfluenceResonance,
         after: Option<Element>,
     },
-    ClearWindKeepCards,
-    ClearWindDiscardTop,
+    ConfluenceClearWindKeepCards,
+    ConfluenceClearWindDiscardTop,
+    ConfluenceClearWindRevealTop,
+    SpiritDeathOmen {
+        player: PlayerId,
+    },
+    PouchInitialShuffle,
+    PouchChain,
+    PouchChainRecycle,
+    PouchChainPostSearch {
+        player: PlayerId,
+    },
+    PouchSheepStealingChoice,
+    PouchSheepStealingRecycle {
+        source_card: CardInstanceId,
+    },
+    PouchSheepStealing {
+        source_card: CardInstanceId,
+        owner: Option<PlayerId>,
+    },
+    TribulationEarthRendingEnvironment,
+    TribulationEarthRendingCard,
+    TribulationRustedForestDiscardShuffle,
+    TribulationRustedForestShuffle,
+    EchoRingingMetalRecycleDiscard,
+    EchoRingingMetalPostSearch,
+    ConfluenceClearWindTenThousandMiles,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1722,31 +1730,16 @@ pub enum ConfluenceResonance {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum PouchChoiceContinuation {
-    Chain,
-    SheepStealing,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum TribulationChoiceContinuation {
-    EarthRendingEnvironment,
-    EarthRendingCard,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct PendingRandomness {
     pub request_id: String,
     pub operation: RandomnessOperation,
-    pub continuation: RandomnessContinuation,
     pub current_order: Vec<CardInstanceId>,
 }
 
 /// 受信任的隨機性決策所執行的牌堆變更。
 ///
-/// 此型別特意與延續並列，而不是放在延續內：延續說明要恢復哪個規則流程，
-/// 而此值精確說明哪個牌堆提供排列，以及結果放置的位置。
+/// 此型別只說明哪個牌堆提供排列，以及結果放置的位置；要恢復的規則流程
+/// 一律由同一個 Pending Resolution 持有。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum RandomnessOperation {
@@ -1777,75 +1770,6 @@ impl RandomnessOperation {
     pub fn is_discard_shuffle(&self) -> bool {
         matches!(self, Self::DiscardShuffle { .. })
     }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(tag = "type", content = "kind", rename_all = "camelCase")]
-pub enum RandomnessContinuation {
-    Base(BaseRandomnessContinuation),
-    Spirit(SpiritRandomnessContinuation),
-    Echo(EchoRandomnessContinuation),
-    Hero(HeroRandomnessContinuation),
-    Confluence(ConfluenceRandomnessContinuation),
-    Pouch(PouchRandomnessContinuation),
-    Tribulation(TribulationRandomnessContinuation),
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum BaseRandomnessContinuation {
-    TurnDraw,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum SpiritRandomnessContinuation {
-    DeathOmen { player: PlayerId },
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum EchoRandomnessContinuation {
-    RingingMetalRecycleDiscard,
-    RingingMetalPostSearch,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum HeroRandomnessContinuation {
-    Revelation,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ConfluenceRandomnessContinuation {
-    ClearWindTenThousandMiles,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum PouchRandomnessContinuation {
-    InitialShuffle,
-    ChainRecycle,
-    ChainPostSearch {
-        player: PlayerId,
-    },
-    SheepStealingRecycle {
-        #[serde(rename = "sourceCard")]
-        source_card: CardInstanceId,
-    },
-    SheepStealing {
-        #[serde(rename = "sourceCard")]
-        source_card: CardInstanceId,
-        owner: Option<PlayerId>,
-    },
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum TribulationRandomnessContinuation {
-    RustedForestDiscardShuffle,
-    RustedForestShuffle,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2283,6 +2207,7 @@ pub enum GameEvent {
     },
     ChoiceRequested {
         choice: PendingChoice,
+        resolution: PendingResolution,
     },
     ChoiceMade {
         player: PlayerId,
@@ -2291,6 +2216,7 @@ pub enum GameEvent {
     },
     RandomnessRequested {
         request: PendingRandomness,
+        resolution: PendingResolution,
     },
     RandomnessResolved {
         request_id: String,

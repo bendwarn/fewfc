@@ -9,10 +9,11 @@ use super::{
     spirit_for_element,
 };
 use crate::domain::{
-    CardInstanceId, CardMoveDelta, CardZone, Element, GameError, GameEvent, GameResult, GameState,
-    PlayerId, PouchLevelBonus, RuleImplementationError, SecretStrategy, SecretStrategyDecision,
-    SecretStrategyEnvironmentOperation, SecretStrategyStarOperation, StarBreakReason, StarKind,
-    StatusDuration, StatusEffect, StatusOwner, TemporaryStarEffect, ValidationError,
+    CardInstanceId, CardMoveDelta, CardZone, DeckPlacement, Element, GameError, GameEvent,
+    GameResult, GameState, PlayerId, PouchLevelBonus, RandomnessDeck, RuleImplementationError,
+    SecretStrategy, SecretStrategyDecision, SecretStrategyEnvironmentOperation,
+    SecretStrategyStarOperation, StarBreakReason, StarKind, StatusDuration, StatusEffect,
+    StatusOwner, TemporaryStarEffect, ValidationError,
 };
 use crate::rules::PlayerFacingActionDetail;
 use serde::Serialize;
@@ -311,15 +312,12 @@ pub(crate) fn validate_decision(
             }
         }
         SecretStrategyDecision::SheepStealing { .. } => {
-            let deck = state.deck_for(player).ok_or_else(|| {
-                GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
-            })?;
-            let discard = state.discard_for(player).unwrap_or_default();
-            if deck.len() < 2 && (discard.is_empty() || deck.len() + discard.len() < 2) {
-                return Err(GameError::Validation(
-                    ValidationError::SecretStrategyInputInvalid,
-                ));
-            }
+            crate::rules::deck_supply::plan(
+                state,
+                &RandomnessDeck::Player(player.clone()),
+                2,
+                DeckPlacement::Bottom,
+            )?;
         }
     }
     Ok(())

@@ -144,7 +144,7 @@ export function systemBattleRecord(
  * 交易中繼資料特意不包含此記錄的另一份副本。
  */
 export interface GameRecord {
-  schemaVersion: 6
+  schemaVersion: 7
   gameInstanceId: string
   sequence: number
   firstPlayer: PlayerId
@@ -254,21 +254,6 @@ export interface TrustedRandomnessRequest {
   operation:
     | { type: 'deckShuffle'; deck: 'Shared' | { Player: PlayerId } }
     | { type: 'discardShuffle'; pile: 'Shared' | { Player: PlayerId }; placement: 'Bottom' }
-  continuation:
-    | { type: 'base'; kind: 'turnDraw' }
-    | { type: 'spirit'; kind: { deathOmen: { player: PlayerId } } }
-    | { type: 'echo'; kind: 'ringingMetalRecycleDiscard' | 'ringingMetalPostSearch' }
-    | { type: 'hero'; kind: 'revelation' }
-    | { type: 'confluence'; kind: 'clearWindTenThousandMiles' }
-    | {
-        type: 'pouch'
-        kind:
-          | 'initialShuffle'
-          | 'chainRecycle'
-          | { sheepStealingRecycle: { sourceCard: number } }
-          | { sheepStealing: { sourceCard: number; owner: PlayerId | null } }
-      }
-    | { type: 'tribulation'; kind: 'rustedForestDiscardShuffle' | 'rustedForestShuffle' }
   currentOrder: number[]
 }
 

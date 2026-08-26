@@ -8,15 +8,15 @@ use fewfc::application::{
 use fewfc::domain::{
     ActionModification, AttackOutcome, AttackPointBreakdown, AttackResolutionEffects,
     CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef, CardInstanceId,
-    CardMoveDelta, CardZone, ChoiceAnswer, ChoiceContinuation, ChoiceId, Command, CommandId,
-    DamageTransform, ElementInteraction, EngineInvariantError, EnvironmentAttackEffect,
-    FormationAreaState, FormationInArea, GameConclusion, GameEndCause, GameError, GameEvent,
-    GameOutcome, GameSetup, GameState, GameStatus, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, LastFormationUse, PassActionReason, PassiveFlipOutcome,
-    PassiveNoEffectGround, PendingChoice, PendingChoiceKind, Phase, Player, PlayerFormationArea,
-    PlayerHand, PlayerId, PlayerShield, RuleModuleId, RulesetId, ShieldChangeDelta, StatusDuration,
-    StatusEffect, StatusExpiryTiming, StatusOwner, TeamHp, TeamId, TurnDrawBonusDelta,
-    TurnDrawSkipReason, ValidationError,
+    CardMoveDelta, CardZone, ChoiceAnswer, ChoiceId, Command, CommandId, DamageTransform,
+    ElementInteraction, EngineInvariantError, EnvironmentAttackEffect, FormationAreaState,
+    FormationInArea, GameConclusion, GameEndCause, GameError, GameEvent, GameOutcome, GameSetup,
+    GameState, GameStatus, HpChangeDelta, LastElementalAttack, LastElementalAttackUpdate,
+    LastFormationUse, PassActionReason, PassiveFlipOutcome, PassiveNoEffectGround, PendingChoice,
+    PendingChoiceKind, PendingResolution, Phase, Player, PlayerFormationArea, PlayerHand, PlayerId,
+    PlayerShield, RuleModuleId, RulesetId, ShieldChangeDelta, StatusDuration, StatusEffect,
+    StatusExpiryTiming, StatusOwner, TeamHp, TeamId, TurnDrawBonusDelta, TurnDrawSkipReason,
+    ValidationError,
 };
 use fewfc::public_view::{
     self, PublicCardRefs, PublicCoveredPassive, PublicGameEvent, PublicPendingChoice,
@@ -2032,7 +2032,7 @@ fn base_start_turn_lifecycle_matrix_commits_an_action_then_resolves_draw_choice_
                 drawn_cards,
                 allowed_discards,
             },
-            GameEvent::ChoiceRequested { choice },
+            GameEvent::ChoiceRequested { choice, .. },
         ] if player == &p1 && drawn_cards == allowed_discards && choice.player == p1 => {
             (choice.choice_id, drawn_cards.clone())
         }
@@ -3031,7 +3031,7 @@ fn new_game_state_exposes_core_status_shields_and_passive_zones() {
 }
 
 #[test]
-fn pending_choices_store_typed_continuations_and_ids() {
+fn pending_choices_store_typed_answers_and_resolutions() {
     let choice = PendingChoice {
         choice_id: ChoiceId::new(7),
         player: PlayerId::new("p1"),
@@ -3041,12 +3041,13 @@ fn pending_choices_store_typed_continuations_and_ids() {
             maximum: 1,
             can_decline: false,
         },
-        continuation: ChoiceContinuation::Base(
-            fewfc::domain::BaseChoiceContinuation::ChaosReturnTwo,
-        ),
     };
 
     assert_eq!(choice.clone(), choice);
+    assert_eq!(
+        PendingResolution::ChaosReturnTwo,
+        PendingResolution::ChaosReturnTwo
+    );
 }
 
 #[test]
@@ -3433,7 +3434,7 @@ fn turn_draw_recycles_discard_to_deck_bottom_when_deck_is_insufficient() {
     let events = advance_state_automatic(&state).unwrap();
     assert!(matches!(
         semantic_events(&events).as_slice(),
-        [GameEvent::RandomnessRequested { request }]
+        [GameEvent::RandomnessRequested { request, .. }]
             if request.operation.is_discard_shuffle()
                 && request.current_order == vec![card(2)]
     ));
@@ -4779,7 +4780,7 @@ fn radiance_cannot_act_matrix_blocks_a_usable_formation_but_keeps_status_specifi
         second_pass_events.as_slice(),
         [
             GameEvent::CardsDrawnForTurnDiscardChoice { player: draw_player, .. },
-            GameEvent::ChoiceRequested { choice },
+            GameEvent::ChoiceRequested { choice, .. },
             GameEvent::ChoiceMade { player: answered_by, .. },
             GameEvent::TurnDrawResolved { player: resolved_player, .. },
             GameEvent::TurnEnded { player: p1_ended },
@@ -5121,10 +5122,8 @@ fn defense_cannot_act_pass_matrix_flips_the_covered_passive_on_radiances_second_
                             maximum: 1,
                             can_decline: false,
                         },
-                        continuation: ChoiceContinuation::Base(
-                            fewfc::domain::BaseChoiceContinuation::TurnDrawDiscard,
-                        ),
                     },
+                    resolution: PendingResolution::TurnDrawDiscard,
                 },
                 GameEvent::ChoiceMade {
                     player: answered_by,
@@ -6014,6 +6013,7 @@ fn metamorphosis_five_streams_matrix_copies_target_hand_damage_and_independent_d
             },
             GameEvent::ChoiceRequested {
                 choice: source_choice.clone(),
+                resolution: PendingResolution::TurnDrawDiscard,
             },
         ]
     );
@@ -6149,6 +6149,7 @@ fn metamorphosis_five_streams_matrix_copies_target_hand_damage_and_independent_d
             },
             GameEvent::ChoiceRequested {
                 choice: copied_choice.clone(),
+                resolution: PendingResolution::TurnDrawDiscard,
             },
         ]
     );
@@ -6827,10 +6828,8 @@ fn chaos_requests_two_next_player_hand_cards_and_returns_them_to_deck_top() {
                         maximum: 2,
                         can_decline: false,
                     },
-                    continuation: ChoiceContinuation::Base(
-                        fewfc::domain::BaseChoiceContinuation::ChaosReturnTwo,
-                    ),
                 },
+                resolution: PendingResolution::ChaosReturnTwo,
             },
         ]
     );
@@ -9413,15 +9412,15 @@ fn five_streams_defense_matrix_keeps_the_turn_draw_bonus_when_damage_is_prevente
                     drawn_cards,
                     allowed_discards,
                 },
-                GameEvent::ChoiceRequested { choice },
+                GameEvent::ChoiceRequested { choice, resolution },
             ] if player == &p2
                 && drawn_cards == allowed_discards
                 && allowed_discards.len() == 4
                 && choice.player == p2
                 && matches!(&choice.kind, PendingChoiceKind::Card { cards, minimum: 1, maximum: 1, can_decline: false } if cards == allowed_discards)
-                && choice.continuation == ChoiceContinuation::Base(fewfc::domain::BaseChoiceContinuation::TurnDrawDiscard)
+                && resolution == &PendingResolution::TurnDrawDiscard
         ),
-        "unexpected Five Streams draw continuation: {turn_draw_events:#?}"
+        "unexpected Five Streams draw resolution: {turn_draw_events:#?}"
     );
     for card_id in [
         card(2),
@@ -10385,9 +10384,9 @@ fn seal_chaos_matrix_cancels_the_choice_but_keeps_spell_commitment_and_cards() {
         .unwrap();
     assert!(baseline_chaos.iter().any(|event| matches!(
         event,
-        GameEvent::ChoiceRequested { choice }
+        GameEvent::ChoiceRequested { choice, resolution }
             if choice.player == p2
-                && matches!(choice.continuation, ChoiceContinuation::Base(fewfc::domain::BaseChoiceContinuation::ChaosReturnTwo))
+                && matches!(resolution, PendingResolution::ChaosReturnTwo)
     )));
     let baseline_choice = baseline
         .state()
@@ -11257,9 +11256,6 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
                 maximum: 2,
                 can_decline: false,
             },
-            continuation: ChoiceContinuation::Base(
-                fewfc::domain::BaseChoiceContinuation::ChaosReturnTwo,
-            ),
         })
     );
     assert_eq!(record.replay().unwrap(), state);
@@ -11315,7 +11311,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
 }
 
 #[test]
-fn choice_requested_event_view_filters_options_and_continuations() {
+fn choice_requested_event_view_filters_options_and_resolutions() {
     let event = GameEvent::ChoiceRequested {
         choice: PendingChoice {
             choice_id: ChoiceId::new(9),
@@ -11326,10 +11322,8 @@ fn choice_requested_event_view_filters_options_and_continuations() {
                 maximum: 2,
                 can_decline: false,
             },
-            continuation: ChoiceContinuation::Base(
-                fewfc::domain::BaseChoiceContinuation::ChaosReturnTwo,
-            ),
         },
+        resolution: PendingResolution::ChaosReturnTwo,
     };
 
     assert_eq!(
@@ -11378,10 +11372,8 @@ fn choice_requested_event_view_filters_options_and_continuations() {
                     maximum: 2,
                     can_decline: false,
                 },
-                continuation: ChoiceContinuation::Base(
-                    fewfc::domain::BaseChoiceContinuation::ChaosReturnTwo,
-                ),
             },
+            resolution: PendingResolution::ChaosReturnTwo,
         }
     );
 }

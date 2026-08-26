@@ -1,9 +1,8 @@
 use crate::domain::targeting::{RulePlayerTarget, TurnOrderTargets};
 use crate::domain::{
-    CardMoveDelta, CardOrigin, CardZone, ChoiceAnswer, ChoiceContinuation, ChoiceRequest,
-    ECHO_MODULE_ID, EchoChoiceContinuation, EchoRandomnessContinuation, Element, GameError,
-    GameEvent, GameResult, GameState, GameStatus, PendingChoiceKind, PlayerId,
-    RandomnessContinuation, ScheduledEcho, ValidationError,
+    CardMoveDelta, CardOrigin, CardZone, ChoiceAnswer, ChoiceRequest, ECHO_MODULE_ID, Element,
+    GameError, GameEvent, GameResult, GameState, GameStatus, PendingChoiceKind, PendingResolution,
+    PlayerId, ScheduledEcho, ValidationError,
 };
 use crate::rules::{
     ActionCost, BaseFormationSpec, ConsequenceCertainty, DelayedEffect, DelayedTiming, EffectDef,
@@ -270,11 +269,11 @@ pub(crate) fn formation_main_effect_events(
 pub(crate) fn answer_choice(
     state: &GameState,
     player: &PlayerId,
-    continuation: &EchoChoiceContinuation,
+    resolution: &PendingResolution,
     answer: &ChoiceAnswer,
 ) -> GameResult<Option<Vec<GameEvent>>> {
-    match continuation {
-        EchoChoiceContinuation::SplitEarthFormation => {
+    match resolution {
+        PendingResolution::EchoSplitEarthFormation => {
             let ChoiceAnswer::Formation { formation_id } = answer else {
                 return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
             };
@@ -314,7 +313,7 @@ pub(crate) fn answer_choice(
             }
             Ok(Some(events))
         }
-        EchoChoiceContinuation::PlantEarthMelody => {
+        PendingResolution::EchoPlantEarthMelody => {
             let ChoiceAnswer::Formation { formation_id } = answer else {
                 return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
             };
@@ -360,7 +359,7 @@ pub(crate) fn answer_choice(
             }
             Ok(Some(events))
         }
-        EchoChoiceContinuation::PureFireTarget => {
+        PendingResolution::EchoPureFireTarget => {
             let ChoiceAnswer::Player { player: target } = answer else {
                 return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
             };
@@ -390,7 +389,7 @@ pub(crate) fn answer_choice(
             }
             Ok(Some(events))
         }
-        EchoChoiceContinuation::RingingMetalDeckCard => {
+        PendingResolution::EchoRingingMetalDeckCard => {
             let ChoiceAnswer::Cards { cards } = answer else {
                 return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
             };
@@ -423,16 +422,14 @@ pub(crate) fn answer_choice(
                         operation: crate::domain::RandomnessOperation::DeckShuffle {
                             deck: deck_kind(state, player),
                         },
-                        continuation: RandomnessContinuation::Echo(
-                            EchoRandomnessContinuation::RingingMetalPostSearch,
-                        ),
                         current_order: remainder,
                     },
+                    resolution: PendingResolution::EchoRingingMetalPostSearch,
                 });
             }
             Ok(Some(events))
         }
-        EchoChoiceContinuation::Cost { melody_id } => {
+        PendingResolution::EchoCost { melody_id } => {
             let Some(melody) = melody(melody_id) else {
                 return Ok(None);
             };
@@ -468,6 +465,7 @@ pub(crate) fn answer_choice(
             }
             Ok(Some(events))
         }
+        _ => Ok(None),
     }
 }
 
@@ -589,7 +587,7 @@ fn main_effect_events(
                     players: state.players.iter().map(|entry| entry.id.clone()).collect(),
                     can_decline: false,
                 },
-                continuation: ChoiceContinuation::Echo(EchoChoiceContinuation::PureFireTarget),
+                resolution: PendingResolution::EchoPureFireTarget,
             },
         )?]),
         PLANT_EARTH => Err(GameError::RuleImplementation(
@@ -625,9 +623,7 @@ fn main_effect_events(
                             formations,
                             can_decline: false,
                         },
-                        continuation: ChoiceContinuation::Echo(
-                            EchoChoiceContinuation::SplitEarthFormation,
-                        ),
+                        resolution: PendingResolution::EchoSplitEarthFormation,
                     },
                 )?,
             ])
@@ -688,13 +684,11 @@ fn echo_timed_effect_reductions(
 
 pub(crate) fn after_randomness_events(
     state: &GameState,
-    continuation: &EchoRandomnessContinuation,
+    resolution: &PendingResolution,
 ) -> GameResult<Vec<GameEvent>> {
-    match continuation {
-        EchoRandomnessContinuation::RingingMetalRecycleDiscard => {
-            ringing_metal_search_choice(state)
-        }
-        EchoRandomnessContinuation::RingingMetalPostSearch => {
+    match resolution {
+        PendingResolution::EchoRingingMetalRecycleDiscard => ringing_metal_search_choice(state),
+        PendingResolution::EchoRingingMetalPostSearch => {
             let selection = state.ringing_metal_selection.clone().ok_or_else(|| {
                 GameError::RuleImplementation(
                     crate::domain::RuleImplementationError::EffectNotImplemented(
@@ -704,39 +698,32 @@ pub(crate) fn after_randomness_events(
             })?;
             ringing_metal_completion_events(state, selection)
         }
+        _ => Err(GameError::RuleImplementation(
+            crate::domain::RuleImplementationError::EffectNotImplemented(
+                "echo:unexpected-randomness-resolution".to_string(),
+            ),
+        )),
     }
 }
 
 fn ringing_metal_start_events(state: &GameState, player: &PlayerId) -> GameResult<Vec<GameEvent>> {
-    let deck = state
-        .deck_for(player)
-        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
-    if !deck.is_empty() {
-        return ringing_metal_search_choice(state);
+    let deck = deck_kind(state, player);
+    if let Some(event) = crate::rules::deck_supply::request_if_needed(
+        state,
+        &deck,
+        1,
+        crate::domain::DeckPlacement::Bottom,
+        format!(
+            "echo:ringing-metal:recycle:{}:{}",
+            state.turn_number,
+            player.as_str()
+        ),
+        PendingResolution::EchoRingingMetalRecycleDiscard,
+    )? {
+        Ok(vec![event])
+    } else {
+        ringing_metal_search_choice(state)
     }
-    let discard = state
-        .discard_for(player)
-        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
-    if discard.is_empty() {
-        return Ok(Vec::new());
-    }
-    Ok(vec![GameEvent::RandomnessRequested {
-        request: crate::domain::PendingRandomness {
-            request_id: format!(
-                "echo:ringing-metal:recycle:{}:{}",
-                state.turn_number,
-                player.as_str()
-            ),
-            operation: crate::domain::RandomnessOperation::DiscardShuffle {
-                pile: deck_kind(state, player),
-                placement: crate::domain::DeckPlacement::Bottom,
-            },
-            continuation: RandomnessContinuation::Echo(
-                EchoRandomnessContinuation::RingingMetalRecycleDiscard,
-            ),
-            current_order: discard.to_vec(),
-        },
-    }])
 }
 
 fn ringing_metal_search_choice(state: &GameState) -> GameResult<Vec<GameEvent>> {
@@ -763,7 +750,7 @@ fn ringing_metal_search_choice(state: &GameState) -> GameResult<Vec<GameEvent>> 
                 maximum: 1,
                 can_decline: false,
             },
-            continuation: ChoiceContinuation::Echo(EchoChoiceContinuation::RingingMetalDeckCard),
+            resolution: PendingResolution::EchoRingingMetalDeckCard,
         },
     )?])
 }
@@ -828,7 +815,7 @@ fn plant_earth_turn_start_events(state: &GameState) -> GameResult<Vec<GameEvent>
                     ],
                     can_decline: false,
                 },
-                continuation: ChoiceContinuation::Echo(EchoChoiceContinuation::PlantEarthMelody),
+                resolution: PendingResolution::EchoPlantEarthMelody,
             },
         )?,
     ])
@@ -932,9 +919,9 @@ fn echo_cost_choice(
                 maximum: 1,
                 can_decline: true,
             },
-            continuation: ChoiceContinuation::Echo(EchoChoiceContinuation::Cost {
+            resolution: PendingResolution::EchoCost {
                 melody_id: melody.id.to_string(),
-            }),
+            },
         },
     )
 }

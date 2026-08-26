@@ -4,14 +4,13 @@ use fewfc::application::{
 };
 use fewfc::domain::{
     CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, ChoiceAnswer, Command, CounterEffect,
-    DARK_GLIMMER_MODULE_ID, ECHO_MODULE_ID, EchoRandomnessContinuation, Element,
-    FIVE_DIRECTIONS_LEGEND_MODULE_ID, FormationAreaState, FormationInArea, FormationSuppression,
-    GameError, GameEvent, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID,
-    JianghuState, JianghuStateKind, PERSONAL_DECK_MODULE_ID, PassiveFlipOutcome,
-    PassiveNoEffectGround, PassiveTriggerTiming, Phase, PlayerId, PreparedProfessionAbility,
-    RandomnessContinuation, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, ScheduledEcho,
-    StarKind, StatusDuration, StatusEffect, StatusOwner, TeamId, TeamStar, TimedEffectReduction,
-    TrustedRandomnessAnswer, ValidationError,
+    DARK_GLIMMER_MODULE_ID, ECHO_MODULE_ID, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+    FormationAreaState, FormationInArea, FormationSuppression, GameError, GameEvent, GameSetup,
+    GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind,
+    PERSONAL_DECK_MODULE_ID, PassiveFlipOutcome, PassiveNoEffectGround, PassiveTriggerTiming,
+    PendingResolution, Phase, PlayerId, PreparedProfessionAbility, RuleModuleId, SPIRIT_MODULE_ID,
+    STAR_MODULE_ID, ScheduledEcho, StarKind, StatusDuration, StatusEffect, StatusOwner, TeamId,
+    TeamStar, TimedEffectReduction, TrustedRandomnessAnswer, ValidationError,
 };
 use fewfc::public_view::{PublicPendingChoice, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -465,8 +464,8 @@ fn ringing_metal_empty_deck_recycles_before_an_independent_post_search_shuffle()
     apply_all(&mut state, &selected);
     let post_search = state.pending_randomness.as_ref().unwrap();
     assert_eq!(
-        post_search.continuation,
-        RandomnessContinuation::Echo(EchoRandomnessContinuation::RingingMetalPostSearch)
+        state.pending_resolution,
+        Some(PendingResolution::EchoRingingMetalPostSearch)
     );
     assert_eq!(post_search.current_order, vec![card(3), card(5), card(6)]);
 }
@@ -1346,7 +1345,7 @@ fn choose_first_turn_draw_discard(record: &mut GameRecord) {
     let (player, choice_id, discard) = events
         .iter()
         .find_map(|event| match event {
-            GameEvent::ChoiceRequested { choice } => Some((
+            GameEvent::ChoiceRequested { choice, .. } => Some((
                 choice.player.clone(),
                 choice.choice_id,
                 match &choice.kind {

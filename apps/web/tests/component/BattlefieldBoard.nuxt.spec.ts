@@ -1,6 +1,8 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { afterEach, describe, expect, it } from 'vitest'
+import { h } from 'vue'
 import BattlefieldBoard from '~/components/BattlefieldBoard.vue'
+import GameConclusionPanel from '~/components/GameConclusionPanel.vue'
 import { emptyPublicState } from '#shared/game-room'
 
 const fireThree = {
@@ -77,5 +79,47 @@ describe('BattlefieldBoard', () => {
     expect(wrapper.findAll('.featured-discard-card')).toHaveLength(1)
     expect(wrapper.get('.seat-top .discard-counts').text()).toBe('0—10')
     expect(wrapper.find('.shared-discard-dock').exists()).toBe(false)
+  })
+})
+
+describe('GameConclusionPanel', () => {
+  it('owns canonical conclusion wording when rendered through the board overlay', async () => {
+    const state = emptyPublicState(['alice', 'bob'])
+    const winningTeam = state.players[0]!.team
+    const losingTeam = state.players[1]!.team
+    state.status = 'Finished'
+    state.gameConclusion = {
+      outcome: { type: 'winner', team: winningTeam },
+      causes: [{ type: 'teamHpDepleted', teams: [losingTeam] }],
+    }
+
+    const wrapper = await mountSuspended(BattlefieldBoard, {
+      props: {
+        state,
+        displayNames: { alice: '小明', bob: '小華' },
+        anchorPlayer: 'alice',
+        mode: 'replay',
+      },
+      slots: {
+        'board-overlay': h(
+          GameConclusionPanel,
+          {
+            class: 'battlefield-conclusion',
+            state,
+            teamLabel: (team) => team === winningTeam ? '我方' : '對方',
+            summary: '小明先手，本局已結束。',
+          },
+          { actions: () => h('button', { class: 'primary-button', type: 'button' }, '返回房間') },
+        ),
+      },
+    })
+
+    expect(wrapper.get('.board-center .result-panel').classes()).toContain('battlefield-conclusion')
+    expect(wrapper.get('.result-panel h2').text()).toBe('我方 勝利')
+    expect(wrapper.get('.result-reason').text()).toBe('終局原因對方 的生命值歸零')
+    expect(wrapper.text()).toContain('小明先手，本局已結束。')
+    const action = wrapper.get('.result-actions button')
+    expect(action.text()).toBe('返回房間')
+    expect(action.classes()).toContain('primary-button')
   })
 })

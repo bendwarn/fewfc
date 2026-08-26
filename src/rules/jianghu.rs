@@ -1,7 +1,7 @@
 use crate::domain::{
     CardInstanceId, Element, GameError, GameEvent, GameResult, GameState, HpChangeDelta,
-    JIANGHU_MODULE_ID, JianghuState, JianghuStateKind, PlayerId, ProfessionId, StatusDuration,
-    StatusEffect, StatusOwner, ValidationError,
+    JIANGHU_MODULE_ID, JianghuState, JianghuStateKind, PendingResolution, PlayerId, ProfessionId,
+    RandomnessDeck, StatusDuration, StatusEffect, StatusOwner, ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::{
@@ -845,8 +845,8 @@ pub(crate) fn playable_profession_abilities(
         }
         if matches!(card.element, Element::Wood | Element::Water)
             && abilities.contains(&"jianghu:azure-cloud-step")
-            && state.deck_for(player).is_some_and(|deck| deck.len() >= 2)
         {
+            azure_cloud_supply_plan(state, player, cards)?;
             candidates.push(ability_candidate(
                 "jianghu:azure-cloud-step",
                 "青雲步",
@@ -996,7 +996,27 @@ pub(crate) fn activate_profession_ability(
             events.push(GameEvent::CardsMoved {
                 card_moves: ability_card_moves(state, player, cards),
             });
-            let drawn_cards = state
+            let mut projected = state.clone();
+            for event in &events {
+                crate::rules::projection::apply_event(&mut projected, event);
+            }
+            let pile = deck_kind(&projected, player);
+            if let Some(event) = crate::rules::deck_supply::request_if_needed(
+                &projected,
+                &pile,
+                2,
+                crate::domain::DeckPlacement::Bottom,
+                format!(
+                    "jianghu:azure-cloud-step:{}:{}",
+                    state.turn_number,
+                    player.as_str()
+                ),
+                PendingResolution::JianghuAzureCloudStepReturnOne,
+            )? {
+                events.push(event);
+                return Ok(events);
+            }
+            let drawn_cards = projected
                 .deck_for(player)
                 .expect("validated deck")
                 .iter()
@@ -1009,7 +1029,7 @@ pub(crate) fn activate_profession_ability(
                 cards: drawn_cards.clone(),
             });
             events.push(crate::rules::pending_choice::request_event(
-                state,
+                &projected,
                 crate::domain::ChoiceRequest {
                     player: player.clone(),
                     kind: crate::domain::PendingChoiceKind::Card {
@@ -1018,9 +1038,7 @@ pub(crate) fn activate_profession_ability(
                         cards: drawn_cards,
                         can_decline: false,
                     },
-                    continuation: crate::domain::ChoiceContinuation::Jianghu(
-                        crate::domain::JianghuChoiceContinuation::AzureCloudStepReturnOne,
-                    ),
+                    resolution: PendingResolution::JianghuAzureCloudStepReturnOne,
                 },
             )?);
         }
@@ -1031,6 +1049,34 @@ pub(crate) fn activate_profession_ability(
         }
     }
     Ok(events)
+}
+
+fn deck_kind(state: &GameState, player: &PlayerId) -> RandomnessDeck {
+    if state.uses_personal_decks() {
+        RandomnessDeck::Player(player.clone())
+    } else {
+        RandomnessDeck::Shared
+    }
+}
+
+fn azure_cloud_supply_plan(
+    state: &GameState,
+    player: &PlayerId,
+    cards: &[CardInstanceId],
+) -> GameResult<crate::rules::deck_supply::DeckSupplyPlan> {
+    let mut projected = state.clone();
+    crate::rules::projection::apply_event(
+        &mut projected,
+        &GameEvent::CardsMoved {
+            card_moves: ability_card_moves(state, player, cards),
+        },
+    );
+    crate::rules::deck_supply::plan(
+        &projected,
+        &deck_kind(&projected, player),
+        2,
+        crate::domain::DeckPlacement::Bottom,
+    )
 }
 
 fn ability_candidate(

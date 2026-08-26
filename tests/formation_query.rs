@@ -1,7 +1,7 @@
 use fewfc::domain::{
-    BaseChoiceContinuation, CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef,
-    CardInstanceId, ChoiceContinuation, ChoiceId, GameError, GameSetup, PendingChoice,
-    PendingChoiceKind, Phase, PlayerId, RuleModuleId, ValidationError,
+    CannotPerformFormationReason, CardDef, CardDefId, CardInstanceDef, CardInstanceId, ChoiceId,
+    GameError, GameSetup, PendingChoice, PendingChoiceKind, PendingResolution, Phase, PlayerId,
+    RuleModuleId, ValidationError,
 };
 use fewfc::rules::{
     Element, FormationCandidate, FormationCategory, ImmediateEffect, OfficialRules, PlayableAction,
@@ -246,8 +246,8 @@ fn playable_actions_returns_error_while_choice_is_pending() {
             maximum: 1,
             can_decline: false,
         },
-        continuation: ChoiceContinuation::Base(BaseChoiceContinuation::ChaosReturnTwo),
     });
+    state.pending_resolution = Some(PendingResolution::ChaosReturnTwo);
 
     assert_eq!(
         rules.playable_actions(&state, &PlayerId::new("p1"), &[]),

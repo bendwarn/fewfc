@@ -1,8 +1,7 @@
 use crate::domain::{
     CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Element, GameError, GameEvent, GameResult,
-    GameState, HERO_SCHOOLS_MODULE_ID, HeroRandomnessContinuation, HpChangeDelta, PlayerId,
-    ProfessionId, RandomnessContinuation, RandomnessDeck, RandomnessOperation, StatusDuration,
-    StatusEffect, StatusOwner, ValidationError,
+    GameState, HERO_SCHOOLS_MODULE_ID, HpChangeDelta, PendingResolution, PlayerId, ProfessionId,
+    RandomnessDeck, StatusDuration, StatusEffect, StatusOwner, ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 
@@ -1169,10 +1168,8 @@ pub(crate) fn playable_profession_abilities(
                 detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
             });
         }
-        if effective_level >= 4
-            && abilities.contains(&ProfessionAbility::Revelation)
-            && state.deck_for(player).is_some_and(|deck| deck.len() >= 3)
-        {
+        if effective_level >= 4 && abilities.contains(&ProfessionAbility::Revelation) {
+            revelation_supply_plan(state, player, cards)?;
             candidates.push(ProfessionAbilityCandidate {
                 ability_id: "revelation".to_string(),
                 ability_name: "啟示".to_string(),
@@ -1402,15 +1399,6 @@ pub(crate) fn activate_profession_ability(
             {
                 return cannot_resolve(ability_id);
             }
-            let deck = state.deck_for(player).ok_or_else(|| {
-                GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
-            })?;
-            let discard = state.discard_for(player).ok_or_else(|| {
-                GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
-            })?;
-            if deck.len() + discard.len() < 3 {
-                return cannot_resolve(ability_id);
-            }
             events.push(GameEvent::ProfessionAbilityActivated {
                 player: player.clone(),
                 ability_id: ability_id.to_string(),
@@ -1419,34 +1407,22 @@ pub(crate) fn activate_profession_ability(
             events.push(GameEvent::CardsMoved {
                 card_moves: ability_card_moves(state, player, cards),
             });
-            if deck.len() < 3 {
-                let mut projected = state.clone();
-                for event in &events {
-                    crate::rules::projection::apply_event(&mut projected, event);
-                }
-                let pile = deck_kind(state, player);
-                events.push(GameEvent::RandomnessRequested {
-                    request: crate::domain::PendingRandomness {
-                        request_id: format!(
-                            "hero:revelation:{}:{}",
-                            state.turn_number,
-                            player.as_str()
-                        ),
-                        operation: RandomnessOperation::DiscardShuffle {
-                            pile,
-                            placement: crate::domain::DeckPlacement::Bottom,
-                        },
-                        continuation: RandomnessContinuation::Hero(
-                            HeroRandomnessContinuation::Revelation,
-                        ),
-                        current_order: projected
-                            .discard_for(player)
-                            .expect("known player has a discard pile")
-                            .to_vec(),
-                    },
-                });
+            let mut projected = state.clone();
+            for event in &events {
+                crate::rules::projection::apply_event(&mut projected, event);
+            }
+            let pile = deck_kind(&projected, player);
+            if let Some(event) = crate::rules::deck_supply::request_if_needed(
+                &projected,
+                &pile,
+                3,
+                crate::domain::DeckPlacement::Bottom,
+                format!("hero:revelation:{}:{}", state.turn_number, player.as_str()),
+                PendingResolution::HeroRevelation,
+            )? {
+                events.push(event);
             } else {
-                events.extend(revelation_choice_events(state, player)?);
+                events.extend(revelation_choice_events(&projected, player)?);
             }
         }
         _ => unreachable!(),
@@ -1486,9 +1462,7 @@ fn revelation_choice_events(state: &GameState, player: &PlayerId) -> GameResult<
                     maximum: 1,
                     can_decline: false,
                 },
-                continuation: crate::domain::ChoiceContinuation::Hero(
-                    crate::domain::HeroChoiceContinuation::RevelationKeepOne,
-                ),
+                resolution: PendingResolution::HeroRevelationKeepOne,
             },
         )?,
     ])
@@ -1500,6 +1474,26 @@ fn deck_kind(state: &GameState, player: &PlayerId) -> RandomnessDeck {
     } else {
         RandomnessDeck::Shared
     }
+}
+
+fn revelation_supply_plan(
+    state: &GameState,
+    player: &PlayerId,
+    cards: &[CardInstanceId],
+) -> GameResult<crate::rules::deck_supply::DeckSupplyPlan> {
+    let mut projected = state.clone();
+    crate::rules::projection::apply_event(
+        &mut projected,
+        &GameEvent::CardsMoved {
+            card_moves: ability_card_moves(state, player, cards),
+        },
+    );
+    crate::rules::deck_supply::plan(
+        &projected,
+        &deck_kind(&projected, player),
+        3,
+        crate::domain::DeckPlacement::Bottom,
+    )
 }
 
 fn cannot_resolve<T>(ability_id: &str) -> GameResult<T> {

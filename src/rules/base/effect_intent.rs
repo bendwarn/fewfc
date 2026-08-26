@@ -158,9 +158,7 @@ pub(in crate::rules::base) fn effect_intent_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{
-        BaseChoiceContinuation, ChoiceContinuation, ChoiceRequest, GameSetup, PendingChoiceKind,
-    };
+    use crate::domain::{ChoiceRequest, GameSetup, PendingChoiceKind, PendingResolution};
 
     fn state() -> GameState {
         GameState::from_setup(&GameSetup::two_player(
@@ -198,9 +196,7 @@ mod tests {
                             maximum: 0,
                             can_decline: false,
                         },
-                        continuation: ChoiceContinuation::Base(
-                            BaseChoiceContinuation::HolyWindTakeHighest,
-                        ),
+                        resolution: PendingResolution::HolyWindTakeHighest,
                     },
                 },
                 EffectIntent::RequestChoice {
@@ -212,9 +208,7 @@ mod tests {
                             maximum: 0,
                             can_decline: false,
                         },
-                        continuation: ChoiceContinuation::Base(
-                            BaseChoiceContinuation::ChaosReturnTwo,
-                        ),
+                        resolution: PendingResolution::ChaosReturnTwo,
                     },
                 },
             ],

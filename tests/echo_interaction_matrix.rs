@@ -102,12 +102,12 @@ fn falling_wood_echo_matrix_pays_cost_schedules_then_resolves_at_its_next_legal_
         falling_wood.as_slice(),
         [
             GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
-            GameEvent::ChoiceRequested { choice },
+            GameEvent::ChoiceRequested { choice, resolution },
         ] if player == &p1
             && formation_id == "echo:falling-wood"
             && cards == &vec![card(19), card(20)]
             && choice.player == p1
-            && matches!(choice.continuation, fewfc::domain::ChoiceContinuation::Echo(fewfc::domain::EchoChoiceContinuation::Cost { .. }))
+            && matches!(resolution, fewfc::domain::PendingResolution::EchoCost { .. })
     ));
     let cost_choice_id = record.state().pending_choice.as_ref().unwrap().choice_id;
     let paid = record

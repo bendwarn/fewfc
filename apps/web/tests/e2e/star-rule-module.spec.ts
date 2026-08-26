@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import { type Locator, type Page } from '@playwright/test'
 import {
   battleRecordRuleEntry,
   expect,
@@ -22,6 +22,56 @@ async function indexedModules(page: Page, roomName: string): Promise<string[]> {
     throw new Error(`GET /api/games returned invalid JSON: ${body}`)
   }
   return result.myRooms?.find(room => room.name === roomName)?.enabledRuleModules ?? []
+}
+
+async function box(locator: Locator) {
+  const value = await locator.boundingBox()
+  expect(value).not.toBeNull()
+  return value!
+}
+
+async function expectBattlefieldConclusion(page: Page, width: number, height: number) {
+  await page.setViewportSize({ width, height })
+  const battlefield = page.locator('.battlefield')
+  const center = battlefield.locator('.board-center')
+  const conclusion = center.locator('.result-panel')
+
+  await expect(conclusion).toBeVisible()
+  await expect(battlefield.locator('.result-panel')).toHaveCount(1)
+
+  const [battlefieldBox, centerBox, conclusionBox] = await Promise.all([
+    box(battlefield),
+    box(center),
+    box(conclusion),
+  ])
+  expect(conclusionBox.x).toBeGreaterThanOrEqual(centerBox.x - 1)
+  expect(conclusionBox.y).toBeGreaterThanOrEqual(centerBox.y - 1)
+  expect(conclusionBox.x + conclusionBox.width).toBeLessThanOrEqual(centerBox.x + centerBox.width + 1)
+  expect(conclusionBox.y + conclusionBox.height).toBeLessThanOrEqual(centerBox.y + centerBox.height + 1)
+  expect(conclusionBox.x).toBeGreaterThanOrEqual(battlefieldBox.x - 1)
+  expect(conclusionBox.y).toBeGreaterThanOrEqual(battlefieldBox.y - 1)
+  expect(conclusionBox.x + conclusionBox.width).toBeLessThanOrEqual(battlefieldBox.x + battlefieldBox.width + 1)
+  expect(conclusionBox.y + conclusionBox.height).toBeLessThanOrEqual(battlefieldBox.y + battlefieldBox.height + 1)
+
+  const seatBoxes = await battlefield.locator('.player-seat').evaluateAll(elements => elements.map((element) => {
+    const rect = element.getBoundingClientRect()
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  }))
+  for (const seatBox of seatBoxes) {
+    const overlaps = conclusionBox.x < seatBox.x + seatBox.width
+      && conclusionBox.x + conclusionBox.width > seatBox.x
+      && conclusionBox.y < seatBox.y + seatBox.height
+      && conclusionBox.y + conclusionBox.height > seatBox.y
+    expect(overlaps).toBe(false)
+  }
+
+  const overflow = await page.evaluate(() => ({
+    page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    battlefield: document.querySelector('.battlefield')!.scrollWidth
+      - document.querySelector('.battlefield')!.clientWidth,
+  }))
+  expect(overflow.page).toBeLessThanOrEqual(0)
+  expect(overflow.battlefield).toBeLessThanOrEqual(0)
 }
 
 test('Star defaults on, survives reconnect, and is immutable after a two-player start', async ({ browser }) => {
@@ -160,14 +210,16 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
     expect((await command).ok()).toBe(true)
 
     await Promise.all(pages.map(async (page) => {
-      await expect(page.locator('.result-panel')).toBeVisible()
-      await expect(page.locator('.result-reason')).toContainText('終局原因')
-      await expect(page.locator('.result-reason')).toContainText('生命值歸零')
+      await expect(page.locator('.battlefield .result-reason')).toContainText('終局原因')
+      await expect(page.locator('.battlefield .result-reason')).toContainText('生命值歸零')
       await expect(await battleRecordRuleEntry(page))
         .toContainText('星辰圖記規則')
     }))
+    await expectBattlefieldConclusion(host, 1440, 900)
+    await expectBattlefieldConclusion(guest, 390, 844)
+    await expectBattlefieldConclusion(guest, 360, 640)
 
-    await host.getByRole('button', { name: '返回房間 →' }).click()
+    await guest.getByRole('button', { name: '返回房間 →' }).click()
     await Promise.all(pages.map(async (page) => {
       await expect(page.getByLabel('星辰圖記')).toBeChecked()
       await expect(page.getByRole('heading', { name: '進階規則' })).toBeVisible()

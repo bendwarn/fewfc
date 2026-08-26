@@ -1,13 +1,12 @@
 use fewfc::application::{GameRecord, apply_event, handle_command};
 use fewfc::domain::{
-    CardInstanceId, CardOrigin, CardZone, ChainPouchDecision, ChoiceAnswer, ChoiceContinuation,
-    ChoiceId, Command, EffectiveCardLevel, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
-    GameEvent, GameState, GameStatus, HERO_SCHOOLS_MODULE_ID, PERSONAL_DECK_MODULE_ID,
-    POUCH_MODULE_ID, PendingChoice, PendingChoiceKind, Phase, Player, PlayerId, PlayerPouch,
-    PouchChoiceContinuation, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID,
-    SecretStrategy, SecretStrategyDecision, SecretStrategyEnvironmentOperation,
-    SecretStrategyStarOperation, SpiritKind, SpiritSkill, StarBreakReason, StarKind, TeamId,
-    ValidationError,
+    CardInstanceId, CardOrigin, CardZone, ChainPouchDecision, ChoiceAnswer, ChoiceId, Command,
+    EffectiveCardLevel, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError, GameEvent, GameState,
+    GameStatus, HERO_SCHOOLS_MODULE_ID, PERSONAL_DECK_MODULE_ID, POUCH_MODULE_ID, PendingChoice,
+    PendingChoiceKind, PendingResolution, Phase, Player, PlayerId, PlayerPouch, ProfessionId,
+    RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, SecretStrategy, SecretStrategyDecision,
+    SecretStrategyEnvironmentOperation, SecretStrategyStarOperation, SpiritKind, SpiritSkill,
+    StarBreakReason, StarKind, TeamId, ValidationError,
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -347,7 +346,7 @@ impl ChainSheepScenario {
                     state: fewfc::domain::FormationAreaState::FaceUpResolving,
                     ..
                 },
-                GameEvent::RandomnessRequested { request },
+                GameEvent::RandomnessRequested { request, resolution },
             ] if player == &self.player
                 && formation_id == "pouch:chain"
                 && cards == &self.chain_cards
@@ -358,12 +357,7 @@ impl ChainSheepScenario {
                         placement: fewfc::domain::DeckPlacement::Bottom,
                     } if player == &self.player
                 )
-                && matches!(
-                    request.continuation,
-                    fewfc::domain::RandomnessContinuation::Pouch(
-                        fewfc::domain::PouchRandomnessContinuation::ChainRecycle
-                    )
-                )
+                && matches!(resolution, PendingResolution::PouchChainRecycle)
         ));
         assert_eq!(
             self.record
@@ -843,7 +837,7 @@ impl StealTheBeamMageGuideScenario {
                     drawn_cards,
                     allowed_discards,
                 },
-                GameEvent::ChoiceRequested { choice },
+                GameEvent::ChoiceRequested { choice, .. },
             ] if player == &self.player
                 && drawn_cards == allowed_discards
                 && drawn_cards.contains(&self.later_entrant)
@@ -2289,7 +2283,7 @@ fn pouch_sheep_stealing_matrix_returns_selected_deck_cards_from_the_projected_di
     }
     assert!(matches!(
         answer_events.last(),
-        Some(GameEvent::RandomnessRequested { request })
+        Some(GameEvent::RandomnessRequested { request, .. })
             if matches!(
                 request.operation,
                 fewfc::domain::RandomnessOperation::DeckShuffle {
@@ -2355,7 +2349,7 @@ fn pouch_sheep_stealing_matrix_recycles_personal_discard_before_exposing_choice_
         trigger_events.as_slice(),
         [
             GameEvent::PouchRevealed { player, card, strategy: SecretStrategy::SheepStealing, .. },
-            GameEvent::RandomnessRequested { request },
+            GameEvent::RandomnessRequested { request, resolution },
         ] if player == &scenario.player
             && *card == scenario.sheep_source
             && matches!(
@@ -2366,10 +2360,9 @@ fn pouch_sheep_stealing_matrix_recycles_personal_discard_before_exposing_choice_
                 } if player == &scenario.player
             )
             && matches!(
-                request.continuation,
-                fewfc::domain::RandomnessContinuation::Pouch(
-                    fewfc::domain::PouchRandomnessContinuation::SheepStealingRecycle { source_card }
-                ) if source_card == scenario.sheep_source
+                resolution,
+                PendingResolution::PouchSheepStealingRecycle { source_card }
+                    if *source_card == scenario.sheep_source
             )
     ));
     assert!(scenario.record.state().pending_choice.is_none());
@@ -2379,7 +2372,7 @@ fn pouch_sheep_stealing_matrix_recycles_personal_discard_before_exposing_choice_
         recycle_events.as_slice(),
         [
             GameEvent::RandomnessResolved { .. },
-            GameEvent::ChoiceRequested { choice },
+            GameEvent::ChoiceRequested { choice, .. },
         ] if matches!(choice.kind, fewfc::domain::PendingChoiceKind::SheepStealing { .. })
     ));
     let (_, deck_cards, _) = scenario.pending_sheep_choice();
@@ -2399,7 +2392,7 @@ fn pouch_chain_sheep_stealing_matrix_recycles_then_sets_aside_the_trigger_from_i
         recycle_events.as_slice(),
         [
             GameEvent::RandomnessResolved { operation, .. },
-            GameEvent::ChoiceRequested { choice },
+            GameEvent::ChoiceRequested { choice, .. },
         ] if matches!(
             operation,
             fewfc::domain::RandomnessOperation::DiscardShuffle {
@@ -2434,7 +2427,7 @@ fn pouch_chain_sheep_stealing_matrix_recycles_then_sets_aside_the_trigger_from_i
             },
             GameEvent::PouchPlaced { source, owner, card, previous: Some(_), .. },
             GameEvent::PouchRevealed { player, owner: None, card: revealed, strategy: SecretStrategy::SheepStealing },
-            GameEvent::ChoiceRequested { choice },
+            GameEvent::ChoiceRequested { choice, .. },
         ] if pouch_owner == &scenario.player
             && *placed == pouch_card
             && *trigger == scenario.sheep_trigger
@@ -2532,12 +2525,13 @@ fn pouch_chain_sheep_stealing_matrix_recycles_then_sets_aside_the_trigger_from_i
             deck: fewfc::domain::RandomnessDeck::Player(ref player)
         } if player == &scenario.player
     ));
-    assert!(matches!(
-        request.continuation,
-        fewfc::domain::RandomnessContinuation::Pouch(
-            fewfc::domain::PouchRandomnessContinuation::SheepStealing { source_card, owner: None }
-        ) if source_card == scenario.sheep_trigger
-    ));
+    assert_eq!(
+        scenario.record.state().pending_resolution,
+        Some(PendingResolution::PouchSheepStealing {
+            source_card: scenario.sheep_trigger,
+            owner: None,
+        })
+    );
     assert!(!request.current_order.contains(&scenario.sheep_trigger));
 
     let shuffled = scenario.resolve_pending_randomness_reversed();
@@ -3016,7 +3010,7 @@ fn golden_cicada_lure_matrix_protects_only_player_scope_when_chain_triggers_lure
                 state: fewfc::domain::FormationAreaState::FaceUpResolving,
                 ..
             },
-            GameEvent::ChoiceRequested { choice },
+            GameEvent::ChoiceRequested { choice, .. },
         ] if player == &p2
             && formation_id == "pouch:chain"
             && cards == &chain_cards
@@ -3086,7 +3080,7 @@ fn golden_cicada_lure_matrix_protects_only_player_scope_when_chain_triggers_lure
                     owner: None,
                     card: consumed_card,
                 },
-                GameEvent::RandomnessRequested { request },
+                GameEvent::RandomnessRequested { request, resolution },
             ] if player == &p2
                 && pouch_owner == &p2
                 && *pouch_card == chain_pouch
@@ -3108,12 +3102,7 @@ fn golden_cicada_lure_matrix_protects_only_player_scope_when_chain_triggers_lure
                     } if status_owner == &p2 && kind == "PouchLureSpirit" && expires == &p2
                 )
                 && *consumed_card == lure_trigger
-                && matches!(
-                    request.continuation,
-                    fewfc::domain::RandomnessContinuation::Pouch(
-                        fewfc::domain::PouchRandomnessContinuation::ChainPostSearch { .. }
-                    )
-                )
+                && matches!(resolution, PendingResolution::PouchChainPostSearch { .. })
         ),
         "unexpected Golden × Lure Chain request: {lure_events:#?}"
     );
@@ -3230,7 +3219,7 @@ fn pouch_chain_deceive_heaven_matrix_places_before_triggering_the_typed_temporar
                 .collect(),
         )
         .unwrap();
-    // 僅是背景：Chain 與其 typed continuation 必須在同一個合法 Action 回合
+    // 僅是背景：Chain 與其 typed resolution 必須在同一個合法 Action 回合
     // 完成，不能因攻擊提早結束。
     for hp in &mut setup.hp {
         hp.hp = 10_000;
@@ -3308,7 +3297,7 @@ fn pouch_chain_deceive_heaven_matrix_places_before_triggering_the_typed_temporar
                 state: fewfc::domain::FormationAreaState::FaceUpResolving,
                 ..
             },
-            GameEvent::ChoiceRequested { choice },
+            GameEvent::ChoiceRequested { choice, .. },
         ] if player == &p1
             && formation_id == "pouch:chain"
             && cards == &chain_cards
@@ -3384,7 +3373,7 @@ fn pouch_chain_deceive_heaven_matrix_places_before_triggering_the_typed_temporar
                     owner: None,
                     card: consumed,
                 },
-                GameEvent::RandomnessRequested { request },
+                GameEvent::RandomnessRequested { request, resolution },
             ] if player == &p1
             && pouch_owner == &p1
             && *pouch_card == placed_pouch
@@ -3400,12 +3389,7 @@ fn pouch_chain_deceive_heaven_matrix_places_before_triggering_the_typed_temporar
             && effect.star == StarKind::Fire
             && effect.applied_on_turn == record.state().turn_number
             && *consumed == deceive_trigger
-            && matches!(
-                request.continuation,
-                fewfc::domain::RandomnessContinuation::Pouch(
-                    fewfc::domain::PouchRandomnessContinuation::ChainPostSearch { .. }
-                )
-            )
+                && matches!(resolution, PendingResolution::PouchChainPostSearch { .. })
     ));
     let request = record.state().pending_randomness.clone().unwrap();
     let mut shuffled_order = request.current_order.clone();
@@ -3948,8 +3932,8 @@ fn chain_choice(state: &mut GameState, player: &PlayerId, deck_cards: Vec<CardIn
             pouch_owners: vec![player.clone()],
             deck_cards,
         },
-        continuation: ChoiceContinuation::Pouch(PouchChoiceContinuation::Chain),
     });
+    state.pending_resolution = Some(PendingResolution::PouchChain);
 }
 
 #[test]
@@ -4215,15 +4199,10 @@ fn pouch_chain_place_only_uses_its_closed_envelope_without_a_strategy_decision()
                 ..
             },
             GameEvent::PouchPlaced { card, previous: Some(previous), .. },
-            GameEvent::RandomnessRequested { request },
+            GameEvent::RandomnessRequested { request, resolution },
         ] if *card == pouch_card
             && *previous == previous_pouch
-            && matches!(
-                request.continuation,
-                fewfc::domain::RandomnessContinuation::Pouch(
-                    fewfc::domain::PouchRandomnessContinuation::ChainPostSearch { .. }
-                )
-            )
+            && matches!(resolution, PendingResolution::PouchChainPostSearch { .. })
     ));
 }
 

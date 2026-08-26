@@ -163,16 +163,10 @@ pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         GameEvent::PlantEarthResolutionStarted { .. }
         | GameEvent::PlantEarthResolutionCompleted { .. } => Some(AutomaticReason::EchoResolution),
         GameEvent::FlowStateTriggered { .. } => Some(AutomaticReason::TurnDraw),
-        GameEvent::RandomnessRequested { request }
-            if matches!(
-                &request.continuation,
-                crate::domain::RandomnessContinuation::Base(
-                    crate::domain::BaseRandomnessContinuation::TurnDraw
-                )
-            ) =>
-        {
-            Some(AutomaticReason::TurnDraw)
-        }
+        GameEvent::RandomnessRequested {
+            resolution: crate::domain::PendingResolution::TurnDraw,
+            ..
+        } => Some(AutomaticReason::TurnDraw),
         GameEvent::RandomnessRequested { .. } => None,
         GameEvent::DeckPrepared { .. }
         | GameEvent::PlayerDeckPrepared { .. }

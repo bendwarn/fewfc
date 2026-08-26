@@ -1,8 +1,8 @@
 //! 從標準遊戲資料衍生經檢視者過濾的公開視圖。
 
 use crate::domain::{
-    CardInstanceId, ChoiceContinuation, ChoiceId, CounterEffect, Element, FormationSuppression,
-    GameEvent, GameState, GameStatus, JianghuState, LimitedUse, PendingChoice, PendingChoiceKind,
+    CardInstanceId, ChoiceId, CounterEffect, Element, FormationSuppression, GameEvent, GameState,
+    GameStatus, JianghuState, LimitedUse, PendingChoice, PendingChoiceKind, PendingResolution,
     Phase, Player, PlayerId, PlayerProfession, PlayerShield, PlayerStarHistory, RandomnessDeck,
     RandomnessOperation, RuleModuleId, ScheduledEcho, ScheduledPlantEarth, StatusEffect, TeamHp,
     TeamStar,
@@ -484,10 +484,16 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
             })
             .collect(),
         counter_effects: state.counter_effects.clone(),
-        pending_choice: state
-            .pending_choice
-            .as_ref()
-            .map(|choice| public_pending_choice(choice, &policy)),
+        pending_choice: state.pending_choice.as_ref().map(|choice| {
+            public_pending_choice(
+                choice,
+                state
+                    .pending_resolution
+                    .as_ref()
+                    .expect("pending choice must have a pending resolution"),
+                &policy,
+            )
+        }),
         pending_randomness: state.pending_randomness.as_ref().map(|request| {
             PublicPendingRandomness {
                 request_id: request.request_id.clone(),
@@ -759,13 +765,13 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
                 PublicCardRefs::Hidden { count: cards.len() }
             },
         },
-        GameEvent::ChoiceRequested { choice } => PublicGameEvent::ChoiceRequested {
-            choice: public_pending_choice(choice, &policy),
+        GameEvent::ChoiceRequested { choice, resolution } => PublicGameEvent::ChoiceRequested {
+            choice: public_pending_choice(choice, resolution, &policy),
         },
         GameEvent::ChoiceMade { player, .. } => PublicGameEvent::ChoiceMade {
             player: player.clone(),
         },
-        GameEvent::RandomnessRequested { request } => PublicGameEvent::RandomnessRequested {
+        GameEvent::RandomnessRequested { request, .. } => PublicGameEvent::RandomnessRequested {
             request_id: request.request_id.clone(),
             deck: request.operation.destination_deck().clone(),
             operation: public_randomness_operation(&request.operation),
@@ -979,8 +985,12 @@ fn movement_zone_owner(zone: &crate::domain::CardZone) -> Option<&PlayerId> {
     }
 }
 
-fn public_pending_choice(choice: &PendingChoice, policy: &RedactionPolicy) -> PublicPendingChoice {
-    let reason = pending_choice_presentation(&choice.continuation);
+fn public_pending_choice(
+    choice: &PendingChoice,
+    resolution: &PendingResolution,
+    policy: &RedactionPolicy,
+) -> PublicPendingChoice {
+    let reason = pending_choice_presentation(resolution);
     if policy.can_see_player_hidden_cards(&choice.player) {
         PublicPendingChoice::Visible {
             choice_id: choice.choice_id,
@@ -996,44 +1006,24 @@ fn public_pending_choice(choice: &PendingChoice, policy: &RedactionPolicy) -> Pu
     }
 }
 
-fn pending_choice_presentation(
-    continuation: &ChoiceContinuation,
-) -> PublicPendingChoicePresentation {
+fn pending_choice_presentation(resolution: &PendingResolution) -> PublicPendingChoicePresentation {
     use PublicEchoMelodyPresentation as Melody;
     use PublicPendingChoicePresentation as Presentation;
-    match continuation {
-        ChoiceContinuation::Base(crate::domain::BaseChoiceContinuation::TurnDrawDiscard) => {
-            Presentation::TurnDrawDiscard
-        }
-        ChoiceContinuation::Base(crate::domain::BaseChoiceContinuation::HolyWindTakeHighest) => {
-            Presentation::HolyWind
-        }
-        ChoiceContinuation::Base(crate::domain::BaseChoiceContinuation::ChaosReturnTwo) => {
-            Presentation::Chaos
-        }
-        ChoiceContinuation::Hero(crate::domain::HeroChoiceContinuation::RevelationKeepOne) => {
-            Presentation::Revelation
-        }
-        ChoiceContinuation::Jianghu(
-            crate::domain::JianghuChoiceContinuation::AzureCloudStepReturnOne,
-        ) => Presentation::AzureCloudStep,
-        ChoiceContinuation::Confluence(
-            crate::domain::ConfluenceChoiceContinuation::ClearWindDiscardTop,
-        ) => Presentation::ClearWind,
-        ChoiceContinuation::Confluence(
-            crate::domain::ConfluenceChoiceContinuation::ClearWindKeepCards,
-        ) => Presentation::ClearWindTenThousandMiles,
-        ChoiceContinuation::Confluence(
-            crate::domain::ConfluenceChoiceContinuation::DiscardInspectedCard { resonance, .. },
-        ) => match resonance {
+    match resolution {
+        PendingResolution::TurnDrawDiscard => Presentation::TurnDrawDiscard,
+        PendingResolution::HolyWindTakeHighest => Presentation::HolyWind,
+        PendingResolution::ChaosReturnTwo => Presentation::Chaos,
+        PendingResolution::HeroRevelationKeepOne => Presentation::Revelation,
+        PendingResolution::JianghuAzureCloudStepReturnOne => Presentation::AzureCloudStep,
+        PendingResolution::ConfluenceClearWindDiscardTop => Presentation::ClearWind,
+        PendingResolution::ConfluenceClearWindKeepCards => Presentation::ClearWindTenThousandMiles,
+        PendingResolution::ConfluenceDiscardInspectedCard { resonance, .. } => match resonance {
             crate::domain::ConfluenceResonance::Mirror => Presentation::MirrorResonance,
             crate::domain::ConfluenceResonance::Myriad => Presentation::MyriadResonance,
             crate::domain::ConfluenceResonance::Thousand => Presentation::ThousandResonance,
         },
-        ChoiceContinuation::Echo(crate::domain::EchoChoiceContinuation::RingingMetalDeckCard) => {
-            Presentation::EchoRingingMetalDeckCard
-        }
-        ChoiceContinuation::Echo(crate::domain::EchoChoiceContinuation::Cost { melody_id }) => {
+        PendingResolution::EchoRingingMetalDeckCard => Presentation::EchoRingingMetalDeckCard,
+        PendingResolution::EchoCost { melody_id } => {
             let melody = match melody_id.as_str() {
                 "echo:ringing-metal" => Melody::RingingMetal,
                 "echo:falling-wood" => Melody::FallingWood,
@@ -1043,27 +1033,16 @@ fn pending_choice_presentation(
             };
             Presentation::EchoCost { melody }
         }
-        ChoiceContinuation::Echo(crate::domain::EchoChoiceContinuation::SplitEarthFormation) => {
-            Presentation::EchoSplitEarthFormation
+        PendingResolution::EchoSplitEarthFormation => Presentation::EchoSplitEarthFormation,
+        PendingResolution::EchoPureFireTarget => Presentation::EchoPureFirePlayer,
+        PendingResolution::EchoPlantEarthMelody => Presentation::EchoPlantEarthMelody,
+        PendingResolution::TribulationEarthRendingEnvironment => {
+            Presentation::EarthRendingEnvironment
         }
-        ChoiceContinuation::Echo(crate::domain::EchoChoiceContinuation::PureFireTarget) => {
-            Presentation::EchoPureFirePlayer
-        }
-        ChoiceContinuation::Echo(crate::domain::EchoChoiceContinuation::PlantEarthMelody) => {
-            Presentation::EchoPlantEarthMelody
-        }
-        ChoiceContinuation::Tribulation(
-            crate::domain::TribulationChoiceContinuation::EarthRendingEnvironment,
-        ) => Presentation::EarthRendingEnvironment,
-        ChoiceContinuation::Tribulation(
-            crate::domain::TribulationChoiceContinuation::EarthRendingCard,
-        ) => Presentation::EarthRendingCard,
-        ChoiceContinuation::Pouch(crate::domain::PouchChoiceContinuation::Chain) => {
-            Presentation::Chain
-        }
-        ChoiceContinuation::Pouch(crate::domain::PouchChoiceContinuation::SheepStealing) => {
-            Presentation::SheepStealing
-        }
+        PendingResolution::TribulationEarthRendingCard => Presentation::EarthRendingCard,
+        PendingResolution::PouchChain => Presentation::Chain,
+        PendingResolution::PouchSheepStealingChoice => Presentation::SheepStealing,
+        _ => unreachable!("non-choice resolution cannot own a Pending Choice"),
     }
 }
 
@@ -1360,49 +1339,43 @@ mod tests {
 
     #[test]
     fn every_official_pending_choice_path_has_a_typed_presentation() {
-        use crate::domain::{
-            BaseChoiceContinuation as Base, ChoiceContinuation as Continuation,
-            ConfluenceChoiceContinuation as Confluence, ConfluenceResonance,
-            EchoChoiceContinuation as Echo, HeroChoiceContinuation as Hero,
-            JianghuChoiceContinuation as Jianghu, PouchChoiceContinuation as Pouch,
-            TribulationChoiceContinuation as Tribulation,
-        };
+        use crate::domain::{ConfluenceResonance, PendingResolution};
 
         let paths = vec![
-            Continuation::Base(Base::TurnDrawDiscard),
-            Continuation::Base(Base::HolyWindTakeHighest),
-            Continuation::Base(Base::ChaosReturnTwo),
-            Continuation::Hero(Hero::RevelationKeepOne),
-            Continuation::Jianghu(Jianghu::AzureCloudStepReturnOne),
-            Continuation::Confluence(Confluence::ClearWindDiscardTop),
-            Continuation::Confluence(Confluence::ClearWindKeepCards),
-            Continuation::Confluence(Confluence::DiscardInspectedCard {
+            PendingResolution::TurnDrawDiscard,
+            PendingResolution::HolyWindTakeHighest,
+            PendingResolution::ChaosReturnTwo,
+            PendingResolution::HeroRevelationKeepOne,
+            PendingResolution::JianghuAzureCloudStepReturnOne,
+            PendingResolution::ConfluenceClearWindDiscardTop,
+            PendingResolution::ConfluenceClearWindKeepCards,
+            PendingResolution::ConfluenceDiscardInspectedCard {
                 resonance: ConfluenceResonance::Mirror,
                 after: None,
-            }),
-            Continuation::Confluence(Confluence::DiscardInspectedCard {
+            },
+            PendingResolution::ConfluenceDiscardInspectedCard {
                 resonance: ConfluenceResonance::Myriad,
                 after: None,
-            }),
-            Continuation::Confluence(Confluence::DiscardInspectedCard {
+            },
+            PendingResolution::ConfluenceDiscardInspectedCard {
                 resonance: ConfluenceResonance::Thousand,
                 after: Some(Element::Fire),
-            }),
-            Continuation::Echo(Echo::RingingMetalDeckCard),
-            Continuation::Echo(Echo::Cost {
+            },
+            PendingResolution::EchoRingingMetalDeckCard,
+            PendingResolution::EchoCost {
                 melody_id: "echo:ringing-metal".to_string(),
-            }),
-            Continuation::Echo(Echo::SplitEarthFormation),
-            Continuation::Echo(Echo::PureFireTarget),
-            Continuation::Echo(Echo::PlantEarthMelody),
-            Continuation::Tribulation(Tribulation::EarthRendingEnvironment),
-            Continuation::Tribulation(Tribulation::EarthRendingCard),
-            Continuation::Pouch(Pouch::Chain),
-            Continuation::Pouch(Pouch::SheepStealing),
+            },
+            PendingResolution::EchoSplitEarthFormation,
+            PendingResolution::EchoPureFireTarget,
+            PendingResolution::EchoPlantEarthMelody,
+            PendingResolution::TribulationEarthRendingEnvironment,
+            PendingResolution::TribulationEarthRendingCard,
+            PendingResolution::PouchChain,
+            PendingResolution::PouchSheepStealingChoice,
         ];
 
-        for continuation in paths {
-            let presentation = pending_choice_presentation(&continuation);
+        for resolution in paths {
+            let presentation = pending_choice_presentation(&resolution);
             assert_ne!(presentation, PublicPendingChoicePresentation::Unclassified);
             assert!(!serde_json::to_string(&presentation).unwrap().is_empty());
         }

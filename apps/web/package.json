@@ -40,22 +40,22 @@
     "vue-router": "^5.2.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260822.1",
+    "@cloudflare/workers-types": "^5.20260826.1",
     "@nuxt/test-utils": "^4.1.0",
     "@playwright/cli": "^0.1.18",
     "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/bun": "^1.4.0",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.3.0",
     "@vue/test-utils": "^2.4.11",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "happy-dom": "^20.11.6",
-    "miniflare": "^5.20260820.0-alpha",
+    "miniflare": "^5.20260825.0-alpha",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
     "vitest": "^4.1.11",
     "vue-tsc": "^3.3.11",
-    "wrangler": "^4.125.0"
+    "wrangler": "^4.126.0"
   }
 }

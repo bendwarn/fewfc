@@ -4,6 +4,7 @@ pub(crate) mod action_detail;
 pub(crate) mod base;
 pub(crate) mod confluence;
 pub(crate) mod dark;
+pub(crate) mod deck_supply;
 pub(crate) mod echo;
 pub(crate) mod hero;
 pub(crate) mod jianghu;

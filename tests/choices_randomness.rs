@@ -3,10 +3,9 @@ use fewfc::application::{
 };
 use fewfc::domain::{
     CardInstanceId, ChainPouchDecision, ChoiceAnswer, ChoiceId, Command, GameError, GameEvent,
-    GameSetup, GameState, PassActionReason, PendingChoiceKind, PendingRandomness, PlayerId,
-    PouchRandomnessContinuation, RandomnessContinuation, RandomnessDeck, SecretStrategyDecision,
-    SecretStrategyStarOperation, SpiritRandomnessContinuation, TrustedRandomnessAnswer,
-    ValidationError,
+    GameSetup, GameState, PassActionReason, PendingChoiceKind, PendingRandomness,
+    PendingResolution, PlayerId, RandomnessDeck, SecretStrategyDecision,
+    SecretStrategyStarOperation, TrustedRandomnessAnswer, ValidationError,
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, event_for, state_for};
 
@@ -29,13 +28,11 @@ fn state_with_pending_randomness() -> GameState {
                 operation: fewfc::domain::RandomnessOperation::DeckShuffle {
                     deck: RandomnessDeck::Shared,
                 },
-                continuation: RandomnessContinuation::Pouch(
-                    PouchRandomnessContinuation::SheepStealing {
-                        source_card: card(1),
-                        owner: None,
-                    },
-                ),
                 current_order: vec![card(1), card(2), card(3)],
+            },
+            resolution: PendingResolution::PouchSheepStealing {
+                source_card: card(1),
+                owner: None,
             },
         },
     );
@@ -127,13 +124,11 @@ fn accepted_shuffle_is_canonical_and_replay_uses_the_recorded_order() {
                     operation: fewfc::domain::RandomnessOperation::DeckShuffle {
                         deck: RandomnessDeck::Shared,
                     },
-                    continuation: RandomnessContinuation::Pouch(
-                        PouchRandomnessContinuation::SheepStealing {
-                            source_card: card(1),
-                            owner: None,
-                        },
-                    ),
                     current_order: vec![card(1), card(2), card(3)],
+                },
+                resolution: PendingResolution::PouchSheepStealing {
+                    source_card: card(1),
+                    owner: None,
                 },
             },
             events[0].clone(),
@@ -156,6 +151,7 @@ fn public_randomness_views_never_expose_the_order() {
 
     let event = GameEvent::RandomnessRequested {
         request: state.pending_randomness.unwrap(),
+        resolution: state.pending_resolution.unwrap(),
     };
     let public_event = event_for(&event, Viewer::Observer);
     assert!(matches!(
@@ -275,9 +271,6 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
             operation: fewfc::domain::RandomnessOperation::DeckShuffle {
                 deck: RandomnessDeck::Shared,
             },
-            continuation: RandomnessContinuation::Echo(
-                fewfc::domain::EchoRandomnessContinuation::RingingMetalPostSearch,
-            ),
             current_order: vec![card(1), card(2)],
         })
         .unwrap(),
@@ -287,27 +280,17 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
                 "type": "deckShuffle",
                 "deck": "Shared"
             },
-            "continuation": {
-                "type": "echo",
-                "kind": "ringingMetalPostSearch"
-            },
             "currentOrder": [1, 2],
         })
     );
     assert_eq!(
-        serde_json::to_value(PouchRandomnessContinuation::ChainRecycle).unwrap(),
-        serde_json::json!("chainRecycle")
-    );
-    assert_eq!(
-        serde_json::to_value(RandomnessContinuation::Spirit(
-            SpiritRandomnessContinuation::DeathOmen {
-                player: PlayerId::new("p1"),
-            },
-        ))
+        serde_json::to_value(PendingResolution::SpiritDeathOmen {
+            player: PlayerId::new("p1"),
+        })
         .unwrap(),
         serde_json::json!({
-            "type": "spirit",
-            "kind": { "deathOmen": { "player": "p1" } }
+            "type": "spiritDeathOmen",
+            "player": "p1"
         })
     );
     assert_eq!(
@@ -317,11 +300,6 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
                 pile: RandomnessDeck::Player(PlayerId::new("p1")),
                 placement: fewfc::domain::DeckPlacement::Bottom,
             },
-            continuation: RandomnessContinuation::Pouch(
-                PouchRandomnessContinuation::SheepStealingRecycle {
-                    source_card: card(9),
-                },
-            ),
             current_order: vec![card(1)],
         })
         .unwrap(),
@@ -332,24 +310,19 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
                 "pile": { "Player": "p1" },
                 "placement": "Bottom"
             },
-            "continuation": {
-                "type": "pouch",
-                "kind": { "sheepStealingRecycle": { "sourceCard": 9 } }
-            },
             "currentOrder": [1]
         })
     );
     assert_eq!(
-        serde_json::to_value(PouchRandomnessContinuation::SheepStealing {
+        serde_json::to_value(PendingResolution::PouchSheepStealing {
             source_card: card(9),
             owner: Some(PlayerId::new("p1")),
         })
         .unwrap(),
         serde_json::json!({
-            "sheepStealing": {
-                "sourceCard": 9,
-                "owner": "p1"
-            }
+            "type": "pouchSheepStealing",
+            "sourceCard": 9,
+            "owner": "p1"
         })
     );
     assert_eq!(

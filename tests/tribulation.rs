@@ -654,10 +654,17 @@ fn rusted_forest_processes_each_personal_deck_and_skips_only_the_protected_owner
         personal_card(&state, &p1, Element::Metal, 4),
         personal_card(&state, &p1, Element::Metal, 3),
     ];
-    state
-        .deck_for_mut(&p1)
-        .unwrap()
-        .retain(|card| !formation.contains(card));
+    let p1_deck = state
+        .card_instances
+        .iter()
+        .filter(|instance| {
+            instance.origin == CardOrigin::Player(p1.clone())
+                && !formation.contains(&instance.instance)
+        })
+        .map(|instance| instance.instance)
+        .take(8)
+        .collect();
+    *state.deck_for_mut(&p1).unwrap() = p1_deck;
     *state.hand_mut(&p1).unwrap() = formation.clone();
     state.statuses.push(StatusEffect {
         id: "divine:p2".to_string(),
@@ -719,10 +726,17 @@ fn rusted_forest_deck_shuffle_does_not_recover_exhausted_tailwind() {
         personal_card(&state, &p1, Element::Metal, 4),
         personal_card(&state, &p1, Element::Metal, 3),
     ];
-    state
-        .deck_for_mut(&p1)
-        .unwrap()
-        .retain(|card| !formation.contains(card));
+    let p1_deck = state
+        .card_instances
+        .iter()
+        .filter(|instance| {
+            instance.origin == CardOrigin::Player(p1.clone())
+                && !formation.contains(&instance.instance)
+        })
+        .map(|instance| instance.instance)
+        .take(8)
+        .collect();
+    *state.deck_for_mut(&p1).unwrap() = p1_deck;
     *state.hand_mut(&p1).unwrap() = formation.clone();
     state.professions.push(PlayerProfession {
         player: p2.clone(),

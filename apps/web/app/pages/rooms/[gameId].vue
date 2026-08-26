@@ -24,6 +24,21 @@
           <template #before>
             <button class="back-button battlefield-back" type="button" aria-label="返回房間列表" title="返回房間列表" @click="leaveGame">←</button>
           </template>
+          <template #board-overlay>
+            <GameConclusionPanel
+              v-if="gameFinished"
+              class="battlefield-conclusion"
+              :state="state"
+              :team-label="teamLabel"
+              :summary="`${firstTurnText}，本局已結束。`"
+            >
+              <template #actions>
+                <button class="primary-button" type="button" :disabled="game.isLoading.value" @click="restartGame">
+                  返回房間 <span>→</span>
+                </button>
+              </template>
+            </GameConclusionPanel>
+          </template>
           <template #turn-controls>
               <div
                 v-if="!roomWaiting && !gameFinished && viewer === state.currentPlayer"
@@ -808,18 +823,7 @@
             </template>
           </WaitingRoomLayout>
 
-        <aside class="game-sidebar" :class="{ finished: gameFinished }">
-          <section v-if="gameFinished" class="result-panel">
-            <h2>{{ gameResultText }}</h2>
-            <p class="result-reason"><strong>終局原因</strong>{{ gameEndReasonText }}</p>
-            <p>{{ firstTurnText }}，本局已結束。</p>
-            <div class="result-actions">
-              <button class="primary-button" type="button" :disabled="game.isLoading.value" @click="restartGame">
-                返回房間 <span>→</span>
-              </button>
-            </div>
-          </section>
-
+        <aside class="game-sidebar">
           <section ref="desktopEventFeed" class="event-panel">
             <div class="panel-title">
               <h2>戰局紀錄 <button v-if="roomWaiting && game.savableReplay.value" class="ghost-button" type="button" :disabled="replaySaving" @click="saveCurrentReplay">{{ replaySaved ? '已儲存' : '儲存本局' }}</button></h2>
@@ -895,7 +899,7 @@ import { useLayoutNotifications } from '~/lib/player-notifications-context'
 import { useRulesCatalog } from '~/lib/rules-catalog'
 import { presentApiError } from '~/lib/api-error-presentation'
 import { abilityLevelPicker } from '~/lib/ability-level-picker'
-import { scrollBattleRecordToLatest } from '~/lib/battle-record-scroll'
+import { battleRecordContentRevision, scrollBattleRecordToLatest } from '~/lib/battle-record-scroll'
 import {
   completeVirtualFormationCardOffer,
   isVirtualFormationCardOffer,
@@ -1398,7 +1402,7 @@ const battleRecordGroups = computed(() => {
   return [
     { id: 'preparation', title: '對局準備', entries: record.preparation.entries },
     ...record.turns.map(group => ({ id: `turn-${group.turnNumber}`, title: group.title, entries: group.entries })),
-  ].filter(group => group.entries.length > 0)
+  ].filter(group => group.id !== 'preparation' || group.entries.length > 0)
 })
 const latestVisibleEvent = computed(() => battleRecordGroups.value.flatMap(group => group.entries).at(-1) ?? null)
 const canStartOnlineRoom = computed(() => {
@@ -1417,50 +1421,6 @@ const showSkip = computed(() => (
   roomConnected.value
   && game.playablePass.value !== null
 ))
-const gameResultText = computed(() => {
-  const conclusion = state.value.gameConclusion
-  if (conclusion?.outcome.type === 'winner') {
-    return `${teamLabel(conclusion.outcome.team)} 勝利`
-  }
-
-  if (conclusion?.outcome.type === 'draw') {
-    return '平局'
-  }
-
-  if (state.value.fiveStarAlignment) {
-    return `五星連珠 · ${teamLabel(state.value.fiveStarAlignment.team)} 勝利`
-  }
-
-  if (state.value.winnerTeam) {
-    return `${teamLabel(state.value.winnerTeam)} 勝利`
-  }
-
-  const aliveTeams = state.value.hp.filter((entry) => entry.hp > 0)
-
-  if (aliveTeams.length === 1) {
-    return `${teamLabel(aliveTeams[0]!.team)} 勝利`
-  }
-
-  return '戰局結束'
-})
-const gameEndReasonText = computed(() => {
-  const conclusion = state.value.gameConclusion
-  if (!conclusion) return '終局結論尚未載入。'
-
-  return conclusion.causes.map((cause) => {
-    if (cause.type === 'teamHpDepleted') {
-      const teams = cause.teams.map(teamLabel)
-      return teams.length ? `${teams.join('、')} 的生命值歸零` : '隊伍生命值歸零'
-    }
-
-    const directVictoryLabels: Record<string, string> = {
-      'five-star-alignment': '達成五星連珠',
-      'king-yama-decree': '施展閻王令',
-    }
-    return directVictoryLabels[cause.rule]
-      ?? `${teamLabel(cause.team)} 達成「${cause.rule}」的直接勝利條件`
-  }).join('；')
-})
 let actionDetailTimer: ReturnType<typeof setTimeout> | undefined
 let setupRevealTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -1969,18 +1929,12 @@ watch(
   },
 )
 watch(() => game.roomDissolved.value, dissolved => { if (dissolved) void router.replace('/rooms') })
-watch(() => battleRecordGroups.value.flatMap(group => group.entries).length, (length, previous = length) => {
-  if (length > previous) {
-    void nextTick(() => {
-      scrollBattleRecordToLatest(desktopEventFeed.value)
-    })
-  }
-  if (!eventSheetOpen.value || length <= previous) return
-  if (!eventSheetFollowing.value) {
-    unseenEventCount.value += length - previous
-    return
-  }
-  void nextTick(scrollEventSheetToBottom)
+watch(() => battleRecordContentRevision(battleRecordGroups.value), (revision, previous = revision) => {
+  if (revision === previous) return
+  void nextTick(() => {
+    scrollBattleRecordToLatest(desktopEventFeed.value)
+    if (eventSheetOpen.value) scrollEventSheetToBottom()
+  })
 })
 
 function starLabel(star: import('~/types/fewfc').StarKind): string {
@@ -2266,13 +2220,6 @@ function formationChoiceLabel(formationId: string): string {
 .result-actions .primary-button { @apply justify-between; }
 
 .game-sidebar { @apply grid min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
-.game-sidebar.finished { grid-template-rows: auto minmax(0, 1fr); }
-.result-panel { @apply border-b border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-5; }
-.result-panel h2 { @apply font-serif text-2xl text-gold-light; }
-.result-panel p { @apply mt-1 text-xs text-muted; }
-.result-panel .result-reason { @apply mt-3 border-l-2 border-[var(--app-accent)] pl-2 text-[var(--app-text)]; }
-.result-reason strong { @apply mr-2 text-gold-light; }
-.result-panel .result-actions { @apply grid-cols-1; }
 .panel-title { @apply flex items-start justify-between; }
 .event-panel { @apply min-h-0 overflow-auto border-b border-line p-5; }
 .panel-title h2 { @apply font-serif text-[15px]; }

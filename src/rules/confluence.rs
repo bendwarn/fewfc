@@ -1,8 +1,7 @@
 use crate::domain::{
-    CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, ConfluenceRandomnessContinuation, Element,
-    GameError, GameEvent, GameResult, GameState, HpChangeDelta, PlayerId, ProfessionId,
-    RandomnessContinuation, RandomnessDeck, RandomnessOperation, RuleModuleId, StatusDuration,
-    StatusEffect, StatusOwner, ValidationError,
+    CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, Element, GameError, GameEvent, GameResult,
+    GameState, HpChangeDelta, PendingResolution, PlayerId, ProfessionId, RandomnessDeck,
+    RuleModuleId, StatusDuration, StatusEffect, StatusOwner, ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::{
@@ -389,27 +388,20 @@ pub(crate) fn active_spell_events(
         }
         WIND_DANCE => vec![turn_draw_bonus_event(state, player, 1)],
         CLEAR_WIND_TEN_THOUSAND_MILES => {
-            let deck_count = state.deck_for(player).map_or(0, |deck| deck.len());
-            let discard = state.discard_for(player).map_or(&[][..], |cards| cards);
-            if deck_count < 10 && !discard.is_empty() {
-                let pile = deck_kind(state, player);
-                vec![GameEvent::RandomnessRequested {
-                    request: crate::domain::PendingRandomness {
-                        request_id: format!(
-                            "confluence:clear-wind-ten-thousand-miles:{}:{}",
-                            state.turn_number,
-                            player.as_str()
-                        ),
-                        operation: RandomnessOperation::DiscardShuffle {
-                            pile,
-                            placement: crate::domain::DeckPlacement::Bottom,
-                        },
-                        continuation: RandomnessContinuation::Confluence(
-                            ConfluenceRandomnessContinuation::ClearWindTenThousandMiles,
-                        ),
-                        current_order: discard.to_vec(),
-                    },
-                }]
+            let pile = deck_kind(state, player);
+            if let Some(event) = crate::rules::deck_supply::request_if_needed(
+                state,
+                &pile,
+                10,
+                crate::domain::DeckPlacement::Bottom,
+                format!(
+                    "confluence:clear-wind-ten-thousand-miles:{}:{}",
+                    state.turn_number,
+                    player.as_str()
+                ),
+                PendingResolution::ConfluenceClearWindTenThousandMiles,
+            )? {
+                vec![event]
             } else {
                 clear_wind_ten_thousand_miles_after_shuffle(state, player)?
             }
@@ -480,11 +472,11 @@ pub(crate) fn active_spell_events(
                 let previous = TurnOrderTargets::new(state)
                     .player_target(player, RulePlayerTarget::PreviousPlayer)?;
                 let after = selected.map(resonance_target_element).transpose()?;
-                return Ok(Some(inspect_and_discard_events_with_continuation(
+                return Ok(Some(inspect_and_discard_events_with_resolution(
                     state,
                     player,
                     &previous,
-                    crate::domain::ConfluenceChoiceContinuation::DiscardInspectedCard {
+                    PendingResolution::ConfluenceDiscardInspectedCard {
                         resonance: crate::domain::ConfluenceResonance::Thousand,
                         after,
                     },
@@ -542,22 +534,22 @@ fn inspect_and_discard_events(
     target: &PlayerId,
     effect_id: &str,
 ) -> GameResult<Vec<GameEvent>> {
-    inspect_and_discard_events_with_continuation(
+    inspect_and_discard_events_with_resolution(
         state,
         player,
         target,
-        crate::domain::ConfluenceChoiceContinuation::DiscardInspectedCard {
+        PendingResolution::ConfluenceDiscardInspectedCard {
             resonance: confluence_resonance(effect_id)?,
             after: None,
         },
     )
 }
 
-fn inspect_and_discard_events_with_continuation(
+fn inspect_and_discard_events_with_resolution(
     state: &GameState,
     player: &PlayerId,
     target: &PlayerId,
-    continuation: crate::domain::ConfluenceChoiceContinuation,
+    resolution: PendingResolution,
 ) -> GameResult<Vec<GameEvent>> {
     let cards = state
         .hand(target)
@@ -579,7 +571,7 @@ fn inspect_and_discard_events_with_continuation(
                     maximum: 1,
                     can_decline: false,
                 },
-                continuation: crate::domain::ChoiceContinuation::Confluence(continuation),
+                resolution,
             },
         )?);
     }
@@ -613,21 +605,17 @@ fn resonance_target_element(target: &str) -> GameResult<Element> {
 pub(crate) fn after_choice_events(
     state: &GameState,
     player: &PlayerId,
-    continuation: &crate::domain::ChoiceContinuation,
+    resolution: &PendingResolution,
 ) -> GameResult<Vec<GameEvent>> {
-    match continuation {
-        crate::domain::ChoiceContinuation::Confluence(
-            crate::domain::ConfluenceChoiceContinuation::DiscardInspectedCard {
-                resonance: crate::domain::ConfluenceResonance::Thousand,
-                after: Some(element),
-            },
-        ) => resonance_element_events(state, player, *element),
-        crate::domain::ChoiceContinuation::Confluence(
-            crate::domain::ConfluenceChoiceContinuation::DiscardInspectedCard {
-                resonance: crate::domain::ConfluenceResonance::Myriad,
-                ..
-            },
-        ) => myriad_primary_events(state, player),
+    match resolution {
+        PendingResolution::ConfluenceDiscardInspectedCard {
+            resonance: crate::domain::ConfluenceResonance::Thousand,
+            after: Some(element),
+        } => resonance_element_events(state, player, *element),
+        PendingResolution::ConfluenceDiscardInspectedCard {
+            resonance: crate::domain::ConfluenceResonance::Myriad,
+            ..
+        } => myriad_primary_events(state, player),
         _ => Ok(Vec::new()),
     }
 }
@@ -1218,6 +1206,46 @@ pub(crate) fn after_clear_wind_randomness_events(state: &GameState) -> GameResul
     clear_wind_ten_thousand_miles_after_shuffle(state, &player)
 }
 
+pub(crate) fn after_clear_wind_supply_events(state: &GameState) -> GameResult<Vec<GameEvent>> {
+    let player = state
+        .current_player()
+        .cloned()
+        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?;
+    clear_wind_reveal_events(state, &player)
+}
+
+fn clear_wind_reveal_events(state: &GameState, player: &PlayerId) -> GameResult<Vec<GameEvent>> {
+    let top = state
+        .deck_for(player)
+        .and_then(|deck| deck.first())
+        .copied()
+        .ok_or(GameError::EngineInvariant(
+            crate::domain::EngineInvariantError::NotEnoughCards {
+                needed: 1,
+                available: 0,
+            },
+        ))?;
+    Ok(vec![
+        GameEvent::DeckTopRevealed {
+            player: player.clone(),
+            card: top,
+        },
+        crate::rules::pending_choice::request_event(
+            state,
+            crate::domain::ChoiceRequest {
+                player: player.clone(),
+                kind: crate::domain::PendingChoiceKind::Card {
+                    cards: vec![top],
+                    minimum: 0,
+                    maximum: 1,
+                    can_decline: false,
+                },
+                resolution: PendingResolution::ConfluenceClearWindDiscardTop,
+            },
+        )?,
+    ])
+}
+
 fn clear_wind_ten_thousand_miles_after_shuffle(
     state: &GameState,
     player: &PlayerId,
@@ -1252,9 +1280,7 @@ fn clear_wind_ten_thousand_miles_after_shuffle(
                     maximum,
                     can_decline: false,
                 },
-                continuation: crate::domain::ChoiceContinuation::Confluence(
-                    crate::domain::ConfluenceChoiceContinuation::ClearWindKeepCards,
-                ),
+                resolution: PendingResolution::ConfluenceClearWindKeepCards,
             },
         )?);
     }
@@ -1423,12 +1449,13 @@ pub(crate) fn playable_profession_abilities(
                 None,
             ));
         }
-        if abilities.contains(&"confluence:clear-wind")
-            && state
-                .deck_for(player)
-                .and_then(|deck| deck.first())
-                .is_some()
-        {
+        if abilities.contains(&"confluence:clear-wind") {
+            crate::rules::deck_supply::plan(
+                state,
+                &deck_kind(state, player),
+                1,
+                crate::domain::DeckPlacement::Bottom,
+            )?;
             candidates.push(ability_candidate(
                 "confluence:clear-wind",
                 "晴風",
@@ -1584,30 +1611,23 @@ pub(crate) fn activate_profession_ability(
             });
         }
         "confluence:clear-wind" => {
-            let top = state
-                .deck_for(player)
-                .and_then(|deck| deck.first())
-                .copied()
-                .expect("playable Clear Wind requires a top Card");
-            events.push(GameEvent::DeckTopRevealed {
-                player: player.clone(),
-                card: top,
-            });
-            events.push(crate::rules::pending_choice::request_event(
+            let pile = deck_kind(state, player);
+            if let Some(event) = crate::rules::deck_supply::request_if_needed(
                 state,
-                crate::domain::ChoiceRequest {
-                    player: player.clone(),
-                    kind: crate::domain::PendingChoiceKind::Card {
-                        cards: vec![top],
-                        minimum: 0,
-                        maximum: 1,
-                        can_decline: false,
-                    },
-                    continuation: crate::domain::ChoiceContinuation::Confluence(
-                        crate::domain::ConfluenceChoiceContinuation::ClearWindDiscardTop,
-                    ),
-                },
-            )?);
+                &pile,
+                1,
+                crate::domain::DeckPlacement::Bottom,
+                format!(
+                    "confluence:clear-wind:{}:{}",
+                    state.turn_number,
+                    player.as_str()
+                ),
+                PendingResolution::ConfluenceClearWindRevealTop,
+            )? {
+                events.push(event);
+            } else {
+                events.extend(clear_wind_reveal_events(state, player)?);
+            }
         }
         "confluence:tailwind" => {
             let use_count = limited_use(state, player, TAILWIND_USE).unwrap();

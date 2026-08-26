@@ -62,11 +62,11 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
     ])
     expect(skillResponse.ok()).toBe(true)
 
-    const hostEntry = await battleRecordEntry(host, '你使用精靈技能')
-    await expect(hostEntry).toContainText('使用「飛刃」，靈力由 2 變為 0')
+    const hostEntry = await battleRecordEntry(host, '使用「飛刃」')
+    await expect(hostEntry).toContainText('靈力由 2 變為 0')
     await reloadFastGameRoute(guest, roomId)
     await expect(guest.getByRole('listitem').filter({
-      hasText: /使用「飛刃」，靈力由 2 變為 0/,
+      hasText: /使用「飛刃」.*靈力由 2 變為 0/,
     })).toBeVisible()
     await reloadFastGameRoute(host, roomId)
     await expect(hostEntry).toContainText('的金精靈已破除')

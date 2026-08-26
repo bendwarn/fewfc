@@ -3,8 +3,8 @@ use fewfc::domain::{
     CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, ChoiceAnswer, Command, DARK_GLIMMER_MODULE_ID,
     DeckPlacement, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameState, GameStatus,
     HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind, LastTurnDiscard,
-    LimitedUse, PendingRandomness, Phase, Player, PlayerId, PlayerProfession, PlayerSpirit,
-    ProfessionId, RandomnessContinuation, RandomnessDeck, RandomnessOperation, RuleModuleId,
+    LimitedUse, PendingRandomness, PendingResolution, Phase, Player, PlayerId, PlayerProfession,
+    PlayerSpirit, ProfessionId, RandomnessDeck, RandomnessOperation, RuleModuleId,
     SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind, SpiritSkill, TargetDecl, TeamId,
     TrustedRandomnessAnswer,
 };
@@ -321,7 +321,7 @@ fn clear_wind_reveals_once_then_waits_for_a_destination_choice() {
     )));
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::ChoiceRequested { choice }
+        GameEvent::ChoiceRequested { choice, resolution }
             if choice.player == player
                 && matches!(&choice.kind, fewfc::domain::PendingChoiceKind::Card {
                     cards,
@@ -329,9 +329,7 @@ fn clear_wind_reveals_once_then_waits_for_a_destination_choice() {
                     maximum: 1,
                     ..
                 } if cards == &vec![top])
-                && matches!(choice.continuation,
-                    fewfc::domain::ChoiceContinuation::Confluence(
-                        fewfc::domain::ConfluenceChoiceContinuation::ClearWindDiscardTop))
+                && matches!(resolution, PendingResolution::ConfluenceClearWindDiscardTop)
     )));
 
     for event in &events {
@@ -361,6 +359,76 @@ fn clear_wind_reveals_once_then_waits_for_a_destination_choice() {
 }
 
 #[test]
+fn clear_wind_recycles_discard_when_the_deck_is_empty_without_exposing_its_resolution() {
+    let mut game = state(false);
+    let player = PlayerId::new("p2");
+    game.professions.push(PlayerProfession {
+        player: player.clone(),
+        profession: ProfessionId::new("confluence:clear-wind-adept"),
+    });
+    let recycled = cards(&game, &[(Element::Metal, 1)])[0];
+    game.deck.clear();
+    game.discard.push(recycled);
+
+    let candidates = OfficialRules::new()
+        .playable_actions(&game, &player, &[])
+        .unwrap();
+    assert!(candidates.iter().any(|action| matches!(
+        action,
+        PlayableAction::ActivateProfessionAbility(candidate)
+            if candidate.ability_id == "confluence:clear-wind"
+    )));
+
+    let activation = handle_command(
+        &game,
+        Command::ActivateProfessionAbility {
+            player: player.clone(),
+            ability_id: "confluence:clear-wind".to_string(),
+            cards: Vec::new(),
+            target_card: None,
+            declared_element: None,
+            declared_level: None,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        activation.last(),
+        Some(GameEvent::RandomnessRequested { request, resolution })
+            if request.operation.is_discard_shuffle()
+                && request.current_order == vec![recycled]
+                && resolution == &PendingResolution::ConfluenceClearWindRevealTop
+    ));
+    for event in &activation {
+        apply_event(&mut game, event);
+    }
+
+    let request = game.pending_randomness.clone().unwrap();
+    let after_shuffle = resolve_trusted_randomness(
+        &game,
+        &TrustedRandomnessAnswer {
+            request_id: request.request_id,
+            shuffled_order: vec![recycled],
+        },
+    )
+    .unwrap();
+    assert!(after_shuffle.iter().any(|event| matches!(
+        event,
+        GameEvent::DeckTopRevealed { player: owner, card }
+            if owner == &player && card == &recycled
+    )));
+    for event in &after_shuffle {
+        apply_event(&mut game, event);
+    }
+
+    assert_eq!(
+        game.pending_resolution,
+        Some(PendingResolution::ConfluenceClearWindDiscardTop)
+    );
+    let public_state = serde_json::to_value(state_for(&game, Viewer::Player(player))).unwrap();
+    assert!(public_state.get("pendingResolution").is_none());
+}
+
+#[test]
 fn clear_wind_ten_thousand_miles_limits_kept_cards_and_discards_unselected_shared_cards() {
     let (mut game, player, used_cards, remaining_card, drawn_cards) =
         clear_wind_ten_thousand_miles_game(false);
@@ -376,12 +444,14 @@ fn clear_wind_ten_thousand_miles_limits_kept_cards_and_discards_unselected_share
                 maximum: 4,
                 ..
             },
-            continuation: fewfc::domain::ChoiceContinuation::Confluence(
-                fewfc::domain::ConfluenceChoiceContinuation::ClearWindKeepCards),
             ..
         }) if choice_player == &player
             && allowed_cards == &drawn_cards
     ));
+    assert_eq!(
+        game.pending_resolution,
+        Some(PendingResolution::ConfluenceClearWindKeepCards)
+    );
 
     let kept_cards = drawn_cards[..4].to_vec();
     let events = answer_choice(
@@ -1060,11 +1130,9 @@ fn tailwind_recovers_for_all_shared_deck_owners_but_only_personal_pile_owner() {
                     pile: RandomnessDeck::Shared,
                     placement: DeckPlacement::Bottom,
                 },
-                continuation: RandomnessContinuation::Base(
-                    fewfc::domain::BaseRandomnessContinuation::TurnDraw,
-                ),
                 current_order: vec![recycled],
             },
+            resolution: PendingResolution::TurnDraw,
         },
     );
     let events = resolve_trusted_randomness(
@@ -1122,11 +1190,9 @@ fn tailwind_recovers_for_all_shared_deck_owners_but_only_personal_pile_owner() {
                     pile: RandomnessDeck::Player(PlayerId::new("p1")),
                     placement: DeckPlacement::Bottom,
                 },
-                continuation: RandomnessContinuation::Base(
-                    fewfc::domain::BaseRandomnessContinuation::TurnDraw,
-                ),
                 current_order: vec![recycled],
             },
+            resolution: PendingResolution::TurnDraw,
         },
     );
     let events = resolve_trusted_randomness(
@@ -1168,11 +1234,9 @@ fn deck_shuffles_and_ineligible_tailwind_owners_do_not_emit_recovery_events() {
                 operation: RandomnessOperation::DeckShuffle {
                     deck: RandomnessDeck::Shared,
                 },
-                continuation: RandomnessContinuation::Base(
-                    fewfc::domain::BaseRandomnessContinuation::TurnDraw,
-                ),
                 current_order: vec![shuffled],
             },
+            resolution: PendingResolution::TurnDraw,
         },
     );
     let events = resolve_trusted_randomness(

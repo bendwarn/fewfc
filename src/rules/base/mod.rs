@@ -6,12 +6,11 @@ mod formation_selection;
 mod formation_use;
 
 use crate::domain::{
-    BaseRandomnessContinuation, CannotPerformFormationReason, CardInstanceId, CardMoveDelta,
-    CardOrigin, CardZone, Command, DISCARD_RETRIEVAL_MODULE_ID, DeckPlacement,
-    EngineInvariantError, GameConclusion, GameEndCause, GameError, GameEvent, GameOutcome,
-    GameResult, GameSetup, GameState, GameStatus, HpChangeDelta, PERSONAL_DECK_MODULE_ID,
-    PassActionReason, Phase, Player, PlayerDeckList, PlayerId, RandomnessContinuation,
-    RandomnessDeck, RandomnessOperation, RulesetId, TeamHp, TurnDrawSkipReason, ValidationError,
+    CannotPerformFormationReason, CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Command,
+    DISCARD_RETRIEVAL_MODULE_ID, DeckPlacement, EngineInvariantError, GameConclusion, GameEndCause,
+    GameError, GameEvent, GameOutcome, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta,
+    PERSONAL_DECK_MODULE_ID, PassActionReason, PendingResolution, Phase, Player, PlayerDeckList,
+    PlayerId, RandomnessDeck, RulesetId, TeamHp, TurnDrawSkipReason, ValidationError,
     validate_setup,
 };
 use crate::rules::projection;
@@ -115,7 +114,7 @@ pub(crate) fn append_terminal_game_end(state: &GameState, events: &mut Vec<GameE
     }
 }
 
-/// 隨機性 continuation 完成作用中陣形後，補上陣形後果與實體卡牌收尾。
+/// 隨機性待處理流程完成作用中陣形後，補上陣形後果與實體卡牌收尾。
 pub(crate) fn append_completed_formation_events(
     state: &GameState,
     events: &mut Vec<GameEvent>,
@@ -650,9 +649,7 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
                         maximum: 1,
                         can_decline: false,
                     },
-                    continuation: crate::domain::ChoiceContinuation::Base(
-                        crate::domain::BaseChoiceContinuation::TurnDrawDiscard,
-                    ),
+                    resolution: PendingResolution::TurnDrawDiscard,
                 },
             )?;
             projection::apply_event(&mut projected, &choice_event);
@@ -750,41 +747,24 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
         .copied()
         .unwrap_or(0);
     let draw_count = (state.base_draw + draw_bonus).min(available_space) + 1;
+    let pile = if state.uses_personal_decks() {
+        RandomnessDeck::Player(player.clone())
+    } else {
+        RandomnessDeck::Shared
+    };
+    if let Some(event) = crate::rules::deck_supply::request_if_needed(
+        state,
+        &pile,
+        draw_count,
+        DeckPlacement::Bottom,
+        format!("base:turn-draw:{}:{}", state.turn_number, player.as_str()),
+        PendingResolution::TurnDraw,
+    )? {
+        return Ok(Some(event));
+    }
     let deck = state
         .deck_for(&player)
         .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
-    let discard = state
-        .discard_for(&player)
-        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
-    if deck.len() < draw_count {
-        if deck.len() + discard.len() >= draw_count && !discard.is_empty() {
-            let pile = if state.uses_personal_decks() {
-                RandomnessDeck::Player(player.clone())
-            } else {
-                RandomnessDeck::Shared
-            };
-            return Ok(Some(GameEvent::RandomnessRequested {
-                request: crate::domain::PendingRandomness {
-                    request_id: format!("base:turn-draw:{}:{}", state.turn_number, player.as_str()),
-                    operation: RandomnessOperation::DiscardShuffle {
-                        pile,
-                        placement: DeckPlacement::Bottom,
-                    },
-                    continuation: RandomnessContinuation::Base(
-                        BaseRandomnessContinuation::TurnDraw,
-                    ),
-                    current_order: discard.to_vec(),
-                },
-            }));
-        }
-
-        return Err(GameError::EngineInvariant(
-            EngineInvariantError::NotEnoughCards {
-                needed: draw_count,
-                available: deck.len(),
-            },
-        ));
-    }
 
     let drawn_cards = deck.iter().take(draw_count).copied().collect::<Vec<_>>();
 
@@ -1373,6 +1353,7 @@ fn ensure_can_query_playable_actions(
 pub(crate) fn resolve_answered_choice(
     state: &GameState,
     choice: &crate::domain::PendingChoice,
+    resolution: &PendingResolution,
     player: PlayerId,
     choice_id: crate::domain::ChoiceId,
     answer: crate::domain::ChoiceAnswer,
@@ -1388,10 +1369,8 @@ pub(crate) fn resolve_answered_choice(
     let mut resolved_state = state.clone();
     crate::rules::projection::apply_event(&mut resolved_state, &events[0]);
 
-    match &choice.continuation {
-        crate::domain::ChoiceContinuation::Base(
-            crate::domain::BaseChoiceContinuation::TurnDrawDiscard,
-        ) => {
+    match resolution {
+        PendingResolution::TurnDrawDiscard => {
             ensure_current_player(&resolved_state, &player)?;
             ensure_phase(&resolved_state, Phase::TurnDraw)?;
             let crate::domain::ChoiceAnswer::Cards { cards } = answer else {
@@ -1430,46 +1409,49 @@ pub(crate) fn resolve_answered_choice(
                 });
             }
         }
-        crate::domain::ChoiceContinuation::Echo(continuation) => {
+        PendingResolution::EchoPureFireTarget
+        | PendingResolution::EchoSplitEarthFormation
+        | PendingResolution::EchoRingingMetalDeckCard
+        | PendingResolution::EchoPlantEarthMelody
+        | PendingResolution::EchoCost { .. } => {
             if let Some(resumed) =
-                crate::rules::echo::answer_choice(&resolved_state, &player, continuation, &answer)?
+                crate::rules::echo::answer_choice(&resolved_state, &player, resolution, &answer)?
             {
                 events.extend(resumed);
             }
         }
-        crate::domain::ChoiceContinuation::Tribulation(continuation) => {
+        PendingResolution::TribulationEarthRendingEnvironment
+        | PendingResolution::TribulationEarthRendingCard => {
             if let Some(resumed) =
-                crate::rules::tribulation::answer_choice(&resolved_state, continuation, &answer)?
+                crate::rules::tribulation::answer_choice(&resolved_state, resolution, &answer)?
             {
                 events.extend(resumed);
             }
         }
-        crate::domain::ChoiceContinuation::Pouch(crate::domain::PouchChoiceContinuation::Chain) => {
+        PendingResolution::PouchChain => {
             if let Some(resumed) =
                 crate::rules::pouch::answer_chain_choice(&resolved_state, &player, &answer)?
             {
                 events.extend(resumed);
             }
         }
-        crate::domain::ChoiceContinuation::Pouch(
-            crate::domain::PouchChoiceContinuation::SheepStealing,
-        ) => {
+        PendingResolution::PouchSheepStealingChoice => {
             if let Some(resumed) =
                 crate::rules::pouch::answer_sheep_choice(&resolved_state, choice, &player, &answer)?
             {
                 events.extend(resumed);
             }
         }
-        continuation => {
+        _resolution => {
             let cards = match &answer {
                 crate::domain::ChoiceAnswer::Cards { cards } => cards,
-                _ => unreachable!("validated card continuation has a Card answer"),
+                _ => unreachable!("validated card resolution has a Card answer"),
             };
             events.extend(formation_use::answer_choice(
                 &resolved_state,
                 choice,
                 &player,
-                continuation,
+                resolution,
                 cards,
             )?);
         }

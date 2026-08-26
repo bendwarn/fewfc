@@ -1,6 +1,6 @@
 use crate::domain::{
-    ChoiceAnswer, ChoiceContinuation, ChoiceId, ChoiceRequest, GameError, GameEvent, GameResult,
-    GameState, PendingChoice, PendingChoiceKind, PlayerId, ValidationError,
+    ChoiceAnswer, ChoiceId, ChoiceRequest, GameError, GameEvent, GameResult, GameState,
+    PendingChoice, PendingChoiceKind, PendingResolution, PlayerId, ValidationError,
 };
 use std::collections::HashSet;
 
@@ -18,8 +18,8 @@ pub(crate) fn request_event(state: &GameState, request: ChoiceRequest) -> GameRe
             choice_id: state.next_choice_id,
             player: request.player,
             kind: request.kind,
-            continuation: request.continuation,
         },
+        resolution: request.resolution,
     })
 }
 
@@ -156,14 +156,19 @@ pub(crate) fn answer_events(
         };
     };
     validate_answer(choice, &player, choice_id, &answer)?;
-    if let (
-        ChoiceContinuation::Pouch(crate::domain::PouchChoiceContinuation::Chain),
-        ChoiceAnswer::Chain { decision },
-    ) = (&choice.continuation, &answer)
+    let resolution = state
+        .pending_resolution
+        .as_ref()
+        .ok_or(GameError::EngineInvariant(
+            crate::domain::EngineInvariantError::InvalidPendingChoice,
+        ))?;
+    if let (PendingResolution::PouchChain, ChoiceAnswer::Chain { decision }) = (resolution, &answer)
     {
         crate::rules::pouch::validate_chain_decision(state, &player, decision)?;
     }
-    crate::rules::base::resolve_answered_choice(state, choice, player, choice_id, answer)
+    crate::rules::base::resolve_answered_choice(
+        state, choice, resolution, player, choice_id, answer,
+    )
 }
 
 fn validate_request(request: &ChoiceRequest) -> GameResult<()> {
@@ -199,8 +204,8 @@ fn cards_are_valid(
 mod tests {
     use super::validate_answer;
     use crate::domain::{
-        CardInstanceId, ChoiceAnswer, ChoiceContinuation, ChoiceId, ChoiceRequest, GameError,
-        GameSetup, GameState, PendingChoice, PendingChoiceKind, PlayerId,
+        CardInstanceId, ChoiceAnswer, ChoiceId, ChoiceRequest, GameError, GameSetup, GameState,
+        PendingChoice, PendingChoiceKind, PendingResolution, PlayerId,
     };
 
     fn card(value: u64) -> CardInstanceId {
@@ -212,14 +217,11 @@ mod tests {
             choice_id: ChoiceId::new(7),
             player: PlayerId::new("p1"),
             kind,
-            continuation: ChoiceContinuation::Base(
-                crate::domain::BaseChoiceContinuation::TurnDrawDiscard,
-            ),
         }
     }
 
     #[test]
-    fn validates_every_typed_choice_shape_before_continuation_dispatch() {
+    fn validates_every_typed_choice_shape_before_resolution_dispatch() {
         let cases = vec![
             (
                 choice(PendingChoiceKind::Card {
@@ -347,6 +349,7 @@ mod tests {
             maximum: 1,
             can_decline: false,
         }));
+        state.pending_resolution = Some(PendingResolution::TurnDrawDiscard);
 
         assert!(matches!(
             super::request_event(
@@ -359,9 +362,7 @@ mod tests {
                         maximum: 1,
                         can_decline: false,
                     },
-                    continuation: ChoiceContinuation::Base(
-                        crate::domain::BaseChoiceContinuation::TurnDrawDiscard,
-                    ),
+                    resolution: PendingResolution::TurnDrawDiscard,
                 },
             ),
             Err(GameError::EngineInvariant(

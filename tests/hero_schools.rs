@@ -1171,7 +1171,7 @@ fn activated_abilities_require_action_permission_and_revelation_recycles_persona
     .unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::RandomnessRequested { request }
+        GameEvent::RandomnessRequested { request, .. }
             if request.operation.is_discard_shuffle()
                 && request.current_order.len() == 3
                 && request.current_order.contains(&cost)

@@ -103,18 +103,14 @@ test('Secret Strategy uses the closed direct and Chain Decision wire shapes', ()
   })
 })
 
-test('Death Omen pending randomness keeps the Rust camelCase continuation contract', () => {
+test('pending randomness exposes only the input required to resolve it', () => {
   const request: TrustedRandomnessRequest = {
     requestId: 'spirit:death-omen:1:p1',
     operation: { type: 'discardShuffle', pile: 'Shared', placement: 'Bottom' },
-    continuation: { type: 'spirit', kind: { deathOmen: { player: 'p1' } } },
     currentOrder: [4, 3, 2],
   }
 
-  expect(request.continuation).toStrictEqual({
-    type: 'spirit',
-    kind: { deathOmen: { player: 'p1' } },
-  })
+  expect('continuation' in request).toBe(false)
 })
 
 test('online command transaction fields keep the exact camelCase wire contract', () => {

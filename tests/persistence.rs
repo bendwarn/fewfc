@@ -3,10 +3,9 @@ use fewfc::application::{
     replay, verify_recorded_decisions,
 };
 use fewfc::domain::{
-    BaseChoiceContinuation, BaseRandomnessContinuation, CardDef, CardDefId, CardInstanceDef,
-    CardInstanceId, ChoiceContinuation, ChoiceId, Command, GameError, GameEvent, GameSetup,
-    GameState, HpChangeDelta, PendingChoice, PendingChoiceKind, PlayerId, RandomnessContinuation,
-    RandomnessOperation, RuleModuleId, RulesetId, TeamId, ValidationError,
+    CardDef, CardDefId, CardInstanceDef, CardInstanceId, ChoiceId, Command, GameError, GameEvent,
+    GameSetup, GameState, HpChangeDelta, PendingChoice, PendingChoiceKind, PendingResolution,
+    PlayerId, RandomnessOperation, RuleModuleId, RulesetId, TeamId, ValidationError,
 };
 use fewfc::infrastructure::{
     FileSystemPersistence, FixedDeckPreparation, InMemoryPersistence, PersistedGameRecord,
@@ -196,8 +195,11 @@ fn persisted_event_log_round_trip_replays_mid_turn_effect_choice() {
                 maximum: 2,
                 can_decline: false,
             },
-            continuation: ChoiceContinuation::Base(BaseChoiceContinuation::ChaosReturnTwo),
         })
+    );
+    assert_eq!(
+        persisted.replay().unwrap().pending_resolution,
+        Some(PendingResolution::ChaosReturnTwo)
     );
 }
 
@@ -235,8 +237,11 @@ fn persisted_event_log_round_trip_replays_turn_draw_discard_choice() {
                 maximum: 1,
                 can_decline: false,
             },
-            continuation: ChoiceContinuation::Base(BaseChoiceContinuation::TurnDrawDiscard),
         })
+    );
+    assert_eq!(
+        persisted.replay().unwrap().pending_resolution,
+        Some(PendingResolution::TurnDrawDiscard)
     );
 }
 
@@ -261,14 +266,13 @@ fn turn_draw_discard_shuffle_records_turn_draw_reason_and_replays() {
     let events = record.advance_automatic().unwrap();
     assert!(matches!(
         events.as_slice(),
-        [GameEvent::RandomnessRequested { request }]
+        [GameEvent::RandomnessRequested { request, resolution }]
             if request.request_id == "base:turn-draw:1:p1"
                 && matches!(
                     request.operation,
                     RandomnessOperation::DiscardShuffle { .. }
                 )
-                && request.continuation
-                    == RandomnessContinuation::Base(BaseRandomnessContinuation::TurnDraw)
+                && resolution == &PendingResolution::TurnDraw
     ));
     assert!(matches!(
         record.recorded_events().last(),

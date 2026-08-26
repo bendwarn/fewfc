@@ -1056,7 +1056,7 @@ fn pouch_preparation_matrix_selection_completion_shuffles_deal_and_replay() {
             GameEvent::PouchPlaced { owner, .. },
             GameEvent::InitialPouchChosen { player: chosen, .. },
             GameEvent::InitialPouchSelectionCompleted,
-            GameEvent::RandomnessRequested { request },
+            GameEvent::RandomnessRequested { request, .. },
         ] if owner == &p2
             && chosen == &p2
             && request.request_id == "pouch:initial-shuffle:p1"

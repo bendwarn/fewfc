@@ -440,6 +440,13 @@ unqualified rule reference to 牌堆 means the resolving Player's applicable Dec
 another Player's Deck must be identified explicitly.
 _Avoid_: Deck List, Discard Pile, target Player's Deck by default
 
+**Deck Supply (牌堆供給)**:
+The rule responsibility that makes an applicable Deck ready for an operation's
+declared required Card count. It performs a necessary Discard Shuffle before
+the operation reads Cards; filtering and choosing supplied Cards remain the
+operation's separate concern.
+_Avoid_: direct Deck access, partial supply, effect-local recycling
+
 **Personal Deck (個人牌組)**:
 An Optional Rule Module under which each Player prepares and draws from their
 own 60-card Deck instead of all Players sharing one Deck.
@@ -523,9 +530,15 @@ The stable identity of one Battle Record Entry within a Game Record. It remains
 unchanged when Pending Randomness enriches that Entry.
 _Avoid_: Game Event type, rendered-text hash, list position after filtering
 
+**Turn Player (回合玩家)**:
+The Player to whom a Turn belongs. Other Players may still make Player Decisions
+during that Turn without becoming its Turn Player.
+_Avoid_: current actor, current decision maker
+
 **Battle Record Turn Group (戰局紀錄回合組)**:
-The chronological Battle Record Entries belonging to one Turn, labeled by that
-Turn and its Player without creating another Entry.
+The chronological Battle Record Entries belonging to one Turn, present as soon
+as that Turn begins and labeled by the Turn and its Turn Player without creating
+another Entry. Its Turn Player is the implicit subject of clauses about them.
 _Avoid_: Turn Started Entry, Turn Phase log
 
 **Battle Record Preparation Group (戰局紀錄準備組)**:
@@ -546,8 +559,29 @@ requires Previous Player or Next Player.
 _Avoid_: the viewer's display name, current Player
 
 **Observer (旁觀者)**:
-A Battle Record viewer without a Player perspective in the viewed Game.
+A viewer without a Player perspective in the viewed Game or Battle Record.
 _Avoid_: Viewer Player, non-current Player
+
+**Online Game Room (線上房間)**:
+A shared online space with a fixed number of Player Seats in which members
+prepare for and play successive Games.
+_Avoid_: Game Record, Game Instance
+
+**Player Seat (玩家席位)**:
+One place in an Online Game Room's playing capacity, occupied by a member who
+participates as a Player when the Game starts.
+_Avoid_: room membership, Observer position
+
+**Room Observer (房間觀戰者)**:
+An Online Game Room member who occupies no Player Seat and awaits automatic
+Seat Promotion. Their Observer perspective provides read-only access to public
+Game information.
+_Avoid_: Player, Replay Perspective, Replay Omniscience
+
+**Seat Promotion (補位)**:
+A Room Observer's change of role into the occupant of a vacant Player Seat
+before the next Game starts.
+_Avoid_: in-game Player replacement, reconnecting Player
 
 **Replay Perspective (重播視角)**:
 The Player viewpoint freely selected by a Replay viewer, independent of the
@@ -963,36 +997,31 @@ selects it as the sole Playable Action, and its Playable Action carries the
 authoritative Pass reason.
 _Avoid_: Skip button, Automatic Decision
 
+**Pending Resolution (待處理規則流程)**:
+A serialized typed rule flow that has been accepted and may pause for one
+Player answer or one trusted random result before deterministic resolution
+continues.
+_Avoid_: Choice Continuation, Randomness Continuation, application callback
+
 **Pending Choice**:
-A serialized waiting state requiring one closed typed Player answer before
-deterministic resolution can continue. Initial Pouch Selection remains a Game
-Preparation stage rather than a Pending Choice.
-_Avoid_: prompt, callback
+A serialized waiting state containing one closed typed Player answer requirement
+for its Pending Resolution. Initial Pouch Selection remains a Game Preparation
+stage rather than a Pending Choice.
+_Avoid_: resolution continuation, prompt, callback
 
 **Choice ID**:
 The stable canonical identity of one Pending Choice. A Player answer references
 the Choice ID so it cannot answer a later choice with the same visible shape.
 _Avoid_: UI key, payload hash
 
-**Choice Continuation**:
-The typed canonical instruction attached to a Pending Choice that tells the
-Rules Engine which rule flow resumes after the Player's answer is validated.
-_Avoid_: effect ID and continuation string pair, application callback
-
 **Pending Randomness**:
 A serialized waiting state requiring a trusted application adapter to supply a
-rule-authorized random result before deterministic resolution can continue.
-_Avoid_: Pending Choice, client-provided shuffle
-
-**Randomness Continuation**:
-The typed canonical instruction attached to Pending Randomness that tells the
-Rules Engine how to validate the supplied random result and resume deterministic
-resolution after the trusted application adapter answers.
-_Avoid_: continuation string, application callback
+rule-authorized random result before its Pending Resolution can continue.
+_Avoid_: Pending Choice, Randomness Continuation, client-provided shuffle
 
 **Choice Requested**:
 A Game Event that creates one Pending Choice, including its Choice ID and
-Choice Continuation, for one Player.
+closed answer requirement, for one Player.
 _Avoid_: UI prompt
 
 **Choice Made**:
@@ -1228,7 +1257,8 @@ _Avoid_: callback response
 - A **Choice Requested** creates one **Pending Choice**
 - A **Choice Made** answers one **Pending Choice**
 - A **Pending Choice** has exactly one **Choice ID**
-- A **Pending Choice** has exactly one **Choice Continuation**
+- A **Pending Resolution** owns the rule-flow state that a **Pending Choice**
+  or **Pending Randomness** pauses
 - A **Game Record** projects **Game Events** into **Game State**
 - A **Turn Draw** moves drawn **Card Instances** from a Deck into the one
   game-scoped **Turn Draw Pool** before any of them enter a hand
@@ -1251,6 +1281,16 @@ _Avoid_: callback response
   rendering of **Game Events**
 - A **Battle Record** orders its **Battle Record Turn Groups** and their Entries
   chronologically in both the live Game and its Replay
+- A **Battle Record Turn Group** exists as soon as its Turn begins, even before
+  it contains an Entry; the group label communicates the Turn number and **Turn
+  Player**, so Turn start does not add a separate Entry
+- Within a **Battle Record Turn Group**, an Entry title or summary omits an
+  explicit subject only when that clause describes the **Turn Player**; another
+  Player and any Player reference needed as an owner, source, or target remain
+  explicit
+- Given the same viewer-filtered Decisions, Replay position, and **Replay
+  Perspective**, a **Battle Record** uses the same canonical player-language
+  wording
 - A **Battle Record Preparation Group** precedes every **Battle Record Turn
   Group**; each Initial Pouch Selection is its own viewer-filtered **Player
   Decision**, while automatic shuffling and dealing are summarized only by
@@ -1301,6 +1341,8 @@ _Avoid_: callback response
   Player in **Turn Order** as **First Side** and the other Team as **Second Side**
 - A Replay viewer may freely select any Player as the **Replay Perspective**;
   the Replay never infers a Player from that viewer's account identity
+- A Replay projects its **Battle Record** with the current canonical narration
+  rules instead of preserving rendered wording from when the Replay was saved
 - Replay defaults its **Replay Perspective** to the first Player in **Turn
   Order**; changing it rotates the board and makes that Player **Viewer Player**
   for **Battle Record** language

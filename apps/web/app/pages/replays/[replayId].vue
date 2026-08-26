@@ -25,6 +25,14 @@
                   {{ replayPlayerLabel(replayFrame.state.pendingChoice.player) }} 的選擇：{{ replayFrame.state.pendingChoice.choice.cards.map(card => card.label).join('、') }}
                 </p>
               </template>
+              <template #board-overlay>
+                <GameConclusionPanel
+                  v-if="replayFrame.state.status === 'Finished'"
+                  class="battlefield-conclusion"
+                  :state="replayFrame.state"
+                  :team-label="replayTeamLabel"
+                />
+              </template>
             </BattlefieldBoard>
           </div>
           <section ref="battleRecordFeed" class="event-panel expanded">
@@ -45,8 +53,9 @@ import type {
   PlayerId,
   BattleRecord,
   PublicGameState,
+  TeamId,
 } from '~/types/fewfc'
-import { scrollBattleRecordToLatest } from '~/lib/battle-record-scroll'
+import { battleRecordContentRevision, scrollBattleRecordToLatest } from '~/lib/battle-record-scroll'
 
 interface ReplayFrame {
   currentStep: number
@@ -74,7 +83,7 @@ const battleRecordGroups = computed(() => {
   return [
     { id: 'preparation', title: '對局準備', entries: record.preparation.entries },
     ...record.turns.map(group => ({ id: `turn-${group.turnNumber}`, title: group.title, entries: group.entries })),
-  ].filter(group => group.entries.length > 0)
+  ].filter(group => group.id !== 'preparation' || group.entries.length > 0)
 })
 let replayLoadRevision = 0
 
@@ -119,6 +128,15 @@ function replayPlayerLabel(player: PlayerId): string {
   return replayFrame.value?.players.find(entry => entry.player === player)?.displayName ?? player
 }
 
+function replayTeamLabel(team: TeamId): string {
+  const perspective = replayPerspective.value || replayFrame.value?.firstPlayer
+  const perspectiveTeam = replayFrame.value?.state.players.find(
+    (player) => player.id === perspective,
+  )?.team
+  if (!perspectiveTeam) return '隊伍'
+  return team === perspectiveTeam ? '我方' : '對方'
+}
+
 onMounted(() => {
   void loadReplayFrame(0)
 })
@@ -128,7 +146,7 @@ watch(replayRouteId, () => {
   void loadReplayFrame(0)
 })
 
-watch(() => battleRecordGroups.value.flatMap(group => group.entries).length, () => {
+watch(() => battleRecordContentRevision(battleRecordGroups.value), () => {
   void nextTick(() => {
     scrollBattleRecordToLatest(battleRecordFeed.value)
   })

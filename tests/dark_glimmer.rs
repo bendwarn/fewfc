@@ -450,7 +450,7 @@ fn death_omen_shuffles_discard_before_consuming_the_skill_then_discards_four_car
 
     assert!(matches!(
         requested.as_slice(),
-        [GameEvent::RandomnessRequested { request }]
+        [GameEvent::RandomnessRequested { request, .. }]
             if request.operation.is_discard_shuffle() && request.current_order == discard
     ));
     assert!(matches!(

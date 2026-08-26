@@ -1,12 +1,12 @@
 use fewfc::application::{GameRecord, apply_event, handle_command};
 use fewfc::domain::{
-    BaseChoiceContinuation, CardInstanceId, ChoiceAnswer, ChoiceContinuation, ChoiceId, Command,
-    Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, FormationAreaState, FormationInArea, GameError,
-    GameEvent, GameOutcome, GameSetup, GameState, GameStatus, HERO_SCHOOLS_MODULE_ID,
-    PERSONAL_DECK_MODULE_ID, PassiveTriggerTiming, PendingChoice, PendingChoiceKind, Phase, Player,
-    PlayerId, PlayerProfession, PlayerSpirit, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID,
-    STAR_MODULE_ID, SpiritKind, SpiritSkill, StarKind, StatusDuration, StatusEffect, StatusOwner,
-    TargetDecl, TeamId, TeamStar, ValidationError,
+    CardInstanceId, ChoiceAnswer, ChoiceId, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+    FormationAreaState, FormationInArea, GameError, GameEvent, GameOutcome, GameSetup, GameState,
+    GameStatus, HERO_SCHOOLS_MODULE_ID, PERSONAL_DECK_MODULE_ID, PassiveTriggerTiming,
+    PendingChoice, PendingChoiceKind, PendingResolution, Phase, Player, PlayerId, PlayerProfession,
+    PlayerSpirit, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind,
+    SpiritSkill, StarKind, StatusDuration, StatusEffect, StatusOwner, TargetDecl, TeamId, TeamStar,
+    ValidationError,
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, event_for, state_for};
 use fewfc::rules::OfficialRules;
@@ -284,8 +284,8 @@ fn matching_turn_discard_charges_only_the_owners_spirit_to_six() {
             maximum: 1,
             can_decline: false,
         },
-        continuation: ChoiceContinuation::Base(BaseChoiceContinuation::TurnDrawDiscard),
     });
+    state.pending_resolution = Some(PendingResolution::TurnDrawDiscard);
 
     let events = handle_command(
         &state,

@@ -102,6 +102,7 @@ async function expectCompactFourPlayerTable(page: Page, width: number, height: n
   await eventSummary.click()
   const eventSheet = page.getByRole('dialog', { name: '戰局紀錄' })
   await expect(eventSheet).toBeVisible()
+  await expect(eventSheet.getByText(/^第 1 回合・/)).toBeVisible()
   await expectEventGroupTitleSingleLine(page, '.event-sheet-feed')
   await eventSheet.getByRole('button', { name: '關閉戰局紀錄' }).click()
   await expect(eventSummary).toBeFocused()

@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import type { PendingChoicePresentation } from '../types/fewfc'
 import { presentPendingChoice } from './pending-choice-presentation'
 
-test('presents every Pending Choice by semantic continuation instead of internal ID', () => {
+test('presents every Pending Choice by its semantic resolution instead of internal ID', () => {
   const cases: PendingChoicePresentation[] = [
     { type: 'turnDrawDiscard' },
     { type: 'holyWind' },
