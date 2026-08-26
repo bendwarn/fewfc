@@ -4820,10 +4820,15 @@ fn event_presentation_with_vocabulary(
         ),
         PublicGameEvent::ChoiceRequested { choice } => (
             "等待選擇".to_string(),
-            format!(
-                "接著由{}{}。",
-                public_choice_player(choice).as_str(),
-                public_choice_requirement(choice)
+            public_choice_requirement(choice).map_or_else(
+                || "等待作出選擇。".to_string(),
+                |requirement| {
+                    format!(
+                        "接著由{}{}。",
+                        public_choice_player(choice).as_str(),
+                        requirement
+                    )
+                },
             ),
         ),
         PublicGameEvent::ChoiceMade { player } => (
@@ -4936,18 +4941,21 @@ fn event_presentation_with_vocabulary(
     }
 }
 
-fn public_choice_requirement(choice: &crate::public_view::PublicPendingChoice) -> &'static str {
+/// 只有已有具體句型的公開要求才附上選擇者；其餘統一呈現等待提示。
+fn public_choice_requirement(
+    choice: &crate::public_view::PublicPendingChoice,
+) -> Option<&'static str> {
     use crate::public_view::PublicPendingChoicePresentation as Choice;
     match choice {
-        crate::public_view::PublicPendingChoice::Hidden { .. } => "作出一項未公開的選擇",
+        crate::public_view::PublicPendingChoice::Hidden { .. } => None,
         crate::public_view::PublicPendingChoice::Visible { reason, .. } => match reason {
-            Choice::TurnDrawDiscard => "選擇一張牌捨棄",
-            Choice::EarthRendingEnvironment => "選擇環境",
-            Choice::EarthRendingCard => "選擇一張手牌，或翻開手牌",
-            Choice::Chain => "選擇錦囊與是否觸發秘計",
-            Choice::SheepStealing => "選擇要交換的牌",
-            Choice::EchoCost { .. } => "決定是否支付迴響代價",
-            _ => "作出選擇",
+            Choice::TurnDrawDiscard => Some("選擇一張牌捨棄"),
+            Choice::EarthRendingEnvironment => Some("選擇環境"),
+            Choice::EarthRendingCard => Some("選擇一張手牌，或翻開手牌"),
+            Choice::Chain => Some("選擇錦囊與是否觸發秘計"),
+            Choice::SheepStealing => Some("選擇要交換的牌"),
+            Choice::EchoCost { .. } => Some("決定是否支付迴響代價"),
+            _ => None,
         },
     }
 }
@@ -7212,15 +7220,45 @@ mod tests {
             other_player.turns[0].entries[0]
                 .summary
                 .as_deref()
-                .is_some_and(|summary| summary.contains("接著由bob作出一項未公開的選擇。"))
+                .is_some_and(|summary| summary.ends_with("等待作出選擇。"))
         );
 
         let no_draw_context = project(PublicDecisionSource::Automatic, vec![hidden_turn_draw()]);
-        assert!(
-            no_draw_context.turns[0].entries[0]
+        assert_eq!(
+            no_draw_context.turns[0].entries[0].summary.as_deref(),
+            Some("等待作出選擇。")
+        );
+
+        let visible_generic_choice = project(
+            PublicDecisionSource::Automatic,
+            vec![PublicGameEvent::ChoiceRequested {
+                choice: crate::public_view::PublicPendingChoice::Visible {
+                    choice_id: ChoiceId::new(2),
+                    player: actor.clone(),
+                    reason: PublicPendingChoicePresentation::Chaos,
+                    choice: PendingChoiceKind::Card {
+                        cards: Vec::new(),
+                        minimum: 1,
+                        maximum: 1,
+                        can_decline: false,
+                    },
+                },
+            }],
+        );
+        assert_eq!(
+            visible_generic_choice.turns[0].entries[0]
                 .summary
-                .as_deref()
-                .is_some_and(|summary| summary.contains("接著由你作出一項未公開的選擇。"))
+                .as_deref(),
+            Some("等待作出選擇。")
+        );
+
+        let visible_specific_choice =
+            project(PublicDecisionSource::Automatic, vec![visible_turn_draw()]);
+        assert_eq!(
+            visible_specific_choice.turns[0].entries[0]
+                .summary
+                .as_deref(),
+            Some("接著由你選擇一張牌捨棄。")
         );
 
         let consumed_by_other_choice = project(
@@ -7240,8 +7278,8 @@ mod tests {
             .summary
             .as_deref()
             .unwrap();
-        assert!(summary.contains("作出一項未公開的選擇"));
-        assert_eq!(summary.matches("接著由").count(), 2);
+        assert_eq!(summary.matches("等待作出選擇。").count(), 2);
+        assert!(!summary.contains("接著由"));
     }
 
     #[test]
@@ -9146,7 +9184,7 @@ mod tests {
             &formations,
             &vocabulary,
         );
-        assert!(summary.contains("未公開的選擇"));
+        assert_eq!(summary, "等待作出選擇。");
         assert!(!summary.contains("echo:"));
 
         for (_, virtual_card) in [

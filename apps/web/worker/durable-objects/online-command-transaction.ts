@@ -73,7 +73,7 @@ export interface ExecutedPlayerCommand {
 export class OnlineCommandTransactionError extends Error {
   constructor(
     readonly code: 'gameInstanceMismatch' | 'idempotencyConflict' | 'staleWrite' | 'commandValidation',
-    readonly statusCode: 400 | 409,
+    readonly statusCode: 400 | 403 | 409,
     message: string,
   ) {
     super(message)
@@ -97,7 +97,7 @@ export async function executePlayerCommand(
 
   const actor = host.playerFor(metadata, request.actorUserId)
   if (!actor) {
-    throw new OnlineCommandTransactionError('commandValidation', 409, 'only room players may submit commands')
+    throw new OnlineCommandTransactionError('commandValidation', 403, 'only room players may submit commands')
   }
   if (!isOnlineGameAction(request.action)) {
     throw new OnlineCommandTransactionError('commandValidation', 400, 'unsupported player action')

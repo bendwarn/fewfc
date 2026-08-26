@@ -11,6 +11,7 @@ import {
   type CompletedReplayDraft,
   type GameRoomInvitation,
   type GameRoomMember,
+  type GameRoomObserver,
   type GameRoomMetadata,
   type GameRoomRequest,
   type GameRoomResponse,
@@ -209,7 +210,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     const players = Array.from({ length: capacity }, (_, index) => `player-${index + 1}`)
     const now = new Date().toISOString()
     const metadata: GameRoomMetadata = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       gameId: request.gameId,
       name: request.name?.trim() || request.gameId,
       access: request.access ?? 'private',
@@ -225,6 +226,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         connected: false,
         owner: true,
       }],
+      observers: [],
       status: 'Waiting',
       createdAt: now,
       updatedAt: now,
@@ -256,7 +258,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   ): Promise<Response> {
     const metadata = await this.requireMetadata()
 
-    if (metadata.members.some((member) => member.userId === actorUserId)) {
+    if (this.participantFor(metadata, actorUserId)) {
       return this.json(await this.response(metadata, actorUserId))
     }
 
@@ -268,18 +270,34 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'room not found' }, 404)
     }
 
-    if (metadata.status !== 'Waiting') {
-      return this.json({ error: 'room has already started' }, 409)
+    if (metadata.status === 'Finished') {
+      return this.json({ error: 'room has finished' }, 409)
     }
 
     const occupiedPlayers = new Set(metadata.members.map((member) => member.player))
     const openPlayer = metadata.players.find((player) => !occupiedPlayers.has(player))
 
-    if (!openPlayer) {
-      return this.json({ error: 'room is full' }, 409)
+    const now = new Date().toISOString()
+    if (!openPlayer || metadata.status !== 'Waiting') {
+      const observer: GameRoomObserver = {
+        userId: actorUserId,
+        displayName: actorName,
+        connected: false,
+      }
+      const nextMetadata: GameRoomMetadata = {
+        ...metadata,
+        observers: [...metadata.observers, observer],
+        updatedAt: now,
+      }
+      await this.ctx.storage.put('metadata', nextMetadata)
+      const updatedMetadata = nextMetadata
+      this.ctx.waitUntil(this.afterRoomMutation(updatedMetadata, {
+        kind: 'roomChanged',
+        message: `${actorName} 正在觀戰「${metadata.name}」。`,
+      }))
+      return this.json(await this.response(updatedMetadata, actorUserId))
     }
 
-    const now = new Date().toISOString()
     const member: GameRoomMember = {
       userId: actorUserId,
       displayName: actorName,
@@ -305,7 +323,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private async getState(actorUserId: string): Promise<Response> {
     const metadata = await this.requireMetadata()
 
-    if (!this.memberFor(metadata, actorUserId)) {
+    if (!this.participantFor(metadata, actorUserId)) {
       return this.json(
         { error: metadata.access === 'private' ? 'room not found' : 'player is not in this room' },
         metadata.access === 'private' ? 404 : 403,
@@ -402,9 +420,26 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private async leaveGame(actorUserId: string): Promise<Response> {
     const metadata = await this.requireMetadata()
     const actor = this.memberFor(metadata, actorUserId)
+    const observer = this.observerFor(metadata, actorUserId)
 
-    if (!actor) {
-      return this.json({ error: 'player is not in this room' }, 404)
+    if (!actor && !observer) {
+      return this.json({ error: 'member is not in this room' }, 404)
+    }
+
+    if (observer) {
+      const nextMetadata: GameRoomMetadata = {
+        ...metadata,
+        observers: metadata.observers.filter(candidate => candidate.userId !== actorUserId),
+        updatedAt: new Date().toISOString(),
+      }
+      await this.ctx.storage.put('metadata', nextMetadata)
+      const updatedMetadata = nextMetadata
+      this.closeUserSockets(actorUserId, 4000, 'left observation')
+      this.ctx.waitUntil(this.afterRoomMutation(updatedMetadata, {
+        kind: 'roomChanged',
+        message: `${observer.displayName} 已停止觀戰「${metadata.name}」。`,
+      }))
+      return this.json(await this.response(updatedMetadata, actorUserId))
     }
 
     if (actor.owner) {
@@ -421,53 +456,60 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       updatedAt: new Date().toISOString(),
     }, 'PlayerLeft', actor.player, { player: actor.player })
     await this.ctx.storage.delete(this.lockedDeckKey(actorUserId))
+    const promotedMetadata = await this.promoteObservers(updatedMetadata)
+    this.closeUserSockets(actorUserId, 4000, 'left room')
 
-    this.ctx.waitUntil(this.afterRoomMutation(updatedMetadata, {
+    this.ctx.waitUntil(this.afterRoomMutation(promotedMetadata, {
       kind: 'roomChanged',
       message: `${actor.displayName} 已離開「${metadata.name}」。`,
     }))
 
-    return this.json(await this.response(updatedMetadata, actorUserId))
+    return this.json(await this.response(promotedMetadata, actorUserId))
   }
 
   private async removePlayer(actorUserId: string, targetUserId: string): Promise<Response> {
     const metadata = await this.requireMetadata()
     const actor = this.memberFor(metadata, actorUserId)
     const target = this.memberFor(metadata, targetUserId)
+    const observer = this.observerFor(metadata, targetUserId)
 
     if (!actor?.owner) {
       return this.json({ error: 'only room owner may remove players' }, 403)
     }
 
-    if (!target || target.owner) {
-      return this.json({ error: 'target player cannot be removed' }, 409)
+    if ((!target && !observer) || target?.owner) {
+      return this.json({ error: 'target member cannot be removed' }, 409)
     }
 
     if (metadata.status !== 'Waiting') {
       return this.json({ error: 'players cannot be removed from an active match' }, 409)
     }
 
-    const updatedMetadata = await this.storeRoomEvent({
+    const nextMetadata: GameRoomMetadata = {
       ...metadata,
       members: metadata.members.filter((member) => member.userId !== targetUserId),
+      observers: metadata.observers.filter((candidate) => candidate.userId !== targetUserId),
       updatedAt: new Date().toISOString(),
-    }, 'PlayerRemoved', target.player, { player: target.player })
+    }
+    const updatedMetadata = target
+      ? await this.storeRoomEvent(nextMetadata, 'PlayerRemoved', target.player, { player: target.player })
+      : (await this.ctx.storage.put('metadata', nextMetadata), nextMetadata)
     await this.ctx.storage.delete(this.lockedDeckKey(targetUserId))
+    const promotedMetadata = target ? await this.promoteObservers(updatedMetadata) : updatedMetadata
+    this.closeUserSockets(targetUserId, 4003, 'removed from room')
 
     this.ctx.waitUntil(Promise.all([
-      this.afterRoomMutation(updatedMetadata, {
+      this.afterRoomMutation(promotedMetadata, {
         kind: 'roomChanged',
-        message: `${target.displayName} 已被移出「${metadata.name}」。`,
+        message: `${(target ?? observer)!.displayName} 已被移出「${metadata.name}」。`,
       }),
       this.sendNotification(targetUserId, {
         kind: 'removed',
         message: `你已被移出「${metadata.name}」。`,
       }),
-    ]).then(() => {
-      this.closeUserSockets(targetUserId, 4003, 'removed from room')
-    }))
+    ]))
 
-    return this.json(await this.response(updatedMetadata, actorUserId))
+    return this.json(await this.response(promotedMetadata, actorUserId))
   }
 
   private async dissolveGame(actorUserId: string): Promise<Response> {
@@ -1390,10 +1432,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     const actorName = decodeURIComponent(encodedActorName)
 
     const metadata = await this.requireMetadata()
-    const actor = this.memberFor(metadata, actorUserId)
+    const actor = this.participantFor(metadata, actorUserId)
 
     if (!actor) {
-      return this.json({ error: 'only room players may connect' }, 403)
+      return this.json({ error: 'only room members may connect' }, 403)
     }
 
     const pair = new WebSocketPair()
@@ -1409,15 +1451,21 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           ? { ...member, displayName: actorName, connected: true }
           : member
       )),
+      observers: metadata.observers.map((observer) => (
+        observer.userId === actorUserId
+          ? { ...observer, displayName: actorName, connected: true }
+          : observer
+      )),
       updatedAt: new Date().toISOString(),
     }
+    const promotedMetadata = await this.promoteObservers(updatedMetadata)
 
-    await this.ctx.storage.put('metadata', updatedMetadata)
+    await this.ctx.storage.put('metadata', promotedMetadata)
     server.send(JSON.stringify({
       type: 'roomState',
-      data: await this.response(updatedMetadata, actorUserId),
+      data: await this.response(promotedMetadata, actorUserId),
     }))
-    this.ctx.waitUntil(this.broadcast(updatedMetadata))
+    this.ctx.waitUntil(this.broadcast(promotedMetadata))
 
     return new Response(null, { status: 101, webSocket: client })
   }
@@ -1448,6 +1496,11 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return
     }
 
+    // 已離房或被移除的舊分頁不得再寫回任何新 membership。
+    if (!this.participantFor(metadata, attachment.userId)) {
+      return
+    }
+
     const updatedMetadata: GameRoomMetadata = {
       ...metadata,
       members: metadata.members.map((member) => (
@@ -1458,6 +1511,9 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
               ready: metadata.status === 'Waiting' && !member.owner ? false : member.ready,
             }
           : member
+      )),
+      observers: metadata.observers.map((observer) => (
+        observer.userId === attachment.userId ? { ...observer, connected: false } : observer
       )),
       updatedAt: new Date().toISOString(),
     }
@@ -1478,7 +1534,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   }
 
   private async broadcast(metadata?: GameRoomMetadata) {
-    const currentMetadata = metadata ?? await this.requireMetadata()
+    // 不使用呼叫端暫存的 metadata，避免舊廣播外洩離房後的私人房間狀態。
+    const currentMetadata = await this.requireMetadata()
 
     await Promise.all(this.ctx.getWebSockets().map(async (socket) => {
       if (socket.readyState !== WebSocket.OPEN) {
@@ -1488,6 +1545,11 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       const attachment = socket.deserializeAttachment() as SocketAttachment | null
 
       if (!attachment?.userId) {
+        return
+      }
+
+      if (!this.participantFor(currentMetadata, attachment.userId)) {
+        socket.close(4000, 'room membership ended')
         return
       }
 
@@ -1525,7 +1587,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     metadata: GameRoomMetadata,
     notification: Pick<PlayerNotification, 'kind' | 'message'>,
   ) {
-    await Promise.all(metadata.members.map((member) => (
+    await Promise.all([...metadata.members, ...metadata.observers].map((member) => (
       this.sendNotification(member.userId, notification)
     )))
   }
@@ -1660,7 +1722,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
     const snapshot = await this.requireGameRecord()
     const publicRules = await this.callReadyRules({ type: 'refresh' }, viewer, snapshot)
-    const responseMetadata: GameRoomMetadata = (
+    let responseMetadata: GameRoomMetadata = (
       currentMetadata.status === 'Active'
       && publicRules.state.status === 'Finished'
     )
@@ -1672,7 +1734,15 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       : currentMetadata
 
     if (responseMetadata !== currentMetadata) {
-      await this.ctx.storage.put('metadata', responseMetadata)
+      // 廣播可能攜帶較舊的 metadata；只更新完成狀態，保留較新 membership。
+      const latest = await this.metadata()
+      const persisted = latest
+        && latest.status === 'Active'
+        && latest.gameInstanceId === currentMetadata.gameInstanceId
+        ? { ...latest, status: 'Finished' as const, updatedAt: responseMetadata.updatedAt }
+        : latest ?? responseMetadata
+      await this.ctx.storage.put('metadata', persisted)
+      responseMetadata = persisted
     }
     const activeTransactionId = responseMetadata.gameInstanceId
       ? (await this.ctx.storage.get<{ transactionId: string }>(
@@ -1716,6 +1786,48 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
   private memberFor(metadata: GameRoomMetadata, userId: string) {
     return metadata.members.find((member) => member.userId === userId)
+  }
+
+  private observerFor(metadata: GameRoomMetadata, userId: string) {
+    return metadata.observers.find((observer) => observer.userId === userId)
+  }
+
+  private participantFor(metadata: GameRoomMetadata, userId: string) {
+    return this.memberFor(metadata, userId) ?? this.observerFor(metadata, userId)
+  }
+
+  /** 僅在等待房補席，並按觀戰者原始加入順序略過離線者。 */
+  private async promoteObservers(metadata: GameRoomMetadata): Promise<GameRoomMetadata> {
+    if (metadata.status !== 'Waiting') return metadata
+
+    let current = metadata
+    while (true) {
+      const occupied = new Set(current.members.map(member => member.player))
+      const seat = current.players.find(player => !occupied.has(player))
+      const observer = current.observers.find(candidate => candidate.connected)
+      if (!seat || !observer) return current
+
+      current = {
+        ...current,
+        members: [...current.members, {
+          userId: observer.userId,
+          displayName: observer.displayName,
+          player: seat,
+          ready: false,
+          connected: true,
+          owner: false,
+        }],
+        observers: current.observers.filter(candidate => candidate.userId !== observer.userId),
+        updatedAt: new Date().toISOString(),
+      }
+      await this.ctx.storage.put('metadata', current)
+
+      // 透過既有通知通道告知補位；前端不讓一般 roomChanged 蓋掉這則通知。
+      this.ctx.waitUntil(this.sendNotification(observer.userId, {
+        kind: 'seatPromoted',
+        message: '已補為玩家，請準備',
+      }))
+    }
   }
 
   private lockedDeckKey(userId: string) {
@@ -1801,9 +1913,11 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       createdAt: metadata.updatedAt,
     }
 
-    await this.ctx.storage.put('metadata', metadata)
-    await this.ctx.storage.put('nextSequence', sequence + 1)
-    await this.ctx.storage.put(this.eventKey(sequence), event)
+    await this.ctx.storage.put({
+      metadata,
+      nextSequence: sequence + 1,
+      [this.eventKey(sequence)]: event,
+    })
 
     return metadata
   }
@@ -1976,6 +2090,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       PlayerJoined: `${event.actor ?? '玩家'} 已加入房間。`,
       PlayerLeft: `${event.actor ?? '玩家'} 已離開房間。`,
       PlayerRemoved: `${event.actor ?? '玩家'} 已被移出房間。`,
+      ObserverJoined: '觀戰者已加入房間。',
+      ObserverLeft: '觀戰者已離開房間。',
+      ObserverRemoved: '觀戰者已被移出房間。',
+      ObserverPromoted: `${event.actor ?? '觀戰者'} 已補為玩家。`,
       PlayerReady: `${event.actor ?? '玩家'} 已準備。`,
       PlayerUnready: `${event.actor ?? '玩家'} 已取消準備。`,
       RuleModulesChanged: '房主已更新選用規則，所有玩家需重新準備。',
@@ -2015,6 +2133,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       PlayerJoined: '玩家加入',
       PlayerLeft: '玩家離開',
       PlayerRemoved: '移除玩家',
+      ObserverJoined: '開始觀戰',
+      ObserverLeft: '離開觀戰',
+      ObserverRemoved: '移除觀戰者',
+      ObserverPromoted: '候補為玩家',
       PlayerReady: '玩家準備',
       PlayerUnready: '取消準備',
       RuleModulesChanged: '更新規則',

@@ -3,7 +3,7 @@
       <div class="lobby-heading">
         <div>
           <h1>房間</h1>
-          <p class="muted">選擇等待中的房間，或使用房間代碼加入。</p>
+          <p class="muted">選擇公開房間，或使用房間代碼加入；等待房的觀戰者會在有空位時依順序自動補為玩家。</p>
         </div>
         <div class="lobby-actions">
           <form class="room-code-form" @submit.prevent="joinRoomByCode">
@@ -88,6 +88,7 @@ interface PublicRoomSummary {
   ownerUserId: string
   players: PlayerId[]
   members: GameRoomMember[]
+  observers: Array<{ userId: string }>
   capacity: number
   enabledRuleModules: string[]
   createdAt: string
@@ -124,9 +125,9 @@ const joinablePublicRoomItems = computed<LobbyRoomListItem[]>(() => joinablePubl
   gameId: room.gameId,
   code: room.roomCode,
   name: room.name,
-  detail: `${room.members.length} / ${room.capacity} 玩家 · 等待開始`,
+  detail: `${room.members.length} / ${room.capacity} 玩家 · ${room.observers.length} 位觀戰者 · ${room.status === 'Active' ? '對局中' : '等待開始'}`,
   ruleSummary: roomRuleSummary(room),
-  actionLabel: '加入',
+  actionLabel: room.status === 'Active' || room.members.length >= room.capacity ? '觀戰' : '加入',
 })))
 const myRoomItems = computed<LobbyRoomListItem[]>(() => myRooms.value.map(room => ({
   gameId: room.gameId,
@@ -206,7 +207,8 @@ async function openJoinedRoom(gameId: string) {
 
 function roomStatusLabel(room: PublicRoomSummary): string {
   const status = { Waiting: '等待中', Active: '對局中', Finished: '已結束', Dissolved: '已解散' }[room.status] ?? room.status
-  return `${room.members.length} / ${room.capacity} 玩家 · ${status}`
+  const observer = room.observers.find(member => member.userId === session.userId.value)
+  return `${room.members.length} / ${room.capacity} 玩家 · ${room.observers.length} 位觀戰者 · ${status}${observer ? ' · 觀戰' : ''}`
 }
 
 function roomRuleSummary(room: PublicRoomSummary): string {

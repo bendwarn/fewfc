@@ -29,8 +29,15 @@ export interface GameRoomMember {
   owner: boolean
 }
 
+/** 觀戰者不屬於標準戰局的玩家身分，也不持有玩家席位。 */
+export interface GameRoomObserver {
+  userId: string
+  displayName: string
+  connected: boolean
+}
+
 export interface GameRoomMetadata {
-  schemaVersion: 4
+  schemaVersion: 5
   gameId: string
   /** 只有房間等待下一個遊戲實例時才是未定義。 */
   gameInstanceId?: string
@@ -41,6 +48,8 @@ export interface GameRoomMetadata {
   enabledRuleModules: string[]
   players: PlayerId[]
   members: GameRoomMember[]
+  /** 依加入順序排列；連線者可在等待房的空席位補為玩家。 */
+  observers: GameRoomObserver[]
   status: GameRoomStatus
   createdAt: string
   updatedAt: string
@@ -72,12 +81,13 @@ interface StoredGameRoomMember extends Partial<GameRoomMember> {
 
 interface StoredGameRoomMetadata extends Omit<
   GameRoomMetadata,
-  'schemaVersion' | 'name' | 'capacity' | 'members' | 'enabledRuleModules'
+  'schemaVersion' | 'name' | 'capacity' | 'members' | 'observers' | 'enabledRuleModules'
 > {
-  schemaVersion: 1 | 2 | 3 | 4
+  schemaVersion: 1 | 2 | 3 | 4 | 5
   name?: string
   capacity?: GameRoomCapacity
   members: StoredGameRoomMember[]
+  observers?: GameRoomObserver[]
   enabledRuleModules?: string[]
 }
 
@@ -89,7 +99,7 @@ export function normalizeGameRoomMetadata(
   const capacity: GameRoomCapacity = stored.capacity === 4 || stored.players.length === 4 ? 4 : 2
 
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     gameId: stored.gameId,
     gameInstanceId: stored.gameInstanceId,
     name: stored.name?.trim() || stored.gameId,
@@ -110,6 +120,11 @@ export function normalizeGameRoomMetadata(
         owner,
       }
     }),
+    observers: (stored.observers ?? []).map(observer => ({
+      userId: observer.userId,
+      displayName: observer.displayName?.trim() || observer.userId,
+      connected: observer.connected ?? false,
+    })),
     status: stored.status,
     createdAt: stored.createdAt,
     updatedAt: stored.updatedAt,
@@ -416,7 +431,7 @@ export type GameRoomSocketMessage =
 export interface PlayerNotification {
   id: string
   gameId: string
-  kind: 'gameStarted' | 'yourTurn' | 'roomChanged' | 'removed' | 'dissolved'
+  kind: 'gameStarted' | 'yourTurn' | 'roomChanged' | 'removed' | 'dissolved' | 'seatPromoted'
   message: string
   createdAt: string
 }

@@ -575,8 +575,13 @@ _Avoid_: room membership, Observer position
 **Room Observer (房間觀戰者)**:
 An Online Game Room member who occupies no Player Seat and awaits automatic
 Seat Promotion. Their Observer perspective provides read-only access to public
-Game information.
+Game information; their room presence is outside Game history.
 _Avoid_: Player, Replay Perspective, Replay Omniscience
+
+**Observer Queue (觀戰候補佇列)**:
+The Room Observers of an Online Game Room ordered by when their current
+membership began.
+_Avoid_: Player Turn Order, connection order
 
 **Seat Promotion (補位)**:
 A Room Observer's change of role into the occupant of a vacant Player Seat

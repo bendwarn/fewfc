@@ -32,6 +32,13 @@ describe('mergePlayerNotification', () => {
     expect(mergePlayerNotification([roomA], roomB)).toEqual([roomB, roomA])
   })
 
+  test('does not let a same-room update hide a seat promotion', () => {
+    const promoted = notification('1', 'room-a', 'seatPromoted', '已補為玩家，請準備')
+    const changed = notification('2', 'room-a', 'roomChanged', '房間 A 已更新。')
+
+    expect(mergePlayerNotification([promoted], changed)).toEqual([promoted])
+  })
+
   test('keeps at most eight distinct rooms', () => {
     const existing = [
       notification('8', 'room-8', 'yourTurn', '房間 8'),

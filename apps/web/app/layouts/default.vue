@@ -51,7 +51,9 @@ const profileOpen = ref(false)
 const profileMenuContainer = ref<HTMLElement | null>(null)
 const playerInitial = computed(() => session.displayName.value.trim().charAt(0).toUpperCase() || 'A')
 const visibleNotifications = computed(() => notifications.notifications.value.filter(notification => (
-  typeof route.params.gameId !== 'string' || notification.gameId !== route.params.gameId
+  typeof route.params.gameId !== 'string'
+    || notification.gameId !== route.params.gameId
+    || notification.kind === 'seatPromoted'
 )))
 
 provide(playerNotificationsKey, notifications)

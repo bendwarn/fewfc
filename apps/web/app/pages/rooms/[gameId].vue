@@ -23,6 +23,13 @@
         >
           <template #before>
             <button class="back-button battlefield-back" type="button" aria-label="返回房間列表" title="返回房間列表" @click="leaveGame">←</button>
+            <button
+              v-if="!roomWaiting && !currentMember"
+              class="ghost-button observer-leave"
+              type="button"
+              :disabled="game.isLoading.value"
+              @click="leaveWaitingRoom"
+            >離開觀戰</button>
           </template>
           <template #board-overlay>
             <GameConclusionPanel
@@ -33,8 +40,11 @@
               :summary="`${firstTurnText}，本局已結束。`"
             >
               <template #actions>
-                <button class="primary-button" type="button" :disabled="game.isLoading.value" @click="restartGame">
+                <button v-if="currentMember" class="primary-button" type="button" :disabled="game.isLoading.value" @click="restartGame">
                   返回房間 <span>→</span>
+                </button>
+                <button v-else class="primary-button" type="button" :disabled="game.isLoading.value" @click="leaveWaitingRoom">
+                  離開觀戰
                 </button>
               </template>
             </GameConclusionPanel>
@@ -743,6 +753,9 @@
                 <p v-if="game.lockedDeckName.value" class="muted">
                   本局使用：{{ game.lockedDeckName.value }}
                 </p>
+                <p v-if="!currentMember" class="muted">
+                  開局前有空位時，會依觀戰順序自動補為玩家。
+                </p>
                 <RuleModuleSettings
                   :catalog="rulesCatalog.catalog.value?.ruleModules ?? []"
                   :enabled-rule-modules="onlineMetadata?.enabledRuleModules ?? []"
@@ -774,6 +787,19 @@
                     </button>
                   </span>
                 </div>
+                <div v-if="onlineMetadata?.observers.length" class="waiting-observers" aria-label="觀戰者">
+                  <h3>觀戰者（依候補順序）</h3>
+                  <span v-for="observer in onlineMetadata.observers" :key="observer.userId">
+                    {{ observer.displayName }}
+                    <small>{{ observer.connected ? '已連線' : '離線' }}</small>
+                    <button
+                      v-if="isRoomOwner"
+                      type="button"
+                      :disabled="game.isLoading.value"
+                      @click="removeWaitingPlayer(observer.userId)"
+                    >移除</button>
+                  </span>
+                </div>
                 <div class="result-actions">
                   <button
                     v-if="isRoomOwner"
@@ -785,7 +811,7 @@
                     解散
                   </button>
                   <button
-                    v-else
+                    v-else-if="currentMember"
                     class="ghost-button"
                     type="button"
                     :disabled="game.isLoading.value"
@@ -803,7 +829,7 @@
                     開始遊戲 <span>→</span>
                   </button>
                   <button
-                    v-else
+                    v-else-if="currentMember"
                     class="primary-button"
                     type="button"
                     :disabled="game.isLoading.value || !roomConnected"
@@ -811,6 +837,13 @@
                   >
                     {{ currentMember?.ready ? '取消準備' : '準備' }} <span>→</span>
                   </button>
+                  <button
+                    v-else
+                    class="ghost-button"
+                    type="button"
+                    :disabled="game.isLoading.value"
+                    @click="leaveWaitingRoom"
+                  >離開觀戰</button>
                 </div>
                 <button
                   v-if="onlineMetadata?.access === 'private' && isRoomOwner && game.invitation.value"
@@ -1384,10 +1417,14 @@ const firstPlayer = computed<PlayerId | null>(() => (
 ))
 const firstTurnText = computed(() => firstPlayer.value ? `${playerLabel(firstPlayer.value)} 先手` : '尚未決定先手')
 const onlinePlayers = computed(() => onlineMetadata.value?.players ?? [])
-const waitingStatusText = computed(() => `${onlineMetadata.value?.members.length ?? 0} / ${onlineMetadata.value?.players.length ?? 0} 玩家`)
+const waitingStatusText = computed(() => `${onlineMetadata.value?.members.length ?? 0} / ${onlineMetadata.value?.players.length ?? 0} 玩家 · ${onlineMetadata.value?.observers.length ?? 0} 位觀戰者`)
 const currentMember = computed(() => onlineMetadata.value?.members.find(
   (member) => member.userId === session.userId.value,
 ))
+watch(onlineMetadata, (metadata) => {
+  viewer.value = metadata?.members.find(member => member.userId === session.userId.value)?.player
+    ?? 'observer'
+})
 const ownPlayer = computed(() => currentMember.value?.player ?? '')
 const isRoomOwner = computed(() => currentMember.value?.owner === true)
 const roomConnected = computed(() => game.connectionState.value === 'connected')
@@ -2214,6 +2251,12 @@ function formationChoiceLabel(formationId: string): string {
 .waiting-members span.joined { @apply border-[var(--app-accent)] text-[var(--app-text)]; }
 .waiting-members small { @apply text-[10px] text-muted; }
 .waiting-members button { @apply mt-1 border-0 bg-transparent text-[9px] text-[#c98e82]; }
+.waiting-observers { @apply mt-4 grid gap-2; }
+.waiting-observers h3 { @apply m-0 text-sm; }
+.waiting-observers span { @apply flex items-center gap-2 border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-2 text-xs; }
+.waiting-observers small { @apply text-[10px] text-muted; }
+.waiting-observers button { @apply ml-auto border-0 bg-transparent text-[9px] text-[#c98e82]; }
+.observer-leave { @apply absolute top-3 right-3 z-10; }
 .invite-link { @apply justify-self-start border-0 bg-transparent text-xs text-gold-light; }
 .result-actions { @apply mt-2 grid grid-cols-2 gap-3; }
 .result-actions .ghost-button { @apply border-[var(--app-border-strong)] text-[var(--app-text)]; }

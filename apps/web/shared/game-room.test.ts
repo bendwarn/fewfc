@@ -213,7 +213,7 @@ describe('normalizeGameRoomMetadata', () => {
       updatedAt: '2026-06-28T00:00:00.000Z',
     })
 
-    expect(metadata.schemaVersion).toBe(4)
+    expect(metadata.schemaVersion).toBe(5)
     expect(metadata.enabledRuleModules).toStrictEqual([])
     expect(metadata.name).toBe('version-one-room')
     expect(metadata.capacity).toBe(2)
@@ -225,6 +225,7 @@ describe('normalizeGameRoomMetadata', () => {
       connected: false,
       owner: true,
     }])
+    expect(metadata.observers).toStrictEqual([])
   })
 
   test('preserves stored rooms without newly released Spirit', () => {

@@ -1,5 +1,5 @@
 import type { H3Event } from 'h3'
-import type { GameRoomMember, GameRoomResponse, GameRoomStatus, GameRoomAccess } from '../../shared/game-room'
+import type { GameRoomMember, GameRoomObserver, GameRoomResponse, GameRoomStatus, GameRoomAccess } from '../../shared/game-room'
 import { workerEnv } from './worker-env'
 
 interface PublicRoomStatement {
@@ -21,6 +21,7 @@ interface PublicRoomRow {
   owner_user_id: string
   players_json: string
   members_json: string
+  observers_json?: string
   enabled_rule_modules_json: string
   created_at: number
   updated_at: number
@@ -35,6 +36,7 @@ export interface PublicRoomSummary {
   ownerUserId: string
   players: string[]
   members: GameRoomMember[]
+  observers: GameRoomObserver[]
   capacity: number
   enabledRuleModules: string[]
   createdAt: string
@@ -57,12 +59,22 @@ async function ensurePublicRoomTable(event: H3Event) {
         owner_user_id text NOT NULL,
         players_json text NOT NULL,
         members_json text NOT NULL,
+        observers_json text NOT NULL DEFAULT '[]',
         enabled_rule_modules_json text NOT NULL DEFAULT '[]',
         created_at integer NOT NULL,
         updated_at integer NOT NULL
       )
     `)
     .run()
+
+  try {
+    await db(event).prepare("ALTER TABLE public_game_room ADD COLUMN observers_json text NOT NULL DEFAULT '[]'").run()
+  } catch (error) {
+    // 已建立的索引資料庫已經有這個欄位；其他 D1 錯誤不可被當作遷移成功。
+    if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) {
+      throw error
+    }
+  }
 
   await db(event)
     .prepare(`
@@ -102,6 +114,7 @@ function parseJson<T>(value: string, fallback: T): T {
 function rowToSummary(row: PublicRoomRow): PublicRoomSummary {
   const players = parseJson<string[]>(row.players_json, [])
   const members = parseJson<GameRoomMember[]>(row.members_json, [])
+  const observers = parseJson<GameRoomObserver[]>(row.observers_json ?? '[]', [])
 
   return {
     gameId: row.game_id,
@@ -112,6 +125,7 @@ function rowToSummary(row: PublicRoomRow): PublicRoomSummary {
     ownerUserId: row.owner_user_id,
     players,
     members,
+    observers,
     capacity: players.length,
     enabledRuleModules: parseJson<string[]>(row.enabled_rule_modules_json, []),
     createdAt: new Date(row.created_at).toISOString(),
@@ -146,11 +160,12 @@ export async function upsertPublicRoom(
         owner_user_id,
         players_json,
         members_json,
+        observers_json,
         enabled_rule_modules_json,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(game_id) DO UPDATE SET
         room_code = CASE
           WHEN ? = 1 THEN excluded.room_code
@@ -165,6 +180,7 @@ export async function upsertPublicRoom(
         owner_user_id = excluded.owner_user_id,
         players_json = excluded.players_json,
         members_json = excluded.members_json,
+        observers_json = excluded.observers_json,
         enabled_rule_modules_json = excluded.enabled_rule_modules_json,
         updated_at = excluded.updated_at
     `)
@@ -177,6 +193,7 @@ export async function upsertPublicRoom(
       owner?.userId ?? '',
       JSON.stringify(metadata.players),
       JSON.stringify(metadata.members),
+      JSON.stringify(metadata.observers),
       JSON.stringify(metadata.enabledRuleModules),
       timestamp(metadata.createdAt),
       timestamp(metadata.updatedAt),
@@ -190,7 +207,7 @@ export async function upsertPublicRoom(
     .bind(metadata.gameId)
     .run()
 
-  for (const member of metadata.members) {
+  for (const member of [...metadata.members, ...metadata.observers]) {
     await db(event)
       .prepare('INSERT OR IGNORE INTO game_room_member (game_id, user_id) VALUES (?, ?)')
       .bind(metadata.gameId, member.userId)
@@ -222,11 +239,12 @@ export async function listPublicRooms(event: H3Event): Promise<PublicRoomSummary
         owner_user_id,
         players_json,
         members_json,
+        observers_json,
         enabled_rule_modules_json,
         created_at,
         updated_at
       FROM public_game_room
-      WHERE access = 'public' AND status = 'Waiting'
+      WHERE access = 'public' AND status IN ('Waiting', 'Active')
       ORDER BY updated_at DESC
       LIMIT 30
     `)
@@ -234,7 +252,7 @@ export async function listPublicRooms(event: H3Event): Promise<PublicRoomSummary
 
   return (result.results ?? [])
     .map(rowToSummary)
-    .filter((room) => room.members.length < room.capacity)
+    .filter((room) => room.status === 'Active' || room.members.length <= room.capacity)
 }
 
 export async function listPlayerRooms(
@@ -254,6 +272,7 @@ export async function listPlayerRooms(
         room.owner_user_id,
         room.players_json,
         room.members_json,
+        room.observers_json,
         room.enabled_rule_modules_json,
         room.created_at,
         room.updated_at
@@ -279,7 +298,7 @@ export async function gameIdForRoomCode(
     .prepare(`
       SELECT game_id
       FROM public_game_room
-      WHERE room_code = ? AND status = 'Waiting'
+      WHERE room_code = ? AND status IN ('Waiting', 'Active')
       LIMIT 1
     `)
     .bind(roomCode.toUpperCase())
