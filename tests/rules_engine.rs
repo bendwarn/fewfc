@@ -5797,7 +5797,6 @@ fn metamorphosis_weapon_chain_matrix_preserves_effect_identity_through_a_termina
                     vec![GameEndCause::TeamHpDepleted {
                         teams: vec![TeamId::new("team:p2")],
                     }],
-                    None,
                 ),
             },
         ]
@@ -11767,7 +11766,6 @@ fn hp_resolution_finishes_as_draw_when_no_team_remains_alive() {
                 vec![GameEndCause::TeamHpDepleted {
                     teams: vec![TeamId::new("team:p1"), TeamId::new("team:p2")],
                 }],
-                None,
             ),
         },
     );

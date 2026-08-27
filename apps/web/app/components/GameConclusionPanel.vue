@@ -1,8 +1,29 @@
 <template>
   <section class="result-panel">
+    <template v-if="state.terminalResolution?.type === 'formation'">
+      <small>{{ playerLabel(state.terminalResolution.player) }}</small>
+      <strong>{{ state.terminalResolution.formationName ?? '陣法' }}</strong>
+      <div class="formation-cards">
+        <GameCard
+          v-for="card in terminalFormationCards"
+          :key="card.id"
+          class="formation-card"
+          :card="card"
+          :interpretations="state.cardInterpretations"
+        />
+      </div>
+      <p v-if="terminalHiddenCount">{{ terminalHiddenCount }} 張蓋牌</p>
+    </template>
+    <template v-else-if="state.terminalResolution?.type === 'discardRetrieval'">
+      <small>{{ playerLabel(state.terminalResolution.player) }}</small>
+      <strong>取回 {{ playerLabel(state.terminalResolution.previousPlayer) }} 的棄牌</strong>
+      <div class="formation-cards"><GameCard class="formation-card" :card="state.terminalResolution.card" :interpretations="state.cardInterpretations" /></div>
+    </template>
+    <template v-else-if="state.terminalResolution?.type === 'automatic'">
+      <strong>{{ state.terminalResolution.label }}</strong>
+    </template>
     <h2>{{ resultText }}</h2>
-    <p class="result-reason"><strong>終局原因</strong>{{ endReasonText }}</p>
-    <p v-if="summary">{{ summary }}</p>
+    <p class="result-reason">{{ endReasonText }}</p>
     <div v-if="$slots.actions" class="result-actions">
       <slot name="actions" />
     </div>
@@ -10,12 +31,12 @@
 </template>
 
 <script setup lang="ts">
-import type { PublicGameState, TeamId } from '~/types/fewfc'
+import type { PublicCard, PublicCardRefs, PublicGameState, TeamId } from '~/types/fewfc'
 
 const props = defineProps<{
   state: PublicGameState
   teamLabel: (team: TeamId) => string
-  summary?: string
+  playerLabel?: (player: string) => string
 }>()
 
 const resultText = computed(() => {
@@ -56,33 +77,45 @@ const endReasonText = computed(() => {
       ?? `${props.teamLabel(cause.team)} 達成「${cause.rule}」的直接勝利條件`
   }).join('；')
 })
+
+const playerLabel = (player: string) => props.playerLabel?.(player) ?? player
+
+const terminalFormationCards = computed<PublicCard[]>(() => {
+  const resolution = props.state.terminalResolution
+  if (resolution?.type !== 'formation') return []
+  const cards: PublicCardRefs = resolution.cards
+  if (cards.kind === 'known') return cards.cards
+  if (cards.kind === 'partiallyKnown') return cards.cards.filter((card): card is PublicCard => card !== null)
+  return []
+})
+
+const terminalHiddenCount = computed(() => {
+  const resolution = props.state.terminalResolution
+  if (resolution?.type !== 'formation') return 0
+  if (resolution.cards.kind === 'hidden') return resolution.cards.count
+  if (resolution.cards.kind === 'partiallyKnown') return resolution.cards.cards.filter(card => card === null).length
+  return 0
+})
 </script>
 
 <style scoped>
 @reference "../assets/css/main.css";
 
-.result-panel { @apply border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-5; }
-.result-panel h2 { @apply font-serif text-2xl text-gold-light; }
-.result-panel p { @apply mt-1 text-xs text-muted; }
-.result-panel .result-reason { @apply mt-3 border-l-2 border-[var(--app-accent)] pl-2 text-[var(--app-text)]; }
-.result-reason strong { @apply mr-2 text-gold-light; }
-.result-panel .result-actions { @apply mt-2 grid grid-cols-1 gap-3; }
+.result-panel { @apply grid min-h-20 content-center justify-items-center gap-1 px-4 py-3 text-center; }
+.result-panel small { @apply text-[9px] text-muted; }
+.result-panel > strong { @apply font-serif text-sm text-gold-light; }
+.result-panel h2 { @apply mt-1 font-serif text-lg text-gold-light; }
+.result-panel p { @apply text-xs text-muted; }
+.result-panel .result-reason { @apply max-w-[34rem] text-[var(--app-text)]; }
+.formation-cards { @apply flex min-h-10 items-center justify-center; }
+.formation-card { width: 34px; margin-left: -4px; }
+.result-panel .result-actions { @apply mt-2 grid w-full max-w-56 grid-cols-1 gap-3; }
 :slotted(.primary-button) { @apply justify-between; }
-.result-panel.battlefield-conclusion {
-  @apply absolute inset-0 z-15 grid min-h-0 min-w-0 justify-items-center overflow-y-auto border bg-[rgba(23,28,25,.96)] px-4 py-3 text-center backdrop-blur-[5px];
-  align-content: safe center;
-  overscroll-behavior: contain;
-}
-.battlefield-conclusion h2 { @apply text-xl; }
-.battlefield-conclusion p { @apply max-w-[34rem]; }
-.battlefield-conclusion .result-reason { @apply text-left; }
-.battlefield-conclusion .result-actions { @apply w-full max-w-56; }
 
 @media (max-width: 600px) {
-  .result-panel.battlefield-conclusion { @apply px-3 py-2; }
-  .battlefield-conclusion h2 { @apply text-lg; }
-  .battlefield-conclusion p { @apply text-[11px]; }
-  .battlefield-conclusion .result-reason { @apply mt-2; }
-  .battlefield-conclusion .result-actions { @apply mt-2 max-w-48; }
+  .result-panel { @apply px-3 py-2; }
+  .result-panel h2 { @apply text-base; }
+  .result-panel p { @apply text-[11px]; }
+  .result-panel .result-actions { @apply max-w-48; }
 }
 </style>

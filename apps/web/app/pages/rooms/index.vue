@@ -102,6 +102,7 @@ interface LobbyRoomListItem {
   detail: string
   ruleSummary: string
   actionLabel: string
+  hasNotification: boolean
 }
 
 const router = useRouter()
@@ -128,6 +129,7 @@ const joinablePublicRoomItems = computed<LobbyRoomListItem[]>(() => joinablePubl
   detail: `${room.members.length} / ${room.capacity} 玩家 · ${room.observers.length} 位觀戰者 · ${room.status === 'Active' ? '對局中' : '等待開始'}`,
   ruleSummary: roomRuleSummary(room),
   actionLabel: room.status === 'Active' || room.members.length >= room.capacity ? '觀戰' : '加入',
+  hasNotification: hasNotification(room.gameId),
 })))
 const myRoomItems = computed<LobbyRoomListItem[]>(() => myRooms.value.map(room => ({
   gameId: room.gameId,
@@ -135,7 +137,8 @@ const myRoomItems = computed<LobbyRoomListItem[]>(() => myRooms.value.map(room =
   name: room.name,
   detail: roomStatusLabel(room),
   ruleSummary: roomRuleSummary(room),
-  actionLabel: roomNeedsAttention(room) ? '輪到你' : '進入',
+  actionLabel: '進入',
+  hasNotification: hasNotification(room.gameId),
 })))
 
 async function openRoomSettings() {
@@ -215,10 +218,8 @@ function roomRuleSummary(room: PublicRoomSummary): string {
   return presentRoomRuleDifferences(rulesCatalog.catalog.value?.ruleModules ?? [], room.enabledRuleModules)
 }
 
-function roomNeedsAttention(room: PublicRoomSummary): boolean {
-  return notifications.notifications.value.some(notification => (
-    notification.gameId === room.gameId && (notification.kind === 'gameStarted' || notification.kind === 'yourTurn')
-  ))
+function hasNotification(gameId: string): boolean {
+  return notifications.notifications.value.some(notification => notification.gameId === gameId)
 }
 
 onMounted(async () => {

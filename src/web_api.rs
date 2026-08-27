@@ -537,6 +537,13 @@ fn response_for(
         formation_names,
     );
     state.set_chain_strategy_options(chain_strategy_options);
+    state.set_terminal_resolution(terminal_resolution_for(
+        &record.recorded_decisions(),
+        viewer.clone(),
+        card_labels,
+        card_facts,
+        formation_names,
+    ));
     Ok(ApiResponse {
         record: record.recorded_decisions(),
         state,
@@ -598,21 +605,26 @@ fn replay_response_for(
     formation_names: &HashMap<String, String>,
 ) -> Result<ApiResult, ApiError> {
     let vocabulary = PlayerVocabulary::for_modules(&frame.state.enabled_rule_modules);
-    let state = WebPublicGameState::from_public(
+    let recorded_prefix = recorded_decision_prefix(recorded_decisions, frame.events.len());
+    let mut state = WebPublicGameState::from_public(
         crate::public_view::state_for(&frame.state, Viewer::Replay),
         card_labels,
         card_facts,
         formation_names,
     );
+    state.set_terminal_resolution(terminal_resolution_for(
+        &recorded_prefix,
+        Viewer::Replay,
+        card_labels,
+        card_facts,
+        formation_names,
+    ));
     Ok(ApiResult::ReplayFrame {
         current_step: frame.step,
         total_steps: frame.total_steps,
         state,
         battle_record: battle_record_for(
-            public_decision_feed(
-                &recorded_decision_prefix(recorded_decisions, frame.events.len()),
-                Viewer::Replay,
-            ),
+            public_decision_feed(&recorded_prefix, Viewer::Replay),
             &frame.state,
             perspective.or_else(|| setup.turn_order.first().cloned()),
             card_labels,
@@ -1657,6 +1669,7 @@ struct WebPublicGameState {
     status: String,
     winner_team: Option<String>,
     game_conclusion: Option<WebGameConclusion>,
+    terminal_resolution: Option<WebTerminalResolution>,
     turn_number: u64,
     phase: String,
     current_player: Option<String>,
@@ -1700,6 +1713,31 @@ struct WebPublicGameState {
 struct WebGameConclusion {
     outcome: WebGameOutcome,
     causes: Vec<WebGameEndCause>,
+}
+
+/// 已結束牌桌的中央展示。它是最後一個終局決策的公開事件投影，而不是
+/// `GameConclusion` 的一部分；後者只保存勝負與規則原因。
+#[derive(Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum WebTerminalResolution {
+    Formation {
+        player: String,
+        formation_id: Option<String>,
+        formation_name: Option<String>,
+        cards: WebCardRefs,
+    },
+    DiscardRetrieval {
+        player: String,
+        previous_player: String,
+        card: WebCard,
+    },
+    Automatic {
+        label: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -1788,6 +1826,7 @@ impl WebPublicGameState {
             },
             winner_team,
             game_conclusion,
+            terminal_resolution: None,
             turn_number: state.turn_number,
             phase: format!("{:?}", state.phase),
             current_player: state
@@ -2197,6 +2236,10 @@ impl WebPublicGameState {
         {
             *strategy_options = options;
         }
+    }
+
+    fn set_terminal_resolution(&mut self, terminal_resolution: Option<WebTerminalResolution>) {
+        self.terminal_resolution = terminal_resolution;
     }
 }
 
@@ -3103,6 +3146,115 @@ fn append_public_decision(
             source,
             events,
         });
+    }
+}
+
+fn terminal_resolution_for(
+    recorded_decisions: &[RecordedDecision],
+    viewer: Viewer,
+    labels: &HashMap<CardInstanceId, String>,
+    card_facts: &HashMap<CardInstanceId, WebCardFact>,
+    formation_names: &HashMap<String, String>,
+) -> Option<WebTerminalResolution> {
+    let decision = recorded_decisions.iter().rev().find(|decision| {
+        decision
+            .events
+            .iter()
+            .any(|event| matches!(event, GameEvent::GameEnded { .. }))
+    })?;
+    let events = crate::public_view::events_for(&decision.events, viewer);
+
+    if matches!(
+        decision.source,
+        RecordedDecisionSource::Automatic | RecordedDecisionSource::Randomness { .. }
+    ) {
+        return Some(WebTerminalResolution::Automatic {
+            label: automatic_terminal_label(&decision.events).to_string(),
+        });
+    }
+
+    if let Some((attacker, formation_id, used_cards)) = events.iter().rev().find_map(|event| {
+        let PublicGameEvent::Public(GameEvent::AttackResolved {
+            attacker,
+            formation_id,
+            used_cards,
+            ..
+        }) = event
+        else {
+            return None;
+        };
+        Some((attacker, formation_id, used_cards))
+    }) {
+        return Some(WebTerminalResolution::Formation {
+            player: attacker.as_str().to_string(),
+            formation_id: Some(formation_id.clone()),
+            formation_name: Some(formation_name(formation_names, formation_id)),
+            cards: WebCardRefs::from_public(
+                PublicCardRefs::Known(used_cards.clone()),
+                labels,
+                card_facts,
+            ),
+        });
+    }
+
+    if let Some((player, formation_id, cards)) = events.iter().rev().find_map(|event| {
+        let PublicGameEvent::FormationCommitted {
+            player,
+            formation_id,
+            cards,
+        } = event
+        else {
+            return None;
+        };
+        Some((player, formation_id, cards))
+    }) {
+        return Some(WebTerminalResolution::Formation {
+            player: player.as_str().to_string(),
+            formation_id: formation_id.clone(),
+            formation_name: formation_id
+                .as_deref()
+                .map(|formation_id| formation_name(formation_names, formation_id)),
+            cards: WebCardRefs::from_public(cards.clone(), labels, card_facts),
+        });
+    }
+
+    events.iter().rev().find_map(|event| {
+        let PublicGameEvent::Public(GameEvent::DiscardRetrieved {
+            player,
+            previous_player,
+            card,
+            ..
+        }) = event
+        else {
+            return None;
+        };
+        Some(WebTerminalResolution::DiscardRetrieval {
+            player: player.as_str().to_string(),
+            previous_player: previous_player.as_str().to_string(),
+            card: WebCard::from_id(*card, labels, card_facts),
+        })
+    })
+}
+
+fn automatic_terminal_label(events: &[GameEvent]) -> &'static str {
+    match events
+        .iter()
+        .rev()
+        .find(|event| !matches!(event, GameEvent::GameEnded { .. }))
+    {
+        Some(GameEvent::JianghuPoisonTicked { .. }) => "江湖毒發",
+        Some(GameEvent::JianghuDelayedDamageResolved { .. }) => "江湖延遲效果",
+        Some(GameEvent::AutomaticBloomsResolved { .. }) => "自動綻放效果",
+        Some(
+            GameEvent::EchoResolutionStarted { .. } | GameEvent::EchoResolutionCompleted { .. },
+        ) => "迴響效果",
+        Some(
+            GameEvent::PlantEarthResolutionStarted { .. }
+            | GameEvent::PlantEarthResolutionCompleted { .. },
+        ) => "植土效果",
+        Some(GameEvent::FiveStarAlignmentAchieved { .. }) => "五星連珠效果",
+        Some(GameEvent::KingYamaDecreeVictoryAchieved { .. }) => "閻王令效果",
+        _ => "自動效果結算",
     }
 }
 
@@ -7478,7 +7630,6 @@ mod tests {
                 rule: "internal:win".to_string(),
                 team: setup.players[0].team.clone(),
             }],
-            None,
         );
         let feed = PublicDecisionFeed {
             decisions: vec![PublicDecision {
@@ -8056,19 +8207,40 @@ mod tests {
                     rule: "test".to_string(),
                     team: setup.players[0].team.clone(),
                 }],
-                None,
             ),
         };
-        let web_state = WebPublicGameState::from_public(
+        let mut web_state = WebPublicGameState::from_public(
             crate::public_view::state_for(&state, Viewer::Player(setup.players[0].id.clone())),
             &rules.card_labels(&setup).unwrap(),
             &card_facts_for_setup(&setup),
             &rules.formation_names(&setup).unwrap(),
         );
+        let conclusion = match &state.status {
+            crate::domain::GameStatus::Finished { conclusion } => conclusion.clone(),
+            _ => unreachable!("finished state was just assigned"),
+        };
+        web_state.set_terminal_resolution(terminal_resolution_for(
+            &[RecordedDecision {
+                source: RecordedDecisionSource::Randomness {
+                    answer: TrustedRandomnessAnswer {
+                        request_id: "test-randomness".to_string(),
+                        shuffled_order: Vec::new(),
+                    },
+                },
+                events: vec![GameEvent::GameEnded { conclusion }],
+            }],
+            Viewer::Player(setup.players[0].id.clone()),
+            &rules.card_labels(&setup).unwrap(),
+            &card_facts_for_setup(&setup),
+            &rules.formation_names(&setup).unwrap(),
+        ));
         let json = serde_json::to_value(web_state).expect("web state should serialize");
 
         assert_eq!(json["status"], "Finished");
         assert_eq!(json["winnerTeam"], setup.players[0].team.as_str());
+        assert_eq!(json["terminalResolution"]["type"], "automatic");
+        assert_eq!(json["terminalResolution"]["label"], "自動效果結算");
+        assert!(json.get("terminal_resolution").is_none());
         assert_eq!(
             json["gameConclusion"],
             serde_json::json!({

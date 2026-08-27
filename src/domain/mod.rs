@@ -638,25 +638,15 @@ pub enum GameOutcome {
 pub struct GameConclusion {
     pub outcome: GameOutcome,
     pub causes: Vec<GameEndCause>,
-    #[serde(default)]
-    pub source_formation: Option<ConcludingFormationSnapshot>,
 }
 
 impl GameConclusion {
-    pub fn new(
-        outcome: GameOutcome,
-        causes: Vec<GameEndCause>,
-        source_formation: Option<ConcludingFormationSnapshot>,
-    ) -> Self {
+    pub fn new(outcome: GameOutcome, causes: Vec<GameEndCause>) -> Self {
         assert!(
             !causes.is_empty(),
             "a Game Conclusion must have at least one Game End Cause"
         );
-        Self {
-            outcome,
-            causes,
-            source_formation,
-        }
+        Self { outcome, causes }
     }
 }
 
@@ -664,13 +654,6 @@ impl GameConclusion {
 pub enum GameEndCause {
     TeamHpDepleted { teams: Vec<TeamId> },
     DirectVictory { rule: String, team: TeamId },
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct ConcludingFormationSnapshot {
-    pub player: PlayerId,
-    pub formation_id: String,
-    pub cards: Vec<CardInstanceId>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

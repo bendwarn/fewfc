@@ -29,10 +29,13 @@
 
     <aside v-if="visibleNotifications.length" class="notification-stack" aria-label="玩家通知">
       <article v-for="notification in visibleNotifications" :key="notification.id" class="notification-item">
-        <button class="notification-main" type="button" @click="openNotification(notification.gameId, notification.id)">
+        <button v-if="canOpenNotification(notification)" class="notification-main" type="button" @click="openNotification(notification.gameId)">
           <strong>{{ notification.message }}</strong>
           <span>進入房間</span>
         </button>
+        <div v-else class="notification-main" role="status">
+          <strong>{{ notification.message }}</strong>
+        </div>
         <button class="notification-dismiss" type="button" aria-label="關閉通知" @click="notifications.dismiss(notification.id)">×</button>
       </article>
     </aside>
@@ -40,7 +43,9 @@
 </template>
 
 <script setup lang="ts">
+import type { PlayerNotification } from '#shared/game-room'
 import { playerNotificationsKey } from '~/lib/player-notifications-context'
+import { isTransientPlayerNotification } from '~/lib/player-notifications'
 import { authClient } from '~/lib/auth-client'
 
 const router = useRouter()
@@ -50,7 +55,7 @@ const notifications = usePlayerNotifications()
 const profileOpen = ref(false)
 const profileMenuContainer = ref<HTMLElement | null>(null)
 const playerInitial = computed(() => session.displayName.value.trim().charAt(0).toUpperCase() || 'A')
-const visibleNotifications = computed(() => notifications.notifications.value.filter(notification => (
+const visibleNotifications = computed(() => notifications.visibleNotifications.value.filter(notification => (
   typeof route.params.gameId !== 'string'
     || notification.gameId !== route.params.gameId
     || notification.kind === 'seatPromoted'
@@ -67,13 +72,17 @@ async function logout() {
   profileOpen.value = false
   await authClient.signOut()
   notifications.disconnect()
+  notifications.setUserId('')
   session.clear()
   await router.replace('/login')
 }
 
-async function openNotification(gameId: string, notificationId: string) {
-  notifications.dismiss(notificationId)
+async function openNotification(gameId: string) {
   await router.push(`/rooms/${encodeURIComponent(gameId)}`)
+}
+
+function canOpenNotification(notification: PlayerNotification): boolean {
+  return !isTransientPlayerNotification(notification)
 }
 
 function closeProfileOnOutsideClick(event: MouseEvent) {
@@ -83,8 +92,14 @@ function closeProfileOnOutsideClick(event: MouseEvent) {
 }
 
 onMounted(() => {
+  notifications.setUserId(session.userId.value)
   notifications.connect()
   window.addEventListener('click', closeProfileOnOutsideClick)
+})
+
+watch(() => session.userId.value, (userId) => {
+  notifications.setUserId(userId)
+  if (userId) notifications.connect()
 })
 
 onBeforeUnmount(() => {

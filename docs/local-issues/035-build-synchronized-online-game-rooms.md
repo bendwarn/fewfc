@@ -66,6 +66,9 @@ Use a Cloudflare Worker as the authenticated gateway and route each room to an a
 - [x] Starting another joined room or reaching a player's turn in a background match produces a non-blocking global notification with an action to open that room.
 - [x] Starting one match does not cancel the player's membership or ready state in other rooms.
 - [x] Notifications are transient and are neither persisted nor replayed; "My rooms" is the authority after reconnect.
+  Browser retention is superseded by [local issue 77](077-retain-and-surface-player-notifications.md):
+  ordinary received notifications are retained locally for room-list dots;
+  server delivery still has no persistence or replay.
 - [x] Match completion shows the result and returns players to the same room.
 - [x] Returning to the room after a match resets every non-host player to unready before another match can start.
 

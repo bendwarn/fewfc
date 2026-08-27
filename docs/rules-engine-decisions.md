@@ -1022,7 +1022,6 @@ enum GameStatus {
 struct GameConclusion {
     outcome: GameOutcome,
     causes: Vec<GameEndCause>,
-    source_formation: Option<ConcludingFormationSnapshot>,
 }
 
 enum GameOutcome {
@@ -1059,9 +1058,12 @@ Formation merely as cleanup, enter `TurnDraw`, or enter `TurnEnd`. The Card
 zones already established remain unchanged, so a terminal current Formation
 can remain in its Player's Formation Area.
 
-The optional `source_formation` is a frozen summary for explanation and UI. A
-client may render it with Formation Area styling, but neither the current
-Formation Area nor `last_formation_by_player` is the canonical Game End Cause.
+The finished-table presentation is derived separately from the recorded
+decision that contains `GameEnded`, after applying the viewer's event
+redaction. A Formation commit or resolved Attack can provide its player,
+Formation, and cards; discard retrieval and automatic effects have their own
+presentations. This display is the terminal decision, not an end cause, and it
+never falls back to `last_formation_by_player`.
 
 Once `GameStatus::Finished` is reached, gameplay commands are rejected.
 
@@ -1270,7 +1272,7 @@ The canonical event log already contains automatic events such as initial deal,
 Discard Shuffles, choice requests, and status expiration. Recomputing them
 during replay could duplicate events or diverge across ruleset versions.
 
-Canonical `GameEvent` and `PendingChoice` payloads are persisted record formats and participate in replay verification. Their shape must not change without an explicit migration for existing records. Data needed only by a client, such as an effect choice's required card count, belongs in the Web projection and is derived from canonical state.
+Canonical `GameEvent` and `PendingChoice` payloads participate in replay verification. Data needed only by a client, such as an effect choice's required card count or a terminal-decision display, belongs in the Web projection and is derived from canonical records and public state.
 
 ### 34. Event Granularity
 

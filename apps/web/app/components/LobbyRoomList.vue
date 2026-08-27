@@ -15,7 +15,7 @@
       >
         <span class="room-code">{{ room.code }}</span>
         <div>
-          <strong>{{ room.name }}</strong>
+          <strong>{{ room.name }} <span v-if="room.hasNotification" class="notification-dot" role="status" aria-label="有房間通知" /></strong>
           <small>{{ room.detail }}</small>
           <small v-if="room.ruleSummary">{{ room.ruleSummary }}</small>
         </div>
@@ -33,6 +33,7 @@ interface LobbyRoomListItem {
   detail: string
   ruleSummary: string
   actionLabel: string
+  hasNotification: boolean
 }
 
 defineProps<{
@@ -62,4 +63,5 @@ defineEmits<{
 .public-room-list small { @apply text-xs text-muted; }
 .public-room-list i { @apply text-[10px] not-italic text-gold-light; }
 .room-code { @apply font-mono text-[10px]; color: var(--app-text-muted); overflow-wrap: anywhere; }
+.notification-dot { display: inline-block; width: 8px; height: 8px; margin-left: 6px; border-radius: 50%; background: var(--app-accent); vertical-align: middle; }
 </style>

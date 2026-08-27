@@ -134,30 +134,36 @@
     <div class="center-stack" :class="{ 'controls-visible': showTurnControls }">
       <div class="board-center">
         <div class="formation-field">
-          <div class="formation-field-heading">
-            <span class="formation-field-label">陣法區</span>
-            <span v-if="state.environment" class="environment-badge" aria-live="polite">環境 · {{ environmentLabel(state.environment) }}</span>
-          </div>
-          <div class="previous-formation">
-            <template v-if="state.previousTurnFormation">
-              <small>上一回合 · {{ playerLabel(state.previousTurnFormation.player) }}</small>
-              <strong>{{ state.previousTurnFormation.formationName ?? (mode === 'live' ? '蓋牌' : '陣法') }}</strong>
-              <div class="formation-cards">
-                <GameCard
-                  v-for="card in previousFormationCards"
-                  :key="card.id"
-                  class="formation-card"
-                  :card="card.card"
-                  :hidden="card.hidden"
-                  :interpretations="state.cardInterpretations"
-                />
-              </div>
-            </template>
-            <p v-else>上一回合未發動陣法</p>
+          <template v-if="state.status === 'Finished'">
+            <div class="terminal-resolution">
+              <slot name="terminal-resolution" />
+            </div>
+          </template>
+          <template v-else>
+            <div class="formation-field-heading">
+              <span class="formation-field-label">陣法區</span>
+              <span v-if="state.environment" class="environment-badge" aria-live="polite">環境 · {{ environmentLabel(state.environment) }}</span>
+            </div>
+            <div class="previous-formation">
+              <template v-if="state.previousTurnFormation">
+                <small>上一回合 · {{ playerLabel(state.previousTurnFormation.player) }}</small>
+                <strong>{{ state.previousTurnFormation.formationName ?? (mode === 'live' ? '蓋牌' : '陣法') }}</strong>
+                <div class="formation-cards">
+                  <GameCard
+                    v-for="card in previousFormationCards"
+                    :key="card.id"
+                    class="formation-card"
+                    :card="card.card"
+                    :hidden="card.hidden"
+                    :interpretations="state.cardInterpretations"
+                  />
+                </div>
+              </template>
+              <p v-else>上一回合未發動陣法</p>
+            </div>
+          </template>
           </div>
         </div>
-        <slot name="board-overlay" />
-      </div>
       <div v-if="showTurnControls" class="action-dock"><slot name="turn-controls" /></div>
     </div>
 
@@ -499,6 +505,7 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 .previous-formation p { @apply text-[10px] text-[var(--app-text-muted)]; }
 .formation-cards { @apply flex min-h-10 items-center justify-center; }
 .formation-card { width: 34px; margin-left: -4px; }
+.terminal-resolution { @apply grid size-full min-h-20 content-center; }
 .action-dock { @apply relative z-5 size-full min-h-0 min-w-0 overflow-y-auto; overscroll-behavior: contain; }
 .effect-detail-list { @apply grid list-none gap-2 p-0; }
 .effect-detail-list li { @apply border-l-2 border-[#8f5f63] bg-[rgba(118,85,87,.12)] px-3 py-2 text-xs leading-5; }

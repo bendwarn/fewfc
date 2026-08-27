@@ -477,12 +477,12 @@ _Avoid_: Game End Cause, score, inferred UI result
 
 **Game Conclusion (遊戲結論)**:
 The canonical terminal fact containing the Game Outcome and one or more Game
-End Causes. It persists independently of Card zones and previous-Turn queries.
+End Causes. It persists independently of Card zones, previous-Turn queries,
+and the presentation of the terminal decision.
 _Avoid_: final board, last Formation, result presentation
 
 **Game End Cause (遊戲結束原因)**:
-A typed reason the Game ended, pairing a terminal condition with the Formation
-Use or Rule Effect that caused it. Simultaneous causes may produce a Draw.
+A typed terminal condition. Simultaneous causes may produce a Draw.
 _Avoid_: Formation Area snapshot, Previous-Turn Formation, inferred cause
 
 **Validation Failure**:
@@ -566,6 +566,11 @@ _Avoid_: Viewer Player, non-current Player
 A shared online space with a fixed number of Player Seats in which members
 prepare for and play successive Games.
 _Avoid_: Game Record, Game Instance
+
+**Player Notification (玩家通知)**:
+A notice addressed to a room member about an Online Game Room change, distinct
+from the Game Record. A member has at most one current notice per room.
+_Avoid_: Game Event, Battle Record Entry
 
 **Player Seat (玩家席位)**:
 One place in an Online Game Room's playing capacity, occupied by a member who

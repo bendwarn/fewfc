@@ -25,12 +25,12 @@
                   {{ replayPlayerLabel(replayFrame.state.pendingChoice.player) }} 的選擇：{{ replayFrame.state.pendingChoice.choice.cards.map(card => card.label).join('、') }}
                 </p>
               </template>
-              <template #board-overlay>
+              <template #terminal-resolution>
                 <GameConclusionPanel
                   v-if="replayFrame.state.status === 'Finished'"
-                  class="battlefield-conclusion"
                   :state="replayFrame.state"
                   :team-label="replayTeamLabel"
+                  :player-label="replayPlayerLabel"
                 />
               </template>
             </BattlefieldBoard>

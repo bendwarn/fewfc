@@ -92,7 +92,6 @@ impl PersistedGameRecord {
                         rule: "five-star-alignment".to_string(),
                         team: team.clone(),
                     }],
-                    None,
                 )),
                 GameEvent::KingYamaDecreeVictoryAchieved { team, .. } => Some(GameConclusion::new(
                     GameOutcome::Winner(team.clone()),
@@ -100,7 +99,6 @@ impl PersistedGameRecord {
                         rule: "king-yama-decree".to_string(),
                         team: team.clone(),
                     }],
-                    None,
                 )),
                 _ => None,
             });
@@ -330,7 +328,6 @@ fn migrate_legacy_finished_status(state: &mut Map<String, Value>) {
         "causes".to_string(),
         Value::Array(vec![Value::Object(cause)]),
     );
-    conclusion.insert("source_formation".to_string(), Value::Null);
     finished.insert("conclusion".to_string(), Value::Object(conclusion));
 }
 

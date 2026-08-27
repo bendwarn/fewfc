@@ -6,6 +6,7 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Completed Local Issues
 
+- [#77 Retain and surface Player Notifications](077-retain-and-surface-player-notifications.md)
 - [#76 Deepen Secret Strategy Decisions](076-deepen-secret-strategy-decisions.md)
 - [#75 Allow Independent Initial Pouch Selection](075-allow-independent-initial-pouch-selection.md)
 - [#74 Simplify single-selection Pending Choices](074-simplify-single-selection-pending-choices.md)

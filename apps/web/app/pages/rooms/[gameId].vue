@@ -31,13 +31,12 @@
               @click="leaveWaitingRoom"
             >離開觀戰</button>
           </template>
-          <template #board-overlay>
+          <template #terminal-resolution>
             <GameConclusionPanel
               v-if="gameFinished"
-              class="battlefield-conclusion"
               :state="state"
               :team-label="teamLabel"
-              :summary="`${firstTurnText}，本局已結束。`"
+              :player-label="playerLabel"
             >
               <template #actions>
                 <button v-if="currentMember" class="primary-button" type="button" :disabled="game.isLoading.value" @click="restartGame">
@@ -1415,7 +1414,6 @@ const gameFinished = computed(() => state.value.status === 'Finished')
 const firstPlayer = computed<PlayerId | null>(() => (
   roomWaiting.value ? null : state.value.turnOrder[0] ?? null
 ))
-const firstTurnText = computed(() => firstPlayer.value ? `${playerLabel(firstPlayer.value)} 先手` : '尚未決定先手')
 const onlinePlayers = computed(() => onlineMetadata.value?.players ?? [])
 const waitingStatusText = computed(() => `${onlineMetadata.value?.members.length ?? 0} / ${onlineMetadata.value?.players.length ?? 0} 玩家 · ${onlineMetadata.value?.observers.length ?? 0} 位觀戰者`)
 const currentMember = computed(() => onlineMetadata.value?.members.find(
@@ -1945,11 +1943,10 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => notifications.notifications.value,
+  () => notifications.visibleNotifications.value,
   (items) => {
     const removal = items.find(notification => notification.gameId === roomCode.value && (notification.kind === 'removed' || notification.kind === 'dissolved'))
     if (!removal) return
-    notifications.dismiss(removal.id)
     game.clearRoom()
     void router.replace('/rooms')
   },

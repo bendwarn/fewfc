@@ -251,6 +251,7 @@ export interface PublicGameState {
   status: 'Preparing' | 'InProgress' | 'Finished'
   winnerTeam: TeamId | null
   gameConclusion: GameConclusion | null
+  terminalResolution: TerminalResolution | null
   turnNumber: number
   phase: 'TurnStart' | 'ActiveEffects' | 'Action' | 'TurnDraw' | 'TurnEnd'
   currentPlayer: PlayerId | null
@@ -349,6 +350,22 @@ export interface GameConclusion {
   outcome: GameOutcome
   causes: GameEndCause[]
 }
+
+export type TerminalResolution =
+  | {
+      type: 'formation'
+      player: PlayerId
+      formationId: string | null
+      formationName: string | null
+      cards: PublicCardRefs
+    }
+  | {
+      type: 'discardRetrieval'
+      player: PlayerId
+      previousPlayer: PlayerId
+      card: PublicCard
+    }
+  | { type: 'automatic'; label: string }
 
 export type GameOutcome =
   | { type: 'winner'; team: TeamId }

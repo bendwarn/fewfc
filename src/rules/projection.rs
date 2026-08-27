@@ -109,7 +109,6 @@ pub(crate) fn game_conclusion_if_needed(state: &GameState) -> Option<GameConclus
     Some(GameConclusion::new(
         outcome,
         vec![GameEndCause::TeamHpDepleted { teams: defeated }],
-        None,
     ))
 }
 

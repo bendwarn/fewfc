@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import type { PlayerNotification } from '../../shared/game-room'
-import { mergePlayerNotification } from './player-notifications'
+import {
+  PLAYER_NOTIFICATION_ROOM_LIMIT,
+  PLAYER_NOTIFICATION_TTL_MS,
+  mergePlayerNotification,
+  playerNotificationStorageKey,
+  restorePlayerNotifications,
+  serializePlayerNotifications,
+} from './player-notifications'
 
 function notification(
   id: string,
@@ -13,7 +20,7 @@ function notification(
     gameId,
     kind,
     message,
-    createdAt: `2026-07-15T00:00:${id.padStart(2, '0')}Z`,
+    createdAt: new Date(Date.UTC(2026, 7, 27, 12, 0, Number.parseInt(id, 10) || 0)).toISOString(),
   }
 }
 
@@ -39,7 +46,7 @@ describe('mergePlayerNotification', () => {
     expect(mergePlayerNotification([promoted], changed)).toEqual([promoted])
   })
 
-  test('keeps at most eight distinct rooms', () => {
+  test('keeps at most 100 distinct rooms', () => {
     const existing = [
       notification('8', 'room-8', 'yourTurn', '房間 8'),
       notification('7', 'room-7', 'yourTurn', '房間 7'),
@@ -61,6 +68,53 @@ describe('mergePlayerNotification', () => {
       'room-4',
       'room-3',
       'room-2',
+      'room-1',
     ])
+  })
+
+  test('evicts the oldest room when the 100-room cap is exceeded', () => {
+    const existing = Array.from({ length: PLAYER_NOTIFICATION_ROOM_LIMIT }, (_, index) => (
+      notification(String(index), `room-${index}`, 'yourTurn', `房間 ${index}`)
+    ))
+    const latest = notification('new', 'room-new', 'gameStarted', '新房間')
+
+    const merged = mergePlayerNotification(existing, latest)
+
+    expect(merged).toHaveLength(PLAYER_NOTIFICATION_ROOM_LIMIT)
+    expect(merged[0]).toEqual(latest)
+    expect(merged.some(item => item.gameId === 'room-99')).toBe(false)
+  })
+})
+
+describe('retained Player Notifications', () => {
+  const now = Date.parse('2026-08-27T12:00:00.000Z')
+
+  test('restores only current ordinary entries and keeps one entry per room', () => {
+    const newest = { ...notification('2', 'room-a', 'yourTurn', '新的通知'), createdAt: '2026-08-27T11:00:00.000Z' }
+    const old = { ...notification('1', 'room-a', 'gameStarted', '舊的通知'), createdAt: '2026-08-27T10:00:00.000Z' }
+    const expired = { ...notification('3', 'room-b', 'roomChanged', '過期通知'), createdAt: new Date(now - PLAYER_NOTIFICATION_TTL_MS - 1).toISOString() }
+    const removed = { ...notification('4', 'room-c', 'removed', '已被移除'), createdAt: '2026-08-27T11:00:00.000Z' }
+
+    expect(restorePlayerNotifications(JSON.stringify({ version: 1, notifications: [newest, old, expired, removed] }), now)).toEqual([newest])
+  })
+
+  test('expires an entry at the seven-day boundary', () => {
+    const boundary = { ...notification('1', 'room-a', 'yourTurn', '輪到你'), createdAt: new Date(now - PLAYER_NOTIFICATION_TTL_MS).toISOString() }
+
+    expect(restorePlayerNotifications(JSON.stringify({ version: 1, notifications: [boundary] }), now)).toEqual([])
+  })
+
+  test('rejects corrupt storage without affecting the current page', () => {
+    expect(restorePlayerNotifications('{not json', now)).toEqual([])
+    expect(restorePlayerNotifications(JSON.stringify({ version: 2, notifications: [] }), now)).toEqual([])
+    expect(restorePlayerNotifications(JSON.stringify({ version: 1, notifications: [{ gameId: 'room-a' }] }), now)).toEqual([])
+  })
+
+  test('serializes a versioned value and keeps account keys separate', () => {
+    const currentNow = Date.now()
+    const current = { ...notification('1', 'room-a', 'yourTurn', '輪到你'), createdAt: new Date(currentNow).toISOString() }
+
+    expect(playerNotificationStorageKey('player-a')).not.toBe(playerNotificationStorageKey('player-b'))
+    expect(restorePlayerNotifications(serializePlayerNotifications([current]), currentNow)).toEqual([current])
   })
 })

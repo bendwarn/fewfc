@@ -83,7 +83,7 @@ describe('BattlefieldBoard', () => {
 })
 
 describe('GameConclusionPanel', () => {
-  it('owns canonical conclusion wording when rendered through the board overlay', async () => {
+  it('renders the terminal decision and canonical conclusion in the formation field', async () => {
     const state = emptyPublicState(['alice', 'bob'])
     const winningTeam = state.players[0]!.team
     const losingTeam = state.players[1]!.team
@@ -91,6 +91,13 @@ describe('GameConclusionPanel', () => {
     state.gameConclusion = {
       outcome: { type: 'winner', team: winningTeam },
       causes: [{ type: 'teamHpDepleted', teams: [losingTeam] }],
+    }
+    state.terminalResolution = {
+      type: 'formation',
+      player: 'alice',
+      formationId: 'fire-attack',
+      formationName: '烈焰陣',
+      cards: { kind: 'known', cards: [fireThree] },
     }
 
     const wrapper = await mountSuspended(BattlefieldBoard, {
@@ -101,23 +108,26 @@ describe('GameConclusionPanel', () => {
         mode: 'replay',
       },
       slots: {
-        'board-overlay': h(
+        'terminal-resolution': h(
           GameConclusionPanel,
           {
-            class: 'battlefield-conclusion',
             state,
             teamLabel: (team) => team === winningTeam ? '我方' : '對方',
-            summary: '小明先手，本局已結束。',
+            playerLabel: (player) => player === 'alice' ? '小明' : player,
           },
           { actions: () => h('button', { class: 'primary-button', type: 'button' }, '返回房間') },
         ),
       },
     })
 
-    expect(wrapper.get('.board-center .result-panel').classes()).toContain('battlefield-conclusion')
+    expect(wrapper.get('.formation-field .result-panel').exists()).toBe(true)
+    expect(wrapper.find('.board-center > .result-panel').exists()).toBe(false)
+    expect(wrapper.find('.formation-field-heading').exists()).toBe(false)
+    expect(wrapper.get('.result-panel').text()).toContain('小明烈焰陣')
+    expect(wrapper.findAll('.formation-field .formation-card')).toHaveLength(1)
     expect(wrapper.get('.result-panel h2').text()).toBe('我方 勝利')
-    expect(wrapper.get('.result-reason').text()).toBe('終局原因對方 的生命值歸零')
-    expect(wrapper.text()).toContain('小明先手，本局已結束。')
+    expect(wrapper.get('.result-reason').text()).toBe('對方 的生命值歸零')
+    expect(wrapper.text()).not.toContain('先手')
     const action = wrapper.get('.result-actions button')
     expect(action.text()).toBe('返回房間')
     expect(action.classes()).toContain('primary-button')

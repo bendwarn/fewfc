@@ -18,6 +18,7 @@ it('renders a rule difference only for rooms whose configuration differs from th
           detail: '1 / 2 玩家 · 等待中',
           ruleSummary: '',
           actionLabel: '進入',
+          hasNotification: true,
         },
         {
           gameId: 'without-pouch',
@@ -26,6 +27,7 @@ it('renders a rule difference only for rooms whose configuration differs from th
           detail: '1 / 2 玩家 · 等待中',
           ruleSummary: '停用：錦囊',
           actionLabel: '進入',
+          hasNotification: false,
         },
       ],
     },
@@ -35,4 +37,5 @@ it('renders a rule difference only for rooms whose configuration differs from th
   expect(allEnabled.text()).not.toContain('停用：')
   expect(wrapper.text()).toContain('停用：錦囊')
   expect(wrapper.findAll('.public-room-list small')).toHaveLength(3)
+  expect(wrapper.get('[role="status"]').attributes('aria-label')).toBe('有房間通知')
 })

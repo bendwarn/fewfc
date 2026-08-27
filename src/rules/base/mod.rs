@@ -73,7 +73,6 @@ pub(crate) fn append_terminal_game_end(state: &GameState, events: &mut Vec<GameE
                 rule: "five-star-alignment".to_string(),
                 team: team.clone(),
             }],
-            None,
         )),
         GameEvent::KingYamaDecreeVictoryAchieved { team, .. } => Some(GameConclusion::new(
             GameOutcome::Winner(team.clone()),
@@ -81,7 +80,6 @@ pub(crate) fn append_terminal_game_end(state: &GameState, events: &mut Vec<GameE
                 rule: "king-yama-decree".to_string(),
                 team: team.clone(),
             }],
-            None,
         )),
         _ => None,
     });

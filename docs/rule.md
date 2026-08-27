@@ -254,9 +254,12 @@ discard a remaining Formation merely for cleanup, enter `TurnDraw`, or enter
 event, as required by official rule 7-3's immediate end and unfinished-effect
 stop.
 
-A public projection may render a source-Formation snapshot stored in the Game
-Conclusion using Formation Area styling. That presentation does not make the
-Formation Area itself the canonical end-reason record.
+For a finished table, a public projection may derive a viewer-safe terminal
+decision presentation from the recorded decision containing `GameEnded` (for
+example, a Formation, discard retrieval, or automatic effect). It is separate
+from `GameConclusion`, which remains the canonical outcome and end causes;
+clients must not substitute `last_formation_by_player` when no specialized
+terminal presentation exists.
 
 ## 3) Commands
 
