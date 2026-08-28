@@ -710,14 +710,23 @@ _Avoid_: hidden-card label, element mark
 A seat participant in turn order.
 _Avoid_: user, account
 
-**Local Password Reset**:
-A development-only password change available from a local Worker entry. It does
-not verify email ownership, requires an explicit local-reset enablement flag,
-reports whether the email is absent, has no resettable password credential, or
-was reset, creates a new session while preserving existing sessions, and is
-unavailable outside enabled local development. It will be replaced by an emailed
-reset flow outside local development.
-_Avoid_: production password reset, email password reset
+**Player Identity**:
+The stable authenticated identity that owns a Player Profile, custom Deck List,
+and saved Replay references. An online Game Room binds its Player Seats to this
+identity and never changes that binding during a waiting room or Game.
+_Avoid_: email address, OAuth subject, room seat
+
+**Authentication Method**:
+One independently removable credential that authenticates a Player Identity,
+such as Email and password, Google, or GitHub. A Player Identity always retains
+at least one Authentication Method.
+_Avoid_: Player Identity, Player Profile, provider email
+
+**Anonymous Player Identity**:
+A temporary Player Identity created for guest play. It may become a permanent
+Player Identity only while it has no waiting or active online-room membership;
+the transfer never rewrites an existing Player Seat.
+_Avoid_: unauthenticated visitor, active-room account merge
 
 **Team**:
 The HP-owning side that one or more players belong to.

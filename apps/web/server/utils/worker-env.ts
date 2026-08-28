@@ -16,7 +16,10 @@ export interface WorkerEnv {
   APP_ENV?: string
   BETTER_AUTH_SECRET?: string
   BETTER_AUTH_URL?: string
-  LOCAL_PASSWORD_RESET_ENABLED?: string
+  GOOGLE_CLIENT_ID?: string
+  GOOGLE_CLIENT_SECRET?: string
+  GITHUB_CLIENT_ID?: string
+  GITHUB_CLIENT_SECRET?: string
 }
 
 declare global {

@@ -7,7 +7,8 @@ export const OFFICIAL_SITE_URL = 'https://www.cfecards.org/'
 
 function pageName(path: string): string | null {
   if (path === '/login') return '登入'
-  if (path === '/reset-password') return '重設密碼'
+  if (path === '/account') return '帳號設定'
+  if (path === '/privacy') return '隱私權政策'
   if (path === '/rooms') return '對戰大廳'
   if (path.startsWith('/rooms/')) return '對戰房間'
   if (path === '/deck') return '個人牌組'
@@ -22,13 +23,15 @@ export function pageTitle(path: string): string {
 }
 
 export function robotsDirective(path: string, appEnvironment: string | undefined): string {
-  return appEnvironment === 'production' && path === '/'
+  return appEnvironment === 'production' && (path === '/' || path === '/privacy')
     ? 'index, follow'
     : 'noindex, nofollow'
 }
 
 export function canonicalUrl(path: string): string | undefined {
-  return path === '/' ? SITE_URL : undefined
+  if (path === '/') return SITE_URL
+  if (path === '/privacy') return `${SITE_URL}privacy`
+  return undefined
 }
 
 export function socialPageUrl(path: string): string {

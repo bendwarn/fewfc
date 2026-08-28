@@ -5,12 +5,12 @@ export interface AuthNavigationInput {
   path: string
   fullPath: string
   redirect?: unknown
-  resetPasswordEnabled: boolean
 }
 
 export type AuthNavigationResult = { allow: true } | { redirect: string }
 
-const AUTHENTICATION_PATHS = new Set(['/login', '/reset-password'])
+const AUTHENTICATION_PATHS = new Set(['/login'])
+const PUBLIC_PATHS = new Set(['/', '/login', '/privacy'])
 
 export function resolveAuthNavigation(input: AuthNavigationInput): AuthNavigationResult {
   if (input.authenticated) {
@@ -21,15 +21,7 @@ export function resolveAuthNavigation(input: AuthNavigationInput): AuthNavigatio
     return { allow: true }
   }
 
-  if (input.path === '/reset-password') {
-    return input.resetPasswordEnabled ? { allow: true } : { redirect: '/login' }
-  }
-
-  if (input.path === '/login') {
-    return { allow: true }
-  }
-
-  if (input.path === '/') {
+  if (PUBLIC_PATHS.has(input.path)) {
     return { allow: true }
   }
 

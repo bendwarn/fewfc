@@ -32,14 +32,8 @@ export async function gotoAppRoute(page: Page, path: string) {
     response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/auth/get-session'
   ))
-  const resetAvailability = path.startsWith('/reset-password')
-    ? page.waitForResponse(response => (
-      response.request().method() === 'GET'
-      && new URL(response.url()).pathname === '/api/local-password-reset'
-    ))
-    : undefined
   await page.goto(path)
-  await Promise.all([sessionRefresh, resetAvailability])
+  await sessionRefresh
 }
 
 export async function reloadAppRoute(page: Page) {

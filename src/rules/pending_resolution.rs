@@ -1,7 +1,7 @@
 //! 已接受規則流程在等待選擇或受信任隨機性後的唯一續行接縫。
 
 use crate::domain::{
-    ChoiceAnswer, EngineInvariantError, GameError, GameEvent, GameResult, GameState, GameStatus,
+    ChoiceAnswer, EngineInvariantError, GameError, GameEvent, GameResult, GameState,
     PendingResolution, Phase, PlayerId, RandomnessDeck,
 };
 
@@ -27,11 +27,11 @@ pub(crate) fn resume(
     state: &GameState,
     input: ValidatedPendingInput,
 ) -> GameResult<Vec<GameEvent>> {
-    let mut events = match input {
+    let events = match input {
         ValidatedPendingInput::Choice(input) => resume_choice(state, input)?,
         ValidatedPendingInput::Randomness(input) => resume_randomness(state, input)?,
     };
-    append_completed_formation_events(state, &mut events)?;
+    let events = crate::rules::base::formation_use::complete(state, events)?;
     ensure_waiting_invariant(state, &events)?;
     Ok(events)
 }
@@ -299,56 +299,6 @@ fn ensure_waiting_invariant(state: &GameState, events: &[GameEvent]) -> GameResu
         }
         _ => Err(invalid_pending_resolution()),
     }
-}
-
-/// Pending Resolution 已無後續等待輸入時，委派 Formation Use 的 typed completion
-/// hook 並保持 canonical terminal 與實體卡牌收尾的既有順序。
-fn append_completed_formation_events(
-    state: &GameState,
-    events: &mut Vec<GameEvent>,
-) -> GameResult<()> {
-    crate::rules::base::formation_use::append_completed_active_spell_post_formation_events(
-        state, events,
-    )?;
-    crate::rules::base::append_terminal_game_end(state, events);
-    if events
-        .iter()
-        .any(|event| matches!(event, GameEvent::GameEnded { .. }))
-    {
-        return Ok(());
-    }
-
-    let mut projected = state.clone();
-    for event in events.iter() {
-        crate::rules::projection::apply_event(&mut projected, event);
-    }
-    if projected.pending_choice.is_some()
-        || projected.pending_randomness.is_some()
-        || !matches!(projected.status, GameStatus::InProgress)
-        || projected.phase != Phase::Action
-    {
-        return Ok(());
-    }
-    let Some(player) = projected.current_player().cloned() else {
-        return Ok(());
-    };
-    let Some(formation) = projected
-        .formation_area(&player)
-        .and_then(|area| area.formation.as_ref())
-    else {
-        return Ok(());
-    };
-    if matches!(
-        formation.state,
-        crate::domain::FormationAreaState::FaceUpResolving
-    ) {
-        events.push(GameEvent::FormationCardsDiscarded {
-            player,
-            formation_id: formation.formation_id.clone(),
-            cards: formation.cards.clone(),
-        });
-    }
-    Ok(())
 }
 
 fn waiting_medium(resolution: &PendingResolution) -> WaitingMedium {

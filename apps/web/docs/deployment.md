@@ -189,6 +189,25 @@ access for the relevant zone if a custom domain is managed by Wrangler.
 Before enabling automatic deployment, replace both placeholder
 `BETTER_AUTH_URL` values in `wrangler.toml` with the actual HTTPS origins.
 
+## Social sign-in
+
+Set each provider as a Worker secret only when it should be available. A provider
+is hidden from the login and account-settings screens unless both variables are
+present:
+
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
+- `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`
+
+Register these callback URLs with Google and GitHub, replacing the origin for
+each environment:
+
+- `https://<origin>/api/auth/callback/google`
+- `https://<origin>/api/auth/callback/github`
+
+For example, use `bunx wrangler secret put GOOGLE_CLIENT_ID --env staging` and
+the corresponding secret command for every provider value. Do not place client
+secrets in `wrangler.toml` or public runtime configuration.
+
 Durable Objects should own authoritative online Game Records. Browser clients submit Commands and receive viewer-filtered Public Game State and Public Event Feed data.
 
 Current Worker game-room endpoints:

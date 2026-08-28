@@ -10,7 +10,7 @@
           <span class="element metal">金</span><span class="element wood">木</span><span class="element water">水</span><span class="element fire">火</span><span class="element earth">土</span><div class="orbit-core">五行</div>
         </div>
       </div>
-      <footer class="hero-footer"><span>© 2026 CFECards</span><span>遊戲規則 · 隱私權</span></footer>
+      <footer class="hero-footer"><span>© 2026 CFECards</span><NuxtLink to="/privacy">隱私權政策</NuxtLink></footer>
     </section>
     <section class="login-panel"><slot /></section>
   </div>
@@ -34,6 +34,7 @@
 .metal { top: -18px; left: calc(50% - 18px); }.wood { top: 28px; right: -18px; }.water { right: 8px; bottom: 8px; }.fire { bottom: 8px; left: 8px; }.earth { top: 28px; left: -18px; }
 .orbit-core { @apply absolute inset-[58px] grid place-items-center rounded-full border border-[#b99550] bg-[#1d2a21] font-serif text-gold-light; }
 .hero-footer { @apply absolute right-12 bottom-8 left-12 flex justify-between text-[10px] text-[#7f8982]; }
+.hero-footer a { color: inherit; text-decoration: none; }.hero-footer a:hover, .hero-footer a:focus-visible { color: #ddc17f; }
 .login-panel { @apply grid min-h-screen place-items-center px-6 py-12; background: var(--app-canvas); }
 .auth-card { @apply w-full max-w-md; color: var(--app-text); }
 .mobile-brand { @apply mb-9 flex items-center gap-3 font-serif text-lg; }

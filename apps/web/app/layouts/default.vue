@@ -17,6 +17,7 @@
             <span aria-hidden="true">⌄</span>
           </button>
           <div v-if="profileOpen" class="profile-menu">
+            <button type="button" @click="open('/account')">帳號設定</button>
             <button type="button" @click="open('/deck')">個人牌組</button>
             <button type="button" @click="open('/replays')">重播紀錄</button>
             <button type="button" @click="logout">登出</button>

@@ -58,8 +58,6 @@ pub(super) fn resolve(
             crate::domain::FormationAreaState::FaceUpResolving
         }
     };
-    let is_passive = matches!(plan.effect_plan, EffectPlan::PassiveSpell(_));
-    let is_active_spell = matches!(&plan.effect_plan, EffectPlan::ActiveSpell(_));
     let mut events = BaseEffectResolver::new().resolve(state, plan)?;
     // 複合陣形效果過去會將自己的陣形卡牌作為手牌到棄牌堆的差異攜帶。在陣形
     // 區架構下，那些移動由流程負責，因此只保留真正額外的移動。
@@ -119,71 +117,74 @@ pub(super) fn resolve(
     crate::rules::pouch::suppress_watch_fire_formation_hp_changes(state, &player, &mut events);
     crate::rules::dark::append_shared_fate_events(state, &player, &formation_id, &mut events)?;
     crate::rules::dark::append_mischief_events(state, &mut events)?;
-    if is_active_spell {
-        append_post_formation_events(state, &player, &formation_id, &mut events)?;
-    }
     attack_resolution::absorb_simultaneous_events(&mut events);
-    super::append_terminal_game_end(state, &mut events);
-    let waits_for_choice = events.iter().any(|event| {
-        matches!(
-            event,
-            GameEvent::ChoiceRequested { .. } | GameEvent::RandomnessRequested { .. }
-        )
-    });
-    let has_terminal_event = events
-        .iter()
-        .any(|event| matches!(event, GameEvent::GameEnded { .. }));
-    if !is_passive && !waits_for_choice && !has_terminal_event {
-        events.push(GameEvent::FormationCardsDiscarded {
-            player: player.clone(),
-            formation_id: formation_id.clone(),
-            cards: composition.physical_cards,
-        });
-    }
-    Ok(events)
+    complete(state, events)
 }
 
-pub(crate) fn append_completed_active_spell_post_formation_events(
+/// 完成一個可能暫停過的 Formation Use。
+///
+/// 呼叫端只需交付目前累積的 canonical events；此 deep interface 取得 sequence
+/// 的 ownership，並在內部決定 post-Formation hooks、Game Conclusion 與三種合法
+/// 結尾的順序。
+pub(crate) fn complete(
     state: &GameState,
-    events: &mut Vec<GameEvent>,
-) -> GameResult<()> {
+    mut events: Vec<GameEvent>,
+) -> GameResult<Vec<GameEvent>> {
     let mut projected = state.clone();
     for event in events.iter() {
         crate::rules::projection::apply_event(&mut projected, event);
     }
 
-    if projected.pending_choice.is_some()
-        || projected.pending_randomness.is_some()
-        || !matches!(projected.status, crate::domain::GameStatus::InProgress)
-        || projected.phase != crate::domain::Phase::Action
-    {
-        return Ok(());
-    }
-    let Some(player) = projected.current_player().cloned() else {
-        return Ok(());
-    };
-    let Some(formation) = projected
-        .formation_area(&player)
-        .and_then(|area| area.formation.as_ref())
-    else {
-        return Ok(());
-    };
-    if !matches!(
-        formation.state,
-        crate::domain::FormationAreaState::FaceUpResolving
-    ) {
-        return Ok(());
+    if let Some((player, formation_id, _)) = face_up_formation_ready_to_complete(&projected) {
+        let registry = base_formation_registry();
+        let is_active_spell = registry
+            .formation(&formation_id)
+            .and_then(|definition| registry.effect_for(definition))
+            .is_some_and(|effect| matches!(effect.plan, EffectPlan::ActiveSpell(_)));
+        if is_active_spell {
+            append_post_formation_events(state, &player, &formation_id, &mut events)?;
+        }
     }
 
-    let registry = base_formation_registry();
-    let is_active_spell = registry
-        .formation(&formation.formation_id)
-        .and_then(|definition| registry.effect_for(definition))
-        .is_some_and(|effect| matches!(effect.plan, EffectPlan::ActiveSpell(_)));
-    if is_active_spell {
-        append_post_formation_events(state, &player, &formation.formation_id, events)?;
+    super::append_terminal_game_end(state, &mut events);
+
+    let mut projected = state.clone();
+    for event in events.iter() {
+        crate::rules::projection::apply_event(&mut projected, event);
     }
-    Ok(())
+    if let Some((player, formation_id, cards)) = face_up_formation_ready_to_complete(&projected) {
+        events.push(GameEvent::FormationCardsDiscarded {
+            player,
+            formation_id,
+            cards,
+        });
+    }
+    Ok(events)
+}
+
+fn face_up_formation_ready_to_complete(
+    state: &GameState,
+) -> Option<(PlayerId, String, Vec<CardInstanceId>)> {
+    if state.pending_choice.is_some()
+        || state.pending_randomness.is_some()
+        || !matches!(state.status, crate::domain::GameStatus::InProgress)
+        || state.phase != crate::domain::Phase::Action
+    {
+        return None;
+    }
+    let player = state.current_player()?.clone();
+    let formation = state.formation_area(&player)?.formation.as_ref()?;
+    matches!(
+        formation.state,
+        crate::domain::FormationAreaState::FaceUpResolving
+    )
+    .then(|| {
+        (
+            player,
+            formation.formation_id.clone(),
+            formation.cards.clone(),
+        )
+    })
 }
 
 pub(super) fn append_post_formation_events(

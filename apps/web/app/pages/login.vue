@@ -18,7 +18,12 @@
     </form>
 
     <button class="auth-mode-button" type="button" @click="toggleAuthMode">{{ authMode === 'sign-in' ? '還沒有帳號？建立帳號' : '已經有帳號？返回登入' }}</button>
-    <button v-if="localPasswordResetEnabled && authMode === 'sign-in'" class="auth-mode-button" type="button" @click="openLocalPasswordReset">重設本機密碼</button>
+    <template v-if="enabledProviders.length">
+      <div class="divider"><span>或使用社群帳號</span></div>
+      <button v-for="provider in enabledProviders" :key="provider" class="ghost-button social-button" type="button" :disabled="authBusy" @click="signInSocial(provider)">
+        使用 {{ providerLabel(provider) }} 繼續
+      </button>
+    </template>
     <div class="divider"><span>或使用訪客身份</span></div>
     <button class="ghost-button" type="button" :disabled="authBusy" @click="guestLogin">以訪客身份遊玩</button>
     <p class="terms">繼續即表示你同意遊戲規範與使用條款。</p>
@@ -28,6 +33,7 @@
 <script setup lang="ts">
 import { authClient } from '~/lib/auth-client'
 import { safeInternalPath } from '~/lib/navigation'
+import { socialAuthFailureMessage } from '~/lib/social-auth-presentation'
 
 definePageMeta({ layout: 'auth' })
 
@@ -40,7 +46,9 @@ const emailInput = ref('')
 const passwordInput = ref('')
 const authBusy = ref(false)
 const loginError = ref('')
-const localPasswordResetEnabled = ref(false)
+const providers = ref({ google: false, github: false })
+type SocialProvider = 'google' | 'github'
+const enabledProviders = computed(() => (['google', 'github'] as const).filter(provider => providers.value[provider]))
 
 function loginRedirect(): string {
   return safeInternalPath(route.query.redirect) ?? '/rooms'
@@ -93,21 +101,38 @@ async function guestLogin() {
   }
 }
 
+async function signInSocial(provider: SocialProvider) {
+  authBusy.value = true
+  loginError.value = ''
+  try {
+    const result = await authClient.signIn.social({
+      provider,
+      callbackURL: loginRedirect(),
+      errorCallbackURL: '/login',
+    })
+    if (result.error) loginError.value = result.error.message || '無法開始社群登入'
+  } catch {
+    loginError.value = '帳號服務目前無法使用'
+  } finally {
+    authBusy.value = false
+  }
+}
+
+function providerLabel(provider: SocialProvider) {
+  return provider === 'google' ? 'Google' : 'GitHub'
+}
+
 function toggleAuthMode() {
   authMode.value = authMode.value === 'sign-in' ? 'sign-up' : 'sign-in'
   loginError.value = ''
 }
 
-function openLocalPasswordReset() {
-  const redirect = safeInternalPath(route.query.redirect)
-  void router.push({ path: '/reset-password', query: redirect ? { redirect } : {} })
-}
-
 onMounted(async () => {
+  loginError.value = socialAuthFailureMessage(route.query.error) ?? ''
   try {
-    localPasswordResetEnabled.value = (await $fetch<{ enabled: boolean }>('/api/local-password-reset')).enabled
+    providers.value = (await $fetch<{ providers: typeof providers.value }>('/api/auth-capabilities')).providers
   } catch {
-    localPasswordResetEnabled.value = false
+    providers.value = { google: false, github: false }
   }
 })
 </script>

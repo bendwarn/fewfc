@@ -17,6 +17,8 @@ export function safeInternalPath(value: unknown): string | undefined {
     || url.pathname.startsWith('/rooms/')
     || url.pathname === '/replays'
     || url.pathname.startsWith('/replays/')
+    || url.pathname === '/account'
+    || url.pathname === '/privacy'
   )
     ? `${url.pathname}${url.search}${url.hash}`
     : undefined

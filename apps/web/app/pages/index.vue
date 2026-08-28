@@ -96,6 +96,7 @@
 
     <footer class="landing-footer">
       <span>© 2026 CFECards</span>
+      <NuxtLink to="/privacy">隱私權政策</NuxtLink>
       <a :href="OFFICIAL_SITE_URL" target="_blank" rel="noopener noreferrer">五行戰鬥牌官方網站 <span aria-hidden="true">↗</span></a>
     </footer>
   </div>

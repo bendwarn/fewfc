@@ -1,13 +1,11 @@
 ---
-status: accepted
+status: deprecated
 ---
 
-# Separate local and email password resets
+# Deprecated: local password reset policy
 
-Local password reset is a development-only recovery tool for malformed local
-credential hashes. It requires an explicit enablement flag, reports diagnostic
-outcomes, preserves existing sessions, and signs the reset user in. It is not
-deployed outside local development and has no separate rate limit. The production
-recovery flow will use Better Auth's one-time reset tokens delivered through
-Cloudflare Email Sending, which verifies control of the account email before a
-password can change and will be rate-limited.
+This decision is superseded by
+[ADR-0036](0036-use-explicit-social-authentication-methods.md). The local
+password-reset entry, API, tests, and enablement flag were removed. The product
+does not provide password recovery or email delivery; Email and password remains
+an ordinary Authentication Method alongside explicit social methods.
