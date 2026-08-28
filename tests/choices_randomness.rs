@@ -2,9 +2,9 @@ use fewfc::application::{
     advance_automatic, apply_event, handle_command, replay, resolve_trusted_randomness,
 };
 use fewfc::domain::{
-    CardInstanceId, ChainPouchDecision, ChoiceAnswer, ChoiceId, Command, GameError, GameEvent,
-    GameSetup, GameState, PassActionReason, PendingChoiceKind, PendingRandomness,
-    PendingResolution, PlayerId, RandomnessDeck, SecretStrategyDecision,
+    CardInstanceId, ChainPouchDecision, ChoiceAnswer, ChoiceId, Command, EngineInvariantError,
+    GameError, GameEvent, GameSetup, GameState, PassActionReason, PendingChoice, PendingChoiceKind,
+    PendingRandomness, PendingResolution, PlayerId, RandomnessDeck, SecretStrategyDecision,
     SecretStrategyStarOperation, TrustedRandomnessAnswer, ValidationError,
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, event_for, state_for};
@@ -96,6 +96,81 @@ fn trusted_randomness_requires_the_exact_current_permutation() {
         ),
         Err(GameError::Validation(
             ValidationError::StalePendingRandomness
+        ))
+    );
+}
+
+#[test]
+fn randomness_without_its_semantic_pending_resolution_is_an_engine_invariant() {
+    let mut state = state_with_pending_randomness();
+    state.pending_resolution = None;
+
+    assert_eq!(
+        resolve_trusted_randomness(
+            &state,
+            &TrustedRandomnessAnswer {
+                request_id: "shuffle-1".to_string(),
+                shuffled_order: vec![card(3), card(2), card(1)],
+            },
+        ),
+        Err(GameError::EngineInvariant(
+            EngineInvariantError::InvalidPendingResolution
+        ))
+    );
+}
+
+#[test]
+fn randomness_cannot_resume_a_choice_only_pending_resolution() {
+    let mut state = state_with_pending_randomness();
+    state.pending_resolution = Some(PendingResolution::TurnDrawDiscard);
+
+    assert_eq!(
+        resolve_trusted_randomness(
+            &state,
+            &TrustedRandomnessAnswer {
+                request_id: "shuffle-1".to_string(),
+                shuffled_order: vec![card(3), card(2), card(1)],
+            },
+        ),
+        Err(GameError::EngineInvariant(
+            EngineInvariantError::InvalidPendingResolution
+        ))
+    );
+}
+
+#[test]
+fn choice_cannot_resume_a_randomness_only_pending_resolution() {
+    let mut state = GameState::from_setup(&setup());
+    apply_event(
+        &mut state,
+        &GameEvent::ChoiceRequested {
+            choice: PendingChoice {
+                choice_id: ChoiceId::new(1),
+                player: PlayerId::new("p1"),
+                kind: PendingChoiceKind::Card {
+                    cards: vec![card(1)],
+                    minimum: 1,
+                    maximum: 1,
+                    can_decline: false,
+                },
+            },
+            resolution: PendingResolution::TurnDraw,
+        },
+    );
+
+    assert_eq!(
+        handle_command(
+            &state,
+            Command::AnswerChoice {
+                player: PlayerId::new("p1"),
+                choice_id: ChoiceId::new(1),
+                answer: ChoiceAnswer::Cards {
+                    cards: vec![card(1)],
+                },
+            },
+        ),
+        Err(GameError::EngineInvariant(
+            EngineInvariantError::InvalidPendingResolution
         ))
     );
 }

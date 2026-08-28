@@ -53,6 +53,25 @@ async function expectBattlefieldConclusion(page: Page, width: number, height: nu
   expect(conclusionBox.x + conclusionBox.width).toBeLessThanOrEqual(battlefieldBox.x + battlefieldBox.width + 1)
   expect(conclusionBox.y + conclusionBox.height).toBeLessThanOrEqual(battlefieldBox.y + battlefieldBox.height + 1)
 
+  const terminalCards = conclusion.locator('.formation-cards .playing-card')
+  const terminalCardBoxes = await terminalCards.evaluateAll(elements => elements.map((element) => {
+    const rect = element.getBoundingClientRect()
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  }))
+  const conclusionTextBoxes = await conclusion.locator('small, strong, h2, .result-reason, .result-actions').evaluateAll(elements => elements.map((element) => {
+    const rect = element.getBoundingClientRect()
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  }))
+  for (const cardBox of terminalCardBoxes) {
+    for (const textBox of conclusionTextBoxes) {
+      const overlaps = cardBox.x < textBox.x + textBox.width
+        && cardBox.x + cardBox.width > textBox.x
+        && cardBox.y < textBox.y + textBox.height
+        && cardBox.y + cardBox.height > textBox.y
+      expect(overlaps).toBe(false)
+    }
+  }
+
   const seatBoxes = await battlefield.locator('.player-seat').evaluateAll(elements => elements.map((element) => {
     const rect = element.getBoundingClientRect()
     return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
@@ -215,6 +234,7 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
         .toContainText('星辰圖記規則')
     }))
     await expectBattlefieldConclusion(host, 1440, 900)
+    await expectBattlefieldConclusion(host, 760, 612)
     await expectBattlefieldConclusion(guest, 390, 844)
     await expectBattlefieldConclusion(guest, 360, 640)
 

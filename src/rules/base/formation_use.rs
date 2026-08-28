@@ -143,7 +143,7 @@ pub(super) fn resolve(
     Ok(events)
 }
 
-pub(super) fn append_completed_active_spell_post_formation_events(
+pub(crate) fn append_completed_active_spell_post_formation_events(
     state: &GameState,
     events: &mut Vec<GameEvent>,
 ) -> GameResult<()> {

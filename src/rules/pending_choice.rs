@@ -205,7 +205,7 @@ pub(crate) fn validate_pending_input(
         .pending_resolution
         .as_ref()
         .ok_or(GameError::EngineInvariant(
-            crate::domain::EngineInvariantError::InvalidPendingChoice,
+            crate::domain::EngineInvariantError::InvalidPendingResolution,
         ))?;
     if let (PendingResolution::PouchChain, ChoiceAnswer::Chain { decision }) = (resolution, &answer)
     {

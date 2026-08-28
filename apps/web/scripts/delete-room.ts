@@ -156,8 +156,8 @@ export async function deleteRoom(
 
   if (processes.length > 0) {
     throw new Error(
-      'Wrangler is running for this workspace. Stop `bun dev` or `bun run cf:dev` before deleting room storage.',
-    )
+      `Wrangler is running for this workspace. Stop \n ${processes.join("\n")}`,
+    );
   }
 
   const durableObjectDatabases = durableObjectFiles(wranglerRoot)

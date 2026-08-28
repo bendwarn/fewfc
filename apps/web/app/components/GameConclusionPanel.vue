@@ -101,14 +101,14 @@ const terminalHiddenCount = computed(() => {
 <style scoped>
 @reference "../assets/css/main.css";
 
-.result-panel { @apply grid min-h-20 content-center justify-items-center gap-1 px-4 py-3 text-center; }
+.result-panel { @apply grid min-h-20 content-center justify-items-center gap-2 px-4 py-3 text-center; }
 .result-panel small { @apply text-[9px] text-muted; }
 .result-panel > strong { @apply font-serif text-sm text-gold-light; }
 .result-panel h2 { @apply mt-1 font-serif text-lg text-gold-light; }
 .result-panel p { @apply text-xs text-muted; }
 .result-panel .result-reason { @apply max-w-[34rem] text-[var(--app-text)]; }
 .formation-cards { @apply flex min-h-10 items-center justify-center; }
-.formation-card { width: 34px; margin-left: -4px; }
+.formation-cards :deep(.playing-card) { width: 34px; margin-left: -4px; }
 .result-panel .result-actions { @apply mt-2 grid w-full max-w-56 grid-cols-1 gap-3; }
 :slotted(.primary-button) { @apply justify-between; }
 
@@ -117,5 +117,6 @@ const terminalHiddenCount = computed(() => {
   .result-panel h2 { @apply text-base; }
   .result-panel p { @apply text-[11px]; }
   .result-panel .result-actions { @apply max-w-48; }
+  .formation-cards :deep(.playing-card) { width: 30px; }
 }
 </style>

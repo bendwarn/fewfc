@@ -6,7 +6,7 @@ use crate::domain::{
 /// 已驗證的受信任隨機性輸入。只有本模組能建立它，解析模組只能消費它。
 pub(crate) struct ValidatedPendingRandomnessInput {
     resolution: PendingResolution,
-    request_id: crate::domain::RandomnessRequestId,
+    request_id: String,
     operation: RandomnessOperation,
     shuffled_order: Vec<crate::domain::CardInstanceId>,
 }
@@ -14,7 +14,7 @@ pub(crate) struct ValidatedPendingRandomnessInput {
 impl ValidatedPendingRandomnessInput {
     fn new(
         resolution: PendingResolution,
-        request_id: crate::domain::RandomnessRequestId,
+        request_id: String,
         operation: RandomnessOperation,
         shuffled_order: Vec<crate::domain::CardInstanceId>,
     ) -> Self {
@@ -30,7 +30,7 @@ impl ValidatedPendingRandomnessInput {
         self,
     ) -> (
         PendingResolution,
-        crate::domain::RandomnessRequestId,
+        String,
         RandomnessOperation,
         Vec<crate::domain::CardInstanceId>,
     ) {

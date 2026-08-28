@@ -3,7 +3,7 @@ mod covered_passive;
 pub(crate) mod deck_composition;
 mod effect_intent;
 mod formation_selection;
-mod formation_use;
+pub(crate) mod formation_use;
 
 use crate::domain::{
     CannotPerformFormationReason, CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Command,
@@ -110,53 +110,6 @@ pub(crate) fn append_terminal_game_end(state: &GameState, events: &mut Vec<GameE
         });
         events.push(GameEvent::GameEnded { conclusion });
     }
-}
-
-/// 隨機性待處理流程完成作用中陣形後，補上陣形後果與實體卡牌收尾。
-pub(crate) fn append_completed_formation_events(
-    state: &GameState,
-    events: &mut Vec<GameEvent>,
-) -> GameResult<()> {
-    formation_use::append_completed_active_spell_post_formation_events(state, events)?;
-    append_terminal_game_end(state, events);
-    if events
-        .iter()
-        .any(|event| matches!(event, GameEvent::GameEnded { .. }))
-    {
-        return Ok(());
-    }
-
-    let mut projected = state.clone();
-    for event in events.iter() {
-        projection::apply_event(&mut projected, event);
-    }
-    if projected.pending_choice.is_some()
-        || projected.pending_randomness.is_some()
-        || !matches!(projected.status, GameStatus::InProgress)
-        || projected.phase != Phase::Action
-    {
-        return Ok(());
-    }
-    let Some(player) = projected.current_player().cloned() else {
-        return Ok(());
-    };
-    let Some(formation) = projected
-        .formation_area(&player)
-        .and_then(|area| area.formation.as_ref())
-    else {
-        return Ok(());
-    };
-    if matches!(
-        formation.state,
-        crate::domain::FormationAreaState::FaceUpResolving
-    ) {
-        events.push(GameEvent::FormationCardsDiscarded {
-            player,
-            formation_id: formation.formation_id.clone(),
-            cards: formation.cards.clone(),
-        });
-    }
-    Ok(())
 }
 
 /// 保留在基礎法術解析器旁的規則專屬選擇事實。這裡僅供說明；實際的待選擇
@@ -1346,140 +1299,6 @@ fn ensure_can_query_playable_actions(
     }
 
     Ok(())
-}
-
-pub(crate) fn resolve_answered_choice(
-    state: &GameState,
-    choice: &crate::domain::PendingChoice,
-    resolution: &PendingResolution,
-    player: PlayerId,
-    choice_id: crate::domain::ChoiceId,
-    answer: crate::domain::ChoiceAnswer,
-) -> GameResult<Vec<GameEvent>> {
-    let mut events = vec![GameEvent::ChoiceMade {
-        player: player.clone(),
-        choice_id,
-        answer: answer.clone(),
-    }];
-    // 後果是從「選擇已完成」後的標準狀態規劃而來。如此一來，延續可以要求
-    // 下一個選擇，而不必在規劃狀態中替換目前的選擇；回傳的事件序列仍可從
-    // 回答前的狀態回放。
-    let mut resolved_state = state.clone();
-    crate::rules::projection::apply_event(&mut resolved_state, &events[0]);
-
-    match resolution {
-        PendingResolution::TurnDrawDiscard => {
-            ensure_current_player(&resolved_state, &player)?;
-            ensure_phase(&resolved_state, Phase::TurnDraw)?;
-            let crate::domain::ChoiceAnswer::Cards { cards } = answer else {
-                unreachable!("validated Turn Draw answer is a Card answer")
-            };
-            let discard = cards[0];
-            let kept_cards = resolved_state
-                .turn_draw_pool
-                .iter()
-                .copied()
-                .filter(|card| *card != discard)
-                .collect();
-            events.push(GameEvent::TurnDrawResolved {
-                player: player.clone(),
-                discard,
-                kept_cards,
-            });
-            if let Some(owned) = resolved_state.spirit_for(&player)
-                && owned.power < 6
-                && !crate::rules::pouch::spirit_is_suppressed(&resolved_state, &player)
-                && crate::rules::spirit::turn_discard_charges(
-                    &resolved_state,
-                    owned.spirit,
-                    discard,
-                )
-            {
-                events.push(GameEvent::SpiritPowerChanged {
-                    player,
-                    spirit: owned.spirit,
-                    old_power: owned.power,
-                    delta: 1,
-                    new_power: owned.power + 1,
-                    reason: crate::domain::SpiritPowerChangeReason::TurnDrawDiscard {
-                        card: discard,
-                    },
-                });
-            }
-        }
-        PendingResolution::EchoPureFireTarget
-        | PendingResolution::EchoSplitEarthFormation
-        | PendingResolution::EchoRingingMetalDeckCard
-        | PendingResolution::EchoPlantEarthMelody
-        | PendingResolution::EchoCost { .. } => {
-            if let Some(resumed) =
-                crate::rules::echo::answer_choice(&resolved_state, &player, resolution, &answer)?
-            {
-                events.extend(resumed);
-            }
-        }
-        PendingResolution::TribulationEarthRendingEnvironment
-        | PendingResolution::TribulationEarthRendingCard => {
-            if let Some(resumed) =
-                crate::rules::tribulation::answer_choice(&resolved_state, resolution, &answer)?
-            {
-                events.extend(resumed);
-            }
-        }
-        PendingResolution::PouchChain => {
-            if let Some(resumed) =
-                crate::rules::pouch::answer_chain_choice(&resolved_state, &player, &answer)?
-            {
-                events.extend(resumed);
-            }
-        }
-        PendingResolution::PouchSheepStealingChoice => {
-            if let Some(resumed) =
-                crate::rules::pouch::answer_sheep_choice(&resolved_state, choice, &player, &answer)?
-            {
-                events.extend(resumed);
-            }
-        }
-        _resolution => {
-            let cards = match &answer {
-                crate::domain::ChoiceAnswer::Cards { cards } => cards,
-                _ => unreachable!("validated card resolution has a Card answer"),
-            };
-            events.extend(formation_use::answer_choice(
-                &resolved_state,
-                choice,
-                &player,
-                resolution,
-                cards,
-            )?);
-        }
-    }
-    formation_use::append_completed_active_spell_post_formation_events(state, &mut events)?;
-    append_terminal_game_end(state, &mut events);
-    let mut projected = state.clone();
-    for event in &events {
-        projection::apply_event(&mut projected, event);
-    }
-    if projected.pending_choice.is_none()
-        && projected.pending_randomness.is_none()
-        && matches!(projected.status, GameStatus::InProgress)
-        && projected.phase == Phase::Action
-        && let Some(player) = projected.current_player().cloned()
-        && let Some(formation) = projected
-            .formation_area(&player)
-            .and_then(|area| area.formation.as_ref())
-        && matches!(
-            formation.state,
-            crate::domain::FormationAreaState::FaceUpResolving
-        )
-    {
-        events.push(GameEvent::FormationCardsDiscarded {
-            player,
-            formation_id: formation.formation_id.clone(),
-            cards: formation.cards.clone(),
-        });
-    }
-    Ok(events)
 }
 
 fn ensure_current_player(state: &GameState, actual: &crate::domain::PlayerId) -> GameResult<()> {
