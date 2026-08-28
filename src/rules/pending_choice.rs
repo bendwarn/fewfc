@@ -4,6 +4,52 @@ use crate::domain::{
 };
 use std::collections::HashSet;
 
+/// 已通過外部選擇驗證、只能交給 Pending Resolution 接縫的輸入。
+/// 欄位保持私有，避免呼叫端跳過待選擇生命週期自行組成答案。
+pub(crate) struct ValidatedPendingChoiceInput {
+    choice: PendingChoice,
+    resolution: PendingResolution,
+    player: PlayerId,
+    choice_id: ChoiceId,
+    answer: ChoiceAnswer,
+}
+
+impl ValidatedPendingChoiceInput {
+    fn new(
+        choice: PendingChoice,
+        resolution: PendingResolution,
+        player: PlayerId,
+        choice_id: ChoiceId,
+        answer: ChoiceAnswer,
+    ) -> Self {
+        Self {
+            choice,
+            resolution,
+            player,
+            choice_id,
+            answer,
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        PendingChoice,
+        PendingResolution,
+        PlayerId,
+        ChoiceId,
+        ChoiceAnswer,
+    ) {
+        (
+            self.choice,
+            self.resolution,
+            self.player,
+            self.choice_id,
+            self.answer,
+        )
+    }
+}
+
 /// 標準待選擇狀態配置與答案形狀驗證的唯一擁有者。規則模組提交
 /// `ChoiceRequest`；它們絕不自行配置識別碼或組合等待狀態。
 pub(crate) fn request_event(state: &GameState, request: ChoiceRequest) -> GameResult<GameEvent> {
@@ -136,15 +182,14 @@ pub(crate) fn validate_answer(
         .ok_or(GameError::Validation(ValidationError::InvalidChoiceAnswer))
 }
 
-/// 驗證作用中的 `ChoiceId`、擁有者與具型別答案後，分派唯一的公開選擇回答命令。
-/// 後果規劃仍在規則模組中，但所有延續都必須經過此生命週期邊界進入，因此
-/// 命令永遠不能直接呼叫原始延續。
-pub(crate) fn answer_events(
+/// 驗證作用中的 `ChoiceId`、擁有者與具型別答案，並產生不透明輸入 token。
+/// 後果規劃不在這個模組；呼叫端只能將 token 交給 Pending Resolution 接縫。
+pub(crate) fn validate_pending_input(
     state: &GameState,
     player: PlayerId,
     choice_id: ChoiceId,
     answer: ChoiceAnswer,
-) -> GameResult<Vec<GameEvent>> {
+) -> GameResult<ValidatedPendingChoiceInput> {
     let Some(choice) = state.pending_choice.as_ref() else {
         return if choice_id < state.next_choice_id {
             Err(GameError::Validation(ValidationError::StaleChoiceId {
@@ -166,8 +211,26 @@ pub(crate) fn answer_events(
     {
         crate::rules::pouch::validate_chain_decision(state, &player, decision)?;
     }
-    crate::rules::base::resolve_answered_choice(
-        state, choice, resolution, player, choice_id, answer,
+    Ok(ValidatedPendingChoiceInput::new(
+        choice.clone(),
+        resolution.clone(),
+        player,
+        choice_id,
+        answer,
+    ))
+}
+
+/// 驗證完成後只負責 hand off；Pending Resolution module 擁有接續與事件順序。
+pub(crate) fn answer_events(
+    state: &GameState,
+    player: PlayerId,
+    choice_id: ChoiceId,
+    answer: ChoiceAnswer,
+) -> GameResult<Vec<GameEvent>> {
+    let input = validate_pending_input(state, player, choice_id, answer)?;
+    crate::rules::pending_resolution::resume(
+        state,
+        crate::rules::pending_resolution::ValidatedPendingInput::Choice(input),
     )
 }
 

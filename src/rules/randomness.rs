@@ -1,7 +1,47 @@
 use crate::domain::{
-    GameError, GameEvent, GameResult, GameState, PendingResolution, RandomnessDeck,
-    RandomnessOperation, TrustedRandomnessAnswer, ValidationError,
+    GameError, GameResult, GameState, PendingResolution, RandomnessDeck, RandomnessOperation,
+    TrustedRandomnessAnswer, ValidationError,
 };
+
+/// 已驗證的受信任隨機性輸入。只有本模組能建立它，解析模組只能消費它。
+pub(crate) struct ValidatedPendingRandomnessInput {
+    resolution: PendingResolution,
+    request_id: crate::domain::RandomnessRequestId,
+    operation: RandomnessOperation,
+    shuffled_order: Vec<crate::domain::CardInstanceId>,
+}
+
+impl ValidatedPendingRandomnessInput {
+    fn new(
+        resolution: PendingResolution,
+        request_id: crate::domain::RandomnessRequestId,
+        operation: RandomnessOperation,
+        shuffled_order: Vec<crate::domain::CardInstanceId>,
+    ) -> Self {
+        Self {
+            resolution,
+            request_id,
+            operation,
+            shuffled_order,
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        PendingResolution,
+        crate::domain::RandomnessRequestId,
+        RandomnessOperation,
+        Vec<crate::domain::CardInstanceId>,
+    ) {
+        (
+            self.resolution,
+            self.request_id,
+            self.operation,
+            self.shuffled_order,
+        )
+    }
+}
 
 pub(crate) fn trusted_random_hand_count_for_formation(formation_id: &str) -> Option<usize> {
     (formation_id == crate::rules::dark::DARK_CHAOS).then_some(2)
@@ -16,7 +56,19 @@ pub(crate) fn trusted_random_hand_count_for_spirit_skill(
 pub(crate) fn resolve_trusted_randomness(
     state: &GameState,
     answer: &TrustedRandomnessAnswer,
-) -> GameResult<Vec<GameEvent>> {
+) -> GameResult<Vec<crate::domain::GameEvent>> {
+    let input = validate_pending_input(state, answer)?;
+    crate::rules::pending_resolution::resume(
+        state,
+        crate::rules::pending_resolution::ValidatedPendingInput::Randomness(input),
+    )
+}
+
+/// 驗證外部隨機性答案，並把它封裝成只能交給 Pending Resolution 的 token。
+pub(crate) fn validate_pending_input(
+    state: &GameState,
+    answer: &TrustedRandomnessAnswer,
+) -> GameResult<ValidatedPendingRandomnessInput> {
     let request = state
         .pending_randomness
         .as_ref()
@@ -31,8 +83,8 @@ pub(crate) fn resolve_trusted_randomness(
     let resolution = state
         .pending_resolution
         .as_ref()
-        .ok_or(GameError::Validation(
-            ValidationError::MissingPendingRandomness,
+        .ok_or(GameError::EngineInvariant(
+            crate::domain::EngineInvariantError::InvalidPendingResolution,
         ))?;
 
     let current_order = current_order_for_request(state, &request.operation)?;
@@ -52,30 +104,12 @@ pub(crate) fn resolve_trusted_randomness(
         ));
     }
 
-    let mut events = vec![GameEvent::RandomnessResolved {
-        request_id: request.request_id.clone(),
-        operation: request.operation.clone(),
-        shuffled_order: answer.shuffled_order.clone(),
-    }];
-    let mut projected = state.clone();
-    crate::rules::projection::apply_event(&mut projected, &events[0]);
-    if request.operation.is_discard_shuffle() {
-        let recovery = crate::rules::confluence::tailwind_recovery_events(
-            &projected,
-            request.operation.destination_deck(),
-        );
-        for event in &recovery {
-            crate::rules::projection::apply_event(&mut projected, event);
-        }
-        events.extend(recovery);
-    }
-    events.extend(after_randomness_events(
-        &projected,
-        resolution,
-        request.operation.destination_deck(),
-    )?);
-    crate::rules::base::append_completed_formation_events(state, &mut events)?;
-    Ok(events)
+    Ok(ValidatedPendingRandomnessInput::new(
+        resolution.clone(),
+        request.request_id.clone(),
+        request.operation.clone(),
+        answer.shuffled_order.clone(),
+    ))
 }
 
 fn current_order_for_request<'a>(
@@ -91,58 +125,5 @@ fn current_order_for_request<'a>(
         RandomnessDeck::Player(player) => state
             .deck_for(player)
             .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone()))),
-    }
-}
-
-fn after_randomness_events(
-    state: &GameState,
-    resolution: &PendingResolution,
-    resolved_deck: &RandomnessDeck,
-) -> GameResult<Vec<GameEvent>> {
-    match resolution {
-        PendingResolution::TurnDraw => Ok(Vec::new()),
-        PendingResolution::SpiritDeathOmen { player } => {
-            crate::rules::spirit::after_death_omen_randomness_events(state, player)
-        }
-        PendingResolution::EchoRingingMetalRecycleDiscard
-        | PendingResolution::EchoRingingMetalPostSearch => {
-            crate::rules::echo::after_randomness_events(state, resolution)
-        }
-        PendingResolution::HeroRevelation => {
-            crate::rules::hero::after_revelation_randomness_events(state)
-        }
-        PendingResolution::ConfluenceClearWindTenThousandMiles => {
-            crate::rules::confluence::after_clear_wind_randomness_events(state)
-        }
-        PendingResolution::ConfluenceClearWindRevealTop => {
-            crate::rules::confluence::after_clear_wind_supply_events(state)
-        }
-        PendingResolution::PouchInitialShuffle => {
-            crate::rules::pouch::after_initial_shuffle_randomness_events(state, resolved_deck)
-        }
-        PendingResolution::PouchChainRecycle => {
-            crate::rules::pouch::after_chain_recycle_randomness_events(state)
-        }
-        PendingResolution::PouchChainPostSearch { player } => {
-            crate::rules::pouch::after_chain_post_search_randomness_events(state, player)
-        }
-        PendingResolution::PouchSheepStealingRecycle { source_card } => {
-            crate::rules::pouch::after_sheep_recycle_randomness_events(state, *source_card)
-        }
-        PendingResolution::PouchSheepStealing { source_card, owner } => {
-            Ok(vec![GameEvent::PouchConsumed {
-                owner: owner.clone(),
-                card: *source_card,
-            }])
-        }
-        PendingResolution::TribulationRustedForestDiscardShuffle => {
-            crate::rules::tribulation::after_rusted_forest_discard_shuffle_events(state)
-        }
-        PendingResolution::TribulationRustedForestShuffle => {
-            crate::rules::tribulation::after_rusted_forest_randomness_events(state)
-        }
-        _ => Err(GameError::Validation(
-            ValidationError::MissingPendingRandomness,
-        )),
     }
 }

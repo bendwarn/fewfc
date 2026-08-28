@@ -2825,6 +2825,7 @@ pub enum EngineInvariantError {
     NotEnoughCards { needed: usize, available: usize },
     DuplicatePendingChoice { player: PlayerId },
     InvalidPendingChoice,
+    InvalidPendingResolution,
     DuplicateFormationArea { player: PlayerId },
     FormationAreaMissing { player: PlayerId },
     DuplicateProfession { player: PlayerId },

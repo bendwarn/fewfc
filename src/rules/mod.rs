@@ -10,6 +10,7 @@ pub(crate) mod hero;
 pub(crate) mod jianghu;
 mod official;
 pub(crate) mod pending_choice;
+pub(crate) mod pending_resolution;
 pub(crate) mod pouch;
 pub(crate) mod profession;
 pub(crate) mod projection;
