@@ -549,12 +549,10 @@ fn sheep_stealing_events(
     }
     let mut moves = deck_cards
         .iter()
-        .map(|card| CardMoveDelta {
-            card: *card,
-            from: CardZone::PlayerDeckTop(player.clone()),
-            to: discard_zone(state, *card),
+        .map(|card| {
+            crate::domain::discard::move_from(state, *card, CardZone::PlayerDeckTop(player.clone()))
         })
-        .collect::<Vec<_>>();
+        .collect::<GameResult<Vec<_>>>()?;
     let mut projected = state.clone();
     crate::rules::projection::apply_event(
         &mut projected,
@@ -573,7 +571,7 @@ fn sheep_stealing_events(
     }
     moves.extend(discard_cards.iter().map(|card| CardMoveDelta {
         card: *card,
-        from: discard_zone(state, *card),
+        from: CardZone::PlayerDiscard(player.clone()),
         to: CardZone::PlayerDeckTop(player.clone()),
     }));
     let moved = GameEvent::CardsMoved { card_moves: moves };
@@ -779,13 +777,6 @@ fn profession_for_element(element: Element) -> ProfessionId {
         Element::Fire => crate::rules::hero::MAGE_ID,
         Element::Earth => crate::rules::hero::WINDWALKER_ID,
     })
-}
-
-fn discard_zone(state: &GameState, card: CardInstanceId) -> CardZone {
-    match state.card_origin(card) {
-        Some(CardOrigin::Player(player)) => CardZone::PlayerDiscard(player.clone()),
-        _ => CardZone::Discard,
-    }
 }
 
 #[cfg(test)]

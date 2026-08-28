@@ -1,7 +1,8 @@
 use fewfc::application::{apply_event, handle_command};
 use fewfc::domain::{
-    CardInstanceId, ChoiceAnswer, ChoiceId, Command, GameEvent, GameSetup, GameState,
-    PendingChoice, PendingChoiceKind, PendingResolution, Phase, PlayerId, ValidationError,
+    CardDef, CardDefId, CardInstanceDef, CardInstanceId, ChoiceAnswer, ChoiceId, Command, Element,
+    GameEvent, GameSetup, GameState, PendingChoice, PendingChoiceKind, PendingResolution, Phase,
+    PlayerId, PrintedCardLevel, ValidationError,
 };
 use fewfc::public_view::{PublicPendingChoice, Viewer, state_for};
 
@@ -11,7 +12,19 @@ fn card(id: u64) -> CardInstanceId {
 
 #[test]
 fn accepted_answer_records_choice_made_before_domain_consequences_and_releases_the_lifecycle() {
-    let setup = GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30);
+    let setup = GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30).with_cards(
+        vec![CardDef {
+            id: CardDefId::new("test-card"),
+            name: "測試牌".to_string(),
+            element: Element::Metal,
+            level: PrintedCardLevel::new(1),
+        }],
+        vec![CardInstanceDef {
+            instance: card(1),
+            definition: CardDefId::new("test-card"),
+            origin: Default::default(),
+        }],
+    );
     let mut state = GameState::from_setup(&setup);
     state.phase = Phase::TurnDraw;
     state.turn_draw_pool = vec![card(1)];

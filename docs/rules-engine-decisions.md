@@ -1897,8 +1897,10 @@ do not share one validation snapshot. Validate the first set against the
 pre-effect Personal Deck, project those ordered Deck-to-Discard moves, and only
 then validate the return set against the performing Player's projected Discard
 Pile. This permits the same physical Card Instance to move from Deck to Discard
-and back to Deck during one resolution, as required by official clarification
-3-2.4. The canonical `CardsMoved` event records those deltas in resolution
+and back to Deck during one resolution only for a Card with that Player's
+origin; an Exposed Foreign Card returns to its origin owner's pile and is not a
+return candidate. The canonical `CardsMoved` event records those deltas in
+resolution
 order and replay applies them sequentially.
 
 Private interaction options expose the current Discard Pile together with
@@ -1988,7 +1990,9 @@ Star or Environment does not exist, no Card qualifies.
 
 Confluence Generation's `上家棄牌` is the existing Retrievable Discard: the
 Previous Player's Turn Draw Discarded Card from the immediately completed
-Previous Turn, provided that Card remains available to retrieve. Residual
+Previous Turn, provided that same Card Instance remains in any Discard Pile;
+the current Pile Owner does not affect retrieval. Moving it to a Deck, hand, or
+any other non-Discard zone makes the physical Card unavailable. Residual
 Element (`餘行`) and Residual Level (`餘級`) are instead fixed from that Card's
 printed definition when it is Discarded. They remain unchanged until the
 current Player reaches Turn Draw even if the Card moves; moving it only makes

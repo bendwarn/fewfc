@@ -2,9 +2,10 @@ use fewfc::application::{
     advance_automatic, apply_event, handle_command, replay, resolve_trusted_randomness,
 };
 use fewfc::domain::{
-    CardInstanceId, ChainPouchDecision, ChoiceAnswer, ChoiceId, Command, EngineInvariantError,
-    GameError, GameEvent, GameSetup, GameState, PassActionReason, PendingChoice, PendingChoiceKind,
-    PendingRandomness, PendingResolution, PlayerId, RandomnessDeck, SecretStrategyDecision,
+    CardDef, CardDefId, CardInstanceDef, CardInstanceId, ChainPouchDecision, ChoiceAnswer,
+    ChoiceId, Command, Element, EngineInvariantError, GameError, GameEvent, GameSetup, GameState,
+    PassActionReason, PendingChoice, PendingChoiceKind, PendingRandomness, PendingResolution,
+    PlayerId, PrintedCardLevel, RandomnessDeck, SecretStrategyDecision,
     SecretStrategyStarOperation, TrustedRandomnessAnswer, ValidationError,
 };
 use fewfc::public_view::{PublicGameEvent, Viewer, event_for, state_for};
@@ -14,7 +15,21 @@ fn card(id: u64) -> CardInstanceId {
 }
 
 fn setup() -> GameSetup {
-    GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30)
+    GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30).with_cards(
+        vec![CardDef {
+            id: CardDefId::new("test-card"),
+            name: "測試牌".to_string(),
+            element: Element::Metal,
+            level: PrintedCardLevel::new(1),
+        }],
+        (1..=4)
+            .map(|id| CardInstanceDef {
+                instance: card(id),
+                definition: CardDefId::new("test-card"),
+                origin: Default::default(),
+            })
+            .collect(),
+    )
 }
 
 fn state_with_pending_randomness() -> GameState {
@@ -31,7 +46,7 @@ fn state_with_pending_randomness() -> GameState {
                 current_order: vec![card(1), card(2), card(3)],
             },
             resolution: PendingResolution::PouchSheepStealing {
-                source_card: card(1),
+                source_card: card(4),
                 owner: None,
             },
         },
@@ -202,7 +217,7 @@ fn accepted_shuffle_is_canonical_and_replay_uses_the_recorded_order() {
                     current_order: vec![card(1), card(2), card(3)],
                 },
                 resolution: PendingResolution::PouchSheepStealing {
-                    source_card: card(1),
+                    source_card: card(4),
                     owner: None,
                 },
             },

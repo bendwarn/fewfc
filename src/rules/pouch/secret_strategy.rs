@@ -4,16 +4,15 @@
 //! 則以同一個完整 Decision 建構 offer、驗證輸入並規劃秘計後果。
 
 use super::{
-    GOLDEN_CICADA_STATUS, LURE_PLAYER_STATUS, LURE_SPIRIT_STATUS, WATCH_FIRE_STATUS, discard_zone,
-    has_status, player_is_protected, profession_for_element, sheep_choice_events,
-    spirit_for_element,
+    GOLDEN_CICADA_STATUS, LURE_PLAYER_STATUS, LURE_SPIRIT_STATUS, WATCH_FIRE_STATUS, has_status,
+    player_is_protected, profession_for_element, sheep_choice_events, spirit_for_element,
 };
 use crate::domain::{
-    CardInstanceId, CardMoveDelta, CardZone, DeckPlacement, Element, GameError, GameEvent,
-    GameResult, GameState, PlayerId, PouchLevelBonus, RandomnessDeck, RuleImplementationError,
-    SecretStrategy, SecretStrategyDecision, SecretStrategyEnvironmentOperation,
-    SecretStrategyStarOperation, StarBreakReason, StarKind, StatusDuration, StatusEffect,
-    StatusOwner, TemporaryStarEffect, ValidationError,
+    CardInstanceId, CardZone, DeckPlacement, Element, GameError, GameEvent, GameResult, GameState,
+    PlayerId, PouchLevelBonus, RandomnessDeck, RuleImplementationError, SecretStrategy,
+    SecretStrategyDecision, SecretStrategyEnvironmentOperation, SecretStrategyStarOperation,
+    StarBreakReason, StarKind, StatusDuration, StatusEffect, StatusOwner, TemporaryStarEffect,
+    ValidationError,
 };
 use crate::rules::PlayerFacingActionDetail;
 use serde::Serialize;
@@ -482,11 +481,11 @@ pub(crate) fn strategy_events(
                 let element = state.card_element(*card).ok_or_else(unexpected)?;
                 Ok(vec![
                     GameEvent::CardsMoved {
-                        card_moves: vec![CardMoveDelta {
-                            card: *card,
-                            from: CardZone::Hand(player.clone()),
-                            to: discard_zone(state, *card),
-                        }],
+                        card_moves: vec![crate::domain::discard::move_from(
+                            state,
+                            *card,
+                            CardZone::Hand(player.clone()),
+                        )?],
                     },
                     GameEvent::EnvironmentTransferred {
                         player: player.clone(),

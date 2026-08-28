@@ -1,5 +1,6 @@
 //! 領域模型：遊戲狀態、識別碼、事件、命令與規則不變量。
 
+pub(crate) mod discard;
 pub mod targeting;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -1310,13 +1311,6 @@ impl GameState {
                 .map(|pile| &mut pile.cards)
         } else {
             Some(&mut self.discard)
-        }
-    }
-
-    pub fn discard_owner(&self, card: CardInstanceId) -> Option<PlayerId> {
-        match self.card_origin(card)? {
-            CardOrigin::Shared => None,
-            CardOrigin::Player(player) => Some(player.clone()),
         }
     }
 

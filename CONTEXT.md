@@ -627,6 +627,9 @@ _Avoid_: inferred movement
 
 **Discard (捨棄)**:
 The action of moving a used or unwanted Card Instance to the Discard Pile.
+An ordinary Discard always follows immutable Card Origin: Shared goes to the
+shared pile and Player-origin goes to that origin Player's Discard Pile, with
+no fallback.
 _Avoid_: 棄置
 
 **Discard Pile (棄牌堆)**:
@@ -683,7 +686,8 @@ _Avoid_: owned card, hidden card
 **Retrievable Discard**:
 The Previous Player's Turn Draw Discarded Card from the immediately completed
 Previous Turn. It is the sole card eligible for the current Player's Discard
-Retrieval.
+Retrieval and remains eligible while that same Card Instance is in any Discard
+Pile, regardless of Pile Owner. Moving it to any other zone ends eligibility.
 _Avoid_: top discarded card, formation cards
 
 **Residual Element (餘行)**:
@@ -1117,6 +1121,8 @@ _Avoid_: callback response
   **Discard Pile**
 - **Discard Retrieval** derives exactly one **Retrievable Discard** from
   canonical turn history rather than a Player-submitted card choice
+- A **Retrievable Discard** remains retrievable in any **Discard Pile** and
+  becomes unavailable only after moving to a different kind of zone
 - Residual Element and Residual Level remain available for Tuner transitions
   and Formations even after their source Card stops being a Retrievable Discard;
   調律 and 天響 additionally require that physical Card to remain retrievable

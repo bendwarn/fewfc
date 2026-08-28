@@ -1,8 +1,8 @@
 use crate::domain::{
-    CardInstanceId, CardMoveDelta, CardOrigin, CardZone, DeckPlacement, Element, GameError,
-    GameEvent, GameResult, GameState, HpChangeDelta, PendingResolution, PlayerId, PlayerSpirit,
-    RandomnessDeck, SpiritBreakReason, SpiritKind, SpiritPowerDelta, SpiritSkill, StatusDuration,
-    StatusEffect, StatusOwner, TeamBloomResolution, ValidationError,
+    CardInstanceId, CardZone, DeckPlacement, Element, GameError, GameEvent, GameResult, GameState,
+    HpChangeDelta, PendingResolution, PlayerId, PlayerSpirit, RandomnessDeck, SpiritBreakReason,
+    SpiritKind, SpiritPowerDelta, SpiritSkill, StatusDuration, StatusEffect, StatusOwner,
+    TeamBloomResolution, ValidationError,
 };
 
 use super::{
@@ -190,12 +190,8 @@ pub(crate) fn void_spirit_shattering_event(
     let card_moves = cards
         .iter()
         .copied()
-        .map(|card| CardMoveDelta {
-            card,
-            from: CardZone::Hand(player.clone()),
-            to: discard_zone_for_card(state, card),
-        })
-        .collect();
+        .map(|card| crate::domain::discard::move_from(state, card, CardZone::Hand(player.clone())))
+        .collect::<GameResult<Vec<_>>>()?;
 
     let broken_professions = broken_spirits
         .iter()
@@ -602,11 +598,11 @@ fn skill_effect_events(
                 .unwrap_or(0);
             Ok(vec![
                 GameEvent::CardsMoved {
-                    card_moves: vec![CardMoveDelta {
+                    card_moves: vec![crate::domain::discard::move_from(
+                        state,
                         card,
-                        from: CardZone::Hand(player.clone()),
-                        to: discard_zone_for_card(state, card),
-                    }],
+                        CardZone::Hand(player.clone()),
+                    )?],
                 },
                 GameEvent::TurnDrawBonusChanged {
                     player: player.clone(),
@@ -720,16 +716,18 @@ fn skill_effect_events(
             let mut events = vec![GameEvent::CardsMoved {
                 card_moves: cards
                     .iter()
-                    .map(|card| CardMoveDelta {
-                        card: *card,
-                        from: if state.uses_personal_decks() {
-                            CardZone::PlayerDeckTop(target.clone())
-                        } else {
-                            CardZone::DeckTop
-                        },
-                        to: discard_zone_for_card(state, *card),
+                    .map(|card| {
+                        crate::domain::discard::move_from(
+                            state,
+                            *card,
+                            if state.uses_personal_decks() {
+                                CardZone::PlayerDeckTop(target.clone())
+                            } else {
+                                CardZone::DeckTop
+                            },
+                        )
                     })
-                    .collect(),
+                    .collect::<GameResult<Vec<_>>>()?,
             }];
             events.push(hp_event(
                 state,
@@ -826,17 +824,6 @@ fn adjacent_player(state: &GameState, player: &PlayerId, next: bool) -> GameResu
         .get(adjacent)
         .cloned()
         .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))
-}
-
-fn discard_zone_for_card(state: &GameState, card: CardInstanceId) -> CardZone {
-    if state.uses_personal_decks() {
-        match state.card_origin(card) {
-            Some(CardOrigin::Player(owner)) => CardZone::PlayerDiscard(owner.clone()),
-            _ => CardZone::Discard,
-        }
-    } else {
-        CardZone::Discard
-    }
 }
 
 fn summoning_id(spirit: SpiritKind) -> &'static str {

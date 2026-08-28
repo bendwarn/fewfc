@@ -474,8 +474,8 @@ Discard Retrieval is independently configurable and resolves during
 an active effect.[3]
 
 1. The Previous Player must have a Turn Draw Discarded Card from the immediately
-   completed Previous Turn, and that Card Instance must still be in its Discard
-   Pile.
+   completed Previous Turn, and that same Card Instance must still be in any
+   Discard Pile; its current Pile Owner does not affect eligibility.
 2. The engine derives that card; the command does not submit a card ID.
 3. The current Player's Team loses HP equal to the card's level times two.
 4. The card moves to the top of the current Player's Deck. In a shared-deck game,
@@ -835,10 +835,11 @@ not requested when no Cards remain.
 
 Sheep Stealing first discards two selected Cards from the Player's Personal
 Deck, then returns two selected Cards from that Player's Discard Pile and
-shuffles. Official clarification 3-2.4 makes this ordering consequential: the
-two Cards discarded by the first step are already in the Discard Pile during
-the return selection, so either or both may be selected and returned
-immediately. If the Deck contains fewer than two Cards when resolution begins,
+shuffles. Official clarification 3-2.4 makes this ordering consequential: a
+newly discarded Card is selectable for return only when its ordinary Discard
+places it in the performing Player's own Discard Pile. An Exposed Foreign Card
+returns to its origin owner's Discard Pile and cannot be selected back. If the
+Deck contains fewer than two Cards when resolution begins,
 its existing Discard Pile is Discard Shuffled first, and the Player selects the
 exchange Cards only after that shuffle has completed. This preliminary Discard
 Shuffle may recover the use count of 順風; Sheep Stealing's later post-exchange Deck

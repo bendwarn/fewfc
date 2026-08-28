@@ -1436,7 +1436,7 @@ pub(crate) fn playable_profession_abilities(
     if cards.is_empty() {
         if abilities.contains(&"confluence:heavenly-resonance")
             && state.hand(player).is_some_and(|hand| hand.len() <= 4)
-            && retrievable_discard(state, player).is_some()
+            && retrievable_discard(state, player)?.is_some()
             && limited_use(state, player, HEAVENLY_RESONANCE_USE)
                 .is_some_and(|use_count| use_count.remaining > 0)
         {
@@ -1504,7 +1504,7 @@ fn tuning_card_can_be_used(
     player: &PlayerId,
     cost: CardInstanceId,
 ) -> GameResult<bool> {
-    let Some((previous, retrieved)) = retrievable_discard(state, player) else {
+    let Some((_previous, retrieved, location)) = retrievable_discard(state, player)? else {
         return Ok(false);
     };
     let mut projected = state.clone();
@@ -1512,14 +1512,18 @@ fn tuning_card_can_be_used(
         .hand_mut(player)
         .expect("known Player has Hand")
         .retain(|card| *card != cost);
+    match location {
+        crate::domain::CardZone::Discard => projected.discard.retain(|card| *card != retrieved),
+        crate::domain::CardZone::PlayerDiscard(owner) => projected
+            .discard_for_mut(&owner)
+            .expect("可回收棄牌堆存在")
+            .retain(|card| *card != retrieved),
+        _ => unreachable!("可回收棄牌位置必須是棄牌堆"),
+    }
     projected
         .hand_mut(player)
         .expect("known Player has Hand")
         .push(retrieved);
-    projected
-        .discard_for_mut(&previous)
-        .expect("known Player has Discard")
-        .retain(|card| *card != retrieved);
     let definition = state
         .card_def(retrieved)
         .expect("retrievable Card has a definition");
@@ -1565,14 +1569,14 @@ pub(crate) fn activate_profession_ability(
     }];
     match ability_id {
         "confluence:tuning" => {
-            let retrieved = retrievable_discard(state, player)
+            let retrieved = retrievable_discard(state, player)?
                 .expect("playable Tuning requires a retrievable discard");
             events.push(GameEvent::CardsMoved {
                 card_moves: vec![
-                    ability_discard_move(state, player, cards[0]),
+                    ability_discard_move(state, player, cards[0])?,
                     crate::domain::CardMoveDelta {
                         card: retrieved.1,
-                        from: discard_zone_for_player(state, &retrieved.0),
+                        from: retrieved.2.clone(),
                         to: crate::domain::CardZone::Hand(player.clone()),
                     },
                 ],
@@ -1592,12 +1596,12 @@ pub(crate) fn activate_profession_ability(
             });
         }
         "confluence:heavenly-resonance" => {
-            let retrieved = retrievable_discard(state, player)
+            let retrieved = retrievable_discard(state, player)?
                 .expect("playable Heavenly Resonance requires a discard");
             events.push(GameEvent::CardsMoved {
                 card_moves: vec![crate::domain::CardMoveDelta {
                     card: retrieved.1,
-                    from: discard_zone_for_player(state, &retrieved.0),
+                    from: retrieved.2.clone(),
                     to: crate::domain::CardZone::Hand(player.clone()),
                 }],
             });
@@ -1691,51 +1695,35 @@ fn validate_ability_cards(
     Ok(())
 }
 
-fn retrievable_discard(state: &GameState, player: &PlayerId) -> Option<(PlayerId, CardInstanceId)> {
+fn retrievable_discard(
+    state: &GameState,
+    player: &PlayerId,
+) -> GameResult<Option<(PlayerId, CardInstanceId, crate::domain::CardZone)>> {
     let previous = TurnOrderTargets::new(state)
         .player_target(player, RulePlayerTarget::PreviousPlayer)
-        .ok()?;
+        .ok();
+    let Some(previous) = previous else {
+        return Ok(None);
+    };
     let discard = state
         .last_turn_discard_by_player
         .get(&previous)
-        .filter(|discard| discard.turn_number + 1 == state.turn_number)?;
-    state
-        .discard_for(&previous)
-        .filter(|pile| pile.contains(&discard.card))?;
-    Some((previous, discard.card))
+        .filter(|discard| discard.turn_number + 1 == state.turn_number);
+    let Some(discard) = discard else {
+        return Ok(None);
+    };
+    let Some(location) = crate::domain::discard::locate(state, discard.card)? else {
+        return Ok(None);
+    };
+    Ok(Some((previous, discard.card, location.card_zone())))
 }
 
 fn ability_discard_move(
     state: &GameState,
     player: &PlayerId,
     card: CardInstanceId,
-) -> crate::domain::CardMoveDelta {
-    crate::domain::CardMoveDelta {
-        card,
-        from: crate::domain::CardZone::Hand(player.clone()),
-        to: discard_zone_for_card(state, card),
-    }
-}
-
-fn discard_zone_for_player(state: &GameState, player: &PlayerId) -> crate::domain::CardZone {
-    if state.uses_personal_decks() {
-        crate::domain::CardZone::PlayerDiscard(player.clone())
-    } else {
-        crate::domain::CardZone::Discard
-    }
-}
-
-fn discard_zone_for_card(state: &GameState, card: CardInstanceId) -> crate::domain::CardZone {
-    if state.uses_personal_decks() {
-        match state.card_origin(card) {
-            Some(crate::domain::CardOrigin::Player(owner)) => {
-                crate::domain::CardZone::PlayerDiscard(owner.clone())
-            }
-            _ => crate::domain::CardZone::Discard,
-        }
-    } else {
-        crate::domain::CardZone::Discard
-    }
+) -> GameResult<crate::domain::CardMoveDelta> {
+    crate::domain::discard::move_from(state, card, crate::domain::CardZone::Hand(player.clone()))
 }
 
 #[cfg(test)]

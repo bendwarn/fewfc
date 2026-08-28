@@ -1,8 +1,8 @@
 use crate::domain::targeting::{RulePlayerTarget, TurnOrderTargets};
 use crate::domain::{
-    CardMoveDelta, CardOrigin, CardZone, ChoiceAnswer, ChoiceRequest, ECHO_MODULE_ID, Element,
-    GameError, GameEvent, GameResult, GameState, GameStatus, PendingChoiceKind, PendingResolution,
-    PlayerId, ScheduledEcho, ValidationError,
+    CardZone, ChoiceAnswer, ChoiceRequest, ECHO_MODULE_ID, Element, GameError, GameEvent,
+    GameResult, GameState, GameStatus, PendingChoiceKind, PendingResolution, PlayerId,
+    ScheduledEcho, ValidationError,
 };
 use crate::rules::{
     ActionCost, BaseFormationSpec, ConsequenceCertainty, DelayedEffect, DelayedTiming, EffectDef,
@@ -443,11 +443,11 @@ pub(crate) fn answer_choice(
                     vec![GameEvent::EchoCostPaid {
                         player: player.clone(),
                         melody_id: melody.id.to_string(),
-                        card_move: CardMoveDelta {
+                        card_move: crate::domain::discard::move_from(
+                            state,
                             card,
-                            from: CardZone::Hand(player.clone()),
-                            to: discard_zone_for_card(state, card),
-                        },
+                            CardZone::Hand(player.clone()),
+                        )?,
                     }]
                 }
                 _ => {
@@ -924,17 +924,6 @@ fn echo_cost_choice(
             },
         },
     )
-}
-
-fn discard_zone_for_card(state: &GameState, card: crate::domain::CardInstanceId) -> CardZone {
-    if state.uses_personal_decks() {
-        match state.card_origin(card) {
-            Some(CardOrigin::Player(owner)) => CardZone::PlayerDiscard(owner.clone()),
-            _ => CardZone::Discard,
-        }
-    } else {
-        CardZone::Discard
-    }
 }
 
 impl EchoPolicy {

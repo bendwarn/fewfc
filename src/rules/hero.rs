@@ -1,6 +1,6 @@
 use crate::domain::{
-    CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Element, GameError, GameEvent, GameResult,
-    GameState, HERO_SCHOOLS_MODULE_ID, HpChangeDelta, PendingResolution, PlayerId, ProfessionId,
+    CardInstanceId, CardMoveDelta, CardZone, Element, GameError, GameEvent, GameResult, GameState,
+    HERO_SCHOOLS_MODULE_ID, HpChangeDelta, PendingResolution, PlayerId, ProfessionId,
     RandomnessDeck, StatusDuration, StatusEffect, StatusOwner, ValidationError,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
@@ -1339,7 +1339,7 @@ pub(crate) fn activate_profession_ability(
                 },
             });
             events.push(GameEvent::CardsMoved {
-                card_moves: ability_card_moves(state, player, cards),
+                card_moves: ability_card_moves(state, player, cards)?,
             });
             if ability_id == "illusion"
                 && level <= 3
@@ -1367,7 +1367,7 @@ pub(crate) fn activate_profession_ability(
                 prepared: None,
             });
             events.push(GameEvent::CardsMoved {
-                card_moves: ability_card_moves(state, player, cards),
+                card_moves: ability_card_moves(state, player, cards)?,
             });
             events.push(GameEvent::HpChanged {
                 change: hp_change(state, team, -level * 2)?,
@@ -1387,7 +1387,7 @@ pub(crate) fn activate_profession_ability(
                 prepared: None,
             });
             events.push(GameEvent::CardsMoved {
-                card_moves: ability_card_moves(state, player, cards),
+                card_moves: ability_card_moves(state, player, cards)?,
             });
             events.push(turn_draw_bonus_event(state, player, 1));
         }
@@ -1405,7 +1405,7 @@ pub(crate) fn activate_profession_ability(
                 prepared: None,
             });
             events.push(GameEvent::CardsMoved {
-                card_moves: ability_card_moves(state, player, cards),
+                card_moves: ability_card_moves(state, player, cards)?,
             });
             let mut projected = state.clone();
             for event in &events {
@@ -1485,7 +1485,7 @@ fn revelation_supply_plan(
     crate::rules::projection::apply_event(
         &mut projected,
         &GameEvent::CardsMoved {
-            card_moves: ability_card_moves(state, player, cards),
+            card_moves: ability_card_moves(state, player, cards)?,
         },
     );
     crate::rules::deck_supply::plan(
@@ -1528,22 +1528,11 @@ fn ability_card_moves(
     state: &GameState,
     player: &PlayerId,
     cards: &[CardInstanceId],
-) -> Vec<CardMoveDelta> {
+) -> GameResult<Vec<CardMoveDelta>> {
     cards
         .iter()
         .copied()
-        .map(|card| CardMoveDelta {
-            card,
-            from: CardZone::Hand(player.clone()),
-            to: if state.uses_personal_decks() {
-                match state.card_origin(card) {
-                    Some(CardOrigin::Player(owner)) => CardZone::PlayerDiscard(owner.clone()),
-                    _ => CardZone::Discard,
-                }
-            } else {
-                CardZone::Discard
-            },
-        })
+        .map(|card| crate::domain::discard::move_from(state, card, CardZone::Hand(player.clone())))
         .collect()
 }
 

@@ -1,9 +1,9 @@
 use crate::domain::{
-    CardInstanceId, CardMoveDelta, CardOrigin, CardZone, ChoiceAnswer, ChoiceRequest,
-    EarthRendingPlayerAnswer, EarthRendingResolution, Element, GameError, GameEvent, GameResult,
-    GameState, HpChangeDelta, PendingChoiceKind, PendingRandomness, PendingResolution, PlayerId,
-    RandomnessDeck, RustedForestResolution, StatusDuration, StatusEffect, StatusOwner, TeamId,
-    ValidationError, targeting::TurnOrderTargets,
+    CardInstanceId, CardZone, ChoiceAnswer, ChoiceRequest, EarthRendingPlayerAnswer,
+    EarthRendingResolution, Element, GameError, GameEvent, GameResult, GameState, HpChangeDelta,
+    PendingChoiceKind, PendingRandomness, PendingResolution, PlayerId, RandomnessDeck,
+    RustedForestResolution, StatusDuration, StatusEffect, StatusOwner, TeamId, ValidationError,
+    targeting::TurnOrderTargets,
 };
 use crate::rules::{
     AttackCategory, AttackPlanDef, BaseFormationSpec, ConsequenceCertainty, DamageTarget,
@@ -538,12 +538,10 @@ fn finish_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> GameR
         .answers
         .iter()
         .filter_map(|answer| answer.card.map(|card| (answer.player.clone(), card)))
-        .map(|(player, card)| CardMoveDelta {
-            card,
-            from: CardZone::Hand(player),
-            to: discard_zone(state, card),
+        .map(|(player, card)| {
+            crate::domain::discard::move_from(state, card, CardZone::Hand(player))
         })
-        .collect::<Vec<_>>();
+        .collect::<GameResult<Vec<_>>>()?;
     // `continue_earth_rending` 套用目前答案後，會將其投影狀態傳到這裡。再次
     // 回放 `events` 會重複消耗最後一位玩家，並造成虛假的順序答案違規。
     let attack_state = state.clone();
@@ -584,17 +582,6 @@ fn finish_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> GameR
         player: active.attacker,
     });
     Ok(())
-}
-
-fn discard_zone(state: &GameState, card: CardInstanceId) -> CardZone {
-    if state.uses_personal_decks() {
-        match state.card_origin(card) {
-            Some(CardOrigin::Player(owner)) => CardZone::PlayerDiscard(owner.clone()),
-            _ => CardZone::Discard,
-        }
-    } else {
-        CardZone::Discard
-    }
 }
 
 pub(crate) fn rusted_forest_start_events(
@@ -718,15 +705,19 @@ fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
         if !discarded.is_empty() {
             let card_moves = discarded
                 .into_iter()
-                .map(|card| CardMoveDelta {
-                    card,
-                    from: match &deck_kind {
-                        RandomnessDeck::Shared => CardZone::DeckTop,
-                        RandomnessDeck::Player(player) => CardZone::PlayerDeckTop(player.clone()),
-                    },
-                    to: discard_zone(&projected, card),
+                .map(|card| {
+                    crate::domain::discard::move_from(
+                        &projected,
+                        card,
+                        match &deck_kind {
+                            RandomnessDeck::Shared => CardZone::DeckTop,
+                            RandomnessDeck::Player(player) => {
+                                CardZone::PlayerDeckTop(player.clone())
+                            }
+                        },
+                    )
                 })
-                .collect();
+                .collect::<GameResult<Vec<_>>>()?;
             let move_event = GameEvent::CardsMoved { card_moves };
             crate::rules::projection::apply_event(&mut projected, &move_event);
             events.push(move_event);

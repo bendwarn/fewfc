@@ -921,12 +921,10 @@ fn decide_command_with_base_ruleset(
             let submitted_cards = cards.clone();
             let card_moves = cards
                 .into_iter()
-                .map(|card| CardMoveDelta {
-                    card,
-                    from: CardZone::Hand(player.clone()),
-                    to: discard_zone_for_card(state, card),
+                .map(|card| {
+                    crate::domain::discard::move_from(state, card, CardZone::Hand(player.clone()))
                 })
-                .collect();
+                .collect::<GameResult<Vec<_>>>()?;
             let mut events = vec![GameEvent::ActionStarted {
                 player: player.clone(),
             }];
@@ -1069,12 +1067,13 @@ fn decide_command_with_base_ruleset(
                 .get(&previous_player)
                 .filter(|discard| discard.turn_number + 1 == state.turn_number)
                 .map(|discard| discard.card)
-                .filter(|card| {
-                    state
-                        .discard_for(&previous_player)
-                        .is_some_and(|discard| discard.contains(card))
-                })
                 .ok_or_else(|| {
+                    GameError::Validation(ValidationError::NoRetrievableDiscard {
+                        previous_player: previous_player.clone(),
+                    })
+                })?;
+            let discard_location =
+                crate::domain::discard::locate(state, card)?.ok_or_else(|| {
                     GameError::Validation(ValidationError::NoRetrievableDiscard {
                         previous_player: previous_player.clone(),
                     })
@@ -1104,18 +1103,14 @@ fn decide_command_with_base_ruleset(
                 })?;
             let hp_cost = crate::rules::hero::discard_retrieval_cost(state, &player, level * 2);
             let new_hp = (old_hp - hp_cost).max(0);
-            let card_move = if state.uses_personal_decks() {
-                CardMoveDelta {
-                    card,
-                    from: CardZone::PlayerDiscard(previous_player.clone()),
-                    to: CardZone::PlayerDeckTop(player.clone()),
-                }
-            } else {
-                CardMoveDelta {
-                    card,
-                    from: CardZone::Discard,
-                    to: CardZone::DeckTop,
-                }
+            let card_move = CardMoveDelta {
+                card,
+                from: discard_location.card_zone(),
+                to: if state.uses_personal_decks() {
+                    CardZone::PlayerDeckTop(player.clone())
+                } else {
+                    CardZone::DeckTop
+                },
             };
 
             Ok(vec![GameEvent::DiscardRetrieved {
@@ -1132,17 +1127,6 @@ fn decide_command_with_base_ruleset(
                 card_move,
             }])
         }
-    }
-}
-
-fn discard_zone_for_card(state: &GameState, card: CardInstanceId) -> CardZone {
-    if state.uses_personal_decks() {
-        match state.card_origin(card) {
-            Some(CardOrigin::Player(owner)) => CardZone::PlayerDiscard(owner.clone()),
-            _ => CardZone::Discard,
-        }
-    } else {
-        CardZone::Discard
     }
 }
 

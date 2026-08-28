@@ -136,6 +136,14 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             known_by,
             previous,
         } => {
+            let prepared_previous = previous.as_ref().map(|previous| {
+                crate::domain::discard::prepare(
+                    state,
+                    *previous,
+                    crate::domain::discard::DestinationFact::Derived,
+                )
+                .expect("canonical Pouch replacement must have a valid Card Origin")
+            });
             if let Some(previous) = previous {
                 let position = state
                     .pouches
@@ -143,7 +151,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     .position(|pouch| &pouch.owner == owner && pouch.card == *previous)
                     .expect("canonical Pouch replacement must target an owned Pouch");
                 state.pouches.remove(position);
-                push_to_origin_discard(state, *previous);
+                prepared_previous
+                    .expect("Pouch replacement discard was prepared")
+                    .place_removed(state);
             }
             let deck = state
                 .deck_for_mut(source)
@@ -178,6 +188,12 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
         }
         GameEvent::PouchRevealed { .. } => {}
         GameEvent::PouchConsumed { owner, card } => {
+            let prepared = crate::domain::discard::prepare(
+                state,
+                *card,
+                crate::domain::discard::DestinationFact::Derived,
+            )
+            .expect("canonical Pouch consumption must have a valid Card Origin");
             if let Some(owner) = owner {
                 let position = state
                     .pouches
@@ -195,7 +211,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     }
                 }
             }
-            push_to_origin_discard(state, *card);
+            prepared.place_removed(state);
         }
         GameEvent::PouchLevelBonusGranted { bonus } => {
             state.pouch_level_bonuses.push(bonus.clone());
@@ -470,7 +486,8 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, crate::domain::Phase::ActiveEffects);
 
-            for used_card in used_cards {
+            let prepared = prepare_discards(state, used_cards);
+            for (used_card, discard) in used_cards.iter().zip(prepared) {
                 let hand = state
                     .hand_mut(player)
                     .expect("canonical formation event must target a known player");
@@ -478,8 +495,8 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     .iter()
                     .position(|card| card == used_card)
                     .expect("canonical formation event must remove cards from hand");
-                let removed = hand.remove(position);
-                push_to_origin_discard(state, removed);
+                hand.remove(position);
+                discard.place_removed(state);
             }
             clear_confluence_obligations_for_cards(state, player, used_cards);
 
@@ -549,6 +566,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             formation_id,
             cards,
         } => {
+            let prepared = prepare_discards(state, cards);
             let area = state
                 .formation_area_mut(player)
                 .expect("formation completion must target a known player");
@@ -558,8 +576,8 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .expect("formation completion requires an occupied Formation Area");
             assert_eq!(committed.formation_id, *formation_id);
             assert_eq!(committed.cards, *cards);
-            for card in cards {
-                push_to_origin_discard(state, *card);
+            for discard in prepared {
+                discard.place_removed(state);
             }
             clear_confluence_obligations_for_cards(state, player, cards);
             state.phase = crate::domain::Phase::TurnDraw;
@@ -672,6 +690,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             cards,
             ..
         } => {
+            let prepared = prepare_discards(state, cards);
             let area = state
                 .formation_area_mut(owner)
                 .expect("canonical passive flip event must target a known Formation Area");
@@ -680,8 +699,8 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 .take()
                 .expect("canonical passive flip event must target a covered passive");
             assert_eq!(passive.cards, *cards);
-            for card in cards {
-                push_to_origin_discard(state, *card);
+            for discard in prepared {
+                discard.place_removed(state);
             }
         }
         GameEvent::PassiveCoverRevealed { owner } => {
@@ -869,7 +888,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     resolved_turn: state.turn_number,
                 },
             );
-            state.phase = crate::domain::Phase::TurnDraw;
             clear_prepared_ability(state, player);
             state
                 .formation_requirements
@@ -936,7 +954,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     resolved_turn: state.turn_number,
                 },
             );
-            state.phase = crate::domain::Phase::TurnDraw;
             clear_prepared_ability(state, player);
         }
         GameEvent::FiveStarAlignmentAchieved { player, team } => {
@@ -1485,6 +1502,12 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
         GameEvent::TurnDiscardChosen { player, discard } => {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, crate::domain::Phase::TurnDraw);
+            let prepared = crate::domain::discard::prepare(
+                state,
+                *discard,
+                crate::domain::discard::DestinationFact::Derived,
+            )
+            .expect("canonical Turn Draw discard must have a valid Card Origin");
             // 僅供相容：在 TurnDrawResolved 啟用前寫入的持久化記錄，會在將牌抽入
             // 手牌後使用此事件。新記錄永遠不會產生它。
             let discarded = if let Some(position) =
@@ -1501,7 +1524,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     .expect("canonical discard event must remove a card from hand");
                 hand.remove(discard_position)
             };
-            push_to_origin_discard(state, discarded);
+            prepared.place_removed(state);
             if !state.turn_draw_pool.is_empty() {
                 let kept_cards = std::mem::take(&mut state.turn_draw_pool);
                 state
@@ -1525,6 +1548,12 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
         } => {
             debug_assert_eq!(state.current_player(), Some(player));
             debug_assert_eq!(state.phase, crate::domain::Phase::TurnDraw);
+            let prepared = crate::domain::discard::prepare(
+                state,
+                *discard,
+                crate::domain::discard::DestinationFact::Derived,
+            )
+            .expect("canonical Turn Draw resolution must have a valid Card Origin");
             assert!(state.turn_draw_pool.contains(discard));
             assert_eq!(
                 state.turn_draw_pool.len(),
@@ -1535,7 +1564,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 assert!(state.turn_draw_pool.contains(card));
             }
             state.turn_draw_pool.retain(|card| card != discard);
-            push_to_origin_discard(state, *discard);
+            prepared.place_removed(state);
             state.last_turn_discard_by_player.insert(
                 player.clone(),
                 crate::domain::LastTurnDiscard {
@@ -1617,6 +1646,15 @@ fn clear_confluence_obligations_for_cards(
 }
 
 fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {
+    let prepared_discard = matches!(card_move.to, CardZone::Discard | CardZone::PlayerDiscard(_))
+        .then(|| {
+            crate::domain::discard::prepare(
+                state,
+                card_move.card,
+                crate::domain::discard::DestinationFact::Recorded(&card_move.to),
+            )
+            .expect("canonical ordinary Discard destination must match Card Origin")
+        });
     let removed = match &card_move.from {
         CardZone::Hand(player) => {
             let hand = state
@@ -1686,7 +1724,9 @@ fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {
             hand.push(removed);
         }
         CardZone::DeckTop => state.deck.insert(0, removed),
-        CardZone::Discard => state.discard.push(removed),
+        CardZone::Discard => prepared_discard
+            .expect("discard placement prepared")
+            .place_removed(state),
         CardZone::PlayerDeckTop(player) => {
             let is_foreign = matches!(
                 state.card_origin(removed),
@@ -1700,15 +1740,9 @@ fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {
                 state.exposed_foreign_cards.push(removed);
             }
         }
-        CardZone::PlayerDiscard(player) => {
-            state
-                .discard_for_mut(player)
-                .expect("canonical card move must target a known player discard")
-                .push(removed);
-            state
-                .exposed_foreign_cards
-                .retain(|exposed| *exposed != removed);
-        }
+        CardZone::PlayerDiscard(_) => prepared_discard
+            .expect("discard placement prepared")
+            .place_removed(state),
         CardZone::Pouch(player) => {
             state.pouches.retain(|pouch| &pouch.owner != player);
             state.pouches.push(crate::domain::PlayerPouch {
@@ -1720,20 +1754,21 @@ fn apply_card_move(state: &mut GameState, card_move: &CardMoveDelta) {
     }
 }
 
-fn push_to_origin_discard(state: &mut GameState, card: crate::domain::CardInstanceId) {
-    if state.uses_personal_decks()
-        && let Some(CardOrigin::Player(player)) = state.card_origin(card).cloned()
-    {
-        state
-            .discard_for_mut(&player)
-            .expect("card origin must identify a known player discard")
-            .push(card);
-        state
-            .exposed_foreign_cards
-            .retain(|exposed| *exposed != card);
-    } else {
-        state.discard.push(card);
-    }
+fn prepare_discards(
+    state: &GameState,
+    cards: &[crate::domain::CardInstanceId],
+) -> Vec<crate::domain::discard::PreparedDiscard> {
+    cards
+        .iter()
+        .map(|card| {
+            crate::domain::discard::prepare(
+                state,
+                *card,
+                crate::domain::discard::DestinationFact::Derived,
+            )
+            .expect("canonical ordinary Discard must have a valid Card Origin")
+        })
+        .collect()
 }
 
 fn apply_shield_change(state: &mut GameState, change: &ShieldChangeDelta) {

@@ -912,12 +912,8 @@ fn void_reversion_event(
     let card_moves = cards
         .iter()
         .copied()
-        .map(|card| CardMoveDelta {
-            card,
-            from: CardZone::Hand(player.clone()),
-            to: super::discard_zone_for_card(state, card),
-        })
-        .collect();
+        .map(|card| crate::domain::discard::move_from(state, card, CardZone::Hand(player.clone())))
+        .collect::<GameResult<Vec<_>>>()?;
 
     Ok(GameEvent::VoidReversionResolved {
         player: player.clone(),
@@ -1267,15 +1263,15 @@ fn resume_choice_intents(
                 return Ok(Vec::new());
             };
             Ok(vec![EffectIntent::MoveCards {
-                card_moves: vec![CardMoveDelta {
+                card_moves: vec![crate::domain::discard::move_from(
+                    state,
                     card,
-                    from: if state.uses_personal_decks() {
+                    if state.uses_personal_decks() {
                         CardZone::PlayerDeckTop(player.clone())
                     } else {
                         CardZone::DeckTop
                     },
-                    to: super::discard_zone_for_card(state, card),
-                }],
+                )?],
             }])
         }
         PendingResolution::ChaosReturnTwo => {
@@ -1328,12 +1324,14 @@ fn resume_choice_intents(
                     .iter()
                     .filter(|card| !selected_cards.contains(card))
                     .copied()
-                    .map(|card| CardMoveDelta {
-                        card,
-                        from: CardZone::Hand(player.clone()),
-                        to: super::discard_zone_for_card(state, card),
+                    .map(|card| {
+                        crate::domain::discard::move_from(
+                            state,
+                            card,
+                            CardZone::Hand(player.clone()),
+                        )
                     })
-                    .collect(),
+                    .collect::<GameResult<Vec<_>>>()?,
             }])
         }
         PendingResolution::JianghuAzureCloudStepReturnOne => {
@@ -1351,20 +1349,26 @@ fn resume_choice_intents(
                 card_moves: allowed_cards
                     .iter()
                     .copied()
-                    .map(|card| CardMoveDelta {
-                        card,
-                        from: CardZone::Hand(player.clone()),
-                        to: if card == returned {
-                            if state.uses_personal_decks() {
-                                CardZone::PlayerDeckTop(player.clone())
-                            } else {
-                                CardZone::DeckTop
-                            }
+                    .map(|card| {
+                        if card == returned {
+                            Ok(CardMoveDelta {
+                                card,
+                                from: CardZone::Hand(player.clone()),
+                                to: if state.uses_personal_decks() {
+                                    CardZone::PlayerDeckTop(player.clone())
+                                } else {
+                                    CardZone::DeckTop
+                                },
+                            })
                         } else {
-                            super::discard_zone_for_card(state, card)
-                        },
+                            crate::domain::discard::move_from(
+                                state,
+                                card,
+                                CardZone::Hand(player.clone()),
+                            )
+                        }
                     })
-                    .collect(),
+                    .collect::<GameResult<Vec<_>>>()?,
             }])
         }
         PendingResolution::ConfluenceDiscardInspectedCard { .. } => {
@@ -1374,11 +1378,11 @@ fn resume_choice_intents(
                 .first()
                 .ok_or(GameError::Validation(ValidationError::MissingPendingChoice))?;
             Ok(vec![EffectIntent::MoveCards {
-                card_moves: vec![CardMoveDelta {
+                card_moves: vec![crate::domain::discard::move_from(
+                    state,
                     card,
-                    from: CardZone::Hand(target),
-                    to: super::discard_zone_for_card(state, card),
-                }],
+                    CardZone::Hand(target),
+                )?],
             }])
         }
         PendingResolution::ConfluenceClearWindKeepCards => {
@@ -1393,12 +1397,14 @@ fn resume_choice_intents(
                     .iter()
                     .filter(|card| !selected_cards.contains(card))
                     .copied()
-                    .map(|card| CardMoveDelta {
-                        card,
-                        from: CardZone::Hand(player.clone()),
-                        to: super::discard_zone_for_card(state, card),
+                    .map(|card| {
+                        crate::domain::discard::move_from(
+                            state,
+                            card,
+                            CardZone::Hand(player.clone()),
+                        )
                     })
-                    .collect(),
+                    .collect::<GameResult<Vec<_>>>()?,
             }])
         }
         _ => Err(GameError::RuleImplementation(

@@ -988,13 +988,13 @@ pub(crate) fn activate_profession_ability(
             });
             if ability_id.ends_with("meteor-step") {
                 events.push(GameEvent::CardsMoved {
-                    card_moves: ability_card_moves(state, player, cards),
+                    card_moves: ability_card_moves(state, player, cards)?,
                 });
             }
         }
         "jianghu:azure-cloud-step" => {
             events.push(GameEvent::CardsMoved {
-                card_moves: ability_card_moves(state, player, cards),
+                card_moves: ability_card_moves(state, player, cards)?,
             });
             let mut projected = state.clone();
             for event in &events {
@@ -1068,7 +1068,7 @@ fn azure_cloud_supply_plan(
     crate::rules::projection::apply_event(
         &mut projected,
         &GameEvent::CardsMoved {
-            card_moves: ability_card_moves(state, player, cards),
+            card_moves: ability_card_moves(state, player, cards)?,
         },
     );
     crate::rules::deck_supply::plan(
@@ -1124,24 +1124,15 @@ fn ability_card_moves(
     state: &GameState,
     player: &PlayerId,
     cards: &[CardInstanceId],
-) -> Vec<crate::domain::CardMoveDelta> {
+) -> GameResult<Vec<crate::domain::CardMoveDelta>> {
     cards
         .iter()
-        .map(|card| crate::domain::CardMoveDelta {
-            card: *card,
-            from: crate::domain::CardZone::Hand(player.clone()),
-            to: if state.uses_personal_decks() {
-                state
-                    .card_origin(*card)
-                    .map_or(crate::domain::CardZone::Discard, |origin| match origin {
-                        crate::domain::CardOrigin::Shared => crate::domain::CardZone::Discard,
-                        crate::domain::CardOrigin::Player(owner) => {
-                            crate::domain::CardZone::PlayerDiscard(owner.clone())
-                        }
-                    })
-            } else {
-                crate::domain::CardZone::Discard
-            },
+        .map(|card| {
+            crate::domain::discard::move_from(
+                state,
+                *card,
+                crate::domain::CardZone::Hand(player.clone()),
+            )
         })
         .collect()
 }
