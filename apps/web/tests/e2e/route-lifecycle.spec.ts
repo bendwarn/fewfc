@@ -117,17 +117,32 @@ fastPageTest('Deck owns its import dialog focus, cleans up its listener, and Rep
 test('Lobby exposes its route-local loading state before rooms arrive', async ({ page }) => {
   let releaseRoomListLoad: (() => void) | undefined
   const roomListGate = new Promise<void>((resolve) => { releaseRoomListLoad = resolve })
-  await page.route('**/api/games', async (route) => {
+  const roomListUrl = '**/api/games'
+  await page.route(roomListUrl, async (route) => {
     if (route.request().method() === 'GET') await roomListGate
-    await route.continue()
+    try {
+      await route.continue()
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('already handled')) throw error
+    }
   })
 
+  const roomListRequest = page.waitForRequest(request => {
+    if (request.method() !== 'GET') return false
+    return new URL(request.url()).pathname === '/api/games'
+  })
   const navigation = page.goto('/rooms')
-  await expect(page.getByRole('status').filter({ hasText: '正在載入房間…' })).toBeVisible()
-  releaseRoomListLoad?.()
-  await navigation
-  await expect(page.getByRole('heading', { name: '公開房間' })).toBeVisible()
-  await page.unroute('**/api/games')
+  try {
+    await roomListRequest
+    await expect(page.getByRole('status').filter({ hasText: '正在載入房間…' })).toBeVisible()
+    releaseRoomListLoad?.()
+    await navigation
+    await expect(page.getByRole('heading', { name: '公開房間' })).toBeVisible()
+  } finally {
+    releaseRoomListLoad?.()
+    await navigation.catch(() => undefined)
+    await page.unroute(roomListUrl)
+  }
 })
 
 test('Lobby navigation reloads Game state, resets parameter-local state, and tears down the room session before re-entry', async ({ browser }) => {

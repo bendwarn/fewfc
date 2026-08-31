@@ -13,7 +13,7 @@ pub(crate) enum ValidatedPendingInput {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WaitingMedium {
+pub(crate) enum WaitingMedium {
     Choice,
     Randomness,
 }
@@ -121,6 +121,7 @@ fn resume_choice(
         | PendingResolution::EchoRingingMetalRecycleDiscard
         | PendingResolution::EchoRingingMetalPostSearch
         | PendingResolution::HeroRevelation
+        | PendingResolution::JianghuAzureCloudStepDraw
         | PendingResolution::ConfluenceClearWindTenThousandMiles
         | PendingResolution::ConfluenceClearWindRevealTop => {
             return Err(invalid_pending_resolution());
@@ -226,6 +227,9 @@ fn after_randomness_events(
         PendingResolution::HeroRevelation => {
             crate::rules::hero::after_revelation_randomness_events(state)
         }
+        PendingResolution::JianghuAzureCloudStepDraw => {
+            crate::rules::jianghu::after_azure_cloud_step_randomness_events(state)
+        }
         PendingResolution::ConfluenceClearWindTenThousandMiles => {
             crate::rules::confluence::after_clear_wind_randomness_events(state)
         }
@@ -301,7 +305,7 @@ fn ensure_waiting_invariant(state: &GameState, events: &[GameEvent]) -> GameResu
     }
 }
 
-fn waiting_medium(resolution: &PendingResolution) -> WaitingMedium {
+pub(crate) fn waiting_medium(resolution: &PendingResolution) -> WaitingMedium {
     match resolution {
         PendingResolution::TurnDrawDiscard
         | PendingResolution::HolyWindTakeHighest
@@ -332,6 +336,7 @@ fn waiting_medium(resolution: &PendingResolution) -> WaitingMedium {
         | PendingResolution::EchoRingingMetalRecycleDiscard
         | PendingResolution::EchoRingingMetalPostSearch
         | PendingResolution::HeroRevelation
+        | PendingResolution::JianghuAzureCloudStepDraw
         | PendingResolution::ConfluenceClearWindTenThousandMiles
         | PendingResolution::ConfluenceClearWindRevealTop => WaitingMedium::Randomness,
     }
@@ -410,6 +415,7 @@ mod tests {
             PendingResolution::EchoRingingMetalRecycleDiscard,
             PendingResolution::EchoRingingMetalPostSearch,
             PendingResolution::HeroRevelation,
+            PendingResolution::JianghuAzureCloudStepDraw,
             PendingResolution::ConfluenceClearWindTenThousandMiles,
             PendingResolution::ConfluenceClearWindRevealTop,
         ];

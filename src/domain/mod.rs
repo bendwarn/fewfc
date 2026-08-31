@@ -1663,6 +1663,7 @@ pub enum PendingResolution {
     },
     HeroRevelation,
     HeroRevelationKeepOne,
+    JianghuAzureCloudStepDraw,
     JianghuAzureCloudStepReturnOne,
     ConfluenceDiscardInspectedCard {
         resonance: ConfluenceResonance,
@@ -2820,6 +2821,7 @@ pub enum EngineInvariantError {
     DuplicatePendingChoice { player: PlayerId },
     InvalidPendingChoice,
     InvalidPendingResolution,
+    InvalidProfessionAbilityPlan,
     DuplicateFormationArea { player: PlayerId },
     FormationAreaMissing { player: PlayerId },
     DuplicateProfession { player: PlayerId },

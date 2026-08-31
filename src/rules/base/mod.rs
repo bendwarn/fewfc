@@ -217,13 +217,10 @@ impl BaseRuleset {
                 })
                 .map(PlayableAction::ChangeProfession),
             );
-            let profession_abilities = crate::rules::profession::playable_profession_abilities(
-                state,
-                player,
-                selected_cards,
-            )?;
+            let profession_abilities =
+                crate::rules::profession::offers(state, player, selected_cards)?;
             for candidate in profession_abilities {
-                let preserves = crate::rules::profession::activate_profession_ability(
+                let preserves = crate::rules::profession::activate(
                     state,
                     player,
                     &candidate.ability_id,
@@ -972,7 +969,7 @@ fn decide_command_with_base_ruleset(
                     ValidationError::ProfessionAbilityCannotResolve(ability_id),
                 ));
             }
-            let events = crate::rules::profession::activate_profession_ability(
+            let events = crate::rules::profession::activate(
                 state,
                 &player,
                 &ability_id,

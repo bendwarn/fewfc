@@ -7,8 +7,8 @@ use crate::domain::{
 use crate::rules::{
     AttackCategory, AttackPlanDef, BaseFormationSpec, ConsequenceCertainty, DamageTarget,
     EffectDef, EffectPlan, FormationCategory, FormationDef, FormationEffect, FormationPattern,
-    PointFormula, ProfessionAbilityCandidate, ProfessionAbilityEffect, ProfessionChangeCandidate,
-    RuleConsequence, SpellPlanDef, SubmittedCardFacts, TrustedRandomness,
+    PointFormula, ProfessionAbilityEffect, ProfessionChangeCandidate, RuleConsequence,
+    SpellPlanDef, SubmittedCardFacts, TrustedRandomness,
 };
 
 pub(crate) fn timed_effect_reductions(
@@ -768,111 +768,101 @@ pub(crate) fn append_mischief_events(
     Ok(())
 }
 
-pub(crate) fn playable_profession_abilities(
-    state: &GameState,
-    player: &PlayerId,
-    cards: &[CardInstanceId],
-) -> GameResult<Vec<ProfessionAbilityCandidate>> {
-    if cards.len() != 1
-        || state
-            .activated_profession_ability_turns
-            .get(player)
-            .is_some_and(|turn| *turn == state.turn_number)
-    {
-        return Ok(Vec::new());
-    }
-    let Some(profession) = state.profession_for(player) else {
-        return Ok(Vec::new());
-    };
-    if !crate::rules::profession::effective_ability_ids(&state.enabled_rule_modules, profession)
-        .contains(&"dark:dark-spirit")
-    {
-        return Ok(Vec::new());
-    }
-    let hand = state
-        .hand(player)
-        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
-    if !hand.contains(&cards[0]) {
-        return Err(GameError::Validation(ValidationError::CardNotInHand(
-            cards[0],
-        )));
-    }
-    let level = state
-        .card_level_for(player, cards[0])
-        .map_or(1, |level| level.value());
-    Ok((1..=2)
-        .filter(|target_level| *target_level < level)
-        .map(|target_level| ProfessionAbilityCandidate {
-            ability_id: "dark:dark-spirit".to_string(),
-            ability_name: "暗靈".to_string(),
-            cards: cards.to_vec(),
-            target_card: Some(cards[0]),
-            declared_element: state
-                .effective_card_facts(player, cards[0])
-                .map(|facts| facts.element),
-            declared_level: Some(target_level),
-            input_requirement: None,
-            detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
-        })
-        .collect())
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActivatedAbility {
+    DarkSpirit,
 }
 
-/// 目前唯一啟用的暗系能力會準備特定的既有卡牌；其宣告的元素與等級是分開的
-/// 行動詳細資料事實。
-pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbilityEffect> {
-    (id == "dark:dark-spirit").then_some(ProfessionAbilityEffect::PrepareCardAtDeclaredLevel)
-}
+pub(crate) struct ActivatedProvider;
 
-pub(crate) fn activate_profession_ability(
-    state: &GameState,
-    player: &PlayerId,
-    ability_id: &str,
-    cards: &[CardInstanceId],
-    target_card: Option<CardInstanceId>,
-    declared_element: Option<Element>,
-    declared_level: Option<u32>,
-) -> GameResult<Vec<GameEvent>> {
-    let legal = playable_profession_abilities(state, player, cards)?;
-    let candidate = legal
-        .iter()
-        .find(|candidate| {
-            candidate.ability_id == ability_id
-                && candidate.target_card == target_card
-                && candidate.declared_level == declared_level
-        })
-        .ok_or_else(|| {
-            GameError::Validation(ValidationError::ProfessionAbilityCannotResolve(
-                ability_id.to_string(),
-            ))
-        })?;
-    Ok(vec![
-        GameEvent::ProfessionAbilityActivated {
-            player: player.clone(),
-            ability_id: ability_id.to_string(),
-            prepared: Some(crate::domain::PreparedProfessionAbility {
-                player: player.clone(),
-                ability_id: ability_id.to_string(),
-                card: candidate.target_card.unwrap(),
-                element: declared_element.unwrap_or(candidate.declared_element.unwrap()),
-                level: crate::domain::EffectiveCardLevel::try_from(
-                    candidate.declared_level.unwrap(),
+impl crate::rules::profession::activated::ActivatedAbilityProvider for ActivatedProvider {
+    type Kind = ActivatedAbility;
+
+    const MODULE_ID: &'static str = DARK_GLIMMER_MODULE_ID;
+
+    fn kinds() -> &'static [Self::Kind] {
+        &[ActivatedAbility::DarkSpirit]
+    }
+
+    fn parse(id: &str) -> Option<Self::Kind> {
+        (id == "dark:dark-spirit").then_some(ActivatedAbility::DarkSpirit)
+    }
+
+    fn id(_kind: Self::Kind) -> &'static str {
+        "dark:dark-spirit"
+    }
+
+    fn catalog_id(kind: Self::Kind) -> &'static str {
+        Self::id(kind)
+    }
+
+    fn offers(
+        context: &crate::rules::profession::activated::OfferContext<'_>,
+    ) -> GameResult<Vec<crate::rules::profession::activated::AbilityOfferPlan<Self::Kind>>> {
+        use crate::rules::profession::activated::{
+            AbilityOfferPlan, AbilityPresentation, CompletionContract,
+        };
+
+        if context.selection.len() != 1 || !context.has::<_, Self>(ActivatedAbility::DarkSpirit) {
+            return Ok(Vec::new());
+        }
+        let card = context.selection.first().expect("one selected Card");
+        let facts = context
+            .state
+            .effective_card_facts(context.player, card)
+            .ok_or(GameError::Validation(
+                ValidationError::MissingCardInstanceDefinition(card),
+            ))?;
+        Ok((1..=2)
+            .filter(|target_level| *target_level < facts.level.value())
+            .map(|target_level| {
+                AbilityOfferPlan::new(
+                    ActivatedAbility::DarkSpirit,
+                    "暗靈",
+                    CompletionContract::fixed_target_element_and_level(
+                        card,
+                        facts.element,
+                        target_level,
+                    ),
+                    AbilityPresentation::new(ProfessionAbilityEffect::PrepareCardAtDeclaredLevel),
                 )
-                .expect("Dark Spirit candidates only declare in-range levels"),
-                allowed_formation_scope: vec!["all".to_string()],
-                prepared_on_turn: state.turn_number,
-                interpretation_revision: state.card_interpretation_revision + 1,
-            }),
-        },
-        GameEvent::FormationRequirementSet {
+            })
+            .collect())
+    }
+
+    fn resolve(
+        context: &crate::rules::profession::activated::ResolveContext<'_>,
+        kind: Self::Kind,
+        mut builder: crate::rules::profession::activated::AbilityPlanBuilder<'_>,
+    ) -> GameResult<crate::rules::profession::activated::AbilityEffectPlan> {
+        let card = context.input.target_card.expect("completion validated");
+        let element = context
+            .input
+            .declared_element
+            .expect("completion validated");
+        let level = context.input.declared_level.expect("completion validated");
+        builder.set_prepared(crate::domain::PreparedProfessionAbility {
+            player: context.player.clone(),
+            ability_id: Self::id(kind).to_string(),
+            card,
+            element,
+            level: crate::domain::EffectiveCardLevel::try_from(level)
+                .expect("Completion Contract 已限制暗靈等級"),
+            allowed_formation_scope: vec!["all".to_string()],
+            prepared_on_turn: context.state.turn_number,
+            interpretation_revision: context.state.card_interpretation_revision + 1,
+        })?;
+        builder.push_consequence(GameEvent::FormationRequirementSet {
             requirement: crate::domain::FormationRequirement {
-                player: player.clone(),
-                physical_card: candidate.target_card,
+                player: context.player.clone(),
+                physical_card: Some(card),
                 virtual_card: None,
                 allowed_formation_scope: vec!["all".to_string()],
-                applied_on_turn: state.turn_number,
+                applied_on_turn: context.state.turn_number,
             },
-        },
-    ])
+        })?;
+        Ok(builder.finish())
+    }
 }
 
 pub(crate) fn effective_ability_summaries(

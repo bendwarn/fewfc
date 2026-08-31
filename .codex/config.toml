@@ -1,4 +1,4 @@
-default_subagent_model = "gpt-5.6-luna"
+default_subagent_model = "gpt-5.6-terra"
 
 [[skills.config]]
 path = ".codex/skills/audit-fewfc-room-record"

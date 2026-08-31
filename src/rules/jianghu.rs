@@ -9,10 +9,7 @@ use crate::rules::{
     FormationCategory, FormationDef, FormationEffect, FormationPattern, PointFormula, SpellPlanDef,
     formation_resolved_on_previous_turn, official_formation_registry,
 };
-use crate::rules::{
-    ProfessionAbilityCandidate, ProfessionAbilityEffect, ProfessionChangeCandidate,
-    SubmittedCardFacts,
-};
+use crate::rules::{ProfessionAbilityEffect, ProfessionChangeCandidate, SubmittedCardFacts};
 
 pub(crate) const LONE_WANDERER_ID: &str = "jianghu:lone-wanderer";
 pub(crate) const SWORDSMAN_ID: &str = "jianghu:swordsman";
@@ -783,272 +780,279 @@ fn shared_fate_change(
     }))
 }
 
-pub(crate) fn playable_profession_abilities(
-    state: &GameState,
-    player: &PlayerId,
-    cards: &[CardInstanceId],
-) -> GameResult<Vec<ProfessionAbilityCandidate>> {
-    if !state.has_rule_module(JIANGHU_MODULE_ID)
-        || state
-            .activated_profession_ability_turns
-            .get(player)
-            .is_some_and(|turn| *turn == state.turn_number)
-    {
-        return Ok(Vec::new());
-    }
-    validate_ability_cards(state, player, cards)?;
-    let Some(profession) = state.profession_for(player) else {
-        return Ok(Vec::new());
-    };
-    let abilities =
-        crate::rules::profession::effective_ability_ids(&state.enabled_rule_modules, profession);
-    let mut candidates = Vec::new();
-    if cards.is_empty() && abilities.contains(&"jianghu:dancing-yang-art") {
-        candidates.push(ability_candidate(
-            "jianghu:dancing-yang-art",
-            "舞陽訣",
-            "本回合以至少三張木／火行牌攻擊時，抽牌＋１",
-            cards,
-            None,
-        ));
-    }
-    if cards.is_empty() && abilities.contains(&"jianghu:divine-yang-aura") {
-        candidates.push(ability_candidate(
-            "jianghu:heavenly-yang-aura",
-            "神陽罡",
-            "不需展示手牌；一輪內受到木、火行攻擊的傷害減半",
-            cards,
-            None,
-        ));
-    }
-    if cards.len() == 1 {
-        let card = state.card_def(cards[0]).expect("validated card");
-        if matches!(card.element, Element::Wood | Element::Fire) {
-            if abilities.contains(&"jianghu:heavenly-yang-aura") {
-                candidates.push(ability_candidate(
-                    "jianghu:heavenly-yang-aura",
-                    "天陽罡",
-                    "亮出此牌；一輪內受到木、火行攻擊的傷害減半",
-                    cards,
-                    None,
-                ));
-            }
-            if abilities.contains(&"jianghu:blazing-yang-art") {
-                candidates.push(ability_candidate(
-                    "jianghu:blazing-yang-art",
-                    "烈陽訣",
-                    "此牌本回合施展基礎陣法時等級＋２（最高５）",
-                    cards,
-                    Some(cards[0]),
-                ));
-            }
-        }
-        if matches!(card.element, Element::Wood | Element::Water)
-            && abilities.contains(&"jianghu:azure-cloud-step")
-        {
-            azure_cloud_supply_plan(state, player, cards)?;
-            candidates.push(ability_candidate(
-                "jianghu:azure-cloud-step",
-                "青雲步",
-                "捨棄此牌，抽二張，再選一張放回牌堆頂",
-                cards,
-                None,
-            ));
-        }
-        if abilities.contains(&"jianghu:meteor-step")
-            && is_meteor_step_card(state, player, cards[0])
-        {
-            candidates.push(ability_candidate(
-                "jianghu:meteor-step",
-                "流星步",
-                "捨棄此火行牌或星行牌；本回合陣法觸發流星效果",
-                cards,
-                None,
-            ));
-        }
-    }
-    Ok(candidates)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActivatedAbility {
+    HeavenlyYangAura,
+    BlazingYangArt,
+    DancingYangArt,
+    AzureCloudStep,
+    MeteorStep,
 }
 
-/// 與下方的能力啟用解析器保持一致。目前每個可提供的江湖能力都必須選擇一個
-/// 封閉且面向玩家的語意效果。
-pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbilityEffect> {
-    Some(match id {
-        "jianghu:heavenly-yang-aura" => ProfessionAbilityEffect::ApplyYangAura,
-        "jianghu:blazing-yang-art" => ProfessionAbilityEffect::PrepareCardWithLevelBonus {
-            amount: 2,
-            maximum: 5,
-        },
-        "jianghu:dancing-yang-art" => ProfessionAbilityEffect::PrepareFormationDrawBonus,
-        "jianghu:azure-cloud-step" => ProfessionAbilityEffect::DrawTwoThenReturnOne,
-        "jianghu:meteor-step" => ProfessionAbilityEffect::PrepareMeteorEffect,
-        _ => return None,
-    })
-}
+pub(crate) struct ActivatedProvider;
 
-pub(crate) fn player_facing_ability_discards_selected_cards(id: &str) -> bool {
-    matches!(id, "jianghu:azure-cloud-step" | "jianghu:meteor-step")
-}
+impl crate::rules::profession::activated::ActivatedAbilityProvider for ActivatedProvider {
+    type Kind = ActivatedAbility;
 
-pub(crate) fn activate_profession_ability(
-    state: &GameState,
-    player: &PlayerId,
-    ability_id: &str,
-    cards: &[CardInstanceId],
-    target_card: Option<CardInstanceId>,
-    _declared_element: Option<Element>,
-    _declared_level: Option<u32>,
-) -> GameResult<Vec<GameEvent>> {
-    if state
-        .activated_profession_ability_turns
-        .get(player)
-        .is_some_and(|turn| *turn == state.turn_number)
-    {
-        return Err(GameError::Validation(
-            ValidationError::ProfessionAbilityAlreadyActivated {
-                player: player.clone(),
-                turn_number: state.turn_number,
-            },
-        ));
+    const MODULE_ID: &'static str = JIANGHU_MODULE_ID;
+
+    fn kinds() -> &'static [Self::Kind] {
+        &[
+            ActivatedAbility::HeavenlyYangAura,
+            ActivatedAbility::BlazingYangArt,
+            ActivatedAbility::DancingYangArt,
+            ActivatedAbility::AzureCloudStep,
+            ActivatedAbility::MeteorStep,
+        ]
     }
-    let available = playable_profession_abilities(state, player, cards)?;
-    let candidate = available
-        .iter()
-        .find(|candidate| {
-            candidate.ability_id == ability_id
-                && (candidate.target_card == target_card || target_card.is_none())
+
+    fn parse(id: &str) -> Option<Self::Kind> {
+        Some(match id {
+            "jianghu:heavenly-yang-aura" => ActivatedAbility::HeavenlyYangAura,
+            "jianghu:blazing-yang-art" => ActivatedAbility::BlazingYangArt,
+            "jianghu:dancing-yang-art" => ActivatedAbility::DancingYangArt,
+            "jianghu:azure-cloud-step" => ActivatedAbility::AzureCloudStep,
+            "jianghu:meteor-step" => ActivatedAbility::MeteorStep,
+            _ => return None,
         })
-        .ok_or_else(|| {
-            GameError::Validation(ValidationError::ProfessionAbilityCannotResolve(
-                ability_id.to_string(),
-            ))
-        })?;
-    let mut events = vec![GameEvent::ProfessionAbilityActivated {
-        player: player.clone(),
-        ability_id: ability_id.to_string(),
-        prepared: None,
-    }];
-    match ability_id {
-        "jianghu:heavenly-yang-aura" => {
-            events.push(GameEvent::StatusAdded {
-                status: StatusEffect {
-                    id: format!("jianghu-heavenly-yang-aura-{}", state.turn_number),
-                    owner: StatusOwner::Player(player.clone()),
-                    kind: "JianghuYangAura".to_string(),
-                    value: None,
-                    duration: StatusDuration::UntilTurnStart {
-                        player: player.clone(),
-                    },
-                },
-            });
+    }
+
+    fn id(kind: Self::Kind) -> &'static str {
+        match kind {
+            ActivatedAbility::HeavenlyYangAura => "jianghu:heavenly-yang-aura",
+            ActivatedAbility::BlazingYangArt => "jianghu:blazing-yang-art",
+            ActivatedAbility::DancingYangArt => "jianghu:dancing-yang-art",
+            ActivatedAbility::AzureCloudStep => "jianghu:azure-cloud-step",
+            ActivatedAbility::MeteorStep => "jianghu:meteor-step",
         }
-        "jianghu:blazing-yang-art" => {
-            let card_id = target_card.unwrap_or(candidate.cards[0]);
-            let current = state
-                .effective_card_facts(player, card_id)
-                .expect("validated card");
-            let level = crate::domain::EffectiveCardLevel::new(
-                current
-                    .level
-                    .value()
-                    .saturating_add(2)
-                    .min(crate::domain::MAX_CARD_LEVEL),
-            );
-            events[0] = GameEvent::ProfessionAbilityActivated {
-                player: player.clone(),
-                ability_id: ability_id.to_string(),
-                prepared: Some(crate::domain::PreparedProfessionAbility {
+    }
+
+    fn catalog_id(kind: Self::Kind) -> &'static str {
+        Self::id(kind)
+    }
+
+    fn offers(
+        context: &crate::rules::profession::activated::OfferContext<'_>,
+    ) -> GameResult<Vec<crate::rules::profession::activated::AbilityOfferPlan<Self::Kind>>> {
+        use crate::rules::profession::activated::{
+            AbilityOfferPlan, AbilityPresentation, CompletionContract,
+        };
+
+        let mut offers = Vec::new();
+        if context.selection.is_empty() && context.has::<_, Self>(ActivatedAbility::DancingYangArt)
+        {
+            offers.push(AbilityOfferPlan::new(
+                ActivatedAbility::DancingYangArt,
+                "舞陽訣",
+                CompletionContract::absent(),
+                AbilityPresentation::new(ProfessionAbilityEffect::PrepareFormationDrawBonus),
+            ));
+        }
+        if context.selection.is_empty() && context.has_catalog_id("jianghu:divine-yang-aura") {
+            offers.push(AbilityOfferPlan::new(
+                ActivatedAbility::HeavenlyYangAura,
+                "神陽罡",
+                CompletionContract::absent(),
+                AbilityPresentation::new(ProfessionAbilityEffect::ApplyYangAura),
+            ));
+        }
+        if context.selection.len() == 1 {
+            let selected = context.selection.first().expect("one selected Card");
+            let card = context
+                .state
+                .card_def(selected)
+                .ok_or(GameError::Validation(
+                    ValidationError::MissingCardInstanceDefinition(selected),
+                ))?;
+            if matches!(card.element, Element::Wood | Element::Fire) {
+                if context.has::<_, Self>(ActivatedAbility::HeavenlyYangAura) {
+                    offers.push(AbilityOfferPlan::new(
+                        ActivatedAbility::HeavenlyYangAura,
+                        "天陽罡",
+                        CompletionContract::absent(),
+                        AbilityPresentation::new(ProfessionAbilityEffect::ApplyYangAura),
+                    ));
+                }
+                if context.has::<_, Self>(ActivatedAbility::BlazingYangArt) {
+                    offers.push(AbilityOfferPlan::new(
+                        ActivatedAbility::BlazingYangArt,
+                        "烈陽訣",
+                        CompletionContract::fixed_target(selected),
+                        AbilityPresentation::new(
+                            ProfessionAbilityEffect::PrepareCardWithLevelBonus {
+                                amount: 2,
+                                maximum: 5,
+                            },
+                        ),
+                    ));
+                }
+            }
+            if matches!(card.element, Element::Wood | Element::Water)
+                && context.has::<_, Self>(ActivatedAbility::AzureCloudStep)
+            {
+                azure_cloud_supply_plan(context.state, context.player, context.selection.cards())?;
+                offers.push(AbilityOfferPlan::new(
+                    ActivatedAbility::AzureCloudStep,
+                    "青雲步",
+                    CompletionContract::absent(),
+                    AbilityPresentation::new(ProfessionAbilityEffect::DrawTwoThenReturnOne)
+                        .discards_selected_cards(),
+                ));
+            }
+            if context.has::<_, Self>(ActivatedAbility::MeteorStep)
+                && is_meteor_step_card(context.state, context.player, selected)
+            {
+                offers.push(AbilityOfferPlan::new(
+                    ActivatedAbility::MeteorStep,
+                    "流星步",
+                    CompletionContract::absent(),
+                    AbilityPresentation::new(ProfessionAbilityEffect::PrepareMeteorEffect)
+                        .discards_selected_cards(),
+                ));
+            }
+        }
+        Ok(offers)
+    }
+
+    fn resolve(
+        context: &crate::rules::profession::activated::ResolveContext<'_>,
+        kind: Self::Kind,
+        mut builder: crate::rules::profession::activated::AbilityPlanBuilder<'_>,
+    ) -> GameResult<crate::rules::profession::activated::AbilityEffectPlan> {
+        let state = context.state;
+        let player = context.player;
+        match kind {
+            ActivatedAbility::HeavenlyYangAura => {
+                builder.push_consequence(GameEvent::StatusAdded {
+                    status: StatusEffect {
+                        id: format!("jianghu-heavenly-yang-aura-{}", state.turn_number),
+                        owner: StatusOwner::Player(player.clone()),
+                        kind: "JianghuYangAura".to_string(),
+                        value: None,
+                        duration: StatusDuration::UntilTurnStart {
+                            player: player.clone(),
+                        },
+                    },
+                })?;
+            }
+            ActivatedAbility::BlazingYangArt => {
+                let card = context.input.target_card.expect("completion validated");
+                let current = state
+                    .effective_card_facts(player, card)
+                    .expect("validated Card has effective facts");
+                builder.set_prepared(crate::domain::PreparedProfessionAbility {
                     player: player.clone(),
-                    ability_id: ability_id.to_string(),
-                    card: card_id,
+                    ability_id: Self::id(kind).to_string(),
+                    card,
                     element: current.element,
-                    level,
+                    level: crate::domain::EffectiveCardLevel::new(
+                        current
+                            .level
+                            .value()
+                            .saturating_add(2)
+                            .min(crate::domain::MAX_CARD_LEVEL),
+                    ),
                     allowed_formation_scope: vec!["base".to_string()],
                     prepared_on_turn: state.turn_number,
                     interpretation_revision: state.card_interpretation_revision + 1,
-                }),
-            };
-        }
-        "jianghu:dancing-yang-art" | "jianghu:meteor-step" => {
-            events.push(GameEvent::StatusAdded {
-                status: StatusEffect {
-                    id: format!("{ability_id}-{}", state.turn_number),
-                    owner: StatusOwner::Player(player.clone()),
-                    kind: if ability_id.ends_with("meteor-step") {
-                        "JianghuMeteor".to_string()
-                    } else {
-                        "JianghuDancingYang".to_string()
+                })?;
+            }
+            ActivatedAbility::DancingYangArt | ActivatedAbility::MeteorStep => {
+                let ability_id = Self::id(kind);
+                builder.push_consequence(GameEvent::StatusAdded {
+                    status: StatusEffect {
+                        id: format!("{ability_id}-{}", state.turn_number),
+                        owner: StatusOwner::Player(player.clone()),
+                        kind: if kind == ActivatedAbility::MeteorStep {
+                            "JianghuMeteor".to_string()
+                        } else {
+                            "JianghuDancingYang".to_string()
+                        },
+                        value: None,
+                        duration: StatusDuration::UntilTurnEndNumber {
+                            player: player.clone(),
+                            turn_number: state.turn_number,
+                        },
                     },
-                    value: None,
-                    duration: StatusDuration::UntilTurnEndNumber {
-                        player: player.clone(),
-                        turn_number: state.turn_number,
-                    },
-                },
-            });
-            if ability_id.ends_with("meteor-step") {
-                events.push(GameEvent::CardsMoved {
-                    card_moves: ability_card_moves(state, player, cards)?,
-                });
+                })?;
+                if kind == ActivatedAbility::MeteorStep {
+                    builder.push_consequence(GameEvent::CardsMoved {
+                        card_moves: ability_card_moves(state, player, context.selection.cards())?,
+                    })?;
+                }
+            }
+            ActivatedAbility::AzureCloudStep => {
+                builder.push_consequence(GameEvent::CardsMoved {
+                    card_moves: ability_card_moves(state, player, context.selection.cards())?,
+                })?;
+                let pile = deck_kind(builder.projected_state(), player);
+                if let Some(event) = crate::rules::deck_supply::request_if_needed(
+                    builder.projected_state(),
+                    &pile,
+                    2,
+                    crate::domain::DeckPlacement::Bottom,
+                    format!(
+                        "jianghu:azure-cloud-step:{}:{}",
+                        state.turn_number,
+                        player.as_str()
+                    ),
+                    PendingResolution::JianghuAzureCloudStepDraw,
+                )? {
+                    builder.set_continuation(event)?;
+                } else {
+                    let events = azure_cloud_draw_events(builder.projected_state(), player)?;
+                    for event in events {
+                        if matches!(event, GameEvent::ChoiceRequested { .. }) {
+                            builder.set_continuation(event)?;
+                        } else {
+                            builder.push_consequence(event)?;
+                        }
+                    }
+                }
             }
         }
-        "jianghu:azure-cloud-step" => {
-            events.push(GameEvent::CardsMoved {
-                card_moves: ability_card_moves(state, player, cards)?,
-            });
-            let mut projected = state.clone();
-            for event in &events {
-                crate::rules::projection::apply_event(&mut projected, event);
-            }
-            let pile = deck_kind(&projected, player);
-            if let Some(event) = crate::rules::deck_supply::request_if_needed(
-                &projected,
-                &pile,
-                2,
-                crate::domain::DeckPlacement::Bottom,
-                format!(
-                    "jianghu:azure-cloud-step:{}:{}",
-                    state.turn_number,
-                    player.as_str()
-                ),
-                PendingResolution::JianghuAzureCloudStepReturnOne,
-            )? {
-                events.push(event);
-                return Ok(events);
-            }
-            let drawn_cards = projected
-                .deck_for(player)
-                .expect("validated deck")
-                .iter()
-                .take(2)
-                .copied()
-                .collect::<Vec<_>>();
-            events.push(GameEvent::CardsDrawnForProfessionChoice {
-                player: player.clone(),
-                ability_id: ability_id.to_string(),
-                cards: drawn_cards.clone(),
-            });
-            events.push(crate::rules::pending_choice::request_event(
-                &projected,
-                crate::domain::ChoiceRequest {
-                    player: player.clone(),
-                    kind: crate::domain::PendingChoiceKind::Card {
-                        maximum: 1,
-                        minimum: 1,
-                        cards: drawn_cards,
-                        can_decline: false,
-                    },
-                    resolution: PendingResolution::JianghuAzureCloudStepReturnOne,
-                },
-            )?);
-        }
-        _ => {
-            return Err(GameError::Validation(
-                ValidationError::UnknownProfessionAbility(ability_id.to_string()),
-            ));
-        }
+        Ok(builder.finish())
     }
-    Ok(events)
+}
+
+pub(crate) fn after_azure_cloud_step_randomness_events(
+    state: &GameState,
+) -> GameResult<Vec<GameEvent>> {
+    let player = state
+        .current_player()
+        .cloned()
+        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?;
+    azure_cloud_draw_events(state, &player)
+}
+
+fn azure_cloud_draw_events(state: &GameState, player: &PlayerId) -> GameResult<Vec<GameEvent>> {
+    let drawn_cards = state
+        .deck_for(player)
+        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?
+        .iter()
+        .take(2)
+        .copied()
+        .collect::<Vec<_>>();
+    Ok(vec![
+        GameEvent::CardsDrawnForProfessionChoice {
+            player: player.clone(),
+            ability_id: "jianghu:azure-cloud-step".to_string(),
+            cards: drawn_cards.clone(),
+        },
+        crate::rules::pending_choice::request_event(
+            state,
+            crate::domain::ChoiceRequest {
+                player: player.clone(),
+                kind: crate::domain::PendingChoiceKind::Card {
+                    maximum: 1,
+                    minimum: 1,
+                    cards: drawn_cards,
+                    can_decline: false,
+                },
+                resolution: PendingResolution::JianghuAzureCloudStepReturnOne,
+            },
+        )?,
+    ])
 }
 
 fn deck_kind(state: &GameState, player: &PlayerId) -> RandomnessDeck {
@@ -1077,47 +1081,6 @@ fn azure_cloud_supply_plan(
         2,
         crate::domain::DeckPlacement::Bottom,
     )
-}
-
-fn ability_candidate(
-    id: &str,
-    name: &str,
-    _rule_text: &str,
-    cards: &[CardInstanceId],
-    target_card: Option<CardInstanceId>,
-) -> ProfessionAbilityCandidate {
-    ProfessionAbilityCandidate {
-        ability_id: id.to_string(),
-        ability_name: name.to_string(),
-        cards: cards.to_vec(),
-        target_card,
-        declared_element: None,
-        declared_level: None,
-        input_requirement: None,
-        detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
-    }
-}
-
-fn validate_ability_cards(
-    state: &GameState,
-    player: &PlayerId,
-    cards: &[CardInstanceId],
-) -> GameResult<()> {
-    let hand = state
-        .hand(player)
-        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
-    let mut seen = std::collections::HashSet::new();
-    for card in cards {
-        if !seen.insert(*card) {
-            return Err(GameError::Validation(
-                ValidationError::DuplicateSubmittedCard(*card),
-            ));
-        }
-        if !hand.contains(card) {
-            return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
-        }
-    }
-    Ok(())
 }
 
 fn ability_card_moves(

@@ -19,10 +19,7 @@ pub(crate) fn timed_effect_reductions(
     }
     crate::rules::timed_effect::status_reductions(state, target, |id| id.starts_with("confluence-"))
 }
-use crate::rules::{
-    ProfessionAbilityCandidate, ProfessionAbilityEffect, ProfessionChangeCandidate,
-    SubmittedCardFacts,
-};
+use crate::rules::{ProfessionAbilityEffect, ProfessionChangeCandidate, SubmittedCardFacts};
 
 pub(crate) const TUNER_ID: &str = "confluence:tuner";
 pub(crate) const STRING_CHANGER_ID: &str = "confluence:string-changer";
@@ -1396,108 +1393,15 @@ pub(crate) fn effective_ability_summaries(
         .collect()
 }
 
-pub(crate) fn playable_profession_abilities(
-    state: &GameState,
-    player: &PlayerId,
-    cards: &[CardInstanceId],
-) -> GameResult<Vec<ProfessionAbilityCandidate>> {
-    if !state.has_rule_module(CONFLUENCE_GENERATION_MODULE_ID)
-        || state
-            .activated_profession_ability_turns
-            .get(player)
-            .is_some_and(|turn| *turn == state.turn_number)
-    {
-        return Ok(Vec::new());
-    }
-    validate_ability_cards(state, player, cards)?;
-    let Some(profession) = state.profession_for(player) else {
-        return Ok(Vec::new());
-    };
-    let abilities =
-        crate::rules::profession::effective_ability_ids(&state.enabled_rule_modules, profession);
-    let mut candidates = Vec::new();
-    if cards.len() == 1
-        && abilities.contains(&"confluence:tuning")
-        && let Some((_, residual_level)) = residual_card_facts(state, player)
-        && state
-            .card_level_for(player, cards[0])
-            .is_some_and(|level| level.value() > residual_level)
-        && tuning_card_can_be_used(state, player, cards[0])?
-    {
-        candidates.push(ability_candidate(
-            "confluence:tuning",
-            "調律",
-            "捨棄此牌，取得上家可回收棄牌；該牌本回合須用於轉職",
-            cards,
-            None,
-            None,
-        ));
-    }
-    if cards.is_empty() {
-        if abilities.contains(&"confluence:heavenly-resonance")
-            && state.hand(player).is_some_and(|hand| hand.len() <= 4)
-            && retrievable_discard(state, player)?.is_some()
-            && limited_use(state, player, HEAVENLY_RESONANCE_USE)
-                .is_some_and(|use_count| use_count.remaining > 0)
-        {
-            candidates.push(ability_candidate(
-                "confluence:heavenly-resonance",
-                "天響",
-                "取得上家可回收棄牌；本局限一次",
-                cards,
-                None,
-                None,
-            ));
-        }
-        if abilities.contains(&"confluence:clear-wind") {
-            crate::rules::deck_supply::plan(
-                state,
-                &deck_kind(state, player),
-                1,
-                crate::domain::DeckPlacement::Bottom,
-            )?;
-            candidates.push(ability_candidate(
-                "confluence:clear-wind",
-                "晴風",
-                "展示牌堆最上方牌，再選擇捨棄或放回",
-                cards,
-                None,
-                None,
-            ));
-        }
-        if abilities.contains(&"confluence:tailwind")
-            && limited_use(state, player, TAILWIND_USE)
-                .is_some_and(|use_count| use_count.remaining > 0)
-        {
-            candidates.push(ability_candidate(
-                "confluence:tailwind",
-                "順風",
-                "本回合抽牌＋２；自身洗牌時回復",
-                cards,
-                None,
-                None,
-            ));
-        }
-    }
-    Ok(candidates)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActivatedAbility {
+    Tuning,
+    HeavenlyResonance,
+    ClearWind,
+    Tailwind,
 }
 
-/// 與啟用解析器放在一起，避免新的已提供行動偷偷重用通用的瀏覽器描述。
-pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbilityEffect> {
-    Some(match id {
-        "confluence:tuning" => {
-            ProfessionAbilityEffect::RetrievePreviousPlayerDiscardForProfessionUse
-        }
-        "confluence:heavenly-resonance" => ProfessionAbilityEffect::RetrievePreviousPlayerDiscard,
-        "confluence:clear-wind" => ProfessionAbilityEffect::RevealDeckTopAndChooseDiscard,
-        "confluence:tailwind" => ProfessionAbilityEffect::IncreaseTurnDraw { amount: 2 },
-        _ => return None,
-    })
-}
-
-pub(crate) fn player_facing_ability_discards_selected_cards(id: &str) -> bool {
-    id == "confluence:tuning"
-}
+pub(crate) struct ActivatedProvider;
 
 fn tuning_card_can_be_used(
     state: &GameState,
@@ -1543,156 +1447,227 @@ fn tuning_card_can_be_used(
     tuning_completion_available(&projected, player)
 }
 
-pub(crate) fn activate_profession_ability(
-    state: &GameState,
-    player: &PlayerId,
-    ability_id: &str,
-    cards: &[CardInstanceId],
-    target_card: Option<CardInstanceId>,
-    _declared_element: Option<Element>,
-    declared_level: Option<u32>,
-) -> GameResult<Vec<GameEvent>> {
-    let candidates = playable_profession_abilities(state, player, cards)?;
-    if !candidates.iter().any(|candidate| {
-        candidate.ability_id == ability_id
-            && candidate.target_card == target_card
-            && candidate.declared_level == declared_level
-    }) {
-        return Err(GameError::Validation(
-            ValidationError::ProfessionAbilityCannotResolve(ability_id.to_string()),
-        ));
+impl crate::rules::profession::activated::ActivatedAbilityProvider for ActivatedProvider {
+    type Kind = ActivatedAbility;
+
+    const MODULE_ID: &'static str = CONFLUENCE_GENERATION_MODULE_ID;
+
+    fn kinds() -> &'static [Self::Kind] {
+        &[
+            ActivatedAbility::Tuning,
+            ActivatedAbility::HeavenlyResonance,
+            ActivatedAbility::ClearWind,
+            ActivatedAbility::Tailwind,
+        ]
     }
-    let mut events = vec![GameEvent::ProfessionAbilityActivated {
-        player: player.clone(),
-        ability_id: ability_id.to_string(),
-        prepared: None,
-    }];
-    match ability_id {
-        "confluence:tuning" => {
-            let retrieved = retrievable_discard(state, player)?
-                .expect("playable Tuning requires a retrievable discard");
-            events.push(GameEvent::CardsMoved {
-                card_moves: vec![
-                    ability_discard_move(state, player, cards[0])?,
-                    crate::domain::CardMoveDelta {
+
+    fn parse(id: &str) -> Option<Self::Kind> {
+        Some(match id {
+            "confluence:tuning" => ActivatedAbility::Tuning,
+            "confluence:heavenly-resonance" => ActivatedAbility::HeavenlyResonance,
+            "confluence:clear-wind" => ActivatedAbility::ClearWind,
+            "confluence:tailwind" => ActivatedAbility::Tailwind,
+            _ => return None,
+        })
+    }
+
+    fn id(kind: Self::Kind) -> &'static str {
+        match kind {
+            ActivatedAbility::Tuning => "confluence:tuning",
+            ActivatedAbility::HeavenlyResonance => "confluence:heavenly-resonance",
+            ActivatedAbility::ClearWind => "confluence:clear-wind",
+            ActivatedAbility::Tailwind => "confluence:tailwind",
+        }
+    }
+
+    fn catalog_id(kind: Self::Kind) -> &'static str {
+        Self::id(kind)
+    }
+
+    fn offers(
+        context: &crate::rules::profession::activated::OfferContext<'_>,
+    ) -> GameResult<Vec<crate::rules::profession::activated::AbilityOfferPlan<Self::Kind>>> {
+        use crate::rules::profession::activated::{
+            AbilityOfferPlan, AbilityPresentation, CompletionContract,
+        };
+
+        let state = context.state;
+        let player = context.player;
+        let mut offers = Vec::new();
+        if context.selection.len() == 1
+            && context.has::<_, Self>(ActivatedAbility::Tuning)
+            && let Some((_, residual_level)) = residual_card_facts(state, player)
+            && state
+                .card_level_for(
+                    player,
+                    context.selection.first().expect("one selected Card"),
+                )
+                .is_some_and(|level| level.value() > residual_level)
+            && tuning_card_can_be_used(
+                state,
+                player,
+                context.selection.first().expect("one selected Card"),
+            )?
+        {
+            offers.push(AbilityOfferPlan::new(
+                ActivatedAbility::Tuning,
+                "調律",
+                CompletionContract::absent(),
+                AbilityPresentation::new(
+                    ProfessionAbilityEffect::RetrievePreviousPlayerDiscardForProfessionUse,
+                )
+                .discards_selected_cards(),
+            ));
+        }
+        if context.selection.is_empty() {
+            if context.has::<_, Self>(ActivatedAbility::HeavenlyResonance)
+                && state.hand(player).is_some_and(|hand| hand.len() <= 4)
+                && retrievable_discard(state, player)?.is_some()
+                && limited_use(state, player, HEAVENLY_RESONANCE_USE)
+                    .is_some_and(|use_count| use_count.remaining > 0)
+            {
+                offers.push(AbilityOfferPlan::new(
+                    ActivatedAbility::HeavenlyResonance,
+                    "天響",
+                    CompletionContract::absent(),
+                    AbilityPresentation::new(
+                        ProfessionAbilityEffect::RetrievePreviousPlayerDiscard,
+                    )
+                    .limited_use(HEAVENLY_RESONANCE_USE),
+                ));
+            }
+            if context.has::<_, Self>(ActivatedAbility::ClearWind) {
+                crate::rules::deck_supply::plan(
+                    state,
+                    &deck_kind(state, player),
+                    1,
+                    crate::domain::DeckPlacement::Bottom,
+                )?;
+                offers.push(AbilityOfferPlan::new(
+                    ActivatedAbility::ClearWind,
+                    "晴風",
+                    CompletionContract::absent(),
+                    AbilityPresentation::new(
+                        ProfessionAbilityEffect::RevealDeckTopAndChooseDiscard,
+                    ),
+                ));
+            }
+            if context.has::<_, Self>(ActivatedAbility::Tailwind)
+                && limited_use(state, player, TAILWIND_USE)
+                    .is_some_and(|use_count| use_count.remaining > 0)
+            {
+                offers.push(AbilityOfferPlan::new(
+                    ActivatedAbility::Tailwind,
+                    "順風",
+                    CompletionContract::absent(),
+                    AbilityPresentation::new(ProfessionAbilityEffect::IncreaseTurnDraw {
+                        amount: 2,
+                    })
+                    .limited_use(TAILWIND_USE),
+                ));
+            }
+        }
+        Ok(offers)
+    }
+
+    fn resolve(
+        context: &crate::rules::profession::activated::ResolveContext<'_>,
+        kind: Self::Kind,
+        mut builder: crate::rules::profession::activated::AbilityPlanBuilder<'_>,
+    ) -> GameResult<crate::rules::profession::activated::AbilityEffectPlan> {
+        let state = context.state;
+        let player = context.player;
+        match kind {
+            ActivatedAbility::Tuning => {
+                let retrieved = retrievable_discard(state, player)?
+                    .expect("offered Tuning has a Retrievable Discard");
+                builder.push_consequence(GameEvent::CardsMoved {
+                    card_moves: vec![
+                        ability_discard_move(
+                            state,
+                            player,
+                            context.selection.first().expect("one selected Card"),
+                        )?,
+                        crate::domain::CardMoveDelta {
+                            card: retrieved.1,
+                            from: retrieved.2.clone(),
+                            to: crate::domain::CardZone::Hand(player.clone()),
+                        },
+                    ],
+                })?;
+                builder.push_consequence(GameEvent::ConfluenceCardObligationSet {
+                    obligation: crate::domain::ConfluenceCardObligation {
+                        owner: player.clone(),
+                        card: retrieved.1,
+                        allow_profession_formation:
+                            crate::rules::profession::ability_ids_in_effect(state, player)
+                                .contains(&"confluence:string-changing"),
+                        applied_on_turn: state.turn_number,
+                        residual_element: state.card_def(retrieved.1).map(|card| card.element),
+                        residual_level: state.card_def(retrieved.1).map(|card| card.level),
+                    },
+                })?;
+            }
+            ActivatedAbility::HeavenlyResonance => {
+                let retrieved = retrievable_discard(state, player)?
+                    .expect("offered Heavenly Resonance has a Retrievable Discard");
+                builder.push_consequence(GameEvent::CardsMoved {
+                    card_moves: vec![crate::domain::CardMoveDelta {
                         card: retrieved.1,
                         from: retrieved.2.clone(),
                         to: crate::domain::CardZone::Hand(player.clone()),
-                    },
-                ],
-            });
-            let allow_profession_formation =
-                crate::rules::profession::ability_ids_in_effect(state, player)
-                    .contains(&"confluence:string-changing");
-            events.push(GameEvent::ConfluenceCardObligationSet {
-                obligation: crate::domain::ConfluenceCardObligation {
+                    }],
+                })?;
+                let use_count = limited_use(state, player, HEAVENLY_RESONANCE_USE)
+                    .expect("offered Heavenly Resonance has Limited Use");
+                builder.push_consequence(GameEvent::LimitedUseChanged {
                     owner: player.clone(),
-                    card: retrieved.1,
-                    allow_profession_formation,
-                    applied_on_turn: state.turn_number,
-                    residual_element: state.card_def(retrieved.1).map(|card| card.element),
-                    residual_level: state.card_def(retrieved.1).map(|card| card.level),
-                },
-            });
-        }
-        "confluence:heavenly-resonance" => {
-            let retrieved = retrievable_discard(state, player)?
-                .expect("playable Heavenly Resonance requires a discard");
-            events.push(GameEvent::CardsMoved {
-                card_moves: vec![crate::domain::CardMoveDelta {
-                    card: retrieved.1,
-                    from: retrieved.2.clone(),
-                    to: crate::domain::CardZone::Hand(player.clone()),
-                }],
-            });
-            let use_count = limited_use(state, player, HEAVENLY_RESONANCE_USE).unwrap();
-            events.push(GameEvent::LimitedUseChanged {
-                owner: player.clone(),
-                key: HEAVENLY_RESONANCE_USE.to_string(),
-                old_remaining: use_count.remaining,
-                new_remaining: use_count.remaining - 1,
-                maximum: use_count.maximum,
-            });
-        }
-        "confluence:clear-wind" => {
-            let pile = deck_kind(state, player);
-            if let Some(event) = crate::rules::deck_supply::request_if_needed(
-                state,
-                &pile,
-                1,
-                crate::domain::DeckPlacement::Bottom,
-                format!(
-                    "confluence:clear-wind:{}:{}",
-                    state.turn_number,
-                    player.as_str()
-                ),
-                PendingResolution::ConfluenceClearWindRevealTop,
-            )? {
-                events.push(event);
-            } else {
-                events.extend(clear_wind_reveal_events(state, player)?);
+                    key: HEAVENLY_RESONANCE_USE.to_string(),
+                    old_remaining: use_count.remaining,
+                    new_remaining: use_count.remaining - 1,
+                    maximum: use_count.maximum,
+                })?;
+            }
+            ActivatedAbility::ClearWind => {
+                let pile = deck_kind(state, player);
+                if let Some(event) = crate::rules::deck_supply::request_if_needed(
+                    state,
+                    &pile,
+                    1,
+                    crate::domain::DeckPlacement::Bottom,
+                    format!(
+                        "confluence:clear-wind:{}:{}",
+                        state.turn_number,
+                        player.as_str()
+                    ),
+                    PendingResolution::ConfluenceClearWindRevealTop,
+                )? {
+                    builder.set_continuation(event)?;
+                } else {
+                    for event in clear_wind_reveal_events(state, player)? {
+                        if matches!(event, GameEvent::ChoiceRequested { .. }) {
+                            builder.set_continuation(event)?;
+                        } else {
+                            builder.push_consequence(event)?;
+                        }
+                    }
+                }
+            }
+            ActivatedAbility::Tailwind => {
+                let use_count = limited_use(state, player, TAILWIND_USE)
+                    .expect("offered Tailwind has Limited Use");
+                builder.push_consequence(GameEvent::LimitedUseChanged {
+                    owner: player.clone(),
+                    key: TAILWIND_USE.to_string(),
+                    old_remaining: use_count.remaining,
+                    new_remaining: use_count.remaining - 1,
+                    maximum: use_count.maximum,
+                })?;
+                builder.push_consequence(turn_draw_bonus_event(state, player, 2))?;
             }
         }
-        "confluence:tailwind" => {
-            let use_count = limited_use(state, player, TAILWIND_USE).unwrap();
-            events.push(GameEvent::LimitedUseChanged {
-                owner: player.clone(),
-                key: TAILWIND_USE.to_string(),
-                old_remaining: use_count.remaining,
-                new_remaining: use_count.remaining - 1,
-                maximum: use_count.maximum,
-            });
-            events.push(turn_draw_bonus_event(state, player, 2));
-        }
-        _ => {
-            return Err(GameError::Validation(
-                ValidationError::UnknownProfessionAbility(ability_id.to_string()),
-            ));
-        }
+        Ok(builder.finish())
     }
-    Ok(events)
-}
-
-fn ability_candidate(
-    id: &str,
-    name: &str,
-    _rule_text: &str,
-    cards: &[CardInstanceId],
-    target_card: Option<CardInstanceId>,
-    declared_level: Option<u32>,
-) -> ProfessionAbilityCandidate {
-    ProfessionAbilityCandidate {
-        ability_id: id.to_string(),
-        ability_name: name.to_string(),
-        cards: cards.to_vec(),
-        target_card,
-        declared_element: None,
-        declared_level,
-        input_requirement: None,
-        detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
-    }
-}
-
-fn validate_ability_cards(
-    state: &GameState,
-    player: &PlayerId,
-    cards: &[CardInstanceId],
-) -> GameResult<()> {
-    let hand = state
-        .hand(player)
-        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
-    let mut seen = std::collections::HashSet::new();
-    for card in cards {
-        if !seen.insert(*card) {
-            return Err(GameError::Validation(
-                ValidationError::DuplicateSubmittedCard(*card),
-            ));
-        }
-        if !hand.contains(card) {
-            return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
-        }
-    }
-    Ok(())
 }
 
 fn retrievable_discard(

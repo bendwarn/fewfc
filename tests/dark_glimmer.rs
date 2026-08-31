@@ -221,7 +221,7 @@ fn dark_spirit_lowers_one_physical_card_and_automatically_requires_it() {
             ability_id: "dark:dark-spirit".to_string(),
             cards: vec![card],
             target_card: Some(card),
-            declared_element: None,
+            declared_element: Some(Element::Earth),
             declared_level: Some(1),
         },
     )
@@ -257,6 +257,33 @@ fn dark_spirit_lowers_one_physical_card_and_automatically_requires_it() {
         GameEvent::AttackResolved { used_cards, point_breakdown, .. }
             if used_cards == &vec![card] && point_breakdown.base_points == 5
     )));
+}
+
+#[test]
+fn dark_spirit_rejects_an_element_that_does_not_match_the_offer() {
+    let mut game = state(2);
+    set_profession(&mut game, "p1", "dark:dark-spirit-envoy");
+    let card = cards(&game, &[(Element::Earth, 5)])[0];
+    set_hand(&mut game, "p1", vec![card]);
+
+    let result = handle_command(
+        &game,
+        Command::ActivateProfessionAbility {
+            player: PlayerId::new("p1"),
+            ability_id: "dark:dark-spirit".to_string(),
+            cards: vec![card],
+            target_card: Some(card),
+            declared_element: Some(Element::Fire),
+            declared_level: Some(1),
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(GameError::Validation(
+            ValidationError::ProfessionAbilityCannotResolve(ref ability)
+        )) if ability == "dark:dark-spirit"
+    ));
 }
 
 #[test]

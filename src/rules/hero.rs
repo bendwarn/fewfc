@@ -6,10 +6,9 @@ use crate::domain::{
 };
 
 use super::{
-    ActionInputRequirement, AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget,
-    EffectDef, EffectPlan, FormationCategory, FormationDef, FormationEffect, FormationPattern,
-    PointFormula, ProfessionAbilityCandidate, ProfessionAbilityEffect, ProfessionChangeCandidate,
-    SubmittedCardFacts, VirtualFormationScope,
+    AttackCategory, AttackPlanDef, BaseFormationSpec, DamageTarget, EffectDef, EffectPlan,
+    FormationCategory, FormationDef, FormationEffect, FormationPattern, PointFormula,
+    ProfessionAbilityEffect, ProfessionChangeCandidate, SubmittedCardFacts, VirtualFormationScope,
 };
 
 pub(crate) const WARRIOR_ID: &str = "warrior";
@@ -1118,316 +1117,242 @@ pub(crate) fn formation_role_options(
         .collect()
 }
 
-pub(crate) fn playable_profession_abilities(
-    state: &GameState,
-    player: &PlayerId,
-    cards: &[CardInstanceId],
-) -> GameResult<Vec<ProfessionAbilityCandidate>> {
-    if !state.has_rule_module(HERO_SCHOOLS_MODULE_ID)
-        || state
-            .activated_profession_ability_turns
-            .get(player)
-            .is_some_and(|turn| *turn == state.turn_number)
-    {
-        return Ok(Vec::new());
-    }
-    validate_ability_cards(state, player, cards)?;
-    let Some(profession) = state.profession_for(player) else {
-        return Ok(Vec::new());
-    };
-    let abilities = effective_abilities(&state.enabled_rule_modules, profession);
-    let mut candidates = Vec::new();
-    if cards.len() == 1 {
-        let effective_level =
-            state
-                .card_level_for(player, cards[0])
-                .ok_or(GameError::Validation(
-                    ValidationError::MissingCardInstanceDefinition(cards[0]),
-                ))?;
-        if abilities.contains(&ProfessionAbility::ShadowCut) {
-            candidates.push(ProfessionAbilityCandidate {
-                ability_id: "shadow-cut".to_string(),
-                ability_name: "影切".to_string(),
-                cards: cards.to_vec(),
-                target_card: None,
-                declared_element: None,
-                declared_level: None,
-                input_requirement: None,
-                detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
-            });
-        }
-        if effective_level >= 4 && abilities.contains(&ProfessionAbility::Meditation) {
-            candidates.push(ProfessionAbilityCandidate {
-                ability_id: "meditation".to_string(),
-                ability_name: "冥思".to_string(),
-                cards: cards.to_vec(),
-                target_card: None,
-                declared_element: None,
-                declared_level: None,
-                input_requirement: None,
-                detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
-            });
-        }
-        if effective_level >= 4 && abilities.contains(&ProfessionAbility::Revelation) {
-            revelation_supply_plan(state, player, cards)?;
-            candidates.push(ProfessionAbilityCandidate {
-                ability_id: "revelation".to_string(),
-                ability_name: "啟示".to_string(),
-                cards: cards.to_vec(),
-                target_card: None,
-                declared_element: None,
-                declared_level: None,
-                input_requirement: None,
-                detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
-            });
-        }
-    }
-    if cards.len() == 2 {
-        for (ability_id, ability_name, ability, _scope) in [
-            ("illusion", "幻術", ProfessionAbility::Illusion, "五行擊術"),
-            (
-                "phantasm",
-                "幻朧",
-                ProfessionAbility::Phantasm,
-                "基礎規則陣法",
-            ),
-        ] {
-            if !abilities.contains(&ability) {
-                continue;
-            }
-            candidates.push(ProfessionAbilityCandidate {
-                ability_id: ability_id.to_string(),
-                ability_name: ability_name.to_string(),
-                cards: cards.to_vec(),
-                target_card: None,
-                declared_element: None,
-                declared_level: None,
-                input_requirement: Some(ActionInputRequirement::VirtualFormationCard {
-                    elements: vec![
-                        Element::Metal,
-                        Element::Wood,
-                        Element::Water,
-                        Element::Fire,
-                        Element::Earth,
-                    ],
-                    levels: (1..=5).collect(),
-                }),
-                detail: crate::rules::PlayerFacingActionDetail::pending_composition(),
-            });
-        }
-    }
-    Ok(candidates)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActivatedAbility {
+    Illusion,
+    Phantasm,
+    ShadowCut,
+    Meditation,
+    Revelation,
 }
 
-/// 與下方的能力啟用解析器保持一致。瀏覽器會呈現這個具型別的事實，絕不透過
-/// 能力識別碼查找文字。
-pub(crate) fn player_facing_ability_effect(id: &str) -> Option<ProfessionAbilityEffect> {
-    Some(match id {
-        "shadow-cut" => {
-            ProfessionAbilityEffect::DamagePreviousTeamByCardLevelTimes { multiplier: 2 }
-        }
-        "meditation" => ProfessionAbilityEffect::IncreaseTurnDraw { amount: 1 },
-        "revelation" => ProfessionAbilityEffect::DrawThreeThenChooseOne,
-        "illusion" => ProfessionAbilityEffect::CreateVirtualFormationCard {
-            scope: VirtualFormationScope::ElementalStrike,
-        },
-        "phantasm" => ProfessionAbilityEffect::CreateVirtualFormationCard {
-            scope: VirtualFormationScope::BaseFormation,
-        },
-        _ => return None,
-    })
-}
+pub(crate) struct ActivatedProvider;
 
-pub(crate) fn player_facing_ability_discards_selected_cards(id: &str) -> bool {
-    matches!(
-        id,
-        "shadow-cut" | "meditation" | "revelation" | "illusion" | "phantasm"
-    )
-}
+impl crate::rules::profession::activated::ActivatedAbilityProvider for ActivatedProvider {
+    type Kind = ActivatedAbility;
 
-pub(crate) fn activate_profession_ability(
-    state: &GameState,
-    player: &PlayerId,
-    ability_id: &str,
-    cards: &[CardInstanceId],
-    target_card: Option<CardInstanceId>,
-    declared_element: Option<Element>,
-    declared_level: Option<u32>,
-) -> GameResult<Vec<GameEvent>> {
-    if !state.has_rule_module(HERO_SCHOOLS_MODULE_ID) {
-        return Err(GameError::Validation(ValidationError::HeroSchoolsDisabled));
+    const MODULE_ID: &'static str = HERO_SCHOOLS_MODULE_ID;
+
+    fn kinds() -> &'static [Self::Kind] {
+        &[
+            ActivatedAbility::Illusion,
+            ActivatedAbility::Phantasm,
+            ActivatedAbility::ShadowCut,
+            ActivatedAbility::Meditation,
+            ActivatedAbility::Revelation,
+        ]
     }
-    if state
-        .activated_profession_ability_turns
-        .get(player)
-        .is_some_and(|turn| *turn == state.turn_number)
-    {
-        return Err(GameError::Validation(
-            ValidationError::ProfessionAbilityAlreadyActivated {
-                player: player.clone(),
-                turn_number: state.turn_number,
-            },
-        ));
+
+    fn parse(id: &str) -> Option<Self::Kind> {
+        Some(match id {
+            "illusion" => ActivatedAbility::Illusion,
+            "phantasm" => ActivatedAbility::Phantasm,
+            "shadow-cut" => ActivatedAbility::ShadowCut,
+            "meditation" => ActivatedAbility::Meditation,
+            "revelation" => ActivatedAbility::Revelation,
+            _ => return None,
+        })
     }
-    let profession = state.profession_for(player).ok_or_else(|| {
-        GameError::Validation(ValidationError::ProfessionAbilityUnavailable(
-            ability_id.to_string(),
-        ))
-    })?;
-    let abilities = effective_abilities(&state.enabled_rule_modules, profession);
-    let required_ability = match ability_id {
-        "illusion" => ProfessionAbility::Illusion,
-        "phantasm" => ProfessionAbility::Phantasm,
-        "shadow-cut" => ProfessionAbility::ShadowCut,
-        "meditation" => ProfessionAbility::Meditation,
-        "revelation" => ProfessionAbility::Revelation,
-        _ => {
-            return Err(GameError::Validation(
-                ValidationError::UnknownProfessionAbility(ability_id.to_string()),
-            ));
+
+    fn id(kind: Self::Kind) -> &'static str {
+        match kind {
+            ActivatedAbility::Illusion => "illusion",
+            ActivatedAbility::Phantasm => "phantasm",
+            ActivatedAbility::ShadowCut => "shadow-cut",
+            ActivatedAbility::Meditation => "meditation",
+            ActivatedAbility::Revelation => "revelation",
         }
-    };
-    if !abilities.contains(&required_ability) {
-        return Err(GameError::Validation(
-            ValidationError::ProfessionAbilityUnavailable(ability_id.to_string()),
-        ));
     }
-    validate_ability_cards(state, player, cards)?;
-    let mut events = Vec::new();
-    match ability_id {
-        "illusion" | "phantasm" => {
-            if cards.len() != 2 {
-                return cannot_resolve(ability_id);
+
+    fn catalog_id(kind: Self::Kind) -> &'static str {
+        match kind {
+            ActivatedAbility::Illusion => ProfessionAbility::Illusion.id(),
+            ActivatedAbility::Phantasm => ProfessionAbility::Phantasm.id(),
+            ActivatedAbility::ShadowCut => ProfessionAbility::ShadowCut.id(),
+            ActivatedAbility::Meditation => ProfessionAbility::Meditation.id(),
+            ActivatedAbility::Revelation => ProfessionAbility::Revelation.id(),
+        }
+    }
+
+    fn offers(
+        context: &crate::rules::profession::activated::OfferContext<'_>,
+    ) -> GameResult<Vec<crate::rules::profession::activated::AbilityOfferPlan<Self::Kind>>> {
+        use crate::rules::profession::activated::{
+            AbilityOfferPlan, AbilityPresentation, CompletionContract,
+        };
+
+        let mut offers = Vec::new();
+        if context.selection.len() == 1 {
+            let card = context.selection.first().expect("one selected Card");
+            let effective_level =
+                context
+                    .state
+                    .card_level_for(context.player, card)
+                    .ok_or(GameError::Validation(
+                        ValidationError::MissingCardInstanceDefinition(card),
+                    ))?;
+            if context.has::<_, Self>(ActivatedAbility::ShadowCut) {
+                offers.push(AbilityOfferPlan::new(
+                    ActivatedAbility::ShadowCut,
+                    "影切",
+                    CompletionContract::absent(),
+                    AbilityPresentation::new(
+                        ProfessionAbilityEffect::DamagePreviousTeamByCardLevelTimes {
+                            multiplier: 2,
+                        },
+                    )
+                    .discards_selected_cards(),
+                ));
             }
-            if target_card.is_some() {
-                return cannot_resolve(ability_id);
+            if effective_level >= 4 && context.has::<_, Self>(ActivatedAbility::Meditation) {
+                offers.push(AbilityOfferPlan::new(
+                    ActivatedAbility::Meditation,
+                    "冥思",
+                    CompletionContract::absent(),
+                    AbilityPresentation::new(ProfessionAbilityEffect::IncreaseTurnDraw {
+                        amount: 1,
+                    })
+                    .discards_selected_cards(),
+                ));
             }
-            let element = declared_element.ok_or_else(|| {
-                GameError::Validation(ValidationError::ProfessionAbilityCannotResolve(
-                    ability_id.to_string(),
-                ))
-            })?;
-            let level = declared_level
-                .filter(|level| (1..=5).contains(level))
-                .ok_or_else(|| {
-                    GameError::Validation(ValidationError::ProfessionAbilityCannotResolve(
-                        ability_id.to_string(),
-                    ))
+            if effective_level >= 4 && context.has::<_, Self>(ActivatedAbility::Revelation) {
+                revelation_supply_plan(context.state, context.player, context.selection.cards())?;
+                offers.push(AbilityOfferPlan::new(
+                    ActivatedAbility::Revelation,
+                    "啟示",
+                    CompletionContract::absent(),
+                    AbilityPresentation::new(ProfessionAbilityEffect::DrawThreeThenChooseOne)
+                        .discards_selected_cards(),
+                ));
+            }
+        }
+        if context.selection.len() == 2 {
+            for (kind, name, scope) in [
+                (
+                    ActivatedAbility::Illusion,
+                    "幻術",
+                    VirtualFormationScope::ElementalStrike,
+                ),
+                (
+                    ActivatedAbility::Phantasm,
+                    "幻朧",
+                    VirtualFormationScope::BaseFormation,
+                ),
+            ] {
+                if context.has::<_, Self>(kind) {
+                    offers.push(AbilityOfferPlan::new(
+                        kind,
+                        name,
+                        CompletionContract::virtual_formation_card(),
+                        AbilityPresentation::new(
+                            ProfessionAbilityEffect::CreateVirtualFormationCard { scope },
+                        )
+                        .discards_selected_cards(),
+                    ));
+                }
+            }
+        }
+        Ok(offers)
+    }
+
+    fn resolve(
+        context: &crate::rules::profession::activated::ResolveContext<'_>,
+        kind: Self::Kind,
+        mut builder: crate::rules::profession::activated::AbilityPlanBuilder<'_>,
+    ) -> GameResult<crate::rules::profession::activated::AbilityEffectPlan> {
+        let state = context.state;
+        let player = context.player;
+        let cards = context.selection.cards();
+        match kind {
+            ActivatedAbility::Illusion | ActivatedAbility::Phantasm => {
+                let element = context
+                    .input
+                    .declared_element
+                    .expect("completion validated");
+                let level = context.input.declared_level.expect("completion validated");
+                let ability_id = Self::id(kind);
+                let allowed_formation_scope = if kind == ActivatedAbility::Illusion {
+                    vec![format!("{}-strike", element_id(element))]
+                } else {
+                    vec!["base".to_string()]
+                };
+                builder.push_consequence(GameEvent::FormationRequirementSet {
+                    requirement: crate::domain::FormationRequirement {
+                        player: player.clone(),
+                        physical_card: None,
+                        virtual_card: Some(crate::domain::VirtualFormationCard {
+                            source_ability_id: ability_id.to_string(),
+                            element,
+                            level: crate::domain::EffectiveCardLevel::try_from(level)
+                                .expect("Completion Contract 已限制虛擬牌等級"),
+                        }),
+                        allowed_formation_scope,
+                        applied_on_turn: state.turn_number,
+                    },
                 })?;
-            let allowed_formation_scope = if ability_id == "illusion" {
-                vec![format!("{}-strike", element_id(element))]
-            } else {
-                vec!["base".to_string()]
-            };
-            events.push(GameEvent::ProfessionAbilityActivated {
-                player: player.clone(),
-                ability_id: ability_id.to_string(),
-                prepared: None,
-            });
-            events.push(GameEvent::FormationRequirementSet {
-                requirement: crate::domain::FormationRequirement {
-                    player: player.clone(),
-                    physical_card: None,
-                    virtual_card: Some(crate::domain::VirtualFormationCard {
-                        source_ability_id: ability_id.to_string(),
-                        element,
-                        level: crate::domain::EffectiveCardLevel::try_from(level)
-                            .expect("Virtual Formation Card levels are validated at command input"),
-                    }),
-                    allowed_formation_scope,
-                    applied_on_turn: state.turn_number,
-                },
-            });
-            events.push(GameEvent::CardsMoved {
-                card_moves: ability_card_moves(state, player, cards)?,
-            });
-            if ability_id == "illusion"
-                && level <= 3
-                && abilities.contains(&ProfessionAbility::IllusionRefinement)
-            {
-                events.push(turn_draw_bonus_event(state, player, 1));
+                builder.push_consequence(GameEvent::CardsMoved {
+                    card_moves: ability_card_moves(state, player, cards)?,
+                })?;
+                let profession = state.profession_for(player).expect("availability checked");
+                if kind == ActivatedAbility::Illusion
+                    && level <= 3
+                    && effective_abilities(&state.enabled_rule_modules, profession)
+                        .contains(&ProfessionAbility::IllusionRefinement)
+                {
+                    builder.push_consequence(turn_draw_bonus_event(state, player, 1))?;
+                }
             }
-        }
-        "shadow-cut" => {
-            if cards.len() != 1 {
-                return cannot_resolve(ability_id);
-            }
-            let target = TurnOrderTargets::new(state)
-                .player_target(player, RulePlayerTarget::PreviousPlayer)?;
-            let team = TurnOrderTargets::new(state).team_of(&target)?;
-            let level = state
-                .card_level_for(player, cards[0])
-                .ok_or(GameError::Validation(
-                    ValidationError::MissingCardInstanceDefinition(cards[0]),
-                ))?
-                .value() as i32;
-            events.push(GameEvent::ProfessionAbilityActivated {
-                player: player.clone(),
-                ability_id: ability_id.to_string(),
-                prepared: None,
-            });
-            events.push(GameEvent::CardsMoved {
-                card_moves: ability_card_moves(state, player, cards)?,
-            });
-            events.push(GameEvent::HpChanged {
-                change: hp_change(state, team, -level * 2)?,
-            });
-        }
-        "meditation" => {
-            if cards.len() != 1
-                || state
+            ActivatedAbility::ShadowCut => {
+                let target = TurnOrderTargets::new(state)
+                    .player_target(player, RulePlayerTarget::PreviousPlayer)?;
+                let team = TurnOrderTargets::new(state).team_of(&target)?;
+                let level = state
                     .card_level_for(player, cards[0])
-                    .is_none_or(|level| level < 4)
-            {
-                return cannot_resolve(ability_id);
+                    .ok_or(GameError::Validation(
+                        ValidationError::MissingCardInstanceDefinition(cards[0]),
+                    ))?
+                    .value() as i32;
+                builder.push_consequence(GameEvent::CardsMoved {
+                    card_moves: ability_card_moves(state, player, cards)?,
+                })?;
+                builder.push_consequence(GameEvent::HpChanged {
+                    change: hp_change(state, team, -level * 2)?,
+                })?;
             }
-            events.push(GameEvent::ProfessionAbilityActivated {
-                player: player.clone(),
-                ability_id: ability_id.to_string(),
-                prepared: None,
-            });
-            events.push(GameEvent::CardsMoved {
-                card_moves: ability_card_moves(state, player, cards)?,
-            });
-            events.push(turn_draw_bonus_event(state, player, 1));
-        }
-        "revelation" => {
-            if cards.len() != 1
-                || state
-                    .card_level_for(player, cards[0])
-                    .is_none_or(|level| level < 4)
-            {
-                return cannot_resolve(ability_id);
+            ActivatedAbility::Meditation => {
+                builder.push_consequence(GameEvent::CardsMoved {
+                    card_moves: ability_card_moves(state, player, cards)?,
+                })?;
+                builder.push_consequence(turn_draw_bonus_event(state, player, 1))?;
             }
-            events.push(GameEvent::ProfessionAbilityActivated {
-                player: player.clone(),
-                ability_id: ability_id.to_string(),
-                prepared: None,
-            });
-            events.push(GameEvent::CardsMoved {
-                card_moves: ability_card_moves(state, player, cards)?,
-            });
-            let mut projected = state.clone();
-            for event in &events {
-                crate::rules::projection::apply_event(&mut projected, event);
-            }
-            let pile = deck_kind(&projected, player);
-            if let Some(event) = crate::rules::deck_supply::request_if_needed(
-                &projected,
-                &pile,
-                3,
-                crate::domain::DeckPlacement::Bottom,
-                format!("hero:revelation:{}:{}", state.turn_number, player.as_str()),
-                PendingResolution::HeroRevelation,
-            )? {
-                events.push(event);
-            } else {
-                events.extend(revelation_choice_events(&projected, player)?);
+            ActivatedAbility::Revelation => {
+                builder.push_consequence(GameEvent::CardsMoved {
+                    card_moves: ability_card_moves(state, player, cards)?,
+                })?;
+                let pile = deck_kind(builder.projected_state(), player);
+                if let Some(event) = crate::rules::deck_supply::request_if_needed(
+                    builder.projected_state(),
+                    &pile,
+                    3,
+                    crate::domain::DeckPlacement::Bottom,
+                    format!("hero:revelation:{}:{}", state.turn_number, player.as_str()),
+                    PendingResolution::HeroRevelation,
+                )? {
+                    builder.set_continuation(event)?;
+                } else {
+                    let events = revelation_choice_events(builder.projected_state(), player)?;
+                    for event in events {
+                        if matches!(event, GameEvent::ChoiceRequested { .. }) {
+                            builder.set_continuation(event)?;
+                        } else {
+                            builder.push_consequence(event)?;
+                        }
+                    }
+                }
             }
         }
-        _ => unreachable!(),
+        Ok(builder.finish())
     }
-    Ok(events)
 }
 
 pub(crate) fn after_revelation_randomness_events(state: &GameState) -> GameResult<Vec<GameEvent>> {
@@ -1494,34 +1419,6 @@ fn revelation_supply_plan(
         3,
         crate::domain::DeckPlacement::Bottom,
     )
-}
-
-fn cannot_resolve<T>(ability_id: &str) -> GameResult<T> {
-    Err(GameError::Validation(
-        ValidationError::ProfessionAbilityCannotResolve(ability_id.to_string()),
-    ))
-}
-
-fn validate_ability_cards(
-    state: &GameState,
-    player: &PlayerId,
-    cards: &[CardInstanceId],
-) -> GameResult<()> {
-    let hand = state
-        .hand(player)
-        .ok_or_else(|| GameError::Validation(ValidationError::UnknownPlayer(player.clone())))?;
-    let mut seen = std::collections::HashSet::new();
-    for card in cards {
-        if !seen.insert(*card) {
-            return Err(GameError::Validation(
-                ValidationError::DuplicateSubmittedCard(*card),
-            ));
-        }
-        if !hand.contains(card) {
-            return Err(GameError::Validation(ValidationError::CardNotInHand(*card)));
-        }
-    }
-    Ok(())
 }
 
 fn ability_card_moves(

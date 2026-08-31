@@ -1570,6 +1570,37 @@ the action opportunity. Validation failure consumes neither. Profession Change
 does not reset the allowance, so acquiring a different Activated Profession
 Ability during the same turn never permits a second activation.
 
+`rules::profession::activated` is the single lifecycle owner for these
+Commands. Its Base-facing interface has only offer generation and activation.
+It resolves the external string ID once into one nested closed enum, delegates
+to statically dispatched Hero Schools, Jianghu, Confluence Generation, or Dark
+Glimmer providers, and rejects unknown IDs without prefix fallback or runtime
+registration. The shared module validates the effective Profession Ability
+Set, Temporary Ability Loss, the shared turn allowance, and a private validated
+Action Card Selection in that order.
+
+Each provider returns an offer plan with one completion contract and declarative
+player-facing metadata. The same offer authority is rebuilt for Command
+validation. Target Card, declared element, and declared level must each be
+absent, equal to the offered fixed value, or belong to the offered required
+values exactly; unrelated fields and fallback omissions are Validation
+Failures. Dark Spirit therefore accepts only the selected Card's offered
+effective element and cannot change that element through a direct Command.
+
+Effect planning uses one scratch projection. The common builder records exactly
+one `ProfessionAbilityActivated` event first, then ordered provider
+consequences, then at most one final Choice or Randomness continuation whose
+medium matches its `PendingResolution`. Providers cannot record the activation
+event themselves. This permits a cost to enter its origin Discard Pile before
+Deck Supply is planned. Revelation and Azure Cloud Step therefore include the
+just-Discarded cost Card in a required Discard Shuffle.
+
+Azure Cloud Step uses two typed continuations. An insufficient Deck waits on
+the Randomness-only `JianghuAzureCloudStepDraw`; after the Discard Shuffle it
+draws two Cards and creates the existing Choice-only
+`JianghuAzureCloudStepReturnOne`. Do not migrate or reinterpret an older invalid
+record that used the Choice resolution as its Randomness resolution.
+
 Formation Proficiencies add Player-scoped alternative matchers to an existing
 Formation. They do not register duplicate Formations or replace the original
 Formation definition. A Formation Use matched through a Proficiency retains the
@@ -1594,12 +1625,15 @@ Apply all deltas before evaluating the Game Outcome. Reaching zero HP from the
 cost does not stop Profession Breaking or expose an intermediate state.
 
 Automatic Profession Abilities and Formation Proficiencies integrate through
-typed Hero Schools module hooks at explicit rule stages. Hooks may extend
+typed Rule Module hooks at explicit rule stages. Hooks may extend
 Formation matching, modify costs or Attack calculation, determine immunity,
 modify Counter Effect applicability, or return post-Formation intents. They
 return declarative values for the shared pipeline and never mutate Game State
 or emit Game Events directly. Do not encode Profession Abilities as generic
 Status Effects or scatter Profession identity checks through Base resolvers.
+Activated Profession Ability providers instead return effect plans for a new
+Player-selected Active Effect; they are not stage hooks and do not bypass the
+shared activation lifecycle.
 
 Cross-module Attack resolution uses one explicit stage order:
 

@@ -9,8 +9,7 @@ use crate::domain::{GameState, PlayerId, SecretStrategy, SpiritSkill};
 use super::{
     ActionAttackCategory, ActionCost, ActionTarget, ConsequenceCertainty, EffectAmount,
     EffectFormula, FormationCandidate, ImmediateEffect, PlayableAction, PlayerFacingActionDetail,
-    ProfessionAbilityCandidate, ProfessionAbilityEffect, RuleConsequence, RuleException,
-    SecretStrategyEffect, SpiritSkillCandidate,
+    RuleConsequence, SecretStrategyEffect, SpiritSkillCandidate,
 };
 
 pub(crate) fn attach_to_actions(
@@ -24,22 +23,9 @@ pub(crate) fn attach_to_actions(
         .collect()
 }
 
-fn profession_ability_effect(ability_id: &str) -> ProfessionAbilityEffect {
-    [
-        crate::rules::hero::player_facing_ability_effect(ability_id),
-        crate::rules::jianghu::player_facing_ability_effect(ability_id),
-        crate::rules::confluence::player_facing_ability_effect(ability_id),
-        crate::rules::dark::player_facing_ability_effect(ability_id),
-    ]
-    .into_iter()
-    .flatten()
-    .next()
-    .unwrap_or_else(|| panic!("offered profession ability `{ability_id}` has no detail effect"))
-}
-
 fn attach_to_action(
     state: &GameState,
-    player: &PlayerId,
+    _player: &PlayerId,
     mut action: PlayableAction,
 ) -> PlayableAction {
     match &mut action {
@@ -49,9 +35,7 @@ fn attach_to_action(
         PlayableAction::ChangeProfession(candidate) => {
             candidate.detail = profession_change_detail()
         }
-        PlayableAction::ActivateProfessionAbility(candidate) => {
-            candidate.detail = profession_ability_detail(state, player, candidate)
-        }
+        PlayableAction::ActivateProfessionAbility(_) => {}
         PlayableAction::UseSpiritSkill(candidate) => {
             candidate.detail = spirit_skill_detail(candidate)
         }
@@ -165,48 +149,6 @@ fn profession_change_detail() -> PlayerFacingActionDetail {
     PlayerFacingActionDetail::composed(Vec::new())
 }
 
-fn profession_ability_detail(
-    state: &GameState,
-    player: &PlayerId,
-    candidate: &ProfessionAbilityCandidate,
-) -> PlayerFacingActionDetail {
-    let mut consequences = vec![RuleConsequence::ImmediateEffect {
-        certainty: ConsequenceCertainty::Guaranteed,
-        effect: ImmediateEffect::ActivateProfessionAbility {
-            effect: profession_ability_effect(&candidate.ability_id),
-        },
-    }];
-    if !candidate.cards.is_empty()
-        && (crate::rules::hero::player_facing_ability_discards_selected_cards(
-            &candidate.ability_id,
-        ) || crate::rules::jianghu::player_facing_ability_discards_selected_cards(
-            &candidate.ability_id,
-        ) || crate::rules::confluence::player_facing_ability_discards_selected_cards(
-            &candidate.ability_id,
-        ))
-    {
-        consequences.push(RuleConsequence::Cost {
-            certainty: ConsequenceCertainty::Guaranteed,
-            cost: ActionCost::DiscardSelectedCards,
-        });
-    }
-    if let Some(use_count) = state
-        .limited_uses
-        .iter()
-        .find(|use_count| use_count.owner == *player && use_count.key == candidate.ability_id)
-    {
-        consequences.push(RuleConsequence::RuleException {
-            certainty: ConsequenceCertainty::Guaranteed,
-            exception: RuleException::LimitedUse {
-                key: use_count.key.clone(),
-                remaining: use_count.remaining,
-                maximum: use_count.maximum,
-            },
-        });
-    }
-    PlayerFacingActionDetail::composed(consequences)
-}
-
 fn spirit_skill_detail(candidate: &SpiritSkillCandidate) -> PlayerFacingActionDetail {
     let mut consequences = vec![
         RuleConsequence::ImmediateEffect {
@@ -281,7 +223,10 @@ pub(crate) fn discard_retrieval_detail(hp_cost: i32) -> PlayerFacingActionDetail
 mod tests {
     use super::*;
     use crate::domain::{CardInstanceId, Element, GameSetup, Phase};
-    use crate::rules::{FormationEffect, ProfessionChangeCandidate, TrustedRandomness};
+    use crate::rules::{
+        FormationEffect, ProfessionAbilityCandidate, ProfessionAbilityEffect,
+        ProfessionChangeCandidate, RuleException, TrustedRandomness,
+    };
 
     #[test]
     fn consequence_contract_uses_tagged_variants_and_camel_case_fields() {
@@ -443,7 +388,20 @@ mod tests {
                     declared_element: Some(Element::Water),
                     declared_level: Some(3),
                     input_requirement: None,
-                    detail: pending.clone(),
+                    detail: PlayerFacingActionDetail::composed(vec![
+                        RuleConsequence::ImmediateEffect {
+                            certainty: ConsequenceCertainty::Guaranteed,
+                            effect: ImmediateEffect::ActivateProfessionAbility {
+                                effect: ProfessionAbilityEffect::CreateVirtualFormationCard {
+                                    scope: crate::rules::VirtualFormationScope::ElementalStrike,
+                                },
+                            },
+                        },
+                        RuleConsequence::Cost {
+                            certainty: ConsequenceCertainty::Guaranteed,
+                            cost: ActionCost::DiscardSelectedCards,
+                        },
+                    ]),
                 }),
                 PlayableAction::UseSpiritSkill(SpiritSkillCandidate {
                     skill: SpiritSkill::Splendor,

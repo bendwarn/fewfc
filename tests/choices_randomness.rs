@@ -258,6 +258,10 @@ fn public_randomness_views_never_expose_the_order() {
 #[test]
 fn new_choice_and_randomness_fields_serialize_as_camel_case() {
     assert_eq!(
+        serde_json::to_value(PendingResolution::JianghuAzureCloudStepDraw).unwrap(),
+        serde_json::json!({"type": "jianghuAzureCloudStepDraw"})
+    );
+    assert_eq!(
         serde_json::to_value(ChoiceAnswer::Formation {
             formation_id: "formation".to_string(),
         })

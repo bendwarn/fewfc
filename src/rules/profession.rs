@@ -4,6 +4,9 @@ use crate::domain::{
 };
 use std::collections::HashSet;
 
+pub(crate) mod activated;
+pub(crate) use activated::{activate, offers};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProfessionCatalogEntry {
     pub(crate) id: ProfessionId,
@@ -79,84 +82,6 @@ pub(crate) fn playable_profession_changes(
         state, player, cards,
     )?);
     Ok(candidates)
-}
-
-pub(crate) fn playable_profession_abilities(
-    state: &crate::domain::GameState,
-    player: &crate::domain::PlayerId,
-    cards: &[crate::domain::CardInstanceId],
-) -> crate::domain::GameResult<Vec<crate::rules::ProfessionAbilityCandidate>> {
-    if crate::rules::pouch::profession_is_suppressed(state, player) {
-        return Ok(Vec::new());
-    }
-    let mut candidates = crate::rules::hero::playable_profession_abilities(state, player, cards)?;
-    candidates.extend(crate::rules::jianghu::playable_profession_abilities(
-        state, player, cards,
-    )?);
-    candidates.extend(crate::rules::confluence::playable_profession_abilities(
-        state, player, cards,
-    )?);
-    candidates.extend(crate::rules::dark::playable_profession_abilities(
-        state, player, cards,
-    )?);
-    Ok(candidates)
-}
-
-pub(crate) fn activate_profession_ability(
-    state: &crate::domain::GameState,
-    player: &crate::domain::PlayerId,
-    ability_id: &str,
-    cards: &[crate::domain::CardInstanceId],
-    target_card: Option<crate::domain::CardInstanceId>,
-    declared_element: Option<crate::domain::Element>,
-    declared_level: Option<u32>,
-) -> crate::domain::GameResult<Vec<crate::domain::GameEvent>> {
-    if crate::rules::pouch::profession_is_suppressed(state, player) {
-        return Err(crate::domain::GameError::Validation(
-            crate::domain::ValidationError::ProfessionAbilityUnavailable(ability_id.to_string()),
-        ));
-    }
-    if ability_id.starts_with("jianghu:") {
-        crate::rules::jianghu::activate_profession_ability(
-            state,
-            player,
-            ability_id,
-            cards,
-            target_card,
-            declared_element,
-            declared_level,
-        )
-    } else if ability_id.starts_with("confluence:") {
-        crate::rules::confluence::activate_profession_ability(
-            state,
-            player,
-            ability_id,
-            cards,
-            target_card,
-            declared_element,
-            declared_level,
-        )
-    } else if ability_id.starts_with("dark:") {
-        crate::rules::dark::activate_profession_ability(
-            state,
-            player,
-            ability_id,
-            cards,
-            target_card,
-            declared_element,
-            declared_level,
-        )
-    } else {
-        crate::rules::hero::activate_profession_ability(
-            state,
-            player,
-            ability_id,
-            cards,
-            target_card,
-            declared_element,
-            declared_level,
-        )
-    }
 }
 
 pub(crate) fn validate_profession_change(
