@@ -159,7 +159,19 @@ validates that its origin and D1 ID no longer contain repository placeholders.
 The commands build first, then apply the matching remote D1 migrations immediately
 before deploying the Worker.
 
+The first Better Auth 1.7.3 deployment must use this ordinary deployment path so
+`0009_account_provider.sql` is applied before the upgraded Worker receives traffic.
+The **Set Worker maintenance mode** action only deploys a Worker configuration and
+does not apply D1 migrations; use it for maintenance-mode changes after the schema
+migration has completed.
+
 ## GitHub Actions CI/CD
+
+Local and CI dependencies are managed with pnpm (see `../README.md`). Both
+GitHub Actions workflows use `pnpm/setup@v2`, read the pnpm version from
+`apps/web/package.json`, and install with `pnpm install --frozen-lockfile`.
+The deployment action also uses pnpm. Bun remains installed for scripts and
+tests; commit dependency changes with `pnpm-lock.yaml`.
 
 `.github/workflows/ci-cd.yml` is the deployment source of truth:
 

@@ -2,6 +2,7 @@
   "name": "web",
   "type": "module",
   "private": true,
+  "packageManager": "pnpm@11.19.0",
   "scripts": {
     "build": "bun run build:rules-wasm && nuxt build",
     "build:staging": "bun run build:rules-wasm && nuxt build --dotenv .env.staging",
@@ -20,7 +21,7 @@
     "generate": "nuxt generate --dotenv .env.production",
     "preview": "nuxt preview --dotenv .env.production",
     "postinstall": "nuxt prepare",
-    "test:unit": "bun test app shared worker scripts",
+    "test:unit": "bun test app shared worker scripts migrations",
     "test:e2e": "playwright test",
     "test:e2e:built": "FEWFC_E2E_PREBUILT=1 playwright test",
     "test:e2e:server": "bun tests/e2e/prepare-storage.ts && bun run build && bun db:migrate:local --persist-to .wrangler/e2e && wrangler dev --persist-to .wrangler/e2e --port 8727 --var BETTER_AUTH_URL:http://localhost:8727",
@@ -32,30 +33,31 @@
     "test:integration": "bun test server"
   },
   "dependencies": {
-    "@better-auth/drizzle-adapter": "^1.7.2",
-    "better-auth": "^1.7.2",
+    "@better-auth/drizzle-adapter": "1.7.3",
+    "better-auth": "1.7.3",
     "drizzle-orm": "^0.45.2",
+    "h3": "^1.15.11",
     "nuxt": "^4.5.2",
     "vue": "^3.5.42",
-    "vue-router": "^5.3.0"
+    "vue-router": "^5.3.1"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260828.1",
-    "@nuxt/test-utils": "^4.2.0",
-    "@playwright/cli": "^0.1.18",
-    "@playwright/test": "^1.62.1",
+    "@cloudflare/workers-types": "^5.20260906.1",
+    "@nuxt/test-utils": "^4.3.1",
+    "@playwright/cli": "^0.1.19",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",
-    "@types/bun": "^1.4.0",
-    "@types/node": "^26.4.0",
+    "@types/bun": "^1.4.1",
+    "@types/node": "^26.4.1",
     "@vue/test-utils": "^2.5.0",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
-    "happy-dom": "^20.11.12",
-    "miniflare": "^5.20260826.0-alpha",
+    "happy-dom": "^20.14.0",
+    "miniflare": "5.20260903.0-alpha",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.11",
+    "vitest": "^5.0.0",
     "vue-tsc": "^3.3.11",
-    "wrangler": "^4.127.0"
+    "wrangler": "^4.129.0"
   }
 }

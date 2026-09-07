@@ -6,11 +6,29 @@ The UI consumes viewer-filtered Public Game State and Public Event Feed data. It
 
 ## Setup
 
-Make sure to install dependencies:
+From `apps/web`, install dependencies with pnpm. Keep Bun installed for scripts
+and tests:
 
 ```bash
-bun install
+pnpm install --frozen-lockfile
 ```
+
+Use `pnpm add`, `pnpm remove`, and `pnpm update` to change dependencies, and
+commit the resulting `pnpm-lock.yaml`. Existing `bun run` commands use these
+installed dependencies.
+
+Better Auth and its Drizzle adapter are pinned to 1.7.3. Existing databases that
+were migrated through Better Auth 1.7.2 must apply `0009_account_provider.sql`
+before serving the upgraded Worker: it preserves historical `account.issuer`
+values as nullable data, restores the unique `(provider_id, account_id)` key, and
+keeps existing account, password, token, and session data.
+Keep Vitest within the peer dependency range supported by `@nuxt/test-utils`.
+
+Each Git worktree should install its own `node_modules`; pnpm shares package
+contents through its store. Prepare a separate `.env` and local Wrangler storage
+in each worktree. The E2E server currently uses port 8727, so run E2E suites
+sequentially with `PLAYWRIGHT_REUSE_SERVER=0` to avoid reusing another worktree’s
+server. Stop any existing server on that port first.
 
 Create a Cloudflare D1 database, copy its ID into `wrangler.toml`, then apply the authentication schema:
 

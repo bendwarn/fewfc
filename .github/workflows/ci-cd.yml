@@ -40,7 +40,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
+      - uses: pnpm/setup@v2
+        with:
+          working-directory: apps/web
+          runtime: node@24
+          cache: true
+          install: false
+      - run: pnpm install --frozen-lockfile
       - run: bun run test:unit
       - run: bun run typecheck
 
@@ -58,12 +64,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
+      - uses: pnpm/setup@v2
+        with:
+          working-directory: apps/web
+          runtime: node@24
+          cache: true
+          install: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: bun install --frozen-lockfile
-      - run: bunx playwright install --with-deps chromium
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
       - run: bun run test:e2e
 
   deploy-staging:
@@ -92,11 +104,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
+      - uses: pnpm/setup@v2
+        with:
+          working-directory: apps/web
+          runtime: node@24
+          cache: true
+          install: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: bun install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - run: bun run validate:deploy staging
       - run: bun run build:staging
       - name: Apply migrations and deploy
@@ -106,7 +124,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-          packageManager: bun
+          packageManager: pnpm
           workingDirectory: apps/web
           environment: staging
           command: |
@@ -192,11 +210,17 @@ jobs:
         with:
           ref: ${{ needs.validate-production.outputs.head-sha }}
       - uses: oven-sh/setup-bun@v2
+      - uses: pnpm/setup@v2
+        with:
+          working-directory: apps/web
+          runtime: node@24
+          cache: true
+          install: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: bun install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - run: bun run validate:deploy production
       - run: bun run build:production
       - name: Apply migrations and deploy
@@ -206,7 +230,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-          packageManager: bun
+          packageManager: pnpm
           workingDirectory: apps/web
           environment: production
           command: |

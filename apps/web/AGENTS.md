@@ -2,7 +2,9 @@
 
 ## Development Environment
 
-- bun as default
+- Use pnpm for local dependency installation and changes; commit `pnpm-lock.yaml`.
+- Keep Bun as the runtime for scripts and tests. CI installs dependencies with
+  `pnpm install --frozen-lockfile` and uses pnpm in the deployment action.
 - Development is the default environment. The `build`, `postinstall`, and
   `typecheck` package scripts intentionally rely on Nuxt's default `.env`
   loading instead of passing `--dotenv .env.development`. For staging or

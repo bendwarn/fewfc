@@ -1,0 +1,6 @@
+allowBuilds:
+  esbuild: true
+  workerd: true
+
+minimumReleaseAgeExclude:
+  - '@nuxt/test-utils@4.3.1'
