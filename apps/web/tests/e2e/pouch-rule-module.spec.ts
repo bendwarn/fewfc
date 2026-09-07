@@ -58,7 +58,7 @@ async function completeIndependentInitialPouchSelection(host: Page, guest: Page,
   await command
   await expect(host.getByRole('dialog', { name: '選擇初始錦囊' })).toHaveCount(0)
   await expect(
-    host.getByRole('region', { name: '五行戰鬥牌對戰桌' }).getByRole('status'),
+    host.locator('.choice-waiting-overlay'),
   ).toContainText('等待')
   await expect(guestChoice).toBeVisible()
 

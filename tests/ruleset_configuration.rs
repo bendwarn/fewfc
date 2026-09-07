@@ -5,7 +5,7 @@ use fewfc::domain::{
 };
 use fewfc::rules::{OfficialRuleModuleCategory, OfficialRules};
 mod support;
-use support::OfficialScenario;
+use support::{CardSelector, ScenarioPlan, ScenarioStep};
 
 fn players() -> (Vec<Player>, Vec<PlayerId>) {
     (
@@ -79,12 +79,22 @@ fn official_rules_reject_an_unsupported_ruleset_before_starting() {
 
 #[test]
 fn base_only_game_runs_through_the_official_rules_interface() {
-    let mut scenario = OfficialScenario::two_player(&[]).expect("base game should start");
+    let mut scenario = ScenarioPlan::two_player(&[])
+        .start()
+        .expect("base game should start");
     scenario
-        .advance_to_decision()
+        .step(ScenarioStep::Advance)
         .expect("base game should advance to a decision");
-    let current_player = scenario.current_player();
-    let selected_card = scenario.first_hand_card(&current_player);
+    let current_player = scenario
+        .current_player()
+        .expect("scenario has a current player")
+        .clone();
+    let selected_card = scenario
+        .select_card(
+            CardSelector::in_hand(current_player.clone(), fewfc::domain::Element::Metal, 1)
+                .occurrence(0),
+        )
+        .expect("first official hand contains a metal level-one card");
 
     assert_eq!(scenario.state().ruleset, RulesetId::base());
     assert!(scenario.state().enabled_rule_modules.is_empty());
@@ -93,7 +103,9 @@ fn base_only_game_runs_through_the_official_rules_interface() {
             .playable_actions(&current_player, &[selected_card])
             .is_ok()
     );
-    scenario.assert_replay_matches();
+    scenario
+        .assert_replay_evidence()
+        .expect("scenario should replay");
 }
 
 #[test]

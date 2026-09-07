@@ -226,11 +226,13 @@ pub(crate) fn answer_events(
     player: PlayerId,
     choice_id: ChoiceId,
     answer: ChoiceAnswer,
+    hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     let input = validate_pending_input(state, player, choice_id, answer)?;
     crate::rules::pending_resolution::resume(
         state,
         crate::rules::pending_resolution::ValidatedPendingInput::Choice(input),
+        hp,
     )
 }
 

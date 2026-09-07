@@ -6,6 +6,7 @@ pub(crate) mod confluence;
 pub(crate) mod dark;
 pub(crate) mod deck_supply;
 pub(crate) mod echo;
+pub(crate) mod formation_effect_sequence;
 pub(crate) mod hero;
 pub(crate) mod jianghu;
 mod official;

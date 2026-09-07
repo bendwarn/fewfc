@@ -267,6 +267,7 @@ pub(crate) trait ActivatedAbilityProvider {
 
     const MODULE_ID: &'static str;
 
+    #[cfg(any(debug_assertions, test))]
     fn kinds() -> &'static [Self::Kind];
     fn parse(id: &str) -> Option<Self::Kind>;
     fn id(kind: Self::Kind) -> &'static str;
@@ -297,6 +298,7 @@ pub(crate) struct AbilityPlanBuilder<'a> {
     player: &'a PlayerId,
     ability_id: &'static str,
     selection: &'a ValidatedAbilitySelection,
+    hp: &'a mut crate::domain::hp::HpChangePlan,
     projected: GameState,
     prepared: Option<PreparedProfessionAbility>,
     consequences: Vec<GameEvent>,
@@ -310,12 +312,14 @@ impl<'a> AbilityPlanBuilder<'a> {
         player: &'a PlayerId,
         ability_id: &'static str,
         selection: &'a ValidatedAbilitySelection,
+        hp: &'a mut crate::domain::hp::HpChangePlan,
     ) -> Self {
         Self {
             source: state,
             player,
             ability_id,
             selection,
+            hp,
             projected: state.clone(),
             prepared: None,
             consequences: Vec::new(),
@@ -359,6 +363,14 @@ impl<'a> AbilityPlanBuilder<'a> {
     pub(crate) fn projected_state(&mut self) -> &GameState {
         self.start();
         &self.projected
+    }
+
+    pub(crate) fn plan_hp(
+        &mut self,
+        team: &crate::domain::TeamId,
+        request: crate::domain::hp::HpChangeRequest,
+    ) -> GameResult<crate::domain::HpChangeDelta> {
+        self.hp.plan(team, request)
     }
 
     pub(crate) fn set_continuation(&mut self, event: GameEvent) -> GameResult<()> {
@@ -494,6 +506,7 @@ pub(crate) fn activate(
     target_card: Option<CardInstanceId>,
     declared_element: Option<Element>,
     declared_level: Option<u32>,
+    hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     let kind = parse(ability_id).ok_or_else(|| {
         GameError::Validation(ValidationError::UnknownProfessionAbility(
@@ -536,17 +549,21 @@ pub(crate) fn activate(
             &offer_context,
             &resolve_context,
             kind,
+            hp,
         ),
         ActivatedAbilityKind::Jianghu(kind) => activate_with::<
             crate::rules::jianghu::ActivatedProvider,
-        >(&offer_context, &resolve_context, kind),
+        >(&offer_context, &resolve_context, kind, hp),
         ActivatedAbilityKind::Confluence(kind) => activate_with::<
             crate::rules::confluence::ActivatedProvider,
-        >(&offer_context, &resolve_context, kind),
+        >(
+            &offer_context, &resolve_context, kind, hp
+        ),
         ActivatedAbilityKind::Dark(kind) => activate_with::<crate::rules::dark::ActivatedProvider>(
             &offer_context,
             &resolve_context,
             kind,
+            hp,
         ),
     }
 }
@@ -555,6 +572,7 @@ fn activate_with<P>(
     offer_context: &OfferContext<'_>,
     resolve_context: &ResolveContext<'_>,
     kind: P::Kind,
+    hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Vec<GameEvent>>
 where
     P: ActivatedAbilityProvider,
@@ -572,6 +590,7 @@ where
         resolve_context.player,
         P::id(kind),
         resolve_context.selection,
+        hp,
     );
     let plan = P::resolve(resolve_context, kind, builder).map_err(|error| match error {
         GameError::Validation(ValidationError::UnknownProfessionAbility(_)) => {
@@ -751,7 +770,8 @@ mod tests {
         let card = CardInstanceId::new(1);
         state.hand_mut(&player).unwrap().push(card);
         let selection = ValidatedAbilitySelection::new(&state, &player, &[card]).unwrap();
-        let mut builder = AbilityPlanBuilder::new(&state, &player, "test", &selection);
+        let mut hp = crate::domain::hp::HpChangePlan::new(&state).unwrap();
+        let mut builder = AbilityPlanBuilder::new(&state, &player, "test", &selection, &mut hp);
         builder
             .push_consequence(GameEvent::TurnDrawBonusChanged {
                 player: player.clone(),
@@ -806,7 +826,8 @@ mod tests {
             100,
         ));
         let selection = ValidatedAbilitySelection { cards: Vec::new() };
-        let mut builder = AbilityPlanBuilder::new(&state, &player, "test", &selection);
+        let mut hp = crate::domain::hp::HpChangePlan::new(&state).unwrap();
+        let mut builder = AbilityPlanBuilder::new(&state, &player, "test", &selection, &mut hp);
 
         assert!(matches!(
             builder.set_continuation(choice_event(

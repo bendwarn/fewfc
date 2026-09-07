@@ -88,19 +88,17 @@
           </button>
         </div>
 
-        <div
+        <ModalShell
           v-if="deckImportOpen"
-          class="room-settings-layer"
-          @click.self="closeDeckImport"
+          :open="true"
+          panel-class="deck-import-shell"
+          labelledby="deck-import-title"
+          describedby="deck-import-help"
+          initial-focus-selector="#deck-import-text"
+          @close="closeDeckImport"
         >
           <form
             class="setup-card deck-import-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="deck-import-title"
-            aria-describedby="deck-import-help"
-            @keydown.esc.prevent="closeDeckImport"
-            @keydown.tab="trapDeckImportFocus"
             @submit.prevent="applyDeckImport"
           >
             <div class="card-heading">
@@ -122,7 +120,6 @@
             <label for="deck-import-text">牌組張數</label>
             <textarea
               id="deck-import-text"
-              ref="deckImportInput"
               v-model="deckImportText"
               class="deck-import-text"
               rows="5"
@@ -135,7 +132,7 @@
               <button class="primary-button" type="submit">套用</button>
             </div>
           </form>
-        </div>
+        </ModalShell>
       </section>
   </main>
 </template>
@@ -163,7 +160,6 @@ const deckImportOpen = ref(false)
 const deckImportText = ref('')
 const deckImportError = ref('')
 const deckImportTrigger = ref<HTMLButtonElement | null>(null)
-const deckImportInput = ref<HTMLTextAreaElement | null>(null)
 const deckExportStatus = ref('')
 const deckExportFailed = ref(false)
 
@@ -207,32 +203,12 @@ async function openDeckImport() {
   deckImportText.value = ''
   deckImportError.value = ''
   deckImportOpen.value = true
-  await nextTick()
-  deckImportInput.value?.focus()
 }
 
 function closeDeckImport() {
   deckImportOpen.value = false
   deckImportError.value = ''
   void nextTick(() => deckImportTrigger.value?.focus())
-}
-
-function trapDeckImportFocus(event: KeyboardEvent) {
-  const dialog = event.currentTarget as HTMLElement
-  const focusable = [...dialog.querySelectorAll<HTMLElement>(
-    'button:not(:disabled), textarea:not(:disabled)',
-  )]
-  const first = focusable[0]
-  const last = focusable.at(-1)
-  if (!first || !last) return
-
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault()
-    last.focus()
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault()
-    first.focus()
-  }
 }
 
 function applyDeckImport() {
@@ -349,6 +325,7 @@ onMounted(() => {
 .deck-validation-errors { @apply grid gap-1 text-sm text-red-700; }
 .deck-transfer-status { @apply text-sm text-emerald-700; }
 .deck-import-dialog { @apply my-auto w-full max-w-[640px] shadow-[0_24px_70px_rgba(0,0,0,.5)]; }
+.deck-import-shell { width: min(640px, 100%); }
 .deck-management-actions { @apply grid grid-cols-3 gap-3 max-[600px]:grid-cols-1; }
 .deck-import-examples { @apply grid gap-2 text-xs text-muted; }
 .deck-import-examples code { @apply block whitespace-pre-wrap p-2 font-mono; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface-muted); color: var(--app-text); }

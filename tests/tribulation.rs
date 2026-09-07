@@ -2,12 +2,15 @@ use fewfc::application::{apply_event, handle_command, resolve_trusted_randomness
 use fewfc::domain::{
     AttackResolutionEffects, CardInstanceId, CardOrigin, ChoiceAnswer, Command, Element,
     FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameSetup, GameState, HERO_SCHOOLS_MODULE_ID,
-    LimitedUse, PERSONAL_DECK_MODULE_ID, Phase, PlayerId, PlayerProfession, PlayerSpirit,
-    ProfessionId, RandomnessDeck, RuleModuleId, STAR_MODULE_ID, SpiritKind, StatusDuration,
-    StatusEffect, StatusOwner, TRIBULATION_MODULE_ID, TeamId, TrustedRandomnessAnswer,
+    HpChangeRole, LimitedUse, PERSONAL_DECK_MODULE_ID, Phase, PlayerId, PlayerProfession,
+    PlayerSpirit, ProfessionId, RandomnessDeck, RuleModuleId, STAR_MODULE_ID, SpiritKind,
+    StatusDuration, StatusEffect, StatusOwner, TRIBULATION_MODULE_ID, TeamId,
+    TrustedRandomnessAnswer,
 };
 use fewfc::public_view::{PublicPendingChoice, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
+mod support;
+use support::ScenarioPlan;
 
 fn card(id: u64) -> CardInstanceId {
     CardInstanceId::new(id)
@@ -33,21 +36,14 @@ fn answer_choice(
 }
 
 fn setup() -> GameSetup {
-    OfficialRules::new()
-        .configure_game(
-            GameSetup::two_player(PlayerId::new("p1"), PlayerId::new("p2"), 30).players,
-            vec![PlayerId::new("p1"), PlayerId::new("p2")],
-            [
-                STAR_MODULE_ID,
-                FIVE_DIRECTIONS_LEGEND_MODULE_ID,
-                HERO_SCHOOLS_MODULE_ID,
-                TRIBULATION_MODULE_ID,
-            ]
-            .into_iter()
-            .map(RuleModuleId::new)
-            .collect(),
-        )
-        .unwrap()
+    ScenarioPlan::two_player(&[
+        STAR_MODULE_ID,
+        FIVE_DIRECTIONS_LEGEND_MODULE_ID,
+        HERO_SCHOOLS_MODULE_ID,
+        TRIBULATION_MODULE_ID,
+    ])
+    .setup()
+    .unwrap()
 }
 
 fn state() -> GameState {
@@ -161,14 +157,22 @@ fn thunder_fire_deducts_each_team_then_resolves_its_special_attack() {
         },
     )
     .unwrap();
-    assert_eq!(attack_effects(&events).hp_changes.len(), 2);
+    let attack_hp_changes = events
+        .iter()
+        .find_map(|event| match event {
+            GameEvent::AttackResolved { hp_changes, .. } => Some(hp_changes),
+            _ => None,
+        })
+        .expect("attack event");
+    assert_eq!(attack_hp_changes.len(), 3);
     assert!(events.iter().any(|event| matches!(
         event,
         GameEvent::AttackResolved {
             point_breakdown,
-            hp_change,
+            hp_changes,
             ..
-        } if point_breakdown.base_points == 60 && hp_change.old_hp == 185
+        } if point_breakdown.base_points == 60
+            && hp_changes.iter().any(|resolved| resolved.change.old_hp() == 185)
     )));
 }
 
@@ -221,21 +225,45 @@ fn thunder_fire_triggers_shared_fate_only_for_death_spirits_on_actually_losing_t
         },
     )
     .unwrap();
-    let hp_changes = attack_effects(&events)
-        .hp_changes
+    let hp_changes = events
+        .iter()
+        .find_map(|event| match event {
+            GameEvent::AttackResolved { hp_changes, .. } => Some(hp_changes),
+            _ => None,
+        })
+        .expect("attack event")
         .iter()
         .collect::<Vec<_>>();
-    assert_eq!(hp_changes.len(), 2);
-    assert!(
-        hp_changes
-            .iter()
-            .any(|change| { change.team == TeamId::new("b") && change.effective_delta == -15 })
-    );
-    assert!(
-        hp_changes
-            .iter()
-            .any(|change| { change.team == TeamId::new("a") && change.effective_delta == -10 })
-    );
+    assert_eq!(hp_changes.len(), 3);
+    assert!(matches!(
+        hp_changes.as_slice(),
+        [
+            fewfc::domain::ResolvedHpChange {
+                role: HpChangeRole::FormationEffect,
+                change: first,
+            },
+            fewfc::domain::ResolvedHpChange {
+                role: HpChangeRole::TriggeredEffect,
+                change: second,
+            },
+            fewfc::domain::ResolvedHpChange {
+                role: HpChangeRole::AttackDamage { target },
+                change: third,
+            },
+        ] if first.team() == &TeamId::new("b")
+            && first.old_hp() == 250
+            && first.effective_delta() == -15
+            && first.new_hp() == 235
+            && second.team() == &TeamId::new("a")
+            && second.old_hp() == 250
+            && second.effective_delta() == -10
+            && second.new_hp() == 240
+            && target == &PlayerId::new("p4")
+            && third.team() == &TeamId::new("b")
+            && third.old_hp() == 235
+            && third.effective_delta() == -60
+            && third.new_hp() == 175
+    ));
 }
 
 #[test]
@@ -270,7 +298,13 @@ fn divine_calculation_replaces_its_owner_and_protects_the_next_tribulation() {
         },
     )
     .unwrap();
-    assert_eq!(attack_effects(&tribulation).hp_changes.len(), 1);
+    assert_eq!(
+        tribulation.iter().find_map(|event| match event {
+            GameEvent::AttackResolved { hp_changes, .. } => Some(hp_changes.len()),
+            _ => None,
+        }),
+        Some(2)
+    );
     assert!(
         attack_effects(&tribulation)
             .statuses_removed
@@ -387,7 +421,7 @@ fn gale_rain_tracks_each_player_and_blocks_only_its_owners_formation_recovery() 
     assert!(recovery.iter().any(|event| matches!(
         event,
         GameEvent::HpChanged { change }
-            if change.old_hp == 100 && change.new_hp == 100 && change.effective_delta == 0
+            if change.old_hp() == 100 && change.new_hp() == 100 && change.effective_delta() == 0
     )));
 }
 

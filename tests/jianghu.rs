@@ -2,9 +2,9 @@ use fewfc::application::{advance_automatic, apply_event, handle_command};
 use fewfc::domain::{
     CardInstanceId, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameEvent, GameOutcome,
     GameState, GameStatus, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState,
-    JianghuStateKind, LastFormationUse, Phase, Player, PlayerId, PlayerProfession, ProfessionId,
-    RuleModuleId, STAR_MODULE_ID, StatusDuration, StatusEffect, StatusExpiryTiming, StatusOwner,
-    TeamId, TeamStar,
+    JianghuStateKind, LastFormationUse, Phase, Player, PlayerId, PlayerProfession, PlayerSpirit,
+    ProfessionId, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind, StatusDuration,
+    StatusEffect, StatusExpiryTiming, StatusOwner, TeamId, TeamStar,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -76,6 +76,48 @@ fn set_profession(state: &mut GameState, player: &str, profession: &str) {
         player: PlayerId::new(player),
         profession: ProfessionId::new(profession),
     });
+}
+
+fn team_state() -> GameState {
+    let players = vec![
+        Player {
+            id: PlayerId::new("p1"),
+            team: TeamId::new("team:a"),
+        },
+        Player {
+            id: PlayerId::new("p2"),
+            team: TeamId::new("team:b"),
+        },
+        Player {
+            id: PlayerId::new("p3"),
+            team: TeamId::new("team:a"),
+        },
+        Player {
+            id: PlayerId::new("p4"),
+            team: TeamId::new("team:b"),
+        },
+    ];
+    let setup = OfficialRules::new()
+        .configure_game(
+            players,
+            vec![
+                PlayerId::new("p1"),
+                PlayerId::new("p2"),
+                PlayerId::new("p3"),
+                PlayerId::new("p4"),
+            ],
+            vec![
+                RuleModuleId::new(STAR_MODULE_ID),
+                RuleModuleId::new(FIVE_DIRECTIONS_LEGEND_MODULE_ID),
+                RuleModuleId::new(HERO_SCHOOLS_MODULE_ID),
+                RuleModuleId::new(SPIRIT_MODULE_ID),
+                RuleModuleId::new(JIANGHU_MODULE_ID),
+            ],
+        )
+        .unwrap();
+    let mut state = GameState::from_setup(&setup);
+    state.phase = Phase::TurnEnd;
+    state
 }
 
 #[test]
@@ -255,6 +297,169 @@ fn poison_stacks_ticks_at_affected_players_turn_end_and_uses_poison_mastery() {
             .remaining_turns,
         2
     );
+}
+
+#[test]
+fn poison_tick_aggregates_teammate_death_spirits_as_following_hp_changed_event() {
+    let mut game = team_state();
+    for team_hp in &mut game.hp {
+        team_hp.hp = 30;
+    }
+    for team_hp in &mut game.initial_hp {
+        team_hp.hp = 30;
+    }
+    game.spirits = vec![
+        PlayerSpirit {
+            player: PlayerId::new("p1"),
+            spirit: SpiritKind::Death,
+            power: 2,
+        },
+        PlayerSpirit {
+            player: PlayerId::new("p3"),
+            spirit: SpiritKind::Death,
+            power: 2,
+        },
+    ];
+    game.jianghu_states.push(JianghuState {
+        owner: PlayerId::new("p1"),
+        kind: JianghuStateKind::Poison,
+        remaining_turns: 1,
+        expires_on_turn: None,
+        last_resolved_turn: None,
+    });
+
+    let events = advance_automatic(&game).unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::JianghuPoisonTicked {
+                owner,
+                damage: 10,
+                remaining_turns: 0,
+                hp_change,
+                ..
+            },
+            GameEvent::HpChanged { change },
+            GameEvent::TurnEnded { player },
+            GameEvent::TurnStarted {
+                player: next_player,
+                turn_number: 2,
+            },
+        ] if owner == &PlayerId::new("p1")
+            && hp_change.team() == &TeamId::new("team:a")
+            && hp_change.old_hp() == 30
+            && hp_change.delta() == -10
+            && hp_change.new_hp() == 20
+            && change.team() == &TeamId::new("team:b")
+            && change.old_hp() == 30
+            && change.delta() == -20
+            && change.new_hp() == 10
+            && player == &PlayerId::new("p1")
+            && next_player == &PlayerId::new("p2")
+    ));
+
+    for event in &events {
+        apply_event(&mut game, event);
+    }
+    assert_eq!(game.hp[0].hp, 20);
+    assert_eq!(game.hp[1].hp, 10);
+}
+
+#[test]
+fn delayed_fan_damage_emits_aggregated_shared_fate_as_its_next_event() {
+    let mut game = team_state();
+    for team_hp in &mut game.hp {
+        team_hp.hp = 30;
+    }
+    for team_hp in &mut game.initial_hp {
+        team_hp.hp = 30;
+    }
+    game.spirits = vec![
+        PlayerSpirit {
+            player: PlayerId::new("p1"),
+            spirit: SpiritKind::Death,
+            power: 2,
+        },
+        PlayerSpirit {
+            player: PlayerId::new("p3"),
+            spirit: SpiritKind::Death,
+            power: 2,
+        },
+    ];
+    game.statuses.push(StatusEffect {
+        id: "jianghu-fan-beyond-heaven-1".to_string(),
+        owner: StatusOwner::Player(PlayerId::new("p1")),
+        kind: "JianghuFanBeyondHeaven".to_string(),
+        value: Some(20),
+        duration: StatusDuration::UntilTurnEndNumber {
+            player: PlayerId::new("p1"),
+            turn_number: game.turn_number,
+        },
+    });
+
+    let events = advance_automatic(&game).unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::JianghuDelayedDamageResolved { hp_change, .. },
+            GameEvent::HpChanged { change },
+            GameEvent::TurnEnded { .. },
+            GameEvent::TurnStarted { .. },
+        ] if hp_change.team() == &TeamId::new("team:a")
+            && hp_change.old_hp() == 30
+            && hp_change.delta() == -20
+            && hp_change.new_hp() == 10
+            && change.team() == &TeamId::new("team:b")
+            && change.old_hp() == 30
+            && change.delta() == -20
+            && change.new_hp() == 10
+    ));
+}
+
+#[test]
+fn lethal_poison_tick_blooms_before_turn_end_game_conclusion() {
+    let mut game = team_state();
+    for team_hp in &mut game.hp {
+        if team_hp.team == TeamId::new("team:a") {
+            team_hp.hp = 10;
+        }
+    }
+    for team_hp in &mut game.initial_hp {
+        if team_hp.team == TeamId::new("team:a") {
+            team_hp.hp = 50;
+        }
+    }
+    game.spirits = vec![PlayerSpirit {
+        player: PlayerId::new("p1"),
+        spirit: SpiritKind::Wood,
+        power: 6,
+    }];
+    game.jianghu_states.push(JianghuState {
+        owner: PlayerId::new("p1"),
+        kind: JianghuStateKind::Poison,
+        remaining_turns: 1,
+        expires_on_turn: None,
+        last_resolved_turn: None,
+    });
+
+    let events = advance_automatic(&game).unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::JianghuPoisonTicked { hp_change, .. },
+            GameEvent::AutomaticBloomsResolved { resolutions },
+            GameEvent::TurnEnded { .. },
+            GameEvent::TurnStarted { .. },
+        ] if hp_change.old_hp() == 10
+            && hp_change.new_hp() == 0
+            && resolutions.len() == 1
+            && resolutions[0].team == TeamId::new("team:a")
+            && resolutions[0].hp_change.old_hp() == 0
+            && resolutions[0].hp_change.new_hp() == 40
+    ));
 }
 
 #[test]

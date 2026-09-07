@@ -388,6 +388,16 @@ fn new_choice_and_randomness_fields_serialize_as_camel_case() {
         })
     );
     assert_eq!(
+        serde_json::to_value(PendingResolution::MelodyPlantEarthMelody {
+            origin: fewfc::domain::MelodyExecutionOrigin::PlantedEarth,
+        })
+        .unwrap(),
+        serde_json::json!({
+            "type": "melodyPlantEarthMelody",
+            "origin": "plantedEarth"
+        })
+    );
+    assert_eq!(
         serde_json::to_value(PendingRandomness {
             request_id: "pouch-recycle".to_string(),
             operation: fewfc::domain::RandomnessOperation::DiscardShuffle {

@@ -578,7 +578,7 @@ fn seeker_options_and_reincarnation_role_binding_are_exact() {
     .unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::HpChanged { change } if change.delta == 100
+        GameEvent::HpChanged { change } if change.delta() == 100
     )));
 }
 
@@ -604,7 +604,7 @@ fn seeker_cost_counter_resistance_and_spell_protection_are_typed() {
     .unwrap();
     assert!(matches!(
         events.as_slice(),
-        [GameEvent::DiscardRetrieved { hp_change, .. }] if hp_change.delta == -5
+        [GameEvent::DiscardRetrieved { hp_change, .. }] if hp_change.delta() == -5
     ));
 
     let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
@@ -658,7 +658,8 @@ fn seeker_cost_counter_resistance_and_spell_protection_are_typed() {
     .unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::AttackResolved { hp_change, .. } if hp_change.delta == 0
+        GameEvent::AttackResolved { hp_changes, .. }
+            if hp_changes.iter().any(|resolved| resolved.change.delta() == 0)
     )));
 }
 
@@ -890,7 +891,7 @@ fn mage_and_windwalker_profession_formations_keep_stage_semantics() {
     let events = perform(&state, "shadow-assault", assault, Vec::new()).unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::HpChanged { change } if change.delta == -24
+        GameEvent::HpChanged { change } if change.delta() == -24
     )));
     assert!(
         !events
@@ -903,7 +904,33 @@ fn mage_and_windwalker_profession_formations_keep_stage_semantics() {
     let events = perform(&state, "instant-shadow-death", death, Vec::new()).unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::HpChanged { change } if change.new_hp == 100 && change.delta == -100
+        GameEvent::HpChanged { change } if change.new_hp() == 100 && change.delta() == -100
+    )));
+}
+
+#[test]
+fn instant_shadow_death_rounds_down_odd_hp_in_its_command_event() {
+    let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
+    set_profession(&mut state, "p1", "martial-artist");
+    state
+        .hp
+        .iter_mut()
+        .find(|owned| owned.team == TeamId::new("team:p2"))
+        .unwrap()
+        .hp = 101;
+    let used = cards(&state, &[(Element::Earth, 5), (Element::Earth, 5)]);
+    set_hand(&mut state, "p1", used.clone());
+
+    let events = perform(&state, "instant-shadow-death", used, Vec::new()).unwrap();
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::HpChanged { change }
+            if change.team() == &TeamId::new("team:p2")
+                && change.old_hp() == 101
+                && change.delta() == -51
+                && change.effective_delta() == -51
+                && change.new_hp() == 50
     )));
 }
 
@@ -953,10 +980,11 @@ fn sacred_beast_resistance_applies_only_after_shield_absorption() {
     assert!(events.iter().any(|event| matches!(
         event,
         GameEvent::AttackResolved {
-            hp_change,
+            hp_changes,
             elemental_context_update: Some(effects),
             ..
-        } if hp_change.delta == 0 && !effects.environment_transfers.is_empty()
+        } if hp_changes.iter().any(|resolved| resolved.change.delta() == 0)
+            && !effects.environment_transfers.is_empty()
     )));
 
     state
@@ -1000,7 +1028,8 @@ fn windwalker_and_unaffiliated_effects_use_shared_pipelines() {
     let events = perform(&state, "metal-strike", strike, Vec::new()).unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::AttackResolved { hp_change, .. } if hp_change.delta < 0
+        GameEvent::AttackResolved { hp_changes, .. }
+            if hp_changes.iter().any(|resolved| resolved.change.delta() < 0)
     )));
 
     let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
@@ -1021,7 +1050,7 @@ fn windwalker_and_unaffiliated_effects_use_shared_pipelines() {
     .unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::HpChanged { change } if change.delta == -10
+        GameEvent::HpChanged { change } if change.delta() == -10
     )));
 
     let mut state = game_state(&[HERO_SCHOOLS_MODULE_ID]);
@@ -1073,7 +1102,7 @@ fn void_reversion_is_atomic_and_protects_low_level_legendary_professions() {
             broken_professions,
             retained_legendary_professions,
             ..
-        } if hp_change.delta == -20
+        } if hp_change.delta() == -20
             && broken_professions.len() == 1
             && retained_legendary_professions.len() == 1
     )));
@@ -1216,7 +1245,7 @@ fn high_level_void_reversion_breaks_legendary_professions_before_outcome() {
             broken_professions,
             retained_legendary_professions,
             ..
-        } if hp_change.new_hp == 0
+        } if hp_change.new_hp() == 0
             && broken_professions.len() == 2
             && retained_legendary_professions.is_empty()
     )));

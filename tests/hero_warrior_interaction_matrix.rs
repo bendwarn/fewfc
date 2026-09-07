@@ -2,11 +2,13 @@ use fewfc::application::GameRecord;
 use fewfc::domain::{
     AttackOutcome, AttackPointBreakdown, AttackResolutionEffects, CardInstanceId, CardMoveDelta,
     CardZone, ChoiceAnswer, Command, Element, FormationAreaState, GameEvent,
-    HERO_SCHOOLS_MODULE_ID, HpChangeDelta, Player, PlayerId, ProfessionId, RuleModuleId,
-    ShieldChangeDelta, TeamId,
+    HERO_SCHOOLS_MODULE_ID, Player, PlayerId, ProfessionId, RuleModuleId, ShieldChangeDelta,
+    TeamId,
 };
 use fewfc::public_view::{Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
+mod support;
+use support::ScenarioPlan;
 
 struct WarriorDefenseScenario {
     record: GameRecord,
@@ -20,21 +22,8 @@ impl WarriorDefenseScenario {
     fn new() -> Self {
         let p1 = PlayerId::new("p1");
         let p2 = PlayerId::new("p2");
-        let setup = OfficialRules::new()
-            .configure_game(
-                vec![
-                    Player {
-                        id: p1.clone(),
-                        team: TeamId::new("team:p1"),
-                    },
-                    Player {
-                        id: p2.clone(),
-                        team: TeamId::new("team:p2"),
-                    },
-                ],
-                vec![p1.clone(), p2.clone()],
-                vec![RuleModuleId::new(HERO_SCHOOLS_MODULE_ID)],
-            )
+        let setup = ScenarioPlan::two_player(&[HERO_SCHOOLS_MODULE_ID])
+            .setup()
             .unwrap();
         let mut remaining = OfficialRules::new().official_deck_order(&setup).unwrap();
         let warrior_cards = vec![
@@ -355,8 +344,7 @@ fn warrior_defense_proficiency_matrix_establishes_and_consumes_defense_without_e
     )));
     assert!(attack_events.iter().any(|event| matches!(
         event,
-        GameEvent::AttackResolved { hp_change, .. }
-            if hp_change.delta == 0 && hp_change.effective_delta == 0
+        GameEvent::AttackResolved { hp_changes, .. } if hp_changes.is_empty()
     )));
     assert!(
         attack_events
@@ -477,7 +465,7 @@ fn warrior_resistance_matrix_reduces_legal_shock_burst_after_profession_change()
                 formation_id: attack_formation,
                 used_cards,
                 point_breakdown: AttackPointBreakdown { base_points: 20, final_amount: 20, .. },
-                hp_change: HpChangeDelta { team, old_hp: 200, delta: -20, new_hp: 180, effective_delta: -20 },
+                hp_changes,
                 shield_change: None,
                 card_moves,
                 ..
@@ -490,7 +478,7 @@ fn warrior_resistance_matrix_reduces_legal_shock_burst_after_profession_change()
             && target == &p1
             && attack_formation == "shock-burst"
             && used_cards == &shock_cards
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| resolved.change.team() == &TeamId::new("team:p1") && resolved.change.old_hp() == 200 && resolved.change.delta() == -20 && resolved.change.new_hp() == 180 && resolved.change.effective_delta() == -20)
             && card_moves.is_empty()
             && discarded_by == &p2
             && discarded == "shock-burst"
@@ -555,7 +543,7 @@ fn warrior_resistance_matrix_reduces_legal_shock_burst_after_profession_change()
                 formation_id: attack_formation,
                 used_cards,
                 point_breakdown: AttackPointBreakdown { base_points: 20, final_amount: 10, .. },
-                hp_change: HpChangeDelta { team, old_hp: 200, delta: -10, new_hp: 190, effective_delta: -10 },
+                hp_changes,
                 shield_change: None,
                 card_moves,
                 ..
@@ -568,7 +556,7 @@ fn warrior_resistance_matrix_reduces_legal_shock_burst_after_profession_change()
             && target == &p1
             && attack_formation == "shock-burst"
             && used_cards == &shock_cards
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| resolved.change.team() == &TeamId::new("team:p1") && resolved.change.old_hp() == 200 && resolved.change.delta() == -10 && resolved.change.new_hp() == 190 && resolved.change.effective_delta() == -10)
             && card_moves.is_empty()
             && discarded_by == &p2
             && discarded == "shock-burst"
@@ -733,7 +721,7 @@ fn warrior_resistance_shield_matrix_absorbs_unreduced_shock_burst_before_damage_
                 formation_id: attack_formation,
                 used_cards,
                 point_breakdown: AttackPointBreakdown { base_points: 20, final_amount: 20, .. },
-                hp_change: HpChangeDelta { team, old_hp: 195, delta: 0, new_hp: 195, effective_delta: 0 },
+                hp_changes,
                 shield_change: Some(ShieldChangeDelta { player: shield_owner, old_value: 44, delta: -40, new_value: 4 }),
                 card_moves,
                 elemental_context_update: Some(AttackResolutionEffects { outcome: AttackOutcome::AbsorbedByShield, .. }),
@@ -746,7 +734,7 @@ fn warrior_resistance_shield_matrix_absorbs_unreduced_shock_burst_before_damage_
             && target == &p1
             && attack_formation == "shock-burst"
             && used_cards == &shock_cards
-            && team == &TeamId::new("team:p1")
+            && hp_changes.is_empty()
             && shield_owner == &p1
             && card_moves.is_empty()
             && discarded_by == &p2
@@ -866,7 +854,7 @@ fn metal_profession_ladder_and_hero_resistance_matrix_use_legal_turns() {
                 target,
                 formation_id: resolved_formation,
                 point_breakdown: AttackPointBreakdown { base_points: 5, final_amount: 5, .. },
-                hp_change: HpChangeDelta { team, old_hp, delta: -5, new_hp, effective_delta: -5 },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -876,9 +864,7 @@ fn metal_profession_ladder_and_hero_resistance_matrix_use_legal_turns() {
             && attacker == &p2
             && target == &p1
             && resolved_formation == "metal-strike"
-            && team == &TeamId::new("team:p1")
-            && *old_hp == baseline_hp
-            && *new_hp == baseline_hp - 5
+            && hp_changes.iter().any(|resolved| resolved.change.team() == &TeamId::new("team:p1") && resolved.change.old_hp() == baseline_hp && resolved.change.delta() == -5 && resolved.change.new_hp() == baseline_hp - 5 && resolved.change.effective_delta() == -5)
             && discarded_by == &p2
             && discarded == "metal-strike"
             && discarded_cards == &vec![baseline_metal]
@@ -1122,7 +1108,7 @@ fn metal_profession_ladder_and_hero_resistance_matrix_use_legal_turns() {
                     target,
                     formation_id: resolved_formation,
                     point_breakdown: AttackPointBreakdown { base_points: 5, final_amount: 0, .. },
-                    hp_change: HpChangeDelta { team, old_hp, delta: 0, new_hp, effective_delta: 0 },
+                    hp_changes,
                     ..
                 },
                 GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -1132,9 +1118,7 @@ fn metal_profession_ladder_and_hero_resistance_matrix_use_legal_turns() {
                 && attacker == &p2
                 && target == &p1
                 && resolved_formation == "metal-strike"
-                && team == &TeamId::new("team:p1")
-                && *old_hp == hero_hp
-                && *new_hp == hero_hp
+                && hp_changes.iter().any(|resolved| resolved.change.team() == &TeamId::new("team:p1") && resolved.change.old_hp() == hero_hp && resolved.change.delta() == 0 && resolved.change.new_hp() == hero_hp && resolved.change.effective_delta() == 0)
                 && discarded_by == &p2
                 && discarded == "metal-strike"
                 && discarded_cards == &vec![hero_metal]

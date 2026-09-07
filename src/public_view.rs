@@ -1022,8 +1022,10 @@ fn pending_choice_presentation(resolution: &PendingResolution) -> PublicPendingC
             crate::domain::ConfluenceResonance::Myriad => Presentation::MyriadResonance,
             crate::domain::ConfluenceResonance::Thousand => Presentation::ThousandResonance,
         },
-        PendingResolution::EchoRingingMetalDeckCard => Presentation::EchoRingingMetalDeckCard,
-        PendingResolution::EchoCost { melody_id } => {
+        PendingResolution::MelodyRingingMetalDeckCard { .. } => {
+            Presentation::EchoRingingMetalDeckCard
+        }
+        PendingResolution::MelodyCost { melody_id, .. } => {
             let melody = match melody_id.as_str() {
                 "echo:ringing-metal" => Melody::RingingMetal,
                 "echo:falling-wood" => Melody::FallingWood,
@@ -1033,9 +1035,11 @@ fn pending_choice_presentation(resolution: &PendingResolution) -> PublicPendingC
             };
             Presentation::EchoCost { melody }
         }
-        PendingResolution::EchoSplitEarthFormation => Presentation::EchoSplitEarthFormation,
-        PendingResolution::EchoPureFireTarget => Presentation::EchoPureFirePlayer,
-        PendingResolution::EchoPlantEarthMelody => Presentation::EchoPlantEarthMelody,
+        PendingResolution::MelodySplitEarthFormation { .. } => {
+            Presentation::EchoSplitEarthFormation
+        }
+        PendingResolution::MelodyPureFireTarget { .. } => Presentation::EchoPureFirePlayer,
+        PendingResolution::MelodyPlantEarthMelody { .. } => Presentation::EchoPlantEarthMelody,
         PendingResolution::TribulationEarthRendingEnvironment => {
             Presentation::EarthRendingEnvironment
         }
@@ -1361,13 +1365,22 @@ mod tests {
                 resonance: ConfluenceResonance::Thousand,
                 after: Some(Element::Fire),
             },
-            PendingResolution::EchoRingingMetalDeckCard,
-            PendingResolution::EchoCost {
-                melody_id: "echo:ringing-metal".to_string(),
+            PendingResolution::MelodyRingingMetalDeckCard {
+                origin: crate::domain::MelodyExecutionOrigin::Echo,
             },
-            PendingResolution::EchoSplitEarthFormation,
-            PendingResolution::EchoPureFireTarget,
-            PendingResolution::EchoPlantEarthMelody,
+            PendingResolution::MelodyCost {
+                melody_id: "echo:ringing-metal".to_string(),
+                origin: crate::domain::MelodyExecutionOrigin::FormationUse,
+            },
+            PendingResolution::MelodySplitEarthFormation {
+                origin: crate::domain::MelodyExecutionOrigin::Echo,
+            },
+            PendingResolution::MelodyPureFireTarget {
+                origin: crate::domain::MelodyExecutionOrigin::Echo,
+            },
+            PendingResolution::MelodyPlantEarthMelody {
+                origin: crate::domain::MelodyExecutionOrigin::PlantedEarth,
+            },
             PendingResolution::TribulationEarthRendingEnvironment,
             PendingResolution::TribulationEarthRendingCard,
             PendingResolution::PouchChain,

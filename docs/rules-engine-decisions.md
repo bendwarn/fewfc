@@ -2483,3 +2483,19 @@ Validate this behavior by extending the existing Battle Record and start-API
 tests, scroll tests, and battlefield layout scenario. Cover Turn start before
 the first Entry and the same Player in subject, target, and owner roles. A
 dedicated TurnStarted integration test or new E2E spec is not required.
+
+### 44. HP Change Planning
+
+Every outer rule resolution constructs one validated Team HP ledger. The ledger
+requires one current and one initial entry for each Team, rejects invalid ranges
+or arithmetic overflow as an Engine Invariant, and records every requested HP
+attempt including prevention, clamping, and no-op changes. Repeated changes to
+the same Team inherit the preceding planned new HP in canonical call order.
+
+One resolved Formation effect receives a scoped ledger session. Its completion
+reports only the Teams that actually lost HP, in canonical `state.hp` order;
+Shared Fate is planned afterward with the outer ledger and cannot recurse into
+that session. Echo repeats are not Formation effects, while Jianghu States own
+their continuous Formation-effect timing. Pending continuations construct a
+fresh ledger from their then-canonical state rather than serializing a live
+planner.

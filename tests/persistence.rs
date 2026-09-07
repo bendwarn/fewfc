@@ -4,8 +4,8 @@ use fewfc::application::{
 };
 use fewfc::domain::{
     CardDef, CardDefId, CardInstanceDef, CardInstanceId, ChoiceId, Command, GameError, GameEvent,
-    GameSetup, GameState, HpChangeDelta, PendingChoice, PendingChoiceKind, PendingResolution,
-    PlayerId, RandomnessOperation, RuleModuleId, RulesetId, TeamId, ValidationError,
+    GameSetup, GameState, PendingChoice, PendingChoiceKind, PendingResolution, PlayerId,
+    RandomnessOperation, RuleModuleId, RulesetId, ValidationError,
 };
 use fewfc::infrastructure::{
     FileSystemPersistence, FixedDeckPreparation, InMemoryPersistence, PersistedGameRecord,
@@ -490,13 +490,24 @@ fn replay_verification_reports_command_event_mismatch_sequence_and_details() {
                     .any(|event| matches!(event, GameEvent::AttackResolved { .. }))
         })
         .unwrap();
-    if let Some(GameEvent::AttackResolved { hp_change, .. }) = recorded_decisions[command_index]
+    if let Some(GameEvent::AttackResolved { hp_changes, .. }) = recorded_decisions[command_index]
         .events
         .iter_mut()
         .find(|event| matches!(event, GameEvent::AttackResolved { .. }))
     {
-        hp_change.delta = -99;
-        hp_change.new_hp = 0;
+        let change = hp_changes
+            .iter_mut()
+            .find(|resolved| {
+                matches!(
+                    resolved.role,
+                    fewfc::domain::HpChangeRole::AttackDamage { .. }
+                )
+            })
+            .expect("attack event must include AttackDamage");
+        let mut value = serde_json::to_value(&change.change).unwrap();
+        value["delta"] = serde_json::json!(-99);
+        value["newHp"] = serde_json::json!(0);
+        change.change = serde_json::from_value(value).unwrap();
     }
     let first_command_sequence = recorded_decisions[..command_index]
         .iter()
@@ -516,7 +527,10 @@ fn replay_verification_reports_command_event_mismatch_sequence_and_details() {
                 actual
                     .iter()
                     .find(|event| matches!(event, GameEvent::AttackResolved { .. })),
-                Some(GameEvent::AttackResolved { hp_change, .. }) if hp_change.delta == -99
+                Some(GameEvent::AttackResolved { hp_changes, .. })
+                    if hp_changes.iter().any(|resolved|
+                        matches!(resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. })
+                            && resolved.change.delta() == -99)
             ));
         }
         other => panic!("expected command event mismatch, got {other:?}"),
@@ -552,14 +566,25 @@ fn pure_replay_applies_canonical_events_even_when_verification_would_fail() {
                 .any(|event| matches!(event, GameEvent::AttackResolved { .. }))
         })
         .unwrap();
-    if let Some(GameEvent::AttackResolved { hp_change, .. }) = persisted.recorded_decisions
+    if let Some(GameEvent::AttackResolved { hp_changes, .. }) = persisted.recorded_decisions
         [command_index]
         .events
         .iter_mut()
         .find(|event| matches!(event, GameEvent::AttackResolved { .. }))
     {
-        hp_change.delta = -99;
-        hp_change.new_hp = 0;
+        let change = hp_changes
+            .iter_mut()
+            .find(|resolved| {
+                matches!(
+                    resolved.role,
+                    fewfc::domain::HpChangeRole::AttackDamage { .. }
+                )
+            })
+            .expect("attack event must include AttackDamage");
+        let mut value = serde_json::to_value(&change.change).unwrap();
+        value["delta"] = serde_json::json!(-99);
+        value["newHp"] = serde_json::json!(0);
+        change.change = serde_json::from_value(value).unwrap();
     }
 
     assert!(matches!(
@@ -569,6 +594,41 @@ fn pure_replay_applies_canonical_events_even_when_verification_would_fail() {
     let replayed = persisted.replay().unwrap();
     assert_ne!(replayed, record.state().clone());
     assert!(replayed.hp.iter().any(|team_hp| team_hp.hp == 0));
+}
+
+#[test]
+fn attack_hp_changes_serialize_with_exact_camel_case_role_contract() {
+    let mut record = GameRecord::start(two_player_setup(), deck_starting_with(&[1])).unwrap();
+    record.advance_automatic().unwrap();
+    let events = record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
+    let attack = events
+        .iter()
+        .find(|event| matches!(event, GameEvent::AttackResolved { .. }))
+        .expect("metal strike must record an attack");
+
+    let wire = serde_json::to_value(attack).unwrap();
+    assert_eq!(
+        wire["AttackResolved"]["hpChanges"][0]["role"],
+        serde_json::json!({ "type": "attackDamage", "target": "p2" })
+    );
+    assert_eq!(
+        wire["AttackResolved"]["hpChanges"][0]["change"],
+        serde_json::json!({
+            "team": "team:p2",
+            "oldHp": 30,
+            "delta": -7,
+            "newHp": 23,
+            "effectiveDelta": -7,
+        })
+    );
+    assert_eq!(serde_json::from_value::<GameEvent>(wire).unwrap(), *attack);
 }
 
 #[test]
@@ -713,22 +773,11 @@ fn environment_events_round_trip_and_replay_without_recomputing_rules() {
             player: PlayerId::new("p2"),
             formation_id: "void-meridian-severing".to_string(),
             environment: Element::Fire,
-            hp_changes: vec![
-                HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 30,
-                    delta: -20,
-                    new_hp: 10,
-                    effective_delta: -20,
-                },
-                HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 30,
-                    delta: -20,
-                    new_hp: 10,
-                    effective_delta: -20,
-                },
-            ],
+            hp_changes: serde_json::from_value(serde_json::json!([
+                { "team": "team:p1", "oldHp": 30, "delta": -20, "newHp": 10, "effectiveDelta": -20 },
+                { "team": "team:p2", "oldHp": 30, "delta": -20, "newHp": 10, "effectiveDelta": -20 }
+            ]))
+            .unwrap(),
         },
     ];
 

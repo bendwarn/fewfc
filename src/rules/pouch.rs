@@ -718,47 +718,6 @@ pub(crate) fn profession_is_suppressed(state: &GameState, player: &PlayerId) -> 
     has_status(state, player, LURE_PLAYER_STATUS)
 }
 
-pub(crate) fn suppress_watch_fire_formation_hp_changes(
-    state: &GameState,
-    player: &PlayerId,
-    events: &mut [GameEvent],
-) {
-    if !has_status(state, player, WATCH_FIRE_STATUS) || player_is_protected(state, player) {
-        return;
-    }
-    for event in events {
-        match event {
-            GameEvent::AttackResolved {
-                hp_change,
-                shield_change,
-                ..
-            } => {
-                prevent_hp_change(hp_change);
-                *shield_change = None;
-            }
-            GameEvent::EnvironmentCleared { hp_changes, .. }
-            | GameEvent::VoidSpiritShatteringResolved { hp_changes, .. } => {
-                hp_changes.clear();
-            }
-            GameEvent::StarBroken { hp_change, .. } => {
-                *hp_change = None;
-            }
-            GameEvent::VoidReversionResolved { hp_change, .. }
-            | GameEvent::HpChanged { change: hp_change }
-            | GameEvent::DiscardRetrieved { hp_change, .. } => {
-                prevent_hp_change(hp_change);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn prevent_hp_change(change: &mut crate::domain::HpChangeDelta) {
-    change.delta = 0;
-    change.new_hp = change.old_hp;
-    change.effective_delta = 0;
-}
-
 fn spirit_for_element(element: Element) -> SpiritKind {
     match element {
         Element::Metal => SpiritKind::Metal,

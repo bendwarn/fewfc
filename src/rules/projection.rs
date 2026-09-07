@@ -472,8 +472,8 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     .iter_mut()
                     .find(|team_hp| team_hp.team == resolution.team)
                     .expect("canonical Bloom must target an existing Team");
-                debug_assert_eq!(team_hp.hp, resolution.hp_change.old_hp);
-                team_hp.hp = resolution.hp_change.new_hp;
+                debug_assert_eq!(team_hp.hp, resolution.hp_change.old_hp());
+                team_hp.hp = resolution.hp_change.new_hp();
             }
             state.spirits.retain(|owned| owned.power > 0);
         }
@@ -718,7 +718,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             attacker,
             formation_id,
             used_cards,
-            hp_change,
+            hp_changes,
             shield_change,
             card_moves,
             elemental_context_update,
@@ -732,15 +732,19 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     | crate::domain::Phase::TurnDraw
             ));
 
+            // HP 向量就是 planner 的 canonical call order；不可按 Team 或 role
+            // 重排。這讓同 Team 的多個變更以後一項承接前一項。
+            for resolved in hp_changes {
+                let team_hp = state
+                    .hp
+                    .iter_mut()
+                    .find(|team_hp| team_hp.team == *resolved.change.team())
+                    .expect("canonical attack HP change must target an existing team");
+                debug_assert_eq!(team_hp.hp, resolved.change.old_hp());
+                team_hp.hp = resolved.change.new_hp();
+            }
+
             if let Some(effects) = elemental_context_update {
-                for change in &effects.hp_changes {
-                    let team_hp = state
-                        .hp
-                        .iter_mut()
-                        .find(|team_hp| team_hp.team == change.team)
-                        .expect("canonical attack side effect must target an existing team");
-                    team_hp.hp = change.new_hp;
-                }
                 for change in &effects.shield_changes {
                     apply_shield_change(state, change);
                 }
@@ -782,15 +786,6 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 }
             }
 
-            // 差異是一個同時發生的語意結果，不是可以分開回放的事件。攻擊前效果
-            // 先套用，只是為了重建主要傷害所記錄的快照。
-            let team_hp = state
-                .hp
-                .iter_mut()
-                .find(|team_hp| team_hp.team == hp_change.team)
-                .expect("canonical attack event must target an existing team");
-            team_hp.hp = hp_change.new_hp;
-
             if let Some(shield_change) = shield_change {
                 apply_shield_change(state, shield_change);
             }
@@ -816,9 +811,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 let team_hp = state
                     .hp
                     .iter_mut()
-                    .find(|team_hp| team_hp.team == change.team)
+                    .find(|team_hp| team_hp.team == *change.team())
                     .expect("canonical environment clearing must target an existing team");
-                team_hp.hp = change.new_hp;
+                team_hp.hp = change.new_hp();
             }
         }
         GameEvent::StarBroken {
@@ -838,9 +833,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 let team_hp = state
                     .hp
                     .iter_mut()
-                    .find(|team_hp| team_hp.team == change.team)
+                    .find(|team_hp| team_hp.team == *change.team())
                     .expect("canonical Star breaking must target an existing Team");
-                team_hp.hp = change.new_hp;
+                team_hp.hp = change.new_hp();
             }
         }
         GameEvent::StarSummoned { player, team, star } => {
@@ -873,9 +868,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             let team_hp = state
                 .hp
                 .iter_mut()
-                .find(|team_hp| team_hp.team == hp_change.team)
+                .find(|team_hp| team_hp.team == *hp_change.team())
                 .expect("canonical Void Reversion must target an existing Team");
-            team_hp.hp = hp_change.new_hp;
+            team_hp.hp = hp_change.new_hp();
             state
                 .professions
                 .retain(|owned| !broken_professions.iter().any(|broken| broken == owned));
@@ -931,19 +926,19 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 let team_hp = state
                     .hp
                     .iter_mut()
-                    .find(|team_hp| team_hp.team == change.team)
+                    .find(|team_hp| team_hp.team == *change.team())
                     .expect("canonical Void Spirit-Shattering must target an existing Team");
-                debug_assert_eq!(team_hp.hp, change.old_hp);
-                team_hp.hp = change.new_hp;
+                debug_assert_eq!(team_hp.hp, change.old_hp());
+                team_hp.hp = change.new_hp();
             }
             for change in shared_fate_hp_changes {
                 let team_hp = state
                     .hp
                     .iter_mut()
-                    .find(|team_hp| team_hp.team == change.team)
+                    .find(|team_hp| team_hp.team == *change.team())
                     .expect("canonical Shared Fate must target an existing Team");
-                debug_assert_eq!(team_hp.hp, change.old_hp);
-                team_hp.hp = change.new_hp;
+                debug_assert_eq!(team_hp.hp, change.old_hp());
+                team_hp.hp = change.new_hp();
             }
             state.last_formation_by_player.insert(
                 player.clone(),
@@ -976,9 +971,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             let team_hp = state
                 .hp
                 .iter_mut()
-                .find(|team_hp| team_hp.team == change.team)
+                .find(|team_hp| team_hp.team == *change.team())
                 .expect("canonical hp event must target an existing team");
-            team_hp.hp = change.new_hp;
+            team_hp.hp = change.new_hp();
         }
         GameEvent::CardsMoved { card_moves } => {
             for card_move in card_moves {
@@ -1038,16 +1033,15 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             owner,
             remaining_turns,
             hp_change,
-            shared_fate_hp_change,
             ..
         } => {
             let team_hp = state
                 .hp
                 .iter_mut()
-                .find(|team_hp| team_hp.team == hp_change.team)
+                .find(|team_hp| team_hp.team == *hp_change.team())
                 .expect("canonical Poison tick must target an existing Team");
-            debug_assert_eq!(team_hp.hp, hp_change.old_hp);
-            team_hp.hp = hp_change.new_hp;
+            debug_assert_eq!(team_hp.hp, hp_change.old_hp());
+            team_hp.hp = hp_change.new_hp();
             let position = state
                 .jianghu_states
                 .iter()
@@ -1061,21 +1055,11 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 state.jianghu_states[position].remaining_turns = *remaining_turns;
                 state.jianghu_states[position].last_resolved_turn = Some(state.turn_number);
             }
-            if let Some(change) = shared_fate_hp_change {
-                let target_hp = state
-                    .hp
-                    .iter_mut()
-                    .find(|team_hp| team_hp.team == change.team)
-                    .expect("canonical Poison Shared Fate targets an existing Team");
-                debug_assert_eq!(target_hp.hp, change.old_hp);
-                target_hp.hp = change.new_hp;
-            }
         }
         GameEvent::JianghuDelayedDamageResolved {
             owner,
             status_id,
             hp_change,
-            shared_fate_hp_change,
         } => {
             let position = state
                 .statuses
@@ -1089,18 +1073,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             let team_hp = state
                 .hp
                 .iter_mut()
-                .find(|team_hp| team_hp.team == hp_change.team)
+                .find(|team_hp| team_hp.team == *hp_change.team())
                 .expect("canonical delayed Jianghu damage must target an existing Team");
-            team_hp.hp = hp_change.new_hp;
-            if let Some(change) = shared_fate_hp_change {
-                let target_hp = state
-                    .hp
-                    .iter_mut()
-                    .find(|team_hp| team_hp.team == change.team)
-                    .expect("canonical delayed Shared Fate targets an existing Team");
-                debug_assert_eq!(target_hp.hp, change.old_hp);
-                target_hp.hp = change.new_hp;
-            }
+            team_hp.hp = hp_change.new_hp();
         }
         GameEvent::LimitedUseChanged {
             owner,
@@ -1602,9 +1577,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             let team_hp = state
                 .hp
                 .iter_mut()
-                .find(|team_hp| team_hp.team == hp_change.team)
+                .find(|team_hp| team_hp.team == *hp_change.team())
                 .expect("canonical discard retrieval must target an existing team");
-            team_hp.hp = hp_change.new_hp;
+            team_hp.hp = hp_change.new_hp();
         }
         GameEvent::TurnEnded { player } => {
             debug_assert_eq!(state.current_player(), Some(player));

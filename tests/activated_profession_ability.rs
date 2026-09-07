@@ -3,8 +3,8 @@ use fewfc::domain::{
     CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, Command, DARK_GLIMMER_MODULE_ID, Element,
     FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError, GameEvent, GameState, HERO_SCHOOLS_MODULE_ID,
     JIANGHU_MODULE_ID, LimitedUse, PERSONAL_DECK_MODULE_ID, PendingResolution, Phase, Player,
-    PlayerId, PlayerProfession, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID, STAR_MODULE_ID,
-    TeamId, TrustedRandomnessAnswer, ValidationError,
+    PlayerId, PlayerProfession, PlayerSpirit, ProfessionId, RuleModuleId, SPIRIT_MODULE_ID,
+    STAR_MODULE_ID, SpiritKind, TeamId, TrustedRandomnessAnswer, ValidationError,
 };
 use fewfc::rules::{ActionInputRequirement, OfficialRules, PlayableAction};
 
@@ -175,6 +175,63 @@ fn activated_abilities_share_one_allowance_across_rule_modules() {
             ValidationError::ProfessionAbilityAlreadyActivated { .. }
         ))
     ));
+}
+
+#[test]
+fn lethal_shadow_cut_blooms_in_the_same_command_and_applies_the_hp_chain() {
+    let mut game = state();
+    set_profession(&mut game, "shadow-walker");
+    game.spirits.push(PlayerSpirit {
+        player: PlayerId::new("p2"),
+        spirit: SpiritKind::Wood,
+        power: 6,
+    });
+    game.hp
+        .iter_mut()
+        .find(|owned| owned.team == TeamId::new("team:b"))
+        .unwrap()
+        .hp = 10;
+    let cost = card(&game, Element::Earth, 5, &[]);
+    set_hand(&mut game, vec![cost]);
+
+    let events = activate(&game, "shadow-cut", vec![cost], None, None, None).unwrap();
+    let hp_change_index = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                GameEvent::HpChanged { change }
+                    if change.team() == &TeamId::new("team:b")
+                        && change.old_hp() == 10
+                        && change.delta() == -10
+                        && change.new_hp() == 0
+            )
+        })
+        .expect("影切必須在同一命令內使 team:b 歸零");
+    assert!(matches!(
+        events.get(hp_change_index + 1),
+        Some(GameEvent::AutomaticBloomsResolved { resolutions })
+            if matches!(resolutions.as_slice(), [resolution]
+                if resolution.team == TeamId::new("team:b")
+                    && resolution.hp_change.old_hp() == 0
+                    && resolution.hp_change.new_hp() == 40)
+    ));
+
+    for event in &events {
+        apply_event(&mut game, event);
+    }
+    assert_eq!(
+        game.hp
+            .iter()
+            .find(|owned| owned.team == TeamId::new("team:b"))
+            .unwrap()
+            .hp,
+        40
+    );
+    assert!(
+        game.spirit_for(&PlayerId::new("p2")).is_none(),
+        "綻放耗盡的木精靈必須在套用事件後被破除"
+    );
 }
 
 #[test]

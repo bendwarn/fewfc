@@ -1,7 +1,8 @@
 use crate::domain::{
     CONFLUENCE_GENERATION_MODULE_ID, CardInstanceId, Element, GameError, GameEvent, GameResult,
-    GameState, HpChangeDelta, PendingResolution, PlayerId, ProfessionId, RandomnessDeck,
-    RuleModuleId, StatusDuration, StatusEffect, StatusOwner, ValidationError,
+    GameState, PendingResolution, PlayerId, ProfessionId, RandomnessDeck, RuleModuleId,
+    StatusDuration, StatusEffect, StatusOwner, ValidationError,
+    hp::{HpChangePlan, HpChangeRequest},
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::{
@@ -323,14 +324,28 @@ pub(crate) fn active_spell_events(
     player: &PlayerId,
     resolver_id: &str,
     declared_targets: &[crate::domain::TargetDecl],
-) -> GameResult<Option<Vec<GameEvent>>> {
+    hp: &mut HpChangePlan,
+) -> GameResult<
+    Option<(
+        Vec<GameEvent>,
+        Option<crate::domain::hp::FormationHpEffectOutcome>,
+    )>,
+> {
     let previous =
         TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::PreviousPlayer)?;
     let events = match resolver_id {
         MIRROR_RESONANCE => inspect_and_discard_events(state, player, &previous, resolver_id)?,
-        FOREST_RESONANCE => vec![change_hp_event(state, player, 20)?],
+        FOREST_RESONANCE => {
+            let mut effect = hp.begin_formation_effect();
+            let event = formation_effect_hp_event(state, &mut effect, player, player, 20)?;
+            return Ok(Some((vec![event], Some(effect.finish()))));
+        }
         STREAM_RESONANCE => vec![turn_draw_bonus_event(state, player, 2)],
-        BLAZE_RESONANCE => vec![change_hp_event(state, &previous, -20)?],
+        BLAZE_RESONANCE => {
+            let mut effect = hp.begin_formation_effect();
+            let event = formation_effect_hp_event(state, &mut effect, player, &previous, -20)?;
+            return Ok(Some((vec![event], Some(effect.finish()))));
+        }
         EARTH_RESONANCE => vec![set_shield_event(state, player, 15)],
         MYRIAD_RESONANCE => {
             let inspected = inspect_and_discard_events(state, player, &previous, resolver_id)?;
@@ -342,9 +357,10 @@ pub(crate) fn active_spell_events(
             {
                 inspected
             } else {
-                let mut events = myriad_primary_events(state, player)?;
+                let mut effect = hp.begin_formation_effect();
+                let mut events = myriad_primary_events_in_effect(state, player, &mut effect)?;
                 events.extend(inspected);
-                events
+                return Ok(Some((events, Some(effect.finish()))));
             }
         }
         IMPRISONING_ARRAY => {
@@ -405,11 +421,7 @@ pub(crate) fn active_spell_events(
         }
         VOID_BARRIER => {
             let mut events = Vec::new();
-            let mut hp_by_team = state
-                .hp
-                .iter()
-                .map(|entry| (entry.team.clone(), entry.hp))
-                .collect::<std::collections::HashMap<_, _>>();
+            let mut effect = hp.begin_formation_effect();
             for shield in &state.shields {
                 let new_value = (shield.value - 20).max(0);
                 if new_value != shield.value {
@@ -420,41 +432,54 @@ pub(crate) fn active_spell_events(
                         new_value,
                     });
                     let team = TurnOrderTargets::new(state).team_of(&shield.player)?;
-                    let old_hp = *hp_by_team.get(&team).expect("known Player Team has HP");
-                    let new_hp = (old_hp - 20).max(0);
-                    hp_by_team.insert(team.clone(), new_hp);
                     events.push(GameEvent::HpChanged {
-                        change: HpChangeDelta {
-                            team,
-                            old_hp,
-                            delta: -20,
-                            new_hp,
-                            effective_delta: new_hp - old_hp,
-                        },
+                        change: effect.plan(
+                            &team,
+                            crate::rules::base::formation_use::formation_hp_request(
+                                state, player, &team, -20,
+                            ),
+                        )?,
                     });
                 }
             }
-            events
+            if events
+                .iter()
+                .any(|event| matches!(event, GameEvent::HpChanged { .. }))
+            {
+                return Ok(Some((events, Some(effect.finish()))));
+            }
+            return Ok(Some((events, None)));
         }
         VOID_RETURN_TO_NOTHING => {
             let own_team = TurnOrderTargets::new(state).team_of(player)?;
-            state
+            let mut effect = hp.begin_formation_effect();
+            let events = state
                 .hp
                 .iter()
                 .map(|team_hp| {
                     let additional = if team_hp.team == own_team { 0 } else { 20 };
                     let new_hp = (team_hp.hp / 2 - additional).max(0);
                     Ok(GameEvent::HpChanged {
-                        change: HpChangeDelta {
-                            team: team_hp.team.clone(),
-                            old_hp: team_hp.hp,
-                            delta: new_hp - team_hp.hp,
-                            new_hp,
-                            effective_delta: new_hp - team_hp.hp,
-                        },
+                        change: effect.plan(
+                            &team_hp.team,
+                            match crate::rules::base::formation_use::formation_hp_request(
+                                state,
+                                player,
+                                &team_hp.team,
+                                new_hp - team_hp.hp,
+                            ) {
+                                HpChangeRequest::Prevented(delta) => {
+                                    HpChangeRequest::Prevented(delta)
+                                }
+                                HpChangeRequest::By(_) | HpChangeRequest::To(_) => {
+                                    HpChangeRequest::To(new_hp)
+                                }
+                            },
+                        )?,
                     })
                 })
-                .collect::<GameResult<Vec<_>>>()?
+                .collect::<GameResult<Vec<_>>>()?;
+            return Ok(Some((events, Some(effect.finish()))));
         }
         THOUSAND_RESONANCE => {
             let selected = declared_targets.iter().find_map(|target| match target {
@@ -469,60 +494,51 @@ pub(crate) fn active_spell_events(
                 let previous = TurnOrderTargets::new(state)
                     .player_target(player, RulePlayerTarget::PreviousPlayer)?;
                 let after = selected.map(resonance_target_element).transpose()?;
-                return Ok(Some(inspect_and_discard_events_with_resolution(
-                    state,
-                    player,
-                    &previous,
-                    PendingResolution::ConfluenceDiscardInspectedCard {
-                        resonance: crate::domain::ConfluenceResonance::Thousand,
-                        after,
-                    },
-                )?));
+                return Ok(Some((
+                    inspect_and_discard_events_with_resolution(
+                        state,
+                        player,
+                        &previous,
+                        PendingResolution::ConfluenceDiscardInspectedCard {
+                            resonance: crate::domain::ConfluenceResonance::Thousand,
+                            after,
+                        },
+                    )?,
+                    None,
+                )));
             }
-            let mut events = resonance_primary_events(state, player)?;
+            let mut effect = hp.begin_formation_effect();
+            let mut events = resonance_primary_events_in_effect(state, player, &mut effect)?;
             if let Some(selected) = selected {
-                events.extend(resonance_element_events(
+                events.extend(resonance_element_events_in_effect(
                     state,
                     player,
                     resonance_target_element(selected)?,
+                    &mut effect,
                 )?);
+            }
+            if events
+                .iter()
+                .any(|event| matches!(event, GameEvent::HpChanged { .. }))
+            {
+                return Ok(Some((events, Some(effect.finish()))));
             }
             events
         }
         _ => return Ok(None),
     };
-    Ok(Some(events))
+    Ok(Some((events, None)))
 }
 
-fn resonance_element_events(
+fn resonance_primary_events_in_effect(
     state: &GameState,
     player: &PlayerId,
-    element: Element,
+    effect: &mut crate::domain::hp::FormationHpEffectPlan<'_>,
 ) -> GameResult<Vec<GameEvent>> {
-    let previous =
-        TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::PreviousPlayer)?;
-    match element {
-        Element::Metal => inspect_and_discard_events(state, player, &previous, THOUSAND_RESONANCE),
-        Element::Wood => Ok(vec![change_hp_event(state, player, 20)?]),
-        Element::Water => Ok(vec![turn_draw_bonus_event(state, player, 2)]),
-        Element::Fire => Ok(vec![change_hp_event(state, &previous, -20)?]),
-        Element::Earth => Ok(vec![set_shield_event(state, player, 15)]),
-    }
-}
-
-fn resonance_primary_events(state: &GameState, player: &PlayerId) -> GameResult<Vec<GameEvent>> {
     let Some((element, _)) = residual_card_facts(state, player) else {
         return Ok(Vec::new());
     };
-    let previous =
-        TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::PreviousPlayer)?;
-    match element {
-        Element::Metal => inspect_and_discard_events(state, player, &previous, THOUSAND_RESONANCE),
-        Element::Wood => Ok(vec![change_hp_event(state, player, 20)?]),
-        Element::Water => Ok(vec![turn_draw_bonus_event(state, player, 2)]),
-        Element::Fire => Ok(vec![change_hp_event(state, &previous, -20)?]),
-        Element::Earth => Ok(vec![set_shield_event(state, player, 15)]),
-    }
+    resonance_element_events_in_effect(state, player, element, effect)
 }
 
 fn inspect_and_discard_events(
@@ -603,54 +619,88 @@ pub(crate) fn after_choice_events(
     state: &GameState,
     player: &PlayerId,
     resolution: &PendingResolution,
-) -> GameResult<Vec<GameEvent>> {
+    hp: &mut HpChangePlan,
+) -> GameResult<Option<(Vec<GameEvent>, crate::domain::hp::FormationHpEffectOutcome)>> {
     match resolution {
         PendingResolution::ConfluenceDiscardInspectedCard {
             resonance: crate::domain::ConfluenceResonance::Thousand,
             after: Some(element),
-        } => resonance_element_events(state, player, *element),
+        } => {
+            let mut effect = hp.begin_formation_effect();
+            let events = resonance_element_events_in_effect(state, player, *element, &mut effect)?;
+            if events
+                .iter()
+                .any(|event| matches!(event, GameEvent::HpChanged { .. }))
+            {
+                return Ok(Some((events, effect.finish())));
+            }
+            Ok(None)
+        }
         PendingResolution::ConfluenceDiscardInspectedCard {
             resonance: crate::domain::ConfluenceResonance::Myriad,
             ..
-        } => myriad_primary_events(state, player),
-        _ => Ok(Vec::new()),
+        } => {
+            let mut effect = hp.begin_formation_effect();
+            let events = myriad_primary_events_in_effect(state, player, &mut effect)?;
+            Ok(Some((events, effect.finish())))
+        }
+        _ => Ok(None),
     }
 }
 
-fn myriad_primary_events(state: &GameState, player: &PlayerId) -> GameResult<Vec<GameEvent>> {
+fn resonance_element_events_in_effect(
+    state: &GameState,
+    player: &PlayerId,
+    element: Element,
+    effect: &mut crate::domain::hp::FormationHpEffectPlan<'_>,
+) -> GameResult<Vec<GameEvent>> {
+    let previous =
+        TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::PreviousPlayer)?;
+    match element {
+        Element::Wood => Ok(vec![formation_effect_hp_event(
+            state, effect, player, player, 20,
+        )?]),
+        Element::Fire => Ok(vec![formation_effect_hp_event(
+            state, effect, player, &previous, -20,
+        )?]),
+        Element::Metal => inspect_and_discard_events(state, player, &previous, THOUSAND_RESONANCE),
+        Element::Water => Ok(vec![turn_draw_bonus_event(state, player, 2)]),
+        Element::Earth => Ok(vec![set_shield_event(state, player, 15)]),
+    }
+}
+
+fn myriad_primary_events_in_effect(
+    state: &GameState,
+    player: &PlayerId,
+    effect: &mut crate::domain::hp::FormationHpEffectPlan<'_>,
+) -> GameResult<Vec<GameEvent>> {
     let previous =
         TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::PreviousPlayer)?;
     Ok(vec![
-        change_hp_event(state, &previous, -20)?,
-        change_hp_event(state, player, 20)?,
+        formation_effect_hp_event(state, effect, player, &previous, -20)?,
+        formation_effect_hp_event(state, effect, player, player, 20)?,
         set_shield_event(state, player, 15),
         turn_draw_bonus_event(state, player, 1),
     ])
 }
 
-fn change_hp_event(state: &GameState, player: &PlayerId, delta: i32) -> GameResult<GameEvent> {
+fn formation_effect_hp_event(
+    state: &GameState,
+    effect: &mut crate::domain::hp::FormationHpEffectPlan<'_>,
+    performer: &PlayerId,
+    player: &PlayerId,
+    delta: i32,
+) -> GameResult<GameEvent> {
     let team = TurnOrderTargets::new(state).team_of(player)?;
-    let old_hp = state
-        .hp
-        .iter()
-        .find(|entry| entry.team == team)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?
-        .hp;
-    let initial = state.initial_hp(&team).unwrap_or(old_hp.max(0));
-    let effective_delta = if delta > 0 && crate::rules::jianghu::player_has_poison(state, player) {
-        0
+    let request = if delta > 0 && crate::rules::jianghu::player_has_poison(state, player) {
+        HpChangeRequest::Prevented(delta)
     } else {
-        delta
+        crate::rules::base::formation_use::formation_hp_request_without_team_poison(
+            state, performer, &team, delta,
+        )
     };
-    let new_hp = (old_hp + effective_delta).clamp(0, initial);
     Ok(GameEvent::HpChanged {
-        change: HpChangeDelta {
-            team,
-            old_hp,
-            delta,
-            new_hp,
-            effective_delta: new_hp - old_hp,
-        },
+        change: effect.plan(&team, request)?,
     })
 }
 
@@ -1051,9 +1101,10 @@ pub(crate) fn void_transcendence_events(
     state: &GameState,
     player: &PlayerId,
     cards: &[CardInstanceId],
-) -> GameResult<Vec<GameEvent>> {
+    hp: &mut HpChangePlan,
+) -> GameResult<Option<(Vec<GameEvent>, crate::domain::hp::FormationHpEffectOutcome)>> {
     if crate::rules::pouch::profession_is_suppressed(state, player) {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let is_void_profession = state.profession_for(player).is_some_and(|profession| {
         crate::rules::profession::inherits_from(
@@ -1069,12 +1120,14 @@ pub(crate) fn void_transcendence_events(
                 .is_some_and(|level| level == 5)
         });
     if !is_void_profession || !uses_three_fives {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let previous = state.profession_for(player).cloned();
     let profession = ProfessionId::new(VOID_DESTROYER_ID);
     let opposing =
         TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::PreviousPlayer)?;
+    let mut effect = hp.begin_formation_effect();
+    let hp_event = formation_effect_hp_event(state, &mut effect, player, &opposing, -20)?;
     let mut events = vec![
         GameEvent::ProfessionTransformed {
             player: player.clone(),
@@ -1082,7 +1135,7 @@ pub(crate) fn void_transcendence_events(
             profession: profession.clone(),
             reason: "confluence:void-seeking".to_string(),
         },
-        change_hp_event(state, &opposing, -20)?,
+        hp_event,
     ];
     events.extend(profession_acquired_events(
         state,
@@ -1090,7 +1143,7 @@ pub(crate) fn void_transcendence_events(
         previous.as_ref(),
         &profession,
     ));
-    Ok(events)
+    Ok(Some((events, effect.finish())))
 }
 
 pub(crate) fn void_realm_protects(state: &GameState, player: &PlayerId) -> bool {
@@ -1452,6 +1505,7 @@ impl crate::rules::profession::activated::ActivatedAbilityProvider for Activated
 
     const MODULE_ID: &'static str = CONFLUENCE_GENERATION_MODULE_ID;
 
+    #[cfg(any(debug_assertions, test))]
     fn kinds() -> &'static [Self::Kind] {
         &[
             ActivatedAbility::Tuning,

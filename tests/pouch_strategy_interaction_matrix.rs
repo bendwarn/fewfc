@@ -3777,7 +3777,7 @@ fn pouch_deceive_heaven_temporary_fire_star_matrix_keeps_draw_under_defense_and_
                 attacker,
                 formation_id: attack_formation,
                 point_breakdown,
-                hp_change,
+                hp_changes,
                 elemental_context_update: Some(effects),
                 ..
             },
@@ -3796,7 +3796,7 @@ fn pouch_deceive_heaven_temporary_fire_star_matrix_keeps_draw_under_defense_and_
             && attack_formation == "yinghuo-heaven-blazing"
             && point_breakdown.base_points == 18
             && point_breakdown.final_amount == 18
-            && hp_change.effective_delta == 0
+            && hp_changes.is_empty()
             && effects.turn_draw_bonus_changes
                 == vec![fewfc::domain::TurnDrawBonusDelta {
                     player: p1.clone(),

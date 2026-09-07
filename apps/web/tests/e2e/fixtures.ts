@@ -258,10 +258,11 @@ async function waitForActiveMatch(page: Page) {
 
 /** 戰局紀錄的準備組是開局後向玩家說明規則配置的公開介面。 */
 export async function battleRecordEntry(page: Page, title: string) {
-  await expect(page.getByRole('heading', { name: '戰局紀錄' })).toBeVisible()
-  const entry = page.getByRole('listitem').filter({
-    has: page.getByText(title, { exact: true }),
-  })
+  // ModalShell 開啟時會正確將背景設為 inert；公開戰局紀錄仍以 DOM 中的
+  // event panel 作為同步依據，不應透過可存取樹判斷被 modal 暫時遮住的 heading。
+  const heading = page.locator('.game-sidebar .event-panel .panel-title h2')
+  await expect(heading).toHaveText('戰局紀錄')
+  const entry = page.locator('.game-sidebar .event-feed li').filter({ hasText: title })
   await expect(entry).toBeVisible()
   return entry
 }

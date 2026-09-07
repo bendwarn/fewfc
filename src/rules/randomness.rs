@@ -58,9 +58,12 @@ pub(crate) fn resolve_trusted_randomness(
     answer: &TrustedRandomnessAnswer,
 ) -> GameResult<Vec<crate::domain::GameEvent>> {
     let input = validate_pending_input(state, answer)?;
+    // 受信任隨機性的結果與其 continuation 是同一個 outer resolution。
+    let mut hp = crate::domain::hp::HpChangePlan::new(state)?;
     crate::rules::pending_resolution::resume(
         state,
         crate::rules::pending_resolution::ValidatedPendingInput::Randomness(input),
+        &mut hp,
     )
 }
 

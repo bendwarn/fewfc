@@ -1,6 +1,7 @@
 //! 領域模型：遊戲狀態、識別碼、事件、命令與規則不變量。
 
 pub(crate) mod discard;
+pub(crate) mod hp;
 pub mod targeting;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -1654,12 +1655,21 @@ pub enum PendingResolution {
     TurnDrawDiscard,
     HolyWindTakeHighest,
     ChaosReturnTwo,
-    EchoPureFireTarget,
-    EchoSplitEarthFormation,
-    EchoRingingMetalDeckCard,
-    EchoPlantEarthMelody,
-    EchoCost {
+    MelodyPureFireTarget {
+        origin: MelodyExecutionOrigin,
+    },
+    MelodySplitEarthFormation {
+        origin: MelodyExecutionOrigin,
+    },
+    MelodyRingingMetalDeckCard {
+        origin: MelodyExecutionOrigin,
+    },
+    MelodyPlantEarthMelody {
+        origin: MelodyExecutionOrigin,
+    },
+    MelodyCost {
         melody_id: String,
+        origin: MelodyExecutionOrigin,
     },
     HeroRevelation,
     HeroRevelationKeepOne,
@@ -1693,8 +1703,12 @@ pub enum PendingResolution {
     TribulationEarthRendingCard,
     TribulationRustedForestDiscardShuffle,
     TribulationRustedForestShuffle,
-    EchoRingingMetalRecycleDiscard,
-    EchoRingingMetalPostSearch,
+    MelodyRingingMetalRecycleDiscard {
+        origin: MelodyExecutionOrigin,
+    },
+    MelodyRingingMetalPostSearch {
+        origin: MelodyExecutionOrigin,
+    },
     ConfluenceClearWindTenThousandMiles,
 }
 
@@ -1778,6 +1792,16 @@ pub struct FormationSuppression {
     pub target: PlayerId,
     pub formation_id: String,
     pub expires_on_turn_number: u64,
+    pub origin: MelodyExecutionOrigin,
+}
+
+/// 延遲或待處理陣法效果產物保留的標準來源。
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MelodyExecutionOrigin {
+    FormationUse,
+    Echo,
+    PlantedEarth,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2051,11 +2075,13 @@ pub enum GameEvent {
         formation_id: String,
         used_cards: Vec<CardInstanceId>,
         point_breakdown: AttackPointBreakdown,
-        hp_change: HpChangeDelta,
+        /// 攻擊解析內的 HP 差異依 planner 呼叫順序保存。這是攻擊事件唯一的
+        /// HP 載體，回放不可另行排序或從巢狀效果讀取 HP。
+        #[serde(rename = "hpChanges")]
+        hp_changes: Vec<ResolvedHpChange>,
         shield_change: Option<ShieldChangeDelta>,
         card_moves: Vec<CardMoveDelta>,
-        /// 此攻擊完整的同時語意結果。之所以可選，僅是為了向後相容地解碼攻擊
-        /// 解析改為原子化之前寫入的記錄。
+        /// 此攻擊完整的同時語意結果；HP 差異不屬於此巢狀 payload。
         #[serde(default)]
         elemental_context_update: Option<AttackResolutionEffects>,
     },
@@ -2159,15 +2185,11 @@ pub enum GameEvent {
         damage: i32,
         remaining_turns: u32,
         hp_change: HpChangeDelta,
-        #[serde(default)]
-        shared_fate_hp_change: Option<HpChangeDelta>,
     },
     JianghuDelayedDamageResolved {
         owner: PlayerId,
         status_id: String,
         hp_change: HpChangeDelta,
-        #[serde(default)]
-        shared_fate_hp_change: Option<HpChangeDelta>,
     },
     LimitedUseChanged {
         owner: PlayerId,
@@ -2509,8 +2531,6 @@ pub struct AttackResolutionEffects {
     #[serde(default)]
     pub elemental_context_update: Option<LastElementalAttackUpdate>,
     #[serde(default)]
-    pub hp_changes: Vec<HpChangeDelta>,
-    #[serde(default)]
     pub shield_changes: Vec<ShieldChangeDelta>,
     #[serde(default)]
     pub card_moves: Vec<CardMoveDelta>,
@@ -2524,6 +2544,24 @@ pub struct AttackResolutionEffects {
     pub turn_draw_bonus_changes: Vec<TurnDrawBonusDelta>,
     #[serde(default)]
     pub environment_transfers: Vec<EnvironmentTransferDelta>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedHpChange {
+    pub role: HpChangeRole,
+    pub change: HpChangeDelta,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum HpChangeRole {
+    FormationEffect,
+    AttackDamage { target: PlayerId },
+    TriggeredEffect,
 }
 
 impl AttackResolutionEffects {
@@ -2576,12 +2614,31 @@ pub struct EnvironmentTransferDelta {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct HpChangeDelta {
-    pub team: TeamId,
-    pub old_hp: i32,
-    pub delta: i32,
-    pub new_hp: i32,
-    pub effective_delta: i32,
+    team: TeamId,
+    old_hp: i32,
+    delta: i32,
+    new_hp: i32,
+    effective_delta: i32,
+}
+
+impl HpChangeDelta {
+    pub fn team(&self) -> &TeamId {
+        &self.team
+    }
+    pub fn old_hp(&self) -> i32 {
+        self.old_hp
+    }
+    pub fn delta(&self) -> i32 {
+        self.delta
+    }
+    pub fn new_hp(&self) -> i32 {
+        self.new_hp
+    }
+    pub fn effective_delta(&self) -> i32 {
+        self.effective_delta
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2826,6 +2883,7 @@ pub enum EngineInvariantError {
     FormationAreaMissing { player: PlayerId },
     DuplicateProfession { player: PlayerId },
     ZoneOwnershipInconsistency { card: CardInstanceId },
+    InvalidHpLedger { reason: String },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

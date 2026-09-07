@@ -102,12 +102,15 @@ fn falling_wood_echo_matrix_pays_cost_schedules_then_resolves_at_its_next_legal_
         falling_wood.as_slice(),
         [
             GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
+            GameEvent::HpChanged { change },
             GameEvent::ChoiceRequested { choice, resolution },
         ] if player == &p1
             && formation_id == "echo:falling-wood"
             && cards == &vec![card(19), card(20)]
+            && change.delta() == 15
+            && change.effective_delta() == 0
             && choice.player == p1
-            && matches!(resolution, fewfc::domain::PendingResolution::EchoCost { .. })
+            && matches!(resolution, fewfc::domain::PendingResolution::MelodyCost { .. })
     ));
     let cost_choice_id = record.state().pending_choice.as_ref().unwrap().choice_id;
     let paid = record
@@ -177,7 +180,9 @@ fn falling_wood_echo_matrix_pays_cost_schedules_then_resolves_at_its_next_legal_
     let hp_before_echo = p2_attack
         .iter()
         .find_map(|event| match event {
-            GameEvent::AttackResolved { hp_change, .. } => Some(hp_change.new_hp),
+            GameEvent::AttackResolved { hp_changes, .. } => {
+                hp_changes.last().map(|resolved| resolved.change.new_hp())
+            }
             _ => None,
         })
         .expect("P2's legal elemental Formation must resolve an attack");
@@ -215,11 +220,11 @@ fn falling_wood_echo_matrix_pays_cost_schedules_then_resolves_at_its_next_legal_
                 melody_id: "echo:falling-wood".to_string(),
                 due_turn_number: 3,
             }
-            && change.team == fewfc::domain::TeamId::new("team:p1")
-            && change.old_hp == hp_before_echo
-            && change.delta == 15
-            && change.new_hp == (hp_before_echo + 15).min(200)
-            && change.effective_delta == (hp_before_echo + 15).min(200) - hp_before_echo
+            && change.team() == &fewfc::domain::TeamId::new("team:p1")
+            && change.old_hp() == hp_before_echo
+            && change.delta() == 15
+            && change.new_hp() == (hp_before_echo + 15).min(200)
+            && change.effective_delta() == (hp_before_echo + 15).min(200) - hp_before_echo
             && player == &p1
             && melody_id == "echo:falling-wood"
             && started == &p1

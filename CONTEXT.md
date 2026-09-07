@@ -62,7 +62,8 @@ _Avoid_: song, Player ability
 
 **Echo (迴響)**:
 The one-time repetition of a Melody's main effect at its performing Player's
-next Turn Start. It is not a new Formation Use and cannot trigger another Echo.
+next Turn Start. It is neither a new Formation Use nor a Formation effect, and
+cannot trigger another Echo.
 _Avoid_: Formation replay, recurring effect
 
 **Echo Cost (迴響代價)**:
@@ -953,9 +954,10 @@ The rule-recognized type of a status effect.
 _Avoid_: string metadata
 
 **Jianghu State (江湖狀態)**:
-The official collective term used only for the 千鋒, 踏雪, and 中毒 ongoing
-Formation effects defined by the Jianghu Rule Module. Similar ongoing effects
-from other rules are not Jianghu States.
+The official collective term used only for the 千鋒, 踏雪, and 中毒 continuous
+Formation effects whose timing and behavior are owned by the Jianghu State
+defined by the Jianghu Rule Module. Similar ongoing effects from other rules
+are not Jianghu States.
 _Avoid_: generic Status Effect, all ongoing Formation effects
 
 **Limited Use (次數限制)**:

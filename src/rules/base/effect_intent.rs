@@ -1,10 +1,12 @@
 use crate::domain::{
     CardInstanceId, CardMoveDelta, ChoiceRequest, EngineInvariantError, GameError, GameEvent,
-    GameResult, GameState, PlayerId, TeamId, ValidationError,
+    GameResult, PlayerId, TeamId, ValidationError,
+    hp::{HpChangePlan, HpChangeRequest},
 };
 use crate::rules::{AttackCategory, PointFormula};
 
 use super::attack_resolution::{self, AttackRequest, AttackResolutionMode};
+use crate::rules::formation_effect_sequence::{FormationEffectSequence, ResolvedFormationEffect};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::rules::base) enum EffectIntent {
@@ -42,84 +44,101 @@ pub(in crate::rules::base) enum EffectIntent {
     },
 }
 
-pub(in crate::rules::base) fn effect_intent_events(
-    state: &GameState,
+/// 陣法 outer resolution 可傳入既有 ledger；Echo/一般 continuation 則不帶 performer。
+pub(in crate::rules::base) fn effect_intent_events_with_plan(
     intents: Vec<EffectIntent>,
-) -> GameResult<Vec<GameEvent>> {
+    hp: &mut HpChangePlan,
+    formation_performer: Option<&PlayerId>,
+    sequence: &mut FormationEffectSequence,
+) -> GameResult<()> {
     let mut requested_choice_player = None;
-    let mut events = Vec::new();
 
-    for intent in intents {
-        let event = match intent {
+    let mut intents = intents.into_iter().peekable();
+    while let Some(intent) = intents.next() {
+        match intent {
             EffectIntent::SetShield { player, value } => {
-                let old_value = state.shield(&player).unwrap_or(0);
+                let old_value = sequence.state().shield(&player).unwrap_or(0);
                 if old_value == value {
                     continue;
                 }
-                GameEvent::ShieldChanged {
+                sequence.extend([GameEvent::ShieldChanged {
                     player,
                     old_value,
                     delta: value - old_value,
                     new_value: value,
-                }
+                }]);
             }
             EffectIntent::ChangeHp { team, delta } => {
-                let delta = if delta > 0 && crate::rules::jianghu::team_has_poison(state, &team) {
-                    0
+                let mut changes = vec![(team, delta)];
+                while matches!(intents.peek(), Some(EffectIntent::ChangeHp { .. })) {
+                    let Some(EffectIntent::ChangeHp { team, delta }) = intents.next() else {
+                        unreachable!("peeked ChangeHp must remain available");
+                    };
+                    changes.push((team, delta));
+                }
+                if formation_performer.is_some() {
+                    let mut effect = hp.begin_formation_effect();
+                    let events = changes
+                        .into_iter()
+                        .map(|(team, delta)| {
+                            let request = crate::rules::base::formation_use::formation_hp_request(
+                                sequence.state(),
+                                formation_performer.expect("formation performer was checked"),
+                                &team,
+                                delta,
+                            );
+                            Ok(GameEvent::HpChanged {
+                                change: effect.plan(&team, request)?,
+                            })
+                        })
+                        .collect::<GameResult<Vec<_>>>()?;
+                    let outcome = effect.finish();
+                    sequence.append(hp, ResolvedFormationEffect::new(events, outcome))?;
                 } else {
-                    delta
-                };
-                if delta == 0 {
-                    continue;
+                    for (team, delta) in changes {
+                        let request = if delta > 0
+                            && crate::rules::jianghu::team_has_poison(sequence.state(), &team)
+                        {
+                            HpChangeRequest::Prevented(delta)
+                        } else {
+                            HpChangeRequest::By(delta)
+                        };
+                        sequence.extend([GameEvent::HpChanged {
+                            change: hp.plan(&team, request)?,
+                        }]);
+                    }
                 }
-                let old_hp = state
-                    .hp
-                    .iter()
-                    .find(|team_hp| team_hp.team == team)
-                    .ok_or_else(|| {
-                        GameError::Validation(ValidationError::MissingTeamHp(team.clone()))
-                    })?
-                    .hp;
-                let initial_hp = state.initial_hp(&team).ok_or_else(|| {
-                    GameError::Validation(ValidationError::MissingTeamHp(team.clone()))
-                })?;
-                let new_hp = (old_hp + delta).clamp(0, initial_hp);
-                GameEvent::HpChanged {
-                    change: crate::domain::HpChangeDelta {
-                        team,
-                        old_hp,
-                        delta,
-                        new_hp,
-                        effective_delta: new_hp - old_hp,
-                    },
-                }
+                continue;
             }
-            EffectIntent::MoveCards { card_moves } => GameEvent::CardsMoved { card_moves },
-            EffectIntent::AddStatus { status } => GameEvent::StatusAdded {
-                status: crate::rules::jianghu::shorten_enemy_status(state, status),
-            },
+            EffectIntent::MoveCards { card_moves } => {
+                sequence.extend([GameEvent::CardsMoved { card_moves }]);
+            }
+            EffectIntent::AddStatus { status } => sequence.extend([GameEvent::StatusAdded {
+                status: crate::rules::jianghu::shorten_enemy_status(sequence.state(), status),
+            }]),
             EffectIntent::EstablishCounterEffect { owner, effect_id } => {
-                GameEvent::CounterEffectEstablished { owner, effect_id }
+                sequence.extend([GameEvent::CounterEffectEstablished { owner, effect_id }])
             }
             EffectIntent::InspectHand {
                 viewer,
                 target,
                 cards,
-            } => GameEvent::HandInspected {
+            } => sequence.extend([GameEvent::HandInspected {
                 viewer,
                 target,
                 cards,
-            },
+            }]),
             EffectIntent::ResolveCopiedAttack {
                 formation_id,
                 category,
                 point_formula,
                 used_cards,
             } => {
-                events.extend(attack_resolution::resolve(
-                    state,
+                sequence.extend(attack_resolution::resolve_with_plan(
+                    sequence.state(),
                     AttackRequest {
-                        attacker: state
+                        attacker: sequence
+                            .state()
                             .current_player()
                             .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?
                             .clone(),
@@ -130,8 +149,11 @@ pub(in crate::rules::base) fn effect_intent_events(
                         damage_prevented: false,
                         split_attack_damage: false,
                         mode: AttackResolutionMode::CopiedEffect,
-                        pre_resolution_effects: crate::domain::AttackResolutionEffects::default(),
+                        pre_resolution_effects:
+                            super::attack_resolution::AttackPreResolutionEffects::default(),
+                        trailing_hp_role: crate::domain::HpChangeRole::TriggeredEffect,
                     },
+                    hp,
                 )?);
                 continue;
             }
@@ -145,20 +167,34 @@ pub(in crate::rules::base) fn effect_intent_events(
                 }
 
                 requested_choice_player = Some(request.player.clone());
-                crate::rules::pending_choice::request_event(state, request)?
+                sequence.extend([crate::rules::pending_choice::request_event(
+                    sequence.state(),
+                    request,
+                )?]);
             }
         };
-
-        events.push(event);
     }
 
-    Ok(events)
+    Ok(())
+}
+
+#[cfg(test)]
+fn effect_intent_events(
+    state: &crate::domain::GameState,
+    intents: Vec<EffectIntent>,
+) -> GameResult<Vec<GameEvent>> {
+    let mut hp = HpChangePlan::new(state)?;
+    let mut sequence = FormationEffectSequence::new(state);
+    effect_intent_events_with_plan(intents, &mut hp, None, &mut sequence)?;
+    Ok(sequence.into_events())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{ChoiceRequest, GameSetup, PendingChoiceKind, PendingResolution};
+    use crate::domain::{
+        ChoiceRequest, GameSetup, GameState, PendingChoiceKind, PendingResolution,
+    };
 
     fn state() -> GameState {
         GameState::from_setup(&GameSetup::two_player(

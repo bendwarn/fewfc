@@ -346,7 +346,8 @@ fn lethal_formation_does_not_apply_post_formation_statuses() {
 
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::AttackResolved { hp_change, .. } if hp_change.new_hp == 0
+        GameEvent::AttackResolved { hp_changes, .. }
+            if hp_changes.iter().any(|resolved| resolved.change.new_hp() == 0)
     )));
     assert!(
         !events

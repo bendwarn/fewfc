@@ -919,12 +919,12 @@ fn blaze_resonance_triggers_shared_fate_for_a_death_spirit_on_the_losing_team() 
     assert!(events.iter().any(|event| matches!(
         event,
         GameEvent::HpChanged { change }
-            if change.team == TeamId::new("team:a") && change.effective_delta == -20
+            if change.team() == &TeamId::new("team:a") && change.effective_delta() == -20
     )));
     assert!(events.iter().any(|event| matches!(
         event,
         GameEvent::HpChanged { change }
-            if change.team == TeamId::new("team:b") && change.delta == -10
+            if change.team() == &TeamId::new("team:b") && change.delta() == -10
     )));
 }
 
@@ -965,7 +965,7 @@ fn forest_resonance_recovery_restriction_checks_performer_not_teammate() {
     assert!(events.iter().any(|event| matches!(
         event,
         GameEvent::HpChanged { change }
-            if change.team == TeamId::new("team:b") && change.effective_delta == 20
+            if change.team() == &TeamId::new("team:b") && change.effective_delta() == 20
     )));
 }
 
@@ -1014,7 +1014,7 @@ fn thousand_resonance_resolves_residual_mirror_choice_before_selected_resonance(
     assert!(!events.iter().any(|event| matches!(
         event,
         GameEvent::HpChanged { change }
-            if change.team == TeamId::new("team:a") && change.effective_delta < 0
+            if change.team() == &TeamId::new("team:a") && change.effective_delta() < 0
     )));
 
     for event in &events {
@@ -1032,7 +1032,7 @@ fn thousand_resonance_resolves_residual_mirror_choice_before_selected_resonance(
     assert!(events.iter().any(|event| matches!(
         event,
         GameEvent::HpChanged { change }
-            if change.team == TeamId::new("team:a") && change.new_hp == 0
+            if change.team() == &TeamId::new("team:a") && change.new_hp() == 0
     )));
 }
 
@@ -1096,7 +1096,7 @@ fn myriad_resonance_defers_game_outcome_until_mirror_choice_finishes() {
     assert!(events.iter().any(|event| matches!(
         event,
         GameEvent::HpChanged { change }
-            if change.team == TeamId::new("team:a") && change.new_hp == 0
+            if change.team() == &TeamId::new("team:a") && change.new_hp() == 0
     )));
     assert!(matches!(events.last(), Some(GameEvent::GameEnded { .. })));
     for event in &events {

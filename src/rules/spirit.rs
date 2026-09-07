@@ -1,8 +1,9 @@
 use crate::domain::{
     CardInstanceId, CardZone, DeckPlacement, Element, GameError, GameEvent, GameResult, GameState,
-    HpChangeDelta, PendingResolution, PlayerId, PlayerSpirit, RandomnessDeck, SpiritBreakReason,
-    SpiritKind, SpiritPowerDelta, SpiritSkill, StatusDuration, StatusEffect, StatusOwner,
-    TeamBloomResolution, ValidationError,
+    PendingResolution, PlayerId, PlayerSpirit, RandomnessDeck, SpiritBreakReason, SpiritKind,
+    SpiritPowerDelta, SpiritSkill, StatusDuration, StatusEffect, StatusOwner, TeamBloomResolution,
+    ValidationError,
+    hp::{HpChangePlan, HpChangeRequest},
 };
 
 use super::{
@@ -74,6 +75,7 @@ pub(crate) fn stone_shield_prevents_attack(state: &GameState, attacker: &PlayerI
 pub(crate) fn append_automatic_blooms(
     state: &GameState,
     events: &mut Vec<GameEvent>,
+    hp: &mut HpChangePlan,
 ) -> GameResult<()> {
     if !state.has_rule_module(crate::domain::SPIRIT_MODULE_ID) {
         return Ok(());
@@ -112,22 +114,21 @@ pub(crate) fn append_automatic_blooms(
         }
 
         let recovery = i32::try_from(spirit_changes.len())
-            .unwrap_or(i32::MAX)
-            .saturating_mul(40);
-        let initial_hp = projected.initial_hp(&team_hp.team).ok_or_else(|| {
-            GameError::Validation(ValidationError::MissingTeamHp(team_hp.team.clone()))
-        })?;
-        let new_hp = recovery.min(initial_hp);
+            .map_err(|_| {
+                GameError::EngineInvariant(crate::domain::EngineInvariantError::InvalidHpLedger {
+                    reason: "Bloom Spirit count exceeds i32".to_string(),
+                })
+            })?
+            .checked_mul(40)
+            .ok_or_else(|| {
+                GameError::EngineInvariant(crate::domain::EngineInvariantError::InvalidHpLedger {
+                    reason: "Bloom recovery overflow".to_string(),
+                })
+            })?;
         resolutions.push(TeamBloomResolution {
             team: team_hp.team.clone(),
             spirit_changes,
-            hp_change: HpChangeDelta {
-                team: team_hp.team.clone(),
-                old_hp: 0,
-                delta: recovery,
-                new_hp,
-                effective_delta: new_hp,
-            },
+            hp_change: hp.plan(&team_hp.team, HpChangeRequest::By(recovery))?,
         });
     }
 
@@ -141,6 +142,7 @@ pub(crate) fn void_spirit_shattering_event(
     state: &GameState,
     player: &PlayerId,
     cards: &[CardInstanceId],
+    hp: &mut HpChangePlan,
 ) -> GameResult<GameEvent> {
     let spirit_changes = state
         .spirits
@@ -166,27 +168,36 @@ pub(crate) fn void_spirit_shattering_event(
     let mut owner_counts = std::collections::HashMap::new();
     for owned in &state.spirits {
         let team = team_for_player(state, &owned.player)?;
-        *owner_counts.entry(team).or_insert(0_i32) += 1;
-    }
-    let hp_changes: Vec<HpChangeDelta> = state
-        .hp
-        .iter()
-        .filter_map(|team_hp| {
-            let owner_count = owner_counts.get(&team_hp.team).copied().unwrap_or(0);
-            if owner_count == 0 {
-                return None;
-            }
-            let delta = owner_count.saturating_mul(-20);
-            let new_hp = (team_hp.hp + delta).max(0);
-            Some(HpChangeDelta {
-                team: team_hp.team.clone(),
-                old_hp: team_hp.hp,
-                delta,
-                new_hp,
-                effective_delta: new_hp - team_hp.hp,
+        let count = owner_counts.entry(team).or_insert(0_i32);
+        *count = count.checked_add(1).ok_or_else(|| {
+            GameError::EngineInvariant(crate::domain::EngineInvariantError::InvalidHpLedger {
+                reason: "Void Spirit-Shattering owner count overflow".to_string(),
             })
-        })
-        .collect();
+        })?;
+    }
+    let mut effect = hp.begin_formation_effect();
+    let mut hp_changes = Vec::new();
+    for team_hp in &state.hp {
+        let owner_count = owner_counts.get(&team_hp.team).copied().unwrap_or(0);
+        if owner_count == 0 {
+            continue;
+        }
+        let delta = owner_count.checked_mul(-20).ok_or_else(|| {
+            GameError::EngineInvariant(crate::domain::EngineInvariantError::InvalidHpLedger {
+                reason: "Void Spirit-Shattering HP delta overflow".to_string(),
+            })
+        })?;
+        hp_changes.push(effect.plan(
+            &team_hp.team,
+            crate::rules::base::formation_use::formation_hp_request(
+                state,
+                player,
+                &team_hp.team,
+                delta,
+            ),
+        )?);
+    }
+    let outcome = effect.finish();
     let card_moves = cards
         .iter()
         .copied()
@@ -222,46 +233,38 @@ pub(crate) fn void_spirit_shattering_event(
         })
         .collect::<Vec<_>>();
 
-    let mut hp_after_primary = state
-        .hp
-        .iter()
-        .map(|entry| (entry.team.clone(), entry.hp))
-        .collect::<std::collections::HashMap<_, _>>();
-    for change in &hp_changes {
-        hp_after_primary.insert(change.team.clone(), change.new_hp);
-    }
     let mut shared_fate_counts = std::collections::HashMap::new();
     for owned in state
         .spirits
         .iter()
+        // 本效果固定扣二；只有歸零而破除者不能觸發同命。
         .filter(|owned| owned.spirit == SpiritKind::Death && owned.power > 2)
     {
         let owner_team = team_for_player(state, &owned.player)?;
-        if !hp_changes
-            .iter()
-            .any(|change| change.team == owner_team && change.effective_delta < 0)
-        {
+        if !outcome.actual_hp_loss_teams().contains(&owner_team) {
             continue;
         }
         let target = next_player(state, &owned.player)?;
         let team = team_for_player(state, &target)?;
-        *shared_fate_counts.entry(team).or_insert(0_i32) += 1;
+        let count = shared_fate_counts.entry(team).or_insert(0_i32);
+        *count = count.checked_add(1).ok_or_else(|| {
+            GameError::EngineInvariant(crate::domain::EngineInvariantError::InvalidHpLedger {
+                reason: "Void Spirit-Shattering shared fate count overflow".to_string(),
+            })
+        })?;
     }
-    let shared_fate_hp_changes = shared_fate_counts
-        .into_iter()
-        .map(|(team, count)| {
-            let old_hp = hp_after_primary.get(&team).copied().unwrap_or(0);
-            let delta = count.saturating_mul(-10);
-            let new_hp = (old_hp + delta).max(0);
-            HpChangeDelta {
-                team,
-                old_hp,
-                delta,
-                new_hp,
-                effective_delta: new_hp - old_hp,
-            }
-        })
-        .collect();
+    let mut shared_fate_hp_changes = Vec::new();
+    for team in state.hp.iter().map(|entry| &entry.team) {
+        let Some(count) = shared_fate_counts.get(team).copied() else {
+            continue;
+        };
+        let delta = count.checked_mul(-10).ok_or_else(|| {
+            GameError::EngineInvariant(crate::domain::EngineInvariantError::InvalidHpLedger {
+                reason: "Shared Fate HP delta overflow".to_string(),
+            })
+        })?;
+        shared_fate_hp_changes.push(hp.plan(team, HpChangeRequest::By(delta))?);
+    }
 
     Ok(GameEvent::VoidSpiritShatteringResolved {
         player: player.clone(),
@@ -328,6 +331,27 @@ pub(crate) fn use_skill(
     declared_level: Option<u32>,
     trusted_random_cards: Option<&[CardInstanceId]>,
 ) -> GameResult<Vec<GameEvent>> {
+    let mut hp = HpChangePlan::new(state)?;
+    use_skill_with_plan(
+        state,
+        player,
+        skill,
+        selected_card,
+        declared_level,
+        trusted_random_cards,
+        &mut hp,
+    )
+}
+
+pub(crate) fn use_skill_with_plan(
+    state: &GameState,
+    player: &PlayerId,
+    skill: SpiritSkill,
+    selected_card: Option<CardInstanceId>,
+    declared_level: Option<u32>,
+    trusted_random_cards: Option<&[CardInstanceId]>,
+    hp: &mut HpChangePlan,
+) -> GameResult<Vec<GameEvent>> {
     if !state.has_rule_module(crate::domain::SPIRIT_MODULE_ID) {
         return Err(GameError::Validation(ValidationError::SpiritRuleDisabled));
     }
@@ -378,6 +402,7 @@ pub(crate) fn use_skill(
         selected_card,
         declared_level,
         trusted_random_cards,
+        hp,
     )?;
     if effect_events
         .iter()
@@ -396,7 +421,7 @@ pub(crate) fn use_skill(
         declared_level,
     }];
     events.extend(effect_events);
-    crate::rules::dark::append_mischief_events(state, &mut events)?;
+    crate::rules::dark::append_mischief_events(state, hp, &mut events)?;
     let mut projected = state.clone();
     for event in &events {
         crate::rules::projection::apply_event(&mut projected, event);
@@ -575,20 +600,21 @@ fn skill_effect_events(
     selected_card: Option<CardInstanceId>,
     declared_level: Option<u32>,
     trusted_random_cards: Option<&[CardInstanceId]>,
+    hp: &mut HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     match skill {
         SpiritSkill::FlyingBlade => Ok(vec![hp_event(
-            state,
+            hp,
             &team_for_player(state, &previous_player(state, player)?)?,
             -10,
         )?]),
         SpiritSkill::SwordRain => Ok(vec![hp_event(
-            state,
+            hp,
             &team_for_player(state, &previous_player(state, player)?)?,
             -40,
         )?]),
-        SpiritSkill::Fragrance => Ok(vec![hp_event(state, &team_for_player(state, player)?, 10)?]),
-        SpiritSkill::Bloom => Ok(vec![hp_event(state, &team_for_player(state, player)?, 40)?]),
+        SpiritSkill::Fragrance => Ok(vec![hp_event(hp, &team_for_player(state, player)?, 10)?]),
+        SpiritSkill::Bloom => Ok(vec![hp_event(hp, &team_for_player(state, player)?, 40)?]),
         SpiritSkill::Flow => {
             let card = selected_card.expect("validated Flow must select one Card");
             let old_value = state
@@ -730,7 +756,7 @@ fn skill_effect_events(
                     .collect::<GameResult<Vec<_>>>()?,
             }];
             events.push(hp_event(
-                state,
+                hp,
                 &team_for_player(state, &target)?,
                 -(highest as i32 * 4),
             )?);
@@ -761,31 +787,18 @@ fn skill_effect_events(
 pub(crate) fn after_death_omen_randomness_events(
     state: &GameState,
     player: &PlayerId,
+    hp: &mut HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
-    let mut events = use_skill(state, player, SpiritSkill::DeathOmen, None, None, None)?;
-    append_automatic_blooms(state, &mut events)?;
-    Ok(events)
+    use_skill_with_plan(state, player, SpiritSkill::DeathOmen, None, None, None, hp)
 }
 
-fn hp_event(state: &GameState, team: &crate::domain::TeamId, delta: i32) -> GameResult<GameEvent> {
-    let old_hp = state
-        .hp
-        .iter()
-        .find(|owned| &owned.team == team)
-        .map(|owned| owned.hp)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
-    let initial_hp = state
-        .initial_hp(team)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
-    let new_hp = (old_hp + delta).clamp(0, initial_hp);
+fn hp_event(
+    hp: &mut HpChangePlan,
+    team: &crate::domain::TeamId,
+    delta: i32,
+) -> GameResult<GameEvent> {
     Ok(GameEvent::HpChanged {
-        change: HpChangeDelta {
-            team: team.clone(),
-            old_hp,
-            delta,
-            new_hp,
-            effective_delta: new_hp - old_hp,
-        },
+        change: hp.plan(team, HpChangeRequest::By(delta))?,
     })
 }
 

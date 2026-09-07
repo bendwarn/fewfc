@@ -26,11 +26,15 @@ pub(crate) enum WaitingMedium {
 pub(crate) fn resume(
     state: &GameState,
     input: ValidatedPendingInput,
+    hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
-    let events = match input {
-        ValidatedPendingInput::Choice(input) => resume_choice(state, input)?,
-        ValidatedPendingInput::Randomness(input) => resume_randomness(state, input)?,
+    let mut events = match input {
+        ValidatedPendingInput::Choice(input) => resume_choice(state, input, hp)?,
+        ValidatedPendingInput::Randomness(input) => resume_randomness(state, input, hp)?,
     };
+    // Pending input 已是新的 outer resolution 的起點。所有分支完成後只在這裡
+    // 檢查一次綻放，讓它與分支內的 HP 變化共用同一份 ledger。
+    crate::rules::spirit::append_automatic_blooms(state, &mut events, hp)?;
     let events = crate::rules::base::formation_use::complete(state, events)?;
     ensure_waiting_invariant(state, &events)?;
     Ok(events)
@@ -39,6 +43,7 @@ pub(crate) fn resume(
 fn resume_choice(
     state: &GameState,
     input: crate::rules::pending_choice::ValidatedPendingChoiceInput,
+    hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     let (choice, resolution, player, choice_id, answer) = input.into_parts();
     if waiting_medium(&resolution) != WaitingMedium::Choice {
@@ -58,13 +63,13 @@ fn resume_choice(
         PendingResolution::TurnDrawDiscard => {
             resume_turn_draw(&projected, &player, answer, &mut events)?;
         }
-        PendingResolution::EchoPureFireTarget
-        | PendingResolution::EchoSplitEarthFormation
-        | PendingResolution::EchoRingingMetalDeckCard
-        | PendingResolution::EchoPlantEarthMelody
-        | PendingResolution::EchoCost { .. } => {
+        PendingResolution::MelodyPureFireTarget { .. }
+        | PendingResolution::MelodySplitEarthFormation { .. }
+        | PendingResolution::MelodyRingingMetalDeckCard { .. }
+        | PendingResolution::MelodyPlantEarthMelody { .. }
+        | PendingResolution::MelodyCost { .. } => {
             if let Some(resumed) =
-                crate::rules::echo::answer_choice(&projected, &player, &resolution, &answer)?
+                crate::rules::echo::answer_choice(&projected, &player, &resolution, &answer, hp)?
             {
                 events.extend(resumed);
             }
@@ -72,7 +77,7 @@ fn resume_choice(
         PendingResolution::TribulationEarthRendingEnvironment
         | PendingResolution::TribulationEarthRendingCard => {
             if let Some(resumed) =
-                crate::rules::tribulation::answer_choice(&projected, &resolution, &answer)?
+                crate::rules::tribulation::answer_choice(&projected, &resolution, &answer, hp)?
             {
                 events.extend(resumed);
             }
@@ -107,6 +112,7 @@ fn resume_choice(
                 &player,
                 &resolution,
                 cards,
+                hp,
             )?);
         }
         PendingResolution::TurnDraw
@@ -118,8 +124,8 @@ fn resume_choice(
         | PendingResolution::PouchSheepStealing { .. }
         | PendingResolution::TribulationRustedForestDiscardShuffle
         | PendingResolution::TribulationRustedForestShuffle
-        | PendingResolution::EchoRingingMetalRecycleDiscard
-        | PendingResolution::EchoRingingMetalPostSearch
+        | PendingResolution::MelodyRingingMetalRecycleDiscard { .. }
+        | PendingResolution::MelodyRingingMetalPostSearch { .. }
         | PendingResolution::HeroRevelation
         | PendingResolution::JianghuAzureCloudStepDraw
         | PendingResolution::ConfluenceClearWindTenThousandMiles
@@ -180,6 +186,7 @@ fn resume_turn_draw(
 fn resume_randomness(
     state: &GameState,
     input: crate::rules::randomness::ValidatedPendingRandomnessInput,
+    hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     let (resolution, request_id, operation, shuffled_order) = input.into_parts();
     if waiting_medium(&resolution) != WaitingMedium::Randomness {
@@ -206,6 +213,7 @@ fn resume_randomness(
         &projected,
         &resolution,
         operation.destination_deck(),
+        hp,
     )?);
     Ok(events)
 }
@@ -214,14 +222,15 @@ fn after_randomness_events(
     state: &GameState,
     resolution: &PendingResolution,
     resolved_deck: &RandomnessDeck,
+    hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     match resolution {
         PendingResolution::TurnDraw => Ok(Vec::new()),
         PendingResolution::SpiritDeathOmen { player } => {
-            crate::rules::spirit::after_death_omen_randomness_events(state, player)
+            crate::rules::spirit::after_death_omen_randomness_events(state, player, hp)
         }
-        PendingResolution::EchoRingingMetalRecycleDiscard
-        | PendingResolution::EchoRingingMetalPostSearch => {
+        PendingResolution::MelodyRingingMetalRecycleDiscard { .. }
+        | PendingResolution::MelodyRingingMetalPostSearch { .. } => {
             crate::rules::echo::after_randomness_events(state, resolution)
         }
         PendingResolution::HeroRevelation => {
@@ -255,19 +264,19 @@ fn after_randomness_events(
             }])
         }
         PendingResolution::TribulationRustedForestDiscardShuffle => {
-            crate::rules::tribulation::after_rusted_forest_discard_shuffle_events(state)
+            crate::rules::tribulation::after_rusted_forest_discard_shuffle_events(state, hp)
         }
         PendingResolution::TribulationRustedForestShuffle => {
-            crate::rules::tribulation::after_rusted_forest_randomness_events(state)
+            crate::rules::tribulation::after_rusted_forest_randomness_events(state, hp)
         }
         PendingResolution::TurnDrawDiscard
         | PendingResolution::HolyWindTakeHighest
         | PendingResolution::ChaosReturnTwo
-        | PendingResolution::EchoPureFireTarget
-        | PendingResolution::EchoSplitEarthFormation
-        | PendingResolution::EchoRingingMetalDeckCard
-        | PendingResolution::EchoPlantEarthMelody
-        | PendingResolution::EchoCost { .. }
+        | PendingResolution::MelodyPureFireTarget { .. }
+        | PendingResolution::MelodySplitEarthFormation { .. }
+        | PendingResolution::MelodyRingingMetalDeckCard { .. }
+        | PendingResolution::MelodyPlantEarthMelody { .. }
+        | PendingResolution::MelodyCost { .. }
         | PendingResolution::HeroRevelationKeepOne
         | PendingResolution::JianghuAzureCloudStepReturnOne
         | PendingResolution::ConfluenceDiscardInspectedCard { .. }
@@ -310,11 +319,11 @@ pub(crate) fn waiting_medium(resolution: &PendingResolution) -> WaitingMedium {
         PendingResolution::TurnDrawDiscard
         | PendingResolution::HolyWindTakeHighest
         | PendingResolution::ChaosReturnTwo
-        | PendingResolution::EchoPureFireTarget
-        | PendingResolution::EchoSplitEarthFormation
-        | PendingResolution::EchoRingingMetalDeckCard
-        | PendingResolution::EchoPlantEarthMelody
-        | PendingResolution::EchoCost { .. }
+        | PendingResolution::MelodyPureFireTarget { .. }
+        | PendingResolution::MelodySplitEarthFormation { .. }
+        | PendingResolution::MelodyRingingMetalDeckCard { .. }
+        | PendingResolution::MelodyPlantEarthMelody { .. }
+        | PendingResolution::MelodyCost { .. }
         | PendingResolution::HeroRevelationKeepOne
         | PendingResolution::JianghuAzureCloudStepReturnOne
         | PendingResolution::ConfluenceDiscardInspectedCard { .. }
@@ -333,8 +342,8 @@ pub(crate) fn waiting_medium(resolution: &PendingResolution) -> WaitingMedium {
         | PendingResolution::PouchSheepStealing { .. }
         | PendingResolution::TribulationRustedForestDiscardShuffle
         | PendingResolution::TribulationRustedForestShuffle
-        | PendingResolution::EchoRingingMetalRecycleDiscard
-        | PendingResolution::EchoRingingMetalPostSearch
+        | PendingResolution::MelodyRingingMetalRecycleDiscard { .. }
+        | PendingResolution::MelodyRingingMetalPostSearch { .. }
         | PendingResolution::HeroRevelation
         | PendingResolution::JianghuAzureCloudStepDraw
         | PendingResolution::ConfluenceClearWindTenThousandMiles
@@ -365,7 +374,7 @@ fn ensure_current_player(state: &GameState, actual: &PlayerId) -> GameResult<()>
 #[cfg(test)]
 mod tests {
     use super::{WaitingMedium, waiting_medium};
-    use crate::domain::{ConfluenceResonance, PendingResolution, PlayerId};
+    use crate::domain::{ConfluenceResonance, MelodyExecutionOrigin, PendingResolution, PlayerId};
 
     #[test]
     fn every_pending_resolution_waiting_medium_is_exhaustively_classified() {
@@ -373,12 +382,21 @@ mod tests {
             PendingResolution::TurnDrawDiscard,
             PendingResolution::HolyWindTakeHighest,
             PendingResolution::ChaosReturnTwo,
-            PendingResolution::EchoPureFireTarget,
-            PendingResolution::EchoSplitEarthFormation,
-            PendingResolution::EchoRingingMetalDeckCard,
-            PendingResolution::EchoPlantEarthMelody,
-            PendingResolution::EchoCost {
+            PendingResolution::MelodyPureFireTarget {
+                origin: MelodyExecutionOrigin::Echo,
+            },
+            PendingResolution::MelodySplitEarthFormation {
+                origin: MelodyExecutionOrigin::Echo,
+            },
+            PendingResolution::MelodyRingingMetalDeckCard {
+                origin: MelodyExecutionOrigin::Echo,
+            },
+            PendingResolution::MelodyPlantEarthMelody {
+                origin: MelodyExecutionOrigin::PlantedEarth,
+            },
+            PendingResolution::MelodyCost {
                 melody_id: "melody".to_string(),
+                origin: MelodyExecutionOrigin::FormationUse,
             },
             PendingResolution::HeroRevelationKeepOne,
             PendingResolution::JianghuAzureCloudStepReturnOne,
@@ -412,8 +430,12 @@ mod tests {
             },
             PendingResolution::TribulationRustedForestDiscardShuffle,
             PendingResolution::TribulationRustedForestShuffle,
-            PendingResolution::EchoRingingMetalRecycleDiscard,
-            PendingResolution::EchoRingingMetalPostSearch,
+            PendingResolution::MelodyRingingMetalRecycleDiscard {
+                origin: MelodyExecutionOrigin::Echo,
+            },
+            PendingResolution::MelodyRingingMetalPostSearch {
+                origin: MelodyExecutionOrigin::Echo,
+            },
             PendingResolution::HeroRevelation,
             PendingResolution::JianghuAzureCloudStepDraw,
             PendingResolution::ConfluenceClearWindTenThousandMiles,

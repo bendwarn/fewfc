@@ -1,10 +1,14 @@
 <template>
-  <div class="room-settings-layer" @click.self="requestClose">
+  <ModalShell
+    :open="true"
+    panel-class="room-settings-dialog-shell"
+    labelledby="room-settings-title"
+    initial-focus-selector="#room-name"
+    :close-disabled="busy"
+    @close="requestClose"
+  >
     <form
       class="setup-card room-settings-dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="room-settings-title"
       @submit.prevent="$emit('submit')"
     >
       <div class="card-heading">
@@ -18,7 +22,6 @@
       <label for="room-name">房間名稱</label>
       <input
         id="room-name"
-        ref="roomNameInput"
         :value="name"
         class="text-input"
         maxlength="24"
@@ -82,7 +85,7 @@
         </button>
       </div>
     </form>
-  </div>
+  </ModalShell>
 </template>
 
 <script setup lang="ts">
@@ -104,22 +107,11 @@ const emit = defineEmits<{
   'update:access': [access: 'private' | 'public']
 }>()
 
-const roomNameInput = ref<HTMLInputElement | null>(null)
 const modes: ReadonlyArray<{ id: RoomMode, icon: string, label: string, description: string }> = [
   { id: 'duel', icon: '雙', label: '雙人對戰', description: '1 對 1 經典規則' },
   { id: 'team', icon: '隊', label: '團隊對戰', description: '2 對 2 交錯行動' },
 ]
 const roomModeLabel = computed(() => modes.find(option => option.id === props.mode)?.label ?? '')
-
-onMounted(async () => {
-  window.addEventListener('keydown', handleKeydown)
-  await nextTick()
-  roomNameInput.value?.focus()
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleKeydown)
-})
 
 function updateName(event: Event) {
   emit('update:name', (event.target as HTMLInputElement).value)
@@ -129,16 +121,12 @@ function requestClose() {
   if (!props.busy) emit('close')
 }
 
-function handleKeydown(event: KeyboardEvent) {
-  if (event.key !== 'Escape') return
-  event.preventDefault()
-  requestClose()
-}
 </script>
 
 <style scoped>
 @reference "../assets/css/main.css";
 
+:global(.room-settings-dialog-shell) { width: min(720px, 100%); }
 .room-settings-dialog { @apply my-auto w-full max-w-[720px] shadow-[0_24px_70px_rgba(0,0,0,.5)]; }
 fieldset { @apply mb-[26px] border-0 p-0; }
 .option-grid { @apply grid grid-cols-2 gap-3 max-[600px]:grid-cols-1; }

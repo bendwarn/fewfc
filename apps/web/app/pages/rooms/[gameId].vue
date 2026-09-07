@@ -120,15 +120,26 @@
                         data-keyboard-shortcut="ability"
                         aria-haspopup="menu"
                         :aria-expanded="darkSpiritMenuOpen"
+                        aria-controls="dark-spirit-level-menu"
                         @mouseenter="showActionDetail(darkSpiritPicker.representative)"
                         @mouseleave="hideActionDetail"
                         @focus="showActionDetail(darkSpiritPicker.representative)"
                         @blur="hideActionDetail"
-                        @click="darkSpiritMenuOpen = !darkSpiritMenuOpen"
+                        @click="toggleDarkSpiritMenu"
                       >
                         暗靈
                       </button>
-                      <div v-if="darkSpiritMenuOpen" class="spirit-level-options" role="menu">
+                      <AnchoredSurface
+                        id="dark-spirit-level-menu"
+                        :open="darkSpiritMenuOpen"
+                        :anchor="darkSpiritMenuTrigger"
+                        role="menu"
+                        placement="top-start"
+                        :return-focus="false"
+                        surface-class="spirit-level-options"
+                        @keydown="event => handleSpiritMenuKeydown(event, 'dark')"
+                        @close="closeDarkSpiritMenu"
+                      >
                         <button
                           v-for="ability in darkSpiritPicker.options"
                           :key="playableAbilityKey(ability)"
@@ -144,7 +155,7 @@
                         >
                           {{ ability.declaredLevel }} 級
                         </button>
-                      </div>
+                      </AnchoredSurface>
                     </div>
                     <div
                       v-if="splendorPicker"
@@ -166,15 +177,26 @@
                         data-keyboard-shortcut="ability"
                         aria-haspopup="menu"
                         :aria-expanded="splendorMenuOpen"
+                        aria-controls="splendor-level-menu"
                         @mouseenter="showActionDetail(splendorPicker.representative)"
                         @mouseleave="hideActionDetail"
                         @focus="showActionDetail(splendorPicker.representative)"
                         @blur="hideActionDetail"
-                        @click="splendorMenuOpen = !splendorMenuOpen"
+                        @click="toggleSplendorMenu"
                       >
                         絢爛
                       </button>
-                      <div v-if="splendorMenuOpen" class="spirit-level-options" role="menu">
+                      <AnchoredSurface
+                        id="splendor-level-menu"
+                        :open="splendorMenuOpen"
+                        :anchor="splendorMenuTrigger"
+                        role="menu"
+                        placement="top-start"
+                        :return-focus="false"
+                        surface-class="spirit-level-options"
+                        @keydown="event => handleSpiritMenuKeydown(event, 'splendor')"
+                        @close="closeSplendorMenu"
+                      >
                         <button
                           v-for="ability in splendorPicker.options"
                           :key="playableAbilityKey(ability)"
@@ -190,7 +212,7 @@
                         >
                           {{ ability.declaredLevel }} 級
                         </button>
-                      </div>
+                      </AnchoredSurface>
                     </div>
                     <button
                       v-if="game.playableDiscardRetrieval.value"
@@ -271,12 +293,14 @@
           </template>
           <template #overlay>
 
-          <div
+          <ModalShell
             v-if="virtualFormationCardDraft"
-            class="choice-overlay"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="virtual-formation-card-title"
+            :open="true"
+            root-class="choice-overlay"
+            panel-class="choice-overlay-panel"
+            labelledby="virtual-formation-card-title"
+            initial-focus-selector=".virtual-formation-card-option"
+            @close="closeVirtualFormationCardDraft"
           >
             <div ref="virtualFormationCardDialog" class="virtual-formation-card-dialog">
               <h2 id="virtual-formation-card-title">
@@ -328,13 +352,15 @@
                 取消
               </button>
             </div>
-          </div>
+          </ModalShell>
 
-          <div
+          <ModalShell
             v-if="state.status === 'Preparing' && game.interaction.value.canChooseInitialPouch"
-            class="choice-overlay"
-            role="dialog"
+            :open="true"
+            root-class="choice-overlay"
+            panel-class="choice-overlay-panel"
             aria-label="選擇初始錦囊"
+            :close-disabled="true"
           >
             <div>
               <h2>選擇初始錦囊</h2>
@@ -348,7 +374,7 @@
                 @choose="chooseInitialPouchCard"
               />
             </div>
-          </div>
+          </ModalShell>
 
           <div
             v-else-if="state.status === 'Preparing'"
@@ -370,11 +396,13 @@
             </div>
           </div>
 
-          <div
+          <ModalShell
             v-if="secretStrategyDraft"
-            class="choice-overlay"
-            role="dialog"
+            :open="true"
+            root-class="choice-overlay"
+            panel-class="choice-overlay-panel"
             :aria-label="`秘計‧${strategyLabel(secretStrategyOptionStrategy(secretStrategyDraft))}：選擇輸入`"
+            @close="resetSecretStrategyDraft"
           >
             <div>
               <h2>秘計‧{{ strategyLabel(secretStrategyOptionStrategy(secretStrategyDraft)) }}</h2>
@@ -466,13 +494,16 @@
                 </button>
               </div>
             </div>
-          </div>
+          </ModalShell>
 
-          <div
+          <ModalShell
             v-if="pouchChoiceKind"
-            class="choice-overlay"
-            role="dialog"
+            :open="true"
+            root-class="choice-overlay"
+            panel-class="choice-overlay-panel"
             :aria-label="pouchChoiceKind === 'chain' ? '連環：選擇錦囊' : '牽羊：交換牌'"
+            :close-disabled="Boolean(state.pendingChoice)"
+            @close="resetPouchChoice"
           >
             <div>
               <h2>{{ pouchChoiceKind === 'chain' ? '連環：選擇牌組牌' : '牽羊：交換牌' }}</h2>
@@ -548,13 +579,17 @@
                 <button v-if="!state.pendingChoice" type="button" @click="resetPouchChoice">取消</button>
               </div>
             </div>
-          </div>
+          </ModalShell>
 
-          <div
+          <ModalShell
             v-if="state.pendingChoice?.visibility === 'visible'
               && !pouchChoiceKind
               && viewer === state.pendingChoice.player"
-            class="choice-overlay"
+            :open="true"
+            root-class="choice-overlay"
+            panel-class="choice-overlay-panel"
+            :aria-label="pendingChoiceLabel(state.pendingChoice)"
+            :close-disabled="true"
           >
             <div>
               <h2>{{ pendingChoiceLabel(state.pendingChoice) }}</h2>
@@ -683,7 +718,7 @@
                 放棄迴響
               </button>
             </div>
-          </div>
+          </ModalShell>
 
           <div
             v-if="state.pendingChoice && !pouchChoiceKind
@@ -713,7 +748,7 @@
             </div>
           </div>
 
-          <div v-if="showSetupReveal" class="setup-reveal">
+          <div v-if="showSetupReveal" class="setup-reveal" role="status" aria-live="polite" @click.self="expediteSetupReveal">
             <div>
               <h2>{{ onlineMetadata?.capacity === 4 ? '隊伍與行動順序' : '行動順序' }}</h2>
               <div v-if="onlineMetadata?.capacity === 4" class="revealed-teams">
@@ -1459,6 +1494,12 @@ const showSkip = computed(() => (
 let actionDetailTimer: ReturnType<typeof setTimeout> | undefined
 let setupRevealTimer: ReturnType<typeof setTimeout> | undefined
 
+function expediteSetupReveal() {
+  if (!showSetupReveal.value) return
+  clearTimeout(setupRevealTimer)
+  showSetupReveal.value = false
+}
+
 function leaveGame() {
   game.clearRoom()
   void router.push('/rooms')
@@ -1508,6 +1549,47 @@ function closeDarkSpiritMenu(returnFocus = false) {
   if (returnFocus) {
     void nextTick(() => darkSpiritMenuTrigger.value?.focus())
   }
+}
+
+function menuButtons(id: string) {
+  return Array.from(document.getElementById(id)?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
+}
+
+function focusOpenedSpiritMenu(id: string) {
+  void nextTick(() => menuButtons(id)[0]?.focus())
+}
+
+function toggleDarkSpiritMenu() {
+  closeSplendorMenu()
+  darkSpiritMenuOpen.value = !darkSpiritMenuOpen.value
+  if (darkSpiritMenuOpen.value) focusOpenedSpiritMenu('dark-spirit-level-menu')
+}
+
+function toggleSplendorMenu() {
+  closeDarkSpiritMenu()
+  splendorMenuOpen.value = !splendorMenuOpen.value
+  if (splendorMenuOpen.value) focusOpenedSpiritMenu('splendor-level-menu')
+}
+
+function handleSpiritMenuKeydown(event: KeyboardEvent, menu: 'dark' | 'splendor') {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    if (menu === 'dark') closeDarkSpiritMenu(true)
+    else closeSplendorMenu(true)
+    return
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  const id = menu === 'dark' ? 'dark-spirit-level-menu' : 'splendor-level-menu'
+  const buttons = menuButtons(id)
+  if (!buttons.length) return
+  event.preventDefault()
+  const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
+  const next = event.key === 'Home'
+    ? 0
+    : event.key === 'End'
+      ? buttons.length - 1
+      : (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
+  buttons[next]?.focus()
 }
 
 function startSplendorAction(ability: PlayableAction) {
@@ -2304,4 +2386,30 @@ function formationChoiceLabel(formationId: string): string {
 .event-sheet-feed span { @apply text-[11px] font-bold text-[var(--app-text)]; }
 .event-sheet-feed p { @apply mt-0.5 text-[10px] leading-5 text-[var(--app-text-muted)]; }
 .new-event-button { @apply mx-auto mt-2 border border-[var(--app-accent)] bg-[var(--app-surface-muted)] px-3 py-1.5 text-[10px] text-gold-light; }
+
+/* Teleport 後的選單已不再位於 action-dock，仍沿用原本的視覺樣式。 */
+.spirit-level-options { @apply grid min-w-20 gap-1 border border-[var(--app-accent)] bg-[var(--app-surface-muted)] p-1 shadow-[0_10px_24px_rgba(0,0,0,.45)]; }
+.spirit-level-options button { @apply min-h-7 whitespace-nowrap border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2 py-1 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
+.modal-shell.choice-overlay { @apply fixed inset-0 z-[70] grid place-items-center text-center; background: transparent; }
+.modal-shell.choice-overlay > .modal-shell-backdrop { background: var(--app-choice-overlay); backdrop-filter: none; }
+.choice-overlay-panel { @apply relative z-1 max-h-[calc(100dvh-32px)] min-w-0 w-[min(560px,calc(100vw-32px))] max-w-[calc(100vw-32px)] overflow-y-auto border border-[var(--app-accent)] p-[30px]; border-radius: 16px; background: var(--app-surface-raised); box-shadow: var(--app-shadow-lg); }
+.choice-overlay-panel h2 { @apply mt-2.5 mb-5 font-serif; }
+.virtual-formation-card-dialog { @apply max-w-[min(560px,calc(100vw-32px))]; }
+.virtual-formation-card-matrix { @apply mx-auto border-collapse text-xs; }
+.virtual-formation-card-matrix th { @apply border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2 py-1.5 font-normal text-muted; }
+.virtual-formation-card-matrix tbody th { @apply min-w-14 text-gold-light; }
+.virtual-formation-card-matrix td { @apply border border-[var(--app-border-strong)] p-0; }
+.virtual-formation-card-option { @apply grid size-11 place-items-center bg-[var(--app-surface-subtle)] font-serif text-sm text-[#e5dfd1] hover:bg-[#3a443d] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
+.virtual-formation-card-option:focus-visible { @apply relative z-1 outline-2 outline-offset-[-3px] outline-[#d1ad62]; }
+.virtual-formation-card-cancel { @apply mt-5 min-h-9 border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-4 py-2 text-xs text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light; }
+.choice-cards { @apply flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
+.choice-cards .choice-card { width: clamp(76px, 11vw, 112px); }
+.choice-options { @apply mt-3 flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
+.choice-options button { @apply min-h-10 border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-3 py-2 text-xs text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
+.choice-options button:focus-visible { @apply border-[#d1ad62] outline-2 outline-offset-2 outline-[#d1ad62]; }
+.choice-options button.selected, .choice-options button[aria-pressed="true"] { @apply font-bold; border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); box-shadow: 0 0 0 2px var(--app-accent-soft); }
+.choice-actions { @apply mt-5; }
+.choice-actions .choice-confirm { @apply border-[var(--app-accent)] bg-[var(--app-accent)] font-bold hover:bg-[var(--app-accent-strong)]; color: var(--app-on-accent); }
+.choice-count { @apply mt-4 text-xs text-muted; }
+.choice-submit { @apply mt-3 border border-[var(--app-accent)] bg-[var(--app-accent)] px-5 py-2 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-45; color: var(--app-on-accent); }
 </style>

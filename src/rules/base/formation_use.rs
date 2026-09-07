@@ -1,6 +1,7 @@
 use crate::domain::{
     CannotPerformFormationReason, CardInstanceId, CardMoveDelta, CardZone, GameError, GameEvent,
     GameResult, GameState, PendingResolution, PlayerId, TargetDecl, TeamId, ValidationError,
+    hp::{FormationHpEffectOutcome, HpChangePlan, HpChangeRequest},
     targeting::{RulePlayerTarget, RuleTeamTarget, TurnOrderTargets},
 };
 use crate::rules::{
@@ -10,8 +11,9 @@ use crate::rules::{
 
 use super::attack_resolution::{self, AttackRequest, AttackResolutionMode};
 use super::covered_passive::{self, IncomingActionKind, TriggerRequest};
-use super::effect_intent::{EffectIntent, effect_intent_events};
+use super::effect_intent::EffectIntent;
 use super::formation_selection::FormationSelection;
+use crate::rules::formation_effect_sequence::{FormationEffectSequence, ResolvedFormationEffect};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct FormationUseRequest {
@@ -37,6 +39,7 @@ struct FormationUsePlan {
 pub(super) fn resolve(
     state: &GameState,
     request: FormationUseRequest,
+    hp: &mut HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     if super::player_has_status(state, &request.player, "CannotAct") {
         return Err(GameError::Validation(
@@ -58,7 +61,8 @@ pub(super) fn resolve(
             crate::domain::FormationAreaState::FaceUpResolving
         }
     };
-    let mut events = BaseEffectResolver::new().resolve(state, plan)?;
+    // 一次陣法施展只建立一份 HP ledger；每個陣法效果完成後立即結算同命。
+    let mut events = BaseEffectResolver::new().resolve(state, plan, hp)?;
     // 複合陣形效果過去會將自己的陣形卡牌作為手牌到棄牌堆的差異攜帶。在陣形
     // 區架構下，那些移動由流程負責，因此只保留真正額外的移動。
     for event in &mut events {
@@ -113,12 +117,59 @@ pub(super) fn resolve(
     ) {
         events.push(event);
     }
-    crate::rules::tribulation::suppress_formation_recovery(state, &player, &mut events);
-    crate::rules::pouch::suppress_watch_fire_formation_hp_changes(state, &player, &mut events);
-    crate::rules::dark::append_shared_fate_events(state, &player, &formation_id, &mut events)?;
-    crate::rules::dark::append_mischief_events(state, &mut events)?;
-    attack_resolution::absorb_simultaneous_events(&mut events);
+    crate::rules::dark::append_mischief_events(state, hp, &mut events)?;
+    attack_resolution::absorb_simultaneous_events(
+        &mut events,
+        crate::domain::HpChangeRole::TriggeredEffect,
+    );
     complete(state, events)
+}
+
+/// 陣法效果進入 HP seam 前決定防止；完成 session 後絕不可再改寫 delta。
+pub(crate) fn formation_hp_request(
+    state: &GameState,
+    performer: &PlayerId,
+    team: &TeamId,
+    delta: i32,
+) -> HpChangeRequest {
+    formation_hp_request_with_poison(state, performer, team, delta, true)
+}
+
+/// 少數規則（如 Forest Resonance）只檢查施術者本人中毒，不能把 teammate poison
+/// 擴張成 team-wide recovery prevention。
+pub(crate) fn formation_hp_request_without_team_poison(
+    state: &GameState,
+    performer: &PlayerId,
+    team: &TeamId,
+    delta: i32,
+) -> HpChangeRequest {
+    formation_hp_request_with_poison(state, performer, team, delta, false)
+}
+
+fn formation_hp_request_with_poison(
+    state: &GameState,
+    performer: &PlayerId,
+    team: &TeamId,
+    delta: i32,
+    prevent_team_poison_recovery: bool,
+) -> HpChangeRequest {
+    let watch_fire =
+        crate::rules::pouch::has_status(state, performer, crate::rules::pouch::WATCH_FIRE_STATUS)
+            && !crate::rules::pouch::player_is_protected(state, performer);
+    let gale_rain = state.statuses.iter().any(|status| {
+        status.kind == "GaleRain"
+            && status.owner == crate::domain::StatusOwner::Player(performer.clone())
+    });
+    if watch_fire
+        || (delta > 0
+            && (gale_rain
+                || (prevent_team_poison_recovery
+                    && crate::rules::jianghu::team_has_poison(state, team))))
+    {
+        HpChangeRequest::Prevented(delta)
+    } else {
+        HpChangeRequest::By(delta)
+    }
 }
 
 /// 完成一個可能暫停過的 Formation Use。
@@ -256,13 +307,17 @@ pub(crate) fn answer_choice(
     player: &PlayerId,
     resolution: &PendingResolution,
     selected_cards: &[CardInstanceId],
+    hp: &mut HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     let intents = resume_choice_intents(state, choice, player, resolution, selected_cards)?;
-    let mut events = effect_intent_events(state, intents)?;
-    events.extend(crate::rules::confluence::after_choice_events(
-        state, player, resolution,
-    )?);
-    Ok(events)
+    let mut sequence = FormationEffectSequence::new(state);
+    super::effect_intent::effect_intent_events_with_plan(intents, hp, Some(player), &mut sequence)?;
+    if let Some((events, outcome)) =
+        crate::rules::confluence::after_choice_events(sequence.state(), player, resolution, hp)?
+    {
+        sequence.append(hp, ResolvedFormationEffect::new(events, outcome))?;
+    }
+    Ok(sequence.into_events())
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -302,7 +357,12 @@ impl BaseEffectResolver {
         Self
     }
 
-    fn resolve(&self, state: &GameState, plan: FormationUsePlan) -> GameResult<Vec<GameEvent>> {
+    fn resolve(
+        &self,
+        state: &GameState,
+        plan: FormationUsePlan,
+        hp: &mut HpChangePlan,
+    ) -> GameResult<Vec<GameEvent>> {
         match &plan.effect_plan {
             EffectPlan::Attack(attack_plan) => {
                 if has_effect_targets(&plan.declared_targets) {
@@ -361,75 +421,97 @@ impl BaseEffectResolver {
                         crate::rules::pouch::WATCH_FIRE_STATUS,
                     ) && !crate::rules::pouch::player_is_protected(state, &plan.player));
                 let split_attack_damage = passive_trigger.splits_attack_damage();
-                let mut events = crate::rules::dark::pre_formation_events(
+                let mut prefix = crate::rules::dark::pre_formation_events(
                     state,
                     &plan.player,
                     &plan.formation_id,
                 );
-                events.extend(match_option_events(&plan));
-                events.extend(passive_trigger.events());
-                events.extend(crate::rules::jianghu::poison_smoke_flip_events(
-                    state, &events,
+                prefix.extend(match_option_events(&plan));
+                prefix.extend(passive_trigger.events());
+                prefix.extend(crate::rules::jianghu::poison_smoke_flip_events(
+                    state, &prefix,
                 ));
+                let mut sequence = FormationEffectSequence::new(state);
+                sequence.extend(prefix);
                 if environment_ineffective || formation_suppressed {
-                    events.push(formation_effect_ignored_event(
+                    sequence.extend([formation_effect_ignored_event(
                         state,
                         &plan.player,
                         &plan.formation_id,
-                    ));
+                    )]);
                 }
                 if plan.formation_id == crate::rules::tribulation::EARTH_RENDING
                     && !environment_ineffective
                     && !formation_suppressed
                 {
-                    events.extend(crate::rules::tribulation::earth_rending_start_events(
+                    sequence.extend(crate::rules::tribulation::earth_rending_start_events(
                         state,
                         &plan.player,
                         &plan.cards,
                         damage_prevented,
                         split_attack_damage,
                     )?);
-                    return Ok(events);
+                    return Ok(sequence.into_events());
                 }
                 if plan.formation_id == crate::rules::tribulation::RUSTED_FOREST
                     && !environment_ineffective
                     && !formation_suppressed
                 {
-                    events.extend(crate::rules::tribulation::rusted_forest_start_events(
+                    sequence.extend(crate::rules::tribulation::rusted_forest_start_events(
                         state,
                         &plan.player,
                         &plan.cards,
                         damage_prevented,
                         split_attack_damage,
+                        hp,
                     )?);
-                    return Ok(events);
+                    return Ok(sequence.into_events());
                 }
-                let tribulation_pre_events = if environment_ineffective || formation_suppressed {
-                    Vec::new()
-                } else {
-                    crate::rules::tribulation::pre_attack_events(
-                        state,
-                        &plan.player,
-                        &plan.formation_id,
-                    )
-                };
+                let (tribulation_pre_events, tribulation_effect) =
+                    if environment_ineffective || formation_suppressed {
+                        (Vec::new(), None)
+                    } else {
+                        crate::rules::tribulation::pre_attack_events(
+                            sequence.state(),
+                            &plan.player,
+                            &plan.formation_id,
+                            hp,
+                        )?
+                    };
+                let pre_primary_hp_count = tribulation_pre_events
+                    .iter()
+                    .filter(|event| matches!(event, GameEvent::HpChanged { .. }))
+                    .count();
                 let point_formula = crate::rules::tribulation::attack_points(
                     &plan.formation_id,
                     &tribulation_pre_events,
                 )
                 .map(PointFormula::Fixed)
                 .unwrap_or_else(|| attack_plan.point_formula.clone());
-                let mut projected = state.clone();
-                for event in &events {
-                    crate::rules::projection::apply_event(&mut projected, event);
-                }
-                // Tribulation 的攻擊前差異會參與同一個標準 AttackResolved 事件，
-                // 但攻擊計算仍必須看到它們解析後的狀態（特別是 Mudslide 護盾）。
-                let mut attack_state = projected.clone();
-                for event in &tribulation_pre_events {
-                    crate::rules::projection::apply_event(&mut attack_state, event);
-                }
-                events.extend(attack_resolution::resolve(
+                let (attack_state, pre_resolution_effects) =
+                    if let Some(outcome) = tribulation_effect {
+                        sequence.append(
+                            hp,
+                            ResolvedFormationEffect::new(tribulation_pre_events.clone(), outcome),
+                        )?;
+                        (
+                            sequence.state().clone(),
+                            attack_resolution::effects_from_events(&[])?,
+                        )
+                    } else {
+                        // 非 HP 的攻擊前效果（泥石轟流）仍屬於 AttackResolved 的原子
+                        // payload。先投影它們取得正確攻擊狀態，但不輸出獨立事件。
+                        let mut projected = sequence.state().clone();
+                        for event in &tribulation_pre_events {
+                            crate::rules::projection::apply_event(&mut projected, event);
+                        }
+                        (
+                            projected,
+                            attack_resolution::effects_from_events(&tribulation_pre_events)?,
+                        )
+                    };
+                // HP 前效果及同命已投影；非 HP 前效果則由 AttackResolved 擁有。
+                sequence.extend(attack_resolution::resolve_with_plan(
                     &attack_state,
                     AttackRequest {
                         attacker: plan.player.clone(),
@@ -440,19 +522,19 @@ impl BaseEffectResolver {
                         damage_prevented,
                         split_attack_damage,
                         mode: AttackResolutionMode::FormationUse,
-                        pre_resolution_effects: attack_resolution::effects_from_events(
-                            &tribulation_pre_events,
-                        )?,
+                        pre_resolution_effects,
+                        trailing_hp_role: crate::domain::HpChangeRole::FormationEffect,
                     },
+                    hp,
                 )?);
                 if !environment_ineffective && !formation_suppressed {
-                    events.extend(crate::rules::tribulation::post_attack_events(
-                        state,
+                    sequence.extend(crate::rules::tribulation::post_attack_events(
+                        sequence.state(),
                         &plan.player,
                         &plan.formation_id,
                     )?);
                 } else {
-                    events.extend(
+                    sequence.extend(
                         crate::rules::tribulation::divine_calculation_consumption_events(
                             state,
                             &plan.formation_id,
@@ -460,8 +542,32 @@ impl BaseEffectResolver {
                     );
                 }
 
-                attack_resolution::absorb_simultaneous_events(&mut events);
-
+                let (dark_events, outcome) = crate::rules::dark::post_attack_events(
+                    sequence.state(),
+                    &plan.player,
+                    &plan.formation_id,
+                    &plan.cards,
+                    hp,
+                )?;
+                let post_primary_hp_count = dark_events
+                    .iter()
+                    .filter(|event| matches!(event, GameEvent::HpChanged { .. }))
+                    .count();
+                if let Some(outcome) = outcome {
+                    sequence.append(hp, ResolvedFormationEffect::new(dark_events, outcome))?;
+                } else {
+                    sequence.extend(dark_events);
+                }
+                let mut events = sequence.into_events();
+                absorb_formation_effect_hp_events(
+                    &mut events,
+                    pre_primary_hp_count,
+                    post_primary_hp_count,
+                );
+                attack_resolution::absorb_simultaneous_events(
+                    &mut events,
+                    crate::domain::HpChangeRole::TriggeredEffect,
+                );
                 Ok(events)
             }
             EffectPlan::PassiveSpell(_) => {
@@ -620,40 +726,62 @@ impl BaseEffectResolver {
                         return Ok(events);
                     }
                     if spell.resolver_id == "void-reversion" {
-                        events.extend(crate::rules::confluence::void_transcendence_events(
-                            state,
-                            &plan.player,
-                            &plan.cards,
-                        )?);
-                        let mut projected = state.clone();
-                        for event in &events {
-                            crate::rules::projection::apply_event(&mut projected, event);
+                        let mut sequence = FormationEffectSequence::new(state);
+                        sequence.extend(events.clone());
+                        if let Some((events, outcome)) =
+                            crate::rules::confluence::void_transcendence_events(
+                                sequence.state(),
+                                &plan.player,
+                                &plan.cards,
+                                hp,
+                            )?
+                        {
+                            sequence.append(hp, ResolvedFormationEffect::new(events, outcome))?;
                         }
-                        events.push(void_reversion_event(&projected, &plan.player, &plan.cards)?);
-                        events.extend(crate::rules::confluence::void_realm_consumption_events(
-                            &projected,
+                        let (event, outcome) =
+                            void_reversion_event(sequence.state(), &plan.player, &plan.cards, hp)?;
+                        sequence.append(hp, ResolvedFormationEffect::new(vec![event], outcome))?;
+                        sequence.extend(crate::rules::confluence::void_realm_consumption_events(
+                            sequence.state(),
                             &plan.player,
                             &plan.cards,
                         ));
-                        return Ok(events);
+                        return Ok(sequence.into_events());
                     }
                     if spell.resolver_id == "void-spirit-shattering" {
-                        events.push(crate::rules::spirit::void_spirit_shattering_event(
+                        let event = crate::rules::spirit::void_spirit_shattering_event(
                             state,
                             &plan.player,
                             &plan.cards,
-                        )?);
+                            hp,
+                        )?;
+                        // 此 canonical 複合事件內含同命結算；不可再交給外層重複處理。
+                        events.push(event);
                         return Ok(events);
                     }
                     if spell.resolver_id == "void-meridian-severing" {
-                        if let Some(event) = environment_clearing_event(state, &plan.player)? {
-                            events.push(event);
+                        let mut sequence = FormationEffectSequence::new(state);
+                        sequence.extend(events);
+                        if let Some((event, outcome)) =
+                            environment_clearing_event(sequence.state(), &plan.player, hp)?
+                        {
+                            sequence
+                                .append(hp, ResolvedFormationEffect::new(vec![event], outcome))?;
                         }
-                        return Ok(events);
+                        return Ok(sequence.into_events());
                     }
                     if spell.resolver_id == "void-star-breaking" {
-                        events.extend(void_star_breaking_events(state, &plan.player));
-                        return Ok(events);
+                        let mut sequence = FormationEffectSequence::new(state);
+                        sequence.extend(events);
+                        let (star_events, outcome) =
+                            void_star_breaking_events(sequence.state(), &plan.player, hp)?;
+                        if let Some(outcome) = outcome {
+                            sequence
+                                .append(hp, ResolvedFormationEffect::new(star_events, outcome))?;
+                        } else {
+                            sequence.extend(star_events);
+                        }
+                        return Ok(sequence.into_events());
                     }
                     if let Some(mut echo_events) = {
                         let mut projected = state.clone();
@@ -661,10 +789,10 @@ impl BaseEffectResolver {
                             crate::rules::projection::apply_event(&mut projected, event);
                         }
                         crate::rules::echo::formation_main_effect_events(
-                            state,
                             &projected,
                             &plan.player,
                             &spell.resolver_id,
+                            hp,
                         )?
                     } {
                         events.append(&mut echo_events);
@@ -680,55 +808,110 @@ impl BaseEffectResolver {
                         events.append(&mut tribulation_events);
                         return Ok(events);
                     }
-                    if let Some(mut jianghu_events) = crate::rules::jianghu::active_spell_events(
-                        state,
-                        &plan.player,
-                        &spell.resolver_id,
-                    )? {
-                        events.append(&mut jianghu_events);
-                        return Ok(events);
+                    if let Some(jianghu_events) = {
+                        let mut sequence = FormationEffectSequence::new(state);
+                        sequence.extend(events.clone());
+                        let result = crate::rules::jianghu::active_spell_events(
+                            sequence.state(),
+                            &plan.player,
+                            &spell.resolver_id,
+                            hp,
+                        )?;
+                        if let Some((jianghu_events, outcome)) = result {
+                            if let Some(outcome) = outcome {
+                                sequence.append(
+                                    hp,
+                                    ResolvedFormationEffect::new(jianghu_events, outcome),
+                                )?;
+                            } else {
+                                sequence.extend(jianghu_events);
+                            }
+                            Some(sequence.into_events())
+                        } else {
+                            None
+                        }
+                    } {
+                        return Ok(jianghu_events);
                     }
-                    if let Some(mut confluence_events) = {
+                    if let Some(confluence_events) = {
+                        let mut sequence = FormationEffectSequence::new(state);
+                        sequence.extend(events.clone());
                         if spell.resolver_id == crate::rules::confluence::VOID_RETURN_TO_NOTHING {
-                            events.extend(crate::rules::confluence::void_transcendence_events(
-                                state,
-                                &plan.player,
-                                &plan.cards,
-                            )?);
+                            if let Some((events, outcome)) =
+                                crate::rules::confluence::void_transcendence_events(
+                                    sequence.state(),
+                                    &plan.player,
+                                    &plan.cards,
+                                    hp,
+                                )?
+                            {
+                                sequence
+                                    .append(hp, ResolvedFormationEffect::new(events, outcome))?;
+                            }
                         }
-                        let mut projected = state.clone();
-                        for event in &events {
-                            crate::rules::projection::apply_event(&mut projected, event);
-                        }
-                        crate::rules::confluence::active_spell_events(
-                            &projected,
+                        let result = crate::rules::confluence::active_spell_events(
+                            sequence.state(),
                             &plan.player,
                             &spell.resolver_id,
                             &plan.declared_targets,
-                        )?
+                            hp,
+                        )?;
+                        if let Some((events, outcome)) = result {
+                            if let Some(outcome) = outcome {
+                                sequence
+                                    .append(hp, ResolvedFormationEffect::new(events, outcome))?;
+                            } else {
+                                sequence.extend(events);
+                            }
+                            Some(sequence.into_events())
+                        } else {
+                            None
+                        }
                     } {
-                        events.append(&mut confluence_events);
-                        return Ok(events);
+                        return Ok(confluence_events);
                     }
-                    if let Some(mut dark_events) = crate::rules::dark::active_spell_events(
-                        state,
-                        &plan.player,
-                        &spell.resolver_id,
-                        &plan.cards,
-                        plan.trusted_random_cards.as_deref(),
-                    )? {
-                        events.append(&mut dark_events);
-                        return Ok(events);
+                    if let Some(dark_events) = {
+                        let mut sequence = FormationEffectSequence::new(state);
+                        sequence.extend(events.clone());
+                        let result = crate::rules::dark::active_spell_events(
+                            sequence.state(),
+                            &plan.player,
+                            &spell.resolver_id,
+                            &plan.cards,
+                            plan.trusted_random_cards.as_deref(),
+                            hp,
+                        )?;
+                        if let Some((dark_events, outcome)) = result {
+                            if let Some(outcome) = outcome {
+                                sequence.append(
+                                    hp,
+                                    ResolvedFormationEffect::new(dark_events, outcome),
+                                )?;
+                            } else {
+                                sequence.extend(dark_events);
+                            }
+                            Some(sequence.into_events())
+                        } else {
+                            None
+                        }
+                    } {
+                        return Ok(dark_events);
                     }
                     if let Some(spirit) =
                         crate::rules::spirit::summoning_formation_spirit(&spell.resolver_id)
                     {
-                        events.push(GameEvent::SpiritSummoned {
+                        let mut sequence = FormationEffectSequence::new(state);
+                        sequence.extend(events);
+                        let previous = sequence
+                            .state()
+                            .spirit_for(&plan.player)
+                            .map(|owned| owned.spirit);
+                        sequence.extend([GameEvent::SpiritSummoned {
                             player: plan.player.clone(),
-                            previous: state.spirit_for(&plan.player).map(|owned| owned.spirit),
+                            previous,
                             spirit,
-                        });
-                        return Ok(events);
+                        }]);
+                        return Ok(sequence.into_events());
                     }
                     let (copied_effect_id, intents) = if spell.resolver_id == "metamorphosis" {
                         metamorphosis_intents(state, &plan.player, &plan.cards)?
@@ -750,12 +933,83 @@ impl BaseEffectResolver {
                             effect_id,
                         });
                     }
-                    events.extend(effect_intent_events(state, intents)?);
+                    let mut sequence = FormationEffectSequence::new(state);
+                    sequence.extend(events);
+                    super::effect_intent::effect_intent_events_with_plan(
+                        intents,
+                        hp,
+                        Some(&plan.player),
+                        &mut sequence,
+                    )?;
+                    return Ok(sequence.into_events());
                 }
                 Ok(events)
             }
         }
     }
+}
+
+/// 將已依序規劃的攻擊前後陣法效果重收納為 AttackResolved 的明確角色。
+/// 規劃與投影先在 sequence 中完成，這裡只調整等價的 canonical event 形狀。
+pub(crate) fn absorb_formation_effect_hp_events(
+    events: &mut Vec<GameEvent>,
+    pre_primary_hp_count: usize,
+    post_primary_hp_count: usize,
+) {
+    let Some(attack_index) = events
+        .iter()
+        .position(|event| matches!(event, GameEvent::AttackResolved { .. }))
+    else {
+        return;
+    };
+
+    let mut before = Vec::new();
+    let mut retained_before = Vec::new();
+    for event in events.drain(..attack_index) {
+        match event {
+            GameEvent::HpChanged { change } => before.push(change),
+            event => retained_before.push(event),
+        }
+    }
+    let attack = events.remove(0);
+    let mut after = Vec::new();
+    let mut retained_after = Vec::new();
+    for event in events.drain(..) {
+        match event {
+            GameEvent::HpChanged { change } => after.push(change),
+            event => retained_after.push(event),
+        }
+    }
+    let mut attack = attack;
+    if let GameEvent::AttackResolved { hp_changes, .. } = &mut attack {
+        let before_len = before.len();
+        let mut merged = Vec::with_capacity(before_len + hp_changes.len() + after.len());
+        merged.extend(before.into_iter().enumerate().map(|(index, change)| {
+            crate::domain::ResolvedHpChange {
+                role: if index < pre_primary_hp_count {
+                    crate::domain::HpChangeRole::FormationEffect
+                } else {
+                    crate::domain::HpChangeRole::TriggeredEffect
+                },
+                change,
+            }
+        }));
+        merged.append(hp_changes);
+        merged.extend(after.into_iter().enumerate().map(|(index, change)| {
+            crate::domain::ResolvedHpChange {
+                role: if index < post_primary_hp_count {
+                    crate::domain::HpChangeRole::FormationEffect
+                } else {
+                    crate::domain::HpChangeRole::TriggeredEffect
+                },
+                change,
+            }
+        }));
+        *hp_changes = merged;
+    }
+    retained_before.push(attack);
+    retained_before.extend(retained_after);
+    *events = retained_before;
 }
 
 fn has_effect_targets(targets: &[TargetDecl]) -> bool {
@@ -790,39 +1044,35 @@ fn match_option_events(plan: &FormationUsePlan) -> Vec<GameEvent> {
     }
 }
 
-fn void_star_breaking_events(state: &GameState, player: &PlayerId) -> Vec<GameEvent> {
+fn void_star_breaking_events(
+    state: &GameState,
+    player: &PlayerId,
+    hp: &mut HpChangePlan,
+) -> GameResult<(Vec<GameEvent>, Option<FormationHpEffectOutcome>)> {
+    let mut effect = hp.begin_formation_effect();
     let mut events = state
         .team_stars
         .iter()
-        .map(|owned| {
-            let old_hp = state
-                .hp
-                .iter()
-                .find(|team_hp| team_hp.team == owned.team)
-                .expect("an owned Star must belong to a Team with HP")
-                .hp;
-            let new_hp = (old_hp - 20).max(0);
-            GameEvent::StarBroken {
+        .map(|owned| -> GameResult<_> {
+            Ok(GameEvent::StarBroken {
                 team: owned.team.clone(),
                 star: owned.star,
                 reason: crate::domain::StarBreakReason::VoidStarBreaking,
-                hp_change: Some(crate::domain::HpChangeDelta {
-                    team: owned.team.clone(),
-                    old_hp,
-                    delta: -20,
-                    new_hp,
-                    effective_delta: new_hp - old_hp,
-                }),
-            }
+                hp_change: Some(effect.plan(
+                    &owned.team,
+                    formation_hp_request(state, player, &owned.team, -20),
+                )?),
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<GameResult<Vec<_>>>()?;
 
     if !events.is_empty() {
         events.push(GameEvent::VoidStarBreakingCompleted {
             player: player.clone(),
         });
     }
-    events
+    let outcome = (!events.is_empty()).then(|| effect.finish());
+    Ok((events, outcome))
 }
 
 fn formation_effect_ignored_event(
@@ -856,41 +1106,41 @@ fn formation_effect_ignored_event(
 fn environment_clearing_event(
     state: &GameState,
     player: &PlayerId,
-) -> GameResult<Option<GameEvent>> {
+    hp: &mut HpChangePlan,
+) -> GameResult<Option<(GameEvent, FormationHpEffectOutcome)>> {
     let Some(environment) = state.environment else {
         return Ok(None);
     };
+    let mut effect = hp.begin_formation_effect();
     let hp_changes = state
         .hp
         .iter()
         .map(|team_hp| {
-            let new_hp = (team_hp.hp - 20).max(0);
-            crate::domain::HpChangeDelta {
-                team: team_hp.team.clone(),
-                old_hp: team_hp.hp,
-                delta: -20,
-                new_hp,
-                effective_delta: new_hp - team_hp.hp,
-            }
+            effect.plan(
+                &team_hp.team,
+                formation_hp_request(state, player, &team_hp.team, -20),
+            )
         })
-        .collect();
+        .collect::<GameResult<Vec<_>>>()?;
 
-    Ok(Some(GameEvent::EnvironmentCleared {
-        player: player.clone(),
-        formation_id: "void-meridian-severing".to_string(),
-        environment,
-        hp_changes,
-    }))
+    Ok(Some((
+        GameEvent::EnvironmentCleared {
+            player: player.clone(),
+            formation_id: "void-meridian-severing".to_string(),
+            environment,
+            hp_changes,
+        },
+        effect.finish(),
+    )))
 }
 
 fn void_reversion_event(
     state: &GameState,
     player: &PlayerId,
     cards: &[CardInstanceId],
-) -> GameResult<GameEvent> {
+    hp: &mut HpChangePlan,
+) -> GameResult<(GameEvent, FormationHpEffectOutcome)> {
     let team = player_team(state, player)?;
-    let old_hp = team_hp(state, &team)?;
-    let new_hp = (old_hp - 20).max(0);
     let high_level = cards.iter().try_fold(true, |all_high_level, card| {
         state
             .card_level_for(player, *card)
@@ -915,19 +1165,15 @@ fn void_reversion_event(
         .map(|card| crate::domain::discard::move_from(state, card, CardZone::Hand(player.clone())))
         .collect::<GameResult<Vec<_>>>()?;
 
-    Ok(GameEvent::VoidReversionResolved {
+    let mut effect = hp.begin_formation_effect();
+    let event = GameEvent::VoidReversionResolved {
         player: player.clone(),
-        hp_change: crate::domain::HpChangeDelta {
-            team,
-            old_hp,
-            delta: -20,
-            new_hp,
-            effective_delta: new_hp - old_hp,
-        },
+        hp_change: effect.plan(&team, formation_hp_request(state, player, &team, -20))?,
         card_moves,
         broken_professions,
         retained_legendary_professions,
-    })
+    };
+    Ok((event, effect.finish()))
 }
 
 fn active_spell_intents(

@@ -2,9 +2,10 @@ use crate::domain::{
     AttackCounterEffect, AttackOutcome, AttackPointBreakdown, AttackResolutionEffects,
     AttackStatusRemoval, CardInstanceId, DamageTransform, Element, ElementInteraction,
     EnvironmentAttackEffect, EnvironmentTransferDelta, FIVE_DIRECTIONS_LEGEND_MODULE_ID, GameError,
-    GameEvent, GameResult, GameState, HpChangeDelta, LastElementalAttack,
-    LastElementalAttackUpdate, PlayerId, STAR_MODULE_ID, ShieldChangeDelta, StarBreakReason,
-    StarKind, TeamId, TurnDrawBonusDelta, ValidationError,
+    GameEvent, GameResult, GameState, HpChangeDelta, HpChangeRole, LastElementalAttack,
+    LastElementalAttackUpdate, PlayerId, ResolvedHpChange, STAR_MODULE_ID, ShieldChangeDelta,
+    StarBreakReason, StarKind, TeamId, TurnDrawBonusDelta, ValidationError,
+    hp::{HpChangePlan, HpChangeRequest},
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::{
@@ -28,15 +29,28 @@ pub(crate) struct AttackRequest {
     pub(crate) damage_prevented: bool,
     pub(crate) split_attack_damage: bool,
     pub(crate) mode: AttackResolutionMode,
-    pub(crate) pre_resolution_effects: AttackResolutionEffects,
+    pub(crate) pre_resolution_effects: AttackPreResolutionEffects,
+    /// 呼叫端擁有攻擊後附帶 HP 差異的語意角色；解析器不依 formation id 猜測。
+    pub(crate) trailing_hp_role: HpChangeRole,
+}
+
+/// 攻擊前已決定、但必須和攻擊共用 HP ledger 的差異。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AttackPreResolutionEffects {
+    pub(crate) hp_changes: Vec<HpChangeDelta>,
+    pub(crate) effects: AttackResolutionEffects,
 }
 
 /// 將沒有其他時序的後果轉換為外層攻擊的負載。呼叫端用它支援舊版模組解析器，
 /// 同時標準記錄仍維持單一 `AttackResolved` 事件。
-pub(crate) fn effects_from_events(events: &[GameEvent]) -> GameResult<AttackResolutionEffects> {
-    let mut effects = AttackResolutionEffects::default();
+pub(crate) fn effects_from_events(events: &[GameEvent]) -> GameResult<AttackPreResolutionEffects> {
+    let mut pre_resolution = AttackPreResolutionEffects::default();
     for event in events.iter().cloned() {
-        append_simultaneous_effect(&mut effects, event).map_err(|event| {
+        if let GameEvent::HpChanged { change } = event {
+            pre_resolution.hp_changes.push(change);
+            continue;
+        }
+        append_simultaneous_effect(&mut pre_resolution.effects, event).map_err(|event| {
             GameError::RuleImplementation(
                 crate::domain::RuleImplementationError::EffectNotImplemented(format!(
                     "attack-side-effect:{}",
@@ -45,12 +59,12 @@ pub(crate) fn effects_from_events(events: &[GameEvent]) -> GameResult<AttackReso
             )
         })?;
     }
-    Ok(effects)
+    Ok(pre_resolution)
 }
 
 /// 將模組產生、與攻擊同時序的效果收納進攻擊的原子負載。宣告其他規則時序的
 /// 事件仍會是分開的標準事件。
-pub(crate) fn absorb_simultaneous_events(events: &mut Vec<GameEvent>) {
+pub(crate) fn absorb_simultaneous_events(events: &mut Vec<GameEvent>, hp_role: HpChangeRole) {
     let Some(attack_index) = events
         .iter()
         .position(|event| matches!(event, GameEvent::AttackResolved { .. }))
@@ -59,21 +73,30 @@ pub(crate) fn absorb_simultaneous_events(events: &mut Vec<GameEvent>) {
     };
     let tail = events.split_off(attack_index + 1);
     let mut effects = AttackResolutionEffects::default();
+    let mut hp_effects = Vec::new();
     let mut retained = Vec::new();
     for event in tail {
+        if let GameEvent::HpChanged { change } = event {
+            hp_effects.push(change);
+            continue;
+        }
         match append_simultaneous_effect(&mut effects, event) {
             Ok(()) => {}
             Err(event) => retained.push(event),
         }
     }
-    if !effects.is_empty()
+    if (!effects.is_empty() || !hp_effects.is_empty())
         && let GameEvent::AttackResolved {
             elemental_context_update,
+            hp_changes,
             ..
         } = &mut events[attack_index]
     {
+        hp_changes.extend(hp_effects.into_iter().map(|change| ResolvedHpChange {
+            role: hp_role.clone(),
+            change,
+        }));
         let target = elemental_context_update.get_or_insert_with(AttackResolutionEffects::default);
-        target.hp_changes.extend(effects.hp_changes);
         target.shield_changes.extend(effects.shield_changes);
         target.card_moves.extend(effects.card_moves);
         target.statuses_added.extend(effects.statuses_added);
@@ -100,7 +123,7 @@ fn append_simultaneous_effect(
     event: GameEvent,
 ) -> Result<(), GameEvent> {
     match event {
-        GameEvent::HpChanged { change } => effects.hp_changes.push(change),
+        GameEvent::HpChanged { .. } => return Err(event),
         GameEvent::ShieldChanged {
             player,
             old_value,
@@ -163,7 +186,15 @@ fn event_name(event: &GameEvent) -> &'static str {
     }
 }
 
-pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<Vec<GameEvent>> {
+/// 同一外層解析若已經有 HP ledger，攻擊必須借用它，不能重新從 state 建立。
+pub(crate) fn resolve_with_plan(
+    state: &GameState,
+    request: AttackRequest,
+    hp: &mut HpChangePlan,
+) -> GameResult<Vec<GameEvent>> {
+    let pre_resolution_effects = request.pre_resolution_effects.effects.clone();
+    // 攻擊前陣法效果已由外層同一份 ledger 的 scoped session 規劃完成。
+    let pre_resolution_hp_changes = request.pre_resolution_effects.hp_changes.clone();
     let plan = AttackPlanDef {
         category: request.category.clone(),
         point_formula: request.point_formula.clone(),
@@ -258,20 +289,23 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
         shield_absorption(state, &target, shield_damage)
     };
     let has_shield_change = shield_change.is_some();
+    // 防護罩與被動在進入 HP seam 前即已阻止攻擊，因此不能捏造 HP no-op fact。
     let hp_change = if request.damage_prevented || has_shield_change {
-        no_hp_change(state, &target_team)?
+        None
     } else {
-        apply_attack_amount(
+        Some(apply_attack_amount(
             state,
+            hp,
             &target_team,
             defender_amount,
             point_breakdown.damage_transform,
-        )?
+        )?)
     };
     // 陣形卡牌的區域移動由 FormationCommitted 與 FormationCardsDiscarded 擁有。
     // AttackResolved 只包含額外的卡牌差異，絕不重複手牌到棄牌堆的基準移動。
     let card_moves = Vec::new();
-    let mut resolution_effects = request.pre_resolution_effects.clone();
+    let mut resolution_effects = pre_resolution_effects;
+    let mut countershock_changes = Vec::new();
     resolution_effects.elemental_context_update =
         elemental_context_update(&request.category, state.turn_number).map(|attack| {
             LastElementalAttackUpdate {
@@ -305,8 +339,9 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             attacker_amount = (attacker_amount - 20).max(0);
         }
         if attacker_amount > 0 {
-            resolution_effects.hp_changes.push(apply_attack_amount(
+            countershock_changes.push(apply_attack_amount(
                 state,
+                hp,
                 &attacker_team,
                 attacker_amount,
                 damage_transform,
@@ -348,13 +383,42 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
     } else {
         AttackOutcome::Resolved
     };
+    let mut hp_changes = Vec::new();
+    hp_changes.extend(
+        pre_resolution_hp_changes
+            .iter()
+            .cloned()
+            .map(|change| ResolvedHpChange {
+                role: HpChangeRole::FormationEffect,
+                change,
+            }),
+    );
+    if let Some(change) = hp_change {
+        hp_changes.push(ResolvedHpChange {
+            role: HpChangeRole::AttackDamage {
+                target: target.clone(),
+            },
+            change,
+        });
+    }
+    hp_changes.extend(
+        countershock_changes
+            .iter()
+            .cloned()
+            .map(|change| ResolvedHpChange {
+                role: HpChangeRole::AttackDamage {
+                    target: request.attacker.clone(),
+                },
+                change,
+            }),
+    );
     let mut events = vec![GameEvent::AttackResolved {
         attacker: request.attacker.clone(),
         target: target.clone(),
         formation_id: request.formation_id.clone(),
         used_cards: request.used_cards.clone(),
         point_breakdown,
-        hp_change,
+        hp_changes,
         shield_change,
         card_moves,
         elemental_context_update: Some(resolution_effects),
@@ -423,12 +487,7 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             &request.attacker,
             &request.formation_id,
             &request.used_cards,
-        )?);
-        events.extend(crate::rules::dark::post_attack_events(
-            &projected,
-            &request.attacker,
-            &request.formation_id,
-            &request.used_cards,
+            hp,
         )?);
     }
     if request.mode == AttackResolutionMode::CopiedEffect
@@ -448,10 +507,11 @@ pub(crate) fn resolve(state: &GameState, request: AttackRequest) -> GameResult<V
             &request.attacker,
             &request.formation_id,
             &request.used_cards,
+            hp,
         )?);
     }
 
-    absorb_simultaneous_events(&mut events);
+    absorb_simultaneous_events(&mut events, request.trailing_hp_role.clone());
     Ok(events)
 }
 
@@ -775,52 +835,21 @@ fn overcomes(current: Element, previous: Element) -> bool {
 
 fn apply_attack_amount(
     state: &GameState,
+    hp: &mut HpChangePlan,
     team: &TeamId,
     amount: i32,
     transform: DamageTransform,
 ) -> GameResult<HpChangeDelta> {
-    let old_hp = state
-        .hp
-        .iter()
-        .find(|team_hp| &team_hp.team == team)
-        .map(|team_hp| team_hp.hp)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
-    let delta = match transform {
-        DamageTransform::HealTarget if crate::rules::jianghu::team_has_poison(state, team) => 0,
-        DamageTransform::HealTarget => amount,
+    let request = match transform {
+        DamageTransform::HealTarget if crate::rules::jianghu::team_has_poison(state, team) => {
+            HpChangeRequest::Prevented(amount)
+        }
+        DamageTransform::HealTarget => HpChangeRequest::By(amount),
         DamageTransform::NormalDamage
         | DamageTransform::DoubleDamage
-        | DamageTransform::HalfDamageRoundUp => -amount,
+        | DamageTransform::HalfDamageRoundUp => HpChangeRequest::By(-amount),
     };
-    let initial_hp = state
-        .initial_hp(team)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
-    let new_hp = (old_hp + delta).clamp(0, initial_hp);
-
-    Ok(HpChangeDelta {
-        team: team.clone(),
-        old_hp,
-        delta,
-        new_hp,
-        effective_delta: new_hp - old_hp,
-    })
-}
-
-fn no_hp_change(state: &GameState, team: &TeamId) -> GameResult<HpChangeDelta> {
-    let old_hp = state
-        .hp
-        .iter()
-        .find(|team_hp| &team_hp.team == team)
-        .map(|team_hp| team_hp.hp)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
-
-    Ok(HpChangeDelta {
-        team: team.clone(),
-        old_hp,
-        delta: 0,
-        new_hp: old_hp,
-        effective_delta: 0,
-    })
+    hp.plan(team, request)
 }
 
 fn shield_absorption(

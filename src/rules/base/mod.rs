@@ -8,9 +8,10 @@ pub(crate) mod formation_use;
 use crate::domain::{
     CannotPerformFormationReason, CardInstanceId, CardMoveDelta, CardOrigin, CardZone, Command,
     DISCARD_RETRIEVAL_MODULE_ID, DeckPlacement, EngineInvariantError, GameConclusion, GameEndCause,
-    GameError, GameEvent, GameOutcome, GameResult, GameSetup, GameState, GameStatus, HpChangeDelta,
+    GameError, GameEvent, GameOutcome, GameResult, GameSetup, GameState, GameStatus,
     PERSONAL_DECK_MODULE_ID, PassActionReason, PendingResolution, Phase, Player, PlayerDeckList,
     PlayerId, RandomnessDeck, RulesetId, TeamHp, TurnDrawSkipReason, ValidationError,
+    hp::{HpChangePlan, HpChangeRequest},
     validate_setup,
 };
 use crate::rules::projection;
@@ -171,8 +172,12 @@ impl BaseRuleset {
         state: &GameState,
         command: Command,
     ) -> GameResult<Vec<GameEvent>> {
-        let mut events = decide_command_with_base_ruleset(state, command)?;
-        crate::rules::spirit::append_automatic_blooms(state, &mut events)?;
+        let is_pending_choice_answer = matches!(&command, Command::AnswerChoice { .. });
+        let mut hp = crate::domain::hp::HpChangePlan::new(state)?;
+        let mut events = decide_command_with_base_ruleset(state, command, &mut hp)?;
+        if !is_pending_choice_answer {
+            crate::rules::spirit::append_automatic_blooms(state, &mut events, &mut hp)?;
+        }
         append_terminal_game_end(state, &mut events);
         Ok(events)
     }
@@ -220,6 +225,7 @@ impl BaseRuleset {
             let profession_abilities =
                 crate::rules::profession::offers(state, player, selected_cards)?;
             for candidate in profession_abilities {
+                let mut preview_hp = crate::domain::hp::HpChangePlan::new(state)?;
                 let preserves = crate::rules::profession::activate(
                     state,
                     player,
@@ -228,6 +234,7 @@ impl BaseRuleset {
                     candidate.target_card,
                     candidate.declared_element,
                     candidate.declared_level,
+                    &mut preview_hp,
                 )
                 .and_then(|events| {
                     crate::rules::confluence::events_preserve_tuning_completion(
@@ -492,6 +499,8 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
 
     let mut projected = state.clone();
     let mut events = Vec::new();
+    // TurnEnd 的所有江湖陣法效果共用同一份 outer HP ledger。
+    let mut turn_end_hp = None;
 
     loop {
         if projected.phase == Phase::TurnStart {
@@ -503,11 +512,21 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
                 player: player.clone(),
             };
             if status_expiry_event(&projected, expiry).is_none() {
-                let echo_events = crate::rules::echo::turn_start_events(&projected)?;
+                // Turn Start 的 Echo 是新的 outer resolution，從當前 canonical 狀態
+                // 建立 ledger，不能沿用上一個指令的暫時規劃。
+                let mut hp = HpChangePlan::new(&projected)?;
+                let echo_events = crate::rules::echo::turn_start_events(&projected, &mut hp)?;
                 if !echo_events.is_empty() {
                     for event in echo_events {
                         projection::apply_event(&mut projected, &event);
                         events.push(event);
+                    }
+                    let bloom_start = events.len();
+                    // Echo 的主效果與自動綻放屬於同一個 Turn Start outer
+                    // resolution，故不可重建 HP ledger。
+                    crate::rules::spirit::append_automatic_blooms(state, &mut events, &mut hp)?;
+                    for event in &events[bloom_start..] {
+                        projection::apply_event(&mut projected, event);
                     }
                     append_terminal_game_end(state, &mut events);
                     if matches!(events.last(), Some(GameEvent::GameEnded { .. })) {
@@ -523,6 +542,54 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
                     }
                     continue;
                 }
+            }
+        }
+        if projected.phase == Phase::TurnEnd {
+            if turn_end_hp.is_none() {
+                turn_end_hp = Some(HpChangePlan::new(&projected)?);
+            }
+            let turn_end_events = crate::rules::jianghu::turn_end_events(
+                &projected,
+                turn_end_hp
+                    .as_mut()
+                    .expect("TurnEnd HP ledger was initialized"),
+            )?;
+            if let Some(turn_end_events) = turn_end_events {
+                let produces_hp = turn_end_events.iter().any(|event| {
+                    matches!(
+                        event,
+                        GameEvent::JianghuPoisonTicked { .. }
+                            | GameEvent::JianghuDelayedDamageResolved { .. }
+                    )
+                });
+                for event in turn_end_events {
+                    projection::apply_event(&mut projected, &event);
+                    events.push(event);
+                }
+                if produces_hp {
+                    // 致命的 TurnEnd 陣法效果必須先讓木精靈綻放，再判定遊戲結束。
+                    let mut bloom_events = Vec::new();
+                    crate::rules::spirit::append_automatic_blooms(
+                        &projected,
+                        &mut bloom_events,
+                        turn_end_hp
+                            .as_mut()
+                            .expect("TurnEnd HP ledger was initialized"),
+                    )?;
+                    for event in bloom_events {
+                        projection::apply_event(&mut projected, &event);
+                        events.push(event);
+                    }
+                }
+                append_terminal_game_end(state, &mut events);
+                if matches!(events.last(), Some(GameEvent::GameEnded { .. })) {
+                    projection::apply_event(
+                        &mut projected,
+                        events.last().expect("terminal event was appended"),
+                    );
+                    break;
+                }
+                continue;
             }
         }
         let next_event = match projected.phase {
@@ -546,28 +613,25 @@ fn advance_automatic(state: &GameState) -> GameResult<Vec<GameEvent>> {
                 })
             }),
             Phase::TurnDraw => next_turn_draw_event(&projected)?,
-            Phase::TurnEnd => crate::rules::jianghu::turn_end_event(&projected)?
-                .or_else(|| {
-                    status_expiry_event(
-                        &projected,
-                        crate::domain::StatusExpiryTiming::TurnEnd {
-                            player: projected
-                                .current_player()
-                                .expect("validated non-empty turn order")
-                                .clone(),
-                        },
-                    )
+            Phase::TurnEnd => status_expiry_event(
+                &projected,
+                crate::domain::StatusExpiryTiming::TurnEnd {
+                    player: projected
+                        .current_player()
+                        .expect("validated non-empty turn order")
+                        .clone(),
+                },
+            )
+            .or_else(|| crate::rules::echo::turn_end_expiry_event(&projected))
+            .or_else(|| {
+                Some(GameEvent::TurnEnded {
+                    player: projected
+                        .current_player()
+                        .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))
+                        .ok()?
+                        .clone(),
                 })
-                .or_else(|| crate::rules::echo::turn_end_expiry_event(&projected))
-                .or_else(|| {
-                    Some(GameEvent::TurnEnded {
-                        player: projected
-                            .current_player()
-                            .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))
-                            .ok()?
-                            .clone(),
-                    })
-                }),
+            }),
             Phase::ActiveEffects | Phase::Action => None,
         };
 
@@ -726,6 +790,7 @@ fn next_turn_draw_event(state: &GameState) -> GameResult<Option<GameEvent>> {
 fn decide_command_with_base_ruleset(
     state: &GameState,
     command: Command,
+    hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     ensure_engine_invariants(state)?;
 
@@ -840,6 +905,7 @@ fn decide_command_with_base_ruleset(
                     declared_targets,
                     trusted_random_cards: None,
                 },
+                hp,
             )
         }
         Command::PerformFormationWithTrustedRandomness {
@@ -861,6 +927,7 @@ fn decide_command_with_base_ruleset(
                     declared_targets,
                     trusted_random_cards: Some(random_cards),
                 },
+                hp,
             )
         }
         Command::ChangeProfession {
@@ -977,6 +1044,7 @@ fn decide_command_with_base_ruleset(
                 target_card,
                 declared_element,
                 declared_level,
+                hp,
             )?;
             if !crate::rules::confluence::events_preserve_tuning_completion(
                 state, &player, &events,
@@ -997,13 +1065,14 @@ fn decide_command_with_base_ruleset(
         } => {
             ensure_current_player(state, &player)?;
             ensure_phase(state, Phase::ActiveEffects)?;
-            let events = crate::rules::spirit::use_skill(
+            let events = crate::rules::spirit::use_skill_with_plan(
                 state,
                 &player,
                 skill,
                 selected_card,
                 declared_level,
                 None,
+                hp,
             )?;
             if !crate::rules::confluence::events_preserve_tuning_completion(
                 state, &player, &events,
@@ -1025,13 +1094,14 @@ fn decide_command_with_base_ruleset(
         } => {
             ensure_current_player(state, &player)?;
             ensure_phase(state, Phase::ActiveEffects)?;
-            let events = crate::rules::spirit::use_skill(
+            let events = crate::rules::spirit::use_skill_with_plan(
                 state,
                 &player,
                 skill,
                 selected_card,
                 declared_level,
                 Some(&random_cards),
+                hp,
             )?;
             if !crate::rules::confluence::events_preserve_tuning_completion(
                 state, &player, &events,
@@ -1048,7 +1118,7 @@ fn decide_command_with_base_ruleset(
             player,
             choice_id,
             answer,
-        } => crate::rules::pending_choice::answer_events(state, player, choice_id, answer),
+        } => crate::rules::pending_choice::answer_events(state, player, choice_id, answer, hp),
         Command::RetrievePreviousTurnDiscard { player } => {
             ensure_current_player(state, &player)?;
             ensure_phase(state, Phase::ActiveEffects)?;
@@ -1090,16 +1160,7 @@ fn decide_command_with_base_ruleset(
                 .ok_or_else(|| {
                     GameError::Validation(ValidationError::UnknownPlayer(player.clone()))
                 })?;
-            let old_hp = state
-                .hp
-                .iter()
-                .find(|team_hp| team_hp.team == team)
-                .map(|team_hp| team_hp.hp)
-                .ok_or_else(|| {
-                    GameError::Validation(ValidationError::MissingTeamHp(team.clone()))
-                })?;
             let hp_cost = crate::rules::hero::discard_retrieval_cost(state, &player, level * 2);
-            let new_hp = (old_hp - hp_cost).max(0);
             let card_move = CardMoveDelta {
                 card,
                 from: discard_location.card_zone(),
@@ -1114,13 +1175,7 @@ fn decide_command_with_base_ruleset(
                 player,
                 previous_player,
                 card,
-                hp_change: HpChangeDelta {
-                    team,
-                    old_hp,
-                    delta: -hp_cost,
-                    new_hp,
-                    effective_delta: new_hp - old_hp,
-                },
+                hp_change: hp.plan(&team, HpChangeRequest::By(-hp_cost))?,
                 card_move,
             }])
         }

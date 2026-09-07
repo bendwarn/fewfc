@@ -1,9 +1,11 @@
 use crate::domain::targeting::{RulePlayerTarget, TurnOrderTargets};
 use crate::domain::{
     CardZone, ChoiceAnswer, ChoiceRequest, ECHO_MODULE_ID, Element, GameError, GameEvent,
-    GameResult, GameState, GameStatus, PendingChoiceKind, PendingResolution, PlayerId,
+    GameResult, GameState, MelodyExecutionOrigin, PendingChoiceKind, PendingResolution, PlayerId,
     ScheduledEcho, ValidationError,
+    hp::{HpChangePlan, HpChangeRequest},
 };
+use crate::rules::formation_effect_sequence::{FormationEffectSequence, ResolvedFormationEffect};
 use crate::rules::{
     ActionCost, BaseFormationSpec, ConsequenceCertainty, DelayedEffect, DelayedTiming, EffectDef,
     EffectPlan, FollowUpChoice, FormationCategory, FormationDef, FormationEffect, FormationPattern,
@@ -32,13 +34,6 @@ pub(crate) enum EchoPolicy {
     },
     Automatic,
     None,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MelodyExecutionOrigin {
-    FormationUse,
-    Echo,
-    PlantedEarth,
 }
 
 impl MelodyExecutionOrigin {
@@ -233,10 +228,10 @@ fn rule_text(melody: &MelodyDef) -> &'static str {
 }
 
 pub(crate) fn formation_main_effect_events(
-    _state: &GameState,
     post_formation_state: &GameState,
     player: &PlayerId,
     melody_id: &str,
+    hp: &mut HpChangePlan,
 ) -> GameResult<Option<Vec<GameEvent>>> {
     let Some(melody) = melody(melody_id) else {
         return Ok(None);
@@ -246,6 +241,7 @@ pub(crate) fn formation_main_effect_events(
         player,
         &melody,
         MelodyExecutionOrigin::FormationUse,
+        hp,
     )?;
     let mut projected = post_formation_state.clone();
     for event in &events {
@@ -256,7 +252,7 @@ pub(crate) fn formation_main_effect_events(
             event,
             GameEvent::ChoiceRequested { .. } | GameEvent::RandomnessRequested { .. }
         )
-    }) && !matches!(projected.status, GameStatus::Finished { .. })
+    }) && crate::rules::projection::game_conclusion_if_needed(&projected).is_none()
         && melody
             .echo_policy
             .is_schedulable_from(MelodyExecutionOrigin::FormationUse)
@@ -271,9 +267,10 @@ pub(crate) fn answer_choice(
     player: &PlayerId,
     resolution: &PendingResolution,
     answer: &ChoiceAnswer,
+    hp: &mut HpChangePlan,
 ) -> GameResult<Option<Vec<GameEvent>>> {
     match resolution {
-        PendingResolution::EchoSplitEarthFormation => {
+        PendingResolution::MelodySplitEarthFormation { origin } => {
             let ChoiceAnswer::Formation { formation_id } = answer else {
                 return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
             };
@@ -285,23 +282,29 @@ pub(crate) fn answer_choice(
                     target,
                     formation_id: formation_id.clone(),
                     expires_on_turn_number: state.turn_number + 1,
+                    origin: *origin,
                 },
             }];
-            if let Some(active) = &state.active_plant_earth_resolution {
+            if *origin == MelodyExecutionOrigin::PlantedEarth {
+                let active = state
+                    .active_plant_earth_resolution
+                    .as_ref()
+                    .ok_or_else(|| {
+                        GameError::EngineInvariant(
+                            crate::domain::EngineInvariantError::InvalidPendingResolution,
+                        )
+                    })?;
                 events.push(GameEvent::PlantEarthResolutionCompleted {
                     player: player.clone(),
                     due_turn_number: active.due_turn_number,
                     melody_id: SPLIT_EARTH.to_string(),
                 });
-            } else if state
-                .active_echo_resolution
-                .as_ref()
-                .is_some_and(|active| active.player == *player && active.melody_id == SPLIT_EARTH)
-            {
-                let active = state
-                    .active_echo_resolution
-                    .as_ref()
-                    .expect("matched active Echo");
+            } else if *origin == MelodyExecutionOrigin::Echo {
+                let active = state.active_echo_resolution.as_ref().ok_or_else(|| {
+                    GameError::EngineInvariant(
+                        crate::domain::EngineInvariantError::InvalidPendingResolution,
+                    )
+                })?;
                 events.push(GameEvent::EchoResolutionCompleted {
                     player: player.clone(),
                     melody_id: SPLIT_EARTH.to_string(),
@@ -313,7 +316,12 @@ pub(crate) fn answer_choice(
             }
             Ok(Some(events))
         }
-        PendingResolution::EchoPlantEarthMelody => {
+        PendingResolution::MelodyPlantEarthMelody { origin } => {
+            if *origin != MelodyExecutionOrigin::PlantedEarth {
+                return Err(GameError::EngineInvariant(
+                    crate::domain::EngineInvariantError::InvalidPendingResolution,
+                ));
+            }
             let ChoiceAnswer::Formation { formation_id } = answer else {
                 return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
             };
@@ -334,6 +342,7 @@ pub(crate) fn answer_choice(
                 player,
                 &selected,
                 MelodyExecutionOrigin::PlantedEarth,
+                hp,
             )?;
             if !events.iter().any(|event| {
                 matches!(
@@ -359,7 +368,7 @@ pub(crate) fn answer_choice(
             }
             Ok(Some(events))
         }
-        PendingResolution::EchoPureFireTarget => {
+        PendingResolution::MelodyPureFireTarget { origin } => {
             let ChoiceAnswer::Player { player: target } = answer else {
                 return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
             };
@@ -368,11 +377,12 @@ pub(crate) fn answer_choice(
                 target: target.clone(),
                 reductions: timed_effect_reductions(state, target),
             }];
-            if let Some(active) = state
-                .active_echo_resolution
-                .as_ref()
-                .filter(|active| active.player == *player && active.melody_id == PURE_FIRE)
-            {
+            if *origin == MelodyExecutionOrigin::Echo {
+                let active = state.active_echo_resolution.as_ref().ok_or_else(|| {
+                    GameError::EngineInvariant(
+                        crate::domain::EngineInvariantError::InvalidPendingResolution,
+                    )
+                })?;
                 events.push(GameEvent::EchoResolutionCompleted {
                     player: player.clone(),
                     melody_id: PURE_FIRE.to_string(),
@@ -389,7 +399,7 @@ pub(crate) fn answer_choice(
             }
             Ok(Some(events))
         }
-        PendingResolution::EchoRingingMetalDeckCard => {
+        PendingResolution::MelodyRingingMetalDeckCard { origin } => {
             let ChoiceAnswer::Cards { cards } = answer else {
                 return Err(GameError::Validation(ValidationError::InvalidChoiceAnswer));
             };
@@ -410,7 +420,9 @@ pub(crate) fn answer_choice(
                 .expect("choice Player must have a Deck")
                 .to_vec();
             if remainder.is_empty() {
-                events.extend(ringing_metal_completion_events(&projected, selection)?);
+                events.extend(ringing_metal_completion_events(
+                    &projected, selection, *origin,
+                )?);
             } else {
                 events.push(GameEvent::RandomnessRequested {
                     request: crate::domain::PendingRandomness {
@@ -424,12 +436,15 @@ pub(crate) fn answer_choice(
                         },
                         current_order: remainder,
                     },
-                    resolution: PendingResolution::EchoRingingMetalPostSearch,
+                    resolution: PendingResolution::MelodyRingingMetalPostSearch { origin: *origin },
                 });
             }
             Ok(Some(events))
         }
-        PendingResolution::EchoCost { melody_id } => {
+        PendingResolution::MelodyCost { melody_id, origin } => {
+            if *origin != MelodyExecutionOrigin::FormationUse {
+                return Ok(None);
+            }
             let Some(melody) = melody(melody_id) else {
                 return Ok(None);
             };
@@ -469,7 +484,10 @@ pub(crate) fn answer_choice(
     }
 }
 
-pub(crate) fn turn_start_events(state: &GameState) -> GameResult<Vec<GameEvent>> {
+pub(crate) fn turn_start_events(
+    state: &GameState,
+    hp: &mut HpChangePlan,
+) -> GameResult<Vec<GameEvent>> {
     let Some(player) = state.current_player() else {
         return Err(GameError::Validation(ValidationError::EmptyTurnOrder));
     };
@@ -481,7 +499,7 @@ pub(crate) fn turn_start_events(state: &GameState) -> GameResult<Vec<GameEvent>>
         })
         .cloned()
     else {
-        return plant_earth_turn_start_events(state);
+        return plant_earth_turn_start_events(state, hp);
     };
     let melody = melody(&schedule.melody_id).ok_or_else(|| {
         GameError::RuleImplementation(
@@ -498,6 +516,7 @@ pub(crate) fn turn_start_events(state: &GameState) -> GameResult<Vec<GameEvent>>
         player,
         &melody,
         MelodyExecutionOrigin::Echo,
+        hp,
     )?);
     if !events.iter().any(|event| {
         matches!(
@@ -550,10 +569,11 @@ fn main_effect_events(
     state: &GameState,
     player: &PlayerId,
     melody: &MelodyDef,
-    _origin: MelodyExecutionOrigin,
+    origin: MelodyExecutionOrigin,
+    hp: &mut HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     match melody.id {
-        FALLING_WOOD => hp_event(state, player, 15).map(|event| event.into_iter().collect()),
+        FALLING_WOOD => melody_hp_events(state, player, player, 15, origin, hp),
         FLOWING_WATER => {
             let old_layers = state
                 .flow_layers_by_player
@@ -569,9 +589,9 @@ fn main_effect_events(
         WAR_FIRE => {
             let target = TurnOrderTargets::new(state)
                 .player_target(player, RulePlayerTarget::PreviousPlayer)?;
-            hp_event(state, &target, -15).map(|event| event.into_iter().collect())
+            melody_hp_events(state, player, &target, -15, origin, hp)
         }
-        PLANT_EARTH if matches!(_origin, MelodyExecutionOrigin::FormationUse) => {
+        PLANT_EARTH if matches!(origin, MelodyExecutionOrigin::FormationUse) => {
             Ok(vec![GameEvent::PlantEarthScheduled {
                 schedule: crate::domain::ScheduledPlantEarth {
                     player: player.clone(),
@@ -587,7 +607,7 @@ fn main_effect_events(
                     players: state.players.iter().map(|entry| entry.id.clone()).collect(),
                     can_decline: false,
                 },
-                resolution: PendingResolution::EchoPureFireTarget,
+                resolution: PendingResolution::MelodyPureFireTarget { origin },
             },
         )?]),
         PLANT_EARTH => Err(GameError::RuleImplementation(
@@ -623,12 +643,12 @@ fn main_effect_events(
                             formations,
                             can_decline: false,
                         },
-                        resolution: PendingResolution::EchoSplitEarthFormation,
+                        resolution: PendingResolution::MelodySplitEarthFormation { origin },
                     },
                 )?,
             ])
         }
-        RINGING_METAL => ringing_metal_start_events(state, player),
+        RINGING_METAL => ringing_metal_start_events(state, player, origin),
         _ => unreachable!("every Melody has one main effect"),
     }
 }
@@ -687,8 +707,10 @@ pub(crate) fn after_randomness_events(
     resolution: &PendingResolution,
 ) -> GameResult<Vec<GameEvent>> {
     match resolution {
-        PendingResolution::EchoRingingMetalRecycleDiscard => ringing_metal_search_choice(state),
-        PendingResolution::EchoRingingMetalPostSearch => {
+        PendingResolution::MelodyRingingMetalRecycleDiscard { origin } => {
+            ringing_metal_search_choice(state, *origin)
+        }
+        PendingResolution::MelodyRingingMetalPostSearch { origin } => {
             let selection = state.ringing_metal_selection.clone().ok_or_else(|| {
                 GameError::RuleImplementation(
                     crate::domain::RuleImplementationError::EffectNotImplemented(
@@ -696,7 +718,7 @@ pub(crate) fn after_randomness_events(
                     ),
                 )
             })?;
-            ringing_metal_completion_events(state, selection)
+            ringing_metal_completion_events(state, selection, *origin)
         }
         _ => Err(GameError::RuleImplementation(
             crate::domain::RuleImplementationError::EffectNotImplemented(
@@ -706,7 +728,11 @@ pub(crate) fn after_randomness_events(
     }
 }
 
-fn ringing_metal_start_events(state: &GameState, player: &PlayerId) -> GameResult<Vec<GameEvent>> {
+fn ringing_metal_start_events(
+    state: &GameState,
+    player: &PlayerId,
+    origin: MelodyExecutionOrigin,
+) -> GameResult<Vec<GameEvent>> {
     let deck = deck_kind(state, player);
     if let Some(event) = crate::rules::deck_supply::request_if_needed(
         state,
@@ -718,15 +744,18 @@ fn ringing_metal_start_events(state: &GameState, player: &PlayerId) -> GameResul
             state.turn_number,
             player.as_str()
         ),
-        PendingResolution::EchoRingingMetalRecycleDiscard,
+        PendingResolution::MelodyRingingMetalRecycleDiscard { origin },
     )? {
         Ok(vec![event])
     } else {
-        ringing_metal_search_choice(state)
+        ringing_metal_search_choice(state, origin)
     }
 }
 
-fn ringing_metal_search_choice(state: &GameState) -> GameResult<Vec<GameEvent>> {
+fn ringing_metal_search_choice(
+    state: &GameState,
+    origin: MelodyExecutionOrigin,
+) -> GameResult<Vec<GameEvent>> {
     let player = state
         .active_echo_resolution
         .as_ref()
@@ -750,7 +779,7 @@ fn ringing_metal_search_choice(state: &GameState) -> GameResult<Vec<GameEvent>> 
                 maximum: 1,
                 can_decline: false,
             },
-            resolution: PendingResolution::EchoRingingMetalDeckCard,
+            resolution: PendingResolution::MelodyRingingMetalDeckCard { origin },
         },
     )?])
 }
@@ -758,17 +787,31 @@ fn ringing_metal_search_choice(state: &GameState) -> GameResult<Vec<GameEvent>> 
 fn ringing_metal_completion_events(
     state: &GameState,
     selection: crate::domain::RingingMetalSelection,
+    origin: MelodyExecutionOrigin,
 ) -> GameResult<Vec<GameEvent>> {
     let mut events = vec![GameEvent::RingingMetalCompleted {
         selection: selection.clone(),
     }];
-    if let Some(active) = &state.active_echo_resolution {
+    if origin == MelodyExecutionOrigin::Echo {
+        let active = state.active_echo_resolution.as_ref().ok_or_else(|| {
+            GameError::EngineInvariant(
+                crate::domain::EngineInvariantError::InvalidPendingResolution,
+            )
+        })?;
         events.push(GameEvent::EchoResolutionCompleted {
             player: active.player.clone(),
             melody_id: active.melody_id.clone(),
             due_turn_number: active.due_turn_number,
         });
-    } else if let Some(active) = &state.active_plant_earth_resolution {
+    } else if origin == MelodyExecutionOrigin::PlantedEarth {
+        let active = state
+            .active_plant_earth_resolution
+            .as_ref()
+            .ok_or_else(|| {
+                GameError::EngineInvariant(
+                    crate::domain::EngineInvariantError::InvalidPendingResolution,
+                )
+            })?;
         events.push(GameEvent::PlantEarthResolutionCompleted {
             player: active.player.clone(),
             due_turn_number: active.due_turn_number,
@@ -783,7 +826,10 @@ fn ringing_metal_completion_events(
     Ok(events)
 }
 
-fn plant_earth_turn_start_events(state: &GameState) -> GameResult<Vec<GameEvent>> {
+fn plant_earth_turn_start_events(
+    state: &GameState,
+    _hp: &mut HpChangePlan,
+) -> GameResult<Vec<GameEvent>> {
     let player = state
         .current_player()
         .ok_or(GameError::Validation(ValidationError::EmptyTurnOrder))?;
@@ -815,7 +861,9 @@ fn plant_earth_turn_start_events(state: &GameState) -> GameResult<Vec<GameEvent>
                     ],
                     can_decline: false,
                 },
-                resolution: PendingResolution::EchoPlantEarthMelody,
+                resolution: PendingResolution::MelodyPlantEarthMelody {
+                    origin: MelodyExecutionOrigin::PlantedEarth,
+                },
             },
         )?,
     ])
@@ -838,6 +886,8 @@ pub(crate) fn formation_use_is_suppressed(
         &suppression.target == player
             && suppression.formation_id == formation_id
             && suppression.expires_on_turn_number == state.turn_number
+            && (suppression.origin == MelodyExecutionOrigin::Echo
+                || crate::rules::sacred_beast_element(formation_id).is_none())
     })
 }
 
@@ -853,34 +903,32 @@ pub(crate) fn turn_end_expiry_event(state: &GameState) -> Option<GameEvent> {
     })
 }
 
-fn hp_event(
+fn melody_hp_events(
     state: &GameState,
+    performer: &PlayerId,
     affected_player: &PlayerId,
     delta: i32,
-) -> GameResult<Option<GameEvent>> {
+    origin: MelodyExecutionOrigin,
+    hp: &mut HpChangePlan,
+) -> GameResult<Vec<GameEvent>> {
     let team = TurnOrderTargets::new(state).team_of(affected_player)?;
-    if delta > 0 && crate::rules::jianghu::team_has_poison(state, &team) {
-        return Ok(None);
+    if origin == MelodyExecutionOrigin::Echo {
+        // Echo 不是陣法效果，不套用中毒、烈風暴雨或觀火等陣法恢復防止。
+        return Ok(vec![GameEvent::HpChanged {
+            change: hp.plan(&team, HpChangeRequest::By(delta))?,
+        }]);
     }
-    let old_hp = state
-        .hp
-        .iter()
-        .find(|entry| entry.team == team)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?
-        .hp;
-    let initial_hp = state
-        .initial_hp(&team)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
-    let new_hp = (old_hp + delta).clamp(0, initial_hp);
-    Ok((new_hp != old_hp).then_some(GameEvent::HpChanged {
-        change: crate::domain::HpChangeDelta {
-            team,
-            old_hp,
-            delta,
-            new_hp,
-            effective_delta: new_hp - old_hp,
-        },
-    }))
+
+    let request =
+        crate::rules::base::formation_use::formation_hp_request(state, performer, &team, delta);
+    let mut effect = hp.begin_formation_effect();
+    let primary = GameEvent::HpChanged {
+        change: effect.plan(&team, request)?,
+    };
+    let outcome = effect.finish();
+    let mut sequence = FormationEffectSequence::new(state);
+    sequence.append(hp, ResolvedFormationEffect::new(vec![primary], outcome))?;
+    Ok(sequence.into_events())
 }
 
 fn echo_cost_choice(
@@ -919,8 +967,9 @@ fn echo_cost_choice(
                 maximum: 1,
                 can_decline: true,
             },
-            resolution: PendingResolution::EchoCost {
+            resolution: PendingResolution::MelodyCost {
                 melody_id: melody.id.to_string(),
+                origin: MelodyExecutionOrigin::FormationUse,
             },
         },
     )

@@ -1,8 +1,8 @@
 use fewfc::application::GameRecord;
 use fewfc::domain::{
     CardInstanceId, Command, Element, FIVE_DIRECTIONS_LEGEND_MODULE_ID, FormationAreaState,
-    GameEvent, HERO_SCHOOLS_MODULE_ID, HpChangeDelta, Player, PlayerId, RuleModuleId,
-    SPIRIT_MODULE_ID, STAR_MODULE_ID, SpiritKind, SpiritSkill, TeamId,
+    GameEvent, HERO_SCHOOLS_MODULE_ID, Player, PlayerId, RuleModuleId, SPIRIT_MODULE_ID,
+    STAR_MODULE_ID, SpiritKind, SpiritSkill, TeamId,
 };
 use fewfc::rules::OfficialRules;
 
@@ -205,16 +205,14 @@ fn metal_spirit_flying_blade_matrix_summons_legally_then_spends_power_for_damage
                 selected_card: None,
                 declared_level: None,
             },
-            GameEvent::HpChanged {
-                change: HpChangeDelta {
-                    team,
-                    old_hp: 200,
-                    delta: -10,
-                    new_hp: 190,
-                    effective_delta: -10,
-                },
-            },
-        ] if player == &p1 && old_power - new_power == 2 && team == &TeamId::new("team:p2")
+            GameEvent::HpChanged { change },
+        ] if player == &p1
+            && old_power - new_power == 2
+            && change.team() == &TeamId::new("team:p2")
+            && change.old_hp() == 200
+            && change.delta() == -10
+            && change.new_hp() == 190
+            && change.effective_delta() == -10
     ));
     assert_eq!(
         record.state().spirit_for(&p1),

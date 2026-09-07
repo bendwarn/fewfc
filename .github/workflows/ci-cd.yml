@@ -109,15 +109,9 @@ jobs:
           packageManager: bun
           workingDirectory: apps/web
           environment: staging
-          secrets: |
-            BETTER_AUTH_SECRET
-            LEGACY_PURGE_SECRET
           command: |
             d1 migrations apply fewfc-auth-staging --remote --env staging
             deploy --env staging
-        env:
-          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
-          LEGACY_PURGE_SECRET: ${{ secrets.LEGACY_PURGE_SECRET }}
 
   validate-production:
     name: Validate staging promotion
@@ -215,12 +209,6 @@ jobs:
           packageManager: bun
           workingDirectory: apps/web
           environment: production
-          secrets: |
-            BETTER_AUTH_SECRET
-            LEGACY_PURGE_SECRET
           command: |
             d1 migrations apply fewfc-auth-production --remote --env production
             deploy --env production
-        env:
-          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
-          LEGACY_PURGE_SECRET: ${{ secrets.LEGACY_PURGE_SECRET }}

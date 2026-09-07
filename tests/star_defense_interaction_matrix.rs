@@ -2,7 +2,7 @@ use fewfc::application::GameRecord;
 use fewfc::domain::{
     ActionModification, AttackOutcome, AttackPointBreakdown, AttackResolutionEffects,
     CardInstanceId, ChoiceAnswer, Command, DamageTransform, Element, ElementInteraction,
-    EnvironmentAttackEffect, FormationAreaState, GameEvent, HpChangeDelta, LastElementalAttack,
+    EnvironmentAttackEffect, FormationAreaState, GameEvent, LastElementalAttack,
     LastElementalAttackUpdate, PassiveFlipOutcome, Player, PlayerId, RuleModuleId, STAR_MODULE_ID,
     StarBreakReason, StarElementSubstitution, StarKind, TargetDecl, TeamId, TeamStar,
 };
@@ -207,7 +207,6 @@ fn owned_star_defense_matrix_records_selected_substitution_and_preserves_star_li
         baseline.first_attack_card,
         Element::Metal,
         2,
-        200,
     );
     assert!(baseline.record.state().covered_passive(&owner).is_none());
     baseline.assert_replay();
@@ -274,7 +273,7 @@ fn owned_star_defense_matrix_records_selected_substitution_and_preserves_star_li
     );
     assert!(first_attack.iter().any(|event| matches!(
         event,
-        GameEvent::AttackResolved { point_breakdown, hp_change, .. }
+        GameEvent::AttackResolved { point_breakdown, hp_changes, .. }
             if point_breakdown == &AttackPointBreakdown {
                 base_points: 5,
                 environment_effect: EnvironmentAttackEffect::None,
@@ -282,13 +281,7 @@ fn owned_star_defense_matrix_records_selected_substitution_and_preserves_star_li
                 damage_transform: DamageTransform::DoubleDamage,
                 final_amount: 10,
             }
-            && hp_change == &HpChangeDelta {
-                team: TeamId::new("team:p1"),
-                old_hp: 200,
-                delta: -10,
-                new_hp: 190,
-                effective_delta: -10,
-            }
+            && hp_changes.iter().any(|resolved| resolved.change.team() == &TeamId::new("team:p1") && resolved.change.old_hp() == 200 && resolved.change.delta() == -10 && resolved.change.new_hp() == 190 && resolved.change.effective_delta() == -10)
     )));
     interaction.finish_turn(&attacker);
     interaction.advance_to_main(&owner);
@@ -388,7 +381,6 @@ fn owned_star_defense_matrix_records_selected_substitution_and_preserves_star_li
         interaction.defended_attack_card,
         Element::Earth,
         4,
-        190,
     );
     assert!(
         !defended_attack
@@ -607,12 +599,12 @@ fn three_card_star_formation_defense_matrix_prevents_damage_but_keeps_draw_and_s
             attacker,
             formation_id,
             point_breakdown: AttackPointBreakdown { base_points: 21, final_amount: 21, .. },
-            hp_change: HpChangeDelta { team, delta: 0, effective_delta: 0, .. },
+            hp_changes,
             elemental_context_update: Some(AttackResolutionEffects { turn_draw_bonus_changes, .. }),
             ..
         } if attacker == &p3
             && formation_id == "taibai-heaven-forging"
-            && team == &water_team
+            && hp_changes.is_empty()
             && turn_draw_bonus_changes
                 == &vec![fewfc::domain::TurnDrawBonusDelta {
                     player: p3.clone(),
@@ -709,7 +701,6 @@ fn assert_defense_flip_and_attack(
     attack_card: CardInstanceId,
     attack_element: Element,
     resolved_turn: u64,
-    old_hp: i32,
 ) {
     assert!(matches!(
         events,
@@ -734,7 +725,7 @@ fn assert_defense_flip_and_attack(
                 formation_id: attack_formation,
                 used_cards,
                 point_breakdown,
-                hp_change,
+                hp_changes,
                 shield_change: None,
                 card_moves,
                 elemental_context_update,
@@ -770,13 +761,7 @@ fn assert_defense_flip_and_attack(
                 damage_transform: DamageTransform::NormalDamage,
                 final_amount: 5,
             }
-            && hp_change == &HpChangeDelta {
-                team: TeamId::new("team:p1"),
-                old_hp,
-                delta: 0,
-                new_hp: old_hp,
-                effective_delta: 0,
-            }
+            && hp_changes.is_empty()
             && card_moves.is_empty()
             && elemental_context_update == &Some(AttackResolutionEffects {
                 outcome: AttackOutcome::DamagePrevented,

@@ -1,3 +1,6 @@
-mod scenario;
+pub mod scenario;
 
-pub use scenario::OfficialScenario;
+#[allow(unused_imports)]
+pub use scenario::{
+    CardSelector, Scenario, ScenarioError, ScenarioPlan, ScenarioStep, ScenarioZone, StepTrace,
+};

@@ -1,7 +1,8 @@
 use crate::domain::{
     CardInstanceId, DARK_GLIMMER_MODULE_ID, Element, GameError, GameEvent, GameResult, GameState,
-    HpChangeDelta, PlayerId, ProfessionId, RuleModuleId, SpiritKind, StatusDuration, StatusEffect,
-    StatusOwner, ValidationError,
+    PlayerId, ProfessionId, RuleModuleId, SpiritKind, StatusDuration, StatusEffect, StatusOwner,
+    ValidationError,
+    hp::{HpChangePlan, HpChangeRequest},
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::{
@@ -493,14 +494,27 @@ pub(crate) fn active_spell_events(
     resolver_id: &str,
     used_cards: &[CardInstanceId],
     trusted_random_cards: Option<&[CardInstanceId]>,
-) -> GameResult<Option<Vec<GameEvent>>> {
+    hp: &mut HpChangePlan,
+) -> GameResult<
+    Option<(
+        Vec<GameEvent>,
+        Option<crate::domain::hp::FormationHpEffectOutcome>,
+    )>,
+> {
     let next = TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::NextPlayer)?;
+    let mut effect = hp.begin_formation_effect();
     let events = match resolver_id {
         DARK_RADIANCE => {
             if crate::rules::hero::target_ignores_disruptive_spell(state, player, resolver_id)? {
-                return Ok(Some(Vec::new()));
+                return Ok(Some((Vec::new(), None)));
             }
-            let mut events = vec![hp_event_for_player(state, &next, -15)?];
+            let mut events = vec![formation_effect_hp_event(
+                state,
+                &mut effect,
+                player,
+                &next,
+                -15,
+            )?];
             events.extend(cannot_act_or_draw(state, &next, "dark-radiance", 2)?);
             events
         }
@@ -509,16 +523,24 @@ pub(crate) fn active_spell_events(
             player,
             level_sum(state, player, used_cards)? * 6,
         )],
-        DARK_RETURN_TO_ORIGIN => vec![hp_event_for_player(
+        DARK_RETURN_TO_ORIGIN => vec![formation_effect_hp_event(
             state,
+            &mut effect,
+            player,
             player,
             level_sum(state, player, used_cards)? * 6,
         )?],
         DARK_CHAOS => {
             if crate::rules::hero::target_ignores_disruptive_spell(state, player, resolver_id)? {
-                return Ok(Some(Vec::new()));
+                return Ok(Some((Vec::new(), None)));
             }
-            let mut events = vec![hp_event_for_player(state, &next, -15)?];
+            let mut events = vec![formation_effect_hp_event(
+                state,
+                &mut effect,
+                player,
+                &next,
+                -15,
+            )?];
             let returned =
                 validate_trusted_random_hand_cards(state, &next, trusted_random_cards, DARK_CHAOS)?;
             if !returned.is_empty() {
@@ -541,8 +563,8 @@ pub(crate) fn active_spell_events(
             events
         }
         DARK_CYCLE => vec![
-            hp_event_for_player(state, &next, -50)?,
-            hp_event_for_player(state, player, 50)?,
+            formation_effect_hp_event(state, &mut effect, player, &next, -50)?,
+            formation_effect_hp_event(state, &mut effect, player, player, 50)?,
             GameEvent::ProfessionBroken {
                 player: player.clone(),
                 profession: ProfessionId::new(DARK_SPIRIT_ENVOY_ID),
@@ -552,7 +574,11 @@ pub(crate) fn active_spell_events(
         DEATH_SPIRIT_SUMMONING => summon_or_charge_events(state, player, SpiritKind::Death),
         _ => return Ok(None),
     };
-    Ok(Some(events))
+    let outcome = events
+        .iter()
+        .any(|event| matches!(event, GameEvent::HpChanged { .. }))
+        .then(|| effect.finish());
+    Ok(Some((events, outcome)))
 }
 
 pub(crate) fn validate_trusted_random_hand_cards(
@@ -598,14 +624,34 @@ pub(crate) fn post_attack_events(
     player: &PlayerId,
     formation_id: &str,
     used_cards: &[CardInstanceId],
-) -> GameResult<Vec<GameEvent>> {
+    hp: &mut HpChangePlan,
+) -> GameResult<(
+    Vec<GameEvent>,
+    Option<crate::domain::hp::FormationHpEffectOutcome>,
+)> {
     let previous =
         TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::PreviousPlayer)?;
+    let mut effect = hp.begin_formation_effect();
     match formation_id {
-        AFTERIMAGE_SLASH => Ok(vec![hp_event_for_player(state, &previous, -8)?]),
+        AFTERIMAGE_SLASH => Ok((
+            vec![formation_effect_hp_event(
+                state,
+                &mut effect,
+                player,
+                &previous,
+                -8,
+            )?],
+            Some(effect.finish()),
+        )),
         BERSERK_AFTERIMAGE_SLASH => {
             let amount = level_sum(state, player, used_cards)? * 3;
-            let mut events = vec![hp_event_for_player(state, &previous, -amount)?];
+            let mut events = vec![formation_effect_hp_event(
+                state,
+                &mut effect,
+                player,
+                &previous,
+                -amount,
+            )?];
             for target in state
                 .players
                 .iter()
@@ -618,111 +664,15 @@ pub(crate) fn post_attack_events(
                 player: player.clone(),
                 profession: ProfessionId::new(SHADOW_BERSERKER_ID),
             });
-            Ok(events)
+            Ok((events, Some(effect.finish())))
         }
-        _ => Ok(Vec::new()),
+        _ => Ok((Vec::new(), None)),
     }
-}
-
-pub(crate) fn append_shared_fate_events(
-    state: &GameState,
-    _performer: &PlayerId,
-    formation_id: &str,
-    events: &mut Vec<GameEvent>,
-) -> GameResult<()> {
-    if formation_id == "void-spirit-shattering" {
-        return Ok(());
-    }
-    let mut affected_teams = std::collections::HashSet::new();
-    for event in events.iter() {
-        match event {
-            GameEvent::AttackResolved {
-                elemental_context_update: Some(effects),
-                ..
-            } => {
-                for change in effects
-                    .hp_changes
-                    .iter()
-                    .filter(|change| change.effective_delta < 0)
-                {
-                    affected_teams.insert(change.team.clone());
-                }
-            }
-            GameEvent::HpChanged { change } if change.effective_delta < 0 => {
-                affected_teams.insert(change.team.clone());
-            }
-            GameEvent::EnvironmentCleared { hp_changes, .. } => {
-                for change in hp_changes
-                    .iter()
-                    .filter(|change| change.effective_delta < 0)
-                {
-                    affected_teams.insert(change.team.clone());
-                }
-            }
-            GameEvent::StarBroken {
-                team,
-                hp_change: Some(change),
-                ..
-            } if change.effective_delta < 0 => {
-                affected_teams.insert(team.clone());
-            }
-            GameEvent::VoidReversionResolved { hp_change, .. } if hp_change.effective_delta < 0 => {
-                affected_teams.insert(hp_change.team.clone());
-            }
-            _ => {}
-        }
-    }
-    let mut death_owners = Vec::new();
-    for owned in state
-        .spirits
-        .iter()
-        .filter(|owned| owned.spirit == SpiritKind::Death)
-    {
-        let owner_team = TurnOrderTargets::new(state).team_of(&owned.player)?;
-        if affected_teams.contains(&owner_team) {
-            death_owners.push(owned.player.clone());
-        }
-    }
-    if death_owners.is_empty() {
-        return Ok(());
-    }
-    let mut projected = state.clone();
-    for event in events.iter() {
-        crate::rules::projection::apply_event(&mut projected, event);
-    }
-    let mut counts = std::collections::HashMap::new();
-    for owner in death_owners {
-        let target =
-            TurnOrderTargets::new(state).player_target(&owner, RulePlayerTarget::NextPlayer)?;
-        let team = TurnOrderTargets::new(state).team_of(&target)?;
-        *counts.entry(team).or_insert(0_i32) += 1;
-    }
-    for (team, count) in counts {
-        let old_hp = projected
-            .hp
-            .iter()
-            .find(|entry| entry.team == team)
-            .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?
-            .hp;
-        let delta = count.saturating_mul(-10);
-        let new_hp = (old_hp + delta).max(0);
-        let event = GameEvent::HpChanged {
-            change: HpChangeDelta {
-                team,
-                old_hp,
-                delta,
-                new_hp,
-                effective_delta: new_hp - old_hp,
-            },
-        };
-        crate::rules::projection::apply_event(&mut projected, &event);
-        events.push(event);
-    }
-    Ok(())
 }
 
 pub(crate) fn append_mischief_events(
     state: &GameState,
+    hp: &mut HpChangePlan,
     events: &mut Vec<GameEvent>,
 ) -> GameResult<()> {
     let inspected = events
@@ -761,7 +711,20 @@ pub(crate) fn append_mischief_events(
         if highest == 0 {
             continue;
         }
-        let event = hp_event_for_player(&projected, &target, -(highest as i32 * 2))?;
+        let level = i32::try_from(highest).map_err(|_| {
+            GameError::EngineInvariant(crate::domain::EngineInvariantError::InvalidHpLedger {
+                reason: "mischief HP delta overflow".to_string(),
+            })
+        })?;
+        let delta = level.checked_mul(-2).ok_or_else(|| {
+            GameError::EngineInvariant(crate::domain::EngineInvariantError::InvalidHpLedger {
+                reason: "mischief HP delta overflow".to_string(),
+            })
+        })?;
+        let team = TurnOrderTargets::new(&projected).team_of(&target)?;
+        let event = GameEvent::HpChanged {
+            change: hp.plan(&team, HpChangeRequest::By(delta))?,
+        };
         crate::rules::projection::apply_event(&mut projected, &event);
         events.push(event);
     }
@@ -780,6 +743,7 @@ impl crate::rules::profession::activated::ActivatedAbilityProvider for Activated
 
     const MODULE_ID: &'static str = DARK_GLIMMER_MODULE_ID;
 
+    #[cfg(any(debug_assertions, test))]
     fn kinds() -> &'static [Self::Kind] {
         &[ActivatedAbility::DarkSpirit]
     }
@@ -931,29 +895,22 @@ fn level_sum(state: &GameState, player: &PlayerId, cards: &[CardInstanceId]) -> 
     })
 }
 
-fn hp_event_for_player(state: &GameState, player: &PlayerId, delta: i32) -> GameResult<GameEvent> {
+/// 直接陣法效果使用外層 ledger 的 scoped session，避免在模組內另建 ledger。
+fn formation_effect_hp_event(
+    state: &GameState,
+    effect: &mut crate::domain::hp::FormationHpEffectPlan<'_>,
+    performer: &PlayerId,
+    player: &PlayerId,
+    delta: i32,
+) -> GameResult<GameEvent> {
     let team = TurnOrderTargets::new(state).team_of(player)?;
-    let old_hp = state
-        .hp
-        .iter()
-        .find(|entry| entry.team == team)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?
-        .hp;
-    let effective_delta = if delta > 0 && crate::rules::jianghu::team_has_poison(state, &team) {
-        0
+    let request = if delta > 0 && crate::rules::jianghu::team_has_poison(state, &team) {
+        HpChangeRequest::Prevented(delta)
     } else {
-        delta
+        crate::rules::base::formation_use::formation_hp_request(state, performer, &team, delta)
     };
-    let new_hp =
-        (old_hp + effective_delta).clamp(0, state.initial_hp(&team).unwrap_or(old_hp.max(0)));
     Ok(GameEvent::HpChanged {
-        change: HpChangeDelta {
-            team,
-            old_hp,
-            delta,
-            new_hp,
-            effective_delta: new_hp - old_hp,
-        },
+        change: effect.plan(&team, request)?,
     })
 }
 

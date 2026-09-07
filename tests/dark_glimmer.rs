@@ -410,7 +410,7 @@ fn shared_fate_triggers_when_a_formation_effect_deducts_the_death_owners_team_hp
     );
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::HpChanged { change } if change.delta == -10
+        GameEvent::HpChanged { change } if change.delta() == -10
     )));
 }
 
@@ -439,10 +439,12 @@ fn shared_fate_does_not_trigger_from_attack_damage() {
     assert!(
         events.iter().all(|event| !matches!(
             event,
-            GameEvent::AttackResolved {
-                elemental_context_update: Some(effects),
-                ..
-            } if !effects.hp_changes.is_empty()
+            GameEvent::AttackResolved { hp_changes, .. } if hp_changes.iter().any(|resolved|
+                matches!(
+                    resolved.role,
+                    fewfc::domain::HpChangeRole::TriggeredEffect
+                )
+            )
         )),
         "ordinary attack damage must not trigger Shared Fate",
     );
@@ -456,6 +458,12 @@ fn death_omen_shuffles_discard_before_consuming_the_skill_then_discards_four_car
         spirit: SpiritKind::Death,
         power: 4,
     });
+    game.spirits.push(PlayerSpirit {
+        player: PlayerId::new("p2"),
+        spirit: SpiritKind::Wood,
+        power: 6,
+    });
+    game.hp[1].hp = 16;
     let top = cards(&game, &[(Element::Metal, 1)])[0];
     let discard = cards(
         &game,
@@ -521,15 +529,35 @@ fn death_omen_shuffles_discard_before_consuming_the_skill_then_discards_four_car
         event,
         GameEvent::CardsMoved { card_moves } if card_moves.len() == 4
     )));
-    assert!(completed.iter().any(|event| matches!(
-        event,
-        GameEvent::HpChanged { change } if change.delta == -16
-    )));
+    let hp_events = completed
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                GameEvent::HpChanged { .. } | GameEvent::AutomaticBloomsResolved { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        hp_events.as_slice(),
+        [
+            GameEvent::HpChanged { change },
+            GameEvent::AutomaticBloomsResolved { resolutions },
+        ] if change.team() == &TeamId::new("team:b")
+            && change.old_hp() == 16
+            && change.delta() == -16
+            && change.new_hp() == 0
+            && resolutions.len() == 1
+            && resolutions[0].team == TeamId::new("team:b")
+            && resolutions[0].hp_change.old_hp() == 0
+            && resolutions[0].hp_change.new_hp() == 40
+    ));
 
     for event in &completed {
         apply_event(&mut game, event);
     }
     assert_eq!(game.spirit_for(&PlayerId::new("p1")).unwrap().power, 1);
+    assert!(game.spirit_for(&PlayerId::new("p2")).is_none());
     assert!(game.deck.is_empty());
     assert_eq!(game.discard.len(), 4);
 }
@@ -653,7 +681,7 @@ fn death_omen_with_four_deck_cards_keeps_the_existing_immediate_resolution() {
     )));
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::HpChanged { change } if change.delta == -16
+        GameEvent::HpChanged { change } if change.delta() == -16
     )));
     assert!(events.iter().any(|event| matches!(
         event,
@@ -729,14 +757,142 @@ fn surviving_death_spirit_triggers_shared_fate_during_void_shattering() {
         },
     )
     .unwrap();
+    let team_a_baseline = game
+        .hp
+        .iter()
+        .find(|owned| owned.team == TeamId::new("team:a"))
+        .unwrap()
+        .hp;
     assert!(events.iter().any(|event| matches!(
         event,
         GameEvent::VoidSpiritShatteringResolved {
             shared_fate_hp_changes,
             ..
-        } if shared_fate_hp_changes.len() == 1
-            && shared_fate_hp_changes[0].delta == -10
+        } if matches!(shared_fate_hp_changes.as_slice(), [change]
+            if change.team() == &TeamId::new("team:a")
+                && change.old_hp() == team_a_baseline
+                && change.delta() == -10
+                && change.new_hp() == team_a_baseline - 10
+                && change.effective_delta() == -10)
     )));
+}
+
+#[test]
+fn afterimage_slash_keeps_attack_effect_and_shared_fate_hp_changes_in_order() {
+    let mut game = state(2);
+    set_profession(&mut game, "p1", "dark:shadow-warrior");
+    game.spirits.push(PlayerSpirit {
+        player: PlayerId::new("p2"),
+        spirit: SpiritKind::Death,
+        power: 4,
+    });
+    let used = cards(&game, &[(Element::Earth, 1), (Element::Metal, 1)]);
+    set_hand(&mut game, "p1", used.clone());
+    let team_a_baseline = game
+        .hp
+        .iter()
+        .find(|owned| owned.team == TeamId::new("team:a"))
+        .unwrap()
+        .hp;
+    let team_b_baseline = game
+        .hp
+        .iter()
+        .find(|owned| owned.team == TeamId::new("team:b"))
+        .unwrap()
+        .hp;
+
+    let events = handle_command(
+        &game,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "dark:afterimage-slash".to_string(),
+            cards: used.clone(),
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved { hp_changes, .. }
+            if matches!(hp_changes.as_slice(), [
+                fewfc::domain::ResolvedHpChange {
+                    role: fewfc::domain::HpChangeRole::AttackDamage { target },
+                    change: attack_damage,
+                },
+                fewfc::domain::ResolvedHpChange {
+                    role: fewfc::domain::HpChangeRole::FormationEffect,
+                    change: afterimage,
+                },
+                fewfc::domain::ResolvedHpChange {
+                    role: fewfc::domain::HpChangeRole::TriggeredEffect,
+                    change: shared_fate,
+                },
+            ] if target == &PlayerId::new("p2")
+                && attack_damage.team() == &TeamId::new("team:b")
+                && attack_damage.old_hp() == team_b_baseline
+                && attack_damage.new_hp() == team_b_baseline - 8
+                && afterimage.team() == &TeamId::new("team:b")
+                && afterimage.old_hp() == attack_damage.new_hp()
+                && afterimage.delta() == -8
+                && afterimage.new_hp() == team_b_baseline - 16
+                && shared_fate.team() == &TeamId::new("team:a")
+                && shared_fate.old_hp() == team_a_baseline
+                && shared_fate.delta() == -10
+                && shared_fate.new_hp() == team_a_baseline - 10)
+    )));
+
+    let mut deck_order = used.clone();
+    deck_order.extend(
+        game.card_instances
+            .iter()
+            .map(|instance| instance.instance)
+            .filter(|card| !used.contains(card)),
+    );
+    let mut canonical_events = vec![
+        GameEvent::DeckPrepared { deck_order },
+        GameEvent::TurnStarted {
+            player: PlayerId::new("p1"),
+            turn_number: 1,
+        },
+        GameEvent::CardsDealt {
+            player: PlayerId::new("p1"),
+            cards: used,
+        },
+        GameEvent::SpiritSummoned {
+            player: PlayerId::new("p2"),
+            previous: None,
+            spirit: SpiritKind::Death,
+        },
+        GameEvent::SpiritPowerChanged {
+            player: PlayerId::new("p2"),
+            spirit: SpiritKind::Death,
+            old_power: 2,
+            delta: 2,
+            new_power: 4,
+            reason: SpiritPowerChangeReason::SkillEffect,
+        },
+    ];
+    canonical_events.extend(events);
+    let replayed = replay(&game_setup(2), &canonical_events).unwrap();
+    assert_eq!(
+        replayed
+            .hp
+            .iter()
+            .find(|owned| owned.team == TeamId::new("team:b"))
+            .unwrap()
+            .hp,
+        team_b_baseline - 16
+    );
+    assert_eq!(
+        replayed
+            .hp
+            .iter()
+            .find(|owned| owned.team == TeamId::new("team:a"))
+            .unwrap()
+            .hp,
+        team_a_baseline - 10
+    );
 }
 
 #[test]
@@ -783,6 +939,6 @@ fn mischief_uses_only_the_cards_evil_gaze_actually_inspected() {
     )));
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::HpChanged { change } if change.delta == -10
+        GameEvent::HpChanged { change } if change.delta() == -10
     )));
 }

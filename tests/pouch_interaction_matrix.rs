@@ -401,11 +401,11 @@ fn assert_generating_watch_fire_matrix_outcome(
         ] if committed_by == player
             && formation_id == "generating-formation"
             && committed_cards == cards
-            && change.team == TeamId::new("team:p2")
-            && change.old_hp == old_hp
-            && change.delta == expected_delta
-            && change.new_hp == old_hp + expected_effective_delta
-            && change.effective_delta == expected_effective_delta
+            && change.team() == &TeamId::new("team:p2")
+            && change.old_hp() == old_hp
+            && change.delta() == expected_delta
+            && change.new_hp() == old_hp + expected_effective_delta
+            && change.effective_delta() == expected_effective_delta
             && discarded_by == player
             && discarded_formation == "generating-formation"
             && discarded_cards == cards
@@ -597,10 +597,10 @@ fn assert_generating_magic_seal_no_effect_outcome(
                 && owner == counter_owner
                 && incoming_player == player
                 && effect_id == "magic-seal"
-                && change.old_hp == old_hp
-                && change.delta == expected_delta
-                && change.new_hp == old_hp + change.effective_delta
-                && change.effective_delta == (200 - old_hp).min(expected_delta)
+                && change.old_hp() == old_hp
+                && change.delta() == expected_delta
+                && change.new_hp() == old_hp + change.effective_delta()
+                && change.effective_delta() == (200 - old_hp).min(expected_delta)
                 && discarded_by == player
                 && discarded_formation == "generating-formation"
                 && discarded_cards == cards
@@ -672,10 +672,10 @@ fn assert_generating_seal_no_effect_outcome(
                 && incoming_player == player
                 && passive_id == "seal"
                 && covered_cards == seal_cards
-                && change.old_hp == old_hp
-                && change.delta == 18
-                && change.new_hp == old_hp + change.effective_delta
-                && change.effective_delta > 0
+                && change.old_hp() == old_hp
+                && change.delta() == 18
+                && change.new_hp() == old_hp + change.effective_delta()
+                && change.effective_delta() > 0
                 && discarded_by == player
                 && discarded_formation == "generating-formation"
                 && discarded_cards == cards
@@ -1193,8 +1193,7 @@ fn pouch_watch_fire_matrix_modifier_prevents_damage_but_not_formation_commitment
     let events = scenario.perform_metal_strike(&p2);
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::AttackResolved { hp_change, .. }
-            if hp_change.delta == 0 && hp_change.effective_delta == 0
+        GameEvent::AttackResolved { hp_changes, .. } if hp_changes.is_empty()
     )));
     assert!(
         events
@@ -1224,7 +1223,8 @@ fn pouch_watch_fire_matrix_golden_cicada_restores_damage_without_consuming_watch
     let events = scenario.perform_metal_strike(&p2);
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::AttackResolved { hp_change, .. } if hp_change.effective_delta < 0
+        GameEvent::AttackResolved { hp_changes, .. }
+            if hp_changes.iter().any(|resolved| resolved.change.effective_delta() < 0)
     )));
     assert!(
         events
@@ -1265,7 +1265,7 @@ fn pouch_watch_fire_matrix_modifier_prevents_formation_hp_change_but_not_commitm
     let p2 = PlayerId::new("p2");
     let hp_before = hp_for_player(&scenario.record, &p2);
     let (cards, events) = scenario.perform_generating_formation(&p2);
-    assert_generating_watch_fire_matrix_outcome(&events, &p2, &cards, hp_before, 0, 0);
+    assert_generating_watch_fire_matrix_outcome(&events, &p2, &cards, hp_before, 18, 0);
     assert_eq!(hp_for_player(&scenario.record, &p2), hp_before);
     scenario.assert_replay_and_public_lifecycle(true, false);
     scenario.finish_turn(&p2);

@@ -419,7 +419,7 @@ fn metal_and_wood_skills_change_hp_consume_power_and_allow_ineffective_recovery(
     let events = use_skill(&metal, SpiritSkill::FlyingBlade, None, None).unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::HpChanged { change } if change.delta == -10
+        GameEvent::HpChanged { change } if change.delta() == -10
     )));
     apply_all(&mut metal, &events);
     assert_eq!(metal.spirit_for(&PlayerId::new("p1")).unwrap().power, 4);
@@ -448,7 +448,7 @@ fn metal_and_wood_skills_change_hp_consume_power_and_allow_ineffective_recovery(
     let events = use_skill(&wood, SpiritSkill::Fragrance, None, None).unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::HpChanged { change } if change.effective_delta == 0
+        GameEvent::HpChanged { change } if change.effective_delta() == 0
     )));
     apply_all(&mut wood, &events);
     assert!(wood.spirits.is_empty());
@@ -717,7 +717,7 @@ fn earth_skills_replace_shields_and_stone_shield_prevents_sacred_beast_damage_on
     .unwrap();
     assert!(attack.iter().any(|event| matches!(
         event,
-        GameEvent::AttackResolved { hp_change, .. } if hp_change.effective_delta == 0
+        GameEvent::AttackResolved { hp_changes, .. } if hp_changes.is_empty()
     )));
     assert!(attack.iter().any(|event| matches!(
         event,
@@ -767,8 +767,8 @@ fn all_eligible_teammate_wood_spirits_bloom_atomically_and_cap_recovery() {
         Some(GameEvent::AutomaticBloomsResolved { resolutions })
             if resolutions.len() == 1
                 && resolutions[0].spirit_changes.len() == 2
-                && resolutions[0].hp_change.delta == 80
-                && resolutions[0].hp_change.new_hp == 50
+                && resolutions[0].hp_change.delta() == 80
+                && resolutions[0].hp_change.new_hp() == 50
     ));
     apply_all(&mut state, &events);
     assert_eq!(
@@ -782,6 +782,67 @@ fn all_eligible_teammate_wood_spirits_bloom_atomically_and_cap_recovery() {
     );
     assert!(matches!(state.status, GameStatus::InProgress));
     assert!(state.spirits.is_empty());
+}
+
+#[test]
+fn lethal_attack_threads_its_hp_ledger_into_wood_bloom_and_replays_the_final_state() {
+    let mut state = team_spirit_state();
+    state.spirits = vec![PlayerSpirit {
+        player: PlayerId::new("p2"),
+        spirit: SpiritKind::Wood,
+        power: 6,
+    }];
+    state
+        .hp
+        .iter_mut()
+        .find(|owned| owned.team == TeamId::new("team:b"))
+        .unwrap()
+        .hp = 1;
+    state
+        .initial_hp
+        .iter_mut()
+        .find(|owned| owned.team == TeamId::new("team:b"))
+        .unwrap()
+        .hp = 50;
+    let strike = vec![card(&state, Element::Metal, 1)];
+    *state.hand_mut(&PlayerId::new("p1")).unwrap() = strike.clone();
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: strike,
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::AttackResolved { hp_changes, .. }
+            if hp_changes.iter().any(|resolved|
+                resolved.change.old_hp() == 1 && resolved.change.new_hp() == 0)
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::AutomaticBloomsResolved { resolutions }
+            if resolutions.len() == 1
+                && resolutions[0].hp_change.old_hp() == 0
+                && resolutions[0].hp_change.new_hp() == 40
+    )));
+
+    let mut replayed = state.clone();
+    apply_all(&mut replayed, &events);
+    assert_eq!(
+        replayed
+            .hp
+            .iter()
+            .find(|owned| owned.team == TeamId::new("team:b"))
+            .unwrap()
+            .hp,
+        40
+    );
 }
 
 #[test]

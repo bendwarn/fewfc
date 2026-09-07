@@ -1,6 +1,6 @@
 use crate::domain::{
     CardInstanceId, CardZone, ChoiceAnswer, ChoiceRequest, EarthRendingPlayerAnswer,
-    EarthRendingResolution, Element, GameError, GameEvent, GameResult, GameState, HpChangeDelta,
+    EarthRendingResolution, Element, GameError, GameEvent, GameResult, GameState,
     PendingChoiceKind, PendingRandomness, PendingResolution, PlayerId, RandomnessDeck,
     RustedForestResolution, StatusDuration, StatusEffect, StatusOwner, TeamId, ValidationError,
     targeting::TurnOrderTargets,
@@ -194,93 +194,67 @@ pub(crate) fn reduces_attack_damage(
     is_tribulation(formation_id) && divine_calculation_owner(state).as_ref() == Some(player)
 }
 
-pub(crate) fn suppress_formation_recovery(
-    state: &GameState,
-    performer: &PlayerId,
-    events: &mut [GameEvent],
-) {
-    let blocked = state.statuses.iter().any(|status| {
-        status.kind == "GaleRain" && status.owner == StatusOwner::Player(performer.clone())
-    });
-    if !blocked {
-        return;
-    }
-    for event in events {
-        match event {
-            GameEvent::HpChanged { change } => suppress_recovery(change),
-            GameEvent::AttackResolved {
-                hp_change,
-                elemental_context_update,
-                ..
-            } => {
-                suppress_recovery(hp_change);
-                if let Some(effects) = elemental_context_update {
-                    for change in &mut effects.hp_changes {
-                        suppress_recovery(change);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn suppress_recovery(change: &mut HpChangeDelta) {
-    if change.effective_delta > 0 {
-        change.new_hp = change.old_hp;
-        change.effective_delta = 0;
-    }
-}
-
 pub(crate) fn pre_attack_events(
     state: &GameState,
     attacker: &PlayerId,
     formation_id: &str,
-) -> Vec<GameEvent> {
+    hp: &mut crate::domain::hp::HpChangePlan,
+) -> GameResult<(
+    Vec<GameEvent>,
+    Option<crate::domain::hp::FormationHpEffectOutcome>,
+)> {
     let protected = divine_calculation_owner(state);
-    match formation_id {
-        THUNDER_FIRE => state
-            .hp
-            .iter()
-            .filter(|entry| {
-                protected
-                    .as_ref()
-                    .and_then(|player| team_of(state, player).ok())
-                    .is_none_or(|team| team != entry.team)
-            })
-            .map(|entry| {
-                let new_hp = (entry.hp - 15).max(0);
-                GameEvent::HpChanged {
-                    change: HpChangeDelta {
-                        team: entry.team.clone(),
-                        old_hp: entry.hp,
-                        delta: -15,
-                        new_hp,
-                        effective_delta: new_hp - entry.hp,
-                    },
-                }
-            })
-            .collect(),
-        MUDSLIDE_TORRENT => state
-            .shields
-            .iter()
-            .filter(|shield| shield.value > 0 && protected.as_ref() != Some(&shield.player))
-            .map(|shield| {
-                let new_value = (shield.value - 20).max(0);
-                GameEvent::ShieldChanged {
-                    player: shield.player.clone(),
-                    old_value: shield.value,
-                    delta: new_value - shield.value,
-                    new_value,
-                }
-            })
-            .collect(),
+    Ok(match formation_id {
+        THUNDER_FIRE => {
+            let protected_team = protected
+                .as_ref()
+                .map(|player| team_of(state, player))
+                .transpose()?;
+            // 雷火是單一陣法效果；對所有 Team 的嘗試必須共享同一個 scoped session。
+            let mut effect = hp.begin_formation_effect();
+            let events = state
+                .hp
+                .iter()
+                .filter(|entry| protected_team.as_ref() != Some(&entry.team))
+                .map(|entry| {
+                    Ok(GameEvent::HpChanged {
+                        change: effect.plan(
+                            &entry.team,
+                            crate::rules::base::formation_use::formation_hp_request(
+                                state,
+                                attacker,
+                                &entry.team,
+                                -15,
+                            ),
+                        )?,
+                    })
+                })
+                .collect::<GameResult<Vec<_>>>()?;
+            (events, Some(effect.finish()))
+        }
+        MUDSLIDE_TORRENT => (
+            state
+                .shields
+                .iter()
+                .filter(|shield| shield.value > 0 && protected.as_ref() != Some(&shield.player))
+                .map(|shield| {
+                    let new_value = (shield.value - 20).max(0);
+                    GameEvent::ShieldChanged {
+                        player: shield.player.clone(),
+                        old_value: shield.value,
+                        delta: new_value - shield.value,
+                        new_value,
+                    }
+                })
+                .collect(),
+            None,
+        ),
         GALE_RAIN | EARTH_RENDING | RUSTED_FOREST => {
             let _ = attacker;
-            Vec::new()
+            (Vec::new(), None)
         }
-        _ => Vec::new(),
-    }
+        _ => (Vec::new(), None),
+    })
 }
 
 pub(crate) fn attack_points(formation_id: &str, pre_events: &[GameEvent]) -> Option<u32> {
@@ -413,6 +387,7 @@ pub(crate) fn answer_choice(
     state: &GameState,
     resolution: &PendingResolution,
     answer: &ChoiceAnswer,
+    hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Option<Vec<GameEvent>>> {
     let Some(active) = state.active_earth_rending_resolution.as_ref() else {
         return Ok(None);
@@ -447,11 +422,15 @@ pub(crate) fn answer_choice(
         }
         _ => return Ok(None),
     };
-    continue_earth_rending(state, &mut events)?;
+    continue_earth_rending(state, &mut events, hp)?;
     Ok(Some(events))
 }
 
-fn continue_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> GameResult<()> {
+fn continue_earth_rending(
+    state: &GameState,
+    events: &mut Vec<GameEvent>,
+    hp: &mut crate::domain::hp::HpChangePlan,
+) -> GameResult<()> {
     let mut projected = state.clone();
     for event in events.iter() {
         crate::rules::projection::apply_event(&mut projected, event);
@@ -462,7 +441,7 @@ fn continue_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
             .clone()
             .expect("Earth Rending resolution requires active state");
         let Some(player) = active.remaining_players.first().cloned() else {
-            finish_earth_rending(&projected, events)?;
+            finish_earth_rending(&projected, events, hp)?;
             return Ok(());
         };
         let environment = active.environment.ok_or_else(|| {
@@ -522,7 +501,11 @@ fn continue_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
     }
 }
 
-fn finish_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> GameResult<()> {
+fn finish_earth_rending(
+    state: &GameState,
+    events: &mut Vec<GameEvent>,
+    hp: &mut crate::domain::hp::HpChangePlan,
+) -> GameResult<()> {
     let active = state
         .active_earth_rending_resolution
         .clone()
@@ -551,32 +534,62 @@ fn finish_earth_rending(state: &GameState, events: &mut Vec<GameEvent>) -> GameR
     }
     let pre_resolution_effects =
         crate::rules::base::attack_resolution::effects_from_events(&pre_resolution_events)?;
-    let mut attack_events = crate::rules::base::attack_resolution::resolve(
+    let attack_events = crate::rules::base::attack_resolution::resolve_with_plan(
         &attack_state,
         crate::rules::base::attack_resolution::AttackRequest {
             attacker: active.attacker.clone(),
             formation_id: EARTH_RENDING.to_string(),
             category: AttackCategory::Special,
             point_formula: PointFormula::Fixed(60),
-            used_cards: active.used_cards,
+            used_cards: active.used_cards.clone(),
             damage_prevented: active.damage_prevented,
             split_attack_damage: active.split_attack_damage,
             mode: crate::rules::base::attack_resolution::AttackResolutionMode::FormationUse,
             pre_resolution_effects,
+            trailing_hp_role: crate::domain::HpChangeRole::FormationEffect,
         },
+        hp,
     )?;
-    attack_events.extend(post_attack_events(
+    let mut sequence =
+        crate::rules::formation_effect_sequence::FormationEffectSequence::new(&attack_state);
+    sequence.extend(attack_events);
+    sequence.extend(post_attack_events(
         &attack_state,
         &active.attacker,
         EARTH_RENDING,
     )?);
-    crate::rules::dark::append_shared_fate_events(
-        &attack_state,
+    let (dark_events, outcome) = crate::rules::dark::post_attack_events(
+        sequence.state(),
         &active.attacker,
         EARTH_RENDING,
-        &mut attack_events,
+        &active.used_cards,
+        hp,
     )?;
-    crate::rules::base::attack_resolution::absorb_simultaneous_events(&mut attack_events);
+    let post_primary_hp_count = dark_events
+        .iter()
+        .filter(|event| matches!(event, GameEvent::HpChanged { .. }))
+        .count();
+    if let Some(outcome) = outcome {
+        sequence.append(
+            hp,
+            crate::rules::formation_effect_sequence::ResolvedFormationEffect::new(
+                dark_events,
+                outcome,
+            ),
+        )?;
+    } else {
+        sequence.extend(dark_events);
+    }
+    let mut attack_events = sequence.into_events();
+    crate::rules::base::formation_use::absorb_formation_effect_hp_events(
+        &mut attack_events,
+        0,
+        post_primary_hp_count,
+    );
+    crate::rules::base::attack_resolution::absorb_simultaneous_events(
+        &mut attack_events,
+        crate::domain::HpChangeRole::TriggeredEffect,
+    );
     events.extend(attack_events);
     events.push(GameEvent::EarthRendingCompleted {
         player: active.attacker,
@@ -590,6 +603,7 @@ pub(crate) fn rusted_forest_start_events(
     used_cards: &[CardInstanceId],
     damage_prevented: bool,
     split_attack_damage: bool,
+    hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     let protected = divine_calculation_owner(state);
     let remaining_decks = if state.uses_personal_decks() {
@@ -612,12 +626,13 @@ pub(crate) fn rusted_forest_start_events(
             split_attack_damage,
         },
     }];
-    continue_rusted_forest(state, &mut events)?;
+    continue_rusted_forest(state, &mut events, hp)?;
     Ok(events)
 }
 
 pub(crate) fn after_rusted_forest_randomness_events(
     state: &GameState,
+    hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     let deck = state
         .active_rusted_forest_resolution
@@ -632,19 +647,24 @@ pub(crate) fn after_rusted_forest_randomness_events(
             )
         })?;
     let mut events = vec![GameEvent::RustedForestDeckProcessed { deck }];
-    continue_rusted_forest(state, &mut events)?;
+    continue_rusted_forest(state, &mut events, hp)?;
     Ok(events)
 }
 
 pub(crate) fn after_rusted_forest_discard_shuffle_events(
     state: &GameState,
+    hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     let mut events = Vec::new();
-    continue_rusted_forest(state, &mut events)?;
+    continue_rusted_forest(state, &mut events, hp)?;
     Ok(events)
 }
 
-fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> GameResult<()> {
+fn continue_rusted_forest(
+    state: &GameState,
+    events: &mut Vec<GameEvent>,
+    hp: &mut crate::domain::hp::HpChangePlan,
+) -> GameResult<()> {
     let mut projected = state.clone();
     for event in events.iter() {
         crate::rules::projection::apply_event(&mut projected, event);
@@ -655,7 +675,7 @@ fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
             .clone()
             .expect("Rusted Forest resolution requires active state");
         let Some(deck_kind) = active.remaining_decks.first().cloned() else {
-            finish_rusted_forest(&projected, events)?;
+            finish_rusted_forest(&projected, events, hp)?;
             return Ok(());
         };
         let deck_owner = match &deck_kind {
@@ -750,32 +770,67 @@ fn continue_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> Gam
     }
 }
 
-fn finish_rusted_forest(state: &GameState, events: &mut Vec<GameEvent>) -> GameResult<()> {
+fn finish_rusted_forest(
+    state: &GameState,
+    events: &mut Vec<GameEvent>,
+    hp: &mut crate::domain::hp::HpChangePlan,
+) -> GameResult<()> {
     let active = state
         .active_rusted_forest_resolution
         .clone()
         .expect("Rusted Forest completion requires active state");
-    let mut attack_events = crate::rules::base::attack_resolution::resolve(
+    let attack_events = crate::rules::base::attack_resolution::resolve_with_plan(
         state,
         crate::rules::base::attack_resolution::AttackRequest {
             attacker: active.attacker.clone(),
             formation_id: RUSTED_FOREST.to_string(),
             category: AttackCategory::Special,
             point_formula: PointFormula::Fixed(60),
-            used_cards: active.used_cards,
+            used_cards: active.used_cards.clone(),
             damage_prevented: active.damage_prevented,
             split_attack_damage: active.split_attack_damage,
             mode: crate::rules::base::attack_resolution::AttackResolutionMode::FormationUse,
-            pre_resolution_effects: crate::domain::AttackResolutionEffects::default(),
+            pre_resolution_effects:
+                crate::rules::base::attack_resolution::AttackPreResolutionEffects::default(),
+            trailing_hp_role: crate::domain::HpChangeRole::FormationEffect,
         },
+        hp,
     )?;
-    attack_events.extend(post_attack_events(state, &active.attacker, RUSTED_FOREST)?);
-    crate::rules::dark::append_shared_fate_events(
-        state,
+    let mut sequence = crate::rules::formation_effect_sequence::FormationEffectSequence::new(state);
+    sequence.extend(attack_events);
+    sequence.extend(post_attack_events(
+        sequence.state(),
         &active.attacker,
         RUSTED_FOREST,
-        &mut attack_events,
+    )?);
+    let (dark_events, outcome) = crate::rules::dark::post_attack_events(
+        sequence.state(),
+        &active.attacker,
+        RUSTED_FOREST,
+        &active.used_cards,
+        hp,
     )?;
+    let post_primary_hp_count = dark_events
+        .iter()
+        .filter(|event| matches!(event, GameEvent::HpChanged { .. }))
+        .count();
+    if let Some(outcome) = outcome {
+        sequence.append(
+            hp,
+            crate::rules::formation_effect_sequence::ResolvedFormationEffect::new(
+                dark_events,
+                outcome,
+            ),
+        )?;
+    } else {
+        sequence.extend(dark_events);
+    }
+    let mut attack_events = sequence.into_events();
+    crate::rules::base::formation_use::absorb_formation_effect_hp_events(
+        &mut attack_events,
+        0,
+        post_primary_hp_count,
+    );
     events.extend(attack_events);
     events.push(GameEvent::RustedForestCompleted {
         player: active.attacker,

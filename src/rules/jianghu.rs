@@ -1,7 +1,8 @@
 use crate::domain::{
-    CardInstanceId, Element, GameError, GameEvent, GameResult, GameState, HpChangeDelta,
-    JIANGHU_MODULE_ID, JianghuState, JianghuStateKind, PendingResolution, PlayerId, ProfessionId,
-    RandomnessDeck, StatusDuration, StatusEffect, StatusOwner, ValidationError,
+    CardInstanceId, Element, GameError, GameEvent, GameResult, GameState, JIANGHU_MODULE_ID,
+    JianghuState, JianghuStateKind, PendingResolution, PlayerId, ProfessionId, RandomnessDeck,
+    StatusDuration, StatusEffect, StatusOwner, ValidationError,
+    hp::{HpChangePlan, HpChangeRequest},
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 use crate::rules::{
@@ -420,6 +421,7 @@ pub(crate) fn post_attack_events(
     player: &PlayerId,
     formation_id: &str,
     used_cards: &[CardInstanceId],
+    hp: &mut HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     let mut events = Vec::new();
     if formation_id == THOUSAND_BLADES_SWORD_ART {
@@ -451,7 +453,7 @@ pub(crate) fn post_attack_events(
         THOUSAND_BLADES_FLYING_FEATHER | FLOWING_SHADOW_CLOUD_BREAKING
     ) && thousand
     {
-        events.push(hp_loss_to_previous_player(state, player, 20)?);
+        events.push(hp_loss_to_previous_player(state, player, 20, hp)?);
     }
     if matches!(
         formation_id,
@@ -503,7 +505,7 @@ pub(crate) fn post_attack_events(
             events.push(turn_draw_bonus_event(state, player));
         }
         if formation_id == FAN_BEYOND_HEAVEN {
-            events.push(hp_loss_to_previous_player(state, player, 20)?);
+            events.push(hp_loss_to_previous_player(state, player, 20, hp)?);
         }
     } else if formation_id == FAN_BEYOND_HEAVEN {
         let previous =
@@ -575,21 +577,29 @@ pub(crate) fn active_spell_events(
     state: &GameState,
     player: &PlayerId,
     resolver_id: &str,
-) -> GameResult<Option<Vec<GameEvent>>> {
+    hp: &mut HpChangePlan,
+) -> GameResult<
+    Option<(
+        Vec<GameEvent>,
+        Option<crate::domain::hp::FormationHpEffectOutcome>,
+    )>,
+> {
     let target =
         TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::NextPlayer)?;
-    let events = match resolver_id {
-        POISON_DART => vec![poison_event(state, &target, 1)],
+    let (events, outcome) = match resolver_id {
+        POISON_DART => (vec![poison_event(state, &target, 1)], None),
         THOUSAND_POISON_HAND => {
-            vec![
-                hp_loss_for_player(state, &target, 10)?,
+            let mut effect = hp.begin_formation_effect();
+            let events = vec![
+                formation_effect_hp_loss_for_player(state, &mut effect, player, &target, 10)?,
                 poison_event(state, &target, 2),
-            ]
+            ];
+            (events, Some(effect.finish()))
         }
         LINGERING_FROST_HAND => {
             let mut events = cannot_act_or_draw_events(state, &target, "lingering-frost", 1)?;
             events.push(poison_event(state, &target, 2));
-            events
+            (events, None)
         }
         KING_YAMA_DECREE => {
             let opposing_team = TurnOrderTargets::new(state).team_of(&target)?;
@@ -602,17 +612,20 @@ pub(crate) fn active_spell_events(
                 })?
                 .hp;
             if hp > 40 {
-                Vec::new()
+                (Vec::new(), None)
             } else {
-                vec![GameEvent::KingYamaDecreeVictoryAchieved {
-                    player: player.clone(),
-                    team: TurnOrderTargets::new(state).team_of(player)?,
-                }]
+                (
+                    vec![GameEvent::KingYamaDecreeVictoryAchieved {
+                        player: player.clone(),
+                        team: TurnOrderTargets::new(state).team_of(player)?,
+                    }],
+                    None,
+                )
             }
         }
         _ => return Ok(None),
     };
-    Ok(Some(events))
+    Ok(Some((events, outcome)))
 }
 
 pub(crate) fn poison_smoke_flip_events(state: &GameState, events: &[GameEvent]) -> Vec<GameEvent> {
@@ -630,7 +643,15 @@ pub(crate) fn poison_smoke_flip_events(state: &GameState, events: &[GameEvent]) 
         .collect()
 }
 
-pub(crate) fn turn_end_event(state: &GameState) -> GameResult<Option<GameEvent>> {
+/// 規劃回合結束的單一江湖陣法效果與其立即結算的同命。
+///
+/// HP ledger 由 TurnEnd 的 outer resolution 持有；每個效果僅借用一個
+/// Formation session，讓同命保持在 primary canonical event 的下一筆事實，
+/// 且不能遞迴成新的 Formation effect。
+pub(crate) fn turn_end_events(
+    state: &GameState,
+    hp: &mut HpChangePlan,
+) -> GameResult<Option<Vec<GameEvent>>> {
     let Some(player) = state.current_player() else {
         return Ok(None);
     };
@@ -644,55 +665,27 @@ pub(crate) fn turn_end_event(state: &GameState) -> GameResult<Option<GameEvent>>
             )
     }) {
         let team = TurnOrderTargets::new(state).team_of(player)?;
-        let old_hp = state
-            .hp
-            .iter()
-            .find(|entry| entry.team == team)
-            .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?
-            .hp;
         let damage = status.value.unwrap_or(20);
-        let new_hp = (old_hp - damage).max(0);
-        let hp_change = HpChangeDelta {
-            team: team.clone(),
-            old_hp,
-            delta: -damage,
-            new_hp,
-            effective_delta: new_hp - old_hp,
-        };
-        let shared_fate_hp_change = if hp_change.effective_delta < 0
-            && state
-                .spirit_for(player)
-                .is_some_and(|owned| owned.spirit == crate::domain::SpiritKind::Death)
-        {
-            let target =
-                TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::NextPlayer)?;
-            let target_team = TurnOrderTargets::new(state).team_of(&target)?;
-            let target_old_hp = if target_team == team {
-                new_hp
-            } else {
-                state
-                    .hp
-                    .iter()
-                    .find(|entry| entry.team == target_team)
-                    .map_or(0, |entry| entry.hp)
-            };
-            let target_new_hp = (target_old_hp - 10).max(0);
-            Some(HpChangeDelta {
-                team: target_team,
-                old_hp: target_old_hp,
-                delta: -10,
-                new_hp: target_new_hp,
-                effective_delta: target_new_hp - target_old_hp,
-            })
-        } else {
-            None
-        };
-        return Ok(Some(GameEvent::JianghuDelayedDamageResolved {
-            owner: player.clone(),
-            status_id: status.id.clone(),
-            hp_change,
-            shared_fate_hp_change,
-        }));
+        let mut effect = hp.begin_formation_effect();
+        let hp_change = effect.plan(
+            &team,
+            crate::rules::base::formation_use::formation_hp_request(state, player, &team, -damage),
+        )?;
+        let outcome = effect.finish();
+        let mut sequence =
+            crate::rules::formation_effect_sequence::FormationEffectSequence::new(state);
+        sequence.append(
+            hp,
+            crate::rules::formation_effect_sequence::ResolvedFormationEffect::new(
+                vec![GameEvent::JianghuDelayedDamageResolved {
+                    owner: player.clone(),
+                    status_id: status.id.clone(),
+                    hp_change,
+                }],
+                outcome,
+            ),
+        )?;
+        return Ok(Some(sequence.into_events()));
     }
     if let Some(poison) = state.jianghu_states.iter().find(|active| {
         &active.owner == player
@@ -711,73 +704,39 @@ pub(crate) fn turn_end_event(state: &GameState) -> GameResult<Option<GameEvent>>
             10
         };
         let team = TurnOrderTargets::new(state).team_of(player)?;
-        let old_hp = state
-            .hp
-            .iter()
-            .find(|entry| entry.team == team)
-            .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?
-            .hp;
-        let new_hp = (old_hp - damage).max(0);
-        let hp_change = HpChangeDelta {
-            team: team.clone(),
-            old_hp,
-            delta: -damage,
-            new_hp,
-            effective_delta: new_hp - old_hp,
-        };
-        let shared_fate_hp_change = shared_fate_change(state, player, &hp_change)?;
-        return Ok(Some(GameEvent::JianghuPoisonTicked {
-            owner: player.clone(),
-            damage,
-            remaining_turns: poison.remaining_turns - 1,
-            hp_change,
-            shared_fate_hp_change,
-        }));
+        let mut effect = hp.begin_formation_effect();
+        let hp_change = effect.plan(
+            &team,
+            crate::rules::base::formation_use::formation_hp_request(state, player, &team, -damage),
+        )?;
+        let outcome = effect.finish();
+        let mut sequence =
+            crate::rules::formation_effect_sequence::FormationEffectSequence::new(state);
+        sequence.append(
+            hp,
+            crate::rules::formation_effect_sequence::ResolvedFormationEffect::new(
+                vec![GameEvent::JianghuPoisonTicked {
+                    owner: player.clone(),
+                    damage,
+                    remaining_turns: poison.remaining_turns - 1,
+                    hp_change,
+                }],
+                outcome,
+            ),
+        )?;
+        return Ok(Some(sequence.into_events()));
     }
     if let Some(active) = state.jianghu_states.iter().find(|active| {
         &active.owner == player
             && active.kind != JianghuStateKind::Poison
             && active.expires_on_turn == Some(state.turn_number)
     }) {
-        return Ok(Some(GameEvent::JianghuStateExpired {
+        return Ok(Some(vec![GameEvent::JianghuStateExpired {
             owner: player.clone(),
             kind: active.kind,
-        }));
+        }]));
     }
     Ok(None)
-}
-
-fn shared_fate_change(
-    state: &GameState,
-    owner: &PlayerId,
-    primary: &HpChangeDelta,
-) -> GameResult<Option<HpChangeDelta>> {
-    if primary.effective_delta >= 0
-        || state
-            .spirit_for(owner)
-            .is_none_or(|owned| owned.spirit != crate::domain::SpiritKind::Death)
-    {
-        return Ok(None);
-    }
-    let target = TurnOrderTargets::new(state).player_target(owner, RulePlayerTarget::NextPlayer)?;
-    let team = TurnOrderTargets::new(state).team_of(&target)?;
-    let old_hp = if team == primary.team {
-        primary.new_hp
-    } else {
-        state
-            .hp
-            .iter()
-            .find(|entry| entry.team == team)
-            .map_or(0, |entry| entry.hp)
-    };
-    let new_hp = (old_hp - 10).max(0);
-    Ok(Some(HpChangeDelta {
-        team,
-        old_hp,
-        delta: -10,
-        new_hp,
-        effective_delta: new_hp - old_hp,
-    }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -796,6 +755,7 @@ impl crate::rules::profession::activated::ActivatedAbilityProvider for Activated
 
     const MODULE_ID: &'static str = JIANGHU_MODULE_ID;
 
+    #[cfg(any(debug_assertions, test))]
     fn kinds() -> &'static [Self::Kind] {
         &[
             ActivatedAbility::HeavenlyYangAura,
@@ -1200,29 +1160,41 @@ fn hp_loss_to_previous_player(
     state: &GameState,
     player: &PlayerId,
     amount: i32,
+    hp: &mut HpChangePlan,
 ) -> GameResult<GameEvent> {
     let target =
         TurnOrderTargets::new(state).player_target(player, RulePlayerTarget::PreviousPlayer)?;
-    hp_loss_for_player(state, &target, amount)
+    hp_loss_for_player(state, &target, amount, hp)
 }
 
-fn hp_loss_for_player(state: &GameState, player: &PlayerId, amount: i32) -> GameResult<GameEvent> {
+fn hp_loss_for_player(
+    state: &GameState,
+    player: &PlayerId,
+    amount: i32,
+    hp: &mut HpChangePlan,
+) -> GameResult<GameEvent> {
     let team = TurnOrderTargets::new(state).team_of(player)?;
-    let old_hp = state
-        .hp
-        .iter()
-        .find(|entry| entry.team == team)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?
-        .hp;
-    let new_hp = (old_hp - amount).max(0);
     Ok(GameEvent::HpChanged {
-        change: HpChangeDelta {
-            team,
-            old_hp,
-            delta: -amount,
-            new_hp,
-            effective_delta: new_hp - old_hp,
-        },
+        change: hp.plan(&team, HpChangeRequest::By(-amount))?,
+    })
+}
+
+/// 陣法直接傷害沿用 Formation Use 的 scoped HP session。
+fn formation_effect_hp_loss_for_player(
+    state: &GameState,
+    effect: &mut crate::domain::hp::FormationHpEffectPlan<'_>,
+    performer: &PlayerId,
+    player: &PlayerId,
+    amount: i32,
+) -> GameResult<GameEvent> {
+    let team = TurnOrderTargets::new(state).team_of(player)?;
+    Ok(GameEvent::HpChanged {
+        change: effect.plan(
+            &team,
+            crate::rules::base::formation_use::formation_hp_request(
+                state, performer, &team, -amount,
+            ),
+        )?,
     })
 }
 

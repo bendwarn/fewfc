@@ -1,7 +1,8 @@
 use crate::domain::{
     CardInstanceId, CardMoveDelta, CardZone, Element, GameError, GameEvent, GameResult, GameState,
-    HERO_SCHOOLS_MODULE_ID, HpChangeDelta, PendingResolution, PlayerId, ProfessionId,
-    RandomnessDeck, StatusDuration, StatusEffect, StatusOwner, ValidationError,
+    HERO_SCHOOLS_MODULE_ID, PendingResolution, PlayerId, ProfessionId, RandomnessDeck,
+    StatusDuration, StatusEffect, StatusOwner, ValidationError,
+    hp::HpChangeRequest,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
 
@@ -1133,6 +1134,7 @@ impl crate::rules::profession::activated::ActivatedAbilityProvider for Activated
 
     const MODULE_ID: &'static str = HERO_SCHOOLS_MODULE_ID;
 
+    #[cfg(any(debug_assertions, test))]
     fn kinds() -> &'static [Self::Kind] {
         &[
             ActivatedAbility::Illusion,
@@ -1315,9 +1317,8 @@ impl crate::rules::profession::activated::ActivatedAbilityProvider for Activated
                 builder.push_consequence(GameEvent::CardsMoved {
                     card_moves: ability_card_moves(state, player, cards)?,
                 })?;
-                builder.push_consequence(GameEvent::HpChanged {
-                    change: hp_change(state, team, -level * 2)?,
-                })?;
+                let change = builder.plan_hp(&team, HpChangeRequest::By(-level * 2))?;
+                builder.push_consequence(GameEvent::HpChanged { change })?;
             }
             ActivatedAbility::Meditation => {
                 builder.push_consequence(GameEvent::CardsMoved {
@@ -1445,30 +1446,6 @@ fn turn_draw_bonus_event(state: &GameState, player: &PlayerId, amount: usize) ->
         delta: amount as i32,
         new_value: old_value + amount,
     }
-}
-
-fn hp_change(
-    state: &GameState,
-    team: crate::domain::TeamId,
-    delta: i32,
-) -> GameResult<HpChangeDelta> {
-    let old_hp = state
-        .hp
-        .iter()
-        .find(|hp| hp.team == team)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?
-        .hp;
-    let initial_hp = state
-        .initial_hp(&team)
-        .ok_or_else(|| GameError::Validation(ValidationError::MissingTeamHp(team.clone())))?;
-    let new_hp = (old_hp + delta).clamp(0, initial_hp);
-    Ok(HpChangeDelta {
-        team,
-        old_hp,
-        delta,
-        new_hp,
-        effective_delta: new_hp - old_hp,
-    })
 }
 
 fn element_id(element: Element) -> &'static str {

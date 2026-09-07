@@ -295,7 +295,7 @@ fn radiance_discard_retrieval_matrix_keeps_the_active_effect_legal_under_cannot_
             && *card == turn_draw_discard
             && card_move.from == fewfc::domain::CardZone::Discard
             && card_move.to == fewfc::domain::CardZone::DeckTop
-            && hp_change.effective_delta < 0
+            && hp_change.effective_delta() < 0
     ));
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
@@ -358,7 +358,7 @@ fn radiance_discard_retrieval_matrix_keeps_the_active_effect_legal_under_cannot_
             && *card == turn_draw_discard
             && card_move.from == fewfc::domain::CardZone::Discard
             && card_move.to == fewfc::domain::CardZone::DeckTop
-            && hp_change.effective_delta < 0
+            && hp_change.effective_delta() < 0
     ));
     assert_eq!(interaction.state().deck.first(), Some(&turn_draw_discard));
     assert!(!interaction.state().discard.contains(&turn_draw_discard));

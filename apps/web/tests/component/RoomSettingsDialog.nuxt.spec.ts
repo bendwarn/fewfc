@@ -30,10 +30,10 @@ it('focuses the room name, closes on Escape, and restores the trigger focus', as
 
   const wrapper = await mountSuspended(Host, { attachTo: document.body })
   await nextTick()
-  expect(wrapper.get('#room-name').element).toBe(document.activeElement)
+  expect(document.querySelector('#room-name')).toBe(document.activeElement)
 
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
   await nextTick()
-  expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
   expect(wrapper.get('button').element).toBe(document.activeElement)
 })

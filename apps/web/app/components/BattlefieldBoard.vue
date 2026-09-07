@@ -53,13 +53,15 @@
             v-if="professionFor(seat.player)"
             class="profession-badge"
             tabindex="0"
-            :aria-label="professionSummaryLabel(seat.player)"
+            :aria-label="`職業 ${professionFor(seat.player)!.name}`"
+            :aria-describedby="professionTooltipPlayer === seat.player ? `profession-summary-${seat.player}` : undefined"
+            @mouseenter="openProfessionSummary(seat.player, $event.currentTarget as HTMLElement)"
+            @mouseleave="closeProfessionSummary"
+            @focus="openProfessionSummary(seat.player, $event.currentTarget as HTMLElement)"
+            @blur="closeProfessionSummary"
+            @keydown.esc.prevent="closeProfessionSummary"
           >
             職業 · {{ professionFor(seat.player)!.name }}
-            <span class="profession-summary" role="note">
-              <b>{{ professionFor(seat.player)!.name }}</b>
-              <small v-for="ability in professionFor(seat.player)!.abilities" :key="ability">{{ ability }}</small>
-            </span>
           </span>
           <button
             v-if="persistentEffectsFor(seat.player).length"
@@ -169,12 +171,28 @@
 
     <slot name="overlay" />
 
+    <AnchoredSurface
+      v-if="professionTooltipPlayer"
+      :open="professionTooltipPlayer !== null"
+      :anchor="professionTooltipAnchor"
+      :id="`profession-summary-${professionTooltipPlayer}`"
+      role="tooltip"
+      placement="bottom-start"
+      :return-focus="false"
+      surface-class="profession-summary"
+      @close="closeProfessionSummary"
+    >
+      <b>{{ professionFor(professionTooltipPlayer)!.name }}</b>
+      <small v-for="ability in professionFor(professionTooltipPlayer)!.abilities" :key="ability">{{ ability }}</small>
+    </AnchoredSurface>
+
     <BattlefieldDetailLayer
       :open="discardDetail !== null"
       id="discard-composition"
       :title="discardDetailTitle"
       kind="discard"
       :anchor="discardAnchor"
+      :anchor-element="discardTrigger"
       @close="closeDiscardDetail"
     >
       <CardChoiceMatrix
@@ -193,6 +211,7 @@
       :title="effectDetailTitle"
       kind="effects"
       :anchor="effectAnchor"
+      :anchor-element="effectTrigger"
       @close="closeEffectDetail"
     >
       <ul class="effect-detail-list">
@@ -206,6 +225,7 @@
       :title="handDetailTitle"
       kind="hand"
       :anchor="handAnchor"
+      :anchor-element="handTrigger"
       @close="closeHandDetail"
     >
       <div class="hand-detail-cards">
@@ -262,6 +282,8 @@ const effectTrigger = ref<HTMLButtonElement | null>(null)
 const handDetailPlayer = ref<PlayerId | null>(null)
 const handAnchor = ref<AnchorRect | null>(null)
 const handTrigger = ref<HTMLButtonElement | null>(null)
+const professionTooltipPlayer = ref<PlayerId | null>(null)
+const professionTooltipAnchor = ref<HTMLElement | null>(null)
 const HAND_SHORTCUT_KEYS = ['1', '2', '3', '4', '5'] as const
 
 const seats = computed(() => {
@@ -338,8 +360,9 @@ function openDiscardDetail(owner: PlayerId | null, trigger: HTMLButtonElement) {
 }
 function closeDiscardDetail() {
   if (!discardDetail.value) return
+  const trigger = discardTrigger.value
   discardDetail.value = null
-  void nextTick(() => discardTrigger.value?.focus())
+  restoreDetailFocus(trigger)
 }
 function openEffectDetail(player: PlayerId, trigger: HTMLButtonElement) {
   if (effectDetailPlayer.value === player) return closeEffectDetail()
@@ -350,8 +373,9 @@ function openEffectDetail(player: PlayerId, trigger: HTMLButtonElement) {
 }
 function closeEffectDetail() {
   if (!effectDetailPlayer.value) return
+  const trigger = effectTrigger.value
   effectDetailPlayer.value = null
-  void nextTick(() => effectTrigger.value?.focus())
+  restoreDetailFocus(trigger)
 }
 function openHandDetail(player: PlayerId, trigger: HTMLButtonElement) {
   if (handDetailPlayer.value === player) return closeHandDetail()
@@ -362,8 +386,33 @@ function openHandDetail(player: PlayerId, trigger: HTMLButtonElement) {
 }
 function closeHandDetail() {
   if (!handDetailPlayer.value) return
+  const trigger = handTrigger.value
   handDetailPlayer.value = null
-  void nextTick(() => handTrigger.value?.focus())
+  restoreDetailFocus(trigger)
+}
+function restoreDetailFocus(trigger: HTMLButtonElement | null) {
+  if (!trigger) return
+  const restore = () => {
+    const active = document.activeElement
+    const shouldRestore = !active
+      || active === document.body
+      || active === trigger
+      || active.classList.contains('battlefield-detail-backdrop')
+      || Boolean(active.closest('.battlefield-detail-panel'))
+    if (shouldRestore) trigger.focus()
+  }
+  void nextTick(() => {
+    restore()
+    requestAnimationFrame(restore)
+  })
+}
+function openProfessionSummary(player: PlayerId, trigger: HTMLElement) {
+  professionTooltipPlayer.value = player
+  professionTooltipAnchor.value = trigger
+}
+function closeProfessionSummary() {
+  professionTooltipPlayer.value = null
+  professionTooltipAnchor.value = null
 }
 
 function cardTokensForRefs(cards: PublicCardRefs | undefined, prefix: string): CardToken[] {
@@ -414,7 +463,6 @@ function coveredPassiveSummary(player: PlayerId) {
   return count ? `${count} 張` : ''
 }
 function professionFor(player: PlayerId) { return props.state.professions.find(entry => entry.player === player) }
-function professionSummaryLabel(player: PlayerId) { const profession = professionFor(player); return profession ? `職業 ${profession.name}。能力：${profession.abilities.join('；')}` : '' }
 function persistentEffectsFor(player: PlayerId) { return presentPersistentEffects(props.state, player, teamForPlayer(player)) }
 function counterEffectsFor(player: PlayerId) { return props.state.counterEffects.filter(entry => entry.owner === player) }
 function shieldFor(player: PlayerId) { return props.state.shields.find(entry => entry.player === player)?.value ?? 0 }
@@ -480,10 +528,9 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 .shield-badge { @apply border-[#557684] bg-[#17262c] text-[#8fc1d5]; }
 .effect-summary { @apply border-[#765557] bg-[#28191b] text-[#d49a9a] hover:border-[#b7787d] hover:text-[#efb9b9]; }
 .profession-badge { @apply relative cursor-help border-[var(--app-accent)] bg-[var(--app-surface-raised)] text-gold-light outline-none; }
-.profession-summary { @apply invisible absolute top-[calc(100%+6px)] left-0 z-20 grid w-64 gap-1 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-2.5 text-left opacity-0 shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
-.profession-summary b { @apply font-serif text-xs text-gold-light; }
-.profession-summary small { @apply whitespace-normal text-[10px] leading-4 text-muted; }
-.profession-badge:hover .profession-summary, .profession-badge:focus .profession-summary { @apply visible opacity-100; }
+:global(.profession-summary) { @apply grid w-64 gap-1 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-2.5 text-left shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
+:global(.profession-summary b) { @apply font-serif text-xs text-gold-light; }
+:global(.profession-summary small) { @apply whitespace-normal text-[10px] leading-4 text-muted; }
 .hand { @apply flex min-w-0 items-center justify-center gap-2; }
 .seat-top .seat-hand :deep(.playing-card) { width: clamp(48px, 5vw, 68px); }
 .seat-left .seat-hand, .seat-right .seat-hand { @apply flex-col gap-1; }

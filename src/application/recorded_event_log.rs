@@ -158,8 +158,9 @@ pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
         }
         GameEvent::EchoResolutionStarted { .. }
         | GameEvent::EchoResolutionCompleted { .. }
-        | GameEvent::FlowStateChanged { .. }
-        | GameEvent::HpChanged { .. } => Some(AutomaticReason::EchoResolution),
+        | GameEvent::FlowStateChanged { .. } => Some(AutomaticReason::EchoResolution),
+        // HP 事實沿用緊鄰 primary effect 的自動原因；同命不屬於迴響。
+        GameEvent::HpChanged { .. } => None,
         GameEvent::PlantEarthResolutionStarted { .. }
         | GameEvent::PlantEarthResolutionCompleted { .. } => Some(AutomaticReason::EchoResolution),
         GameEvent::FlowStateTriggered { .. } => Some(AutomaticReason::TurnDraw),

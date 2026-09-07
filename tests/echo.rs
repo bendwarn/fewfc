@@ -8,9 +8,10 @@ use fewfc::domain::{
     FormationAreaState, FormationInArea, FormationSuppression, GameError, GameEvent, GameSetup,
     GameState, HERO_SCHOOLS_MODULE_ID, JIANGHU_MODULE_ID, JianghuState, JianghuStateKind,
     PERSONAL_DECK_MODULE_ID, PassiveFlipOutcome, PassiveNoEffectGround, PassiveTriggerTiming,
-    PendingResolution, Phase, PlayerId, PreparedProfessionAbility, RuleModuleId, SPIRIT_MODULE_ID,
-    STAR_MODULE_ID, ScheduledEcho, StarKind, StatusDuration, StatusEffect, StatusOwner, TeamId,
-    TeamStar, TimedEffectReduction, TrustedRandomnessAnswer, ValidationError,
+    PendingResolution, Phase, PlayerId, PlayerSpirit, PreparedProfessionAbility, RuleModuleId,
+    SPIRIT_MODULE_ID, STAR_MODULE_ID, ScheduledEcho, SpiritKind, StarKind, StatusDuration,
+    StatusEffect, StatusOwner, TeamId, TeamStar, TimedEffectReduction, TrustedRandomnessAnswer,
+    ValidationError,
 };
 use fewfc::public_view::{PublicPendingChoice, Viewer, state_for};
 use fewfc::rules::{OfficialRules, PlayableAction};
@@ -200,13 +201,279 @@ fn lethal_war_fire_uses_direct_hp_loss_and_offers_no_echo_cost() {
     .unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::HpChanged { change } if change.old_hp == 10 && change.new_hp == 0
+        GameEvent::HpChanged { change } if change.old_hp() == 10 && change.new_hp() == 0
     )));
     assert!(
         !events
             .iter()
             .any(|event| matches!(event, GameEvent::ChoiceRequested { .. }))
     );
+}
+
+#[test]
+fn formation_use_war_fire_immediately_triggers_shared_fate() {
+    let mut state = configured_state();
+    state.hands[0].cards = vec![card(55), card(56), card(57)];
+    state.spirits.push(PlayerSpirit {
+        player: PlayerId::new("p2"),
+        spirit: SpiritKind::Death,
+        power: 2,
+    });
+
+    let events = handle_command(
+        &state,
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "echo:war-fire".to_string(),
+            cards: vec![card(55), card(56)],
+            declared_targets: Vec::new(),
+        },
+    )
+    .unwrap();
+    let changes = events
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::HpChanged { change } => Some(change),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(changes.len(), 2);
+    assert_eq!(changes[0].team(), &TeamId::new("team:p2"));
+    assert_eq!(changes[0].delta(), -15);
+    assert_eq!(changes[1].team(), &TeamId::new("team:p1"));
+    assert_eq!(changes[1].delta(), -10);
+}
+
+#[test]
+fn echo_war_fire_does_not_trigger_shared_fate() {
+    let mut state = configured_state();
+    state.phase = Phase::TurnStart;
+    state.scheduled_echoes.push(ScheduledEcho {
+        player: PlayerId::new("p1"),
+        melody_id: "echo:war-fire".to_string(),
+        due_turn_number: state.turn_number,
+    });
+    state.spirits.push(PlayerSpirit {
+        player: PlayerId::new("p2"),
+        spirit: SpiritKind::Death,
+        power: 2,
+    });
+
+    let events = advance_automatic(&state).unwrap();
+    let changes = events
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::HpChanged { change } => Some(change),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].team(), &TeamId::new("team:p2"));
+    assert_eq!(changes[0].delta(), -15);
+}
+
+#[test]
+fn echo_war_fire_runs_automatic_bloom_before_game_conclusion() {
+    let mut state = configured_state();
+    state
+        .enabled_rule_modules
+        .push(RuleModuleId::new(SPIRIT_MODULE_ID));
+    state.phase = Phase::TurnStart;
+    state.hp[1].hp = 15;
+    state.scheduled_echoes.push(ScheduledEcho {
+        player: PlayerId::new("p1"),
+        melody_id: "echo:war-fire".to_string(),
+        due_turn_number: state.turn_number,
+    });
+    state.spirits.push(PlayerSpirit {
+        player: PlayerId::new("p2"),
+        spirit: SpiritKind::Wood,
+        power: 6,
+    });
+
+    let events = advance_automatic(&state).unwrap();
+    assert!(matches!(
+        events.as_slice(),
+        [
+            GameEvent::EchoResolutionStarted { .. },
+            GameEvent::HpChanged { change },
+            GameEvent::EchoResolutionCompleted { .. },
+            GameEvent::AutomaticBloomsResolved { resolutions },
+            GameEvent::TurnStarted { .. },
+        ] if change.team() == &TeamId::new("team:p2")
+            && change.new_hp() == 0
+            && resolutions.len() == 1
+            && resolutions[0].team == TeamId::new("team:p2")
+            && resolutions[0].hp_change.old_hp() == 0
+            && resolutions[0].hp_change.new_hp() == 40
+    ));
+}
+
+#[test]
+fn echo_falling_wood_recovers_even_when_its_team_is_poisoned() {
+    let mut state = configured_state();
+    state.phase = Phase::TurnStart;
+    state.hp[0].hp = 100;
+    state.jianghu_states.push(JianghuState {
+        owner: PlayerId::new("p1"),
+        kind: JianghuStateKind::Poison,
+        remaining_turns: 1,
+        expires_on_turn: None,
+        last_resolved_turn: None,
+    });
+    state.scheduled_echoes.push(ScheduledEcho {
+        player: PlayerId::new("p1"),
+        melody_id: "echo:falling-wood".to_string(),
+        due_turn_number: state.turn_number,
+    });
+
+    let events = advance_automatic(&state).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::HpChanged { change }
+            if change.team() == &TeamId::new("team:p1")
+                && change.old_hp() == 100
+                && change.delta() == 15
+                && change.new_hp() == 115
+                && change.effective_delta() == 15
+    )));
+}
+
+#[test]
+fn only_echo_split_earth_suppresses_a_sacred_beast() {
+    for (origin, suppresses) in [
+        (fewfc::domain::MelodyExecutionOrigin::FormationUse, false),
+        (fewfc::domain::MelodyExecutionOrigin::PlantedEarth, false),
+        (fewfc::domain::MelodyExecutionOrigin::Echo, true),
+    ] {
+        let mut state = configured_state();
+        let beast_cards = (1..=90)
+            .map(card)
+            .filter(|card| state.card_element(*card) == Some(Element::Metal))
+            .take(5)
+            .collect::<Vec<_>>();
+        assert_eq!(beast_cards.len(), 5);
+        state.hands[0].cards = beast_cards.clone();
+        state.formation_suppressions.push(FormationSuppression {
+            source: PlayerId::new("p2"),
+            target: PlayerId::new("p1"),
+            formation_id: "west-white-tiger".to_string(),
+            expires_on_turn_number: state.turn_number,
+            origin,
+        });
+
+        let events = handle_command(
+            &state,
+            Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "west-white-tiger".to_string(),
+                cards: beast_cards,
+                declared_targets: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            events.iter().any(|event| matches!(
+                event,
+                GameEvent::FormationEffectIgnored { formation_id, .. }
+                    if formation_id == "west-white-tiger"
+            )),
+            suppresses,
+            "{origin:?} Split Earth suppression must {}affect Sacred Beast",
+            if suppresses { "" } else { "not " },
+        );
+    }
+}
+
+#[test]
+fn planted_earth_war_fire_immediately_triggers_shared_fate() {
+    let mut state = configured_state();
+    state.phase = Phase::TurnStart;
+    state
+        .scheduled_plant_earth
+        .push(fewfc::domain::ScheduledPlantEarth {
+            player: PlayerId::new("p1"),
+            due_turn_number: state.turn_number,
+        });
+    state.spirits.push(PlayerSpirit {
+        player: PlayerId::new("p2"),
+        spirit: SpiritKind::Death,
+        power: 2,
+    });
+
+    let started = advance_automatic(&state).unwrap();
+    apply_all(&mut state, &started);
+    let selected = answer_choice(
+        &state,
+        PlayerId::new("p1"),
+        ChoiceAnswer::Formation {
+            formation_id: "echo:war-fire".to_string(),
+        },
+    )
+    .unwrap();
+    let changes = selected
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::HpChanged { change } => Some(change),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(changes.len(), 2);
+    assert_eq!(changes[0].team(), &TeamId::new("team:p2"));
+    assert_eq!(changes[0].delta(), -15);
+    assert_eq!(changes[1].team(), &TeamId::new("team:p1"));
+    assert_eq!(changes[1].delta(), -10);
+}
+
+#[test]
+fn planted_earth_war_fire_choice_reuses_its_hp_plan_for_bloom() {
+    let mut state = configured_state();
+    state
+        .enabled_rule_modules
+        .push(RuleModuleId::new(SPIRIT_MODULE_ID));
+    state.phase = Phase::TurnStart;
+    state
+        .scheduled_plant_earth
+        .push(fewfc::domain::ScheduledPlantEarth {
+            player: PlayerId::new("p1"),
+            due_turn_number: state.turn_number,
+        });
+    state.hp[1].hp = 15;
+    state.spirits.push(PlayerSpirit {
+        player: PlayerId::new("p2"),
+        spirit: SpiritKind::Wood,
+        power: 6,
+    });
+
+    let started = advance_automatic(&state).unwrap();
+    apply_all(&mut state, &started);
+    let selected = answer_choice(
+        &state,
+        PlayerId::new("p1"),
+        ChoiceAnswer::Formation {
+            formation_id: "echo:war-fire".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        selected.as_slice(),
+        [
+            GameEvent::ChoiceMade { .. },
+            GameEvent::HpChanged { change },
+            GameEvent::PlantEarthResolutionCompleted { .. },
+            GameEvent::AutomaticBloomsResolved { resolutions },
+        ] if change.team() == &TeamId::new("team:p2")
+            && change.old_hp() == 15
+            && change.new_hp() == 0
+            && resolutions.len() == 1
+            && resolutions[0].team == TeamId::new("team:p2")
+            && resolutions[0].hp_change.old_hp() == 0
+            && resolutions[0].hp_change.new_hp() == 40
+    ));
 }
 
 #[test]
@@ -320,6 +587,7 @@ fn an_ineffective_melody_neither_runs_its_main_effect_nor_offers_echo() {
         target: PlayerId::new("p1"),
         formation_id: "echo:falling-wood".to_string(),
         expires_on_turn_number: 1,
+        origin: fewfc::domain::MelodyExecutionOrigin::FormationUse,
     });
 
     let events = handle_command(
@@ -463,10 +731,10 @@ fn ringing_metal_empty_deck_recycles_before_an_independent_post_search_shuffle()
     .unwrap();
     apply_all(&mut state, &selected);
     let post_search = state.pending_randomness.as_ref().unwrap();
-    assert_eq!(
+    assert!(matches!(
         state.pending_resolution,
-        Some(PendingResolution::EchoRingingMetalPostSearch)
-    );
+        Some(PendingResolution::MelodyRingingMetalPostSearch { .. })
+    ));
     assert_eq!(post_search.current_order, vec![card(3), card(5), card(6)]);
 }
 
@@ -929,6 +1197,7 @@ fn pure_fire_atomically_reduces_eligible_effects_and_preserves_hidden_passive_un
         target: target.clone(),
         formation_id: "weapon".to_string(),
         expires_on_turn_number: 3,
+        origin: fewfc::domain::MelodyExecutionOrigin::FormationUse,
     });
     state.jianghu_states.push(JianghuState {
         owner: target.clone(),
@@ -1090,7 +1359,7 @@ fn lethal_turn_start_melody_completes_its_resolution_without_entering_main() {
     let events = advance_automatic(&state).unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
-        GameEvent::HpChanged { change } if change.new_hp == 0
+        GameEvent::HpChanged { change } if change.new_hp() == 0
     )));
     assert!(
         events

@@ -24,6 +24,49 @@ use fewfc::public_view::{
 };
 use fewfc::rules::Element;
 
+/// AttackResolved 的 HP vector 是公開事件契約；整合測試依 role/target 讀取，
+/// 不再依賴已移除的 singular hp_change 欄位。
+fn attack_damage<'a>(event: &'a GameEvent, target: &PlayerId) -> &'a HpChangeDelta {
+    let GameEvent::AttackResolved { hp_changes, .. } = event else {
+        panic!("expected AttackResolved event");
+    };
+    &hp_changes
+        .iter()
+        .find(|resolved| {
+            matches!(
+                &resolved.role,
+                fewfc::domain::HpChangeRole::AttackDamage { target: damage_target }
+                    if damage_target == target
+            )
+        })
+        .expect("attack must have entered the HP seam")
+        .change
+}
+
+fn attack_hp_changes(event: &GameEvent) -> &[fewfc::domain::ResolvedHpChange] {
+    let GameEvent::AttackResolved { hp_changes, .. } = event else {
+        panic!("expected AttackResolved event");
+    };
+    hp_changes
+}
+
+fn expected_hp_change(
+    team: TeamId,
+    old_hp: i32,
+    delta: i32,
+    new_hp: i32,
+    effective_delta: i32,
+) -> HpChangeDelta {
+    serde_json::from_value(serde_json::json!({
+        "team": team.as_str(),
+        "oldHp": old_hp,
+        "delta": delta,
+        "newHp": new_hp,
+        "effectiveDelta": effective_delta,
+    }))
+    .expect("HP expectation must satisfy the public serialization contract")
+}
+
 fn card(id: u64) -> CardInstanceId {
     CardInstanceId::new(id)
 }
@@ -55,11 +98,14 @@ fn semantic_events(events: &[GameEvent]) -> Vec<GameEvent> {
                 let mut attack = event.clone();
                 let mut environment_transfers = Vec::new();
                 if let GameEvent::AttackResolved {
+                    hp_changes,
                     card_moves,
                     elemental_context_update,
                     ..
                 } = &mut attack
                 {
+                    // 舊生命週期案例只比較非 HP 語意；HP 由 role/getter 專用案例驗證。
+                    hp_changes.clear();
                     // 陣形卡牌現在會經過陣形區，而不是使用攻擊舊有的手牌到棄牌堆
                     // 負載。
                     card_moves.clear();
@@ -451,14 +497,19 @@ fn elemental_history_matrix_uses_only_the_immediate_previous_formation() {
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 9,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 188, delta: -9, effective_delta: -9, new_hp: 179, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
         ] if player == &p1
             && formation_id == "earth-strike"
             && cards == &vec![card(5)]
-            && team == &TeamId::new("team:p2")
+            && hp_changes.iter().any(|resolved|
+                resolved.change.team() == &TeamId::new("team:p2")
+                    && resolved.change.old_hp() == 188
+                    && resolved.change.delta() == -9
+                    && resolved.change.effective_delta() == -9
+                    && resolved.change.new_hp() == 179)
             && discarded_by == &p1
             && discarded == "earth-strike"
             && discarded_cards == &vec![card(5)]
@@ -521,11 +572,11 @@ fn elemental_history_matrix_uses_only_the_immediate_previous_formation() {
                     damage_transform: DamageTransform::HealTarget,
                     final_amount: 9,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 188, delta: 9, effective_delta: 9, new_hp: 197, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { .. },
-        ] if team == &TeamId::new("team:p2")
+        ] if hp_changes.iter().any(|resolved| resolved.change.team() == &TeamId::new("team:p2") && resolved.change.old_hp() == 188 && resolved.change.delta() == 9 && resolved.change.effective_delta() == 9 && resolved.change.new_hp() == 197)
     ));
     assert_eq!(immediate.replay().unwrap(), immediate.state().clone());
     assert_eq!(
@@ -601,14 +652,14 @@ fn elemental_history_matrix_uses_only_the_immediate_previous_formation() {
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 9,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 176, delta: -9, effective_delta: -9, new_hp: 167, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
         ] if player == &p1
             && formation_id == "earth-strike"
             && cards == &vec![card(5)]
-            && team == &TeamId::new("team:p2")
+            && hp_changes.iter().any(|resolved| resolved.change.team() == &TeamId::new("team:p2") && resolved.change.old_hp() == 176 && resolved.change.delta() == -9 && resolved.change.effective_delta() == -9 && resolved.change.new_hp() == 167)
             && discarded_by == &p1
             && discarded == "earth-strike"
             && discarded_cards == &vec![card(5)]
@@ -708,7 +759,7 @@ fn metal_environment_overcoming_matrix_stacks_matching_and_immediate_wood_contex
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 500, delta: -7, effective_delta: -7, new_hp: 493, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -717,7 +768,7 @@ fn metal_environment_overcoming_matrix_stacks_matching_and_immediate_wood_contex
             && cards == &vec![card(1)]
             && attacker == &p1
             && target == &p2
-            && team == &TeamId::new("team:p2")
+            && hp_changes.iter().any(|resolved| resolved.change.team() == &TeamId::new("team:p2") && resolved.change.old_hp() == 500 && resolved.change.delta() == -7 && resolved.change.effective_delta() == -7 && resolved.change.new_hp() == 493)
             && discarded_by == &p1
             && discarded == "metal-strike"
             && discarded_cards == &vec![card(1)]
@@ -843,11 +894,12 @@ fn metal_environment_overcoming_matrix_stacks_matching_and_immediate_wood_contex
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 14,
                 },
-                hp_change: HpChangeDelta { old_hp: 412, delta: -14, effective_delta: -14, new_hp: 398, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
-        ] if player == &p1
+        ] if hp_changes.iter().any(|resolved| resolved.change.old_hp() == 412 && resolved.change.delta() == -14 && resolved.change.effective_delta() == -14 && resolved.change.new_hp() == 398)
+            && player == &p1
             && formation_id == "metal-strike"
             && cards == &vec![card(51)]
             && discarded_by == &p1
@@ -898,7 +950,7 @@ fn metal_environment_overcoming_matrix_stacks_matching_and_immediate_wood_contex
                     damage_transform: DamageTransform::DoubleDamage,
                     final_amount: 28,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 412, delta: -28, effective_delta: -28, new_hp: 384, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -907,7 +959,7 @@ fn metal_environment_overcoming_matrix_stacks_matching_and_immediate_wood_contex
             && cards == &vec![card(51)]
             && attacker == &p1
             && target == &p2
-            && team == &TeamId::new("team:p2")
+            && hp_changes.iter().any(|resolved| resolved.change.team() == &TeamId::new("team:p2") && resolved.change.old_hp() == 412 && resolved.change.delta() == -28 && resolved.change.effective_delta() == -28 && resolved.change.new_hp() == 384)
             && discarded_by == &p1
             && discarded == "metal-strike"
             && discarded_cards == &vec![card(51)]
@@ -1004,7 +1056,7 @@ fn metal_environment_recovery_matrix_distinguishes_overcoming_and_same_contexts(
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 9,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 200, delta: -9, effective_delta: -9, new_hp: 191, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -1013,7 +1065,7 @@ fn metal_environment_recovery_matrix_distinguishes_overcoming_and_same_contexts(
             && cards == &vec![card(5)]
             && attacker == &p1
             && target == &p2
-            && team == &TeamId::new("team:p2")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p2"))
             && discarded_by == &p1
             && discarded == "earth-strike"
             && discarded_cards == &vec![card(5)]
@@ -1070,7 +1122,7 @@ fn metal_environment_recovery_matrix_distinguishes_overcoming_and_same_contexts(
             [
                 GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
                 GameEvent::AttackResolved {
-                    hp_change: HpChangeDelta { team, old_hp: 194, delta: -81, effective_delta: -81, new_hp: 113, .. },
+                    hp_changes,
                     elemental_context_update: Some(AttackResolutionEffects { environment_transfers, .. }),
                     ..
                 },
@@ -1078,7 +1130,7 @@ fn metal_environment_recovery_matrix_distinguishes_overcoming_and_same_contexts(
             ] if player == &p1
                 && formation_id == "west-white-tiger"
                 && cards == &vec![card(1), card(6), card(11), card(16), card(21)]
-                && team == &TeamId::new("team:p2")
+                && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p2"))
                 && environment_transfers == &vec![fewfc::domain::EnvironmentTransferDelta {
                     player: p1.clone(),
                     formation_id: "west-white-tiger".to_string(),
@@ -1127,14 +1179,14 @@ fn metal_environment_recovery_matrix_distinguishes_overcoming_and_same_contexts(
                     damage_transform: DamageTransform::HealTarget,
                     final_amount: 9,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 113, delta: 9, effective_delta: 9, new_hp: 122, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
         ] if player == &p1
             && formation_id == "earth-strike"
             && cards == &vec![card(23)]
-            && team == &TeamId::new("team:p2")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p2"))
             && discarded_by == &p1
             && discarded == "earth-strike"
             && discarded_cards == &vec![card(23)]
@@ -1200,7 +1252,7 @@ fn metal_environment_recovery_matrix_distinguishes_overcoming_and_same_contexts(
                     damage_transform: DamageTransform::HealTarget,
                     final_amount: 18,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 113, delta: 18, effective_delta: 18, new_hp: 131, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -1209,7 +1261,7 @@ fn metal_environment_recovery_matrix_distinguishes_overcoming_and_same_contexts(
             && cards == &vec![card(23)]
             && attacker == &p1
             && target == &p2
-            && team == &TeamId::new("team:p2")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p2"))
             && discarded_by == &p1
             && discarded == "earth-strike"
             && discarded_cards == &vec![card(23)]
@@ -1299,7 +1351,7 @@ fn metal_environment_recovery_matrix_distinguishes_overcoming_and_same_contexts(
                     damage_transform: DamageTransform::HealTarget,
                     final_amount: 5,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 113, delta: 5, effective_delta: 5, new_hp: 118, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -1308,7 +1360,7 @@ fn metal_environment_recovery_matrix_distinguishes_overcoming_and_same_contexts(
             && cards == &vec![card(23)]
             && attacker == &p1
             && target == &p2
-            && team == &TeamId::new("team:p2")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p2"))
             && discarded_by == &p1
             && discarded == "earth-strike"
             && discarded_cards == &vec![card(23)]
@@ -1463,7 +1515,7 @@ fn void_meridian_environment_matrix_clears_both_teams_then_finishes_as_a_draw() 
             GameEvent::PassiveFlipped { outcome: PassiveFlipOutcome::NoEffect { .. }, .. },
             GameEvent::AttackResolved {
                 point_breakdown: AttackPointBreakdown { final_amount: 81, .. },
-                hp_change: HpChangeDelta { team, old_hp: 101, effective_delta: -81, new_hp: 20, .. },
+                hp_changes,
                 elemental_context_update: Some(AttackResolutionEffects { environment_transfers, .. }),
                 ..
             },
@@ -1471,7 +1523,7 @@ fn void_meridian_environment_matrix_clears_both_teams_then_finishes_as_a_draw() 
         ] if player == &p3
             && formation_id == "west-white-tiger"
             && cards == &vec![card(6), card(11), card(16), card(21), card(26)]
-            && team == &team_a
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &team_a)
             && environment_transfers == &vec![fewfc::domain::EnvironmentTransferDelta {
                 player: p3.clone(),
                 formation_id: "west-white-tiger".to_string(),
@@ -1528,8 +1580,8 @@ fn void_meridian_environment_matrix_clears_both_teams_then_finishes_as_a_draw() 
             && clearer == &p2
             && cleared_by == "void-meridian-severing"
             && hp_changes == &vec![
-                HpChangeDelta { team: team_a.clone(), old_hp: 20, delta: -20, effective_delta: -20, new_hp: 0 },
-                HpChangeDelta { team: team_b.clone(), old_hp: 20, delta: -20, effective_delta: -20, new_hp: 0 },
+                expected_hp_change(team_a.clone(), 20, -20, 0, -20),
+                expected_hp_change(team_b.clone(), 20, -20, 0, -20),
             ]
             && conclusion.outcome == GameOutcome::Draw
             && conclusion.causes == vec![GameEndCause::TeamHpDepleted {
@@ -1661,7 +1713,7 @@ fn sacred_beast_same_environment_matrix_records_the_idempotent_metal_transfer() 
                         damage_transform: DamageTransform::NormalDamage,
                         final_amount: 81,
                     },
-                    hp_change: HpChangeDelta { team, effective_delta: -81, .. },
+                    hp_changes,
                     elemental_context_update: Some(AttackResolutionEffects { environment_transfers, .. }),
                     ..
                 },
@@ -1671,7 +1723,7 @@ fn sacred_beast_same_environment_matrix_records_the_idempotent_metal_transfer() 
                 && cards == &first_beast_cards
                 && attacker == &p1
                 && target == &p2
-                && team == &TeamId::new("team:p2")
+                && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p2"))
                 && environment_transfers == &vec![fewfc::domain::EnvironmentTransferDelta {
                     player: p1.clone(),
                     formation_id: "west-white-tiger".to_string(),
@@ -1748,13 +1800,7 @@ fn sacred_beast_same_environment_matrix_records_the_idempotent_metal_transfer() 
                         damage_transform: DamageTransform::HalfDamageRoundUp,
                         final_amount: 81,
                     },
-                    hp_change: HpChangeDelta {
-                        team,
-                    old_hp: 988,
-                    delta: -81,
-                    new_hp: 907,
-                        effective_delta: -81,
-                    },
+                    hp_changes,
                     shield_change: None,
                     card_moves,
                     elemental_context_update: Some(AttackResolutionEffects {
@@ -1777,7 +1823,7 @@ fn sacred_beast_same_environment_matrix_records_the_idempotent_metal_transfer() 
                 && cards == &second_beast_cards
                 && attacker == &p2
                 && target == &p1
-                && team == &TeamId::new("team:p1")
+                && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
                 && card_moves.is_empty()
                 && context_player == &p2
                 && environment_transfers == &vec![fewfc::domain::EnvironmentTransferDelta {
@@ -1994,7 +2040,7 @@ fn base_start_turn_lifecycle_matrix_commits_an_action_then_resolves_draw_choice_
                 target,
                 formation_id: attack_formation,
                 point_breakdown: AttackPointBreakdown { final_amount: 7, .. },
-                hp_change: HpChangeDelta { old_hp: 30, delta: -7, new_hp: 23, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded {
@@ -2041,7 +2087,7 @@ fn base_start_turn_lifecycle_matrix_commits_an_action_then_resolves_draw_choice_
     assert_eq!(drawn_cards, vec![card(10), card(11), card(12)]);
 
     let chosen_discard = card(12);
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::AnswerChoice {
                 player: p1.clone(),
@@ -2423,7 +2469,7 @@ fn four_player_metal_strike_matrix_targets_the_cyclic_previous_opposing_team() {
 
     // 在 A/B 交錯座次 P1、P2、P3、P4 中，不宣告 target 的 Metal Strike 必須以
     // 環狀上一位 P4 為 target，並只扣除其 Team B 的 HP。
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -2452,13 +2498,7 @@ fn four_player_metal_strike_matrix_targets_the_cyclic_previous_opposing_team() {
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("B"),
-                    old_hp: 30,
-                    delta: -7,
-                    new_hp: 23,
-                    effective_delta: -7,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -2669,7 +2709,7 @@ fn four_player_metal_strike_matrix_consumes_only_the_cyclic_previous_players_shi
         .unwrap();
     finish_turn(&mut baseline, &p4);
     assert_eq!(baseline.state().current_player(), Some(&p1));
-    assert_eq!(
+    assert_event_semantics_eq!(
         baseline
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -2698,13 +2738,7 @@ fn four_player_metal_strike_matrix_consumes_only_the_cyclic_previous_players_shi
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("B"),
-                    old_hp: 100,
-                    delta: -7,
-                    new_hp: 93,
-                    effective_delta: -7,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -2751,7 +2785,7 @@ fn four_player_metal_strike_matrix_consumes_only_the_cyclic_previous_players_shi
         })
         .unwrap();
     finish_turn(&mut interaction, &p1);
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -2791,7 +2825,7 @@ fn four_player_metal_strike_matrix_consumes_only_the_cyclic_previous_players_shi
         })
         .unwrap();
     finish_turn(&mut interaction, &p3);
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p4.clone(),
@@ -2855,7 +2889,7 @@ fn four_player_metal_strike_matrix_consumes_only_the_cyclic_previous_players_shi
 
     // 互動：P1 的第二回合 Metal Strike 只命中 cyclic previous P4 的 Shield。P2
     // 是同隊 sibling，仍完整保留 44；Team B 亦因 Shield absorption 維持 100 HP。
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -2884,13 +2918,7 @@ fn four_player_metal_strike_matrix_consumes_only_the_cyclic_previous_players_shi
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("B"),
-                    old_hp: 100,
-                    delta: 0,
-                    new_hp: 100,
-                    effective_delta: 0,
-                },
+                hp_changes: Vec::new(),
                 shield_change: Some(ShieldChangeDelta {
                     player: p4.clone(),
                     old_value: 44,
@@ -3100,6 +3128,96 @@ fn duplicate_covered_passive_is_engine_invariant_before_command_validation() {
         ))
     );
     assert_eq!(state, state_before);
+}
+
+#[test]
+fn formation_commands_reject_malformed_hp_ledgers_before_emitting_events() {
+    fn command() -> Command {
+        Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        }
+    }
+
+    let malformed_states = [
+        {
+            let mut state = GameState::from_setup(&two_player_setup());
+            state.phase = Phase::ActiveEffects;
+            *state.hand_mut(&PlayerId::new("p1")).unwrap() = vec![card(1)];
+            state.hp.push(state.hp[0].clone());
+            state
+        },
+        {
+            let mut state = GameState::from_setup(&two_player_setup());
+            state.phase = Phase::ActiveEffects;
+            *state.hand_mut(&PlayerId::new("p1")).unwrap() = vec![card(1)];
+            state.initial_hp.pop();
+            state
+        },
+        {
+            let mut state = GameState::from_setup(&two_player_setup());
+            state.phase = Phase::ActiveEffects;
+            *state.hand_mut(&PlayerId::new("p1")).unwrap() = vec![card(1)];
+            state.hp[0].hp = 31;
+            state
+        },
+    ];
+
+    for state in malformed_states {
+        let before = state.clone();
+        assert!(matches!(
+            handle_command(&state, command()),
+            Err(GameError::EngineInvariant(
+                EngineInvariantError::InvalidHpLedger { .. }
+            ))
+        ));
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn formation_command_reports_hp_arithmetic_overflow_before_emitting_events() {
+    // 以合法的上一回合 Water Strike 建立相生；目前 Team HP 本身仍在可表示、合法
+    // 範圍內，唯有本次 Metal Strike 的回復加法會超出 i32。
+    let mut state = GameState::from_setup(&two_player_setup());
+    state.phase = Phase::ActiveEffects;
+    state.turn_number = 2;
+    *state.hand_mut(&PlayerId::new("p1")).unwrap() = vec![card(1)];
+    state.last_formation_by_player.insert(
+        PlayerId::new("p2"),
+        LastFormationUse {
+            formation_id: "water-strike".to_string(),
+            resolved_effect_id: "water-strike".to_string(),
+            used_cards: vec![card(3)],
+            resolved_turn: 1,
+        },
+    );
+    for ledger in [&mut state.hp, &mut state.initial_hp] {
+        ledger
+            .iter_mut()
+            .find(|entry| entry.team == TeamId::new("team:p2"))
+            .expect("p2 team HP")
+            .hp = i32::MAX;
+    }
+    let before = state.clone();
+
+    assert!(matches!(
+        handle_command(
+            &state,
+            Command::PerformFormation {
+                player: PlayerId::new("p1"),
+                formation_id: "metal-strike".to_string(),
+                cards: vec![card(1)],
+                declared_targets: Vec::new(),
+            },
+        ),
+        Err(GameError::EngineInvariant(
+            EngineInvariantError::InvalidHpLedger { .. }
+        ))
+    ));
+    assert_eq!(state, before);
 }
 
 #[test]
@@ -3461,7 +3579,7 @@ fn triple_fire_level_sum_matrix_commits_resolves_and_replays() {
             declared_targets: Vec::new(),
         })
         .unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         events,
         vec![
             GameEvent::FormationCommitted {
@@ -3483,13 +3601,7 @@ fn triple_fire_level_sum_matrix_commits_resolves_and_replays() {
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 36,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 100,
-                    delta: -36,
-                    new_hp: 64,
-                    effective_delta: -36,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -3558,7 +3670,7 @@ fn shock_burst_level_sum_matrix_has_no_elemental_context() {
             declared_targets: Vec::new(),
         })
         .unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         events,
         vec![
             GameEvent::FormationCommitted {
@@ -3580,13 +3692,7 @@ fn shock_burst_level_sum_matrix_has_no_elemental_context() {
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 56,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 100,
-                    delta: -56,
-                    new_hp: 44,
-                    effective_delta: -56,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: Some(AttackResolutionEffects {
@@ -3649,7 +3755,7 @@ fn generating_formation_recovery_matrix_clamps_at_full_hp_and_heals_after_legal_
     // effective delta 則正確為零，這與 HP clamp 不變量是分開的行為證據。
     let mut baseline = GameRecord::start(setup.clone(), deck.clone()).unwrap();
     baseline.advance_automatic().unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         baseline
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -3667,13 +3773,7 @@ fn generating_formation_recovery_matrix_clamps_at_full_hp_and_heals_after_legal_
                 state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::HpChanged {
-                change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 100,
-                    delta: 18,
-                    new_hp: 100,
-                    effective_delta: 0,
-                },
+                change: expected_hp_change(TeamId::new("team:p1"), 100, 18, 100, 0),
             },
             GameEvent::FormationCardsDiscarded {
                 player: p1.clone(),
@@ -3763,13 +3863,7 @@ fn generating_formation_recovery_matrix_clamps_at_full_hp_and_heals_after_legal_
                 state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::HpChanged {
-                change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 100,
-                    delta: 18,
-                    new_hp: 100,
-                    effective_delta: 0,
-                },
+                change: expected_hp_change(TeamId::new("team:p1"), 100, 18, 100, 0),
             },
             GameEvent::FormationCardsDiscarded {
                 player: p1.clone(),
@@ -3778,7 +3872,7 @@ fn generating_formation_recovery_matrix_clamps_at_full_hp_and_heals_after_legal_
             },
         ]
     );
-    assert_eq!(
+    assert_event_semantics_eq!(
         triple_fire,
         vec![
             GameEvent::FormationCommitted {
@@ -3800,13 +3894,7 @@ fn generating_formation_recovery_matrix_clamps_at_full_hp_and_heals_after_legal_
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 36,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 100,
-                    delta: -36,
-                    new_hp: 64,
-                    effective_delta: -36,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -3861,13 +3949,7 @@ fn generating_formation_recovery_matrix_clamps_at_full_hp_and_heals_after_legal_
                 state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::HpChanged {
-                change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 64,
-                    delta: 18,
-                    new_hp: 82,
-                    effective_delta: 18,
-                },
+                change: expected_hp_change(TeamId::new("team:p1"), 64, 18, 82, 18),
             },
             GameEvent::FormationCardsDiscarded {
                 player: p1.clone(),
@@ -4029,7 +4111,7 @@ fn four_player_generating_matrix_recovers_only_its_own_team_after_previous_playe
 
     // 無修飾基準：P1 的 Generating 只能作用於 own Team A。滿血時仍保留請求的
     // 十八點回復，但 effective delta 為零，Team B 完全不受影響。
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -4047,13 +4129,7 @@ fn four_player_generating_matrix_recovers_only_its_own_team_after_previous_playe
                 state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::HpChanged {
-                change: HpChangeDelta {
-                    team: TeamId::new("A"),
-                    old_hp: 100,
-                    delta: 18,
-                    new_hp: 100,
-                    effective_delta: 0,
-                },
+                change: expected_hp_change(TeamId::new("A"), 100, 18, 100, 0),
             },
             GameEvent::FormationCardsDiscarded {
                 player: p1.clone(),
@@ -4087,7 +4163,7 @@ fn four_player_generating_matrix_recovers_only_its_own_team_after_previous_playe
     // 修飾本身：在相同的交錯 Team 座次，P4 的 Weapon 必須傷害 cyclic previous
     // P3 所在 Team A，而不是 P2 或 Team B。
     assert_eq!(record.state().current_player(), Some(&p4));
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p4.clone(),
@@ -4116,13 +4192,7 @@ fn four_player_generating_matrix_recovers_only_its_own_team_after_previous_playe
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 12,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("A"),
-                    old_hp: 100,
-                    delta: -12,
-                    new_hp: 88,
-                    effective_delta: -12,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: Some(AttackResolutionEffects {
@@ -4153,7 +4223,7 @@ fn four_player_generating_matrix_recovers_only_its_own_team_after_previous_playe
 
     // 互動：P1 的第二組合法 Generating 只回復受 P4 影響的 Team A。它請求十八點，
     // 但由 100 HP cap 將 effective delta 精確限制為十二；Team B 仍是 100。
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -4171,13 +4241,7 @@ fn four_player_generating_matrix_recovers_only_its_own_team_after_previous_playe
                 state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::HpChanged {
-                change: HpChangeDelta {
-                    team: TeamId::new("A"),
-                    old_hp: 88,
-                    delta: 18,
-                    new_hp: 100,
-                    effective_delta: 12,
-                },
+                change: expected_hp_change(TeamId::new("A"), 88, 18, 100, 12),
             },
             GameEvent::FormationCardsDiscarded {
                 player: p1.clone(),
@@ -4310,7 +4374,7 @@ fn overcoming_formation_four_player_matrix_reduces_only_the_next_players_persona
     let record_before_overcoming = |p3_uses_barrier: bool| {
         let mut record = GameRecord::start(setup(), complete_deck(p3_uses_barrier)).unwrap();
         record.advance_automatic().unwrap();
-        assert_eq!(
+        assert_event_semantics_eq!(
             record
                 .handle(Command::PerformFormation {
                     player: p1.clone(),
@@ -4342,7 +4406,7 @@ fn overcoming_formation_four_player_matrix_reduces_only_the_next_players_persona
         );
         finish_turn(&mut record, &p1, Some(card(6)));
         assert_eq!(record.state().current_player(), Some(&p2));
-        assert_eq!(
+        assert_event_semantics_eq!(
             record
                 .handle(Command::PerformFormation {
                     player: p2.clone(),
@@ -4379,7 +4443,7 @@ fn overcoming_formation_four_player_matrix_reduces_only_the_next_players_persona
         finish_turn(&mut record, &p2, None);
 
         if p3_uses_barrier {
-            assert_eq!(
+            assert_event_semantics_eq!(
                 record
                     .handle(Command::PerformFormation {
                         player: p3.clone(),
@@ -4410,7 +4474,7 @@ fn overcoming_formation_four_player_matrix_reduces_only_the_next_players_persona
                 ]
             );
         } else {
-            assert_eq!(
+            assert_event_semantics_eq!(
                 record
                     .handle(Command::PerformFormation {
                         player: p3.clone(),
@@ -4428,13 +4492,7 @@ fn overcoming_formation_four_player_matrix_reduces_only_the_next_players_persona
                         state: FormationAreaState::FaceUpResolving,
                     },
                     GameEvent::HpChanged {
-                        change: HpChangeDelta {
-                            team: TeamId::new("A"),
-                            old_hp: 100,
-                            delta: 18,
-                            new_hp: 100,
-                            effective_delta: 0,
-                        },
+                        change: expected_hp_change(TeamId::new("A"), 100, 18, 100, 0),
                     },
                     GameEvent::FormationCardsDiscarded {
                         player: p3.clone(),
@@ -4472,7 +4530,7 @@ fn overcoming_formation_four_player_matrix_reduces_only_the_next_players_persona
     // 基準：P1/P2 都有自己合法建立的 Shield，但 P2 的下家 P3 沒有 Shield；剋陣
     // 仍完整提交，且不會誤傷任一其他 Player 的 Shield。
     let mut baseline = record_before_overcoming(false);
-    assert_eq!(
+    assert_event_semantics_eq!(
         baseline
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -4506,7 +4564,7 @@ fn overcoming_formation_four_player_matrix_reduces_only_the_next_players_persona
     // 互動：P3 是 P2 在四人交替座次中的下家。P3 的 44 Shield 被三十點剋陣削為
     // 14；P1 的同隊 Shield 與 P2 自己的 Shield 都必須保持原值。
     let mut interaction = record_before_overcoming(true);
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -4831,7 +4889,7 @@ fn radiance_cannot_act_matrix_blocks_a_usable_formation_but_keeps_status_specifi
         })
         .unwrap();
     advance_record_to_next_main_after_turn_draw(&mut radiance, card(16));
-    assert_eq!(
+    assert_event_semantics_eq!(
         radiance
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -4860,13 +4918,7 @@ fn radiance_cannot_act_matrix_blocks_a_usable_formation_but_keeps_status_specifi
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 6,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 30,
-                    delta: -6,
-                    new_hp: 24,
-                    effective_delta: -6,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -4941,13 +4993,7 @@ fn defense_cannot_act_pass_matrix_flips_the_covered_passive_on_radiances_second_
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta {
-                    team,
-                    old_hp: 30,
-                    delta: -7,
-                    new_hp: 23,
-                    effective_delta: -7,
-                },
+                hp_changes,
                 ..
                 },
                 GameEvent::FormationCardsDiscarded {
@@ -4960,7 +5006,7 @@ fn defense_cannot_act_pass_matrix_flips_the_covered_passive_on_radiances_second_
             && cards == &vec![card(11)]
             && attacker == &p2
             && target == &p1
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && discarded_by == &p2
                 && discarded == "metal-strike"
                 && discarded_cards == &vec![card(11)]
@@ -5304,7 +5350,7 @@ fn metamorphosis_weapon_matrix_copies_a_legal_source_without_losing_its_own_iden
     .unwrap();
     record.advance_automatic().unwrap();
     let weapon_cards = vec![card(1), card(6)];
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -5333,13 +5379,7 @@ fn metamorphosis_weapon_matrix_copies_a_legal_source_without_losing_its_own_iden
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 12,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 30,
-                    delta: -12,
-                    new_hp: 18,
-                    effective_delta: -12,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: Some(AttackResolutionEffects::default()),
@@ -5354,7 +5394,7 @@ fn metamorphosis_weapon_matrix_copies_a_legal_source_without_losing_its_own_iden
     advance_record_to_next_main_after_turn_draw(&mut record, card(9));
 
     let metamorphosis_cards = vec![card(5), card(10)];
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -5387,13 +5427,7 @@ fn metamorphosis_weapon_matrix_copies_a_legal_source_without_losing_its_own_iden
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 20,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 30,
-                    delta: -20,
-                    new_hp: 10,
-                    effective_delta: -20,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: Some(AttackResolutionEffects::default()),
@@ -5461,7 +5495,7 @@ fn metamorphosis_metal_strike_matrix_recomputes_the_copied_elemental_effect() {
     .unwrap();
     record.advance_automatic().unwrap();
     let source_cards = vec![card(1)];
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -5490,13 +5524,7 @@ fn metamorphosis_metal_strike_matrix_recomputes_the_copied_elemental_effect() {
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 30,
-                    delta: -7,
-                    new_hp: 23,
-                    effective_delta: -7,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -5517,7 +5545,7 @@ fn metamorphosis_metal_strike_matrix_recomputes_the_copied_elemental_effect() {
     advance_record_to_next_main_after_turn_draw(&mut record, card(9));
 
     let metamorphosis_cards = vec![card(5), card(10)];
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -5550,13 +5578,7 @@ fn metamorphosis_metal_strike_matrix_recomputes_the_copied_elemental_effect() {
                     damage_transform: DamageTransform::HalfDamageRoundUp,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 30,
-                    delta: -7,
-                    new_hp: 23,
-                    effective_delta: -7,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -5632,7 +5654,7 @@ fn metamorphosis_weapon_chain_matrix_preserves_effect_identity_through_a_termina
     record.advance_automatic().unwrap();
 
     // 基準來源：P1 的真實 Weapon 建立可被下一位複製的 resolved effect。
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -5661,13 +5683,7 @@ fn metamorphosis_weapon_chain_matrix_preserves_effect_identity_through_a_termina
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 12,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 30,
-                    delta: -12,
-                    new_hp: 18,
-                    effective_delta: -12,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: Some(AttackResolutionEffects::default()),
@@ -5683,7 +5699,7 @@ fn metamorphosis_weapon_chain_matrix_preserves_effect_identity_through_a_termina
 
     // 修飾本身：P2 的 Meta 以自己的 cards 重算 Weapon，卻保有 Meta 的 formation
     // identity；這也是下一個 Meta 必須看見的 immediate resolved effect。
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -5716,13 +5732,7 @@ fn metamorphosis_weapon_chain_matrix_preserves_effect_identity_through_a_termina
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 20,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 30,
-                    delta: -20,
-                    new_hp: 10,
-                    effective_delta: -20,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: Some(AttackResolutionEffects::default()),
@@ -5747,7 +5757,7 @@ fn metamorphosis_weapon_chain_matrix_preserves_effect_identity_through_a_termina
 
     // 互動：P1 不可回溯到原始 Weapon；它合法複製 P2 剛解析的 Weapon effect。終局
     // GameEnded 直接接在攻擊後，因此 incoming Meta cards 仍留在 formation area。
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -5780,13 +5790,7 @@ fn metamorphosis_weapon_chain_matrix_preserves_effect_identity_through_a_termina
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 20,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 18,
-                    delta: -20,
-                    new_hp: 0,
-                    effective_delta: -18,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: Some(AttackResolutionEffects::default()),
@@ -5880,7 +5884,7 @@ fn metamorphosis_five_streams_matrix_copies_target_hand_damage_and_independent_d
 
     // 背景 bridge 仍走完整命令：它保留 P2 的 Meta cards，並讓 P2 在第一次
     // Turn Draw 後恰有四張手牌，作為來源 Five Streams 的 target-hand baseline。
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -5909,13 +5913,7 @@ fn metamorphosis_five_streams_matrix_copies_target_hand_damage_and_independent_d
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 12,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 100,
-                    delta: -12,
-                    new_hp: 88,
-                    effective_delta: -12,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: Some(AttackResolutionEffects::default()),
@@ -5933,7 +5931,7 @@ fn metamorphosis_five_streams_matrix_copies_target_hand_damage_and_independent_d
 
     // 基準來源：P1 以合法五張同等級卡片解析 Five Streams。P2 的四張手牌使
     // 傷害為 60；其獨立的 +1 draw bonus 必須進入同一個 AttackResolved outcome。
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -5962,13 +5960,7 @@ fn metamorphosis_five_streams_matrix_copies_target_hand_damage_and_independent_d
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 60,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 100,
-                    delta: -60,
-                    new_hp: 40,
-                    effective_delta: -60,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: Some(AttackResolutionEffects {
@@ -6017,7 +6009,7 @@ fn metamorphosis_five_streams_matrix_copies_target_hand_damage_and_independent_d
         ]
     );
     let source_discard = source_drawn_cards[0];
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::AnswerChoice {
                 player: p1.clone(),
@@ -6056,7 +6048,7 @@ fn metamorphosis_five_streams_matrix_copies_target_hand_damage_and_independent_d
 
     // 互動：P2 以自己合法的 Meta cards 複製 Five Streams。複製後重新讀取 P1
     // 剛保留的三張手牌，因此傷害是 45，且 P2 自己再取得一份 draw bonus。
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -6089,13 +6081,7 @@ fn metamorphosis_five_streams_matrix_copies_target_hand_damage_and_independent_d
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 45,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 88,
-                    delta: -45,
-                    new_hp: 43,
-                    effective_delta: -45,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: Some(AttackResolutionEffects {
@@ -6209,7 +6195,7 @@ fn metamorphosis_barrier_matrix_copies_the_spell_with_its_own_card_levels() {
     )
     .unwrap();
     record.advance_automatic().unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -6242,7 +6228,7 @@ fn metamorphosis_barrier_matrix_copies_the_spell_with_its_own_card_levels() {
     advance_record_to_next_main_after_turn_draw(&mut record, card(3));
 
     let metamorphosis_cards = vec![card(5), card(10)];
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -6337,7 +6323,7 @@ fn metamorphosis_defense_matrix_establishes_and_consumes_a_public_delayed_counte
     )
     .unwrap();
     baseline.advance_automatic().unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         baseline
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -6366,13 +6352,7 @@ fn metamorphosis_defense_matrix_establishes_and_consumes_a_public_delayed_counte
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 100,
-                    delta: -7,
-                    new_hp: 93,
-                    effective_delta: -7,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -6403,7 +6383,7 @@ fn metamorphosis_defense_matrix_establishes_and_consumes_a_public_delayed_counte
     interaction.advance_automatic().unwrap();
 
     // 修飾本身：P1 只能用完整合法 Defense command 建立原始 covered passive。
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -6456,7 +6436,7 @@ fn metamorphosis_defense_matrix_establishes_and_consumes_a_public_delayed_counte
 
     // Meta 是 P2 的合法下一個 Action：P1 原 Defense 會以 NotAnAttack 正常翻開並
     // 消耗；P2 取得的是獨立、公開的 delayed counter，而非重用 P1 的 covered card。
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -6517,7 +6497,7 @@ fn metamorphosis_defense_matrix_establishes_and_consumes_a_public_delayed_counte
     // counter；攻擊依舊完整 commitment/discard，但只有傷害變為零。
     advance_record_to_next_main_discarding_first_turn_draw_card(&mut interaction, &p2);
     assert_eq!(interaction.state().current_player(), Some(&p1));
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -6555,13 +6535,7 @@ fn metamorphosis_defense_matrix_establishes_and_consumes_a_public_delayed_counte
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 100,
-                    delta: 0,
-                    new_hp: 100,
-                    effective_delta: 0,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: Some(AttackResolutionEffects {
@@ -6628,7 +6602,7 @@ fn metamorphosis_empty_city_matrix_copies_without_establishing_a_delayed_counter
 
     // 修飾本身：空城必須由 P1 的合法 covered passive command 建立；P1 保留後續
     // Metal Strike 所需的 card 6，不能以 fixture 塞入 last formation。
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -6659,7 +6633,7 @@ fn metamorphosis_empty_city_matrix_copies_without_establishing_a_delayed_counter
     // 互動：Meta 合法翻開並複製空城的 effect identity，但空城沒有可建立的 delayed
     // counter。Defense positive sibling 在 metamorphosis_defense_matrix_... 已證明同一
     // lifecycle 確實會建立及消耗 counter。
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -6724,7 +6698,7 @@ fn metamorphosis_empty_city_matrix_copies_without_establishing_a_delayed_counter
     // 同時排除 hidden counter 被消耗、或只檢查 final state 而漏掉的 canonical event。
     advance_record_to_next_main_discarding_first_turn_draw_card(&mut record, &p2);
     assert_eq!(record.state().current_player(), Some(&p1));
-    assert_eq!(
+    assert_event_semantics_eq!(
         record
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -6753,13 +6727,7 @@ fn metamorphosis_empty_city_matrix_copies_without_establishing_a_delayed_counter
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 100,
-                    delta: -7,
-                    new_hp: 93,
-                    effective_delta: -7,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -6915,7 +6883,7 @@ fn return_to_origin_recovery_matrix_heals_after_a_legal_previous_player_attack()
     )
     .unwrap();
     baseline.advance_automatic().unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         baseline
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -6933,13 +6901,7 @@ fn return_to_origin_recovery_matrix_heals_after_a_legal_previous_player_attack()
                 state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::HpChanged {
-                change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 100,
-                    delta: 36,
-                    new_hp: 100,
-                    effective_delta: 0,
-                },
+                change: expected_hp_change(TeamId::new("team:p1"), 100, 36, 100, 0),
             },
             GameEvent::FormationCardsDiscarded {
                 player: p1.clone(),
@@ -6964,7 +6926,7 @@ fn return_to_origin_recovery_matrix_heals_after_a_legal_previous_player_attack()
     )
     .unwrap();
     interaction.advance_automatic().unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -6993,13 +6955,7 @@ fn return_to_origin_recovery_matrix_heals_after_a_legal_previous_player_attack()
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 36,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 100,
-                    delta: -36,
-                    new_hp: 64,
-                    effective_delta: -36,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -7021,7 +6977,7 @@ fn return_to_origin_recovery_matrix_heals_after_a_legal_previous_player_attack()
     assert_eq!(interaction.state().current_player(), Some(&p1));
 
     // 互動：P1 的合法 Return to Origin 回復自身 Team 的三十六點；P2 沒有受影響。
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -7039,13 +6995,7 @@ fn return_to_origin_recovery_matrix_heals_after_a_legal_previous_player_attack()
                 state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::HpChanged {
-                change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 64,
-                    delta: 36,
-                    new_hp: 100,
-                    effective_delta: 36,
-                },
+                change: expected_hp_change(TeamId::new("team:p1"), 64, 36, 100, 36),
             },
             GameEvent::FormationCardsDiscarded {
                 player: p1.clone(),
@@ -7112,7 +7062,7 @@ fn five_elements_cycle_matrix_swaps_hp_after_a_legal_low_point_triple_fire() {
     let cycle_cards = vec![card(1), card(2), card(3), card(4), card(5)];
 
     // 無修飾基準：P2 合法 Generating bridge 後，兩個 Team 都是 27，因此 Cycle
-    // 仍完整提交；沒有實際變化時 canonical record 不會製造零值 HP event。
+    // 仍完整提交；即使沒有實際變化，兩個嘗試仍保留可稽核的 HP fact。
     let mut baseline = GameRecord::start(
         p2_first_setup(),
         deck_starting_with(&[6, 8, 7, 9, 1, 2, 3, 4, 5]),
@@ -7128,7 +7078,7 @@ fn five_elements_cycle_matrix_swaps_hp_after_a_legal_low_point_triple_fire() {
         })
         .unwrap();
     advance_record_to_next_main_discarding_first_turn_draw_card(&mut baseline, &p2);
-    assert_eq!(
+    assert_event_semantics_eq!(
         baseline
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -7144,6 +7094,12 @@ fn five_elements_cycle_matrix_swaps_hp_after_a_legal_low_point_triple_fire() {
                 cards: cycle_cards.clone(),
                 star_substitution: None,
                 state: FormationAreaState::FaceUpResolving,
+            },
+            GameEvent::HpChanged {
+                change: expected_hp_change(TeamId::new("team:p1"), 27, 0, 27, 0)
+            },
+            GameEvent::HpChanged {
+                change: expected_hp_change(TeamId::new("team:p2"), 27, 0, 27, 0)
             },
             GameEvent::FormationCardsDiscarded {
                 player: p1.clone(),
@@ -7221,7 +7177,7 @@ fn five_elements_cycle_matrix_swaps_hp_after_a_legal_low_point_triple_fire() {
     }
     let mut interaction = GameRecord::start(interaction_setup, deck).unwrap();
     interaction.advance_automatic().unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -7250,13 +7206,7 @@ fn five_elements_cycle_matrix_swaps_hp_after_a_legal_low_point_triple_fire() {
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 15,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 27,
-                    delta: -15,
-                    new_hp: 12,
-                    effective_delta: -15,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -7278,7 +7228,7 @@ fn five_elements_cycle_matrix_swaps_hp_after_a_legal_low_point_triple_fire() {
 
     // 互動：P1 Cycle 的兩個 typed HP changes 要同時交換目前的兩隊值，不只是
     // 以最終 state 側面證明結果。
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -7296,22 +7246,10 @@ fn five_elements_cycle_matrix_swaps_hp_after_a_legal_low_point_triple_fire() {
                 state: FormationAreaState::FaceUpResolving,
             },
             GameEvent::HpChanged {
-                change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 12,
-                    delta: 15,
-                    new_hp: 27,
-                    effective_delta: 15,
-                },
+                change: expected_hp_change(TeamId::new("team:p1"), 12, 15, 27, 15),
             },
             GameEvent::HpChanged {
-                change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 27,
-                    delta: -15,
-                    new_hp: 12,
-                    effective_delta: -15,
-                },
+                change: expected_hp_change(TeamId::new("team:p2"), 27, -15, 12, -15),
             },
             GameEvent::FormationCardsDiscarded {
                 player: p1.clone(),
@@ -7493,8 +7431,8 @@ fn empty_city_next_action_matrix_consumes_its_intentional_no_effect_while_attack
     );
     assert!(baseline_attack.iter().any(|event| matches!(
         event,
-        GameEvent::AttackResolved { hp_change: HpChangeDelta { effective_delta, .. }, .. }
-            if *effective_delta < 0
+        GameEvent::AttackResolved { hp_changes, .. }
+            if hp_changes.iter().any(|resolved| matches!(resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.effective_delta() < 0)
     )));
     assert_eq!(baseline.replay().unwrap(), baseline.state().clone());
 
@@ -7549,7 +7487,7 @@ fn empty_city_next_action_matrix_consumes_its_intentional_no_effect_while_attack
                 cards: passive_cards,
                 outcome: PassiveFlipOutcome::NoEffect { grounds },
             },
-            GameEvent::AttackResolved { attacker, target, hp_change: HpChangeDelta { team, effective_delta, .. }, .. },
+            GameEvent::AttackResolved { attacker, target, hp_changes, .. },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
         ] if player == &p2
             && formation_id == "fire-strike"
@@ -7561,8 +7499,8 @@ fn empty_city_next_action_matrix_consumes_its_intentional_no_effect_while_attack
             && grounds == &vec![PassiveNoEffectGround::EmptyCity]
             && attacker == &p2
             && target == &p1
-            && team == &TeamId::new("team:p1")
-            && *effective_delta < 0
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
+            && hp_changes.iter().any(|resolved| matches!(resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.effective_delta() < 0)
             && discarded_by == &p2
             && discarded == "fire-strike"
             && discarded_cards == &vec![card(9)]
@@ -7657,13 +7595,7 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
                         damage_transform: DamageTransform::NormalDamage,
                         final_amount: 12,
                     },
-                    hp_change: HpChangeDelta {
-                        team,
-                        old_hp: 30,
-                        delta: -12,
-                        new_hp: 18,
-                        effective_delta: -12,
-                    },
+                    hp_changes,
                     shield_change: None,
                     card_moves,
                     elemental_context_update: Some(AttackResolutionEffects {
@@ -7684,7 +7616,7 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
                 && target == &p2
                 && resolved_formation == "weapon"
                 && used_cards == cards
-                && team == &TeamId::new("team:p2")
+                && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p2"))
                 && card_moves.is_empty()
                 && discarded_by == &p1
                 && discarded_formation == "weapon"
@@ -7731,13 +7663,7 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
                         damage_transform: DamageTransform::NormalDamage,
                         final_amount: 8,
                     },
-                    hp_change: HpChangeDelta {
-                        team,
-                        old_hp,
-                        delta: -8,
-                        new_hp,
-                        effective_delta: -8,
-                    },
+                    hp_changes,
                     shield_change: None,
                     card_moves,
                     elemental_context_update: Some(AttackResolutionEffects {
@@ -7764,9 +7690,8 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
                 && target == &p1
                 && resolved_formation == "fire-strike"
                 && used_cards == cards
-                && team == &TeamId::new("team:p1")
-                && *old_hp == baseline_hp
-                && *new_hp == baseline_hp - 8
+                && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
+                && hp_changes.iter().any(|resolved| matches!(resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.old_hp() == baseline_hp && resolved.change.new_hp() == baseline_hp - 8)
                 && card_moves.is_empty()
                 && context_player == &p2
                 && discarded_by == &p2
@@ -7950,13 +7875,7 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
                         damage_transform: DamageTransform::NormalDamage,
                         final_amount: 8,
                     },
-                    hp_change: HpChangeDelta {
-                        team,
-                        old_hp,
-                        delta: 0,
-                        new_hp,
-                        effective_delta: 0,
-                    },
+                    hp_changes,
                     shield_change: None,
                     card_moves,
                     elemental_context_update: Some(AttackResolutionEffects {
@@ -7989,9 +7908,7 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
                 && target == &p1
                 && resolved_formation == "fire-strike"
                 && used_cards == cards
-                && team == &TeamId::new("team:p1")
-                && *old_hp == interaction_hp
-                && *new_hp == interaction_hp
+                && hp_changes.is_empty()
                 && card_moves.is_empty()
                 && context_player == &p2
                 && discarded_by == &p2
@@ -8133,9 +8050,9 @@ fn defense_metal_environment_matrix_records_the_ground_but_keeps_attack_damage()
         event,
         GameEvent::AttackResolved {
             point_breakdown: AttackPointBreakdown { base_points: 8, final_amount: 8, .. },
-            hp_change: HpChangeDelta { team, effective_delta: -8, .. },
+            hp_changes,
             ..
-        } if team == &TeamId::new("team:p1")
+        } if hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
     )));
 
     // 互動：相同的合法環境現在與合法覆蓋的 Defense 共存。Defense 會隨環境地面
@@ -8204,7 +8121,7 @@ fn defense_metal_environment_matrix_records_the_ground_but_keeps_attack_damage()
                 attacker,
                 target,
                 point_breakdown: AttackPointBreakdown { base_points: 8, final_amount: 8, .. },
-                hp_change: HpChangeDelta { team, effective_delta: -8, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -8218,7 +8135,7 @@ fn defense_metal_environment_matrix_records_the_ground_but_keeps_attack_damage()
             && grounds == &vec![PassiveNoEffectGround::IneffectiveInEnvironment { environment: Element::Metal }]
             && attacker == &p2
             && target == &p1
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && discarded_by == &p2
             && discarded == "fire-strike"
             && discarded_cards == &vec![card(14)]
@@ -8300,7 +8217,7 @@ fn defense_sacred_beast_matrix_consumes_defense_but_keeps_the_beasts_damage_and_
                 attacker,
                 target,
                 point_breakdown: AttackPointBreakdown { base_points: 81, final_amount: 81, .. },
-                hp_change: HpChangeDelta { team, effective_delta: -81, .. },
+                hp_changes,
                 elemental_context_update: Some(AttackResolutionEffects { environment_transfers, .. }),
                 ..
             },
@@ -8310,7 +8227,7 @@ fn defense_sacred_beast_matrix_consumes_defense_but_keeps_the_beasts_damage_and_
             && cards == &beast_cards
             && attacker == &p2
             && target == &p1
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && environment_transfers == &vec![fewfc::domain::EnvironmentTransferDelta {
                 player: p2.clone(),
                 formation_id: "west-white-tiger".to_string(),
@@ -8384,7 +8301,7 @@ fn defense_sacred_beast_matrix_consumes_defense_but_keeps_the_beasts_damage_and_
                 attacker,
                 target,
                 point_breakdown: AttackPointBreakdown { base_points: 81, final_amount: 81, .. },
-                hp_change: HpChangeDelta { team, effective_delta: -81, .. },
+                hp_changes,
                 elemental_context_update: Some(AttackResolutionEffects { environment_transfers, .. }),
                 ..
             },
@@ -8399,7 +8316,7 @@ fn defense_sacred_beast_matrix_consumes_defense_but_keeps_the_beasts_damage_and_
             && grounds == &vec![PassiveNoEffectGround::IgnoredBySacredBeast]
             && attacker == &p2
             && target == &p1
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && environment_transfers == &vec![fewfc::domain::EnvironmentTransferDelta {
                 player: p2.clone(),
                 formation_id: "west-white-tiger".to_string(),
@@ -8664,7 +8581,7 @@ fn fire_environment_weapon_matrix_keeps_attack_commitment_when_damage_is_ineffec
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 12,
                 },
-                hp_change: HpChangeDelta { team, effective_delta: -12, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -8673,7 +8590,7 @@ fn fire_environment_weapon_matrix_keeps_attack_commitment_when_damage_is_ineffec
             && cards == &weapon_cards
             && attacker == &p1
             && target == &p2
-            && team == &TeamId::new("team:p2")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p2"))
             && discarded_by == &p1
             && discarded == "weapon"
             && discarded_cards == &weapon_cards
@@ -8767,7 +8684,7 @@ fn fire_environment_weapon_matrix_keeps_attack_commitment_when_damage_is_ineffec
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 12,
                 },
-                hp_change: HpChangeDelta { team, effective_delta: 0, .. },
+                hp_changes,
                 shield_change: None,
                 ..
             },
@@ -8779,7 +8696,7 @@ fn fire_environment_weapon_matrix_keeps_attack_commitment_when_damage_is_ineffec
             && ignored_formation == "weapon"
             && attacker == &p1
             && target == &p2
-            && team == &TeamId::new("team:p2")
+            && hp_changes.is_empty()
             && discarded_by == &p1
             && discarded == "weapon"
             && discarded_cards == &weapon_cards
@@ -9001,7 +8918,7 @@ fn shield_water_environment_metal_attack_matrix_absorbs_before_the_healing_inter
                     damage_transform: DamageTransform::HealTarget,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 112, new_hp: 119, effective_delta: 7, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -9010,7 +8927,7 @@ fn shield_water_environment_metal_attack_matrix_absorbs_before_the_healing_inter
             && cards == &vec![card(6)]
             && attacker == &p1
             && target == &p2
-            && team == &TeamId::new("team:p2")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p2"))
             && discarded_by == &p1
             && discarded == "metal-strike"
             && discarded_cards == &vec![card(6)]
@@ -9072,7 +8989,7 @@ fn shield_water_environment_metal_attack_matrix_absorbs_before_the_healing_inter
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 112, new_hp: 112, effective_delta: 0, .. },
+                hp_changes,
                 shield_change: Some(ShieldChangeDelta { player: shield_owner, old_value: 44, delta: -7, new_value: 37 }),
                 elemental_context_update: Some(AttackResolutionEffects {
                     elemental_context_update: Some(LastElementalAttackUpdate {
@@ -9090,7 +9007,7 @@ fn shield_water_environment_metal_attack_matrix_absorbs_before_the_healing_inter
             && cards == &vec![card(6)]
             && attacker == &p1
             && target == &p2
-            && team == &TeamId::new("team:p2")
+            && hp_changes.is_empty()
             && shield_owner == &p2
             && context_player == &p1
             && discarded_by == &p1
@@ -9197,7 +9114,7 @@ fn five_streams_defense_matrix_keeps_the_turn_draw_bonus_when_damage_is_prevente
                     formation_id: resolved_formation,
                     used_cards,
                     point_breakdown,
-                    hp_change,
+                    hp_changes,
                     shield_change: None,
                     card_moves,
                     elemental_context_update: Some(effects),
@@ -9219,13 +9136,13 @@ fn five_streams_defense_matrix_keeps_the_turn_draw_bonus_when_damage_is_prevente
                 && point_breakdown.interaction == ElementInteraction::None
                 && point_breakdown.damage_transform == DamageTransform::NormalDamage
                 && point_breakdown.final_amount == 60
-                && hp_change == &HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: baseline_hp,
-                    delta: -60,
-                    new_hp: baseline_hp - 60,
-                    effective_delta: -60,
-                }
+                && hp_changes.iter().any(|resolved|
+                    matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { target } if target == &p1)
+                        && resolved.change.team() == &TeamId::new("team:p1")
+                        && resolved.change.old_hp() == baseline_hp
+                        && resolved.change.delta() == -60
+                        && resolved.change.new_hp() == baseline_hp - 60
+                        && resolved.change.effective_delta() == -60)
                 && card_moves.is_empty()
                 && effects.outcome == AttackOutcome::Resolved
                 && effects.turn_draw_bonus_changes.len() == 1
@@ -9330,7 +9247,7 @@ fn five_streams_defense_matrix_keeps_the_turn_draw_bonus_when_damage_is_prevente
                     formation_id: resolved_formation,
                     used_cards,
                     point_breakdown,
-                    hp_change,
+                    hp_changes,
                     shield_change: None,
                     card_moves,
                     elemental_context_update: Some(effects),
@@ -9358,13 +9275,7 @@ fn five_streams_defense_matrix_keeps_the_turn_draw_bonus_when_damage_is_prevente
                 && point_breakdown.interaction == ElementInteraction::None
                 && point_breakdown.damage_transform == DamageTransform::NormalDamage
                 && point_breakdown.final_amount == 60
-                && hp_change == &HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: interaction_hp,
-                    delta: 0,
-                    new_hp: interaction_hp,
-                    effective_delta: 0,
-                }
+                && hp_changes.is_empty()
                 && card_moves.is_empty()
                 && effects.outcome == AttackOutcome::DamagePrevented
                 && effects.turn_draw_bonus_changes.len() == 1
@@ -9534,7 +9445,7 @@ fn countershock_attack_matrix_splits_damage_after_legal_cover_and_preserves_atta
                 attacker,
                 target,
                 point_breakdown: AttackPointBreakdown { base_points: 7, final_amount: 7, .. },
-                hp_change: HpChangeDelta { team, old_hp: 30, delta: -7, new_hp: 23, effective_delta: -7 },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -9543,7 +9454,7 @@ fn countershock_attack_matrix_splits_damage_after_legal_cover_and_preserves_atta
             && cards == &vec![card(6)]
             && attacker == &p2
             && target == &p1
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && discarded_by == &p2
             && discarded == "metal-strike"
             && discarded_cards == &vec![card(6)]
@@ -9644,7 +9555,7 @@ fn countershock_attack_matrix_splits_damage_after_legal_cover_and_preserves_atta
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 30, delta: -4, new_hp: 26, effective_delta: -4 },
+                hp_changes,
                 shield_change: None,
                 card_moves,
                 elemental_context_update: Some(AttackResolutionEffects {
@@ -9653,7 +9564,6 @@ fn countershock_attack_matrix_splits_damage_after_legal_cover_and_preserves_atta
                         player: context_player,
                         attack: LastElementalAttack { element: Element::Metal, resolved_turn: 2 },
                     }),
-                    hp_changes,
                     shield_changes,
                     card_moves: effect_card_moves,
                     statuses_added,
@@ -9677,16 +9587,16 @@ fn countershock_attack_matrix_splits_damage_after_legal_cover_and_preserves_atta
             && target == &p1
             && attack_formation == "metal-strike"
             && used_cards == &vec![card(6)]
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && card_moves.is_empty()
             && context_player == &p2
-            && hp_changes == &vec![HpChangeDelta {
-                team: TeamId::new("team:p2"),
-                old_hp: 30,
-                delta: -4,
-                new_hp: 26,
-                effective_delta: -4,
-            }]
+            && hp_changes.iter().any(|resolved|
+                matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { target } if target == &p2)
+                    && resolved.change.team() == &TeamId::new("team:p2")
+                    && resolved.change.old_hp() == 30
+                    && resolved.change.delta() == -4
+                    && resolved.change.new_hp() == 26
+                    && resolved.change.effective_delta() == -4)
             && shield_changes.is_empty()
             && effect_card_moves.is_empty()
             && statuses_added.is_empty()
@@ -9779,7 +9689,7 @@ fn countershock_shield_matrix_splits_before_physical_shield_absorption_through_l
         assert!(opening_attack.iter().any(|event| matches!(
             event,
             GameEvent::AttackResolved {
-                hp_change: HpChangeDelta { delta: 0, effective_delta: 0, .. },
+                hp_changes,
                 shield_change: Some(ShieldChangeDelta { player, old_value: 44, delta: -7, new_value: 37 }),
                 ..
             } if player == p1
@@ -9816,7 +9726,7 @@ fn countershock_shield_matrix_splits_before_physical_shield_absorption_through_l
             GameEvent::FormationCommitted { player, formation_id, cards, .. },
             GameEvent::AttackResolved {
                 point_breakdown: AttackPointBreakdown { base_points: 12, final_amount: 12, .. },
-                hp_change: HpChangeDelta { team, delta: 0, effective_delta: 0, .. },
+                hp_changes,
                 shield_change: Some(ShieldChangeDelta { player: shield_owner, old_value: 37, delta: -24, new_value: 13 }),
                 ..
             },
@@ -9824,7 +9734,6 @@ fn countershock_shield_matrix_splits_before_physical_shield_absorption_through_l
         ] if player == &p2
             && formation_id == "weapon"
             && cards == &vec![card(11), card(16)]
-            && team == &TeamId::new("team:p1")
             && shield_owner == &p1
             && discarded_by == &p2
             && discarded == "weapon"
@@ -9885,18 +9794,17 @@ fn countershock_shield_matrix_splits_before_physical_shield_absorption_through_l
         event,
         GameEvent::AttackResolved {
             point_breakdown: AttackPointBreakdown { base_points: 12, final_amount: 12, .. },
-            hp_change: HpChangeDelta { team, delta: 0, effective_delta: 0, .. },
+            hp_changes,
             shield_change: Some(ShieldChangeDelta { player, old_value: 37, delta: -12, new_value: 25 }),
             elemental_context_update: Some(effects),
             ..
-        } if team == &TeamId::new("team:p1")
-            && effects.hp_changes == vec![HpChangeDelta {
-                team: TeamId::new("team:p2"),
-                old_hp: 30,
-                delta: -6,
-                new_hp: 24,
-                effective_delta: -6,
-            }]
+        } if hp_changes.iter().any(|resolved|
+                matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { target } if target == &p2)
+                    && resolved.change.team() == &TeamId::new("team:p2")
+                    && resolved.change.old_hp() == 30
+                    && resolved.change.delta() == -6
+                    && resolved.change.new_hp() == 24
+                    && resolved.change.effective_delta() == -6)
     )));
     assert!(interaction.state().covered_passive(&p1).is_none());
     assert_eq!(interaction.state().shield(&p1), Some(25));
@@ -9989,8 +9897,8 @@ fn countershock_lethal_matrix_resolves_both_split_losses_before_declaring_a_draw
                 attacker,
                 target,
                 point_breakdown: AttackPointBreakdown { base_points: 7, final_amount: 7, .. },
-                hp_change: HpChangeDelta { team, old_hp: 4, delta: -4, new_hp: 0, effective_delta: -4 },
-                elemental_context_update: Some(AttackResolutionEffects { hp_changes, .. }),
+                hp_changes,
+                elemental_context_update: Some(AttackResolutionEffects { .. }),
                 ..
             },
             GameEvent::GameEnded { conclusion },
@@ -10003,14 +9911,14 @@ fn countershock_lethal_matrix_resolves_both_split_losses_before_declaring_a_draw
             && modifications == &vec![ActionModification::SplitAttackDamage]
             && attacker == &p2
             && target == &p1
-            && team == &TeamId::new("team:p1")
-            && hp_changes == &vec![HpChangeDelta {
-                team: TeamId::new("team:p2"),
-                old_hp: 4,
-                delta: -4,
-                new_hp: 0,
-                effective_delta: -4,
-            }]
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
+            && hp_changes.iter().any(|resolved|
+                matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { target } if target == &p2)
+                    && resolved.change.team() == &TeamId::new("team:p2")
+                    && resolved.change.old_hp() == 4
+                    && resolved.change.delta() == -4
+                    && resolved.change.new_hp() == 0
+                    && resolved.change.effective_delta() == -4)
             && conclusion.outcome == GameOutcome::Draw
             && conclusion.causes == vec![GameEndCause::TeamHpDepleted {
                 teams: vec![TeamId::new("team:p1"), TeamId::new("team:p2")],
@@ -10140,9 +10048,9 @@ fn seal_attack_matrix_records_not_a_spell_but_keeps_the_attack_outcome() {
         event,
         GameEvent::AttackResolved {
             point_breakdown: AttackPointBreakdown { base_points: 8, final_amount: 8, .. },
-            hp_change: HpChangeDelta { team, old_hp: 30, delta: -8, new_hp: 22, effective_delta: -8 },
+            hp_changes,
             ..
-        } if team == &TeamId::new("team:p1")
+        } if hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
     )));
 
     // 修飾：P1 在相同的 incoming Attack 前合法覆蓋 Seal。
@@ -10180,7 +10088,7 @@ fn seal_attack_matrix_records_not_a_spell_but_keeps_the_attack_outcome() {
                 attacker,
                 target,
                 point_breakdown: AttackPointBreakdown { base_points: 8, final_amount: 8, .. },
-                hp_change: HpChangeDelta { team, old_hp: 30, delta: -8, new_hp: 22, effective_delta: -8 },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -10194,7 +10102,7 @@ fn seal_attack_matrix_records_not_a_spell_but_keeps_the_attack_outcome() {
             && grounds == &vec![PassiveNoEffectGround::NotASpell]
             && attacker == &p2
             && target == &p1
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && discarded_by == &p2
             && discarded == "fire-strike"
             && discarded_cards == &vec![card(9)]
@@ -10669,9 +10577,9 @@ fn seal_incoming_covered_passive_matrix_commits_sealed_counter_then_consumes_it_
             attacker,
             target,
             point_breakdown: AttackPointBreakdown { base_points: 7, final_amount: 7, .. },
-            hp_change: HpChangeDelta { team, old_hp: 30, delta: -7, new_hp: 23, effective_delta: -7 },
+            hp_changes,
             ..
-        } if attacker == &p1 && target == &p2 && team == &TeamId::new("team:p2")
+        } if attacker == &p1 && target == &p2 && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p2"))
     )));
     assert!(attack.iter().any(|event| matches!(
         event,
@@ -10875,10 +10783,10 @@ fn seal_void_meridian_matrix_cancels_environment_clearing_but_keeps_spell_commit
             && cleared_by == "void-meridian-severing"
             && hp_changes.len() == 2
             && hp_changes.iter().zip(&baseline_before_void).all(|(change, before)| {
-                change.team == before.team
-                    && change.old_hp == before.hp
-                    && change.new_hp == before.hp - 20
-                    && change.effective_delta == -20
+                change.team() == &before.team
+                    && change.old_hp() == before.hp
+                    && change.new_hp() == before.hp - 20
+                    && change.effective_delta() == -20
             })
             && discarded_by == &p2
             && discarded == "void-meridian-severing"
@@ -11524,13 +11432,7 @@ fn perform_formation_matches_cards_by_instance_definitions() {
                 damage_transform: DamageTransform::NormalDamage,
                 final_amount: 12,
             },
-            hp_change: HpChangeDelta {
-                team: TeamId::new("team:p2"),
-                old_hp: 30,
-                delta: -12,
-                new_hp: 18,
-                effective_delta: -12,
-            },
+            hp_changes: Vec::new(),
             shield_change: None,
             card_moves: vec![
                 CardMoveDelta {
@@ -11575,15 +11477,16 @@ fn attack_hp_delta_records_clamped_damage() {
     let mut record = GameRecord::start(two_player_setup_with_hp(5), official_deck()).unwrap();
     record.advance_automatic().unwrap();
 
+    let events = record
+        .handle(Command::PerformFormation {
+            player: PlayerId::new("p1"),
+            formation_id: "metal-strike".to_string(),
+            cards: vec![card(1)],
+            declared_targets: Vec::new(),
+        })
+        .unwrap();
     assert_event_semantics_eq!(
-        record
-            .handle(Command::PerformFormation {
-                player: PlayerId::new("p1"),
-                formation_id: "metal-strike".to_string(),
-                cards: vec![card(1)],
-                declared_targets: Vec::new(),
-            })
-            .unwrap(),
+        events,
         vec![GameEvent::AttackResolved {
             attacker: PlayerId::new("p1"),
             target: PlayerId::new("p2"),
@@ -11596,13 +11499,7 @@ fn attack_hp_delta_records_clamped_damage() {
                 damage_transform: DamageTransform::NormalDamage,
                 final_amount: 7,
             },
-            hp_change: HpChangeDelta {
-                team: TeamId::new("team:p2"),
-                old_hp: 5,
-                delta: -7,
-                new_hp: 0,
-                effective_delta: -5,
-            },
+            hp_changes: Vec::new(),
             shield_change: None,
             card_moves: vec![CardMoveDelta {
                 card: card(1),
@@ -11618,6 +11515,19 @@ fn attack_hp_delta_records_clamped_damage() {
             }),
         }]
     );
+
+    let target = PlayerId::new("p2");
+    let attack = events
+        .iter()
+        .find(|event| matches!(event, GameEvent::AttackResolved { .. }))
+        .expect("metal strike must record its attack outcome");
+    assert_eq!(attack_hp_changes(attack).len(), 1);
+    let change = attack_damage(attack, &target);
+    assert_eq!(change.team(), &TeamId::new("team:p2"));
+    assert_eq!(change.old_hp(), 5);
+    assert_eq!(change.delta(), -7);
+    assert_eq!(change.new_hp(), 0);
+    assert_eq!(change.effective_delta(), -5);
 
     let state = record.state().clone();
     assert_eq!(
@@ -11746,13 +11656,7 @@ fn hp_resolution_finishes_as_draw_when_no_team_remains_alive() {
                 damage_transform: DamageTransform::NormalDamage,
                 final_amount: 7,
             },
-            hp_change: HpChangeDelta {
-                team: TeamId::new("team:p2"),
-                old_hp: 1,
-                delta: -7,
-                new_hp: 0,
-                effective_delta: -1,
-            },
+            hp_changes: Vec::new(),
             shield_change: None,
             card_moves: Vec::new(),
             elemental_context_update: None,
@@ -11806,7 +11710,7 @@ fn elemental_attack_previous_element_matrix_distinguishes_physical_baseline_from
             declared_targets: Vec::new(),
         })
         .unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         ordinary_fire,
         vec![
             GameEvent::FormationCommitted {
@@ -11828,13 +11732,7 @@ fn elemental_attack_previous_element_matrix_distinguishes_physical_baseline_from
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 8,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 30,
-                    delta: -8,
-                    new_hp: 22,
-                    effective_delta: -8,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -11883,7 +11781,7 @@ fn elemental_attack_previous_element_matrix_distinguishes_physical_baseline_from
             declared_targets: Vec::new(),
         })
         .unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         overcoming_fire,
         vec![
             GameEvent::FormationCommitted {
@@ -11905,13 +11803,7 @@ fn elemental_attack_previous_element_matrix_distinguishes_physical_baseline_from
                     damage_transform: DamageTransform::DoubleDamage,
                     final_amount: 16,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 30,
-                    delta: -16,
-                    new_hp: 14,
-                    effective_delta: -16,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -11991,7 +11883,7 @@ fn elemental_attack_same_element_matrix_uses_legal_previous_metal_and_rounds_up(
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 30, delta: -7, new_hp: 23, effective_delta: -7 },
+                hp_changes,
                 shield_change: None,
                 card_moves,
                 ..
@@ -12002,7 +11894,7 @@ fn elemental_attack_same_element_matrix_uses_legal_previous_metal_and_rounds_up(
             && cards == &vec![card(6)]
             && attacker == &p2
             && target == &p1
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && card_moves.is_empty()
             && discarded_by == &p2
             && discarded == "metal-strike"
@@ -12051,7 +11943,7 @@ fn elemental_attack_same_element_matrix_uses_legal_previous_metal_and_rounds_up(
                     damage_transform: DamageTransform::HalfDamageRoundUp,
                     final_amount: 4,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 30, delta: -4, new_hp: 26, effective_delta: -4 },
+                hp_changes,
                 shield_change: None,
                 card_moves,
                 elemental_context_update: Some(AttackResolutionEffects {
@@ -12070,7 +11962,7 @@ fn elemental_attack_same_element_matrix_uses_legal_previous_metal_and_rounds_up(
             && cards == &vec![card(6)]
             && attacker == &p2
             && target == &p1
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && card_moves.is_empty()
             && context_player == &p2
             && discarded_by == &p2
@@ -12197,7 +12089,7 @@ fn elemental_attack_generating_matrix_uses_legal_previous_metal_to_heal_an_injur
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 9,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 18, delta: -9, new_hp: 9, effective_delta: -9 },
+                hp_changes,
                 shield_change: None,
                 card_moves,
                 ..
@@ -12208,7 +12100,7 @@ fn elemental_attack_generating_matrix_uses_legal_previous_metal_to_heal_an_injur
             && cards == &vec![card(5)]
             && attacker == &p2
             && target == &p1
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && card_moves.is_empty()
             && discarded_by == &p2
             && discarded == "earth-strike"
@@ -12301,7 +12193,7 @@ fn elemental_attack_generating_matrix_uses_legal_previous_metal_to_heal_an_injur
                     damage_transform: DamageTransform::HealTarget,
                     final_amount: 9,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 18, delta: 9, new_hp: 27, effective_delta: 9 },
+                hp_changes,
                 shield_change: None,
                 card_moves,
                 elemental_context_update: Some(AttackResolutionEffects {
@@ -12320,7 +12212,7 @@ fn elemental_attack_generating_matrix_uses_legal_previous_metal_to_heal_an_injur
             && cards == &vec![card(5)]
             && attacker == &p2
             && target == &p1
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && card_moves.is_empty()
             && context_player == &p2
             && discarded_by == &p2
@@ -12431,7 +12323,7 @@ fn metal_environment_generating_matrix_recovers_once_when_both_grounds_apply() {
             GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceUpResolving, .. },
             GameEvent::AttackResolved {
                 point_breakdown: AttackPointBreakdown { base_points: 81, interaction: ElementInteraction::None, final_amount: 81, .. },
-                hp_change: HpChangeDelta { team, old_hp: 194, delta: -81, new_hp: 113, effective_delta: -81 },
+                hp_changes,
                 elemental_context_update: Some(AttackResolutionEffects { environment_transfers, .. }),
                 ..
             },
@@ -12520,7 +12412,7 @@ fn metal_environment_generating_matrix_recovers_once_when_both_grounds_apply() {
                     damage_transform: DamageTransform::HealTarget,
                     final_amount: 9,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 113, delta: 9, new_hp: 122, effective_delta: 9 },
+                hp_changes,
                 shield_change: None,
                 card_moves,
                 elemental_context_update: Some(AttackResolutionEffects {
@@ -12539,7 +12431,7 @@ fn metal_environment_generating_matrix_recovers_once_when_both_grounds_apply() {
             && cards == &vec![card(23)]
             && attacker == &p1
             && target == &p2
-            && team == &TeamId::new("team:p2")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p2"))
             && card_moves.is_empty()
             && context_player == &p1
             && discarded_by == &p1
@@ -12591,13 +12483,7 @@ fn elemental_attack_unrelated_previous_element_matrix_keeps_normal_damage() {
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 12,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 100,
-                    delta: -12,
-                    new_hp: 88,
-                    effective_delta: -12,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: Some(AttackResolutionEffects {
@@ -12633,13 +12519,7 @@ fn elemental_attack_unrelated_previous_element_matrix_keeps_normal_damage() {
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 7,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p2"),
-                    old_hp: 100,
-                    delta: -7,
-                    new_hp: 93,
-                    effective_delta: -7,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -12678,13 +12558,7 @@ fn elemental_attack_unrelated_previous_element_matrix_keeps_normal_damage() {
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 6,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 100,
-                    delta: -6,
-                    new_hp: 94,
-                    effective_delta: -6,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -12707,7 +12581,7 @@ fn elemental_attack_unrelated_previous_element_matrix_keeps_normal_damage() {
     // Wood Strike 因此正常造成六點傷害。
     let mut baseline = GameRecord::start(setup.clone(), deck.clone()).unwrap();
     baseline.advance_automatic().unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         baseline
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -12719,7 +12593,7 @@ fn elemental_attack_unrelated_previous_element_matrix_keeps_normal_damage() {
         weapon_events()
     );
     advance_record_to_next_main_after_turn_draw(&mut baseline, card(10));
-    assert_eq!(
+    assert_event_semantics_eq!(
         baseline
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -12740,7 +12614,7 @@ fn elemental_attack_unrelated_previous_element_matrix_keeps_normal_damage() {
     // Overcoming 並從八點加倍為十六點。
     let mut modifier = GameRecord::start(setup.clone(), deck.clone()).unwrap();
     modifier.advance_automatic().unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         modifier
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -12760,7 +12634,7 @@ fn elemental_attack_unrelated_previous_element_matrix_keeps_normal_damage() {
             declared_targets: Vec::new(),
         })
         .unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         overcoming_fire,
         vec![
             GameEvent::FormationCommitted {
@@ -12782,13 +12656,7 @@ fn elemental_attack_unrelated_previous_element_matrix_keeps_normal_damage() {
                     damage_transform: DamageTransform::DoubleDamage,
                     final_amount: 16,
                 },
-                hp_change: HpChangeDelta {
-                    team: TeamId::new("team:p1"),
-                    old_hp: 100,
-                    delta: -16,
-                    new_hp: 84,
-                    effective_delta: -16,
-                },
+                hp_changes: Vec::new(),
                 shield_change: None,
                 card_moves: Vec::new(),
                 elemental_context_update: atomic_context!(LastElementalAttackUpdate {
@@ -12816,7 +12684,7 @@ fn elemental_attack_unrelated_previous_element_matrix_keeps_normal_damage() {
     // 仍維持六點正常傷害，而不會錯用任何元素交互規則。
     let mut interaction = GameRecord::start(setup, deck).unwrap();
     interaction.advance_automatic().unwrap();
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p1.clone(),
@@ -12828,7 +12696,7 @@ fn elemental_attack_unrelated_previous_element_matrix_keeps_normal_damage() {
         metal_events()
     );
     advance_record_to_next_main_after_turn_draw(&mut interaction, card(10));
-    assert_eq!(
+    assert_event_semantics_eq!(
         interaction
             .handle(Command::PerformFormation {
                 player: p2.clone(),
@@ -12927,14 +12795,14 @@ fn elemental_history_non_elemental_matrix_blocks_stale_metal_context() {
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 8,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 100, delta: -8, effective_delta: -8, new_hp: 92, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
         ] if player == &p2
             && formation_id == "fire-strike"
             && cards == &vec![card(9)]
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && discarded_by == &p2
             && discarded == "fire-strike"
             && discarded_cards == &vec![card(9)]
@@ -12975,11 +12843,11 @@ fn elemental_history_non_elemental_matrix_blocks_stale_metal_context() {
                     damage_transform: DamageTransform::DoubleDamage,
                     final_amount: 16,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 100, delta: -16, effective_delta: -16, new_hp: 84, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { .. },
-        ] if team == &TeamId::new("team:p1")
+        ] if hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
     ));
     assert_eq!(immediate.replay().unwrap(), immediate.state().clone());
     assert_eq!(
@@ -13056,14 +12924,14 @@ fn elemental_history_non_elemental_matrix_blocks_stale_metal_context() {
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 8,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 88, delta: -8, effective_delta: -8, new_hp: 80, .. },
+                hp_changes,
                 ..
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
         ] if player == &p2
             && formation_id == "fire-strike"
             && cards == &vec![card(9)]
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && discarded_by == &p2
             && discarded == "fire-strike"
             && discarded_cards == &vec![card(9)]
@@ -13144,7 +13012,7 @@ fn barrier_weapon_matrix_applies_physical_double_shield_damage_without_hp_loss()
                     damage_transform: DamageTransform::NormalDamage,
                     final_amount: 12,
                 },
-                hp_change: HpChangeDelta { team, old_hp: 30, delta: -12, new_hp: 18, effective_delta: -12 },
+                hp_changes,
                 shield_change: None,
                 ..
             },
@@ -13156,7 +13024,7 @@ fn barrier_weapon_matrix_applies_physical_double_shield_damage_without_hp_loss()
             && target == &p1
             && attack_formation == "weapon"
             && used_cards == &vec![card(6), card(11)]
-            && team == &TeamId::new("team:p1")
+            && hp_changes.iter().any(|resolved| matches!(&resolved.role, fewfc::domain::HpChangeRole::AttackDamage { .. }) && resolved.change.team() == &TeamId::new("team:p1"))
             && discarded_by == &p2
             && discarded == "weapon"
             && discarded_cards == &vec![card(6), card(11)]
@@ -13252,7 +13120,7 @@ fn barrier_weapon_matrix_applies_physical_double_shield_damage_without_hp_loss()
                 formation_id: attack_formation,
                 used_cards,
                 point_breakdown: AttackPointBreakdown { base_points: 12, final_amount: 12, .. },
-                hp_change: HpChangeDelta { team, old_hp: 30, delta: 0, new_hp: 30, effective_delta: 0 },
+                hp_changes,
                 shield_change: Some(ShieldChangeDelta { player: shield_owner, old_value: 44, delta: -24, new_value: 20 }),
                 ..
             },
@@ -13264,7 +13132,7 @@ fn barrier_weapon_matrix_applies_physical_double_shield_damage_without_hp_loss()
             && target == &p1
             && attack_formation == "weapon"
             && used_cards == &vec![card(6), card(11)]
-            && team == &TeamId::new("team:p1")
+            && hp_changes.is_empty()
             && shield_owner == &p1
             && discarded_by == &p2
             && discarded == "weapon"

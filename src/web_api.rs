@@ -3652,7 +3652,8 @@ fn decision_event_summary(
             PublicGameEvent::Public(GameEvent::DiscardRetrieved { hp_change, .. }),
         ) => Some(format!(
             "支付生命值（{} → {}）。",
-            hp_change.old_hp, hp_change.new_hp
+            hp_change.old_hp(),
+            hp_change.new_hp()
         )),
         _ => None,
     }
@@ -4169,21 +4170,28 @@ fn battle_event_presentation(
                 attacker,
                 target,
                 formation_id,
-                hp_change,
+                hp_changes,
                 shield_change,
                 ..
             } => {
+                let hp_change = hp_changes
+                    .iter()
+                    .find(|resolved| matches!(&resolved.role, crate::domain::HpChangeRole::AttackDamage { target: damage_target } if damage_target == target))
+                    .map(|resolved| &resolved.change);
                 let result = shield_change.as_ref().map_or_else(
                     || {
+                        let Some(hp_change) = hp_change else {
+                            return "傷害在進入生命結算前被阻止。".to_string();
+                        };
                         format!(
                             "生命值{} {} 點，剩餘 {}",
-                            if hp_change.effective_delta >= 0 {
+                            if hp_change.effective_delta() >= 0 {
                                 "增加"
                             } else {
                                 "減少"
                             },
-                            hp_change.effective_delta.unsigned_abs(),
-                            hp_change.new_hp
+                            hp_change.effective_delta().unsigned_abs(),
+                            hp_change.new_hp()
                         )
                     },
                     |change| {
@@ -4248,7 +4256,7 @@ fn battle_event_presentation(
                 "天外飛扇".to_string(),
                 action(
                     delayed,
-                    format!("行動後扣除 {} 點生命。", -hp_change.effective_delta),
+                    format!("行動後扣除 {} 點生命。", -hp_change.effective_delta()),
                 ),
             ),
             GameEvent::ConfluenceCardObligationSet { obligation } => (
@@ -4320,9 +4328,9 @@ fn battle_event_presentation(
                     player,
                     format!(
                         "使隊伍生命值由 {} 降至 {}（扣除 {} 點），破除 {} 個職業，保留 {} 個低等級保護的傳說職業。",
-                        hp_change.old_hp,
-                        hp_change.new_hp,
-                        -hp_change.effective_delta,
+                        hp_change.old_hp(),
+                        hp_change.new_hp(),
+                        -hp_change.effective_delta(),
                         broken_professions.len(),
                         retained_legendary_professions.len()
                     ),
@@ -4346,9 +4354,9 @@ fn battle_event_presentation(
                             .iter()
                             .map(|change| format!(
                                 "{} 生命值 {} → {}",
-                                change.team.as_str(),
-                                change.old_hp,
-                                change.new_hp
+                                change.team().as_str(),
+                                change.old_hp(),
+                                change.new_hp()
                             ))
                             .collect::<Vec<_>>()
                             .join("、")
@@ -5435,8 +5443,8 @@ fn game_event_presentation_with_vocabulary(
                         "{} 有 {} 個木精靈綻放，生命值 {} → {}",
                         resolution.team.as_str(),
                         resolution.spirit_changes.len(),
-                        resolution.hp_change.old_hp,
-                        resolution.hp_change.new_hp
+                        resolution.hp_change.old_hp(),
+                        resolution.hp_change.new_hp()
                     ))
                     .collect::<Vec<_>>()
                     .join("；")
@@ -5605,21 +5613,28 @@ fn game_event_presentation_with_vocabulary(
             attacker,
             target,
             formation_id,
-            hp_change,
+            hp_changes,
             shield_change,
             ..
         } => {
+            let hp_change = hp_changes
+                .iter()
+                .find(|resolved| matches!(&resolved.role, crate::domain::HpChangeRole::AttackDamage { target: damage_target } if damage_target == target))
+                .map(|resolved| &resolved.change);
             let result = shield_change.as_ref().map_or_else(
                 || {
+                    let Some(hp_change) = hp_change else {
+                        return "傷害在進入生命結算前被阻止。".to_string();
+                    };
                     format!(
                         "生命值{} {} 點，剩餘 {}",
-                        if hp_change.effective_delta >= 0 {
+                        if hp_change.effective_delta() >= 0 {
                             "增加"
                         } else {
                             "減少"
                         },
-                        hp_change.effective_delta.unsigned_abs(),
-                        hp_change.new_hp
+                        hp_change.effective_delta().unsigned_abs(),
+                        hp_change.new_hp()
                     )
                 },
                 |change| {
@@ -5679,14 +5694,14 @@ fn game_event_presentation_with_vocabulary(
             "生命變化".to_string(),
             format!(
                 "{}生命值{} {} 點，剩餘 {}。",
-                change.team.as_str(),
-                if change.effective_delta >= 0 {
+                change.team().as_str(),
+                if change.effective_delta() >= 0 {
                     "增加"
                 } else {
                     "減少"
                 },
-                change.effective_delta.unsigned_abs(),
-                change.new_hp
+                change.effective_delta().unsigned_abs(),
+                change.new_hp()
             ),
         ),
         GameEvent::CardsMoved { card_moves } => (
@@ -5737,7 +5752,7 @@ fn game_event_presentation_with_vocabulary(
             format!(
                 "{} 行動後扣除 {} 點生命。",
                 owner.as_str(),
-                -hp_change.effective_delta
+                -hp_change.effective_delta()
             ),
         ),
         GameEvent::LimitedUseChanged {
@@ -5867,8 +5882,8 @@ fn game_event_presentation_with_vocabulary(
             format!(
                 "{} 支付生命值（{} → {}），回收 {} 的 {}。",
                 player.as_str(),
-                hp_change.old_hp,
-                hp_change.new_hp,
+                hp_change.old_hp(),
+                hp_change.new_hp(),
                 previous_player.as_str(),
                 card_summary(card, labels)
             ),
@@ -5904,9 +5919,9 @@ fn game_event_presentation_with_vocabulary(
                     .iter()
                     .map(|change| format!(
                         "{} 生命值 {} → {}",
-                        change.team.as_str(),
-                        change.old_hp,
-                        change.new_hp
+                        change.team().as_str(),
+                        change.old_hp(),
+                        change.new_hp()
                     ))
                     .collect::<Vec<_>>()
                     .join("、"),
@@ -5926,8 +5941,8 @@ fn game_event_presentation_with_vocabulary(
                         "{} 的{}已被破除，生命值 {} → {}。",
                         team.as_str(),
                         star_name(*star),
-                        change.old_hp,
-                        change.new_hp
+                        change.old_hp(),
+                        change.new_hp()
                     )
                 },
             ),
@@ -5951,9 +5966,9 @@ fn game_event_presentation_with_vocabulary(
             format!(
                 "{} 使隊伍生命值由 {} 降至 {}（扣除 {} 點），破除 {} 個職業，保留 {} 個低等級保護的傳說職業。",
                 player.as_str(),
-                hp_change.old_hp,
-                hp_change.new_hp,
-                -hp_change.effective_delta,
+                hp_change.old_hp(),
+                hp_change.new_hp(),
+                -hp_change.effective_delta(),
                 broken_professions.len(),
                 retained_legendary_professions.len()
             ),
@@ -5975,9 +5990,9 @@ fn game_event_presentation_with_vocabulary(
                     .iter()
                     .map(|change| format!(
                         "{} 生命值 {} → {}",
-                        change.team.as_str(),
-                        change.old_hp,
-                        change.new_hp
+                        change.team().as_str(),
+                        change.old_hp(),
+                        change.new_hp()
                     ))
                     .collect::<Vec<_>>()
                     .join("、")
@@ -7591,13 +7606,13 @@ mod tests {
                         shuffled_order: Vec::new(),
                     },
                     GameEvent::HpChanged {
-                        change: crate::domain::HpChangeDelta {
-                            team: setup.players[0].team.clone(),
-                            old_hp: 20,
-                            delta: -1,
-                            new_hp: 19,
-                            effective_delta: -1,
-                        },
+                        change: crate::domain::hp::test_delta(
+                            setup.players[0].team.clone(),
+                            20,
+                            -1,
+                            19,
+                            -1,
+                        ),
                     },
                 ],
             },
@@ -7815,14 +7830,13 @@ mod tests {
                 owner: actor.clone(),
                 damage: 2,
                 remaining_turns: 1,
-                hp_change: crate::domain::HpChangeDelta {
-                    team: setup.players[0].team.clone(),
-                    old_hp: 20,
-                    delta: -2,
-                    new_hp: 18,
-                    effective_delta: -2,
-                },
-                shared_fate_hp_change: None,
+                hp_change: crate::domain::hp::test_delta(
+                    setup.players[0].team.clone(),
+                    20,
+                    -2,
+                    18,
+                    -2,
+                ),
             },
         );
         assert_eq!(
@@ -8109,13 +8123,13 @@ mod tests {
                     },
                 }),
                 PublicGameEvent::Public(GameEvent::HpChanged {
-                    change: crate::domain::HpChangeDelta {
-                        team: setup.players[0].team.clone(),
-                        old_hp: 20,
-                        delta: -5,
-                        new_hp: 15,
-                        effective_delta: -5,
-                    },
+                    change: crate::domain::hp::test_delta(
+                        setup.players[0].team.clone(),
+                        20,
+                        -5,
+                        15,
+                        -5,
+                    ),
                 }),
                 PublicGameEvent::Public(GameEvent::EchoResolutionCompleted {
                     player,
@@ -9019,13 +9033,7 @@ mod tests {
                 damage_transform: crate::domain::DamageTransform::NormalDamage,
                 final_amount: 12,
             },
-            hp_change: crate::domain::HpChangeDelta {
-                team: TeamId::new("team-b"),
-                old_hp: 20,
-                delta: 0,
-                new_hp: 20,
-                effective_delta: 0,
-            },
+            hp_changes: Vec::new(),
             shield_change: Some(crate::domain::ShieldChangeDelta {
                 player: PlayerId::new("bob"),
                 old_value: 30,
@@ -9135,6 +9143,7 @@ mod tests {
                 target: PlayerId::new("bob"),
                 formation_id: "weapon".to_string(),
                 expires_on_turn_number: 2,
+                origin: crate::domain::MelodyExecutionOrigin::FormationUse,
             });
         state
             .scheduled_plant_earth
@@ -9270,6 +9279,7 @@ mod tests {
                     target: bob,
                     formation_id: "echo:ringing-metal".to_string(),
                     expires_on_turn_number: 2,
+                    origin: crate::domain::MelodyExecutionOrigin::Echo,
                 },
             },
             GameEvent::PlantEarthResolutionCompleted {
