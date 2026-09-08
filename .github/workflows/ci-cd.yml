@@ -31,13 +31,15 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/setup@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
-          runtime: bun@1.4.2
           cache: true
-          cache-dependency-path: apps/web/pnpm-lock.yaml
-          install: false
+          cache_dependency_path: apps/web/pnpm-lock.yaml
+          run_install: false
       - run: pnpm install --frozen-lockfile
       - run: bun run test:unit
       - run: bun run typecheck
@@ -54,13 +56,15 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/setup@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
-          runtime: bun@1.4.2
           cache: true
-          cache-dependency-path: apps/web/pnpm-lock.yaml
-          install: false
+          cache_dependency_path: apps/web/pnpm-lock.yaml
+          run_install: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -94,13 +98,15 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/setup@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
-          runtime: bun@1.4.2
           cache: true
-          cache-dependency-path: apps/web/pnpm-lock.yaml
-          install: false
+          cache_dependency_path: apps/web/pnpm-lock.yaml
+          run_install: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -145,13 +151,15 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/setup@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
-          runtime: bun@1.4.2
           cache: true
-          cache-dependency-path: apps/web/pnpm-lock.yaml
-          install: false
+          cache_dependency_path: apps/web/pnpm-lock.yaml
+          run_install: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown

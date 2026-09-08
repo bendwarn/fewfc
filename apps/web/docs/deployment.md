@@ -168,9 +168,10 @@ migration has completed.
 ## GitHub Actions CI/CD
 
 Local dependency management remains pnpm (see `../README.md`), and dependency
-changes must update `pnpm-lock.yaml`. GitHub Actions uses `pnpm/setup@v2` with
-the Bun runtime for the repository's Bun-based scripts, and requires the
-checked-in lockfile for installation.
+changes must update `pnpm-lock.yaml`. GitHub Actions uses the stable
+`pnpm/action-setup` action for pnpm and `oven-sh/setup-bun` for the repository's
+Bun-based scripts. Each job installs from the checked-in lockfile with
+`pnpm install --frozen-lockfile`.
 
 Wrangler is pinned to `4.113.0` because `4.114+` has an upstream local-runtime
 regression that can terminate `wrangler dev` with `Network connection lost`
