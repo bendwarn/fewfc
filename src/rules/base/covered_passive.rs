@@ -3,7 +3,6 @@ use crate::domain::{
     PassiveNoEffectGround, PlayerId,
     targeting::{RulePlayerTarget, TurnOrderTargets},
 };
-use crate::rules::environment_makes_formation_ineffective;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum IncomingActionKind {
@@ -73,12 +72,13 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
     let mut all_modifications = Vec::new();
 
     if let Some(passive) = state.covered_passive(&previous_player) {
-        let (sealed, neutralized) = match &passive.state {
+        let (sealed, neutralized, ineffective_environment) = match &passive.state {
             crate::domain::FormationAreaState::FaceDownWaiting {
                 sealed,
                 neutralized,
+                ineffective_environment,
                 ..
-            } => (*sealed, *neutralized),
+            } => (*sealed, *neutralized, *ineffective_environment),
             _ => {
                 return PassiveTriggerResult {
                     events,
@@ -86,10 +86,6 @@ pub(super) fn trigger(state: &GameState, request: TriggerRequest) -> PassiveTrig
                 };
             }
         };
-        let ineffective_environment =
-            environment_makes_formation_ineffective(state, &passive.formation_id)
-                .then_some(state.environment)
-                .flatten();
         let modifications = if neutralized {
             Vec::new()
         } else {

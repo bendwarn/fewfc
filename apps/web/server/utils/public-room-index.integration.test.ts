@@ -34,6 +34,7 @@ function roomResponse(members: GameRoomMember[], observers: GameRoomObserver[] =
       name: '已加入公開房間',
       access: 'public',
       capacity: 2,
+      ruleVersion: '5.17',
       ruleset: 'fewfc-base',
       enabledRuleModules: ['star'],
       players: ['player-1', 'player-2'] as never,
@@ -100,6 +101,8 @@ describe('public room index', () => {
     expect((await listPlayerRooms(event, host.userId)).map(room => room.name)).toEqual(['已加入公開房間'])
     expect((await listPlayerRooms(event, guest.userId)).map(room => room.gameId)).toEqual([gameId])
     expect((await listPlayerRooms(event, observer.userId)).map(room => room.gameId)).toEqual([gameId])
+    expect((await listPublicRooms(event))[0]?.ruleVersion).toBe('5.17')
+    expect((await listPlayerRooms(event, host.userId))[0]?.ruleVersion).toBe('5.17')
     expect(notificationCount).toBe(2)
   })
 
@@ -183,6 +186,7 @@ describe('public room index', () => {
     expect((await listPublicRooms(event)).map(room => ({
       gameId: room.gameId, name: room.name, observers: room.observers,
     }))).toEqual([{ gameId, name: '既有房間', observers: [] }])
+    expect((await listPublicRooms(event))[0]?.ruleVersion).toBe('5.16')
 
     const observer: GameRoomObserver = {
       userId: 'observer-user', displayName: '觀戰者', connected: true,

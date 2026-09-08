@@ -129,6 +129,7 @@ function gameIdFromResponse(body: { gameId?: unknown }, operation: string): stri
  */
 export type FastTwoPlayerGameOptions = {
   roomName?: string
+  ruleVersion?: '5.16' | '5.17'
   enabledRuleModules?: readonly string[]
   disabledRuleModules?: readonly string[]
   activeMatch?: boolean
@@ -148,7 +149,7 @@ export type FastTwoPlayerGame = {
 }
 
 export type FastWaitingRoomOptions = Pick<FastTwoPlayerGameOptions,
-  'roomName' | 'enabledRuleModules' | 'disabledRuleModules'
+  'roomName' | 'ruleVersion' | 'enabledRuleModules' | 'disabledRuleModules'
 >
 
 export type FastWaitingRoom = {
@@ -159,7 +160,7 @@ export type FastWaitingRoom = {
 }
 
 export type FastFourPlayerGameOptions = Pick<FastTwoPlayerGameOptions,
-  'roomName' | 'enabledRuleModules' | 'disabledRuleModules'
+  'roomName' | 'ruleVersion' | 'enabledRuleModules' | 'disabledRuleModules'
 >
 
 export type FastFourPlayerGame = {
@@ -193,8 +194,14 @@ const fastRuleModuleDependencies: Readonly<Record<string, readonly string[]>> = 
   pouch: ['personal-deck', 'spirit'],
 }
 
-function defaultFastRuleModules(disabledRuleModules: readonly string[]): string[] {
-  let enabled = defaultFastTwoPlayerRuleModules.filter(module => !disabledRuleModules.includes(module))
+function defaultFastRuleModules(
+  disabledRuleModules: readonly string[],
+  ruleVersion: '5.16' | '5.17' = '5.16',
+): string[] {
+  let enabled = defaultFastTwoPlayerRuleModules.filter(module => (
+    !disabledRuleModules.includes(module)
+    && (ruleVersion === '5.16' || (module !== 'echo' && module !== 'tribulation'))
+  ))
   let changed = true
 
   while (changed) {
@@ -280,6 +287,7 @@ export async function setupFastWaitingRoom(
   browser: Browser,
   {
     roomName = `快速 API 等待房間 ${Date.now()}`,
+    ruleVersion = '5.16',
     enabledRuleModules,
     disabledRuleModules = [],
   }: FastWaitingRoomOptions = {},
@@ -290,7 +298,7 @@ export async function setupFastWaitingRoom(
   }
   const configuredRuleModules = enabledRuleModules
     ? [...enabledRuleModules]
-    : defaultFastRuleModules(disabledRuleModules)
+    : defaultFastRuleModules(disabledRuleModules, ruleVersion)
 
   try {
     await signInAnonymously(context, 'room owner')
@@ -301,6 +309,7 @@ export async function setupFastWaitingRoom(
           name: roomName,
           access: 'public',
           capacity: 2,
+          ruleVersion,
           enabledRuleModules: configuredRuleModules,
         },
       }),
@@ -319,6 +328,7 @@ export async function setupFastTwoPlayerGame(
   browser: Browser,
   {
     roomName = `快速 API 房間 ${Date.now()}`,
+    ruleVersion = '5.16',
     enabledRuleModules,
     disabledRuleModules = [],
     activeMatch = true,
@@ -331,7 +341,7 @@ export async function setupFastTwoPlayerGame(
   }
   const configuredRuleModules = enabledRuleModules
     ? [...enabledRuleModules]
-    : defaultFastRuleModules(disabledRuleModules)
+    : defaultFastRuleModules(disabledRuleModules, ruleVersion)
 
   try {
     await Promise.all([
@@ -346,6 +356,7 @@ export async function setupFastTwoPlayerGame(
           name: roomName,
           access: 'public',
           capacity: 2,
+          ruleVersion,
           enabledRuleModules: configuredRuleModules,
         },
       }),
@@ -429,6 +440,7 @@ export async function setupFastFourPlayerGame(
   browser: Browser,
   {
     roomName = `快速 API 四人房間 ${Date.now()}`,
+    ruleVersion = '5.16',
     enabledRuleModules,
     disabledRuleModules = [],
   }: FastFourPlayerGameOptions = {},
@@ -439,7 +451,7 @@ export async function setupFastFourPlayerGame(
   }
   const configuredRuleModules = enabledRuleModules
     ? [...enabledRuleModules]
-    : defaultFastRuleModules(disabledRuleModules)
+    : defaultFastRuleModules(disabledRuleModules, ruleVersion)
 
   try {
     await Promise.all(contexts.map((context, index) => (
@@ -453,6 +465,7 @@ export async function setupFastFourPlayerGame(
           name: roomName,
           access: 'public',
           capacity: 4,
+          ruleVersion,
           enabledRuleModules: configuredRuleModules,
         },
       }),

@@ -6,8 +6,8 @@ Deterministic rules engine for CFECards game state, formation resolution, turn f
 
 **Rule Version (規則版本)**:
 A complete published version identifier, such as 5.16 or 5.17, identifying the
-applicable rule content and the full set of Theme Rule Modules enabled together
-for a Game. A Game retains its selected Rule Version throughout play.
+applicable rule content and available Rule Modules independently of which
+modules a Game enables. A Game retains its selected Rule Version throughout play.
 _Avoid_: generation, Confluence Generation Rule Module, engine version, schema version
 
 **Rules Engine**:
@@ -48,6 +48,16 @@ The official Theme Rule Module that adds player-owned Spirits, Spirit Power,
 Spirit Skills, five Spirit-summoning Formations, and Void Spirit-Shattering
 Technique. It requires Star, Five Directions Legend, and Hero Schools.
 _Avoid_: Spirit Ruleset, individual Spirit toggle
+
+**Totem Formation Rule Module (圖騰法陣規則)**:
+The official Theme Rule Module introduced in Rule Version 5.17 that provides
+five elemental Totem-granting Formations and 尋龍.
+_Avoid_: Totem Ruleset, Sacred Beast extension
+
+**Totem (圖騰)**:
+A persistent Player-owned entity granting its listed Environment exceptions;
+each Player may own one, and gaining another replaces the previous Totem.
+_Avoid_: Team Totem, Spirit, 青爪圖騰 when referring to 青角圖騰
 
 **Jianghu Rule Module (江湖規則)**:
 The official Theme Rule Module that adds 獨行客 and the 劍客, 煉氣者, 尋墨客,

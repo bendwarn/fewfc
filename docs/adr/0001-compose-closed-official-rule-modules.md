@@ -32,7 +32,7 @@ and run conformance cases with each supported module configuration.
 
 ## Consequences
 
-Rule Version identity and theme selection below are superseded by
+The deferral of Rule Version identity and global module defaults below are superseded by
 [ADR-0038](0038-bind-games-to-rule-versions.md). Record schema compatibility
 remains a separate decision.
 

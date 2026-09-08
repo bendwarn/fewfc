@@ -24,12 +24,13 @@ export default defineEventHandler(async (event) => {
     name?: string
     access?: unknown
     capacity?: unknown
+    ruleVersion?: '5.16' | '5.17'
     enabledRuleModules?: unknown
   }>(event)
   const gameId = crypto.randomUUID()
   let enabledRuleModules: string[]
   try {
-    enabledRuleModules = await resolveServerRuleModules(body.enabledRuleModules)
+    enabledRuleModules = await resolveServerRuleModules(body.enabledRuleModules, body.ruleVersion)
   } catch {
     throw createError({ statusCode: 400, statusMessage: 'Invalid Rule Module configuration.' })
   }
@@ -46,6 +47,7 @@ export default defineEventHandler(async (event) => {
     access: roomAccess(body.access),
     capacity: roomCapacity(body.capacity),
     name,
+    ruleVersion: body.ruleVersion ?? '5.17',
     enabledRuleModules,
     invitation,
   })

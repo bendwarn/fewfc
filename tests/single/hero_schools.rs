@@ -1017,6 +1017,7 @@ fn windwalker_and_unaffiliated_effects_use_shared_pipelines() {
         cards: cards(&state, &[(Element::Wood, 1), (Element::Wood, 2)]),
         star_substitution: None,
         state: fewfc::domain::FormationAreaState::FaceDownWaiting {
+            ineffective_environment: None,
             sealed: false,
             revealed: false,
             neutralized: false,

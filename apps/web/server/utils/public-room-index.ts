@@ -22,6 +22,7 @@ interface PublicRoomRow {
   players_json: string
   members_json: string
   observers_json?: string
+  rule_version?: '5.16' | '5.17'
   enabled_rule_modules_json: string
   created_at: number
   updated_at: number
@@ -38,6 +39,7 @@ export interface PublicRoomSummary {
   members: GameRoomMember[]
   observers: GameRoomObserver[]
   capacity: number
+  ruleVersion: '5.16' | '5.17'
   enabledRuleModules: string[]
   createdAt: string
   updatedAt: string
@@ -74,6 +76,13 @@ async function ensurePublicRoomTable(event: H3Event) {
     if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) {
       throw error
     }
+  }
+
+  try {
+    await db(event).prepare("ALTER TABLE public_game_room ADD COLUMN rule_version text NOT NULL DEFAULT '5.16'").run()
+  } catch (error) {
+    // 舊索引補上版本；既有列保留為 5.16。
+    if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error
   }
 
   await db(event)
@@ -127,6 +136,7 @@ function rowToSummary(row: PublicRoomRow): PublicRoomSummary {
     members,
     observers,
     capacity: players.length,
+    ruleVersion: row.rule_version ?? '5.16',
     enabledRuleModules: parseJson<string[]>(row.enabled_rule_modules_json, []),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
@@ -161,11 +171,12 @@ export async function upsertPublicRoom(
         players_json,
         members_json,
         observers_json,
+        rule_version,
         enabled_rule_modules_json,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(game_id) DO UPDATE SET
         room_code = CASE
           WHEN ? = 1 THEN excluded.room_code
@@ -181,6 +192,7 @@ export async function upsertPublicRoom(
         players_json = excluded.players_json,
         members_json = excluded.members_json,
         observers_json = excluded.observers_json,
+        rule_version = excluded.rule_version,
         enabled_rule_modules_json = excluded.enabled_rule_modules_json,
         updated_at = excluded.updated_at
     `)
@@ -194,6 +206,7 @@ export async function upsertPublicRoom(
       JSON.stringify(metadata.players),
       JSON.stringify(metadata.members),
       JSON.stringify(metadata.observers),
+      metadata.ruleVersion ?? '5.16',
       JSON.stringify(metadata.enabledRuleModules),
       timestamp(metadata.createdAt),
       timestamp(metadata.updatedAt),
@@ -240,6 +253,7 @@ export async function listPublicRooms(event: H3Event): Promise<PublicRoomSummary
         players_json,
         members_json,
         observers_json,
+        rule_version,
         enabled_rule_modules_json,
         created_at,
         updated_at
@@ -273,6 +287,7 @@ export async function listPlayerRooms(
         room.players_json,
         room.members_json,
         room.observers_json,
+        room.rule_version,
         room.enabled_rule_modules_json,
         room.created_at,
         room.updated_at

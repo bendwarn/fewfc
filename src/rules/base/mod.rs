@@ -299,6 +299,7 @@ impl BaseRuleset {
 
         GameSetup {
             ruleset: self.id(),
+            rule_version: crate::domain::RuleVersion::default(),
             enabled_rule_modules: Vec::new(),
             players,
             turn_order,

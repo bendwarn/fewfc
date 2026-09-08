@@ -7,7 +7,7 @@ fn rules_catalog_serializes_the_versioned_web_contract() {
         .expect("valid rules catalog JSON");
 
     assert_eq!(catalog["version"], 1);
-    assert_eq!(catalog["ruleModules"].as_array().unwrap().len(), 12);
+    assert_eq!(catalog["ruleModules"].as_array().unwrap().len(), 13);
     assert_eq!(
         catalog["deckComposition"]["sharedDeck"]["exactCardCount"],
         90
@@ -38,6 +38,20 @@ fn rules_catalog_serializes_the_versioned_web_contract() {
     assert_eq!(spirit["defaultEnabled"], true);
     assert_eq!(
         spirit["dependencies"],
+        serde_json::json!(["star", "five-directions-legend", "hero-schools"])
+    );
+
+    let totem = catalog["ruleModules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|module| module["id"] == "totem-formation")
+        .unwrap();
+    assert_eq!(totem["id"], "totem-formation");
+    assert_eq!(totem["category"], "theme");
+    assert_eq!(totem["defaultEnabled"], true);
+    assert_eq!(
+        totem["dependencies"],
         serde_json::json!(["star", "five-directions-legend", "hero-schools"])
     );
 }

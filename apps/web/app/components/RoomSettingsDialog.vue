@@ -66,6 +66,14 @@
         </div>
       </fieldset>
 
+      <p>規則版本 {{ ruleVersion ?? '5.17' }}</p>
+      <details>
+        <summary>選擇過往規則版本</summary>
+        <label v-for="version in (['5.17', '5.16'] as const)" :key="version">
+          <input type="radio" name="create-rule-version" :checked="(ruleVersion ?? '5.17') === version" :disabled="busy" @change="$emit('update:ruleVersion', version)">
+          {{ version }}
+        </label>
+      </details>
       <div class="setup-summary">
         <div>
           <span>目前設定</span>
@@ -92,6 +100,7 @@
 type RoomMode = 'duel' | 'team'
 
 const props = defineProps<{
+  ruleVersion?: '5.16' | '5.17'
   name: string
   mode: RoomMode
   access: 'private' | 'public'
@@ -102,6 +111,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: []
   submit: []
+  'update:ruleVersion': [ruleVersion: '5.16' | '5.17']
   'update:name': [name: string]
   'update:mode': [mode: RoomMode]
   'update:access': [access: 'private' | 'public']

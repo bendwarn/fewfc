@@ -625,7 +625,9 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             cards,
             star_substitution,
             sealed,
+            ineffective_environment,
         } => {
+            let ineffective_environment = *ineffective_environment;
             debug_assert_eq!(state.current_player(), Some(player));
             let area = state
                 .formation_area_mut(player)
@@ -652,6 +654,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     star_substitution: star_substitution.clone(),
                     state: crate::domain::FormationAreaState::FaceDownWaiting {
                         sealed: *sealed,
+                        ineffective_environment,
                         revealed: false,
                         neutralized: false,
                         trigger_timing: crate::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -666,6 +669,7 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                 assert_eq!(formation.cards, *cards);
                 formation.state = crate::domain::FormationAreaState::FaceDownWaiting {
                     sealed: *sealed,
+                    ineffective_environment,
                     revealed: false,
                     neutralized: false,
                     trigger_timing: crate::domain::PassiveTriggerTiming::NextPlayerActionStart,
@@ -775,6 +779,15 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
                     state
                         .turn_draw_bonus_by_player
                         .insert(change.player.clone(), change.new_value);
+                }
+                for change in &effects.totem_changes {
+                    state.totems.retain(|owned| owned.player != change.player);
+                    if let Some(totem) = change.totem {
+                        state.totems.push(crate::domain::PlayerTotem {
+                            player: change.player.clone(),
+                            totem,
+                        });
+                    }
                 }
                 for transfer in &effects.environment_transfers {
                     state.environment = Some(transfer.to);
@@ -1421,6 +1434,34 @@ pub(crate) fn apply_event(state: &mut GameState, event: &GameEvent) {
             resolution.answers.push(answer.clone());
         }
         GameEvent::HandRevealed { .. } => {}
+        GameEvent::DragonSearchRevealed { player, card } => {
+            let deck = state.deck_for_mut(player).expect("search deck");
+            let position = deck
+                .iter()
+                .position(|entry| entry == card)
+                .expect("searched card");
+            deck.remove(position);
+            state.dragon_search_card = Some(*card);
+        }
+        GameEvent::DragonSearchCompleted { player, card } => {
+            assert_eq!(state.dragon_search_card, *card);
+            if let Some(card) = card {
+                state
+                    .deck_for_mut(player)
+                    .expect("search deck")
+                    .insert(0, *card);
+            }
+            state.dragon_search_card = None;
+        }
+        GameEvent::TotemChanged { player, totem, .. } => {
+            state.totems.retain(|owned| &owned.player != player);
+            if let Some(totem) = totem {
+                state.totems.push(crate::domain::PlayerTotem {
+                    player: player.clone(),
+                    totem: *totem,
+                });
+            }
+        }
         GameEvent::EarthRendingCompleted { .. } => {
             state.active_earth_rending_resolution = None;
         }

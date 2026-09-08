@@ -20,6 +20,7 @@ pub enum Viewer {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicGameState {
+    pub rule_version: crate::domain::RuleVersion,
     pub enabled_rule_modules: Vec<RuleModuleId>,
     pub status: GameStatus,
     pub turn_number: u64,
@@ -55,6 +56,7 @@ pub struct PublicGameState {
     pub professions: Vec<PlayerProfession>,
     pub card_interpretations: Vec<PublicCardInterpretation>,
     pub spirits: Vec<crate::domain::PlayerSpirit>,
+    pub totems: Vec<crate::domain::PlayerTotem>,
     pub previous_turn_formation: Option<PublicPreviousTurnFormation>,
     pub last_completed_turn_discards: Vec<PublicLastCompletedTurnDiscard>,
 }
@@ -185,6 +187,9 @@ pub enum PublicPendingChoicePresentation {
     MyriadResonance,
     ThousandResonance,
     EchoRingingMetalDeckCard,
+    SouthSpiritArrayElement,
+    CentralSpiritArrayCard,
+    DragonSearchDeckCard,
     EchoCost {
         melody: PublicEchoMelodyPresentation,
     },
@@ -392,6 +397,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
     let last_completed_turn_discards = public_last_completed_turn_discards(state);
 
     PublicGameState {
+        rule_version: state.rule_version,
         enabled_rule_modules: state.enabled_rule_modules.clone(),
         status: state.status.clone(),
         turn_number: state.turn_number,
@@ -582,6 +588,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
         } else {
             Vec::new()
         },
+        totems: state.totems.clone(),
         previous_turn_formation,
         last_completed_turn_discards,
     }
@@ -679,6 +686,7 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
             cards,
             star_substitution,
             sealed: _,
+            ..
         } => PublicGameEvent::PassiveCovered {
             player: player.clone(),
             formation_id: policy
@@ -868,6 +876,9 @@ pub fn event_for(event: &GameEvent, viewer: Viewer) -> PublicGameEvent {
         | GameEvent::ProfessionBroken { .. }
         | GameEvent::ProfessionAbilityActivated { .. }
         | GameEvent::SpiritSummoned { .. }
+        | GameEvent::TotemChanged { .. }
+        | GameEvent::DragonSearchRevealed { .. }
+        | GameEvent::DragonSearchCompleted { .. }
         | GameEvent::SpiritTransformed { .. }
         | GameEvent::SpiritPowerChanged { .. }
         | GameEvent::SpiritBroken { .. }
@@ -1012,6 +1023,9 @@ fn pending_choice_presentation(resolution: &PendingResolution) -> PublicPendingC
     match resolution {
         PendingResolution::TurnDrawDiscard => Presentation::TurnDrawDiscard,
         PendingResolution::HolyWindTakeHighest => Presentation::HolyWind,
+        PendingResolution::SouthSpiritArrayElement { .. } => Presentation::SouthSpiritArrayElement,
+        PendingResolution::CentralSpiritArrayCard => Presentation::CentralSpiritArrayCard,
+        PendingResolution::DragonSearchDeckCard => Presentation::DragonSearchDeckCard,
         PendingResolution::ChaosReturnTwo => Presentation::Chaos,
         PendingResolution::HeroRevelationKeepOne => Presentation::Revelation,
         PendingResolution::JianghuAzureCloudStepReturnOne => Presentation::AzureCloudStep,
@@ -1100,6 +1114,59 @@ impl RedactionPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dragon_search_reveal_is_public_but_does_not_expose_a_later_hand() {
+        let alice = PlayerId::new("alice");
+        let card = CardInstanceId::new(1);
+        let reveal = GameEvent::DragonSearchRevealed {
+            player: alice.clone(),
+            card,
+        };
+        assert_eq!(
+            event_for(&reveal, Viewer::Observer),
+            PublicGameEvent::Public(reveal.clone())
+        );
+        let mut state = GameState::from_setup(&crate::domain::GameSetup::two_player(
+            alice.clone(),
+            PlayerId::new("bob"),
+            30,
+        ));
+        state.hands[0].cards = vec![card];
+        assert_eq!(
+            state_for(&state, Viewer::Observer).hands[0].cards,
+            PublicCardRefs::Hidden { count: 1 }
+        );
+        assert_eq!(
+            state_for(&state, Viewer::Player(alice)).hands[0].cards,
+            PublicCardRefs::Known(vec![card])
+        );
+    }
+
+    #[test]
+    fn cover_time_environment_ground_is_hidden_until_passive_flip() {
+        let alice = PlayerId::new("alice");
+        let covered = GameEvent::PassiveCovered {
+            player: alice,
+            formation_id: "defense".to_string(),
+            cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
+            star_substitution: None,
+            sealed: false,
+            ineffective_environment: Some(Element::Metal),
+        };
+        let public = event_for(&covered, Viewer::Observer);
+        assert!(matches!(
+            public,
+            PublicGameEvent::PassiveCovered {
+                formation_id: None,
+                cards: PublicCardRefs::Hidden { count: 2 },
+                ..
+            }
+        ));
+        let json = serde_json::to_string(&public).unwrap();
+        assert!(!json.contains("Metal"));
+        assert!(!json.contains("defense"));
+    }
 
     #[test]
     fn replay_viewer_reveals_player_areas_but_keeps_decks_count_only() {
@@ -1347,6 +1414,12 @@ mod tests {
 
         let paths = vec![
             PendingResolution::TurnDrawDiscard,
+            PendingResolution::SouthSpiritArrayElement {
+                damage_prevented: false,
+                split_attack_damage: false,
+            },
+            PendingResolution::CentralSpiritArrayCard,
+            PendingResolution::DragonSearchDeckCard,
             PendingResolution::HolyWindTakeHighest,
             PendingResolution::ChaosReturnTwo,
             PendingResolution::HeroRevelationKeepOne,

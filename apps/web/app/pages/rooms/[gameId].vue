@@ -695,14 +695,14 @@
               <div
                 v-if="state.pendingChoice.choice.type === 'environment'"
                 class="choice-options"
-                aria-label="選擇環境"
+                :aria-label="state.pendingChoice.reason.type === 'southSpiritArrayElement' ? '選擇攻擊屬性' : '選擇環境'"
               >
                 <button
                   v-for="environment in state.pendingChoice.choice.environments"
                   :key="`choice-environment-${environment}`"
                   type="button"
                   :disabled="game.isLoading.value || !roomConnected"
-                  :aria-label="`選擇環境 ${environmentLabel(environment)}`"
+                  :aria-label="`${state.pendingChoice.reason.type === 'southSpiritArrayElement' ? '選擇攻擊屬性' : '選擇環境'} ${environmentLabel(environment)}`"
                   @click="game.choosePendingEnvironment(environment)"
                 >
                   {{ environmentLabel(environment) }}
@@ -715,7 +715,7 @@
                 :disabled="game.isLoading.value || !roomConnected"
                 @click="game.declinePendingChoice()"
               >
-                放棄迴響
+                {{ state.pendingChoice.reason.type === 'echoCost' ? '放棄迴響' : '放棄選擇' }}
               </button>
             </div>
           </ModalShell>
@@ -791,6 +791,8 @@
                   開局前有空位時，會依觀戰順序自動補為玩家。
                 </p>
                 <RuleModuleSettings
+                  :rule-version="onlineMetadata?.ruleVersion ?? '5.16'"
+                  @update:rule-version="game.updateRuleModules(undefined, $event)"
                   :catalog="rulesCatalog.catalog.value?.ruleModules ?? []"
                   :enabled-rule-modules="onlineMetadata?.enabledRuleModules ?? []"
                   :is-owner="isRoomOwner"

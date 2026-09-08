@@ -19,6 +19,7 @@ pub(crate) mod randomness;
 pub(crate) mod spirit;
 pub(crate) mod star;
 pub(crate) mod timed_effect;
+pub(crate) mod totem;
 pub(crate) mod tribulation;
 
 pub use base::deck_composition::{
@@ -211,6 +212,12 @@ pub enum EffectFormula {
     rename_all_fields = "camelCase"
 )]
 pub enum FormationEffect {
+    TotemAzureHorn,
+    TotemWhiteFang,
+    TotemVermilionFeather,
+    TotemBlackShell,
+    TotemYellowScales,
+    DragonSearch,
     CoverCounter,
     CopyPreviousTurnFormation,
     RecoverHp,
@@ -743,6 +750,7 @@ fn official_formation_spec_groups(
             crate::domain::DARK_GLIMMER_MODULE_ID => Some(dark::formation_specs()),
             crate::domain::ECHO_MODULE_ID => Some(echo::formation_specs()),
             crate::domain::TRIBULATION_MODULE_ID => Some(tribulation::formation_specs()),
+            crate::domain::TOTEM_FORMATION_MODULE_ID => Some(totem::formation_specs()),
             crate::domain::POUCH_MODULE_ID => Some(pouch::formation_specs()),
             _ => None,
         };
@@ -862,6 +870,24 @@ pub(crate) fn base_formation_matcher<'a>() -> FormationMatcher<'a> {
             submitted.len() == 1 && submitted[0].level >= 4
         })
         .with_custom(pouch::CHAIN_ID, pouch::matches_chain)
+        .with_custom(totem::EAST, |cards| {
+            totem::matches_array(cards, Element::Wood)
+        })
+        .with_custom(totem::WEST, |cards| {
+            totem::matches_array(cards, Element::Metal)
+        })
+        .with_custom(totem::SOUTH, |cards| {
+            totem::matches_array(cards, Element::Fire)
+        })
+        .with_custom(totem::NORTH, |cards| {
+            totem::matches_array(cards, Element::Water)
+        })
+        .with_custom(totem::CENTRAL, |cards| {
+            totem::matches_array(cards, Element::Earth)
+        })
+        .with_custom(totem::SEARCH, |cards| {
+            cards.len() == 2 && cards[0].element == cards[1].element
+        })
         .with_custom("metal-and-same-level", |submitted| {
             submitted.len() == 2
                 && submitted.iter().any(|card| card.element == Element::Metal)

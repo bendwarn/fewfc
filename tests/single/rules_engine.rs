@@ -155,6 +155,7 @@ fn cover(
         cards,
         star_substitution: None,
         state: FormationAreaState::FaceDownWaiting {
+            ineffective_environment: None,
             sealed,
             revealed: false,
             neutralized: false,
@@ -227,6 +228,7 @@ fn two_player_setup_with_hp(starting_hp: i32) -> GameSetup {
 
 fn bare_team_setup(players_by_team: &[(&str, &str)]) -> GameSetup {
     GameSetup {
+        rule_version: Default::default(),
         ruleset: RulesetId::base(),
         enabled_rule_modules: Vec::new(),
         players: players_by_team
@@ -2254,6 +2256,7 @@ fn setup_validation_rejects_duplicate_card_instance_definitions() {
 #[test]
 fn setup_validation_requires_hp_for_every_team() {
     let setup = GameSetup {
+        rule_version: Default::default(),
         ruleset: RulesetId::base(),
         enabled_rule_modules: Vec::new(),
         players: vec![Player {
@@ -2280,6 +2283,7 @@ fn setup_validation_requires_hp_for_every_team() {
 #[test]
 fn setup_validation_rejects_team_mode_turn_order_that_is_not_alternating() {
     let setup = GameSetup {
+        rule_version: Default::default(),
         ruleset: RulesetId::base(),
         enabled_rule_modules: Vec::new(),
         players: vec![
@@ -6401,6 +6405,7 @@ fn metamorphosis_defense_matrix_establishes_and_consumes_a_public_delayed_counte
                 state: FormationAreaState::FaceDownResolving,
             },
             GameEvent::PassiveCovered {
+                ineffective_environment: None,
                 player: p1.clone(),
                 formation_id: "defense".to_string(),
                 cards: defense_cards.clone(),
@@ -6620,6 +6625,7 @@ fn metamorphosis_empty_city_matrix_copies_without_establishing_a_delayed_counter
                 state: FormationAreaState::FaceDownResolving,
             },
             GameEvent::PassiveCovered {
+                ineffective_environment: None,
                 player: p1.clone(),
                 formation_id: "empty-city".to_string(),
                 cards: empty_city_cards.clone(),
@@ -7730,29 +7736,30 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
         })
         .unwrap();
     assert!(matches!(
-        defense_events.as_slice(),
-        [
-            GameEvent::FormationCommitted {
-                player,
-                formation_id,
-                cards,
-                state: FormationAreaState::FaceDownResolving,
-                ..
-            },
-            GameEvent::PassiveCovered {
-                player: owner,
-                formation_id: covered,
-                cards: covered_cards,
-                star_substitution: None,
-                sealed: false,
-            },
-        ] if player == &p1
-            && formation_id == "defense"
-            && cards == &defense_cards
-            && owner == &p1
-            && covered == "defense"
-            && covered_cards == &defense_cards
-    ));
+           defense_events.as_slice(),
+           [
+               GameEvent::FormationCommitted {
+                   player,
+                   formation_id,
+                   cards,
+                   state: FormationAreaState::FaceDownResolving,
+                   ..
+               },
+               GameEvent::PassiveCovered {
+    ineffective_environment: None,
+                   player: owner,
+                   formation_id: covered,
+                   cards: covered_cards,
+                   star_substitution: None,
+                   sealed: false,
+               },
+           ] if player == &p1
+               && formation_id == "defense"
+               && cards == &defense_cards
+               && owner == &p1
+               && covered == "defense"
+               && covered_cards == &defense_cards
+       ));
     assert_eq!(
         public_view::state_for(interaction.state(), Viewer::Player(p1.clone())).covered_passives,
         vec![PublicCoveredPassive {
@@ -7811,6 +7818,7 @@ fn defense_attack_matrix_preserves_formation_lifecycle_while_preventing_damage()
     assert_eq!(
         interaction.events().last(),
         Some(&GameEvent::PassiveCovered {
+            ineffective_environment: None,
             player: p1.clone(),
             formation_id: "defense".to_string(),
             cards: defense_cards.clone(),
@@ -9491,17 +9499,18 @@ fn countershock_attack_matrix_splits_damage_after_legal_cover_and_preserves_atta
         })
         .unwrap();
     assert!(matches!(
-        cover_events.as_slice(),
-        [
-            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
-            GameEvent::PassiveCovered { player: covered_by, formation_id: covered, cards: covered_cards, star_substitution: None, sealed: false },
-        ] if player == &p1
-            && formation_id == "countershock"
-            && cards == &vec![card(4), card(9)]
-            && covered_by == &p1
-            && covered == "countershock"
-            && covered_cards == &vec![card(4), card(9)]
-    ));
+           cover_events.as_slice(),
+           [
+               GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+               GameEvent::PassiveCovered {
+    ineffective_environment: None,  player: covered_by, formation_id: covered, cards: covered_cards, star_substitution: None, sealed: false },
+           ] if player == &p1
+               && formation_id == "countershock"
+               && cards == &vec![card(4), card(9)]
+               && covered_by == &p1
+               && covered == "countershock"
+               && covered_cards == &vec![card(4), card(9)]
+       ));
     assert_eq!(
         public_view::state_for(interaction.state(), Viewer::Player(p1.clone())).covered_passives,
         vec![PublicCoveredPassive {
@@ -9571,6 +9580,7 @@ fn countershock_attack_matrix_splits_damage_after_legal_cover_and_preserves_atta
                     counter_effects_established,
                     turn_draw_bonus_changes,
                     environment_transfers,
+                    totem_changes: _,
                 }),
             },
             GameEvent::FormationCardsDiscarded { player: discarded_by, formation_id: discarded, cards: discarded_cards },
@@ -10185,17 +10195,18 @@ fn seal_barrier_matrix_cancels_the_spell_but_keeps_formation_commitment_and_card
         })
         .unwrap();
     assert!(matches!(
-        seal.as_slice(),
-        [
-            GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
-            GameEvent::PassiveCovered { player: covered_by, formation_id: covered, cards: covered_cards, star_substitution: None, sealed: false },
-        ] if player == &p1
-            && formation_id == "seal"
-            && cards == &vec![card(3), card(8)]
-            && covered_by == &p1
-            && covered == "seal"
-            && covered_cards == &vec![card(3), card(8)]
-    ));
+           seal.as_slice(),
+           [
+               GameEvent::FormationCommitted { player, formation_id, cards, state: FormationAreaState::FaceDownResolving, .. },
+               GameEvent::PassiveCovered {
+    ineffective_environment: None,  player: covered_by, formation_id: covered, cards: covered_cards, star_substitution: None, sealed: false },
+           ] if player == &p1
+               && formation_id == "seal"
+               && cards == &vec![card(3), card(8)]
+               && covered_by == &p1
+               && covered == "seal"
+               && covered_cards == &vec![card(3), card(8)]
+       ));
     assert_eq!(
         public_view::state_for(interaction.state(), Viewer::Player(p2.clone())).covered_passives,
         vec![PublicCoveredPassive {
@@ -11171,6 +11182,7 @@ fn pending_effect_choice_state_view_shows_options_only_to_choice_player() {
 #[test]
 fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_event() {
     let event = GameEvent::PassiveCovered {
+        ineffective_environment: None,
         player: PlayerId::new("p1"),
         formation_id: "defense".to_string(),
         cards: vec![card(2), card(7)],
@@ -11208,6 +11220,7 @@ fn passive_cover_event_view_filters_hidden_card_ids_without_changing_canonical_e
     assert_eq!(
         event,
         GameEvent::PassiveCovered {
+            ineffective_environment: None,
             player: PlayerId::new("p1"),
             formation_id: "defense".to_string(),
             cards: vec![card(2), card(7)],

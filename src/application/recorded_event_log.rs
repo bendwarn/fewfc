@@ -146,6 +146,9 @@ fn event_source(
 
 pub(super) fn automatic_reason(event: &GameEvent) -> Option<AutomaticReason> {
     match event {
+        GameEvent::TotemChanged { .. }
+        | GameEvent::DragonSearchRevealed { .. }
+        | GameEvent::DragonSearchCompleted { .. } => None,
         GameEvent::TurnStarted { .. } => Some(AutomaticReason::TurnStart),
         GameEvent::CardsDrawnForTurnDiscardChoice { .. } => Some(AutomaticReason::TurnDraw),
         GameEvent::TurnDrawSkipped { .. } => Some(AutomaticReason::TurnDrawSkipped),

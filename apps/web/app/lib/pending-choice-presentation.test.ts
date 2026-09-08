@@ -23,11 +23,14 @@ test('presents every Pending Choice by its semantic resolution instead of intern
     { type: 'earthRendingEnvironment' },
     { type: 'earthRendingCard' },
     { type: 'metamorphosis' },
+    { type: 'centralSpiritArrayCard' },
+    { type: 'southSpiritArrayElement' },
+    { type: 'dragonSearchDeckCard' },
     { type: 'sealCard' },
     { type: 'unclassified' },
   ]
 
-  expect(cases.length).toBe(24)
+  expect(cases.length).toBe(27)
   for (const presentation of cases) {
     const label = presentPendingChoice(presentation)
     expect(label.length > 0).toBeTruthy()

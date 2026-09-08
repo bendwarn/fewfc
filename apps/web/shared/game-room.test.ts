@@ -213,6 +213,7 @@ describe('normalizeGameRoomMetadata', () => {
       updatedAt: '2026-06-28T00:00:00.000Z',
     })
 
+    expect(metadata.ruleVersion).toBe('5.16')
     expect(metadata.schemaVersion).toBe(5)
     expect(metadata.enabledRuleModules).toStrictEqual([])
     expect(metadata.name).toBe('version-one-room')
@@ -250,6 +251,8 @@ describe('normalizeGameRoomMetadata', () => {
       updatedAt: '2026-06-28T00:00:00.000Z',
     })
 
+    expect(metadata.ruleVersion).toBe('5.16')
+    expect(metadata.enabledRuleModules).toEqual(['star', 'hero-schools', 'five-directions-legend'])
     expect(metadata.enabledRuleModules.includes('spirit')).toBe(false)
   })
 })

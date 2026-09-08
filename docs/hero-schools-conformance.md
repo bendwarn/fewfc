@@ -40,10 +40,10 @@ and outcome ordering are covered by
 | --- | --- |
 | Star attack-point qualification and exact substitution | `mage_point_modifiers_and_star_qualification_use_attack_points` plus `tests/star_rules.rs` |
 | Prepared versus printed interpretation and Sacred Art multiplicity | `mesmer_preparation_is_public_shared_and_clears_after_action`, `windwalker_and_unaffiliated_effects_use_shared_pipelines` |
-| Five Directions Environment, Sacred Beast, Shield, and resistance order | `tests/rules_engine.rs` Environment tests and `sacred_beast_resistance_applies_only_after_shield_absorption` |
+| Five Directions Environment, Sacred Beast, Shield, and resistance order | `tests/single/rules_engine.rs` Environment tests and `sacred_beast_resistance_applies_only_after_shield_absorption` |
 | Discard Retrieval cost, lethal/shared Team HP, and Cannot Act | `seeker_cost_counter_resistance_and_spell_protection_are_typed`, existing Discard Retrieval integration tests, and `activated_abilities_require_action_permission_and_revelation_recycles_personal_cards` |
-| Personal Deck origin, owner discard, recycling, and hidden-card projection | `activated_abilities_require_action_permission_and_revelation_recycles_personal_cards` plus `tests/persistence.rs`, `tests/rules_engine.rs`, and `apps/web/tests/e2e/personal-deck.spec.ts` |
-| Replay, verification, viewer filtering, and Web DTOs | `tests/persistence.rs`, `tests/rules_engine.rs`, and `src/web_api.rs` unit tests |
+| Personal Deck origin, owner discard, recycling, and hidden-card projection | `activated_abilities_require_action_permission_and_revelation_recycles_personal_cards` plus `tests/single/persistence.rs`, `tests/single/rules_engine.rs`, and `apps/web/tests/e2e/personal-deck.spec.ts` |
+| Replay, verification, viewer filtering, and Web DTOs | `tests/single/persistence.rs`, `tests/single/rules_engine.rs`, and `src/web_api.rs` unit tests |
 | Online default, stored-room compatibility, vertical controls, and teaching catalog | `apps/web/app/lib/rule-modules.test.ts` and `apps/web/tests/e2e/playable-actions.spec.ts` |
 
 The online release gate stayed closed while issues #47–#52 were incomplete.

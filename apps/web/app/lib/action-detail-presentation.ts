@@ -111,6 +111,12 @@ function presentFormationEffect(effect: Extract<ImmediateEffect, { type: 'resolv
     case 'poisonNextPlayer': return `下家中毒 ${effect.durationTurns} 回合`
     case 'damageNextTeamAndPoisonNextPlayer': return `下家隊伍扣除 ${effect.damage} 點生命，並使下家中毒 ${effect.durationTurns} 回合`
     case 'winIfNextTeamHpAtMost': return `下家隊伍生命值不超過 ${effect.hpThreshold} 時，立即獲勝`
+    case 'totemAzureHorn': return '自己隊伍回復 15 點生命並建構 15 點防護罩，轉換為木行環境，獲得青角圖騰'
+    case 'totemWhiteFang': return '上家隊伍扣除 30 點生命，轉換為金行環境，獲得白牙圖騰'
+    case 'totemVermilionFeather': return '選擇五行屬性，轉為該屬性 20 點攻擊；先結算攻擊，再轉換為火行環境並獲得朱羽圖騰'
+    case 'totemBlackShell': return '本回合抽牌＋1，檢視下家手牌，使下家下回合無法行動及抽牌，轉換為水行環境，獲得玄甲圖騰'
+    case 'totemYellowScales': return '檢視下家手牌；若非空手，必須選擇一張加入自己手牌；轉換為土行環境，獲得黃鱗圖騰'
+    case 'dragonSearch': return '從適用牌堆檢索一張組成屬性或所生屬性的５級牌，公開展示，將剩餘牌堆洗牌後放到牌堆頂；亦可放棄並洗牌'
     case 'coverCounter': return '覆蓋反制術式，於下一位玩家行動時結算'
     case 'copyPreviousTurnFormation': return '複製上家上回合基礎陣法的類別與效果'
     case 'recoverHp': return '回復生命'

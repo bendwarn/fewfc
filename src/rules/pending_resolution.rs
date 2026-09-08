@@ -60,6 +60,17 @@ fn resume_choice(
     crate::rules::projection::apply_event(&mut projected, &events[0]);
 
     match &resolution {
+        PendingResolution::SouthSpiritArrayElement { .. }
+        | PendingResolution::CentralSpiritArrayCard
+        | PendingResolution::DragonSearchDeckCard => {
+            events.extend(crate::rules::totem::answer(
+                &projected,
+                &player,
+                &resolution,
+                &answer,
+                hp,
+            )?);
+        }
         PendingResolution::TurnDrawDiscard => {
             resume_turn_draw(&projected, &player, answer, &mut events)?;
         }
@@ -115,7 +126,9 @@ fn resume_choice(
                 hp,
             )?);
         }
-        PendingResolution::TurnDraw
+        PendingResolution::DragonSearchRecycle { .. }
+        | PendingResolution::DragonSearchShuffle { .. }
+        | PendingResolution::TurnDraw
         | PendingResolution::SpiritDeathOmen { .. }
         | PendingResolution::PouchInitialShuffle
         | PendingResolution::PouchChainRecycle
@@ -225,6 +238,18 @@ fn after_randomness_events(
     hp: &mut crate::domain::hp::HpChangePlan,
 ) -> GameResult<Vec<GameEvent>> {
     match resolution {
+        PendingResolution::DragonSearchRecycle { element } => crate::rules::totem::search_choice(
+            state,
+            state.current_player().expect("active search"),
+            *element,
+            false,
+        ),
+        PendingResolution::DragonSearchShuffle { player, card } => {
+            Ok(vec![GameEvent::DragonSearchCompleted {
+                player: player.clone(),
+                card: *card,
+            }])
+        }
         PendingResolution::TurnDraw => Ok(Vec::new()),
         PendingResolution::SpiritDeathOmen { player } => {
             crate::rules::spirit::after_death_omen_randomness_events(state, player, hp)
@@ -269,7 +294,10 @@ fn after_randomness_events(
         PendingResolution::TribulationRustedForestShuffle => {
             crate::rules::tribulation::after_rusted_forest_randomness_events(state, hp)
         }
-        PendingResolution::TurnDrawDiscard
+        PendingResolution::SouthSpiritArrayElement { .. }
+        | PendingResolution::CentralSpiritArrayCard
+        | PendingResolution::DragonSearchDeckCard
+        | PendingResolution::TurnDrawDiscard
         | PendingResolution::HolyWindTakeHighest
         | PendingResolution::ChaosReturnTwo
         | PendingResolution::MelodyPureFireTarget { .. }
@@ -316,7 +344,10 @@ fn ensure_waiting_invariant(state: &GameState, events: &[GameEvent]) -> GameResu
 
 pub(crate) fn waiting_medium(resolution: &PendingResolution) -> WaitingMedium {
     match resolution {
-        PendingResolution::TurnDrawDiscard
+        PendingResolution::SouthSpiritArrayElement { .. }
+        | PendingResolution::CentralSpiritArrayCard
+        | PendingResolution::DragonSearchDeckCard
+        | PendingResolution::TurnDrawDiscard
         | PendingResolution::HolyWindTakeHighest
         | PendingResolution::ChaosReturnTwo
         | PendingResolution::MelodyPureFireTarget { .. }
@@ -333,7 +364,9 @@ pub(crate) fn waiting_medium(resolution: &PendingResolution) -> WaitingMedium {
         | PendingResolution::PouchSheepStealingChoice
         | PendingResolution::TribulationEarthRendingEnvironment
         | PendingResolution::TribulationEarthRendingCard => WaitingMedium::Choice,
-        PendingResolution::TurnDraw
+        PendingResolution::DragonSearchRecycle { .. }
+        | PendingResolution::DragonSearchShuffle { .. }
+        | PendingResolution::TurnDraw
         | PendingResolution::SpiritDeathOmen { .. }
         | PendingResolution::PouchInitialShuffle
         | PendingResolution::PouchChainRecycle

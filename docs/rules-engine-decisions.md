@@ -1509,7 +1509,10 @@ An ineffective Formation remains legal to perform, consumes the action
 opportunity, and follows its normal Card movement procedure, but its effect
 resolves with `NoEffect`. Attacks and Active Spells emit
 `FormationEffectIgnored` with the current Environment as the reason; Covered
-Passives record the same reason in their flip outcome. Invalidation checks the
+Passives retain the ineffectiveness established when performed and report it
+in their later flip outcome, rather than reevaluating a changed Environment.
+See section 45 for the confirmed timing and current implementation gap.
+Invalidation checks the
 performed Formation's identity, not an effect copied by Metamorphosis. Existing
 persistent state is not removed; for example, an ineffective Barrier does not
 replace or clear an existing Shield.
@@ -1896,9 +1899,9 @@ Shield receives the unreduced damage.
 
 ### 39. Theme Rule Module Delivery Scope And Defaults
 
-The independent theme-selection and global-catalog default policy below is
-superseded by [ADR-0038](adr/0038-bind-games-to-rule-versions.md): a selected Rule
-Version enables its complete theme set and excludes themes from other versions.
+The global-catalog default policy below is superseded by
+[ADR-0038](adr/0038-bind-games-to-rule-versions.md): available themes come from
+the selected Rule Version, independently of the game's enabled module subset.
 The remaining execution decisions in this section continue to apply.
 
 Add Jianghu, Confluence Generation, and Dark Glimmer as three independently
@@ -2504,3 +2507,105 @@ that session. Echo repeats are not Formation effects, while Jianghu States own
 their continuous Formation-effect timing. Pending continuations construct a
 fresh ledger from their then-canonical state rather than serializing a live
 planner.
+
+### 45. Totem Formation Rule Interpretations
+
+Source: supplied 五行戰鬥牌5.17規則書.pdf, printed pages 38-39.
+This section records accepted interview rulings; unresolved interactions remain
+outside its scope until separately settled.
+
+Use 青角圖騰 consistently. The 東靈陣‧青角 result naming 青爪圖騰 is a
+typographical error, not another Totem kind.
+
+Each of the five Totem-granting Formations requires exactly three Cards of its
+element, with at least one having interpreted level exactly 5. For example,
+木1、木2、木5 matches 東靈陣‧青角; 木1、木2、木6 does not. Existing legal
+Card interpretations apply only within their granted scope; this ruling does
+not expand base-only interpretation abilities to Theme Formations.
+
+A Totem's first effect prevents Environment damage doubling only when its
+Player receives damage, not when that Player's Shield receives it. In a Wood
+Environment, a 20-point Wood Attack against a Player with 青角圖騰 still
+deals 40 to their Shield, while the Totem removes that Environment doubling
+when the Player has no Shield. Other applicable modifiers remain independent.
+
+Only Void Meridian-Severing Technique successfully clearing an existing
+Environment breaks all Totems. Performing it with no Environment, clearing the
+Environment with 走為, and ordinary Environment Transfer preserve Totems.
+
+南靈陣‧朱羽 first undergoes Active Spell effectiveness checks. If ineffective,
+its entire effect does not execute, including its conversion into an Attack.
+If effective, it becomes the selected elemental Attack and undergoes applicable
+Attack-damage checks. Seal can therefore suppress the complete Formation,
+while Defense can suppress its damage after conversion. This follows the
+existing active-Spell-before-conversion treatment of Metamorphosis.
+
+A Totem's third effect triggers and consumes that Totem when an applicable
+Environment conversion into HP recovery is prevented. It does not trigger when
+a Shield receives the Attack, when a Sacred Beast ignores the Totem, or when
+the damage is already ineffective, for example through Defense. If independent
+five-element generation also converts the Attack into recovery, the Totem is
+still consumed for preventing the Environment conversion; the generation-based
+recovery remains. Consumption is mandatory, not an optional Player choice.
+
+南靈陣‧朱羽 completes Attack Resolution using the original Environment and
+original Totem, then transfers to Fire and grants 朱羽圖騰. For example, in a
+Fire Environment, selecting a Wood Attack may consume the performer's existing
+青角圖騰 before they gain 朱羽圖騰. Damage prevention alone does not prevent
+the later Environment Transfer or Totem acquisition; making the initial Active
+Spell ineffective prevents all of them.
+
+A Totem's second effect exempts the performed Formation identity from its
+Environment invalidation, not the identity of an effect copied by Metamorphosis.
+黃鱗圖騰 protects 幻化; 青角圖騰 does not protect 幻化 merely because it
+copies 氣壁. Other independent ineffectiveness grounds, including Seal, remain.
+
+The Totem Formation Rule Module requires all three Advanced Rule Modules but
+does not require Personal Deck. 尋龍 searches the shared Deck in shared-Deck
+play and the performing Player's own Deck in Personal Deck play.
+
+Countershock distributes the Attack into shares before each recipient's Totem
+first-effect exception to Environment doubling is evaluated. In a Fire
+Environment, a 20-point Fire Attack reflected by a defender with 朱羽圖騰
+deals 10 to that unshielded defender and 20 directly to the attacking side when
+the attacker has no Totem. The defender's exception does not protect the
+attacker; the existing direct-to-HP reflected-share rule remains unchanged.
+
+A Totem's third effect is evaluated once for the complete Attack, not once for
+each Countershock share. If 青角圖騰 prevents a Wood Attack's Fire-Environment
+conversion into recovery, consume it once and keep both shares in damage mode,
+unless an independent five-element generation still makes the Attack recover
+HP. Consuming it while resolving one share never restores Environment recovery
+for another share of the same Attack.
+
+Formation effectiveness is determined when the Formation is performed,
+including the applicable incoming Counter Effects, the Environment then present,
+and any Totem exemption. For a Covered Passive, this is its covering action,
+not its later flip. The second Totem effect therefore participates in that
+performance-time determination; later changes to the Environment or Totem do
+not retroactively invalidate or revive the already performed Formation.
+For example, covering an effective Defense and then having the next Player use
+走為 to transfer to Metal does not invalidate that Defense. A Defense made
+ineffective by Metal when covered does not recover merely because the
+Environment later changes. Flip-time applicability to the incoming action and
+explicit later neutralization remain separate from this determination.
+
+Implementation gap identified during the interview: `covered_passive::trigger`
+currently calls `environment_makes_formation_ineffective` against the live
+flip-time state, while `PassiveCovered` records `sealed` but no performance-time
+Environment ground. Correct that behavior and preserve viewer-filtered reasons
+without exposing a hidden Formation early. Cover both directions of an
+Environment change between cover and flip in regression checks. The existing
+Metal/Defense test holds the Environment constant and does not distinguish
+these timings. This gap is a confirmed correction, not an open rule question.
+
+尋龍's selected Card is publicly shown and then placed face down on top of the
+Deck after the remaining Deck is shuffled. Its public reveal remains in the
+Battle Record, but drawing it into a hand follows ordinary hidden-hand rules;
+the reveal does not create permanent public visibility. Existing Exposed
+Foreign Card visibility still applies independently.
+
+中靈陣‧黃鱗 requires selecting exactly one Card after inspecting a nonempty
+Next Player hand; declining is not allowed. If that hand is empty, skip the
+Card choice and hand-to-hand Card movement while still transferring to Earth and granting
+黃鱗圖騰. Making the complete Spell ineffective prevents every effect.

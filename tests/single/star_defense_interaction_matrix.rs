@@ -666,31 +666,32 @@ fn assert_cover_commitment(
     substitution: Option<&StarElementSubstitution>,
 ) {
     assert!(matches!(
-        events,
-        [
-            GameEvent::FormationCommitted {
-                player,
-                formation_id,
-                cards: committed_cards,
-                star_substitution: committed_substitution,
-                state: FormationAreaState::FaceDownResolving,
-            },
-            GameEvent::PassiveCovered {
-                player: covered_by,
-                formation_id: covered,
-                cards: covered_cards,
-                star_substitution: covered_substitution,
-                sealed: false,
-            },
-        ] if player == owner
-            && formation_id == "defense"
-            && committed_cards == cards
-            && committed_substitution.as_ref() == substitution
-            && covered_by == owner
-            && covered == "defense"
-            && covered_cards == cards
-            && covered_substitution.as_ref() == substitution
-    ));
+           events,
+           [
+               GameEvent::FormationCommitted {
+                   player,
+                   formation_id,
+                   cards: committed_cards,
+                   star_substitution: committed_substitution,
+                   state: FormationAreaState::FaceDownResolving,
+               },
+               GameEvent::PassiveCovered {
+    ineffective_environment: None,
+                   player: covered_by,
+                   formation_id: covered,
+                   cards: covered_cards,
+                   star_substitution: covered_substitution,
+                   sealed: false,
+               },
+           ] if player == owner
+               && formation_id == "defense"
+               && committed_cards == cards
+               && committed_substitution.as_ref() == substitution
+               && covered_by == owner
+               && covered == "defense"
+               && covered_cards == cards
+               && covered_substitution.as_ref() == substitution
+       ));
 }
 
 fn assert_defense_flip_and_attack(

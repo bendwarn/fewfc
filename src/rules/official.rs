@@ -47,6 +47,12 @@ pub struct OfficialRuleModuleSpec {
 
 const OFFICIAL_RULE_MODULES: &[RuleModuleSpec] = &[
     RuleModuleSpec {
+        id: crate::domain::TOTEM_FORMATION_MODULE_ID,
+        category: OfficialRuleModuleCategory::Theme,
+        default_enabled: true,
+        dependencies: ADVANCED_RULE_MODULE_IDS,
+    },
+    RuleModuleSpec {
         id: DISCARD_RETRIEVAL_MODULE_ID,
         category: OfficialRuleModuleCategory::Optional,
         default_enabled: true,
@@ -144,8 +150,26 @@ impl OfficialRules {
         enabled_rule_modules: Vec<RuleModuleId>,
         deck_lists: Vec<PlayerDeckList>,
     ) -> GameResult<GameSetup> {
-        self.validate_modules(&enabled_rule_modules)?;
+        self.configure_versioned_game_with_decks(
+            crate::domain::RuleVersion::default(),
+            players,
+            turn_order,
+            enabled_rule_modules,
+            deck_lists,
+        )
+    }
+
+    pub fn configure_versioned_game_with_decks(
+        &self,
+        rule_version: crate::domain::RuleVersion,
+        players: Vec<Player>,
+        turn_order: Vec<PlayerId>,
+        enabled_rule_modules: Vec<RuleModuleId>,
+        deck_lists: Vec<PlayerDeckList>,
+    ) -> GameResult<GameSetup> {
+        self.resolve_version_modules(rule_version, Some(enabled_rule_modules.clone()))?;
         let mut setup = BaseRuleset::new().official_game_setup(players, turn_order);
+        setup.rule_version = rule_version;
         setup.enabled_rule_modules = enabled_rule_modules;
         let uses_advanced_rules = setup.has_rule_module(FIVE_DIRECTIONS_LEGEND_MODULE_ID)
             || setup.has_rule_module(STAR_MODULE_ID)
@@ -171,6 +195,7 @@ impl OfficialRules {
             .iter()
             .filter(|module| module.default_enabled)
             .map(|module| RuleModuleId::new(module.id))
+            .filter(|module| crate::domain::RuleVersion::default().allows_module(module))
             .collect()
     }
 
@@ -195,6 +220,30 @@ impl OfficialRules {
         candidate: Option<Vec<RuleModuleId>>,
     ) -> GameResult<Vec<RuleModuleId>> {
         let modules = candidate.unwrap_or_else(|| self.default_rule_modules());
+        self.validate_modules(&modules)?;
+        Ok(modules)
+    }
+
+    pub fn resolve_version_modules(
+        &self,
+        version: crate::domain::RuleVersion,
+        candidate: Option<Vec<RuleModuleId>>,
+    ) -> GameResult<Vec<RuleModuleId>> {
+        let modules = candidate.unwrap_or_else(|| {
+            OFFICIAL_RULE_MODULES
+                .iter()
+                .filter(|module| module.default_enabled)
+                .map(|module| RuleModuleId::new(module.id))
+                .filter(|module| version.allows_module(module))
+                .collect()
+        });
+        for module in &modules {
+            if !version.allows_module(module) {
+                return Err(GameError::Validation(ValidationError::UnknownRuleModule(
+                    module.clone(),
+                )));
+            }
+        }
         self.validate_modules(&modules)?;
         Ok(modules)
     }
@@ -270,12 +319,14 @@ impl OfficialRules {
     pub fn validate_setup(&self, setup: &GameSetup) -> GameResult<()> {
         validate_setup(setup)?;
         self.validate_ruleset(&setup.ruleset)?;
-        self.validate_modules(&setup.enabled_rule_modules)
+        self.resolve_version_modules(setup.rule_version, Some(setup.enabled_rule_modules.clone()))
+            .map(|_| ())
     }
 
     fn validate_state(&self, state: &GameState) -> GameResult<()> {
         self.validate_ruleset(&state.ruleset)?;
-        self.validate_modules(&state.enabled_rule_modules)
+        self.resolve_version_modules(state.rule_version, Some(state.enabled_rule_modules.clone()))
+            .map(|_| ())
     }
 
     fn validate_ruleset(&self, ruleset: &RulesetId) -> GameResult<()> {

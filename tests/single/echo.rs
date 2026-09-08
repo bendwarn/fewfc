@@ -1180,6 +1180,7 @@ fn pure_fire_atomically_reduces_eligible_effects_and_preserves_hidden_passive_un
         cards: vec![card(89), card(90)],
         star_substitution: None,
         state: FormationAreaState::FaceDownWaiting {
+            ineffective_environment: None,
             sealed: false,
             revealed: false,
             neutralized: false,

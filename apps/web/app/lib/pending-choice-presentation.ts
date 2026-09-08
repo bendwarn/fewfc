@@ -23,6 +23,9 @@ export function presentPendingChoice(presentation: PendingChoicePresentation): s
     case 'chain': return '連環：選擇錦囊與可選的觸發秘計'
     case 'sheepStealing': return '牽羊：各選兩張牌組牌與棄牌交換'
     case 'metamorphosis': return '幻化：選擇效果指定的牌'
+    case 'centralSpiritArrayCard': return '中靈陣‧黃鱗：必須選擇下家一張手牌加入自己的手牌'
+    case 'dragonSearchDeckCard': return '尋龍：選擇一張可檢索的５級牌公開展示，洗牌後放到牌堆頂；亦可放棄並洗牌'
+    case 'southSpiritArrayElement': return '南靈陣‧朱羽：選擇此攻擊的五行屬性'
     case 'sealCard': return '選擇要封印的牌'
     case 'unclassified': return '等待選擇'
   }

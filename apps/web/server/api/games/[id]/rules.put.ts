@@ -1,7 +1,7 @@
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
   const gameId = getRouterParam(event, 'id')
-  const body = await readBody<{ enabledRuleModules?: unknown }>(event)
+  const body = await readBody<{ enabledRuleModules?: string[]; ruleVersion?: '5.16' | '5.17' }>(event)
 
   if (!gameId) {
     throw createError({
@@ -9,16 +9,11 @@ export default defineEventHandler(async (event) => {
       statusMessage: 'Missing game id.',
     })
   }
-  let enabledRuleModules: string[]
-  try {
-    enabledRuleModules = await resolveServerRuleModules(body.enabledRuleModules)
-  } catch {
-    throw createError({ statusCode: 400, statusMessage: 'Invalid Rule Module configuration.' })
-  }
   const response = await callGameRoom(event, gameId, {
     type: 'updateRuleModules',
     actorUserId: session.user.id,
-    enabledRuleModules,
+    enabledRuleModules: body.enabledRuleModules,
+    ruleVersion: body.ruleVersion,
   })
 
   await updatePublicRoom(event, response)

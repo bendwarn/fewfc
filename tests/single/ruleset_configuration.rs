@@ -147,6 +147,12 @@ fn official_rule_module_catalog_is_the_authoritative_configuration_contract() {
             .collect::<Vec<_>>(),
         vec![
             (
+                "totem-formation",
+                OfficialRuleModuleCategory::Theme,
+                true,
+                vec!["star", "five-directions-legend", "hero-schools"],
+            ),
+            (
                 "discard-retrieval",
                 OfficialRuleModuleCategory::Optional,
                 true,

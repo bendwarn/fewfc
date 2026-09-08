@@ -97,6 +97,7 @@ pub(crate) fn absorb_simultaneous_events(events: &mut Vec<GameEvent>, hp_role: H
             change,
         }));
         let target = elemental_context_update.get_or_insert_with(AttackResolutionEffects::default);
+        target.totem_changes.extend(effects.totem_changes);
         target.shield_changes.extend(effects.shield_changes);
         target.card_moves.extend(effects.card_moves);
         target.statuses_added.extend(effects.statuses_added);
@@ -123,6 +124,17 @@ fn append_simultaneous_effect(
     event: GameEvent,
 ) -> Result<(), GameEvent> {
     match event {
+        GameEvent::TotemChanged {
+            player,
+            previous,
+            totem,
+            reason,
+        } => effects.totem_changes.push(crate::domain::TotemChange {
+            player,
+            previous,
+            totem,
+            reason,
+        }),
         GameEvent::HpChanged { .. } => return Err(event),
         GameEvent::ShieldChanged {
             player,
@@ -241,8 +253,38 @@ pub(crate) fn resolve_with_plan(
         &request.formation_id,
     );
     let has_target_shield = !extreme_yang && state.shield(&target).is_some_and(|value| value > 0);
-    let mut point_breakdown =
-        attack_point_breakdown(state, &request.category, &target, points, has_target_shield);
+    let attack_element = elemental_attack_element(&request.category);
+    let ignores_totem = sacred_beast_element(&request.formation_id).is_some();
+    let target_exempt = !ignores_totem
+        && !has_target_shield
+        && crate::rules::totem::owned(state, &target)
+            .is_some_and(|totem| attack_element == Some(crate::rules::totem::element(totem)));
+    let attacker_exempt = !ignores_totem
+        && crate::rules::totem::owned(state, &request.attacker)
+            .is_some_and(|totem| attack_element == Some(crate::rules::totem::element(totem)));
+    let environment_doubled = state.has_rule_module(FIVE_DIRECTIONS_LEGEND_MODULE_ID)
+        && attack_element.is_some()
+        && attack_element == state.environment;
+    let consumed_totem = crate::rules::totem::owned(state, &request.attacker).filter(|totem| {
+        !ignores_totem
+            && !has_target_shield
+            && !request.damage_prevented
+            && attack_element == Some(crate::rules::totem::element(*totem))
+            && state.environment.is_some_and(|environment| {
+                attack_element.is_some_and(|element| generates(element, environment))
+            })
+    });
+    let totem_split = request.split_attack_damage && (target_exempt || attacker_exempt);
+    // 圖騰例外先於其他修正及其取整；圖騰反震先分配，再依各受擊玩家套用環境倍數。
+    let mut point_breakdown = attack_point_breakdown(
+        state,
+        &request.category,
+        &target,
+        points,
+        has_target_shield,
+        consumed_totem.is_some(),
+        target_exempt || totem_split,
+    );
     if !has_target_shield {
         match crate::rules::hero::incoming_damage_modifier(
             state,
@@ -267,7 +309,9 @@ pub(crate) fn resolve_with_plan(
     let final_amount = point_breakdown.final_amount;
     let damage_transform = point_breakdown.damage_transform;
     let split_attack_damage = request.split_attack_damage;
-    let defender_amount = if split_attack_damage {
+    let defender_amount = if totem_split && environment_doubled {
+        ((final_amount + 1) / 2) * if target_exempt { 1 } else { 2 }
+    } else if split_attack_damage {
         (final_amount + 1) / 2
     } else {
         final_amount
@@ -305,6 +349,16 @@ pub(crate) fn resolve_with_plan(
     // AttackResolved 只包含額外的卡牌差異，絕不重複手牌到棄牌堆的基準移動。
     let card_moves = Vec::new();
     let mut resolution_effects = pre_resolution_effects;
+    if let Some(totem) = consumed_totem.filter(|_| final_amount > 0) {
+        resolution_effects
+            .totem_changes
+            .push(crate::domain::TotemChange {
+                player: request.attacker.clone(),
+                previous: Some(totem),
+                totem: None,
+                reason: crate::domain::TotemChangeReason::EnvironmentRecoveryPrevented,
+            });
+    }
     let mut countershock_changes = Vec::new();
     resolution_effects.elemental_context_update =
         elemental_context_update(&request.category, state.turn_number).map(|attack| {
@@ -330,7 +384,11 @@ pub(crate) fn resolve_with_plan(
         && !request.damage_prevented
     {
         let attacker_team = player_team(state, &request.attacker)?;
-        let mut attacker_amount = (final_amount + 1) / 2;
+        let mut attacker_amount = if totem_split && environment_doubled {
+            ((final_amount + 1) / 2) * if attacker_exempt { 1 } else { 2 }
+        } else {
+            (final_amount + 1) / 2
+        };
         if crate::rules::tribulation::reduces_attack_damage(
             state,
             &request.attacker,
@@ -412,6 +470,13 @@ pub(crate) fn resolve_with_plan(
                 change,
             }),
     );
+    if totem_split && environment_doubled && !target_exempt {
+        point_breakdown.final_amount *= 2;
+        point_breakdown.environment_effect =
+            EnvironmentAttackEffect::MatchingElementDamageDoubled {
+                environment: state.environment.expect("matching environment"),
+            };
+    }
     let mut events = vec![GameEvent::AttackResolved {
         attacker: request.attacker.clone(),
         target: target.clone(),
@@ -710,6 +775,8 @@ fn attack_point_breakdown(
     target: &PlayerId,
     base_points: i32,
     skip_interaction: bool,
+    prevent_environment_recovery: bool,
+    prevent_environment_doubling: bool,
 ) -> AttackPointBreakdown {
     let Some(current_element) = elemental_attack_element(category) else {
         return AttackPointBreakdown {
@@ -727,11 +794,14 @@ fn attack_point_breakdown(
     if state.has_rule_module(FIVE_DIRECTIONS_LEGEND_MODULE_ID)
         && let Some(environment) = state.environment
     {
-        if current_element == environment {
+        if current_element == environment && !prevent_environment_doubling {
             amount *= 2;
             environment_effect =
                 EnvironmentAttackEffect::MatchingElementDamageDoubled { environment };
-        } else if !skip_interaction && generates(current_element, environment) {
+        } else if !skip_interaction
+            && !prevent_environment_recovery
+            && generates(current_element, environment)
+        {
             environment_converts_to_healing = true;
             environment_effect =
                 EnvironmentAttackEffect::GeneratingElementDamageConvertedToHealing { environment };
@@ -794,6 +864,13 @@ fn attack_point_breakdown(
 
 fn previous_formation_element(state: &GameState, player: &PlayerId) -> Option<Element> {
     let formation_id = formation_resolved_on_previous_turn(state, player)?.effective_effect_id();
+    if formation_id == crate::rules::totem::SOUTH {
+        return state
+            .last_elemental_attack_by_player
+            .get(player)
+            .filter(|attack| attack.resolved_turn + 1 == state.turn_number)
+            .map(|attack| attack.element);
+    }
     let registry = official_formation_registry(&state.enabled_rule_modules);
     let formation = registry.formation(formation_id)?;
     let effect = registry.effect_for(formation)?;

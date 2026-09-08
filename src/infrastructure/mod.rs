@@ -27,6 +27,70 @@ pub struct PersistedGameRecord {
     pub recorded_decisions: Vec<RecordedDecision>,
 }
 
+// 舊蓋牌事件沒有環境快照；只補齊當時的蓋牌事實，不重算已記錄的翻牌或勝負。
+fn migrate_passive_effectiveness(value: &mut Value) -> Result<(), serde_json::Error> {
+    let Some(setup) = value.get("setup") else {
+        return Ok(());
+    };
+    let setup: GameSetup = serde_json::from_value(setup.clone())?;
+    if let Some(decisions) = value.get_mut("recorded_decisions") {
+        migrate_passive_events(&setup, decisions)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn has_legacy_passive_events(decisions: &Value) -> bool {
+    decisions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|decision| decision.get("events").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|event| event.get("PassiveCovered").and_then(Value::as_object))
+        .any(|cover| !cover.contains_key("ineffective_environment"))
+}
+
+/// 只補齊舊蓋牌的成立條件，保留所有已記錄的翻牌與傷害結果。
+pub(crate) fn migrate_passive_events(
+    setup: &GameSetup,
+    decisions: &mut Value,
+) -> Result<(), serde_json::Error> {
+    if !has_legacy_passive_events(decisions) {
+        return Ok(());
+    }
+    let mut state = GameState::from_setup(&setup);
+    if let Some(decisions) = decisions.as_array_mut() {
+        for decision in decisions {
+            if let Some(events) = decision.get_mut("events").and_then(Value::as_array_mut) {
+                for event in events {
+                    if let Some(cover) = event
+                        .get_mut("PassiveCovered")
+                        .and_then(Value::as_object_mut)
+                    {
+                        if !cover.contains_key("ineffective_environment") {
+                            let player: crate::domain::PlayerId =
+                                serde_json::from_value(cover["player"].clone())?;
+                            let formation = cover["formation_id"].as_str().unwrap_or_default();
+                            let environment = crate::rules::totem::environment_ineffective(
+                                &state, &player, formation,
+                            )
+                            .then_some(state.environment)
+                            .flatten();
+                            cover.insert(
+                                "ineffective_environment".into(),
+                                serde_json::to_value(environment)?,
+                            );
+                        }
+                    }
+                    let decoded: GameEvent = serde_json::from_value(event.clone())?;
+                    crate::rules::projection::apply_event(&mut state, &decoded);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl PersistedGameRecord {
     pub fn from_record(metadata: PersistenceMetadata, record: &GameRecord) -> Self {
         let mut metadata = metadata;
@@ -69,6 +133,7 @@ impl PersistedGameRecord {
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let mut value = serde_json::from_str(json)?;
         migrate_legacy_wire_format(&mut value);
+        migrate_passive_effectiveness(&mut value)?;
         let mut persisted = serde_json::from_value::<Self>(value)?;
         persisted.migrate_legacy_terminal_events();
         Ok(persisted)

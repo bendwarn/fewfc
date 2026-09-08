@@ -5,7 +5,7 @@ import type { PlayerDeckList } from '../../shared/game-room'
 export interface FewfcRulesEngineBridge {
   catalog(): Promise<RulesCatalog>
   resolvePersonalDeck(player: string, candidate?: PlayerDeckList): Promise<PersonalDeckResolution>
-  resolveRuleModules(candidate?: string[]): Promise<{ modules: string[] }>
+  resolveRuleModules(candidate?: string[], ruleVersion?: '5.16' | '5.17'): Promise<{ modules: string[] }>
 }
 
 declare global {

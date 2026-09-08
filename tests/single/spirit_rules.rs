@@ -36,6 +36,7 @@ fn cover(state: &mut GameState, owner: &str, formation_id: &str, cards: Vec<Card
         cards,
         star_substitution: None,
         state: FormationAreaState::FaceDownWaiting {
+            ineffective_environment: None,
             sealed: false,
             revealed: false,
             neutralized: false,

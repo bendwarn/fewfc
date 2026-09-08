@@ -5,8 +5,8 @@ use crate::domain::{
     targeting::{RulePlayerTarget, RuleTeamTarget, TurnOrderTargets},
 };
 use crate::rules::{
-    EffectPlan, PointFormula, base_formation_registry, environment_makes_formation_ineffective,
-    formation_resolved_on_previous_turn, sacred_beast_element,
+    EffectPlan, PointFormula, base_formation_registry, formation_resolved_on_previous_turn,
+    sacred_beast_element,
 };
 
 use super::attack_resolution::{self, AttackRequest, AttackResolutionMode};
@@ -405,7 +405,11 @@ impl BaseEffectResolver {
                         &plan.player,
                         &plan.formation_id,
                     )
-                    && environment_makes_formation_ineffective(state, &plan.formation_id);
+                    && crate::rules::totem::environment_ineffective(
+                        state,
+                        &plan.player,
+                        &plan.formation_id,
+                    );
                 let formation_suppressed = crate::rules::echo::formation_use_is_suppressed(
                     state,
                     &plan.player,
@@ -635,10 +639,17 @@ impl BaseEffectResolver {
                 }
                 events.push(GameEvent::PassiveCovered {
                     player: plan.player.clone(),
-                    formation_id: plan.formation_id,
+                    formation_id: plan.formation_id.clone(),
                     cards: plan.cards,
                     star_substitution: plan.star_substitution,
                     sealed,
+                    ineffective_environment: crate::rules::totem::environment_ineffective(
+                        state,
+                        &plan.player,
+                        &plan.formation_id,
+                    )
+                    .then_some(state.environment)
+                    .flatten(),
                 });
                 if revealed {
                     events.push(GameEvent::PassiveCoverRevealed { owner: plan.player });
@@ -669,18 +680,58 @@ impl BaseEffectResolver {
                         attack_points: None,
                     },
                 );
-                let spell_cancelled = passive_trigger.cancels_spell();
-                let spell_ineffective =
-                    !crate::rules::dark::ignores_environment(
+                let converted_trigger = if spell.resolver_id == crate::rules::totem::SOUTH {
+                    let attack_points = attack_resolution::preview_attack_points(
                         state,
                         &plan.player,
                         &plan.formation_id,
-                    ) && environment_makes_formation_ineffective(state, &plan.formation_id)
-                        || crate::rules::echo::formation_use_is_suppressed(
-                            state,
-                            &plan.player,
-                            &plan.formation_id,
-                        );
+                        &crate::rules::AttackPlanDef {
+                            category: crate::rules::AttackCategory::Elemental(
+                                crate::domain::Element::Fire,
+                            ),
+                            point_formula: PointFormula::Fixed(20),
+                            damage_target: crate::rules::DamageTarget::PreviousPlayer,
+                        },
+                        &plan.cards,
+                    )?;
+                    Some(covered_passive::trigger(
+                        state,
+                        TriggerRequest {
+                            incoming_player: plan.player.clone(),
+                            incoming_kind: IncomingActionKind::Attack,
+                            ignores_formation_effects:
+                                crate::rules::jianghu::ignores_other_formation_effects(
+                                    state,
+                                    &plan.player,
+                                ),
+                            ignores_counter_effects_by_profession_ability:
+                                crate::rules::hero::windwalking_applies(
+                                    state,
+                                    &plan.player,
+                                    attack_points,
+                                ),
+                            ignores_counter_effects_by_golden_cicada:
+                                crate::rules::pouch::player_is_protected(state, &plan.player),
+                            attack_points: Some(attack_points),
+                        },
+                    ))
+                } else {
+                    None
+                };
+                let spell_cancelled = passive_trigger.cancels_spell();
+                let spell_ineffective = !crate::rules::dark::ignores_environment(
+                    state,
+                    &plan.player,
+                    &plan.formation_id,
+                ) && crate::rules::totem::environment_ineffective(
+                    state,
+                    &plan.player,
+                    &plan.formation_id,
+                ) || crate::rules::echo::formation_use_is_suppressed(
+                    state,
+                    &plan.player,
+                    &plan.formation_id,
+                );
                 let mut events = crate::rules::dark::pre_formation_events(
                     state,
                     &plan.player,
@@ -712,6 +763,79 @@ impl BaseEffectResolver {
                     ));
                 }
                 if !spell_cancelled && !spell_ineffective {
+                    if [
+                        crate::rules::totem::EAST,
+                        crate::rules::totem::WEST,
+                        crate::rules::totem::SOUTH,
+                        crate::rules::totem::NORTH,
+                        crate::rules::totem::CENTRAL,
+                        crate::rules::totem::SEARCH,
+                    ]
+                    .contains(&spell.resolver_id.as_str())
+                    {
+                        let damage_prevented = converted_trigger
+                            .as_ref()
+                            .is_some_and(|trigger| trigger.prevents_damage())
+                            || crate::rules::spirit::stone_shield_prevents_attack(
+                                state,
+                                &plan.player,
+                            )
+                            || (crate::rules::pouch::has_status(
+                                state,
+                                &plan.player,
+                                crate::rules::pouch::WATCH_FIRE_STATUS,
+                            ) && !crate::rules::pouch::player_is_protected(
+                                state,
+                                &plan.player,
+                            ));
+                        let split = converted_trigger
+                            .as_ref()
+                            .is_some_and(|trigger| trigger.splits_attack_damage());
+                        if let Some(trigger) = converted_trigger {
+                            let converted_events = trigger.events();
+                            for event in &mut events {
+                                if matches!(event,GameEvent::PassiveFlipped { outcome:crate::domain::PassiveFlipOutcome::NoEffect {grounds},.. } if grounds.contains(&crate::domain::PassiveNoEffectGround::NotAnAttack))
+                                {
+                                    if let Some(replacement) =
+                                        converted_events.iter().find(|candidate| {
+                                            matches!(candidate, GameEvent::PassiveFlipped { .. })
+                                        })
+                                    {
+                                        *event = replacement.clone();
+                                    }
+                                }
+                                if let GameEvent::CounterEffectResolved {
+                                    effect_id,
+                                    outcome: crate::domain::PassiveFlipOutcome::NoEffect { grounds },
+                                    ..
+                                } = event
+                                {
+                                    if grounds.contains(
+                                        &crate::domain::PassiveNoEffectGround::NotAnAttack,
+                                    ) {
+                                        if let Some(replacement) = converted_events.iter().find(|candidate| matches!(candidate,
+                                            GameEvent::CounterEffectResolved { effect_id: other, .. } if other == effect_id)) {
+                                            *event = replacement.clone();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let mut projected = state.clone();
+                        for event in &events {
+                            crate::rules::projection::apply_event(&mut projected, event);
+                        }
+                        events.extend(crate::rules::totem::active_events(
+                            &projected,
+                            &plan.player,
+                            &spell.resolver_id,
+                            &plan.cards,
+                            damage_prevented,
+                            split,
+                            hp,
+                        )?);
+                        return Ok(events);
+                    }
                     if spell.resolver_id == crate::rules::pouch::CHAIN_ID {
                         if !plan.declared_targets.is_empty() {
                             return Err(GameError::Validation(
@@ -767,6 +891,14 @@ impl BaseEffectResolver {
                         {
                             sequence
                                 .append(hp, ResolvedFormationEffect::new(vec![event], outcome))?;
+                            for owned in &state.totems {
+                                sequence.extend([GameEvent::TotemChanged {
+                                    player: owned.player.clone(),
+                                    previous: Some(owned.totem),
+                                    totem: None,
+                                    reason: crate::domain::TotemChangeReason::EnvironmentCleared,
+                                }]);
+                            }
                         }
                         return Ok(sequence.into_events());
                     }

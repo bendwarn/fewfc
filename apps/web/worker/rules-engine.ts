@@ -45,9 +45,10 @@ export async function callPersonalDeckResolution(
 
 export async function callRuleModuleResolution(
   candidate?: string[],
+  ruleVersion: '5.16' | '5.17' = '5.17',
 ): Promise<{ modules: string[] }> {
   const wasm = await instance()
-  return callJsonExport(wasm, { candidate }, wasm.fewfc_resolve_rule_modules)
+  return callJsonExport(wasm, { candidate, ruleVersion }, wasm.fewfc_resolve_rule_modules)
 }
 
 function callJsonExport<T>(

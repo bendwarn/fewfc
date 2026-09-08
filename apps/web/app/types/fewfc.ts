@@ -3,6 +3,7 @@ export type TeamId = string
 export type ViewerId = PlayerId | 'observer'
 export type CardInstanceId = number
 export type StarKind = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
+export type TotemKind = 'AzureHorn' | 'WhiteFang' | 'VermilionFeather' | 'BlackShell' | 'YellowScales'
 export type SpiritKind = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth' | 'Evil' | 'Death'
 export type Element = 'Metal' | 'Wood' | 'Water' | 'Fire' | 'Earth'
 export type SecretStrategy =
@@ -160,6 +161,9 @@ export type PendingChoicePresentation =
   | { type: 'chain' }
   | { type: 'sheepStealing' }
   | { type: 'metamorphosis' }
+  | { type: 'centralSpiritArrayCard' }
+  | { type: 'dragonSearchDeckCard' }
+  | { type: 'southSpiritArrayElement' }
   | { type: 'sealCard' }
   | { type: 'unclassified' }
 
@@ -247,6 +251,8 @@ export interface PersonalDeckResolution {
 }
 
 export interface PublicGameState {
+  ruleVersion: '5.16' | '5.17'
+  totems: Array<{ player: PlayerId; totem: TotemKind; name: string }>
   enabledRuleModules: string[]
   status: 'Preparing' | 'InProgress' | 'Finished'
   winnerTeam: TeamId | null
@@ -495,6 +501,12 @@ export type EffectFormula =
   | { type: 'targetHandCountTimes'; multiplier: number }
   | { type: 'elementProductTimes'; element: Element; multiplier: number }
 export type FormationEffect =
+  | { type: 'totemAzureHorn' }
+  | { type: 'totemWhiteFang' }
+  | { type: 'totemVermilionFeather' }
+  | { type: 'totemBlackShell' }
+  | { type: 'totemYellowScales' }
+  | { type: 'dragonSearch' }
   | { type: 'coverCounter' }
   | { type: 'copyPreviousTurnFormation' }
   | { type: 'recoverHp' }

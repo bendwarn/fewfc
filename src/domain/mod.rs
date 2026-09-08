@@ -39,6 +39,7 @@ pub const FIVE_DIRECTIONS_LEGEND_MODULE_ID: &str = "five-directions-legend";
 pub const PERSONAL_DECK_MODULE_ID: &str = "personal-deck";
 pub const STAR_MODULE_ID: &str = "star";
 pub const HERO_SCHOOLS_MODULE_ID: &str = "hero-schools";
+pub const TOTEM_FORMATION_MODULE_ID: &str = "totem-formation";
 pub const SPIRIT_MODULE_ID: &str = "spirit";
 pub const JIANGHU_MODULE_ID: &str = "jianghu";
 pub const CONFLUENCE_GENERATION_MODULE_ID: &str = "confluence-generation";
@@ -242,6 +243,24 @@ pub struct CardInterpretationLayer {
 pub struct EffectiveCardFacts {
     pub element: Element,
     pub level: EffectiveCardLevel,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RuleVersion {
+    #[default]
+    #[serde(rename = "5.16")]
+    V5_16,
+    #[serde(rename = "5.17")]
+    V5_17,
+}
+
+impl RuleVersion {
+    pub fn allows_module(self, module: &RuleModuleId) -> bool {
+        match self {
+            Self::V5_16 => module.as_str() != "totem-formation",
+            Self::V5_17 => !matches!(module.as_str(), "echo" | "tribulation"),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -658,6 +677,36 @@ pub enum GameEndCause {
     DirectVictory { rule: String, team: TeamId },
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TotemKind {
+    AzureHorn,
+    WhiteFang,
+    VermilionFeather,
+    BlackShell,
+    YellowScales,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PlayerTotem {
+    pub player: PlayerId,
+    pub totem: TotemKind,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TotemChangeReason {
+    Granted,
+    EnvironmentRecoveryPrevented,
+    EnvironmentCleared,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct TotemChange {
+    pub player: PlayerId,
+    pub previous: Option<TotemKind>,
+    pub totem: Option<TotemKind>,
+    pub reason: TotemChangeReason,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PlayerShield {
     pub player: PlayerId,
@@ -679,6 +728,8 @@ pub enum FormationAreaState {
     FaceDownResolving,
     FaceDownWaiting {
         sealed: bool,
+        #[serde(default)]
+        ineffective_environment: Option<Element>,
         #[serde(default)]
         revealed: bool,
         #[serde(default)]
@@ -825,6 +876,8 @@ pub enum TimedEffectReduction {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GameSetup {
+    #[serde(default)]
+    pub rule_version: RuleVersion,
     pub ruleset: RulesetId,
     #[serde(default)]
     pub enabled_rule_modules: Vec<RuleModuleId>,
@@ -845,6 +898,7 @@ impl GameSetup {
         let second_team = TeamId::new(format!("team:{}", second_player.as_str()));
 
         Self {
+            rule_version: RuleVersion::default(),
             ruleset: RulesetId::base(),
             enabled_rule_modules: Vec::new(),
             players: vec![
@@ -905,6 +959,7 @@ impl GameSetup {
         }
 
         Self {
+            rule_version: RuleVersion::default(),
             ruleset: RulesetId::base(),
             enabled_rule_modules: Vec::new(),
             players,
@@ -937,6 +992,11 @@ impl GameSetup {
         self
     }
 
+    pub fn with_rule_version(mut self, version: RuleVersion) -> Self {
+        self.rule_version = version;
+        self
+    }
+
     pub fn with_rule_modules(mut self, modules: Vec<RuleModuleId>) -> Self {
         self.enabled_rule_modules = modules;
         self
@@ -965,6 +1025,8 @@ pub enum Phase {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GameState {
+    #[serde(default)]
+    pub rule_version: RuleVersion,
     #[serde(default)]
     pub ruleset: RulesetId,
     #[serde(default)]
@@ -1056,6 +1118,10 @@ pub struct GameState {
     #[serde(default)]
     pub spirits: Vec<PlayerSpirit>,
     #[serde(default)]
+    pub totems: Vec<PlayerTotem>,
+    #[serde(default)]
+    pub dragon_search_card: Option<CardInstanceId>,
+    #[serde(default)]
     pub spirit_skill_use_turns: HashMap<PlayerId, u64>,
     #[serde(default)]
     pub spirit_level_interpretations: Vec<SpiritLevelInterpretation>,
@@ -1089,6 +1155,7 @@ impl GameState {
         };
         Self {
             ruleset: setup.ruleset.clone(),
+            rule_version: setup.rule_version,
             enabled_rule_modules: setup.enabled_rule_modules.clone(),
             status,
             turn_number: 1,
@@ -1177,6 +1244,8 @@ impl GameState {
             five_star_alignment: None,
             professions: Vec::new(),
             spirits: Vec::new(),
+            totems: Vec::new(),
+            dragon_search_card: None,
             spirit_skill_use_turns: HashMap::new(),
             spirit_level_interpretations: Vec::new(),
             card_interpretation_layers: Vec::new(),
@@ -1651,6 +1720,19 @@ impl PendingChoiceKind {
     deny_unknown_fields
 )]
 pub enum PendingResolution {
+    SouthSpiritArrayElement {
+        damage_prevented: bool,
+        split_attack_damage: bool,
+    },
+    CentralSpiritArrayCard,
+    DragonSearchDeckCard,
+    DragonSearchShuffle {
+        player: PlayerId,
+        card: Option<CardInstanceId>,
+    },
+    DragonSearchRecycle {
+        element: Element,
+    },
     TurnDraw,
     TurnDrawDiscard,
     HolyWindTakeHighest,
@@ -2314,6 +2396,20 @@ pub enum GameEvent {
     RustedForestCompleted {
         player: PlayerId,
     },
+    TotemChanged {
+        player: PlayerId,
+        previous: Option<TotemKind>,
+        totem: Option<TotemKind>,
+        reason: TotemChangeReason,
+    },
+    DragonSearchRevealed {
+        player: PlayerId,
+        card: CardInstanceId,
+    },
+    DragonSearchCompleted {
+        player: PlayerId,
+        card: Option<CardInstanceId>,
+    },
     PassiveCovered {
         player: PlayerId,
         formation_id: String,
@@ -2321,6 +2417,8 @@ pub enum GameEvent {
         #[serde(default)]
         star_substitution: Option<StarElementSubstitution>,
         sealed: bool,
+        #[serde(default)]
+        ineffective_environment: Option<Element>,
     },
     PassiveCoverRevealed {
         owner: PlayerId,
@@ -2526,6 +2624,8 @@ pub struct LastElementalAttackUpdate {
 /// 狀態計算而來。
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct AttackResolutionEffects {
+    #[serde(default)]
+    pub totem_changes: Vec<TotemChange>,
     #[serde(default)]
     pub outcome: AttackOutcome,
     #[serde(default)]

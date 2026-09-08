@@ -19,10 +19,39 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub fn handle_request_json(input: &str) -> Result<String, String> {
-    let request: ApiRequest = serde_json::from_str(input).map_err(|error| error.to_string())?;
+    let request = decode_api_request(input)?;
     let response = handle(request).map_err(|error| serde_json::to_string(&error).unwrap())?;
-
     serde_json::to_string(&response).map_err(|error| error.to_string())
+}
+
+fn decode_api_request(input: &str) -> Result<ApiRequest, String> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(input).map_err(|error| error.to_string())?;
+    if value
+        .get("record")
+        .is_some_and(crate::infrastructure::has_legacy_passive_events)
+    {
+        let requested_setup = value
+            .get("setup")
+            .filter(|setup| !setup.is_null())
+            .map(|setup| serde_json::from_value::<WebGameSetup>(setup.clone()))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let setup = setup_for_request(
+            &OfficialRules::new(),
+            requested_setup,
+            value.get("firstPlayer").and_then(serde_json::Value::as_str),
+        )
+        .map_err(|error| {
+            serde_json::to_string(&error).unwrap_or_else(|_| "invalid legacy setup".to_string())
+        })?;
+        crate::infrastructure::migrate_passive_events(
+            &setup,
+            value.get_mut("record").expect("record checked above"),
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
 pub fn rules_catalog_json() -> Result<String, String> {
@@ -59,7 +88,7 @@ pub fn resolve_rule_modules_json(input: &str) -> Result<String, String> {
             .collect::<Vec<_>>()
     });
     let modules = OfficialRules::new()
-        .resolve_rule_modules(candidate)
+        .resolve_version_modules(request.rule_version, candidate)
         .map_err(|error| format!("{error:?}"))?;
     serde_json::to_string(&WebResolvedRuleModules { modules }).map_err(|error| error.to_string())
 }
@@ -67,6 +96,8 @@ pub fn resolve_rule_modules_json(input: &str) -> Result<String, String> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WebRuleModulesRequest {
+    #[serde(default = "latest_rule_version")]
+    rule_version: crate::domain::RuleVersion,
     candidate: Option<Vec<String>>,
 }
 
@@ -671,6 +702,8 @@ struct ApiRequest {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WebGameSetup {
+    #[serde(default)]
+    rule_version: crate::domain::RuleVersion,
     players: Vec<WebSetupPlayer>,
     turn_order: Vec<String>,
     #[serde(default)]
@@ -1539,8 +1572,15 @@ fn setup_for_request(
         })
         .collect();
     let mut setup = rules
-        .configure_game_with_decks(players, turn_order, modules, deck_lists)
+        .configure_versioned_game_with_decks(
+            requested.rule_version,
+            players,
+            turn_order,
+            modules,
+            deck_lists,
+        )
         .map_err(ApiError::Game)?;
+    rules.validate_setup(&setup).map_err(ApiError::Game)?;
     if !requested.initial_hp.is_empty() {
         setup.hp = requested
             .initial_hp
@@ -1665,6 +1705,7 @@ impl WebInteraction {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WebPublicGameState {
+    rule_version: crate::domain::RuleVersion,
     enabled_rule_modules: Vec<String>,
     status: String,
     winner_team: Option<String>,
@@ -1704,6 +1745,7 @@ struct WebPublicGameState {
     profession_catalog: Vec<WebProfessionCatalogEntry>,
     card_interpretations: Vec<WebCardInterpretationPresentation>,
     spirits: Vec<WebPlayerSpirit>,
+    totems: Vec<WebPlayerTotem>,
     previous_turn_formation: Option<WebPreviousTurnFormation>,
     last_completed_turn_discards: Vec<WebLastCompletedTurnDiscard>,
 }
@@ -1819,6 +1861,7 @@ impl WebPublicGameState {
                 .iter()
                 .map(|module| module.as_str().to_string())
                 .collect(),
+            rule_version: state.rule_version,
             status: match &state.status {
                 crate::domain::GameStatus::Preparing { .. } => "Preparing".to_string(),
                 crate::domain::GameStatus::InProgress => "InProgress".to_string(),
@@ -2203,6 +2246,15 @@ impl WebPublicGameState {
                     power: owned.power,
                 })
                 .collect(),
+            totems: state
+                .totems
+                .into_iter()
+                .map(|owned| WebPlayerTotem {
+                    player: owned.player.as_str().to_string(),
+                    totem: owned.totem,
+                    name: totem_name(owned.totem).to_string(),
+                })
+                .collect(),
             previous_turn_formation: state.previous_turn_formation.map(|formation| {
                 WebPreviousTurnFormation {
                     player: formation.player.as_str().to_string(),
@@ -2277,6 +2329,14 @@ struct WebPlayerSpirit {
     player: String,
     spirit: String,
     power: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPlayerTotem {
+    player: String,
+    totem: crate::domain::TotemKind,
+    name: String,
 }
 
 #[derive(Serialize)]
@@ -4054,6 +4114,19 @@ fn battle_event_presentation(
                     ),
                 ),
             ),
+            GameEvent::TotemChanged {
+                player,
+                previous,
+                totem,
+                reason,
+            } => (
+                "圖騰變更".to_string(),
+                action(player, totem_change_summary(*previous, *totem, *reason)),
+            ),
+            GameEvent::DragonSearchRevealed { player, card } => (
+                "尋龍檢索".to_string(),
+                action(player, format!("展示了牌 {}。", card_summary(card, labels))),
+            ),
             GameEvent::SpiritSummoned {
                 player,
                 previous,
@@ -4172,6 +4245,7 @@ fn battle_event_presentation(
                 formation_id,
                 hp_changes,
                 shield_change,
+                elemental_context_update,
                 ..
             } => {
                 let hp_change = hp_changes
@@ -4210,14 +4284,20 @@ fn battle_event_presentation(
                 );
                 (
                     "攻擊結算".to_string(),
-                    action(
-                        attacker,
-                        format!(
-                            "以「{}」攻擊 {}，{}。",
-                            formation_name(formation_names, formation_id),
-                            owner(target),
-                            result
+                    format!(
+                        "{}{}",
+                        action(
+                            attacker,
+                            format!(
+                                "以「{}」攻擊 {}，{}。",
+                                formation_name(formation_names, formation_id),
+                                owner(target),
+                                result
+                            ),
                         ),
+                        attack_totem_summary(elemental_context_update.as_ref(), |player, text| {
+                            action(player, text)
+                        })
                     ),
                 )
             }
@@ -4414,6 +4494,7 @@ fn battle_record_event_is_meaningful(event: &PublicGameEvent) -> bool {
                 | GameEvent::EchoResolutionStarted { .. }
                 | GameEvent::EchoResolutionCompleted { .. }
                 | GameEvent::RingingMetalCompleted { .. }
+                | GameEvent::DragonSearchCompleted { card: Some(_), .. }
                 | GameEvent::PlantEarthResolutionStarted { .. }
                 | GameEvent::PlantEarthResolutionCompleted { .. }
                 | GameEvent::EarthRendingStarted { .. }
@@ -4533,6 +4614,7 @@ fn enabled_rule_modules_summary(enabled: &[RuleModuleId]) -> String {
         crate::domain::JIANGHU_MODULE_ID => "江湖規則",
         crate::domain::CONFLUENCE_GENERATION_MODULE_ID => "匯流世代規則",
         crate::domain::DARK_GLIMMER_MODULE_ID => "黑暗微光規則",
+        crate::domain::TOTEM_FORMATION_MODULE_ID => "圖騰法陣規則",
         _ => "選用規則",
     }));
     names.join("、")
@@ -5111,6 +5193,9 @@ fn public_choice_requirement(
         crate::public_view::PublicPendingChoice::Visible { reason, .. } => match reason {
             Choice::TurnDrawDiscard => Some("選擇一張牌捨棄"),
             Choice::EarthRendingEnvironment => Some("選擇環境"),
+            Choice::SouthSpiritArrayElement => Some("選擇南靈陣的攻擊屬性"),
+            Choice::CentralSpiritArrayCard => Some("選擇下家的一張手牌加入手牌"),
+            Choice::DragonSearchDeckCard => Some("選擇尋龍檢索的牌，或放棄檢索"),
             Choice::EarthRendingCard => Some("選擇一張手牌，或翻開手牌"),
             Choice::Chain => Some("選擇錦囊與是否觸發秘計"),
             Choice::SheepStealing => Some("選擇要交換的牌"),
@@ -5345,6 +5430,39 @@ fn game_event_presentation_with_vocabulary(
         } => (
             "陣法義務完成".to_string(),
             formation_requirement_fulfillment_summary(player, formation_id, formation_names),
+        ),
+        GameEvent::TotemChanged {
+            player,
+            previous,
+            totem,
+            reason,
+        } => (
+            "圖騰變更".to_string(),
+            format!(
+                "{} {}",
+                player.as_str(),
+                totem_change_summary(*previous, *totem, *reason)
+            ),
+        ),
+        GameEvent::DragonSearchRevealed { player, card } => (
+            "尋龍檢索".to_string(),
+            format!(
+                "{} 展示了牌 {}。",
+                player.as_str(),
+                card_summary(card, labels)
+            ),
+        ),
+        GameEvent::DragonSearchCompleted { player, card } => (
+            "尋龍完成".to_string(),
+            format!(
+                "{} {}",
+                player.as_str(),
+                if card.is_some() {
+                    "將展示牌放到牌堆最上方。"
+                } else {
+                    "未選擇檢索牌，完成洗牌。"
+                }
+            ),
         ),
         GameEvent::SpiritSummoned {
             player,
@@ -5615,6 +5733,7 @@ fn game_event_presentation_with_vocabulary(
             formation_id,
             hp_changes,
             shield_change,
+            elemental_context_update,
             ..
         } => {
             let hp_change = hp_changes
@@ -5655,11 +5774,15 @@ fn game_event_presentation_with_vocabulary(
             (
                 "攻擊結算".to_string(),
                 format!(
-                    "{} 以「{}」攻擊 {}，{}。",
+                    "{} 以「{}」攻擊 {}，{}。{}",
                     attacker.as_str(),
                     formation_name(formation_names, formation_id),
                     target.as_str(),
-                    result
+                    result,
+                    attack_totem_summary(
+                        elemental_context_update.as_ref(),
+                        |player, text| format!("{} {}", player.as_str(), text)
+                    )
                 ),
             )
         }
@@ -6215,6 +6338,59 @@ fn element_short_name(element: crate::domain::Element) -> &'static str {
     }
 }
 
+fn attack_totem_summary(
+    effects: Option<&crate::domain::AttackResolutionEffects>,
+    describe: impl Fn(&PlayerId, String) -> String,
+) -> String {
+    effects
+        .into_iter()
+        .flat_map(|effects| &effects.totem_changes)
+        .map(|change| {
+            format!(
+                " {}",
+                describe(
+                    &change.player,
+                    totem_change_summary(change.previous, change.totem, change.reason)
+                )
+            )
+        })
+        .collect()
+}
+
+fn totem_name(totem: crate::domain::TotemKind) -> &'static str {
+    use crate::domain::TotemKind;
+    match totem {
+        TotemKind::AzureHorn => "青角圖騰",
+        TotemKind::WhiteFang => "白牙圖騰",
+        TotemKind::VermilionFeather => "朱羽圖騰",
+        TotemKind::BlackShell => "玄甲圖騰",
+        TotemKind::YellowScales => "黃鱗圖騰",
+    }
+}
+
+fn totem_change_summary(
+    previous: Option<crate::domain::TotemKind>,
+    totem: Option<crate::domain::TotemKind>,
+    reason: crate::domain::TotemChangeReason,
+) -> String {
+    use crate::domain::TotemChangeReason;
+    match (previous, totem, reason) {
+        (Some(previous), Some(totem), _) => {
+            format!("以{}取代{}。", totem_name(totem), totem_name(previous))
+        }
+        (_, Some(totem), _) => format!("獲得{}。", totem_name(totem)),
+        (Some(previous), None, TotemChangeReason::EnvironmentRecoveryPrevented) => format!(
+            "消耗{}，使本次攻擊不因環境效果改為回復生命。",
+            totem_name(previous)
+        ),
+        (Some(previous), None, TotemChangeReason::EnvironmentCleared) => {
+            format!("{}因虛空斷脈術破除環境而被破除。", totem_name(previous))
+        }
+        (Some(previous), None, _) => format!("失去{}。", totem_name(previous)),
+        (None, None, _) => "目前沒有圖騰。".to_string(),
+    }
+}
+
 fn spirit_name(spirit: crate::domain::SpiritKind) -> &'static str {
     match spirit {
         crate::domain::SpiritKind::Metal => "金",
@@ -6352,6 +6528,148 @@ enum ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_legacy_passive_migration_uses_cover_environment_not_later_environment() {
+        for (cover_environment, later_environment) in [
+            (None, Element::Metal),
+            (Some(Element::Metal), Element::Wood),
+        ] {
+            let player = PlayerId::new("alice");
+            let cards = vec![CardInstanceId::new(1), CardInstanceId::new(2)];
+            let mut events = vec![
+                GameEvent::DeckPrepared {
+                    deck_order: cards.clone(),
+                },
+                GameEvent::CardsDealt {
+                    player: player.clone(),
+                    cards,
+                },
+            ];
+            if let Some(to) = cover_environment {
+                events.push(GameEvent::EnvironmentTransferred {
+                    player: player.clone(),
+                    formation_id: "west-white-tiger".into(),
+                    from: None,
+                    to,
+                });
+            }
+            events.push(GameEvent::PassiveCovered {
+                player: player.clone(),
+                formation_id: "defense".into(),
+                cards: vec![CardInstanceId::new(1), CardInstanceId::new(2)],
+                star_substitution: None,
+                sealed: false,
+                ineffective_environment: None,
+            });
+            events.push(GameEvent::EnvironmentTransferred {
+                player,
+                formation_id: "pouch:retreat".into(),
+                from: cover_environment,
+                to: later_environment,
+            });
+            let mut record = serde_json::to_value(vec![RecordedDecision {
+                source: RecordedDecisionSource::Automatic,
+                events,
+            }])
+            .unwrap();
+            for event in record[0]["events"].as_array_mut().unwrap() {
+                if let Some(cover) = event.get_mut("PassiveCovered") {
+                    cover
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("ineffective_environment");
+                }
+            }
+            let request = serde_json::json!({
+                "action": { "type": "refresh" },
+                "setup": { "players": [{"id":"alice","team":"a"},{"id":"bob","team":"b"}], "turnOrder":["alice","bob"], "enabledRuleModules":["five-directions-legend"] },
+                "record": record
+            });
+            let decoded = decode_api_request(&request.to_string()).unwrap();
+            assert_eq!(
+                decoded.setup.unwrap().rule_version,
+                crate::domain::RuleVersion::V5_16
+            );
+            let decisions = decoded.record.unwrap();
+            let snapshot = decisions[0]
+                .events
+                .iter()
+                .find_map(|event| match event {
+                    GameEvent::PassiveCovered {
+                        ineffective_environment,
+                        ..
+                    } => Some(*ineffective_environment),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(snapshot, cover_environment);
+            let mut migrated_request = request;
+            migrated_request["record"] = serde_json::to_value(&decisions).unwrap();
+            let repeated = decode_api_request(&migrated_request.to_string()).unwrap();
+            assert_eq!(repeated.record.unwrap(), decisions);
+        }
+    }
+
+    #[test]
+    fn totem_state_and_atomic_changes_use_player_facing_names() {
+        use crate::domain::{TotemChange, TotemChangeReason, TotemKind};
+        let dto = WebPlayerTotem {
+            player: "alice".to_string(),
+            totem: TotemKind::AzureHorn,
+            name: totem_name(TotemKind::AzureHorn).to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(dto).unwrap(),
+            serde_json::json!({
+                "player": "alice", "totem": "AzureHorn", "name": "青角圖騰"
+            })
+        );
+        let effects = crate::domain::AttackResolutionEffects {
+            totem_changes: vec![TotemChange {
+                player: PlayerId::new("alice"),
+                previous: Some(TotemKind::AzureHorn),
+                totem: None,
+                reason: TotemChangeReason::EnvironmentRecoveryPrevented,
+            }],
+            ..Default::default()
+        };
+        let summary = attack_totem_summary(Some(&effects), |_, text| format!("你{text}"));
+        assert_eq!(
+            summary,
+            " 你消耗青角圖騰，使本次攻擊不因環境效果改為回復生命。"
+        );
+        let changed = GameEvent::TotemChanged {
+            player: PlayerId::new("alice"),
+            previous: Some(TotemKind::AzureHorn),
+            totem: Some(TotemKind::VermilionFeather),
+            reason: TotemChangeReason::Granted,
+        };
+        assert_eq!(
+            game_event_presentation(&changed, &HashMap::new(), &HashMap::new()).1,
+            "alice 以朱羽圖騰取代青角圖騰。"
+        );
+    }
+
+    #[test]
+    fn totem_pending_reasons_serialize_for_web_clients() {
+        for (reason, expected) in [
+            (
+                PublicPendingChoicePresentation::SouthSpiritArrayElement,
+                "southSpiritArrayElement",
+            ),
+            (
+                PublicPendingChoicePresentation::CentralSpiritArrayCard,
+                "centralSpiritArrayCard",
+            ),
+            (
+                PublicPendingChoicePresentation::DragonSearchDeckCard,
+                "dragonSearchDeckCard",
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(reason).unwrap()["type"], expected);
+        }
+    }
     use crate::domain::DISCARD_RETRIEVAL_MODULE_ID;
 
     fn test_action_detail() -> PlayerFacingActionDetail {
@@ -6425,6 +6743,7 @@ mod tests {
             )
             .unwrap();
         let web_setup = || WebGameSetup {
+            rule_version: crate::domain::RuleVersion::default(),
             players: vec![
                 WebSetupPlayer {
                     id: "alice".to_string(),
@@ -9627,4 +9946,8 @@ mod tests {
             );
         }
     }
+}
+
+fn latest_rule_version() -> crate::domain::RuleVersion {
+    crate::domain::RuleVersion::V5_17
 }

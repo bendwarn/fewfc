@@ -40,6 +40,7 @@
           <span v-if="teamStar(teamForPlayer(seat.player))">星辰 · {{ starLabel(teamStar(teamForPlayer(seat.player))!) }}</span>
           <span v-if="state.enabledRuleModules.includes('star') && starHistoryLabel(seat.player)">召星 · {{ starHistoryLabel(seat.player) }}</span>
           <span v-if="spiritFor(seat.player)" class="spirit-status">精靈 · {{ spiritLabel(spiritFor(seat.player)!.spirit) }} · 靈力 {{ spiritFor(seat.player)!.power }} / 6</span>
+          <span v-if="totemFor(seat.player)" tabindex="0" :title="presentTotem(totemFor(seat.player)!.totem)" :aria-label="presentTotem(totemFor(seat.player)!.totem)">{{ totemFor(seat.player)!.name }}</span>
           <span v-if="pouchFor(seat.player)">錦囊 · {{ pouchFor(seat.player)?.card?.label ?? '覆蓋牌' }}</span>
           <span v-if="coveredPassiveSummary(seat.player)">蓋牌 · {{ coveredPassiveSummary(seat.player) }}</span>
           <span v-for="card in exposedDeckCards(seat.player)" :key="`exposed-deck-${seat.player}-${card.id}`">公開牌 · {{ card.label }}</span>
@@ -236,6 +237,7 @@
 </template>
 
 <script setup lang="ts">
+import { presentTotem } from '~/lib/totem-presentation'
 import type { CardInstanceId, Element, PlayerId, PublicCard, PublicCardRefs, PublicGameState, SpiritKind, TeamId } from '~/types/fewfc'
 import { cardElementGlyph } from '~/lib/card-face-presentation'
 import {
@@ -448,6 +450,7 @@ function teamHp(team: TeamId) { return props.state.hp.find(entry => entry.team =
 function handCount(player: PlayerId) { const cards = props.state.hands.find(entry => entry.player === player)?.cards; return !cards ? 0 : cards.kind === 'hidden' ? cards.count : cards.cards.length }
 function teamStar(team: TeamId) { return props.state.teamStars.find(entry => entry.team === team)?.star }
 function starHistoryLabel(player: PlayerId) { return (props.state.starHistories.find(entry => entry.player === player)?.stars ?? []).map(cardElementGlyph).join('、') }
+function totemFor(player: PlayerId) { return props.state.totems?.find(entry => entry.player === player) }
 function spiritFor(player: PlayerId) { return props.state.spirits.find(entry => entry.player === player) }
 function spiritLabel(spirit: SpiritKind) { return { Metal: '金精靈', Wood: '木精靈', Water: '水精靈', Fire: '火精靈', Earth: '土精靈', Evil: '惡精靈', Death: '死精靈' }[spirit] }
 function pouchFor(player: PlayerId) { return props.state.pouches.find(pouch => pouch.owner === player) }
@@ -476,6 +479,7 @@ function playerFacts(player: PlayerId) {
   const facts = [
     teamStar(teamForPlayer(player)) ? `星辰 ${starLabel(teamStar(teamForPlayer(player))!)}` : '',
     spiritFor(player) ? `${spiritLabel(spiritFor(player)!.spirit)}，靈力 ${spiritFor(player)!.power} / 6` : '',
+    totemFor(player) ? presentTotem(totemFor(player)!.totem) : '',
     pouchFor(player) ? `錦囊 ${pouchFor(player)?.card?.label ?? '覆蓋牌'}` : '',
   ]
   return facts.filter(Boolean).join('。')

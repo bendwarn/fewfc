@@ -39,6 +39,7 @@
       <RoomSettingsDialog
         v-if="roomSettingsOpen"
         v-model:name="roomName"
+        v-model:rule-version="roomRuleVersion"
         v-model:mode="roomMode"
         v-model:access="roomAccess"
         :busy="lobbyBusy"
@@ -71,6 +72,7 @@
 </template>
 
 <script setup lang="ts">
+import { modulesForVersion } from '#shared/utils/rule-versions'
 import type { PlayerId } from '~/types/fewfc'
 import type { GameRoomMember, GameRoomResponse } from '#shared/game-room'
 import { presentApiError } from '~/lib/api-error-presentation'
@@ -90,6 +92,7 @@ interface PublicRoomSummary {
   members: GameRoomMember[]
   observers: Array<{ userId: string }>
   capacity: number
+  ruleVersion?: '5.16' | '5.17'
   enabledRuleModules: string[]
   createdAt: string
   updatedAt: string
@@ -110,6 +113,7 @@ const session = usePlayerSession()
 const notifications = useLayoutNotifications()
 const rulesCatalog = useRulesCatalog()
 const roomSettingsOpen = ref(false)
+const roomRuleVersion = ref<'5.16' | '5.17'>('5.17')
 const createRoomTrigger = ref<HTMLButtonElement | null>(null)
 const roomName = ref('')
 const roomMode = ref<'duel' | 'team'>('duel')
@@ -163,6 +167,7 @@ async function createRoom() {
         name: roomName.value || `${session.displayName.value}的房間`,
         access: roomAccess.value,
         capacity: roomCapacity.value,
+        ruleVersion: roomRuleVersion.value,
       },
     })
     await router.push(`/rooms/${encodeURIComponent(response.gameId)}`)
@@ -215,7 +220,9 @@ function roomStatusLabel(room: PublicRoomSummary): string {
 }
 
 function roomRuleSummary(room: PublicRoomSummary): string {
-  return presentRoomRuleDifferences(rulesCatalog.catalog.value?.ruleModules ?? [], room.enabledRuleModules)
+  const version = room.ruleVersion ?? '5.16'
+  const differences = presentRoomRuleDifferences(modulesForVersion(rulesCatalog.catalog.value?.ruleModules ?? [], version), room.enabledRuleModules)
+  return `規則 ${version}${differences ? ` · ${differences}` : ''}`
 }
 
 function hasNotification(gameId: string): boolean {

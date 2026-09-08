@@ -46,6 +46,8 @@ type ViewerRef = Ref<ViewerId>
 
 function emptyState(): PublicGameState {
   return {
+    ruleVersion: '5.16',
+    totems: [],
     enabledRuleModules: [],
     status: 'InProgress',
     turnNumber: 1,
@@ -378,7 +380,7 @@ export function useGameRoom(viewer: ViewerRef) {
     return await roomMutation('reset')
   }
 
-  async function updateRuleModules(enabledRuleModules: string[]) {
+  async function updateRuleModules(enabledRuleModules?: string[], ruleVersion?: '5.16' | '5.17') {
     if (!onlineGameId.value) return false
 
     isLoading.value = true
@@ -388,7 +390,7 @@ export function useGameRoom(viewer: ViewerRef) {
         `/api/games/${onlineGameId.value}/rules`,
         {
           method: 'PUT',
-          body: { enabledRuleModules },
+          body: { enabledRuleModules, ruleVersion },
         },
       ))
       return true

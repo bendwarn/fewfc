@@ -37,3 +37,15 @@ it('focuses the room name, closes on Escape, and restores the trigger focus', as
   expect(document.querySelector('[role="dialog"]')).toBeNull()
   expect(wrapper.get('button').element).toBe(document.activeElement)
 })
+
+it('defaults the creation selector to 5.17 and emits a selected past version', async () => {
+  const wrapper = await mountSuspended(RoomSettingsDialog, {
+    props: { name: '版本測試', mode: 'duel', access: 'private', busy: false },
+    global: { stubs: { teleport: true } },
+  })
+  expect(wrapper.text()).toContain('規則版本 5.17')
+  expect(wrapper.get('details').element.open).toBe(false)
+  await wrapper.get('summary').trigger('click')
+  await wrapper.findAll('input[name="create-rule-version"]')[1]!.setValue(true)
+  expect(wrapper.emitted('update:ruleVersion')).toEqual([['5.16']])
+})

@@ -4,6 +4,8 @@ import { reconcileActionDraft, toggleActionDraftCard } from './action-draft'
 
 function state(overrides: Partial<PublicGameState> = {}): PublicGameState {
   return {
+    ruleVersion: '5.16',
+    totems: [],
     enabledRuleModules: [],
     status: 'InProgress',
     turnNumber: 1,

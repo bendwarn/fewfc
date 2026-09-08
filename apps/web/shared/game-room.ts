@@ -36,6 +36,8 @@ export interface GameRoomObserver {
   connected: boolean
 }
 
+export type RuleVersion = '5.16' | '5.17'
+
 export interface GameRoomMetadata {
   schemaVersion: 5
   gameId: string
@@ -44,6 +46,7 @@ export interface GameRoomMetadata {
   name: string
   access: GameRoomAccess
   capacity: GameRoomCapacity
+  ruleVersion: RuleVersion
   ruleset: 'fewfc-base'
   enabledRuleModules: string[]
   players: PlayerId[]
@@ -81,13 +84,14 @@ interface StoredGameRoomMember extends Partial<GameRoomMember> {
 
 interface StoredGameRoomMetadata extends Omit<
   GameRoomMetadata,
-  'schemaVersion' | 'name' | 'capacity' | 'members' | 'observers' | 'enabledRuleModules'
+  'schemaVersion' | 'name' | 'capacity' | 'members' | 'observers' | 'enabledRuleModules' | 'ruleVersion'
 > {
   schemaVersion: 1 | 2 | 3 | 4 | 5
   name?: string
   capacity?: GameRoomCapacity
   members: StoredGameRoomMember[]
   observers?: GameRoomObserver[]
+  ruleVersion?: RuleVersion
   enabledRuleModules?: string[]
 }
 
@@ -105,6 +109,7 @@ export function normalizeGameRoomMetadata(
     name: stored.name?.trim() || stored.gameId,
     access: stored.access,
     capacity,
+    ruleVersion: stored.ruleVersion ?? '5.16',
     ruleset: stored.ruleset,
     enabledRuleModules: stored.enabledRuleModules ?? [],
     players: stored.players,
@@ -188,6 +193,7 @@ export interface CompletedReplayDraft extends SavableReplay {
 }
 
 export interface RulesGameSetup {
+  ruleVersion?: RuleVersion
   players: Array<{
     id: PlayerId
     team: string
@@ -287,6 +293,7 @@ export type GameRoomRequest =
       access?: GameRoomAccess
       capacity?: GameRoomCapacity
       name?: string
+      ruleVersion?: RuleVersion
       enabledRuleModules?: string[]
       invitation: GameRoomInvitation
     }
@@ -325,7 +332,8 @@ export type GameRoomRequest =
   | {
       type: 'updateRuleModules'
       actorUserId: string
-      enabledRuleModules: string[]
+      ruleVersion?: RuleVersion
+      enabledRuleModules?: string[]
     }
   | {
       type: 'resetGame'
@@ -447,6 +455,8 @@ export type PlayerNotificationSocketMessage =
 
 export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): PublicGameState {
   return {
+    ruleVersion: '5.16',
+    totems: [],
     enabledRuleModules: [],
     status: 'InProgress',
     turnNumber: 1,

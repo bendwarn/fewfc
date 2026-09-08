@@ -120,7 +120,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         case 'toggleReady':
           return await this.toggleReady(body.actorUserId, body.deckList)
         case 'updateRuleModules':
-          return await this.updateRuleModules(body.actorUserId, body.enabledRuleModules)
+          return await this.updateRuleModules(body.actorUserId, body.enabledRuleModules, body.ruleVersion)
         case 'leaveGame':
           return await this.leaveGame(body.actorUserId)
         case 'removePlayer':
@@ -216,7 +216,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       access: request.access ?? 'private',
       capacity,
       ruleset: 'fewfc-base',
-      enabledRuleModules: (await callRuleModuleResolution(request.enabledRuleModules)).modules,
+      ruleVersion: request.ruleVersion ?? '5.17',
+      enabledRuleModules: (await callRuleModuleResolution(request.enabledRuleModules, request.ruleVersion ?? '5.17')).modules,
       players,
       members: [{
         userId: request.actorUserId,
@@ -238,6 +239,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         capacity,
         access: metadata.access,
         ruleset: metadata.ruleset,
+        ruleVersion: metadata.ruleVersion,
         enabledRuleModules: [...metadata.enabledRuleModules],
       },
       createdAt: now,
@@ -390,7 +392,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
   private async updateRuleModules(
     actorUserId: string,
-    enabledRuleModules: string[],
+    enabledRuleModules?: string[],
+    requestedVersion?: '5.16' | '5.17',
   ): Promise<Response> {
     const metadata = await this.requireMetadata()
     const actor = this.memberFor(metadata, actorUserId)
@@ -402,16 +405,24 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return this.json({ error: 'room has already started' }, 409)
     }
 
-    const modules = (await callRuleModuleResolution(enabledRuleModules)).modules
+    const ruleVersion = requestedVersion ?? metadata.ruleVersion
+    const candidate = ruleVersion !== metadata.ruleVersion ? undefined : enabledRuleModules ?? metadata.enabledRuleModules
+    let modules: string[]
+    try {
+      modules = (await callRuleModuleResolution(candidate, ruleVersion)).modules
+    } catch {
+      return this.json({ error: '規則版本或模組設定無效。' }, 400)
+    }
     for (const member of metadata.members) {
       await this.ctx.storage.delete(this.lockedDeckKey(member.userId))
     }
     const updatedMetadata = await this.storeRoomEvent({
       ...metadata,
+      ruleVersion,
       enabledRuleModules: modules,
       members: metadata.members.map(member => ({ ...member, ready: false })),
       updatedAt: new Date().toISOString(),
-    }, 'RuleModulesChanged', actor.player, { enabledRuleModules: modules })
+    }, 'RuleModulesChanged', actor.player, { ruleVersion, enabledRuleModules: modules })
 
     this.ctx.waitUntil(this.afterRoomMutation(updatedMetadata))
     return this.json(await this.response(updatedMetadata, actorUserId))
@@ -1642,6 +1653,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
           team: `team-${index + 1}`,
         })),
         turnOrder,
+        ruleVersion: metadata.ruleVersion,
         enabledRuleModules: metadata.enabledRuleModules,
         deckLists,
       }
@@ -1658,6 +1670,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         team: teamByPlayer.get(member.player) ?? 'team-a',
       })),
       turnOrder,
+      ruleVersion: metadata.ruleVersion,
       enabledRuleModules: [...metadata.enabledRuleModules],
       deckLists,
     }
@@ -1708,7 +1721,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
               finishedAt: completed.finishedAt,
             }
           : undefined,
-        state: emptyPublicState(currentMetadata.players),
+        state: { ...emptyPublicState(currentMetadata.players), ruleVersion: currentMetadata.ruleVersion, enabledRuleModules: currentMetadata.enabledRuleModules },
         battleRecord: systemBattleRecord(await this.events(), event => ({
           title: this.eventTitle(event),
           summary: this.displaySummary(currentMetadata, this.eventSummary(event)),

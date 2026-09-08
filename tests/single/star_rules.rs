@@ -52,6 +52,7 @@ fn cover(
         cards,
         star_substitution,
         state: FormationAreaState::FaceDownWaiting {
+            ineffective_environment: None,
             sealed,
             revealed: false,
             neutralized: false,
