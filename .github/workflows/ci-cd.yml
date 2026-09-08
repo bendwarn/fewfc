@@ -24,6 +24,9 @@ jobs:
     name: Web checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: pnpm-cache-writer
+      cancel-in-progress: false
     env:
       APP_ENV: development
     defaults:
@@ -37,6 +40,8 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
+          cache: true
+          cache_dependency_path: apps/web/pnpm-lock.yaml
           run_install: |
             - cwd: apps/web
               args: [--frozen-lockfile]
@@ -45,6 +50,7 @@ jobs:
 
   e2e:
     name: Browser E2E
+    needs: web
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -61,6 +67,8 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
+          cache: true
+          cache_dependency_path: apps/web/pnpm-lock.yaml
           run_install: |
             - cwd: apps/web
               args: [--frozen-lockfile]
@@ -102,6 +110,8 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
+          cache: true
+          cache_dependency_path: apps/web/pnpm-lock.yaml
           run_install: |
             - cwd: apps/web
               args: [--frozen-lockfile]
@@ -154,6 +164,8 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
+          cache: true
+          cache_dependency_path: apps/web/pnpm-lock.yaml
           run_install: |
             - cwd: apps/web
               args: [--frozen-lockfile]
