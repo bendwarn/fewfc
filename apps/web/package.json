@@ -2,6 +2,7 @@
   "name": "web",
   "type": "module",
   "private": true,
+  "packageManager": "pnpm@12.3.4",
   "scripts": {
     "build": "bun run build:rules-wasm && nuxt build",
     "build:staging": "bun run build:rules-wasm && nuxt build --dotenv .env.staging",
@@ -59,6 +60,6 @@
     "typescript": "^6.0.3",
     "vitest": "^5.0.0",
     "vue-tsc": "^3.3.11",
-    "wrangler": "^4.129.0"
+    "wrangler": "4.113.0"
   }
 }

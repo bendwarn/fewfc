@@ -168,10 +168,14 @@ migration has completed.
 ## GitHub Actions CI/CD
 
 Local dependency management remains pnpm (see `../README.md`), and dependency
-changes must update `pnpm-lock.yaml`. GitHub Actions temporarily uses Bun for
-installation and deployment because `pnpm/setup@v2` currently has an action
-compatibility issue. Restore pnpm in CI after that action is fixed; this does
-not change the repository's primary package manager.
+changes must update `pnpm-lock.yaml`. GitHub Actions uses `pnpm/setup@v2` with
+the Bun runtime for the repository's Bun-based scripts, and requires the
+checked-in lockfile for installation.
+
+Wrangler is pinned to `4.113.0` because `4.114+` has an upstream local-runtime
+regression that can terminate `wrangler dev` with `Network connection lost`
+during concurrent E2E requests. Remove this pin after the Workers SDK fix is
+available; it is independent of repository visibility.
 
 `.github/workflows/ci-cd.yml` is the deployment source of truth:
 
