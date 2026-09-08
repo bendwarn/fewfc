@@ -35,9 +35,10 @@ jobs:
         with:
           version: 12.3.4
           runtime: bun@1.4.2
-          working-directory: apps/web
           cache: true
-          require-lockfile: true
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+          package-json-file: apps/web/package.json
+          install: true
       - run: bun run test:unit
       - run: bun run typecheck
 
@@ -57,9 +58,10 @@ jobs:
         with:
           version: 12.3.4
           runtime: bun@1.4.2
-          working-directory: apps/web
           cache: true
-          require-lockfile: true
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+          package-json-file: apps/web/package.json
+          install: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -96,9 +98,10 @@ jobs:
         with:
           version: 12.3.4
           runtime: bun@1.4.2
-          working-directory: apps/web
           cache: true
-          require-lockfile: true
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+          package-json-file: apps/web/package.json
+          install: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -146,9 +149,10 @@ jobs:
         with:
           version: 12.3.4
           runtime: bun@1.4.2
-          working-directory: apps/web
           cache: true
-          require-lockfile: true
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+          package-json-file: apps/web/package.json
+          install: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
