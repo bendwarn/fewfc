@@ -61,12 +61,13 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
-          run_install: false
+          run_install: |
+            - cwd: apps/web
+              args: [--frozen-lockfile]
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: pnpm install --frozen-lockfile
       - run: bun run validate:deploy staging
       - run: bun run build:staging
       - name: Validate requested maintenance mode
@@ -127,12 +128,13 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
-          run_install: false
+          run_install: |
+            - cwd: apps/web
+              args: [--frozen-lockfile]
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: pnpm install --frozen-lockfile
       - run: bun run validate:deploy production
       - run: bun run build:production
       - name: Validate requested maintenance mode

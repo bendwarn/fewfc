@@ -37,8 +37,9 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
-          run_install: false
-      - run: pnpm install --frozen-lockfile
+          run_install: |
+            - cwd: apps/web
+              args: [--frozen-lockfile]
       - run: bun run test:unit
       - run: bun run typecheck
 
@@ -60,12 +61,13 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
-          run_install: false
+          run_install: |
+            - cwd: apps/web
+              args: [--frozen-lockfile]
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - run: bun run test:e2e
 
@@ -100,12 +102,13 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
-          run_install: false
+          run_install: |
+            - cwd: apps/web
+              args: [--frozen-lockfile]
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: pnpm install --frozen-lockfile
       - run: bun run validate:deploy staging
       - run: bun run build:staging
       - name: Apply migrations and deploy
@@ -151,12 +154,13 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
-          run_install: false
+          run_install: |
+            - cwd: apps/web
+              args: [--frozen-lockfile]
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: pnpm install --frozen-lockfile
       - run: bun run validate:deploy production
       - run: bun run build:production
       - name: Apply migrations and deploy
