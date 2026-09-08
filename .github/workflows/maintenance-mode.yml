@@ -56,16 +56,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
-      - uses: pnpm/setup@v2
-        with:
-          working-directory: apps/web
-          runtime: node@24
-          cache: true
-          require-lockfile: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - run: bun install
       - run: bun run validate:deploy staging
       - run: bun run build:staging
       - name: Validate requested maintenance mode
@@ -89,7 +84,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-          packageManager: pnpm
+          packageManager: bun
           workingDirectory: apps/web
           environment: staging
           secrets: |
@@ -121,16 +116,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
-      - uses: pnpm/setup@v2
-        with:
-          working-directory: apps/web
-          runtime: node@24
-          cache: true
-          require-lockfile: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - run: bun install
       - run: bun run validate:deploy production
       - run: bun run build:production
       - name: Validate requested maintenance mode
@@ -154,7 +144,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-          packageManager: pnpm
+          packageManager: bun
           workingDirectory: apps/web
           environment: production
           secrets: |

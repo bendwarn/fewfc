@@ -60,12 +60,5 @@
     "vitest": "^5.0.0",
     "vue-tsc": "^3.3.11",
     "wrangler": "^4.129.0"
-  },
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "^12.3.4",
-      "onFail": "download"
-    }
   }
 }
