@@ -45,8 +45,7 @@ jobs:
           working-directory: apps/web
           runtime: node@24
           cache: true
-          install: false
-      - run: pnpm install --frozen-lockfile
+          require-lockfile: true
       - run: bun run test:unit
       - run: bun run typecheck
 
@@ -69,12 +68,11 @@ jobs:
           working-directory: apps/web
           runtime: node@24
           cache: true
-          install: false
+          require-lockfile: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - run: bun run test:e2e
 
@@ -109,12 +107,11 @@ jobs:
           working-directory: apps/web
           runtime: node@24
           cache: true
-          install: false
+          require-lockfile: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: pnpm install --frozen-lockfile
       - run: bun run validate:deploy staging
       - run: bun run build:staging
       - name: Apply migrations and deploy
@@ -215,12 +212,11 @@ jobs:
           working-directory: apps/web
           runtime: node@24
           cache: true
-          install: false
+          require-lockfile: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: pnpm install --frozen-lockfile
       - run: bun run validate:deploy production
       - run: bun run build:production
       - name: Apply migrations and deploy
