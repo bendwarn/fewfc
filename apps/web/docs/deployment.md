@@ -167,20 +167,20 @@ migration has completed.
 
 ## GitHub Actions CI/CD
 
-Local and CI dependencies are managed with pnpm (see `../README.md`). Both
-GitHub Actions workflows use `pnpm/setup@v2`, read the pnpm version from
-`apps/web/package.json`, and install with `pnpm install --frozen-lockfile`.
-The deployment action also uses pnpm. Bun remains installed for scripts and
-tests; commit dependency changes with `pnpm-lock.yaml`.
+Local dependency management remains pnpm (see `../README.md`), and dependency
+changes must update `pnpm-lock.yaml`. GitHub Actions temporarily uses Bun for
+installation and deployment because `pnpm/setup@v2` currently has an action
+compatibility issue. Restore pnpm in CI after that action is fixed; this does
+not change the repository's primary package manager.
 
 `.github/workflows/ci-cd.yml` is the deployment source of truth:
 
 - Pull requests and pushes to `main` run Rust tests, Web unit tests and type
   checking, and the Worker-backed Playwright suite.
 - A successful push to `main` deploys `staging` automatically.
-- `production` is deployed from `main` through the workflow's manual
-  `workflow_dispatch` action. Protect the GitHub `production` Environment with
-  required reviewers.
+- A successful push to `main` deploys `production` automatically after the same
+  run's `staging` deployment succeeds. The `production` Environment must not
+  require reviewers or a wait timer; its branch policy may remain enabled.
 - Each deployment builds the environment-specific Nuxt/Wasm output, uploads
   `BETTER_AUTH_SECRET` and `LEGACY_PURGE_SECRET`, applies pending remote D1
   migrations, and then deploys the Worker.

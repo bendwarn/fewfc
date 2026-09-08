@@ -25,7 +25,7 @@
     </section>
   </div>
   <div class="verdict">
-    fewfc 建議保留 GitHub Actions：它已有 Rust、Web、E2E gates、D1 migration、staging 自動部署與 production 手動部署。
+    fewfc 建議保留 GitHub Actions：它已有 Rust、Web、E2E gates、D1 migration，並在 staging 成功後自動部署 production。
   </div>
   <h2>最常見的錯誤</h2>
   <p>同時啟用 Cloudflare Git integration 的 production deploy 與 GitHub Actions deploy。同一次 push 會啟動兩條互不等待的流程，可能重複或競速部署。</p>
