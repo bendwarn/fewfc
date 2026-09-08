@@ -61,12 +61,12 @@ jobs:
           runtime: bun@1.4.2
           cache: true
           cache-dependency-path: apps/web/pnpm-lock.yaml
-          package-json-file: apps/web/package.json
-          install: true
+          install: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
       - run: bun run validate:deploy staging
       - run: bun run build:staging
       - name: Validate requested maintenance mode
@@ -127,12 +127,12 @@ jobs:
           runtime: bun@1.4.2
           cache: true
           cache-dependency-path: apps/web/pnpm-lock.yaml
-          package-json-file: apps/web/package.json
-          install: true
+          install: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
       - run: bun run validate:deploy production
       - run: bun run build:production
       - name: Validate requested maintenance mode
