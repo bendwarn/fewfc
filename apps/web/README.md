@@ -24,11 +24,11 @@ values as nullable data, restores the unique `(provider_id, account_id)` key, an
 keeps existing account, password, token, and session data.
 Keep Vitest within the peer dependency range supported by `@nuxt/test-utils`.
 
-Each Git worktree should install its own `node_modules`; pnpm shares package
-contents through its store. Prepare a separate `.env` and local Wrangler storage
-in each worktree. The E2E server currently uses port 8727, so run E2E suites
-sequentially with `PLAYWRIGHT_REUSE_SERVER=0` to avoid reusing another worktree’s
-server. Stop any existing server on that port first.
+Initialize each checkout from the repository root with
+`bun scripts/setup-worktree.ts`. It installs dependencies with pnpm, assigns
+separate development/test ports, builds the app, and migrates local storage.
+Before deleting a worktree, run `bun run dev:stop` from apps/web to stop its managed servers.
+See [worktree setup](../../docs/worktree-setup.md) for Codex local and Cloud setup.
 
 Create a Cloudflare D1 database, copy its ID into `wrangler.toml`, then apply the authentication schema:
 

@@ -1896,6 +1896,11 @@ Shield receives the unreduced damage.
 
 ### 39. Theme Rule Module Delivery Scope And Defaults
 
+The independent theme-selection and global-catalog default policy below is
+superseded by [ADR-0038](adr/0038-bind-games-to-rule-versions.md): a selected Rule
+Version enables its complete theme set and excludes themes from other versions.
+The remaining execution decisions in this section continue to apply.
+
 Add Jianghu, Confluence Generation, and Dark Glimmer as three independently
 selectable Theme Rule Modules, delivered in that order. Each delivery is a
 complete vertical slice through the Rust rules engine, canonical replay,

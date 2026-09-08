@@ -32,6 +32,10 @@ and run conformance cases with each supported module configuration.
 
 ## Consequences
 
+Rule Version identity and theme selection below are superseded by
+[ADR-0038](0038-bind-games-to-rule-versions.md). Record schema compatibility
+remains a separate decision.
+
 Adding an official Rule Module requires extending the exhaustive catalog and may
 extend the shared canonical schema. Available modules are enabled by default in
 new Web rooms and remain independently configurable; disabling all modules

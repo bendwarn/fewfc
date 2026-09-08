@@ -1,0 +1,15 @@
+version = 1
+name = "fewfc"
+
+[setup]
+script = "bun scripts/setup-worktree.ts"
+
+[[actions]]
+name = "Dev"
+icon = "run"
+command = "cd apps/web && bun run dev"
+
+[[actions]]
+name = "Stop servers"
+icon = "run"
+command = "cd apps/web && bun run dev:stop"

@@ -2,6 +2,7 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { defineConfig } from '@playwright/test'
 import dotenv from "dotenv"
+import { port } from "./scripts/local-ports"
 
 dotenv.config({
   path: resolve(dirname(fileURLToPath(import.meta.url)), ".env"),
@@ -23,9 +24,10 @@ function browserNameFromEnvironment(): BrowserName {
   )
 }
 
+const baseURL = `http://localhost:${port("FEWFC_E2E_PORT", 8727)}`
 const browserName = browserNameFromEnvironment()
 const browserPath = process.env.PLAYWRIGHT_BROWSER_PATH
-const reuseExistingServer = !process.env.CI && process.env.PLAYWRIGHT_REUSE_SERVER !== "0"
+const reuseExistingServer = !process.env.CI && process.env.PLAYWRIGHT_REUSE_SERVER === "1"
 const e2eServerCommand =
   process.env.FEWFC_E2E_PREBUILT === "1"
     ? "bun run test:e2e:server:built"
@@ -35,15 +37,16 @@ export default defineConfig({
   testDir: "./tests/e2e",
   workers: process.env.CI ? undefined : 1,
   use: {
-    baseURL: "http://localhost:8727",
+    baseURL,
     browserName,
     launchOptions: browserPath ? { executablePath: browserPath } : {},
     screenshot: "off",
     trace: "retain-on-failure",
   },
   webServer: {
+    gracefulShutdown: { signal: 'SIGTERM', timeout: 10_000 },
     command: e2eServerCommand,
-    url: "http://localhost:8727/login",
+    url: `${baseURL}/login`,
     timeout: 360_000,
     reuseExistingServer,
   },

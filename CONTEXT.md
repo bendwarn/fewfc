@@ -4,6 +4,12 @@ Deterministic rules engine for CFECards game state, formation resolution, turn f
 
 ## Language
 
+**Rule Version (規則版本)**:
+A complete published version identifier, such as 5.16 or 5.17, identifying the
+applicable rule content and the full set of Theme Rule Modules enabled together
+for a Game. A Game retains its selected Rule Version throughout play.
+_Avoid_: generation, Confluence Generation Rule Module, engine version, schema version
+
 **Rules Engine**:
 A pure Rust library that validates commands, advances deterministic game state, resolves formations, emits canonical events, and supports replay.
 
