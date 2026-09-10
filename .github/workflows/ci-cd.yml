@@ -131,9 +131,13 @@ jobs:
           packageManager: pnpm
           workingDirectory: apps/web
           environment: staging
+          vars: |
+            CLOUDFLARE_ACCOUNT_ID
           command: |
             d1 migrations apply fewfc-auth-staging --remote --env staging
-            deploy --env staging --var CLOUDFLARE_ACCOUNT_ID:${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+            deploy --env staging
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   deploy-production:
     name: Deploy production
@@ -185,6 +189,10 @@ jobs:
           packageManager: pnpm
           workingDirectory: apps/web
           environment: production
+          vars: |
+            CLOUDFLARE_ACCOUNT_ID
           command: |
             d1 migrations apply fewfc-auth-production --remote --env production
-            deploy --env production --var CLOUDFLARE_ACCOUNT_ID:${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+            deploy --env production
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
