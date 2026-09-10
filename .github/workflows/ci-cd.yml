@@ -29,32 +29,6 @@ jobs:
       cancel-in-progress: false
     env:
       APP_ENV: development
-    defaults:
-      run:
-        working-directory: apps/web
-    steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.2
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 12.3.4
-          cache: true
-          cache_dependency_path: apps/web/pnpm-lock.yaml
-          run_install: |
-            - cwd: apps/web
-              args: [--frozen-lockfile]
-      - run: bun run test:unit
-      - run: bun run typecheck
-
-  e2e:
-    name: Browser E2E
-    needs: web
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      APP_ENV: development
       BETTER_AUTH_SECRET: ci-e2e-only-not-for-production-00000000
     defaults:
       run:
@@ -78,6 +52,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: pnpm exec playwright install --with-deps chromium
       - run: bun run test:e2e
+      - run: bun run test:unit
+      - run: bun run typecheck
 
   deploy-staging:
     name: Deploy staging
@@ -85,7 +61,6 @@ jobs:
     needs:
       - rust
       - web
-      - e2e
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
