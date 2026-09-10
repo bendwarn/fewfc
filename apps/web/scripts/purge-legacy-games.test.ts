@@ -16,7 +16,6 @@ import {
 
 const environment = {
   CLOUDFLARE_ACCOUNT_ID: 'account',
-  LEGACY_PURGE_SECRET: 'management-secret-that-must-never-be-printed',
 }
 
 const wranglerToken = 'wrangler-oauth-token-that-must-never-be-printed'
@@ -138,6 +137,18 @@ describe('purge-legacy-games', () => {
     expect(Object.keys(environment).some(key => key.startsWith('FEWFC_STAGING_'))).toBe(false)
   })
 
+  test('allows confirmed operation with Wrangler token authentication only', async () => {
+    const config = await configFromEnvironment(
+      parsePurgeArguments(['--env', 'staging', '--epoch', 'cutover-75', '--confirm']),
+      environment,
+      async () => wranglerToken,
+      async accountId => accountId ?? 'account',
+      async () => wranglerToml,
+    )
+
+    expect(config.authorizationToken).toBe(wranglerToken)
+  })
+
   test('fails closed when Wrangler does not return an OAuth or API token', async () => {
     await expect(authorizationTokenFromWrangler(async () => ({
       exitCode: 1,
@@ -173,23 +184,74 @@ describe('purge-legacy-games', () => {
     }))).resolves.toBe('account')
   })
 
-  test('defaults to dry-run and does not require or transmit a management secret', async () => {
+  test('defaults to dry-run and uses the Wrangler token without requiring a management secret', async () => {
     const config = await configuration(
       parsePurgeArguments(['--env', 'staging', '--epoch', 'cutover-75']),
-      { ...environment, LEGACY_PURGE_SECRET: undefined },
+      environment,
     )
-    const calls: string[] = []
-    const fetcher: Fetcher = async (url) => {
-      calls.push(url)
+    const calls: Array<{ url: string, init?: RequestInit }> = []
+    const fetcher: Fetcher = async (url, init) => {
+      calls.push({ url, init })
       if (url.includes('/durable_objects/namespaces?')) return namespaceResponse()
       if (url.includes('/d1/database/')) return response({ success: true, result: [{ results: [{ game_id: 'room-1' }] }] })
+      if (url.endsWith('/room-probe')) return response({ status: 'preserved', gameId: 'room-1' })
       return response({ success: true, result: [] })
     }
 
     const result = await runLegacyPurge(config, fetcher)
 
     expect(result).toMatchObject({ mutated: false, mutationCount: 0 })
-    expect(calls.some(url => url.includes('internal/legacy-purge'))).toBe(false)
+    const probe = calls.find(call => call.url.endsWith('/room-probe'))
+    expect(probe?.init?.headers).toMatchObject({ 'x-fewfc-cloudflare-token': wranglerToken })
+  })
+
+  test('dry-run probes indexed rooms and GameRoom objects when management auth is available', async () => {
+    const config = await configuration(
+      parsePurgeArguments(['--env', 'staging', '--epoch', 'cutover-75']),
+      environment,
+    )
+    const probeCalls: Array<Record<string, unknown>> = []
+    const fetcher: Fetcher = async (url, init) => {
+      if (url.includes('/durable_objects/namespaces?')) return namespaceResponse()
+      if (url.includes('/d1/database/')) {
+        const sql = JSON.parse(String(init?.body ?? '{}')).sql as string
+        if (sql.includes('SELECT game_id')) {
+          return response({ success: true, result: [{ results: [{ game_id: 'missing-index' }] }] })
+        }
+        if (sql.includes('SELECT replay_id')) return response({ success: true, result: [{ results: [] }] })
+        throw new Error(`unexpected dry-run SQL ${sql}`)
+      }
+      if (url.includes('/objects?')) {
+        return response({
+          success: true,
+          result: url.includes('game-room-namespace')
+            ? [{ id: 'broken-object', hasStoredData: true }]
+            : [],
+          result_info: {},
+        })
+      }
+      if (url.endsWith('/room-probe')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+        probeCalls.push(body)
+        return body.objectId === 'broken-object'
+          ? response({ status: 'broken', gameId: 'broken-room' }, 500)
+          : response({ status: 'absent' }, 404)
+      }
+      throw new Error(`unexpected dry-run request ${url}`)
+    }
+
+    const result = await runLegacyPurge(config, fetcher)
+
+    expect(result).toMatchObject({ mutated: false, mutationCount: 0 })
+    expect(result.roomProbes).toEqual([
+      { kind: 'game-room-object', id: 'broken-object', status: 'broken' },
+      { kind: 'room-index', id: 'missing-index', status: 'absent' },
+    ])
+    expect(probeCalls).toEqual([
+      { epoch: 'cutover-75', objectId: 'broken-object' },
+      { epoch: 'cutover-75', roomId: 'missing-index' },
+    ])
+    expect(purgeRunSummary(result)).toMatchObject({ mode: 'dry-run', candidateRooms: 2 })
   })
 
   test('prints an inventory-only summary and redacts API credentials from failures', () => {
@@ -204,11 +266,10 @@ describe('purge-legacy-games', () => {
     })
 
     expect(JSON.stringify(summary)).not.toContain(wranglerToken)
-    expect(JSON.stringify(summary)).not.toContain(environment.LEGACY_PURGE_SECRET)
     expect(redactSecrets(
-      `request failed for ${wranglerToken}/${environment.LEGACY_PURGE_SECRET}`,
-      [wranglerToken, environment.LEGACY_PURGE_SECRET],
-    )).toBe('request failed for [redacted]/[redacted]')
+      `request failed for ${wranglerToken}`,
+      [wranglerToken],
+    )).toBe('request failed for [redacted]')
   })
 
   test('follows Durable Object API cursors and retains only object ids and storage facts', async () => {
@@ -262,7 +323,7 @@ describe('purge-legacy-games', () => {
   test('fails closed before inventory when a configured Durable Object namespace is ambiguous', async () => {
     const config = await configuration(
       parsePurgeArguments(['--env', 'staging', '--epoch', 'cutover-75']),
-      { ...environment, LEGACY_PURGE_SECRET: undefined },
+      environment,
     )
     const calls: string[] = []
     const fetcher: Fetcher = async (url) => {
@@ -284,7 +345,7 @@ describe('purge-legacy-games', () => {
     expect(calls[0]).toContain('/durable_objects/namespaces?')
   })
 
-  test('reports zero new mutation when a same-epoch rerun sees only already-purged rooms', async () => {
+  test('reports zero new mutation when a same-epoch rerun sees no stored room objects', async () => {
     const config = await configuration(
       parsePurgeArguments(['--env', 'staging', '--epoch', 'cutover-75', '--confirm']),
       environment,
@@ -307,8 +368,9 @@ describe('purge-legacy-games', () => {
         }
         return response({ success: true, result: [], result_info: {} })
       }
-      if (url.endsWith('/room')) return response({ status: 'alreadyPurged' })
-      if (url.endsWith('/room-index')) return response({ roomIndexUpdated: 0 })
+      if (url.endsWith('/room')) return response({ status: 'preserved', gameId: 'room-1' })
+      if (url.endsWith('/room-index')) return response({ status: 'preserved', roomIndexDeleted: 0 })
+      if (url.endsWith('/room-probe')) return response({ status: 'preserved', gameId: 'room-1' })
       if (url.endsWith('/replay-index')) return response({ playerSavedReplayDeleted: 0, replayArchiveLifecycleDeleted: 0 })
       if (url.endsWith('/room-verify')) return response({ status: 'Waiting', hasGameRecord: false })
       throw new Error(`unexpected test request ${url}`)
@@ -320,20 +382,24 @@ describe('purge-legacy-games', () => {
     })
   })
 
-  test('targets only legacy replay tables, preserves room identities, and verifies the cutover', async () => {
+  test('deletes only rooms whose management response is absent or broken and preserves all others', async () => {
     const config = await configuration(
       parsePurgeArguments(['--env', 'staging', '--epoch', 'cutover-75', '--confirm']),
       environment,
     )
     const sql: string[] = []
     const managementCalls: Array<{ path: string, body: Record<string, unknown> }> = []
+    let staleRoomPresent = true
     const fetcher: Fetcher = async (url, init) => {
       if (url.includes('/durable_objects/namespaces?')) return namespaceResponse()
       if (url.includes('/d1/database/')) {
         const statement = JSON.parse(String(init?.body ?? '{}')).sql as string
         sql.push(statement)
         if (statement.includes('SELECT game_id')) {
-          return response({ success: true, result: [{ results: [{ game_id: 'room-1' }] }] })
+          return response({ success: true, result: [{ results: [
+            { game_id: 'room-1' },
+            ...(staleRoomPresent ? [{ game_id: 'stale-room' }] : []),
+          ] }] })
         }
         if (statement.includes('SELECT replay_id')) {
           return response({ success: true, result: [{ results: [{ replay_id: 'replay-1' }] }] })
@@ -345,33 +411,57 @@ describe('purge-legacy-games', () => {
       }
       if (url.includes('/objects?')) {
         if (url.includes('game-room-namespace')) {
-          return response({ success: true, result: [{ id: 'room-object', hasStoredData: true }], result_info: {} })
+          return response({ success: true, result: [
+            { id: 'orphan-room-object', hasStoredData: true },
+            { id: 'broken-room-object', hasStoredData: true },
+            { id: 'live-room-object', hasStoredData: true },
+          ], result_info: {} })
         }
         return response({ success: true, result: [{ id: 'replay-object', hasStoredData: true }], result_info: {} })
       }
       const path = new URL(url).pathname.split('/').at(-1) as string
       const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
       managementCalls.push({ path, body })
-      if (path === 'room') return response({ status: 'purged' })
-      if (path === 'room-index') return response({ roomIndexUpdated: 1 })
+      if (path === 'room') {
+        if (body.objectId === 'orphan-room-object') return response({ status: 'absent' }, 404)
+        if (body.objectId === 'broken-room-object') return response({ status: 'broken', gameId: 'broken-room' }, 500)
+        return response({ status: 'preserved', gameId: 'room-1' })
+      }
+      if (path === 'room-index') {
+        if (body.roomId === 'stale-room') {
+          staleRoomPresent = false
+          return response({ status: 'absent', roomIndexDeleted: 1 })
+        }
+        return response({ status: 'preserved', roomIndexDeleted: 0 })
+      }
       if (path === 'replay') return response({ purged: true })
       if (path === 'replay-index') return response({ playerSavedReplayDeleted: 1, replayArchiveLifecycleDeleted: 1 })
-      if (path === 'room-verify') return response({ status: 'Waiting', hasGameRecord: false })
+      if (path === 'room-probe') {
+        if (body.objectId === 'orphan-room-object' || body.objectId === 'broken-room-object') {
+          return response({ status: 'Absent' }, 404)
+        }
+        return response({ status: 'preserved', gameId: 'room-1' })
+      }
       if (path === 'replay-verify') return response({ keyCount: 0 })
       if (path === 'replay-sample') return response({ status: 404 })
       throw new Error(`unexpected management endpoint ${path}`)
     }
 
     await expect(runLegacyPurge(config, fetcher)).resolves.toMatchObject({
-      mutationCount: 5,
-      inventory: { roomIds: ['room-1'], replayIds: ['replay-1'] },
+      mutationCount: 6,
+      inventory: { roomIds: ['room-1', 'stale-room'], replayIds: ['replay-1'] },
     })
     expect(sql.filter(statement => statement.startsWith('DELETE'))).toEqual([])
-    expect(managementCalls.find(call => call.path === 'room-index')?.body).toEqual({ epoch: 'cutover-75' })
     expect(managementCalls.find(call => call.path === 'replay-index')?.body).toEqual({ epoch: 'cutover-75' })
-    expect(managementCalls.find(call => call.path === 'room')?.body).toEqual({
-      epoch: 'cutover-75', objectId: 'room-object',
-    })
+    expect(managementCalls.filter(call => call.path === 'room-index').map(call => call.body)).toEqual([
+      { epoch: 'cutover-75', roomId: 'room-1' },
+      { epoch: 'cutover-75', roomId: 'stale-room' },
+    ])
+    expect(managementCalls.filter(call => call.path === 'room').map(call => call.body)).toEqual([
+      { epoch: 'cutover-75', objectId: 'orphan-room-object' },
+      { epoch: 'cutover-75', objectId: 'broken-room-object' },
+      { epoch: 'cutover-75', objectId: 'live-room-object' },
+    ])
     expect(managementCalls.find(call => call.path === 'replay')?.body).toEqual({
       epoch: 'cutover-75', objectId: 'replay-object',
     })
@@ -402,13 +492,49 @@ describe('purge-legacy-games', () => {
       }
       const path = new URL(url).pathname.split('/').at(-1) as string
       managementPaths.push(path)
-      if (path === 'room') return response({ status: 'purged' })
-      if (path === 'room-index') return response({ error: 'storage failure' }, 500)
+      if (path === 'room') return response({ status: 'preserved' })
+      if (path === 'replay-index') return response({ error: 'storage failure' }, 500)
       throw new Error(`unexpected management endpoint ${path}`)
     }
 
-    await expect(runLegacyPurge(config, fetcher)).rejects.toThrow('room-index')
-    expect(managementPaths).toEqual(['room', 'room-index'])
+    await expect(runLegacyPurge(config, fetcher)).rejects.toThrow('replay-index')
+    expect(managementPaths).toEqual(['room', 'replay-index'])
     expect(managementPaths).not.toContain('reopen-traffic')
+  })
+
+  test('fails closed when a preserved room becomes broken during verification', async () => {
+    const config = await configuration(
+      parsePurgeArguments(['--env', 'staging', '--epoch', 'cutover-75', '--confirm']),
+      environment,
+    )
+    const managementPaths: string[] = []
+    const fetcher: Fetcher = async (url, init) => {
+      if (url.includes('/durable_objects/namespaces?')) return namespaceResponse()
+      if (url.includes('/d1/database/')) {
+        const sql = JSON.parse(String(init?.body ?? '{}')).sql as string
+        if (sql.includes('SELECT game_id') || sql.includes('SELECT replay_id')) {
+          return response({ success: true, result: [{ results: [] }] })
+        }
+        return response({ success: true, result: [{ results: [{ saved_count: 0, lifecycle_count: 0 }] }] })
+      }
+      if (url.includes('/objects?')) {
+        return response({
+          success: true,
+          result: url.includes('game-room-namespace')
+            ? [{ id: 'room-object', hasStoredData: true }]
+            : [],
+          result_info: {},
+        })
+      }
+      const path = new URL(url).pathname.split('/').at(-1) as string
+      managementPaths.push(path)
+      if (path === 'room') return response({ status: 'preserved', gameId: 'room-1' })
+      if (path === 'room-probe') return response({ status: 'broken', gameId: 'room-1' }, 500)
+      if (path === 'replay-index') return response({ playerSavedReplayDeleted: 0, replayArchiveLifecycleDeleted: 0 })
+      throw new Error(`unexpected management endpoint ${path}`)
+    }
+
+    await expect(runLegacyPurge(config, fetcher)).rejects.toThrow('room-probe failed with HTTP 500')
+    expect(managementPaths).toEqual(['room', 'replay-index', 'room-probe'])
   })
 })

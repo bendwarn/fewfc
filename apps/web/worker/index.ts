@@ -2,10 +2,8 @@ import nuxtWorker from '../.output/server/index.mjs'
 import { GameRoom } from './durable-objects/game-room'
 import { PlayerNotifications } from './durable-objects/player-notifications'
 import { ReplayArchive } from './durable-objects/replay-archive'
-import {
-  legacyReplayDeleteStatements,
-  resetLegacyActiveRoomStatusStatement,
-} from './legacy-purge'
+import { legacyReplayDeleteStatements } from './legacy-purge'
+import { managementAuthorized } from './management-auth'
 import { maintenanceBlocksPlayerMutation, maintenanceEnabled } from './maintenance'
 import {
   callPersonalDeckResolution,
@@ -21,8 +19,8 @@ interface WorkerEnv {
   APP_ENV: 'development' | 'staging' | 'production'
   /** 部署時明確控制單向舊版切換的閘門。 */
   MAINTENANCE_MODE?: string
-  /** 舊版清除管理端點專用的密鑰。 */
-  LEGACY_PURGE_SECRET?: string
+  /** 從部署帳戶設定注入，僅用來驗證 Wrangler token 的帳戶範圍。 */
+  CLOUDFLARE_ACCOUNT_ID?: string
 }
 
 interface AuthSessionResponse {
@@ -113,20 +111,6 @@ async function websocketResponse(
   })
 }
 
-function managementAuthorized(request: Request, env: WorkerEnv): boolean {
-  if (!maintenanceEnabled(env.MAINTENANCE_MODE) || !env.LEGACY_PURGE_SECRET) return false
-  const supplied = request.headers.get('x-fewfc-legacy-purge-secret')
-  if (!supplied) return false
-  const expectedBytes = new TextEncoder().encode(env.LEGACY_PURGE_SECRET)
-  const suppliedBytes = new TextEncoder().encode(supplied)
-  // `timingSafeEqual` 要求長度相同。輸入長度不同時仍執行固定時間比較，讓
-  // 未授權呼叫端無法利用回應時間推測密鑰長度。
-  const lengthsMatch = expectedBytes.byteLength === suppliedBytes.byteLength
-  return lengthsMatch
-    ? crypto.subtle.timingSafeEqual(expectedBytes, suppliedBytes)
-    : !crypto.subtle.timingSafeEqual(suppliedBytes, suppliedBytes)
-}
-
 async function managementResponse(
   request: Request,
   env: WorkerEnv,
@@ -135,7 +119,7 @@ async function managementResponse(
   if (!url.pathname.startsWith('/internal/legacy-purge/')) return null
   // 對停用的閘門與錯誤密鑰都回傳 404，讓這個受保護的控制介面不會在一般
   // 玩家流量中被發現。
-  if (!managementAuthorized(request, env)) {
+  if (!await managementAuthorized(request, env)) {
     return Response.json({ error: 'not found' }, { status: 404 })
   }
   if (request.method !== 'POST') {
@@ -169,6 +153,20 @@ async function managementResponse(
     })
   }
 
+  if (url.pathname === '/internal/legacy-purge/room-probe') {
+    const hasRoomId = typeof body.roomId === 'string' && body.roomId.trim()
+    const hasObjectId = typeof body.objectId === 'string' && body.objectId.trim()
+    if (Boolean(hasRoomId) === Boolean(hasObjectId)) {
+      return Response.json({ error: 'provide exactly one roomId or objectId' }, { status: 400 })
+    }
+    const id = hasRoomId
+      ? env.GAME_ROOM.idFromName(body.roomId as string)
+      : env.GAME_ROOM.idFromString(body.objectId as string)
+    return await env.GAME_ROOM.get(id).fetch('https://game-room.internal/manage/probe-legacy', {
+      method: 'POST',
+    })
+  }
+
   if (url.pathname === '/internal/legacy-purge/replay') {
     const hasObjectId = typeof body.objectId === 'string' && body.objectId.trim()
     if (!hasObjectId) return Response.json({ error: 'an objectId is required' }, { status: 400 })
@@ -198,6 +196,32 @@ async function managementResponse(
     })
   }
 
+  // 先由權威 GameRoom 判定 404，再清理對應的索引列；可回應房間不做任何變更。
+  if (url.pathname === '/internal/legacy-purge/room-index') {
+    const roomId = typeof body.roomId === 'string' ? body.roomId.trim() : ''
+    if (!roomId) return Response.json({ error: 'a roomId is required' }, { status: 400 })
+    const room = env.GAME_ROOM.get(env.GAME_ROOM.idFromName(roomId))
+    const roomResponse = await room.fetch('https://game-room.internal/manage/purge-legacy', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ epoch }),
+    })
+    const roomResult = await roomResponse.json() as { status?: unknown }
+    const removable = (roomResponse.status === 404 && roomResult.status === 'absent')
+      || (roomResponse.status === 500 && roomResult.status === 'broken')
+    if (!removable) {
+      if (roomResponse.ok && roomResult.status === 'preserved') {
+        return Response.json({ status: 'preserved', roomIndexDeleted: 0 })
+      }
+      return Response.json({ error: 'room management response was unreadable' }, { status: 502 })
+    }
+    const results = await env.DB.batch([
+      env.DB.prepare('DELETE FROM public_game_room WHERE game_id = ?').bind(roomId),
+      env.DB.prepare('DELETE FROM game_room_member WHERE game_id = ?').bind(roomId),
+    ])
+    return Response.json({ status: roomResult.status, roomIndexDeleted: results[0]?.meta.changes ?? 0 })
+  }
+
   if (url.pathname === '/internal/legacy-purge/replay-sample') {
     const requestedReplayId = typeof body.replayId === 'string' ? body.replayId : undefined
     if (!requestedReplayId?.trim()) {
@@ -216,11 +240,6 @@ async function managementResponse(
       playerSavedReplayDeleted: results[0]?.meta.changes ?? 0,
       replayArchiveLifecycleDeleted: results[1]?.meta.changes ?? 0,
     })
-  }
-
-  if (url.pathname === '/internal/legacy-purge/room-index') {
-    const result = await env.DB.prepare(resetLegacyActiveRoomStatusStatement).run()
-    return Response.json({ roomIndexUpdated: result.meta.changes ?? 0 })
   }
 
   return Response.json({ error: 'not found' }, { status: 404 })

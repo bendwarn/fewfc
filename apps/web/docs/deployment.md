@@ -47,16 +47,15 @@ bunx wrangler secret put BETTER_AUTH_SECRET --env production
 Schema 7 centralizes card supply and the serialized pending rule flow. It does
 not read, migrate, or replay schema 6 Game Records. The one-time purge is
 manual, dry-run-first, and is never run by deployment, migration, or tests. It
-preserves waiting-room identity and configuration; it resets only active and
-finished matches.
+only removes GameRoom Durable Objects whose management-only authoritative probe
+returns either `404 { status: "absent" }` or the explicit `500 { status: "broken" }`
+classification, and removes the matching stale public-room index row. A healthy
+room is preserved exactly as-is. Ordinary player-facing `401`/`403` responses are
+not used by this probe and never qualify a room for deletion.
 
-Before the cutover, configure a dedicated `LEGACY_PURGE_SECRET` for both
-environments. Do not put its value in a file or command argument:
-
-```bash
-bunx wrangler secret put LEGACY_PURGE_SECRET --env staging
-bunx wrangler secret put LEGACY_PURGE_SECRET --env production
-```
+The Worker management route requires maintenance mode and a short-lived Wrangler
+token verified against the configured Cloudflare account. The account ID selects
+the verification scope; it is not itself a credential.
 
 The management script reuses the local Wrangler login instead of requiring a
 `CLOUDFLARE_API_TOKEN`. Authenticate and confirm the intended account before
@@ -75,9 +74,10 @@ Cloudflare's read-only namespace listing by the configured Worker and
 whoami --json` and temporary Cloudflare authorization from `wrangler auth token
 --json`; both remain only in memory and are never printed. If the logged-in
 profile belongs to multiple accounts, set the non-secret
-`CLOUDFLARE_ACCOUNT_ID` to select the intended account explicitly. Set only
-`LEGACY_PURGE_SECRET` in the operator's environment; do not set
-`FEWFC_*` target variables.
+`CLOUDFLARE_ACCOUNT_ID` to select the intended account explicitly. The same
+account ID must be injected into the deployed Worker as a variable by the
+protected deployment configuration; it is never sufficient as a credential by
+itself. Do not set `FEWFC_*` target variables.
 
 Run staging first. Use the **Set Worker maintenance mode** GitHub Action with
 `staging` and `enable` (preferred), or deploy the release with
@@ -86,27 +86,38 @@ a dry-run inventory:
 
 ```bash
 bun run build:staging
-wrangler deploy --env staging --var MAINTENANCE_MODE:true
+wrangler deploy --env staging --var MAINTENANCE_MODE:true --var CLOUDFLARE_ACCOUNT_ID:"$CLOUDFLARE_ACCOUNT_ID"
 bun run purge:legacy-games --env staging --epoch schema-7-2026-08-26
 ```
 
+The dry-run sends read-only `room-probe` requests for every indexed room and
+stored GameRoom object. Its `candidateRooms` count covers only explicit
+`absent` or `broken` responses; malformed responses fail closed and no mutation
+is attempted. The CLI forwards the short-lived Wrangler token only to the
+configured Worker URL, using the dedicated management header.
+
 Only after confirming room identities and object counts, run the mutation and
-its idempotency verification. A successful second confirmed run reports
-`mutationCount: 0`:
+its idempotency verification. A GameRoom is deleted only when its management-only
+authoritative probe returns the explicit `404 { status: "absent" }` or
+`500 { status: "broken" }` response. The same check is applied to each D1
+public-room row before removing a stale index row. A successful probe returns
+`200 { status: "preserved" }` and leaves the DO and index untouched.
+A successful second confirmed run reports `mutationCount: 0`:
 
 ```bash
 bun run purge:legacy-games --env staging --epoch schema-7-2026-08-26 --confirm
 bun run purge:legacy-games --env staging --epoch schema-7-2026-08-26 --confirm
 ```
 
-Keep maintenance enabled if either command fails. The script verifies that no
-Game Record remains in enumerated rooms, active/finished rooms are waiting, both
-replay D1 tables are empty, and every enumerated ReplayArchive is empty. Reopen
-traffic only after that verification succeeds using the GitHub Action with
-`staging` and `disable` (preferred), or:
+Keep maintenance enabled if either command fails. The script verifies that
+preserved room identities still match the dry-run inventory, every removed room
+object returns 404 after deletion, every preserved room remains readable, both
+replay D1 tables are empty, and every enumerated ReplayArchive is empty. Reopen traffic only after
+that verification succeeds using the GitHub Action with `staging` and
+`disable` (preferred), or:
 
 ```bash
-wrangler deploy --env staging --var MAINTENANCE_MODE:false
+wrangler deploy --env staging --var MAINTENANCE_MODE:false --var CLOUDFLARE_ACCOUNT_ID:"$CLOUDFLARE_ACCOUNT_ID"
 ```
 
 Repeat the same sequence with `production` only after staging verification is
@@ -189,8 +200,9 @@ available; it is independent of repository visibility.
   run's `staging` deployment succeeds. The `production` Environment must not
   require reviewers or a wait timer; its branch policy may remain enabled.
 - Each deployment builds the environment-specific Nuxt/Wasm output, uploads
-  `BETTER_AUTH_SECRET` and `LEGACY_PURGE_SECRET`, applies pending remote D1
-  migrations, and then deploys the Worker.
+  `BETTER_AUTH_SECRET`, injects the protected `CLOUDFLARE_ACCOUNT_ID` as a
+  Worker variable, applies pending
+  remote D1 migrations, and then deploys the Worker.
 
 Create GitHub Environments named `staging` and `production`. Add these encrypted
 secrets to both environments:
@@ -198,7 +210,6 @@ secrets to both environments:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 - `BETTER_AUTH_SECRET`
-- `LEGACY_PURGE_SECRET`
 
 Use different `BETTER_AUTH_SECRET` values for staging and production. The
 Cloudflare token needs Workers Scripts write access, D1 edit access, and Account

@@ -18,9 +18,12 @@ describe('safeInternalPath', () => {
 })
 
 describe('roomRouteResult', () => {
-  test('maps room failures to player-facing results', () => {
+  test('only presents an actual 404 as a missing room', () => {
     expect(roomRouteResult(new Error('room is full'))).toBe('房間已滿')
     expect(roomRouteResult(new Error('room has already started'))).toBe('對局已開始')
-    expect(roomRouteResult(new Error('room not found'))).toBe('找不到這個房間')
+    expect(roomRouteResult({ status: 404 })).toBe('找不到這個房間')
+    expect(roomRouteResult({ statusCode: 403 })).toBe('你沒有權限進入這個房間')
+    expect(roomRouteResult({ status: 500 })).toBe('房間服務暫時無法處理要求，請稍後再試。')
+    expect(roomRouteResult({ status: 429 })).toBe('無法載入這個房間，請稍後再試。')
   })
 })

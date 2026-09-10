@@ -6,7 +6,3 @@ export const legacyReplayDeleteStatements = [
   'DELETE FROM player_saved_replay',
   'DELETE FROM replay_archive_lifecycle',
 ] as const
-
-export const resetLegacyActiveRoomStatusStatement = (
-  "UPDATE public_game_room SET status = 'Waiting' WHERE status IN ('Active', 'Finished')"
-)

@@ -133,7 +133,7 @@ jobs:
           environment: staging
           command: |
             d1 migrations apply fewfc-auth-staging --remote --env staging
-            deploy --env staging
+            deploy --env staging --var CLOUDFLARE_ACCOUNT_ID:${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   deploy-production:
     name: Deploy production
@@ -187,4 +187,4 @@ jobs:
           environment: production
           command: |
             d1 migrations apply fewfc-auth-production --remote --env production
-            deploy --env production
+            deploy --env production --var CLOUDFLARE_ACCOUNT_ID:${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

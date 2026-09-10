@@ -9,7 +9,7 @@ BETTER_AUTH_URL = "http://localhost:8787"
 MAINTENANCE_MODE = "false"
 
 [secrets]
-required = ["BETTER_AUTH_SECRET", "LEGACY_PURGE_SECRET"]
+required = ["BETTER_AUTH_SECRET"]
 
 [assets]
 directory = ".output/public"
@@ -54,7 +54,7 @@ BETTER_AUTH_URL = "https://fewfc-web-staging.febcg.workers.dev"
 MAINTENANCE_MODE = "false"
 
 [env.staging.secrets]
-required = ["BETTER_AUTH_SECRET", "LEGACY_PURGE_SECRET"]
+required = ["BETTER_AUTH_SECRET"]
 
 [[env.staging.d1_databases]]
 binding = "DB"
@@ -95,7 +95,7 @@ BETTER_AUTH_URL = "https://fewfc.febcg.workers.dev"
 MAINTENANCE_MODE = "false"
 
 [env.production.secrets]
-required = ["BETTER_AUTH_SECRET", "LEGACY_PURGE_SECRET"]
+required = ["BETTER_AUTH_SECRET"]
 
 [[env.production.d1_databases]]
 binding = "DB"

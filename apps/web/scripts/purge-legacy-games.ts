@@ -23,7 +23,6 @@ export interface PurgeConfig {
   d1DatabaseId: string
   gameRoomClassName: string
   replayClassName: string
-  managementSecret?: string
 }
 
 export interface DurableObjectInventoryItem {
@@ -50,6 +49,14 @@ export interface PurgeRunSummary {
   rooms: number
   gameRoomObjects: number
   replayObjects: number
+  /** dry-run 額外回報權威 probe 判定的清除候選數。 */
+  candidateRooms?: number
+}
+
+export interface LegacyRoomProbe {
+  kind: 'room-index' | 'game-room-object'
+  id: string
+  status: 'preserved' | 'absent' | 'broken'
 }
 
 export interface FetchResponse {
@@ -57,6 +64,11 @@ export interface FetchResponse {
   status: number
   json(): Promise<unknown>
   text(): Promise<string>
+}
+
+interface ManagementPostOptions {
+  allowNotFound?: boolean
+  allowBroken?: boolean
 }
 
 export type Fetcher = (input: string, init?: RequestInit) => Promise<FetchResponse>
@@ -305,17 +317,12 @@ export async function configFromEnvironment(
   readToml: WranglerTomlReader = readWranglerToml,
 ): Promise<PurgeConfig> {
   const target = purgeTargetFromWranglerToml(await readToml(), args.environment)
-  const managementSecret = source.LEGACY_PURGE_SECRET?.trim()
-  if (args.confirm && !managementSecret) {
-    throw new Error('missing required environment variable LEGACY_PURGE_SECRET')
-  }
 
   return {
     ...args,
     accountId: await resolveAccountId(source.CLOUDFLARE_ACCOUNT_ID?.trim() || undefined),
     authorizationToken: await resolveAuthorizationToken(),
     ...target,
-    managementSecret: args.confirm ? managementSecret : undefined,
   }
 }
 
@@ -436,21 +443,55 @@ export async function purgeInventory(
 export async function runLegacyPurge(
   config: PurgeConfig,
   fetcher: Fetcher = fetch,
-): Promise<{ inventory: PurgeInventory, mutated: boolean, mutationCount: number }> {
+): Promise<{
+  inventory: PurgeInventory
+  mutated: boolean
+  mutationCount: number
+  roomProbes?: LegacyRoomProbe[]
+}> {
   const inventory = await purgeInventory(config, fetcher)
-  if (!config.confirm) return { inventory, mutated: false, mutationCount: 0 }
+  if (!config.confirm) {
+    // dry-run 也使用 Wrangler 的暫時權杖做唯讀 probe，不繞過 maintenance/auth gate。
+    const roomProbes = await probeLegacyRooms(config, inventory, fetcher)
+    return { inventory, mutated: false, mutationCount: 0, roomProbes }
+  }
 
   let mutationCount = 0
+  const removedRoomIds: string[] = []
   for (const object of inventory.gameRoomObjects) {
-    const result = await managementPost(config, 'room', { objectId: object.id }, fetcher) as {
-      status?: unknown
+    const result = await managementPost(
+      config,
+      'room',
+      { objectId: object.id },
+      fetcher,
+      { allowNotFound: true, allowBroken: true },
+    ) as { status?: unknown }
+    if (result.status === 'absent') {
+      mutationCount += 1
+    } else if (result.status === 'broken') {
+      mutationCount += 1
+    } else if (result.status !== 'preserved') {
+      throw new Error(`management request room returned an unreadable response for ${object.id}`)
     }
-    if (result.status === 'purged') mutationCount += 1
   }
-  const roomIndex = await managementPost(config, 'room-index', {}, fetcher) as {
-    roomIndexUpdated?: unknown
+  for (const roomId of inventory.roomIds) {
+    const result = await managementPost(
+      config,
+      'room-index',
+      { roomId },
+      fetcher,
+      { allowBroken: true },
+    ) as {
+      status?: unknown
+      roomIndexDeleted?: unknown
+    }
+    if (result.status === 'absent' || result.status === 'broken') {
+      removedRoomIds.push(roomId)
+      mutationCount += Number(result.roomIndexDeleted ?? 0)
+    } else if (result.status !== 'preserved') {
+      throw new Error(`management request room-index returned an unreadable response for ${roomId}`)
+    }
   }
-  mutationCount += Number(roomIndex.roomIndexUpdated ?? 0)
   for (const object of inventory.replayObjects) {
     await managementPost(config, 'replay', { objectId: object.id }, fetcher)
     mutationCount += 1
@@ -461,7 +502,7 @@ export async function runLegacyPurge(
   }
   mutationCount += Number(replayIndex.playerSavedReplayDeleted ?? 0)
   mutationCount += Number(replayIndex.replayArchiveLifecycleDeleted ?? 0)
-  await verifyPurge(config, inventory, fetcher)
+  await verifyPurge(config, inventory, fetcher, removedRoomIds)
   return { inventory, mutated: true, mutationCount }
 }
 
@@ -469,13 +510,17 @@ export async function runLegacyPurge(
 export function purgeRunSummary(
   result: Awaited<ReturnType<typeof runLegacyPurge>>,
 ): PurgeRunSummary {
-  return {
+  const summary: PurgeRunSummary = {
     mode: result.mutated ? 'mutated' : 'dry-run',
     mutationCount: result.mutationCount,
     rooms: result.inventory.roomIds.length,
     gameRoomObjects: result.inventory.gameRoomObjects.length,
     replayObjects: result.inventory.replayObjects.length,
   }
+  if (result.roomProbes) {
+    summary.candidateRooms = result.roomProbes.filter(probe => probe.status !== 'preserved').length
+  }
+  return summary
 }
 
 export function redactSecrets(message: string, secrets: Array<string | undefined>): string {
@@ -489,47 +534,51 @@ export async function verifyPurge(
   config: PurgeConfig,
   inventory: PurgeInventory,
   fetcher: Fetcher = fetch,
+  removedRoomIds: string[] = [],
 ): Promise<void> {
-  const [roomRows, replayCounts, nonWaiting] = await Promise.all([
+  const [roomRows, replayCounts] = await Promise.all([
     d1Query<{ game_id?: unknown }>(config, 'SELECT game_id FROM public_game_room ORDER BY game_id', fetcher),
     d1Query<{ saved_count?: unknown, lifecycle_count?: unknown }>(
       config,
       'SELECT (SELECT COUNT(*) FROM player_saved_replay) AS saved_count, (SELECT COUNT(*) FROM replay_archive_lifecycle) AS lifecycle_count',
       fetcher,
     ),
-    d1Query<{ count?: unknown }>(
-      config,
-      "SELECT COUNT(*) AS count FROM public_game_room WHERE status IN ('Active', 'Finished')",
-      fetcher,
-    ),
   ])
   const roomIds = roomRows
     .map(row => row.game_id)
     .filter((value): value is string => typeof value === 'string')
-  if (JSON.stringify(roomIds) !== JSON.stringify(inventory.roomIds)) {
+  const expectedRoomIds = inventory.roomIds.filter(roomId => !removedRoomIds.includes(roomId))
+  if (JSON.stringify(roomIds) !== JSON.stringify(expectedRoomIds)) {
     throw new Error('verification failed: preserved room identities do not match the dry-run inventory')
   }
   const counts = replayCounts[0] ?? {}
   if (Number(counts.saved_count ?? -1) !== 0 || Number(counts.lifecycle_count ?? -1) !== 0) {
     throw new Error('verification failed: legacy replay tables are not empty')
   }
-  if (Number(nonWaiting[0]?.count ?? -1) !== 0) {
-    throw new Error('verification failed: an Active or Finished room remains in the public index')
-  }
-
   for (const object of inventory.gameRoomObjects) {
-    const verification = await managementPost(config, 'room-verify', { objectId: object.id }, fetcher) as {
+    const verification = await managementPost(
+      config,
+      'room-probe',
+      { objectId: object.id },
+      fetcher,
+      { allowNotFound: true },
+    ) as {
       status?: unknown
-      gameInstanceId?: unknown
-      hasGameRecord?: unknown
     }
-    if (
-      verification.hasGameRecord === true
-      || verification.status === 'Active'
-      || verification.status === 'Finished'
-      || typeof verification.gameInstanceId === 'string'
-    ) {
-      throw new Error(`verification failed: legacy Game Record remains in ${object.id}`)
+    if (verification.status !== 'Absent' && verification.status !== 'absent'
+      && verification.status !== 'preserved') {
+      throw new Error(`verification failed: room response was not preserved or absent for ${object.id}`)
+    }
+  }
+  for (const roomId of expectedRoomIds) {
+    const verification = await managementPost(
+      config,
+      'room-probe',
+      { roomId },
+      fetcher,
+    ) as { status?: unknown }
+    if (verification.status !== 'preserved') {
+      throw new Error(`verification failed: preserved room is not readable for ${roomId}`)
     }
   }
   for (const object of inventory.replayObjects) {
@@ -555,18 +604,75 @@ async function managementPost(
   path: string,
   body: Record<string, unknown>,
   fetcher: Fetcher,
+  options: ManagementPostOptions = {},
 ): Promise<unknown> {
-  if (!config.managementSecret) throw new Error('LEGACY_PURGE_SECRET is required for --confirm')
   const response = await fetcher(`${config.workerUrl}/internal/legacy-purge/${path}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-fewfc-legacy-purge-secret': config.managementSecret,
+      'x-fewfc-cloudflare-token': config.authorizationToken,
     },
     body: JSON.stringify({ epoch: config.epoch, ...body }),
   })
-  if (!response.ok) throw new Error(`management request ${path} failed with HTTP ${response.status}`)
-  return await response.json()
+  const allowsExpectedFailure = (options.allowNotFound && response.status === 404)
+    || (options.allowBroken && response.status === 500)
+  if (!response.ok && !allowsExpectedFailure) {
+    throw new Error(`management request ${path} failed with HTTP ${response.status}`)
+  }
+  const result = await response.json()
+  if (response.status === 404 && options.allowNotFound) {
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+      throw new Error(`management request ${path} returned an unreadable not-found response`)
+    }
+    const status = (result as { status?: unknown }).status
+    if (status !== 'Absent' && status !== 'absent') {
+      throw new Error(`management request ${path} returned an unexpected not-found response`)
+    }
+  }
+  if (response.status === 500 && options.allowBroken) {
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+      throw new Error(`management request ${path} returned an unreadable broken response`)
+    }
+    if ((result as { status?: unknown }).status !== 'broken') {
+      throw new Error(`management request ${path} returned an unexpected broken response`)
+    }
+  }
+  return result
+}
+
+async function probeLegacyRooms(
+  config: PurgeConfig,
+  inventory: PurgeInventory,
+  fetcher: Fetcher,
+): Promise<LegacyRoomProbe[]> {
+  const probes: LegacyRoomProbe[] = []
+  for (const object of inventory.gameRoomObjects) {
+    const result = await managementPost(
+      config,
+      'room-probe',
+      { objectId: object.id },
+      fetcher,
+      { allowNotFound: true, allowBroken: true },
+    ) as { status?: unknown }
+    if (result.status !== 'preserved' && result.status !== 'absent' && result.status !== 'broken') {
+      throw new Error(`management request room-probe returned an unreadable response for ${object.id}`)
+    }
+    probes.push({ kind: 'game-room-object', id: object.id, status: result.status })
+  }
+  for (const roomId of inventory.roomIds) {
+    const result = await managementPost(
+      config,
+      'room-probe',
+      { roomId },
+      fetcher,
+      { allowNotFound: true, allowBroken: true },
+    ) as { status?: unknown }
+    if (result.status !== 'preserved' && result.status !== 'absent' && result.status !== 'broken') {
+      throw new Error(`management request room-probe returned an unreadable response for ${roomId}`)
+    }
+    probes.push({ kind: 'room-index', id: roomId, status: result.status })
+  }
+  return probes
 }
 
 async function d1Query<T>(
@@ -611,7 +717,7 @@ function usage(): string {
 }
 
 if (import.meta.main) {
-  const sensitiveValues: Array<string | undefined> = [Bun.env.LEGACY_PURGE_SECRET]
+  const sensitiveValues: Array<string | undefined> = []
   try {
     const args = parsePurgeArguments(Bun.argv.slice(2))
     const config = await configFromEnvironment(args)

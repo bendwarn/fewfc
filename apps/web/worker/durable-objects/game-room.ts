@@ -88,12 +88,23 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         if (typeof body.epoch !== 'string' || !body.epoch.trim()) {
           return this.json({ error: 'a purge epoch is required' }, 400)
         }
-        return this.json(await this.purgeLegacyGameData(body.epoch.trim()))
+        const result = await this.purgeLegacyGameData(body.epoch.trim())
+        return this.json(result.body, result.statusCode)
+      })
+    }
+
+    if (request.method === 'POST' && url.pathname.endsWith('/manage/probe-legacy')) {
+      return await this.serialized(async () => {
+        const result = await this.legacyPurgeProbe()
+        return this.json(result.body, result.statusCode)
       })
     }
 
     if (request.method === 'POST' && url.pathname.endsWith('/manage/verify-legacy')) {
-      return await this.serialized(async () => this.json(await this.legacyPurgeVerification()))
+      return await this.serialized(async () => {
+        const result = await this.legacyPurgeVerification()
+        return this.json(result, result.status === 'Absent' ? 404 : 200)
+      })
     }
 
     if (request.method === 'GET' && url.pathname.endsWith('/socket')) {
@@ -101,7 +112,9 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
 
     if (request.method === 'GET') {
-      return this.json(await this.response())
+      const metadata = await this.metadata()
+      if (!metadata) return this.json({ error: 'room not found' }, 404)
+      return this.json(await this.response(metadata))
     }
 
     if (request.method !== 'POST') {
@@ -323,7 +336,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   }
 
   private async getState(actorUserId: string): Promise<Response> {
-    const metadata = await this.requireMetadata()
+    const metadata = await this.metadata()
+    if (!metadata) return this.json({ error: 'room not found' }, 404)
 
     if (!this.participantFor(metadata, actorUserId)) {
       return this.json(
@@ -1960,78 +1974,61 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   }
 
   /**
-   * 舊版遊戲記錄的單向管理切換。此操作特意在既有房間物件上執行，讓房間識別
-   * 與等待房間設定保持不變。時代標記讓重試即使發生在玩家準備好替代遊戲後，
-   * 也會成為無操作。
+   * 在同一個 DO 序列化操作中判定房間是否可由管理端重播。缺少權威 metadata
+   * 或 Active/Finished 的權威讀取失敗才是清理候選；等待房與觀戰授權結果不參與
+   * 此判定，避免把正常房間或未加入者誤判為故障。
    */
-  private async purgeLegacyGameData(epoch: string): Promise<{
-    status: 'purged' | 'alreadyPurged' | 'dissolved' | 'absent'
-    gameId?: string
+  private async legacyPurgeProbe(): Promise<{
+    body: {
+      status: 'preserved' | 'absent' | 'broken'
+      gameId?: string
+    }
+    statusCode: 200 | 404 | 500
   }> {
     const metadata = await this.metadata()
     if (!metadata) {
-      // 沒有房間中繼資料的物件不可能是存活中的房間。清除擱置的記錄，不讓孤立
-      // 的舊版遊戲記錄逃過命名空間盤點。
+      return { body: { status: 'absent' }, statusCode: 404 }
+    }
+
+    if (metadata.status !== 'Active' && metadata.status !== 'Finished') {
+      // 等待房與已解散房本來就沒有 Game Record；其他非對局狀態也不能因 probe 被刪除。
+      return { body: { status: 'preserved', gameId: metadata.gameId }, statusCode: 200 }
+    }
+
+    try {
+      // 以管理端的 observer 視角驗證同一份 Game Record 與規則讀取路徑；不模擬
+      // 匿名或觀戰者請求，避免把一般 401/403 誤當成清理錯誤。這裡刻意不呼叫
+      // 完整 response()，因為它可能把 Active 對局的完成狀態寫回 metadata；probe
+      // 只能觀察健康度，不能改動仍可回應的房間。
+      const snapshot = await this.requireGameRecord()
+      await this.callReadyRules({ type: 'refresh' }, 'observer', snapshot)
+      return { body: { status: 'preserved', gameId: metadata.gameId }, statusCode: 200 }
+    } catch (error) {
+      // Active/Finished 的 legacy 或缺失 Game Record 會在此明確暴露為管理讀取錯誤。
+      console.error('Legacy GameRoom authoritative read failed', error)
+      return { body: { status: 'broken', gameId: metadata.gameId }, statusCode: 500 }
+    }
+  }
+
+  private async purgeLegacyGameData(epoch: string): Promise<{
+    body: {
+      status: 'preserved' | 'absent' | 'broken'
+      gameId?: string
+      epoch: string
+    }
+    statusCode: 200 | 404 | 500
+  }> {
+    const probe = await this.legacyPurgeProbe()
+    if (probe.statusCode === 404 || probe.statusCode === 500) {
+      // 只有權威資料不存在或管理讀取明確失敗時才清除 DO。
       await this.ctx.storage.deleteAll()
-      return { status: 'absent' }
-    }
-    if (metadata.status === 'Dissolved') return { status: 'dissolved', gameId: metadata.gameId }
-
-    const previousEpoch = await this.ctx.storage.get<string>('legacyPurgeEpoch')
-    if (previousEpoch === epoch) {
-      return { status: 'alreadyPurged', gameId: metadata.gameId }
-    }
-
-    const activeOrFinished = metadata.status === 'Active' || metadata.status === 'Finished'
-    const now = new Date().toISOString()
-    const replacementMetadata: GameRoomMetadata = activeOrFinished
-      ? {
-          ...metadata,
-          gameInstanceId: undefined,
-          status: 'Waiting',
-          members: metadata.members.map(member => ({
-            ...member,
-            ready: false,
-            connected: false,
-          })),
-          updatedAt: now,
-        }
-      : {
-          ...metadata,
-          updatedAt: now,
-        }
-
-    const eventEntries = await this.ctx.storage.list({ prefix: 'event:' })
-    const replacementEvent: StoredGameEvent = {
-      sequence: 1,
-      type: 'LegacyGamePurged',
-      payload: { epoch },
-      createdAt: now,
-    }
-    const entries: Record<string, unknown> = {
-      metadata: replacementMetadata,
-      nextSequence: 2,
-      legacyPurgeEpoch: epoch,
-      [this.eventKey(1)]: replacementEvent,
-    }
-    await this.ctx.storage.put(entries)
-    await this.ctx.storage.delete([...eventEntries.keys()])
-    // 再次放入替代事件，因為舊日誌可能已經包含序列一。
-    await this.ctx.storage.put(this.eventKey(1), replacementEvent)
-    await this.ctx.storage.delete('lastCompletedReplayDraft')
-
-    if (activeOrFinished) {
-      await this.ctx.storage.delete('gameRecord')
-      for (const member of metadata.members) {
-        await this.ctx.storage.delete(this.lockedDeckKey(member.userId))
-      }
-      for (const prefix of ['commandReceipt:', 'trustedReceipt:', 'transaction:']) {
-        const transactionEntries = await this.ctx.storage.list({ prefix })
-        await this.ctx.storage.delete([...transactionEntries.keys()])
+      return {
+        body: { ...probe.body, epoch },
+        statusCode: probe.statusCode,
       }
     }
-
-    return { status: 'purged', gameId: metadata.gameId }
+    // 可成功讀取的房間一律保留，不重設任何遊戲或等待房間資料。
+    return { body: { ...probe.body, epoch }, statusCode: 200 }
   }
 
   private async legacyPurgeVerification(): Promise<{
