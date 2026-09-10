@@ -324,11 +324,11 @@ onMounted(() => {
 .deck-validation.invalid { @apply border-red-700/30 bg-red-50 text-red-900; }
 .deck-validation-errors { @apply grid gap-1 text-sm text-red-700; }
 .deck-transfer-status { @apply text-sm text-emerald-700; }
-.deck-import-dialog { @apply my-auto w-full max-w-[640px] shadow-[0_24px_70px_rgba(0,0,0,.5)]; }
-.deck-import-shell { width: min(640px, 100%); }
+.modal-shell .deck-import-dialog { @apply my-auto w-full max-w-[640px] shadow-[0_24px_70px_rgba(0,0,0,.5)]; }
+.modal-shell > .modal-shell-panel.deck-import-shell { width: min(640px, 100%); }
 .deck-management-actions { @apply grid grid-cols-3 gap-3 max-[600px]:grid-cols-1; }
-.deck-import-examples { @apply grid gap-2 text-xs text-muted; }
-.deck-import-examples code { @apply block whitespace-pre-wrap p-2 font-mono; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface-muted); color: var(--app-text); }
-.deck-import-text { @apply min-h-36 w-full p-3 font-mono outline-0; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-input); color: var(--app-text); }
-.deck-import-text:focus { border-color: var(--app-accent); box-shadow: 0 0 0 3px var(--app-focus-ring); }
+.modal-shell .deck-import-examples { @apply grid gap-2 text-xs text-muted; }
+.modal-shell .deck-import-examples code { @apply block whitespace-pre-wrap p-2 font-mono; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface-muted); color: var(--app-text); }
+.modal-shell .deck-import-text { @apply min-h-36 w-full p-3 font-mono outline-0; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-input); color: var(--app-text); }
+.modal-shell .deck-import-text:focus { border-color: var(--app-accent); box-shadow: 0 0 0 3px var(--app-focus-ring); }
 </style>

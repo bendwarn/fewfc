@@ -53,6 +53,13 @@ async function completeIndependentInitialPouchSelection(host: Page, guest: Page,
   const dialog = host.getByRole('dialog', { name: '選擇初始錦囊' })
   await expect(dialog.locator('.pouch-composition')).toBeVisible()
   await expect(dialog.locator('tbody td')).toHaveCount(25)
+  const populatedCell = dialog.locator('.pouch-composition td:has(button)').first()
+  const cellBox = await populatedCell.boundingBox()
+  const buttonBox = await populatedCell.locator('button').boundingBox()
+  expect(cellBox).not.toBeNull()
+  expect(buttonBox).not.toBeNull()
+  expect(buttonBox!.width).toBeGreaterThanOrEqual(cellBox!.width - 2)
+  expect(buttonBox!.height).toBeGreaterThanOrEqual(cellBox!.height - 2)
   const command = waitForCommand(host, 'chooseInitialPouch')
   await hostChoice.click()
   await command
@@ -220,6 +227,7 @@ test('Chain stages Sheep Stealing as a typed exchange choice', async ({ browser 
     }
     expect(sheepTrigger).not.toBeNull()
     const pouchMatrix = chainDialog.getByLabel('連環錦囊牌組矩陣')
+    await expect(pouchMatrix).toHaveCSS('margin-top', '8px')
     const pouchButton = pouchMatrix.getByRole('button', {
       name: new RegExp(`：${elementLabel(sheepTrigger!.pouch.element!)} ${sheepTrigger!.pouch.level} 級`),
     }).first()

@@ -124,4 +124,9 @@ function selectCell(cardIds: CardInstanceId[]) {
 .card-composition tbody th { @apply w-7 text-[10px] font-normal text-muted; }
 .card-composition td strong { @apply font-serif text-sm text-[#e4c47d]; }
 .card-composition td.empty strong { color: var(--app-text-soft); }
+.pouch-composition { @apply mx-auto mt-5 w-[min(390px,calc(100vw-64px))] border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3.5 text-[var(--app-text)] shadow-[0_18px_48px_rgba(0,0,0,.52)]; }
+.pouch-composition td { @apply p-0; }
+.pouch-composition td button { @apply grid size-full min-h-8 place-items-center border-0 bg-transparent text-[#e4c47d] hover:bg-[rgba(185,149,80,.16)] disabled:cursor-not-allowed disabled:opacity-45; }
+.pouch-composition td button[aria-pressed="true"] { @apply bg-[rgba(185,149,80,.3)] shadow-[inset_0_0_0_2px_#d1ad62]; }
+.choice-card-matrix td button small { @apply text-[8px] font-normal text-[#f0d99e]; }
 </style>

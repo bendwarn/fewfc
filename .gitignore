@@ -2,3 +2,6 @@
 /tmp/
 # Playwright CLI output (may contain credentials)
 .playwright-cli/
+
+# pnpm local store
+/.pnpm-store/

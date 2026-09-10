@@ -2266,14 +2266,6 @@ function formationChoiceLabel(formationId: string): string {
 .battlefield-back { @apply absolute top-4 left-4 z-20; }
 .battle-layout { @apply grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px]; }
 .mobile-event-summary { @apply hidden; }
-.pouch-composition { @apply mx-auto mt-5 w-[min(390px,calc(100vw-64px))] border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3.5 text-[var(--app-text)] shadow-[0_18px_48px_rgba(0,0,0,.52)]; }
-.pouch-composition td { @apply p-0; }
-.pouch-composition td button { @apply grid size-full min-h-8 place-items-center border-0 bg-transparent text-[#e4c47d] hover:bg-[rgba(185,149,80,.16)] disabled:cursor-not-allowed disabled:opacity-45; }
-.pouch-composition td button[aria-pressed="true"] { @apply bg-[rgba(185,149,80,.3)] shadow-[inset_0_0_0_2px_#d1ad62]; }
-.choice-card-matrix td button small { @apply text-[8px] font-normal text-[#f0d99e]; }
-.chain-composition { @apply mt-2; }
-.choice-selection-summary { @apply mx-auto mb-1 flex max-w-[390px] items-center justify-between gap-3 text-xs text-gold-light; }
-.choice-selection-summary button { @apply border border-[var(--app-accent)] bg-[var(--app-surface-raised)] px-2 py-1 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
 .turn-controls { @apply relative grid min-h-full min-w-0 content-start gap-2 border-l border-[rgba(166,141,86,.14)] pl-2; }
 .ability-panel, .action-panel { @apply grid min-w-0 gap-1.5 border p-2; border-color: color-mix(in srgb, var(--app-accent) 24%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--app-surface-muted) 84%, transparent); }
 .ability-panel header, .action-panel header { @apply flex flex-wrap items-baseline justify-between gap-x-2 text-left; }
@@ -2376,42 +2368,46 @@ function formationChoiceLabel(formationId: string): string {
 }
 
 .event-sheet-portal { @apply fixed inset-0 z-50; }
-.event-sheet-backdrop { @apply absolute inset-0 size-full cursor-default border-0 bg-[var(--app-overlay)] p-0 backdrop-blur-[3px]; }
-.event-sheet { @apply fixed right-0 bottom-0 left-0 z-1 grid max-h-[72dvh] grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden rounded-t-2xl border-x-0 border-b-0 border-t border-[var(--app-accent)] bg-[var(--app-surface-raised)] text-[var(--app-text)] shadow-[0_-18px_48px_rgba(0,0,0,.45)]; }
-.event-sheet > header { @apply flex items-center justify-between border-b border-line px-4 py-3; }
-.event-sheet h2 { @apply font-serif text-base text-gold-light; }
-.event-sheet header button { @apply grid size-8 place-items-center border border-[var(--app-border-strong)] bg-transparent text-xl text-muted; }
-.event-sheet-feed { @apply m-0 grid min-h-0 list-none gap-3 overflow-y-auto p-4; overscroll-behavior: contain; }
-.event-sheet-feed li { @apply grid grid-cols-[10px_1fr] gap-2; }
-.event-sheet-feed li.event-group-title { grid-template-columns: minmax(0, 1fr); }
-.event-sheet-feed li > i { @apply mt-1.5 size-[5px] rounded-full bg-[#b79550] shadow-[0_0_0_4px_rgba(183,149,80,.08)]; }
-.event-sheet-feed span { @apply text-[11px] font-bold text-[var(--app-text)]; }
-.event-sheet-feed p { @apply mt-0.5 text-[10px] leading-5 text-[var(--app-text-muted)]; }
-.new-event-button { @apply mx-auto mt-2 border border-[var(--app-accent)] bg-[var(--app-surface-muted)] px-3 py-1.5 text-[10px] text-gold-light; }
+.event-sheet-portal .event-sheet-backdrop { @apply absolute inset-0 size-full cursor-default border-0 bg-[var(--app-overlay)] p-0 backdrop-blur-[3px]; }
+.event-sheet-portal .event-sheet { @apply fixed right-0 bottom-0 left-0 z-1 grid max-h-[72dvh] grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden rounded-t-2xl border-x-0 border-b-0 border-t border-[var(--app-accent)] bg-[var(--app-surface-raised)] text-[var(--app-text)] shadow-[0_-18px_48px_rgba(0,0,0,.45)]; }
+.event-sheet-portal .event-sheet > header { @apply flex items-center justify-between border-b border-line px-4 py-3; }
+.event-sheet-portal .event-sheet h2 { @apply font-serif text-base text-gold-light; }
+.event-sheet-portal .event-sheet header button { @apply grid size-8 place-items-center border border-[var(--app-border-strong)] bg-transparent text-xl text-muted; }
+.event-sheet-portal .event-sheet-feed { @apply m-0 grid min-h-0 list-none gap-3 overflow-y-auto p-4; overscroll-behavior: contain; }
+.event-sheet-portal .event-sheet-feed li { @apply grid grid-cols-[10px_1fr] gap-2; }
+.event-sheet-portal .event-sheet-feed li.event-group-title { grid-template-columns: minmax(0, 1fr); }
+.event-sheet-portal .event-sheet-feed li > i { @apply mt-1.5 size-[5px] rounded-full bg-[#b79550] shadow-[0_0_0_4px_rgba(183,149,80,.08)]; }
+.event-sheet-portal .event-sheet-feed span { @apply text-[11px] font-bold text-[var(--app-text)]; }
+.event-sheet-portal .event-sheet-feed p { @apply mt-0.5 text-[10px] leading-5 text-[var(--app-text-muted)]; }
+.event-sheet-portal .new-event-button { @apply mx-auto mt-2 border border-[var(--app-accent)] bg-[var(--app-surface-muted)] px-3 py-1.5 text-[10px] text-gold-light; }
 
 /* Teleport 後的選單已不再位於 action-dock，仍沿用原本的視覺樣式。 */
-.spirit-level-options { @apply grid min-w-20 gap-1 border border-[var(--app-accent)] bg-[var(--app-surface-muted)] p-1 shadow-[0_10px_24px_rgba(0,0,0,.45)]; }
-.spirit-level-options button { @apply min-h-7 whitespace-nowrap border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2 py-1 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
+.anchored-surface.spirit-level-options { @apply grid min-w-20 gap-1 border border-[var(--app-accent)] bg-[var(--app-surface-muted)] p-1 shadow-[0_10px_24px_rgba(0,0,0,.45)]; }
+.anchored-surface.spirit-level-options button { @apply min-h-7 whitespace-nowrap border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2 py-1 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
 .modal-shell.choice-overlay { @apply fixed inset-0 z-[70] grid place-items-center text-center; background: transparent; }
 .modal-shell.choice-overlay > .modal-shell-backdrop { background: var(--app-choice-overlay); backdrop-filter: none; }
-.choice-overlay-panel { @apply relative z-1 max-h-[calc(100dvh-32px)] min-w-0 w-[min(560px,calc(100vw-32px))] max-w-[calc(100vw-32px)] overflow-y-auto border border-[var(--app-accent)] p-[30px]; border-radius: 16px; background: var(--app-surface-raised); box-shadow: var(--app-shadow-lg); }
-.choice-overlay-panel h2 { @apply mt-2.5 mb-5 font-serif; }
-.virtual-formation-card-dialog { @apply max-w-[min(560px,calc(100vw-32px))]; }
-.virtual-formation-card-matrix { @apply mx-auto border-collapse text-xs; }
-.virtual-formation-card-matrix th { @apply border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2 py-1.5 font-normal text-muted; }
-.virtual-formation-card-matrix tbody th { @apply min-w-14 text-gold-light; }
-.virtual-formation-card-matrix td { @apply border border-[var(--app-border-strong)] p-0; }
-.virtual-formation-card-option { @apply grid size-11 place-items-center bg-[var(--app-surface-subtle)] font-serif text-sm text-[#e5dfd1] hover:bg-[#3a443d] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
-.virtual-formation-card-option:focus-visible { @apply relative z-1 outline-2 outline-offset-[-3px] outline-[#d1ad62]; }
-.virtual-formation-card-cancel { @apply mt-5 min-h-9 border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-4 py-2 text-xs text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light; }
-.choice-cards { @apply flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
-.choice-cards .choice-card { width: clamp(76px, 11vw, 112px); }
-.choice-options { @apply mt-3 flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
-.choice-options button { @apply min-h-10 border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-3 py-2 text-xs text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
-.choice-options button:focus-visible { @apply border-[#d1ad62] outline-2 outline-offset-2 outline-[#d1ad62]; }
-.choice-options button.selected, .choice-options button[aria-pressed="true"] { @apply font-bold; border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); box-shadow: 0 0 0 2px var(--app-accent-soft); }
-.choice-actions { @apply mt-5; }
-.choice-actions .choice-confirm { @apply border-[var(--app-accent)] bg-[var(--app-accent)] font-bold hover:bg-[var(--app-accent-strong)]; color: var(--app-on-accent); }
-.choice-count { @apply mt-4 text-xs text-muted; }
-.choice-submit { @apply mt-3 border border-[var(--app-accent)] bg-[var(--app-accent)] px-5 py-2 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-45; color: var(--app-on-accent); }
+.modal-shell.choice-overlay > .modal-shell-panel.choice-overlay-panel { @apply relative z-1 max-h-[calc(100dvh-32px)] min-w-0 w-[min(560px,calc(100vw-32px))] max-w-[calc(100vw-32px)] overflow-y-auto border border-[var(--app-accent)] p-[30px]; border-radius: 16px; background: var(--app-surface-raised); box-shadow: var(--app-shadow-lg); }
+.modal-shell.choice-overlay > .modal-shell-panel.choice-overlay-panel h2 { @apply mt-2.5 mb-5 font-serif; }
+.modal-shell.choice-overlay .choice-selection-summary { @apply mx-auto mb-1 flex max-w-[390px] items-center justify-between gap-3 text-xs text-gold-light; }
+.modal-shell.choice-overlay .choice-selection-summary button { @apply border border-[var(--app-accent)] bg-[var(--app-surface-raised)] px-2 py-1 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
+.modal-shell.choice-overlay .action-detail { @apply pointer-events-none sticky bottom-0 z-8 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
+.modal-shell.choice-overlay .action-detail strong { @apply mr-2 text-gold-light; }
+.modal-shell.choice-overlay .virtual-formation-card-dialog { @apply max-w-[min(560px,calc(100vw-32px))]; }
+.modal-shell.choice-overlay .virtual-formation-card-matrix { @apply mx-auto border-collapse text-xs; }
+.modal-shell.choice-overlay .virtual-formation-card-matrix th { @apply border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2 py-1.5 font-normal text-muted; }
+.modal-shell.choice-overlay .virtual-formation-card-matrix tbody th { @apply min-w-14 text-gold-light; }
+.modal-shell.choice-overlay .virtual-formation-card-matrix td { @apply border border-[var(--app-border-strong)] p-0; }
+.modal-shell.choice-overlay .virtual-formation-card-option { @apply grid size-11 place-items-center bg-[var(--app-surface-subtle)] font-serif text-sm text-[#e5dfd1] hover:bg-[#3a443d] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
+.modal-shell.choice-overlay .virtual-formation-card-option:focus-visible { @apply relative z-1 outline-2 outline-offset-[-3px] outline-[#d1ad62]; }
+.modal-shell.choice-overlay .virtual-formation-card-cancel { @apply mt-5 min-h-9 border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-4 py-2 text-xs text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light; }
+.modal-shell.choice-overlay .choice-cards { @apply flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
+.modal-shell.choice-overlay .choice-cards .choice-card { width: clamp(76px, 11vw, 112px); }
+.modal-shell.choice-overlay .choice-options { @apply mt-3 flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
+.modal-shell.choice-overlay .choice-options button { @apply min-h-10 border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-3 py-2 text-xs text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
+.modal-shell.choice-overlay .choice-options button:focus-visible { @apply border-[#d1ad62] outline-2 outline-offset-2 outline-[#d1ad62]; }
+.modal-shell.choice-overlay .choice-options button.selected, .modal-shell.choice-overlay .choice-options button[aria-pressed="true"] { @apply font-bold; border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); box-shadow: 0 0 0 2px var(--app-accent-soft); }
+.modal-shell.choice-overlay .choice-actions { @apply mt-5; }
+.modal-shell.choice-overlay .choice-actions .choice-confirm { @apply border-[var(--app-accent)] bg-[var(--app-accent)] font-bold hover:bg-[var(--app-accent-strong)]; color: var(--app-on-accent); }
+.modal-shell.choice-overlay .choice-count { @apply mt-4 text-xs text-muted; }
+.modal-shell.choice-overlay .choice-submit { @apply mt-3 border border-[var(--app-accent)] bg-[var(--app-accent)] px-5 py-2 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-45; color: var(--app-on-accent); }
 </style>

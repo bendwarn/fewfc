@@ -532,9 +532,9 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 .shield-badge { @apply border-[#557684] bg-[#17262c] text-[#8fc1d5]; }
 .effect-summary { @apply border-[#765557] bg-[#28191b] text-[#d49a9a] hover:border-[#b7787d] hover:text-[#efb9b9]; }
 .profession-badge { @apply relative cursor-help border-[var(--app-accent)] bg-[var(--app-surface-raised)] text-gold-light outline-none; }
-:global(.profession-summary) { @apply grid w-64 gap-1 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-2.5 text-left shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
-:global(.profession-summary b) { @apply font-serif text-xs text-gold-light; }
-:global(.profession-summary small) { @apply whitespace-normal text-[10px] leading-4 text-muted; }
+:global(.anchored-surface.profession-summary) { @apply grid w-64 gap-1 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-2.5 text-left shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
+:global(.anchored-surface.profession-summary b) { @apply font-serif text-xs text-gold-light; }
+:global(.anchored-surface.profession-summary small) { @apply whitespace-normal text-[10px] leading-4 text-muted; }
 .hand { @apply flex min-w-0 items-center justify-center gap-2; }
 .seat-top .seat-hand :deep(.playing-card) { width: clamp(48px, 5vw, 68px); }
 .seat-left .seat-hand, .seat-right .seat-hand { @apply flex-col gap-1; }

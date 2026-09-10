@@ -196,3 +196,8 @@ const emit = defineEmits<{
   'select-retreat-card': [card: CardInstanceId | null]
 }>()
 </script>
+
+<style scoped>
+/* CardChoiceMatrix 會隨本元件進入 Teleport 的 modal；間距由使用情境擁有。 */
+.chain-choice :deep(.chain-composition) { margin-top: .5rem; }
+</style>
