@@ -205,6 +205,23 @@ describe('purge-legacy-games', () => {
     expect(probe?.init?.headers).toMatchObject({ 'x-fewfc-cloudflare-token': wranglerToken })
   })
 
+  test('distinguishes a management-gate 404 from an absent room', async () => {
+    const config = await configuration(
+      parsePurgeArguments(['--env', 'staging', '--epoch', 'cutover-75']),
+      environment,
+    )
+    const fetcher: Fetcher = async (url) => {
+      if (url.includes('/durable_objects/namespaces?')) return namespaceResponse()
+      if (url.includes('/d1/database/')) return response({ success: true, result: [{ results: [{ game_id: 'room-1' }] }] })
+      if (url.endsWith('/room-probe')) return response({ error: 'not found' }, 404)
+      return response({ success: true, result: [] })
+    }
+
+    await expect(runLegacyPurge(config, fetcher)).rejects.toThrow(
+      'was rejected by the management gate; verify maintenance mode, Wrangler token, and Cloudflare account ID',
+    )
+  })
+
   test('dry-run probes indexed rooms and GameRoom objects when management auth is available', async () => {
     const config = await configuration(
       parsePurgeArguments(['--env', 'staging', '--epoch', 'cutover-75']),

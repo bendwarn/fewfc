@@ -625,6 +625,12 @@ async function managementPost(
       throw new Error(`management request ${path} returned an unreadable not-found response`)
     }
     const status = (result as { status?: unknown }).status
+    if ((result as { error?: unknown }).error === 'not found') {
+      throw new Error(
+        `management request ${path} was rejected by the management gate; `
+        + 'verify maintenance mode, Wrangler token, and Cloudflare account ID',
+      )
+    }
     if (status !== 'Absent' && status !== 'absent') {
       throw new Error(`management request ${path} returned an unexpected not-found response`)
     }
