@@ -53,6 +53,8 @@ jobs:
     defaults:
       run:
         working-directory: apps/web
+    env:
+      APP_ENV: staging
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -123,6 +125,8 @@ jobs:
     defaults:
       run:
         working-directory: apps/web
+    env:
+      APP_ENV: production
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
