@@ -13,6 +13,17 @@
 - For Worker/Durable Object local development, ensure `.env` exists and `BETTER_AUTH_SECRET` is at least 32 characters, otherwise Better Auth routes fail with `500 BETTER_AUTH_SECRET must contain at least 32 characters`.
 - Local development servers may need sandbox escalation to bind localhost ports. If a server reports no available port while nothing is reachable, rerun with escalated permissions.
 
+## 玩家介面文案
+
+- 玩家可見的系統文案使用繁體中文，包含停用原因、錯誤提示、空狀態、
+  tooltip、`title` 與無障礙標籤；使用者輸入與必要的專有名稱保留原文。
+- 顯示規則、陣法、狀態或錯誤時，沿用既有中文名稱與呈現層映射。
+  API 的機器 ID、enum 值與原始英文錯誤保留供程式處理及診斷，
+  不直接作為玩家文案；未知值提供可理解的繁體中文備援訊息。
+- 修改動態文案時，追查從 API／規則引擎到 UI 的顯示路徑，檢查正常、
+  停用及錯誤分支。修正漏譯時，以對應單元或元件測試驗證實際中文文案，
+  包含造成漏譯的分支，而不只檢查靜態模板。
+
 ## Browser and E2E Validation
 
 - Keep E2E tests on Playwright's default timeouts whenever possible. If a test

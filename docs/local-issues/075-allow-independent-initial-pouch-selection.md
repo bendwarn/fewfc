@@ -8,7 +8,8 @@ ready-for-agent
 
 Let every outstanding Player choose their initial Pouch immediately while
 preserving deterministic replay, hidden information, safe Online Game command
-commits, and a deliberate hard cutover from legacy games and Replays.
+commits, and a deliberate, data-loss-safe cutover from legacy games and
+Replays.
 
 ## Problem Statement
 
@@ -26,8 +27,10 @@ apply an older active-game snapshot after a newer one because broadcasts are
 post-commit asynchronous and room responses have no active-record sequence.
 
 The canonical preparation shape and event contract are changing. The release
-will therefore discard old active Game Records and all completed Replays rather
-than add compatibility paths. Waiting rooms must survive the cutover.
+does not add legacy Game Record or Replay compatibility paths. Its one-time
+cleanup may remove only GameRoom or Replay storage proved inaccessible or
+broken; readable rooms and Replay storage must survive the cutover. Waiting
+rooms must survive the cutover.
 
 ## Solution
 
@@ -60,8 +63,9 @@ part of ordinary deploys.
    arrival order and the same final state reconstructed for every legal order.
 7. As a reconnecting Player, I want an older active-game broadcast ignored when
    a newer snapshot for the same Game Instance was already applied.
-8. As an operator, I want one explicit, dry-run-first CLI to clear incompatible
-   games and Replays without deleting accounts, Deck Lists, or waiting rooms.
+8. As an operator, I want one explicit, dry-run-first CLI to clear only
+   inaccessible or broken legacy room and Replay storage without deleting
+   accounts, Deck Lists, or readable waiting rooms and Replays.
 9. As an operator, I want a partial cleanup failure to leave the application in
    maintenance so I can safely rerun the same purge epoch.
 
@@ -156,50 +160,53 @@ part of ordinary deploys.
 
 ## Hard Cutover And Management CLI
 
+- Preserve every room and Replay that the authenticated management probe can
+  currently read. A Dissolved room does not cascade-delete a readable Replay.
 - Do not add old Game Record reads, event fallbacks, dual-write, repair, or
-  replay compatibility. Do not preserve completed legacy Replays.
+  replay compatibility.
 - Do not add or change D1 migrations. Do not add a Durable Object class
   migration. Keep the existing GameRoom and ReplayArchive classes and
   namespaces so the new version can create new games and Replays normally.
-- Add a protected, idempotent GameRoom management operation such as
-  `purgeLegacyGameData(epoch)`. It must preserve room ID, name, access, owner,
-  members, seats, invitation, capacity, ruleset, and enabled Rule Modules.
-- Preserve an already Waiting room's readiness and Locked Deck Lists. Remove
-  any legacy completed-replay draft and old event history without otherwise
-  resetting its waiting-room configuration.
-- Reset Active and Finished rooms to Waiting, clear `gameInstanceId`, mark all
-  members `ready: false` and `connected: false`, and delete their Game Record,
-  `lastCompletedReplayDraft`, Locked Deck Lists, `event:*`, Command receipts,
-  trusted-randomness receipts, and resolution transactions.
-- Start each surviving non-dissolved room's replacement event log with one
-  `LegacyGamePurged { epoch }` event and show the one-time message
-  `系統版本更新，上一局已清除，請重新準備。` A repeated call for the same
-  epoch must not duplicate the event or reset a newly prepared room.
-- Add a protected ReplayArchive management operation such as
-  `purgeLegacyArchive(epoch)` that calls Durable Object
-  `storage.deleteAll()`. Calling it again must remain safe. Do not replace or
-  retire the namespace, because new-version Replays continue using it.
+- Add a protected, idempotent GameRoom management probe and purge operation.
+  Delete only a GameRoom object when the authenticated probe explicitly returns
+  HTTP 404 `absent` or HTTP 500 `broken`; delete its matching room-index and
+  membership rows in the same operation. Preserve room ID, name, access,
+  owner, members, seats, invitation, capacity, ruleset, and enabled Rule
+  Modules for every readable room. Never delete on 401/403, authentication
+  failure, timeout, malformed response, or an arbitrary transport/server error.
+- Add a protected ReplayArchive probe/purge operation that verifies the archive's
+  own `sourceGameId` matches a GameRoom explicitly deleted in this run before
+  calling `storage.deleteAll()`. Preserve readable archives and Replay D1 rows
+  unless that association is proven; otherwise fail closed and preserve them.
+  Calling the operation again must remain safe. Do not replace or retire the
+  namespace, because new-version Replays continue using it.
 - Add `apps/web/scripts/purge-legacy-games.ts` and a package script. Require
   exactly one explicit `--env staging|production`; default to dry-run and
-  require `--confirm` for mutation. Require a stable purge epoch, accept secrets
-  only from environment variables, and never print secret values.
-- Protect management endpoints with a dedicated secret and make them available
-  only while an explicit deployment/configuration maintenance gate is active.
-  This gate is configuration, not persisted schema.
+  require `--confirm` for mutation. Require a stable purge epoch. Derive the
+  temporary Wrangler OAuth/API token from the authenticated Wrangler profile;
+  do not accept a purge secret, and never print credentials. Treat
+  `CLOUDFLARE_ACCOUNT_ID` only as a non-secret account selector.
+- Protect management endpoints with the short-lived authenticated Wrangler
+  OAuth/API token verified against the configured `CLOUDFLARE_ACCOUNT_ID`, and
+  make them available only while an explicit deployment/configuration
+  maintenance gate is active. Do not use `LEGACY_PURGE_SECRET`. This gate is
+  configuration, not persisted schema.
 - During maintenance, reject new game commands and Replay creation. Enter
   maintenance before enumeration and leave it enabled after any failure.
 - Use D1 room data plus the Cloudflare Durable Objects Namespaces/Objects API to
   enumerate GameRoom and ReplayArchive objects, including storage with no
   surviving D1 replay reference. Follow API cursors until exhausted.
-- Delete only rows from `player_saved_replay` and
-  `replay_archive_lifecycle`; preserve authentication, Player profiles, custom
-  Deck Lists, and public room index data. Use a D1 atomic batch/transaction for
-  the replay-table deletion.
-- Verification must prove: every incompatible Game Record is absent; active and
-  finished rooms are Waiting; preserved room count and identities match the
-  dry-run inventory; both D1 replay tables are empty; every enumerated legacy
-  ReplayArchive has no stored archive; sampled old Replay IDs return 404; and
-  a second run reports no further mutation.
+- Delete only rows from `player_saved_replay` whose `source_game_id` names an
+  explicitly deleted room, and matching `replay_archive_lifecycle` rows whose
+  Replay association is proven. Preserve authentication, Player profiles,
+  custom Deck Lists, public-room index data for readable rooms, and all other
+  Replay rows. Use a D1 atomic batch/transaction for the selective deletion.
+- Verification must prove: every explicitly deleted GameRoom object and its
+  matching index/membership rows are absent; preserved room count and
+  identities match the dry-run inventory; readable Replay archives and D1 rows
+  remain; explicitly associated deleted Replays have no archive or selected D1
+  rows; sampled deleted Replay IDs return 404; and a second run reports no new
+  mutation.
 - Reopen traffic only after all verification succeeds. Document the exact
   staging-first and production command sequence, but never invoke the remote
   purge automatically during deploy, tests, or implementation.
@@ -227,7 +234,7 @@ Cloudflare references for the management implementation:
 - Add representative E2E coverage proving both Players initially see the
   chooser, the first submitter waits, and the final submitter releases shuffle
   and initial deal.
-- Add CLI tests for argument validation, dry-run default, secret redaction,
+- Add CLI tests for argument validation, dry-run default, credential redaction,
   cursor pagination, room preservation, status reset, selective D1 deletion,
   ReplayArchive `deleteAll()`, same-epoch rerun, partial failure, maintenance
   fail-closed behavior, and verification failures.
@@ -238,7 +245,8 @@ Cloudflare references for the management implementation:
 ## Out Of Scope
 
 - Supporting or migrating an in-progress legacy Game Record.
-- Preserving, converting, or replaying a legacy completed Replay.
+- Adding compatibility, conversion, or fallback replaying for a legacy
+  completed Replay. This does not authorize deleting readable archive storage.
 - Running the purge as a schema migration, Durable Object class migration,
   ordinary deployment hook, or automatic startup task.
 - Adding a global room revision or redesigning all room-state delivery.

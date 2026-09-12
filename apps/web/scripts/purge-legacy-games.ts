@@ -1,6 +1,6 @@
 /**
- * 專為 issue #75 硬切換設計的一次性、刻意僅操作遠端的管理工具。它永遠不會
- * 啟用維護或部署 Worker：操作人員必須先明確部署維護設定，再執行此工具。
+ * 專為 issue #75 資料保全切換設計的一次性、刻意僅操作遠端的管理工具。它永遠
+ * 不會啟用維護或部署 Worker：操作人員必須先明確部署維護設定，再執行此工具。
  */
 
 export type PurgeEnvironment = 'staging' | 'production'
@@ -39,6 +39,7 @@ export interface DurableObjectNamespace {
 export interface PurgeInventory {
   roomIds: string[]
   replayIds: string[]
+  replayReferences?: Array<{ replayId: string, sourceGameId: string }>
   gameRoomObjects: DurableObjectInventoryItem[]
   replayObjects: DurableObjectInventoryItem[]
 }
@@ -49,14 +50,21 @@ export interface PurgeRunSummary {
   rooms: number
   gameRoomObjects: number
   replayObjects: number
-  /** dry-run 額外回報權威 probe 判定的清除候選數。 */
-  candidateRooms?: number
+  /** dry-run 額外逐筆回報權威 probe 判定的清除候選，供人類核對後確認。 */
+  candidateRooms?: LegacyRoomProbe[]
 }
 
 export interface LegacyRoomProbe {
   kind: 'room-index' | 'game-room-object'
   id: string
   status: 'preserved' | 'absent' | 'broken'
+}
+
+export interface ReplayArchiveProbe {
+  objectId: string
+  status: 'preserved' | 'absent'
+  replayId?: string
+  sourceGameId?: string
 }
 
 export interface FetchResponse {
@@ -424,7 +432,7 @@ export async function purgeInventory(
   const namespaces = await purgeNamespaceIds(config, fetcher)
   const [roomRows, replayRows, gameRoomObjects, replayObjects] = await Promise.all([
     d1Query<{ game_id?: unknown }>(config, 'SELECT game_id FROM public_game_room ORDER BY game_id', fetcher),
-    d1Query<{ replay_id?: unknown }>(config, 'SELECT replay_id FROM player_saved_replay ORDER BY replay_id', fetcher),
+    d1Query<{ replay_id?: unknown, source_game_id?: unknown }>(config, 'SELECT replay_id, source_game_id FROM player_saved_replay ORDER BY replay_id, source_game_id', fetcher),
     listDurableObjects(config, namespaces.gameRoomNamespaceId, fetcher),
     listDurableObjects(config, namespaces.replayNamespaceId, fetcher),
   ])
@@ -435,6 +443,12 @@ export async function purgeInventory(
     replayIds: replayRows
       .map(row => row.replay_id)
       .filter((value): value is string => typeof value === 'string' && value.length > 0),
+    replayReferences: replayRows.flatMap(row => (
+      typeof row.replay_id === 'string' && row.replay_id.length > 0
+      && typeof row.source_game_id === 'string' && row.source_game_id.length > 0
+        ? [{ replayId: row.replay_id, sourceGameId: row.source_game_id }]
+        : []
+    )),
     gameRoomObjects: gameRoomObjects.filter(object => object.hasStoredData),
     replayObjects: replayObjects.filter(object => object.hasStoredData),
   }
@@ -450,31 +464,38 @@ export async function runLegacyPurge(
   roomProbes?: LegacyRoomProbe[]
 }> {
   const inventory = await purgeInventory(config, fetcher)
+  const roomProbes = await probeLegacyRooms(config, inventory, fetcher)
   if (!config.confirm) {
     // dry-run 也使用 Wrangler 的暫時權杖做唯讀 probe，不繞過 maintenance/auth gate。
-    const roomProbes = await probeLegacyRooms(config, inventory, fetcher)
     return { inventory, mutated: false, mutationCount: 0, roomProbes }
   }
 
   let mutationCount = 0
-  const removedRoomIds: string[] = []
-  for (const object of inventory.gameRoomObjects) {
+  const removedRoomIds = new Set<string>()
+  for (const probe of roomProbes.filter(candidate => candidate.status !== 'preserved')) {
+    if (probe.kind !== 'game-room-object') continue
     const result = await managementPost(
       config,
       'room',
-      { objectId: object.id },
+      { objectId: probe.id },
       fetcher,
       { allowNotFound: true, allowBroken: true },
-    ) as { status?: unknown }
+    ) as { status?: unknown, gameId?: unknown }
     if (result.status === 'absent') {
       mutationCount += 1
     } else if (result.status === 'broken') {
       mutationCount += 1
     } else if (result.status !== 'preserved') {
-      throw new Error(`management request room returned an unreadable response for ${object.id}`)
+      throw new Error(`management request room returned an unreadable response for ${probe.id}`)
+    }
+    if ((result.status === 'absent' || result.status === 'broken')
+      && typeof result.gameId === 'string' && result.gameId.trim()) {
+      removedRoomIds.add(result.gameId.trim())
     }
   }
-  for (const roomId of inventory.roomIds) {
+  for (const probe of roomProbes.filter(candidate => candidate.status !== 'preserved')) {
+    if (probe.kind !== 'room-index') continue
+    const roomId = probe.id
     const result = await managementPost(
       config,
       'room-index',
@@ -486,23 +507,69 @@ export async function runLegacyPurge(
       roomIndexDeleted?: unknown
     }
     if (result.status === 'absent' || result.status === 'broken') {
-      removedRoomIds.push(roomId)
+      removedRoomIds.add(roomId)
       mutationCount += Number(result.roomIndexDeleted ?? 0)
     } else if (result.status !== 'preserved') {
       throw new Error(`management request room-index returned an unreadable response for ${roomId}`)
     }
   }
-  for (const object of inventory.replayObjects) {
-    await managementPost(config, 'replay', { objectId: object.id }, fetcher)
-    mutationCount += 1
+
+  const references = inventory.replayReferences ?? []
+  const referencesByReplay = new Map<string, Set<string>>()
+  for (const reference of references) {
+    const sourceIds = referencesByReplay.get(reference.replayId) ?? new Set<string>()
+    sourceIds.add(reference.sourceGameId)
+    referencesByReplay.set(reference.replayId, sourceIds)
   }
-  const replayIndex = await managementPost(config, 'replay-index', {}, fetcher) as {
-    playerSavedReplayDeleted?: unknown
-    replayArchiveLifecycleDeleted?: unknown
+  const deletedReplayObjectIds: string[] = []
+  const deletedReplayIds: string[] = []
+  const replayProbes = removedRoomIds.size > 0 && references.length > 0
+    ? await probeReplayArchives(config, inventory, fetcher)
+    : []
+  for (const probe of replayProbes) {
+    if (probe.status !== 'preserved' || !probe.replayId || !probe.sourceGameId) continue
+    const sourceIds = referencesByReplay.get(probe.replayId)
+    const sourceGameId = sourceIds?.has(probe.sourceGameId) && removedRoomIds.has(probe.sourceGameId)
+      ? probe.sourceGameId
+      : undefined
+    // Only a D1 source_game_id that points at a room deleted in this same run
+    // proves the association. Orphan/unindexed ReplayArchives remain readable.
+    if (!sourceGameId || !sourceIds || [...sourceIds].some(source => !removedRoomIds.has(source))) continue
+    const result = await managementPost(
+      config,
+      'replay',
+      { objectId: probe.objectId, sourceGameId },
+      fetcher,
+      { allowNotFound: true },
+    ) as { status?: unknown, purged?: unknown }
+    if (result.status === 'deleted' || result.purged === true) {
+      mutationCount += 1
+      deletedReplayObjectIds.push(probe.objectId)
+      deletedReplayIds.push(probe.replayId)
+    } else if (result.status !== 'preserved' && result.status !== 'absent') {
+      throw new Error(`management request replay returned an unreadable response for ${probe.objectId}`)
+    }
   }
-  mutationCount += Number(replayIndex.playerSavedReplayDeleted ?? 0)
-  mutationCount += Number(replayIndex.replayArchiveLifecycleDeleted ?? 0)
-  await verifyPurge(config, inventory, fetcher, removedRoomIds)
+  const replayIdsWithDeletedArchives = [...new Set(deletedReplayIds)]
+  if (removedRoomIds.size > 0 && replayIdsWithDeletedArchives.length > 0) {
+    const replayIndex = await managementPost(config, 'replay-index', {
+      sourceGameIds: [...removedRoomIds],
+      replayIds: replayIdsWithDeletedArchives,
+    }, fetcher) as {
+      playerSavedReplayDeleted?: unknown
+      replayArchiveLifecycleDeleted?: unknown
+    }
+    mutationCount += Number(replayIndex.playerSavedReplayDeleted ?? 0)
+    mutationCount += Number(replayIndex.replayArchiveLifecycleDeleted ?? 0)
+  }
+  await verifyPurge(
+    config,
+    inventory,
+    fetcher,
+    [...removedRoomIds],
+    deletedReplayObjectIds,
+    deletedReplayIds,
+  )
   return { inventory, mutated: true, mutationCount }
 }
 
@@ -518,7 +585,7 @@ export function purgeRunSummary(
     replayObjects: result.inventory.replayObjects.length,
   }
   if (result.roomProbes) {
-    summary.candidateRooms = result.roomProbes.filter(probe => probe.status !== 'preserved').length
+    summary.candidateRooms = result.roomProbes.filter(probe => probe.status !== 'preserved')
   }
   return summary
 }
@@ -535,15 +602,14 @@ export async function verifyPurge(
   inventory: PurgeInventory,
   fetcher: Fetcher = fetch,
   removedRoomIds: string[] = [],
+  deletedReplayObjectIds: string[] = [],
+  deletedReplayIds: string[] = [],
 ): Promise<void> {
-  const [roomRows, replayCounts] = await Promise.all([
-    d1Query<{ game_id?: unknown }>(config, 'SELECT game_id FROM public_game_room ORDER BY game_id', fetcher),
-    d1Query<{ saved_count?: unknown, lifecycle_count?: unknown }>(
-      config,
-      'SELECT (SELECT COUNT(*) FROM player_saved_replay) AS saved_count, (SELECT COUNT(*) FROM replay_archive_lifecycle) AS lifecycle_count',
-      fetcher,
-    ),
-  ])
+  const roomRows = await d1Query<{ game_id?: unknown }>(
+    config,
+    'SELECT game_id FROM public_game_room ORDER BY game_id',
+    fetcher,
+  )
   const roomIds = roomRows
     .map(row => row.game_id)
     .filter((value): value is string => typeof value === 'string')
@@ -551,9 +617,28 @@ export async function verifyPurge(
   if (JSON.stringify(roomIds) !== JSON.stringify(expectedRoomIds)) {
     throw new Error('verification failed: preserved room identities do not match the dry-run inventory')
   }
-  const counts = replayCounts[0] ?? {}
-  if (Number(counts.saved_count ?? -1) !== 0 || Number(counts.lifecycle_count ?? -1) !== 0) {
-    throw new Error('verification failed: legacy replay tables are not empty')
+  if (removedRoomIds.length > 0 && deletedReplayIds.length > 0) {
+    const roomLiterals = removedRoomIds.map(id => `'${id.replaceAll("'", "''")}'`).join(', ')
+    const selectedReplayLiterals = deletedReplayIds.map(id => `'${id.replaceAll("'", "''")}'`).join(', ')
+    const remainingReferences = await d1Query<{ count?: unknown }>(
+      config,
+      `SELECT COUNT(*) AS count FROM player_saved_replay WHERE source_game_id IN (${roomLiterals}) AND replay_id IN (${selectedReplayLiterals})`,
+      fetcher,
+    )
+    if (Number(remainingReferences[0]?.count ?? -1) !== 0) {
+      throw new Error('verification failed: deleted rooms still have Replay D1 references')
+    }
+  }
+  if (deletedReplayIds.length > 0) {
+    const replayLiterals = deletedReplayIds.map(id => `'${id.replaceAll("'", "''")}'`).join(', ')
+    const remainingLifecycle = await d1Query<{ count?: unknown }>(
+      config,
+      `SELECT COUNT(*) AS count FROM replay_archive_lifecycle WHERE replay_id IN (${replayLiterals})`,
+      fetcher,
+    )
+    if (Number(remainingLifecycle[0]?.count ?? -1) !== 0) {
+      throw new Error('verification failed: deleted Replays still have lifecycle rows')
+    }
   }
   for (const object of inventory.gameRoomObjects) {
     const verification = await managementPost(
@@ -585,11 +670,11 @@ export async function verifyPurge(
     const verification = await managementPost(config, 'replay-verify', { objectId: object.id }, fetcher) as {
       keyCount?: unknown
     }
-    if (Number(verification.keyCount ?? -1) !== 0) {
+    if (deletedReplayObjectIds.includes(object.id) && Number(verification.keyCount ?? -1) !== 0) {
       throw new Error(`verification failed: legacy ReplayArchive remains in ${object.id}`)
     }
   }
-  for (const replayId of inventory.replayIds.slice(0, 5)) {
+  for (const replayId of deletedReplayIds.slice(0, 5)) {
     const sample = await managementPost(config, 'replay-sample', { replayId }, fetcher) as {
       status?: unknown
     }
@@ -677,6 +762,41 @@ async function probeLegacyRooms(
       throw new Error(`management request room-probe returned an unreadable response for ${roomId}`)
     }
     probes.push({ kind: 'room-index', id: roomId, status: result.status })
+  }
+  return probes
+}
+
+async function probeReplayArchives(
+  config: PurgeConfig,
+  inventory: PurgeInventory,
+  fetcher: Fetcher,
+): Promise<ReplayArchiveProbe[]> {
+  const probes: ReplayArchiveProbe[] = []
+  for (const object of inventory.replayObjects) {
+    const result = await managementPost(
+      config,
+      'replay-probe',
+      { objectId: object.id },
+      fetcher,
+      { allowNotFound: true },
+    ) as { status?: unknown, replayId?: unknown, sourceGameId?: unknown }
+    if (result.status === 'absent') {
+      probes.push({ objectId: object.id, status: 'absent' })
+      continue
+    }
+    if (result.status !== 'preserved') {
+      throw new Error(`management request replay-probe returned an unreadable response for ${object.id}`)
+    }
+    probes.push({
+      objectId: object.id,
+      status: 'preserved',
+      replayId: typeof result.replayId === 'string' && result.replayId.trim()
+        ? result.replayId.trim()
+        : undefined,
+      sourceGameId: typeof result.sourceGameId === 'string' && result.sourceGameId.trim()
+        ? result.sourceGameId.trim()
+        : undefined,
+    })
   }
   return probes
 }

@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import type { RulesCatalog } from '../app/types/fewfc'
+import { presentationForRuleModule } from '../shared/utils/rule-modules'
 import { modulesForVersion } from '../shared/utils/rule-versions'
 
 interface VersionExports extends WebAssembly.Exports {
@@ -23,6 +24,9 @@ test('version-filtered UI catalog matches the built Rust version resolver', asyn
     return JSON.parse(json) as T
   }
   const catalog = output<RulesCatalog>(wasm.fewfc_rules_catalog())
+  for (const module of catalog.ruleModules) {
+    expect(presentationForRuleModule(module.id).label).not.toBe('其他規則')
+  }
   for (const ruleVersion of ['5.16', '5.17'] as const) {
     const input = new TextEncoder().encode(JSON.stringify({ ruleVersion }))
     const pointer = wasm.fewfc_alloc(input.length)

@@ -37,11 +37,12 @@ export class ReplayArchive extends DurableObject {
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
     if (request.method === 'POST' && url.pathname.endsWith('/manage/purge-legacy')) {
-      const body = await request.json() as { epoch?: unknown }
-      if (typeof body.epoch !== 'string' || !body.epoch.trim()) {
-        return Response.json({ error: 'a purge epoch is required' }, { status: 400 })
+      const body = await request.json() as { epoch?: unknown, sourceGameId?: unknown }
+      if (typeof body.epoch !== 'string' || !body.epoch.trim()
+        || typeof body.sourceGameId !== 'string' || !body.sourceGameId.trim()) {
+        return Response.json({ error: 'a purge epoch and sourceGameId are required' }, { status: 400 })
       }
-      return await this.purgeLegacyArchive(body.epoch.trim())
+      return await this.purgeLegacyArchive(body.epoch.trim(), body.sourceGameId.trim())
     }
     if (request.method === 'POST' && url.pathname.endsWith('/manage/verify-legacy')) {
       const [archive, lifecycle] = await Promise.all([
@@ -49,6 +50,21 @@ export class ReplayArchive extends DurableObject {
         this.ctx.storage.get('lifecycle'),
       ])
       return Response.json({ keyCount: Number(Boolean(archive)) + Number(Boolean(lifecycle)) })
+    }
+    if (request.method === 'POST' && url.pathname.endsWith('/manage/probe-legacy')) {
+      const archive = await this.ctx.storage.get<CompletedReplayDraft>('archive')
+      if (!archive) return Response.json({ status: 'absent' }, { status: 404 })
+      if (typeof archive.replayId !== 'string' || typeof archive.sourceGameId !== 'string'
+        || !archive.replayId.trim() || !archive.sourceGameId.trim()) {
+        // A malformed archive is readable storage, but not a provable deletion
+        // candidate. Preserve it and let the caller fail closed.
+        return Response.json({ status: 'preserved' })
+      }
+      return Response.json({
+        status: 'preserved',
+        replayId: archive.replayId,
+        sourceGameId: archive.sourceGameId,
+      })
     }
     if (request.method === 'POST' && url.pathname.endsWith('/create')) {
       return await this.create(await request.json() as ReplayArchiveCreateRequest)
@@ -96,9 +112,16 @@ export class ReplayArchive extends DurableObject {
 
   /** 清除附加儲存空間具冪等性，會移除每個舊版封存鍵，包括已沒有存活 D1
    * 參照的值。 */
-  private async purgeLegacyArchive(epoch: string): Promise<Response> {
+  private async purgeLegacyArchive(epoch: string, sourceGameId: string): Promise<Response> {
+    const archive = await this.ctx.storage.get<CompletedReplayDraft>('archive')
+    if (!archive) return Response.json({ status: 'absent', purged: false, epoch }, { status: 404 })
+    // D1 的 source_game_id 只提供候選關聯；封存本身也必須確認同一房間，
+    // 才能在資料保全切換中刪除，避免錯刪可讀或被錯誤索引的 Replay。
+    if (archive.sourceGameId !== sourceGameId) {
+      return Response.json({ status: 'preserved', purged: false, epoch })
+    }
     await this.ctx.storage.deleteAll()
-    return Response.json({ purged: true, epoch })
+    return Response.json({ status: 'deleted', purged: true, epoch })
   }
 
   private async frame(step: number, perspective?: string): Promise<Response> {

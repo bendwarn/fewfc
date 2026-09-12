@@ -1980,10 +1980,10 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
    */
   private async legacyPurgeProbe(): Promise<{
     body: {
-      status: 'preserved' | 'absent' | 'broken'
+      status: 'preserved' | 'absent' | 'broken' | 'unavailable'
       gameId?: string
     }
-    statusCode: 200 | 404 | 500
+    statusCode: 200 | 404 | 500 | 503
   }> {
     const metadata = await this.metadata()
     if (!metadata) {
@@ -2004,7 +2004,17 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       await this.callReadyRules({ type: 'refresh' }, 'observer', snapshot)
       return { body: { status: 'preserved', gameId: metadata.gameId }, statusCode: 200 }
     } catch (error) {
-      // Active/Finished 的 legacy 或缺失 Game Record 會在此明確暴露為管理讀取錯誤。
+      // 只有明確可判定為舊版／毀損 Game Record 的結果才分類為 broken。
+      // 未知例外（例如平台或傳輸故障）必須保留房間並讓管理端 fail closed。
+      const isBroken = error instanceof RulesEngineError
+        || (error instanceof Error && (
+          error.message === 'game room Game Record is missing'
+          || error.message === 'legacy game record must be purged before it can be used'
+        ))
+      if (!isBroken) {
+        console.error('Legacy GameRoom probe unavailable', error)
+        return { body: { status: 'unavailable', gameId: metadata.gameId }, statusCode: 503 }
+      }
       console.error('Legacy GameRoom authoritative read failed', error)
       return { body: { status: 'broken', gameId: metadata.gameId }, statusCode: 500 }
     }
@@ -2012,11 +2022,11 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
   private async purgeLegacyGameData(epoch: string): Promise<{
     body: {
-      status: 'preserved' | 'absent' | 'broken'
+      status: 'preserved' | 'absent' | 'broken' | 'unavailable'
       gameId?: string
       epoch: string
     }
-    statusCode: 200 | 404 | 500
+    statusCode: 200 | 404 | 500 | 503
   }> {
     const probe = await this.legacyPurgeProbe()
     if (probe.statusCode === 404 || probe.statusCode === 500) {

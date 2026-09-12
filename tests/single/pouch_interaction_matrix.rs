@@ -1183,6 +1183,32 @@ fn pouch_preparation_matrix_independent_arrival_order_converges_in_two_and_four_
 }
 
 #[test]
+fn pouch_preparation_matrix_canonical_choice_events_follow_arrival_order_in_two_and_four_player_games()
+ {
+    for mut scenario in [
+        PouchPreparationScenario::two_player(),
+        PouchPreparationScenario::four_player(),
+    ] {
+        let mut arrival_order = scenario.turn_order.clone();
+        arrival_order.reverse();
+        for player in &arrival_order {
+            scenario.choose(player);
+        }
+
+        let chosen_players = scenario
+            .record
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::InitialPouchChosen { player, .. } => Some(player.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chosen_players, arrival_order);
+    }
+}
+
+#[test]
 fn pouch_watch_fire_matrix_modifier_prevents_damage_but_not_formation_commitment_or_cards() {
     let mut scenario = PouchWatchFireScenario::new();
     let p1 = PlayerId::new("p1");

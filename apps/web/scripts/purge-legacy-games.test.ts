@@ -268,7 +268,13 @@ describe('purge-legacy-games', () => {
       { epoch: 'cutover-75', objectId: 'broken-object' },
       { epoch: 'cutover-75', roomId: 'missing-index' },
     ])
-    expect(purgeRunSummary(result)).toMatchObject({ mode: 'dry-run', candidateRooms: 2 })
+    expect(purgeRunSummary(result)).toMatchObject({
+      mode: 'dry-run',
+      candidateRooms: [
+        { kind: 'game-room-object', id: 'broken-object', status: 'broken' },
+        { kind: 'room-index', id: 'missing-index', status: 'absent' },
+      ],
+    })
   })
 
   test('prints an inventory-only summary and redacts API credentials from failures', () => {
@@ -419,7 +425,7 @@ describe('purge-legacy-games', () => {
           ] }] })
         }
         if (statement.includes('SELECT replay_id')) {
-          return response({ success: true, result: [{ results: [{ replay_id: 'replay-1' }] }] })
+          return response({ success: true, result: [{ results: [{ replay_id: 'replay-1', source_game_id: 'stale-room' }] }] })
         }
         if (statement.includes('saved_count')) {
           return response({ success: true, result: [{ results: [{ saved_count: 0, lifecycle_count: 0 }] }] })
@@ -453,10 +459,12 @@ describe('purge-legacy-games', () => {
       }
       if (path === 'replay') return response({ purged: true })
       if (path === 'replay-index') return response({ playerSavedReplayDeleted: 1, replayArchiveLifecycleDeleted: 1 })
+      if (path === 'replay-probe') return response({ status: 'preserved', replayId: 'replay-1', sourceGameId: 'stale-room' })
       if (path === 'room-probe') {
         if (body.objectId === 'orphan-room-object' || body.objectId === 'broken-room-object') {
-          return response({ status: 'Absent' }, 404)
+          return response({ status: 'absent' }, 404)
         }
+        if (body.roomId === 'stale-room') return response({ status: 'absent' }, 404)
         return response({ status: 'preserved', gameId: 'room-1' })
       }
       if (path === 'replay-verify') return response({ keyCount: 0 })
@@ -469,19 +477,82 @@ describe('purge-legacy-games', () => {
       inventory: { roomIds: ['room-1', 'stale-room'], replayIds: ['replay-1'] },
     })
     expect(sql.filter(statement => statement.startsWith('DELETE'))).toEqual([])
-    expect(managementCalls.find(call => call.path === 'replay-index')?.body).toEqual({ epoch: 'cutover-75' })
+    expect(managementCalls.find(call => call.path === 'replay-index')?.body).toEqual({
+      epoch: 'cutover-75',
+      sourceGameIds: ['broken-room', 'stale-room'],
+      replayIds: ['replay-1'],
+    })
     expect(managementCalls.filter(call => call.path === 'room-index').map(call => call.body)).toEqual([
-      { epoch: 'cutover-75', roomId: 'room-1' },
       { epoch: 'cutover-75', roomId: 'stale-room' },
     ])
     expect(managementCalls.filter(call => call.path === 'room').map(call => call.body)).toEqual([
       { epoch: 'cutover-75', objectId: 'orphan-room-object' },
       { epoch: 'cutover-75', objectId: 'broken-room-object' },
-      { epoch: 'cutover-75', objectId: 'live-room-object' },
     ])
-    expect(managementCalls.find(call => call.path === 'replay')?.body).toEqual({
-      epoch: 'cutover-75', objectId: 'replay-object',
+    expect(managementCalls.find(call => call.path === 'replay-probe')?.body).toEqual({
+      epoch: 'cutover-75',
+      objectId: 'replay-object',
     })
+    expect(managementCalls.find(call => call.path === 'replay')?.body).toEqual({
+      epoch: 'cutover-75', objectId: 'replay-object', sourceGameId: 'stale-room',
+    })
+  })
+
+  test('preserves a readable archive and its D1 row when archive association mismatches', async () => {
+    const config = await configuration(
+      parsePurgeArguments(['--env', 'staging', '--epoch', 'cutover-75', '--confirm']),
+      environment,
+    )
+    const managementPaths: string[] = []
+    let roomProbeCalls = 0
+    const fetcher: Fetcher = async (url, init) => {
+      if (url.includes('/durable_objects/namespaces?')) return namespaceResponse()
+      if (url.includes('/d1/database/')) {
+        const statement = JSON.parse(String(init?.body ?? '{}')).sql as string
+        if (statement.includes('SELECT game_id')) return response({ success: true, result: [{ results: [] }] })
+        if (statement.includes('SELECT replay_id')) {
+          return response({ success: true, result: [{ results: [{ replay_id: 'replay-1', source_game_id: 'deleted-room' }] }] })
+        }
+        return response({ success: true, result: [{ results: [{ count: 0 }] }] })
+      }
+      if (url.includes('/objects?')) {
+        return response({
+          success: true,
+          result: url.includes('game-room-namespace')
+            ? [{ id: 'opaque-room-object', hasStoredData: true }]
+            : [{ id: 'opaque-replay-object', hasStoredData: true }],
+          result_info: {},
+        })
+      }
+      const path = new URL(url).pathname.split('/').at(-1) as string
+      managementPaths.push(path)
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      if (path === 'room-probe') {
+        roomProbeCalls += 1
+        return body.objectId === 'opaque-room-object' && roomProbeCalls === 1
+          ? response({ status: 'broken', gameId: 'deleted-room' }, 500)
+          : response({ status: 'absent' }, 404)
+      }
+      if (path === 'room') return response({ status: 'broken', gameId: 'deleted-room' }, 500)
+      if (path === 'replay-probe') {
+        return response({ status: 'preserved', replayId: 'replay-1', sourceGameId: 'different-room' })
+      }
+      if (path === 'replay-verify') return response({ keyCount: 2 })
+      throw new Error(`unexpected management endpoint ${path}`)
+    }
+
+    await expect(runLegacyPurge(config, fetcher)).resolves.toMatchObject({
+      mutated: true,
+      mutationCount: 1,
+    })
+    expect(managementPaths).toEqual([
+      'room-probe',
+      'room',
+      'replay-probe',
+      'room-probe',
+      'replay-verify',
+    ])
+    expect(managementPaths).not.toContain('replay-index')
   })
 
   test('does not attempt to reopen traffic after a partial cleanup failure', async () => {
@@ -509,13 +580,12 @@ describe('purge-legacy-games', () => {
       }
       const path = new URL(url).pathname.split('/').at(-1) as string
       managementPaths.push(path)
-      if (path === 'room') return response({ status: 'preserved' })
-      if (path === 'replay-index') return response({ error: 'storage failure' }, 500)
+      if (path === 'room-probe') return response({ status: 'preserved' })
       throw new Error(`unexpected management endpoint ${path}`)
     }
 
-    await expect(runLegacyPurge(config, fetcher)).rejects.toThrow('replay-index')
-    expect(managementPaths).toEqual(['room', 'replay-index'])
+    await expect(runLegacyPurge(config, fetcher)).resolves.toMatchObject({ mutated: true, mutationCount: 0 })
+    expect(managementPaths).toEqual(['room-probe', 'room-probe'])
     expect(managementPaths).not.toContain('reopen-traffic')
   })
 
@@ -525,6 +595,7 @@ describe('purge-legacy-games', () => {
       environment,
     )
     const managementPaths: string[] = []
+    let probeCalls = 0
     const fetcher: Fetcher = async (url, init) => {
       if (url.includes('/durable_objects/namespaces?')) return namespaceResponse()
       if (url.includes('/d1/database/')) {
@@ -545,13 +616,17 @@ describe('purge-legacy-games', () => {
       }
       const path = new URL(url).pathname.split('/').at(-1) as string
       managementPaths.push(path)
-      if (path === 'room') return response({ status: 'preserved', gameId: 'room-1' })
-      if (path === 'room-probe') return response({ status: 'broken', gameId: 'room-1' }, 500)
+      if (path === 'room-probe') {
+        probeCalls += 1
+        return probeCalls === 1
+          ? response({ status: 'preserved', gameId: 'room-1' })
+          : response({ status: 'broken', gameId: 'room-1' }, 500)
+      }
       if (path === 'replay-index') return response({ playerSavedReplayDeleted: 0, replayArchiveLifecycleDeleted: 0 })
       throw new Error(`unexpected management endpoint ${path}`)
     }
 
     await expect(runLegacyPurge(config, fetcher)).rejects.toThrow('room-probe failed with HTTP 500')
-    expect(managementPaths).toEqual(['room', 'replay-index', 'room-probe'])
+    expect(managementPaths).toEqual(['room-probe', 'room-probe'])
   })
 })

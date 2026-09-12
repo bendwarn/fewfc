@@ -49,9 +49,11 @@ not read, migrate, or replay schema 6 Game Records. The one-time purge is
 manual, dry-run-first, and is never run by deployment, migration, or tests. It
 only removes GameRoom Durable Objects whose management-only authoritative probe
 returns either `404 { status: "absent" }` or the explicit `500 { status: "broken" }`
-classification, and removes the matching stale public-room index row. A healthy
-room is preserved exactly as-is. Ordinary player-facing `401`/`403` responses are
-not used by this probe and never qualify a room for deletion.
+classification, and removes only its matching stale public-room index and
+membership rows. A healthy room is preserved exactly as-is. Ordinary
+player-facing `401`/`403` responses, authentication failures, timeouts,
+malformed responses, and arbitrary transport/server errors never qualify a
+room for deletion.
 
 The Worker management route requires maintenance mode and a short-lived Wrangler
 token verified against the configured Cloudflare account. The account ID selects
@@ -80,28 +82,32 @@ protected deployment configuration; it is never sufficient as a credential by
 itself. Do not set `FEWFC_*` target variables.
 
 Run staging first. Use the **Set Worker maintenance mode** GitHub Action with
-`staging` and `enable` (preferred), or deploy the release with
-`MAINTENANCE_MODE=true` as explicit Worker configuration. Then take and review
+`staging` and `enable` (preferred). It promotes the maintenance version paired
+with the version currently serving 100% traffic; it does not build or migrate.
+Then take and review
 a dry-run inventory:
 
 ```bash
 bun run build:staging
-wrangler deploy --env staging --var MAINTENANCE_MODE:true --var CLOUDFLARE_ACCOUNT_ID:"$CLOUDFLARE_ACCOUNT_ID"
 bun run purge:legacy-games --env staging --epoch schema-7-2026-08-26
 ```
 
 The dry-run sends read-only `room-probe` requests for every indexed room and
-stored GameRoom object. Its `candidateRooms` count covers only explicit
-`absent` or `broken` responses; malformed responses fail closed and no mutation
-is attempted. The CLI forwards the short-lived Wrangler token only to the
-configured Worker URL, using the dedicated management header.
+stored GameRoom object. Its `candidateRooms` output lists every candidate room
+identity and classification; it includes only explicit `absent` or `broken`
+responses. Malformed responses fail closed and no mutation is attempted. The
+CLI forwards the short-lived Wrangler token only to the configured Worker URL,
+using the management header; there is no `LEGACY_PURGE_SECRET`.
 
 Only after confirming room identities and object counts, run the mutation and
 its idempotency verification. A GameRoom is deleted only when its management-only
 authoritative probe returns the explicit `404 { status: "absent" }` or
 `500 { status: "broken" }` response. The same check is applied to each D1
 public-room row before removing a stale index row. A successful probe returns
-`200 { status: "preserved" }` and leaves the DO and index untouched.
+`200 { status: "preserved" }` and leaves the DO and index untouched. Replay
+archives and D1 replay rows are also preserved unless the archive's own
+`sourceGameId` matches a room explicitly deleted in this run; only then may the
+archive and matching D1 references be removed.
 A successful second confirmed run reports `mutationCount: 0`:
 
 ```bash
@@ -111,70 +117,59 @@ bun run purge:legacy-games --env staging --epoch schema-7-2026-08-26 --confirm
 
 Keep maintenance enabled if either command fails. The script verifies that
 preserved room identities still match the dry-run inventory, every removed room
-object returns 404 after deletion, every preserved room remains readable, both
-replay D1 tables are empty, and every enumerated ReplayArchive is empty. Reopen traffic only after
-that verification succeeds using the GitHub Action with `staging` and
-`disable` (preferred), or:
-
-```bash
-wrangler deploy --env staging --var MAINTENANCE_MODE:false --var CLOUDFLARE_ACCOUNT_ID:"$CLOUDFLARE_ACCOUNT_ID"
-```
+object returns 404 after deletion, every preserved room remains readable,
+readable Replay archives and unrelated D1 rows remain, and every explicitly
+associated deleted Replay has no archive or selected D1 reference. Reopen
+traffic only after that verification succeeds using the GitHub Action with
+`staging` and `disable`.
 
 Repeat the same sequence with `production` only after staging verification is
 complete. The script follows the Cloudflare Durable Objects Objects API cursors
 for both namespaces, so ReplayArchives without a surviving D1 reference are
-included. It deletes only `player_saved_replay` and `replay_archive_lifecycle`;
-account, profile, Deck List, and public-room index rows are preserved.
-
-CI/CD supplies this secret from the matching GitHub Environment instead. Do not
-commit the value to this repository.
+included. It deletes only Replay data provably associated with explicitly
+deleted rooms; account, profile, Deck List, readable Replay, and readable
+public-room index rows are preserved.
 
 ### GitHub Actions maintenance switch
 
 Use **Actions → Set Worker maintenance mode → Run workflow** from `main` to
-choose `staging` or `production` and `enable` or `disable`. The workflow uses
+choose `staging` or `production` and `enable`, `disable`, or the one-time
+`bootstrap-normal` option. The workflow uses
 the matching GitHub Environment, so its required reviewers and environment
-secrets still apply. It validates and builds the Worker, then deploys one new
-version with `MAINTENANCE_MODE` explicitly set to the requested value. It never
-runs a D1 migration or the purge script.
+secrets still apply. It resolves the active 100% deployment and all deployable
+versions, then promotes exactly its same-SHA paired version with
+`wrangler versions deploy`. It never builds, migrates, or runs the purge script;
+untagged, split, unknown, or unpaired deployments fail closed.
 
 Select `enable` before the dry-run and confirmed purge. Select `disable` only
-after the script's verification succeeds. Do not run the ordinary deployment
-workflow or push a deployment-triggering change while maintenance is enabled:
-the checked-in environment configuration sets `MAINTENANCE_MODE=false`, so a
-normal deployment would reopen traffic.
+after the script's verification succeeds. Ordinary CI refuses to run while
+maintenance is active; it resolves the active deployment first and fails closed
+instead of reopening traffic.
+
+For the one-time adoption of a Worker that predates paired tags, choose
+`bootstrap-normal` instead. Before entering the required acknowledgement
+`BOOTSTRAP_NORMAL_VERSION`, verify in the dashboard or through the last known
+deployment that maintenance is currently disabled. Bootstrap is deliberately a
+separate, protected operation: it validates and builds `main`, applies pending
+migrations, uploads the normal/maintenance pair, then promotes normal. It is
+the only workflow path allowed to replace an untagged active Worker; ordinary
+CI and `enable`/`disable` remain fail-closed.
 
 Before deployment:
 
 1. Verify the staging and production D1 IDs in `wrangler.toml`.
 2. Replace `BETTER_AUTH_URL` with the actual production and staging origins.
 3. Configure `BETTER_AUTH_SECRET` for each environment.
-4. Apply migrations to each remote database.
-
-```bash
-bun run db:migrate:staging
-bun run db:migrate:production
-```
 
 `bun run build` first compiles the Rust rules engine to `worker/wasm/fewfc.wasm`, then runs the Nuxt Cloudflare build. The generated Wasm binary is ignored by git and should be rebuilt in deploy environments.
 
-Deploy staging or production:
-
-```bash
-bun run cf:deploy:staging
-bun run cf:deploy:production
-```
-
-There is intentionally no unqualified deployment command. Each deployment command
-validates that its origin and D1 ID no longer contain repository placeholders.
-The commands build first, then apply the matching remote D1 migrations immediately
-before deploying the Worker.
-
-The first Better Auth 1.7.3 deployment must use this ordinary deployment path so
-`0009_account_provider.sql` is applied before the upgraded Worker receives traffic.
-The **Set Worker maintenance mode** action only deploys a Worker configuration and
-does not apply D1 migrations; use it for maintenance-mode changes after the schema
-migration has completed.
+Deployments run only through the protected CI/CD workflow. The former
+`cf:deploy:staging` and `cf:deploy:production` commands now fail deliberately:
+an ordinary `wrangler deploy` would create an unpaired version and make a later
+maintenance promotion ambiguous. The deployment workflow validates its origin
+and D1 ID, applies migrations, uploads the paired versions, and promotes normal
+in one protected sequence. An existing untagged Worker requires the explicit
+`bootstrap-normal` procedure above before automatic CI can take over.
 
 ## GitHub Actions CI/CD
 
@@ -186,10 +181,9 @@ arguments passed through `run_install`. The `Web checks` job is the pnpm cache
 writer; browser tests wait for it, and deployment jobs follow the browser tests
 so parallel jobs do not race while creating the same cache.
 
-Wrangler is pinned to `4.113.0` because `4.114+` has an upstream local-runtime
-regression that can terminate `wrangler dev` with `Network connection lost`
-during concurrent E2E requests. Remove this pin after the Workers SDK fix is
-available; it is independent of repository visibility.
+Wrangler is pinned to `4.130.0` in `package.json`. The paired-version workflows
+use its `versions upload` and `versions deploy` commands rather than the
+traffic-changing `wrangler deploy` command.
 
 `.github/workflows/ci-cd.yml` is the deployment source of truth:
 
@@ -199,10 +193,13 @@ available; it is independent of repository visibility.
 - A successful push to `main` deploys `production` automatically after the same
   run's `staging` deployment succeeds. The `production` Environment must not
   require reviewers or a wait timer; its branch policy may remain enabled.
-- Each deployment builds the environment-specific Nuxt/Wasm output, uploads
-  `BETTER_AUTH_SECRET`, injects the protected `CLOUDFLARE_ACCOUNT_ID` as a
-  Worker variable, applies pending
-  remote D1 migrations, and then deploys the Worker.
+- Each deployment builds the environment-specific Nuxt/Wasm output once,
+  applies pending remote D1 migrations, uploads immutable normal and maintenance
+  versions tagged `fewfc-<commit-sha>-normal` and
+  `fewfc-<commit-sha>-maintenance`, and promotes normal to 100%.
+- A preflight resolves the active deployment by exact version ID before any
+  migration or upload. It rejects active maintenance, untagged, split, or
+  otherwise unknown state, so an ordinary push cannot clear maintenance mode.
 
 Create GitHub Environments named `staging` and `production`. Add these encrypted
 secrets to both environments:
@@ -212,8 +209,8 @@ secrets to both environments:
 - `BETTER_AUTH_SECRET`
 
 Use different `BETTER_AUTH_SECRET` values for staging and production. The
-Cloudflare token needs Workers Scripts write access, D1 edit access, and Account
-Settings read access, scoped to the deployment account. Add Workers Routes write
+Cloudflare token needs Workers Scripts read and write access, D1 edit access,
+and Account Settings read access, scoped to the deployment account. Add Workers Routes write
 access for the relevant zone if a custom domain is managed by Wrangler.
 
 Before enabling automatic deployment, replace both placeholder

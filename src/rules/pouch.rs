@@ -100,16 +100,6 @@ fn choose_initial_pouch(
     if !state.has_rule_module(POUCH_MODULE_ID) {
         return Err(GameError::Validation(ValidationError::PouchRuleDisabled));
     }
-    if !matches!(
-        state.status,
-        GameStatus::Preparing {
-            stage: GamePreparationStage::InitialPouchSelection,
-        }
-    ) {
-        return Err(GameError::Validation(
-            ValidationError::InitialPouchSelectionUnavailable,
-        ));
-    }
     if !state.turn_order.contains(player) {
         return Err(GameError::Validation(ValidationError::UnknownPlayer(
             player.clone(),
@@ -120,6 +110,18 @@ fn choose_initial_pouch(
             ValidationError::InitialPouchAlreadyChosen {
                 player: player.clone(),
             },
+        ));
+    }
+    // 先檢查玩家是否已完成選擇，再檢查整體準備階段。最後一位玩家的
+    // 選擇會同時推進階段；同一玩家重試時仍應得到穩定的重複選擇錯誤。
+    if !matches!(
+        state.status,
+        GameStatus::Preparing {
+            stage: GamePreparationStage::InitialPouchSelection,
+        }
+    ) {
+        return Err(GameError::Validation(
+            ValidationError::InitialPouchSelectionUnavailable,
         ));
     }
     if !state
@@ -867,6 +869,41 @@ mod tests {
         assert_eq!(record.events().len(), event_count);
     }
 
+    #[test]
+    fn final_initial_pouch_choice_remains_duplicate_error_after_completion_advances_stage() {
+        let setup = setup();
+        let mut record = crate::application::GameRecord::start(setup, Vec::new()).unwrap();
+        let alice = PlayerId::new("alice");
+        let bob = PlayerId::new("bob");
+        let alice_card = record.state().deck_for(&alice).unwrap()[0];
+        let bob_card = record.state().deck_for(&bob).unwrap()[0];
+
+        record
+            .handle(Command::ChooseInitialPouch {
+                player: alice,
+                card: alice_card,
+            })
+            .unwrap();
+        record
+            .handle(Command::ChooseInitialPouch {
+                player: bob.clone(),
+                card: bob_card,
+            })
+            .unwrap();
+        let event_count = record.events().len();
+
+        assert_eq!(
+            record.handle(Command::ChooseInitialPouch {
+                player: bob.clone(),
+                card: bob_card,
+            }),
+            Err(GameError::Validation(
+                ValidationError::InitialPouchAlreadyChosen { player: bob },
+            )),
+        );
+        assert_eq!(record.events().len(), event_count);
+    }
+
     fn four_player_setup() -> crate::domain::GameSetup {
         let rules = OfficialRules::new();
         let players = crate::domain::GameSetup::team_mode(
@@ -948,6 +985,23 @@ mod tests {
         assert_eq!(decision["operation"]["type"], "transferByDiscard");
         assert_eq!(decision["operation"]["card"], 8);
         assert!(decision.get("source_card").is_none());
+    }
+
+    #[test]
+    fn initial_pouch_chosen_event_has_no_next_player_payload() {
+        let event = GameEvent::InitialPouchChosen {
+            player: PlayerId::new("alice"),
+            card: CardInstanceId::new(7),
+        };
+        let json = serde_json::to_value(event).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "InitialPouchChosen": { "player": "alice", "card": 7 }
+            }),
+        );
+        assert!(json["InitialPouchChosen"].get("next_player").is_none());
+        assert!(json["InitialPouchChosen"].get("nextPlayer").is_none());
     }
 
     #[test]

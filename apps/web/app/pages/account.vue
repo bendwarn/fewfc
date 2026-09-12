@@ -49,6 +49,7 @@
 
 <script setup lang="ts">
 import { authClient } from '~/lib/auth-client'
+import { presentApiError } from '~/lib/api-error-presentation'
 import { socialAuthFailureMessage } from '~/lib/social-auth-presentation'
 
 type SocialProvider = 'google' | 'github'
@@ -112,7 +113,7 @@ async function link(provider: SocialProvider) {
           callbackURL: '/account',
           errorCallbackURL: '/account',
       })
-    if (result.error) errorMessage.value = result.error.message || '無法開始連結社群帳號。'
+    if (result.error) errorMessage.value = presentApiError({ data: { message: result.error.message } }, '無法開始連結社群帳號。')
   } catch {
     errorMessage.value = '帳號服務目前無法使用。'
   } finally {
@@ -129,8 +130,7 @@ async function unlink(accountId: string) {
     await refresh()
     message.value = '登入方式已解除連結。'
   } catch (error) {
-    const statusMessage = (error as { data?: { statusMessage?: unknown } }).data?.statusMessage
-    errorMessage.value = typeof statusMessage === 'string' ? statusMessage : '無法解除登入方式。'
+    errorMessage.value = presentApiError(error, '無法解除登入方式。')
   } finally {
     busy.value = false
   }

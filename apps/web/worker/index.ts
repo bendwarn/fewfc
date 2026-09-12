@@ -131,6 +131,9 @@ async function managementResponse(
     roomId?: unknown
     replayId?: unknown
     objectId?: unknown
+    sourceGameId?: unknown
+    sourceGameIds?: unknown
+    replayIds?: unknown
   }
   if (typeof body.epoch !== 'string' || !body.epoch.trim()) {
     return Response.json({ error: 'a purge epoch is required' }, { status: 400 })
@@ -170,11 +173,13 @@ async function managementResponse(
   if (url.pathname === '/internal/legacy-purge/replay') {
     const hasObjectId = typeof body.objectId === 'string' && body.objectId.trim()
     if (!hasObjectId) return Response.json({ error: 'an objectId is required' }, { status: 400 })
+    const sourceGameId = typeof body.sourceGameId === 'string' ? body.sourceGameId.trim() : ''
+    if (!sourceGameId) return Response.json({ error: 'a sourceGameId is required' }, { status: 400 })
     const id = env.REPLAY.idFromString(body.objectId as string)
     return await env.REPLAY.get(id).fetch('https://replay.internal/manage/purge-legacy', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ epoch }),
+      body: JSON.stringify({ epoch, sourceGameId }),
     })
   }
 
@@ -192,6 +197,15 @@ async function managementResponse(
     if (!hasObjectId) return Response.json({ error: 'an objectId is required' }, { status: 400 })
     const id = env.REPLAY.idFromString(body.objectId as string)
     return await env.REPLAY.get(id).fetch('https://replay.internal/manage/verify-legacy', {
+      method: 'POST',
+    })
+  }
+
+  if (url.pathname === '/internal/legacy-purge/replay-probe') {
+    const hasObjectId = typeof body.objectId === 'string' && body.objectId.trim()
+    if (!hasObjectId) return Response.json({ error: 'an objectId is required' }, { status: 400 })
+    const id = env.REPLAY.idFromString(body.objectId as string)
+    return await env.REPLAY.get(id).fetch('https://replay.internal/manage/probe-legacy', {
       method: 'POST',
     })
   }
@@ -233,9 +247,19 @@ async function managementResponse(
   }
 
   if (url.pathname === '/internal/legacy-purge/replay-index') {
-    const results = await env.DB.batch([
-      ...legacyReplayDeleteStatements.map(statement => env.DB.prepare(statement)),
-    ])
+    const sourceGameIds = Array.isArray(body.sourceGameIds)
+      ? body.sourceGameIds.filter((value): value is string => typeof value === 'string' && value.trim())
+      : []
+    const replayIds = Array.isArray(body.replayIds)
+      ? body.replayIds.filter((value): value is string => typeof value === 'string' && value.trim())
+      : []
+    const statements = legacyReplayDeleteStatements(sourceGameIds, replayIds)
+    if (statements.length === 0) {
+      return Response.json({ playerSavedReplayDeleted: 0, replayArchiveLifecycleDeleted: 0 })
+    }
+    const results = await env.DB.batch(statements.map(statement => (
+      env.DB.prepare(statement.sql).bind(...statement.bindings)
+    )))
     return Response.json({
       playerSavedReplayDeleted: results[0]?.meta.changes ?? 0,
       replayArchiveLifecycleDeleted: results[1]?.meta.changes ?? 0,

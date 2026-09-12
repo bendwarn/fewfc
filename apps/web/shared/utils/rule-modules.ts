@@ -13,6 +13,7 @@ export const RULE_MODULE_PRESENTATION = {
   echo: { label: '迴響' },
   tribulation: { label: '天劫' },
   pouch: { label: '錦囊' },
+  'totem-formation': { label: '圖騰法陣' },
 } as const
 
 export interface RuleModulePolicy {
@@ -85,5 +86,5 @@ export function presentationForRuleModule(id: string): {
   label: string
 } {
   return RULE_MODULE_PRESENTATION[id as keyof typeof RULE_MODULE_PRESENTATION]
-    ?? { label: id }
+    ?? { label: '其他規則' }
 }

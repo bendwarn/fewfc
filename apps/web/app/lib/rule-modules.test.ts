@@ -101,6 +101,7 @@ test('presentation metadata is separate from authoritative rule policy', () => {
     label: '精靈',
   })
   expect(presentationForRuleModule('future-module')).toStrictEqual({
-    label: 'future-module',
+    label: '其他規則',
   })
+  expect(presentationForRuleModule('totem-formation')).toStrictEqual({ label: '圖騰法陣' })
 })

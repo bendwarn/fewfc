@@ -26,4 +26,20 @@ describe('presentApiError', () => {
       data: { error: '{"game":{"Validation":"SecretStrategyInputInvalid"}}' },
     }, '操作失敗')).toBe('操作失敗')
   })
+
+  test('falls back instead of exposing English server or auth messages', () => {
+    expect(presentApiError({
+      statusCode: 400,
+      data: { statusMessage: 'Invalid Rule Module configuration.' },
+    }, '無法更新規則')).toBe('規則版本或模組設定無效。')
+    expect(presentApiError({
+      data: { message: 'Invalid password.' },
+    }, '無法完成登入')).toBe('密碼錯誤。')
+    expect(presentApiError({
+      data: { message: 'Invalid email or password.' },
+    }, '無法完成登入')).toBe('Email 或密碼錯誤。')
+    expect(presentApiError({
+      data: { message: 'Unexpected provider failure.' },
+    }, '無法完成登入')).toBe('無法完成登入')
+  })
 })

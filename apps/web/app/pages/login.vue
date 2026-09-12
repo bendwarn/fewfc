@@ -32,6 +32,7 @@
 
 <script setup lang="ts">
 import { authClient } from '~/lib/auth-client'
+import { presentApiError } from '~/lib/api-error-presentation'
 import { safeInternalPath } from '~/lib/navigation'
 import { socialAuthFailureMessage } from '~/lib/social-auth-presentation'
 
@@ -71,7 +72,7 @@ async function login() {
       ? await authClient.signIn.email({ email: emailInput.value, password: passwordInput.value, rememberMe: true })
       : await authClient.signUp.email({ name: nameInput.value, email: emailInput.value, password: passwordInput.value })
     if (result.error) {
-      loginError.value = result.error.message || '無法完成登入'
+      loginError.value = presentApiError({ data: { message: result.error.message } }, '無法完成登入')
       return
     }
     await session.refresh()
@@ -89,7 +90,7 @@ async function guestLogin() {
   try {
     const result = await authClient.signIn.anonymous()
     if (result.error) {
-      loginError.value = result.error.message || '無法建立訪客身份'
+      loginError.value = presentApiError({ data: { message: result.error.message } }, '無法建立訪客身份')
       return
     }
     await session.refresh()
@@ -110,7 +111,7 @@ async function signInSocial(provider: SocialProvider) {
       callbackURL: loginRedirect(),
       errorCallbackURL: '/login',
     })
-    if (result.error) loginError.value = result.error.message || '無法開始社群登入'
+    if (result.error) loginError.value = presentApiError({ data: { message: result.error.message } }, '無法開始社群登入')
   } catch {
     loginError.value = '帳號服務目前無法使用'
   } finally {

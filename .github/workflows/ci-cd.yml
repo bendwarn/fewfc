@@ -65,6 +65,7 @@ jobs:
     timeout-minutes: 10
     env:
       APP_ENV: staging
+      WORKER_NAME: fewfc-web-staging
     permissions:
       contents: read
       deployments: write
@@ -73,7 +74,6 @@ jobs:
       cancel-in-progress: false
     environment:
       name: staging
-      url: ${{ steps.deploy.outputs.deployment-url }}
     defaults:
       run:
         working-directory: apps/web
@@ -96,23 +96,39 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: bun run validate:deploy staging
       - run: bun run build:staging
-      - name: Apply migrations and deploy
-        id: deploy
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-          packageManager: pnpm
-          workingDirectory: apps/web
-          environment: staging
-          vars: |
-            CLOUDFLARE_ACCOUNT_ID
-          command: |
-            d1 migrations apply fewfc-auth-staging --remote --env staging
-            deploy --env staging
+      - name: Preflight active Worker version and release pair
+        id: version_pair
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          metadata_dir="$(mktemp -d)"
+          trap 'rm -rf "$metadata_dir"' EXIT
+          bun scripts/worker-version-promotion.ts metadata "$CLOUDFLARE_ACCOUNT_ID" "$WORKER_NAME" "$metadata_dir"
+          bun scripts/worker-version-promotion.ts guard "$metadata_dir/deployments.json" "$metadata_dir/versions.json"
+          release_json="$(bun scripts/worker-version-promotion.ts release "$metadata_dir/versions.json" "$GITHUB_SHA")"
+          release_state="$(jq -r '.state' <<< "$release_json")"
+          [[ "$release_state" == "missing" || "$release_state" == "complete" ]]
+          echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
+      - name: Apply migrations and upload paired versions
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RELEASE_STATE: ${{ steps.version_pair.outputs.release_state }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 migrations apply fewfc-auth-staging --remote --env staging
+          normal_tag="fewfc-${GITHUB_SHA}-normal"
+          maintenance_tag="fewfc-${GITHUB_SHA}-maintenance"
+          if [[ "$RELEASE_STATE" == "missing" ]]; then
+            pnpm exec wrangler versions upload worker/index.ts --env staging --assets .output/public --tag "$normal_tag" --var "MAINTENANCE_MODE:false" --var "CLOUDFLARE_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID"
+            pnpm exec wrangler versions upload worker/index.ts --env staging --assets .output/public --tag "$maintenance_tag" --var "MAINTENANCE_MODE:true" --var "CLOUDFLARE_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID"
+          elif [[ "$RELEASE_STATE" != "complete" ]]; then
+            echo "Unexpected release pair state: $RELEASE_STATE" >&2
+            exit 1
+          fi
+          pnpm exec wrangler versions deploy --env staging --version-tag "$normal_tag@100%" --message "Promote paired normal version ${GITHUB_SHA}" -y
 
   deploy-production:
     name: Deploy production
@@ -123,6 +139,7 @@ jobs:
     timeout-minutes: 10
     env:
       APP_ENV: production
+      WORKER_NAME: fewfc
     permissions:
       contents: read
       deployments: write
@@ -131,7 +148,6 @@ jobs:
       cancel-in-progress: false
     environment:
       name: production
-      url: ${{ steps.deploy.outputs.deployment-url }}
     defaults:
       run:
         working-directory: apps/web
@@ -154,20 +170,36 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: bun run validate:deploy production
       - run: bun run build:production
-      - name: Apply migrations and deploy
-        id: deploy
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-          packageManager: pnpm
-          workingDirectory: apps/web
-          environment: production
-          vars: |
-            CLOUDFLARE_ACCOUNT_ID
-          command: |
-            d1 migrations apply fewfc-auth-production --remote --env production
-            deploy --env production
+      - name: Preflight active Worker version and release pair
+        id: version_pair
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          metadata_dir="$(mktemp -d)"
+          trap 'rm -rf "$metadata_dir"' EXIT
+          bun scripts/worker-version-promotion.ts metadata "$CLOUDFLARE_ACCOUNT_ID" "$WORKER_NAME" "$metadata_dir"
+          bun scripts/worker-version-promotion.ts guard "$metadata_dir/deployments.json" "$metadata_dir/versions.json"
+          release_json="$(bun scripts/worker-version-promotion.ts release "$metadata_dir/versions.json" "$GITHUB_SHA")"
+          release_state="$(jq -r '.state' <<< "$release_json")"
+          [[ "$release_state" == "missing" || "$release_state" == "complete" ]]
+          echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
+      - name: Apply migrations and upload paired versions
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RELEASE_STATE: ${{ steps.version_pair.outputs.release_state }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 migrations apply fewfc-auth-production --remote --env production
+          normal_tag="fewfc-${GITHUB_SHA}-normal"
+          maintenance_tag="fewfc-${GITHUB_SHA}-maintenance"
+          if [[ "$RELEASE_STATE" == "missing" ]]; then
+            pnpm exec wrangler versions upload worker/index.ts --env production --assets .output/public --tag "$normal_tag" --var "MAINTENANCE_MODE:false" --var "CLOUDFLARE_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID"
+            pnpm exec wrangler versions upload worker/index.ts --env production --assets .output/public --tag "$maintenance_tag" --var "MAINTENANCE_MODE:true" --var "CLOUDFLARE_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID"
+          elif [[ "$RELEASE_STATE" != "complete" ]]; then
+            echo "Unexpected release pair state: $RELEASE_STATE" >&2
+            exit 1
+          fi
+          pnpm exec wrangler versions deploy --env production --version-tag "$normal_tag@100%" --message "Promote paired normal version ${GITHUB_SHA}" -y
