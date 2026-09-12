@@ -17,7 +17,7 @@ interface WorkerEnv {
   PLAYER_NOTIFICATIONS: DurableObjectNamespace
   REPLAY: DurableObjectNamespace
   APP_ENV: 'development' | 'staging' | 'production'
-  /** 部署時明確控制單向舊版切換的閘門。 */
+  /** 由 Cloudflare Secret 明確控制的維護閘門。 */
   MAINTENANCE_MODE?: string
   /** 從部署帳戶設定注入，僅用來驗證 Wrangler token 的帳戶範圍。 */
   CLOUDFLARE_ACCOUNT_ID?: string

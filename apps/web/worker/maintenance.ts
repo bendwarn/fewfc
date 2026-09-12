@@ -1,4 +1,4 @@
-/** 由部署設定的維護政策。它特意不使用儲存空間。 */
+/** 由 Cloudflare Secret 設定的維護政策。它特意不使用儲存空間。 */
 export function maintenanceEnabled(value: string | undefined): boolean {
   return value === 'true'
 }

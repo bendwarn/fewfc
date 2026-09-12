@@ -193,6 +193,19 @@ part of ordinary deploys.
   configuration, not persisted schema.
 - During maintenance, reject new game commands and Replay creation. Enter
   maintenance before enumeration and leave it enabled after any failure.
+- Deployment policy is deliberately separate from this room/replay cleanup:
+  pushes to `main` run the normal CI checks and automatically build and deploy
+  staging; production deploys only from a manually dispatched CI workflow with
+  its production input enabled.
+- The protected maintenance workflow's `enable` and `disable` operations use
+  `wrangler versions secret put MAINTENANCE_MODE` followed by `wrangler
+  versions deploy`. Cloudflare creates and promotes a configuration-only
+  version that reuses the currently deployed Worker code/build; these
+  operations run no application build, migration, or purge.
+- Ordinary code deployment uses `wrangler deploy --keep-vars` and never supplies
+  `MAINTENANCE_MODE`, so a push cannot silently disable an active maintenance
+  gate. If the configuration-only version cannot be created or promoted, the
+  current deployment remains in place and the workflow fails closed.
 - Use D1 room data plus the Cloudflare Durable Objects Namespaces/Objects API to
   enumerate GameRoom and ReplayArchive objects, including storage with no
   surviving D1 replay reference. Follow API cursors until exhausted.
@@ -215,6 +228,8 @@ Cloudflare references for the management implementation:
 
 - [Access Durable Object storage](https://developers.cloudflare.com/durable-objects/best-practices/access-durable-objects-storage/)
 - [List Durable Object namespace objects](https://developers.cloudflare.com/api/resources/durable_objects/subresources/namespaces/subresources/objects/methods/list/)
+- [Workers secrets and configuration-only versions](https://developers.cloudflare.com/workers/configuration/secrets/)
+- [Workers versions and deployments](https://developers.cloudflare.com/workers/versions-and-deployments/)
 
 ## Testing Decisions
 

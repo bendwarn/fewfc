@@ -42,6 +42,11 @@ bunx wrangler secret put BETTER_AUTH_SECRET --env staging
 bunx wrangler secret put BETTER_AUTH_SECRET --env production
 ```
 
+`MAINTENANCE_MODE` is also a deployed Worker secret, but it is managed only by
+the protected maintenance workflow. Do not add it to `wrangler.toml` or pass it
+as a variable during a code deployment: `wrangler deploy --keep-vars` preserves
+the current value so a normal CI run cannot silently reopen traffic.
+
 ## Legacy game cutover (schema 7)
 
 Schema 7 centralizes card supply and the serialized pending rule flow. It does
@@ -82,9 +87,9 @@ protected deployment configuration; it is never sufficient as a credential by
 itself. Do not set `FEWFC_*` target variables.
 
 Run staging first. Use the **Set Worker maintenance mode** GitHub Action with
-`staging` and `enable` (preferred). It promotes the maintenance version paired
-with the version currently serving 100% traffic; it does not build or migrate.
-Then take and review
+`staging` and `enable` (preferred). It creates a configuration-only Worker
+version from the currently deployed Worker and promotes it; the code and build
+are reused, so it does not build or migrate. Then take and review
 a dry-run inventory:
 
 ```bash
@@ -121,7 +126,8 @@ object returns 404 after deletion, every preserved room remains readable,
 readable Replay archives and unrelated D1 rows remain, and every explicitly
 associated deleted Replay has no archive or selected D1 reference. Reopen
 traffic only after that verification succeeds using the GitHub Action with
-`staging` and `disable`.
+`staging` and `disable`. Disabling uses the same configuration-only version flow
+with `MAINTENANCE_MODE=false`; it does not rebuild the application.
 
 Repeat the same sequence with `production` only after staging verification is
 complete. The script follows the Cloudflare Durable Objects Objects API cursors
@@ -133,27 +139,19 @@ public-room index rows are preserved.
 ### GitHub Actions maintenance switch
 
 Use **Actions → Set Worker maintenance mode → Run workflow** from `main` to
-choose `staging` or `production` and `enable`, `disable`, or the one-time
-`bootstrap-normal` option. The workflow uses
+choose `staging` or `production` and `enable` or `disable`. The workflow uses
 the matching GitHub Environment, so its required reviewers and environment
-secrets still apply. It resolves the active 100% deployment and all deployable
-versions, then promotes exactly its same-SHA paired version with
-`wrangler versions deploy`. It never builds, migrates, or runs the purge script;
-untagged, split, unknown, or unpaired deployments fail closed.
+secrets still apply. It runs `wrangler versions secret put MAINTENANCE_MODE`
+with the requested value, then promotes that version with `wrangler versions
+deploy`. Cloudflare creates this version from the existing deployed code and
+build; the switch never runs the application build, migrations, or purge
+script.
 
 Select `enable` before the dry-run and confirmed purge. Select `disable` only
-after the script's verification succeeds. Ordinary CI refuses to run while
-maintenance is active; it resolves the active deployment first and fails closed
-instead of reopening traffic.
-
-For the one-time adoption of a Worker that predates paired tags, choose
-`bootstrap-normal` instead. Before entering the required acknowledgement
-`BOOTSTRAP_NORMAL_VERSION`, verify in the dashboard or through the last known
-deployment that maintenance is currently disabled. Bootstrap is deliberately a
-separate, protected operation: it validates and builds `main`, applies pending
-migrations, uploads the normal/maintenance pair, then promotes normal. It is
-the only workflow path allowed to replace an untagged active Worker; ordinary
-CI and `enable`/`disable` remain fail-closed.
+after the script's verification succeeds. Ordinary CI uses `wrangler deploy
+--keep-vars` and never supplies `MAINTENANCE_MODE`, so a push cannot clear the
+secret while maintenance is active. If the configuration-only version cannot
+be created or promoted, the workflow fails without changing traffic.
 
 Before deployment:
 
@@ -163,13 +161,13 @@ Before deployment:
 
 `bun run build` first compiles the Rust rules engine to `worker/wasm/fewfc.wasm`, then runs the Nuxt Cloudflare build. The generated Wasm binary is ignored by git and should be rebuilt in deploy environments.
 
-Deployments run only through the protected CI/CD workflow. The former
-`cf:deploy:staging` and `cf:deploy:production` commands now fail deliberately:
-an ordinary `wrangler deploy` would create an unpaired version and make a later
-maintenance promotion ambiguous. The deployment workflow validates its origin
-and D1 ID, applies migrations, uploads the paired versions, and promotes normal
-in one protected sequence. An existing untagged Worker requires the explicit
-`bootstrap-normal` procedure above before automatic CI can take over.
+Deployments run through the protected CI/CD workflow. A push to `main` runs the
+normal CI checks and, after they pass, automatically builds and deploys the
+staging Worker. Production is not part of the push path: start the same
+workflow manually with its `deploy_production` input enabled. Both code paths
+apply pending migrations and deploy one normal Worker version with
+`wrangler deploy --keep-vars`, preserving the separately managed maintenance
+secret.
 
 ## GitHub Actions CI/CD
 
@@ -181,25 +179,26 @@ arguments passed through `run_install`. The `Web checks` job is the pnpm cache
 writer; browser tests wait for it, and deployment jobs follow the browser tests
 so parallel jobs do not race while creating the same cache.
 
-Wrangler is pinned to `4.130.0` in `package.json`. The paired-version workflows
-use its `versions upload` and `versions deploy` commands rather than the
-traffic-changing `wrangler deploy` command.
+Wrangler is pinned to `4.130.0` in `package.json`. Code deployment uses its
+standard `deploy` command; the maintenance workflow uses `versions secret` and
+`versions deploy` so maintenance changes do not rebuild the application.
 
 `.github/workflows/ci-cd.yml` is the deployment source of truth:
 
 - Pull requests and pushes to `main` run Rust tests, Web unit tests and type
   checking, and the Worker-backed Playwright suite.
-- A successful push to `main` deploys `staging` automatically.
-- A successful push to `main` deploys `production` automatically after the same
-  run's `staging` deployment succeeds. The `production` Environment must not
-  require reviewers or a wait timer; its branch policy may remain enabled.
+- A successful push to `main` deploys `staging` automatically after the normal
+  Rust, Web, browser, and type checks.
+- Production deploys only from a manually dispatched run with
+  `deploy_production` enabled; a push to `main` never deploys production.
 - Each deployment builds the environment-specific Nuxt/Wasm output once,
-  applies pending remote D1 migrations, uploads immutable normal and maintenance
-  versions tagged `fewfc-<commit-sha>-normal` and
-  `fewfc-<commit-sha>-maintenance`, and promotes normal to 100%.
-- A preflight resolves the active deployment by exact version ID before any
-  migration or upload. It rejects active maintenance, untagged, split, or
-  otherwise unknown state, so an ordinary push cannot clear maintenance mode.
+  applies pending remote D1 migrations, and deploys one Worker version with
+  `wrangler deploy --keep-vars`.
+- `MAINTENANCE_MODE` is intentionally absent from `wrangler.toml` and code
+  deployment arguments. The maintenance workflow changes it through
+  Cloudflare's `versions secret`/`versions deploy` mechanism, preserving the
+  deployed Worker code/build and ensuring normal CI cannot clear an active
+  maintenance flag.
 
 Create GitHub Environments named `staging` and `production`. Add these encrypted
 secrets to both environments:

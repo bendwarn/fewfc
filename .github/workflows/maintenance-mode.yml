@@ -11,17 +11,12 @@ on:
           - staging
           - production
       mode:
-        description: Enable or disable maintenance; bootstrap-normal adopts an existing untagged normal Worker
+        description: Enable or disable maintenance without rebuilding the Worker
         required: true
         type: choice
         options:
           - enable
           - disable
-          - bootstrap-normal
-      bootstrap_acknowledgement:
-        description: For bootstrap-normal only, type BOOTSTRAP_NORMAL_VERSION after verifying maintenance is disabled
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -58,8 +53,6 @@ jobs:
         working-directory: apps/web
     env:
       APP_ENV: ${{ inputs.environment }}
-      WORKER_NAME: ${{ inputs.environment == 'staging' && 'fewfc-web-staging' || 'fewfc' }}
-      D1_DATABASE_NAME: ${{ inputs.environment == 'staging' && 'fewfc-auth-staging' || 'fewfc-auth-production' }}
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -71,93 +64,13 @@ jobs:
           run_install: |
             - cwd: apps/web
               args: [--frozen-lockfile]
-      - name: Confirm bootstrap
-        if: inputs.mode == 'bootstrap-normal'
+      - name: Create config-only Worker version
         env:
-          BOOTSTRAP_ACKNOWLEDGEMENT: ${{ inputs.bootstrap_acknowledgement }}
-        run: |
-          set -euo pipefail
-          if [[ "$BOOTSTRAP_ACKNOWLEDGEMENT" != "BOOTSTRAP_NORMAL_VERSION" ]]; then
-            echo "bootstrap-normal requires BOOTSTRAP_NORMAL_VERSION after verifying maintenance is disabled" >&2
-            exit 1
-          fi
-      - uses: dtolnay/rust-toolchain@stable
-        if: inputs.mode == 'bootstrap-normal'
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        if: inputs.mode == 'bootstrap-normal'
-      - name: Validate and build bootstrap version
-        if: inputs.mode == 'bootstrap-normal'
-        run: |
-          set -euo pipefail
-          bun run validate:deploy "$APP_ENV"
-          bun run "build:$APP_ENV"
-      - name: Resolve current paired Worker versions
-        if: inputs.mode != 'bootstrap-normal'
-        id: pair
-        env:
+          MAINTENANCE_MODE_VALUE: ${{ inputs.mode == 'enable' && 'true' || 'false' }}
+          VERSION_TAG: fewfc-maintenance-${{ inputs.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          REQUESTED_MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
-          metadata_dir="$(mktemp -d)"
-          trap 'rm -rf "$metadata_dir"' EXIT
-          bun scripts/worker-version-promotion.ts metadata "$CLOUDFLARE_ACCOUNT_ID" "$WORKER_NAME" "$metadata_dir"
-          pair_json="$(bun scripts/worker-version-promotion.ts pair "$metadata_dir/deployments.json" "$metadata_dir/versions.json" "$REQUESTED_MODE")"
-          normal_tag="$(jq -r '.normal' <<< "$pair_json")"
-          maintenance_tag="$(jq -r '.maintenance' <<< "$pair_json")"
-          [[ "$normal_tag" != "null" && "$maintenance_tag" != "null" ]]
-          echo "normal_tag=$normal_tag" >> "$GITHUB_OUTPUT"
-          echo "maintenance_tag=$maintenance_tag" >> "$GITHUB_OUTPUT"
-      - name: Promote requested maintenance mode
-        if: inputs.mode != 'bootstrap-normal'
-        env:
-          REQUESTED_MODE: ${{ inputs.mode }}
-          NORMAL_TAG: ${{ steps.pair.outputs.normal_tag }}
-          MAINTENANCE_TAG: ${{ steps.pair.outputs.maintenance_tag }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          case "$REQUESTED_MODE" in
-            enable) tag="$MAINTENANCE_TAG" ;;
-            disable) tag="$NORMAL_TAG" ;;
-            *) echo "Unexpected maintenance mode: $REQUESTED_MODE" >&2; exit 1 ;;
-          esac
-          pnpm exec wrangler versions deploy --env "$APP_ENV" --version-tag "$tag@100%" --message "Promote paired $REQUESTED_MODE version" -y
-      - name: Resolve bootstrap release pair
-        if: inputs.mode == 'bootstrap-normal'
-        id: bootstrap_pair
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          metadata_dir="$(mktemp -d)"
-          trap 'rm -rf "$metadata_dir"' EXIT
-          bun scripts/worker-version-promotion.ts metadata "$CLOUDFLARE_ACCOUNT_ID" "$WORKER_NAME" "$metadata_dir"
-          release_json="$(bun scripts/worker-version-promotion.ts release "$metadata_dir/versions.json" "$GITHUB_SHA")"
-          release_state="$(jq -r '.state' <<< "$release_json")"
-          [[ "$release_state" == "missing" || "$release_state" == "complete" ]]
-          echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
-      - name: Bootstrap paired normal Worker version
-        if: inputs.mode == 'bootstrap-normal'
-        env:
-          RELEASE_STATE: ${{ steps.bootstrap_pair.outputs.release_state }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          pnpm exec wrangler d1 migrations apply "$D1_DATABASE_NAME" --remote --env "$APP_ENV"
-          normal_tag="fewfc-${GITHUB_SHA}-normal"
-          maintenance_tag="fewfc-${GITHUB_SHA}-maintenance"
-          if [[ "$RELEASE_STATE" == "missing" ]]; then
-            pnpm exec wrangler versions upload worker/index.ts --env "$APP_ENV" --assets .output/public --tag "$normal_tag" --var "MAINTENANCE_MODE:false" --var "CLOUDFLARE_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID"
-            pnpm exec wrangler versions upload worker/index.ts --env "$APP_ENV" --assets .output/public --tag "$maintenance_tag" --var "MAINTENANCE_MODE:true" --var "CLOUDFLARE_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID"
-          elif [[ "$RELEASE_STATE" != "complete" ]]; then
-            echo "Unexpected release pair state: $RELEASE_STATE" >&2
-            exit 1
-          fi
-          pnpm exec wrangler versions deploy --env "$APP_ENV" --version-tag "$normal_tag@100%" --message "Bootstrap paired normal version ${GITHUB_SHA}" -y
+          printf '%s' "$MAINTENANCE_MODE_VALUE" | pnpm exec wrangler versions secret put MAINTENANCE_MODE --env "$APP_ENV" --tag "$VERSION_TAG" --message "Set maintenance mode: ${{ inputs.mode }}"
+          # The config-only version reuses the currently deployed Worker code/build.
+          pnpm exec wrangler versions deploy --env "$APP_ENV" --version-tag "$VERSION_TAG@100%" --message "Set maintenance mode: ${{ inputs.mode }}" -y
