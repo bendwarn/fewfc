@@ -27,14 +27,13 @@
 ## Browser and E2E Validation
 
 - Keep E2E tests on Playwright's default timeouts whenever possible. If a test
-  times out, use the `playwright-cli` skill first to inspect the live flow and
-  identify where it is blocked before increasing a timeout or changing the
-  test.
+  times out, inspect the error, retained trace, console, or network evidence to
+  locate the block before increasing a timeout. Use `playwright-cli` when live
+  interaction would resolve remaining uncertainty.
 - Tests and development scenarios must be deterministic. Do not scan seed ranges,
   retry random outcomes, or rely on probability to reach the required state. When
   a scenario needs specific Cards, use a fixed Rules Engine-owned deck order and
   still reach the state through normal start, command, event, and replay paths.
-- Tests can use bun api as possible.
 - Do not use manual visual inspection or screenshot comparison as acceptance
   validation. Prefer repeatable Playwright assertions against routes, DOM state,
   accessible roles and names, focus, and element geometry.
@@ -48,32 +47,11 @@
   accepts `chromium`, `firefox`, or `webkit`; `PLAYWRIGHT_BROWSER_PATH` supplies
   a local executable when needed. The Playwright configuration explicitly loads
   `.env`; neither setting belongs in committed test configuration.
-- A Playwright `click()` waits for the browser click action, not for an async Vue
-  handler's command request to commit. Before reload or reconnect assertions,
-  wait for the specific `/commands` response and identify it by request action
-  type; otherwise navigation can race a valid command.
-- When an E2E state assertion fails despite correct API JSON, inspect retained
-  trace console errors before changing replay or persistence. A Vue render
-  exception can hide state that is present in command responses, refresh
-  responses, and WebSocket messages.
-- Playwright locators are strict. Use the complete accessible name when controls
-  share a label, such as `建立房間` and `建立房間 →`.
 - Do not keep tombstone assertions whose only purpose is proving that a removed
   button, label, or component has not returned. Prefer positive assertions about
   the current workflow. Assertions about absence or invisibility are appropriate
   only for privacy, security, authorization, mutually exclusive state, or an
   explicit current product contract.
-- Playwright treats `aria-disabled="true"` as disabled. Use a forced click only
-  when a test deliberately verifies that the handler still refuses to open the
-  control; normal workflow tests must use actionable controls.
-- Do not manufacture end-of-match assertions by playing dozens of browser
-  turns. Replaying the growing canonical record on every command can eventually
-  restart the local Worker mid-POST with `503 Your worker restarted
-  mid-request`. Use a narrowly scoped development-only endgame fixture, then
-  verify the final action, outcome, and reset through normal UI controls. The
-  current online-room fixture is `POST /api/games/:id/test-endgame`; production
-  and staging must continue to return 404 for test-only routes.
-- After clicking `開始遊戲`, wait for an active-game DOM marker such as the
-  `啟用規則` region before invoking fixture or command APIs. The click handler is
-  asynchronous; issuing the next request immediately can race the room update
-  and receive `409 test fixture requires an active match`.
+- Production and staging must return 404 for test-only routes.
+- For command/reload races, mismatches between API state and the rendered UI,
+  locator failures, or endgame fixture setup, read [E2E troubleshooting](docs/e2e-troubleshooting.md).

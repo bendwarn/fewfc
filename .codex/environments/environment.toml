@@ -13,3 +13,8 @@ command = "cd apps/web && bun run dev"
 name = "Stop servers"
 icon = "run"
 command = "cd apps/web && bun run dev:stop"
+
+[[actions]]
+name = "Legacy purge wizard"
+icon = "run"
+command = "bash tmp/legacy-game-purge-wizard.sh"

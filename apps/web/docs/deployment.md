@@ -42,10 +42,11 @@ bunx wrangler secret put BETTER_AUTH_SECRET --env staging
 bunx wrangler secret put BETTER_AUTH_SECRET --env production
 ```
 
-`MAINTENANCE_MODE` is also a deployed Worker secret, but it is managed only by
-the protected maintenance workflow. Do not add it to `wrangler.toml` or pass it
-as a variable during a code deployment: `wrangler deploy --keep-vars` preserves
-the current value so a normal CI run cannot silently reopen traffic.
+`MAINTENANCE_MODE` is also a deployed Worker secret. The local cutover wizard
+changes it through Wrangler's configuration-only version commands. Do not add
+it to `wrangler.toml` or pass it as a variable during a code deployment:
+`wrangler deploy --keep-vars` preserves the current value so a normal CI run
+cannot silently reopen traffic.
 
 ## Legacy game cutover (schema 7)
 
@@ -86,9 +87,9 @@ account ID must be injected into the deployed Worker as a variable by the
 protected deployment configuration; it is never sufficient as a credential by
 itself. Do not set `FEWFC_*` target variables.
 
-Run staging first. Use the **Set Worker maintenance mode** GitHub Action with
-`staging` and `enable` (preferred). It creates a configuration-only Worker
-version from the currently deployed Worker and promotes it; the code and build
+Run staging first. Start the local cutover wizard and select `staging`. It uses
+the authenticated local Wrangler profile to create a configuration-only Worker
+version from the currently deployed Worker and promote it; the code and build
 are reused, so it does not build or migrate. Then take and review
 a dry-run inventory:
 
@@ -125,9 +126,9 @@ preserved room identities still match the dry-run inventory, every removed room
 object returns 404 after deletion, every preserved room remains readable,
 readable Replay archives and unrelated D1 rows remain, and every explicitly
 associated deleted Replay has no archive or selected D1 reference. Reopen
-traffic only after that verification succeeds using the GitHub Action with
-`staging` and `disable`. Disabling uses the same configuration-only version flow
-with `MAINTENANCE_MODE=false`; it does not rebuild the application.
+traffic only after that verification succeeds. The wizard disables maintenance
+with the same configuration-only version flow using `MAINTENANCE_MODE=false`; it
+does not rebuild the application.
 
 Repeat the same sequence with `production` only after staging verification is
 complete. The script follows the Cloudflare Durable Objects Objects API cursors
@@ -136,22 +137,28 @@ included. It deletes only Replay data provably associated with explicitly
 deleted rooms; account, profile, Deck List, readable Replay, and readable
 public-room index rows are preserved.
 
-### GitHub Actions maintenance switch
+### Local Wrangler maintenance switch
 
-Use **Actions → Set Worker maintenance mode → Run workflow** from `main` to
-choose `staging` or `production` and `enable` or `disable`. The workflow uses
-the matching GitHub Environment, so its required reviewers and environment
-secrets still apply. It runs `wrangler versions secret put MAINTENANCE_MODE`
-with the requested value, then promotes that version with `wrangler versions
-deploy`. Cloudflare creates this version from the existing deployed code and
-build; the switch never runs the application build, migrations, or purge
-script.
+Run the checked-out wizard from the repository root:
 
-Select `enable` before the dry-run and confirmed purge. Select `disable` only
-after the script's verification succeeds. Ordinary CI uses `wrangler deploy
---keep-vars` and never supplies `MAINTENANCE_MODE`, so a push cannot clear the
-secret while maintenance is active. If the configuration-only version cannot
-be created or promoted, the workflow fails without changing traffic.
+```bash
+bash tmp/legacy-game-purge-wizard.sh
+```
+
+It verifies `wrangler whoami`, lets the operator select `staging` or
+`production`, then runs `wrangler versions secret put MAINTENANCE_MODE` with
+the requested value and promotes exactly that tagged version with `wrangler
+versions deploy`. The local Wrangler OAuth login supplies authentication; no
+GitHub Action, API token, application build, migration, or purge is involved
+in this switch. If the profile has multiple accounts, provide the non-secret
+`CLOUDFLARE_ACCOUNT_ID` when the wizard asks.
+
+The wizard enables maintenance before the dry-run and confirmed purge, and
+disables it only after the second confirmed run reports `mutationCount: 0`.
+Ordinary CI uses `wrangler deploy --keep-vars` and never supplies
+`MAINTENANCE_MODE`, so a push cannot clear the secret while maintenance is
+active. If the configuration-only version cannot be created or promoted, the
+active deployment is unchanged and the wizard stops.
 
 Before deployment:
 
@@ -180,7 +187,7 @@ writer; browser tests wait for it, and deployment jobs follow the browser tests
 so parallel jobs do not race while creating the same cache.
 
 Wrangler is pinned to `4.130.0` in `package.json`. Code deployment uses its
-standard `deploy` command; the maintenance workflow uses `versions secret` and
+standard `deploy` command; the local cutover wizard uses `versions secret` and
 `versions deploy` so maintenance changes do not rebuild the application.
 
 `.github/workflows/ci-cd.yml` is the deployment source of truth:
@@ -195,7 +202,7 @@ standard `deploy` command; the maintenance workflow uses `versions secret` and
   applies pending remote D1 migrations, and deploys one Worker version with
   `wrangler deploy --keep-vars`.
 - `MAINTENANCE_MODE` is intentionally absent from `wrangler.toml` and code
-  deployment arguments. The maintenance workflow changes it through
+  deployment arguments. The local cutover wizard changes it through
   Cloudflare's `versions secret`/`versions deploy` mechanism, preserving the
   deployed Worker code/build and ensuring normal CI cannot clear an active
   maintenance flag.

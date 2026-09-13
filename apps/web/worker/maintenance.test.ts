@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { maintenanceBlocksPlayerMutation, maintenanceEnabled } from './maintenance'
 
 test('maintenance is explicit and fails closed for Commands and Replay creation only', () => {
@@ -12,7 +12,7 @@ test('maintenance is explicit and fails closed for Commands and Replay creation 
   expect(maintenanceBlocksPlayerMutation('POST', '/api/games/room-1/start')).toBe(false)
 })
 
-test('deployment preserves the maintenance secret and changes it without a rebuild', async () => {
+test('deployment preserves the maintenance secret while cutover uses local Wrangler', async () => {
   const workflow = await readFile(new URL('../../../.github/workflows/ci-cd.yml', import.meta.url), 'utf8')
   expect(workflow).toContain('wrangler deploy --env staging --keep-vars')
   expect(workflow).toContain('wrangler deploy --env production --keep-vars')
@@ -27,8 +27,8 @@ test('deployment preserves the maintenance secret and changes it without a rebui
   const wrangler = await readFile(new URL('../wrangler.toml', import.meta.url), 'utf8')
   expect(wrangler).not.toContain('MAINTENANCE_MODE')
 
-  const maintenanceWorkflow = await readFile(new URL('../../../.github/workflows/maintenance-mode.yml', import.meta.url), 'utf8')
-  expect(maintenanceWorkflow).toContain('wrangler versions secret put MAINTENANCE_MODE')
-  expect(maintenanceWorkflow).toContain('wrangler versions deploy')
-  expect(maintenanceWorkflow).not.toContain('build:')
+  const maintenanceWorkflowExists = await stat(
+    new URL('../../../.github/workflows/maintenance-mode.yml', import.meta.url),
+  ).then(() => true, () => false)
+  expect(maintenanceWorkflowExists).toBe(false)
 })

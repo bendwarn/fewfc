@@ -1,0 +1,69 @@
+--- a/cx/SKILL.md
++++ b/cx/SKILL.md
+@@ -1,6 +1,6 @@
+ ---
+ name: cx
+-description: Semantic code navigation via the cx CLI. Use cx before rg or reading source files when exploring a codebase or locating symbols, definitions, references, or file/dir overviews; fall back to rg for plain-text, non-symbol, or unsupported searches.
++description: Navigate code symbols, definitions, and references with cx when semantic lookup helps locate the relevant code.
+ ---
+ 
+ # cx — Semantic Code Navigation
+@@ -26,36 +26,11 @@
+       --all              Return all results (bypass the default limit)
+ ```
+ 
+-Prefer cx before using rg or reading source files. Zoom in until you have what you need, then stop:
+-`overview` > `symbols` > `definition` or `references`.
++Use cx when semantic lookup helps answer the current question. Choose `overview`, `symbols`, `definition`, or `references` for the target; a known file or symbol does not require a repository-wide overview. Use `rg` and direct file reads for text searches or when they are more direct.
+ 
+-Use `rg` for plain-text, non-symbol, or cx-unsupported searches; do not use it as the first step when cx can represent the target.
++## Availability
+ 
+-Fall back to the Read tool when `cx` can't represent the target (anonymous functions, JSX-inline components, dynamic
+-dispatch, string-keyed lookups, non-symbol regions).
+-
+-## First-run checks (once per session)
+-
+-1. **Is cx installed?** Run `command -v cx`. If absent, stop and ask the user to install it — do not attempt the install
+-   yourself. Canonical commands:
+-    - Homebrew: `brew tap ind-igo/cx && brew install cx`
+-    - Cargo: `cargo install cx-cli`
+-    - Shell (Linux/macOS): `curl -sL https://raw.githubusercontent.com/ind-igo/cx/master/install.sh | sh`
+-
+-2. **Are this project's grammars installed?** Just run `cx overview .` as your first probe. If grammars are missing the
+-   output is self-diagnosing — it prints the detected project languages and the exact install command, e.g.:
+-
+-   ```
+-   cx: no language grammars installed
+-   Detected languages in this project:
+-     typescript (37 files)
+-     markdown (7 files)
+-   Install with: cx lang add typescript markdown
+-   ```
+-
+-   If your harness sandboxes network egress, the install will fail with "Connection refused" when `cx` fetches the
+-   grammars from GitHub. Run the install outside the sandbox, or grant network access for the install command. Once
+-   grammars are cached, normal cx queries don't need network. Re-run `cx overview .` to confirm.
++Check `command -v cx` before first use. If cx is absent, a required grammar is missing, or a query fails, continue with `rg` and direct file reads. Mention the limitation only when it affects the result. Install cx or grammars when setup is part of the user's request; ordinary code navigation can continue without installation.
+ 
+ ## Common Recipes & Extra Info
+ 
+@@ -74,7 +49,7 @@
+ 
+ ## Key patterns
+ 
+-- Start with `cx overview .`, drill into subdirectories — cheaper than ls + reading files.
++- Use `cx overview` for an unfamiliar area; scope it to the relevant directory.
+ - Can't find a symbol that should exist? Make sure the language grammar is installed via `cx lang list`.
+ - `cx definition --name X` gives exact text for Edit tool's `old_string` without reading the whole file.
+ - `cx references --name X` groups hits by file; add `--context` only when exact source lines are needed.
+@@ -84,8 +59,7 @@
+ - If your harness restricts writes outside the project root, the default cache location may not be writable. Set
+   `CX_CACHE_DIR` to a project-local writable path before running cx, for example:
+   `CX_CACHE_DIR="$PWD/.cx-cache" cx overview .`. Do not change permissions on the default cache directory or use
+-  elevated privileges just for cx; if the project-local path is not writable, ask for a writable workspace or explicit
+-  permission before proceeding.
++  elevated privileges just for cx; if the project-local path is not writable, continue with `rg` and direct file reads.
+ 
+ ## Pagination
+ 

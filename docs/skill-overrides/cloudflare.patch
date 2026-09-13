@@ -1,0 +1,19 @@
+--- a/cloudflare/SKILL.md
++++ b/cloudflare/SKILL.md
+@@ -1,6 +1,6 @@
+ ---
+ name: cloudflare
+-description: Comprehensive Cloudflare platform skill covering Workers, Pages, storage (KV, D1, R2), AI (Workers AI, Vectorize, Agents SDK), feature flags (Flagship), networking (Tunnel, Spectrum), security (WAF, DDoS), and infrastructure-as-code (Terraform, Pulumi). Use for any Cloudflare development task. Biases towards retrieval from Cloudflare docs over pre-trained knowledge.
++description: Choose Cloudflare products or investigate work spanning multiple Cloudflare services. For a known product, use its focused skill or reference.
+ references:
+   - workers
+   - pages
+@@ -11,7 +11,7 @@
+ 
+ # Cloudflare Platform Skill
+ 
+-Consolidated skill for building on the Cloudflare platform. Use decision trees below to find the right product, then load detailed references.
++For product selection or cross-service work, use the decision trees to select the relevant references. Read only the matching sections. When the product is already known, go directly to its focused skill or reference; loading this entire index is unnecessary.
+ 
+ Your knowledge of Cloudflare APIs, types, limits, and pricing may be outdated. **Prefer retrieval over pre-training** — the references in this skill are starting points, not source of truth.
+ 

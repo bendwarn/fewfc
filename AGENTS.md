@@ -14,6 +14,17 @@
   action fields; Rust field names otherwise default to snake_case and can turn
   a valid UI action into a server error.
 
+## Operational terminology
+
+- **GitHub Workflow (GHW)**: a remote automation defined in
+  `.github/workflows/*.yml` and run by the GitHub Actions platform.
+- **Toolbar Action (TA)**: a user-started command defined in
+  `.codex/environments/environment.toml` and run in Codex's local integrated
+  terminal.
+- Do not use `GA`: it can mean the GitHub Actions platform or an individual
+  `uses:` action. Outside concise comparison tables, spell out `GitHub
+  Workflow` and `Toolbar Action`.
+
 ## 雜項
 - ./tmp 可以放不用加到repo的檔案，避免需要在repo建立檔案
 - 程式註解使用中文

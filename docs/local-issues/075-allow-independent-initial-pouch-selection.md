@@ -197,15 +197,16 @@ part of ordinary deploys.
   pushes to `main` run the normal CI checks and automatically build and deploy
   staging; production deploys only from a manually dispatched CI workflow with
   its production input enabled.
-- The protected maintenance workflow's `enable` and `disable` operations use
-  `wrangler versions secret put MAINTENANCE_MODE` followed by `wrangler
-  versions deploy`. Cloudflare creates and promotes a configuration-only
-  version that reuses the currently deployed Worker code/build; these
-  operations run no application build, migration, or purge.
+- The local cutover wizard's `enable` and `disable` operations use the logged-in
+  Wrangler profile to run `wrangler versions secret put MAINTENANCE_MODE`
+  followed by `wrangler versions deploy`. Cloudflare creates and promotes a
+  configuration-only version that reuses the currently deployed Worker
+  code/build; these operations run no GitHub Action, application build,
+  migration, or purge.
 - Ordinary code deployment uses `wrangler deploy --keep-vars` and never supplies
   `MAINTENANCE_MODE`, so a push cannot silently disable an active maintenance
   gate. If the configuration-only version cannot be created or promoted, the
-  current deployment remains in place and the workflow fails closed.
+  current deployment remains in place and the wizard fails closed.
 - Use D1 room data plus the Cloudflare Durable Objects Namespaces/Objects API to
   enumerate GameRoom and ReplayArchive objects, including storage with no
   surviving D1 replay reference. Follow API cursors until exhausted.

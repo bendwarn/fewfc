@@ -1,6 +1,6 @@
 ---
 name: audit-fewfc-room-record
-description: Audit FEWFC local online-room canonical records from a room UUID. Use when the user asks to inspect a room log, explain a recorded Formation, Status, Spirit Skill, HP, Shield, or event-order interaction, or verify replay behavior in the FEWFC repository.
+description: Audit a FEWFC local room record by UUID to explain recorded interactions or assess rule and replay correctness.
 ---
 
 # Audit FEWFC Room Record
@@ -9,7 +9,7 @@ Inspect the requested local Wrangler `GameRoom` record without modifying room st
 
 ## Workflow
 
-1. Confirm the repository contains `apps/web/worker/durable-objects/game-room.ts`. Read `CONTEXT.md`, the relevant section of `docs/rule.md`, `docs/rules-engine-decisions.md`, and any directly relevant ADR before interpreting domain behavior.
+1. Confirm the repository contains `apps/web/worker/durable-objects/game-room.ts`. Read the relevant glossary entries in `CONTEXT.md`, rule sections in `docs/rule.md`, decisions in `docs/rules-engine-decisions.md`, and directly relevant ADRs before interpreting domain behavior.
 
 2. Locate the room and list its canonical commands:
 
@@ -47,9 +47,9 @@ Inspect the requested local Wrangler `GameRoom` record without modifying room st
 
    Completion: every observed delta and semantic event is attributed to one rule source, and every relevant prerequisite is supported by an earlier canonical event or setup fact.
 
-6. Verify the conclusion. Run the narrowest existing Rust test that covers the same interaction. If correctness is disputed or a bug is suspected, use `diagnosing-bugs` to create an agent-runnable assertion against this exact captured room entry before forming hypotheses. Report the assertion command and focused test result.
+6. Match validation to the question. For an explanation of recorded events, the canonical timeline, prerequisites, and cited rule contract are sufficient; running Rust tests is optional. When assessing implementation or replay correctness, or investigating a suspected bug, run the narrowest relevant existing Rust test and, where feasible, verify an assertion against the captured room entry. If no suitable test or replay is available, report the evidence gap and limit the verdict to what the record supports. A related test alone does not prove this room entry is correct.
 
-7. Lead with `correct`, `incorrect`, or `inconclusive`. Then give the compact event timeline, explain surprising secondary effects, cite local rule/code lines, state validation commands and results, and mention whether files or room data were changed.
+7. Lead with `correct`, `incorrect`, or `inconclusive`. Then give the compact event timeline, explain surprising secondary effects, cite local rule/code lines, state any validation commands actually run and their results, and mention whether files or room data were changed.
 
 ## Script contract
 

@@ -6,14 +6,14 @@ How engineering skills should consume this repo's domain documentation when expl
 
 This is a single-context repo for the CFECards rules engine.
 
-Read these before domain-sensitive work:
+For domain-sensitive work, locate the relevant entries or sections in these sources. Full-document reading is unnecessary unless the task spans the whole model:
 
-- `CONTEXT.md` for the canonical glossary, relationships, and flagged ambiguities.
-- `docs/rules-engine-decisions.md` for rules-engine decisions and follow-up context.
+- `CONTEXT.md` entries for concepts, relationships, and ambiguities touched by the task.
+- `docs/rules-engine-decisions.md` sections and linked ADRs for decisions affecting the change.
 - `docs/rule.md` when the work depends on game rules.
 - Relevant files in `docs/local-issues/` when working from an existing ticket.
 
-If a referenced file does not exist, proceed silently.
+Skip missing optional background material. If a missing rule, decision, or ticket is necessary to establish the requested behavior, state the gap, continue independent work, and obtain the missing contract before making a dependent change or claiming correctness.
 
 ## Use the glossary's vocabulary
 
