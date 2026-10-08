@@ -1,0 +1,394 @@
+import { expect, test } from 'bun:test'
+import {
+  parseCompetitionTournamentViewResponse,
+  presentCompetitionTournamentViewError,
+  tournamentFormatLabel,
+  tournamentMatchResultLabel,
+  tournamentTimeLimitLabel,
+} from './competition-tournament-view'
+
+function stageFixture(format: string, stageId: string) {
+  return {
+    config: {
+      stageId,
+      format,
+      teams: [
+        { teamId: 'team-a', seed: 1 },
+        { teamId: 'team-b', seed: 2 },
+      ],
+      randomSeed: 77,
+      matchFormat: { type: format === 'roundRobin' || format === 'swiss' ? 'fixedGames' : 'firstToWins', value: 2 },
+      clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 15_000 },
+      swissRounds: format === 'swiss' ? 3 : null,
+      swissPolicy: format === 'swiss'
+        ? {
+            matchPoints: { win: 3, draw: 1, loss: 0, bye: 3 },
+            drawCredit: { numerator: 1, denominator: 2 },
+            opponentWinRateFloorPercent: 25,
+            opponentWinRateCapPercent: 75,
+            excludeByesFromOpponentWinRate: true,
+            tieBreakers: ['matchPoints', 'opponentWinRate', 'seedOrder'],
+          }
+        : null,
+    },
+    status: 'active',
+    rounds: [{
+      roundNumber: 1,
+      kind: format === 'doubleElimination' ? 'winners' : 'main',
+      matches: [{
+        matchId: `${stageId}-match-1`,
+        stageId,
+        roundNumber: 1,
+        sequence: 1,
+        kind: format === 'doubleElimination' ? 'winners' : 'main',
+        participants: ['team-a', 'team-b'],
+        status: 'pending',
+        result: null,
+        cancellationReason: null,
+        started: false,
+      }],
+    }],
+    standings: [
+      {
+        teamId: 'team-a', matchPoints: 0, wins: 0, draws: 0, losses: 0,
+        gameWins: 0, gameLosses: 0, netGameWins: 0,
+        opponentWinRateBasisPoints: null, dropped: false, rank: null,
+      },
+      {
+        teamId: 'team-b', matchPoints: 0, wins: 0, draws: 0, losses: 0,
+        gameWins: 0, gameLosses: 0, netGameWins: 0,
+        opponentWinRateBasisPoints: null, dropped: false, rank: null,
+      },
+    ],
+    corrections: [],
+    lastScheduleError: null,
+    scheduleGeneration: 0,
+    supersededRounds: [],
+    // 欄位依 Rust Stage／TeamEntry／DoubleState 的 camelCase 序列化契約建立。
+    teams: {
+      'team-a': { seed: 1, dropped: false, hadBye: false },
+      'team-b': { seed: 2, dropped: false, hadBye: false },
+    },
+    doubleState: format === 'doubleElimination'
+      ? {
+          phase: 'winners',
+          winnersPool: ['team-a', 'team-b'],
+          losersWaiting: [],
+          lowerPool: [],
+          winnersChampion: null,
+          losersChampion: null,
+          grandFinalWinner: null,
+        }
+      : null,
+  }
+}
+
+function response() {
+  return {
+    competitionId: 'competition-a',
+    revision: 9,
+    projection: {
+      ok: true,
+      operation: 'tournamentView',
+      public: {
+        tournamentId: 'competition-a',
+        stages: [
+          stageFixture('singleElimination', 'single-stage'),
+          stageFixture('roundRobin', 'round-robin-stage'),
+          stageFixture('doubleElimination', 'double-stage'),
+          stageFixture('swiss', 'swiss-stage'),
+        ],
+      },
+    },
+  }
+}
+
+function responseWithStageOverrides(stageIndex: number, overrides: Record<string, unknown>): unknown {
+  const base = response()
+  const stages = base.projection.public.stages.map((stage, index) =>
+    index === stageIndex ? { ...stage, ...overrides } : stage)
+  return {
+    ...base,
+    projection: {
+      ...base.projection,
+      public: { ...base.projection.public, stages },
+    },
+  }
+}
+
+function responseWithMatchOverrides(stageIndex: number, overrides: Record<string, unknown>): unknown {
+  const base = response()
+  const stages = base.projection.public.stages.map((stage, index) => {
+    if (index !== stageIndex) return stage
+    const rounds = stage.rounds.map((round, roundIndex) => roundIndex === 0
+      ? {
+          ...round,
+          matches: round.matches.map((match, matchIndex) =>
+            matchIndex === 0 ? { ...match, ...overrides } : match),
+        }
+      : round)
+    return { ...stage, rounds }
+  })
+  return {
+    ...base,
+    projection: {
+      ...base.projection,
+      public: { ...base.projection.public, stages },
+    },
+  }
+}
+
+function responseWithStandingOverrides(stageIndex: number, overrides: Record<string, unknown>): unknown {
+  const base = response()
+  const stages = base.projection.public.stages.map((stage, index) => index === stageIndex
+    ? { ...stage, standings: stage.standings.map((standing, standingIndex) =>
+        standingIndex === 0 ? { ...standing, ...overrides } : standing) }
+    : stage)
+  return {
+    ...base,
+    projection: {
+      ...base.projection,
+      public: { ...base.projection.public, stages },
+    },
+  }
+}
+
+test('parses the exact current tournament projection without inferring rank from array position', () => {
+  const parsed = parseCompetitionTournamentViewResponse(response(), 'competition-a')
+
+  expect(parsed.competitionId).toBe('competition-a')
+  expect(parsed.revision).toBe(9)
+  expect(parsed.stages.map(stage => stage.config.format)).toEqual([
+    'singleElimination', 'roundRobin', 'doubleElimination', 'swiss',
+  ])
+  expect(parsed.stages[0]?.standings[0]?.rank).toBeNull()
+  expect(parsed.stages[0]?.standings[1]?.rank).toBeNull()
+  expect(parsed.stages[0]?.rounds[0]?.matches[0]?.sequence).toBe(1)
+  expect(parsed.stages[0]?.config.clockConfig.outOfTurnChoiceTimeMs).toBe(15_000)
+  expect(parsed.stages[3]?.config.swissPolicy?.tieBreakers).toEqual([
+    'matchPoints', 'opponentWinRate', 'seedOrder',
+  ])
+  expect(parsed.stages[2]).not.toHaveProperty('teams')
+  expect(parsed.stages[2]).not.toHaveProperty('doubleState')
+})
+
+test('preserves server bye and double-loss states and never renders raw schedule or correction reasons', () => {
+  const base = response()
+  const stages = base.projection.public.stages.map((stage, stageIndex) => {
+    if (stageIndex !== 2) return stage
+    return {
+      ...stage,
+      lastScheduleError: 'private referee payload',
+      corrections: [{
+        matchId: 'double-stage-match-1',
+        previousResult: { type: 'draw', firstGames: 1, secondGames: 1 },
+        replacementResult: { type: 'doubleLoss' },
+        reason: 'private correction note',
+      }],
+      rounds: stage.rounds.map((round, roundIndex) => roundIndex === 0
+        ? {
+            ...round,
+            matches: round.matches.map((match, matchIndex) => matchIndex === 0
+              ? { ...match, status: 'completed', result: { type: 'doubleLoss' }, started: true }
+              : match),
+          }
+        : round),
+    }
+  })
+  const combined = {
+    ...base,
+    projection: {
+      ...base.projection,
+      public: { ...base.projection.public, stages },
+    },
+  }
+  const parsed = parseCompetitionTournamentViewResponse(combined, 'competition-a')
+  const doubleLossStage = parsed.stages[2]
+  const doubleLoss = doubleLossStage?.rounds[0]?.matches[0]?.result ?? null
+  expect(doubleLossStage?.hasScheduleWarning).toBe(true)
+  expect(doubleLossStage?.correctionCount).toBe(1)
+  expect(tournamentMatchResultLabel(doubleLoss)).toBe('雙方判負（不推定勝者）')
+  expect(JSON.stringify(parsed)).not.toContain('private referee payload')
+  expect(JSON.stringify(parsed)).not.toContain('private correction note')
+
+  const byeInput = responseWithMatchOverrides(3, {
+    participants: ['team-a'],
+    status: 'completed',
+    result: { type: 'bye', teamId: 'team-a' },
+    started: false,
+  })
+  const bye = parseCompetitionTournamentViewResponse(byeInput, 'competition-a')
+    .stages[3]?.rounds[0]?.matches[0]?.result ?? null
+  expect(tournamentMatchResultLabel(bye)).toBe('team-a 輪空')
+
+  const win = parseCompetitionTournamentViewResponse(responseWithMatchOverrides(0, {
+    status: 'completed',
+    started: true,
+    result: { type: 'win', winnerId: 'team-a', loserId: 'team-b', winnerGames: 2, loserGames: 1 },
+  }), 'competition-a').stages[0]?.rounds[0]?.matches[0]?.result ?? null
+  const draw = parseCompetitionTournamentViewResponse(responseWithMatchOverrides(1, {
+    status: 'completed',
+    started: true,
+    result: { type: 'draw', firstGames: 1, secondGames: 1 },
+  }), 'competition-a').stages[1]?.rounds[0]?.matches[0]?.result ?? null
+  const forfeit = parseCompetitionTournamentViewResponse(responseWithMatchOverrides(0, {
+    status: 'completed',
+    result: { type: 'forfeit', winnerId: 'team-b', loserId: 'team-a' },
+  }), 'competition-a').stages[0]?.rounds[0]?.matches[0]?.result ?? null
+  expect(tournamentMatchResultLabel(win)).toBe('team-a 勝出 2–1')
+  expect(tournamentMatchResultLabel(draw)).toBe('和局 1–1')
+  expect(tournamentMatchResultLabel(forfeit)).toBe('team-b 棄權判定勝出（對手 team-a）')
+})
+
+test('rejects mismatched identity, unsafe revisions, unknown fields, and unknown enum states', () => {
+  const valid = response()
+  expect(() => parseCompetitionTournamentViewResponse(valid, 'another-competition')).toThrow()
+  expect(() => parseCompetitionTournamentViewResponse({ ...valid, revision: 1.5 }, 'competition-a')).toThrow()
+  const wrongPublicId = response()
+  wrongPublicId.projection.public.tournamentId = 'another-competition'
+  expect(() => parseCompetitionTournamentViewResponse(wrongPublicId, 'competition-a')).toThrow()
+  expect(() => parseCompetitionTournamentViewResponse({ ...valid, privateHistory: ['secret'] }, 'competition-a')).toThrow()
+  expect(() => parseCompetitionTournamentViewResponse({ ...valid, [Symbol('hidden')]: true }, 'competition-a')).toThrow()
+  expect(() => parseCompetitionTournamentViewResponse(
+    responseWithStageOverrides(0, { status: 'finished-ish' }), 'competition-a',
+  )).toThrow()
+  expect(() => parseCompetitionTournamentViewResponse(
+    responseWithStageOverrides(0, { privateRoster: ['member-a'] }), 'competition-a',
+  )).toThrow()
+  expect(() => parseCompetitionTournamentViewResponse(
+    responseWithMatchOverrides(0, { status: 'queued' }), 'competition-a',
+  )).toThrow()
+  expect(() => parseCompetitionTournamentViewResponse(
+    responseWithMatchOverrides(0, { result: { type: 'winner', winnerId: 'team-a' } }), 'competition-a',
+  )).toThrow()
+  expect(() => parseCompetitionTournamentViewResponse(
+    responseWithMatchOverrides(0, { privateRoster: ['member-a'] }), 'competition-a',
+  )).toThrow()
+  expect(() => parseCompetitionTournamentViewResponse(responseWithStandingOverrides(0, { rank: '1' }), 'competition-a'))
+    .toThrow()
+  const singleConfig = response().projection.public.stages[0]?.config
+  if (!singleConfig) throw new Error('missing single-elimination fixture config')
+  expect(() => parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, {
+    config: { ...singleConfig, format: 'unknownFormat' },
+  }), 'competition-a')).toThrow()
+  expect(() => parseCompetitionTournamentViewResponse(responseWithMatchOverrides(0, {
+    stageId: 'another-stage',
+  }), 'competition-a')).toThrow()
+})
+
+test('rejects unsafe Swiss policy numbers and preserves only valid explicit display labels', () => {
+  const swissConfig = response().projection.public.stages[3]?.config
+  const singleConfig = response().projection.public.stages[0]?.config
+  if (!swissConfig || !singleConfig) throw new Error('missing tournament config fixture')
+  const invalidPolicy = responseWithStageOverrides(3, {
+    config: {
+      ...swissConfig,
+      swissPolicy: {
+        matchPoints: { win: 3, draw: 1, loss: 0, bye: 3 },
+        drawCredit: { numerator: 1, denominator: 2 },
+        opponentWinRateFloorPercent: '25',
+        opponentWinRateCapPercent: 75,
+        excludeByesFromOpponentWinRate: true,
+        tieBreakers: ['matchPoints'],
+      },
+    },
+  })
+  expect(() => parseCompetitionTournamentViewResponse(invalidPolicy, 'competition-a')).toThrow()
+  expect(() => parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, {
+    config: { ...singleConfig, swissPolicy: undefined },
+  }), 'competition-a')).toThrow()
+  expect(tournamentFormatLabel('doubleElimination')).toBe('雙敗淘汰')
+  expect(tournamentTimeLimitLabel(null)).toBe('不限時')
+  expect(tournamentTimeLimitLabel(1_250)).toBe('1,250 毫秒')
+})
+
+test('maps not-ready, forbidden, and malformed responses to fixed Chinese messages', () => {
+  expect(presentCompetitionTournamentViewError({
+    statusCode: 409,
+    message: 'private response detail',
+    data: { code: 'notReady', message: 'private response detail' },
+  })).toEqual({ kind: 'notReady', message: '目前尚未有可顯示賽程。' })
+  expect(presentCompetitionTournamentViewError({
+    statusCode: 403,
+    message: 'private response detail',
+  })).toEqual({ kind: 'forbidden', message: '目前帳號沒有這場賽事的賽程讀取權限。' })
+  expect(presentCompetitionTournamentViewError({
+    statusCode: 503,
+    message: 'private response detail',
+  }).message).not.toContain('private response detail')
+})
+
+test('recognizes ofetch accessor status and the actual nested H3 error data without exposing raw errors', () => {
+  // 安裝的 ofetch 以 getter 提供 statusCode/data；H3 HTTP JSON 將 code 放在 data.data。
+  const fetchError = new Error('private HTTP request detail')
+  Object.defineProperties(fetchError, {
+    statusCode: { get: () => 409 },
+    data: { get: () => ({ statusCode: 409, data: { code: 'notReady', message: 'private checkpoint' } }) },
+  })
+  expect(presentCompetitionTournamentViewError(fetchError)).toEqual({
+    kind: 'notReady', message: '目前尚未有可顯示賽程。',
+  })
+  const forbidden = new Error('private ACL detail')
+  Object.defineProperty(forbidden, 'statusCode', { get: () => 403 })
+  expect(presentCompetitionTournamentViewError(forbidden)).toEqual({
+    kind: 'forbidden', message: '目前帳號沒有這場賽事的賽程讀取權限。',
+  })
+  const badGetter = new Error('private getter detail')
+  Object.defineProperty(badGetter, 'statusCode', { get: () => { throw new Error('private getter throws') } })
+  expect(presentCompetitionTournamentViewError(badGetter).message).toBe('目前無法查詢賽程，請稍後重試。')
+})
+
+test('accepts actual serialized scheduler fields but rejects malformed or private checkpoint extras', () => {
+  // 合法對照先證明完整 envelope 可通過，以下只改欲驗證的 checkpoint 欄位。
+  expect(parseCompetitionTournamentViewResponse(response(), 'competition-a').stages).toHaveLength(4)
+  const doubleStage = response().projection.public.stages[2]
+  if (!doubleStage?.doubleState) throw new Error('missing serialized double-stage fixture')
+  for (const overrides of [
+    { teams: undefined },
+    { teams: { ...doubleStage.teams, 'team-a': { seed: 1, dropped: false, hadBye: 'false' } } },
+    { teams: { ...doubleStage.teams, 'team-a': { seed: 2, dropped: false, hadBye: false } } },
+    { teams: { ...doubleStage.teams, 'team-a': { ...doubleStage.teams['team-a'], cards: ['secret'] } } },
+    { doubleState: null },
+    { doubleState: { ...doubleStage.doubleState, phase: 'unknownPhase' } },
+    { doubleState: { ...doubleStage.doubleState, winnersPool: ['team-a', 'outsider-team'] } },
+    { doubleState: { ...doubleStage.doubleState, winnersPool: ['team-a', 'team-a'] } },
+    { doubleState: { ...doubleStage.doubleState, winnersChampion: 'outsider-team' } },
+    { doubleState: { ...doubleStage.doubleState, privateRoster: ['member-a'] } },
+  ]) {
+    expect(() => parseCompetitionTournamentViewResponse(responseWithStageOverrides(2, overrides), 'competition-a')).toThrow()
+  }
+  expect(() => parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, {
+    doubleState: doubleStage.doubleState,
+  }), 'competition-a')).toThrow()
+})
+
+test('guards consumed nested numbers and identity without coercion and copies public values', () => {
+  const base = response()
+  const singleStage = base.projection.public.stages[0]
+  if (!singleStage) throw new Error('missing full tournament fixture')
+  expect(parseCompetitionTournamentViewResponse(base, 'competition-a').stages).toHaveLength(4)
+  for (const overrides of [
+    { scheduleGeneration: -1 },
+    { config: { ...singleStage.config, randomSeed: Number.MAX_SAFE_INTEGER + 1 } },
+    { config: { ...singleStage.config, clockConfig: { ...singleStage.config.clockConfig, mainTimeMs: '300000' } } },
+    { config: { ...singleStage.config, matchFormat: { type: 'firstToWins', value: 0 } } },
+    { config: { ...singleStage.config, teams: [{ teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 1 }] } },
+    { standings: singleStage.standings.map(standing => ({ ...standing, opponentWinRateBasisPoints: Infinity })) },
+  ]) {
+    expect(() => parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, overrides), 'competition-a')).toThrow()
+  }
+  for (const overrides of [
+    { roundNumber: 2 },
+    { sequence: -1 },
+    { participants: ['team-a', 'another-team'] },
+    { result: { type: 'win', winnerId: 'team-a', loserId: 'another-team', winnerGames: 2, loserGames: 0 } },
+    { started: 'false' },
+  ]) {
+    expect(() => parseCompetitionTournamentViewResponse(responseWithMatchOverrides(0, overrides), 'competition-a')).toThrow()
+  }
+  const parsed = parseCompetitionTournamentViewResponse(base, 'competition-a')
+  const firstTeam = singleStage.config.teams[0]
+  if (!firstTeam) throw new Error('missing configured fixture team')
+  firstTeam.teamId = 'changed-after-parse'
+  expect(parsed.stages[0]?.config.teams[0]?.teamId).toBe('team-a')
+})

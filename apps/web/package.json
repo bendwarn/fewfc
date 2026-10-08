@@ -3,6 +3,10 @@
   "type": "module",
   "private": true,
   "packageManager": "pnpm@12.3.4",
+  "imports": {
+    "#shared/utils/rule-modules": "./shared/utils/rule-modules.ts",
+    "#shared/utils/rule-versions": "./shared/utils/rule-versions.ts"
+  },
   "scripts": {
     "build": "bun run build:rules-wasm && nuxt build",
     "build:staging": "bun run build:rules-wasm && nuxt build --dotenv .env.staging",
