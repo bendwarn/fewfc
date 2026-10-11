@@ -1620,7 +1620,7 @@ fn invalid_clock_checkpoint_is_rejected_without_partial_restore() {
 }
 
 #[test]
-fn tournament_result_with_schedule_error_keeps_committed_state() {
+fn single_elimination_final_double_loss_finishes_without_schedule_error() {
     let created = request(
         json!({
             "type": "tournamentCreate",
@@ -1665,6 +1665,55 @@ fn tournament_result_with_schedule_error_keeps_committed_state() {
         created["serverState"].clone(),
     );
     assert_eq!(submitted["ok"], true);
+    assert_eq!(submitted["public"]["result"]["type"], "applied");
+    assert_eq!(
+        submitted["public"]["tournament"]["stages"][0]["status"],
+        "finished"
+    );
+    let state = &submitted["serverState"]["tournament"];
+    assert_eq!(
+        state["stages"][0]["rounds"][0]["matches"][0]["result"]["type"],
+        "doubleLoss"
+    );
+    assert!(state["stages"][0]["lastScheduleError"].is_null());
+    assert!(state["stages"][0]["standings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|standing| standing["rank"].is_null()));
+
+    let restored = request(
+        json!({ "type": "tournamentView" }),
+        player("reader"),
+        2,
+        submitted["serverState"].clone(),
+    );
+    assert_eq!(restored["ok"], true, "{restored}");
+    assert_eq!(restored["public"], submitted["public"]["tournament"]);
+    assert_eq!(restored["serverState"], submitted["serverState"]);
+}
+
+#[test]
+fn tournament_result_with_swiss_schedule_error_keeps_committed_state() {
+    let created = tournament_view_create("swiss", 2);
+    assert_eq!(created["ok"], true, "{created}");
+    let match_id = created["public"]["stages"][0]["rounds"][0]["matches"][0]["matchId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let submitted = request(
+        json!({
+            "type": "tournamentSubmitResult",
+            "stageId": "stage",
+            "matchId": match_id,
+            "result": { "type": "doubleLoss" },
+        }),
+        organizer(),
+        1,
+        created["serverState"].clone(),
+    );
+    assert_eq!(submitted["ok"], true, "{submitted}");
     assert_eq!(
         submitted["public"]["result"]["type"],
         "appliedWithScheduleError"
@@ -1674,12 +1723,23 @@ fn tournament_result_with_schedule_error_keeps_committed_state() {
         submitted["public"]["tournament"]["stages"][0]["status"],
         "active"
     );
+
     let state = &submitted["serverState"]["tournament"];
     assert_eq!(
         state["stages"][0]["rounds"][0]["matches"][0]["result"]["type"],
         "doubleLoss"
     );
     assert!(state["stages"][0]["lastScheduleError"].is_string());
+
+    let restored = request(
+        json!({ "type": "tournamentView" }),
+        player("reader"),
+        2,
+        submitted["serverState"].clone(),
+    );
+    assert_eq!(restored["ok"], true, "{restored}");
+    assert_eq!(restored["public"], submitted["public"]["tournament"]);
+    assert_eq!(restored["serverState"], submitted["serverState"]);
 }
 
 fn tournament_view_create(format: &str, team_count: u32) -> Value {
