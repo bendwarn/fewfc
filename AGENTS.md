@@ -3,7 +3,6 @@
 ## Repository Validation
 
 - This repository is a Rust crate. Prefer `cargo test` for the main validation path unless the task specifically touches package tooling.
-- 審核以 Git 基準 ref、diff 與工作區狀態確認變更範圍。
 
 ## Online Game Commands
 
