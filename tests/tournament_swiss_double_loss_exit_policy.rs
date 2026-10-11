@@ -138,6 +138,7 @@ fn swiss_double_loss_exits_both_teams_before_second_round_and_preserves_history(
         assert_eq!(row.game_wins, 0);
         assert_eq!(row.game_losses, 0);
         assert_eq!(row.net_game_wins, 0);
+        assert!(row.dropped, "Swiss 雙負隊伍須在目前排名投影標示退出");
     }
 
     for index in 1..3 {
@@ -232,6 +233,36 @@ fn swiss_double_loss_exits_both_teams_before_second_round_and_preserves_history(
     assert_eq!(second_round.round_number, 2);
     assert_eq!(second_round.kind, RoundKind::Main);
 
+    // Rust 對外序列化正是網站 tournamentView 讀取的目前賽程投影。
+    let website_projection = serde_json::to_value(&tournament).unwrap();
+    let projected_stage = &website_projection["stages"][0];
+    let projected_second_round = &projected_stage["rounds"][1];
+    assert_eq!(
+        projected_second_round["matches"].as_array().unwrap().len(),
+        2
+    );
+    for match_ in projected_second_round["matches"].as_array().unwrap() {
+        let participants = match_["participants"].as_array().unwrap();
+        assert_eq!(participants.len(), 2);
+        assert!(
+            exited_teams
+                .iter()
+                .all(|team_id| !participants.contains(&serde_json::to_value(team_id).unwrap()))
+        );
+    }
+    for team_id in &exited_teams {
+        let standing = projected_stage["standings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|standing| standing["teamId"] == serde_json::to_value(team_id).unwrap())
+            .unwrap();
+        assert_eq!(standing["dropped"], true);
+        assert_eq!(standing["losses"], 1);
+        assert_eq!(standing["wins"], 0);
+        assert_eq!(standing["draws"], 0);
+    }
+
     // 第一個新政策 target：雙負兩隊退出，不得再被配入真正第二輪。
     assert!(
         second_round.matches.iter().all(|match_| {
@@ -307,6 +338,72 @@ fn swiss_double_loss_exits_both_teams_before_second_round_and_preserves_history(
         UpdateOutcome::AlreadyRecorded
     );
     assert_eq!(serde_json::to_value(&restored).unwrap(), snapshot);
+    for team_id in &exited_teams {
+        let standing = restored
+            .stage(&stage_id)
+            .unwrap()
+            .standings()
+            .iter()
+            .find(|row| &row.team_id == team_id)
+            .unwrap();
+        assert_eq!(standing.losses, 1, "重送原雙負不得重複記敗");
+        assert!(standing.dropped);
+    }
+
+    // 改判移除唯一雙負事實後，重建的後輪重新納入兩隊且不再標記退出。
+    let mut corrected = restored.clone();
+    corrected
+        .correct_result(
+            &stage_id,
+            &original_double_loss.match_id,
+            MatchResult::win(exited_teams[0].clone(), exited_teams[1].clone()),
+            "裁判確認應為正常勝負".into(),
+        )
+        .expect("尚未開打的 Swiss 後輪可依已更正結果重建");
+    let corrected_stage = corrected.stage(&stage_id).unwrap();
+    assert_eq!(corrected_stage.status(), StageStatus::Active);
+    assert_eq!(corrected_stage.last_schedule_error(), None);
+    assert_eq!(corrected_stage.corrections().len(), 1);
+    assert_eq!(corrected_stage.superseded_rounds().len(), 1);
+    let corrected_second_round = &corrected_stage.rounds()[1];
+    assert_eq!(corrected_second_round.matches.len(), 3);
+    for team_id in &exited_teams {
+        assert_eq!(
+            corrected_second_round
+                .matches
+                .iter()
+                .flat_map(|match_| &match_.participants)
+                .filter(|participant| *participant == team_id)
+                .count(),
+            1,
+            "雙負改判後，兩隊都恢復後輪配對資格"
+        );
+        let standing = corrected_stage
+            .standings()
+            .iter()
+            .find(|row| &row.team_id == team_id)
+            .unwrap();
+        assert!(!standing.dropped);
+    }
+    let corrected_snapshot = serde_json::to_value(&corrected).unwrap();
+    let restored_correction: Tournament = serde_json::from_value(corrected_snapshot.clone())
+        .expect("改判後的資格及重建配對須能由網站目前投影往返還原");
+    assert_eq!(
+        serde_json::to_value(&restored_correction).unwrap(),
+        corrected_snapshot
+    );
+    for team_id in &exited_teams {
+        assert!(
+            !restored_correction
+                .stage(&stage_id)
+                .unwrap()
+                .standings()
+                .iter()
+                .find(|row| &row.team_id == team_id)
+                .unwrap()
+                .dropped
+        );
+    }
     tournament = restored;
 
     // 沿同一 trace 真開賽及完成第二輪，不能用一輪即結束的弱覆蓋代替。
@@ -427,4 +524,141 @@ fn swiss_double_loss_exits_both_teams_before_second_round_and_preserves_history(
     assert_eq!(standings.iter().map(|row| row.match_points).sum::<u32>(), 12);
     assert_eq!(standings.iter().map(|row| row.game_wins).sum::<u32>(), 4);
     assert_eq!(standings.iter().map(|row| row.game_losses).sum::<u32>(), 4);
+}
+
+#[test]
+fn swiss_double_loss_keeps_the_normal_bye_for_the_odd_eligible_field() {
+    let stage_id = StageId::from("swiss-double-loss-odd-bye");
+    let config = StageConfig {
+        stage_id: stage_id.clone(),
+        format: TournamentFormat::Swiss,
+        teams: (1..=7)
+            .map(|seed| SeededTeam {
+                team_id: TeamId::from(format!("swiss-odd-team-{seed}")),
+                seed,
+            })
+            .collect(),
+        random_seed: 19,
+        match_format: MatchFormat::FixedGames(1),
+        clock_config: ClockConfig::default(),
+        swiss_rounds: Some(2),
+        swiss_policy: Some(SwissStandingPolicy {
+            match_points: MatchPoints {
+                win: 3,
+                draw: 1,
+                loss: 0,
+                bye: 3,
+            },
+            draw_credit: DrawCredit::new(1, 2).unwrap(),
+            opponent_win_rate_floor_percent: None,
+            opponent_win_rate_cap_percent: None,
+            exclude_byes_from_opponent_win_rate: true,
+            tie_breakers: vec![SwissTieBreaker::SeedOrder],
+        }),
+    };
+    let mut tournament = Tournament::new(TournamentConfig {
+        tournament_id: "swiss-double-loss-odd-bye".into(),
+        stage: config,
+    })
+    .unwrap();
+    let first_round = tournament.stage(&stage_id).unwrap().rounds()[0].clone();
+    assert_eq!(first_round.matches.len(), 4);
+    let first_bye = first_round
+        .matches
+        .iter()
+        .find_map(|match_| match match_.result.as_ref() {
+            Some(MatchResult::Bye { team_id }) => Some(team_id.clone()),
+            _ => None,
+        })
+        .expect("奇數首輪必須保留真實輪空");
+    let played_matches: Vec<_> = first_round
+        .matches
+        .iter()
+        .filter(|match_| match_.participants.len() == 2)
+        .cloned()
+        .collect();
+    assert_eq!(played_matches.len(), 3);
+    let exited_teams = played_matches[0].participants.clone();
+
+    for (index, match_) in played_matches.iter().enumerate() {
+        tournament.start_match(&stage_id, &match_.match_id).unwrap();
+        let result = if index == 0 {
+            MatchResult::DoubleLoss
+        } else {
+            MatchResult::win(
+                match_.participants[0].clone(),
+                match_.participants[1].clone(),
+            )
+        };
+        assert_eq!(
+            tournament
+                .submit_result(&stage_id, &match_.match_id, result)
+                .unwrap(),
+            UpdateOutcome::Applied
+        );
+    }
+
+    let stage = tournament.stage(&stage_id).unwrap();
+    assert_eq!(stage.status(), StageStatus::Active);
+    assert_eq!(stage.rounds().len(), 2);
+    assert_eq!(stage.rounds()[0].matches.len(), first_round.matches.len());
+    assert_eq!(stage.rounds()[0].matches[0], first_round.matches[0]);
+    for (completed, original) in stage.rounds()[0]
+        .matches
+        .iter()
+        .zip(&first_round.matches)
+        .skip(1)
+    {
+        assert_eq!(completed.match_id, original.match_id);
+        assert_eq!(completed.participants, original.participants);
+        assert_eq!(completed.status, MatchStatus::Completed);
+        assert!(completed.started);
+        assert!(matches!(
+            completed.result,
+            Some(MatchResult::DoubleLoss | MatchResult::Win { .. })
+        ));
+    }
+    let second_round = &stage.rounds()[1];
+    assert_eq!(second_round.matches.len(), 3);
+    assert_eq!(
+        second_round
+            .matches
+            .iter()
+            .filter(|match_| match_.participants.len() == 1
+                && matches!(match_.result, Some(MatchResult::Bye { .. })))
+            .count(),
+        1,
+        "五支仍合法隊伍須保留一組輪空與兩組真配對"
+    );
+    let eligible_teams: Vec<_> = played_matches[1..]
+        .iter()
+        .flat_map(|match_| match_.participants.iter().cloned())
+        .chain(std::iter::once(first_bye.clone()))
+        .collect();
+    assert_eq!(eligible_teams.len(), 5);
+    assert!(second_round.matches.iter().all(|match_| {
+        exited_teams
+            .iter()
+            .all(|team_id| !match_.participants.contains(team_id))
+    }));
+    for team_id in &eligible_teams {
+        assert_eq!(
+            second_round
+                .matches
+                .iter()
+                .flat_map(|match_| &match_.participants)
+                .filter(|participant| *participant == team_id)
+                .count(),
+            1
+        );
+    }
+    let second_bye = second_round
+        .matches
+        .iter()
+        .find_map(|match_| match match_.result.as_ref() {
+            Some(MatchResult::Bye { team_id }) => Some(team_id),
+            _ => None,
+        })
+        .unwrap();
+    assert_ne!(second_bye, &first_bye, "前輪輪空者不能重複輪空");
 }

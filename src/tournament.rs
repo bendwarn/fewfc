@@ -2322,10 +2322,14 @@ impl Stage {
     }
 
     fn swiss_order(&self) -> Vec<TeamId> {
+        let double_loss_exits = self.swiss_double_loss_exits();
         let mut order: Vec<TeamId> = self
             .teams
             .iter()
-            .filter_map(|(team_id, entry)| (!entry.dropped).then_some(team_id.clone()))
+            .filter_map(|(team_id, _)| {
+                self.is_swiss_team_eligible(team_id, &double_loss_exits)
+                    .then_some(team_id.clone())
+            })
             .collect();
         let standings = self.compute_standings();
         order.sort_by(|left, right| {
@@ -2337,9 +2341,10 @@ impl Stage {
     }
 
     fn swiss_pairing(&self, ordered: &[TeamId]) -> Result<Vec<Vec<TeamId>>, ScheduleError> {
+        let double_loss_exits = self.swiss_double_loss_exits();
         let active: Vec<TeamId> = ordered
             .iter()
-            .filter(|team_id| self.teams.get(*team_id).is_some_and(|entry| !entry.dropped))
+            .filter(|team_id| self.is_swiss_team_eligible(team_id, &double_loss_exits))
             .cloned()
             .collect();
         if active.is_empty() {
@@ -2365,6 +2370,32 @@ impl Stage {
             }
         }
         Err(ScheduleError::NoLegalSwissPairing)
+    }
+
+    fn is_swiss_team_eligible(
+        &self,
+        team_id: &TeamId,
+        double_loss_exits: &BTreeSet<TeamId>,
+    ) -> bool {
+        self.teams
+            .get(team_id)
+            .is_some_and(|entry| !entry.dropped)
+            && !double_loss_exits.contains(team_id)
+    }
+
+    fn swiss_double_loss_exits(&self) -> BTreeSet<TeamId> {
+        if self.config.format != TournamentFormat::Swiss {
+            return BTreeSet::new();
+        }
+        self.rounds
+            .iter()
+            .flat_map(|round| &round.matches)
+            .filter(|match_| {
+                match_.status == MatchStatus::Completed
+                    && match_.result.as_ref().is_some_and(MatchResult::is_double_loss)
+            })
+            .flat_map(|match_| match_.participants.iter().cloned())
+            .collect()
     }
 
     fn opponents(&self) -> BTreeMap<TeamId, BTreeSet<TeamId>> {
@@ -2548,6 +2579,7 @@ impl Stage {
     }
 
     fn compute_standings(&self) -> Vec<Standing> {
+        let double_loss_exits = self.swiss_double_loss_exits();
         let mut rows: BTreeMap<TeamId, Standing> = self
             .teams
             .iter()
@@ -2564,7 +2596,7 @@ impl Stage {
                         game_losses: 0,
                         net_game_wins: 0,
                         opponent_win_rate_basis_points: None,
-                        dropped: entry.dropped,
+                        dropped: entry.dropped || double_loss_exits.contains(team_id),
                         rank: None,
                     },
                 )

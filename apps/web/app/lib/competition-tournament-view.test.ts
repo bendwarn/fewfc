@@ -270,6 +270,98 @@ test('公開賽程顯示報到缺席原因與判負隊伍，且不把它標成�
   }), 'competition-a')).toThrow()
 })
 
+test('projects a Swiss round without double-loss exits and marks both teams as exited', () => {
+  const base = stageFixture('swiss', 'swiss-exit-stage')
+  const teamIds = ['team-a', 'team-b', 'team-c', 'team-d', 'team-e', 'team-f']
+  const exitedTeamIds = new Set(['team-a', 'team-b'])
+  const match = (
+    roundNumber: number,
+    sequence: number,
+    participants: string[],
+    status: 'completed' | 'pending',
+    result: Record<string, unknown> | null,
+  ) => ({
+    matchId: `swiss-exit-stage-r${roundNumber}-m${sequence}`,
+    stageId: 'swiss-exit-stage',
+    roundNumber,
+    sequence,
+    kind: 'main',
+    participants,
+    status,
+    result,
+    cancellationReason: null,
+    started: status === 'completed',
+  })
+  const stage = {
+    ...base,
+    config: {
+      ...base.config,
+      teams: teamIds.map((teamId, index) => ({ teamId, seed: index + 1 })),
+    },
+    teams: Object.fromEntries(teamIds.map((teamId, index) => [teamId, {
+      seed: index + 1,
+      dropped: false,
+      hadBye: false,
+    }])),
+    rounds: [
+      {
+        roundNumber: 1,
+        kind: 'main',
+        matches: [
+          match(1, 1, ['team-a', 'team-b'], 'completed', { type: 'doubleLoss' }),
+          match(1, 2, ['team-c', 'team-d'], 'completed', {
+            type: 'win', winnerId: 'team-c', loserId: 'team-d', winnerGames: 1, loserGames: 0,
+          }),
+          match(1, 3, ['team-e', 'team-f'], 'completed', {
+            type: 'win', winnerId: 'team-e', loserId: 'team-f', winnerGames: 1, loserGames: 0,
+          }),
+        ],
+      },
+      {
+        roundNumber: 2,
+        kind: 'main',
+        matches: [
+          match(2, 1, ['team-c', 'team-e'], 'pending', null),
+          match(2, 2, ['team-d', 'team-f'], 'pending', null),
+        ],
+      },
+    ],
+    standings: teamIds.map(teamId => ({
+      teamId,
+      matchPoints: teamId === 'team-c' || teamId === 'team-e' ? 3 : 0,
+      wins: teamId === 'team-c' || teamId === 'team-e' ? 1 : 0,
+      draws: 0,
+      losses: exitedTeamIds.has(teamId) || teamId === 'team-d' || teamId === 'team-f' ? 1 : 0,
+      gameWins: teamId === 'team-c' || teamId === 'team-e' ? 1 : 0,
+      gameLosses: teamId === 'team-d' || teamId === 'team-f' ? 1 : 0,
+      netGameWins: 0,
+      opponentWinRateBasisPoints: null,
+      dropped: exitedTeamIds.has(teamId),
+      rank: null,
+    })),
+  }
+  const parsed = parseCompetitionTournamentViewResponse({
+    competitionId: 'competition-a',
+    revision: 10,
+    projection: {
+      ok: true,
+      operation: 'tournamentView',
+      public: { tournamentId: 'competition-a', stages: [stage] },
+    },
+  }, 'competition-a')
+  const swissStage = parsed.stages[0]!
+  const secondRoundParticipants = swissStage.rounds[1]?.matches.flatMap(match => match.participants) ?? []
+  expect(swissStage.rounds[1]?.matches).toHaveLength(2)
+  expect(secondRoundParticipants).toEqual(['team-c', 'team-e', 'team-d', 'team-f'])
+  expect(secondRoundParticipants.some(teamId => exitedTeamIds.has(teamId))).toBe(false)
+  for (const teamId of exitedTeamIds) {
+    const standing = swissStage.standings.find(row => row.teamId === teamId)
+    expect(standing).toMatchObject({ dropped: true, wins: 0, draws: 0, losses: 1 })
+  }
+  expect(tournamentMatchResultLabel(swissStage.rounds[0]?.matches[0]?.result ?? null))
+    .toBe('雙方判負（不推定勝者）')
+})
+
 test('rejects mismatched identity, unsafe revisions, unknown fields, and unknown enum states', () => {
   const valid = response()
   expect(() => parseCompetitionTournamentViewResponse(valid, 'another-competition')).toThrow()
