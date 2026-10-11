@@ -1,6 +1,8 @@
 import type { RuleModuleSpec } from '../types/fewfc'
 import { createRuleModulePolicy } from '#shared/utils/rule-modules'
 import { modulesForVersion } from '#shared/utils/rule-versions'
+import { buildCompetitionAnnouncementPlan, parseCompetitionAnnouncementPlan, type CompetitionAnnouncementStageDraft } from '../../shared/competition-announcement-plan'
+import type { CompetitionAnnouncementPlan } from '../../shared/competition'
 
 export type CompetitionRuleVersion = '5.16' | '5.17'
 export type CompetitionTeamStatus = 'registered' | 'checkedIn' | 'withdrawn' | 'notCheckedIn'
@@ -37,6 +39,7 @@ export interface CompetitionRegistrationState {
   personalDecks: 'disabled' | 'required'
   registrationDeadline: number
   checkInDeadline: number
+  plan: CompetitionAnnouncementPlan
   lifecycle: CompetitionRegistrationLifecycle
   teams: CompetitionPublicTeam[]
   ownTeam: CompetitionOwnTeam | null
@@ -71,6 +74,7 @@ export interface CompetitionAnnouncementFormInput {
   invitedCaptainsText: string
   registrationDeadlineLocal: string
   checkInDeadlineLocal: string
+  stageDrafts: readonly CompetitionAnnouncementStageDraft[]
 }
 
 export interface CompetitionAnnouncementBody {
@@ -82,6 +86,7 @@ export interface CompetitionAnnouncementBody {
   personalDecks: 'disabled' | 'required'
   registrationDeadline: number
   checkInDeadline: number
+  plan: CompetitionAnnouncementPlan
 }
 
 export class CompetitionProtocolError extends Error {
@@ -141,6 +146,7 @@ export function parseCompetitionRegistrationResponse(
     personalDecks: publicView.announcement.personalDecks,
     registrationDeadline: publicView.announcement.registrationDeadline,
     checkInDeadline: publicView.announcement.checkInDeadline,
+    plan: publicView.announcement.plan,
     lifecycle: publicView.lifecycle,
     teams: publicView.teams,
     ownTeam,
@@ -225,6 +231,8 @@ export function buildCompetitionAnnouncement(
     registrationMode = { inviteOnly: { invitedCaptains } }
   }
 
+  const plan = buildCompetitionAnnouncementPlan(input.stageDrafts)
+
   return {
     ruleVersion: input.ruleVersion,
     ruleset: 'base',
@@ -234,6 +242,7 @@ export function buildCompetitionAnnouncement(
     personalDecks: enabled.includes('personal-deck') ? 'required' : 'disabled',
     registrationDeadline,
     checkInDeadline,
+    plan,
   }
 }
 
@@ -369,7 +378,7 @@ function parsePublicRegistrationView(input: unknown): ParsedPublicRegistrationVi
   const announcement = asRecord(view.announcement)
   if (!announcement || !isExactKeys(announcement, [
     'organizer', 'ruleVersion', 'ruleset', 'enabledRuleModules', 'teamSize', 'initialHp',
-    'registrationMode', 'personalDecks', 'registrationDeadline', 'checkInDeadline',
+    'registrationMode', 'personalDecks', 'registrationDeadline', 'checkInDeadline', 'plan',
   ]) || typeof announcement.organizer !== 'string' || !announcement.organizer
     || !isRuleVersion(announcement.ruleVersion)
     || typeof announcement.ruleset !== 'string' || !announcement.ruleset
@@ -379,9 +388,13 @@ function parsePublicRegistrationView(input: unknown): ParsedPublicRegistrationVi
     || !isRegistrationMode(announcement.registrationMode)
     || (announcement.personalDecks !== 'disabled' && announcement.personalDecks !== 'required')
     || !isSafeInteger(announcement.registrationDeadline) || announcement.registrationDeadline < 0
-    || !isSafeInteger(announcement.checkInDeadline) || announcement.checkInDeadline < 0) {
+    || !isSafeInteger(announcement.checkInDeadline) || announcement.checkInDeadline < 0
+    || announcement.registrationDeadline > announcement.checkInDeadline
+    || announcement.registrationDeadline % 60_000 !== 0 || announcement.checkInDeadline % 60_000 !== 0) {
     throw new CompetitionProtocolError()
   }
+  const plan = parseCompetitionAnnouncementPlan(announcement.plan)
+  if (!plan) throw new CompetitionProtocolError()
 
   const teams = view.teams.map(parsePublicTeam)
   if (new Set(teams.map(team => team.teamId)).size !== teams.length) throw new CompetitionProtocolError()
@@ -407,6 +420,7 @@ function parsePublicRegistrationView(input: unknown): ParsedPublicRegistrationVi
       personalDecks: announcement.personalDecks,
       registrationDeadline: announcement.registrationDeadline,
       checkInDeadline: announcement.checkInDeadline,
+      plan,
     },
     lifecycle: view.lifecycle,
     revision: view.revision,
@@ -510,6 +524,7 @@ interface ParsedPublicRegistrationView {
     personalDecks: 'disabled' | 'required'
     registrationDeadline: number
     checkInDeadline: number
+    plan: CompetitionAnnouncementPlan
   }
   lifecycle: CompetitionRegistrationLifecycle
   revision: number

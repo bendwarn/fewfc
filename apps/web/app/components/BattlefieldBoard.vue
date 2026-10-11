@@ -32,7 +32,7 @@
           <span class="avatar" aria-hidden="true">{{ playerInitial(seat.player) }}</span>
           <span class="player-name-block">
             <strong :title="playerLabel(seat.player)">{{ playerLabel(seat.player) }}</strong>
-            <small>{{ teamHp(teamForPlayer(seat.player)) }} HP</small>
+            <small class="health-badge">{{ teamHp(teamForPlayer(seat.player)) }} HP</small>
           </span>
         </div>
 
@@ -519,7 +519,15 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 .player-heading { @apply flex min-w-0 items-center gap-2; }
 .player-name-block { @apply grid min-w-0; }
 .player-name-block strong { @apply max-w-40 truncate text-xs; }
-.player-name-block small { @apply text-[11px] text-[#d0a450]; }
+.health-badge {
+  @apply inline-flex w-fit max-w-full items-center rounded-md border px-1.5 py-0.5 font-bold tracking-wide whitespace-nowrap;
+  background: color-mix(in srgb, var(--app-danger-surface) 88%, var(--app-surface-raised));
+  border-color: color-mix(in srgb, var(--app-danger) 54%, var(--app-border-strong));
+  color: var(--app-danger);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
 .avatar { @apply grid size-[34px] shrink-0 place-items-center rounded-full bg-[#b48a47] font-extrabold text-[#141813]; }
 .connection-dot { @apply size-2 shrink-0 rounded-full border border-[#76524b] bg-[#6f3c34]; }
 .connection-dot.connected { @apply border-[#477557] bg-[#63a979]; }
@@ -573,7 +581,7 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .battlefield:not(.four-player) .player-seat { @apply w-full; }
   .battlefield:not(.four-player) .player-identity { @apply max-w-[42%]; }
   .player-name-block strong { font-size: 14px; }
-  .player-name-block small, .player-facts { font-size: 12px; }
+  .player-facts { font-size: 12px; }
   .reconnecting-label, .counter-badge, .shield-badge, .profession-badge, .effect-summary { font-size: 11px; }
   .formation-field { font-size: 12px; }
   .previous-formation small { font-size: 11px; }
@@ -604,7 +612,7 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .player-seat:not(.seat-bottom) .player-heading { @apply w-full gap-1; }
   .player-seat:not(.seat-bottom) .player-name-block { @apply min-w-0; }
   .player-seat:not(.seat-bottom) .player-name-block strong { @apply max-w-full text-[10px]; }
-  .player-seat:not(.seat-bottom) .player-name-block small { @apply text-[9px]; }
+  .player-seat:not(.seat-bottom) .health-badge { @apply px-1 py-0 text-[9px]; }
   .player-seat:not(.seat-bottom) .player-facts { @apply w-full text-[8px]; }
   .player-seat:not(.seat-bottom) .player-statuses { @apply w-full flex-nowrap overflow-hidden; }
   .player-seat:not(.seat-bottom) .profession-badge, .player-seat:not(.seat-bottom) .counter-badge, .player-seat:not(.seat-bottom) .shield-badge, .player-seat:not(.seat-bottom) .effect-summary { @apply shrink-0 px-1 py-0.5 text-[8px]; }

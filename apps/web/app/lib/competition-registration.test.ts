@@ -19,6 +19,7 @@ import {
   selectActiveTeamForCaller,
 } from './competition-registration'
 import type { RuleModuleSpec } from '../types/fewfc'
+import type { CompetitionAnnouncementStageDraft } from '../../shared/competition-announcement-plan'
 
 const catalog: RuleModuleSpec[] = [
   { id: 'star', category: 'advanced', defaultEnabled: true, dependencies: [] },
@@ -37,7 +38,21 @@ const announcement = {
   registrationMode: 'inviteOnly',
   personalDecks: 'required',
   registrationDeadline: 1_790_700_000_000,
-  checkInDeadline: 1_790_800_000_000,
+  checkInDeadline: 1_790_760_000_000,
+  plan: {
+    initialSeedPolicy: 'randomDrawAfterRegistrationDeadline',
+    swissPairingPolicy: 'publishedRulesWithPersistedRandomSeed',
+    rankingPolicy: 'matchPointsThenOpponentWinsThenOpponentLosses',
+    exactRankingTiePolicy: 'organizerOrUnconflictedRefereeWithPublicReason',
+    stages: [{ stageId: 'stage-1', format: 'roundRobin', matchFormat: { type: 'fixedGames', value: 1 },
+      clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
+      swissRounds: null, swissMatchPoints: null, qualification: { type: 'allEligibleTeams' } }],
+  },
+}
+
+function stageDrafts(): CompetitionAnnouncementStageDraft[] {
+  return [{ stageId: 'stage-1', format: 'roundRobin', matchGames: '1', mainMinutes: '5', byoyomiSeconds: '30',
+    swissRounds: '3', swissMatchPoints: { win: '3', draw: '1', loss: '0', bye: '3' }, sourceSlots: [] }]
 }
 
 const team = {
@@ -127,6 +142,7 @@ describe('competition registration contracts', () => {
       invitedCaptainsText: 'captain-a\n captain-b \n',
       registrationDeadlineLocal: '2026-09-30T13:14',
       checkInDeadlineLocal: '2026-09-30T14:00',
+      stageDrafts: stageDrafts(),
     }, catalog)
 
     expect(payload.ruleset).toBe('base')
@@ -135,6 +151,14 @@ describe('competition registration contracts', () => {
     expect(payload.registrationMode).toEqual({ inviteOnly: { invitedCaptains: ['captain-a', 'captain-b'] } })
     expect(payload.registrationDeadline).toBe(localMinuteDateTimeToEpochMs('2026-09-30T13:14'))
     expect(payload.checkInDeadline).toBe(localMinuteDateTimeToEpochMs('2026-09-30T14:00', '比賽開始時間'))
+    expect(payload.plan).toMatchObject({
+      initialSeedPolicy: 'randomDrawAfterRegistrationDeadline',
+      rankingPolicy: 'matchPointsThenOpponentWinsThenOpponentLosses',
+      exactRankingTiePolicy: 'organizerOrUnconflictedRefereeWithPublicReason',
+      stages: [{ format: 'roundRobin', matchFormat: { type: 'fixedGames', value: 1 },
+        clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
+        qualification: { type: 'allEligibleTeams' } }],
+    })
   })
 
   test.each([
@@ -150,6 +174,7 @@ describe('competition registration contracts', () => {
         invitedCaptainsText: '',
         registrationDeadlineLocal: field === 'registrationDeadlineLocal' ? invalid : '2026-09-30T13:14',
         checkInDeadlineLocal: field === 'checkInDeadlineLocal' ? invalid : validStart,
+        stageDrafts: stageDrafts(),
       }
       expect(() => buildCompetitionAnnouncement(input, catalog))
         .toThrow(`${label}請以分鐘為單位輸入，不含秒或毫秒。`)
@@ -168,6 +193,7 @@ describe('competition registration contracts', () => {
       invitedCaptainsText: '',
       registrationDeadlineLocal: field === 'registrationDeadlineLocal' ? '2026-02-30T12:00' : '2026-09-30T13:14',
       checkInDeadlineLocal: field === 'checkInDeadlineLocal' ? '2026-02-30T12:00' : '2026-09-30T14:00',
+      stageDrafts: stageDrafts(),
     }
     expect(() => buildCompetitionAnnouncement(input, catalog)).toThrow()
   })
@@ -181,6 +207,7 @@ describe('competition registration contracts', () => {
       invitedCaptainsText: '',
       registrationDeadlineLocal: '2026-09-30T13:14',
       checkInDeadlineLocal: '2026-09-30T14:00',
+      stageDrafts: stageDrafts(),
     }
     Object.freeze(input)
     Object.freeze(input.enabledRuleModules)
@@ -202,6 +229,7 @@ describe('competition registration contracts', () => {
       invitedCaptainsText: '',
       registrationDeadlineLocal: '2026-09-30T15:00',
       checkInDeadlineLocal: '2026-09-30T14:00',
+      stageDrafts: stageDrafts(),
     }
     expect(() => buildCompetitionAnnouncement(input, catalog))
       .toThrow('報名截止時間不可晚於比賽開始時間。')
@@ -224,6 +252,7 @@ describe('competition registration contracts', () => {
       invitedCaptainsText: '',
       registrationDeadlineLocal: '2026-09-30T13:14',
       checkInDeadlineLocal: '2026-09-30T14:00',
+      stageDrafts: stageDrafts(),
     }, catalog)).toThrow()
   })
 
@@ -325,6 +354,16 @@ describe('competition registration contracts', () => {
     expect(state.ownTeam?.teamId).toBe('team-a')
     expect(state.ownTeam?.ownDeckSubmitted).toBe(true)
     expect(JSON.stringify(state)).not.toMatch(/secret-deck|secret-card|"ownDeck"|serverState/)
+  })
+
+  test('reads the exact saved announcement plan and rejects an altered public policy', () => {
+    const state = parseCompetitionRegistrationResponse(registrationResponse(), 'competition-a')
+    expect(state.plan).toEqual(JSON.parse(JSON.stringify(announcement.plan)))
+
+    const invalid = structuredClone(registrationResponse())
+    invalid.projection.public.announcement.plan.rankingPolicy = 'matchPointsThenHealth'
+    expect(() => parseCompetitionRegistrationResponse(invalid, 'competition-a'))
+      .toThrow(CompetitionProtocolError)
   })
 
   test('rejects untrusted extra fields and private data for a different caller', () => {

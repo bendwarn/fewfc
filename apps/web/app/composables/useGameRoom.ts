@@ -41,6 +41,10 @@ import {
 import { isInitialPouchAlreadyChosen } from '~/lib/initial-pouch-selection'
 import { presentApiError } from '~/lib/api-error-presentation'
 import { createSubmissionController } from '~/lib/submission-controller'
+import {
+  parseGameRoomCompetitionMode,
+  type CompetitionRoomMode,
+} from '~/lib/competition-ready'
 
 type ViewerRef = Ref<ViewerId>
 
@@ -95,6 +99,7 @@ function emptyState(): PublicGameState {
 export function useGameRoom(viewer: ViewerRef) {
   const state = ref<PublicGameState>(emptyState())
   const metadata = ref<GameRoomMetadata | null>(null)
+  const competitionMode = ref<CompetitionRoomMode>({ kind: 'ordinary' })
   const invitation = ref<GameRoomInvitation | null>(null)
   const lockedDeckName = ref<string | null>(null)
   const savableReplay = ref<GameRoomResponse['savableReplay']>()
@@ -220,6 +225,7 @@ export function useGameRoom(viewer: ViewerRef) {
       }
     }
     const previousState = state.value
+    competitionMode.value = parseGameRoomCompetitionMode(response)
     metadata.value = response.metadata
     invitation.value = response.invitation ?? null
     lockedDeckName.value = response.lockedDeckName ?? null
@@ -845,6 +851,7 @@ export function useGameRoom(viewer: ViewerRef) {
   function clearRoom() {
     disconnectRoomSocket()
     metadata.value = null
+    competitionMode.value = { kind: 'ordinary' }
     invitation.value = null
     lockedDeckName.value = null
     savableReplay.value = undefined
@@ -869,6 +876,7 @@ export function useGameRoom(viewer: ViewerRef) {
 
   return {
     metadata,
+    competitionMode,
     invitation,
     lockedDeckName,
     savableReplay,

@@ -6,6 +6,20 @@
     <div class="route-state-content"><h1>{{ roomRouteError }}</h1><button class="primary-button" type="button" @click="returnToLobby">返回房間大廳</button></div>
   </main>
   <main v-else class="game-page">
+    <p v-if="invalidCompetitionMode" class="form-error" role="alert">
+      競賽房間資訊無法確認，已停用房間管理操作。
+      <button class="ghost-button" type="button" :disabled="game.isLoading.value" @click="game.refreshOnlineGame()">
+        重新查詢房間
+      </button>
+    </p>
+    <CompetitionClockDisplay
+      v-if="competitionRoomMode.kind === 'competition'"
+      :mode="competitionRoomMode"
+      :game-id="typeof route.params.gameId === 'string' ? route.params.gameId : ''"
+      :room-game-id="onlineMetadata?.gameId ?? null"
+      :session-user-id="session.userId.value || null"
+      :member-user-id="currentMember?.userId ?? null"
+    />
     <div class="battle-layout">
         <BattlefieldBoard
           ref="battlefield"
@@ -22,9 +36,23 @@
           @select-card="game.toggleCardSelection"
         >
           <template #before>
-            <button class="back-button battlefield-back" type="button" aria-label="返回房間列表" title="返回房間列表" @click="leaveGame">←</button>
+            <NuxtLink
+              v-if="competitionReturnPath"
+              class="back-button battlefield-back"
+              :to="competitionReturnPath"
+              aria-label="返回賽事"
+              title="返回賽事"
+            >←</NuxtLink>
             <button
-              v-if="!roomWaiting && !currentMember"
+              v-else-if="ordinaryRoomMode"
+              class="back-button battlefield-back"
+              type="button"
+              aria-label="返回房間列表"
+              title="返回房間列表"
+              @click="leaveGame"
+            >←</button>
+            <button
+              v-if="ordinaryRoomMode && !roomWaiting && !currentMember"
               class="ghost-button observer-leave"
               type="button"
               :disabled="game.isLoading.value"
@@ -39,10 +67,13 @@
               :player-label="playerLabel"
             >
               <template #actions>
-                <button v-if="currentMember" class="primary-button" type="button" :disabled="game.isLoading.value" @click="restartGame">
+                <NuxtLink v-if="competitionReturnPath" class="primary-button" :to="competitionReturnPath">
+                  返回賽事 <span>→</span>
+                </NuxtLink>
+                <button v-else-if="ordinaryRoomMode && currentMember" class="primary-button" type="button" :disabled="game.isLoading.value" @click="restartGame">
                   返回房間 <span>→</span>
                 </button>
-                <button v-else class="primary-button" type="button" :disabled="game.isLoading.value" @click="leaveWaitingRoom">
+                <button v-else-if="ordinaryRoomMode" class="primary-button" type="button" :disabled="game.isLoading.value" @click="leaveWaitingRoom">
                   離開觀戰
                 </button>
               </template>
@@ -787,10 +818,11 @@
                 <p v-if="game.lockedDeckName.value" class="muted">
                   本局使用：{{ game.lockedDeckName.value }}
                 </p>
-                <p v-if="!currentMember" class="muted">
+                <p v-if="ordinaryRoomMode && !currentMember" class="muted">
                   開局前有空位時，會依觀戰順序自動補為玩家。
                 </p>
                 <RuleModuleSettings
+                  v-if="ordinaryRoomMode"
                   :rule-version="onlineMetadata?.ruleVersion ?? '5.16'"
                   @update:rule-version="game.updateRuleModules(undefined, $event)"
                   :catalog="rulesCatalog.catalog.value?.ruleModules ?? []"
@@ -814,7 +846,7 @@
                     {{ playerLabel(player) }}
                     <small>{{ waitingMemberStatus(memberForPlayer(player)) }}</small>
                     <button
-                      v-if="isRoomOwner && memberForPlayer(player) && !memberForPlayer(player)?.owner"
+                      v-if="ordinaryRoomMode && isRoomOwner && memberForPlayer(player) && !memberForPlayer(player)?.owner"
                       type="button"
                       :disabled="game.isLoading.value"
                       @click="removeWaitingPlayer(memberForPlayer(player)!.userId)"
@@ -823,7 +855,7 @@
                     </button>
                   </span>
                 </div>
-                <div v-if="onlineMetadata?.observers.length" class="waiting-observers" aria-label="觀戰者">
+                <div v-if="ordinaryRoomMode && onlineMetadata?.observers.length" class="waiting-observers" aria-label="觀戰者">
                   <h3>觀戰者（依候補順序）</h3>
                   <span v-for="observer in onlineMetadata.observers" :key="observer.userId">
                     {{ observer.displayName }}
@@ -836,7 +868,7 @@
                     >移除</button>
                   </span>
                 </div>
-                <div class="result-actions">
+                <div v-if="ordinaryRoomMode" class="result-actions">
                   <button
                     v-if="isRoomOwner"
                     class="ghost-button"
@@ -882,13 +914,33 @@
                   >離開觀戰</button>
                 </div>
                 <button
-                  v-if="onlineMetadata?.access === 'private' && isRoomOwner && game.invitation.value"
+                  v-if="ordinaryRoomMode && onlineMetadata?.access === 'private' && isRoomOwner && game.invitation.value"
                   class="invite-link"
                   type="button"
                   @click="copyInviteLink"
                 >
                   複製邀請連結
                 </button>
+                <CompetitionReadyControls
+                  v-if="competitionRoomMode.kind === 'competition' && roomWaiting && currentMember"
+                  :game-id="roomCode"
+                  :mode="competitionRoomMode"
+                  :session-user-id="session.userId.value || null"
+                  :room-status="onlineMetadata?.status ?? null"
+                  :member-user-id="currentMember.userId"
+                  :member-ready="currentMember.ready"
+                  :member-connected="currentMember.connected"
+                  :socket-connected="roomConnected"
+                  :loading="game.isLoading.value"
+                  @refresh="game.refreshOnlineGame()"
+                />
+                <p
+                  v-else-if="competitionRoomMode.kind === 'competition' && roomWaiting"
+                  class="muted"
+                  role="status"
+                >
+                  {{ session.userId.value ? '目前登入帳號不屬於此場競賽的固定參賽席位。' : '請登入固定參賽者帳號後重新查詢房間。' }}
+                </p>
             </template>
           </WaitingRoomLayout>
 
@@ -967,6 +1019,7 @@ import { sheepReturnCards } from '~/lib/pouch-choice'
 import { useLayoutNotifications } from '~/lib/player-notifications-context'
 import { useRulesCatalog } from '~/lib/rules-catalog'
 import { presentApiError } from '~/lib/api-error-presentation'
+import { competitionWaitingMemberStatus } from '~/lib/competition-ready'
 import { abilityLevelPicker } from '~/lib/ability-level-picker'
 import { battleRecordContentRevision, scrollBattleRecordToLatest } from '~/lib/battle-record-scroll'
 import {
@@ -1446,6 +1499,12 @@ const activeRoomName = computed(() => onlineMetadata.value?.name ?? '')
 const waitingRoomSummary = computed(() => game.invitation.value
   ? `房號 ${game.invitation.value.roomCode} · ${waitingStatusText.value}`
   : waitingStatusText.value)
+const competitionRoomMode = computed(() => game.competitionMode.value)
+const ordinaryRoomMode = computed(() => competitionRoomMode.value.kind === 'ordinary')
+const invalidCompetitionMode = computed(() => competitionRoomMode.value.kind === 'invalid')
+const competitionReturnPath = computed(() => competitionRoomMode.value.kind === 'competition'
+  ? `/competitions/${encodeURIComponent(competitionRoomMode.value.context.competitionId)}`
+  : null)
 const roomWaiting = computed(() => onlineMetadata.value?.status === 'Waiting')
 const gameFinished = computed(() => state.value.status === 'Finished')
 const firstPlayer = computed<PlayerId | null>(() => (
@@ -2104,10 +2163,7 @@ function teamMembers(team: TeamId): string[] {
 }
 
 function waitingMemberStatus(member: GameRoomMember | undefined): string {
-  if (!member) return '等待中'
-  if (!member.connected) return '未連線'
-  if (member.owner) return '房主'
-  return member.ready ? '已準備' : '未準備'
+  return competitionWaitingMemberStatus(member, competitionRoomMode.value)
 }
 
 function playableActionName(action: PlayableAction): string {

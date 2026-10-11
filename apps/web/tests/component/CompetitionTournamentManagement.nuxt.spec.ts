@@ -14,7 +14,16 @@ const notReady = { statusCode: 409, data: { code: 'notReady' } }
 function registration(revision = 4): CompetitionRegistrationState {
   return { competitionId: 'competition a', revision, organizer: 'organizer-a', ruleVersion: '5.17', ruleset: 'base',
     enabledRuleModules: [], teamSize: 1, initialHp: 200, registrationMode: 'public', personalDecks: 'disabled',
-    registrationDeadline: 1000, checkInDeadline: 2000, lifecycle: 'locked', ownTeam: null,
+    registrationDeadline: 60_000, checkInDeadline: 120_000, lifecycle: 'locked', ownTeam: null,
+    plan: {
+      initialSeedPolicy: 'randomDrawAfterRegistrationDeadline',
+      swissPairingPolicy: 'publishedRulesWithPersistedRandomSeed',
+      rankingPolicy: 'matchPointsThenOpponentWinsThenOpponentLosses',
+      exactRankingTiePolicy: 'organizerOrUnconflictedRefereeWithPublicReason',
+      stages: [{ stageId: 'stage-1', format: 'roundRobin', matchFormat: { type: 'fixedGames', value: 1 },
+        clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
+        swissRounds: null, swissMatchPoints: null, qualification: { type: 'allEligibleTeams' } }],
+    },
     teams: teamIds.map((teamId, index) => ({ teamId, captain: `captain-${index}`, members: [`captain-${index}`],
       rosterVersion: 1, confirmedMembers: [`captain-${index}`], status: 'checkedIn', exclusionReasons: [] })) }
 }

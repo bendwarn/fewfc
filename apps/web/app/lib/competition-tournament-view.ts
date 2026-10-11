@@ -239,6 +239,23 @@ export function swissTieBreakerLabel(value: SwissTieBreakerView): string {
   }[value]
 }
 
+/** 只辨識服務已結清的目前單敗決賽；不由排名或被替代的輪次推定冠軍。 */
+export function singleEliminationDoubleLossFinal(stage: TournamentViewStage): TournamentViewMatch | null {
+  if (stage.config.format !== 'singleElimination' || stage.status !== 'finished'
+    || stage.hasScheduleWarning) return null
+
+  const finalRound = stage.rounds[stage.rounds.length - 1]
+  if (!finalRound || finalRound.kind !== 'main' || finalRound.matches.length !== 1) return null
+  const finalMatch = finalRound.matches[0]
+  if (!finalMatch || finalMatch.kind !== 'main' || finalMatch.participants.length !== 2
+    || finalMatch.status !== 'completed' || finalMatch.result?.type !== 'doubleLoss') return null
+
+  // 已結清的前輪雙負或輪空仍是事實，不當作未決案件或另造勝者。
+  const previousRoundsClosed = stage.rounds.slice(0, -1).every(round =>
+    round.matches.every(match => match.status === 'completed' || match.status === 'cancelled'))
+  return previousRoundsClosed ? finalMatch : null
+}
+
 function parseStage(input: unknown): TournamentViewStage | null {
   const value = exactRecord(input, [
     'config', 'status', 'rounds', 'standings', 'corrections', 'lastScheduleError',
