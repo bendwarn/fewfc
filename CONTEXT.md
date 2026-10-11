@@ -4,6 +4,139 @@ Deterministic rules engine for CFECards game state, formation resolution, turn f
 
 ## Language
 
+**Free Play (自由對局・切磋)**:
+The existing configurable play offering, without tournament ranking implications.
+_Avoid_: Unranked Competitive Play
+
+**Competitive Play (競賽對局・論劍)**:
+Play governed by a declared Team time control and competition adjudication,
+using the selected existing Ruleset without contributing to ladder ratings.
+_Avoid_: Rule Module, Ruleset, Ranked Play
+
+**Tournament (賽事)**:
+An organized competition between registered Teams, comprising scheduled
+Tournament Matches and the rules determining progression and final standings.
+_Avoid_: Game, Turn, Round
+
+**Tournament Completion (賽事結束)**:
+The end of a Tournament after every declared Stage has finished or been
+explicitly cancelled, all Match results have been received, and no adjudication
+remains unresolved.
+_Avoid_: end of one Game, completion of one Stage, room closure
+
+**Individual Competition (個人)**:
+A Tournament participation format in which each competing Team has one Player.
+_Avoid_: 單人隊 as the participation-format label
+
+**Team Competition (團體)**:
+A Tournament participation format in which each competing Team has the same
+declared number of multiple Players.
+_Avoid_: 雙人隊 as the participation-format label
+
+**Tournament Round (賽事輪次)**:
+A scheduled group of Tournament Matches within a Tournament Stage, distinct
+from the rules-engine Round used by time-limited effects.
+_Avoid_: Turn, full-table rotation, rules-engine Round
+
+**Competition Start Time (比賽開始時間)**:
+The announced start time of a Tournament Round, distinct from the registration
+deadline, room availability, and actual Game start; a ready Match may start earlier.
+_Avoid_: 報到期限, registration deadline, room opening time, earliest permitted Game start
+
+**Tournament Check-In (房間報到)**:
+A fixed participant's current readiness while connected to their assigned Game
+Room, distinct from registration-data confirmation or merely entering the room.
+_Avoid_: separate check-in action, permanent attendance receipt, captain's registration completion, room entry alone
+
+**Tournament Stage (賽事階段)**:
+A portion of a Tournament with its declared pairing format, Match format and
+time control, such as a round-robin stage or an elimination stage.
+_Avoid_: Turn Phase, Rule Version
+
+**Stage Cancellation (階段取消)**:
+The explicit closure of a declared Tournament Stage that will not be played
+and has no winner, distinct from finishing a played Stage.
+_Avoid_: undeclared omission, Tournament reopening, automatic winner
+
+**Tournament Match (賽事交手)**:
+A scheduled encounter between two Teams, containing one or more Games and any
+required elimination tiebreak continuations.
+_Avoid_: Game Record, single Game
+
+**Competition Rematch (競賽重賽)**:
+A newly played Game replacing an invalidated Game at the same position of a
+Tournament Match, distinct from an additional Game or Elimination Tiebreak Continuation.
+_Avoid_: ordinary next Game, elimination tiebreak, rewriting the original Game Conclusion
+
+**Tournament Bronze Match (季軍賽)**:
+A Tournament Match between the eligible single-elimination semifinal losers to
+determine third place, distinct from the championship Match.
+_Avoid_: shared third place, championship Match, single Game
+
+**Tournament Deck List (賽事牌組清單)**:
+A Player's validated Deck List fixed at a Tournament's registration deadline
+and used for that Tournament. It describes the submitted composition, not later
+account edits or shuffled Deck order.
+_Avoid_: live account deck, prepared deck order, private Game State
+
+**Competition Ruling (競賽判定)**:
+The competition-level result and reason assigned under time-control, tiebreak
+or referee rules, distinct from the original Game Conclusion.
+_Avoid_: overwritten Game Outcome, Attack Points
+
+**Double Loss (雙方判負)**:
+A Tournament Match result in which both Teams receive a loss and neither is a
+winner. It is distinct from a drawn Match or simultaneous entry into Byoyomi.
+_Avoid_: Draw, shared victory, inferred winner
+
+**Tournament Bye (賽事輪空)**:
+The absence of an opposing Team in a Team's scheduled position, distinct from
+a played Tournament Match or Game victory.
+_Avoid_: fabricated Game win, opponent no-show
+
+**Tournament Placement Vacancy (名次空缺)**:
+An explicitly unawarded Tournament placement with no eligible Team, distinct
+from an unresolved placement still awaiting results or adjudication.
+_Avoid_: pending placement, shared placement, automatic promotion from a lower placement
+
+**Champion Vacancy (冠軍空缺)**:
+An elimination title left unawarded because its concluding path produces no
+winning Team.
+_Avoid_: shared championship, invented winner
+
+**Tournament Standing Points (賽事積分)**:
+Points awarded for completed Tournament Matches to determine stage standings.
+_Avoid_: Attack Points, ladder rating
+
+**Tournament Match Wins (自身勝場)**:
+The number of completed Tournament Matches won by a Team within one Tournament Stage,
+distinct from Opponent Win Score, individual Game wins, or points awarded for a Bye.
+_Avoid_: 勝分, Game wins, Bye points
+
+**Tournament Opponent Win Score (勝分)**:
+The sum of final Match wins of the distinct opponents a Team faced within one
+Tournament Stage, distinct from that Team's own wins or Standing Points.
+_Avoid_: own win count, standing points, Attack Points
+
+**Tournament Opponent Loss Score (負分)**:
+The sum of final Match losses of the distinct opponents a Team faced within one
+Tournament Stage, distinct from that Team's own losses or a Standing Point deduction.
+_Avoid_: own loss count, deducted standing points, net opponent win score
+
+**Team Main Time (隊伍主時間)**:
+A Team's shared thinking-time reserve preceding its entry into byoyomi.
+_Avoid_: per-Player reserve, whole-Match duration limit
+
+**Team Byoyomi (隊伍讀秒)**:
+The Team time-control period after its Main Time is exhausted, with a renewable
+allowance for each action turn or required choice during another Team's turn.
+_Avoid_: automatic loss on entering byoyomi
+
+**Elimination Tiebreak Continuation (淘汰賽和局加賽)**:
+A further Game resolving an elimination Draw when Byoyomi entry does not
+distinguish a loser, preserving both Teams' existing time-control state.
+_Avoid_: ordinary next Game, reset time reserve
+
 **Rule Version (規則版本)**:
 A complete published version identifier, such as 5.16 or 5.17, identifying the
 applicable rule content and available Rule Modules independently of which
@@ -1049,6 +1182,11 @@ A serialized waiting state containing one closed typed Player answer requirement
 for its Pending Resolution. Initial Pouch Selection remains a Game Preparation
 stage rather than a Pending Choice.
 _Avoid_: resolution continuation, prompt, callback
+
+**Out-of-Turn Choice (回合外選擇)**:
+A Pending Choice answered by a Player other than the Player whose Turn is in
+progress. The deciding Player may belong to either Team.
+_Avoid_: every Pending Choice, Initial Pouch Selection, only opposing-Team input
 
 **Choice ID**:
 The stable canonical identity of one Pending Choice. A Player answer references

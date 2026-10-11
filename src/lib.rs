@@ -4,11 +4,16 @@
 //! 連接埠，以及基礎設施轉接器。
 
 pub mod application;
+pub mod competition_clock;
+pub mod competition_match;
+pub mod competition_registration;
+pub mod competition_web_api;
 pub mod domain;
 pub mod infrastructure;
 pub mod ports;
 pub mod public_view;
 pub mod rules;
+pub mod tournament;
 pub mod web_api;
 
 #[cfg(target_arch = "wasm32")]

@@ -18,6 +18,11 @@ use crate::rules::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// 競賽核心的伺服器專用 JSON 入口；一般玩家 API 不會自動取得此授權邊界。
+pub fn handle_competition_request_json(input: &str) -> Result<String, String> {
+    crate::competition_web_api::handle_request_json(input)
+}
+
 pub fn handle_request_json(input: &str) -> Result<String, String> {
     let request = decode_api_request(input)?;
     let response = handle(request).map_err(|error| serde_json::to_string(&error).unwrap())?;
