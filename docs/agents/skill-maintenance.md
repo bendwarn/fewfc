@@ -9,7 +9,7 @@
 - `.agents/skills/playwright-cli/`：專案唯一的 Playwright 技能來源，由本專案 Git 維護。使用 `apps/web` 工作目錄與 `bun playwright cli`，保留 references 的相同命令適配。
 - `.codex/skills/audit-fewfc-room-record/`：本專案維護。純紀錄解說以事件與規則為證據；實作或 replay 正確性調查使用相關測試，並揭露無法驗證的範圍。
 
-已移除 `apps/web/.agents/skills/playwright-cli/` 的重複副本，以及只管理該副本的 `apps/web/skills-lock.json`。原安裝紀錄指向 `microsoft/playwright-cli` 的 `skills/playwright-cli/SKILL.md`，computedHash 為 `f602822b51bcb6d033749c60731b8f1e80f308222fcb2e4af551905a817c6e08`；此 hash 是原安裝紀錄，不當作 Git commit 使用。
+已移除 `apps/web/.agents/skills/playwright-cli/` 的重複副本，以及只管理該副本的 `apps/web/skills-lock.json`。原安裝紀錄指向 `microsoft/playwright-cli` 的 `skills/playwright-cli/SKILL.md`。
 
 ## 更新方式
 
