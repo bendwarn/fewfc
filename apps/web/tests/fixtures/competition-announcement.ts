@@ -12,7 +12,7 @@ const announcementPlan: CompetitionAnnouncementPlan = {
     matchFormat: { type: 'fixedGames', value: 1 },
     clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
     swissRounds: null,
-    swissMatchPoints: null,
+    swissPolicy: null,
     qualification: { type: 'allEligibleTeams' },
   }],
 }

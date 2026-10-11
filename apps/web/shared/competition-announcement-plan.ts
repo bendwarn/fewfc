@@ -2,7 +2,8 @@ import type {
   AnnouncedStageQualification,
   AnnouncedTournamentStage,
   CompetitionAnnouncementPlan,
-  MatchPoints,
+  SwissStandingPolicy,
+  SwissTieBreaker,
   StageQualificationSlot,
   TournamentFormat,
 } from './competition'
@@ -17,6 +18,14 @@ export interface CompetitionAnnouncementStageDraft {
   byoyomiSeconds: string
   swissRounds: string
   swissMatchPoints: { win: string, draw: string, loss: string, bye: string }
+  swissPolicy: {
+    drawCredit: { numerator: string, denominator: string }
+    opponentWinRateFloorPercent: { mode: '' | 'none' | 'value', value: string }
+    opponentWinRateCapPercent: { mode: '' | 'none' | 'value', value: string }
+    excludeByesFromOpponentWinRate: '' | 'yes' | 'no'
+    tieMode: '' | 'none' | 'configured'
+    tieBreakers: ('' | SwissTieBreaker)[]
+  }
   sourceSlots: {
     sourceStageId: string
     sourceType: '' | 'finishedStageWinner' | 'uniqueStandingRank'
@@ -48,12 +57,13 @@ export function buildCompetitionAnnouncementPlan(
 
     const swiss = draft.format === 'swiss'
     const swissRounds = swiss ? positiveInteger(draft.swissRounds, `第 ${index + 1} 階段瑞士輪數`) : null
-    const swissMatchPoints: MatchPoints | null = swiss ? {
+    const matchPoints = swiss ? {
       win: u32(draft.swissMatchPoints.win, '瑞士勝場積分'),
       draw: u32(draft.swissMatchPoints.draw, '瑞士和局積分'),
       loss: u32(draft.swissMatchPoints.loss, '瑞士敗場積分'),
       bye: u32(draft.swissMatchPoints.bye, '瑞士輪空積分'),
     } : null
+    const swissPolicy: SwissStandingPolicy | null = swiss ? buildSwissPolicy(draft, matchPoints!) : null
     if (swissRounds !== null && swissRounds > MAX_U32) invalid('瑞士輪數超出可設定範圍。')
 
     const qualification: AnnouncedStageQualification = index === 0
@@ -74,7 +84,7 @@ export function buildCompetitionAnnouncementPlan(
         outOfTurnChoiceTimeMs: Number(byoyomiSeconds) * 1_000,
       },
       swissRounds,
-      swissMatchPoints,
+      swissPolicy,
       qualification,
     }
   })
@@ -107,7 +117,7 @@ export function parseCompetitionAnnouncementPlan(input: unknown): CompetitionAnn
   const stages: AnnouncedTournamentStage[] = []
   for (let index = 0; index < plan.stages.length; index += 1) {
     const value = exactRecord(plan.stages[index], [
-      'stageId', 'format', 'matchFormat', 'clockConfig', 'swissRounds', 'swissMatchPoints', 'qualification',
+      'stageId', 'format', 'matchFormat', 'clockConfig', 'swissRounds', 'swissPolicy', 'qualification',
     ])
     if (!value || typeof value.stageId !== 'string' || normalizedId(value.stageId) !== value.stageId
       || stageIds.has(value.stageId) || !isFormat(value.format)) return null
@@ -127,17 +137,14 @@ export function parseCompetitionAnnouncementPlan(input: unknown): CompetitionAnn
 
     const swiss = value.format === 'swiss'
     let swissRounds: number | null = null
-    let swissMatchPoints: MatchPoints | null = null
+    let swissPolicy: SwissStandingPolicy | null = null
     if (swiss) {
       if (!u32PositiveIntegerValue(value.swissRounds)) return null
-      const points = exactRecord(value.swissMatchPoints, ['win', 'draw', 'loss', 'bye'])
-      if (!points || !['win', 'draw', 'loss', 'bye'].every(key => u32IntegerValue(points[key]))) return null
+      const parsedPolicy = parseSwissPolicy(value.swissPolicy)
+      if (!parsedPolicy) return null
       swissRounds = value.swissRounds as number
-      swissMatchPoints = {
-        win: points.win as number, draw: points.draw as number,
-        loss: points.loss as number, bye: points.bye as number,
-      }
-    } else if (value.swissRounds !== null || value.swissMatchPoints !== null) return null
+      swissPolicy = parsedPolicy
+    } else if (value.swissRounds !== null || value.swissPolicy !== null) return null
 
     const qualification = parseQualification(value.qualification, index, stages)
     if (!qualification) return null
@@ -151,7 +158,7 @@ export function parseCompetitionAnnouncementPlan(input: unknown): CompetitionAnn
         outOfTurnChoiceTimeMs: clock.outOfTurnChoiceTimeMs as number,
       },
       swissRounds,
-      swissMatchPoints,
+      swissPolicy,
       qualification,
     })
   }
@@ -162,6 +169,91 @@ export function parseCompetitionAnnouncementPlan(input: unknown): CompetitionAnn
     exactRankingTiePolicy: plan.exactRankingTiePolicy,
     stages,
   }
+}
+
+function buildSwissPolicy(
+  draft: CompetitionAnnouncementStageDraft,
+  matchPoints: SwissStandingPolicy['matchPoints'],
+): SwissStandingPolicy {
+  const numerator = u32(draft.swissPolicy.drawCredit.numerator, '瑞士和局折算分子')
+  const denominator = u32(draft.swissPolicy.drawCredit.denominator, '瑞士和局折算分母')
+  if (denominator === 0) invalid('瑞士和局折算分母必須大於零。')
+  if (numerator > denominator) invalid('瑞士和局折算必須介於零與一之間。')
+  const floor = draftPercent(draft.swissPolicy.opponentWinRateFloorPercent, '瑞士對手勝率下限')
+  const cap = draftPercent(draft.swissPolicy.opponentWinRateCapPercent, '瑞士對手勝率上限')
+  if (floor !== null && cap !== null && floor > cap) invalid('瑞士對手勝率下限不可高於上限。')
+  if (draft.swissPolicy.excludeByesFromOpponentWinRate !== 'yes'
+    && draft.swissPolicy.excludeByesFromOpponentWinRate !== 'no') invalid('請明示計算對手勝率時是否排除輪空。')
+  const tieBreakers: SwissTieBreaker[] = []
+  if (draft.swissPolicy.tieMode === 'configured') {
+    for (const tieBreaker of draft.swissPolicy.tieBreakers) {
+      if (!isTieBreaker(tieBreaker) || tieBreakers.includes(tieBreaker)) invalid('瑞士同分比較順序必須明示且不可重複。')
+      tieBreakers.push(tieBreaker)
+    }
+    if (tieBreakers.length === 0) invalid('請明示瑞士同分比較順序，或選擇不設定。')
+  } else if (draft.swissPolicy.tieMode !== 'none' || draft.swissPolicy.tieBreakers.length !== 0) {
+    invalid('請明示瑞士同分比較順序，或選擇不設定。')
+  }
+  return {
+    matchPoints,
+    drawCredit: { numerator, denominator },
+    opponentWinRateFloorPercent: floor,
+    opponentWinRateCapPercent: cap,
+    excludeByesFromOpponentWinRate: draft.swissPolicy.excludeByesFromOpponentWinRate === 'yes',
+    tieBreakers,
+  }
+}
+
+function parseSwissPolicy(input: unknown): SwissStandingPolicy | null {
+  const value = exactRecord(input, [
+    'matchPoints', 'drawCredit', 'opponentWinRateFloorPercent', 'opponentWinRateCapPercent',
+    'excludeByesFromOpponentWinRate', 'tieBreakers',
+  ])
+  if (!value) return null
+  const points = exactRecord(value.matchPoints, ['win', 'draw', 'loss', 'bye'])
+  const credit = exactRecord(value.drawCredit, ['numerator', 'denominator'])
+  if (!points || !['win', 'draw', 'loss', 'bye'].every(key => u32IntegerValue(points[key]))
+    || !credit || !u32IntegerValue(credit.numerator) || !u32PositiveIntegerValue(credit.denominator)
+    || (credit.numerator as number) > (credit.denominator as number)
+    || typeof value.excludeByesFromOpponentWinRate !== 'boolean'
+    || !Array.isArray(value.tieBreakers)) return null
+  const floor = nullablePercent(value.opponentWinRateFloorPercent)
+  const cap = nullablePercent(value.opponentWinRateCapPercent)
+  if (floor === undefined || cap === undefined || (floor !== null && cap !== null && floor > cap)) return null
+  const tieBreakers: SwissTieBreaker[] = []
+  for (const item of value.tieBreakers) {
+    if (!isTieBreaker(item) || tieBreakers.includes(item)) return null
+    tieBreakers.push(item)
+  }
+  return {
+    matchPoints: { win: points.win as number, draw: points.draw as number, loss: points.loss as number, bye: points.bye as number },
+    drawCredit: { numerator: credit.numerator as number, denominator: credit.denominator as number },
+    opponentWinRateFloorPercent: floor,
+    opponentWinRateCapPercent: cap,
+    excludeByesFromOpponentWinRate: value.excludeByesFromOpponentWinRate,
+    tieBreakers,
+  }
+}
+
+function draftPercent(
+  draft: CompetitionAnnouncementStageDraft['swissPolicy']['opponentWinRateFloorPercent'],
+  label: string,
+): number | null {
+  if (draft.mode === 'none') return null
+  if (draft.mode !== 'value') invalid(`${label}請明示選擇是否設定。`)
+  const value = u32(draft.value, label)
+  if (value > 100) invalid(`${label}必須介於零到一百。`)
+  return value
+}
+
+function nullablePercent(value: unknown): number | null | undefined {
+  if (value === null) return null
+  return u32IntegerValue(value) && value <= 100 ? value : undefined
+}
+
+function isTieBreaker(value: unknown): value is SwissTieBreaker {
+  return value === 'matchPoints' || value === 'headToHeadMatchPoints' || value === 'opponentWinRate'
+    || value === 'netGameWins' || value === 'seedOrder'
 }
 
 function parseQualification(

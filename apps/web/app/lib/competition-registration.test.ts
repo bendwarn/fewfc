@@ -46,13 +46,19 @@ const announcement = {
     exactRankingTiePolicy: 'organizerOrUnconflictedRefereeWithPublicReason',
     stages: [{ stageId: 'stage-1', format: 'roundRobin', matchFormat: { type: 'fixedGames', value: 1 },
       clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
-      swissRounds: null, swissMatchPoints: null, qualification: { type: 'allEligibleTeams' } }],
+      swissRounds: null, swissPolicy: null, qualification: { type: 'allEligibleTeams' } }],
   },
 }
 
 function stageDrafts(): CompetitionAnnouncementStageDraft[] {
   return [{ stageId: 'stage-1', format: 'roundRobin', matchGames: '1', mainMinutes: '5', byoyomiSeconds: '30',
-    swissRounds: '3', swissMatchPoints: { win: '3', draw: '1', loss: '0', bye: '3' }, sourceSlots: [] }]
+    swissRounds: '3', swissMatchPoints: { win: '3', draw: '1', loss: '0', bye: '3' },
+    swissPolicy: {
+      drawCredit: { numerator: '1', denominator: '2' },
+      opponentWinRateFloorPercent: { mode: 'none', value: '' },
+      opponentWinRateCapPercent: { mode: 'none', value: '' },
+      excludeByesFromOpponentWinRate: 'no', tieMode: 'none', tieBreakers: [],
+    }, sourceSlots: [] }]
 }
 
 const team = {

@@ -163,7 +163,54 @@
                   <input :id="`stage-swiss-${field.key}-${index}`" v-model="stage.swissMatchPoints[field.key]" class="text-input" inputmode="numeric" pattern="[0-9]+" required :disabled="creating || createOutcomeUnknown">
                 </label>
               </div>
-              <small>初始值為設計採用的勝／和／敗／輪空 3／1／0／3；送出的公告會固定實際選值。</small>
+              <h4>瑞士排名政策</h4>
+              <div class="point-grid">
+                <label :for="`stage-swiss-credit-numerator-${index}`">對手勝率和局折算分子
+                  <input :id="`stage-swiss-credit-numerator-${index}`" v-model="stage.swissPolicy.drawCredit.numerator" class="text-input" inputmode="numeric" pattern="[0-9]+" required :disabled="creating || createOutcomeUnknown">
+                </label>
+                <label :for="`stage-swiss-credit-denominator-${index}`">對手勝率和局折算分母
+                  <input :id="`stage-swiss-credit-denominator-${index}`" v-model="stage.swissPolicy.drawCredit.denominator" class="text-input" inputmode="numeric" pattern="[0-9]+" required :disabled="creating || createOutcomeUnknown">
+                </label>
+                <label :for="`stage-swiss-floor-mode-${index}`">對手勝率下限
+                  <select :id="`stage-swiss-floor-mode-${index}`" v-model="stage.swissPolicy.opponentWinRateFloorPercent.mode" class="text-input" required :disabled="creating || createOutcomeUnknown">
+                    <option value="none">不設定</option><option value="value">指定百分比</option>
+                  </select>
+                </label>
+                <label v-if="stage.swissPolicy.opponentWinRateFloorPercent.mode === 'value'" :for="`stage-swiss-floor-value-${index}`">下限百分比（0–100）
+                  <input :id="`stage-swiss-floor-value-${index}`" v-model="stage.swissPolicy.opponentWinRateFloorPercent.value" class="text-input" inputmode="numeric" pattern="[0-9]+" required :disabled="creating || createOutcomeUnknown">
+                </label>
+                <label :for="`stage-swiss-cap-mode-${index}`">對手勝率上限
+                  <select :id="`stage-swiss-cap-mode-${index}`" v-model="stage.swissPolicy.opponentWinRateCapPercent.mode" class="text-input" required :disabled="creating || createOutcomeUnknown">
+                    <option value="none">不設定</option><option value="value">指定百分比</option>
+                  </select>
+                </label>
+                <label v-if="stage.swissPolicy.opponentWinRateCapPercent.mode === 'value'" :for="`stage-swiss-cap-value-${index}`">上限百分比（0–100）
+                  <input :id="`stage-swiss-cap-value-${index}`" v-model="stage.swissPolicy.opponentWinRateCapPercent.value" class="text-input" inputmode="numeric" pattern="[0-9]+" required :disabled="creating || createOutcomeUnknown">
+                </label>
+                <label :for="`stage-swiss-exclude-byes-${index}`">計算對手勝率時排除輪空
+                  <select :id="`stage-swiss-exclude-byes-${index}`" v-model="stage.swissPolicy.excludeByesFromOpponentWinRate" class="text-input" required :disabled="creating || createOutcomeUnknown">
+                    <option value="yes">排除</option><option value="no">不排除</option>
+                  </select>
+                </label>
+                <label :for="`stage-swiss-tie-mode-${index}`">瑞士同分比較
+                  <select :id="`stage-swiss-tie-mode-${index}`" v-model="stage.swissPolicy.tieMode" class="text-input" required :disabled="creating || createOutcomeUnknown" @change="selectSwissTieMode(stage)">
+                    <option value="none">不設定</option><option value="configured">明示比較順序</option>
+                  </select>
+                </label>
+              </div>
+              <template v-if="stage.swissPolicy.tieMode === 'configured'">
+                <div v-for="(_, tieIndex) in stage.swissPolicy.tieBreakers" :key="tieIndex" class="source-slot">
+                  <label :for="`stage-swiss-tie-${index}-${tieIndex}`">第 {{ tieIndex + 1 }} 項同分比較
+                    <select :id="`stage-swiss-tie-${index}-${tieIndex}`" v-model="stage.swissPolicy.tieBreakers[tieIndex]" class="text-input" required :disabled="creating || createOutcomeUnknown">
+                      <option value="" disabled>請選擇</option>
+                      <option v-for="tieBreaker in swissTieBreakers" :key="tieBreaker.value" :value="tieBreaker.value" :disabled="stage.swissPolicy.tieBreakers.includes(tieBreaker.value) && stage.swissPolicy.tieBreakers[tieIndex] !== tieBreaker.value">{{ tieBreaker.label }}</option>
+                    </select>
+                  </label>
+                  <button class="ghost-button" type="button" :disabled="creating || createOutcomeUnknown" @click="removeSwissTieBreaker(stage, tieIndex)">移除</button>
+                </div>
+                <button class="secondary-button" type="button" :disabled="creating || createOutcomeUnknown || stage.swissPolicy.tieBreakers.length >= swissTieBreakers.length" @click="addSwissTieBreaker(stage)">新增同分比較</button>
+              </template>
+              <small>種子抽籤完成後，完整瑞士政策依此公告執行並保存在賽程中。</small>
             </div>
 
             <div v-if="index === 0" class="policy-note">
@@ -287,6 +334,7 @@
 <script setup lang="ts">
 import type { RuleModuleSpec } from '~/types/fewfc'
 import type { CompetitionAnnouncementStageDraft } from '#shared/competition-announcement-plan'
+import type { SwissTieBreaker } from '#shared/competition'
 import { createRuleModulePolicy, presentationForRuleModule } from '#shared/utils/rule-modules'
 import { modulesForVersion } from '#shared/utils/rule-versions'
 import { presentApiError } from '~/lib/api-error-presentation'
@@ -343,6 +391,13 @@ const swissPointFields = [
   { key: 'win', label: '勝場積分' }, { key: 'draw', label: '和局積分' },
   { key: 'loss', label: '敗場積分' }, { key: 'bye', label: '輪空積分' },
 ] as const
+const swissTieBreakers: { value: SwissTieBreaker, label: string }[] = [
+  { value: 'matchPoints', label: '交手積分' },
+  { value: 'headToHeadMatchPoints', label: '彼此交手積分' },
+  { value: 'opponentWinRate', label: '對手勝率' },
+  { value: 'netGameWins', label: '淨勝局' },
+  { value: 'seedOrder', label: '種子順序' },
+]
 
 function newStageDraft(): CompetitionAnnouncementStageDraft {
   return {
@@ -353,8 +408,28 @@ function newStageDraft(): CompetitionAnnouncementStageDraft {
     byoyomiSeconds: '30',
     swissRounds: '',
     swissMatchPoints: { win: '3', draw: '1', loss: '0', bye: '3' },
+    swissPolicy: {
+      drawCredit: { numerator: '1', denominator: '2' },
+      opponentWinRateFloorPercent: { mode: 'none', value: '' },
+      opponentWinRateCapPercent: { mode: 'none', value: '' },
+      excludeByesFromOpponentWinRate: 'no',
+      tieMode: 'none',
+      tieBreakers: [],
+    },
     sourceSlots: [] as { sourceStageId: string, sourceType: '' | 'finishedStageWinner' | 'uniqueStandingRank', rank: string, destinationSeed: string }[],
   }
+}
+
+function selectSwissTieMode(stage: CompetitionAnnouncementStageDraft) {
+  if (stage.swissPolicy.tieMode === 'none') stage.swissPolicy.tieBreakers = []
+}
+
+function addSwissTieBreaker(stage: CompetitionAnnouncementStageDraft) {
+  if (stage.swissPolicy.tieBreakers.length < swissTieBreakers.length) stage.swissPolicy.tieBreakers.push('')
+}
+
+function removeSwissTieBreaker(stage: CompetitionAnnouncementStageDraft, index: number) {
+  stage.swissPolicy.tieBreakers.splice(index, 1)
 }
 
 function addStage() {

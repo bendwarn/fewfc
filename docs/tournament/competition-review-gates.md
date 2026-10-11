@@ -1,6 +1,6 @@
 # 競賽功能：目前審核關卡
 
-2026-10-09 實作狀態快照；2026-10-10 同步已核准票據及政策與 02 放行證據，2026-10-11 完成 01 獨立主審、03 fixture 與 04 alarm／最後測試修正審核，四票均按指定範圍限定 PASS；05 的 03＋04 功能前置已通過。產品政策以[設計](competitive-play-design.md)為準。本文件只管理現況、互斥範圍、驗證與相依放行，不複述玩法規則。
+2026-10-11 本輪以 HEAD `653a516` 審核 03 公告、05 初始種子、07 權威時計與 17 缺席。03 公告限定 PASS。各功能依指定案例與兩軸審核逐一提交；產品政策以[設計](competitive-play-design.md)為準。本文件只管理現況、互斥範圍、驗證與相依放行，不複述玩法規則。
 
 ## 執行邊界與完成條件
 
@@ -17,7 +17,7 @@
 | 切片／負責者 | 狀態與唯一寫入範圍 | 下一關卡／證據 |
 | --- | --- | --- |
 | 04 報名截止自動凍結／來源對話最後修正→主審末審 | 限定 PASS：alarm P2 與最後測試預期 P2 均閉合；Standards 硬性 0／heuristic 0，Spec 0。本輪作者 E6a2 15 pass／0 fail、288 assertions，1v1／2v2 正式交付與重放全綠。僅測試檔改為從已提交 checkpoint 取預期版號，其他來源未改。沿用同版本 Nuxt／pure／獨立故障證據，驗證集合跨輪合計 258 pass／6 skip／0 fail，本輪新執行只有 15 例 | [最後修正報告／固定版本／原始 log](../../scratch/tour-attempt/ticket04-final-review/report.md)、[alarm 修復與原紅例](../../scratch/tour-attempt/ticket03-04-review/report.md)、[前次失敗](../../scratch/tour-attempt/ticket04-review/report.md)。04 四項驗收已勾選；放行 F 自動凍結、遲交接受點、排除理由、固定參賽快照交付與正常重試。05 的 03＋04 前置已通過，可依唯一寫入權開始其實作；legacy initial 障礙仍既存 HOLD，不外推 22 真 Worker／Brave／全流程。 |
-| 03 賽前完整公告／來源對話 fixture 整理→主審末審 | 維持限定 PASS：前次三項 finding 閉合，Standards 硬性 0／非阻擋 P3 建議 1（部分閉合），產品 Spec 0。新增共用 factory 隔離驗證通過，API／DO／terminology 已遷移，另兩個 Nuxt plan 仍重複。聯合審核純模組 140 pass／6 skip、共用 Nuxt 86 pass（含 04 Freeze 六例）、獨立 API 比較九例及實際 API→DO→Rust 保存／重讀通過；前次 Rust 重編譯後 18 pass 來源未改，沒有計為後續新執行 | [聯合修後報告／固定版本／原始 log](../../scratch/tour-attempt/ticket03-04-review/report.md)、[前次修後末審](../../scratch/tour-attempt/ticket03-final-review/report.md)、[原失敗證據](../../scratch/tour-attempt/ticket03-review/report.md)。03 四項驗收維持已勾選；fixture P3 不阻擋。當時 04 唯一紅例已由[最後修正末審](../../scratch/tour-attempt/ticket04-final-review/report.md)閉合；05 已具備 03＋04 功能前置，待其自動首輪實作／驗證。不外推 22 全量 Cargo／型別／打包／Brave／真 Worker 或全流程。 |
+| 03 賽前完整公告／本輪獨立主審 | 限定 PASS：完整 SwissStandingPolicy 公告契約、Rust／TypeScript 驗證與玩家可讀政策已核對；Standards 硬性 0、Spec 0。共用純模組／API 230 pass、6 skip、Nuxt 八檔 107 pass；Rust DTO 與公告案例通過 | [本輪報告／兩軸／原始 log](../../scratch/four-feature-review/report.md)。本輪按 HEAD `653a516` 的指定功能差異提交；全量 Cargo 的既有單敗決賽 API oracle 與型別檢查的既有測試錯誤仍保留，不外推 22／28。 |
 | 02 等待房斷線清除準備／來源對話交付→主審驗證 | 限定 PASS：DO 全檔 118 green／1 既存 fail（修改前同樣失敗），元件 12 green，主審獨立 4 green。Standards 0／Spec 0 個有效 finding， | [本輪審核與原始 log](../../scratch/tour-attempt/ticket02-review/report.md)。只放行等待房斷線／重連、2v2 開局競態、同人多分頁／舊回呼、Preparing／Active 負控制；不外推 01 提前開局、17 缺席或 22 全流程。全檔既存 randomness-restart payload 失敗另保留，不宣稱全綠。 |
 | 首輪 Rust 凍結 R1 | 限定 PASS：7 元件案例、兩軸無 finding；兩 Rust 檔凍結 | [主審原始證據](evidence/2026-10-08/main-review-history.md) |
 | 前端凍結／Maxwell→Socrates 分鐘修復 | 限定 PASS：pure40／198 assertions、Nuxt兩檔18 green；Standards 無 finding／Spec 無 P1/P2、DST-gap 覆蓋 P3 非阻擋。七檔凍結；不代表後端已強制所有公告 T 的分鐘精度 | [修復](../../scratch/tour-attempt/frontend-announcement-minute-policy.md)、[Standards](../../scratch/tour-attempt/delivery-wave-e-frontend-minute-standards-review.md)、[Spec](../../scratch/tour-attempt/delivery-wave-e-frontend-minute-spec-review.md)、[集中實證](../../scratch/tour-attempt/main-competition-2026-10-08.md) |

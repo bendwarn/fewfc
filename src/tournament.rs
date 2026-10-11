@@ -386,7 +386,7 @@ pub struct MatchPoints {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DrawCredit {
     pub numerator: u32,
     pub denominator: u32,
@@ -417,7 +417,7 @@ pub enum SwissTieBreaker {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SwissStandingPolicy {
     pub match_points: MatchPoints,
     pub draw_credit: DrawCredit,
@@ -503,7 +503,7 @@ pub struct AnnouncedTournamentStage {
     pub match_format: MatchFormat,
     pub clock_config: ClockConfig,
     pub swiss_rounds: Option<u32>,
-    pub swiss_match_points: Option<MatchPoints>,
+    pub swiss_policy: Option<SwissStandingPolicy>,
     pub qualification: AnnouncedStageQualification,
 }
 
@@ -537,13 +537,15 @@ pub fn validate_competition_announcement_plan(plan: &CompetitionAnnouncementPlan
             .validate()
             .map_err(|error| error.to_string())?;
         validate_announced_clock(&stage.clock_config)?;
-        match (stage.format, stage.swiss_rounds, &stage.swiss_match_points) {
-            (TournamentFormat::Swiss, Some(rounds), Some(_points)) if rounds > 0 => {}
+        match (stage.format, stage.swiss_rounds, &stage.swiss_policy) {
+            (TournamentFormat::Swiss, Some(rounds), Some(policy)) if rounds > 0 => {
+                validate_swiss_policy(policy).map_err(|error| error.to_string())?;
+            }
             (TournamentFormat::Swiss, _, _) => {
-                return Err("瑞士階段必須明示正整數輪數與四項積分".to_string());
+                return Err("瑞士階段必須明示正整數輪數與完整瑞士政策".to_string());
             }
             (_, None, None) => {}
-            _ => return Err("非瑞士階段不可設定瑞士輪數或積分".to_string()),
+            _ => return Err("非瑞士階段不可設定瑞士輪數或政策".to_string()),
         }
 
         match (&stage.qualification, index) {
@@ -599,6 +601,46 @@ fn validate_announced_clock(config: &ClockConfig) -> Result<(), String> {
         || config.action_time_ms != config.out_of_turn_choice_time_ms
     {
         return Err("讀秒只可選 30 秒、1 分鐘或 3 分鐘，且共用於行動與回合外選擇".to_string());
+    }
+    Ok(())
+}
+
+fn validate_swiss_policy(policy: &SwissStandingPolicy) -> Result<(), ScheduleError> {
+    if let (Some(floor), Some(cap)) = (
+        policy.opponent_win_rate_floor_percent,
+        policy.opponent_win_rate_cap_percent,
+    ) && floor > cap
+    {
+        return Err(ScheduleError::InvalidSwissPolicy(
+            "OMW floor 不可大於 cap".to_string(),
+        ));
+    }
+    if policy
+        .opponent_win_rate_floor_percent
+        .is_some_and(|floor| floor > 100)
+        || policy
+            .opponent_win_rate_cap_percent
+            .is_some_and(|cap| cap > 100)
+    {
+        return Err(ScheduleError::InvalidSwissPolicy(
+            "OMW floor/cap 必須介於 0 到 100".to_string(),
+        ));
+    }
+    if policy.draw_credit.denominator == 0
+        || policy.draw_credit.numerator > policy.draw_credit.denominator
+    {
+        return Err(ScheduleError::InvalidSwissPolicy(
+            "drawCredit 必須是 0 到 1 之間的有理數".to_string(),
+        ));
+    }
+    let mut seen_tie_breakers: Vec<SwissTieBreaker> = Vec::new();
+    for tie_breaker in &policy.tie_breakers {
+        if seen_tie_breakers.contains(tie_breaker) {
+            return Err(ScheduleError::InvalidSwissPolicy(
+                "同分比較項目不可重複".to_string(),
+            ));
+        }
+        seen_tie_breakers.push(tie_breaker.clone());
     }
     Ok(())
 }
@@ -2721,33 +2763,7 @@ fn validate_config(config: &StageConfig) -> Result<(), ScheduleError> {
             .swiss_policy
             .as_ref()
             .ok_or(ScheduleError::SwissPolicyRequired)?;
-        if let (Some(floor), Some(cap)) = (
-            policy.opponent_win_rate_floor_percent,
-            policy.opponent_win_rate_cap_percent,
-        ) && floor > cap
-        {
-            return Err(ScheduleError::InvalidSwissPolicy(
-                "OMW floor 不可大於 cap".to_string(),
-            ));
-        }
-        if policy
-            .opponent_win_rate_floor_percent
-            .is_some_and(|floor| floor > 100)
-            || policy
-                .opponent_win_rate_cap_percent
-                .is_some_and(|cap| cap > 100)
-        {
-            return Err(ScheduleError::InvalidSwissPolicy(
-                "OMW floor/cap 必須介於 0 到 100".to_string(),
-            ));
-        }
-        if policy.draw_credit.denominator == 0
-            || policy.draw_credit.numerator > policy.draw_credit.denominator
-        {
-            return Err(ScheduleError::InvalidSwissPolicy(
-                "drawCredit 必須是 0 到 1 之間的有理數".to_string(),
-            ));
-        }
+        validate_swiss_policy(policy)?;
     }
     Ok(())
 }
@@ -3062,7 +3078,14 @@ mod tests {
                     out_of_turn_choice_time_ms: Some(60_000),
                 },
                 swiss_rounds: Some(5),
-                swiss_match_points: Some(MatchPoints { win: 3, draw: 1, loss: 0, bye: 3 }),
+                swiss_policy: Some(SwissStandingPolicy {
+                    match_points: MatchPoints { win: 3, draw: 1, loss: 0, bye: 3 },
+                    draw_credit: DrawCredit::new(1, 2).unwrap(),
+                    opponent_win_rate_floor_percent: None,
+                    opponent_win_rate_cap_percent: None,
+                    exclude_byes_from_opponent_win_rate: false,
+                    tie_breakers: vec![SwissTieBreaker::OpponentWinRate],
+                }),
                 qualification: AnnouncedStageQualification::AllEligibleTeams,
             }],
         };
@@ -3079,7 +3102,12 @@ mod tests {
                     "stageId": "stage-1", "format": "swiss",
                     "matchFormat": { "type": "fixedGames", "value": 3 },
                     "clockConfig": { "mainTimeMs": 0, "actionTimeMs": 60000, "outOfTurnChoiceTimeMs": 60000 },
-                    "swissRounds": 5, "swissMatchPoints": { "win": 3, "draw": 1, "loss": 0, "bye": 3 },
+                    "swissRounds": 5, "swissPolicy": {
+                        "matchPoints": { "win": 3, "draw": 1, "loss": 0, "bye": 3 },
+                        "drawCredit": { "numerator": 1, "denominator": 2 },
+                        "opponentWinRateFloorPercent": null, "opponentWinRateCapPercent": null,
+                        "excludeByesFromOpponentWinRate": false, "tieBreakers": ["opponentWinRate"]
+                    },
                     "qualification": { "type": "allEligibleTeams" }
                 }]
             })

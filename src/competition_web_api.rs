@@ -2020,7 +2020,7 @@ mod tests {
                             "matchFormat": { "type": "fixedGames", "value": 1 },
                             "clockConfig": { "mainTimeMs": 300000, "actionTimeMs": 30000, "outOfTurnChoiceTimeMs": 30000 },
                             "swissRounds": null,
-                            "swissMatchPoints": null,
+                            "swissPolicy": null,
                             "qualification": { "type": "allEligibleTeams" }
                         }]
                     },

@@ -33,7 +33,7 @@ function registration(overrides: Partial<CompetitionRegistrationState> = {}): Co
       exactRankingTiePolicy: 'organizerOrUnconflictedRefereeWithPublicReason',
       stages: [{ stageId: 'stage-1', format: 'roundRobin', matchFormat: { type: 'fixedGames', value: 1 },
         clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
-        swissRounds: null, swissMatchPoints: null, qualification: { type: 'allEligibleTeams' } }],
+        swissRounds: null, swissPolicy: null, qualification: { type: 'allEligibleTeams' } }],
     },
     teams: [], ownTeam: null, ...overrides,
   }

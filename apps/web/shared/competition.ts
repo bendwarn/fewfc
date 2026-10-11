@@ -49,7 +49,7 @@ export interface AnnouncedTournamentStage {
   matchFormat: MatchFormat
   clockConfig: ClockConfig
   swissRounds: number | null
-  swissMatchPoints: MatchPoints | null
+  swissPolicy: SwissStandingPolicy | null
   qualification: AnnouncedStageQualification
 }
 

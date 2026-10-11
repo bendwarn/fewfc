@@ -125,7 +125,7 @@ it.each([1, 2])('serializes the selected teamSize %i with exact minute registrat
       rankingPolicy: 'matchPointsThenOpponentWinsThenOpponentLosses',
       exactRankingTiePolicy: 'organizerOrUnconflictedRefereeWithPublicReason',
       stages: [{ stageId: expect.stringMatching(/^stage-/u), format: 'roundRobin',
-        matchFormat: { type: 'fixedGames', value: 1 }, swissRounds: null, swissMatchPoints: null,
+        matchFormat: { type: 'fixedGames', value: 1 }, swissRounds: null, swissPolicy: null,
         qualification: { type: 'allEligibleTeams' } }],
     },
   })

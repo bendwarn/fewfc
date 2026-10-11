@@ -25,7 +25,7 @@ fn announcement_plan() -> CompetitionAnnouncementPlan {
                 out_of_turn_choice_time_ms: Some(30_000),
             },
             swiss_rounds: None,
-            swiss_match_points: None,
+            swiss_policy: None,
             qualification: AnnouncedStageQualification::AllEligibleTeams,
         }],
     }

@@ -112,9 +112,13 @@
               <div><dt>主時間</dt><dd>{{ announcedMainTime(stage.clockConfig.mainTimeMs) }}</dd></div>
               <div><dt>讀秒</dt><dd>{{ announcedByoyomi(stage.clockConfig.actionTimeMs) }}（行動與回合外選擇共用）</dd></div>
               <div v-if="stage.format === 'roundRobin'"><dt>賽事積分</dt><dd>勝 3、和 1、負 0；輪空 0</dd></div>
-              <template v-if="stage.format === 'swiss' && stage.swissMatchPoints">
+              <template v-if="stage.format === 'swiss' && stage.swissPolicy">
                 <div><dt>瑞士輪數</dt><dd>{{ stage.swissRounds }}</dd></div>
-                <div><dt>瑞士積分（勝／和／負／輪空）</dt><dd>{{ stage.swissMatchPoints.win }}／{{ stage.swissMatchPoints.draw }}／{{ stage.swissMatchPoints.loss }}／{{ stage.swissMatchPoints.bye }}</dd></div>
+                <div><dt>瑞士積分（勝／和／負／輪空）</dt><dd>{{ stage.swissPolicy.matchPoints.win }}／{{ stage.swissPolicy.matchPoints.draw }}／{{ stage.swissPolicy.matchPoints.loss }}／{{ stage.swissPolicy.matchPoints.bye }}</dd></div>
+                <div><dt>對手勝率和局折算</dt><dd>{{ stage.swissPolicy.drawCredit.numerator }}／{{ stage.swissPolicy.drawCredit.denominator }}</dd></div>
+                <div><dt>對手勝率上下限</dt><dd>{{ announcedPercent(stage.swissPolicy.opponentWinRateFloorPercent) }}／{{ announcedPercent(stage.swissPolicy.opponentWinRateCapPercent) }}</dd></div>
+                <div><dt>計算對手勝率時排除輪空</dt><dd>{{ stage.swissPolicy.excludeByesFromOpponentWinRate ? '是' : '否' }}</dd></div>
+                <div><dt>瑞士同分比較</dt><dd>{{ announcedSwissTieBreakers(stage.swissPolicy.tieBreakers) }}</dd></div>
               </template>
               <div v-if="stage.qualification.type === 'allEligibleTeams'"><dt>參賽資格</dt><dd>截止時所有符合公告條件的隊伍</dd></div>
               <div v-else class="qualification-fact"><dt>晉級來源與目的種子</dt><dd>
@@ -389,6 +393,16 @@ function announcedByoyomi(milliseconds: number | null): string {
   if (milliseconds === 60_000) return '1 分鐘'
   if (milliseconds === 180_000) return '3 分鐘'
   return '公告資料無效'
+}
+function announcedPercent(value: number | null): string {
+  return value === null ? '不設定' : `${value}%`
+}
+function announcedSwissTieBreakers(values: string[]): string {
+  const labels: Record<string, string> = {
+    matchPoints: '交手積分', headToHeadMatchPoints: '彼此交手積分', opponentWinRate: '對手勝率',
+    netGameWins: '淨勝局', seedOrder: '種子順序',
+  }
+  return values.length ? values.map(value => labels[value] ?? '公告資料無效').join(' → ') : '不設定'
 }
 function announcedSourceStage(stageId: string): string {
   const index = registration.value?.plan.stages.findIndex(stage => stage.stageId === stageId) ?? -1

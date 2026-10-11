@@ -8,7 +8,14 @@ import {
 function firstStage(overrides: Partial<CompetitionAnnouncementStageDraft> = {}): CompetitionAnnouncementStageDraft {
   return {
     stageId: 'stage-1', format: 'roundRobin', matchGames: '3', mainMinutes: '0', byoyomiSeconds: '30',
-    swissRounds: '3', swissMatchPoints: { win: '3', draw: '1', loss: '0', bye: '3' }, sourceSlots: [],
+    swissRounds: '3', swissMatchPoints: { win: '3', draw: '1', loss: '0', bye: '3' },
+    swissPolicy: {
+      drawCredit: { numerator: '1', denominator: '2' },
+      opponentWinRateFloorPercent: { mode: 'none', value: '' },
+      opponentWinRateCapPercent: { mode: 'none', value: '' },
+      excludeByesFromOpponentWinRate: 'no', tieMode: 'none', tieBreakers: [],
+    },
+    sourceSlots: [],
     ...overrides,
   }
 }
@@ -23,12 +30,12 @@ test('builds one immutable announcement plan with minutes, fixed byoyomi options
     stages: [{
       stageId: 'stage-1', format: 'roundRobin', matchFormat: { type: 'fixedGames', value: 3 },
       clockConfig: { mainTimeMs: 0, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
-      swissRounds: null, swissMatchPoints: null, qualification: { type: 'allEligibleTeams' },
+      swissRounds: null, swissPolicy: null, qualification: { type: 'allEligibleTeams' },
     }],
   })
 })
 
-test('records cross-stage source slots and swiss match points before registration closes', () => {
+test('records cross-stage source slots and complete swiss policy before registration closes', () => {
   const plan = buildCompetitionAnnouncementPlan([
     firstStage({ format: 'swiss', swissRounds: '5', swissMatchPoints: { win: '4', draw: '2', loss: '1', bye: '3' } }),
     firstStage({ stageId: 'stage-2', format: 'singleElimination', matchGames: '2', sourceSlots: [
@@ -37,7 +44,7 @@ test('records cross-stage source slots and swiss match points before registratio
     ] }),
   ])
   expect(plan.stages[0]).toMatchObject({
-    format: 'swiss', swissRounds: 5, swissMatchPoints: { win: 4, draw: 2, loss: 1, bye: 3 },
+    format: 'swiss', swissRounds: 5, swissPolicy: { matchPoints: { win: 4, draw: 2, loss: 1, bye: 3 } },
   })
   expect(plan.stages[1]).toMatchObject({
     format: 'singleElimination', matchFormat: { type: 'firstToWins', value: 2 },
