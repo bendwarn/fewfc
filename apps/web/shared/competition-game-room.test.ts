@@ -320,6 +320,26 @@ test('clock transition ends the old action window before switching player and te
   ])
 })
 
+test('clock transition ends the final player window when the game finishes', () => {
+  const finished = publicState({
+    status: 'Finished', currentPlayer: null, phase: 'TurnEnd', turnNumber: 1, pendingChoice: null,
+  })
+  const action = publicState({ status: 'InProgress', currentPlayer: 'player-a', phase: 'Action', turnNumber: 1 })
+  const outOfTurnChoice = publicState({
+    status: 'InProgress', currentPlayer: 'player-a', phase: 'Action', turnNumber: 1,
+    pendingChoice: {
+      visibility: 'visible', choiceId: 42, player: 'player-b', reason: { type: 'earthRendingCard' },
+      choice: { type: 'card', cards: [], minimum: 1, maximum: 1, canDecline: false },
+    },
+  } as unknown as Partial<PublicGameState>)
+
+  for (const previous of [action, outOfTurnChoice]) {
+    expect(competitionClockOperationsForTransition(binding(), previous, finished)).toEqual([
+      { type: 'clockEndWindow', matchId: 'match-1' },
+    ])
+  }
+})
+
 test('out-of-turn choice uses verified player, team, and visible choice ID on entry and exit', () => {
   const active = publicState({ status: 'InProgress', currentPlayer: 'player-a', turnNumber: 1 })
   const waiting = publicState({

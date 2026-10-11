@@ -1,6 +1,6 @@
 # 競賽功能：目前審核關卡
 
-2026-10-11 本輪以 HEAD `653a516` 審核 03 公告、05 初始種子、07 權威時計與 17 缺席。03 公告與 05 初始種子限定 PASS。各功能依指定案例與兩軸審核逐一提交；產品政策以[設計](competitive-play-design.md)為準。本文件只管理現況、互斥範圍、驗證與相依放行，不複述玩法規則。
+2026-10-11 本輪以 HEAD `653a516` 審核 03 公告、05 初始種子、07 權威時計與 17 缺席。03 公告、05 初始種子及 07 權威時計限定 PASS。各功能依指定案例與兩軸審核逐一提交；產品政策以[設計](competitive-play-design.md)為準。本文件只管理現況、互斥範圍、驗證與相依放行，不複述玩法規則。
 
 ## 執行邊界與完成條件
 
@@ -16,6 +16,7 @@
 
 | 切片／負責者 | 狀態與唯一寫入範圍 | 下一關卡／證據 |
 | --- | --- | --- |
+| 07 權威隊伍時計／本輪獨立主審 | 限定 PASS：終局先關玩家視窗，再依 FIFO 送終局；重試、restart、strict ACK 及固定時計 ID 斷言均通過。Standards 硬性 0、Spec 0；GameRoom 完整 125 pass／0 fail，ClockDisplay 共用 Nuxt 驗證通過 | [本輪報告／兩軸／原始 log](../../scratch/four-feature-review/report.md)。原 FIFO 測試 P2 已閉合，07 六項驗收已勾選；既有同隊／回合外、有限額度、零不限時路由保留。18 真超時裁決與 22／28 集中界線保留。 |
 | 05 自動抽籤並建立首輪／本輪獨立主審 | 限定 PASS：固定亂數的兩隊／奇數隊抽籤、正常輪空、持久建立意圖、相同收據及 alarm 重試均有正向案例；父頁與 notReady 自動更新案例通過。Standards 硬性 0、Spec 0 | [本輪報告／兩軸／原始 log](../../scratch/four-feature-review/report.md)。CompetitionRoom 完整 349 pass／0 fail；沿公告與凍結名單建立同一首輪，不要求 F 後確認；05 四項驗收已勾選。完整 Swiss 政策擴充已有來源使用者授權；指定種子來源僅在支援時適用，不外推 22／28。 |
 | 04 報名截止自動凍結／來源對話最後修正→主審末審 | 限定 PASS：alarm P2 與最後測試預期 P2 均閉合；Standards 硬性 0／heuristic 0，Spec 0。本輪作者 E6a2 15 pass／0 fail、288 assertions，1v1／2v2 正式交付與重放全綠。僅測試檔改為從已提交 checkpoint 取預期版號，其他來源未改。沿用同版本 Nuxt／pure／獨立故障證據，驗證集合跨輪合計 258 pass／6 skip／0 fail，本輪新執行只有 15 例 | [最後修正報告／固定版本／原始 log](../../scratch/tour-attempt/ticket04-final-review/report.md)、[alarm 修復與原紅例](../../scratch/tour-attempt/ticket03-04-review/report.md)、[前次失敗](../../scratch/tour-attempt/ticket04-review/report.md)。04 四項驗收已勾選；放行 F 自動凍結、遲交接受點、排除理由、固定參賽快照交付與正常重試。05 的 03＋04 前置已通過，可依唯一寫入權開始其實作；legacy initial 障礙仍既存 HOLD，不外推 22 真 Worker／Brave／全流程。 |
 | 03 賽前完整公告／本輪獨立主審 | 限定 PASS：完整 SwissStandingPolicy 公告契約、Rust／TypeScript 驗證與玩家可讀政策已核對；Standards 硬性 0、Spec 0。共用純模組／API 230 pass、6 skip、Nuxt 八檔 107 pass；Rust DTO 與公告案例通過 | [本輪報告／兩軸／原始 log](../../scratch/four-feature-review/report.md)。本輪按 HEAD `653a516` 的指定功能差異提交；全量 Cargo 的既有單敗決賽 API oracle 與型別檢查的既有測試錯誤仍保留，不外推 22／28。 |

@@ -3639,14 +3639,18 @@ test('terminal outbox retries the same request after RPC failure and clears itse
   rulesEngineMode = 'finished'
   const storage = new MemoryStorage()
   const calls: Record<string, unknown>[] = []
+  const clockCalls: Record<string, unknown>[] = []
+  const deliveryOrder: string[] = []
   let remoteReceipt: ReturnType<typeof terminalSuccess> | undefined
   let loseFirstResponse = true
   const namespace = {
     idFromName: (name: string) => name as unknown as DurableObjectId,
     get: () => ({
+      executeMatch: clockEndWindowReceiver(clockCalls, deliveryOrder),
       ingestGameTerminal: async (request: unknown) => {
         const typedRequest = request as Record<string, unknown>
         calls.push(structuredClone(typedRequest))
+        deliveryOrder.push('terminal')
         if (remoteReceipt) {
           return {
             ...remoteReceipt,
@@ -3687,12 +3691,18 @@ test('terminal outbox retries the same request after RPC failure and clears itse
   expect((await storage.get<Record<string, unknown>>(outboxKey))?.entries).toHaveLength(0)
   expect(storage.alarm).toBeNull()
   expect(calls).toHaveLength(2)
+  expect(clockCalls).toHaveLength(1)
+  expect(deliveryOrder).toEqual(['clockEndWindow', 'terminal', 'terminal'])
+  expect(clockCalls[0]).toMatchObject({
+    expectedMatchRevision: request.binding.expectedMatchRevision + 1,
+    operation: { type: 'clockEndWindow', matchId: request.binding.matchId },
+  })
   expect({ ...calls[0], trustedTimeMs: 0 }).toEqual({ ...calls[1], trustedTimeMs: 0 })
   expect(calls[0]).toMatchObject({
     competitionId: request.binding.competitionId,
     matchId: request.binding.matchId,
     callerUserId: request.binding.organizerUserId,
-    expectedMatchRevision: request.binding.expectedMatchRevision + 1,
+    expectedMatchRevision: request.binding.expectedMatchRevision + 2,
     firstPlayer: 'team-a',
   })
   expect(calls[0]).not.toHaveProperty('ruling')
@@ -3713,16 +3723,20 @@ test('successful low-latency terminal delivery drains after serialized command r
   rulesEngineMode = 'finished'
   const storage = new MemoryStorage()
   const calls: Record<string, unknown>[] = []
+  const clockCalls: Record<string, unknown>[] = []
+  const deliveryOrder: string[] = []
   const namespace = {
     idFromName: (name: string) => name as unknown as DurableObjectId,
     get: () => ({
+      executeMatch: clockEndWindowReceiver(clockCalls, deliveryOrder),
       ingestGameTerminal: async (request: unknown) => {
         calls.push(structuredClone(request as Record<string, unknown>))
+        deliveryOrder.push('terminal')
         return terminalSuccess(request as Record<string, unknown>)
       },
     }),
   }
-  const { room, pendingWaits } = await startTerminalRoom(storage, namespace)
+  const { room, request, pendingWaits } = await startTerminalRoom(storage, namespace)
   await drainWaitUntil(pendingWaits)
   const record = await storage.get<Record<string, unknown>>('gameRecord')
   await post(room, {
@@ -3736,7 +3750,16 @@ test('successful low-latency terminal delivery drains after serialized command r
   await drainWaitUntil(pendingWaits)
 
   expect(calls).toHaveLength(1)
-  expect((await storage.get<Record<string, unknown>>('competitionDeliveryQueue'))?.entries).toHaveLength(0)
+  expect(clockCalls).toHaveLength(1)
+  expect(deliveryOrder).toEqual(['clockEndWindow', 'terminal'])
+  expect(clockCalls[0]).toMatchObject({
+    expectedMatchRevision: request.binding.expectedMatchRevision + 1,
+    operation: { type: 'clockEndWindow', matchId: request.binding.matchId },
+  })
+  expect(calls[0]).toMatchObject({ expectedMatchRevision: request.binding.expectedMatchRevision + 2 })
+  expect(await storage.get<Record<string, unknown>>('competitionDeliveryQueue')).toMatchObject({
+    entries: [], revisionCursor: request.binding.expectedMatchRevision + 3,
+  })
   expect(storage.alarm).toBeNull()
   rulesEngineMode = 'normal'
 })
@@ -3745,12 +3768,16 @@ test('a restarted GameRoom instance delivers the persisted outbox and clears its
   rulesEngineMode = 'finished'
   const storage = new MemoryStorage()
   const calls: Record<string, unknown>[] = []
+  const clockCalls: Record<string, unknown>[] = []
+  const deliveryOrder: string[] = []
   let firstAttempt = true
   const namespace = {
     idFromName: (name: string) => name as unknown as DurableObjectId,
     get: () => ({
+      executeMatch: clockEndWindowReceiver(clockCalls, deliveryOrder),
       ingestGameTerminal: async (request: unknown) => {
         calls.push(structuredClone(request as Record<string, unknown>))
+        deliveryOrder.push('terminal')
         if (firstAttempt) {
           firstAttempt = false
           throw new Error('simulated crash before response')
@@ -3759,7 +3786,7 @@ test('a restarted GameRoom instance delivers the persisted outbox and clears its
       },
     }),
   }
-  const { room, pendingWaits } = await startTerminalRoom(storage, namespace)
+  const { room, request, pendingWaits } = await startTerminalRoom(storage, namespace)
   const record = await storage.get<Record<string, unknown>>('gameRecord')
   await post(room, {
     type: 'submitCommand',
@@ -3784,6 +3811,13 @@ test('a restarted GameRoom instance delivers the persisted outbox and clears its
   expect((await storage.get<Record<string, unknown>>(outboxKey))?.entries).toHaveLength(0)
   expect(storage.alarm).toBeNull()
   expect(calls).toHaveLength(2)
+  expect(clockCalls).toHaveLength(1)
+  expect(deliveryOrder).toEqual(['clockEndWindow', 'terminal', 'terminal'])
+  expect(clockCalls[0]).toMatchObject({ operation: { type: 'clockEndWindow' } })
+  expect(calls[0]?.expectedMatchRevision).toBe(request.binding.expectedMatchRevision + 2)
+  expect(await storage.get<Record<string, unknown>>(outboxKey)).toMatchObject({
+    revisionCursor: request.binding.expectedMatchRevision + 3,
+  })
   expect({ ...calls[0], trustedTimeMs: 0 }).toEqual({ ...calls[1], trustedTimeMs: 0 })
   rulesEngineMode = 'normal'
 })
@@ -3821,18 +3855,22 @@ test('strict terminal ACK validation retains the outbox and reschedules every ma
     rulesEngineMode = 'finished'
     const storage = new MemoryStorage()
     const calls: Record<string, unknown>[] = []
+    const clockCalls: Record<string, unknown>[] = []
+    const deliveryOrder: string[] = []
     const namespace = {
       idFromName: (name: string) => name as unknown as DurableObjectId,
       get: () => ({
+        executeMatch: clockEndWindowReceiver(clockCalls, deliveryOrder),
         ingestGameTerminal: async (request: unknown) => {
           const typedRequest = request as Record<string, unknown>
           calls.push(structuredClone(typedRequest))
+          deliveryOrder.push('terminal')
           const success = terminalSuccess(typedRequest)
           return { ...success, value: mutate(success.value) }
         },
       }),
     }
-    const { room, pendingWaits } = await startTerminalRoom(storage, namespace)
+    const { room, request, pendingWaits } = await startTerminalRoom(storage, namespace)
     await drainWaitUntil(pendingWaits)
     const record = await storage.get<Record<string, unknown>>('gameRecord')
     await post(room, {
@@ -3847,7 +3885,18 @@ test('strict terminal ACK validation retains the outbox and reschedules every ma
     const outboxKey = 'competitionDeliveryQueue'
     expect(await storage.get(outboxKey), label).toBeDefined()
     expect(storage.alarm, label).not.toBeNull()
+    expect(clockCalls, label).toHaveLength(1)
+    expect(deliveryOrder, label).toEqual(['clockEndWindow', 'terminal'])
+    expect(clockCalls[0], label).toMatchObject({
+      expectedMatchRevision: request.binding.expectedMatchRevision + 1,
+      operation: { type: 'clockEndWindow' },
+    })
     expect(calls, label).toHaveLength(1)
+    expect(calls[0], label).toMatchObject({
+      expectedMatchRevision: request.binding.expectedMatchRevision + 2,
+    })
+    expect(await storage.get<Record<string, unknown>>(outboxKey), label)
+      .toMatchObject({ revisionCursor: request.binding.expectedMatchRevision + 2 })
   }
   rulesEngineMode = 'normal'
 })
@@ -3926,6 +3975,23 @@ function clockSuccess(request: Record<string, unknown>, timeoutEvidence: unknown
       matchProjection: null,
       clockProjection: null,
     },
+  }
+}
+
+function clockEndWindowSuccess(request: Record<string, unknown>) {
+  const success = clockSuccess(request)
+  return { ...success, value: { ...success.value, nextClockDeadlineMs: null } }
+}
+
+function clockEndWindowReceiver(
+  clockCalls: Record<string, unknown>[],
+  deliveryOrder: string[],
+) {
+  return async (request: unknown) => {
+    const typedRequest = request as Record<string, unknown>
+    clockCalls.push(structuredClone(typedRequest))
+    deliveryOrder.push('clockEndWindow')
+    return clockEndWindowSuccess(typedRequest)
   }
 }
 
@@ -4687,6 +4753,10 @@ async function initialFifoFixture(
     async executeMatch(request: unknown) {
       clockCalls.push(structuredClone(request))
       if (!initialFifoRecord(request)) throw new Error('invalid clock fixture request')
+      const typedRequest = request as Record<string, unknown>
+      if ((typedRequest.operation as Record<string, unknown>).type === 'clockEndWindow') {
+        return clockEndWindowSuccess(typedRequest)
+      }
       return terminalSuccess(request)
     },
     async ingestGameTerminal(request: unknown) {
@@ -4891,16 +4961,38 @@ test('round-release initial FIFO keeps later clock and terminal behind its ACK t
       })).status).toBe(200)
       expect(fixture.clockCalls).toEqual([])
       expect(fixture.terminalCalls).toEqual([])
-      const queue = await fixture.storage.get<{ entries: { kind: string }[] }>('competitionDeliveryQueue')
+      const queue = await fixture.storage.get<{
+        entries: { kind: string; commandId?: string; operation?: unknown }[]
+      }>('competitionDeliveryQueue')
       expect(queue?.entries.map(entry => entry.kind)).toEqual([
-        'competitionInitialGameStarted', 'competitionClockMutation', 'competitionGameTerminal',
+        'competitionInitialGameStarted', 'competitionClockMutation', 'competitionClockMutation',
+        'competitionGameTerminal',
       ])
+      expect(queue?.entries.slice(1, 3).map(entry => entry.operation)).toEqual([
+        { type: 'clockEndWindow', matchId: fixture.request.binding.matchId },
+        { type: 'clockEndWindow', matchId: fixture.request.binding.matchId },
+      ])
+      expect(queue?.entries[1]?.commandId).toBe(queued.commandId)
+      expect(queue?.entries[2]?.commandId).toMatch(/^competition-clock:[0-9a-f]{64}$/)
+      expect(queue?.entries[2]?.commandId).not.toBe(queue?.entries[1]?.commandId)
     } finally { unblock(); expect(await delivery).toEqual({ completed: true }) }
     await drainWaitUntil(fixture.pendingWaits)
     expect(fixture.initialCalls).toHaveLength(1)
-    expect(fixture.clockCalls).toHaveLength(1)
+    expect(fixture.clockCalls).toHaveLength(2)
     expect(fixture.terminalCalls).toHaveLength(1)
-    expect(await fixture.storage.get('competitionDeliveryQueue')).toMatchObject({ entries: [], revisionCursor: 4 })
+    const clockCalls = fixture.clockCalls as Record<string, unknown>[]
+    expect(clockCalls.map(call => call.expectedMatchRevision)).toEqual([
+      fixture.request.binding.expectedMatchRevision + 1,
+      fixture.request.binding.expectedMatchRevision + 2,
+    ])
+    expect(clockCalls.map(call => (call.operation as Record<string, unknown>).type)).toEqual([
+      'clockEndWindow', 'clockEndWindow',
+    ])
+    expect((fixture.terminalCalls[0] as Record<string, unknown>)?.expectedMatchRevision)
+      .toBe(fixture.request.binding.expectedMatchRevision + 3)
+    expect(await fixture.storage.get('competitionDeliveryQueue')).toMatchObject({
+      entries: [], revisionCursor: fixture.request.binding.expectedMatchRevision + 4,
+    })
   })
 })
 

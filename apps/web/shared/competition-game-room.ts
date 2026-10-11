@@ -24,9 +24,13 @@ export function competitionClockOperationsForTransition(
   previous: PublicGameState,
   next: PublicGameState,
 ): CompetitionClockOperation[] {
-  if (next.status === 'Finished') return []
-
   const operations: CompetitionClockOperation[] = []
+  if (next.status === 'Finished') {
+    // 終局也要先結束最後一段玩家視窗，讓權威時計計入終局命令前的耗時。
+    operations.push({ type: 'clockEndWindow', matchId: binding.matchId })
+    return operations
+  }
+
   const previousRemaining = previous.initialPouchSelection?.remainingPlayers ?? []
   const nextRemaining = next.initialPouchSelection?.remainingPlayers ?? []
   const teamIds = [...new Set(binding.players.map(player => player.team))]
