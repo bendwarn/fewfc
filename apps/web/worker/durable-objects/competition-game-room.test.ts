@@ -5,7 +5,10 @@ import type {
   CompetitionGameClockControlEligibilityRequest,
   CompetitionGameCreateRequest,
 } from '../../shared/competition-game-room'
-import { competitionGameBindingRefForRequest } from '../../shared/competition-game-room'
+import {
+  competitionGameBindingRefForRequest,
+  competitionGameNoShowCommandId,
+} from '../../shared/competition-game-room'
 import {
   isCompetitionRoomInitialGameStartedRequest,
   type CompetitionRoomInitialGameStartedRequest,
@@ -456,7 +459,7 @@ function binding(overrides: Partial<CompetitionGameBinding> = {}): CompetitionGa
     roundRef: {
       competitionId: 'competition-1', stageId: 'stage-1', roundNumber: 1, roundGenerationId: 'generation-1',
     },
-    roundStartMs: 1_700_000_000_000,
+    roundStartMs: Date.now() + 600_000,
     competitionId: 'competition-1',
     matchId: 'match-1',
     gameNumber: 1,
@@ -669,6 +672,450 @@ test('round-release child a released unready T alarm does not busyloop or claim 
   } finally { Date.now = realNow }
 })
 
+test('round-release child records one pre-game no-show decision from the fixed ready snapshot', async () => {
+  const fixture = await roundReleaseFixture()
+  expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+  await connectCompetitionMember(fixture.room, fixture.sockets, 'user-a')
+  expect(await fixture.room.setCompetitionReady({ actorUserId: 'user-a', ready: true }))
+    .toEqual({ ok: true, ready: true })
+  const request = {
+    bindingRef: fixture.release.bindingRef,
+    commandId: competitionGameNoShowCommandId(fixture.release.bindingRef),
+    deadlineMs: fixture.request.binding.roundStartMs,
+  }
+  const realNow = Date.now
+  try {
+    Date.now = () => request.deadlineMs
+    const decision = await fixture.room.adjudicateCompetitionNoShow(request)
+    expect(decision).toEqual({ type: 'noShow', absentTeams: ['team-b'], sampledAtMs: request.deadlineMs })
+    const snapshot = structuredClone(fixture.storage.values)
+    const writes = fixture.storage.writeCount
+    expect(await gameRoom(fixture.storage).room.adjudicateCompetitionNoShow(request)).toEqual(decision)
+    expect(fixture.storage.values).toEqual(snapshot)
+    expect(fixture.storage.writeCount).toBe(writes)
+    expect(fixture.storage.values.get('competitionGameAdmission')).toMatchObject({ status: 'noShow' })
+    expect(await fixture.room.setCompetitionReady({ actorUserId: 'user-b', ready: true }))
+      .toEqual({ ok: false, code: 'checkInDeadlinePassed' })
+    roundReleaseNoStart(fixture.storage)
+  } finally { Date.now = realNow }
+})
+
+test('round-release child treats a team as absent when any fixed member missed check-in', async () => {
+  const players = [
+    { userId: 'user-a1', player: 'player-a1', team: 'team-a' },
+    { userId: 'user-a2', player: 'player-a2', team: 'team-a' },
+    { userId: 'user-b1', player: 'player-b1', team: 'team-b' },
+    { userId: 'user-b2', player: 'player-b2', team: 'team-b' },
+  ]
+  const fixture = await roundReleaseFixture({
+    players,
+    turnOrder: ['player-a1', 'player-b1', 'player-a2', 'player-b2'],
+    firstPlayer: 'player-a1',
+    deckSnapshot: players.map(player => ({ player: player.player, name: `${player.player} deck`, cards: ['card'] })),
+  })
+  expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+  for (const userId of ['user-a1', 'user-a2', 'user-b1']) {
+    await connectCompetitionMember(fixture.room, fixture.sockets, userId)
+    expect(await fixture.room.setCompetitionReady({ actorUserId: userId, ready: true }))
+      .toEqual({ ok: true, ready: true })
+  }
+  const realNow = Date.now
+  try {
+    Date.now = () => fixture.request.binding.roundStartMs
+    expect(await fixture.room.adjudicateCompetitionNoShow({
+      bindingRef: fixture.release.bindingRef,
+      commandId: competitionGameNoShowCommandId(fixture.release.bindingRef),
+      deadlineMs: fixture.request.binding.roundStartMs,
+    })).toEqual({ type: 'noShow', absentTeams: ['team-b'], sampledAtMs: fixture.request.binding.roundStartMs })
+    roundReleaseNoStart(fixture.storage)
+  } finally { Date.now = realNow }
+})
+
+test('round-release child records two absent teams as a double no-show without starting a game', async () => {
+  const fixture = await roundReleaseFixture()
+  expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+  const realNow = Date.now
+  try {
+    Date.now = () => fixture.request.binding.roundStartMs
+    expect(await fixture.room.adjudicateCompetitionNoShow({
+      bindingRef: fixture.release.bindingRef,
+      commandId: competitionGameNoShowCommandId(fixture.release.bindingRef),
+      deadlineMs: fixture.request.binding.roundStartMs,
+    })).toEqual({ type: 'noShow', absentTeams: ['team-a', 'team-b'], sampledAtMs: fixture.request.binding.roundStartMs })
+    roundReleaseNoStart(fixture.storage)
+  } finally { Date.now = realNow }
+})
+
+test('round-release child preserves an earlier real start when a member disconnects after T', async () => {
+  const fixture = await roundReleaseFixture()
+  await roundReleaseReady(fixture)
+  const realNow = Date.now
+  try {
+    Date.now = () => fixture.request.binding.roundStartMs - 1
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+    await drainWaitUntil(fixture.pendingWaits)
+
+    const startedAtMs = fixture.request.binding.roundStartMs - 1
+    expect(storedRoomEvents(fixture.storage).filter(event => event.type === 'GameStarted')).toHaveLength(1)
+    expect(fixture.storage.values.get('competitionGameAdmission')).toMatchObject({
+      status: 'started', start: { startedAtMs },
+    })
+
+    Date.now = () => fixture.request.binding.roundStartMs + 1
+    const disconnected = fixture.sockets.find(socket => (
+      (socket.deserializeAttachment() as { userId?: string } | null)?.userId === 'user-b'
+    ))
+    if (!disconnected) throw new Error('user-b socket is missing')
+    disconnected.close()
+    await fixture.room.webSocketClose(disconnected)
+
+    expect(fixture.storage.values.has('competitionNoShowDecision')).toBe(false)
+    expect(await fixture.room.adjudicateCompetitionNoShow({
+      bindingRef: fixture.release.bindingRef,
+      commandId: competitionGameNoShowCommandId(fixture.release.bindingRef),
+      deadlineMs: fixture.request.binding.roundStartMs,
+    })).toEqual({ type: 'started', startedAtMs })
+    expect(storedRoomEvents(fixture.storage).filter(event => event.type === 'GameStarted')).toHaveLength(1)
+    expect(fixture.storage.values.has('gameRecord')).toBe(true)
+  } finally { Date.now = realNow }
+})
+
+test('round-release child samples a disconnect committed at T before fixing the no-show decision', async () => {
+  const fixture = await roundReleaseFixture()
+  await roundReleaseReady(fixture)
+  const realNow = Date.now
+  let unblock = () => {}
+  let entered = () => {}
+  const reached = new Promise<void>(resolve => { entered = resolve })
+  rulesEngineStartGate = new Promise<void>(resolve => { unblock = resolve })
+  rulesEngineStartGateEntered = entered
+  try {
+    Date.now = () => fixture.request.binding.roundStartMs - 1
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+    await reached
+
+    Date.now = () => fixture.request.binding.roundStartMs
+    const disconnected = fixture.sockets.find(socket => (
+      (socket.deserializeAttachment() as { userId?: string } | null)?.userId === 'user-b'
+    ))
+    if (!disconnected) throw new Error('user-b socket is missing')
+    disconnected.close()
+    await fixture.room.webSocketClose(disconnected)
+
+    expect(fixture.storage.values.get('competitionNoShowDecision')).toMatchObject({
+      decision: { type: 'noShow', absentTeams: ['team-b'], sampledAtMs: fixture.request.binding.roundStartMs },
+    })
+    expect(fixture.storage.values.get('competitionGameAdmission')).toMatchObject({ status: 'noShow' })
+    unblock()
+    await drainWaitUntil(fixture.pendingWaits)
+    roundReleaseNoStart(fixture.storage)
+  } finally {
+    unblock()
+    rulesEngineStartGate = null
+    rulesEngineStartGateEntered = null
+    Date.now = realNow
+  }
+})
+
+test('round-release child freezes the T-ready sample before a delayed post-T disconnect', async () => {
+  const fixture = await roundReleaseFixture()
+  await roundReleaseReady(fixture)
+  const realNow = Date.now
+  try {
+    const deadlineMs = fixture.request.binding.roundStartMs
+    Date.now = () => deadlineMs - 500
+    rulesEngineStartFailureCount = 1
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+    await drainWaitUntil(fixture.pendingWaits)
+    roundReleaseNoStart(fixture.storage)
+    expect(fixture.storage.values.get('competitionGameAdmission')).toMatchObject({
+      status: 'released', startRetryAtMs: deadlineMs + 500,
+    })
+    expect(fixture.storage.alarm).toBe(deadlineMs)
+    expect(fixture.storage.values.has('competitionNoShowDecision')).toBe(false)
+
+    Date.now = () => deadlineMs
+    expect((fixture.storage.values.get('metadata') as GameRoomMetadata).members
+      .every(member => member.connected && member.ready)).toBe(true)
+    Date.now = () => deadlineMs + 100
+    const disconnected = fixture.sockets.find(socket => (
+      (socket.deserializeAttachment() as { userId?: string } | null)?.userId === 'user-b'
+    ))
+    if (!disconnected) throw new Error('user-b socket is missing')
+    disconnected.close()
+    await fixture.room.webSocketClose(disconnected)
+
+    expect(fixture.storage.values.get('competitionNoShowDecision')).toMatchObject({
+      decision: { type: 'ready', sampledAtMs: deadlineMs + 100 },
+    })
+    expect(fixture.storage.values.get('competitionGameAdmission')).toMatchObject({ status: 'released' })
+    expect(fixture.storage.alarm).toBeNull()
+    const metadata = fixture.storage.values.get('metadata') as GameRoomMetadata
+    expect(metadata.status).toBe('Waiting')
+    expect(metadata.members.find(member => member.userId === 'user-b'))
+      .toMatchObject({ connected: false, ready: false })
+    roundReleaseNoStart(fixture.storage)
+  } finally {
+    rulesEngineStartFailureCount = 0
+    Date.now = realNow
+  }
+})
+
+test('round-release child requires current ready members after T and starts after reconnection and re-ready', async () => {
+  const fixture = await roundReleaseFixture()
+  await roundReleaseReady(fixture)
+  const realNow = Date.now
+  let unblock = () => {}
+  let entered = () => {}
+  const reached = new Promise<void>(resolve => { entered = resolve })
+  rulesEngineStartGate = new Promise<void>(resolve => { unblock = resolve })
+  rulesEngineStartGateEntered = entered
+  try {
+    Date.now = () => fixture.request.binding.roundStartMs - 1
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+    await reached
+
+    const deadlineMs = fixture.request.binding.roundStartMs
+    Date.now = () => deadlineMs
+    expect(await fixture.room.adjudicateCompetitionNoShow({
+      bindingRef: fixture.release.bindingRef,
+      commandId: competitionGameNoShowCommandId(fixture.release.bindingRef),
+      deadlineMs,
+    })).toEqual({ type: 'ready', sampledAtMs: deadlineMs })
+
+    // T 的 ready 判定不能取代目前的連線與準備狀態。
+    const disconnected = fixture.sockets.find(socket => (
+      (socket.deserializeAttachment() as { userId?: string } | null)?.userId === 'user-b'
+    ))
+    if (!disconnected) throw new Error('user-b socket is missing')
+    disconnected.close()
+    await fixture.room.webSocketClose(disconnected)
+    unblock()
+    await drainWaitUntil(fixture.pendingWaits)
+
+    expect(fixture.storage.values.get('competitionNoShowDecision')).toMatchObject({
+      decision: { type: 'ready', sampledAtMs: deadlineMs },
+    })
+    expect(fixture.storage.values.get('competitionGameAdmission')).toMatchObject({
+      status: 'released', startRetryAtMs: null,
+    })
+    expect(fixture.storage.alarm).toBeNull()
+    let metadata = fixture.storage.values.get('metadata') as GameRoomMetadata
+    expect(metadata.status).toBe('Waiting')
+    expect(metadata.members.find(member => member.userId === 'user-b'))
+      .toMatchObject({ connected: false, ready: false })
+    roundReleaseNoStart(fixture.storage)
+
+    Date.now = () => deadlineMs + 1_000
+    await connectCompetitionMember(fixture.room, fixture.sockets, 'user-b')
+    await drainWaitUntil(fixture.pendingWaits)
+    metadata = fixture.storage.values.get('metadata') as GameRoomMetadata
+    expect(metadata.status).toBe('Waiting')
+    expect(metadata.members.find(member => member.userId === 'user-b'))
+      .toMatchObject({ connected: true, ready: false })
+    roundReleaseNoStart(fixture.storage)
+
+    expect(await fixture.room.setCompetitionReady({ actorUserId: 'user-b', ready: true }))
+      .toEqual({ ok: true, ready: true })
+    rulesEngineStartFailureCount = 1
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(fixture.storage.values.get('competitionGameAdmission')).toMatchObject({
+      status: 'released', startRetryAtMs: deadlineMs + 2_000,
+    })
+    expect(fixture.storage.alarm).toBe(deadlineMs + 2_000)
+    expect((fixture.storage.values.get('metadata') as GameRoomMetadata).status).toBe('Waiting')
+    roundReleaseNoStart(fixture.storage)
+
+    Date.now = () => deadlineMs + 2_000
+    await fixture.room.alarm()
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(fixture.storage.values.get('competitionGameAdmission')).toMatchObject({ status: 'started' })
+    metadata = fixture.storage.values.get('metadata') as GameRoomMetadata
+    expect(metadata.status).toBe('Active')
+    expect(metadata.members.every(member => member.connected && member.ready)).toBe(true)
+    expect(storedRoomEvents(fixture.storage).filter(event => event.type === 'GameStarted')).toHaveLength(1)
+    expect(fixture.storage.values.has('gameRecord')).toBe(true)
+  } finally {
+    unblock()
+    rulesEngineStartFailureCount = 0
+    rulesEngineStartGate = null
+    rulesEngineStartGateEntered = null
+    Date.now = realNow
+  }
+})
+
+test('round-release child legacy ready endpoint cannot backfill check-in after T', async () => {
+  const realNow = Date.now
+  const deadlineMs = 2_000_000_050_000
+  try {
+    Date.now = () => deadlineMs - 2_000
+    const fixture = await roundReleaseFixture({ roundStartMs: deadlineMs })
+    await connectCompetitionMember(fixture.room, fixture.sockets, 'user-a')
+    await connectCompetitionMember(fixture.room, fixture.sockets, 'user-b')
+    expect(await fixture.room.setCompetitionReady({ actorUserId: 'user-a', ready: true }))
+      .toEqual({ ok: true, ready: true })
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(fixture.storage.alarm).toBe(deadlineMs)
+    roundReleaseNoStart(fixture.storage)
+
+    Date.now = () => deadlineMs
+    expect((fixture.storage.values.get('metadata') as GameRoomMetadata).members
+      .find(member => member.userId === 'user-b')).toMatchObject({ connected: true, ready: false })
+    Date.now = () => deadlineMs + 100
+    const response = await post(fixture.room, {
+      type: 'toggleReady',
+      actorUserId: 'user-b',
+      deckList: { name: 'B locked deck', cards: ['b-1', 'b-2'] },
+    })
+    await drainWaitUntil(fixture.pendingWaits)
+    await fixture.room.alarm()
+    await drainWaitUntil(fixture.pendingWaits)
+
+    expect(response.status).toBe(409)
+    expect(fixture.storage.values.get('competitionNoShowDecision')).toMatchObject({
+      decision: { type: 'noShow', absentTeams: ['team-b'], sampledAtMs: deadlineMs + 100 },
+    })
+    expect((fixture.storage.values.get('metadata') as GameRoomMetadata).members
+      .find(member => member.userId === 'user-b')).toMatchObject({ connected: true, ready: false })
+    roundReleaseNoStart(fixture.storage)
+  } finally { Date.now = realNow }
+})
+
+test('round-release child legacy ready endpoint permits explicit re-ready after a ready cutoff and reconnect', async () => {
+  const realNow = Date.now
+  const deadlineMs = 2_000_000_055_000
+  try {
+    Date.now = () => deadlineMs - 2_000
+    const fixture = await roundReleaseFixture({ roundStartMs: deadlineMs })
+    await roundReleaseReady(fixture)
+    rulesEngineStartFailureCount = 1
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(fixture.storage.values.get('competitionGameAdmission')).toMatchObject({
+      status: 'released', startRetryAtMs: deadlineMs - 1_000,
+    })
+    roundReleaseNoStart(fixture.storage)
+
+    Date.now = () => deadlineMs
+    const cutoff = await fixture.room.adjudicateCompetitionNoShow({
+      bindingRef: fixture.release.bindingRef,
+      commandId: competitionGameNoShowCommandId(fixture.release.bindingRef),
+      deadlineMs,
+    })
+    expect(cutoff).toEqual({ type: 'ready', sampledAtMs: deadlineMs })
+    const frozen = structuredClone(fixture.storage.values.get('competitionNoShowDecision'))
+
+    Date.now = () => deadlineMs + 100
+    const socketB = fixture.sockets.find(socket => (
+      (socket.deserializeAttachment() as { userId?: string } | null)?.userId === 'user-b'
+    ))
+    if (!socketB) throw new Error('user-b socket is missing')
+    socketB.close()
+    await fixture.room.webSocketClose(socketB)
+    expect((fixture.storage.values.get('metadata') as GameRoomMetadata).members
+      .find(member => member.userId === 'user-b')).toMatchObject({ connected: false, ready: false })
+
+    Date.now = () => deadlineMs + 200
+    await connectCompetitionMember(fixture.room, fixture.sockets, 'user-b')
+    const response = await post(fixture.room, {
+      type: 'toggleReady',
+      actorUserId: 'user-b',
+      deckList: { name: 'B locked deck', cards: ['b-1', 'b-2'] },
+    })
+    await drainWaitUntil(fixture.pendingWaits)
+
+    expect(response.status).toBe(200)
+    expect((fixture.storage.values.get('metadata') as GameRoomMetadata).status).toBe('Active')
+    expect(fixture.storage.values.get('competitionNoShowDecision')).toEqual(frozen)
+    expect(storedRoomEvents(fixture.storage).filter(event => event.type === 'GameStarted')).toHaveLength(1)
+    expect(fixture.storage.values.has('gameRecord')).toBe(true)
+  } finally {
+    rulesEngineStartFailureCount = 0
+    Date.now = realNow
+  }
+})
+
+test('round-release child disconnect records no-show and still revokes the disconnected member state', async () => {
+  const realNow = Date.now
+  const deadlineMs = 2_000_000_060_000
+  try {
+    Date.now = () => deadlineMs - 2_000
+    const fixture = await roundReleaseFixture({ roundStartMs: deadlineMs })
+    const socketA = await connectCompetitionMember(fixture.room, fixture.sockets, 'user-a')
+    const socketB = await connectCompetitionMember(fixture.room, fixture.sockets, 'user-b')
+    expect(await fixture.room.setCompetitionReady({ actorUserId: 'user-b', ready: true }))
+      .toEqual({ ok: true, ready: true })
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(fixture.storage.alarm).toBe(deadlineMs)
+    roundReleaseNoStart(fixture.storage)
+
+    Date.now = () => deadlineMs + 100
+    socketB.close()
+    let closeError: unknown
+    try { await fixture.room.webSocketClose(socketB) } catch (error) { closeError = error }
+
+    const metadata = fixture.storage.values.get('metadata') as GameRoomMetadata
+    expect(closeError).toBeUndefined()
+    expect(metadata.members.find(member => member.userId === 'user-b'))
+      .toMatchObject({ connected: false, ready: false })
+    expect(fixture.storage.values.get('competitionNoShowDecision')).toMatchObject({
+      decision: { type: 'noShow', absentTeams: ['team-a'], sampledAtMs: deadlineMs + 100 },
+    })
+    const wire = socketA.sent.at(-1)
+    if (!wire) throw new Error('still-connected member did not receive room state')
+    const roomState = JSON.parse(wire) as { type: string; data: { metadata: GameRoomMetadata } }
+    expect(roomState.type).toBe('roomState')
+    expect(roomState.data.metadata.members.find(member => member.userId === 'user-b'))
+      .toMatchObject({ connected: false, ready: false })
+    roundReleaseNoStart(fixture.storage)
+  } finally { Date.now = realNow }
+})
+
+test('round-release child disconnect after frozen no-show preserves decision and broadcasts revoked state', async () => {
+  const realNow = Date.now
+  const deadlineMs = 2_000_000_070_000
+  try {
+    Date.now = () => deadlineMs - 2_000
+    const fixture = await roundReleaseFixture({ roundStartMs: deadlineMs })
+    const socketA = await connectCompetitionMember(fixture.room, fixture.sockets, 'user-a')
+    const socketB = await connectCompetitionMember(fixture.room, fixture.sockets, 'user-b')
+    expect(await fixture.room.setCompetitionReady({ actorUserId: 'user-b', ready: true }))
+      .toEqual({ ok: true, ready: true })
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+
+    Date.now = () => deadlineMs
+    expect(await fixture.room.adjudicateCompetitionNoShow({
+      bindingRef: fixture.release.bindingRef,
+      commandId: competitionGameNoShowCommandId(fixture.release.bindingRef),
+      deadlineMs,
+    })).toEqual({ type: 'noShow', absentTeams: ['team-a'], sampledAtMs: deadlineMs })
+    const frozen = structuredClone(fixture.storage.values.get('competitionNoShowDecision'))
+    const frozenAdmission = structuredClone(fixture.storage.values.get('competitionGameAdmission'))
+
+    Date.now = () => deadlineMs + 100
+    socketB.close()
+    let closeError: unknown
+    try { await fixture.room.webSocketClose(socketB) } catch (error) { closeError = error }
+
+    const metadata = fixture.storage.values.get('metadata') as GameRoomMetadata
+    expect(closeError).toBeUndefined()
+    expect(metadata.members.find(member => member.userId === 'user-b'))
+      .toMatchObject({ connected: false, ready: false })
+    expect(fixture.storage.values.get('competitionGameAdmission')).toMatchObject({ status: 'noShow' })
+    expect(fixture.storage.values.get('competitionGameAdmission')).toEqual(frozenAdmission)
+    expect(fixture.storage.values.get('competitionNoShowDecision')).toEqual(frozen)
+    const wire = socketA.sent.at(-1)
+    if (!wire) throw new Error('still-connected member did not receive room state')
+    const roomState = JSON.parse(wire) as { type: string; data: { metadata: GameRoomMetadata } }
+    expect(roomState.type).toBe('roomState')
+    expect(roomState.data.metadata.members.find(member => member.userId === 'user-b'))
+      .toMatchObject({ connected: false, ready: false })
+    roundReleaseNoStart(fixture.storage)
+  } finally { Date.now = realNow }
+})
+
 test('round-release child revoke is terminal and immutable retries have no repeated writes, events or alarm', async () => {
   const fixture = await roundReleaseFixture()
   expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
@@ -796,7 +1243,7 @@ test('round-release child unready invalidates in-flight preparation without cloc
   rulesEngineStartGate = new Promise<void>(resolve => { unblock = resolve })
   rulesEngineStartGateEntered = entered
   try {
-    Date.now = () => fixture.request.binding.roundStartMs
+    Date.now = () => fixture.request.binding.roundStartMs - 1
     const starting = fixture.room.startCompetitionGame(fixture.request)
     const captured = starting.then(
       (): { status: 'fulfilled' } => ({ status: 'fulfilled' }),
@@ -811,7 +1258,7 @@ test('round-release child unready invalidates in-flight preparation without cloc
     expect(() => { throw settled.reason }).toThrow('all fixed competition members must be connected and ready')
     await drainWaitUntil(fixture.pendingWaits)
     roundReleaseNoStart(fixture.storage)
-    expect(fixture.storage.alarm).toBeNull()
+    expect(fixture.storage.alarm).toBe(fixture.request.binding.roundStartMs)
   } finally { unblock(); rulesEngineStartGate = null; rulesEngineStartGateEntered = null; Date.now = realNow }
 })
 
@@ -1803,7 +2250,7 @@ test('present binding 與固定 metadata 的矛盾／畸形不能變成普通房
     expect(await response.json()).toMatchObject({ code: 'gameRoomFailure' })
     expect(storage.values).toStrictEqual(before)
     expect(storage.writeCount).toBe(beforeWrites)
-    expect(storage.alarm).toBeNull()
+    expect(storage.alarm).toBe(validBinding.roundStartMs)
     expect(pendingWaits).toHaveLength(0)
     await expect(room.fetch(new Request('https://game-room.internal/'))).rejects.toThrow()
     expect(storage.values).toStrictEqual(before)
@@ -1834,7 +2281,7 @@ test('present binding 與固定 metadata 的矛盾／畸形不能變成普通房
     expect(text).not.toMatch(/private-metadata-secret|deckSeed|competitionId|matchId/)
     expect(storage.values).toStrictEqual(before)
     expect(storage.writeCount).toBe(beforeWrites)
-    expect(storage.alarm).toBeNull()
+    expect(storage.alarm).toBe(validBinding.roundStartMs)
     expect(pendingWaits).toHaveLength(0)
   }
 })
@@ -1872,7 +2319,7 @@ test('start transaction atomically records GameStarted and the no-preparation ac
   expect(await storage.get('gameRecord')).toBeUndefined()
   expect((await storage.get<Record<string, unknown>>('metadata'))?.status).toBe('Waiting')
   expect((await storage.get<Record<string, unknown>>('competitionDeliveryQueue'))?.entries).toEqual([])
-  expect(storage.alarm).toBeNull()
+  expect(storage.alarm).toBe(request.binding.roundStartMs)
 
   await room.startCompetitionGame(request)
   const record = await storage.get<Record<string, unknown>>('gameRecord')
@@ -2028,7 +2475,7 @@ test('multi-game start batch or alarm failure rolls back the complete start and 
   expect(await storage.get('gameRecord')).toBeUndefined()
   expect(storedRoomEvents(storage)).toEqual(initialEvents)
   expect((await storage.get<Record<string, unknown>>('competitionDeliveryQueue'))?.entries).toEqual([])
-  expect(storage.alarm).toBeNull()
+  expect(storage.alarm).toBe(request.binding.roundStartMs)
 
   storage.failNextAlarm = true
   await expect(room.startCompetitionGame(request)).rejects.toThrow('simulated alarm transaction failure')
@@ -2036,7 +2483,7 @@ test('multi-game start batch or alarm failure rolls back the complete start and 
   expect(await storage.get('gameRecord')).toBeUndefined()
   expect(storedRoomEvents(storage)).toEqual(initialEvents)
   expect((await storage.get<Record<string, unknown>>('competitionDeliveryQueue'))?.entries).toEqual([])
-  expect(storage.alarm).toBeNull()
+  expect(storage.alarm).toBe(request.binding.roundStartMs)
 
   await room.startCompetitionGame(request)
   expect((await storage.get<Record<string, unknown>>('competitionDeliveryQueue'))?.entries)
@@ -2127,7 +2574,7 @@ test('矛盾的正式開局 state 在 GameStarted transaction 前拒絕且不寫
       expect(await storage.get('gameRecord')).toBeUndefined()
       expect(storedRoomEvents(storage).filter(event => event.type === 'GameStarted')).toEqual([])
       expect((await storage.get<Record<string, unknown>>('competitionDeliveryQueue'))?.entries).toEqual([])
-      expect(storage.alarm).toBeNull()
+      expect(storage.alarm).toBe(request.binding.roundStartMs)
     }
   } finally {
     rulesEngineStartStateOverride = null
@@ -2329,7 +2776,7 @@ test('最後 ready 的 metadata、event 與 alarm 在同一交易失敗時完整
   expect(failedBatch.status).toBe(500)
   expect(await storage.get('metadata')).toEqual(metadataBefore)
   expect(storedRoomEvents(storage)).toEqual(eventsBefore)
-  expect(storage.alarm).toBeNull()
+  expect(storage.alarm).toBe(request.binding.roundStartMs)
 
   storage.failNextAlarm = true
   const failedAlarm = await post(room, {
@@ -2339,7 +2786,7 @@ test('最後 ready 的 metadata、event 與 alarm 在同一交易失敗時完整
   expect(failedAlarm.status).toBe(500)
   expect(await storage.get('metadata')).toEqual(metadataBefore)
   expect(storedRoomEvents(storage)).toEqual(eventsBefore)
-  expect(storage.alarm).toBeNull()
+  expect(storage.alarm).toBe(request.binding.roundStartMs)
 
   const retry = await post(room, {
     type: 'toggleReady', actorUserId: 'user-b',
@@ -2409,7 +2856,7 @@ test('等待房斷線原子取消準備；重連須重新準備，開局後斷�
 
     releaseStart()
     await drainWaitUntil(created.pendingWaits)
-    expect(storage.alarm).toBeNull()
+    expect(storage.alarm).toBe(fourPlayerBinding.roundStartMs)
     await created.room.alarm()
     expect((await storage.get<Record<string, unknown>>('metadata'))?.status).toBe('Waiting')
     expect(await storage.get('gameRecord')).toBeUndefined()
@@ -2425,7 +2872,7 @@ test('等待房斷線原子取消準備；重連須重新準備，開局後斷�
     const roomStateBody = await roomState.json() as { metadata?: GameRoomMetadata }
     expect(roomStateBody.metadata?.members.find(member => member.userId === 'user-a'))
       .toMatchObject({ connected: true, ready: false })
-    expect(storage.alarm).toBeNull()
+    expect(storage.alarm).toBe(fourPlayerBinding.roundStartMs)
     await drainWaitUntil(created.pendingWaits)
     expect((await storage.get<Record<string, unknown>>('metadata'))?.status).toBe('Waiting')
     expect(await storage.get('gameRecord')).toBeUndefined()
@@ -2475,7 +2922,7 @@ test('不完整或衝突的固定成員 binding 不自動開局，普通房 read
   await competitionStorage.setAlarm(Date.now())
   await competition.alarm()
   expect((await competitionStorage.get<Record<string, unknown>>('metadata'))?.status).toBe('Waiting')
-  expect(competitionStorage.alarm).toBeNull()
+  expect(competitionStorage.alarm).toBe(request.binding.roundStartMs)
   expect(storedRoomEvents(competitionStorage).filter(event => event.type === 'GameStarted')).toHaveLength(0)
 
   const regularStorage = new MemoryStorage()
@@ -2751,7 +3198,8 @@ test('ready RPC 對普通房、額外 payload、陌生成員、observer、斷線
 
   const malformedStorage = new MemoryStorage()
   const malformedRoom = gameRoom(malformedStorage).room
-  await createReleasedCompetitionGame(malformedRoom, { gameId: 'ready-rpc-malformed', binding: binding() })
+  const malformedRequest = { gameId: 'ready-rpc-malformed', binding: binding() }
+  await createReleasedCompetitionGame(malformedRoom, malformedRequest)
   for (const payload of [
     {},
     { actorUserId: 'user-a' },
@@ -2761,7 +3209,7 @@ test('ready RPC 對普通房、額外 payload、陌生成員、observer、斷線
     expect(await malformedRoom.setCompetitionReady(payload as never))
       .toEqual({ ok: false, code: 'invalidRequest' })
     expect(malformedStorage.values).toEqual(before)
-    expect(malformedStorage.alarm).toBeNull()
+    expect(malformedStorage.alarm).toBe(malformedRequest.binding.roundStartMs)
   }
 
   const outsiderStorage = new MemoryStorage()
@@ -2784,10 +3232,11 @@ test('ready RPC 對普通房、額外 payload、陌生成員、observer、斷線
 
   const malformedBindingStorage = new MemoryStorage()
   const malformedBindingRoom = gameRoom(malformedBindingStorage).room
-  await createReleasedCompetitionGame(malformedBindingRoom, {
+  const malformedBindingRequest = {
     gameId: 'ready-rpc-malformed-binding',
     binding: binding(),
-  })
+  }
+  await createReleasedCompetitionGame(malformedBindingRoom, malformedBindingRequest)
   await malformedBindingStorage.put('competitionBinding', {
     ...binding(),
     expectedMatchRevision: 0,
@@ -2796,16 +3245,17 @@ test('ready RPC 對普通房、額外 payload、陌生成員、observer、斷線
   expect(await malformedBindingRoom.setCompetitionReady({ actorUserId: 'user-a', ready: true }))
     .toEqual({ ok: false, code: 'invalidCompetitionRoom' })
   expect(malformedBindingStorage.values).toEqual(malformedBindingBefore)
-  expect(malformedBindingStorage.alarm).toBeNull()
+  expect(malformedBindingStorage.alarm).toBe(malformedBindingRequest.binding.roundStartMs)
 
   const disconnectedStorage = new MemoryStorage()
   const disconnectedRoom = gameRoom(disconnectedStorage).room
-  await createReleasedCompetitionGame(disconnectedRoom, { gameId: 'ready-rpc-disconnected', binding: binding() })
+  const disconnectedRequest = { gameId: 'ready-rpc-disconnected', binding: binding() }
+  await createReleasedCompetitionGame(disconnectedRoom, disconnectedRequest)
   const disconnectedBefore = structuredClone(disconnectedStorage.values)
   expect(await disconnectedRoom.setCompetitionReady({ actorUserId: 'user-a', ready: true }))
     .toEqual({ ok: false, code: 'playerNotConnected' })
   expect(disconnectedStorage.values).toEqual(disconnectedBefore)
-  expect(disconnectedStorage.alarm).toBeNull()
+  expect(disconnectedStorage.alarm).toBe(disconnectedRequest.binding.roundStartMs)
 
   const mismatchStorage = new MemoryStorage()
   const mismatchRoom = gameRoom(mismatchStorage).room
@@ -2825,7 +3275,8 @@ test('ready RPC 對普通房、額外 payload、陌生成員、observer、斷線
 
   const missingDeckStorage = new MemoryStorage()
   const missingDeckRoom = gameRoom(missingDeckStorage).room
-  await createReleasedCompetitionGame(missingDeckRoom, { gameId: 'ready-rpc-missing-deck', binding: binding() })
+  const missingDeckRequest = { gameId: 'ready-rpc-missing-deck', binding: binding() }
+  await createReleasedCompetitionGame(missingDeckRoom, missingDeckRequest)
   await missingDeckStorage.put('competitionBinding', binding({
     deckSnapshot: [{ player: 'player-b', name: 'B locked deck', cards: ['b-1', 'b-2'] }],
   }))
@@ -2833,18 +3284,19 @@ test('ready RPC 對普通房、額外 payload、陌生成員、observer、斷線
   expect(await missingDeckRoom.setCompetitionReady({ actorUserId: 'user-a', ready: true }))
     .toEqual({ ok: false, code: 'lockedDeckMissing' })
   expect(missingDeckStorage.values).toEqual(missingDeckBefore)
-  expect(missingDeckStorage.alarm).toBeNull()
+  expect(missingDeckStorage.alarm).toBe(missingDeckRequest.binding.roundStartMs)
 
   const dissolvedStorage = new MemoryStorage()
   const dissolvedRoom = gameRoom(dissolvedStorage).room
-  await createReleasedCompetitionGame(dissolvedRoom, { gameId: 'ready-rpc-dissolved', binding: binding() })
+  const dissolvedRequest = { gameId: 'ready-rpc-dissolved', binding: binding() }
+  await createReleasedCompetitionGame(dissolvedRoom, dissolvedRequest)
   const waitingMetadata = await dissolvedStorage.get<Record<string, unknown>>('metadata')
   await dissolvedStorage.put('metadata', { ...waitingMetadata, status: 'Dissolved' })
   const dissolvedBefore = structuredClone(dissolvedStorage.values)
   expect(await dissolvedRoom.setCompetitionReady({ actorUserId: 'user-a', ready: true }))
     .toEqual({ ok: false, code: 'roomNotWaiting' })
   expect(dissolvedStorage.values).toEqual(dissolvedBefore)
-  expect(dissolvedStorage.alarm).toBeNull()
+  expect(dissolvedStorage.alarm).toBe(dissolvedRequest.binding.roundStartMs)
 })
 
 test('ready true/false 重試冪等；真實 unready 阻止 autostart，已開局重試不翻轉狀態', async () => {
@@ -2887,7 +3339,7 @@ test('ready true/false 重試冪等；真實 unready 阻止 autostart，已開�
     .toEqual({ ok: true, ready: false })
   expect(storedRoomEvents(storage).filter(event => event.type === 'PlayerReady')).toHaveLength(2)
   expect(storedRoomEvents(storage).filter(event => event.type === 'PlayerUnready')).toHaveLength(1)
-  expect(storage.alarm).toBeNull()
+  expect(storage.alarm).toBe(request.binding.roundStartMs)
 
   releaseStart()
   await drainWaitUntil(created.pendingWaits)
@@ -2960,14 +3412,14 @@ test('ready RPC transaction rollback, alarm restart 與 clock delivery 保持同
     .rejects.toThrow('simulated atomic storage failure')
   expect(await storage.get('metadata')).toEqual(metadataBefore)
   expect(storedRoomEvents(storage)).toEqual(eventsBefore)
-  expect(storage.alarm).toBeNull()
+  expect(storage.alarm).toBe(request.binding.roundStartMs)
 
   storage.failNextAlarm = true
   await expect(created.room.setCompetitionReady({ actorUserId: 'user-b', ready: true }))
     .rejects.toThrow('simulated alarm transaction failure')
   expect(await storage.get('metadata')).toEqual(metadataBefore)
   expect(storedRoomEvents(storage)).toEqual(eventsBefore)
-  expect(storage.alarm).toBeNull()
+  expect(storage.alarm).toBe(request.binding.roundStartMs)
 
   rulesEngineStartFailureCount = 1
   expect(await created.room.setCompetitionReady({ actorUserId: 'user-b', ready: true }))

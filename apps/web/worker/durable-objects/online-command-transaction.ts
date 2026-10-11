@@ -312,10 +312,12 @@ async function commitPlayerCheckpoint(
     ...input.record,
     sequence: nextSequence,
     rulesRecord: input.result.record,
-    finishedAt: input.result.type === 'ready' && input.result.state.status === 'Finished'
-      ? now
-      : input.record.finishedAt,
   }
+  const finishedAt = input.result.type === 'ready' && input.result.state.status === 'Finished'
+    ? now
+    : input.record.finishedAt
+  if (finishedAt === undefined) delete nextRecord.finishedAt
+  else nextRecord.finishedAt = finishedAt
   const nextMetadata: GameRoomMetadata = {
     ...input.metadata,
     status: input.result.type === 'ready' && input.result.state.status === 'Finished' ? 'Finished' : 'Active',
@@ -393,10 +395,12 @@ async function drainTrustedRandomness(
       ...currentRecord,
       sequence: nextSequence,
       rulesRecord: result.record,
-      finishedAt: result.type === 'ready' && result.state.status === 'Finished'
-        ? now
-        : currentRecord.finishedAt,
     }
+    const finishedAt = result.type === 'ready' && result.state.status === 'Finished'
+      ? now
+      : currentRecord.finishedAt
+    if (finishedAt === undefined) delete checkpoint.finishedAt
+    else checkpoint.finishedAt = finishedAt
     const transactionStatus = statusFor(result)
     const transaction = await requireTransaction(host, currentRecord.gameInstanceId)
     const checkpointMetadata: GameRoomMetadata = {

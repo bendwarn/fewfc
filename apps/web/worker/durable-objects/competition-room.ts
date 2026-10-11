@@ -39,9 +39,13 @@ import {
   type CompetitionGameCreateRequest,
   type CompetitionClockControlRequest,
   type CompetitionGameClockControlEligibilityRequest,
+  type CompetitionGameNoShowDecision,
+  type CompetitionGameNoShowRequest,
   isCompetitionClockControlAck,
   competitionGameBindingRefForRequest,
   competitionRoundReadyCutoffMs,
+  competitionGameNoShowCommandId,
+  isCompetitionGameNoShowDecision,
   isCompetitionGameBindingRef,
   isCompetitionRoundRef,
   isCompetitionGameInitialStartEvidence,
@@ -139,6 +143,7 @@ interface GameRoomNamespace {
     releaseCompetitionGame?(request: CompetitionGameAdmissionRequest): Promise<unknown>
     synchronizeCompetitionClock(request: CompetitionClockControlRequest): Promise<unknown>
     getCompetitionClockControlEligibility?(request: CompetitionGameClockControlEligibilityRequest): Promise<unknown>
+    adjudicateCompetitionNoShow?(request: CompetitionGameNoShowRequest): Promise<unknown>
   }
 }
 
@@ -289,6 +294,22 @@ interface RoundReleaseRow {
   claim_version: number
   attempts: number
   next_attempt_at_ms: number
+  completed_at_ms: number | null
+}
+
+interface NoShowOutboxRow {
+  [key: string]: ArrayBuffer | string | number | null
+  round_generation_id: string
+  match_id: string
+  game_id: string
+  deadline_ms: number
+  command_id: string
+  status: 'pending' | 'completed'
+  decision_json: string | null
+  claim_id: string | null
+  claim_version: number
+  attempts: number
+  next_attempt_at_ms: number
 }
 
 interface RoundDeliveryAuthority {
@@ -310,6 +331,12 @@ type RoundDeliveryClaim = {
   authority: RoundDeliveryAuthority
   row: RoundReleaseRow
   request: CompetitionGameAdmissionRequest
+}
+
+interface NoShowDeliveryClaim {
+  row: NoShowOutboxRow
+  request: CompetitionGameNoShowRequest
+  decision: CompetitionGameNoShowDecision | null
 }
 
 interface PreparedRoundRoom {
@@ -420,7 +447,7 @@ interface ScheduledMatchMaterialization {
   result: JsonValue
 }
 
-const SCHEMA_VERSION = 12
+const SCHEMA_VERSION = 13
 
 const OPERATION_NAMES: CompetitionOperationName[] = [
   'registrationCreate',
@@ -740,6 +767,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     await Promise.all([
       this.serialized(() => this.pumpInitialSeedingInternal()),
       this.pumpRoundDeliveries(),
+      this.pumpNoShowRulings(),
       this.pumpGameProvisionDeliveries(legacyBatch),
       this.pumpClockControlDeliveries(legacyBatch),
     ])
@@ -1135,6 +1163,31 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         )
       }
 
+      if (currentVersion < 13) {
+        this.storage.sql.exec(
+          'ALTER TABLE competition_round_release_outbox ADD COLUMN completed_at_ms INTEGER',
+        )
+        this.storage.sql.exec(`
+          CREATE TABLE competition_no_show_outbox (
+            round_generation_id TEXT NOT NULL,
+            match_id TEXT NOT NULL,
+            game_id TEXT NOT NULL,
+            deadline_ms INTEGER NOT NULL,
+            command_id TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'completed')),
+            decision_json TEXT,
+            claim_id TEXT,
+            claim_version INTEGER NOT NULL CHECK (claim_version >= 0),
+            attempts INTEGER NOT NULL CHECK (attempts >= 0),
+            next_attempt_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (round_generation_id, match_id)
+          )
+        `)
+        this.storage.sql.exec(
+          'INSERT INTO competition_schema_migrations (version, applied_at_trusted_time_ms) VALUES (13, 0)',
+        )
+      }
+
       const finalVersion = this.storage.sql.exec<{
         [key: string]: ArrayBuffer | string | number | null
         version: number
@@ -1243,6 +1296,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       // 整個前輪的實際結果與 parent mirror 都必須接受，不只看任一晉級分支。
       for (const previous of selected.previousMatches) {
         if (isCoreBye(previous)) continue
+        if (this.isAuthoritativeNoShowResult(previous)) continue
         const row = typeof previous.matchId === 'string' ? this.match(previous.matchId) : undefined
         if (!row || row.stage_id !== request.stageId) throw new Error('previous round match is missing')
         const checkpoint = parseJsonObject(row.match_checkpoint_json, 'previous match checkpoint')
@@ -1377,6 +1431,14 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
            VALUES (?, ?, 1, ?, ?, ?, ?, 2, 'pending', NULL, NULL, 0, 0, ?)`,
           roundRef.roundGenerationId, room.matchId, room.bindingRef.gameId, JSON.stringify(room.binding),
           JSON.stringify(room.bindingRef), JSON.stringify(room.nextGame), request.trustedTimeMs,
+        )
+        this.storage.sql.exec(
+          `INSERT INTO competition_no_show_outbox
+            (round_generation_id, match_id, game_id, deadline_ms, command_id, status, decision_json,
+             claim_id, claim_version, attempts, next_attempt_at_ms)
+           VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, 0, 0, ?)`,
+          roundRef.roundGenerationId, room.matchId, room.bindingRef.gameId, request.roundStartMs,
+          competitionGameNoShowCommandId(room.bindingRef), request.roundStartMs,
         )
       }
       this.storage.sql.exec(
@@ -2028,6 +2090,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       // 不用單條晉級來源或靜態 standings 冒充整前輪實際完成。
       for (const previous of selected.previousMatches) {
         if (isCoreBye(previous)) continue
+        if (this.isAuthoritativeNoShowResult(previous)) continue
         const row = typeof previous.matchId === 'string' ? this.match(previous.matchId) : undefined
         if (!row || row.stage_id !== header.stage_id) throw new Error('previous match authority is missing')
         const checkpoint = parseJsonObject(row.match_checkpoint_json, 'previous match')
@@ -2299,7 +2362,8 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
           throw new Error('release ACK claim changed')
         }
         this.storage.sql.exec(`UPDATE competition_round_release_outbox SET status = 'completed', claim_id = NULL
-          WHERE round_generation_id = ? AND game_id = ?`, row.round_generation_id, row.game_id)
+          , completed_at_ms = ? WHERE round_generation_id = ? AND game_id = ?`,
+        confirmedAt, row.round_generation_id, row.game_id)
       }
     })
   }
@@ -2354,6 +2418,332 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     await this.serialized(async () => {
       try { await this.scheduleSharedAlarm() } catch {
         console.warn('CompetitionRoom retained round work after alarm scheduling failure')
+      }
+    })
+  }
+
+  private noShowOutbox(matchId: string): NoShowOutboxRow | undefined {
+    return this.storage.sql.exec<NoShowOutboxRow>(
+      'SELECT * FROM competition_no_show_outbox WHERE match_id = ?', matchId,
+    ).toArray()[0]
+  }
+
+  /** 晉級只接受父房已提交且能對回子房固定成員判定的 no-show。 */
+  private isAuthoritativeNoShowResult(match: JsonObject): boolean {
+    if (typeof match.matchId !== 'string' || match.status !== 'completed' || match.started !== false
+      || !isTeamPair(match.participants) || !isJsonObject(match.result)) return false
+    const row = this.noShowOutbox(match.matchId)
+    if (!row || row.status !== 'completed' || !validNoShowOutboxRow(row)
+      || row.decision_json === null) return false
+    let decision: unknown
+    try { decision = JSON.parse(row.decision_json) } catch { return false }
+    if (!isCompetitionGameNoShowDecision(decision) || decision.type !== 'noShow') return false
+    const expected = noShowTournamentResult(match.participants, decision)
+    if (!expected || !sameJson(match.result, expected)) return false
+    const header = this.storage.sql.exec<RoundPublicationRow>(
+      'SELECT * FROM competition_round_publication WHERE round_generation_id = ?',
+      row.round_generation_id,
+    ).toArray()[0]
+    const current = this.meta()
+    if (!header || !current || row.game_id === '' || match.stageId !== header.stage_id) return false
+    try {
+      const manifest = parseRoundManifest(header, current.competition_id)
+      return manifest.roundStartMs === row.deadline_ms
+        && manifest.rooms.some(room => room.matchId === row.match_id && room.gameId === row.game_id
+          && room.bindingRef.roundRef.roundGenerationId === row.round_generation_id)
+    } catch {
+      return false
+    }
+  }
+
+  /** T 到期後只判定在 T 前已完整開放的房間；決策與賽果都透過持久 outbox 重試。 */
+  private async claimNoShowRuling(now: number): Promise<NoShowDeliveryClaim | null> {
+    if (!safeNonNegativeInteger(now)) return null
+    const candidate = this.storage.sql.exec<NoShowOutboxRow>(
+      `SELECT * FROM competition_no_show_outbox
+       WHERE status = 'pending' AND next_attempt_at_ms <= ?
+       ORDER BY next_attempt_at_ms, match_id LIMIT 1`, now,
+    ).toArray()[0]
+    if (!candidate) return null
+    if (!validNoShowOutboxRow(candidate) || now < candidate.deadline_ms) {
+      throw new Error('no-show outbox candidate is invalid or early')
+    }
+    const header = this.storage.sql.exec<RoundPublicationRow>(
+      'SELECT * FROM competition_round_publication WHERE round_generation_id = ?',
+      candidate.round_generation_id,
+    ).toArray()[0]
+    if (!header) throw new Error('no-show publication is missing')
+    const manifest = parseRoundManifest(header, this.meta()?.competition_id ?? '')
+    const room = manifest.rooms.find(entry => entry.matchId === candidate.match_id
+      && entry.gameId === candidate.game_id)
+    if (!room || manifest.roundStartMs !== candidate.deadline_ms
+      || candidate.command_id !== competitionGameNoShowCommandId(room.bindingRef)) {
+      throw new Error('no-show outbox does not match its round manifest')
+    }
+    let decision: CompetitionGameNoShowDecision | null = null
+    if (candidate.decision_json !== null) {
+      const parsed: unknown = JSON.parse(candidate.decision_json)
+      if (!isCompetitionGameNoShowDecision(parsed)) throw new Error('stored no-show decision is invalid')
+      decision = parsed
+    } else {
+      const releaseRows = this.roundReleaseRows(candidate.round_generation_id)
+      const ledgerRows = this.roundRoomLedger(candidate.round_generation_id)
+      const cutoff = competitionRoundReadyCutoffMs(candidate.deadline_ms)
+      const releasedOnTime = header.status === 'released' && header.requires_referee === 0
+        && cutoff !== null && ledgerRows.length === manifest.rooms.length
+        && manifest.rooms.every(expected => ledgerRows.some(row => row.match_id === expected.matchId
+          && row.game_id === expected.gameId && row.status === 'confirmed'
+          && safeNonNegativeInteger(row.ack_confirmed_at_ms) && row.ack_confirmed_at_ms <= cutoff))
+        && releaseRows.length === manifest.rooms.length
+        && manifest.rooms.every(expected => releaseRows.some(row => row.game_id === expected.gameId
+          && row.status === 'completed' && validRoundReleaseRow(row)
+          && row.completed_at_ms !== null && row.completed_at_ms <= candidate.deadline_ms))
+      if (!releasedOnTime) decision = { type: 'unavailable' }
+    }
+    const nextAttempt = checkedRoundRetryTime(now, 30_000)
+    if (!Number.isSafeInteger(candidate.claim_version + 1)) throw new Error('no-show claim version overflow')
+    const claimed: NoShowOutboxRow = {
+      ...candidate,
+      claim_id: crypto.randomUUID(),
+      claim_version: candidate.claim_version + 1,
+      next_attempt_at_ms: nextAttempt,
+    }
+    this.storage.transactionSync(() => {
+      const latest = this.noShowOutbox(candidate.match_id)
+      if (!sameJson(latest, candidate)) throw new Error('no-show candidate changed before claim')
+      this.storage.sql.exec(`UPDATE competition_no_show_outbox
+        SET claim_id = ?, claim_version = ?, next_attempt_at_ms = ?
+        WHERE round_generation_id = ? AND match_id = ? AND status = 'pending'`,
+      claimed.claim_id, claimed.claim_version, claimed.next_attempt_at_ms,
+      claimed.round_generation_id, claimed.match_id)
+    })
+    return {
+      row: claimed,
+      request: { bindingRef: structuredClone(room.bindingRef), commandId: claimed.command_id,
+        deadlineMs: claimed.deadline_ms },
+      decision,
+    }
+  }
+
+  private async persistNoShowDecision(
+    claim: NoShowDeliveryClaim,
+    decision: CompetitionGameNoShowDecision,
+  ): Promise<NoShowDeliveryClaim | null> {
+    if (!isCompetitionGameNoShowDecision(decision)
+      || (decision.type === 'ready' || decision.type === 'noShow')
+        && decision.sampledAtMs < claim.row.deadline_ms) return null
+    if (claim.row.decision_json !== null) {
+      return sameJson(JSON.parse(claim.row.decision_json), decision) ? { ...claim, decision } : null
+    }
+    if (decision.type === 'noShow') {
+      const header = this.storage.sql.exec<RoundPublicationRow>(
+        'SELECT * FROM competition_round_publication WHERE round_generation_id = ?',
+        claim.row.round_generation_id,
+      ).toArray()[0]
+      if (!header) return null
+      const manifest = parseRoundManifest(header, this.meta()?.competition_id ?? '')
+      const scheduledMatches = manifest.tournamentRound.matches
+      if (!Array.isArray(scheduledMatches)) return null
+      const scheduled = scheduledMatches.find((match): match is JsonObject =>
+        isJsonObject(match) && match.matchId === claim.row.match_id)
+      if (!scheduled || !isTeamPair(scheduled.participants)
+        || !noShowTournamentResult(scheduled.participants, decision)) return null
+    }
+    this.storage.transactionSync(() => {
+      const latest = this.noShowOutbox(claim.row.match_id)
+      if (!sameJson(latest, claim.row)) throw new Error('no-show decision claim changed')
+      this.storage.sql.exec(`UPDATE competition_no_show_outbox SET decision_json = ?
+        WHERE round_generation_id = ? AND match_id = ? AND status = 'pending'
+          AND claim_id = ? AND claim_version = ? AND decision_json IS NULL`,
+      JSON.stringify(decision), claim.row.round_generation_id, claim.row.match_id,
+      claim.row.claim_id, claim.row.claim_version)
+    })
+    const row = this.noShowOutbox(claim.row.match_id)
+    return row && row.decision_json === JSON.stringify(decision)
+      ? { ...claim, row, decision }
+      : null
+  }
+
+  private async applyNoShowTournamentResult(
+    claim: NoShowDeliveryClaim,
+    decision: Extract<CompetitionGameNoShowDecision, { type: 'noShow' }>,
+  ): Promise<'completed' | 'retry'> {
+    const row = claim.row
+    return this.serialized(async () => {
+      const current = this.meta()
+      const latestOutbox = this.noShowOutbox(row.match_id)
+      if (!current || !latestOutbox || !sameJson(latestOutbox, row)
+        || latestOutbox.status !== 'pending' || latestOutbox.claim_id !== row.claim_id
+        || latestOutbox.claim_version !== row.claim_version
+        || latestOutbox.decision_json !== JSON.stringify(decision)) return 'retry'
+      let state: CompetitionServerState
+      let schedule: ScheduledMatchMaterialization | null
+      try {
+        state = parseServerState(current.server_state_json)
+        schedule = findScheduledMatch(state.tournament, row.match_id, true, true, 'pending')
+      } catch {
+        try {
+          state = parseServerState(current.server_state_json)
+          schedule = findScheduledMatch(state.tournament, row.match_id, true, true, 'inProgress')
+        } catch {
+          return 'retry'
+        }
+      }
+      const expectedResult = noShowTournamentResult(schedule?.teams, decision)
+      if (!schedule || !expectedResult || schedule.stageId !== this.match(row.match_id)?.stage_id) {
+        // 已開始或已有其他正式賽果時不再覆蓋該結果。
+        if (schedule?.status === 'completed' || schedule?.status === 'inProgress') return 'completed'
+        return 'retry'
+      }
+      if (schedule.status === 'completed') {
+        return 'completed'
+      }
+      if (schedule.status !== 'pending' || schedule.started || schedule.result !== null) return 'completed'
+      if (!current.organizer_user_id || !safeNonNegativeInteger(current.revision)
+        || !safeNonNegativeInteger(current.updated_trusted_time_ms)) return 'retry'
+      const organizer = this.acl(current.organizer_user_id)
+      if (!organizer || organizer.active !== 1 || organizer.role !== 'organizer') return 'retry'
+      const trustedTimeMs = Math.max(Date.now(), current.updated_trusted_time_ms)
+      if (!safeNonNegativeInteger(trustedTimeMs)) return 'retry'
+      const request: CompetitionRoomExecuteRequest = {
+        competitionId: current.competition_id,
+        callerUserId: current.organizer_user_id,
+        commandId: row.command_id,
+        expectedRevision: current.revision,
+        trustedTimeMs,
+        operation: { type: 'tournamentSubmitResult', stageId: schedule.stageId,
+          matchId: row.match_id, result: expectedResult },
+      }
+      const fingerprint = await commandFingerprint(request)
+      const receipt = this.commandReceipt(request.commandId)
+      if (receipt) {
+        if (receipt.receipt_kind === 'execute' && receipt.fingerprint === fingerprint) {
+          return 'completed'
+        }
+        return 'retry'
+      }
+      let response: CompetitionEngineResponse
+      try {
+        response = await this.engine({
+          serverActor: actorFor('organizer', current.organizer_user_id),
+          trustedTimeMs,
+          operation: request.operation,
+          serverState: { registration: null, clock: null,
+            tournament: state.tournament, matches: {} },
+        })
+      } catch {
+        return 'retry'
+      }
+      const submitError = response.ok
+        ? validateTournamentSubmitResponse(response, state.tournament, schedule, expectedResult)
+        : response.error.code
+      if (submitError !== null || !response.ok || response.operation !== 'tournamentSubmitResult'
+        || !sameMatches(response.serverState.matches, {})) {
+        return 'retry'
+      }
+      const projection = publicProjection(response, 'organizer')
+      const revision = current.revision + 1
+      if (!safeNonNegativeInteger(revision)) return 'retry'
+      const persistedState: CompetitionServerState = {
+        ...state,
+        tournament: response.serverState.tournament,
+      }
+      const result = roomSuccess<CompetitionRoomExecuteValue>({
+        competitionId: current.competition_id, revision, commandId: request.commandId,
+        idempotent: false, projection,
+      })
+      this.storage.transactionSync(() => {
+        const latest = this.meta()
+        const latestAcl = this.acl(current.organizer_user_id)
+        if (!sameJson(latest, current) || !sameJson(this.noShowOutbox(row.match_id), row)
+          || !latestAcl || latestAcl.active !== 1 || latestAcl.role !== 'organizer'
+          || this.commandReceipt(row.command_id)) throw new Error('no-show tournament result CAS failed')
+        this.storage.sql.exec(`UPDATE competition_meta
+          SET revision = ?, server_state_json = ?, public_projection_json = ?, updated_trusted_time_ms = ?
+          WHERE singleton = 1`, revision, JSON.stringify(persistedState),
+        JSON.stringify(stripPrivate(projection)), trustedTimeMs)
+        this.insertAudit({ actorUserId: current.organizer_user_id, role: 'organizer',
+          operationType: 'tournamentSubmitResult', commandId: row.command_id, revision,
+          outcomeCode: 'success', trustedTimeMs, reason: '賽前未完成報到自動判負' })
+        this.insertCommandReceipt(row.command_id, 'execute', fingerprint, result)
+      })
+      return 'completed'
+    })
+  }
+
+  private async finishNoShowRuling(
+    claim: NoShowDeliveryClaim,
+    complete: boolean,
+  ): Promise<void> {
+    const latest = this.noShowOutbox(claim.row.match_id)
+    if (!latest || latest.status !== 'pending' || latest.claim_id !== claim.row.claim_id
+      || latest.claim_version !== claim.row.claim_version || !sameJson(latest, claim.row)
+        && latest.decision_json !== claim.row.decision_json) return
+    const now = Date.now()
+    if (!safeNonNegativeInteger(now)) return
+    if (complete) {
+      this.storage.sql.exec(`UPDATE competition_no_show_outbox SET status = 'completed', claim_id = NULL
+        WHERE round_generation_id = ? AND match_id = ? AND status = 'pending'
+          AND claim_id = ? AND claim_version = ?`,
+      latest.round_generation_id, latest.match_id, latest.claim_id, latest.claim_version)
+      return
+    }
+    const delay = Math.min(60_000, 1_000 * 2 ** Math.min(latest.attempts + 1, 6))
+    this.storage.sql.exec(`UPDATE competition_no_show_outbox SET claim_id = NULL,
+      attempts = attempts + 1, next_attempt_at_ms = ?
+      WHERE round_generation_id = ? AND match_id = ? AND status = 'pending'
+        AND claim_id = ? AND claim_version = ?`,
+    checkedRoundRetryTime(now, delay), latest.round_generation_id, latest.match_id,
+    latest.claim_id, latest.claim_version)
+  }
+
+  private async pumpNoShowRulings(): Promise<void> {
+    for (let count = 0; count < 16; count += 1) {
+      const claim = await this.serialized(async () => {
+        try {
+          const next = await this.claimNoShowRuling(Date.now())
+          if (next) {
+            try { await this.scheduleSharedAlarm() } catch {
+              console.warn('CompetitionRoom retained automatic no-show ruling after alarm scheduling failure')
+            }
+          }
+          return next
+        } catch {
+          console.warn('CompetitionRoom retained invalid automatic no-show authority')
+          return null
+        }
+      })
+      if (!claim) break
+      let decision = claim.decision
+      if (!decision) {
+        try {
+          const namespace = this.roomEnv.GAME_ROOM
+          if (!namespace) throw new Error('no-show game namespace unavailable')
+          const stub = namespace.get(namespace.idFromName(claim.row.game_id))
+          const method = stub.adjudicateCompetitionNoShow
+          if (typeof method !== 'function') throw new Error('no-show adjudication capability unavailable')
+          const returned: unknown = await Reflect.apply(method, stub, [structuredClone(claim.request)])
+          if (!isCompetitionGameNoShowDecision(returned)) throw new Error('no-show decision is invalid')
+          decision = returned
+        } catch {
+          await this.serialized(() => this.finishNoShowRuling(claim, false))
+          continue
+        }
+      }
+      const decided = await this.serialized(() => this.persistNoShowDecision(claim, decision!))
+      if (!decided) {
+        await this.serialized(() => this.finishNoShowRuling(claim, false))
+        continue
+      }
+      let complete = decision.type !== 'noShow'
+      if (decision.type === 'noShow') {
+        complete = await this.applyNoShowTournamentResult(decided, decision) === 'completed'
+      }
+      await this.serialized(() => this.finishNoShowRuling(decided, complete))
+    }
+    await this.serialized(async () => {
+      try { await this.scheduleSharedAlarm() } catch {
+        console.warn('CompetitionRoom retained automatic no-show work after alarm scheduling failure')
       }
     })
   }
@@ -6487,6 +6877,9 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
        JOIN competition_round_publication publication USING (round_generation_id)
        WHERE outbox.status = 'pending' AND publication.status = 'released' AND publication.requires_referee = 0`,
     ).toArray().map(row => row.due).filter(safeNonNegativeInteger)
+    const noShowJobs = this.storage.sql.exec<{ [key: string]: ArrayBuffer | string | number | null; due: number }>(
+      `SELECT next_attempt_at_ms AS due FROM competition_no_show_outbox WHERE status = 'pending'`,
+    ).toArray().map(row => row.due).filter(safeNonNegativeInteger)
     const dueTimes = [
       provision?.next_attempt_at_ms,
       control?.next_attempt_at_ms,
@@ -6498,6 +6891,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
           : checkedRoundRetryTime(now, 1_000),
       // 過期工作以有界 retry 再排，不讓到 T 但 authority 損壞形成即刻空轉。
       ...roundJobs.map(due => due > now ? due : checkedRoundRetryTime(now, 1_000)),
+      ...noShowJobs.map(due => due > now ? due : checkedRoundRetryTime(now, 1_000)),
       ...this.roundsReadyForRelease().map(() => checkedRoundRetryTime(now, 1_000)),
     ].filter(safeNonNegativeInteger)
     if (dueTimes.length) {
@@ -7223,6 +7617,43 @@ function validRoundReleaseRow(row: RoundReleaseRow): boolean {
     && ['pending', 'completed'].includes(row.status)
     && (row.claim_id === null || nonEmpty(row.claim_id)) && safeNonNegativeInteger(row.claim_version)
     && safeNonNegativeInteger(row.attempts) && safeNonNegativeInteger(row.next_attempt_at_ms)
+    && (row.status === 'pending' ? row.completed_at_ms === null
+      : row.completed_at_ms === null || safeNonNegativeInteger(row.completed_at_ms))
+}
+
+function validNoShowOutboxRow(row: NoShowOutboxRow): boolean {
+  if (!nonEmpty(row.round_generation_id) || !nonEmpty(row.match_id) || !nonEmpty(row.game_id)
+    || !safeNonNegativeInteger(row.deadline_ms) || !nonEmpty(row.command_id)
+    || !['pending', 'completed'].includes(row.status)
+    || (row.claim_id !== null && !nonEmpty(row.claim_id))
+    || !safeNonNegativeInteger(row.claim_version) || !safeNonNegativeInteger(row.attempts)
+    || !safeNonNegativeInteger(row.next_attempt_at_ms)) return false
+  if (row.decision_json !== null) {
+    try {
+      if (!isCompetitionGameNoShowDecision(JSON.parse(row.decision_json))) return false
+    } catch {
+      return false
+    }
+  }
+  return row.status === 'pending' || (row.claim_id === null && row.decision_json !== null)
+}
+
+function noShowTournamentResult(
+  teams: unknown,
+  decision: CompetitionGameNoShowDecision,
+): TournamentMatchResult | null {
+  if (decision.type !== 'noShow' || !isTeamPair(teams)
+    || decision.absentTeams.length < 1 || decision.absentTeams.length > 2
+    || new Set(decision.absentTeams).size !== decision.absentTeams.length
+    || decision.absentTeams.some(team => !teams.includes(team))) return null
+  if (decision.absentTeams.length === 2) {
+    if (teams.some(team => !decision.absentTeams.includes(team))) return null
+    return { type: 'noShow', absentTeams: [...decision.absentTeams], winnerId: null }
+  }
+  const winnerId = teams.find(team => !decision.absentTeams.includes(team))
+  return winnerId
+    ? { type: 'noShow', absentTeams: [...decision.absentTeams], winnerId }
+    : null
 }
 
 /** RPC disposer 是 transport 資源；只抽 exact 三個 data 欄位，不放寬 shared JSON guard。 */
@@ -9010,6 +9441,7 @@ function findScheduledMatch(
 }
 
 type TournamentMatchResult =
+  | { type: 'noShow'; absentTeams: string[]; winnerId: string | null }
   | { type: 'win'; winnerId: string; loserId: string; winnerGames: number; loserGames: number }
   | { type: 'draw'; firstGames: number; secondGames: number }
 
@@ -9413,7 +9845,7 @@ function validateTournamentCorrectionUpdate(
       true,
       true,
     )
-    if (after.status !== 'completed' || !after.started
+    if (after.status !== 'completed' || after.started !== (expectedResult.type !== 'noShow')
       || !sameJson(after.teams, previousSchedule.teams)
       || !sameJson(after.format, previousSchedule.format)
       || !sameJson(after.result, expectedResult as unknown as JsonValue)) {
@@ -9456,8 +9888,9 @@ function validateTournamentSubmitResponse(
       previousSchedule.matchId,
       true,
       true,
+      expectedResult.type === 'noShow' ? 'pending' : 'inProgress',
     )
-    if (after.status !== 'completed' || !after.started
+    if (after.status !== 'completed' || after.started !== (expectedResult.type !== 'noShow')
       || !sameJson(after.teams, previousSchedule.teams)
       || !sameJson(after.format, previousSchedule.format)
       || !sameJson(after.result as JsonValue, expectedResult as unknown as JsonValue)) {

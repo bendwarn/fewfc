@@ -23,6 +23,7 @@ const READY_ERRORS = {
   lockedDeckMissing: { statusCode: 409, statusMessage: 'Conflict', message: '競賽鎖定牌組尚未就緒。' },
   gameAlreadyStarted: { statusCode: 409, statusMessage: 'Conflict', message: '對局已開始，無法變更準備狀態。' },
   gameFinished: { statusCode: 409, statusMessage: 'Conflict', message: '對局已結束，無法變更準備狀態。' },
+  checkInDeadlinePassed: { statusCode: 409, statusMessage: 'Conflict', message: '比賽開始時間已到，無法變更房間報到狀態。' },
   roomNotWaiting: { statusCode: 409, statusMessage: 'Conflict', message: '房間目前不在準備階段。' },
   competitionGameProtocolError: { statusCode: 502, statusMessage: 'Bad Gateway', message: '競賽房間回應格式不正確。' },
   competitionGameRoomUnavailable: { statusCode: 503, statusMessage: 'Service Unavailable', message: '競賽房間暫時無法使用，請稍後重試。' },

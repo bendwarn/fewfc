@@ -52,8 +52,10 @@ import {
 } from '../../tests/fixtures/competition-announcement'
 import {
   competitionGameBindingRefForRequest,
+  competitionGameNoShowCommandId,
   validateCompetitionGameBinding,
 } from '../../shared/competition-game-room'
+import type { CompetitionGameNoShowRequest } from '../../shared/competition-game-room'
 import type { CompetitionEngineAdapter, CompetitionRoom } from './competition-room'
 
 const announcedPlan = createCompetitionAnnouncementPlanFixture()
@@ -3085,7 +3087,7 @@ test('schema migrations are versioned and private rows carry projection identity
   const versions = sql.database.query(
     'SELECT version FROM competition_schema_migrations ORDER BY version',
   ).all() as Array<{ version: number }>
-  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
   const privateColumns = sql.database.query(
     'PRAGMA table_info(competition_private_projection)',
   ).all() as Array<{ name: string }>
@@ -3241,7 +3243,7 @@ test('legacy unversioned tables migrate in place and preserve readable/idempoten
   const versions = sql.database.query(
     'SELECT version FROM competition_schema_migrations ORDER BY version',
   ).all() as Array<{ version: number }>
-  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
   const privateRow = sql.database.query(
     'SELECT payload_json, revision, operation_type FROM competition_private_projection WHERE user_id = ?',
   ).all('legacy-player') as Array<{ payload_json: string; revision: number; operation_type: string }>
@@ -5561,7 +5563,7 @@ test('v3 migration creates match rows and adds nullable audit identity', async (
   const read = await room.readMatch({ competitionId: 'competition-1', matchId: 'legacy-match', callerUserId: 'viewer' })
   expect(read.ok).toBe(true)
   const schema = sql.database.query('SELECT MAX(version) AS version FROM competition_schema_migrations').get() as { version: number }
-  expect(schema.version).toBe(12)
+  expect(schema.version).toBe(13)
   const columns = sql.database.query('PRAGMA table_info(competition_audit)').all() as Array<{ name: string }>
   expect(columns.some(column => column.name === 'match_id')).toBe(true)
   const rows = sql.database.query('SELECT match_id, revision FROM competition_matches').all() as Array<{ match_id: string; revision: number }>
@@ -12292,6 +12294,12 @@ async function roundDeliveryModule(options: { teamSize?: 1 | 2; incompletePrevio
       VALUES (?, ?, 1, ?, ?, ?, ?, 2, 'pending', NULL, NULL, 0, 0, ?)`)
       .run(manifest.roundRef.roundGenerationId, entry.matchId, entry.gameId, JSON.stringify(binding),
         JSON.stringify(entry.bindingRef), JSON.stringify(nextGame), request.trustedTimeMs)
+    sql.database.query(`INSERT INTO competition_no_show_outbox
+      (round_generation_id, match_id, game_id, deadline_ms, command_id, status, decision_json,
+       claim_id, claim_version, attempts, next_attempt_at_ms)
+      VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, 0, 0, ?)`)
+      .run(manifest.roundRef.roundGenerationId, entry.matchId, entry.gameId, request.roundStartMs,
+        competitionGameNoShowCommandId(entry.bindingRef), request.roundStartMs)
   }
   sql.database.query('UPDATE competition_round_publication SET manifest_json = ?')
     .run(JSON.stringify(manifest))
@@ -12301,6 +12309,15 @@ async function roundDeliveryModule(options: { teamSize?: 1 | 2; incompletePrevio
   sql.database.query(`INSERT INTO competition_acl (user_id, role, active, participant) VALUES (?, 'organizer', 1, 0)`)
     .run(request.callerUserId)
   const engineCalls: string[] = []
+  const noShowCalls: CompetitionGameNoShowRequest[] = []
+  let noShowDecision: (request: CompetitionGameNoShowRequest) => unknown = input => {
+    const scheduled = manifest.tournamentRound.matches.find(match => match.matchId === input.bindingRef.matchId)
+    const participants = scheduled?.participants
+    return Array.isArray(participants)
+      ? { type: 'noShow', absentTeams: [participants[0]], sampledAtMs: input.deadlineMs }
+      : { type: 'unavailable' }
+  }
+  let failNextNoShowSubmit = false
   const engine: CompetitionEngineAdapter = async input => {
     engineCalls.push(input.operation.type)
     if (input.operation.type === 'tournamentView') {
@@ -12314,6 +12331,31 @@ async function roundDeliveryModule(options: { teamSize?: 1 | 2; incompletePrevio
       const projection: unknown = JSON.parse(row.match_projection_json)
       if (!isJsonObject(projection) || !isJsonObject(projection.public)) throw new Error('module projection missing')
       return { ok: true, operation: 'matchView', public: projection.public, serverState: input.serverState }
+    }
+    if (input.operation.type === 'tournamentSubmitResult') {
+      if (failNextNoShowSubmit) {
+        failNextNoShowSubmit = false
+        throw new Error('simulated automatic no-show engine retry')
+      }
+      const nextTournament: unknown = structuredClone(input.serverState.tournament)
+      if (!isJsonObject(nextTournament) || !Array.isArray(nextTournament.stages)) {
+        throw new Error('module tournament checkpoint missing')
+      }
+      for (const stage of nextTournament.stages) {
+        if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) continue
+        for (const round of stage.rounds) {
+          if (!isJsonObject(round) || !Array.isArray(round.matches)) continue
+          for (const match of round.matches) {
+            if (!isJsonObject(match) || match.matchId !== input.operation.matchId) continue
+            match.status = 'completed'
+            match.started = false
+            match.result = structuredClone(input.operation.result)
+          }
+        }
+      }
+      const serverState = { ...input.serverState, tournament: nextTournament, matches: {} }
+      return { ok: true, operation: 'tournamentSubmitResult',
+        public: { result: { type: 'applied' }, tournament: nextTournament }, serverState }
     }
     throw new Error('delivery module permits no engine mutation/export')
   }
@@ -12331,6 +12373,10 @@ async function roundDeliveryModule(options: { teamSize?: 1 | 2; incompletePrevio
         creates.push(structuredClone(input)); return create(input)
       },
       releaseCompetitionGame: async (input: unknown) => { releases.push(structuredClone(input)); return release(input) },
+      adjudicateCompetitionNoShow: async (input: CompetitionGameNoShowRequest) => {
+        noShowCalls.push(structuredClone(input))
+        return noShowDecision(input)
+      },
       synchronizeCompetitionClock: async () => { throw new Error('unexpected module clock control') },
     }),
   } }
@@ -12341,7 +12387,11 @@ async function roundDeliveryModule(options: { teamSize?: 1 | 2; incompletePrevio
     stageId: request.stageId, roundNumber: request.roundNumber, callerUserId: request.callerUserId })
   const at = atRoundDeliveryTime
   return { ...base, room, reopen, env, read, at, creates, releases, expected, engineCalls,
-    setCreate: (next: typeof create) => { create = next }, setRelease: (next: typeof release) => { release = next } }
+    noShowCalls,
+    setCreate: (next: typeof create) => { create = next }, setRelease: (next: typeof release) => { release = next },
+    setNoShowDecision: (next: typeof noShowDecision) => { noShowDecision = next },
+    failNextNoShowSubmit: () => { failNextNoShowSubmit = true },
+  }
 }
 
 for (const teamSize of [1, 2] as const) {
@@ -12354,7 +12404,7 @@ test(`round-release parent delivery module persists exact ${teamSize}v${teamSize
     status: 'released', releaseDecisionId: expect.any(String),
     rooms: [{ ackConfirmedAtMs: 400_000 }, { ackConfirmedAtMs: 400_000 }],
   } } })
-  expect(setup.alarm.scheduledAt).toBeNull()
+  expect(setup.alarm.scheduledAt).toBe(900_000)
   const released = await setup.read()
   expect(released).toMatchObject({ ok: true, value: { revision: 41, publication: { status: 'released' } } })
   if (!released.ok || !released.value.publication) throw new Error('module publication missing')
@@ -12364,7 +12414,7 @@ test(`round-release parent delivery module persists exact ${teamSize}v${teamSize
   })))
   expect(setup.engineCalls.every(type => ['tournamentView', 'matchView'].includes(type))).toBe(true)
   const before = e6c2aSnapshot(setup)
-  await setup.at(910_000, () => setup.reopen().alarm())
+  await setup.at(400_000, () => setup.reopen().alarm())
   expect(setup.releases).toHaveLength(2)
   expect(e6c2aSnapshot(setup).tables).toStrictEqual(before.tables)
 })
@@ -12375,6 +12425,65 @@ function moduleReadyAck(setup: Awaited<ReturnType<typeof roundDeliveryModule>>, 
   if (!ref) throw new Error('module binding ref missing')
   return { gameId, bindingDigest: ref.bindingDigest, status: 'Waiting' }
 }
+
+test('round-release parent commits pre-game no-show reasons as completed but never-started tournament results', async () => {
+  const setup = await roundDeliveryModule()
+  await setup.at(400_000, () => setup.room.alarm())
+  setup.setNoShowDecision(request => request.bindingRef.matchId === 'module-match-1'
+    ? { type: 'noShow', absentTeams: ['team-b'], sampledAtMs: request.deadlineMs }
+    : { type: 'noShow', absentTeams: ['team-c', 'team-d'], sampledAtMs: request.deadlineMs })
+
+  await setup.at(900_000, () => setup.reopen().alarm())
+  const meta = setup.sql.database.query('SELECT server_state_json, revision FROM competition_meta WHERE singleton = 1')
+    .get() as { server_state_json: string; revision: number }
+  const serverState: unknown = JSON.parse(meta.server_state_json)
+  if (!isJsonObject(serverState) || !isJsonObject(serverState.tournament)
+    || !Array.isArray(serverState.tournament.stages)) throw new Error('no-show tournament projection missing')
+  expect(serverState.registration).toBeDefined()
+  expect(Object.keys(serverState.matches as JsonObject)).toHaveLength(2)
+  const stage = serverState.tournament.stages[0]
+  if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) throw new Error('no-show round missing')
+  const round = stage.rounds.find(value => isJsonObject(value) && value.roundNumber === 1)
+  if (!isJsonObject(round) || !Array.isArray(round.matches)) throw new Error('no-show matches missing')
+  expect(round.matches).toEqual(expect.arrayContaining([
+    expect.objectContaining({ matchId: 'module-match-1', status: 'completed', started: false,
+      result: { type: 'noShow', absentTeams: ['team-b'], winnerId: 'team-a' } }),
+    expect.objectContaining({ matchId: 'module-match-2', status: 'completed', started: false,
+      result: { type: 'noShow', absentTeams: ['team-c', 'team-d'], winnerId: null } }),
+  ]))
+  expect(meta.revision).toBe(43)
+  expect(roundParentRows(setup.sql, 'competition_no_show_outbox').map(row => row.status))
+    .toEqual(['completed', 'completed'])
+  expect(setup.noShowCalls).toHaveLength(2)
+  expect(setup.engineCalls.filter(operation => operation === 'tournamentSubmitResult')).toHaveLength(2)
+  const matchCheckpoints = setup.sql.database.query('SELECT match_checkpoint_json FROM competition_matches').all()
+  expect(matchCheckpoints).toHaveLength(2)
+  for (const row of matchCheckpoints) {
+    if (!isJsonObject(row) || typeof row.match_checkpoint_json !== 'string') {
+      throw new Error('no-show changed a malformed materialized match')
+    }
+    const checkpoint: unknown = JSON.parse(row.match_checkpoint_json)
+    expect(checkpoint).toMatchObject({ history: [expect.any(Object)] })
+  }
+  expect(setup.alarm.scheduledAt).toBeNull()
+})
+
+test('round-release parent retries a saved no-show decision without sampling the child again', async () => {
+  const setup = await roundDeliveryModule()
+  await setup.at(400_000, () => setup.room.alarm())
+  setup.failNextNoShowSubmit()
+  await setup.at(900_000, () => setup.reopen().alarm())
+  const first = roundParentRows(setup.sql, 'competition_no_show_outbox')
+    .find(row => row.match_id === 'module-match-1')
+  expect(first).toMatchObject({ status: 'pending', decision_json: expect.any(String), attempts: 1 })
+  expect(setup.alarm.scheduledAt).toBe(902_000)
+  const samples = setup.noShowCalls.length
+
+  await setup.at(902_000, () => setup.reopen().alarm())
+  const rows = roundParentRows(setup.sql, 'competition_no_show_outbox')
+  expect(rows.every(row => row.status === 'completed')).toBe(true)
+  expect(setup.noShowCalls).toHaveLength(samples)
+})
 
 for (const fault of ['wrong game', 'wrong digest', 'Active', 'private', 'unknown string', 'unknown symbol',
   'hidden field', 'accessor', 'dispose throw', 'async dispose', 'array'] as const) {
@@ -12428,7 +12537,7 @@ for (const confirmation of [599_999, 600_000, 600_001]) {
     expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
       status: confirmation <= 600_000 ? 'released' : 'materializing', roundStartMs: 900_000,
     } } })
-    if (confirmation > 600_000) expect(setup.alarm.scheduledAt).toBeNull()
+    expect(setup.alarm.scheduledAt).toBe(900_000)
   })
 }
 
@@ -13799,7 +13908,7 @@ test('round-release parent alarm fairness dispatches due round and control ACKs 
     .toEqual({ status: 'provisioned', claim_id: null, claim_version: 1, error_code: null })
   expect(setup.sql.database.query(`SELECT status FROM competition_game_provision
     WHERE match_id = ? AND game_number = 1`).get(controlMatchId)).toEqual({ status: 'provisioned' })
-  expect(setup.alarm.scheduledAt).toBeNull()
+  expect(setup.alarm.scheduledAt).toBe(900_000)
 })
 
 test('round-release parent alarm fairness preserves per-match clock order while another due control proceeds', async () => {
@@ -14327,7 +14436,7 @@ test('round-release parent alarm fairness dispatches a linked due clock control 
   expect(roundParentRows(setup.sql, 'competition_game_provision'))
     .toContainEqual(expect.objectContaining({ game_id: gameId, status: 'provisioned' }))
   expect(roundParentRows(setup.sql, 'competition_round_room_ledger').every(row => row.status === 'confirmed')).toBe(true)
-  expect(setup.alarm.scheduledAt).toBeNull()
+  expect(setup.alarm.scheduledAt).toBe(900_000)
 })
 
 test('round-release parent delivery module retains a missing release capability and serves pure minimal current view', async () => {

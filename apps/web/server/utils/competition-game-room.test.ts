@@ -66,6 +66,7 @@ test('fixed ready errors use ASCII reasons and retain safe Chinese message and d
     ['lockedDeckMissing', 409, 'Conflict', '競賽鎖定牌組尚未就緒。'],
     ['gameAlreadyStarted', 409, 'Conflict', '對局已開始，無法變更準備狀態。'],
     ['gameFinished', 409, 'Conflict', '對局已結束，無法變更準備狀態。'],
+    ['checkInDeadlinePassed', 409, 'Conflict', '比賽開始時間已到，無法變更房間報到狀態。'],
     ['roomNotWaiting', 409, 'Conflict', '房間目前不在準備階段。'],
     ['competitionGameProtocolError', 502, 'Bad Gateway', '競賽房間回應格式不正確。'],
     ['competitionGameRoomUnavailable', 503, 'Service Unavailable', '競賽房間暫時無法使用，請稍後重試。'],

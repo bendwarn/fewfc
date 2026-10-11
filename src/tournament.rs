@@ -254,6 +254,11 @@ pub enum MatchStatus {
 pub enum MatchResult {
     // 雙方皆負，不代表和局，也不推定任何單局比分。
     DoubleLoss,
+    // 賽前報到缺席是賽事判定，不代表交手或 Game 已開始。
+    NoShow {
+        absent_teams: Vec<TeamId>,
+        winner_id: Option<TeamId>,
+    },
     Win {
         winner_id: TeamId,
         loser_id: TeamId,
@@ -321,6 +326,7 @@ impl MatchResult {
     fn winner(&self) -> Option<&TeamId> {
         match self {
             Self::Win { winner_id, .. } | Self::Forfeit { winner_id, .. } => Some(winner_id),
+            Self::NoShow { winner_id, .. } => winner_id.as_ref(),
             Self::Bye { team_id } => Some(team_id),
             Self::Draw { .. } | Self::DoubleLoss => None,
         }
@@ -329,8 +335,21 @@ impl MatchResult {
     fn loser(&self) -> Option<&TeamId> {
         match self {
             Self::Win { loser_id, .. } | Self::Forfeit { loser_id, .. } => Some(loser_id),
+            Self::NoShow { absent_teams, .. } if absent_teams.len() == 1 => absent_teams.first(),
             Self::Bye { .. } | Self::Draw { .. } | Self::DoubleLoss => None,
+            Self::NoShow { .. } => None,
         }
+    }
+
+    fn is_double_loss(&self) -> bool {
+        matches!(
+            self,
+            Self::DoubleLoss
+                | Self::NoShow {
+                    winner_id: None,
+                    ..
+                }
+        )
     }
 
     fn game_score(&self, team_id: &TeamId) -> Option<(u32, u32)> {
@@ -347,7 +366,9 @@ impl MatchResult {
                 winner_games,
                 loser_games,
             } if loser_id == team_id => Some((*loser_games as u32, *winner_games as u32)),
-            Self::Forfeit { .. } | Self::Bye { .. } | Self::Draw { .. } => None,
+            Self::Forfeit { .. } | Self::NoShow { .. } | Self::Bye { .. } | Self::Draw { .. } => {
+                None
+            }
             Self::Win { .. } | Self::DoubleLoss => None,
         }
     }
@@ -1238,7 +1259,7 @@ fn ensure_stage_qualification_source_is_closed(
         .rounds
         .iter()
         .flat_map(|round| &round.matches)
-        .find(|match_| matches!(match_.result, Some(MatchResult::DoubleLoss)))
+        .find(|match_| match_.result.as_ref().is_some_and(MatchResult::is_double_loss))
     {
         return Err(StageQualificationBlocker::DoubleLossNeedsReferee {
             source_stage_id: stage.config.stage_id.clone(),
@@ -1593,7 +1614,9 @@ impl Stage {
             self.config.match_format,
         )?;
         let match_ = self.find_match_mut(match_id)?;
-        match_.started = true;
+        if !matches!(&result, MatchResult::NoShow { .. }) {
+            match_.started = true;
+        }
         match_.status = if matches!(result, MatchResult::Bye { .. }) {
             MatchStatus::Completed
         } else {
@@ -1661,7 +1684,7 @@ impl Stage {
         }
         let restore_double_loss_future_matches = self.config.format == TournamentFormat::RoundRobin
             && self.status == StageStatus::Active
-            && matches!(&old_result, MatchResult::DoubleLoss);
+            && old_result.is_double_loss();
         let match_ = self.find_match_mut(match_id)?;
         match_.result = Some(replacement.clone());
         match_.status = MatchStatus::Completed;
@@ -1750,7 +1773,7 @@ impl Stage {
             .flat_map(|round| &round.matches)
             .filter(|match_| {
                 match_.status == MatchStatus::Completed
-                    && matches!(match_.result, Some(MatchResult::DoubleLoss))
+                    && match_.result.as_ref().is_some_and(MatchResult::is_double_loss)
             })
             .map(|match_| {
                 (
@@ -1805,7 +1828,7 @@ impl Stage {
             .flat_map(|round| &round.matches)
             .filter(|match_| {
                 match_.status == MatchStatus::Completed
-                    && matches!(match_.result, Some(MatchResult::DoubleLoss))
+                    && match_.result.as_ref().is_some_and(MatchResult::is_double_loss)
             })
             .flat_map(|match_| match_.participants.iter().cloned())
             .collect();
@@ -1915,7 +1938,7 @@ impl Stage {
             && final_match.kind == RoundKind::Main
             && final_match.participants.len() == 2
             && final_match.status == MatchStatus::Completed
-            && matches!(final_match.result, Some(MatchResult::DoubleLoss))
+            && final_match.result.as_ref().is_some_and(MatchResult::is_double_loss)
             && previous_rounds
                 .iter()
                 .all(|round| round.matches.iter().all(is_closed))
@@ -1977,7 +2000,7 @@ impl Stage {
                 .rounds
                 .iter()
                 .flat_map(|round| &round.matches)
-                .find(|match_| matches!(match_.result, Some(MatchResult::DoubleLoss)))
+                .find(|match_| match_.result.as_ref().is_some_and(MatchResult::is_double_loss))
             {
                 return Err(ScheduleError::DoubleLossNeedsReferee(
                     match_.match_id.clone(),
@@ -1992,7 +2015,7 @@ impl Stage {
         if let Some(double_loss) = round
             .matches
             .iter()
-            .find(|match_| matches!(match_.result, Some(MatchResult::DoubleLoss)))
+            .find(|match_| match_.result.as_ref().is_some_and(MatchResult::is_double_loss))
         {
             // 先依原交手位置組分支，才移除無 winner 的空位，不能壓縮全部勝者。
             let pairs = round
@@ -2002,7 +2025,8 @@ impl Stage {
                     let participants = branch
                         .iter()
                         .filter_map(|match_| match &match_.result {
-                            Some(MatchResult::DoubleLoss) | None => None,
+                            Some(result) if result.is_double_loss() => None,
+                            None => None,
                             Some(result) => Some(result.winner().cloned().ok_or_else(|| {
                                 ScheduleError::InvalidOperation("和局沒有晉級隊伍".to_string())
                             })),
@@ -2557,6 +2581,21 @@ impl Stage {
                             rows.get_mut(team_id).unwrap().losses += 1;
                         }
                     }
+                    MatchResult::NoShow {
+                        absent_teams,
+                        winner_id: None,
+                    } => {
+                        let loss_points = if self.config.format == TournamentFormat::Swiss {
+                            self.config.swiss_policy.as_ref().unwrap().match_points.loss
+                        } else {
+                            0
+                        };
+                        for team_id in absent_teams {
+                            let standing = rows.get_mut(team_id).unwrap();
+                            standing.match_points += loss_points;
+                            standing.losses += 1;
+                        }
+                    }
                     MatchResult::Win {
                         winner_id,
                         loser_id,
@@ -2588,6 +2627,26 @@ impl Stage {
                         rows.get_mut(winner_id).unwrap().match_points += points;
                         rows.get_mut(winner_id).unwrap().wins += 1;
                         rows.get_mut(loser_id).unwrap().losses += 1;
+                    }
+                    MatchResult::NoShow {
+                        absent_teams,
+                        winner_id: Some(winner_id),
+                    } => {
+                        let (win_points, loss_points) = if self.config.format
+                            == TournamentFormat::Swiss
+                        {
+                            let points = &self.config.swiss_policy.as_ref().unwrap().match_points;
+                            (points.win, points.loss)
+                        } else {
+                            (3, 0)
+                        };
+                        rows.get_mut(winner_id).unwrap().match_points += win_points;
+                        rows.get_mut(winner_id).unwrap().wins += 1;
+                        for team_id in absent_teams {
+                            let standing = rows.get_mut(team_id).unwrap();
+                            standing.match_points += loss_points;
+                            standing.losses += 1;
+                        }
                     }
                     MatchResult::Draw { .. } => {
                         let points = if self.config.format == TournamentFormat::Swiss {
@@ -2683,6 +2742,16 @@ impl Stage {
                         }
                         MatchResult::Draw { .. } => draws += 1,
                         MatchResult::DoubleLoss => losses += 1,
+                        MatchResult::NoShow {
+                            absent_teams,
+                            winner_id,
+                        } => {
+                            if winner_id.as_ref() == Some(team_id) {
+                                wins += 1;
+                            } else if absent_teams.contains(team_id) {
+                                losses += 1;
+                            }
+                        }
                         _ => {}
                     }
                 } else if matches!(result, MatchResult::Bye { team_id: bye_team } if bye_team == team_id)
@@ -2935,6 +3004,26 @@ fn validate_match_result(
                 ));
             }
         }
+        MatchResult::NoShow {
+            absent_teams,
+            winner_id,
+        } => {
+            let absent: BTreeSet<_> = absent_teams.iter().collect();
+            let valid = participants.len() == 2
+                && !absent_teams.is_empty()
+                && absent.len() == absent_teams.len()
+                && absent_teams.iter().all(|team| participants.contains(team));
+            let outcome_matches = match absent_teams.len() {
+                1 => winner_id.as_ref().is_some_and(|winner| {
+                    participants.contains(winner) && !absent.contains(winner)
+                }),
+                2 => winner_id.is_none(),
+                _ => false,
+            };
+            if !valid || !outcome_matches {
+                return Err(ScheduleError::ResultDoesNotMatchParticipants(match_id.clone()));
+            }
+        }
         MatchResult::Draw {
             first_games,
             second_games,
@@ -3011,6 +3100,11 @@ fn match_result_points(result: &MatchResult, team_id: &TeamId, config: &StageCon
         {
             points.loss
         }
+        MatchResult::NoShow {
+            winner_id: Some(winner_id),
+            ..
+        } if winner_id == team_id => points.win,
+        MatchResult::NoShow { absent_teams, .. } if absent_teams.contains(team_id) => points.loss,
         MatchResult::Draw { .. } if config.format == TournamentFormat::Swiss => points.draw,
         MatchResult::Draw { .. } => points.draw,
         MatchResult::Bye { team_id: bye_team } if bye_team == team_id => points.bye,
@@ -3142,6 +3236,93 @@ mod tests {
                 "winnerGames": 2,
                 "loserGames": 1
             })
+        );
+    }
+
+    #[test]
+    fn no_show_result_records_absence_without_marking_the_match_started() {
+        let mut stage = Stage::new(config(TournamentFormat::RoundRobin, 2)).unwrap();
+        let match_id = stage.rounds()[0].matches[0].match_id.clone();
+        let result = MatchResult::NoShow {
+            absent_teams: vec![TeamId::from("t1")],
+            winner_id: Some(TeamId::from("t2")),
+        };
+
+        stage.submit_result(&match_id, result.clone()).unwrap();
+
+        let match_ = &stage.rounds()[0].matches[0];
+        assert_eq!(match_.status, MatchStatus::Completed);
+        assert!(!match_.started);
+        assert_eq!(match_.result, Some(result));
+        let standings = stage.standings();
+        assert_eq!(standings.iter().find(|row| row.team_id.0 == "t1").unwrap().losses, 1);
+        assert_eq!(standings.iter().find(|row| row.team_id.0 == "t2").unwrap().wins, 1);
+    }
+
+    #[test]
+    fn double_no_show_counts_two_losses_and_serializes_its_reason() {
+        let result = MatchResult::NoShow {
+            absent_teams: vec![TeamId::from("t1"), TeamId::from("t2")],
+            winner_id: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&result).unwrap(),
+            serde_json::json!({ "type": "noShow", "absentTeams": ["t1", "t2"], "winnerId": null }),
+        );
+
+        let mut stage = Stage::new(config(TournamentFormat::RoundRobin, 2)).unwrap();
+        let match_id = stage.rounds()[0].matches[0].match_id.clone();
+        stage.submit_result(&match_id, result).unwrap();
+        let standings = stage.standings();
+        assert_eq!(standings.iter().find(|row| row.team_id.0 == "t1").unwrap().losses, 1);
+        assert_eq!(standings.iter().find(|row| row.team_id.0 == "t2").unwrap().losses, 1);
+    }
+
+    #[test]
+    fn swiss_no_show_losses_receive_the_published_loss_points() {
+        let mut policy = swiss_policy(DrawCredit::new(1, 2).unwrap());
+        policy.match_points.loss = 2;
+
+        let mut single_absence = Stage::new(swiss_config(2, 1, policy.clone())).unwrap();
+        let match_id = single_absence.rounds()[0].matches[0].match_id.clone();
+        single_absence
+            .submit_result(
+                &match_id,
+                MatchResult::NoShow {
+                    absent_teams: vec![TeamId::from("t1")],
+                    winner_id: Some(TeamId::from("t2")),
+                },
+            )
+            .unwrap();
+        let standings = single_absence.standings();
+        assert_eq!(
+            standings.iter().find(|row| row.team_id.0 == "t1").unwrap().match_points,
+            2
+        );
+        assert_eq!(
+            standings.iter().find(|row| row.team_id.0 == "t2").unwrap().match_points,
+            3
+        );
+
+        let mut double_absence = Stage::new(swiss_config(2, 1, policy)).unwrap();
+        let match_id = double_absence.rounds()[0].matches[0].match_id.clone();
+        double_absence
+            .submit_result(
+                &match_id,
+                MatchResult::NoShow {
+                    absent_teams: vec![TeamId::from("t1"), TeamId::from("t2")],
+                    winner_id: None,
+                },
+            )
+            .unwrap();
+        let standings = double_absence.standings();
+        assert_eq!(
+            standings.iter().find(|row| row.team_id.0 == "t1").unwrap().match_points,
+            2
+        );
+        assert_eq!(
+            standings.iter().find(|row| row.team_id.0 == "t2").unwrap().match_points,
+            2
         );
     }
 

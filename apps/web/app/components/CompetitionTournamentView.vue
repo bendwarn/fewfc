@@ -164,7 +164,7 @@
                     </span>
                   </p>
                   <p class="match-fact">
-                    賽果：{{ tournamentMatchResultLabel(match.result) }}
+                    賽果：{{ tournamentResultLabel(stage.config, match.result) }}
                     <span
                       v-if="match.result?.type === 'doubleLoss' && isEliminationFormat(stage.config.format)
                         && singleEliminationDoubleLossFinal(stage)?.matchId !== match.matchId"
@@ -221,7 +221,7 @@
                       <span v-if="index > 0">、</span><span class="identifier">{{ teamId }}</span>
                     </span>
                   </p>
-                  <p class="match-fact">賽果：{{ tournamentMatchResultLabel(match.result) }}</p>
+                  <p class="match-fact">賽果：{{ tournamentResultLabel(stage.config, match.result) }}</p>
                 </article>
               </div>
             </article>
@@ -246,6 +246,7 @@ import {
   tournamentTimeLimitLabel,
   type CompetitionTournamentViewData,
   type CompetitionTournamentViewLoadError,
+  type TournamentViewMatchResult,
   type TournamentViewStageConfig,
 } from '~/lib/competition-tournament-view'
 
@@ -282,6 +283,16 @@ const requestContext = computed(() => JSON.stringify([
   props.contextRevision,
   props.contextReady,
 ]))
+
+function tournamentResultLabel(
+  stage: TournamentViewStageConfig,
+  result: TournamentViewMatchResult | null,
+): string {
+  return tournamentMatchResultLabel(result, teamId => {
+    const team = stage.teams.find(entry => entry.teamId === teamId)
+    return team ? `種子 ${team.seed}` : '該隊'
+  })
+}
 
 async function loadTournament() {
   if (!canRead.value || loading.value) return

@@ -174,6 +174,53 @@ export interface CompetitionGameStartRequest {
   binding: CompetitionGameBinding
 }
 
+export interface CompetitionGameNoShowRequest {
+  bindingRef: CompetitionGameBindingRef
+  commandId: string
+  deadlineMs: number
+}
+
+export function competitionGameNoShowCommandId(bindingRef: CompetitionGameBindingRef): string {
+  return `competition-no-show:${bindingRef.roundRef.roundGenerationId}:${bindingRef.matchId}`
+}
+
+export type CompetitionGameNoShowDecision =
+  | { type: 'started'; startedAtMs: number }
+  | { type: 'ready'; sampledAtMs: number }
+  | { type: 'noShow'; absentTeams: string[]; sampledAtMs: number }
+  | { type: 'unavailable' }
+
+export function isCompetitionGameNoShowRequest(value: unknown): value is CompetitionGameNoShowRequest {
+  return isRecord(value)
+    && hasExactKeys(value, ['bindingRef', 'commandId', 'deadlineMs'])
+    && isCompetitionGameBindingRef(value.bindingRef)
+    && isNonEmptyId(value.commandId) && value.commandId.trim() === value.commandId
+    && typeof value.deadlineMs === 'number' && Number.isSafeInteger(value.deadlineMs)
+    && value.deadlineMs === value.bindingRef.roundStartMs
+}
+
+export function isCompetitionGameNoShowDecision(value: unknown): value is CompetitionGameNoShowDecision {
+  if (!isRecord(value) || typeof value.type !== 'string') return false
+  if (value.type === 'unavailable') return hasExactKeys(value, ['type'])
+  if (value.type === 'started') {
+    return hasExactKeys(value, ['type', 'startedAtMs'])
+      && typeof value.startedAtMs === 'number' && Number.isSafeInteger(value.startedAtMs)
+      && value.startedAtMs >= 0 && value.startedAtMs <= 8_640_000_000_000_000
+  }
+  if (value.type === 'ready') {
+    return hasExactKeys(value, ['type', 'sampledAtMs'])
+      && typeof value.sampledAtMs === 'number' && Number.isSafeInteger(value.sampledAtMs)
+      && value.sampledAtMs >= 0 && value.sampledAtMs <= 8_640_000_000_000_000
+  }
+  return value.type === 'noShow'
+    && hasExactKeys(value, ['type', 'absentTeams', 'sampledAtMs'])
+    && Array.isArray(value.absentTeams) && value.absentTeams.length >= 1 && value.absentTeams.length <= 2
+    && value.absentTeams.every(team => isNonEmptyId(team) && team.trim() === team)
+    && new Set(value.absentTeams).size === value.absentTeams.length
+    && typeof value.sampledAtMs === 'number' && Number.isSafeInteger(value.sampledAtMs)
+    && value.sampledAtMs >= 0 && value.sampledAtMs <= 8_640_000_000_000_000
+}
+
 /** 僅供伺服器核對目前固定對局；結果只回 boolean，不回傳私密房間資料。 */
 export interface CompetitionGameClockControlEligibilityRequest {
   competitionId: string
@@ -222,6 +269,7 @@ export type CompetitionGameReadyResult =
         | 'lockedDeckMissing'
         | 'gameAlreadyStarted'
         | 'gameFinished'
+        | 'checkInDeadlinePassed'
         | 'roomNotWaiting'
     }
 

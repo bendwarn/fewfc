@@ -240,6 +240,36 @@ test('preserves server bye and double-loss states and never renders raw schedule
   expect(tournamentMatchResultLabel(forfeit)).toBe('team-b 棄權判定勝出（對手 team-a）')
 })
 
+test('公開賽程顯示報到缺席原因與判負隊伍，且不把它標成已開局', () => {
+  const noShowInput = responseWithMatchOverrides(0, {
+    status: 'completed',
+    started: false,
+    result: { type: 'noShow', absentTeams: ['team-a'], winnerId: 'team-b' },
+  })
+  const parsed = parseCompetitionTournamentViewResponse(noShowInput, 'competition-a')
+  expect(parsed).not.toBeNull()
+  const result = parsed?.stages[0]?.rounds[0]?.matches[0]?.result ?? null
+  expect(result).toEqual({ type: 'noShow', absentTeams: ['team-a'], winnerId: 'team-b' })
+  expect(tournamentMatchResultLabel(result, teamId => teamId === 'team-a' ? '種子 1' : '種子 2'))
+    .toBe('種子 1 因賽前未完成報到判負；種子 2 勝出')
+
+  const doubleNoShowInput = responseWithMatchOverrides(0, {
+    status: 'completed',
+    started: false,
+    result: { type: 'noShow', absentTeams: ['team-a', 'team-b'], winnerId: null },
+  })
+  const doubleNoShow = parseCompetitionTournamentViewResponse(doubleNoShowInput, 'competition-a')
+    ?.stages[0]?.rounds[0]?.matches[0]?.result ?? null
+  expect(tournamentMatchResultLabel(doubleNoShow, teamId => teamId === 'team-a' ? '種子 1' : '種子 2'))
+    .toBe('雙方因賽前未完成報到判負（種子 1、種子 2）')
+
+  expect(() => parseCompetitionTournamentViewResponse(responseWithMatchOverrides(0, {
+    status: 'completed',
+    started: true,
+    result: { type: 'noShow', absentTeams: ['team-a'], winnerId: 'team-b' },
+  }), 'competition-a')).toThrow()
+})
+
 test('rejects mismatched identity, unsafe revisions, unknown fields, and unknown enum states', () => {
   const valid = response()
   expect(() => parseCompetitionTournamentViewResponse(valid, 'another-competition')).toThrow()

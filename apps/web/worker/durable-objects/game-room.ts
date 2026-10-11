@@ -30,6 +30,7 @@ import {
   competitionClockOperationsForTransition,
   competitionGameBindingEquals,
   competitionGameBindingRefForRequest,
+  competitionGameNoShowCommandId,
   competitionRulesSetup,
   validateCompetitionGameBinding,
   validateCompetitionGameRequest,
@@ -41,6 +42,8 @@ import {
   type CompetitionClockOperation,
   type CompetitionGameBinding,
   type CompetitionGameBindingRef,
+  type CompetitionGameNoShowDecision,
+  type CompetitionGameNoShowRequest,
   type CompetitionGameAdmissionRequest,
   type CompetitionGameInitialStartEvidence,
   type CompetitionGameRevokeResult,
@@ -51,6 +54,8 @@ import {
   type CompetitionGameReadyResult,
   type CompetitionGameRoomResult,
   type CompetitionGameStartRequest,
+  isCompetitionGameNoShowRequest,
+  isCompetitionGameNoShowDecision,
   isCompetitionGameReadyRequest,
   isCompetitionGameClockControlEligibilityRequest,
   isCompetitionGameAdmissionRequestShape,
@@ -120,7 +125,7 @@ type GameRoomAtomicStorage = Pick<DurableObjectStorage,
 >
 
 /** storage 與 transaction 都能協調 alarm；此 helper 不要求讀寫或開啟交易能力。 */
-type GameRoomAlarmStorage = Pick<DurableObjectTransaction, 'setAlarm' | 'deleteAlarm'>
+type GameRoomAlarmStorage = Pick<DurableObjectTransaction, 'get' | 'setAlarm' | 'deleteAlarm'>
 
 interface CompetitionDeliveryQueue {
   schemaVersion: 1
@@ -218,7 +223,7 @@ interface CompetitionGameAdmission {
   schemaVersion: 1
   bindingRef: CompetitionGameBindingRef
   bindingFingerprint: string | null
-  status: 'unreleased' | 'released' | 'revoked' | 'started'
+  status: 'unreleased' | 'released' | 'revoked' | 'noShow' | 'started'
   version: number
   releaseCommandId: string | null
   startRetryAtMs: number | null
@@ -231,8 +236,17 @@ interface CompetitionGameAdmission {
   }>
 }
 
+interface CompetitionGameNoShowSnapshot {
+  schemaVersion: 1
+  bindingRef: CompetitionGameBindingRef
+  commandId: string
+  deadlineMs: number
+  decision: CompetitionGameNoShowDecision
+}
+
 const competitionAdmissionKey = 'competitionGameAdmission'
 const competitionInitialStartEvidenceKey = 'competitionInitialStartEvidence'
+const competitionNoShowDecisionKey = 'competitionNoShowDecision'
 
 interface NotificationEnvelope {
   targetUserId: string
@@ -515,6 +529,13 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     return await this.serialized(() => this.commitCompetitionGameStart(preparation, rules))
   }
 
+  /** 截止時與 GameStarted 共用 serial lane；只記房間 admission，不造遊戲事件。 */
+  async adjudicateCompetitionNoShow(
+    request: CompetitionGameNoShowRequest,
+  ): Promise<CompetitionGameNoShowDecision> {
+    return this.serialized(() => this.adjudicateCompetitionNoShowInternal(request))
+  }
+
   /** 固定賽事成員準備 RPC；只讀 binding 的鎖定牌組，不接受或查詢帳號牌組。 */
   async setCompetitionReady(
     request: CompetitionGameReadyRequest,
@@ -541,7 +562,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       }
 
       const storedMetadata = await this.ctx.storage.get<unknown>('metadata')
-      const admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+      let admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
       if (!isCompetitionSnapshotData(storedMetadata)
         || !hasCompetitionReadyMetadataShape(storedMetadata)
         || !competitionAdmissionMatchesBinding(admission, storedMetadata, binding)
@@ -579,6 +600,22 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       if (metadata.status !== 'Waiting') {
         return { ok: false, code: 'roomNotWaiting' }
       }
+      if (Date.now() >= binding.roundStartMs) {
+        // T 已凍結為 ready 時，斷線者仍須重連並明示準備；noShow 判定不可逆。
+        const decision = await this.adjudicateCompetitionNoShowInternal({
+          bindingRef: admission.bindingRef,
+          commandId: competitionGameNoShowCommandId(admission.bindingRef),
+          deadlineMs: binding.roundStartMs,
+        })
+        if (decision.type !== 'ready') {
+          return { ok: false, code: 'checkInDeadlinePassed' }
+        }
+        admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+        if (!competitionAdmissionMatchesBinding(admission, metadata, binding)
+          || admission.status !== 'released') {
+          return { ok: false, code: 'checkInDeadlinePassed' }
+        }
+      }
       if (!actor.connected) {
         return { ok: false, code: 'playerNotConnected' }
       }
@@ -611,6 +648,97 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     })
   }
 
+  private async adjudicateCompetitionNoShowInternal(
+    request: CompetitionGameNoShowRequest,
+  ): Promise<CompetitionGameNoShowDecision> {
+    if (!isCompetitionGameNoShowRequest(request)) throw new Error('invalid competition no-show request')
+    const current = await this.ctx.storage.list<unknown>()
+    const binding = current.get('competitionBinding')
+    const metadata = current.get('metadata')
+    const admission = current.get(competitionAdmissionKey)
+    if (!competitionBindingIsValid(binding) || !isCompetitionSnapshotData(metadata)
+      || !hasCompetitionReadyMetadataShape(metadata)
+      || !competitionAdmissionMatchesBinding(admission, metadata, binding)
+      || !sameCompetitionBindingRef(admission.bindingRef, request.bindingRef)
+      || request.bindingRef.gameId !== metadata.gameId
+      || request.bindingRef.matchId !== binding.matchId
+      || request.bindingRef.roundStartMs !== binding.roundStartMs
+      || request.commandId !== competitionGameNoShowCommandId(request.bindingRef)) {
+      throw new Error('competition no-show binding is invalid')
+    }
+
+    const stored = current.get(competitionNoShowDecisionKey)
+    if (stored !== undefined) {
+      if (!isCompetitionGameNoShowSnapshot(stored)
+        || !sameCompetitionBindingRef(stored.bindingRef, request.bindingRef)
+        || stored.commandId !== request.commandId || stored.deadlineMs !== request.deadlineMs) {
+        throw new Error('stored competition no-show decision is invalid')
+      }
+      return structuredClone(stored.decision)
+    }
+
+    const now = Date.now()
+    if (!isSafeNonNegativeInteger(now) || now < request.deadlineMs) {
+      throw new Error('competition no-show deadline has not arrived')
+    }
+    if (admission.status === 'started') {
+      if (!this.hasDurableCompetitionStart(current, metadata, binding, admission) || !admission.start) {
+        throw new Error('competition start evidence is invalid')
+      }
+      return { type: 'started', startedAtMs: admission.start.startedAtMs }
+    }
+    if (admission.status !== 'released' || metadata.status !== 'Waiting') {
+      return { type: 'unavailable' }
+    }
+    if (!this.competitionMembersMatchBinding(metadata, binding)
+      || metadata.members.length !== binding.players.length
+      || !metadata.members.every(member => typeof member.connected === 'boolean'
+        && typeof member.ready === 'boolean')) {
+      throw new Error('competition no-show member snapshot is invalid')
+    }
+
+    const teams = [...new Set(binding.players.map(player => player.team))]
+    const absentTeams = teams.filter(team => binding.players.some(player => player.team === team
+      && !metadata.members.some(member => member.userId === player.userId
+        && member.connected && member.ready)))
+    const decision: CompetitionGameNoShowDecision = absentTeams.length > 0
+      ? { type: 'noShow', absentTeams, sampledAtMs: now }
+      : { type: 'ready', sampledAtMs: now }
+    const snapshot: CompetitionGameNoShowSnapshot = {
+      schemaVersion: 1,
+      bindingRef: structuredClone(request.bindingRef),
+      commandId: request.commandId,
+      deadlineMs: request.deadlineMs,
+      decision,
+    }
+    if (!isCompetitionGameNoShowSnapshot(snapshot)) throw new Error('competition no-show snapshot is invalid')
+    const nextAdmission: CompetitionGameAdmission = decision.type === 'noShow'
+      ? { ...admission, status: 'noShow', version: admission.version + 1, startRetryAtMs: null }
+      : { ...admission, startRetryAtMs: now }
+    if (decision.type === 'noShow' && admission.version >= Number.MAX_SAFE_INTEGER) {
+      throw new Error('competition admission version overflow')
+    }
+
+    await this.ctx.storage.transaction(async storage => {
+      const latest = await storage.list<unknown>()
+      if (!competitionBindingIsValid(latest.get('competitionBinding'))
+        || stableDeliveryFingerprint(latest.get('competitionBinding')) !== stableDeliveryFingerprint(binding)
+        || stableDeliveryFingerprint(latest.get('metadata')) !== stableDeliveryFingerprint(metadata)
+        || stableDeliveryFingerprint(latest.get(competitionAdmissionKey)) !== stableDeliveryFingerprint(admission)
+        || latest.has(competitionNoShowDecisionKey)) {
+        throw new Error('competition no-show state changed before commit')
+      }
+      await storage.put({
+        [competitionNoShowDecisionKey]: snapshot,
+        [competitionAdmissionKey]: nextAdmission,
+      })
+      await this.scheduleCompetitionAdmissionAlarm(
+        storage, metadata, binding, nextAdmission, latest.get(this.competitionDeliveryQueueKey()),
+      )
+    })
+    return structuredClone(decision)
+  }
+
   private async prepareCompetitionGameStart(
     request: CompetitionGameStartRequest,
   ): Promise<PreparedCompetitionGameStart | { result: CompetitionGameRoomResult }> {
@@ -618,12 +746,20 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
     const metadata = await this.requireMetadata()
     const storedBinding = await this.competitionBinding()
-    const admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+    let admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
     if (!storedBinding
       || metadata.gameId !== request.gameId
       || !competitionAdmissionMatchesBinding(admission, metadata, storedBinding)
       || !competitionGameBindingEquals(storedBinding, request.binding)) {
       throw new CompetitionGameBindingError('competitionBindingConflict')
+    }
+    if (Date.now() >= storedBinding.roundStartMs) {
+      await this.adjudicateCompetitionNoShowInternal({
+        bindingRef: admission.bindingRef,
+        commandId: competitionGameNoShowCommandId(admission.bindingRef),
+        deadlineMs: storedBinding.roundStartMs,
+      })
+      admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
     }
     if (metadata.status === 'Active') {
       const current = await this.ctx.storage.list<unknown>()
@@ -655,13 +791,21 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     validateCompetitionGameRequest(preparation.request)
     const metadata = await this.requireMetadata()
     const storedBinding = await this.competitionBinding()
-    const admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+    let admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
     if (!storedBinding
       || !competitionAdmissionMatchesBinding(admission, metadata, storedBinding)
       || metadata.gameId !== preparation.request.gameId
       || !competitionGameBindingEquals(storedBinding, preparation.binding)
       || !competitionGameBindingEquals(storedBinding, preparation.request.binding)) {
       throw new CompetitionGameBindingError('competitionBindingConflict')
+    }
+    if (Date.now() >= storedBinding.roundStartMs) {
+      await this.adjudicateCompetitionNoShowInternal({
+        bindingRef: admission.bindingRef,
+        commandId: competitionGameNoShowCommandId(admission.bindingRef),
+        deadlineMs: storedBinding.roundStartMs,
+      })
+      admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
     }
     if (metadata.status === 'Active') {
       const current = await this.ctx.storage.list<unknown>()
@@ -1437,6 +1581,27 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       }
       if (metadata.status !== 'Waiting') {
         return this.json({ error: 'room has already started' }, 409)
+      }
+
+      if (Date.now() >= competition.roundStartMs) {
+        const admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+        if (!competitionAdmissionMatchesBinding(admission, metadata, competition)) {
+          return this.json({ error: '競賽房間狀態無法驗證。', code: 'invalidCompetitionRoom' }, 409)
+        }
+        const decision = await this.adjudicateCompetitionNoShowInternal({
+          bindingRef: admission.bindingRef,
+          commandId: competitionGameNoShowCommandId(admission.bindingRef),
+          deadlineMs: competition.roundStartMs,
+        })
+        const currentAdmission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+        if (decision.type !== 'ready'
+          || !competitionAdmissionMatchesBinding(currentAdmission, metadata, competition)
+          || currentAdmission.status !== 'released') {
+          return this.json({
+            error: '比賽開始時間已到，無法變更房間報到狀態。',
+            code: 'checkInDeadlinePassed',
+          }, 409)
+        }
       }
 
       const ready = !actor.ready
@@ -2585,8 +2750,17 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         ? await this.ctx.storage.get<GameRoomMetadata>('metadata')
         : await this.metadata()
       if (binding && metadata?.status === 'Waiting') {
-        const admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+        let admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
         const queue = await this.ctx.storage.get<unknown>(this.competitionDeliveryQueueKey())
+        if (isCompetitionGameAdmission(admission) && admission.status === 'released'
+          && Date.now() >= binding.roundStartMs) {
+          await this.adjudicateCompetitionNoShowInternal({
+            bindingRef: admission.bindingRef,
+            commandId: competitionGameNoShowCommandId(admission.bindingRef),
+            deadlineMs: binding.roundStartMs,
+          })
+          admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+        }
         if (!isCompetitionSnapshotData(metadata)
           || !hasCompetitionReadyMetadataShape(metadata)
           || !competitionAdmissionMatchesBinding(admission, metadata, binding)
@@ -2613,7 +2787,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
             alarmWork.request.binding,
           )
         })
-        console.error('competition auto-start failed; retry scheduled', error)
+        console.error('competition auto-start failed; retry eligibility reevaluated', error)
       }
       return
     }
@@ -2639,9 +2813,21 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     const metadata = await this.requireMetadata()
     const competition = await this.competitionBinding()
     if (competition) {
-      const admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+      let admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
       if (!competitionAdmissionMatchesBinding(admission, metadata, competition)
         || admission.status === 'revoked') return this.competitionMutationRejected()
+      if (metadata.status === 'Waiting' && admission.status === 'released'
+        && Date.now() >= competition.roundStartMs) {
+        await this.adjudicateCompetitionNoShowInternal({
+          bindingRef: admission.bindingRef,
+          commandId: competitionGameNoShowCommandId(admission.bindingRef),
+          deadlineMs: competition.roundStartMs,
+        })
+        admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+        if (!competitionAdmissionMatchesBinding(admission, metadata, competition)) {
+          return this.competitionMutationRejected()
+        }
+      }
     }
     const actor = competition
       ? this.memberFor(metadata, actorUserId)
@@ -2751,7 +2937,32 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
 
     if (competition && updatedMetadata.status === 'Waiting') {
-      await this.persistCompetitionWaitingMetadata(updatedMetadata, competition, unreadyEvent)
+      const disconnectedAtMs = Date.now()
+      if (disconnectedAtMs > competition.roundStartMs) {
+        const admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+        if (competitionAdmissionMatchesBinding(admission, metadata, competition)
+          && admission.status === 'released') {
+          await this.adjudicateCompetitionNoShowInternal({
+            bindingRef: admission.bindingRef,
+            commandId: competitionGameNoShowCommandId(admission.bindingRef),
+            deadlineMs: competition.roundStartMs,
+          })
+        }
+      }
+      await this.persistCompetitionWaitingMetadata(updatedMetadata, competition, unreadyEvent, {
+        allowNoShow: true,
+      })
+      if (disconnectedAtMs === competition.roundStartMs) {
+        const admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+        if (competitionAdmissionMatchesBinding(admission, updatedMetadata, competition)
+          && admission.status === 'released') {
+          await this.adjudicateCompetitionNoShowInternal({
+            bindingRef: admission.bindingRef,
+            commandId: competitionGameNoShowCommandId(admission.bindingRef),
+            deadlineMs: competition.roundStartMs,
+          })
+        }
+      }
       if (await this.competitionCanAutoStart(updatedMetadata, competition)) {
         this.queueCompetitionAutoStart(updatedMetadata.gameId, competition)
       }
@@ -3547,8 +3758,9 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       && admission.status === 'released' && metadata.status === 'Waiting') {
       if (this.competitionStartAdmitted(metadata, binding, admission, now)) {
         candidates.push(admission.startRetryAtMs ?? now)
-      } else if (now < binding.roundStartMs) {
-        // T 仍是未開局交手的報到截止；只有已全員準備才排立即開局。
+      }
+      if (now < binding.roundStartMs) {
+        // 即使開局重試排在 T 後，也要先在 T 固定一次房間報到快照。
         candidates.push(binding.roundStartMs)
       }
     }
@@ -3694,6 +3906,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     metadata: GameRoomMetadata,
     binding: CompetitionGameBinding,
     eventDetails?: { type: string; actor: PlayerId; payload: unknown },
+    options?: { allowNoShow?: boolean },
   ): Promise<void> {
     const storage: GameRoomAtomicStorage = this.ctx.storage
     const sequence = eventDetails ? await this.nextSequence() : undefined
@@ -3717,15 +3930,17 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       if (!competitionBindingIsValid(currentBinding) || !competitionGameBindingEquals(currentBinding, binding)
         || !isCompetitionSnapshotData(currentMetadata) || !hasCompetitionReadyMetadataShape(currentMetadata)
         || !competitionAdmissionMatchesBinding(admission, currentMetadata, currentBinding)
-        || (admission.status !== 'unreleased' && admission.status !== 'released')
+        || (admission.status !== 'unreleased' && admission.status !== 'released'
+          && !(options?.allowNoShow && admission.status === 'noShow'))
         || currentMetadata.status !== 'Waiting' || current.has('gameRecord')
         || !this.competitionMembersMatchBinding(metadata, currentBinding)) {
         throw new CompetitionGameBindingError('competitionBindingConflict')
       }
-      const nextAdmission: CompetitionGameAdmission = {
-        ...admission, version: admission.version + 1, startRetryAtMs: null,
-      }
-      if (admission.version >= Number.MAX_SAFE_INTEGER) {
+      // noShow 裁定固定後，斷線只能改等待房狀態，不能再改 admission 或重開局。
+      const nextAdmission: CompetitionGameAdmission = admission.status === 'noShow'
+        ? admission
+        : { ...admission, version: admission.version + 1, startRetryAtMs: null }
+      if (admission.status !== 'noShow' && admission.version >= Number.MAX_SAFE_INTEGER) {
         throw new CompetitionGameBindingError('competitionBindingConflict')
       }
       await transaction.put({
@@ -3756,7 +3971,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       } catch (retryError) {
         console.error('competition auto-start retry scheduling failed', retryError)
       }
-      console.error('competition low-latency auto-start failed; alarm retained', error)
+      console.error('competition low-latency auto-start failed; retry eligibility reevaluated', error)
     }))
   }
 
@@ -3765,6 +3980,17 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     expectedBinding: CompetitionGameBinding,
   ): Promise<void> {
     const storage: GameRoomAtomicStorage = this.ctx.storage
+    const bindingBeforeRetry = await this.competitionBinding()
+    const admissionBeforeRetry = await storage.get<unknown>(competitionAdmissionKey)
+    if (bindingBeforeRetry && competitionGameBindingEquals(bindingBeforeRetry, expectedBinding)
+      && isCompetitionGameAdmission(admissionBeforeRetry)
+      && admissionBeforeRetry.status === 'released' && Date.now() >= bindingBeforeRetry.roundStartMs) {
+      await this.adjudicateCompetitionNoShowInternal({
+        bindingRef: admissionBeforeRetry.bindingRef,
+        commandId: competitionGameNoShowCommandId(admissionBeforeRetry.bindingRef),
+        deadlineMs: bindingBeforeRetry.roundStartMs,
+      })
+    }
     await storage.transaction(async transaction => {
       const current = await transaction.get<unknown>([
         'metadata', 'competitionBinding', competitionAdmissionKey, this.competitionDeliveryQueueKey(),
@@ -3774,6 +4000,12 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       const admission = current.get(competitionAdmissionKey)
       if (!competitionBindingIsValid(binding) || !hasCompetitionReadyMetadataShape(metadata)
         || !competitionAdmissionMatchesBinding(admission, metadata, binding)) return
+      if (admission.status !== 'released') {
+        await this.scheduleCompetitionAdmissionAlarm(
+          transaction, metadata, binding, admission, current.get(this.competitionDeliveryQueueKey()),
+        )
+        return
+      }
       const next: CompetitionGameAdmission = {
         ...admission,
         startRetryAtMs: metadata.gameId === gameId && competitionGameBindingEquals(binding, expectedBinding)
@@ -4800,10 +5032,27 @@ function isCompetitionGameAdmission(value: unknown): value is CompetitionGameAdm
   if (value.start !== null || value.receipts.some(receipt => receipt.result === 'started')) return false
   if (value.status === 'revoked') return value.startRetryAtMs === null
     && value.receipts.some(receipt => receipt.result === 'revoked')
+  if (value.status === 'noShow') return value.startRetryAtMs === null
+    && value.releaseCommandId !== null && value.bindingFingerprint !== null
+    && value.receipts.some(receipt => receipt.kind === 'release' && receipt.commandId === value.releaseCommandId)
+    && !value.receipts.some(receipt => receipt.result === 'revoked')
   if (value.bindingFingerprint === null || value.receipts.some(receipt => receipt.kind === 'revoke')) return false
   return value.status === 'unreleased'
     ? value.releaseCommandId === null && value.startRetryAtMs === null && value.receipts.length === 0
     : value.status === 'released' && value.releaseCommandId !== null
+}
+
+function isCompetitionGameNoShowSnapshot(value: unknown): value is CompetitionGameNoShowSnapshot {
+  return isCompetitionSnapshotData(value) && isRecord(value)
+    && hasCompetitionSnapshotKeys(value, ['schemaVersion', 'bindingRef', 'commandId', 'deadlineMs', 'decision'])
+    && value.schemaVersion === 1 && isCompetitionGameBindingRef(value.bindingRef)
+    && isNormalizedCompetitionId(value.commandId)
+    && value.commandId === competitionGameNoShowCommandId(value.bindingRef)
+    && isSafeNonNegativeInteger(value.deadlineMs)
+    && value.deadlineMs === value.bindingRef.roundStartMs
+    && isCompetitionGameNoShowDecision(value.decision)
+    && (value.decision.type === 'ready' || value.decision.type === 'noShow')
+    && value.decision.sampledAtMs >= value.deadlineMs
 }
 
 function competitionAdmissionMatchesBinding(

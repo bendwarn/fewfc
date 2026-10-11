@@ -40,6 +40,7 @@ export interface TournamentViewStageConfig {
 
 export type TournamentViewMatchResult =
   | { type: 'doubleLoss' }
+  | { type: 'noShow', absentTeams: string[], winnerId: string | null }
   | { type: 'win', winnerId: string, loserId: string, winnerGames: number, loserGames: number }
   | { type: 'draw', firstGames: number, secondGames: number }
   | { type: 'bye', teamId: string }
@@ -212,10 +213,17 @@ export function tournamentMatchStatusLabel(status: TournamentMatchStatusView): s
   }[status]
 }
 
-export function tournamentMatchResultLabel(result: TournamentViewMatchResult | null): string {
+export function tournamentMatchResultLabel(
+  result: TournamentViewMatchResult | null,
+  teamLabel: (teamId: string) => string = () => '該隊',
+): string {
   if (result === null) return '尚無賽果'
   switch (result.type) {
     case 'doubleLoss': return '雙方判負（不推定勝者）'
+    case 'noShow':
+      return result.winnerId === null
+        ? `雙方因賽前未完成報到判負（${result.absentTeams.map(teamLabel).join('、')}）`
+        : `${result.absentTeams.map(teamLabel).join('、')} 因賽前未完成報到判負；${teamLabel(result.winnerId)} 勝出`
     case 'win': return `${result.winnerId} 勝出 ${result.winnerGames}–${result.loserGames}`
     case 'draw': return `和局 ${result.firstGames}–${result.secondGames}`
     case 'bye': return `${result.teamId} 輪空`
@@ -495,6 +503,7 @@ function parseMatch(
   if (value.result !== null) {
     const parsedResult = parseMatchResult(value.result, new Set(participants))
     if (!parsedResult) return null
+    if (parsedResult.type === 'noShow' && (value.status !== 'completed' || value.started)) return null
     result = parsedResult
   }
 
@@ -531,6 +540,23 @@ function parseMatchResult(
       return exactRecord(value, ['type']) && (!participants || participants.size === 2)
         ? { type: 'doubleLoss' }
         : null
+    case 'noShow': {
+      const result = exactRecord(value, ['type', 'absentTeams', 'winnerId'])
+      if (!result || !Array.isArray(result.absentTeams) || result.absentTeams.length < 1
+        || result.absentTeams.length > 2 || result.absentTeams.some(team => !isNonEmptyString(team))
+        || new Set(result.absentTeams).size !== result.absentTeams.length
+        || (participants && (participants.size !== 2 || result.absentTeams.some(team => !participants.has(team))))) {
+        return null
+      }
+      const winnerId = result.winnerId
+      if (result.absentTeams.length === 2) {
+        if (winnerId !== null || (participants && result.absentTeams.some(team => !participants.has(team)))) return null
+      } else if (!isNonEmptyString(winnerId) || result.absentTeams.includes(winnerId)
+        || (participants && !participants.has(winnerId))) {
+        return null
+      }
+      return { type: 'noShow', absentTeams: [...result.absentTeams], winnerId }
+    }
     case 'win': {
       const result = exactRecord(value, ['type', 'winnerId', 'loserId', 'winnerGames', 'loserGames'])
       if (!result || !isNonEmptyString(result.winnerId) || !isNonEmptyString(result.loserId)

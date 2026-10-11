@@ -368,6 +368,7 @@ export type CompetitionProjectionAudience =
 
 export type MatchResult =
   | { type: 'doubleLoss' }
+  | { type: 'noShow'; absentTeams: string[]; winnerId: string | null }
   | {
       type: 'win'
       winnerId: string

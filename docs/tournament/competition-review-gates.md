@@ -1,6 +1,6 @@
 # 競賽功能：目前審核關卡
 
-2026-10-11 本輪以 HEAD `653a516` 審核 03 公告、05 初始種子、07 權威時計與 17 缺席。03 公告、05 初始種子及 07 權威時計限定 PASS。各功能依指定案例與兩軸審核逐一提交；產品政策以[設計](competitive-play-design.md)為準。本文件只管理現況、互斥範圍、驗證與相依放行，不複述玩法規則。
+2026-10-11 本輪重審 03 公告、05 初始種子、07 權威時計與 17 缺席：四票均在各自範圍限定 PASS，依使用者要求按功能提交。17 最新截止／舊準備端點／noShow 後斷線修正已經獨立兩軸與固定時間案例驗證。19、既有 AGENTS.md 與其他 dirty 保留。產品政策以[設計](competitive-play-design.md)為準。本文件只管理現況、互斥範圍、驗證與相依放行，不複述玩法規則。
 
 ## 執行邊界與完成條件
 
@@ -67,6 +67,8 @@
 ### 自動例外收尾
 
 P2 的 [17–21](tickets/README.md#逐票入口與功能相依) 是正式辦賽必需，不依賴一般裁判介面。[19](tickets/19-swiss-double-loss-exit.md) 的瑞士後輪重新配入缺陷已有真 red，尚未修復；既有單敗／循環仍只按各自已驗範圍計。
+
+[17](tickets/17-automatic-no-show-rulings.md) **限定 PASS**：2026-10-11 [本輪兩軸報告與原始證據](../../scratch/ticket17-ready-endpoints-review/report.md)確認先前截止快照／即時開局資格、舊準備端點旁路 P1 與 noShow 後斷線寫入 P2 全部閉合。Standards 硬性 0／重複 request 建構非阻擋建議 1，Spec 0；主審精確路徑 child 131／0、parent 349／0、五檔 helpers 106／0、Nuxt 元件 10／0、獨立固定時間 6／0、typecheck 與 diff check 通過。排除 19 的提交快照重新建置 Cargo 733 pass／1 fail，唯一失敗是 19 的已提交 Swiss 退出紅例；原始基準同例亦 0／1，非 17 回歸，三個 NoShow 新 Rust 案例全綠。分離後 view 測試 9／0。17 四項驗收勾選；只提交 17，不帶入 19 或 AGENTS.md 修改，不外推真 Worker／Brave／22／28 整合驗收。
 
 [20](tickets/20-double-loss-vacancy-completion.md) 維持一票，名次空缺政策已確認、needs-info 阻擋解除；當前雙敗阻擋路徑的修復與本票完整現況／元件實證仍未完成，不以政策確認代替放行。產品取值只見[設計](competitive-play-design.md#雙負空缺與後續階段)。
 
