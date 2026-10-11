@@ -36,6 +36,62 @@ describe('executePlayerCommand', () => {
     })).rejects.toMatchObject({ code: 'idempotencyConflict', statusCode: 409 })
   })
 
+  test('returns a completed accepted receipt after the competition timeout freeze', async () => {
+    const room = fakeRoom()
+    const request = {
+      commandId: 'completed-before-timeout', gameInstanceId: 'game-1', transactionId: 'transaction-complete',
+      actorUserId: 'alice-user', action: { type: 'passAction' as const, reason: 'NoCardsInHand' as const },
+    }
+    const first = await executePlayerCommand(room, request)
+    room.frozen = true
+
+    const retry = await executePlayerCommand(room, request)
+
+    expect(first.receipt?.transactionStatus).toBe('complete')
+    expect(retry.receipt).toStrictEqual(first.receipt)
+    expect(room.rulesCalls).toBe(1)
+  })
+
+  test('does not freeze a randomness receipt whose resolution transaction already completed', async () => {
+    const room = fakeRoom()
+    const request = {
+      commandId: 'randomness-already-complete', gameInstanceId: 'game-1', transactionId: 'transaction-randomness-complete',
+      actorUserId: 'alice-user', action: { type: 'passAction' as const, reason: 'NoCardsInHand' as const },
+    }
+    const first = await executePlayerCommand(room, request)
+    const legacyReceipt = { ...first.receipt!, transactionStatus: 'awaitingRandomness' as const }
+    await room.storage.put({ 'commandReceipt:game-1:randomness-already-complete': legacyReceipt })
+    room.frozen = true
+
+    const retry = await executePlayerCommand(room, request)
+
+    expect(retry.receipt).toStrictEqual(legacyReceipt)
+    expect(room.rulesCalls).toBe(1)
+  })
+
+  test('returns a rejected receipt after the competition timeout freeze', async () => {
+    const room = fakeRoom()
+    const request = {
+      commandId: 'rejected-before-timeout', gameInstanceId: 'game-1', transactionId: 'transaction-rejected',
+      actorUserId: 'alice-user', action: { type: 'passAction' as const, reason: 'NoCardsInHand' as const },
+    }
+    let ruleCalls = 0
+    room.callRules = async (action: { type: string }) => {
+      ruleCalls += 1
+      if (action.type === 'passAction') throw new RulesEngineError({ validation: 'illegal pass' })
+      return { type: 'ready', record: [], state: { status: 'InProgress', currentPlayer: 'alice', pendingChoice: null } }
+    }
+    const first = await executePlayerCommand(room, request)
+    const callsAfterFirst = ruleCalls
+    room.frozen = true
+
+    const retry = await executePlayerCommand(room, request)
+
+    expect(first.receipt?.outcome).toBe('rejected')
+    expect(retry.receipt).toStrictEqual(first.receipt)
+    expect(ruleCalls).toBe(callsAfterFirst)
+  })
+
   test('drains every trusted shuffle in one command transaction and returns only a redacted room response', async () => {
     const room = randomnessRoom()
 
@@ -99,6 +155,7 @@ function fakeRoom() {
 
   return {
     authoritativeMarker: 'first-state',
+    frozen: false,
     rulesCalls: 0,
     storage: {
       async get<T>(key: string) { return values.get(key) as T | undefined },
@@ -116,6 +173,7 @@ function fakeRoom() {
     },
     async response() { return { marker: this.authoritativeMarker } },
     shuffle<T>(values: T[]) { return values },
+    competitionCommandFrozen() { return this.frozen },
   }
 }
 

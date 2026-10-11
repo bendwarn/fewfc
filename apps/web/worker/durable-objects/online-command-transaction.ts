@@ -34,7 +34,15 @@ interface TransactionStorage {
   get<T>(key: string): Promise<T | undefined>
   put(entries: Record<string, unknown>): Promise<void>
   delete(key: string): Promise<boolean>
+  setAlarm?(scheduledTime: number | Date): Promise<void>
   transaction<T>(callback: (storage: TransactionStorage) => Promise<T>): Promise<T>
+}
+
+/** canonical checkpoint 與跨 DO terminal delivery 的同一原子寫入描述。 */
+export interface CanonicalCompetitionDeliveryCommit {
+  storageKey: string
+  value: unknown
+  alarmAt: number
 }
 
 /**
@@ -59,6 +67,14 @@ interface OnlineCommandTransactionHost {
     receipt?: CommandReceipt,
   ): Promise<GameRoomResponse>
   shuffle<T>(values: T[]): T[]
+  competitionDelivery?(
+    record: GameRecord,
+    previous: RulesReadyResult,
+    result: RulesReadyResult,
+    commandId: string,
+    nextSequence: number,
+  ): Promise<CanonicalCompetitionDeliveryCommit | undefined> | CanonicalCompetitionDeliveryCommit | undefined
+  competitionCommandFrozen?(): Promise<boolean> | boolean
 }
 
 export interface ExecutedPlayerCommand {
@@ -91,10 +107,6 @@ export async function executePlayerCommand(
 ): Promise<ExecutedPlayerCommand> {
   const metadata = await host.metadata()
   if (!metadata) throw new Error('game room has not been created')
-  if (metadata.status !== 'Active') {
-    throw new OnlineCommandTransactionError('commandValidation', 409, 'room has not started')
-  }
-
   const actor = host.playerFor(metadata, request.actorUserId)
   if (!actor) {
     throw new OnlineCommandTransactionError('commandValidation', 403, 'only room players may submit commands')
@@ -132,7 +144,23 @@ export async function executePlayerCommand(
     if (existingReceipt.payloadIdentity !== payloadIdentity) {
       throw new OnlineCommandTransactionError('idempotencyConflict', 409, 'command id was reused for another command')
     }
-    await resumeTrustedRandomnessIfNeeded(host, metadata, record, existingReceipt)
+    const activeTransaction = existingReceipt.outcome === 'accepted'
+      ? await host.storage.get<ResolutionTransaction>(transactionKey(record.gameInstanceId))
+      : undefined
+    const needsTrustedRandomnessResume = existingReceipt.outcome === 'accepted'
+      && activeTransaction?.transactionId === existingReceipt.transactionId
+      && existingReceipt.transactionStatus !== 'awaitingChoice'
+      && existingReceipt.transactionStatus !== 'complete'
+    if (needsTrustedRandomnessResume) {
+      if (await host.competitionCommandFrozen?.()) {
+        throw new OnlineCommandTransactionError(
+          'commandValidation',
+          409,
+          '本場競賽已因時間結束，正在提交競賽判定。',
+        )
+      }
+      await resumeTrustedRandomnessIfNeeded(host, metadata, record, existingReceipt)
+    }
     return {
       response: await host.response(metadata, request.actorUserId, undefined, existingReceipt),
       receipt: existingReceipt,
@@ -141,10 +169,24 @@ export async function executePlayerCommand(
     }
   }
 
+  if (await host.competitionCommandFrozen?.()) {
+    throw new OnlineCommandTransactionError(
+      'commandValidation',
+      409,
+      '本場競賽已因時間結束，正在提交競賽判定。',
+    )
+  }
+
+  if (metadata.status !== 'Active') {
+    throw new OnlineCommandTransactionError('commandValidation', 409, 'room has not started')
+  }
+
   let current: RulesEngineResult
+  let previousRules: RulesReadyResult | undefined
   let previousPlayer: PlayerId | null | undefined
   try {
     const currentRules = await host.callRules({ type: 'refresh' }, 'observer', record)
+    if (currentRules.type === 'ready') previousRules = currentRules
     previousPlayer = currentRules.type === 'ready' ? currentRules.state.currentPlayer : undefined
     const activeTransaction = await host.storage.get<ResolutionTransaction>(transactionKey(record.gameInstanceId))
     validateContinuation(currentRules, activeTransaction, transactionId, action, actor)
@@ -186,6 +228,9 @@ export async function executePlayerCommand(
     actor,
     action,
     payloadIdentity,
+    competitionDelivery: current.type === 'ready' && previousRules
+      ? await host.competitionDelivery?.(record, previousRules, current, request.commandId, record.sequence + 1)
+      : undefined,
   })
   const finalCheckpoint = await drainTrustedRandomness(host, accepted.metadata, accepted.record, current)
   const finalMetadata = finalCheckpoint.metadata
@@ -257,6 +302,7 @@ async function commitPlayerCheckpoint(
     actor: PlayerId
     action: OnlineGameAction
     payloadIdentity: string
+    competitionDelivery?: CanonicalCompetitionDeliveryCommit
   },
 ) {
   const nextSequence = input.record.sequence + 1
@@ -313,6 +359,7 @@ async function commitPlayerCheckpoint(
     },
     receipt,
     transaction: transactionStatus === 'complete' ? undefined : transaction,
+      competitionDelivery: input.competitionDelivery,
   })
   return { record: nextRecord, metadata: nextMetadata, receipt }
 }
@@ -338,6 +385,7 @@ async function drainTrustedRandomness(
       requestId: request.requestId,
       shuffledOrder: host.shuffle(request.currentOrder),
     }
+    const previous = await host.callRules({ type: 'refresh' }, 'observer', currentRecord)
     const result = await host.callRules(answer, 'observer', currentRecord)
     const nextSequence = currentRecord.sequence + 1
     const now = new Date().toISOString()
@@ -379,6 +427,15 @@ async function drainTrustedRandomness(
       transaction: transactionStatus === 'complete'
         ? undefined
         : transaction,
+      competitionDelivery: result.type === 'ready' && previous.type === 'ready'
+        ? await host.competitionDelivery?.(
+            currentRecord,
+            previous,
+            result,
+            `trusted-randomness:${request.requestId}`,
+            nextSequence,
+          )
+        : undefined,
     })
     currentRecord = checkpoint
     currentMetadata = checkpointMetadata
@@ -454,6 +511,7 @@ async function commitCanonical(
     receipt?: CommandReceipt
     trustedReceipt?: unknown
     transaction?: ResolutionTransaction
+    competitionDelivery?: CanonicalCompetitionDeliveryCommit
   },
 ) {
   await host.storage.transaction(async (storage) => {
@@ -471,6 +529,13 @@ async function commitCanonical(
       values[trustedReceiptKey(input.record.gameInstanceId, requestId)] = input.trustedReceipt
     }
     if (input.transaction) values[transactionKey(input.record.gameInstanceId)] = input.transaction
+    if (input.competitionDelivery) {
+      values[input.competitionDelivery.storageKey] = input.competitionDelivery.value
+      if (!storage.setAlarm) {
+        throw new Error('terminal outbox storage does not support alarms')
+      }
+      await storage.setAlarm(input.competitionDelivery.alarmAt)
+    }
     await storage.put(values)
     if (!input.transaction) await storage.delete(transactionKey(input.record.gameInstanceId))
   })

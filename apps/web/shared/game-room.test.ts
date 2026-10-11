@@ -3,6 +3,7 @@ import {
   isOnlineGameAction,
   invitationCredentialMatches,
   normalizeGameRoomMetadata,
+  projectGameRoomCompetitionContext,
   systemBattleRecord,
 } from './game-room'
 import type { OnlineGameAction, TrustedRandomnessRequest } from './game-room'
@@ -139,6 +140,23 @@ test('active Game Record versions keep the exact camelCase delivery contract', (
   expect(wire).toContain('gameInstanceId')
   expect(wire).toContain('recordSequence')
   expect(wire).not.toContain('record_sequence')
+})
+
+test('competition context projects only its three camelCase public fields without mutating the binding', () => {
+  const binding = {
+    competitionId: 'competition-1', matchId: 'match-2', gameNumber: 3,
+    organizerUserId: 'private-organizer', expectedMatchRevision: 12,
+    players: [{ userId: 'private-user', player: 'player-a', team: 'team-a' }],
+    deckSnapshot: [{ player: 'player-a', cards: ['private-card'] }],
+    firstPlayer: 'player-a', turnOrder: ['player-a', 'player-b'], deckSeed: 'private-seed',
+  }
+  const before = structuredClone(binding)
+  const context = projectGameRoomCompetitionContext(binding)
+  expect(context).toStrictEqual({ competitionId: 'competition-1', matchId: 'match-2', gameNumber: 3 })
+  expect(Reflect.ownKeys(context)).toEqual(['competitionId', 'matchId', 'gameNumber'])
+  expect(JSON.stringify(context)).toBe('{"competitionId":"competition-1","matchId":"match-2","gameNumber":3}')
+  expect(context).not.toBe(binding)
+  expect(binding).toStrictEqual(before)
 })
 
 describe('normalizeGameRoomMetadata', () => {

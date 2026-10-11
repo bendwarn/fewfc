@@ -1,0 +1,16002 @@
+import { Database } from 'bun:sqlite'
+import { expect, mock, test } from 'bun:test'
+import type {
+  CompetitionEngineResponse,
+  CompetitionRequest,
+  CompetitionRuling,
+  GameTerminalEvidence,
+  JsonObject,
+  JsonValue,
+  StageConfig,
+  RegistrationAction,
+} from '../../shared/competition'
+import { isJsonObject } from '../../shared/competition'
+import { callCompetitionEngine } from '../competition-bridge'
+import { clockCheckpointDigest } from '../../shared/competition-room'
+import type {
+  CompetitionClockControlRequest,
+  CompetitionGameClockControlEligibilityRequest,
+  CompetitionGameBinding,
+  CompetitionGameAdmissionRequest,
+  CompetitionGameCreateRequest,
+} from '../../shared/competition-game-room'
+import type {
+  CompetitionRoomInitializeRequest,
+  CompetitionRoomExecuteRequest,
+  CompetitionRoomMatchExecuteRequest,
+  CompetitionRoomCreateTournamentRequest,
+  CompetitionRoomStartScheduledMatchRequest,
+  CompetitionRoomProvisionInitialScheduledGameRequest,
+  CompetitionRoomProvisionAssignedScheduledGameRequest,
+  CompetitionRoomProvisionCaptainAssignedScheduledGameRequest,
+  CompetitionRoomAssignNextFirstPlayerByCaptainRequest,
+  CompetitionRoomTerminalIngestRequest,
+  CompetitionRoomResult,
+  CompetitionRoomProvisionInitialScheduledGameValue,
+  CompetitionRoomParticipantGameReadRequest,
+  CompetitionRoomTournamentReadRequest,
+  CompetitionRoomMatchClockReadRequest,
+  CompetitionRoomMatchClockReadValue,
+  CompetitionRoomAnnounceRoundRequest,
+  CompetitionRoomAnnounceRoundValue,
+  CompetitionRoomInitialGameStartedRequest,
+  CompetitionRoomRoundReleaseRpc,
+} from '../../shared/competition-room'
+import { isCompetitionRoomInitialGameStartedRequest } from '../../shared/competition-room'
+import { emptyPublicState } from '../../shared/game-room'
+import {
+  createCompetitionAnnouncementDraftFixture,
+  createCompetitionAnnouncementFixture,
+  createCompetitionAnnouncementPlanFixture,
+} from '../../tests/fixtures/competition-announcement'
+import {
+  competitionGameBindingRefForRequest,
+  validateCompetitionGameBinding,
+} from '../../shared/competition-game-room'
+import type { CompetitionEngineAdapter, CompetitionRoom } from './competition-room'
+
+const announcedPlan = createCompetitionAnnouncementPlanFixture()
+
+mock.module('cloudflare:workers', () => ({
+  DurableObject: class {
+    protected ctx: unknown
+    protected env: unknown
+
+    constructor(ctx: unknown, env: unknown) {
+      this.ctx = ctx
+      this.env = env
+    }
+  },
+}))
+
+const { CompetitionRoom: CompetitionRoomClass } = await import('./competition-room')
+
+interface CompetitionWasmExports extends WebAssembly.Exports {
+  memory: WebAssembly.Memory
+  fewfc_alloc(length: number): number
+  fewfc_dealloc(pointer: number, length: number): void
+  fewfc_handle_competition_request(pointer: number, length: number): bigint
+}
+
+let competitionWasmPromise: Promise<CompetitionWasmExports> | null = null
+
+async function realCompetitionWasm(request: CompetitionRequest): Promise<unknown> {
+  competitionWasmPromise ??= (async () => {
+    const wasmPath = Bun.env.FEWC_COMPETITION_TEST_WASM
+      ?? new URL('../wasm/fewfc.wasm', import.meta.url)
+    const bytes = await Bun.file(wasmPath).arrayBuffer()
+    const module = await WebAssembly.compile(bytes)
+    const instance = await WebAssembly.instantiate(module, {})
+    return instance.exports as CompetitionWasmExports
+  })()
+  const wasm = await competitionWasmPromise
+  const input = new TextEncoder().encode(JSON.stringify(request))
+  const inputPointer = wasm.fewfc_alloc(input.length)
+  new Uint8Array(wasm.memory.buffer).set(input, inputPointer)
+  let packed: bigint
+  try {
+    packed = wasm.fewfc_handle_competition_request(inputPointer, input.length)
+  } finally {
+    wasm.fewfc_dealloc(inputPointer, input.length)
+  }
+  const outputPointer = Number(packed >> 32n)
+  const outputLength = Number(packed & 0xffff_ffffn)
+  const output = new TextDecoder().decode(
+    new Uint8Array(wasm.memory.buffer, outputPointer, outputLength),
+  )
+  wasm.fewfc_dealloc(outputPointer, outputLength)
+  return JSON.parse(output) as unknown
+}
+
+interface SqlCursor<T> {
+  toArray(): T[]
+  one(): T
+}
+
+class MemorySql {
+  readonly database = new Database(':memory:')
+  failNextQueryContaining: string | null = null
+
+  exec<T>(query: string, ...bindings: unknown[]): SqlCursor<T> {
+    if (this.failNextQueryContaining && query.includes(this.failNextQueryContaining)) {
+      this.failNextQueryContaining = null
+      throw new Error('injected SQL failure')
+    }
+    const trimmed = query.trim().toUpperCase()
+    if (trimmed.startsWith('SELECT')) {
+      const rows = this.database.query(query).all(...bindings) as T[]
+      return {
+        toArray: () => rows,
+        one: () => {
+          const row = rows[0]
+          if (!row) throw new Error('expected one row')
+          return row
+        },
+      }
+    }
+
+    if (bindings.length === 0 && trimmed.startsWith('CREATE')) {
+      this.database.exec(query)
+    } else {
+      this.database.query(query).run(...bindings)
+    }
+    return { toArray: () => [], one: () => { throw new Error('no row') } }
+  }
+
+  transactionSync<T>(callback: () => T): T {
+    this.database.exec('BEGIN')
+    try {
+      const value = callback()
+      this.database.exec('COMMIT')
+      return value
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+}
+
+interface TestAlarmState {
+  scheduledAt: number | null
+  failSetAlarmCount?: number
+}
+
+function stateFor(sql: MemorySql, alarm: TestAlarmState = { scheduledAt: null }): DurableObjectState {
+  const state = {
+    storage: {
+      sql,
+      transactionSync: <T>(callback: () => T) => sql.transactionSync(callback),
+      setAlarm: async (scheduledTime: number | Date) => {
+        const alarmTime = scheduledTime instanceof Date ? scheduledTime.getTime() : scheduledTime
+        if (!Number.isSafeInteger(alarmTime)) {
+          throw new Error('setAlarm requires safe-integer epoch milliseconds')
+        }
+        if (alarm.failSetAlarmCount && alarm.failSetAlarmCount > 0) {
+          alarm.failSetAlarmCount -= 1
+          throw new Error('injected setAlarm failure')
+        }
+        alarm.scheduledAt = alarmTime
+      },
+      deleteAlarm: async () => {
+        alarm.scheduledAt = null
+      },
+    },
+    blockConcurrencyWhile: async <T>(callback: () => Promise<T>) => callback(),
+  }
+  return state as unknown as DurableObjectState
+}
+
+function validInitialize(overrides: Partial<CompetitionRoomInitializeRequest> = {}) {
+  return {
+    competitionId: 'competition-1',
+    callerUserId: 'organizer-1',
+    announcement: createCompetitionAnnouncementFixture({
+      plan: structuredClone(announcedPlan),
+    }),
+    participantUserIds: ['player-1', 'player-2'],
+    trustedTimeMs: 100,
+    ...overrides,
+  } satisfies CompetitionRoomInitializeRequest
+}
+
+function rulesInitialize() {
+  return {
+    competitionId: 'competition-1', callerUserId: 'organizer-1', trustedTimeMs: 100,
+    announcement: createCompetitionAnnouncementDraftFixture({
+      teamSize: 1,
+      plan: structuredClone(announcedPlan),
+    }),
+  }
+}
+
+test('E6a3a formal rules initialization derives HP and preserves the full legacy public result', async () => {
+  const sql = new MemorySql()
+  const alarm: TestAlarmState = { scheduledAt: null }
+  const calls: CompetitionRequest[] = []
+  const adapter: CompetitionEngineAdapter = async request => {
+    calls.push(structuredClone(request))
+    return callCompetitionEngine(request, realCompetitionWasm)
+  }
+  const room = new CompetitionRoomClass(stateFor(sql, alarm), {}, adapter)
+  const request = rulesInitialize()
+  const before = structuredClone(request)
+  const result = await room.initializeFromRules(request)
+  expect(result.ok).toBe(true)
+  if (!result.ok) throw new Error('規則推導初始化失敗')
+  const officialSettings = await realCompetitionWasm({
+    serverActor: { type: 'organizer', playerId: request.callerUserId }, trustedTimeMs: request.trustedTimeMs,
+    operation: { type: 'registrationResolveSettings', ruleVersion: '5.17', ruleset: 'base',
+      enabledRuleModules: [], teamSize: 1 },
+    serverState: { registration: null, clock: null, tournament: null, matches: {} },
+  })
+  if (!isJsonObject(officialSettings) || !isJsonObject(officialSettings.public)) {
+    throw new Error('正式 settings query 缺公投影')
+  }
+  const announcement = { organizer: request.callerUserId, ...request.announcement,
+    initialHp: officialSettings.public.initialHp }
+  expect(result.value).toStrictEqual({
+    competitionId: request.competitionId, organizerUserId: request.callerUserId, revision: 1,
+    projection: { ok: true, operation: 'registrationCreate', public: {
+      announcement, lifecycle: 'draft', revision: 0, teams: [],
+    } },
+  })
+  expect(request).toStrictEqual(before)
+  expect(calls.map(call => call.operation.type)).toEqual(['registrationResolveSettings', 'registrationCreate'])
+  expect(calls.every(call => call.trustedTimeMs === 100
+    && call.serverActor.type === 'organizer' && call.serverActor.playerId === request.callerUserId)).toBe(true)
+  expect(await room.read({ competitionId: request.competitionId, callerUserId: request.callerUserId }))
+    .toMatchObject({ ok: true, value: { revision: 1, projection: result.value.projection } })
+  expect(e6c2aSnapshot({ sql, alarm }).tables.competition_command_receipt).toEqual([])
+  expect(e6c2aSnapshot({ sql, alarm }).tables.competition_acl).toEqual([
+    { user_id: request.callerUserId, role: 'organizer', active: 1, participant: 0 },
+  ])
+  expect(alarm.scheduledAt).toBeNull()
+})
+
+test('E6a3a rules initialization rejects inconsistent create public HP before durable commit', async () => {
+  const sql = new MemorySql()
+  const alarm: TestAlarmState = { scheduledAt: null }
+  const room = new CompetitionRoomClass(stateFor(sql, alarm), {}, async request => {
+    const response = await callCompetitionEngine(request, realCompetitionWasm)
+    if (request.operation.type === 'registrationCreate' && response.ok
+      && isJsonObject(response.public) && isJsonObject(response.public.announcement)) {
+      response.public.announcement.initialHp = request.operation.announcement.initialHp + 1
+    }
+    return response
+  })
+  const before = e6c2aSnapshot({ sql, alarm })
+  expect(await room.initializeFromRules(rulesInitialize()))
+    .toMatchObject({ ok: false, error: { code: 'engineProtocolError' } })
+  expect(e6c2aSnapshot({ sql, alarm })).toStrictEqual(before)
+})
+
+function responseFor(request: CompetitionRequest, count: number): CompetitionEngineResponse {
+  const includesPrivate = request.serverActor.type === 'player'
+    || request.operation.type === 'registrationExportLockedRoster'
+  const registration = request.operation.type === 'registrationCreate'
+    ? { announcement: request.operation.announcement, commands: [] }
+    : request.operation.type === 'registrationExecute'
+      ? { ...request.serverState.registration, commands: [
+          ...(request.serverState.registration?.commands as JsonValue[] ?? []),
+          { commandId: request.operation.commandId, expectedRevision: request.operation.expectedRevision,
+            serverActor: request.serverActor, action: request.operation.action, trustedTimeMs: request.trustedTimeMs },
+        ] }
+      : request.serverState.registration
+  return {
+    ok: true,
+    operation: request.operation.type,
+    public: request.operation.type === 'clockCreate'
+      ? { status: 'created', scheduleError: 'late schedule warning' }
+      : { operation: request.operation.type, count,
+          ...(request.operation.type === 'registrationExecute'
+            ? { revision: Array.isArray(registration?.commands) ? registration.commands.length : 0 } : {}) },
+    ...(includesPrivate ? { private: request.operation.type === 'registrationExportLockedRoster'
+      ? { lockedRoster: ['team-a'] }
+      : { deck: ['secret-card'] } } : {}),
+    serverState: {
+      registration: registration as JsonObject,
+      clock: request.operation.type.startsWith('clock') ? { revision: count } : null,
+      tournament: request.operation.type.startsWith('tournament') ? { revision: count } : null,
+    },
+  }
+}
+
+function stageConfig(options: {
+  format?: StageConfig['format']
+  teams?: StageConfig['teams']
+  swissPolicy?: StageConfig['swissPolicy']
+} = {}): StageConfig {
+  const format = options.format ?? 'singleElimination'
+  return {
+    stageId: 'stage-online',
+    format,
+    teams: options.teams ?? [
+      { teamId: 'team-a', seed: 2 },
+      { teamId: 'team-b', seed: 1 },
+    ],
+    randomSeed: 17,
+    matchFormat: format === 'singleElimination' || format === 'doubleElimination'
+      ? { type: 'firstToWins', value: 2 }
+      : { type: 'fixedGames', value: 3 },
+    clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
+    swissRounds: format === 'swiss' ? 3 : null,
+    swissPolicy: format === 'swiss' ? options.swissPolicy ?? {
+      matchPoints: { win: 3, draw: 1, loss: 0, bye: 3 },
+      drawCredit: { numerator: 1, denominator: 1 },
+      opponentWinRateFloorPercent: null,
+      opponentWinRateCapPercent: null,
+      excludeByesFromOpponentWinRate: true,
+      tieBreakers: ['matchPoints', 'seedOrder'],
+    } : null,
+  }
+}
+
+function createTournamentRequest(
+  overrides: Partial<CompetitionRoomCreateTournamentRequest> = {},
+): CompetitionRoomCreateTournamentRequest {
+  return {
+    competitionId: 'competition-1',
+    callerUserId: 'organizer-1',
+    commandId: 'create-tournament-1',
+    expectedRevision: 1,
+    trustedTimeMs: 101,
+    stage: stageConfig(),
+    ...overrides,
+  }
+}
+
+function createdTournament(stage: StageConfig, tournamentId: string): JsonObject {
+  const kind = stage.format === 'doubleElimination' ? 'winners' : 'main'
+  const sortedTeams = [...stage.teams].sort((left, right) => left.seed - right.seed)
+  const pairsByRound = initialFixturePairs(stage)
+  const byeTeams = new Set(pairsByRound.flat().filter(pair => pair.length === 1).map(pair => pair[0]))
+  const rounds = pairsByRound.map((pairs, roundIndex) => ({
+    roundNumber: roundIndex + 1,
+    kind,
+    matches: pairs.map((participants, matchIndex) => ({
+      matchId: `${stage.stageId}-g0-r${roundIndex + 1}-m${matchIndex + 1}`,
+      stageId: stage.stageId,
+      roundNumber: roundIndex + 1,
+      sequence: matchIndex + 1,
+      kind,
+      participants,
+      status: participants.length === 1 ? 'completed' : 'pending',
+      result: participants.length === 1 ? { type: 'bye', teamId: participants[0] } : null,
+      cancellationReason: null,
+      started: false,
+    })),
+  }))
+  const standingOrder = stage.format === 'swiss'
+    ? [...sortedTeams].sort((left, right) => {
+      const points = (byeTeams.has(right.teamId) ? stage.swissPolicy?.matchPoints.bye ?? 0 : 0)
+        - (byeTeams.has(left.teamId) ? stage.swissPolicy?.matchPoints.bye ?? 0 : 0)
+      return points || (stage.swissPolicy?.tieBreakers.includes('seedOrder')
+        ? left.seed - right.seed : left.teamId.localeCompare(right.teamId))
+    })
+    : [...stage.teams].sort((left, right) => left.teamId.localeCompare(right.teamId))
+  let previousSwissKey = ''
+  let swissRank = 0
+  const standings = standingOrder.map((team, index) => {
+    const matchPoints = stage.format === 'swiss' && byeTeams.has(team.teamId)
+      ? stage.swissPolicy?.matchPoints.bye ?? 0 : 0
+    if (stage.format === 'swiss') {
+      const key = `${matchPoints}:${stage.swissPolicy?.tieBreakers.includes('seedOrder') ? team.seed : ''}`
+      if (key !== previousSwissKey) swissRank = index + 1
+      previousSwissKey = key
+    }
+    return {
+      teamId: team.teamId,
+      matchPoints, wins: 0, draws: 0, losses: 0,
+      gameWins: 0, gameLosses: 0, netGameWins: 0,
+      opponentWinRateBasisPoints: null,
+      dropped: false,
+      rank: stage.format === 'swiss' ? swissRank : 1,
+    }
+  })
+  return {
+    tournamentId,
+    stages: [{
+      config: stage,
+      status: 'active',
+      rounds,
+      standings,
+      corrections: [],
+      lastScheduleError: null,
+      scheduleGeneration: 0,
+      supersededRounds: [],
+      teams: Object.fromEntries(stage.teams.map(team => [team.teamId, {
+        seed: team.seed, dropped: false, hadBye: byeTeams.has(team.teamId),
+      }])),
+      doubleState: stage.format === 'doubleElimination' ? {
+        phase: 'winners',
+        winnersPool: [...stage.teams].sort((left, right) => left.seed - right.seed).map(team => team.teamId),
+        losersWaiting: [], lowerPool: [], winnersChampion: null, losersChampion: null,
+        grandFinalWinner: null,
+      } : null,
+    }],
+  }
+}
+
+function initialFixturePairs(stage: StageConfig): string[][][] {
+  const seeded = [...stage.teams].sort((left, right) => left.seed - right.seed)
+    .map(team => team.teamId)
+  if (seeded.length === 2) return [[seeded]]
+  if (seeded.join(',') !== 'team-a,team-b,team-c') {
+    throw new Error('test fixture only covers the audited two- and three-team configurations')
+  }
+  if (stage.format === 'singleElimination' || stage.format === 'doubleElimination') {
+    return [[['team-a'], ['team-b', 'team-c']]]
+  }
+  if (stage.format === 'swiss') {
+    if (stage.randomSeed !== 17) throw new Error('Swiss fixture is pinned to Rust randomSeed 17')
+    return [[['team-a'], ['team-b', 'team-c']]]
+  }
+  return [
+    [['team-a'], ['team-b', 'team-c']],
+    [['team-a', 'team-c'], ['team-b']],
+    [['team-a', 'team-b'], ['team-c']],
+  ]
+}
+
+async function tournamentRoom(options: {
+  roster?: JsonObject
+  exportResponse?: (request: CompetitionRequest) => CompetitionEngineResponse | Promise<CompetitionEngineResponse>
+  createResponse?: (request: CompetitionRequest) => CompetitionEngineResponse | Promise<CompetitionEngineResponse>
+  throwExport?: boolean
+  throwCreate?: boolean
+} = {}) {
+  const sql = new MemorySql()
+  const calls: CompetitionRequest[] = []
+  const adapter: CompetitionEngineAdapter = async request => {
+    calls.push(structuredClone(request))
+    if (request.operation.type === 'registrationCreate') return responseFor(request, 1)
+    if (request.operation.type === 'registrationExportLockedRoster') {
+      if (options.throwExport) throw new Error('private export detail')
+      if (options.exportResponse) return options.exportResponse(request)
+      return {
+        ok: true,
+        operation: 'registrationExportLockedRoster',
+        public: { exported: true },
+        private: options.roster ?? lockedRoster(1, false),
+        serverState: request.serverState,
+      }
+    }
+    if (request.operation.type === 'tournamentCreate') {
+      if (options.throwCreate) throw new Error('private create detail')
+      if (options.createResponse) return options.createResponse(request)
+      const tournament = createdTournament(request.operation.config.stage, request.operation.config.tournamentId)
+      return {
+        ok: true,
+        operation: 'tournamentCreate',
+        public: tournament,
+        serverState: { ...request.serverState, tournament },
+      }
+    }
+    return responseFor(request, 1)
+  }
+  const room = new CompetitionRoomClass(stateFor(sql), {}, adapter)
+  expect((await room.initialize(validInitialize())).ok).toBe(true)
+  return { room, sql, calls }
+}
+
+async function wasmTournamentRoom(
+  roster: JsonObject,
+  randomBit: () => number = () => 0,
+  deliverGames = false,
+) {
+  const sql = new MemorySql()
+  const calls: CompetitionRequest[] = []
+  const gameCalls: Array<{ gameId: string; binding: CompetitionGameBinding }> = []
+  const adapter: CompetitionEngineAdapter = async request => {
+    calls.push(structuredClone(request))
+    if (request.operation.type === 'registrationCreate'
+      || request.operation.type === 'tournamentCreate'
+      || request.operation.type === 'tournamentStartMatch'
+      || request.operation.type === 'tournamentSubmitResult'
+      || request.operation.type === 'matchCreate'
+      || request.operation.type === 'clockCreate'
+      || request.operation.type === 'clockRuleGame'
+      || request.operation.type === 'clockBeginAction'
+      || request.operation.type === 'clockEndWindow'
+      || request.operation.type === 'clockNewGame'
+      || request.operation.type === 'matchAssignFirstPlayer'
+      || request.operation.type === 'matchSubmitGame') {
+      return callCompetitionEngine(request, realCompetitionWasm)
+    }
+    if (request.operation.type === 'registrationExportLockedRoster') {
+      return {
+        ok: true,
+        operation: 'registrationExportLockedRoster',
+        public: { exported: true },
+        private: roster,
+        serverState: request.serverState,
+      }
+    }
+    return responseFor(request, 1)
+  }
+  const env = deliverGames ? { GAME_ROOM: gameRoomNamespace(async request => {
+    gameCalls.push(structuredClone(request))
+    return { gameId: request.gameId, status: 'Waiting', idempotent: false }
+  }) } : {}
+  const room = new CompetitionRoomClass(stateFor(sql), env, adapter, randomBit)
+  const initializeRequest = validInitialize({
+    announcement: { ...validInitialize().announcement, ruleset: 'base' },
+  })
+  const initialized = await room.initialize(initializeRequest)
+  if (!initialized.ok) {
+    throw new Error(`WASM registrationCreate failed: ${initialized.error.code} ${initialized.error.message}`)
+  }
+  return { room, sql, calls, gameCalls }
+}
+
+async function legacyFingerprint(value: unknown): Promise<string> {
+  const stable = (input: unknown): string => {
+    if (input === null || typeof input !== 'object') return JSON.stringify(input)
+    if (Array.isArray(input)) return `[${input.map(stable).join(',')}]`
+    const object = input as Record<string, unknown>
+    return `{${Object.keys(object).sort().map(key => `${JSON.stringify(key)}:${stable(object[key])}`).join(',')}}`
+  }
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(stable(value)),
+  )
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function initializedRoom(
+  adapter: CompetitionEngineAdapter = async (request) => responseFor(request, 1),
+  sql = new MemorySql(),
+): Promise<{ room: CompetitionRoom; sql: MemorySql }> {
+  const room = new CompetitionRoomClass(stateFor(sql), {}, adapter)
+  const result = await room.initialize(validInitialize())
+  expect(result.ok).toBe(true)
+  return { room, sql }
+}
+
+function executeRequest(
+  operation: Parameters<CompetitionRoom['execute']>[0]['operation'],
+  overrides: Partial<Parameters<CompetitionRoom['execute']>[0]> = {},
+) {
+  return {
+    competitionId: 'competition-1',
+    callerUserId: 'organizer-1',
+    commandId: 'command-1',
+    expectedRevision: 1,
+    operation,
+    trustedTimeMs: 101,
+    ...overrides,
+  } satisfies Parameters<CompetitionRoom['execute']>[0]
+}
+
+const matchConfig = (matchId: string, referees: { refereeId: string; conflictedTeam: string | null }[] = []) => ({
+  matchId,
+  teams: ['team-a', 'team-b'] as [string, string],
+  format: { type: 'firstToWins' as const, value: 1 },
+  firstGame: { type: 'pending' as const, reason: '裁判指定' },
+  referees,
+})
+
+function matchAdapter(request: CompetitionRequest): CompetitionEngineResponse {
+  const state = {
+    registration: request.serverState.registration,
+    clock: request.serverState.clock,
+    tournament: request.serverState.tournament,
+    matches: { ...(request.serverState.matches ?? {}) },
+  }
+  if (request.operation.type === 'tournamentStartMatch') {
+    const tournament = JSON.parse(JSON.stringify(request.serverState.tournament)) as JsonObject
+    const stages = tournament.stages as JsonValue[]
+    for (const stage of stages) {
+      if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) continue
+      for (const round of stage.rounds) {
+        if (!isJsonObject(round) || !Array.isArray(round.matches)) continue
+        for (const match of round.matches) {
+          if (!isJsonObject(match) || match.stageId !== request.operation.stageId
+            || match.matchId !== request.operation.matchId) continue
+          match.status = 'inProgress'
+          match.started = true
+        }
+      }
+    }
+    state.tournament = tournament
+    return {
+      ok: true,
+      operation: 'tournamentStartMatch',
+      public: { result: { type: 'started' }, tournament },
+      serverState: state,
+    }
+  }
+  if (request.operation.type === 'matchAssignFirstPlayer') {
+    const checkpoint = JSON.parse(JSON.stringify(
+      state.matches[request.operation.matchId],
+    )) as JsonObject
+    ;(checkpoint.history as JsonValue[]).push({
+      type: 'assignFirstPlayer', team: request.operation.team, reason: request.operation.reason,
+    })
+    state.matches[request.operation.matchId] = checkpoint
+    return {
+      ok: true,
+      operation: 'matchAssignFirstPlayer',
+      public: { match: {
+        config: checkpoint.config,
+        status: 'open',
+        score: [0, 0],
+        games: [],
+        rulings: [],
+        corrections: [],
+        outcome: null,
+        nextFirstPlayer: request.operation.team,
+        nextGame: {
+          gameNumber: 1,
+          kind: { type: 'ordinaryNewGame' },
+          firstPlayer: { type: 'assigned', team: request.operation.team },
+        },
+      } },
+      serverState: state,
+    }
+  }
+  if (request.operation.type === 'matchCreate') {
+    state.matches[request.operation.config.matchId] = {
+      config: request.operation.config,
+      history: [],
+    }
+  }
+  if (request.operation.type === 'clockCreate') {
+    state.clock = terminalClock(request.operation.config as unknown as JsonObject)
+  } else if (request.operation.type.startsWith('clock')) {
+    state.clock = {
+      ...(request.serverState.clock ?? {}),
+      lastObservedMs: request.trustedTimeMs,
+    }
+    if (request.operation.type === 'clockPause' && isJsonObject(state.clock)) {
+      state.clock = { ...state.clock, paused: state.clock.running, running: null }
+    } else if (request.operation.type === 'clockResume' && isJsonObject(state.clock)) {
+      state.clock = { ...state.clock, running: state.clock.paused, paused: null }
+    }
+  }
+  return {
+    ok: true,
+    operation: request.operation.type,
+    public: request.operation.type === 'clockCreate' && state.clock
+      ? clockPublicFromCheckpoint(state.clock)
+      : request.operation.type.startsWith('clock') && state.clock
+        ? { result: { type: 'advanced' }, clock: clockPublicFromCheckpoint(state.clock) }
+      : { operation: request.operation.type, trustedTimeMs: request.trustedTimeMs },
+    serverState: state,
+  }
+}
+
+function pauseResumeAdapter(request: CompetitionRequest): CompetitionEngineResponse {
+  if (request.operation.type === 'tournamentStartMatch') return matchAdapter(request)
+  const state = {
+    registration: request.serverState.registration,
+    clock: request.serverState.clock,
+    tournament: request.serverState.tournament,
+    matches: { ...(request.serverState.matches ?? {}) },
+  }
+  if (request.operation.type === 'matchCreate') {
+    state.matches[request.operation.config.matchId] = {
+      config: request.operation.config,
+      history: [],
+    }
+  }
+
+  let clockPublic: JsonObject | null = null
+  if (request.operation.type === 'clockCreate') {
+    clockPublic = { remainingMs: 1_000, paused: false, lastObservedMs: request.trustedTimeMs }
+    const checkpoint = terminalClock(request.operation.config as unknown as JsonObject, {
+      lastObservedMs: request.trustedTimeMs,
+    })
+    checkpoint.teams = (checkpoint.teams as JsonObject[]).map((team, index) => index === 0
+      ? { ...team, mainTimeRemainingMs: 1_000 }
+      : team)
+    state.clock = checkpoint
+  } else if (request.operation.type.startsWith('clock')) {
+    const current = request.serverState.clock ?? {}
+    const currentTeams = Array.isArray(current.teams) ? current.teams as JsonObject[] : []
+    const currentTeamRemaining = currentTeams.find(team => team.team === 'team-a')?.mainTimeRemainingMs
+    const remainingMs = typeof current.remainingMs === 'number'
+      ? current.remainingMs
+      : typeof currentTeamRemaining === 'number' ? currentTeamRemaining : 1_000
+    const lastObservedMs = typeof current.lastObservedMs === 'number'
+      ? current.lastObservedMs
+      : request.trustedTimeMs
+    const paused = current.paused !== null && current.paused !== undefined
+    const elapsedMs = paused ? 0 : Math.max(0, request.trustedTimeMs - lastObservedMs)
+    const nextRemainingMs = Math.max(0, remainingMs - elapsedMs)
+
+    if (request.operation.type === 'clockPause') {
+      clockPublic = { remainingMs: nextRemainingMs, paused: true, lastObservedMs: request.trustedTimeMs }
+    } else if (request.operation.type === 'clockResume') {
+      clockPublic = { remainingMs, paused: false, lastObservedMs: request.trustedTimeMs }
+    } else {
+      clockPublic = { remainingMs: nextRemainingMs, paused, lastObservedMs: request.trustedTimeMs }
+    }
+    const checkpoint = { ...(request.serverState.clock ?? {}) }
+    checkpoint.lastObservedMs = request.trustedTimeMs
+    if (Array.isArray(checkpoint.teams)) {
+      checkpoint.teams = (checkpoint.teams as JsonObject[]).map(team => team.team === 'team-a'
+        ? { ...team, mainTimeRemainingMs: nextRemainingMs }
+        : team)
+    }
+    if (request.operation.type === 'clockPause') {
+      checkpoint.running = null
+      checkpoint.paused = { type: 'action', team: 'team-a', turn: 1 }
+    } else if (request.operation.type === 'clockResume') {
+      checkpoint.running = { type: 'action', team: 'team-a', turn: 1 }
+      checkpoint.paused = null
+    }
+    state.clock = checkpoint
+  }
+
+  return {
+    ok: true,
+    operation: request.operation.type,
+    public: request.operation.type === 'clockCreate' && state.clock
+      ? clockPublicFromCheckpoint(state.clock)
+      : request.operation.type.startsWith('clock') && state.clock
+        ? { result: { type: 'advanced' }, clock: clockPublicFromCheckpoint(state.clock) }
+      : { operation: request.operation.type, trustedTimeMs: request.trustedTimeMs },
+    serverState: state,
+  }
+}
+
+function terminalClock(
+  config: JsonObject,
+  overrides: Partial<JsonObject> = {},
+): JsonObject {
+  return {
+    preparationStarted: true,
+    doubleExpired: false,
+    version: 2,
+    config,
+    teams: [
+      {
+        team: 'team-a',
+        mainTimeRemainingMs: 5_000,
+        actionTurn: 1,
+        actionTimeRemainingMs: null,
+        actionByoyomiStarted: false,
+        enteredByoyomi: false,
+        byoyomiEntrySequence: null,
+      },
+      {
+        team: 'team-b',
+        mainTimeRemainingMs: 5_000,
+        actionTurn: null,
+        actionTimeRemainingMs: null,
+        actionByoyomiStarted: false,
+        enteredByoyomi: false,
+        byoyomiEntrySequence: null,
+      },
+    ],
+    running: { type: 'action', team: 'team-a', turn: 1 },
+    paused: null,
+    lastObservedMs: 200,
+    nextByoyomiEntrySequence: 0,
+    expiredTeam: null,
+    needsDecision: null,
+    ...overrides,
+  }
+}
+
+function clockPublicFromCheckpoint(checkpoint: JsonObject): JsonObject {
+  const running = checkpoint.running
+  const paused = checkpoint.paused
+  const publicWindow = (window: unknown): JsonValue | null => {
+    if (!isJsonObject(window)) return null
+    if (window.type === 'preparation') return { type: 'preparation', teams: window.teams }
+    if (window.type === 'action') return { type: 'action', team: window.team, turn: window.turn }
+    return {
+      type: 'outOfTurnChoice',
+      team: window.team,
+      choiceId: window.choiceId,
+    }
+  }
+  const timeoutRuling = checkpoint.doubleExpired === true
+    ? { type: 'doubleTimeoutLoss', teams: (checkpoint.teams as JsonObject[]).map(team => team.team) }
+    : checkpoint.expiredTeam !== null
+      ? { type: 'timeoutLoss', loser: checkpoint.expiredTeam }
+      : null
+  const entered = (checkpoint.teams as JsonObject[])
+    .filter(team => team.byoyomiEntrySequence !== null)
+    .sort((left, right) => (left.byoyomiEntrySequence as number) - (right.byoyomiEntrySequence as number))
+  const byoyomiEntryOrder = entered.length === 0
+    ? 'none'
+    : entered.length === 2 && entered[0]?.byoyomiEntrySequence === entered[1]?.byoyomiEntrySequence
+      ? 'simultaneous'
+      : { first: entered[0]?.team }
+  let nextTimeoutDeadlineMs: number | null = null
+  if (isJsonObject(running) && paused === null && checkpoint.expiredTeam === null
+    && checkpoint.doubleExpired === false && checkpoint.needsDecision === null) {
+    const config = checkpoint.config as JsonObject
+    const candidates: number[] = []
+    const snapshots = checkpoint.teams as JsonObject[]
+    const addTeamDeadline = (teamId: string): void => {
+      const snapshot = snapshots.find(team => team.team === teamId)
+      if (!snapshot || snapshot.mainTimeRemainingMs === null) return
+      const allowance = snapshot.actionByoyomiStarted === true
+        ? snapshot.actionTimeRemainingMs
+        : config.actionTimeMs
+      if (allowance !== null) {
+        const remaining = snapshot.actionByoyomiStarted === true
+          ? allowance as number
+          : (snapshot.mainTimeRemainingMs as number) + (allowance as number)
+        candidates.push((checkpoint.lastObservedMs as number) + remaining)
+      }
+    }
+    if (running.type === 'preparation' && Array.isArray(running.teams)) {
+      running.teams.forEach(team => addTeamDeadline(team as string))
+    } else if (running.type === 'action' && typeof running.team === 'string') {
+      addTeamDeadline(running.team)
+    } else if (running.type === 'outOfTurnChoice' && running.remainingMs !== null) {
+      candidates.push((checkpoint.lastObservedMs as number) + (running.remainingMs as number))
+    }
+    nextTimeoutDeadlineMs = candidates.length === 0 ? null : Math.min(...candidates)
+  }
+  return {
+    config: checkpoint.config,
+    teams: checkpoint.teams,
+    activeWindow: publicWindow(running),
+    pausedWindow: publicWindow(paused),
+    expiredTeam: checkpoint.expiredTeam,
+    needsDecision: checkpoint.needsDecision,
+    timeoutRuling,
+    byoyomiEntryOrder,
+    lastObservedMs: checkpoint.lastObservedMs,
+    nextTimeoutDeadlineMs,
+  }
+}
+
+function expiredActionClock(config: JsonObject, team = 'team-a'): JsonObject {
+  const other = team === 'team-a' ? 'team-b' : 'team-a'
+  return terminalClock(config, {
+    teams: [
+      { team, mainTimeRemainingMs: 0, actionTurn: 1, actionTimeRemainingMs: 0,
+        actionByoyomiStarted: true, enteredByoyomi: true, byoyomiEntrySequence: 0 },
+      { team: other, mainTimeRemainingMs: 5_000, actionTurn: null, actionTimeRemainingMs: null,
+        actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+    ],
+    running: { type: 'action', team, turn: 1 },
+    nextByoyomiEntrySequence: 1,
+    expiredTeam: team,
+  })
+}
+
+function doubleExpiredPreparationClock(config: JsonObject): JsonObject {
+  return terminalClock(config, {
+    teams: [
+      { team: 'team-a', mainTimeRemainingMs: 0, actionTurn: null, actionTimeRemainingMs: 0,
+        actionByoyomiStarted: true, enteredByoyomi: true, byoyomiEntrySequence: 0 },
+      { team: 'team-b', mainTimeRemainingMs: 0, actionTurn: null, actionTimeRemainingMs: 0,
+        actionByoyomiStarted: true, enteredByoyomi: true, byoyomiEntrySequence: 0 },
+    ],
+    running: { type: 'preparation', teams: ['team-a', 'team-b'] },
+    nextByoyomiEntrySequence: 1,
+    doubleExpired: true,
+    expiredTeam: null,
+  })
+}
+
+function terminalAdapter(options: {
+  ruling?: CompetitionRuling
+  failSubmit?: boolean
+  throwOn?: 'clockRuleGame' | 'matchSubmitGame' | 'matchCorrectRuling' | 'tournamentSubmitResult' | 'tournamentCorrectResult'
+  throwMessage?: string
+  clockOperationOverride?: CompetitionEngineResponse['operation']
+  clockPublicOverride?: JsonObject
+  tournamentResponseOverride?: Partial<CompetitionEngineResponse>
+  tournamentCorrectionResponseOverride?: Partial<CompetitionEngineResponse>
+  matchCorrectionResponseOverride?: Partial<CompetitionEngineResponse>
+  rejectTournamentCorrection?: boolean
+  calls?: CompetitionRequest[]
+} = {}): CompetitionEngineAdapter {
+  return async request => {
+    options.calls?.push(request)
+    if (request.operation.type === 'tournamentStartMatch') return matchAdapter(request)
+    const state = {
+      registration: null,
+      clock: request.serverState.clock,
+      tournament: request.serverState.tournament,
+      matches: { ...(request.serverState.matches ?? {}) },
+    }
+    if (request.operation.type === 'registrationCreate') {
+      return responseFor(request, 1)
+    }
+    if (request.operation.type === 'matchCreate') {
+      state.matches[request.operation.config.matchId] = {
+        config: request.operation.config,
+        history: [],
+      }
+    }
+    if (request.operation.type === 'clockCreate') {
+      state.clock = terminalClock(request.operation.config as unknown as JsonObject)
+    }
+    if (request.operation.type === 'clockCreate') {
+      return {
+        ok: true,
+        operation: 'clockCreate',
+        public: clockPublicFromCheckpoint(state.clock as JsonObject),
+        serverState: state,
+      }
+    }
+    if (request.operation.type === 'clockRuleGame') {
+      if (options.throwOn === 'clockRuleGame') {
+        throw new Error(options.throwMessage ?? 'adapter secret: clock protocol detail')
+      }
+      return {
+        ok: true,
+        operation: options.clockOperationOverride ?? 'clockRuleGame',
+        public: options.clockPublicOverride ?? {
+          result: options.ruling ?? (request.operation.conclusion.outcome.type === 'winner'
+            ? { type: 'gameAccepted', outcome: { winner: request.operation.conclusion.outcome.team } }
+            : request.operation.mode === 'retainDraw'
+              ? { type: 'gameAccepted', outcome: 'draw' }
+              : { type: 'needsTiebreak', continuation: {
+                  teams: [
+                    { team: 'team-a', mainTimeRemainingMs: 4_000 },
+                    { team: 'team-b', mainTimeRemainingMs: 4_000 },
+                  ],
+                } }),
+          clock: state.clock ? clockPublicFromCheckpoint(state.clock) : null,
+        },
+        serverState: state,
+      }
+    }
+    if (request.operation.type === 'matchSubmitGame') {
+      if (options.throwOn === 'matchSubmitGame') {
+        throw new Error(options.throwMessage ?? 'adapter secret: submit protocol detail')
+      }
+      if (options.failSubmit) {
+        return { ok: false, error: {
+          code: 'submitRejected', layer: 'match', message: 'adapter secret: submit rejection detail',
+        } }
+      }
+      const current = state.matches[request.operation.matchId]
+      if (!current || !Array.isArray(current.history)) {
+        return { ok: false, error: { code: 'badState', layer: 'match', message: 'missing history' } }
+      }
+      const nextMatch = {
+        ...current,
+        history: [...current.history, { type: 'submitGame', submission: request.operation.submission }],
+      }
+      state.matches[request.operation.matchId] = nextMatch
+      return {
+        ok: true,
+        operation: 'matchSubmitGame',
+        public: { match: terminalPublicMatch(nextMatch) },
+        serverState: state,
+      }
+    }
+    if (request.operation.type === 'matchCorrectRuling') {
+      if (options.throwOn === 'matchCorrectRuling') {
+        throw new Error(options.throwMessage ?? 'adapter secret: correction detail')
+      }
+      const current = state.matches[request.operation.matchId]
+      if (!current || !Array.isArray(current.history)) {
+        return { ok: false, error: { code: 'badState', layer: 'match', message: 'missing history' } }
+      }
+      const gameRecordId = request.operation.gameRecordId
+      const activeSubmission = [...current.history].reverse().find(event => isJsonObject(event)
+        && event.type === 'submitGame' && isJsonObject(event.submission)
+        && event.submission.gameRecordId === gameRecordId)
+      if (!isJsonObject(activeSubmission) || !isJsonObject(activeSubmission.submission)) {
+        return { ok: false, error: { code: 'gameNotFound', layer: 'match', message: 'missing game' } }
+      }
+      const nextMatch = {
+        ...current,
+        history: [...current.history, {
+          type: 'correctRuling', correctionId: request.operation.correctionId,
+          refereeId: request.operation.refereeId, gameRecordId,
+          replacementRulingRecordId: request.operation.replacementRulingRecordId,
+          replacementRuling: request.operation.replacementRuling,
+          reason: request.operation.reason,
+        }],
+      }
+      state.matches[request.operation.matchId] = nextMatch
+      return {
+        ok: true,
+        operation: 'matchCorrectRuling',
+        public: { match: terminalPublicMatch(nextMatch) },
+        serverState: state,
+        ...options.matchCorrectionResponseOverride,
+      }
+    }
+    if (request.operation.type === 'tournamentSubmitResult'
+      || request.operation.type === 'tournamentCorrectResult') {
+      if (request.operation.type === 'tournamentCorrectResult' && options.rejectTournamentCorrection) {
+        return { ok: false, error: {
+          code: 'downstreamStarted', layer: 'schedule', message: 'private downstream state detail',
+        } }
+      }
+      if (options.throwOn === request.operation.type) {
+        throw new Error(options.throwMessage ?? 'adapter secret: tournament protocol detail')
+      }
+      if (!isJsonObject(state.tournament) || !Array.isArray(state.tournament.stages)) {
+        return { ok: false, error: { code: 'missingState', layer: 'state', message: 'missing tournament' } }
+      }
+      const tournament = JSON.parse(JSON.stringify(state.tournament)) as JsonObject
+      const stage = (tournament.stages as JsonValue[]).find(value =>
+        isJsonObject(value) && isJsonObject(value.config)
+        && value.config.stageId === request.operation.stageId,
+      )
+      if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) {
+        return { ok: false, error: { code: 'noSuchStage', layer: 'schedule', message: 'missing stage' } }
+      }
+      for (const round of stage.rounds) {
+        if (!isJsonObject(round) || !Array.isArray(round.matches)) continue
+        const match = round.matches.find(value => isJsonObject(value)
+          && value.matchId === request.operation.matchId)
+        if (isJsonObject(match)) {
+          match.result = request.operation.type === 'tournamentSubmitResult'
+            ? request.operation.result
+            : request.operation.replacement
+          match.status = 'completed'
+          break
+        }
+      }
+      state.tournament = tournament
+      return {
+        ok: true,
+        operation: request.operation.type,
+        public: { result: { type: request.operation.type === 'tournamentSubmitResult' ? 'applied' : 'corrected' }, tournament },
+        serverState: state,
+        ...(request.operation.type === 'tournamentCorrectResult'
+          ? options.tournamentCorrectionResponseOverride
+          : options.tournamentResponseOverride),
+      }
+    }
+    return {
+      ok: true,
+      operation: request.operation.type,
+      public: { operation: request.operation.type },
+      serverState: state,
+    }
+  }
+}
+
+function terminalPublicMatch(checkpoint: JsonObject): JsonObject {
+  const config = checkpoint.config as JsonObject
+  const history = checkpoint.history as JsonValue[]
+  const submissions = history
+    .filter((event): event is JsonObject => isJsonObject(event) && event.type === 'submitGame'
+      && isJsonObject(event.submission))
+    .map(event => event.submission as JsonObject)
+  const teams = config.teams as string[]
+  const score = [0, 0]
+  let pendingReferee: JsonObject | null = null
+  const games: JsonValue[] = []
+  const rulings: JsonValue[] = []
+  const corrections: JsonValue[] = []
+  const rulingByGame = new Map<string, { rulingRecordId: string; ruling: JsonObject }>()
+  submissions.forEach((submission, index) => {
+    const ruling = submission.ruling as JsonObject
+    const gameRecordId = submission.gameRecordId as string
+    const rulingRecordId = submission.rulingRecordId as string
+    rulingByGame.set(gameRecordId, { rulingRecordId, ruling })
+    rulings.push({ rulingRecordId, gameRecordId, ruling })
+    games.push({
+      gameNumber: index + 1,
+      gameRecordId,
+      startKind: submission.startKind,
+      firstPlayer: submission.firstPlayer,
+      terminalEvidence: submission.terminalEvidence,
+      rulingRecordId,
+    })
+  })
+  for (const event of history) {
+    if (!isJsonObject(event) || event.type !== 'correctRuling') continue
+    const active = rulingByGame.get(String(event.gameRecordId))
+    if (!active || typeof event.replacementRulingRecordId !== 'string'
+      || event.replacementRulingRecordId.trim().length === 0 || !isJsonObject(event.replacementRuling)) continue
+    corrections.push({
+      correctionId: event.correctionId,
+      refereeId: event.refereeId,
+      gameRecordId: event.gameRecordId,
+      previousRulingRecordId: active.rulingRecordId,
+      replacementRulingRecordId: event.replacementRulingRecordId,
+      replacementRuling: event.replacementRuling,
+      reason: event.reason,
+    })
+    rulingByGame.set(String(event.gameRecordId), {
+      rulingRecordId: event.replacementRulingRecordId,
+      ruling: event.replacementRuling,
+    })
+    rulings.push({
+      rulingRecordId: event.replacementRulingRecordId,
+      gameRecordId: event.gameRecordId,
+      ruling: event.replacementRuling,
+    })
+  }
+  for (const game of games) {
+    if (!isJsonObject(game)) continue
+    const active = rulingByGame.get(String(game.gameRecordId))
+    if (!active) continue
+    game.rulingRecordId = active.rulingRecordId
+    if (active.ruling.type === 'gameAccepted' && isJsonObject(active.ruling.outcome)
+      && typeof active.ruling.outcome.winner === 'string') {
+      score[teams.indexOf(active.ruling.outcome.winner)] += 1
+    } else if (active.ruling.type === 'timeoutLoss' || active.ruling.type === 'eliminationDrawLoss') {
+      const winner = teams.find(team => team !== active.ruling.loser)
+      if (winner) score[teams.indexOf(winner)] += 1
+    } else if (active.ruling.type === 'doubleTimeoutLoss') {
+      pendingReferee = { type: 'doubleLoss', teams: active.ruling.teams,
+        progression: { type: 'pendingReferee', reason: 'DoubleLoss 待裁判處理' } }
+    } else if (active.ruling.type === 'needsDecision') {
+      pendingReferee = { type: 'pendingReferee', gameRecordId: game.gameRecordId, reason: active.ruling.reason }
+    }
+  }
+  const format = config.format as JsonObject
+  const completed = format.type === 'fixedGames'
+    ? submissions.length >= (format.value as number)
+    : score.some(value => value >= (format.value as number))
+  const status = pendingReferee ? 'awaitingReferee' : completed ? 'completed' : 'open'
+  const outcome = pendingReferee ?? (completed
+    ? score[0] === score[1]
+      ? { type: 'draw', score }
+      : {
+          type: 'winner',
+          winnerId: teams[score[0] > score[1] ? 0 : 1],
+          loserId: teams[score[0] > score[1] ? 1 : 0],
+          score,
+        }
+    : null)
+  return {
+    config,
+    status,
+    score,
+    games,
+    rulings,
+    corrections,
+    outcome,
+    nextFirstPlayer: null,
+    nextGame: completed || pendingReferee ? null : {
+      gameNumber: submissions.length + 1,
+      kind: { type: 'ordinaryNewGame' },
+      firstPlayer: { type: 'pending', reason: '等待先手指定' },
+    },
+  }
+}
+
+function configureTerminalSchedule(
+  sql: MemorySql,
+  options: {
+    matchFormat: { type: 'fixedGames' | 'firstToWins'; value: number }
+    tournamentFormat?: string
+  },
+): void {
+  const matchRow = sql.database.query(
+    'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+  ).get('terminal-match') as { match_checkpoint_json: string }
+  const checkpoint = JSON.parse(matchRow.match_checkpoint_json) as JsonObject
+  ;(checkpoint.config as JsonObject).format = options.matchFormat
+  sql.database.query(
+    'UPDATE competition_matches SET match_checkpoint_json = ? WHERE match_id = ?',
+  ).run(JSON.stringify(checkpoint), 'terminal-match')
+
+  const metaRow = sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const state = JSON.parse(metaRow.server_state_json) as JsonObject
+  ;(state.matches as JsonObject)['terminal-match'] = checkpoint
+  const stage = (state.tournament as JsonObject).stages as JsonValue[]
+  const tournamentStage = stage[0] as JsonObject
+  const config = tournamentStage.config as JsonObject
+  config.matchFormat = options.matchFormat
+  const tournamentFormat = options.tournamentFormat
+    ?? (options.matchFormat.type === 'fixedGames' ? 'roundRobin' : 'singleElimination')
+  config.format = tournamentFormat
+  if (tournamentFormat === 'doubleElimination') {
+    const round = (tournamentStage.rounds as JsonValue[])[0] as JsonObject
+    round.kind = 'winners'
+    const scheduled = (round.matches as JsonValue[])[0] as JsonObject
+    scheduled.kind = 'winners'
+  }
+  if (tournamentFormat === 'swiss') {
+    config.swissRounds = 3
+    config.swissPolicy = {
+      matchPoints: { win: 3, draw: 1, loss: 0, bye: 3 },
+      drawCredit: { numerator: 1, denominator: 1 },
+      opponentWinRateFloorPercent: null,
+      opponentWinRateCapPercent: null,
+      excludeByesFromOpponentWinRate: true,
+      tieBreakers: ['matchPoints', 'seedOrder'],
+    }
+  }
+  sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(state))
+}
+
+function clockEvidenceAdapter(options: {
+  preClock: JsonObject
+  postClock: JsonObject
+  update: JsonObject
+  publicOverride?: JsonObject
+  calls?: CompetitionRequest[]
+}): CompetitionEngineAdapter {
+  return async request => {
+    options.calls?.push(request)
+    if (request.operation.type === 'tournamentStartMatch') return matchAdapter(request)
+    const state = {
+      registration: request.serverState.registration,
+      clock: request.serverState.clock,
+      tournament: request.serverState.tournament,
+      matches: { ...(request.serverState.matches ?? {}) },
+    }
+    if (request.operation.type === 'registrationCreate') return responseFor(request, 1)
+    if (request.operation.type === 'matchCreate') {
+      state.matches[request.operation.config.matchId] = {
+        config: request.operation.config,
+        history: [],
+      }
+      return { ok: true, operation: 'matchCreate', public: {}, serverState: state }
+    }
+    if (request.operation.type === 'clockCreate') {
+      state.clock = { ...options.preClock, config: request.operation.config }
+      return {
+        ok: true,
+        operation: 'clockCreate',
+        public: clockPublicFromCheckpoint(state.clock),
+        serverState: state,
+      }
+    }
+    if (request.operation.type.startsWith('clock')) {
+      state.clock = options.postClock
+      return {
+        ok: true,
+        operation: request.operation.type,
+        public: options.publicOverride ?? {
+          result: options.update,
+          clock: clockPublicFromCheckpoint(options.postClock),
+        },
+        serverState: state,
+      }
+    }
+    return { ok: true, operation: request.operation.type, public: {}, serverState: state }
+  }
+}
+
+async function terminalTestRequest(
+  overrides: Partial<CompetitionRoomTerminalIngestRequest> = {},
+): Promise<CompetitionRoomTerminalIngestRequest> {
+  const clock = terminalClock({
+    config: { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 },
+  })
+  return {
+    competitionId: 'competition-1',
+    matchId: 'terminal-match',
+    callerUserId: 'organizer-1',
+    commandId: 'terminal-command',
+    expectedMatchRevision: 1,
+    trustedTimeMs: 201,
+    submissionId: 'submission-1',
+    gameRecordId: 'game-1',
+    rulingRecordId: 'ruling-1',
+    startKind: { type: 'ordinaryNewGame' },
+    firstPlayer: 'team-a',
+    terminalEvidence: {
+      type: 'canonicalGameEnded',
+      conclusion: {
+        outcome: { type: 'winner', team: 'team-a' },
+        causes: [{ type: 'directVictory', rule: 'test', team: 'team-a' }],
+      },
+    },
+    ...(overrides.terminalEvidence?.type === 'timeout'
+      ? { terminalEvidence: overrides.terminalEvidence }
+      : overrides),
+  }
+}
+
+async function terminalRoom(
+  options: Parameters<typeof terminalAdapter>[0] = {},
+): Promise<{ room: CompetitionRoom; sql: MemorySql; calls: CompetitionRequest[] }> {
+  const calls = options.calls ?? []
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(terminalAdapter({ ...options, calls }), sql)
+  const created = await materializeTestMatch(room, sql, 'terminal-match')
+  expect(created.ok).toBe(true)
+  return { room, sql, calls }
+}
+
+function replaceMatchClock(sql: MemorySql, checkpoint: JsonObject): void {
+  sql.database.query(
+    'UPDATE competition_matches SET clock_checkpoint_json = ? WHERE match_id = ?',
+  ).run(JSON.stringify(checkpoint), 'terminal-match')
+}
+
+function terminalStateSnapshot(sql: MemorySql): {
+  match: Record<string, unknown>
+  globalState: string
+  meta: Record<string, unknown>
+} {
+  const match = sql.database.query(
+    `SELECT match_checkpoint_json, clock_checkpoint_json, match_projection_json,
+            clock_projection_json, revision, last_trusted_time_ms
+       FROM competition_matches WHERE match_id = ?`,
+  ).get('terminal-match') as Record<string, unknown>
+  const meta = sql.database.query(
+    `SELECT server_state_json, public_projection_json, revision, updated_trusted_time_ms
+       FROM competition_meta WHERE singleton = 1`,
+  ).get() as Record<string, unknown> & { server_state_json: string }
+  return { match, globalState: meta.server_state_json, meta }
+}
+
+function matchExecuteRequest(
+  operation: CompetitionRoomMatchExecuteRequest['operation'],
+  overrides: Partial<CompetitionRoomMatchExecuteRequest> = {},
+): CompetitionRoomMatchExecuteRequest {
+  return {
+    competitionId: 'competition-1',
+    matchId: operation.type === 'matchCreate' ? operation.config.matchId : operation.matchId,
+    callerUserId: 'organizer-1',
+    commandId: `${operation.type}-command`,
+    expectedMatchRevision: 0,
+    trustedTimeMs: 200,
+    operation,
+    ...overrides,
+  }
+}
+
+function matchCorrectionRequest(
+  overrides: Partial<CompetitionRoomMatchExecuteRequest> = {},
+  ruling: CompetitionRuling = { type: 'gameAccepted', outcome: { winner: 'team-b' } },
+  operationOverrides: Partial<Extract<CompetitionRoomMatchExecuteRequest['operation'], { type: 'matchCorrectRuling' }>> = {},
+): CompetitionRoomMatchExecuteRequest {
+  const operation = {
+    type: 'matchCorrectRuling' as const,
+    matchId: 'terminal-match',
+    correctionId: 'correction-1',
+    refereeId: 'referee-1',
+    gameRecordId: 'game-1',
+    replacementRulingRecordId: 'replacement-ruling-1',
+    replacementRuling: ruling,
+    reason: '裁判覆核後修正',
+    ...operationOverrides,
+  }
+  return matchExecuteRequest(operation, {
+    callerUserId: 'referee-1',
+    commandId: 'correction-command',
+    expectedMatchRevision: 2,
+    trustedTimeMs: 250,
+    ...overrides,
+  })
+}
+
+function addTestReferee(sql: MemorySql): void {
+  sql.database.query(
+    `INSERT INTO competition_acl (user_id, role, active, participant)
+     VALUES ('referee-1', 'referee', 1, 0)`,
+  ).run()
+  const row = sql.database.query(
+    'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+  ).get('terminal-match') as { match_checkpoint_json: string }
+  const checkpoint = JSON.parse(row.match_checkpoint_json) as JsonObject
+  const config = checkpoint.config as JsonObject
+  config.referees = [{ refereeId: 'referee-1', conflictedTeam: null }]
+  sql.database.query('UPDATE competition_matches SET match_checkpoint_json = ? WHERE match_id = ?')
+    .run(JSON.stringify(checkpoint), 'terminal-match')
+  const meta = sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const state = JSON.parse(meta.server_state_json) as JsonObject
+  ;(state.matches as JsonObject)['terminal-match'] = checkpoint
+  sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(state))
+}
+
+function seedScheduledMatches(
+  sql: MemorySql,
+  matches: Array<{
+    matchId: string
+    participants?: string[]
+    status?: string
+    started?: boolean
+    result?: JsonValue
+    cancellationReason?: string | null
+  }>,
+  clockConfig: JsonObject = { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 },
+): void {
+  const row = sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const state = JSON.parse(row.server_state_json) as Record<string, unknown>
+  const stageId = 'stage-1'
+  const scheduled = matches.map((match, index) => ({
+    matchId: match.matchId,
+    stageId,
+    roundNumber: index + 1,
+    sequence: index + 1,
+    kind: 'main',
+    participants: match.participants ?? ['team-a', 'team-b'],
+    status: match.status ?? 'pending',
+    result: match.result ?? null,
+    cancellationReason: match.cancellationReason ?? null,
+    started: match.started ?? false,
+  }))
+  state.tournament = {
+    tournamentId: 'tournament-1',
+    stages: [{
+      config: {
+        stageId,
+        format: 'singleElimination',
+        teams: [
+          { teamId: 'team-a', seed: 1 },
+          { teamId: 'team-b', seed: 2 },
+          { teamId: 'team-c', seed: 3 },
+        ],
+        randomSeed: 7,
+        matchFormat: { type: 'firstToWins', value: 2 },
+        clockConfig,
+        swissRounds: null,
+        swissPolicy: null,
+      },
+      status: 'active',
+      rounds: scheduled.map(match => ({
+        roundNumber: match.roundNumber,
+        kind: 'main',
+        matches: [match],
+      })),
+      standings: [],
+      corrections: [],
+      lastScheduleError: null,
+      scheduleGeneration: 1,
+      supersededRounds: [],
+      teams: {
+        'team-a': { seed: 1, dropped: false, hadBye: false },
+        'team-b': { seed: 2, dropped: false, hadBye: false },
+        'team-c': { seed: 3, dropped: false, hadBye: false },
+      },
+      doubleState: null,
+    }],
+  }
+  sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(state))
+}
+
+function replaceTournament(sql: MemorySql, tournament: unknown): void {
+  const row = sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const state = JSON.parse(row.server_state_json) as Record<string, unknown>
+  state.tournament = tournament
+  sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(state))
+}
+
+function mutateTournament(sql: MemorySql, mutate: (tournament: Record<string, unknown>) => void): void {
+  const row = sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const state = JSON.parse(row.server_state_json) as Record<string, unknown>
+  const tournament = JSON.parse(JSON.stringify(state.tournament)) as Record<string, unknown>
+  mutate(tournament)
+  replaceTournament(sql, tournament)
+}
+
+async function materializeTestMatch(
+  room: CompetitionRoom,
+  sql: MemorySql,
+  matchId: string,
+  referees: { refereeId: string; conflictedTeam: string | null }[] = [],
+  overrides: Partial<Parameters<CompetitionRoom['materializeScheduledMatch']>[0]> = {},
+  clockConfig: JsonObject = { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 },
+) {
+  seedScheduledMatches(sql, [{ matchId }], clockConfig)
+  const meta = sql.database.query('SELECT revision FROM competition_meta WHERE singleton = 1').get() as { revision: number }
+  return room.materializeScheduledMatch({
+    competitionId: 'competition-1',
+    stageId: 'stage-1',
+    matchId,
+    callerUserId: 'organizer-1',
+    commandId: `materialize-${matchId}`,
+    expectedRevision: overrides.expectedRevision ?? meta.revision,
+    trustedTimeMs: 200,
+    referees,
+    ...overrides,
+  })
+}
+
+function scheduledStartRequest(
+  overrides: Partial<CompetitionRoomStartScheduledMatchRequest> = {},
+): CompetitionRoomStartScheduledMatchRequest {
+  return {
+    competitionId: 'competition-1',
+    stageId: 'stage-1',
+    matchId: 'scheduled-match',
+    callerUserId: 'organizer-1',
+    commandId: 'start-scheduled-match',
+    expectedRevision: 1,
+    trustedTimeMs: 200,
+    referees: [],
+    ...overrides,
+  }
+}
+
+function lockedRoster(
+  teamSize: 1 | 2,
+  personalDeck: boolean,
+  teamIds = ['team-a', 'team-b'],
+): JsonObject {
+  const members = Object.fromEntries(teamIds.map((teamId, index) => [teamId,
+    Array.from({ length: teamSize }, (_, memberIndex) => `${String.fromCharCode(97 + index)}-${memberIndex + 1}`),
+  ]))
+  return {
+    announcement: createCompetitionAnnouncementFixture({
+      enabledRuleModules: personalDeck ? ['personal-deck'] : [],
+      teamSize,
+      personalDecks: personalDeck ? 'required' : 'disabled',
+      plan: structuredClone(announcedPlan),
+    }),
+    teams: Object.entries(members).map(([teamId, teamMembers]) => ({
+      teamId,
+      captain: teamMembers[0],
+      members: teamMembers,
+      rosterVersion: 1,
+      decks: personalDeck
+        ? teamMembers.map(player => ({ player, name: `${player}-deck`, cards: [`${player}-card`] }))
+        : [],
+    })),
+  }
+}
+
+async function realRegistrationRoom(teamSize: 1 | 2 = 1, personalDeck = false, checkInDeadline = 120_000) {
+  const sql = new MemorySql()
+  const alarm: TestAlarmState = { scheduledAt: null }
+  const calls: CompetitionRequest[] = []
+  const gameCalls: Array<{ gameId: string; binding: CompetitionGameBinding }> = []
+  // 所有核心 operation 都送正式 WASM；只替換平台 SQLite／GameRoom RPC 邊界。
+  const adapter: CompetitionEngineAdapter = async request => {
+    calls.push(structuredClone(request))
+    return callCompetitionEngine(request, realCompetitionWasm)
+  }
+  const env = { GAME_ROOM: gameRoomNamespace(async request => {
+    gameCalls.push(structuredClone(request))
+    if (isJsonObject(request.binding.roundRef) && Number.isSafeInteger(request.binding.roundStartMs)) {
+      const bindingRef = await competitionGameBindingRefForRequest({ gameId: request.gameId, binding: request.binding })
+      return { gameId: request.gameId, bindingDigest: bindingRef.bindingDigest, status: 'Waiting' }
+    }
+    return { gameId: request.gameId, status: 'Waiting', idempotent: false }
+  }) }
+  const room = new CompetitionRoomClass(stateFor(sql, alarm), env, adapter, () => 0)
+  const initialized = await room.initialize(validInitialize({
+    participantUserIds: [],
+    announcement: {
+      ...validInitialize().announcement, ruleset: 'base', teamSize,
+      enabledRuleModules: personalDeck ? ['personal-deck'] : [],
+      personalDecks: personalDeck ? 'required' : 'disabled',
+      checkInDeadline,
+    },
+  }))
+  expect(initialized).toMatchObject({ ok: true, value: { revision: 1 } })
+  const meta = () => sql.database.query('SELECT * FROM competition_meta').get() as {
+    revision: number; updated_trusted_time_ms: number; server_state_json: string
+  }
+  let sequence = 0
+  const command = (action: RegistrationAction, callerUserId = 'organizer-1',
+    overrides: Partial<CompetitionRoomExecuteRequest> = {}): CompetitionRoomExecuteRequest & {
+      operation: Extract<CompetitionRequest['operation'], { type: 'registrationExecute' }>
+    } => {
+    const current = meta()
+    const commandId = overrides.commandId ?? `real-registration-${++sequence}-${action.type}`
+    const expectedRevision = overrides.expectedRevision ?? current.revision
+    return {
+      competitionId: 'competition-1', callerUserId, commandId, expectedRevision,
+      trustedTimeMs: current.updated_trusted_time_ms + 1,
+      ...overrides,
+      operation: { type: 'registrationExecute', commandId, expectedRevision, action },
+    }
+  }
+  return { room, sql, alarm, env, adapter, calls, gameCalls, initialized, meta, command }
+}
+
+async function registerRealTeams(setup: Awaited<ReturnType<typeof realRegistrationRoom>>,
+  teamSize: 1 | 2, personalDeck: boolean) {
+  const accepted = async (request: CompetitionRoomExecuteRequest) => {
+    const result = await setup.room.execute(request)
+    expect(result).toMatchObject({ ok: true, value: { revision: request.expectedRevision + 1 } })
+    if (!result.ok) throw new Error(`real registration ${request.operation.type} failed: ${result.error.code}`)
+    return result
+  }
+  await accepted(setup.command({ type: 'open' }))
+  // 非 registration 的全域 mutation 會擴大版號差，子命令不能取 global-1。
+  expect(await setup.room.grantReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'referee-1',
+    commandId: 'real-registration-referee', expectedRevision: setup.meta().revision,
+    trustedTimeMs: setup.meta().updated_trusted_time_ms + 1,
+  })).toMatchObject({ ok: true })
+  const cards = ['metal', 'wood', 'water', 'fire', 'earth'].flatMap(element => (
+    [3, 2, 3, 2, 2].flatMap((copies, index) => Array.from({ length: copies }, () => `${element}-${index + 1}`))
+  ))
+  for (const prefix of ['a', 'b']) {
+    const members = Array.from({ length: teamSize }, (_, index) => `${prefix}-${index + 1}`)
+    const teamId = `team-${prefix}`
+    await accepted(setup.command({ type: 'registerTeam', teamId, captain: members[0]!, members }, members[0]))
+    for (const player of members) {
+      await accepted(setup.command({ type: 'confirmMembership', teamId, rosterVersion: 1 }, player))
+      if (personalDeck) await accepted(setup.command({
+        type: 'submitDeck', teamId, rosterVersion: 1, name: `${player}-private-deck`, cards,
+      }, player))
+    }
+    await accepted(setup.command({ type: 'checkInTeam', teamId, rosterVersion: 1 }, members[0]))
+  }
+  await atRoundDeliveryTime(60_000, () => setup.room.alarm())
+  const frozen = await setup.room.execute({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', commandId: 'automatic-freeze-view',
+    expectedRevision: setup.meta().revision, trustedTimeMs: 60_001, operation: { type: 'registrationView' },
+  })
+  expect(frozen).toMatchObject({ ok: true, value: { projection: {
+    operation: 'registrationView', public: { lifecycle: 'locked' },
+  } } })
+}
+
+test('E6a2 registration deadline alarm freezes at F without an organizer lock command', async () => {
+  const setup = await realRegistrationRoom()
+  const opened = await atRoundDeliveryTime(500, () => setup.room.execute(setup.command({ type: 'open' })))
+  expect(opened).toMatchObject({ ok: true })
+  expect(setup.alarm.scheduledAt).toBe(60_000)
+
+  await atRoundDeliveryTime(60_000, () => setup.room.alarm())
+  expect(setup.alarm.scheduledAt).toBeNull()
+  const checkpoint = JSON.parse(setup.meta().server_state_json) as JsonObject
+  const registration = checkpoint.registration as JsonObject
+  const commands = registration.commands as JsonObject[]
+  expect(commands.map(command => (command.action as JsonObject).type)).toEqual(['open', 'lock'])
+  expect(commands.at(-1)).toMatchObject({
+    serverActor: { type: 'organizer', playerId: 'organizer-1' },
+    trustedTimeMs: 60_000,
+    action: { type: 'lock' },
+  })
+
+  const late = setup.command({
+    type: 'registerTeam', teamId: 'late-team', captain: 'late-captain', members: ['late-captain'],
+  }, 'late-captain', { trustedTimeMs: 60_001 })
+  expect(await setup.room.execute(late)).toMatchObject({
+    ok: false, error: { code: 'engine:registrationError' },
+  })
+  expect(setup.meta().revision).toBe(late.expectedRevision)
+  expect((JSON.parse(setup.meta().server_state_json) as JsonObject).registration)
+    .toStrictEqual(registration)
+})
+
+test('E6a2 registration request accepted after F freezes before applying its late payload', async () => {
+  const setup = await realRegistrationRoom()
+  await atRoundDeliveryTime(500, () => setup.room.execute(setup.command({ type: 'open' })))
+  const late = setup.command({
+    type: 'registerTeam', teamId: 'late-team', captain: 'late-captain', members: ['late-captain'],
+  }, 'late-captain', { trustedTimeMs: 60_001 })
+
+  expect(await atRoundDeliveryTime(60_001, () => setup.room.execute(late))).toMatchObject({
+    ok: false, error: { code: 'revisionConflict' },
+  })
+  expect(setup.meta().revision).toBe(late.expectedRevision + 1)
+  const registration = (JSON.parse(setup.meta().server_state_json) as JsonObject).registration as JsonObject
+  const commands = registration.commands as JsonObject[]
+  expect(commands.map(command => (command.action as JsonObject).type)).toEqual(['open', 'lock'])
+  const view = await setup.room.execute({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', commandId: 'after-cutoff-registration-view',
+    expectedRevision: setup.meta().revision, trustedTimeMs: 60_002, operation: { type: 'registrationView' },
+  })
+  expect(view).toMatchObject({ ok: true, value: { projection: {
+    public: { lifecycle: 'locked', teams: [] },
+  } } })
+})
+
+for (const scenario of [{ teamSize: 1 as const, personalDeck: false }, { teamSize: 2 as const, personalDeck: true }]) {
+  test(`E6a2 full real WASM registration-to-published-round handoff: ${scenario.teamSize}v${scenario.teamSize}`, async () => {
+    const setup = await realRegistrationRoom(scenario.teamSize, scenario.personalDeck, 600_000)
+    await registerRealTeams(setup, scenario.teamSize, scenario.personalDeck)
+    let frozenDecks: JsonObject[] = []
+    if (scenario.personalDeck) {
+      const exported = await setup.room.execute({
+        competitionId: 'competition-1', callerUserId: 'organizer-1', commandId: 'automatic-freeze-export',
+        expectedRevision: setup.meta().revision, trustedTimeMs: 60_001,
+        operation: { type: 'registrationExportLockedRoster' },
+      })
+      if (!exported.ok || !isJsonObject(exported.value.projection.private)
+        || !Array.isArray(exported.value.projection.private.teams)
+        || !exported.value.projection.private.teams.every(team => isJsonObject(team)
+          && Array.isArray(team.decks) && team.decks.every(isJsonObject))) {
+        throw new Error('automatic registration freeze did not export its locked roster')
+      }
+      const exportedTeams = exported.value.projection.private.teams
+      expect(exportedTeams.map(team => team.teamId)).toEqual(['team-a', 'team-b'])
+      frozenDecks = exportedTeams
+        .flatMap(team => team.decks as JsonObject[])
+        .sort((left, right) => String(left.player).localeCompare(String(right.player)))
+      const original = setup.meta()
+      const firstDeck = frozenDecks[0]
+      if (!firstDeck || !Array.isArray(firstDeck.cards)) throw new Error('frozen personal deck is missing')
+      expect(await setup.room.execute(setup.command({
+        type: 'submitDeck', teamId: 'team-a', rosterVersion: 1,
+        name: '截止後更新的帳號牌組', cards: firstDeck.cards as string[],
+      }, String(firstDeck.player), { trustedTimeMs: 60_002 }))).toMatchObject({
+        ok: false, error: { code: 'engine:registrationError' },
+      })
+      expect(setup.meta().revision).toBe(original.revision)
+      const afterRejectedSubmission = await setup.room.execute({
+        competitionId: 'competition-1', callerUserId: 'organizer-1', commandId: 'automatic-freeze-export-after-late',
+        expectedRevision: setup.meta().revision, trustedTimeMs: 60_003,
+        operation: { type: 'registrationExportLockedRoster' },
+      })
+      if (!afterRejectedSubmission.ok || !isJsonObject(afterRejectedSubmission.value.projection.private)
+        || !Array.isArray(afterRejectedSubmission.value.projection.private.teams)
+        || !afterRejectedSubmission.value.projection.private.teams.every(team => isJsonObject(team)
+          && Array.isArray(team.decks) && team.decks.every(isJsonObject))) {
+        throw new Error('automatic registration freeze lost its locked roster after a late submission')
+      }
+      const afterTeams = afterRejectedSubmission.value.projection.private.teams
+      expect(afterTeams.map(team => team.teamId)).toEqual(['team-a', 'team-b'])
+      const afterDecks = afterTeams
+        .flatMap(team => team.decks as JsonObject[])
+        .sort((left, right) => String(left.player).localeCompare(String(right.player)))
+      expect(afterDecks).toStrictEqual(frozenDecks)
+    }
+    const beforeQueries = setup.sql.database.query('SELECT * FROM competition_meta').get()
+    const beforePrivate = setup.sql.database.query('SELECT * FROM competition_private_projection').all()
+    const beforeQuerySnapshot = realRegistrationSnapshot(setup)
+    const query = (type: 'registrationView' | 'registrationExportLockedRoster', callerUserId = 'organizer-1') => (
+      setup.room.execute({
+        competitionId: 'competition-1', callerUserId, commandId: `real-query-${type}-${callerUserId}`,
+        expectedRevision: setup.meta().revision, trustedTimeMs: 60_001, operation: { type },
+      })
+    )
+    const exported = await query('registrationExportLockedRoster')
+    expect(exported).toMatchObject({ ok: true, value: { projection: {
+      private: { announcement: { ruleset: 'base' }, teams: [{ teamId: 'team-a' }, { teamId: 'team-b' }] },
+    } } })
+    const playerView = await query('registrationView', 'a-1')
+    expect(playerView).toMatchObject({ ok: true })
+    expect(JSON.stringify(playerView)).not.toContain('b-1-private-deck')
+    expect(await query('registrationExportLockedRoster', 'a-1')).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(setup.sql.database.query('SELECT * FROM competition_meta').get()).toEqual(beforeQueries)
+    expect(setup.sql.database.query('SELECT * FROM competition_private_projection').all()).toEqual(beforePrivate)
+    expect(realRegistrationSnapshot(setup)).toEqual(beforeQuerySnapshot)
+    expect(setup.sql.database.query(
+      "SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id LIKE 'real-query-%'",
+    ).get()).toEqual({ count: 0 })
+    const stage: StageConfig = {
+      ...stageConfig({ format: 'roundRobin', teams: [
+        { teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 2 },
+      ] }),
+      matchFormat: { type: 'fixedGames', value: 1 },
+    }
+    const created = await setup.room.createTournamentFromLockedRoster(createTournamentRequest({
+      commandId: 'real-handoff-tournament', stage, expectedRevision: setup.meta().revision, trustedTimeMs: 60_002,
+    }))
+    expect(created).toMatchObject({ ok: true })
+    if (!created.ok) throw new Error(`real tournament failed: ${created.error.code}`)
+    const tournament = created.value.projection.public as JsonObject
+    const firstStage = (tournament.stages as JsonObject[])[0]!
+    const matchId = (((firstStage.rounds as JsonObject[])[0]!.matches as JsonObject[])[0]!.matchId) as string
+    const announcementRequest: CompetitionRoomAnnounceRoundRequest = {
+      competitionId: 'competition-1', stageId: stage.stageId, roundNumber: 1,
+      callerUserId: 'organizer-1', commandId: 'real-handoff-announce',
+      expectedRevision: created.value.revision, trustedTimeMs: 60_003, roundStartMs: 600_000,
+      refereeAssignments: [],
+    }
+    const announced = await atRoundDeliveryTime(60_003, () => setup.room.announceRound(announcementRequest))
+    expect(announced).toMatchObject({ ok: true, value: { publication: {
+      roundStartMs: 600_000, rooms: [{ matchId }],
+    } } })
+    if (!announced.ok) throw new Error(`real round announcement failed: ${announced.error.code}`)
+    await atRoundDeliveryTime(61_003, () => setup.room.alarm())
+    expect(setup.gameCalls).toHaveLength(1)
+    expect(setup.gameCalls[0]!.binding).toMatchObject({
+      ruleset: 'fewfc-base', firstPlayer: 'a-1',
+      roundRef: announced.value.publication.roundRef,
+      roundStartMs: 600_000,
+      turnOrder: ['a-1', 'b-1', ...(scenario.teamSize === 2 ? ['a-2', 'b-2'] : [])],
+    })
+    const deliveredPublication = await setup.room.readRoundPublication({ competitionId: 'competition-1',
+      stageId: stage.stageId, roundNumber: 1, callerUserId: 'organizer-1' })
+    expect(deliveredPublication).toMatchObject({ ok: true, value: { publication: {
+      rooms: [{ matchId, ackConfirmedAtMs: 61_003 }],
+    } } })
+    expect(((JSON.parse(setup.meta().server_state_json) as JsonObject).registration as JsonObject)
+      .announcement).toMatchObject({ ruleset: 'base' })
+    if (scenario.personalDeck) {
+      expect(setup.gameCalls[0]!.binding.deckSnapshot).toHaveLength(4)
+      for (const deck of setup.gameCalls[0]!.binding.deckSnapshot) expect(deck.cards).toHaveLength(60)
+      expect(setup.gameCalls[0]!.binding.deckSnapshot
+        .map(deck => ({ player: deck.player, name: deck.name, cards: deck.cards }))
+        .sort((left, right) => left.player.localeCompare(right.player))).toStrictEqual(frozenDecks)
+    }
+    const callCount = setup.calls.length
+    const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter, () => 1)
+    expect(await restarted.announceRound({ ...announcementRequest, trustedTimeMs: 60_099 }))
+      .toMatchObject({ ok: true, value: { idempotent: true } })
+    expect(setup.calls).toHaveLength(callCount)
+    expect(setup.gameCalls).toHaveLength(1)
+    const publicRead = await restarted.read({ competitionId: 'competition-1', callerUserId: 'b-1' })
+    const audit = await restarted.audit({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+    for (const publicValue of [created, publicRead, audit, announced]) {
+      expect(JSON.stringify(publicValue)).not.toMatch(/"(?:private|serverState|binding|deckSeed|deckSnapshot|cards|decks|members)"\s*:/)
+    }
+    const committedState: unknown = JSON.parse(setup.meta().server_state_json)
+    if (!isJsonObject(committedState) || !isJsonObject(committedState.registration)
+      || !Array.isArray(committedState.registration.commands)
+      || !committedState.registration.commands.every(isJsonObject)) {
+      throw new Error('committed registration checkpoint is malformed')
+    }
+    const committedRegistrationRevision = committedState.registration.commands.length
+    const registrationCalls = setup.calls.filter(call => call.operation.type === 'registrationExecute')
+    expect(registrationCalls.map(call => (call.operation as Extract<CompetitionRequest['operation'], { type: 'registrationExecute' }>).expectedRevision))
+      .toEqual(Array.from({ length: registrationCalls.length }, (_, index) => index))
+    // 公告也已推進全域版號，合法子 revision 仍取 registration checkpoint。
+    const afterTournament = setup.command({ type: 'open' }, 'organizer-1', { trustedTimeMs: 60_005 })
+    const invalidLifecycle = await restarted.execute(afterTournament)
+    expect(invalidLifecycle).toMatchObject({ ok: false, error: { code: 'engine:registrationError' } })
+    if (!invalidLifecycle.ok) {
+      expect(invalidLifecycle.error.message).toContain('invalidLifecycle')
+      expect(invalidLifecycle.error.message).not.toContain('revisionConflict')
+    }
+    expect(setup.calls.at(-1)!.operation).toMatchObject({ expectedRevision: committedRegistrationRevision })
+    expect(setup.meta().revision).toBe(afterTournament.expectedRevision)
+  })
+}
+
+function realRegistrationSnapshot(setup: { sql: MemorySql }) {
+  return {
+    meta: setup.sql.database.query('SELECT * FROM competition_meta').all(),
+    acl: setup.sql.database.query('SELECT * FROM competition_acl ORDER BY user_id').all(),
+    private: setup.sql.database.query('SELECT * FROM competition_private_projection ORDER BY user_id').all(),
+    receipts: setup.sql.database.query('SELECT * FROM competition_command_receipt ORDER BY command_id').all(),
+    audit: setup.sql.database.query('SELECT * FROM competition_audit ORDER BY id').all(),
+  }
+}
+
+test('E6a2 registration receipt precedes ACL, revision and time after a valid restart', async () => {
+  const setup = await realRegistrationRoom()
+  expect(await setup.room.grantReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'referee-1',
+    commandId: 'before-open-grant', expectedRevision: 1, trustedTimeMs: 101,
+  })).toMatchObject({ ok: true, value: { revision: 2 } })
+  const request = setup.command({ type: 'open' })
+  expect(request.expectedRevision).toBe(2)
+  const first = await setup.room.execute(request)
+  expect(first).toMatchObject({ ok: true, value: { revision: 3, projection: { public: { revision: 1 } } } })
+  expect(setup.calls.at(-1)!.operation).toEqual({
+    type: 'registrationExecute', commandId: request.commandId, expectedRevision: 0, action: { type: 'open' },
+  })
+  expect(await setup.room.revokeReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'referee-1',
+    commandId: 'after-open-revoke', expectedRevision: 3, trustedTimeMs: 103,
+  })).toMatchObject({ ok: true, value: { revision: 4 } })
+  const count = setup.calls.length
+  setup.sql.database.query('UPDATE competition_acl SET active = 0 WHERE user_id = ?').run('organizer-1')
+  const beforeRetry = realRegistrationSnapshot(setup)
+  const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+  for (const trustedTimeMs of [0, 9999]) {
+    expect(await restarted.execute({ ...request, trustedTimeMs })).toEqual(first.ok
+      ? { ...first, value: { ...first.value, idempotent: true } } : first)
+  }
+  expect(await restarted.execute({
+    ...request,
+    operation: { type: 'registrationExecute', commandId: request.commandId,
+      expectedRevision: request.expectedRevision, action: { type: 'lock' } },
+  })).toMatchObject({ ok: false, error: { code: 'commandIdConflict' } })
+  expect(await restarted.execute({
+    ...request, expectedRevision: 4,
+    operation: { type: 'registrationExecute', commandId: request.commandId, expectedRevision: 4, action: { type: 'open' } },
+  })).toMatchObject({ ok: false, error: { code: 'commandIdConflict' } })
+  expect(setup.calls).toHaveLength(count)
+  expect(realRegistrationSnapshot(setup)).toEqual(beforeRetry)
+})
+
+test('E6a2 registration receipt never bypasses the room identity guard', async () => {
+  const setup = await realRegistrationRoom()
+  const request = setup.command({ type: 'open' })
+  expect((await setup.room.execute(request)).ok).toBe(true)
+  const count = setup.calls.length
+  const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+  const beforeMismatch = realRegistrationSnapshot(setup)
+  expect(await restarted.execute({ ...request, competitionId: 'other-competition', trustedTimeMs: 0 }))
+    .toMatchObject({ ok: false, error: { code: 'competitionIdMismatch' } })
+  expect(realRegistrationSnapshot(setup)).toEqual(beforeMismatch)
+  setup.sql.database.query('DELETE FROM competition_meta').run()
+  const beforeMissingMeta = realRegistrationSnapshot(setup)
+  expect(await restarted.execute({ ...request, trustedTimeMs: 0 }))
+    .toMatchObject({ ok: false, error: { code: 'notInitialized' } })
+  expect(await restarted.execute({ ...request,
+    operation: { ...request.operation, action: { type: 'lock' } },
+  })).toMatchObject({ ok: false, error: { code: 'notInitialized' } })
+  expect(setup.calls).toHaveLength(count)
+  expect(realRegistrationSnapshot(setup)).toEqual(beforeMissingMeta)
+})
+
+test('E6a2 registration translation keeps global revision, trusted time and command metadata checks', async () => {
+  const setup = await realRegistrationRoom()
+  const request = setup.command({ type: 'open' })
+  const count = setup.calls.length
+  const before = realRegistrationSnapshot(setup)
+  const failures: Array<[CompetitionRoomExecuteRequest, string]> = [
+    [{ ...request, expectedRevision: 2 }, 'revisionConflict'],
+    [{ ...request, trustedTimeMs: 99 }, 'trustedTimeRegression'],
+    [{ ...request, competitionId: 'other-competition' }, 'competitionIdMismatch'],
+    [{ ...request, operation: { ...request.operation, commandId: 'other-command' } }, 'commandMismatch'],
+    [{ ...request, operation: { ...request.operation, expectedRevision: 0 } }, 'commandMismatch'],
+    [{ ...request, operation: { ...request.operation, registrationRevision: 0 } } as typeof request, 'invalidRequest'],
+  ]
+  for (const [invalid, code] of failures) {
+    expect(await setup.room.execute(invalid)).toMatchObject({ ok: false, error: { code } })
+  }
+  setup.sql.database.query('UPDATE competition_acl SET active = 0 WHERE user_id = ?').run('organizer-1')
+  expect(await setup.room.execute(request)).toMatchObject({ ok: false })
+  expect(setup.calls).toHaveLength(count + 1)
+  // 失效 caller 以 player actor 交給 Rust 授權，絕不能被當成主辦方執行 open。
+  expect(setup.calls.at(-1)!.serverActor).toEqual({ type: 'player', playerId: 'organizer-1' })
+  expect(setup.meta().revision).toBe(1)
+  expect(setup.meta().server_state_json).toBe((before.meta[0] as { server_state_json: string }).server_state_json)
+})
+
+for (const path of ['open', 'registerTeam'] as const) {
+  test(`E6a2 registration late SQL rollback and safe retry: ${path}`, async () => {
+    const setup = await realRegistrationRoom(2)
+    if (path === 'registerTeam') expect((await setup.room.execute(setup.command({ type: 'open' }))).ok).toBe(true)
+    const request = path === 'open' ? setup.command({ type: 'open' })
+      : setup.command({ type: 'registerTeam', teamId: 'team-a', captain: 'a-1', members: ['a-1', 'a-2'] }, 'a-1')
+    const before = realRegistrationSnapshot(setup)
+    setup.sql.failNextQueryContaining = 'INSERT INTO competition_command_receipt'
+    expect(await setup.room.execute(request)).toEqual({
+      ok: false, error: { code: 'internalFailure', message: 'competition room operation failed' },
+    })
+    expect(realRegistrationSnapshot(setup)).toEqual(before)
+    const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+    expect(await restarted.execute({ ...request, trustedTimeMs: request.trustedTimeMs + 1 }))
+      .toMatchObject({ ok: true, value: { revision: request.expectedRevision + 1 } })
+    expect(await restarted.execute(request)).toMatchObject({ ok: true, value: { idempotent: true } })
+    const state = JSON.parse(setup.meta().server_state_json) as JsonObject
+    expect((state.registration as JsonObject).commands).toHaveLength(path === 'open' ? 1 : 2)
+    expect(setup.sql.database.query('SELECT COUNT(*) AS count FROM competition_audit WHERE command_id = ?')
+      .get(request.commandId)).toEqual({ count: 1 })
+  })
+}
+
+test('E6a2 malformed registration checkpoints cannot supply a child revision', async () => {
+  const mutations: Array<(checkpoint: JsonObject) => void> = [
+    checkpoint => { checkpoint.revision = 100 },
+    checkpoint => { checkpoint.commands = {} },
+    checkpoint => { delete (checkpoint.announcement as JsonObject).registrationDeadline },
+    checkpoint => { (checkpoint.announcement as JsonObject).organizer = 'someone-else' },
+    checkpoint => { (checkpoint.commands as JsonObject[])[0]!.expectedRevision = 1 },
+    checkpoint => { (checkpoint.commands as JsonObject[]).push((checkpoint.commands as JsonObject[])[0]!) },
+    checkpoint => { (checkpoint.commands as JsonObject[])[0]!.commandId = '' },
+    checkpoint => { ((checkpoint.commands as JsonObject[])[0]!.serverActor as JsonObject).extra = true },
+    checkpoint => { ((checkpoint.commands as JsonObject[])[0]!.serverActor as JsonObject).type = 'referee' },
+    checkpoint => { (checkpoint.commands as JsonObject[])[0]!.trustedTimeMs = -1 },
+    checkpoint => { ((checkpoint.commands as JsonObject[])[0]!.action as JsonObject).extra = true },
+    checkpoint => { ((checkpoint.commands as JsonObject[])[0]!.action as JsonObject).type = 'unknown' },
+  ]
+  for (const mutate of mutations) {
+    const setup = await realRegistrationRoom()
+    expect((await setup.room.execute(setup.command({ type: 'open' }))).ok).toBe(true)
+    const request = setup.command({ type: 'lock' }, 'organizer-1', { trustedTimeMs: 2000 })
+    const state = JSON.parse(setup.meta().server_state_json) as JsonObject
+    mutate(state.registration as JsonObject)
+    setup.sql.database.query('UPDATE competition_meta SET server_state_json = ?').run(JSON.stringify(state))
+    const before = realRegistrationSnapshot(setup)
+    const count = setup.calls.length
+    expect(await setup.room.execute(request)).toMatchObject({ ok: false, error: { code: 'invalidRegistrationCheckpoint' } })
+    expect(setup.calls).toHaveLength(count)
+    expect(realRegistrationSnapshot(setup)).toEqual(before)
+  }
+})
+
+test('E6a2 structurally valid but illegal registration history is rejected by real Rust replay', async () => {
+  const setup = await realRegistrationRoom()
+  expect((await setup.room.execute(setup.command({ type: 'open' }))).ok).toBe(true)
+  const state = JSON.parse(setup.meta().server_state_json) as JsonObject
+  ;((state.registration as JsonObject).commands as JsonObject[])[0]!.action = { type: 'lock' }
+  setup.sql.database.query('UPDATE competition_meta SET server_state_json = ?').run(JSON.stringify(state))
+  const before = setup.meta()
+  expect(await setup.room.execute(setup.command({ type: 'open' })))
+    .toMatchObject({ ok: false, error: { code: 'engine:invalidRegistrationCheckpoint' } })
+  expect(setup.meta()).toEqual(before)
+  expect(setup.gameCalls).toHaveLength(0)
+})
+
+test('E6a2 locked roster accepts only canonical Rust base, never web or unknown rulesets', async () => {
+  for (const ruleset of ['fewfc-base', 'unknown', 'BASE']) {
+    const roster = lockedRoster(1, false)
+    ;(roster.announcement as JsonObject).ruleset = ruleset
+    const setup = await provisionableRoom({ assigned: false, roster })
+    const before = realRegistrationSnapshot(setup)
+    expect(await setup.room.provisionInitialScheduledGame(provisionInitialRequest()))
+      .toMatchObject({ ok: false, error: { code: 'invalidLockedRoster' } })
+    expect(setup.calls).toHaveLength(0)
+    expect(realRegistrationSnapshot(setup)).toEqual(before)
+  }
+})
+
+test('E6a2 real registration response must append exactly the trusted command in its own scope', async () => {
+  const mutations: Array<(response: Extract<CompetitionEngineResponse, { ok: true }>) => void> = [
+    response => { response.serverState.registration!.commands = [] },
+    response => { (response.public as JsonObject).revision = 999 },
+    response => { response.serverState.tournament = { unexpected: true } },
+    response => { response.serverState.clock = { unexpected: true } },
+    response => { ((response.serverState.registration!.commands as JsonObject[])[0]!).expectedRevision = 1 },
+    response => { (response.serverState.registration!.announcement as JsonObject).organizer = 'not-organizer' },
+  ]
+  for (const mutate of mutations) {
+    const setup = await realRegistrationRoom()
+    const request = setup.command({ type: 'open' })
+    const before = setup.meta()
+    const adapter: CompetitionEngineAdapter = async engineRequest => {
+      const response = await setup.adapter(engineRequest)
+      if (response.ok) mutate(response)
+      return response
+    }
+    const room = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, adapter)
+    expect(await room.execute(request)).toMatchObject({ ok: false, error: { code: 'engineProtocolError' } })
+    expect(setup.meta()).toEqual(before)
+    expect(setup.gameCalls).toHaveLength(0)
+    expect(setup.sql.database.query('SELECT COUNT(*) AS count FROM competition_audit WHERE command_id = ? AND outcome_code = ?')
+      .get(request.commandId, 'success')).toEqual({ count: 0 })
+  }
+})
+
+for (const operation of ['registrationView', 'registrationExportLockedRoster'] as const) {
+  test(`E6a2 read-only query rejects malformed stored action metadata: ${operation}`, async () => {
+    const setup = await realRegistrationRoom()
+    await registerRealTeams(setup, 1, false)
+    const state = JSON.parse(setup.meta().server_state_json) as JsonObject
+    const history = ((state.registration as JsonObject).commands as JsonObject[])
+    ;(history[0]!.action as JsonObject).extra = 'unexpected-private-field'
+    setup.sql.database.query('UPDATE competition_meta SET server_state_json = ?').run(JSON.stringify(state))
+    const before = realRegistrationSnapshot(setup)
+    const count = setup.calls.length
+    expect(await setup.room.execute({
+      competitionId: 'competition-1', callerUserId: 'organizer-1', commandId: `corrupt-query-${operation}`,
+      expectedRevision: setup.meta().revision, trustedTimeMs: 60_001, operation: { type: operation },
+    })).toMatchObject({ ok: false, error: { code: 'invalidRegistrationCheckpoint' } })
+    expect(setup.calls).toHaveLength(count)
+    expect(realRegistrationSnapshot(setup)).toEqual(before)
+  })
+}
+
+function gameRoomNamespace(
+  create: (request: { gameId: string; binding: CompetitionGameBinding }) => Promise<unknown>,
+  synchronize: (request: CompetitionClockControlRequest) => Promise<unknown> = async request => ({
+    ok: true,
+    value: { ...request, idempotent: false },
+  }),
+  eligibility?: (request: CompetitionGameClockControlEligibilityRequest) => Promise<unknown>,
+) {
+  return {
+    idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
+    get: () => ({
+      createCompetitionGame: create,
+      synchronizeCompetitionClock: synchronize,
+      ...(eligibility ? { getCompetitionClockControlEligibility: eligibility } : {}),
+    }),
+  }
+}
+
+async function provisionableRoom(options: {
+  teamSize?: 1 | 2
+  personalDeck?: boolean
+  create?: (request: { gameId: string; binding: CompetitionGameBinding }) => Promise<unknown>
+  synchronize?: (request: CompetitionClockControlRequest) => Promise<unknown>
+  eligibility?: (request: CompetitionGameClockControlEligibilityRequest) => Promise<unknown>
+  assigned?: boolean
+  referee?: boolean
+  roster?: JsonObject
+  randomBit?: () => number
+  subsequent?: boolean
+  wasmTerminal?: boolean
+  mutateMatchSubmit?: (response: CompetitionEngineResponse) => CompetitionEngineResponse
+} = {}) {
+  const teamSize = options.teamSize ?? 1
+  const personalDeck = options.personalDeck ?? false
+  const sql = new MemorySql()
+  const alarm: TestAlarmState = { scheduledAt: null }
+  const calls: Array<{ gameId: string; binding: CompetitionGameBinding }> = []
+  const controlCalls: CompetitionClockControlRequest[] = []
+  const engineOperations: string[] = []
+  let currentRoster = options.roster ?? lockedRoster(teamSize, personalDeck)
+  let exportMutation: 'extra' | 'state' | null = null
+  const create = options.create ?? (async request => {
+    calls.push(structuredClone(request))
+    return { gameId: request.gameId, status: 'Waiting', idempotent: false }
+  })
+  const adapter: CompetitionEngineAdapter = async request => {
+    engineOperations.push(request.operation.type)
+    if (request.operation.type === 'registrationExportLockedRoster') {
+      const response: CompetitionEngineResponse = {
+        ok: true,
+        operation: 'registrationExportLockedRoster',
+        public: { exported: true },
+        private: currentRoster,
+        serverState: request.serverState,
+      }
+      if (exportMutation === 'extra') return { ...response, unexpected: true }
+      if (exportMutation === 'state') {
+        return { ...response, serverState: { ...request.serverState, clock: { changed: true } } }
+      }
+      return response
+    }
+    if (request.operation.type === 'matchView' && !options.wasmTerminal) {
+      const persisted = sql.database.query(
+        'SELECT match_projection_json FROM competition_matches WHERE match_id = ?',
+      ).get(request.operation.matchId) as { match_projection_json: string }
+      const projection = JSON.parse(persisted.match_projection_json) as JsonObject
+      return {
+        ok: true,
+        operation: 'matchView',
+        public: { match: (projection.public as JsonObject).match },
+        serverState: request.serverState,
+      }
+    }
+    if (options.wasmTerminal && [
+      'matchCreate', 'matchView', 'matchAssignFirstPlayer', 'clockCreate',
+      'clockRuleGame', 'clockBeginAction', 'clockEndWindow', 'clockNewGame',
+      'matchSubmitGame', 'matchCorrectRuling',
+    ].includes(request.operation.type)) {
+      const response = await callCompetitionEngine(request, realCompetitionWasm)
+      return request.operation.type === 'matchSubmitGame' && options.mutateMatchSubmit
+        ? options.mutateMatchSubmit(response)
+        : response
+    }
+    return matchAdapter(request)
+  }
+  const synchronize = options.synchronize ?? (async request => {
+    controlCalls.push(structuredClone(request))
+    return { ok: true, value: { ...request, idempotent: false } }
+  })
+  const env = { GAME_ROOM: gameRoomNamespace(create, synchronize, options.eligibility) }
+  const room = new CompetitionRoomClass(stateFor(sql, alarm), env, adapter, options.randomBit)
+  expect((await room.initialize(validInitialize())).ok).toBe(true)
+  if (options.referee) {
+    expect((await room.grantReferee({
+      competitionId: 'competition-1',
+      callerUserId: 'organizer-1',
+      targetUserId: 'referee-1',
+      commandId: 'grant-provision-match-referee',
+      expectedRevision: 1,
+      trustedTimeMs: 199,
+    })).ok).toBe(true)
+  }
+  expect((await materializeTestMatch(
+    room,
+    sql,
+    'provision-match',
+    options.referee ? [{ refereeId: 'referee-1', conflictedTeam: null }] : [],
+    options.referee ? { expectedRevision: 2 } : {},
+  )).ok).toBe(true)
+
+  if (options.assigned !== false) {
+    const row = sql.database.query(
+      'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+    ).get('provision-match') as { match_checkpoint_json: string }
+    const checkpoint = JSON.parse(row.match_checkpoint_json) as JsonObject
+    ;(checkpoint.history as JsonValue[]).push({
+      type: 'assignFirstPlayer', team: 'team-a', reason: '可信編排',
+    })
+    const config = checkpoint.config as JsonObject
+    const view = {
+      config,
+      status: 'open',
+      score: [0, 0],
+      games: [],
+      rulings: [],
+      corrections: [],
+      outcome: null,
+      nextFirstPlayer: 'team-a',
+      nextGame: {
+        gameNumber: 1,
+        kind: { type: 'ordinaryNewGame' },
+        firstPlayer: { type: 'assigned', team: 'team-a' },
+      },
+    }
+    sql.database.query(
+      `UPDATE competition_matches
+       SET match_checkpoint_json = ?, match_projection_json = ?, revision = 2,
+           last_trusted_time_ms = 201 WHERE match_id = ?`,
+    ).run(
+      JSON.stringify(checkpoint),
+      JSON.stringify({ ok: true, operation: 'matchAssignFirstPlayer', public: { match: view } }),
+      'provision-match',
+    )
+    const meta = sql.database.query(
+      'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+    ).get() as { server_state_json: string }
+    const state = JSON.parse(meta.server_state_json) as JsonObject
+    ;(state.matches as JsonObject)['provision-match'] = checkpoint
+    sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+      .run(JSON.stringify(state))
+
+    if (options.subsequent !== false) {
+      const nextCheckpoint = structuredClone(checkpoint)
+      const priorSubmission = {
+        submissionId: 'previous-submission',
+        gameRecordId: 'previous-game-record',
+        rulingRecordId: 'previous-ruling',
+        startKind: { type: 'ordinaryNewGame' },
+        firstPlayer: 'team-a',
+        terminalEvidence: {
+          type: 'canonicalGameEnded',
+          conclusion: { outcome: { type: 'draw' }, causes: [] },
+        },
+        ruling: { type: 'gameAccepted', outcome: 'draw' },
+      }
+      ;(nextCheckpoint.history as JsonValue[]).push({ type: 'submitGame', submission: priorSubmission })
+      const nextView = structuredClone(view)
+      ;(nextView.games as JsonValue[]).push({
+        gameNumber: 1,
+        gameRecordId: priorSubmission.gameRecordId,
+        startKind: priorSubmission.startKind,
+        firstPlayer: priorSubmission.firstPlayer,
+        terminalEvidence: priorSubmission.terminalEvidence,
+        rulingRecordId: priorSubmission.rulingRecordId,
+      })
+      ;(nextView.rulings as JsonValue[]).push({
+        rulingRecordId: priorSubmission.rulingRecordId,
+        gameRecordId: priorSubmission.gameRecordId,
+        ruling: priorSubmission.ruling,
+      })
+      nextView.nextFirstPlayer = 'team-b'
+      nextView.nextGame = {
+        gameNumber: 2,
+        kind: { type: 'ordinaryNewGame' },
+        firstPlayer: { type: 'assigned', team: 'team-b' },
+      }
+      sql.database.query(
+        `UPDATE competition_matches
+         SET match_checkpoint_json = ?, match_projection_json = ?, revision = 3, last_trusted_time_ms = 203
+         WHERE match_id = ?`,
+      ).run(
+        JSON.stringify(nextCheckpoint),
+        JSON.stringify({ ok: true, operation: 'matchAssignFirstPlayer', public: { match: nextView } }),
+        'provision-match',
+      )
+      const nextMeta = sql.database.query(
+        'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+      ).get() as { server_state_json: string }
+      const nextState = JSON.parse(nextMeta.server_state_json) as JsonObject
+      ;(nextState.matches as JsonObject)['provision-match'] = nextCheckpoint
+      sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+        .run(JSON.stringify(nextState))
+      sql.database.query(
+        `INSERT INTO competition_game_provision
+          (match_id, game_number, game_id, binding_json, match_revision, next_game_json,
+           command_id, fingerprint, status, attempts, next_attempt_at_ms, error_code,
+           created_trusted_time_ms)
+         VALUES ('provision-match', 1, 'previous-game', '{}', 3, ?,
+           'previous-game-command', 'previous-game-fingerprint', 'provisioned', 0, 0, NULL, 202)`,
+      ).run(JSON.stringify({
+        gameNumber: 1,
+        kind: { type: 'ordinaryNewGame' },
+        firstPlayer: { type: 'assigned', team: 'team-a' },
+      }))
+    }
+  } else {
+    const row = sql.database.query(
+      'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+    ).get('provision-match') as { match_checkpoint_json: string }
+    const checkpoint = JSON.parse(row.match_checkpoint_json) as JsonObject
+    const config = checkpoint.config as JsonObject
+    sql.database.query(
+      'UPDATE competition_matches SET match_projection_json = ? WHERE match_id = ?',
+    ).run(JSON.stringify({
+      ok: true,
+      operation: 'matchCreate',
+      public: { match: {
+        config,
+        status: 'awaitingFirstPlayer',
+        score: [0, 0],
+        games: [],
+        rulings: [],
+        corrections: [],
+        outcome: null,
+        nextFirstPlayer: null,
+        nextGame: {
+          gameNumber: 1,
+          kind: { type: 'ordinaryNewGame' },
+          firstPlayer: { type: 'pending', reason: '等待可信隨機先手' },
+        },
+      } },
+    }), 'provision-match')
+  }
+
+  return {
+    room, sql, alarm, calls, controlCalls, engineOperations, adapter, env,
+    setRoster: (roster: JsonObject) => { currentRoster = roster },
+    setExportMutation: (mutation: 'extra' | 'state' | null) => { exportMutation = mutation },
+  }
+}
+
+function provisionAssignedRequest(
+  overrides: Partial<CompetitionRoomProvisionAssignedScheduledGameRequest> = {},
+): CompetitionRoomProvisionAssignedScheduledGameRequest {
+  return {
+    competitionId: 'competition-1',
+    matchId: 'provision-match',
+    callerUserId: 'organizer-1',
+    commandId: 'provision-1',
+    expectedMatchRevision: 3,
+    trustedTimeMs: 204,
+    ...overrides,
+  }
+}
+
+function captainFirstPlayerRequest(
+  overrides: Partial<CompetitionRoomAssignNextFirstPlayerByCaptainRequest> = {},
+): CompetitionRoomAssignNextFirstPlayerByCaptainRequest {
+  return {
+    competitionId: 'competition-1',
+    matchId: 'provision-match',
+    callerUserId: 'b-1',
+    commandId: 'captain-first-player-1',
+    expectedMatchRevision: 3,
+    trustedTimeMs: 204,
+    selectedFirstPlayerTeam: 'team-a',
+    ...overrides,
+  }
+}
+
+function captainGameProvisionRequest(
+  overrides: Partial<CompetitionRoomProvisionCaptainAssignedScheduledGameRequest> = {},
+): CompetitionRoomProvisionCaptainAssignedScheduledGameRequest {
+  return {
+    competitionId: 'competition-1',
+    matchId: 'provision-match',
+    callerUserId: 'b-1',
+    commandId: 'captain-game-two',
+    assignmentCommandId: 'captain-first-player-1',
+    expectedMatchRevision: 4,
+    trustedTimeMs: 205,
+    ...overrides,
+  }
+}
+
+function provisionInitialRequest(
+  overrides: Partial<CompetitionRoomProvisionInitialScheduledGameRequest> = {},
+): CompetitionRoomProvisionInitialScheduledGameRequest {
+  return {
+    competitionId: 'competition-1',
+    matchId: 'provision-match',
+    callerUserId: 'organizer-1',
+    commandId: 'provision-initial-1',
+    expectedMatchRevision: 1,
+    trustedTimeMs: 202,
+    ...overrides,
+  }
+}
+
+test('claim race lets only the first organizer initialize a room', async () => {
+  const sql = new MemorySql()
+  const adapter: CompetitionEngineAdapter = async request => responseFor(request, 1)
+  const room = new CompetitionRoomClass(stateFor(sql), {}, adapter)
+  const first = room.initialize(validInitialize())
+  const second = room.initialize(validInitialize({
+    callerUserId: 'organizer-2',
+    announcement: {
+      ...validInitialize().announcement,
+      organizer: 'organizer-2',
+    },
+  }))
+  const results = await Promise.all([first, second])
+
+  expect(results.filter(result => result.ok)).toHaveLength(1)
+  expect(results.filter(result => !result.ok && result.error.code === 'alreadyInitialized')).toHaveLength(1)
+})
+
+test('unknown public-registration captain may use registration only and becomes a participant after roster creation', async () => {
+  const { room } = await initializedRoom()
+  const view = await room.execute(executeRequest(
+    { type: 'registrationView' },
+    { callerUserId: 'unknown-viewer', commandId: 'unknown-view' },
+  ))
+  expect(view.ok).toBe(true)
+  if (view.ok) expect(view.value.projection).not.toHaveProperty('private')
+  const unknownRead = await room.read({
+    competitionId: 'competition-1',
+    callerUserId: 'unknown-viewer',
+  })
+  expect(unknownRead).toEqual({
+    ok: false,
+    error: { code: 'notParticipant', message: 'caller is not an active competition participant' },
+  })
+  const burst = await Promise.all(Array.from({ length: 12 }, (_, index) => room.execute(executeRequest(
+    { type: 'registrationView' },
+    { callerUserId: `burst-viewer-${index}`, commandId: `burst-view-${index}`, trustedTimeMs: 999 },
+  ))))
+  expect(burst.every(result => result.ok)).toBe(true)
+
+  const registration = await room.execute(executeRequest({
+    type: 'registrationExecute',
+    commandId: 'register-unknown-captain',
+    expectedRevision: 1,
+    action: {
+      type: 'registerTeam',
+      teamId: 'team-new',
+      captain: 'unknown-captain',
+      members: ['unknown-captain', 'new-member'],
+    },
+  }, {
+    callerUserId: 'unknown-captain',
+    commandId: 'register-unknown-captain',
+    expectedRevision: 1,
+    trustedTimeMs: 102,
+  }))
+  expect(registration.ok).toBe(true)
+
+  const read = await room.read({
+    competitionId: 'competition-1',
+    callerUserId: 'unknown-captain',
+  })
+  expect(read.ok).toBe(true)
+
+  const official = await room.execute(executeRequest(
+    { type: 'clockObserve' },
+    { callerUserId: 'never-seen-user', commandId: 'unknown-official', expectedRevision: 2, trustedTimeMs: 103 },
+  ))
+  expect(official).toEqual({
+    ok: false,
+    error: { code: 'operationNotAllowed', message: 'clock operations must use executeMatch' },
+  })
+})
+
+test('state and ACL survive a new object instance using the same SQLite storage', async () => {
+  const { sql } = await initializedRoom()
+  const restored = new CompetitionRoomClass(
+    stateFor(sql),
+    {},
+    async request => responseFor(request, 2),
+  )
+  const result = await restored.read({ competitionId: 'competition-1', callerUserId: 'player-1' })
+
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+  expect(result.value.revision).toBe(1)
+  expect(result.value.projection.public).toEqual({ operation: 'registrationCreate', count: 1 })
+  expect(result.value.projection).not.toHaveProperty('serverState')
+})
+
+test('optimistic revision serializes concurrent commands and retries by fingerprint', async () => {
+  let started = () => {}
+  const startedPromise = new Promise<void>(resolve => { started = resolve })
+  let release = () => {}
+  const releasePromise = new Promise<void>(resolve => { release = resolve })
+  let calls = 0
+  const adapter: CompetitionEngineAdapter = async request => {
+    calls += 1
+    if (request.operation.type === 'registrationView' && calls === 2) {
+      started()
+      await releasePromise
+    }
+    return responseFor(request, calls)
+  }
+  const { room } = await initializedRoom(adapter)
+  const firstRequest = executeRequest({ type: 'registrationView' }, { commandId: 'command-a' })
+  const secondRequest = executeRequest({ type: 'registrationView' }, { commandId: 'command-b' })
+  const first = room.execute(firstRequest)
+  await startedPromise
+  const second = room.execute(secondRequest)
+  release()
+  const [firstResult, secondResult] = await Promise.all([first, second])
+
+  expect(firstResult.ok).toBe(true)
+  expect(secondResult.ok).toBe(true)
+  if (firstResult.ok && secondResult.ok) {
+    expect(firstResult.value.revision).toBe(1)
+    expect(secondResult.value.revision).toBe(1)
+  }
+  const mutationRequest = executeRequest(
+    { type: 'tournamentCreate', config: {
+      tournamentId: 'tournament-1',
+      stage: { stageId: 'stage-1', format: 'singleElimination',
+        teams: [{ teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 2 }],
+        randomSeed: 1, matchFormat: { type: 'firstToWins', value: 1 },
+        clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
+        swissRounds: null, swissPolicy: null },
+    } },
+    { commandId: 'after-view-burst', expectedRevision: 1 },
+  )
+  const mutation = await room.execute(mutationRequest)
+  expect(mutation).toEqual({
+    ok: false,
+    error: { code: 'operationNotAllowed',
+      message: 'tournamentCreate must use createTournamentFromLockedRoster' },
+  })
+  expect(calls).toBe(3)
+})
+
+test('direct execute tournamentCreate is blocked before engine or persistence', async () => {
+  const dispatched: CompetitionRequest[] = []
+  const { room } = await initializedRoom(async request => {
+    dispatched.push(request)
+    if (request.operation.type === 'tournamentCreate') {
+      return { ok: false, error: { code: 'scheduleInvalid', layer: 'clock', message: 'invalid schedule' } }
+    }
+    return responseFor(request, 1)
+  })
+  const failed = await room.execute(executeRequest({
+    type: 'tournamentCreate',
+    config: {
+      tournamentId: 'tournament-failed',
+      stage: { stageId: 'stage-failed', format: 'singleElimination',
+        teams: [{ teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 2 }],
+        randomSeed: 1, matchFormat: { type: 'firstToWins', value: 1 },
+        clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
+        swissRounds: null, swissPolicy: null },
+    },
+  }))
+  expect(failed).toEqual({
+    ok: false,
+    error: { code: 'operationNotAllowed',
+      message: 'tournamentCreate must use createTournamentFromLockedRoster' },
+  })
+  const directStart = await room.execute(executeRequest({
+    type: 'tournamentStartMatch', stageId: 'stage-online', matchId: 'match-online',
+  }, { commandId: 'direct-start' }))
+  expect(directStart).toEqual({
+    ok: false,
+    error: { code: 'operationNotAllowed', message: 'tournamentStartMatch must use startScheduledMatch' },
+  })
+
+  const read = await room.read({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  expect(read.ok).toBe(true)
+  if (read.ok) expect(read.value.revision).toBe(1)
+  const afterFailure = await room.execute(executeRequest(
+    { type: 'registrationView' },
+    { commandId: 'after-failure' },
+  ))
+  expect(afterFailure.ok).toBe(true)
+  expect(dispatched).toHaveLength(2)
+  const audit = await room.audit({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  expect(audit.ok).toBe(true)
+  if (!audit.ok) return
+  expect(audit.value.records).toHaveLength(1)
+  expect(JSON.stringify(audit.value)).not.toContain('serverState')
+})
+
+test('tournament receipt retry ignores later trusted time while new commands reject time regression', async () => {
+  const { room } = await tournamentRoom()
+  const first = await room.createTournamentFromLockedRoster(createTournamentRequest({
+    commandId: 'time-command', trustedTimeMs: 101,
+  }))
+  expect(first.ok).toBe(true)
+  const retry = await room.createTournamentFromLockedRoster(createTournamentRequest({
+    commandId: 'time-command', trustedTimeMs: 999,
+  }))
+  expect(retry.ok).toBe(true)
+  if (retry.ok) expect(retry.value.idempotent).toBe(true)
+
+  const regressed = await room.execute(executeRequest(
+    { type: 'tournamentDropTeam', stageId: 'time-stage', teamId: 'team-a' },
+    { commandId: 'time-regression', expectedRevision: 2, trustedTimeMs: 100 },
+  ))
+  expect(regressed).toEqual({
+    ok: false,
+    error: { code: 'trustedTimeRegression', message: 'trusted server time cannot move backwards' },
+  })
+  const read = await room.read({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  expect(read.ok).toBe(true)
+  if (read.ok) expect(read.value.revision).toBe(2)
+})
+
+test('locked-roster tournament creation persists public state and restart returns the same receipt', async () => {
+  const { room, sql } = await tournamentRoom()
+  const request = createTournamentRequest()
+  const result = await room.createTournamentFromLockedRoster(request)
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+  expect(result.value.revision).toBe(2)
+  expect(result.value.projection.public).toEqual(createdTournament(request.stage, request.competitionId))
+  expect(result.value.projection).not.toHaveProperty('serverState')
+  const restored = new CompetitionRoomClass(stateFor(sql), {}, async request => {
+    throw new Error(`unexpected replay ${request.operation.type}`)
+  })
+  const retry = await restored.createTournamentFromLockedRoster({ ...request, trustedTimeMs: 999 })
+  expect(retry.ok).toBe(true)
+  if (retry.ok) expect(retry.value.idempotent).toBe(true)
+  const read = await restored.read({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  expect(read.ok).toBe(true)
+  if (read.ok) expect(read.value.projection.public).toEqual(createdTournament(request.stage, request.competitionId))
+})
+
+test('private projection is caller-bound and audit never stores deck or state payload', async () => {
+  const dispatched: CompetitionRequest[] = []
+  const { room } = await initializedRoom(async request => {
+    dispatched.push(request)
+    return responseFor(request, dispatched.length)
+  })
+  const result = await room.execute(executeRequest(
+    { type: 'registrationView' },
+    { callerUserId: 'player-1', commandId: 'private-1' },
+  ))
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+  expect(result.value.projection.private).toEqual({ deck: ['secret-card'] })
+  expect(result.value.projection).not.toHaveProperty('serverState')
+  expect(dispatched[1]?.serverActor).toEqual({ type: 'player', playerId: 'player-1' })
+  expect(dispatched[1]?.serverState).toEqual({
+    registration: {
+      announcement: {
+        organizer: 'organizer-1',
+        ruleVersion: '5.17',
+        ruleset: 'base',
+        enabledRuleModules: [],
+        teamSize: 2,
+        initialHp: 20,
+        registrationMode: 'public',
+        personalDecks: 'disabled',
+        registrationDeadline: 60_000,
+        checkInDeadline: 120_000,
+        plan: structuredClone(announcedPlan),
+      },
+      commands: [],
+    },
+    clock: null,
+    tournament: null,
+    matches: {},
+  })
+
+  const other = await room.read({ competitionId: 'competition-1', callerUserId: 'player-2' })
+  expect(other.ok).toBe(true)
+  if (other.ok) expect(other.value.projection).not.toHaveProperty('private')
+  const organizer = await room.read({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  expect(organizer.ok).toBe(true)
+  if (organizer.ok) expect(organizer.value.projection).not.toHaveProperty('private')
+  const audit = await room.audit({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  expect(JSON.stringify(audit)).not.toContain('secret-card')
+  expect(JSON.stringify(audit)).not.toContain('serverState')
+})
+
+test('locked roster private handoff is organizer-only and is not public or audited', async () => {
+  const { room } = await initializedRoom()
+  const exported = await room.execute(executeRequest(
+    { type: 'registrationExportLockedRoster' },
+    { commandId: 'export-roster', expectedRevision: 1 },
+  ))
+  expect(exported.ok).toBe(true)
+  if (!exported.ok) return
+  expect(exported.value.projection.private).toEqual({ lockedRoster: ['team-a'] })
+  expect(exported.value.projection).not.toHaveProperty('serverState')
+
+  const organizerRead = await room.read({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  expect(organizerRead.ok).toBe(true)
+  if (organizerRead.ok) expect(organizerRead.value.projection).not.toHaveProperty('private')
+  const playerRead = await room.read({ competitionId: 'competition-1', callerUserId: 'player-1' })
+  expect(playerRead.ok).toBe(true)
+  if (playerRead.ok) expect(playerRead.value.projection).not.toHaveProperty('private')
+  const audit = await room.audit({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  expect(JSON.stringify(audit)).not.toContain('lockedRoster')
+})
+
+test('private registration data is not attached to a later unrelated public revision', async () => {
+  const { room } = await initializedRoom()
+  const privateResult = await room.execute(executeRequest(
+    { type: 'registrationExecute', commandId: 'private-revision', expectedRevision: 1,
+      action: {
+        type: 'registerTeam',
+        teamId: 'private-team',
+        captain: 'player-1',
+        members: ['player-1', 'player-2'],
+      } },
+    { callerUserId: 'player-1', commandId: 'private-revision', expectedRevision: 1 },
+  ))
+  expect(privateResult.ok).toBe(true)
+  if (privateResult.ok) expect(privateResult.value.projection.private).toEqual({ deck: ['secret-card'] })
+  const unrelatedRevision = await room.grantReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'referee-1',
+    commandId: 'public-revision', expectedRevision: 2, trustedTimeMs: 102,
+  })
+  expect(unrelatedRevision.ok).toBe(true)
+  const read = await room.read({ competitionId: 'competition-1', callerUserId: 'player-1' })
+  expect(read.ok).toBe(true)
+  if (read.ok) {
+    expect(read.value.revision).toBe(3)
+    expect(read.value.projection.operation).toBe('registrationExecute')
+    expect(read.value.projection).not.toHaveProperty('private')
+  }
+})
+
+test('organizer-only referee ACL, revoke, audit access, and DO isolation', async () => {
+  const first = await initializedRoom()
+  const grant = await first.room.grantReferee({
+    competitionId: 'competition-1',
+    callerUserId: 'organizer-1',
+    targetUserId: 'referee-1',
+    commandId: 'grant-1',
+    expectedRevision: 1,
+    trustedTimeMs: 102,
+  })
+  expect(grant.ok).toBe(true)
+  if (grant.ok) expect(grant.value.idempotent).toBe(false)
+  const grantRetry = await first.room.grantReferee({
+    competitionId: 'competition-1',
+    callerUserId: 'organizer-1',
+    targetUserId: 'referee-1',
+    commandId: 'grant-1',
+    expectedRevision: 1,
+    trustedTimeMs: 999,
+  })
+  expect(grantRetry).toEqual({
+    ok: true,
+    value: {
+      competitionId: 'competition-1',
+      revision: 2,
+      targetUserId: 'referee-1',
+      role: 'referee',
+      active: true,
+      idempotent: true,
+    },
+  })
+  const grantConflict = await first.room.grantReferee({
+    competitionId: 'competition-1',
+    callerUserId: 'organizer-1',
+    targetUserId: 'referee-2',
+    commandId: 'grant-1',
+    expectedRevision: 1,
+    trustedTimeMs: 999,
+  })
+  expect(grantConflict).toEqual({
+    ok: false,
+    error: { code: 'commandIdConflict', message: 'command id was used with another payload' },
+  })
+  const refereeAudit = await first.room.audit({ competitionId: 'competition-1', callerUserId: 'referee-1' })
+  expect(refereeAudit.ok).toBe(true)
+  const playerAudit = await first.room.audit({ competitionId: 'competition-1', callerUserId: 'player-1' })
+  expect(playerAudit).toEqual({
+    ok: false,
+    error: { code: 'forbidden', message: 'players cannot read competition audit records' },
+  })
+  const revoked = await first.room.revokeReferee({
+    competitionId: 'competition-1',
+    callerUserId: 'organizer-1',
+    targetUserId: 'referee-1',
+    commandId: 'revoke-1',
+    expectedRevision: 2,
+    trustedTimeMs: 103,
+  })
+  expect(revoked.ok).toBe(true)
+  const revokeRetry = await first.room.revokeReferee({
+    competitionId: 'competition-1',
+    callerUserId: 'organizer-1',
+    targetUserId: 'referee-1',
+    commandId: 'revoke-1',
+    expectedRevision: 2,
+    trustedTimeMs: 999,
+  })
+  expect(revokeRetry).toEqual({
+    ok: true,
+    value: {
+      competitionId: 'competition-1',
+      revision: 3,
+      targetUserId: 'referee-1',
+      role: 'player',
+      active: false,
+      idempotent: true,
+    },
+  })
+  const afterRevoke = await first.room.read({ competitionId: 'competition-1', callerUserId: 'referee-1' })
+  expect(afterRevoke).toEqual({
+    ok: false,
+    error: { code: 'notParticipant', message: 'caller is not an active competition participant' },
+  })
+
+  const second = await initializedRoom(undefined, new MemorySql())
+  const isolated = await second.room.read({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  expect(isolated.ok).toBe(true)
+  if (isolated.ok) expect(isolated.value.revision).toBe(1)
+})
+
+test('schema migrations are versioned and private rows carry projection identity', async () => {
+  const { sql } = await initializedRoom()
+  const versions = sql.database.query(
+    'SELECT version FROM competition_schema_migrations ORDER BY version',
+  ).all() as Array<{ version: number }>
+  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+  const privateColumns = sql.database.query(
+    'PRAGMA table_info(competition_private_projection)',
+  ).all() as Array<{ name: string }>
+  expect(privateColumns.map(column => column.name)).toEqual([
+    'user_id',
+    'payload_json',
+    'revision',
+    'operation_type',
+  ])
+  const receiptColumns = sql.database.query(
+    'PRAGMA table_info(competition_command_receipt)',
+  ).all() as Array<{ name: string }>
+  expect(receiptColumns.map(column => column.name)).toContain('receipt_kind')
+  const provisionColumns = sql.database.query(
+    'PRAGMA table_info(competition_game_provision)',
+  ).all() as Array<{ name: string }>
+  expect(provisionColumns.map(column => column.name)).toEqual([
+    'match_id', 'game_number', 'game_id', 'binding_json', 'match_revision',
+    'next_game_json', 'command_id', 'fingerprint', 'status', 'attempts',
+    'next_attempt_at_ms', 'error_code', 'created_trusted_time_ms', 'claim_id', 'claim_version',
+  ])
+  expect(sql.database.query('PRAGMA table_info(competition_clock_control_outbox)')
+    .all().map((column: { name: string }) => column.name)).toEqual([
+    'control_id', 'competition_id', 'match_id', 'game_id', 'game_number',
+    'source_command_id', 'match_revision', 'operation', 'trusted_time_ms',
+    'next_clock_deadline_ms', 'attempts', 'next_attempt_at_ms', 'status', 'claim_id', 'claim_version',
+  ])
+})
+
+test('legacy unversioned tables migrate in place and preserve readable/idempotent data', async () => {
+  const sql = new MemorySql()
+  sql.database.exec(`
+    CREATE TABLE competition_meta (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      competition_id TEXT NOT NULL,
+      organizer_user_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      server_state_json TEXT NOT NULL,
+      public_projection_json TEXT NOT NULL,
+      updated_trusted_time_ms INTEGER NOT NULL
+    );
+    CREATE TABLE competition_acl (
+      user_id TEXT PRIMARY KEY,
+      role TEXT NOT NULL,
+      active INTEGER NOT NULL,
+      participant INTEGER NOT NULL
+    );
+    CREATE TABLE competition_private_projection (
+      user_id TEXT PRIMARY KEY,
+      payload_json TEXT NOT NULL
+    );
+    CREATE TABLE competition_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor_user_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      operation_type TEXT NOT NULL,
+      command_id TEXT,
+      revision INTEGER NOT NULL,
+      outcome_code TEXT NOT NULL,
+      trusted_time_ms INTEGER NOT NULL
+    );
+    CREATE TABLE competition_command_receipt (
+      command_id TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      response_json TEXT NOT NULL
+    );
+  `)
+  const legacyState = JSON.stringify({ registration: null, clock: null, tournament: null })
+  const legacyProjection = JSON.stringify({
+    ok: true,
+    operation: 'tournamentCreate',
+    public: { legacy: true },
+  })
+  sql.database.query(
+    `INSERT INTO competition_meta
+      (singleton, competition_id, organizer_user_id, revision, server_state_json,
+       public_projection_json, updated_trusted_time_ms)
+     VALUES (1, ?, ?, 1, ?, ?, 100)`,
+  ).run('legacy-competition', 'legacy-organizer', legacyState, legacyProjection)
+  sql.database.query(
+    'INSERT INTO competition_acl (user_id, role, active, participant) VALUES (?, ?, 1, 0)',
+  ).run('legacy-organizer', 'organizer')
+  sql.database.query(
+    'INSERT INTO competition_private_projection (user_id, payload_json) VALUES (?, ?)',
+  ).run('legacy-player', JSON.stringify({ deck: ['legacy-card'] }))
+  sql.database.query(
+    `INSERT INTO competition_audit
+      (actor_user_id, role, operation_type, command_id, revision, outcome_code, trusted_time_ms)
+     VALUES ('legacy-organizer', 'organizer', 'clockObserve', NULL, 1, 'success', 100)`,
+  ).run()
+  const legacyCommand = {
+    competitionId: 'legacy-competition',
+    callerUserId: 'legacy-organizer',
+    commandId: 'legacy-command',
+    expectedRevision: 1,
+    operation: { type: 'tournamentCreate' as const, config: {
+      tournamentId: 'legacy-tournament',
+      stage: { stageId: 'legacy-stage', format: 'singleElimination' as const,
+        teams: [{ teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 2 }],
+        randomSeed: 1, matchFormat: { type: 'firstToWins', value: 1 },
+        clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
+        swissRounds: null, swissPolicy: null },
+    } },
+  }
+  const fingerprint = await legacyFingerprint(legacyCommand)
+  const legacyResponse = JSON.stringify({
+    ok: true,
+    value: {
+      competitionId: 'legacy-competition',
+      revision: 2,
+      commandId: 'legacy-command',
+      idempotent: false,
+          projection: { ok: true, operation: 'tournamentCreate', public: { legacy: true } },
+    },
+  })
+  sql.database.query(
+    'INSERT INTO competition_command_receipt (command_id, fingerprint, response_json) VALUES (?, ?, ?)',
+  ).run('legacy-command', fingerprint, legacyResponse)
+
+  let engineCalls = 0
+  const room = new CompetitionRoomClass(
+    stateFor(sql),
+    {},
+    async request => {
+      engineCalls += 1
+      return responseFor(request, 99)
+    },
+  )
+  const read = await room.read({
+    competitionId: 'legacy-competition',
+    callerUserId: 'legacy-organizer',
+  })
+  expect(read).toEqual({
+    ok: true,
+    value: {
+      competitionId: 'legacy-competition',
+      revision: 1,
+      projection: { ok: true, operation: 'tournamentCreate', public: { legacy: true } },
+    },
+  })
+
+  const retry = await room.execute({
+    ...legacyCommand,
+    trustedTimeMs: 200,
+  })
+  expect(retry).toEqual({
+    ok: false,
+    error: { code: 'operationNotAllowed',
+      message: 'tournamentCreate must use createTournamentFromLockedRoster' },
+  })
+  expect(engineCalls).toBe(0)
+
+  const versions = sql.database.query(
+    'SELECT version FROM competition_schema_migrations ORDER BY version',
+  ).all() as Array<{ version: number }>
+  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+  const privateRow = sql.database.query(
+    'SELECT payload_json, revision, operation_type FROM competition_private_projection WHERE user_id = ?',
+  ).all('legacy-player') as Array<{ payload_json: string; revision: number; operation_type: string }>
+  expect(privateRow[0]).toEqual({
+    payload_json: JSON.stringify({ deck: ['legacy-card'] }),
+    revision: 0,
+    operation_type: 'unknown',
+  })
+  const receipt = sql.database.query(
+    'SELECT receipt_kind FROM competition_command_receipt WHERE command_id = ?',
+  ).all('legacy-command') as Array<{ receipt_kind: string }>
+  expect(receipt[0]?.receipt_kind).toBe('execute')
+})
+
+test('match-scoped rows isolate revisions, clocks, projections, and restart recovery', async () => {
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(matchAdapter, sql)
+  const createA = await materializeTestMatch(room, sql, 'match-a', [], { commandId: 'create-a' })
+  const createB = await materializeTestMatch(room, sql, 'match-b', [], { commandId: 'create-b' })
+  expect(createA.ok).toBe(true)
+  expect(createB.ok).toBe(true)
+  if (!createA.ok || !createB.ok) return
+  expect(createA.value.matchRevision).toBe(1)
+  expect(createB.value.matchRevision).toBe(1)
+  expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_matches').get()).toEqual({ count: 2 })
+
+  const global = await room.read({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  expect(global.ok).toBe(true)
+  if (global.ok) expect(global.value.revision).toBe(3)
+
+  const [clockA, clockB] = await Promise.all([
+    room.executeMatch(matchExecuteRequest(
+      { type: 'clockObserve', matchId: 'match-a' },
+      { matchId: 'match-a', commandId: 'clock-a', expectedMatchRevision: 1, trustedTimeMs: 1_000 },
+    )),
+    room.executeMatch(matchExecuteRequest(
+      { type: 'clockObserve', matchId: 'match-b' },
+      { matchId: 'match-b', commandId: 'clock-b', expectedMatchRevision: 1, trustedTimeMs: 500 },
+    )),
+  ])
+  expect(clockA.ok).toBe(true)
+  expect(clockB.ok).toBe(true)
+  if (!clockA.ok || !clockB.ok) return
+  expect(clockA.value.matchRevision).toBe(2)
+  expect(clockB.value.matchRevision).toBe(2)
+  expect(clockA.value.matchProjection).not.toBeNull()
+  expect(clockA.value.clockProjection?.operation).toBe('clockObserve')
+
+  const retry = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'match-a' },
+    { matchId: 'match-a', commandId: 'clock-a', expectedMatchRevision: 1, trustedTimeMs: 9_999 },
+  ))
+  expect(retry.ok).toBe(true)
+  if (retry.ok) {
+    expect(retry.value.idempotent).toBe(true)
+    expect(retry.value.matchRevision).toBe(2)
+  }
+  const conflict = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockBeginPreparation', matchId: 'match-a' },
+    { matchId: 'match-a', commandId: 'clock-a', expectedMatchRevision: 2, trustedTimeMs: 9_999 },
+  ))
+  expect(conflict).toEqual({
+    ok: false,
+    error: { code: 'commandIdConflict', message: 'command id was used with another payload' },
+  })
+  const timeRegression = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'match-a' },
+    { matchId: 'match-a', commandId: 'clock-a-regression', expectedMatchRevision: 2, trustedTimeMs: 999 },
+  ))
+  expect(timeRegression).toEqual({
+    ok: false,
+    error: { code: 'trustedTimeRegression', message: 'trusted server time cannot move backwards for this match' },
+  })
+
+  const restored = new CompetitionRoomClass(stateFor(sql), {}, matchAdapter)
+  const readA = await restored.readMatch({ competitionId: 'competition-1', matchId: 'match-a', callerUserId: 'viewer' })
+  const readB = await restored.readMatch({ competitionId: 'competition-1', matchId: 'match-b', callerUserId: 'viewer' })
+  expect(readA.ok).toBe(true)
+  expect(readB.ok).toBe(true)
+  if (readA.ok && readB.ok) {
+    expect(readA.value.matchRevision).toBe(2)
+    expect(readB.value.matchRevision).toBe(2)
+    expect(readA.value.matchProjection?.operation).toBe('matchCreate')
+    expect(readA.value.clockProjection?.operation).toBe('clockObserve')
+  }
+  const audit = await restored.audit({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  expect(audit.ok).toBe(true)
+  if (audit.ok) {
+    expect(audit.value.records.filter(record => record.matchId === 'match-a')).not.toHaveLength(0)
+    expect(JSON.stringify(audit.value)).not.toContain('match_checkpoint_json')
+  }
+})
+
+test('match scope rejects players, mismatched ids, invalid ACL, and cross-scope engine output', async () => {
+  const { room, sql } = await initializedRoom(matchAdapter)
+  const globalClock = await room.execute(executeRequest(
+    { type: 'clockObserve' },
+    { commandId: 'global-clock', expectedRevision: 1 },
+  ))
+  expect(globalClock).toEqual({
+    ok: false,
+    error: { code: 'operationNotAllowed', message: 'clock operations must use executeMatch' },
+  })
+  const player = await room.executeMatch(matchExecuteRequest(
+    { type: 'matchCreate', config: matchConfig('match-player') },
+    { callerUserId: 'player-1', commandId: 'player-create' },
+  ))
+  expect(player).toEqual({
+    ok: false,
+    error: { code: 'operationNotAllowed', message: 'matchCreate must use startScheduledMatch' },
+  })
+  const mismatch = await room.executeMatch({
+    ...matchExecuteRequest({ type: 'clockObserve', matchId: 'match-a' }),
+    matchId: 'match-b',
+    commandId: 'mismatch',
+  })
+  expect(mismatch).toEqual({
+    ok: false,
+    error: { code: 'matchIdMismatch', message: 'outer and inner match ids must match' },
+  })
+
+  const create = await materializeTestMatch(room, sql, 'match-a', [], { commandId: 'create-a' })
+  expect(create.ok).toBe(true)
+  const maliciousSql = new MemorySql()
+  const malicious = new CompetitionRoomClass(
+    stateFor(maliciousSql),
+    {},
+    async request => ({
+      ok: true,
+      operation: request.operation.type,
+      public: { ok: true },
+      serverState: {
+        registration: { leaked: true },
+        clock: null,
+        tournament: null,
+        matches: {
+          'match-a': { config: matchConfig('match-a'), history: [] },
+          'match-b': { config: matchConfig('match-b'), history: [] },
+        },
+      },
+    }),
+  )
+  const init = await malicious.initialize(validInitialize())
+  expect(init.ok).toBe(true)
+  seedScheduledMatches(maliciousSql, [{ matchId: 'match-a' }])
+  const bad = await malicious.materializeScheduledMatch({
+    competitionId: 'competition-1', stageId: 'stage-1', matchId: 'match-a',
+    callerUserId: 'organizer-1', commandId: 'bad-create', expectedRevision: 1,
+    trustedTimeMs: 200, referees: [],
+  })
+  expect(bad).toEqual({
+    ok: false,
+    error: { code: 'engineInvalidTournamentCheckpoint', message: 'tournamentStartMatch returned an invalid checkpoint' },
+  })
+})
+
+test('scoped clock mutation fails closed when the engine omits its checkpoint', async () => {
+  const adapter: CompetitionEngineAdapter = request => {
+    const matches = { ...(request.serverState.matches ?? {}) }
+    if (request.operation.type === 'tournamentStartMatch') return Promise.resolve(matchAdapter(request))
+    if (request.operation.type === 'matchCreate') {
+      matches[request.operation.config.matchId] = { config: request.operation.config, history: [] }
+    }
+    return Promise.resolve({
+      ok: true,
+      operation: request.operation.type,
+      public: { operation: request.operation.type },
+      serverState: {
+        registration: null,
+        clock: request.operation.type === 'clockCreate' ? null : request.serverState.clock,
+        tournament: null,
+        matches,
+      },
+    })
+  }
+  const { room, sql } = await initializedRoom(adapter)
+  const clock = await materializeTestMatch(room, sql, 'clock-match', [], {
+    commandId: 'clock-match-create',
+  })
+  expect(clock).toEqual({
+    ok: false,
+    error: { code: 'engineInvalidClockCheckpoint', message: 'clockCreate must return a clock checkpoint' },
+  })
+})
+
+test('match creation requires every configured referee to be active', async () => {
+  const { room, sql } = await initializedRoom(matchAdapter)
+  const denied = await materializeTestMatch(room, sql, 'match-referee', [{ refereeId: 'ref-1', conflictedTeam: null }], {
+    commandId: 'create-referee',
+  })
+  expect(denied).toEqual({
+    ok: false,
+    error: { code: 'invalidRefereeAcl', message: 'every configured referee must be an active referee' },
+  })
+  const grant = await room.grantReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'ref-1',
+    commandId: 'grant-ref-1', expectedRevision: 1, trustedTimeMs: 201,
+  })
+  expect(grant.ok).toBe(true)
+  const allowed = await materializeTestMatch(room, sql, 'match-referee', [{ refereeId: 'ref-1', conflictedTeam: null }], {
+    commandId: 'create-referee-allowed', expectedRevision: 2, trustedTimeMs: 202,
+  })
+  expect(allowed.ok).toBe(true)
+})
+
+test('clock pause and resume require an assigned non-conflicted active referee and audit reason', async () => {
+  const { room, sql } = await initializedRoom(pauseResumeAdapter)
+  const grant = await room.grantReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'ref-1',
+    commandId: 'grant-ref-1-for-clock', expectedRevision: 1, trustedTimeMs: 201,
+  })
+  expect(grant.ok).toBe(true)
+  const grantOther = await room.grantReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'ref-2',
+    commandId: 'grant-ref-2-for-clock', expectedRevision: 2, trustedTimeMs: 202,
+  })
+  expect(grantOther.ok).toBe(true)
+
+  const created = await materializeTestMatch(room, sql, 'clock-referee', [{ refereeId: 'ref-1', conflictedTeam: null }], {
+    commandId: 'clock-referee-create', expectedRevision: 3, trustedTimeMs: 203,
+  })
+  expect(created.ok).toBe(true)
+
+  const organizerPause = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockPause', matchId: 'clock-referee', reason: 'organizer attempt' },
+    { matchId: 'clock-referee', callerUserId: 'organizer-1', commandId: 'organizer-pause', expectedMatchRevision: 1 },
+  ))
+  expect(organizerPause).toEqual({
+    ok: false,
+    error: { code: 'forbidden', message: 'only an active referee may pause or resume a match clock' },
+  })
+
+  const unassignedPause = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockPause', matchId: 'clock-referee', reason: 'unassigned attempt' },
+    { matchId: 'clock-referee', callerUserId: 'ref-2', commandId: 'unassigned-pause', expectedMatchRevision: 1, trustedTimeMs: 205 },
+  ))
+  expect(unassignedPause).toEqual({
+    ok: false,
+    error: { code: 'forbidden', message: 'referee is not assigned to this match or conflicts with a team' },
+  })
+
+  const paused = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockPause', matchId: 'clock-referee', reason: '斷線處理' },
+    { matchId: 'clock-referee', callerUserId: 'ref-1', commandId: 'referee-pause', expectedMatchRevision: 1, trustedTimeMs: 206 },
+  ))
+  expect(paused.ok).toBe(true)
+  if (!paused.ok) return
+  expect(paused.value.matchRevision).toBe(2)
+  expect(paused.value.clockProjection?.public).toMatchObject({
+    clock: { nextTimeoutDeadlineMs: null },
+  })
+  const retry = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockPause', matchId: 'clock-referee', reason: '斷線處理' },
+    { matchId: 'clock-referee', callerUserId: 'ref-1', commandId: 'referee-pause', expectedMatchRevision: 1, trustedTimeMs: 9_999 },
+  ))
+  expect(retry.ok).toBe(true)
+  if (retry.ok) {
+    expect(retry.value).toMatchObject({ matchRevision: 2, idempotent: true })
+    expect(retry.value.nextClockDeadlineMs).toBe(paused.value.nextClockDeadlineMs)
+  }
+
+  const resumed = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockResume', matchId: 'clock-referee', reason: '恢復計時' },
+    { matchId: 'clock-referee', callerUserId: 'ref-1', commandId: 'referee-resume', expectedMatchRevision: 2, trustedTimeMs: 1_000_000 },
+  ))
+  expect(resumed.ok).toBe(true)
+  if (!resumed.ok) return
+  expect(resumed.value.matchRevision).toBe(3)
+  expect(resumed.value.clockProjection?.public).toMatchObject({
+    clock: { nextTimeoutDeadlineMs: 1_001_027 },
+  })
+
+  const resumeRetry = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockResume', matchId: 'clock-referee', reason: '恢復計時' },
+    { matchId: 'clock-referee', callerUserId: 'ref-1', commandId: 'referee-resume', expectedMatchRevision: 2, trustedTimeMs: 2_000_000 },
+  ))
+  expect(resumeRetry.ok).toBe(true)
+  if (resumeRetry.ok) {
+    expect(resumeRetry.value).toMatchObject({
+      matchRevision: 3, idempotent: true, nextClockDeadlineMs: 1_001_027,
+    })
+  }
+
+  const observed = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'clock-referee' },
+    { matchId: 'clock-referee', callerUserId: 'ref-1', commandId: 'referee-observe', expectedMatchRevision: 3, trustedTimeMs: 1_000_010 },
+  ))
+  expect(observed.ok).toBe(true)
+  if (!observed.ok) return
+  expect(observed.value.matchRevision).toBe(4)
+  expect(observed.value.clockProjection?.public).toMatchObject({
+    clock: { nextTimeoutDeadlineMs: 1_001_027 },
+  })
+
+  const audit = await room.audit({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  expect(audit.ok).toBe(true)
+  if (audit.ok) {
+    expect(audit.value.records.find(record => record.commandId === 'referee-pause')).toMatchObject({
+      matchId: 'clock-referee',
+      operationType: 'clockPause',
+      reason: '斷線處理',
+    })
+    expect(audit.value.records.find(record => record.commandId === 'referee-resume')).toMatchObject({
+      matchId: 'clock-referee',
+      operationType: 'clockResume',
+      reason: '恢復計時',
+    })
+  }
+})
+
+test('conflicted referee cannot pause or resume even when active', async () => {
+  const { room, sql } = await initializedRoom(matchAdapter)
+  const grant = await room.grantReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'ref-1',
+    commandId: 'grant-conflicted-ref', expectedRevision: 1, trustedTimeMs: 201,
+  })
+  expect(grant.ok).toBe(true)
+  const created = await materializeTestMatch(room, sql, 'conflicted-clock', [{ refereeId: 'ref-1', conflictedTeam: 'team-a' }], {
+    commandId: 'conflicted-clock-create', expectedRevision: 2, trustedTimeMs: 202,
+  })
+  expect(created.ok).toBe(true)
+  const denied = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockResume', matchId: 'conflicted-clock', reason: '衝突測試' },
+    { matchId: 'conflicted-clock', callerUserId: 'ref-1', commandId: 'conflicted-resume', expectedMatchRevision: 1, trustedTimeMs: 204 },
+  ))
+  expect(denied).toEqual({
+    ok: false,
+    error: { code: 'forbidden', message: 'referee is not assigned to this match or conflicts with a team' },
+  })
+})
+
+test('direct matchCreate and clockCreate are rejected by the scoped RPC', async () => {
+  const { room } = await initializedRoom(matchAdapter)
+  const match = await room.executeMatch(matchExecuteRequest(
+    { type: 'matchCreate', config: matchConfig('direct-match') },
+    { commandId: 'direct-match-create' },
+  ))
+  expect(match).toEqual({
+    ok: false,
+    error: { code: 'operationNotAllowed', message: 'matchCreate must use startScheduledMatch' },
+  })
+  const clock = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockCreate', matchId: 'direct-match', teams: ['team-a', 'team-b'],
+      config: { mainTimeMs: 1_000, actionTimeMs: 300, outOfTurnChoiceTimeMs: null } },
+    { matchId: 'direct-match', commandId: 'direct-clock-create' },
+  ))
+  expect(clock).toEqual({
+    ok: false,
+    error: { code: 'operationNotAllowed', message: 'clockCreate must use startScheduledMatch' },
+  })
+})
+
+test('active-byoyomi action timeout uses remaining action time and post digest', async () => {
+  const config = { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 }
+  const preClock = terminalClock(config, {
+    teams: [
+      { team: 'team-a', mainTimeRemainingMs: 0, actionTurn: 1, actionTimeRemainingMs: 30,
+        actionByoyomiStarted: true, enteredByoyomi: true, byoyomiEntrySequence: 0 },
+      { team: 'team-b', mainTimeRemainingMs: 5_000, actionTurn: null, actionTimeRemainingMs: null,
+        actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+    ],
+    nextByoyomiEntrySequence: 1,
+  })
+  const postClock = terminalClock(config, {
+    teams: [
+      { team: 'team-a', mainTimeRemainingMs: 0, actionTurn: 1, actionTimeRemainingMs: 0,
+        actionByoyomiStarted: true, enteredByoyomi: true, byoyomiEntrySequence: 0 },
+      { team: 'team-b', mainTimeRemainingMs: 5_000, actionTurn: null, actionTimeRemainingMs: null,
+        actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+    ],
+    lastObservedMs: 600,
+    expiredTeam: 'team-a',
+    nextByoyomiEntrySequence: 1,
+  })
+  const calls: CompetitionRequest[] = []
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(clockEvidenceAdapter({
+    preClock, postClock, update: { type: 'timedOut', team: 'team-a' }, calls,
+  }), sql)
+  expect((await materializeTestMatch(room, sql, 'action-timeout')).ok).toBe(true)
+
+  const result = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'action-timeout' },
+    { commandId: 'action-timeout-observe', expectedMatchRevision: 1, trustedTimeMs: 9_999 },
+  ))
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+  expect(result.value.timeoutEvidence).toMatchObject({
+    type: 'timeout',
+    expiries: [{ team: 'team-a', deadlineMonotonicMs: 230 }],
+    observedAtMonotonicMs: 600,
+    clockCheckpointDigest: await clockCheckpointDigest(postClock),
+  })
+  expect(result.value.timeoutEvidence?.timeoutId).toMatch(/^[0-9a-f]{64}$/)
+  expect(result.value.nextClockDeadlineMs).toBeNull()
+  expect(calls.filter(call => call.operation.type === 'clockObserve')).toHaveLength(1)
+
+  const retry = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'action-timeout' },
+    { commandId: 'action-timeout-observe', expectedMatchRevision: 1, trustedTimeMs: 20_000 },
+  ))
+  expect(retry).toEqual({ ok: true, value: { ...result.value, idempotent: true } })
+  const restarted = new CompetitionRoomClass(stateFor(sql), {}, clockEvidenceAdapter({
+    preClock, postClock, update: { type: 'timedOut', team: 'team-a' }, calls,
+  }))
+  const restartRetry = await restarted.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'action-timeout' },
+    { commandId: 'action-timeout-observe', expectedMatchRevision: 1, trustedTimeMs: 30_000 },
+  ))
+  expect(restartRetry).toEqual({ ok: true, value: { ...result.value, idempotent: true } })
+  expect(calls.filter(call => call.operation.type === 'clockObserve')).toHaveLength(1)
+})
+
+test('preparation timeout evidence only double-expires at the same earliest deadline', async () => {
+  const config = { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 }
+  const preparationTeams = (a: number, b: number) => [
+    { team: 'team-a', mainTimeRemainingMs: a, actionTurn: null, actionTimeRemainingMs: null,
+      actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+    { team: 'team-b', mainTimeRemainingMs: b, actionTurn: null, actionTimeRemainingMs: null,
+      actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+  ]
+  const run = async (teams: JsonObject[], update: JsonObject, postOverrides: JsonObject) => {
+    const preClock = terminalClock(config, {
+      teams,
+      running: { type: 'preparation', teams: ['team-a', 'team-b'] },
+    })
+    const postClock = terminalClock(config, {
+      teams: teams.map(team => ({
+        ...team,
+        mainTimeRemainingMs: 0,
+        actionTimeRemainingMs: 0,
+        actionByoyomiStarted: true,
+        enteredByoyomi: true,
+        byoyomiEntrySequence: 0,
+      })),
+      running: { type: 'preparation', teams: ['team-a', 'team-b'] },
+      lastObservedMs: 1_000,
+      nextByoyomiEntrySequence: 1,
+      ...postOverrides,
+    })
+    const sql = new MemorySql()
+    const { room } = await initializedRoom(clockEvidenceAdapter({ preClock, postClock, update }), sql)
+    expect((await materializeTestMatch(room, sql, 'preparation-timeout')).ok).toBe(true)
+    return room.executeMatch(matchExecuteRequest(
+      { type: 'clockObserve', matchId: 'preparation-timeout' },
+      { commandId: `preparation-${update.type}`, expectedMatchRevision: 1, trustedTimeMs: 1_000 },
+    ))
+  }
+
+  const sameDeadline = await run(
+    preparationTeams(100, 100) as JsonObject[],
+    { type: 'doubleTimedOut', teams: ['team-a', 'team-b'] },
+    { doubleExpired: true, expiredTeam: null },
+  )
+  expect(sameDeadline.ok).toBe(true)
+  if (sameDeadline.ok) {
+    expect(sameDeadline.value.timeoutEvidence?.expiries).toEqual([
+      { team: 'team-a', deadlineMonotonicMs: 330 },
+      { team: 'team-b', deadlineMonotonicMs: 330 },
+    ])
+    expect(sameDeadline.value.nextClockDeadlineMs).toBeNull()
+  }
+
+  const differentDeadline = await run(
+    preparationTeams(100, 200) as JsonObject[],
+    { type: 'timedOut', team: 'team-a' },
+    { doubleExpired: false, expiredTeam: 'team-a' },
+  )
+  expect(differentDeadline.ok).toBe(true)
+  if (differentDeadline.ok) {
+    expect(differentDeadline.value.timeoutEvidence?.expiries).toEqual([
+      { team: 'team-a', deadlineMonotonicMs: 330 },
+    ])
+    expect(differentDeadline.value.nextClockDeadlineMs).toBeNull()
+  }
+})
+
+test('out-of-turn choice timeout and non-timeout mutations have typed evidence boundaries', async () => {
+  const config = { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 }
+  const preClock = terminalClock(config, {
+    running: { type: 'outOfTurnChoice', team: 'team-b', choiceId: 'choice-1', remainingMs: 20 },
+  })
+  const postClock = terminalClock(config, {
+    running: { type: 'outOfTurnChoice', team: 'team-b', choiceId: 'choice-1', remainingMs: 0 },
+    lastObservedMs: 500,
+    expiredTeam: 'team-b',
+  })
+  const calls: CompetitionRequest[] = []
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(clockEvidenceAdapter({
+    preClock, postClock, update: { type: 'timedOut', team: 'team-b' }, calls,
+  }), sql)
+  expect((await materializeTestMatch(room, sql, 'choice-timeout')).ok).toBe(true)
+  const timeout = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockEndWindow', matchId: 'choice-timeout' },
+    { commandId: 'choice-timeout-end', expectedMatchRevision: 1, trustedTimeMs: 500 },
+  ))
+  expect(timeout.ok).toBe(true)
+  if (timeout.ok) {
+    expect(timeout.value.timeoutEvidence?.expiries).toEqual([
+      { team: 'team-b', deadlineMonotonicMs: 220 },
+    ])
+    expect(timeout.value.nextClockDeadlineMs).toBeNull()
+  }
+
+  const normalSql = new MemorySql()
+  const normalPostClock = terminalClock(config, {
+    running: { type: 'outOfTurnChoice', team: 'team-b', choiceId: 'choice-1', remainingMs: 20 },
+    lastObservedMs: 210,
+  })
+  const { room: normalRoom } = await initializedRoom(clockEvidenceAdapter({
+    preClock, postClock: normalPostClock, update: { type: 'advanced' },
+  }), normalSql)
+  expect((await materializeTestMatch(normalRoom, normalSql, 'normal-clock')).ok).toBe(true)
+  const nonTimeout = await normalRoom.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'normal-clock' },
+    { commandId: 'choice-non-timeout', expectedMatchRevision: 1, trustedTimeMs: 210 },
+  ))
+  expect(nonTimeout).toMatchObject({ ok: true, value: { timeoutEvidence: null } })
+  expect(calls.filter(call => call.operation.type === 'clockEndWindow')).toHaveLength(1)
+})
+
+test('unlimited timeout and inconsistent engine flags fail closed without advancing the match', async () => {
+  const config = { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 }
+  const unlimitedConfig = { mainTimeMs: null, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 }
+  const unlimitedTeams = [
+    { team: 'team-a', mainTimeRemainingMs: null, actionTurn: 1, actionTimeRemainingMs: null,
+      actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+    { team: 'team-b', mainTimeRemainingMs: null, actionTurn: null, actionTimeRemainingMs: null,
+      actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+  ] as JsonObject[]
+  const unlimitedPre = terminalClock(unlimitedConfig, {
+    teams: unlimitedTeams,
+  })
+  const unlimitedPost = terminalClock(unlimitedConfig, {
+    teams: unlimitedTeams,
+    lastObservedMs: 10_000,
+  })
+  const unlimitedSql = new MemorySql()
+  const { room: unlimitedRoom } = await initializedRoom(clockEvidenceAdapter({
+    preClock: unlimitedPre,
+    postClock: unlimitedPost,
+    update: { type: 'timedOut', team: 'team-a' },
+  }), unlimitedSql)
+  expect((await materializeTestMatch(
+    unlimitedRoom, unlimitedSql, 'unlimited-clock', [], {}, unlimitedConfig,
+  )).ok).toBe(true)
+  const unlimited = await unlimitedRoom.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'unlimited-clock' },
+    { commandId: 'unlimited-timeout', expectedMatchRevision: 1, trustedTimeMs: 10_000 },
+  ))
+  expect(unlimited).toEqual({
+    ok: false,
+    error: { code: 'invalidTimeoutEvidence', message: 'timeout deadline is not observed by the post checkpoint' },
+  })
+  expect(unlimitedSql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get('unlimited-clock')).toEqual({ revision: 1 })
+
+  const unlimitedFakePre = terminalClock(config, {
+    teams: [
+      { team: 'team-a', mainTimeRemainingMs: null, actionTurn: 1, actionTimeRemainingMs: null,
+        actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+      ...(terminalClock(config).teams as JsonObject[]).slice(1),
+    ],
+  })
+  const fakeSql = new MemorySql()
+  const { room: fakeRoom } = await initializedRoom(clockEvidenceAdapter({
+    preClock: unlimitedFakePre,
+    postClock: unlimitedFakePre,
+    update: { type: 'timedOut', team: 'team-a' },
+  }), fakeSql)
+  expect((await materializeTestMatch(fakeRoom, fakeSql, 'unlimited-fake')).ok).toBe(false)
+
+  const mismatchPre = terminalClock(config, {
+    teams: [
+      { team: 'team-a', mainTimeRemainingMs: 0, actionTurn: 1, actionTimeRemainingMs: 30,
+        actionByoyomiStarted: true, enteredByoyomi: true, byoyomiEntrySequence: 0 },
+      ...(terminalClock(config).teams as JsonObject[]).slice(1),
+    ],
+    nextByoyomiEntrySequence: 1,
+  })
+  const mismatchPost = expiredActionClock(config, 'team-b')
+  mismatchPost.lastObservedMs = 1_000
+  const mismatchSql = new MemorySql()
+  const { room: mismatchRoom } = await initializedRoom(clockEvidenceAdapter({
+    preClock: mismatchPre,
+    postClock: mismatchPost,
+    update: { type: 'timedOut', team: 'team-a' },
+  }), mismatchSql)
+  expect((await materializeTestMatch(mismatchRoom, mismatchSql, 'mismatch-clock')).ok).toBe(true)
+  const mismatch = await mismatchRoom.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'mismatch-clock' },
+    { commandId: 'mismatch-timeout', expectedMatchRevision: 1, trustedTimeMs: 1_000 },
+  ))
+  expect(mismatch.ok).toBe(false)
+  expect(mismatchSql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get('mismatch-clock')).toEqual({ revision: 1 })
+})
+
+test('clock timeout evidence transaction rolls back and retries the engine', async () => {
+  const config = { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 }
+  const preClock = terminalClock(config, {
+    teams: [
+      { team: 'team-a', mainTimeRemainingMs: 0, actionTurn: 1, actionTimeRemainingMs: 30,
+        actionByoyomiStarted: true, enteredByoyomi: true, byoyomiEntrySequence: 0 },
+      ...(terminalClock(config).teams as JsonObject[]).slice(1),
+    ],
+    nextByoyomiEntrySequence: 1,
+  })
+  const postClock = terminalClock(config, {
+    teams: [
+      { team: 'team-a', mainTimeRemainingMs: 0, actionTurn: 1, actionTimeRemainingMs: 0,
+        actionByoyomiStarted: true, enteredByoyomi: true, byoyomiEntrySequence: 0 },
+      { team: 'team-b', mainTimeRemainingMs: 5_000, actionTurn: null, actionTimeRemainingMs: null,
+        actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+    ],
+    lastObservedMs: 600,
+    expiredTeam: 'team-a',
+    nextByoyomiEntrySequence: 1,
+  })
+  const calls: CompetitionRequest[] = []
+  const sql = new MemorySql()
+  const adapter = clockEvidenceAdapter({
+    preClock, postClock, update: { type: 'timedOut', team: 'team-a' }, calls,
+  })
+  const { room } = await initializedRoom(adapter, sql)
+  expect((await materializeTestMatch(room, sql, 'rollback-clock')).ok).toBe(true)
+  sql.failNextQueryContaining = 'INSERT INTO competition_command_receipt'
+  const failed = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'rollback-clock' },
+    { commandId: 'rollback-timeout', expectedMatchRevision: 1, trustedTimeMs: 600 },
+  ))
+  expect(failed).toEqual({
+    ok: false,
+    error: { code: 'internalFailure', message: 'competition room operation failed' },
+  })
+  expect(sql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get('rollback-clock')).toEqual({ revision: 1 })
+  const retry = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'rollback-clock' },
+    { commandId: 'rollback-timeout', expectedMatchRevision: 1, trustedTimeMs: 600 },
+  ))
+  expect(retry.ok).toBe(true)
+  expect(calls.filter(call => call.operation.type === 'clockObserve')).toHaveLength(2)
+})
+
+test('clock result parser and deadline arithmetic fail closed without advancing revision', async () => {
+  const config = { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 }
+  for (const [name, update] of [
+    ['unknown', { type: 'futureUpdate' }],
+    ['extra', { type: 'advanced', extra: true }],
+  ] as const) {
+    const sql = new MemorySql()
+    const preClock = terminalClock(config)
+    const postClock = terminalClock(config, { lastObservedMs: 210 })
+    const { room } = await initializedRoom(clockEvidenceAdapter({ preClock, postClock, update }), sql)
+    expect((await materializeTestMatch(room, sql, `strict-${name}`)).ok).toBe(true)
+    const result = await room.executeMatch(matchExecuteRequest(
+      { type: 'clockObserve', matchId: `strict-${name}` },
+      { commandId: `strict-${name}`, expectedMatchRevision: 1, trustedTimeMs: 210 },
+    ))
+    expect(result.ok).toBe(false)
+    expect(sql.database.query(
+      'SELECT revision FROM competition_matches WHERE match_id = ?',
+    ).get(`strict-${name}`)).toEqual({ revision: 1 })
+  }
+
+  const validPublic = clockPublicFromCheckpoint(terminalClock(config, { lastObservedMs: 210 }))
+  const malformedPublics: Array<[string, JsonObject]> = []
+  const missingDeadline = { ...validPublic }
+  delete missingDeadline.nextTimeoutDeadlineMs
+  malformedPublics.push(['missing-deadline', missingDeadline])
+  malformedPublics.push(['extra-field', { ...validPublic, extra: true }])
+  malformedPublics.push(['wrong-deadline-type', { ...validPublic, nextTimeoutDeadlineMs: 'later' }])
+  for (const [name, publicView] of malformedPublics) {
+    const sql = new MemorySql()
+    const { room } = await initializedRoom(clockEvidenceAdapter({
+      preClock: terminalClock(config),
+      postClock: terminalClock(config, { lastObservedMs: 210 }),
+      update: { type: 'advanced' },
+      publicOverride: { result: { type: 'advanced' }, clock: publicView },
+    }), sql)
+    expect((await materializeTestMatch(room, sql, `public-${name}`)).ok).toBe(true)
+    const result = await room.executeMatch(matchExecuteRequest(
+      { type: 'clockObserve', matchId: `public-${name}` },
+      { commandId: `public-${name}`, expectedMatchRevision: 1, trustedTimeMs: 210 },
+    ))
+    expect(result.ok).toBe(false)
+    expect(sql.database.query(
+      'SELECT revision FROM competition_matches WHERE match_id = ?',
+    ).get(`public-${name}`)).toEqual({ revision: 1 })
+  }
+
+  const contradictoryDeadlines: Array<[string, JsonObject, number]> = [
+    ['stale', terminalClock(config, { lastObservedMs: 210 }), 209],
+    ['paused', terminalClock(config, {
+      running: null,
+      paused: { type: 'action', team: 'team-a', turn: 1 },
+    }), 201],
+    ['inactive', terminalClock(config, { running: null }), 201],
+    ['decision', terminalClock(config, { needsDecision: 'zeroTimeControl' }), 201],
+    ['expired', expiredActionClock(config), 201],
+    ['double-expired', doubleExpiredPreparationClock(config), 201],
+  ]
+  for (const [name, postClock, deadline] of contradictoryDeadlines) {
+    const sql = new MemorySql()
+    const { room } = await initializedRoom(clockEvidenceAdapter({
+      preClock: postClock,
+      postClock,
+      update: { type: 'advanced' },
+      publicOverride: {
+        result: { type: 'advanced' },
+        clock: { ...clockPublicFromCheckpoint(postClock), nextTimeoutDeadlineMs: deadline },
+      },
+    }), sql)
+    expect((await materializeTestMatch(room, sql, `contradictory-${name}`)).ok).toBe(true)
+    const result = await room.executeMatch(matchExecuteRequest(
+      { type: 'clockObserve', matchId: `contradictory-${name}` },
+      { commandId: `contradictory-${name}`, expectedMatchRevision: 1, trustedTimeMs: 210 },
+    ))
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'engineInvalidClockResult',
+        message: 'clock public view deadline contradicts its checkpoint',
+      },
+    })
+    expect(sql.database.query(
+      'SELECT revision FROM competition_matches WHERE match_id = ?',
+    ).get(`contradictory-${name}`)).toEqual({ revision: 1 })
+  }
+
+  const overflowConfig = { mainTimeMs: 1, actionTimeMs: 1, outOfTurnChoiceTimeMs: 1 }
+  const overflowPre = terminalClock(overflowConfig, {
+    teams: [
+      { team: 'team-a', mainTimeRemainingMs: 1, actionTurn: 1, actionTimeRemainingMs: null,
+        actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+      { team: 'team-b', mainTimeRemainingMs: 1, actionTurn: null, actionTimeRemainingMs: null,
+        actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+    ],
+    lastObservedMs: Number.MAX_SAFE_INTEGER,
+  })
+  const overflowPost = terminalClock(overflowConfig, {
+    teams: overflowPre.teams,
+    lastObservedMs: Number.MAX_SAFE_INTEGER,
+  })
+  const overflowSql = new MemorySql()
+  const { room: overflowRoom } = await initializedRoom(clockEvidenceAdapter({
+    preClock: overflowPre,
+    postClock: overflowPost,
+    update: { type: 'timedOut', team: 'team-a' },
+  }), overflowSql)
+  const overflowMaterialize = await materializeTestMatch(
+    overflowRoom, overflowSql, 'overflow-clock', [], {}, overflowConfig,
+  )
+  expect(overflowMaterialize).toEqual({
+    ok: false,
+    error: { code: 'engineInvalidClockResult', message: 'clock public view is invalid' },
+  })
+  expect(overflowSql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get('overflow-clock')).toBeNull()
+})
+
+test('non-timeout mutations from paused, inactive, decision, and terminal checkpoints never forge evidence', async () => {
+  const config = { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 }
+  const checkpoints: Array<[string, JsonObject]> = [
+    ['paused', terminalClock(config, {
+      running: null,
+      paused: { type: 'action', team: 'team-a', turn: 1 },
+    })],
+    ['inactive', terminalClock(config, { running: null })],
+    ['decision', terminalClock(config, { needsDecision: 'zeroTimeControl' })],
+    ['terminal', expiredActionClock(config)],
+  ]
+  for (const [name, checkpoint] of checkpoints) {
+    const sql = new MemorySql()
+    const { room } = await initializedRoom(clockEvidenceAdapter({
+      preClock: checkpoint,
+      postClock: checkpoint,
+      update: { type: 'advanced' },
+    }), sql)
+    expect((await materializeTestMatch(room, sql, `boundary-${name}`)).ok).toBe(true)
+    const result = await room.executeMatch(matchExecuteRequest(
+      { type: 'clockObserve', matchId: `boundary-${name}` },
+      { commandId: `boundary-${name}`, expectedMatchRevision: 1, trustedTimeMs: 210 },
+    ))
+    expect(result).toMatchObject({
+      ok: true,
+      value: { timeoutEvidence: null, nextClockDeadlineMs: null },
+    })
+  }
+})
+
+test('zero-main preparation ACK carries a decision with no deadline or timeout evidence', async () => {
+  const config = { mainTimeMs: 0, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 }
+  const checkpoint = terminalClock(config, {
+    teams: [
+      { team: 'team-a', mainTimeRemainingMs: 0, actionTurn: null, actionTimeRemainingMs: null,
+        actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+      { team: 'team-b', mainTimeRemainingMs: 0, actionTurn: null, actionTimeRemainingMs: null,
+        actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+    ],
+    running: { type: 'preparation', teams: ['team-a', 'team-b'] },
+    needsDecision: 'zeroTimeControl',
+  })
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(clockEvidenceAdapter({
+    preClock: checkpoint,
+    postClock: checkpoint,
+    update: { type: 'needsDecision', reason: 'zeroTimeControl' },
+  }), sql)
+  expect((await materializeTestMatch(room, sql, 'zero-main-preparation', [], {}, config)).ok).toBe(true)
+
+  const result = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'zero-main-preparation' },
+    { commandId: 'zero-main-preparation-observe', expectedMatchRevision: 1, trustedTimeMs: 200 },
+  ))
+  expect(result).toMatchObject({
+    ok: true,
+    value: {
+      timeoutEvidence: null,
+      nextClockDeadlineMs: null,
+      clockProjection: {
+        public: {
+          clock: { needsDecision: 'zeroTimeControl', nextTimeoutDeadlineMs: null },
+        },
+      },
+    },
+  })
+})
+
+test('stored clock receipts reject stale public deadlines after restart', async () => {
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(matchAdapter, sql)
+  expect((await materializeTestMatch(room, sql, 'stored-deadline')).ok).toBe(true)
+  const command = matchExecuteRequest(
+    { type: 'clockObserve', matchId: 'stored-deadline' },
+    { commandId: 'stored-deadline-command', expectedMatchRevision: 1, trustedTimeMs: 1_000 },
+  )
+  expect((await room.executeMatch(command)).ok).toBe(true)
+  const receipt = sql.database.query(
+    'SELECT response_json FROM competition_command_receipt WHERE command_id = ?',
+  ).get(command.commandId) as { response_json: string }
+  const stored = JSON.parse(receipt.response_json) as JsonObject
+  const value = stored.value as JsonObject
+  const projection = value.clockProjection as JsonObject
+  const publicValue = projection.public as JsonObject
+  const clock = publicValue.clock as JsonObject
+  clock.nextTimeoutDeadlineMs = (clock.lastObservedMs as number) - 1
+  sql.database.query(
+    'UPDATE competition_command_receipt SET response_json = ? WHERE command_id = ?',
+  ).run(JSON.stringify(stored), command.commandId)
+
+  const restarted = new CompetitionRoomClass(stateFor(sql), {}, matchAdapter)
+  expect(await restarted.executeMatch({ ...command, trustedTimeMs: 2_000 })).toEqual({
+    ok: false,
+    error: { code: 'internalFailure', message: 'competition room operation failed' },
+  })
+  expect(sql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get('stored-deadline')).toEqual({ revision: 2 })
+})
+
+test('terminal ingest derives canonical decisive ruling and commits one revision', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  sql.database.query('UPDATE competition_meta SET updated_trusted_time_ms = ? WHERE singleton = 1').run(300)
+  const request = await terminalTestRequest()
+  const result = await room.ingestGameTerminal(request)
+  expect(result.ok).toBe(true)
+  expect(calls.map(call => call.operation.type)).toEqual([
+    'registrationCreate', 'tournamentStartMatch', 'matchCreate', 'clockCreate', 'clockRuleGame', 'matchSubmitGame',
+  ])
+  const ruleCall = calls.find(call => call.operation.type === 'clockRuleGame')
+  expect(ruleCall?.operation).toMatchObject({ type: 'clockRuleGame', mode: 'elimination' })
+  expect(ruleCall && 'byoyomiEntryOrder' in ruleCall.operation).toBe(false)
+  expect(sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?')
+    .get('terminal-match')).toEqual({ revision: 2 })
+  const row = sql.database.query(
+    'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+  ).get('terminal-match') as { match_checkpoint_json: string }
+  expect(JSON.parse(row.match_checkpoint_json)).toMatchObject({
+    history: [{ type: 'submitGame', submission: { ruling: { type: 'gameAccepted', outcome: { winner: 'team-a' } } } }],
+  })
+  const retry = await room.ingestGameTerminal({ ...request, trustedTimeMs: 999 })
+  expect(retry).toMatchObject({
+    ok: true,
+    value: { idempotent: true },
+  })
+  expect(retry.ok && Object.keys(retry.value).sort()).toEqual([
+    'clockProjection', 'commandId', 'competitionId', 'idempotent', 'matchId',
+    'matchProjection', 'matchRevision', 'nextClockDeadlineMs', 'timeoutEvidence',
+  ])
+})
+
+test('completed match maps each recorded game into its tournament result and survives restart retry', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  configureTerminalSchedule(sql, { matchFormat: { type: 'fixedGames', value: 2 } })
+
+  const firstGame = await terminalTestRequest({
+    terminalEvidence: {
+      type: 'canonicalGameEnded',
+      conclusion: {
+        outcome: { type: 'draw' },
+        causes: [],
+      },
+    },
+  })
+  expect(await room.ingestGameTerminal(firstGame)).toMatchObject({
+    ok: true,
+  })
+  expect(calls.some(call => call.operation.type === 'tournamentSubmitResult')).toBe(false)
+
+  const finalGame = await terminalTestRequest({
+    commandId: 'fixed-final-game',
+    expectedMatchRevision: 2,
+    trustedTimeMs: 202,
+    submissionId: 'submission-final',
+    gameRecordId: 'game-final',
+    rulingRecordId: 'ruling-final',
+    firstPlayer: 'team-b',
+  })
+  const completed = await room.ingestGameTerminal(finalGame)
+  expect(completed).toMatchObject({
+    ok: true,
+  })
+  const submit = calls.find(call => call.operation.type === 'tournamentSubmitResult')
+  expect(submit?.operation).toEqual({
+    type: 'tournamentSubmitResult',
+    stageId: 'stage-1',
+    matchId: 'terminal-match',
+    result: { type: 'win', winnerId: 'team-a', loserId: 'team-b', winnerGames: 1, loserGames: 0 },
+  })
+  const meta = sql.database.query(
+    `SELECT server_state_json, public_projection_json, revision, updated_trusted_time_ms
+       FROM competition_meta WHERE singleton = 1`,
+  ).get() as { server_state_json: string; public_projection_json: string; revision: number; updated_trusted_time_ms: number }
+  expect(meta.revision).toBe(3)
+  expect(meta.updated_trusted_time_ms).toBe(202)
+  expect(JSON.parse(meta.public_projection_json)).toMatchObject({
+    operation: 'tournamentSubmitResult',
+    public: { result: { type: 'applied' } },
+  })
+  expect(JSON.parse(meta.server_state_json)).toMatchObject({
+    tournament: { stages: [{ rounds: [{ matches: [{
+      matchId: 'terminal-match',
+      status: 'completed',
+      result: { type: 'win', winnerId: 'team-a', loserId: 'team-b', winnerGames: 1, loserGames: 0 },
+    }] }] }] },
+  })
+
+  const restarted = new CompetitionRoomClass(stateFor(sql), {}, terminalAdapter({ calls }))
+  expect(await restarted.ingestGameTerminal({ ...finalGame, trustedTimeMs: 999 })).toMatchObject({
+    ok: true,
+    value: { idempotent: true },
+  })
+  expect(calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(1)
+})
+
+test('older terminal outbox applies completed result at non-regressing tournament time exactly once', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  configureTerminalSchedule(sql, { matchFormat: { type: 'firstToWins', value: 1 } })
+  sql.database.query('UPDATE competition_meta SET updated_trusted_time_ms = ? WHERE singleton = 1').run(300)
+  const request = await terminalTestRequest({ commandId: 'delayed-terminal-outbox', trustedTimeMs: 201 })
+
+  expect((await room.ingestGameTerminal(request)).ok).toBe(true)
+  const tournamentCall = calls.find(call => call.operation.type === 'tournamentSubmitResult')
+  expect(tournamentCall?.trustedTimeMs).toBe(300)
+  expect(calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(1)
+  expect(sql.database.query(
+    'SELECT last_trusted_time_ms FROM competition_matches WHERE match_id = ?',
+  ).get('terminal-match')).toEqual({ last_trusted_time_ms: 201 })
+  expect(sql.database.query(
+    'SELECT updated_trusted_time_ms FROM competition_meta WHERE singleton = 1',
+  ).get()).toEqual({ updated_trusted_time_ms: 300 })
+
+  expect(await room.ingestGameTerminal({ ...request, trustedTimeMs: 301 })).toMatchObject({
+    ok: true,
+    value: { idempotent: true },
+  })
+  expect(calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(1)
+})
+
+test('fixed games retain a draw result and use recorded decisive-game statistics', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  configureTerminalSchedule(sql, { matchFormat: { type: 'fixedGames', value: 2 } })
+  const firstGame = await terminalTestRequest({
+    terminalEvidence: {
+      type: 'canonicalGameEnded',
+      conclusion: {
+        outcome: { type: 'draw' },
+        causes: [{ type: 'teamHpDepleted', teams: ['team-a', 'team-b'] }],
+      },
+    },
+  })
+  expect((await room.ingestGameTerminal(firstGame)).ok).toBe(true)
+  const finalGame = await terminalTestRequest({
+    commandId: 'fixed-draw-game', expectedMatchRevision: 2, trustedTimeMs: 202,
+    submissionId: 'fixed-draw-submission', gameRecordId: 'fixed-draw-game-record',
+    rulingRecordId: 'fixed-draw-ruling',
+    terminalEvidence: {
+      type: 'canonicalGameEnded',
+      conclusion: { outcome: { type: 'draw' }, causes: [] },
+    },
+    firstPlayer: 'team-b',
+  })
+  expect(await room.ingestGameTerminal(finalGame)).toMatchObject({
+    ok: true,
+  })
+  expect(calls.find(call => call.operation.type === 'tournamentSubmitResult')?.operation).toMatchObject({
+    result: { type: 'draw', firstGames: 0, secondGames: 0 },
+  })
+})
+
+test('Swiss, round-robin, single-elimination, and double-elimination results use the stored stage format', async () => {
+  for (const scenario of [
+    { tournamentFormat: 'swiss', matchFormat: { type: 'fixedGames' as const, value: 1 }, game: 'draw' as const },
+    { tournamentFormat: 'roundRobin', matchFormat: { type: 'fixedGames' as const, value: 1 }, game: 'draw' as const },
+    { tournamentFormat: 'singleElimination', matchFormat: { type: 'firstToWins' as const, value: 1 }, game: 'win' as const },
+    { tournamentFormat: 'doubleElimination', matchFormat: { type: 'firstToWins' as const, value: 1 }, game: 'win' as const },
+  ]) {
+    const calls: CompetitionRequest[] = []
+    const { room, sql } = await terminalRoom({ calls })
+    configureTerminalSchedule(sql, scenario)
+    const request = await terminalTestRequest(scenario.game === 'draw' ? {
+      terminalEvidence: {
+        type: 'canonicalGameEnded', conclusion: { outcome: { type: 'draw' }, causes: [] },
+      },
+    } : {})
+    expect(await room.ingestGameTerminal(request)).toMatchObject({
+      ok: true,
+    })
+    expect(calls.find(call => call.operation.type === 'tournamentSubmitResult')?.operation.type)
+      .toBe('tournamentSubmitResult')
+  }
+})
+
+test('referee correction atomically replaces a completed decisive tournament result', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  configureTerminalSchedule(sql, { matchFormat: { type: 'firstToWins', value: 1 } })
+  addTestReferee(sql)
+  expect((await room.ingestGameTerminal(await terminalTestRequest())).ok).toBe(true)
+  sql.database.query('UPDATE competition_meta SET updated_trusted_time_ms = ? WHERE singleton = 1').run(500)
+
+  const correction = matchCorrectionRequest()
+  expect(await room.executeMatch(correction)).toMatchObject({ ok: true, value: { matchRevision: 3 } })
+  const correctionCall = calls.find(call => call.operation.type === 'matchCorrectRuling')
+  expect(correctionCall?.serverActor).toEqual({ type: 'referee', playerId: 'referee-1' })
+  const tournamentCall = calls.find(call => call.operation.type === 'tournamentCorrectResult')
+  expect(tournamentCall?.trustedTimeMs).toBe(500)
+  expect(tournamentCall?.serverActor).toEqual({ type: 'referee', playerId: 'referee-1' })
+  expect(tournamentCall?.operation).toEqual({
+    type: 'tournamentCorrectResult', stageId: 'stage-1', matchId: 'terminal-match',
+    replacement: { type: 'win', winnerId: 'team-b', loserId: 'team-a', winnerGames: 1, loserGames: 0 },
+    reason: '裁判覆核後修正',
+  })
+  const state = JSON.parse((sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }).server_state_json) as JsonObject
+  expect(state.tournament).toMatchObject({ stages: [{ rounds: [{ matches: [{
+    status: 'completed', result: { type: 'win', winnerId: 'team-b', loserId: 'team-a' },
+  }] }] }] })
+  expect(sql.database.query(
+    'SELECT revision, last_trusted_time_ms FROM competition_matches WHERE match_id = ?',
+  ).get('terminal-match')).toEqual({ revision: 3, last_trusted_time_ms: 250 })
+  expect(sql.database.query(
+    'SELECT revision, updated_trusted_time_ms FROM competition_meta WHERE singleton = 1',
+  ).get()).toEqual({ revision: 4, updated_trusted_time_ms: 500 })
+
+  const restarted = new CompetitionRoomClass(stateFor(sql), {}, terminalAdapter({ calls }))
+  expect(await restarted.executeMatch({ ...correction, trustedTimeMs: 999 }))
+    .toMatchObject({ ok: true, value: { idempotent: true } })
+  expect(calls.filter(call => call.operation.type === 'tournamentCorrectResult')).toHaveLength(1)
+})
+
+test('pending referee correction submits on first completion and leaves unresolved rulings pending', async () => {
+  for (const replacement of [
+    { type: 'gameAccepted', outcome: { winner: 'team-b' } },
+    { type: 'doubleTimeoutLoss', teams: ['team-a', 'team-b'] },
+  ] as const) {
+    const calls: CompetitionRequest[] = []
+    const { room, sql } = await terminalRoom({
+      calls,
+      ruling: replacement.type === 'doubleTimeoutLoss'
+        ? { type: 'needsDecision', reason: 'simultaneousByoyomiEntry' }
+        : { type: 'doubleTimeoutLoss', teams: ['team-a', 'team-b'] },
+    })
+    configureTerminalSchedule(sql, { matchFormat: { type: 'firstToWins', value: 1 } })
+    addTestReferee(sql)
+    expect((await room.ingestGameTerminal(await terminalTestRequest())).ok).toBe(true)
+    const corrected = await room.executeMatch(matchCorrectionRequest({}, replacement))
+    expect(corrected.ok).toBe(true)
+    const submitted = calls.filter(call => call.operation.type === 'tournamentSubmitResult')
+    const correctedExisting = calls.filter(call => call.operation.type === 'tournamentCorrectResult')
+    if (replacement.type === 'gameAccepted') {
+      expect(submitted).toHaveLength(1)
+      expect(submitted[0]?.serverActor).toEqual({ type: 'referee', playerId: 'referee-1' })
+      expect(correctedExisting).toHaveLength(0)
+    } else {
+      expect(submitted).toHaveLength(0)
+      expect(correctedExisting).toHaveLength(0)
+      const tournament = JSON.parse((sql.database.query(
+        'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+      ).get() as { server_state_json: string }).server_state_json) as JsonObject
+      expect(tournament.tournament).toMatchObject({
+        stages: [{ rounds: [{ matches: [{ status: 'inProgress', result: null }] }] }],
+      })
+    }
+  }
+})
+
+test('a correction that reopens a submitted match fails closed without changing stored state', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  configureTerminalSchedule(sql, { matchFormat: { type: 'firstToWins', value: 1 } })
+  addTestReferee(sql)
+  expect((await room.ingestGameTerminal(await terminalTestRequest())).ok).toBe(true)
+  const before = terminalStateSnapshot(sql)
+  const request = matchCorrectionRequest({}, { type: 'needsDecision', reason: 'zeroTimeControl' })
+  expect(await room.executeMatch(request)).toEqual({
+    ok: false,
+    error: {
+      code: 'correctionWouldReopenScheduledResult',
+      message: 'competition engine rejected match correction',
+    },
+  })
+  expect(terminalStateSnapshot(sql)).toEqual(before)
+  expect(calls.some(call => call.operation.type === 'tournamentCorrectResult')).toBe(false)
+})
+
+test('fixed-games correction recalculates winner, draw, and per-team game statistics', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  configureTerminalSchedule(sql, { matchFormat: { type: 'fixedGames', value: 2 }, tournamentFormat: 'roundRobin' })
+  addTestReferee(sql)
+  expect((await room.ingestGameTerminal(await terminalTestRequest())).ok).toBe(true)
+  expect((await room.ingestGameTerminal(await terminalTestRequest({
+    commandId: 'fixed-game-two', expectedMatchRevision: 2, trustedTimeMs: 202,
+    submissionId: 'submission-2', gameRecordId: 'game-2', rulingRecordId: 'ruling-2',
+  }))).ok).toBe(true)
+  const toDraw = { type: 'gameAccepted' as const, outcome: 'draw' as const }
+  expect(await room.executeMatch(matchCorrectionRequest({
+    commandId: 'fixed-correction-game-2', expectedMatchRevision: 3, trustedTimeMs: 250,
+  }, toDraw, {
+    correctionId: 'correction-game-2', gameRecordId: 'game-2',
+    replacementRulingRecordId: 'replacement-ruling-2',
+  }))).toMatchObject({ ok: true })
+  expect(calls.find(call => call.operation.type === 'tournamentCorrectResult')?.operation).toMatchObject({
+    replacement: { type: 'win', winnerId: 'team-a', loserId: 'team-b', winnerGames: 1, loserGames: 0 },
+  })
+  expect(await room.executeMatch(matchCorrectionRequest({
+    commandId: 'fixed-correction-game-1', expectedMatchRevision: 4, trustedTimeMs: 260,
+  }, toDraw, {
+    correctionId: 'correction-game-1', gameRecordId: 'game-1',
+    replacementRulingRecordId: 'replacement-ruling-1',
+  }))).toMatchObject({ ok: true })
+  expect(calls.filter(call => call.operation.type === 'tournamentCorrectResult').at(-1)?.operation).toMatchObject({
+    replacement: { type: 'draw', firstGames: 0, secondGames: 0 },
+  })
+})
+
+test('result corrections follow the persisted Swiss, round-robin, single, and double elimination stage formats', async () => {
+  for (const tournamentFormat of ['swiss', 'roundRobin', 'singleElimination', 'doubleElimination']) {
+    const calls: CompetitionRequest[] = []
+    const { room, sql } = await terminalRoom({ calls })
+    configureTerminalSchedule(sql, {
+      matchFormat: ['singleElimination', 'doubleElimination'].includes(tournamentFormat)
+        ? { type: 'firstToWins', value: 1 }
+        : { type: 'fixedGames', value: 1 },
+      tournamentFormat,
+    })
+    addTestReferee(sql)
+    expect((await room.ingestGameTerminal(await terminalTestRequest())).ok).toBe(true)
+    expect(await room.executeMatch(matchCorrectionRequest())).toMatchObject({ ok: true })
+    const correction = calls.find(call => call.operation.type === 'tournamentCorrectResult')
+    expect(correction?.operation.type).toBe('tournamentCorrectResult')
+    const tournament = JSON.parse((sql.database.query(
+      'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+    ).get() as { server_state_json: string }).server_state_json) as JsonObject
+    const stage = (tournament.tournament as JsonObject).stages as JsonValue[]
+    expect(((stage[0] as JsonObject).config as JsonObject).format).toBe(tournamentFormat)
+  }
+})
+
+test('correction validates persisted match, team, stage, format, and prior result before calling the engine', async () => {
+  const corruptions: Array<(sql: MemorySql) => void> = [
+    sql => mutateTournament(sql, tournament => {
+      const stage = (tournament.stages as JsonValue[])[0] as JsonObject
+      const round = (stage.rounds as JsonValue[])[0] as JsonObject
+      const scheduled = (round.matches as JsonValue[])[0] as JsonObject
+      scheduled.result = { type: 'win', winnerId: 'team-b', loserId: 'team-a', winnerGames: 1, loserGames: 0 }
+    }),
+    sql => mutateTournament(sql, tournament => {
+      const stage = (tournament.stages as JsonValue[])[0] as JsonObject
+      const round = (stage.rounds as JsonValue[])[0] as JsonObject
+      const scheduled = (round.matches as JsonValue[])[0] as JsonObject
+      scheduled.participants = ['team-a', 'team-c']
+    }),
+    sql => mutateTournament(sql, tournament => {
+      const stage = (tournament.stages as JsonValue[])[0] as JsonObject
+      const round = (stage.rounds as JsonValue[])[0] as JsonObject
+      const scheduled = (round.matches as JsonValue[])[0] as JsonObject
+      scheduled.status = 'inProgress'
+      scheduled.result = null
+    }),
+    sql => sql.database.query('UPDATE competition_matches SET stage_id = ? WHERE match_id = ?')
+      .run('wrong-stage', 'terminal-match'),
+    sql => mutateTournament(sql, tournament => {
+      (((tournament.stages as JsonValue[])[0] as JsonObject).config as JsonObject).matchFormat = {
+        type: 'firstToWins', value: 3,
+      }
+    }),
+  ]
+  for (const corrupt of corruptions) {
+    const calls: CompetitionRequest[] = []
+    const { room, sql } = await terminalRoom({ calls })
+    configureTerminalSchedule(sql, { matchFormat: { type: 'firstToWins', value: 1 } })
+    addTestReferee(sql)
+    expect((await room.ingestGameTerminal(await terminalTestRequest())).ok).toBe(true)
+    corrupt(sql)
+    const before = terminalStateSnapshot(sql)
+    expect(await room.executeMatch(matchCorrectionRequest())).toMatchObject({ ok: false })
+    expect(terminalStateSnapshot(sql)).toEqual(before)
+    expect(calls.some(call => call.operation.type === 'matchCorrectRuling')).toBe(false)
+  }
+})
+
+test('downstream rejection, engine protocol violations, and late SQL failure preserve the original correction state', async () => {
+  const cases: Array<{
+    name: string
+    options: Parameters<typeof terminalAdapter>[0]
+    code: string
+  }> = [
+    { name: 'downstream started', options: { rejectTournamentCorrection: true }, code: 'engine:downstreamStarted' },
+    { name: 'correction throw', options: { throwOn: 'matchCorrectRuling' }, code: 'engineProtocolError' },
+    { name: 'tournament throw', options: { throwOn: 'tournamentCorrectResult' }, code: 'engineProtocolError' },
+    { name: 'wrong operation', options: { tournamentCorrectionResponseOverride: { operation: 'tournamentSubmitResult' } }, code: 'engineOperationMismatch' },
+    { name: 'wrong correction operation', options: { matchCorrectionResponseOverride: { operation: 'matchSubmitGame' } }, code: 'engineOperationMismatch' },
+    { name: 'extra correction keys', options: { matchCorrectionResponseOverride: { unexpected: true } }, code: 'engineInvalidMatchCheckpoint' },
+    { name: 'invalid correction checkpoint', options: { matchCorrectionResponseOverride: {
+      serverState: { registration: null, clock: null, tournament: null, matches: {} },
+    } }, code: 'engineInvalidMatchCheckpoint' },
+    { name: 'extra tournament keys', options: { tournamentCorrectionResponseOverride: {
+      public: { result: { type: 'corrected' }, tournament: {}, unexpected: true },
+    } }, code: 'engineInvalidTournamentCheckpoint' },
+    { name: 'invalid tournament checkpoint', options: { tournamentCorrectionResponseOverride: {
+      serverState: { registration: null, clock: null, tournament: null, matches: {} },
+    } }, code: 'engineInvalidTournamentCheckpoint' },
+  ]
+  for (const scenario of cases) {
+    const calls: CompetitionRequest[] = []
+    const { room, sql } = await terminalRoom({ ...scenario.options, calls })
+    configureTerminalSchedule(sql, { matchFormat: { type: 'firstToWins', value: 1 } })
+    addTestReferee(sql)
+    expect((await room.ingestGameTerminal(await terminalTestRequest())).ok).toBe(true)
+    const before = terminalStateSnapshot(sql)
+    const result = await room.executeMatch(matchCorrectionRequest())
+    expect(result).toMatchObject({ ok: false, error: { code: scenario.code } })
+    expect((result as { error?: { message?: string } }).error?.message).not.toContain('private')
+    expect(terminalStateSnapshot(sql)).toEqual(before)
+  }
+
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  configureTerminalSchedule(sql, { matchFormat: { type: 'firstToWins', value: 1 } })
+  addTestReferee(sql)
+  expect((await room.ingestGameTerminal(await terminalTestRequest())).ok).toBe(true)
+  const request = matchCorrectionRequest({ commandId: 'late-correction-sql-failure' })
+  const before = terminalStateSnapshot(sql)
+  sql.failNextQueryContaining = 'INSERT INTO competition_command_receipt'
+  expect(await room.executeMatch(request)).toEqual({
+    ok: false, error: { code: 'internalFailure', message: 'competition room operation failed' },
+  })
+  expect(terminalStateSnapshot(sql)).toEqual(before)
+  expect(sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+  ).get(request.commandId)).toEqual({ count: 0 })
+  expect(await room.executeMatch(request)).toMatchObject({ ok: true })
+})
+
+test('DoubleLoss stores pending-referee state in the match projection without advancing tournament', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  sql.database.query('UPDATE competition_meta SET updated_trusted_time_ms = ? WHERE singleton = 1').run(300)
+  const checkpoint = doubleExpiredPreparationClock({
+    mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20,
+  })
+  replaceMatchClock(sql, checkpoint)
+  const request = await terminalTestRequest({
+    terminalEvidence: {
+      type: 'timeout', timeoutId: 'double-pending',
+      expiries: [
+        { team: 'team-a', deadlineMonotonicMs: 200 },
+        { team: 'team-b', deadlineMonotonicMs: 200 },
+      ], observedAtMonotonicMs: 200,
+      clockCheckpointDigest: await clockCheckpointDigest(checkpoint),
+    },
+  })
+  expect(await room.ingestGameTerminal(request)).toMatchObject({
+    ok: true,
+    value: { matchProjection: { public: { match: { status: 'awaitingReferee', outcome: {
+      type: 'doubleLoss', progression: { type: 'pendingReferee' },
+    } } } } },
+  })
+  expect(calls.some(call => call.operation.type === 'tournamentSubmitResult')).toBe(false)
+  const state = JSON.parse((sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }).server_state_json) as JsonObject
+  expect(state.tournament).toMatchObject({
+    stages: [{ rounds: [{ matches: [{ status: 'inProgress', result: null }] }] }],
+  })
+  expect(state.matches).toMatchObject({
+    'terminal-match': { history: [{ type: 'submitGame', submission: {
+      ruling: { type: 'doubleTimeoutLoss' },
+    } }] },
+  })
+})
+
+test('terminal ingest rejects persisted team, stage, and match-format mismatches', async () => {
+  const mutations: Array<(sql: MemorySql) => void> = [
+    sql => mutateTournament(sql, tournament => {
+      const stage = (tournament.stages as JsonValue[])[0] as JsonObject
+      const match = (((stage.rounds as JsonValue[])[0] as JsonObject).matches as JsonValue[])[0] as JsonObject
+      match.participants = ['team-a', 'team-c']
+    }),
+    sql => {
+      sql.database.query('UPDATE competition_matches SET stage_id = ? WHERE match_id = ?')
+        .run('different-stage', 'terminal-match')
+    },
+    sql => mutateTournament(sql, tournament => {
+      const stage = (tournament.stages as JsonValue[])[0] as JsonObject
+      ;(stage.config as JsonObject).matchFormat = { type: 'firstToWins', value: 3 }
+    }),
+  ]
+  for (const mutate of mutations) {
+    const calls: CompetitionRequest[] = []
+    const { room, sql } = await terminalRoom({ calls })
+    mutate(sql)
+    const before = terminalStateSnapshot(sql)
+    expect(await room.ingestGameTerminal(await terminalTestRequest())).toEqual({
+      ok: false,
+      error: { code: 'scheduleMismatch', message: 'materialized match does not match its tournament schedule' },
+    })
+    expect(terminalStateSnapshot(sql)).toEqual(before)
+    expect(calls.some(call => call.operation.type === 'matchSubmitGame')).toBe(false)
+  }
+})
+
+test('tournament engine throw and invalid response leave match and tournament unapplied', async () => {
+  for (const failure of ['throw', 'invalid'] as const) {
+    const calls: CompetitionRequest[] = []
+    const { room, sql } = await terminalRoom({
+      calls,
+      ...(failure === 'throw'
+        ? { throwOn: 'tournamentSubmitResult' as const }
+      : { tournamentResponseOverride: { public: { result: { type: 'invalid' }, tournament: null } } }),
+    })
+    configureTerminalSchedule(sql, { matchFormat: { type: 'firstToWins', value: 1 } })
+    const request = await terminalTestRequest({ commandId: `tournament-${failure}` })
+    const before = terminalStateSnapshot(sql)
+    expect(await room.ingestGameTerminal(request)).toEqual(failure === 'throw'
+      ? { ok: false, error: { code: 'engineProtocolError', message: 'competition engine request failed' } }
+      : { ok: false, error: { code: 'engineInvalidTournamentCheckpoint', message: 'competition engine rejected terminal ingest' } })
+    expect(terminalStateSnapshot(sql)).toEqual(before)
+    expect(sql.database.query(
+      'SELECT revision FROM competition_matches WHERE match_id = ?',
+    ).get('terminal-match')).toEqual({ revision: 1 })
+    if (failure === 'invalid') {
+      expect(await room.ingestGameTerminal(request)).toEqual({
+        ok: false,
+        error: { code: 'engineInvalidTournamentCheckpoint', message: 'competition engine rejected terminal ingest' },
+      })
+    } else {
+      const restarted = new CompetitionRoomClass(stateFor(sql), {}, terminalAdapter({ calls }))
+      expect(await restarted.ingestGameTerminal(request)).toMatchObject({
+        ok: true,
+      })
+    }
+  }
+})
+
+test('final tournament update rolls back match, clock, tournament, projections, audit, and receipt together', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  configureTerminalSchedule(sql, { matchFormat: { type: 'firstToWins', value: 1 } })
+  const request = await terminalTestRequest({ commandId: 'atomic-tournament-submit' })
+  const before = terminalStateSnapshot(sql)
+  const auditBefore = sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_audit',
+  ).get()
+  sql.failNextQueryContaining = 'INSERT INTO competition_command_receipt'
+  expect(await room.ingestGameTerminal(request)).toEqual({
+    ok: false,
+    error: { code: 'internalFailure', message: 'competition room operation failed' },
+  })
+  expect(terminalStateSnapshot(sql)).toEqual(before)
+  expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_audit').get()).toEqual(auditBefore)
+  expect(sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+  ).get(request.commandId)).toEqual({ count: 0 })
+
+  expect(await room.ingestGameTerminal(request)).toMatchObject({
+    ok: true,
+  })
+  expect(calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(2)
+})
+
+test('terminal ingest keeps E4c1 v1 clock checkpoint recovery compatible', async () => {
+  const { room, sql } = await terminalRoom()
+  const row = sql.database.query(
+    'SELECT clock_checkpoint_json FROM competition_matches WHERE match_id = ?',
+  ).get('terminal-match') as { clock_checkpoint_json: string }
+  const legacy = JSON.parse(row.clock_checkpoint_json) as JsonObject
+  legacy.version = 1
+  delete legacy.paused
+  replaceMatchClock(sql, legacy)
+  expect(await room.ingestGameTerminal(await terminalTestRequest())).toMatchObject({
+    ok: true,
+    value: { matchRevision: 2 },
+  })
+})
+
+test('terminal ingest derives fixed-games draw and elimination draw from the checkpoint format', async () => {
+  const fixedCalls: CompetitionRequest[] = []
+  const fixed = await terminalRoom({ calls: fixedCalls })
+  configureTerminalSchedule(fixed.sql, { matchFormat: { type: 'fixedGames', value: 2 } })
+  const fixedRequest = await terminalTestRequest({
+    terminalEvidence: {
+      type: 'canonicalGameEnded',
+      conclusion: { outcome: { type: 'draw' }, causes: [] },
+    },
+  })
+  expect(await fixed.room.ingestGameTerminal(fixedRequest)).toMatchObject({ ok: true })
+  expect(fixedCalls.find(call => call.operation.type === 'clockRuleGame')?.operation).toMatchObject({
+    type: 'clockRuleGame', mode: 'retainDraw',
+  })
+
+  const eliminationCalls: CompetitionRequest[] = []
+  const elimination = await terminalRoom({
+    calls: eliminationCalls,
+    ruling: { type: 'eliminationDrawLoss', loser: 'team-a', reason: 'enteredByoyomiFirst' },
+  })
+  const eliminationRequest = await terminalTestRequest({
+    terminalEvidence: {
+      type: 'canonicalGameEnded',
+      conclusion: { outcome: { type: 'draw' }, causes: [] },
+    },
+  })
+  expect(await elimination.room.ingestGameTerminal(eliminationRequest)).toMatchObject({ ok: true })
+  const eliminationRule = eliminationCalls.find(call => call.operation.type === 'clockRuleGame')
+  expect(eliminationRule?.operation).toMatchObject({ type: 'clockRuleGame', mode: 'elimination' })
+  expect(eliminationRule && 'byoyomiEntryOrder' in eliminationRule.operation).toBe(false)
+})
+
+test('timeout ingest derives single and double timeout without calling clockRuleGame', async () => {
+  for (const scenario of ['single', 'double'] as const) {
+    const calls: CompetitionRequest[] = []
+    const { room, sql } = await terminalRoom({ calls })
+    const checkpoint = scenario === 'single'
+      ? expiredActionClock({ mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 })
+      : doubleExpiredPreparationClock({ mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 })
+    replaceMatchClock(sql, checkpoint)
+    const evidence = scenario === 'single'
+      ? {
+          type: 'timeout' as const,
+          timeoutId: 'timeout-single',
+          expiries: [{ team: 'team-a', deadlineMonotonicMs: 200 }],
+          observedAtMonotonicMs: 200,
+          clockCheckpointDigest: await clockCheckpointDigest(checkpoint),
+        }
+      : {
+          type: 'timeout' as const,
+          timeoutId: 'timeout-double',
+          expiries: [
+            { team: 'team-a', deadlineMonotonicMs: 200 },
+            { team: 'team-b', deadlineMonotonicMs: 200 },
+          ],
+          observedAtMonotonicMs: 200,
+          clockCheckpointDigest: await clockCheckpointDigest(checkpoint),
+        }
+    const result = await room.ingestGameTerminal(await terminalTestRequest({ terminalEvidence: evidence }))
+    expect(result.ok).toBe(true)
+    expect(calls.map(call => call.operation.type)).not.toContain('clockRuleGame')
+    expect(calls.map(call => call.operation.type)).toContain('matchSubmitGame')
+    const row = sql.database.query(
+      'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+    ).get('terminal-match') as { match_checkpoint_json: string }
+    expect(JSON.parse(row.match_checkpoint_json)).toMatchObject({
+      history: [{ type: 'submitGame', submission: {
+        ruling: scenario === 'single'
+          ? { type: 'timeoutLoss', loser: 'team-a' }
+          : { type: 'doubleTimeoutLoss', teams: ['team-a', 'team-b'] },
+      } }],
+    })
+  }
+})
+
+test('timeout ingest rejects digest, observation, flags, and team mismatches', async () => {
+  const cases = [
+    { name: 'digest', change: (e: Record<string, unknown>) => { e.clockCheckpointDigest = 'bad' } },
+    { name: 'observed', change: (e: Record<string, unknown>) => { e.observedAtMonotonicMs = 201 } },
+    { name: 'flags', change: (_e: Record<string, unknown>, c: JsonObject) => { c.expiredTeam = 'team-b' } },
+    { name: 'team', change: (e: Record<string, unknown>) => { e.expiries = [{ team: 'team-c', deadlineMonotonicMs: 200 }] } },
+  ]
+  for (const testCase of cases) {
+    const { room, sql } = await terminalRoom()
+    const checkpoint = expiredActionClock(
+      { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 },
+    )
+    replaceMatchClock(sql, checkpoint)
+    const evidence: Record<string, unknown> = {
+      type: 'timeout',
+      timeoutId: `timeout-${testCase.name}`,
+      expiries: [{ team: 'team-a', deadlineMonotonicMs: 200 }],
+      observedAtMonotonicMs: 200,
+      clockCheckpointDigest: await clockCheckpointDigest(checkpoint),
+    }
+    testCase.change(evidence, checkpoint)
+    if (testCase.name === 'flags') {
+      replaceMatchClock(sql, checkpoint)
+      evidence.clockCheckpointDigest = await clockCheckpointDigest(checkpoint)
+    }
+    const result = await room.ingestGameTerminal(await terminalTestRequest({
+      terminalEvidence: evidence as CompetitionRoomTerminalIngestRequest['terminalEvidence'],
+    }))
+    expect(result.ok).toBe(false)
+    expect(sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?')
+      .get('terminal-match')).toEqual({ revision: 1 })
+  }
+})
+
+test('terminal ingest rejects caller ruling or mode overrides and direct terminal bypasses', async () => {
+  const { room } = await terminalRoom()
+  const request = await terminalTestRequest()
+  const withOverride = { ...request, ruling: { type: 'timeoutLoss', loser: 'team-a' }, mode: 'retainDraw' }
+  expect(await room.ingestGameTerminal(withOverride as typeof request)).toEqual({
+    ok: false,
+    error: { code: 'invalidRequest', message: 'terminal ingest request contains unsupported fields' },
+  })
+  expect(await room.executeMatch(matchExecuteRequest(
+    { type: 'matchSubmitGame', matchId: 'terminal-match', submission: {
+      submissionId: 's', gameRecordId: 'g', rulingRecordId: 'r',
+      startKind: { type: 'ordinaryNewGame' }, firstPlayer: 'team-a',
+      terminalEvidence: request.terminalEvidence,
+      ruling: { type: 'gameAccepted', outcome: { winner: 'team-a' } },
+    } },
+    { matchId: 'terminal-match', expectedMatchRevision: 1, commandId: 'direct-submit' },
+  ))).toEqual({
+    ok: false,
+    error: { code: 'operationNotAllowed', message: 'terminal results must use ingestGameTerminal' },
+  })
+  expect(await room.executeMatch(matchExecuteRequest(
+    { type: 'clockRuleGame', matchId: 'terminal-match', conclusion: request.terminalEvidence.type === 'canonicalGameEnded'
+      ? request.terminalEvidence.conclusion : { outcome: { type: 'draw' }, causes: [] }, mode: 'elimination' },
+    { matchId: 'terminal-match', expectedMatchRevision: 1, commandId: 'direct-rule' },
+  ))).toEqual({
+    ok: false,
+    error: { code: 'operationNotAllowed', message: 'terminal results must use ingestGameTerminal' },
+  })
+})
+
+test('terminal ingest does not make adapter protocol throws sticky', async () => {
+  for (const throwOn of ['clockRuleGame', 'matchSubmitGame'] as const) {
+    const calls: CompetitionRequest[] = []
+    const { room, sql } = await terminalRoom({
+      calls,
+      throwOn,
+      throwMessage: `adapter secret: ${throwOn}`,
+    })
+    const request = await terminalTestRequest({ commandId: `throw-${throwOn}` })
+    const before = terminalStateSnapshot(sql)
+    expect(await room.ingestGameTerminal(request)).toEqual({
+      ok: false,
+      error: { code: 'engineProtocolError', message: 'competition engine request failed' },
+    })
+    expect(terminalStateSnapshot(sql)).toEqual(before)
+    expect(sql.database.query(
+      'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+    ).get(request.commandId)).toEqual({ count: 0 })
+
+    const recovered = new CompetitionRoomClass(stateFor(sql), {}, terminalAdapter({ calls }))
+    expect(await recovered.ingestGameTerminal(request)).toMatchObject({
+      ok: true,
+      value: { matchRevision: 2 },
+    })
+  }
+})
+
+test('terminal ingest rejects inactive organizer before invoking the engine', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  sql.database.query('UPDATE competition_acl SET active = 0 WHERE user_id = ?').run('organizer-1')
+  const request = await terminalTestRequest({ commandId: 'inactive-organizer' })
+  const before = terminalStateSnapshot(sql)
+  expect(await room.ingestGameTerminal(request)).toEqual({
+    ok: false,
+    error: { code: 'forbidden', message: 'only the active organizer may ingest a game terminal' },
+  })
+  expect(calls.filter(call => call.operation.type === 'clockRuleGame'
+    || call.operation.type === 'matchSubmitGame')).toHaveLength(0)
+  expect(terminalStateSnapshot(sql)).toEqual(before)
+})
+
+test('terminal ingest fails closed for wrong operation and exact ruling parser violations', async () => {
+  const cases = [
+    {
+      name: 'wrong-operation',
+      options: { clockOperationOverride: 'clockObserve' as const },
+      code: 'engineOperationMismatch',
+    },
+    {
+      name: 'extra-ruling-field',
+      options: {
+          clockPublicOverride: {
+            result: { type: 'gameAccepted', outcome: { winner: 'team-a' }, extra: 'not-allowed' },
+            clock: clockPublicFromCheckpoint(terminalClock({
+              mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20,
+            })),
+          },
+      },
+      code: 'engineInvalidRuling',
+    },
+  ]
+  for (const testCase of cases) {
+    const { room, sql } = await terminalRoom(testCase.options)
+    const request = await terminalTestRequest({ commandId: `strict-${testCase.name}` })
+    const before = terminalStateSnapshot(sql)
+    const result = await room.ingestGameTerminal(request)
+    expect(result).toEqual({
+      ok: false,
+      error: { code: testCase.code, message: 'competition engine rejected terminal ingest' },
+    })
+    expect(terminalStateSnapshot(sql)).toEqual(before)
+    expect(sql.database.query(
+      'SELECT response_json FROM competition_command_receipt WHERE command_id = ?',
+    ).get(request.commandId)).toBeTruthy()
+  }
+})
+
+test('terminal ingest keeps both engine calls in memory when submit fails', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls, failSubmit: true })
+  const result = await room.ingestGameTerminal(await terminalTestRequest())
+  expect(result).toEqual({
+    ok: false,
+    error: { code: 'engine:submitRejected', message: 'competition engine rejected terminal ingest' },
+  })
+  const receipt = sql.database.query(
+    'SELECT response_json FROM competition_command_receipt WHERE command_id = ?',
+  ).get('terminal-command') as { response_json: string }
+  expect(receipt.response_json).not.toContain('adapter secret')
+  const audit = sql.database.query(
+    'SELECT outcome_code FROM competition_audit WHERE command_id = ?',
+  ).all('terminal-command')
+  expect(JSON.stringify(audit)).not.toContain('adapter secret')
+  expect(sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?')
+    .get('terminal-match')).toEqual({ revision: 1 })
+  expect(calls.map(call => call.operation.type)).toEqual([
+    'registrationCreate', 'tournamentStartMatch', 'matchCreate', 'clockCreate', 'clockRuleGame', 'matchSubmitGame',
+  ])
+  const retry = await room.ingestGameTerminal(await terminalTestRequest({ trustedTimeMs: 999 }))
+  expect(retry).toEqual(result)
+  expect(calls).toHaveLength(6)
+})
+
+test('terminal ingest transaction rollback and restart preserve idempotency', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  const request = await terminalTestRequest()
+  sql.failNextQueryContaining = 'INSERT INTO competition_command_receipt'
+  expect(await room.ingestGameTerminal(request)).toEqual({
+    ok: false,
+    error: { code: 'internalFailure', message: 'competition room operation failed' },
+  })
+  expect(sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?')
+    .get('terminal-match')).toEqual({ revision: 1 })
+  expect(await room.ingestGameTerminal(request)).toMatchObject({ ok: true })
+  const restarted = new CompetitionRoomClass(stateFor(sql), {}, terminalAdapter({ calls }))
+  const retry = await restarted.ingestGameTerminal({ ...request, trustedTimeMs: 999 })
+  expect(retry).toMatchObject({ ok: true, value: { idempotent: true, matchRevision: 2 } })
+  expect(calls.filter(call => call.operation.type === 'clockRuleGame')).toHaveLength(2)
+  const conflict = await restarted.ingestGameTerminal({ ...request, submissionId: 'other-submission' })
+  expect(conflict).toEqual({
+    ok: false,
+    error: { code: 'commandIdConflict', message: 'command id was used with another payload' },
+  })
+})
+
+test('scheduled materialization derives the exact schedule config and pending first player', async () => {
+  const dispatched: CompetitionRequest[] = []
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(async request => {
+    dispatched.push(request)
+    return matchAdapter(request)
+  }, sql)
+  const result = await materializeTestMatch(room, sql, 'derived-match')
+  expect(result.ok).toBe(true)
+  const materializationCalls = dispatched.filter(request => request.operation.type !== 'registrationCreate')
+  expect(materializationCalls.map(request => request.operation.type)).toEqual([
+    'tournamentStartMatch', 'matchCreate', 'clockCreate',
+  ])
+  expect(materializationCalls[1]?.operation).toEqual({
+    type: 'matchCreate',
+    config: {
+      matchId: 'derived-match',
+      teams: ['team-a', 'team-b'],
+      format: { type: 'firstToWins', value: 2 },
+      firstGame: { type: 'pending', reason: '等待可信隨機先手' },
+      referees: [],
+    },
+  })
+  expect(materializationCalls[2]?.operation).toEqual({
+    type: 'clockCreate',
+    teams: ['team-a', 'team-b'],
+    config: { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 },
+  })
+  if (result.ok) expect(result.value.matchRevision).toBe(1)
+})
+
+test('clock engine failure leaves no row and the same command can retry', async () => {
+  const sequence: CompetitionOperation['type'][] = []
+  let clockFailureInjected = false
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(async request => {
+    sequence.push(request.operation.type)
+    if (request.operation.type === 'clockCreate' && !clockFailureInjected) {
+      clockFailureInjected = true
+      return { ok: false, error: { code: 'clockRejected', layer: 'clock', message: 'clock failed' } }
+    }
+    return matchAdapter(request)
+  }, sql)
+  const first = await materializeTestMatch(room, sql, 'retry-match', [], { commandId: 'retry-materialize' })
+  expect(first).toEqual({
+    ok: false,
+    error: { code: 'engine:clockRejected', message: 'clock failed' },
+  })
+  expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_matches').get()).toEqual({ count: 0 })
+  const stateAfterFailure = sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  expect((JSON.parse(stateAfterFailure.server_state_json) as { matches?: Record<string, unknown> }).matches)
+    .not.toHaveProperty('retry-match')
+  expect(sequence).toEqual(['registrationCreate', 'tournamentStartMatch', 'matchCreate', 'clockCreate'])
+
+  const second = await materializeTestMatch(room, sql, 'retry-match', [], {
+    commandId: 'retry-materialize', trustedTimeMs: 201,
+  })
+  expect(second.ok).toBe(true)
+  expect(sequence).toEqual([
+    'registrationCreate', 'tournamentStartMatch', 'matchCreate', 'clockCreate',
+    'tournamentStartMatch', 'matchCreate', 'clockCreate',
+  ])
+})
+
+test('successful materialization returns its receipt on a later trusted time', async () => {
+  let calls = 0
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(async request => {
+    calls += 1
+    return matchAdapter(request)
+  }, sql)
+  const first = await materializeTestMatch(room, sql, 'receipt-match', [], {
+    commandId: 'receipt-materialize', trustedTimeMs: 200,
+  })
+  expect(first.ok).toBe(true)
+  const retry = await materializeTestMatch(room, sql, 'receipt-match', [], {
+    commandId: 'receipt-materialize', expectedRevision: 1, trustedTimeMs: 99_999,
+  })
+  expect(retry.ok).toBe(true)
+  if (retry.ok) {
+    expect(retry.value.idempotent).toBe(true)
+    expect(retry.value.matchRevision).toBe(1)
+  }
+  expect(calls).toBe(4)
+  expect(sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?').get('receipt-match'))
+    .toEqual({ revision: 1 })
+})
+
+test('materialization rejection checks do not call the engine or create a row', async () => {
+  const sequence: CompetitionOperation['type'][] = []
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(async request => {
+    sequence.push(request.operation.type)
+    return matchAdapter(request)
+  }, sql)
+  seedScheduledMatches(sql, [{ matchId: 'rejection-match' }])
+  const base = {
+    competitionId: 'competition-1',
+    stageId: 'stage-1',
+    matchId: 'rejection-match',
+    callerUserId: 'organizer-1',
+    commandId: 'rejection-command',
+    expectedRevision: 1,
+    trustedTimeMs: 200,
+    referees: [],
+  } as const
+
+  expect(await room.materializeScheduledMatch({ ...base, callerUserId: 'player-1' })).toEqual({
+    ok: false,
+    error: { code: 'forbidden', message: 'only the active organizer may start a scheduled match' },
+  })
+  expect(await room.materializeScheduledMatch({ ...base, commandId: 'rejection-revision', expectedRevision: 2 })).toEqual({
+    ok: false,
+    error: { code: 'revisionConflict', message: 'expected revision does not match tournament snapshot' },
+  })
+  expect(await room.materializeScheduledMatch({ ...base, commandId: 'rejection-time', trustedTimeMs: 99 })).toEqual({
+    ok: false,
+    error: { code: 'trustedTimeRegression', message: 'trusted server time cannot move backwards' },
+  })
+  const withOverride = { ...base, commandId: 'rejection-override', teams: ['caller-team', 'caller-team'] }
+  expect(await room.materializeScheduledMatch(withOverride as typeof base)).toEqual({
+    ok: false,
+    error: { code: 'invalidRequest', message: 'scheduled match start request is invalid' },
+  })
+  expect(sequence).toEqual(['registrationCreate'])
+  expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_matches').get()).toEqual({ count: 0 })
+})
+
+test('materialization command receipt conflicts before schedule, revision, or existence checks', async () => {
+  const sequence: CompetitionOperation['type'][] = []
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(async request => {
+    sequence.push(request.operation.type)
+    return matchAdapter(request)
+  }, sql)
+  seedScheduledMatches(sql, [{ matchId: 'semantic-match' }])
+  const request = {
+    competitionId: 'competition-1', stageId: 'stage-1', matchId: 'semantic-match',
+    callerUserId: 'organizer-1', commandId: 'semantic-conflict', expectedRevision: 1,
+    trustedTimeMs: 200, referees: [],
+  } as const
+  const first = await room.materializeScheduledMatch(request)
+  expect(first.ok).toBe(true)
+  const conflict = await room.materializeScheduledMatch({
+    ...request,
+    stageId: 'other-stage',
+    expectedRevision: 999,
+    trustedTimeMs: 99_999,
+  })
+  expect(conflict).toEqual({
+    ok: false,
+    error: { code: 'commandIdConflict', message: 'command id was used with another payload' },
+  })
+  expect(sequence).toEqual(['registrationCreate', 'tournamentStartMatch', 'matchCreate', 'clockCreate'])
+  expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_matches').get()).toEqual({ count: 1 })
+})
+
+test('malformed, missing, in-progress, and completed schedules fail closed', async () => {
+  const cases: Array<{ name: string; prepare: (sql: MemorySql) => void; stageId?: string; matchId?: string }> = [
+    {
+      name: 'in-progress',
+      prepare: sql => {
+        seedScheduledMatches(sql, [{ matchId: 'scheduled-match', status: 'inProgress', started: true }])
+      },
+    },
+    {
+      name: 'cancelled',
+      prepare: sql => {
+        seedScheduledMatches(sql, [{ matchId: 'scheduled-match', status: 'cancelled', started: true }])
+      },
+    },
+    {
+      name: 'completed',
+      prepare: sql => {
+        seedScheduledMatches(sql, [{ matchId: 'scheduled-match', status: 'completed', started: true }])
+      },
+    },
+    {
+      name: 'missing-stage',
+      prepare: sql => seedScheduledMatches(sql, [{ matchId: 'scheduled-match' }]),
+      stageId: 'missing-stage',
+    },
+    {
+      name: 'missing-match',
+      prepare: sql => seedScheduledMatches(sql, [{ matchId: 'scheduled-match' }]),
+      matchId: 'missing-match',
+    },
+    {
+      name: 'malformed',
+      prepare: sql => replaceTournament(sql, { tournamentId: 'tournament-1', stages: [{ stageId: 'stage-1' }] }),
+    },
+  ]
+
+  for (const testCase of cases) {
+    const sql = new MemorySql()
+    const { room } = await initializedRoom(matchAdapter, sql)
+    testCase.prepare(sql)
+    const result = await room.materializeScheduledMatch({
+      competitionId: 'competition-1',
+      stageId: testCase.stageId ?? 'stage-1',
+      matchId: testCase.matchId ?? 'scheduled-match',
+      callerUserId: 'organizer-1',
+      commandId: `malformed-${testCase.name}`,
+      expectedRevision: 1,
+      trustedTimeMs: 200,
+      referees: [],
+    })
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'invalidTournamentCheckpoint', message: 'tournament checkpoint is malformed' },
+    })
+    expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_matches').get()).toEqual({ count: 0 })
+  }
+})
+
+test('corrupt schedule structure fails closed without guessing', async () => {
+  const corruptions: Array<{ name: string; mutate: (tournament: Record<string, unknown>) => void }> = [
+    {
+      name: 'stage-status',
+      mutate: tournament => {
+        const stage = (tournament.stages as Array<Record<string, unknown>>)[0]
+        stage.status = 'corrupt'
+      },
+    },
+    {
+      name: 'round-kind',
+      mutate: tournament => {
+        const stage = (tournament.stages as Array<Record<string, unknown>>)[0]
+        const round = (stage.rounds as Array<Record<string, unknown>>)[0]
+        round.kind = 'corrupt'
+      },
+    },
+    {
+      name: 'match-kind',
+      mutate: tournament => {
+        const stage = (tournament.stages as Array<Record<string, unknown>>)[0]
+        const round = (stage.rounds as Array<Record<string, unknown>>)[0]
+        const match = (round.matches as Array<Record<string, unknown>>)[0]
+        match.kind = 'corrupt'
+      },
+    },
+    {
+      name: 'round-number',
+      mutate: tournament => {
+        const stage = (tournament.stages as Array<Record<string, unknown>>)[0]
+        const round = (stage.rounds as Array<Record<string, unknown>>)[0]
+        const match = (round.matches as Array<Record<string, unknown>>)[0]
+        match.roundNumber = 999
+      },
+    },
+    {
+      name: 'in-progress-result',
+      mutate: tournament => {
+        const stage = (tournament.stages as Array<Record<string, unknown>>)[0]
+        const round = (stage.rounds as Array<Record<string, unknown>>)[0]
+        const match = (round.matches as Array<Record<string, unknown>>)[0]
+        match.result = { type: 'draw', firstGames: 0, secondGames: 0 }
+      },
+    },
+    {
+      name: 'in-progress-cancellation',
+      mutate: tournament => {
+        const stage = (tournament.stages as Array<Record<string, unknown>>)[0]
+        const round = (stage.rounds as Array<Record<string, unknown>>)[0]
+        const match = (round.matches as Array<Record<string, unknown>>)[0]
+        match.cancellationReason = 'corrupt'
+      },
+    },
+    {
+      name: 'incompatible-match-format',
+      mutate: tournament => {
+        const stage = (tournament.stages as Array<Record<string, unknown>>)[0]
+        const config = stage.config as Record<string, unknown>
+        config.matchFormat = { type: 'fixedGames', value: 2 }
+      },
+    },
+  ]
+
+  for (const corruption of corruptions) {
+    const sequence: CompetitionOperation['type'][] = []
+    const sql = new MemorySql()
+    const { room } = await initializedRoom(async request => {
+      sequence.push(request.operation.type)
+      return matchAdapter(request)
+    }, sql)
+    seedScheduledMatches(sql, [{ matchId: 'corrupt-match' }])
+    mutateTournament(sql, corruption.mutate)
+    const result = await room.materializeScheduledMatch({
+      competitionId: 'competition-1', stageId: 'stage-1', matchId: 'corrupt-match',
+      callerUserId: 'organizer-1', commandId: `corrupt-${corruption.name}`,
+      expectedRevision: 1, trustedTimeMs: 200, referees: [],
+    })
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'invalidTournamentCheckpoint', message: 'tournament checkpoint is malformed' },
+    })
+    expect(sequence).toEqual(['registrationCreate'])
+    expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_matches').get()).toEqual({ count: 0 })
+  }
+})
+
+test('transaction failure rolls back both match row and global mirror, then retries safely', async () => {
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(matchAdapter, sql)
+  seedScheduledMatches(sql, [{ matchId: 'transaction-match' }])
+  sql.failNextQueryContaining = 'INSERT INTO competition_command_receipt'
+  const request = {
+    competitionId: 'competition-1', stageId: 'stage-1', matchId: 'transaction-match',
+    callerUserId: 'organizer-1', commandId: 'transaction-materialize', expectedRevision: 1,
+    trustedTimeMs: 200, referees: [],
+  } as const
+  const failed = await room.materializeScheduledMatch(request)
+  expect(failed).toEqual({
+    ok: false,
+    error: { code: 'internalFailure', message: 'competition room operation failed' },
+  })
+  expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_matches').get()).toEqual({ count: 0 })
+  const stateAfterFailure = sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  expect((JSON.parse(stateAfterFailure.server_state_json) as { matches?: Record<string, unknown> }).matches)
+    .not.toHaveProperty('transaction-match')
+  expect(stateAfterFailure.server_state_json).toContain('"status":"pending"')
+  expect(sql.database.query('SELECT revision, updated_trusted_time_ms FROM competition_meta').get())
+    .toEqual({ revision: 1, updated_trusted_time_ms: 100 })
+  expect(sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_audit WHERE command_id = ?',
+  ).get('transaction-materialize')).toEqual({ count: 0 })
+  expect(sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+  ).get('transaction-materialize')).toEqual({ count: 0 })
+
+  const retried = await room.materializeScheduledMatch({ ...request, trustedTimeMs: 201 })
+  expect(retried.ok).toBe(true)
+  expect(sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?').get('transaction-match'))
+    .toEqual({ revision: 1 })
+})
+
+test('startScheduledMatch atomically starts, materializes, advances revision, and replays its receipt first', async () => {
+  const calls: CompetitionRequest[] = []
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(async request => {
+    calls.push(structuredClone(request))
+    return matchAdapter(request)
+  }, sql)
+  seedScheduledMatches(sql, [{ matchId: 'scheduled-match' }])
+  const request = scheduledStartRequest()
+  const first = await room.startScheduledMatch(request)
+  expect(first.ok).toBe(true)
+  if (!first.ok) return
+  expect(first.value).toMatchObject({
+    competitionId: request.competitionId,
+    stageId: request.stageId,
+    matchId: request.matchId,
+    revision: 2,
+    matchRevision: 1,
+    commandId: request.commandId,
+    idempotent: false,
+    tournamentProjection: { ok: true, operation: 'tournamentStartMatch' },
+    matchProjection: { ok: true, operation: 'matchCreate' },
+    clockProjection: { ok: true, operation: 'clockCreate' },
+  })
+  expect(calls.map(call => call.operation.type)).toEqual([
+    'registrationCreate', 'tournamentStartMatch', 'matchCreate', 'clockCreate',
+  ])
+  const persisted = sql.database.query(
+    'SELECT revision, updated_trusted_time_ms, server_state_json, public_projection_json FROM competition_meta',
+  ).get() as { revision: number; updated_trusted_time_ms: number; server_state_json: string; public_projection_json: string }
+  expect(persisted.revision).toBe(2)
+  expect(persisted.updated_trusted_time_ms).toBe(request.trustedTimeMs)
+  expect(JSON.parse(persisted.public_projection_json)).toMatchObject({
+    operation: 'tournamentStartMatch',
+  })
+  const state = JSON.parse(persisted.server_state_json) as JsonObject
+  const tournament = state.tournament as JsonObject
+  const startedMatch = (((tournament.stages as JsonValue[])[0] as JsonObject).rounds as JsonValue[])[0] as JsonObject
+  expect((startedMatch.matches as JsonObject[])[0]).toMatchObject({ status: 'inProgress', started: true })
+  expect((state.matches as JsonObject)['scheduled-match']).toEqual(
+    JSON.parse(sql.database.query(
+      'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+    ).get('scheduled-match')!.match_checkpoint_json as string),
+  )
+  expect(sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?').get('scheduled-match'))
+    .toEqual({ revision: 1 })
+
+  const retry = await room.startScheduledMatch({ ...request, trustedTimeMs: 99 })
+  expect(retry).toMatchObject({ ok: true, value: { revision: 2, matchRevision: 1, idempotent: true } })
+  expect(calls).toHaveLength(4)
+  const conflict = await room.startScheduledMatch({ ...request, stageId: 'other-stage' })
+  expect(conflict).toEqual({
+    ok: false,
+    error: { code: 'commandIdConflict', message: 'command id was used with another payload' },
+  })
+})
+
+test('scheduled start replays a matching receipt before requiring readable competition meta', async () => {
+  const calls: CompetitionRequest[] = []
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(async request => {
+    calls.push(structuredClone(request))
+    return matchAdapter(request)
+  }, sql)
+  seedScheduledMatches(sql, [{ matchId: 'scheduled-match' }])
+  const request = scheduledStartRequest()
+  expect((await room.startScheduledMatch(request)).ok).toBe(true)
+  const callsAfterStart = calls.length
+
+  sql.database.query('DELETE FROM competition_meta').run()
+
+  expect(await room.startScheduledMatch(request)).toMatchObject({
+    ok: true,
+    value: { commandId: request.commandId, revision: 2, idempotent: true },
+  })
+  expect(await room.startScheduledMatch({ ...request, stageId: 'changed-stage' })).toEqual({
+    ok: false,
+    error: { code: 'commandIdConflict', message: 'command id was used with another payload' },
+  })
+  expect(calls).toHaveLength(callsAfterStart)
+})
+
+test('scheduled start validates organizer, revision, trusted time, exact request and referee keys', async () => {
+  const calls: CompetitionRequest[] = []
+  const sql = new MemorySql()
+  const { room } = await initializedRoom(async request => {
+    calls.push(request)
+    return matchAdapter(request)
+  }, sql)
+  seedScheduledMatches(sql, [{ matchId: 'scheduled-match' }])
+  const base = scheduledStartRequest()
+  expect(await room.startScheduledMatch({ ...base, callerUserId: 'player-1' })).toMatchObject({
+    ok: false, error: { code: 'forbidden' },
+  })
+  expect(await room.startScheduledMatch({ ...base, commandId: 'stale-revision', expectedRevision: 2 })).toMatchObject({
+    ok: false, error: { code: 'revisionConflict' },
+  })
+  expect(await room.startScheduledMatch({ ...base, commandId: 'stale-time', trustedTimeMs: 99 })).toMatchObject({
+    ok: false, error: { code: 'trustedTimeRegression' },
+  })
+  expect(await room.startScheduledMatch({
+    ...base, commandId: 'extra-referee-key',
+    referees: [{ refereeId: 'ref-1', conflictedTeam: null, ignored: true }],
+  } as unknown as CompetitionRoomStartScheduledMatchRequest)).toMatchObject({
+    ok: false, error: { code: 'invalidRequest' },
+  })
+  expect(await room.startScheduledMatch({
+    ...base, commandId: 'extra-request-key', unexpected: true,
+  } as unknown as CompetitionRoomStartScheduledMatchRequest)).toMatchObject({
+    ok: false, error: { code: 'invalidRequest' },
+  })
+  expect(calls).toHaveLength(1)
+  expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_matches').get()).toEqual({ count: 0 })
+})
+
+test('schedule start accepts only pending active two-team matches', async () => {
+  const cases: Array<{
+    name: string
+    prepare: (sql: MemorySql) => void
+  }> = [
+    { name: 'in-progress', prepare: sql => seedScheduledMatches(sql, [{ matchId: 'scheduled-match', status: 'inProgress', started: true }]) },
+    { name: 'cancelled', prepare: sql => {
+      seedScheduledMatches(sql, [{ matchId: 'scheduled-match', status: 'cancelled', cancellationReason: 'withdrawn' }])
+    } },
+    { name: 'completed', prepare: sql => seedScheduledMatches(sql, [{ matchId: 'scheduled-match', status: 'completed', started: true }]) },
+    { name: 'bye', prepare: sql => {
+      seedScheduledMatches(sql, [{ matchId: 'scheduled-match', status: 'completed', started: true, participants: ['team-a'], result: { type: 'bye' } }])
+    } },
+    { name: 'pending-bye', prepare: sql => seedScheduledMatches(sql, [{ matchId: 'scheduled-match', participants: ['team-a'] }]) },
+    { name: 'pending-duplicate-teams', prepare: sql => seedScheduledMatches(sql, [{ matchId: 'scheduled-match', participants: ['team-a', 'team-a'] }]) },
+    { name: 'pending-started-flag', prepare: sql => seedScheduledMatches(sql, [{ matchId: 'scheduled-match', started: true }]) },
+    { name: 'inactive-stage', prepare: sql => {
+      seedScheduledMatches(sql, [{ matchId: 'scheduled-match' }])
+      mutateTournament(sql, tournament => {
+        const stage = (tournament.stages as JsonObject[])[0]!
+        stage.status = 'finished'
+      })
+    } },
+  ]
+  for (const entry of cases) {
+    const calls: CompetitionRequest[] = []
+    const sql = new MemorySql()
+    const { room } = await initializedRoom(async request => {
+      calls.push(request)
+      return matchAdapter(request)
+    }, sql)
+    entry.prepare(sql)
+    const result = await room.startScheduledMatch(scheduledStartRequest({ commandId: `reject-${entry.name}` }))
+    expect(result).toMatchObject({ ok: false, error: { code: 'invalidTournamentCheckpoint' } })
+    expect(calls.map(call => call.operation.type)).toEqual(['registrationCreate'])
+    expect(sql.database.query('SELECT revision FROM competition_meta').get()).toEqual({ revision: 1 })
+    expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_matches').get()).toEqual({ count: 0 })
+  }
+})
+
+test('malformed or malicious tournamentStartMatch output is rejected before materialization', async () => {
+  const corrupt = ['extraTopLevel', 'secondMatch', 'changedSettings', 'publicMismatch'] as const
+  for (const kind of corrupt) {
+    const calls: CompetitionRequest[] = []
+    const sql = new MemorySql()
+    const { room } = await initializedRoom(async request => {
+      calls.push(request)
+      const response = matchAdapter(request)
+      if (request.operation.type !== 'tournamentStartMatch') return response
+      const raw = structuredClone(response) as unknown as JsonObject
+      if (kind === 'extraTopLevel') raw.private = { leaked: true }
+      if (kind === 'secondMatch') {
+        const tournament = raw.serverState as JsonObject
+        const stages = (tournament.tournament as JsonObject).stages as JsonObject[]
+        const matches = ((stages[0]!.rounds as JsonObject[])[0]!.matches as JsonObject[])
+        matches.push({ ...matches[0], matchId: 'other-match', started: true, status: 'inProgress' })
+        ;(raw.public as JsonObject).tournament = structuredClone(tournament.tournament)
+      }
+      if (kind === 'changedSettings') {
+        const state = raw.serverState as JsonObject
+        const config = (((state.tournament as JsonObject).stages as JsonObject[])[0]!.config as JsonObject)
+        config.randomSeed = 999
+        ;(raw.public as JsonObject).tournament = structuredClone(state.tournament)
+      }
+      if (kind === 'publicMismatch') (raw.public as JsonObject).unexpected = true
+      return raw as unknown as CompetitionEngineResponse
+    }, sql)
+    seedScheduledMatches(sql, [{ matchId: 'scheduled-match' }])
+    const result = await room.startScheduledMatch(scheduledStartRequest({ commandId: `malicious-${kind}` }))
+    expect(result).toMatchObject({ ok: false, error: { code: 'engineInvalidTournamentCheckpoint' } })
+    expect(calls.map(call => call.operation.type)).toEqual(['registrationCreate', 'tournamentStartMatch'])
+    expect(sql.database.query('SELECT revision FROM competition_meta').get()).toEqual({ revision: 1 })
+    expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_matches').get()).toEqual({ count: 0 })
+  }
+})
+
+test('any engine step failure leaves no started schedule or partial rows and retries safely', async () => {
+  for (const failedStep of ['tournamentStartMatch', 'matchCreate', 'clockCreate'] as const) {
+    const calls: CompetitionOperation['type'][] = []
+    let failOnce = true
+    const sql = new MemorySql()
+    const { room } = await initializedRoom(async request => {
+      calls.push(request.operation.type)
+      if (request.operation.type === failedStep && failOnce) {
+        failOnce = false
+        return { ok: false, error: { code: 'injectedFailure', layer: 'test', message: 'step failed' } }
+      }
+      return matchAdapter(request)
+    }, sql)
+    seedScheduledMatches(sql, [{ matchId: 'scheduled-match' }])
+    const request = scheduledStartRequest({ commandId: `retry-${failedStep}` })
+    const failed = await room.startScheduledMatch(request)
+    expect(failed).toMatchObject({ ok: false, error: { code: 'engine:injectedFailure' } })
+    expect(sql.database.query('SELECT revision FROM competition_meta').get()).toEqual({ revision: 1 })
+    expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_matches').get()).toEqual({ count: 0 })
+    const failedState = sql.database.query('SELECT server_state_json FROM competition_meta').get() as { server_state_json: string }
+    expect(JSON.parse(failedState.server_state_json)).toMatchObject({ tournament: { stages: [
+      { rounds: [{ matches: [{ status: 'pending', started: false }] }] },
+    ] } })
+    const retry = await room.startScheduledMatch({ ...request, trustedTimeMs: 201 })
+    expect(retry).toMatchObject({ ok: true, value: { revision: 2, idempotent: false } })
+    expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_matches').get()).toEqual({ count: 1 })
+    expect(calls.filter(type => type === 'tournamentStartMatch')).toHaveLength(2)
+  }
+})
+
+test('scheduled start receipt parser rejects unknown fields and wrong projection operations', async () => {
+  for (const corrupt of [
+    'extraValueKey', 'wrongMatchProjection', 'privateTournamentProjection',
+    'malformedTournamentProjection', 'privateMatchProjection', 'privateClockProjection',
+  ] as const) {
+    const sql = new MemorySql()
+    const { room } = await initializedRoom(matchAdapter, sql)
+    seedScheduledMatches(sql, [{ matchId: 'scheduled-match' }])
+    const request = scheduledStartRequest({ commandId: `receipt-${corrupt}` })
+    expect((await room.startScheduledMatch(request)).ok).toBe(true)
+    const row = sql.database.query(
+      'SELECT response_json FROM competition_command_receipt WHERE command_id = ?',
+    ).get(request.commandId) as { response_json: string }
+    const receipt = JSON.parse(row.response_json) as JsonObject
+    const value = receipt.value as JsonObject
+    if (corrupt === 'extraValueKey') value.unknown = true
+    else if (corrupt === 'wrongMatchProjection') {
+      (value.matchProjection as JsonObject).operation = 'clockCreate'
+    } else if (corrupt === 'privateTournamentProjection') {
+      (((value.tournamentProjection as JsonObject).public as JsonObject).tournament as JsonObject)
+        .members = ['private-member']
+    } else if (corrupt === 'malformedTournamentProjection') {
+      (((value.tournamentProjection as JsonObject).public as JsonObject).result as JsonObject)
+        .type = 'completed'
+    } else {
+      const projection = value[corrupt === 'privateMatchProjection' ? 'matchProjection' : 'clockProjection'] as JsonObject
+      ;(projection.public as JsonObject).decks = ['private-deck']
+    }
+    sql.database.query('UPDATE competition_command_receipt SET response_json = ? WHERE command_id = ?')
+      .run(JSON.stringify(receipt), request.commandId)
+    expect(await room.startScheduledMatch(request)).toEqual({
+      ok: false,
+      error: { code: 'internalFailure', message: 'competition room operation failed' },
+    })
+  }
+})
+
+test('v3 migration creates match rows and adds nullable audit identity', async () => {
+  const sql = new MemorySql()
+  sql.database.exec(`
+    CREATE TABLE competition_schema_migrations (version INTEGER PRIMARY KEY, applied_at_trusted_time_ms INTEGER NOT NULL);
+    INSERT INTO competition_schema_migrations VALUES (1, 0), (2, 0), (3, 0);
+    CREATE TABLE competition_meta (
+      singleton INTEGER PRIMARY KEY, competition_id TEXT NOT NULL, organizer_user_id TEXT NOT NULL,
+      revision INTEGER NOT NULL, server_state_json TEXT NOT NULL, public_projection_json TEXT NOT NULL,
+      updated_trusted_time_ms INTEGER NOT NULL
+    );
+    CREATE TABLE competition_acl (user_id TEXT PRIMARY KEY, role TEXT NOT NULL, active INTEGER NOT NULL, participant INTEGER NOT NULL);
+    CREATE TABLE competition_private_projection (user_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, revision INTEGER NOT NULL, operation_type TEXT NOT NULL);
+    CREATE TABLE competition_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, actor_user_id TEXT NOT NULL, role TEXT NOT NULL, operation_type TEXT NOT NULL, command_id TEXT, revision INTEGER NOT NULL, outcome_code TEXT NOT NULL, trusted_time_ms INTEGER NOT NULL);
+    CREATE TABLE competition_command_receipt (command_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response_json TEXT NOT NULL, receipt_kind TEXT NOT NULL);
+  `)
+  const checkpoint = { config: matchConfig('legacy-match'), history: [] }
+  sql.database.query(`INSERT INTO competition_meta VALUES (1, 'competition-1', 'organizer-1', 1, ?, ?, 100)`).run(
+    JSON.stringify({ registration: null, clock: null, tournament: null, matches: { 'legacy-match': checkpoint } }),
+    JSON.stringify({ ok: true, operation: 'registrationCreate', public: {} }),
+  )
+  sql.database.query(`INSERT INTO competition_acl VALUES ('organizer-1', 'organizer', 1, 0)`).run()
+  const room = new CompetitionRoomClass(stateFor(sql), {}, matchAdapter)
+  const read = await room.readMatch({ competitionId: 'competition-1', matchId: 'legacy-match', callerUserId: 'viewer' })
+  expect(read.ok).toBe(true)
+  const schema = sql.database.query('SELECT MAX(version) AS version FROM competition_schema_migrations').get() as { version: number }
+  expect(schema.version).toBe(11)
+  const columns = sql.database.query('PRAGMA table_info(competition_audit)').all() as Array<{ name: string }>
+  expect(columns.some(column => column.name === 'match_id')).toBe(true)
+  const rows = sql.database.query('SELECT match_id, revision FROM competition_matches').all() as Array<{ match_id: string; revision: number }>
+  expect(rows).toEqual([{ match_id: 'legacy-match', revision: 0 }])
+})
+
+test('assigned provision derives a 1v1 preconstructed-deck binding for the next game', async () => {
+  const { room, sql, calls } = await provisionableRoom()
+  const request = provisionAssignedRequest()
+  const result = await room.provisionAssignedScheduledGame(request)
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+  expect(result.value.status).toBe('provisioned')
+  expect(result.value.binding).toMatchObject({
+    competitionId: 'competition-1',
+    matchId: 'provision-match',
+    gameNumber: 2,
+    expectedMatchRevision: 3,
+    firstPlayer: 'b-1',
+    turnOrder: ['b-1', 'a-1'],
+    enabledRuleModules: [],
+    deckSnapshot: [],
+    players: [
+      { userId: 'b-1', player: 'b-1', team: 'team-b' },
+      { userId: 'a-1', player: 'a-1', team: 'team-a' },
+    ],
+    initialHp: [{ team: 'team-a', hp: 20 }, { team: 'team-b', hp: 20 }],
+  })
+  expect(result.value.gameId).toMatch(/^competition-game-[0-9a-f]{64}$/)
+  expect(result.value.binding.deckSeed).toBeString()
+  expect(calls).toHaveLength(1)
+
+  const retry = await room.provisionAssignedScheduledGame({
+    ...request,
+    trustedTimeMs: 99_999,
+  })
+  expect(retry.ok).toBe(true)
+  if (retry.ok) {
+    expect(retry.value.idempotent).toBe(true)
+    expect(retry.value.gameId).toBe(result.value.gameId)
+    expect(retry.value.binding.deckSeed).toBe(result.value.binding.deckSeed)
+  }
+  expect(calls).toHaveLength(1)
+  const row = sql.database.query(
+    'SELECT status, attempts FROM competition_game_provision',
+  ).get()
+  expect(row).toEqual({ status: 'provisioned', attempts: 0 })
+})
+
+test('provisionInitialScheduledGame uses both trusted random branches and derives fixed 1v1/2v2 seating', async () => {
+  for (const randomIndex of [0, 1] as const) {
+    for (const [teamSize, personalDeck] of [[1, false], [1, true], [2, false], [2, true]] as const) {
+      let randomCalls = 0
+      const setup = await provisionableRoom({
+        assigned: false,
+        teamSize,
+        personalDeck,
+        randomBit: () => { randomCalls += 1; return randomIndex },
+      })
+      const request = provisionInitialRequest({
+        commandId: `initial-${randomIndex}-${teamSize}-${personalDeck}`,
+      })
+      const result = await setup.room.provisionInitialScheduledGame(request)
+      expect(result.ok).toBe(true)
+      if (!result.ok) continue
+      const expectedOrder = randomIndex === 0
+        ? teamSize === 1 ? ['a-1', 'b-1'] : ['a-1', 'b-1', 'a-2', 'b-2']
+        : teamSize === 1 ? ['b-1', 'a-1'] : ['b-1', 'a-1', 'b-2', 'a-2']
+      expect(result.value).toMatchObject({
+        competitionId: request.competitionId,
+        matchId: request.matchId,
+        matchRevision: 2,
+        gameNumber: 1,
+        commandId: request.commandId,
+        idempotent: false,
+        status: 'provisioned',
+      })
+      expect(result.value.binding.turnOrder).toEqual(expectedOrder)
+      expect(result.value.binding.firstPlayer).toBe(expectedOrder[0])
+      expect(result.value.binding.deckSnapshot.length).toBe(personalDeck ? teamSize * 2 : 0)
+      expect(setup.engineOperations.slice(-2)).toEqual([
+        'matchAssignFirstPlayer', 'registrationExportLockedRoster',
+      ])
+      expect(randomCalls).toBe(1)
+      const matchRow = setup.sql.database.query(
+        'SELECT revision, last_trusted_time_ms, match_checkpoint_json, match_projection_json FROM competition_matches WHERE match_id = ?',
+      ).get(request.matchId) as {
+        revision: number
+        last_trusted_time_ms: number
+        match_checkpoint_json: string
+        match_projection_json: string
+      }
+      expect(matchRow).toMatchObject({ revision: 2, last_trusted_time_ms: request.trustedTimeMs })
+      expect(JSON.parse(matchRow.match_checkpoint_json).history).toEqual([{
+        type: 'assignFirstPlayer',
+        team: randomIndex === 0 ? 'team-a' : 'team-b',
+        reason: '賽事伺服器可信隨機先手',
+      }])
+      const meta = setup.sql.database.query('SELECT server_state_json, public_projection_json FROM competition_meta')
+        .get() as { server_state_json: string; public_projection_json: string }
+      const globalState = JSON.parse(meta.server_state_json) as JsonObject
+      expect((globalState.matches as JsonObject)[request.matchId]).toEqual(
+        JSON.parse(matchRow.match_checkpoint_json),
+      )
+      expect(meta.public_projection_json).not.toMatch(/members|decks|a-1-card|b-1-card/)
+      expect(JSON.stringify(setup.sql.database.query(
+        "SELECT reason FROM competition_audit WHERE operation_type = 'provisionInitialScheduledGame'",
+      ).all())).not.toMatch(/members|decks|a-1-card|b-1-card/)
+    }
+  }
+})
+
+test('initial first player receipt retry and object restart reuse the same assignment and binding without drawing again', async () => {
+  let randomCalls = 0
+  const setup = await provisionableRoom({
+    assigned: false,
+    randomBit: () => { randomCalls += 1; return 1 },
+  })
+  const request = provisionInitialRequest()
+  const first = await setup.room.provisionInitialScheduledGame(request)
+  expect(first.ok).toBe(true)
+  if (!first.ok) return
+  const restart = new CompetitionRoomClass(
+    stateFor(setup.sql, setup.alarm),
+    setup.env,
+    setup.adapter,
+    () => { randomCalls += 1; return 0 },
+  )
+  setup.sql.database.query('DELETE FROM competition_meta').run()
+  expect(await restart.provisionInitialScheduledGame({ ...request, callerUserId: 'player-1' }))
+    .toMatchObject({ ok: false, error: { code: 'commandIdConflict' } })
+  const retry = await restart.provisionInitialScheduledGame({ ...request, trustedTimeMs: 99_999 })
+  expect(retry).toMatchObject({ ok: true, value: {
+    gameId: first.value.gameId,
+    matchRevision: 2,
+    idempotent: true,
+    binding: { deckSeed: first.value.binding.deckSeed, firstPlayer: 'b-1', turnOrder: ['b-1', 'a-1'] },
+  } })
+  expect(randomCalls).toBe(1)
+  expect(setup.calls).toHaveLength(1)
+})
+
+test('initial game provision rejects spoofed fields, ACL/revision/time failures, and direct first-player bypass', async () => {
+  const setup = await provisionableRoom({ assigned: false, randomBit: () => 0 })
+  const request = provisionInitialRequest()
+  expect(await setup.room.provisionInitialScheduledGame({ ...request, firstPlayer: 'b-1' } as typeof request))
+    .toMatchObject({ ok: false, error: { code: 'invalidRequest' } })
+  expect(await setup.room.provisionInitialScheduledGame({ ...request, callerUserId: 'player-1' }))
+    .toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  expect(await setup.room.provisionInitialScheduledGame({ ...request, expectedMatchRevision: 2 }))
+    .toMatchObject({ ok: false, error: { code: 'matchRevisionConflict' } })
+  expect(await setup.room.provisionInitialScheduledGame({ ...request, trustedTimeMs: 100 }))
+    .toMatchObject({ ok: false, error: { code: 'trustedTimeRegression' } })
+  const directAssign = await setup.room.executeMatch(matchExecuteRequest(
+    { type: 'matchAssignFirstPlayer', matchId: request.matchId, team: 'team-a', reason: 'caller' },
+    { matchId: request.matchId, expectedMatchRevision: 1, commandId: 'direct-first-player' },
+  ))
+  expect(directAssign).toMatchObject({ ok: false, error: { code: 'operationNotAllowed' } })
+  expect(await setup.room.provisionAssignedScheduledGame(provisionAssignedRequest({
+    expectedMatchRevision: 1,
+  }))).toMatchObject({ ok: false, error: { code: 'firstPlayerPending' } })
+  expect(setup.engineOperations.filter(operation => operation === 'matchAssignFirstPlayer')).toHaveLength(0)
+  expect(setup.sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?')
+    .get(request.matchId)).toEqual({ revision: 1 })
+})
+
+test('initial first-player and late SQL failures leave assignment, linkage, audit and receipt uncommitted', async () => {
+  const invalidRandom = await provisionableRoom({ assigned: false, randomBit: () => 2 })
+  expect(await invalidRandom.room.provisionInitialScheduledGame(provisionInitialRequest()))
+    .toMatchObject({ ok: false, error: { code: 'randomSourceFailure' } })
+  expect(invalidRandom.sql.database.query('SELECT revision FROM competition_matches').get())
+    .toEqual({ revision: 1 })
+
+  const late = await provisionableRoom({ assigned: false, randomBit: () => 0 })
+  late.sql.failNextQueryContaining = 'INSERT INTO competition_command_receipt'
+  expect(await late.room.provisionInitialScheduledGame(provisionInitialRequest()))
+    .toMatchObject({ ok: false, error: { code: 'internalFailure' } })
+  expect(late.sql.database.query('SELECT revision, match_checkpoint_json FROM competition_matches')
+    .get()).toMatchObject({ revision: 1 })
+  expect(late.sql.database.query('SELECT COUNT(*) AS count FROM competition_game_provision').get())
+    .toEqual({ count: 0 })
+  expect(late.sql.database.query('SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?')
+    .get('provision-initial-1'))
+    .toEqual({ count: 0 })
+  expect(late.sql.database.query(
+    "SELECT COUNT(*) AS count FROM competition_audit WHERE operation_type = 'provisionInitialScheduledGame'",
+  ).get()).toEqual({ count: 0 })
+  const rolledBackMeta = late.sql.database.query('SELECT server_state_json FROM competition_meta').get() as {
+    server_state_json: string
+  }
+  const rolledBackState = JSON.parse(rolledBackMeta.server_state_json) as JsonObject
+  const rolledBackMatch = late.sql.database.query(
+    'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match') as { match_checkpoint_json: string }
+  expect((rolledBackState.matches as JsonObject)['provision-match'])
+    .toEqual(JSON.parse(rolledBackMatch.match_checkpoint_json))
+  const retried = await late.room.provisionInitialScheduledGame(provisionInitialRequest())
+  expect(retried.ok).toBe(true)
+  expect(late.sql.database.query('SELECT revision FROM competition_matches').get()).toEqual({ revision: 2 })
+})
+
+test('initial game delivery response loss and alarm failure recover from the same durable receipt', async () => {
+  let randomCalls = 0
+  let createCalls = 0
+  const setup = await provisionableRoom({
+    assigned: false,
+    randomBit: () => { randomCalls += 1; return 0 },
+    create: async request => {
+      createCalls += 1
+      if (createCalls === 1) throw new Error('response lost')
+      return { gameId: request.gameId, status: 'Waiting', idempotent: true }
+    },
+  })
+  setup.alarm.failSetAlarmCount = 1
+  const request = provisionInitialRequest()
+  const first = await setup.room.provisionInitialScheduledGame(request)
+  expect(first).toMatchObject({ ok: true, value: { status: 'pending', idempotent: false } })
+  expect(setup.sql.database.query('SELECT status, attempts FROM competition_game_provision').get())
+    .toEqual({ status: 'pending', attempts: 1 })
+  const retry = await setup.room.provisionInitialScheduledGame(request)
+  expect(retry).toMatchObject({ ok: true, value: {
+    status: 'provisioned', idempotent: true,
+    gameId: first.ok ? first.value.gameId : '',
+    binding: { deckSeed: first.ok ? first.value.binding.deckSeed : '' },
+  } })
+  expect(randomCalls).toBe(1)
+  expect(createCalls).toBe(2)
+})
+
+test('initial provision retries strict GameRoom ACK rejection from the durable receipt', async () => {
+  let randomCalls = 0
+  let createCalls = 0
+  const setup = await provisionableRoom({
+    assigned: false,
+    randomBit: () => { randomCalls += 1; return 1 },
+    create: async request => {
+      createCalls += 1
+      return createCalls === 1
+        ? { gameId: request.gameId, status: 'Waiting', idempotent: false, private: true }
+        : { gameId: request.gameId, status: 'Waiting', idempotent: true }
+    },
+  })
+  const request = provisionInitialRequest({ commandId: 'strict-initial-ack' })
+  expect(await setup.room.provisionInitialScheduledGame(request))
+    .toMatchObject({ ok: true, value: { status: 'pending' } })
+  setup.sql.database.query('UPDATE competition_game_provision SET next_attempt_at_ms = 0').run()
+  const retry = await setup.room.provisionInitialScheduledGame(request)
+  expect(retry).toMatchObject({ ok: true, value: { status: 'provisioned', idempotent: true } })
+  expect(randomCalls).toBe(1)
+  expect(createCalls).toBe(2)
+})
+
+test('initial provision fails closed on malformed assignment/export and corrupted clock or schedule state', async () => {
+  for (const malformed of ['assignment', 'export'] as const) {
+    const setup = await provisionableRoom({ assigned: false, randomBit: () => 0 })
+    const delegate = setup.adapter
+    const adapter: CompetitionEngineAdapter = async request => {
+      const response = await delegate(request)
+      if (malformed === 'assignment' && request.operation.type === 'matchAssignFirstPlayer') {
+        return {
+          ...response,
+          serverState: { ...response.serverState, matches: {
+            ...(response.serverState.matches ?? {}), attackerMatch: {},
+          } },
+        }
+      }
+      if (malformed === 'export' && request.operation.type === 'registrationExportLockedRoster') {
+        return { ...response, private: { ...lockedRoster(1, false), extra: true } }
+      }
+      return response
+    }
+    const room = new CompetitionRoomClass(
+      stateFor(setup.sql, setup.alarm), setup.env, adapter, () => 0,
+    )
+    expect(await room.provisionInitialScheduledGame(provisionInitialRequest({
+      commandId: `malformed-${malformed}`,
+    }))).toMatchObject({
+      ok: false,
+      error: { code: malformed === 'assignment' ? 'engineInvalidMatchCheckpoint' : 'invalidLockedRoster' },
+    })
+    expect(setup.sql.database.query('SELECT revision FROM competition_matches').get()).toEqual({ revision: 1 })
+    expect(setup.sql.database.query('SELECT COUNT(*) AS count FROM competition_game_provision').get())
+      .toEqual({ count: 0 })
+  }
+
+  for (const corrupted of ['history', 'clock', 'clockProjection', 'schedule', 'globalMirror'] as const) {
+    let randomCalls = 0
+    const setup = await provisionableRoom({
+      assigned: false,
+      randomBit: () => { randomCalls += 1; return 0 },
+    })
+    const row = setup.sql.database.query(
+      'SELECT match_checkpoint_json, clock_checkpoint_json, clock_projection_json FROM competition_matches',
+    ).get() as { match_checkpoint_json: string; clock_checkpoint_json: string; clock_projection_json: string }
+    if (corrupted === 'clock') {
+      const clock = JSON.parse(row.clock_checkpoint_json) as JsonObject
+      ;(clock.config as JsonObject).mainTimeMs = 123
+      setup.sql.database.query('UPDATE competition_matches SET clock_checkpoint_json = ?')
+        .run(JSON.stringify(clock))
+    } else if (corrupted === 'clockProjection') {
+      const projection = JSON.parse(row.clock_projection_json) as JsonObject
+      ;(projection.public as JsonObject).nextTimeoutDeadlineMs = -1
+      setup.sql.database.query('UPDATE competition_matches SET clock_projection_json = ?')
+        .run(JSON.stringify(projection))
+    } else if (corrupted === 'schedule') {
+      mutateTournament(setup.sql, tournament => {
+        const stage = (tournament.stages as JsonValue[])[0] as JsonObject
+        stage.status = 'completed'
+      })
+    } else {
+      const meta = setup.sql.database.query('SELECT server_state_json FROM competition_meta').get() as {
+        server_state_json: string
+      }
+      const state = JSON.parse(meta.server_state_json) as JsonObject
+      if (corrupted === 'globalMirror') {
+        delete (state.matches as JsonObject)['provision-match']
+      } else {
+        const checkpoint = JSON.parse(row.match_checkpoint_json) as JsonObject
+        ;(checkpoint.history as JsonValue[]).push({ type: 'unexpected' })
+        ;(state.matches as JsonObject)['provision-match'] = checkpoint
+        setup.sql.database.query('UPDATE competition_matches SET match_checkpoint_json = ?')
+          .run(JSON.stringify(checkpoint))
+      }
+      setup.sql.database.query('UPDATE competition_meta SET server_state_json = ?')
+        .run(JSON.stringify(state))
+    }
+    expect(await setup.room.provisionInitialScheduledGame(provisionInitialRequest({
+      commandId: `corrupt-${corrupted}`,
+    }))).toMatchObject({ ok: false, error: { code: 'matchNotProvisionable' } })
+    expect(randomCalls).toBe(0)
+    expect(setup.sql.database.query('SELECT COUNT(*) AS count FROM competition_game_provision').get())
+      .toEqual({ count: 0 })
+  }
+})
+
+test('clock pause control is transactional and retries response loss with the exact payload', async () => {
+  let controlCalls = 0
+  const seenControls: CompetitionClockControlRequest[] = []
+  const { room, sql, alarm, env, adapter } = await provisionableRoom({
+    referee: true,
+    eligibility: async () => true,
+    synchronize: async request => {
+      seenControls.push(structuredClone(request))
+      controlCalls += 1
+      if (controlCalls === 1) throw new Error('simulated response loss')
+      return { ok: true, value: { ...request, idempotent: false } }
+    },
+  })
+  const provision = await room.provisionAssignedScheduledGame(provisionAssignedRequest())
+  expect(provision.ok).toBe(true)
+  expect(sql.database.query('SELECT status FROM competition_game_provision').get())
+    .toEqual({ status: 'provisioned' })
+  const paused = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockPause', matchId: 'provision-match', reason: '裁判暫停' },
+    {
+      matchId: 'provision-match', callerUserId: 'referee-1', commandId: 'linked-pause',
+      expectedMatchRevision: 3, trustedTimeMs: 250,
+    },
+  ))
+  expect(paused.ok).toBe(true)
+  const pending = sql.database.query(
+    `SELECT control_id, competition_id, match_id, game_id, game_number,
+            source_command_id, match_revision, operation, trusted_time_ms,
+            next_clock_deadline_ms, status
+     FROM competition_clock_control_outbox`,
+  ).get() as Record<string, unknown>
+  expect(pending).toMatchObject({
+    competition_id: 'competition-1',
+    match_id: 'provision-match',
+    game_number: 2,
+    source_command_id: 'linked-pause',
+    match_revision: 4,
+    operation: 'clockPause',
+    trusted_time_ms: 250,
+    next_clock_deadline_ms: null,
+    status: 'pending',
+  })
+  expect(controlCalls).toBe(1)
+  const controlRetry = (sql.database.query(
+    'SELECT next_attempt_at_ms FROM competition_clock_control_outbox',
+  ).get() as { next_attempt_at_ms: number }).next_attempt_at_ms
+  expect(alarm.scheduledAt).toBe(controlRetry)
+
+  sql.database.query('UPDATE competition_clock_control_outbox SET next_attempt_at_ms = 0').run()
+  const restarted = new CompetitionRoomClass(stateFor(sql, alarm), env, adapter)
+  await restarted.alarm()
+  // 已建立的房間只重送 control；不可再次 provision，也不可改寫 payload。
+  expect(controlCalls).toBe(2)
+  expect(seenControls[1]).toEqual(seenControls[0])
+  expect(sql.database.query('SELECT status FROM competition_game_provision').get()).toEqual({ status: 'provisioned' })
+  expect(sql.database.query('SELECT status FROM competition_clock_control_outbox').get()).toEqual({ status: 'completed' })
+  expect(alarm.scheduledAt).toBeNull()
+})
+
+test('clock control strict ACK mismatch retains the exact payload for its alarm retry', async () => {
+  const calls: CompetitionClockControlRequest[] = []
+  const { room, sql, alarm } = await provisionableRoom({
+    referee: true,
+    eligibility: async () => true,
+    synchronize: async request => {
+      calls.push(structuredClone(request))
+      return { ok: true, value: { ...request, matchRevision: request.matchRevision + 1, idempotent: false } }
+    },
+  })
+  expect((await room.provisionAssignedScheduledGame(provisionAssignedRequest())).ok).toBe(true)
+  const paused = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockPause', matchId: 'provision-match', reason: '錯誤 ACK 測試' },
+    {
+      matchId: 'provision-match', callerUserId: 'referee-1', commandId: 'strict-ack-pause',
+      expectedMatchRevision: 3, trustedTimeMs: 250,
+    },
+  ))
+  expect(paused.ok).toBe(true)
+  expect(calls).toHaveLength(1)
+  expect(sql.database.query('SELECT status FROM competition_clock_control_outbox').get())
+    .toEqual({ status: 'pending' })
+  const persisted = sql.database.query(
+    `SELECT control_id, source_command_id, match_revision, operation,
+            trusted_time_ms, next_clock_deadline_ms FROM competition_clock_control_outbox`,
+  ).get()
+  expect(persisted).toMatchObject({
+    source_command_id: 'strict-ack-pause', match_revision: 4, operation: 'clockPause',
+    trusted_time_ms: 250, next_clock_deadline_ms: null,
+  })
+  expect(alarm.scheduledAt).not.toBeNull()
+})
+
+test('clock control ACK preserves an unrelated pending GameRoom provision alarm', async () => {
+  const { room, sql, alarm } = await provisionableRoom({
+    referee: true,
+    eligibility: async () => true,
+  })
+  const provision = await room.provisionAssignedScheduledGame(provisionAssignedRequest())
+  expect(provision.ok).toBe(true)
+  const unrelatedRetryAt = Date.now() + 60_000
+  sql.database.query(
+    `INSERT INTO competition_game_provision
+      (match_id, game_number, game_id, binding_json, match_revision, next_game_json,
+       command_id, fingerprint, status, attempts, next_attempt_at_ms, error_code,
+       created_trusted_time_ms)
+     VALUES ('unrelated-match', 1, 'unrelated-game', '{}', 1, '{}',
+       'unrelated-provision', 'unrelated-fingerprint', 'pending', 0, ?, NULL, 1)`,
+  ).run(unrelatedRetryAt)
+  const pause = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockPause', matchId: 'provision-match', reason: '保留 provision alarm' },
+    {
+      matchId: 'provision-match', callerUserId: 'referee-1', commandId: 'preserve-provision-alarm',
+      expectedMatchRevision: 3, trustedTimeMs: 250,
+    },
+  ))
+  expect(pause.ok).toBe(true)
+  expect(sql.database.query(
+    "SELECT status FROM competition_game_provision WHERE match_id = 'provision-match'",
+  ).get()).toEqual({ status: 'provisioned' })
+  expect(sql.database.query(
+    "SELECT status FROM competition_game_provision WHERE match_id = 'unrelated-match'",
+  ).get()).toEqual({ status: 'pending' })
+  expect(sql.database.query('SELECT status FROM competition_clock_control_outbox').get())
+    .toEqual({ status: 'completed' })
+  expect(alarm.scheduledAt).toBe(unrelatedRetryAt)
+})
+
+test('clock pause fails closed before the engine while the current game provision is pending or blocked', async () => {
+  for (const status of ['pending', 'blocked'] as const) {
+    const { room, sql, engineOperations, controlCalls } = await provisionableRoom({
+      referee: true,
+      create: async () => { throw new Error('GameRoom provision unavailable') },
+    })
+    expect((await room.provisionAssignedScheduledGame(provisionAssignedRequest())).ok).toBe(true)
+    if (status === 'blocked') {
+      sql.database.query(
+        "UPDATE competition_game_provision SET status = 'blocked' WHERE match_id = 'provision-match'",
+      ).run()
+    }
+    expect(sql.database.query(
+      'SELECT status FROM competition_game_provision WHERE game_number = 2',
+    ).get())
+      .toEqual({ status })
+    const operationCount = engineOperations.length
+    const paused = await room.executeMatch(matchExecuteRequest(
+      { type: 'clockPause', matchId: 'provision-match', reason: `provision ${status}` },
+      {
+        matchId: 'provision-match', callerUserId: 'referee-1', commandId: `pause-${status}`,
+        expectedMatchRevision: 3, trustedTimeMs: 250,
+      },
+    ))
+    expect(paused).toMatchObject({
+      ok: false,
+      error: {
+        code: 'gameRoomNotProvisioned',
+        message: 'the current match game must be provisioned before its clock can be controlled',
+      },
+    })
+    expect(engineOperations).toHaveLength(operationCount)
+    expect(controlCalls).toHaveLength(0)
+    expect(sql.database.query(
+      "SELECT revision FROM competition_matches WHERE match_id = 'provision-match'",
+    ).get()).toEqual({ revision: 3 })
+    expect(sql.database.query(
+      'SELECT COUNT(*) AS count FROM competition_clock_control_outbox',
+    ).get()).toEqual({ count: 0 })
+    expect(sql.database.query(
+      'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+    ).get(`pause-${status}`)).toEqual({ count: 0 })
+    expect(sql.database.query(
+      'SELECT COUNT(*) AS count FROM competition_audit WHERE command_id = ?',
+    ).get(`pause-${status}`)).toEqual({ count: 0 })
+  }
+})
+
+test('a provisioned previous game cannot receive pause after persisted nextGame advances', async () => {
+  const { room, sql, engineOperations, controlCalls } = await provisionableRoom({
+    referee: true,
+    assigned: false,
+  })
+  expect((await room.provisionInitialScheduledGame(provisionInitialRequest())).ok).toBe(true)
+  const assignedRow = sql.database.query(
+    'SELECT match_checkpoint_json, match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match') as { match_checkpoint_json: string; match_projection_json: string }
+  const assignedCheckpoint = JSON.parse(assignedRow.match_checkpoint_json) as JsonObject
+  ;(assignedCheckpoint.history as JsonValue[]).push({ type: 'submitGame', gameNumber: 1 })
+  const assignedProjection = JSON.parse(assignedRow.match_projection_json) as JsonObject
+  const assignedMatch = assignedProjection.public as JsonObject
+  ;(assignedMatch.match as JsonObject).games = [{ gameNumber: 1 }]
+  ;(assignedMatch.match as JsonObject).nextFirstPlayer = 'team-b'
+  ;(assignedMatch.match as JsonObject).nextGame = {
+    gameNumber: 2, kind: { type: 'ordinaryNewGame' },
+    firstPlayer: { type: 'assigned', team: 'team-b' },
+  }
+  sql.database.query(
+    'UPDATE competition_matches SET match_checkpoint_json = ?, match_projection_json = ? WHERE match_id = ?',
+  ).run(JSON.stringify(assignedCheckpoint), JSON.stringify(assignedProjection), 'provision-match')
+  const assignedMeta = sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const assignedState = JSON.parse(assignedMeta.server_state_json) as JsonObject
+  ;(assignedState.matches as JsonObject)['provision-match'] = assignedCheckpoint
+  sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(assignedState))
+  const row = sql.database.query(
+    `SELECT match_checkpoint_json, match_projection_json FROM competition_matches
+      WHERE match_id = 'provision-match'`,
+  ).get() as { match_checkpoint_json: string; match_projection_json: string }
+  const checkpoint = JSON.parse(row.match_checkpoint_json) as JsonObject
+  ;(checkpoint.history as JsonValue[]).push({ type: 'submitGame', gameNumber: 1 })
+  const oldProjection = JSON.parse(row.match_projection_json) as JsonObject
+  const publicProjection = oldProjection.public as JsonObject
+  const match = publicProjection.match as JsonObject
+  match.games = [{}]
+  match.nextFirstPlayer = 'team-b'
+  match.nextGame = {
+    gameNumber: 2,
+    kind: { type: 'ordinaryNewGame' },
+    firstPlayer: { type: 'assigned', team: 'team-b' },
+  }
+  sql.database.query(
+    `UPDATE competition_matches SET match_checkpoint_json = ?, match_projection_json = ?
+      WHERE match_id = 'provision-match'`,
+  ).run(JSON.stringify(checkpoint), JSON.stringify(oldProjection))
+  const meta = sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const state = JSON.parse(meta.server_state_json) as JsonObject
+  ;(state.matches as JsonObject)['provision-match'] = checkpoint
+  sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(state))
+
+  const operationCount = engineOperations.length
+  const paused = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockPause', matchId: 'provision-match', reason: '舊局不得接收' },
+    {
+      matchId: 'provision-match', callerUserId: 'referee-1', commandId: 'pause-previous-game',
+      expectedMatchRevision: 2, trustedTimeMs: 250,
+    },
+  ))
+  expect(paused).toMatchObject({ ok: false, error: { code: 'gameRoomNotProvisioned' } })
+  expect(engineOperations).toHaveLength(operationCount)
+  expect(controlCalls).toHaveLength(0)
+  expect(sql.database.query(
+    "SELECT revision FROM competition_matches WHERE match_id = 'provision-match'",
+  ).get()).toEqual({ revision: 2 })
+  expect(sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_clock_control_outbox',
+  ).get()).toEqual({ count: 0 })
+  expect(sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+  ).get('pause-previous-game')).toEqual({ count: 0 })
+})
+
+test('clock pause linkage transaction rollback leaves no receipt, audit or control outbox', async () => {
+  const { room, sql } = await provisionableRoom({ referee: true, eligibility: async () => true })
+  const provision = await room.provisionAssignedScheduledGame(provisionAssignedRequest())
+  expect(provision.ok).toBe(true)
+  sql.failNextQueryContaining = 'INSERT INTO competition_clock_control_outbox'
+  const paused = await room.executeMatch(matchExecuteRequest(
+    { type: 'clockPause', matchId: 'provision-match', reason: '交易回滾' },
+    {
+      matchId: 'provision-match', callerUserId: 'referee-1', commandId: 'rollback-pause',
+      expectedMatchRevision: 3, trustedTimeMs: 250,
+    },
+  ))
+  expect(paused).toMatchObject({ ok: false, error: { code: 'internalFailure' } })
+  expect(sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?')
+    .get('provision-match')).toEqual({ revision: 3 })
+  expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_clock_control_outbox').get())
+    .toEqual({ count: 0 })
+  expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?')
+    .get('rollback-pause')).toEqual({ count: 0 })
+  expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_audit WHERE command_id = ?')
+    .get('rollback-pause')).toEqual({ count: 0 })
+})
+
+test('assigned provision derives a complete alternating 2v2 personal-deck binding', async () => {
+  const { room, calls } = await provisionableRoom({ teamSize: 2, personalDeck: true })
+  const result = await room.provisionAssignedScheduledGame(provisionAssignedRequest())
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+  expect(result.value.binding.enabledRuleModules).toEqual(['personal-deck'])
+  expect(result.value.binding.players.map(player => [player.player, player.team])).toEqual([
+    ['b-1', 'team-b'], ['a-1', 'team-a'], ['b-2', 'team-b'], ['a-2', 'team-a'],
+  ])
+  expect(result.value.binding.deckSnapshot).toEqual([
+    { player: 'b-1', name: 'b-1-deck', cards: ['b-1-card'] },
+    { player: 'a-1', name: 'a-1-deck', cards: ['a-1-card'] },
+    { player: 'b-2', name: 'b-2-deck', cards: ['b-2-card'] },
+    { player: 'a-2', name: 'a-2-deck', cards: ['a-2-card'] },
+  ])
+  expect(calls).toHaveLength(1)
+})
+
+test('assigned provision treats a changed expected revision as command reuse conflict', async () => {
+  const { room } = await provisionableRoom()
+  const request = provisionAssignedRequest({ commandId: 'revision-fingerprint' })
+  expect((await room.provisionAssignedScheduledGame(request)).ok).toBe(true)
+  expect(await room.provisionAssignedScheduledGame({
+    ...request,
+    expectedMatchRevision: request.expectedMatchRevision + 1,
+  })).toEqual({
+    ok: false,
+    error: { code: 'commandIdConflict', message: 'command id was used with another payload' },
+  })
+})
+
+async function runFormalContinuationClock(
+  setup: Pick<Awaited<ReturnType<typeof provisionableRoom>>, 'room' | 'sql'>,
+  operation: Extract<CompetitionRoomMatchExecuteRequest['operation'], {
+    type: 'clockBeginAction' | 'clockEndWindow' | 'clockNewGame'
+  }>,
+  trustedTimeMs: number,
+) {
+  const row = setup.sql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get(operation.matchId) as { revision: number }
+  const result = await setup.room.executeMatch(matchExecuteRequest(operation, {
+    commandId: `formal-carry-forward-${operation.type}-${trustedTimeMs}`,
+    expectedMatchRevision: row.revision,
+    trustedTimeMs,
+  }))
+  if (!result.ok) throw new Error(`formal clock command failed: ${result.error.code}`)
+  return result.value
+}
+
+async function createFormalContinuation(options: {
+  referee?: boolean
+  winner?: 'team-a' | 'team-b'
+  timeoutLoser?: 'team-a' | 'team-b'
+  doubleTimeout?: boolean
+  eliminationDrawLoss?: boolean
+  eliminationNeedsTiebreak?: boolean
+  teamSize?: 1 | 2
+  personalDeck?: boolean
+  roster?: JsonObject
+  postInitialRoster?: JsonObject
+  preexistingSecondGameLinkage?: boolean
+  malformedExportAfterInitial?: 'extra' | 'state'
+  create?: (request: { gameId: string; binding: CompetitionGameBinding }) => Promise<unknown>
+  failAutomaticLinkInsert?: boolean
+  allowTerminalFailure?: boolean
+  failFirstAutomaticAlarm?: boolean
+  mutateMatchSubmit?: (response: CompetitionEngineResponse) => CompetitionEngineResponse
+} = {}) {
+  const setup = await provisionableRoom({
+    teamSize: options.teamSize,
+    personalDeck: options.personalDeck,
+    roster: options.roster,
+    assigned: false,
+    wasmTerminal: true,
+    randomBit: () => 0,
+    referee: options.referee,
+    create: options.create,
+    mutateMatchSubmit: options.mutateMatchSubmit,
+  })
+  const lockedParticipants = options.teamSize === 2
+    ? ['a-1', 'a-2', 'b-1', 'b-2']
+    : ['a-1', 'b-1']
+  for (const playerId of lockedParticipants) {
+    setup.sql.database.query(
+      `INSERT OR IGNORE INTO competition_acl (user_id, role, active, participant)
+       VALUES (?, 'player', 1, 1)`,
+    ).run(playerId)
+  }
+  const materialized = setup.sql.database.query(
+    'SELECT match_checkpoint_json, match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match') as { match_checkpoint_json: string; match_projection_json: string }
+  const checkpoint = JSON.parse(materialized.match_checkpoint_json) as JsonObject
+  const projection = JSON.parse(materialized.match_projection_json) as JsonObject
+  const eliminationScenario = options.eliminationDrawLoss || options.eliminationNeedsTiebreak
+  if (!eliminationScenario) {
+    ;(checkpoint.config as JsonObject).format = { type: 'fixedGames', value: 2 }
+    const publicProjection = projection.public as JsonObject
+    ;((publicProjection.match as JsonObject).config as JsonObject).format = { type: 'fixedGames', value: 2 }
+    setup.sql.database.query(
+      'UPDATE competition_matches SET match_checkpoint_json = ?, match_projection_json = ? WHERE match_id = ?',
+    ).run(JSON.stringify(checkpoint), JSON.stringify(projection), 'provision-match')
+  }
+  const meta = setup.sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const serverState = JSON.parse(meta.server_state_json) as JsonObject
+  ;(serverState.matches as JsonObject)['provision-match'] = checkpoint
+  if (!eliminationScenario) {
+    const stage = ((serverState.tournament as JsonObject).stages as JsonValue[])[0] as JsonObject
+    ;(stage.config as JsonObject).format = 'roundRobin'
+    ;((stage.config as JsonObject).matchFormat as JsonObject).type = 'fixedGames'
+    ;((stage.config as JsonObject).matchFormat as JsonObject).value = 2
+  }
+  setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(serverState))
+  const initial = await setup.room.provisionInitialScheduledGame(provisionInitialRequest({
+    commandId: 'formal-game-one',
+  }))
+  if (!initial.ok) throw new Error(`formal initial game failed: ${initial.error.code}`)
+  if (options.postInitialRoster) setup.setRoster(options.postInitialRoster)
+  if (options.malformedExportAfterInitial) setup.setExportMutation(options.malformedExportAfterInitial)
+
+  let terminalEvidence: GameTerminalEvidence
+  if (options.timeoutLoser || options.doubleTimeout) {
+    const timeoutConfig = {
+      mainTimeMs: 300_000,
+      actionTimeMs: 30_000,
+      outOfTurnChoiceTimeMs: 30_000,
+    }
+    const timeoutClock = options.doubleTimeout
+      ? doubleExpiredPreparationClock(timeoutConfig)
+      : expiredActionClock(timeoutConfig, options.timeoutLoser)
+    setup.sql.database.query(
+      'UPDATE competition_matches SET clock_checkpoint_json = ? WHERE match_id = ?',
+    ).run(JSON.stringify(timeoutClock), 'provision-match')
+    const timeoutMeta = setup.sql.database.query(
+      'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+    ).get() as { server_state_json: string }
+    const timeoutState = JSON.parse(timeoutMeta.server_state_json) as JsonObject
+    timeoutState.clock = timeoutClock
+    setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+      .run(JSON.stringify(timeoutState))
+    terminalEvidence = {
+      type: 'timeout',
+      timeoutId: 'formal-timeout',
+      expiries: options.doubleTimeout
+        ? [
+            { team: 'team-a', deadlineMonotonicMs: 200 },
+            { team: 'team-b', deadlineMonotonicMs: 200 },
+          ]
+        : [{ team: options.timeoutLoser!, deadlineMonotonicMs: 200 }],
+      observedAtMonotonicMs: 200,
+      clockCheckpointDigest: await clockCheckpointDigest(timeoutClock as JsonValue),
+    }
+  } else if (options.eliminationDrawLoss) {
+    const decisionClock = terminalClock({
+      mainTimeMs: 300_000,
+      actionTimeMs: 30_000,
+      outOfTurnChoiceTimeMs: 30_000,
+    }, {
+      teams: [
+        { team: 'team-a', mainTimeRemainingMs: 0, actionTurn: 1, actionTimeRemainingMs: 30_000,
+          actionByoyomiStarted: true, enteredByoyomi: true, byoyomiEntrySequence: 0 },
+        { team: 'team-b', mainTimeRemainingMs: 5_000, actionTurn: null, actionTimeRemainingMs: null,
+          actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null },
+      ],
+      nextByoyomiEntrySequence: 1,
+    })
+    setup.sql.database.query(
+      'UPDATE competition_matches SET clock_checkpoint_json = ? WHERE match_id = ?',
+    ).run(JSON.stringify(decisionClock), 'provision-match')
+    const decisionMeta = setup.sql.database.query(
+      'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+    ).get() as { server_state_json: string }
+    const decisionState = JSON.parse(decisionMeta.server_state_json) as JsonObject
+    decisionState.clock = decisionClock
+    setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+      .run(JSON.stringify(decisionState))
+    terminalEvidence = {
+      type: 'canonicalGameEnded',
+      conclusion: { outcome: { type: 'draw' }, causes: [{ type: 'teamHpDepleted', teams: ['team-a', 'team-b'] }] },
+    }
+  } else {
+    terminalEvidence = {
+      type: 'canonicalGameEnded',
+      conclusion: options.winner
+        ? {
+            outcome: { type: 'winner', team: options.winner },
+            causes: [{ type: 'directVictory', rule: 'test', team: options.winner }],
+          }
+        : {
+            outcome: { type: 'draw' },
+            causes: [{ type: 'teamHpDepleted', teams: ['team-a', 'team-b'] }],
+          },
+    }
+  }
+
+  const terminalRequest: CompetitionRoomTerminalIngestRequest = {
+    competitionId: 'competition-1',
+    matchId: 'provision-match',
+    callerUserId: 'organizer-1',
+    commandId: 'formal-game-one-terminal',
+    expectedMatchRevision: 2,
+    trustedTimeMs: 203,
+    submissionId: 'formal-submission',
+    gameRecordId: 'formal-game-record',
+    rulingRecordId: 'formal-ruling',
+    startKind: { type: 'ordinaryNewGame' },
+    firstPlayer: 'team-a',
+    terminalEvidence,
+  }
+  if (options.preexistingSecondGameLinkage) {
+    setup.sql.database.query(
+      `INSERT INTO competition_game_provision
+        (match_id, game_number, game_id, binding_json, match_revision, next_game_json,
+         command_id, fingerprint, status, attempts, next_attempt_at_ms, error_code,
+         created_trusted_time_ms)
+       VALUES (?, 2, 'preserved-game-two', '{"sentinel":true}', 2, '{"sentinel":true}',
+         'preserved-game-two-command', 'preserved-fingerprint', 'pending', 0, 0, NULL, 202)`,
+    ).run('provision-match')
+  }
+  const preTerminalSnapshot = {
+    match: setup.sql.database.query(
+      `SELECT match_checkpoint_json, clock_checkpoint_json, match_projection_json,
+              clock_projection_json, revision, last_trusted_time_ms
+       FROM competition_matches WHERE match_id = ?`,
+    ).get('provision-match'),
+    meta: setup.sql.database.query(
+      `SELECT server_state_json, public_projection_json, revision, updated_trusted_time_ms
+       FROM competition_meta WHERE singleton = 1`,
+    ).get(),
+  }
+  if (options.failAutomaticLinkInsert) {
+    setup.sql.failNextQueryContaining = 'INSERT INTO competition_game_provision'
+  }
+  if (options.failFirstAutomaticAlarm) setup.alarm.failSetAlarmCount = 1
+  const terminal = await setup.room.ingestGameTerminal(terminalRequest)
+  if (!terminal.ok && !options.allowTerminalFailure) {
+    throw new Error(`formal terminal ingest failed: ${terminal.error.code}`)
+  }
+  return { setup, initial, terminal, terminalRequest, preTerminalSnapshot }
+}
+
+async function persistFormalNextFirstPlayer(
+  setup: Awaited<ReturnType<typeof provisionableRoom>>,
+  team: 'team-a' | 'team-b',
+): Promise<void> {
+  const meta = setup.sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const serverState = JSON.parse(meta.server_state_json) as CompetitionRequest['serverState']
+  const response = await callCompetitionEngine({
+    serverActor: { type: 'organizer', playerId: 'organizer-1' },
+    trustedTimeMs: 204,
+    operation: {
+      type: 'matchAssignFirstPlayer',
+      matchId: 'provision-match',
+      team,
+      reason: '第二局可信先手指定',
+    },
+    serverState,
+  }, realCompetitionWasm)
+  if (!response.ok || response.operation !== 'matchAssignFirstPlayer'
+    || !isJsonObject(response.serverState.matches['provision-match'])
+    || !isJsonObject(response.public) || !isJsonObject(response.public.match)) {
+    throw new Error('formal WASM failed to assign the next game first player')
+  }
+  const checkpoint = response.serverState.matches['provision-match']
+  const row = setup.sql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match') as { revision: number }
+  const projection = { ok: true, operation: 'matchAssignFirstPlayer', public: response.public }
+  setup.sql.database.query(
+    `UPDATE competition_matches
+     SET match_checkpoint_json = ?, match_projection_json = ?, revision = ?, last_trusted_time_ms = ?
+     WHERE match_id = ?`,
+  ).run(JSON.stringify(checkpoint), JSON.stringify(projection), row.revision + 1, 204, 'provision-match')
+  setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(response.serverState))
+}
+
+function persistProvisionHistoryMutation(
+  setup: Awaited<ReturnType<typeof provisionableRoom>>,
+  checkpoint: JsonObject,
+  revision: number,
+): void {
+  setup.sql.database.query(
+    `UPDATE competition_matches
+     SET match_checkpoint_json = ?, revision = ?, last_trusted_time_ms = ?
+     WHERE match_id = ?`,
+  ).run(JSON.stringify(checkpoint), revision, revision + 200, 'provision-match')
+  const meta = setup.sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const state = JSON.parse(meta.server_state_json) as JsonObject
+  ;(state.matches as JsonObject)['provision-match'] = checkpoint
+  setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(state))
+}
+
+test('formal Rust/WASM ordinary draw atomically provisions the roster-derived next game', async () => {
+  for (const scenario of [
+    { teamSize: 1 as const, personalDeck: false, turnOrder: ['b-1', 'a-1'] },
+    { teamSize: 2 as const, personalDeck: true, turnOrder: ['b-1', 'a-1', 'b-2', 'a-2'] },
+  ]) {
+    const { setup, terminal } = await createFormalContinuation(scenario)
+    expect(terminal).toMatchObject({
+      ok: true,
+      value: { matchRevision: 3, matchProjection: { operation: 'matchSubmitGame', public: { match: {
+        nextFirstPlayer: 'team-b',
+        nextGame: { gameNumber: 2, kind: { type: 'ordinaryNewGame' }, firstPlayer: { type: 'assigned', team: 'team-b' } },
+      } } } },
+    })
+    if (!terminal.ok) throw new Error('expected successful terminal ingest')
+    expect(Object.keys(terminal.value).sort()).toEqual([
+      'clockProjection', 'commandId', 'competitionId', 'idempotent', 'matchId',
+      'matchProjection', 'matchRevision', 'nextClockDeadlineMs', 'timeoutEvidence',
+    ])
+    const receipt = setup.sql.database.query(
+      'SELECT response_json FROM competition_command_receipt WHERE command_id = ?',
+    ).get('formal-game-one-terminal') as { response_json: string }
+    const automaticAudit = setup.sql.database.query(
+      `SELECT command_id, operation_type, revision, outcome_code, reason
+       FROM competition_audit WHERE command_id LIKE 'auto-draw-provision:%'`,
+    ).all()
+    for (const serialized of [JSON.stringify(terminal.value), receipt.response_json, JSON.stringify(automaticAudit)]) {
+      expect(serialized).not.toMatch(/binding|deckSeed|roster|decks|members|private|serverState/)
+    }
+    expect(automaticAudit).toHaveLength(1)
+    expect((automaticAudit[0] as { command_id: string }).command_id).toStartWith('auto-draw-provision:')
+    const linkage = setup.sql.database.query(
+      'SELECT game_number, match_revision, status, game_id, binding_json FROM competition_game_provision ORDER BY game_number',
+    ).all() as Array<{ game_number: number; match_revision: number; status: string; game_id: string; binding_json: string }>
+    expect(linkage.map(({ game_number, match_revision, status }) => ({ game_number, match_revision, status }))).toEqual([
+      { game_number: 1, match_revision: 2, status: 'provisioned' },
+      { game_number: 2, match_revision: 3, status: 'provisioned' },
+    ])
+    const binding = JSON.parse(linkage[1]!.binding_json) as CompetitionGameBinding
+    expect(binding).toMatchObject({
+      gameNumber: 2,
+      expectedMatchRevision: 3,
+      firstPlayer: 'b-1',
+      turnOrder: scenario.turnOrder,
+    })
+    if (scenario.personalDeck) expect(binding.deckSnapshot).toBeTruthy()
+    const persisted = setup.sql.database.query(
+      'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+    ).get('provision-match') as { match_checkpoint_json: string }
+    const meta = setup.sql.database.query(
+      'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+    ).get() as { server_state_json: string }
+    expect((JSON.parse(meta.server_state_json) as JsonObject).matches?.['provision-match'])
+      .toEqual(JSON.parse(persisted.match_checkpoint_json))
+    expect(setup.sql.database.query(
+      "SELECT COUNT(*) AS count FROM competition_audit WHERE operation_type = 'provisionAssignedScheduledGame' AND outcome_code = 'pending'",
+    ).get()).toEqual({ count: 1 })
+    expect(await setup.room.provisionAssignedScheduledGame(provisionAssignedRequest({
+      commandId: `duplicate-game-two-${scenario.teamSize}`,
+      expectedMatchRevision: 3,
+      trustedTimeMs: 204,
+    }))).toMatchObject({ ok: false, error: { code: 'gameAlreadyLinked' } })
+  }
+})
+
+test('automatic next-game delivery retries a non-strict ACK and alarm failure from the terminal receipt', async () => {
+  let permitSecondGame = false
+  let secondGameAttempts = 0
+  const create = async (request: { gameId: string; binding: CompetitionGameBinding }) => {
+    if (request.binding.gameNumber === 2) {
+      secondGameAttempts += 1
+      if (!permitSecondGame) {
+        return { gameId: request.gameId, status: 'Active', idempotent: false }
+      }
+    }
+    return { gameId: request.gameId, status: 'Waiting', idempotent: false }
+  }
+  const { setup, terminal, terminalRequest } = await createFormalContinuation({
+    create,
+    failFirstAutomaticAlarm: true,
+  })
+  expect(terminal.ok).toBe(true)
+  expect(secondGameAttempts).toBe(1)
+  const beforeEngineRetry = setup.engineOperations.length
+  const pending = setup.sql.database.query(
+    'SELECT game_id, binding_json, status FROM competition_game_provision WHERE game_number = 2',
+  ).get() as { game_id: string; binding_json: string; status: string }
+  expect(pending.status).toBe('pending')
+  permitSecondGame = true
+  const restarted = new CompetitionRoomClass(
+    stateFor(setup.sql, setup.alarm),
+    setup.env,
+    setup.adapter,
+    () => 0,
+  )
+  const retry = await restarted.ingestGameTerminal(terminalRequest)
+  expect(retry).toMatchObject({ ok: true, value: { idempotent: true, matchRevision: 3 } })
+  expect(secondGameAttempts).toBe(2)
+  expect(setup.engineOperations.length).toBe(beforeEngineRetry)
+  expect(setup.sql.database.query(
+    'SELECT game_id, binding_json, status FROM competition_game_provision WHERE game_number = 2',
+  ).get()).toEqual({ ...pending, status: 'provisioned' })
+})
+
+test('elimination continuation receipt retry preserves the exact binding and recovers pending delivery', async () => {
+  let allowGameTwo = false
+  let gameTwoAttempts = 0
+  const create = async (request: { gameId: string; binding: CompetitionGameBinding }) => {
+    if (request.binding.gameNumber === 2) {
+      gameTwoAttempts += 1
+      if (!allowGameTwo) return { gameId: request.gameId, status: 'Active', idempotent: false }
+    }
+    return { gameId: request.gameId, status: 'Waiting', idempotent: false }
+  }
+  const { setup, terminal, terminalRequest } = await createFormalContinuation({
+    eliminationNeedsTiebreak: true,
+    create,
+    failFirstAutomaticAlarm: true,
+  })
+  expect(terminal.ok).toBe(true)
+  expect(gameTwoAttempts).toBe(1)
+  const beforeRetryOperations = setup.engineOperations.length
+  const pending = setup.sql.database.query(
+    'SELECT game_id, binding_json, status FROM competition_game_provision WHERE game_number = 2',
+  ).get() as { game_id: string; binding_json: string; status: string }
+  expect(pending.status).toBe('pending')
+  allowGameTwo = true
+  const restarted = new CompetitionRoomClass(
+    stateFor(setup.sql, setup.alarm), setup.env, setup.adapter, () => 0,
+  )
+  const retry = await restarted.ingestGameTerminal(terminalRequest)
+  expect(retry).toMatchObject({ ok: true, value: { idempotent: true, matchRevision: 3 } })
+  expect(gameTwoAttempts).toBe(2)
+  expect(setup.engineOperations.length).toBe(beforeRetryOperations)
+  expect(setup.sql.database.query(
+    'SELECT game_id, binding_json, status FROM competition_game_provision WHERE game_number = 2',
+  ).get()).toEqual({ ...pending, status: 'provisioned' })
+  expect(JSON.parse(pending.binding_json)).toMatchObject({
+    gameNumber: 2,
+    startKind: { type: 'eliminationDrawContinuation' },
+  })
+})
+
+for (const mutation of ['ordinaryNewGame', 'remainingMilliseconds'] as const) {
+  test(`elimination delivery rejects corrupted binding start kind after restart: ${mutation}`, async () => {
+    let gameTwoAttempts = 0
+    const { setup, terminal, terminalRequest } = await createFormalContinuation({
+      eliminationNeedsTiebreak: true,
+      create: async (request) => {
+        if (request.binding.gameNumber === 2) {
+          gameTwoAttempts += 1
+          return { gameId: request.gameId, status: 'Active', idempotent: false }
+        }
+        return { gameId: request.gameId, status: 'Waiting', idempotent: false }
+      },
+    })
+    expect(terminal.ok).toBe(true)
+    expect(gameTwoAttempts).toBe(1)
+    const linked = setup.sql.database.query(
+      'SELECT binding_json, next_game_json, status FROM competition_game_provision WHERE game_number = 2',
+    ).get() as { binding_json: string; next_game_json: string; status: string }
+    expect(linked.status).toBe('pending')
+    const binding = JSON.parse(linked.binding_json) as CompetitionGameBinding
+    if (mutation === 'ordinaryNewGame') binding.startKind = { type: 'ordinaryNewGame' }
+    else if (binding.startKind.type === 'eliminationDrawContinuation') {
+      binding.startKind.continuation.teams[0]!.mainTimeRemainingMs! += 1
+    } else throw new Error('expected an elimination continuation binding')
+    // 僅破壞 binding 的 kind；權威 nextGame、revision 與其餘 linkage 保持原樣。
+    setup.sql.database.query(
+      'UPDATE competition_game_provision SET binding_json = ? WHERE game_number = 2',
+    ).run(JSON.stringify(binding))
+    const engineCount = setup.engineOperations.length
+    const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+    expect(await restarted.ingestGameTerminal(terminalRequest)).toMatchObject({
+      ok: true, value: { idempotent: true, matchRevision: 3 },
+    })
+    expect(gameTwoAttempts).toBe(1)
+    expect(setup.engineOperations).toHaveLength(engineCount)
+    expect(setup.sql.database.query(
+      'SELECT status, error_code, next_game_json FROM competition_game_provision WHERE game_number = 2',
+    ).get()).toEqual({ status: 'blocked', error_code: 'staleMatchState', next_game_json: linked.next_game_json })
+  })
+}
+
+for (const field of ['commandId', 'competitionId', 'matchId', 'matchRevision'] as const) {
+  test(`terminal receipt retry rejects corrupted persisted identity: ${field}`, async () => {
+    let gameTwoAttempts = 0
+    const { setup, terminal, terminalRequest } = await createFormalContinuation({
+      eliminationNeedsTiebreak: true,
+      ...(field === 'matchRevision' ? { winner: 'team-a' as const } : {}),
+      create: async (request) => {
+        if (request.binding.gameNumber === 2) {
+          gameTwoAttempts += 1
+          return { gameId: request.gameId, status: 'Active', idempotent: false }
+        }
+        return { gameId: request.gameId, status: 'Waiting', idempotent: false }
+      },
+    })
+    expect(terminal.ok).toBe(true)
+    const attemptsBeforeRetry = gameTwoAttempts
+    const receipt = setup.sql.database.query(
+      'SELECT response_json FROM competition_command_receipt WHERE command_id = ?',
+    ).get(terminalRequest.commandId) as { response_json: string }
+    const response = JSON.parse(receipt.response_json) as { value: Record<string, unknown> }
+    // strict ACK 的身分與 revision 都必須由原 terminal 指令確定，不能信任損壞的收據。
+    response.value[field] = field === 'matchRevision' ? 999 : `corrupted-${field}`
+    setup.sql.database.query(
+      'UPDATE competition_command_receipt SET response_json = ? WHERE command_id = ?',
+    ).run(JSON.stringify(response), terminalRequest.commandId)
+    const engineCount = setup.engineOperations.length
+    const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+    expect(await restarted.ingestGameTerminal({ ...terminalRequest, trustedTimeMs: 50_000 })).toEqual({
+      ok: false, error: { code: 'internalFailure', message: 'competition room operation failed' },
+    })
+    expect(gameTwoAttempts).toBe(attemptsBeforeRetry)
+    expect(setup.engineOperations).toHaveLength(engineCount)
+  })
+}
+
+test('automatic linkage SQL failure rolls back terminal state, audit, receipt, and next-game outbox', async () => {
+  for (const scenario of [{}, { eliminationNeedsTiebreak: true }]) {
+    const { setup, terminal, preTerminalSnapshot } = await createFormalContinuation({
+      ...scenario,
+      failAutomaticLinkInsert: true,
+      allowTerminalFailure: true,
+    })
+    expect(terminal).toMatchObject({ ok: false, error: { code: 'internalFailure' } })
+    expect(setup.sql.database.query(
+      'SELECT revision FROM competition_matches WHERE match_id = ?',
+    ).get('provision-match')).toMatchObject({ revision: 2 })
+    expect(setup.sql.database.query(
+      `SELECT match_checkpoint_json, clock_checkpoint_json, match_projection_json,
+              clock_projection_json, revision, last_trusted_time_ms
+       FROM competition_matches WHERE match_id = ?`,
+    ).get('provision-match')).toEqual(preTerminalSnapshot.match)
+    expect(setup.sql.database.query(
+      `SELECT server_state_json, public_projection_json, revision, updated_trusted_time_ms
+       FROM competition_meta WHERE singleton = 1`,
+    ).get()).toEqual(preTerminalSnapshot.meta)
+    expect(setup.sql.database.query(
+      'SELECT game_number FROM competition_game_provision ORDER BY game_number',
+    ).all()).toEqual([{ game_number: 1 }])
+    expect(setup.sql.database.query(
+      "SELECT COUNT(*) AS count FROM competition_audit WHERE operation_type = 'ingestGameTerminal'",
+    ).get()).toEqual({ count: 0 })
+    expect(setup.sql.database.query(
+      'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+    ).get('formal-game-one-terminal')).toEqual({ count: 0 })
+  }
+})
+
+test('preexisting game-two linkage rejects terminal ingest without changing either linkage or match state', async () => {
+  const { setup, terminal, preTerminalSnapshot } = await createFormalContinuation({
+    preexistingSecondGameLinkage: true,
+    allowTerminalFailure: true,
+  })
+  expect(terminal).toMatchObject({ ok: false, error: { code: 'gameAlreadyLinked' } })
+  const match = setup.sql.database.query(
+    `SELECT match_checkpoint_json, clock_checkpoint_json, match_projection_json,
+            clock_projection_json, revision, last_trusted_time_ms
+     FROM competition_matches WHERE match_id = ?`,
+  ).get('provision-match') as Record<string, unknown>
+  expect(match).toEqual(preTerminalSnapshot.match)
+  const state = setup.sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  expect({
+    ...setup.sql.database.query(
+      `SELECT server_state_json, public_projection_json, revision, updated_trusted_time_ms
+       FROM competition_meta WHERE singleton = 1`,
+    ).get() as object,
+  }).toEqual(preTerminalSnapshot.meta)
+  expect((JSON.parse(state.server_state_json) as JsonObject).matches?.['provision-match'])
+    .toEqual(JSON.parse(match.match_checkpoint_json as string))
+  expect(setup.sql.database.query(
+    `SELECT game_id, binding_json, match_revision, next_game_json, command_id, fingerprint, status
+     FROM competition_game_provision WHERE match_id = ? AND game_number = 2`,
+  ).get('provision-match')).toEqual({
+    game_id: 'preserved-game-two',
+    binding_json: '{"sentinel":true}',
+    match_revision: 2,
+    next_game_json: '{"sentinel":true}',
+    command_id: 'preserved-game-two-command',
+    fingerprint: 'preserved-fingerprint',
+    status: 'pending',
+  })
+  expect(setup.sql.database.query(
+    "SELECT COUNT(*) AS count FROM competition_audit WHERE operation_type = 'ingestGameTerminal'",
+  ).get()).toEqual({ count: 0 })
+  expect(setup.sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+  ).get('formal-game-one-terminal')).toEqual({ count: 0 })
+})
+
+test('malformed locked roster prevents ordinary-draw terminal and linkage from being committed', async () => {
+  const roster = lockedRoster(1, false)
+  const firstTeam = (roster.teams as JsonValue[])[0] as JsonObject
+  firstTeam.members = []
+  const { setup, terminal } = await createFormalContinuation({
+    postInitialRoster: roster,
+    allowTerminalFailure: true,
+  })
+  expect(terminal).toMatchObject({ ok: false, error: { code: 'invalidLockedRoster' } })
+  expect(setup.sql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match')).toEqual({ revision: 2 })
+  expect(setup.sql.database.query(
+    'SELECT game_number FROM competition_game_provision ORDER BY game_number',
+  ).all()).toEqual([{ game_number: 1 }])
+  expect(setup.sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+  ).get('formal-game-one-terminal')).toEqual({ count: 0 })
+})
+
+test('malformed locked-roster export protocol prevents terminal commit', async () => {
+  for (const malformed of ['extra', 'state'] as const) {
+    const { setup, terminal, preTerminalSnapshot } = await createFormalContinuation({
+      malformedExportAfterInitial: malformed,
+      allowTerminalFailure: true,
+    })
+    expect(terminal).toMatchObject({ ok: false, error: { code: 'engineProtocolError' } })
+    expect(setup.sql.database.query(
+      'SELECT revision FROM competition_matches WHERE match_id = ?',
+    ).get('provision-match')).toEqual({ revision: 2 })
+    expect(setup.sql.database.query(
+      `SELECT match_checkpoint_json, clock_checkpoint_json, match_projection_json,
+              clock_projection_json, revision, last_trusted_time_ms
+       FROM competition_matches WHERE match_id = ?`,
+    ).get('provision-match')).toEqual(preTerminalSnapshot.match)
+    expect(setup.sql.database.query(
+      `SELECT server_state_json, public_projection_json, revision, updated_trusted_time_ms
+       FROM competition_meta WHERE singleton = 1`,
+    ).get()).toEqual(preTerminalSnapshot.meta)
+    expect(setup.sql.database.query(
+      'SELECT game_number FROM competition_game_provision ORDER BY game_number',
+    ).all()).toEqual([{ game_number: 1 }])
+    expect(setup.sql.database.query(
+      "SELECT COUNT(*) AS count FROM competition_audit WHERE operation_type = 'ingestGameTerminal'",
+    ).get()).toEqual({ count: 0 })
+    expect(setup.sql.database.query(
+      'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+    ).get('formal-game-one-terminal')).toEqual({ count: 0 })
+  }
+})
+
+test('mismatched elimination continuation in engine projection fails closed without committing terminal state', async () => {
+  const { setup, terminal, preTerminalSnapshot } = await createFormalContinuation({
+    eliminationNeedsTiebreak: true,
+    allowTerminalFailure: true,
+    mutateMatchSubmit: response => {
+      if (!response.ok || response.operation !== 'matchSubmitGame'
+        || !isJsonObject(response.public) || !isJsonObject(response.public.match)) return response
+      const match = response.public.match
+      if (!isJsonObject(match.nextGame) || !isJsonObject(match.nextGame.kind)
+        || !isJsonObject(match.nextGame.kind.continuation)
+        || !Array.isArray(match.nextGame.kind.continuation.teams)) return response
+      const first = match.nextGame.kind.continuation.teams[0]
+      if (isJsonObject(first) && typeof first.mainTimeRemainingMs === 'number') {
+        first.mainTimeRemainingMs += 1
+      }
+      return response
+    },
+  })
+  expect(terminal).toMatchObject({ ok: false, error: { code: 'engineInvalidMatchResult' } })
+  expect(setup.sql.database.query(
+    `SELECT match_checkpoint_json, clock_checkpoint_json, match_projection_json,
+            clock_projection_json, revision, last_trusted_time_ms
+     FROM competition_matches WHERE match_id = ?`,
+  ).get('provision-match')).toEqual(preTerminalSnapshot.match)
+  expect(setup.sql.database.query(
+    'SELECT server_state_json, public_projection_json, revision, updated_trusted_time_ms FROM competition_meta',
+  ).get()).toEqual(preTerminalSnapshot.meta)
+  expect(setup.sql.database.query(
+    'SELECT game_number FROM competition_game_provision ORDER BY game_number',
+  ).all()).toEqual([{ game_number: 1 }])
+  expect(setup.sql.database.query(
+    "SELECT COUNT(*) AS count FROM competition_audit WHERE command_id = 'formal-game-one-terminal' AND outcome_code = 'success'",
+  ).get()).toEqual({ count: 0 })
+})
+
+test('applicable NeedsTiebreak with pending or malformed nextGame fails closed before terminal commit', async () => {
+  for (const mutation of ['awaitingFirstPlayer', 'pendingWhileOpen', 'missingNextGame', 'extraNextGameKey'] as const) {
+    const { setup, terminal, preTerminalSnapshot } = await createFormalContinuation({
+      eliminationNeedsTiebreak: true,
+      allowTerminalFailure: true,
+      mutateMatchSubmit: response => {
+        if (!response.ok || response.operation !== 'matchSubmitGame'
+          || !isJsonObject(response.public) || !isJsonObject(response.public.match)) return response
+        const match = response.public.match
+        if (mutation === 'missingNextGame') match.nextGame = null
+        else if (isJsonObject(match.nextGame)) {
+          if (mutation === 'extraNextGameKey') match.nextGame.unknown = true
+          else {
+            match.status = mutation === 'awaitingFirstPlayer' ? 'awaitingFirstPlayer' : 'open'
+            match.nextFirstPlayer = null
+            match.nextGame.firstPlayer = { type: 'pending', reason: '惡意降級已確認的加賽先手' }
+          }
+        }
+        return response
+      },
+    })
+    expect(terminal).toMatchObject({ ok: false, error: { code: 'engineInvalidMatchResult' } })
+    expect(setup.sql.database.query(
+      `SELECT match_checkpoint_json, clock_checkpoint_json, match_projection_json,
+              clock_projection_json, revision, last_trusted_time_ms
+       FROM competition_matches WHERE match_id = ?`,
+    ).get('provision-match')).toEqual(preTerminalSnapshot.match)
+    expect(setup.sql.database.query(
+      'SELECT server_state_json, public_projection_json, revision, updated_trusted_time_ms FROM competition_meta',
+    ).get()).toEqual(preTerminalSnapshot.meta)
+    expect(setup.sql.database.query(
+      'SELECT game_number FROM competition_game_provision ORDER BY game_number',
+    ).all()).toEqual([{ game_number: 1 }])
+    expect(setup.sql.database.query(
+      "SELECT COUNT(*) AS count FROM competition_audit WHERE command_id = 'formal-game-one-terminal' AND outcome_code = 'success'",
+    ).get()).toEqual({ count: 0 })
+  }
+})
+
+test('real Rust/WASM final fixed-games draw leaves only game-one and game-two linkages', async () => {
+  const setup = await wasmTournamentRoom(lockedRoster(1, false))
+  const stage: StageConfig = {
+    ...stageConfig({ format: 'roundRobin' }),
+    matchFormat: { type: 'fixedGames', value: 2 },
+  }
+  const created = await setup.room.createTournamentFromLockedRoster(createTournamentRequest({
+    commandId: 'legal-fixed-draw-tournament',
+    stage,
+  }))
+  if (!created.ok) throw new Error(`formal tournament creation failed: ${created.error.code}`)
+  const tournament = created.value.projection.public as JsonObject
+  const createdStage = (tournament.stages as JsonValue[])[0] as JsonObject
+  const firstRound = (createdStage.rounds as JsonValue[])[0] as JsonObject
+  const scheduled = (firstRound.matches as JsonValue[])[0] as JsonObject
+  const matchId = scheduled.matchId as string
+  const started = await setup.room.startScheduledMatch({
+    competitionId: 'competition-1',
+    stageId: stage.stageId,
+    matchId,
+    callerUserId: 'organizer-1',
+    commandId: 'legal-fixed-draw-start',
+    expectedRevision: 2,
+    trustedTimeMs: 102,
+    referees: [],
+  })
+  expect(started.ok).toBe(true)
+  const initial = await setup.room.provisionInitialScheduledGame(provisionInitialRequest({
+    matchId,
+    commandId: 'legal-fixed-draw-game-one',
+    expectedMatchRevision: 1,
+    trustedTimeMs: 103,
+  }))
+  expect(initial.ok).toBe(true)
+  const matchProjection = (): JsonObject => {
+    const stored = setup.sql.database.query(
+      'SELECT match_projection_json FROM competition_matches WHERE match_id = ?',
+    ).get(matchId) as { match_projection_json: string }
+    return ((JSON.parse(stored.match_projection_json) as JsonObject).public as JsonObject).match as JsonObject
+  }
+  const submitDraw = async (number: 1 | 2, revision: number, trustedTimeMs: number) => {
+    const match = matchProjection()
+    return setup.room.ingestGameTerminal({
+      competitionId: 'competition-1',
+      matchId,
+      callerUserId: 'organizer-1',
+      commandId: `legal-fixed-draw-terminal-${number}`,
+      expectedMatchRevision: revision,
+      trustedTimeMs,
+      submissionId: `legal-fixed-draw-submission-${number}`,
+      gameRecordId: `legal-fixed-draw-record-${number}`,
+      rulingRecordId: `legal-fixed-draw-ruling-${number}`,
+      startKind: { type: 'ordinaryNewGame' },
+      firstPlayer: match.nextFirstPlayer as string,
+      terminalEvidence: {
+        type: 'canonicalGameEnded',
+        conclusion: {
+          outcome: { type: 'draw' },
+          causes: [{ type: 'teamHpDepleted', teams: ['team-a', 'team-b'] }],
+        },
+      },
+    })
+  }
+  expect(await submitDraw(1, 2, 104)).toMatchObject({ ok: true, value: { matchRevision: 3 } })
+  expect(setup.sql.database.query(
+    'SELECT game_number FROM competition_game_provision ORDER BY game_number',
+  ).all()).toEqual([{ game_number: 1 }, { game_number: 2 }])
+  const finalDraw = await submitDraw(2, 3, 105)
+  expect(finalDraw).toMatchObject({
+    ok: true,
+    value: { matchRevision: 4, matchProjection: { public: { match: { status: 'completed' } } } },
+  })
+  expect(setup.sql.database.query(
+    'SELECT game_number FROM competition_game_provision ORDER BY game_number',
+  ).all()).toEqual([{ game_number: 1 }, { game_number: 2 }])
+})
+
+test('non-winning or unresolved terminal rulings do not auto-provision a continuation', async () => {
+  for (const options of [
+    { winner: 'team-a' as const },
+    { timeoutLoser: 'team-b' as const },
+    { doubleTimeout: true },
+    { eliminationDrawLoss: true },
+  ]) {
+    const { setup, terminal } = await createFormalContinuation(options)
+    expect(terminal.ok).toBe(true)
+    expect(setup.sql.database.query(
+      'SELECT game_number FROM competition_game_provision ORDER BY game_number',
+    ).all()).toEqual([{ game_number: 1 }])
+  }
+})
+
+async function createRealEliminationContinuation(teamSize: 1 | 2, personalDeck: boolean) {
+  const setup = await wasmTournamentRoom(lockedRoster(teamSize, personalDeck), () => 0, true)
+  const stage: StageConfig = {
+    ...stageConfig({ teams: [{ teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 2 }] }),
+    matchFormat: { type: 'firstToWins', value: 1 },
+    clockConfig: { mainTimeMs: 5000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 },
+  }
+  const created = await setup.room.createTournamentFromLockedRoster(createTournamentRequest({ stage }))
+  if (!created.ok) throw new Error(`formal elimination tournament failed: ${created.error.code}`)
+  const tournament = created.value.projection.public as JsonObject
+  const firstStage = (tournament.stages as JsonObject[])[0]!
+  const firstRound = (firstStage.rounds as JsonObject[])[0]!
+  const matchId = (firstRound.matches as JsonObject[])[0]!.matchId as string
+  expect(await setup.room.startScheduledMatch({
+    competitionId: 'competition-1', stageId: stage.stageId, matchId,
+    callerUserId: 'organizer-1', commandId: 'formal-elimination-start', expectedRevision: 2,
+    trustedTimeMs: 102, referees: [],
+  })).toMatchObject({ ok: true, value: { revision: 3, matchRevision: 1 } })
+  expect(await setup.room.provisionInitialScheduledGame(provisionInitialRequest({
+    matchId, commandId: 'formal-elimination-initial', expectedMatchRevision: 1, trustedTimeMs: 103,
+  }))).toMatchObject({ ok: true, value: { matchRevision: 2, status: 'provisioned', binding: { firstPlayer: 'a-1' } } })
+  await runFormalContinuationClock(setup, { type: 'clockBeginAction', matchId, team: 'team-a', turn: 1 }, 210)
+  await runFormalContinuationClock(setup, { type: 'clockEndWindow', matchId }, 1444)
+  await runFormalContinuationClock(setup, { type: 'clockBeginAction', matchId, team: 'team-b', turn: 2 }, 1444)
+  await runFormalContinuationClock(setup, { type: 'clockEndWindow', matchId }, 2111)
+  const terminalRequest: CompetitionRoomTerminalIngestRequest = {
+    competitionId: 'competition-1', matchId, callerUserId: 'organizer-1',
+    commandId: 'formal-elimination-terminal-one', expectedMatchRevision: 6, trustedTimeMs: 2112,
+    submissionId: 'formal-elimination-submission-one', gameRecordId: 'formal-elimination-record-one',
+    rulingRecordId: 'formal-elimination-ruling-one', startKind: { type: 'ordinaryNewGame' },
+    firstPlayer: 'team-a', terminalEvidence: {
+      type: 'canonicalGameEnded', conclusion: {
+        outcome: { type: 'draw' }, causes: [{ type: 'teamHpDepleted', teams: ['team-a', 'team-b'] }],
+      },
+    },
+  }
+  const terminal = await setup.room.ingestGameTerminal(terminalRequest)
+  return { setup, matchId, terminal, terminalRequest }
+}
+
+test('formal Rust/WASM elimination tiebreaks carry exact milliseconds and complete the match and tournament once', async () => {
+  for (const scenario of [
+    { teamSize: 1 as const, personalDeck: false, turnOrder: ['b-1', 'a-1'] },
+    { teamSize: 2 as const, personalDeck: true, turnOrder: ['b-1', 'a-1', 'b-2', 'a-2'] },
+  ]) {
+    const { setup, matchId, terminal, terminalRequest } = await createRealEliminationContinuation(
+      scenario.teamSize, scenario.personalDeck,
+    )
+    expect(terminal).toMatchObject({
+      ok: true,
+      value: { matchRevision: 7, matchProjection: { public: { match: {
+        status: 'open', score: [0, 0], nextFirstPlayer: 'team-b',
+        nextGame: {
+          gameNumber: 2,
+          kind: { type: 'eliminationDrawContinuation' },
+          firstPlayer: { type: 'assigned', team: 'team-b' },
+        },
+        rulings: [{ ruling: { type: 'needsTiebreak' } }],
+      } } } },
+    })
+    if (!terminal.ok) throw new Error('expected first elimination draw to succeed')
+    const firstRuling = (terminal.value.matchProjection?.public as JsonObject).match as JsonObject
+    const firstContinuation = (((firstRuling.rulings as JsonObject[])[0]!.ruling as JsonObject)
+      .continuation as JsonObject)
+    // 主時間 5000ms 分別扣除 1234ms 與 667ms，不能以重置或相對比對冒充沿用。
+    expect(firstContinuation).toEqual({ teams: [
+      { team: 'team-a', mainTimeRemainingMs: 3766 },
+      { team: 'team-b', mainTimeRemainingMs: 4333 },
+    ] })
+    const firstBindingRow = setup.sql.database.query(
+      'SELECT binding_json, game_id FROM competition_game_provision WHERE game_number = 2',
+    ).get() as { binding_json: string; game_id: string }
+    const firstBinding = JSON.parse(firstBindingRow.binding_json) as CompetitionGameBinding
+    expect(firstBinding).toMatchObject({
+      gameNumber: 2,
+      expectedMatchRevision: 7,
+      firstPlayer: 'b-1',
+      turnOrder: scenario.turnOrder,
+      startKind: { type: 'eliminationDrawContinuation', continuation: firstContinuation },
+    })
+    if (scenario.personalDeck) expect(firstBinding.deckSnapshot).toBeTruthy()
+
+    const carried = await runFormalContinuationClock(setup, {
+      type: 'clockNewGame', matchId, time: 'carryForward',
+    }, 2200)
+    expect(carried.clockProjection).toMatchObject({ public: { clock: { teams: [
+      { team: 'team-a', mainTimeRemainingMs: 3766 },
+      { team: 'team-b', mainTimeRemainingMs: 4333 },
+    ] } } })
+    await runFormalContinuationClock(setup, {
+      type: 'clockBeginAction', matchId, team: 'team-b', turn: 1,
+    }, 2300)
+    await runFormalContinuationClock(setup, { type: 'clockEndWindow', matchId }, 2411)
+    await runFormalContinuationClock(setup, {
+      type: 'clockBeginAction', matchId, team: 'team-a', turn: 2,
+    }, 2411)
+    await runFormalContinuationClock(setup, { type: 'clockEndWindow', matchId }, 2633)
+
+    const storedProjection = setup.sql.database.query(
+      'SELECT match_projection_json FROM competition_matches WHERE match_id = ?',
+    ).get(matchId) as { match_projection_json: string }
+    const persistedMatch = ((JSON.parse(storedProjection.match_projection_json) as JsonObject)
+      .public as JsonObject).match as JsonObject
+    const secondRequest: CompetitionRoomTerminalIngestRequest = {
+      ...terminalRequest,
+      commandId: `formal-game-two-terminal-${scenario.teamSize}`,
+      expectedMatchRevision: 12,
+      trustedTimeMs: 2634,
+      submissionId: `formal-submission-two-${scenario.teamSize}`,
+      gameRecordId: `formal-game-record-two-${scenario.teamSize}`,
+      rulingRecordId: `formal-ruling-two-${scenario.teamSize}`,
+      startKind: persistedMatch.nextGame.kind as GameStartKind,
+      firstPlayer: persistedMatch.nextFirstPlayer as string,
+    }
+    const secondTerminal = await setup.room.ingestGameTerminal(secondRequest)
+    expect(secondTerminal).toMatchObject({
+      ok: true,
+      value: { matchRevision: 13, matchProjection: { public: { match: {
+        status: 'open', score: [0, 0], nextFirstPlayer: 'team-a',
+        nextGame: {
+          gameNumber: 3,
+          kind: { type: 'eliminationDrawContinuation' },
+          firstPlayer: { type: 'assigned', team: 'team-a' },
+        },
+        rulings: [{ ruling: { type: 'needsTiebreak' } }, { ruling: { type: 'needsTiebreak' } }],
+      } } } },
+    })
+    if (!secondTerminal.ok) throw new Error('expected second elimination draw to succeed')
+    const secondRulings = ((secondTerminal.value.matchProjection?.public as JsonObject)
+      .match as JsonObject).rulings as JsonObject[]
+    const secondContinuation = (secondRulings[1]!.ruling as JsonObject).continuation as JsonObject
+    expect(secondContinuation).toEqual({ teams: [
+      { team: 'team-a', mainTimeRemainingMs: 3544 },
+      { team: 'team-b', mainTimeRemainingMs: 4222 },
+    ] })
+    const linkages = setup.sql.database.query(
+      'SELECT game_number, match_revision, status, game_id, binding_json FROM competition_game_provision ORDER BY game_number',
+    ).all() as Array<{ game_number: number; match_revision: number; status: string; game_id: string; binding_json: string }>
+    expect(linkages.map(({ game_number, match_revision, status }) => ({ game_number, match_revision, status }))).toEqual([
+      { game_number: 1, match_revision: 2, status: 'provisioned' },
+      { game_number: 2, match_revision: 7, status: 'provisioned' },
+      { game_number: 3, match_revision: 13, status: 'provisioned' },
+    ])
+    const secondBinding = JSON.parse(linkages[2]!.binding_json) as CompetitionGameBinding
+    expect(secondBinding).toMatchObject({
+      gameNumber: 3,
+      expectedMatchRevision: 13,
+      firstPlayer: 'a-1',
+      turnOrder: ['a-1', 'b-1', ...(scenario.teamSize === 2 ? ['a-2', 'b-2'] : [])],
+      startKind: { type: 'eliminationDrawContinuation', continuation: secondContinuation },
+    })
+    expect(linkages[1]!.game_id).not.toBe(linkages[2]!.game_id)
+    expect(setup.gameCalls.filter(call => call.binding.gameNumber >= 2).map(call => call.binding.startKind))
+      .toEqual([
+        { type: 'eliminationDrawContinuation', continuation: firstContinuation },
+        { type: 'eliminationDrawContinuation', continuation: secondContinuation },
+      ])
+    const thirdCarried = await runFormalContinuationClock(setup, {
+      type: 'clockNewGame', matchId, time: 'carryForward',
+    }, 2700)
+    expect(thirdCarried.clockProjection).toMatchObject({ public: { clock: { teams: [
+      { team: 'team-a', mainTimeRemainingMs: 3544 },
+      { team: 'team-b', mainTimeRemainingMs: 4222 },
+    ] } } })
+    const thirdRequest: CompetitionRoomTerminalIngestRequest = {
+      ...secondRequest,
+      commandId: `formal-game-three-terminal-${scenario.teamSize}`,
+      expectedMatchRevision: 14, trustedTimeMs: 2701,
+      submissionId: 'formal-submission-three', gameRecordId: 'formal-record-three', rulingRecordId: 'formal-ruling-three',
+      startKind: secondBinding.startKind,
+      firstPlayer: 'team-a',
+      terminalEvidence: { type: 'canonicalGameEnded', conclusion: {
+        outcome: { type: 'winner', team: 'team-a' },
+        causes: [{ type: 'directVictory', rule: 'test', team: 'team-a' }],
+      } },
+    }
+    const final = await setup.room.ingestGameTerminal(thirdRequest)
+    expect(final).toMatchObject({ ok: true, value: { matchRevision: 15, matchProjection: { public: { match: {
+      status: 'completed', score: [1, 0], nextGame: null, nextFirstPlayer: null,
+      outcome: { type: 'winner', winnerId: 'team-a', loserId: 'team-b', score: [1, 0] },
+      rulings: [{ ruling: { type: 'needsTiebreak' } }, { ruling: { type: 'needsTiebreak' } },
+        { ruling: { type: 'gameAccepted', outcome: { winner: 'team-a' } } }],
+    } } } } })
+    const tournamentCalls = setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')
+    expect(tournamentCalls).toHaveLength(1)
+    expect(tournamentCalls[0]!.operation).toEqual({
+      type: 'tournamentSubmitResult', stageId: 'stage-online', matchId,
+      result: { type: 'win', winnerId: 'team-a', loserId: 'team-b', winnerGames: 1, loserGames: 0 },
+    })
+    const finalMeta = setup.sql.database.query(
+      'SELECT revision, server_state_json FROM competition_meta',
+    ).get() as { revision: number; server_state_json: string }
+    expect(finalMeta.revision).toBe(4)
+    const finalTournament = (JSON.parse(finalMeta.server_state_json) as JsonObject).tournament as JsonObject
+    const finalStage = (finalTournament.stages as JsonObject[])[0]!
+    expect(finalStage.status).toBe('finished')
+    expect((finalTournament.stages as JsonObject[]).filter(stage => stage.status === 'active')).toEqual([])
+    expect(((finalStage.rounds as JsonObject[])[0]!.matches as JsonObject[])[0]).toMatchObject({
+      status: 'completed', result: { type: 'win', winnerId: 'team-a', loserId: 'team-b', winnerGames: 1, loserGames: 0 },
+    })
+    const operationsBeforeRetry = setup.calls.length
+    expect(await setup.room.ingestGameTerminal({ ...thirdRequest, trustedTimeMs: 10_000 }))
+      .toMatchObject({ ok: true, value: { idempotent: true, matchRevision: 15 } })
+    // 後續事件已推進 revision，舊 terminal 收據仍回原 revision，不能重建加賽或重送賽程結果。
+    expect(await setup.room.ingestGameTerminal({ ...terminalRequest, trustedTimeMs: 10_001 }))
+      .toMatchObject({ ok: true, value: { idempotent: true, matchRevision: 7 } })
+    expect(setup.calls).toHaveLength(operationsBeforeRetry)
+    expect(setup.sql.database.query('SELECT revision, server_state_json FROM competition_meta').get()).toEqual(finalMeta)
+    expect(setup.sql.database.query(
+      'SELECT game_number FROM competition_game_provision ORDER BY game_number',
+    ).all()).toEqual([{ game_number: 1 }, { game_number: 2 }, { game_number: 3 }])
+    expect(setup.gameCalls.map(call => call.binding.gameNumber)).toEqual([1, 2, 3])
+    expect(setup.sql.database.query(
+      'SELECT COUNT(*) AS count FROM competition_audit WHERE command_id = ?',
+    ).get(thirdRequest.commandId)).toEqual({ count: 1 })
+  }
+})
+
+test('formal WASM continuation allows only the losing captain and persists an exact assignment receipt', async () => {
+  const { setup, terminal } = await createFormalContinuation({ winner: 'team-a' })
+  expect(terminal).toMatchObject({
+    ok: true,
+    value: { matchRevision: 3, matchProjection: { public: { match: {
+      games: [{ rulingRecordId: 'formal-ruling' }],
+      nextGame: { gameNumber: 2, firstPlayer: { type: 'pending' } },
+    } } } },
+  })
+  const request = captainFirstPlayerRequest()
+  const assigned = await setup.room.assignNextFirstPlayerByCaptain(request)
+  expect(assigned).toMatchObject({
+    ok: true,
+    value: {
+      competitionId: 'competition-1', matchId: 'provision-match',
+      matchRevision: 4, commandId: request.commandId, idempotent: false,
+      matchProjection: { operation: 'matchAssignFirstPlayer', public: { match: {
+        status: 'open', nextFirstPlayer: 'team-a',
+        nextGame: { gameNumber: 2, firstPlayer: { type: 'assigned', team: 'team-a' } },
+      } } },
+    },
+  })
+  const engineCount = setup.engineOperations.length
+  const restarted = new CompetitionRoomClass(
+    stateFor(setup.sql, setup.alarm), setup.env, setup.adapter,
+  )
+  const retry = await restarted.assignNextFirstPlayerByCaptain({
+    ...request,
+    trustedTimeMs: 50_000,
+  })
+  expect(retry).toMatchObject({ ok: true, value: { idempotent: true, matchRevision: 4 } })
+  expect(setup.engineOperations).toHaveLength(engineCount)
+  expect(await setup.room.assignNextFirstPlayerByCaptain({
+    ...request,
+    selectedFirstPlayerTeam: 'team-b',
+  })).toMatchObject({ ok: false, error: { code: 'commandIdConflict' } })
+  expect(await setup.room.assignNextFirstPlayerByCaptain({
+    ...request,
+    expectedMatchRevision: request.expectedMatchRevision + 1,
+  })).toMatchObject({ ok: false, error: { code: 'commandIdConflict' } })
+  expect(setup.sql.database.query(
+    'SELECT role, operation_type, reason, revision FROM competition_audit WHERE command_id = ?',
+  ).get(request.commandId)).toEqual({
+    role: 'player', operation_type: 'assignNextFirstPlayerByCaptain',
+    reason: '敗方隊長選擇本局先手隊伍', revision: 4,
+  })
+  expect(JSON.stringify(assigned)).not.toMatch(/"(?:captain|members|decks|deckSeed|serverState|private)"\s*:/)
+})
+
+test('formal WASM loser captain may select either team, with 2v2 captain identity checked from locked roster', async () => {
+  const setupA = await createFormalContinuation({ winner: 'team-a' })
+  const selectedA = await setupA.setup.room.assignNextFirstPlayerByCaptain(
+    captainFirstPlayerRequest({ selectedFirstPlayerTeam: 'team-b' }),
+  )
+  expect(selectedA).toMatchObject({
+    ok: true,
+    value: { matchProjection: { public: { match: {
+      nextFirstPlayer: 'team-b',
+      nextGame: { firstPlayer: { type: 'assigned', team: 'team-b' } },
+    } } } },
+  })
+
+  const setupB = await createFormalContinuation({ winner: 'team-a', teamSize: 2 })
+  const twoVsTwo = await setupB.setup.room.assignNextFirstPlayerByCaptain(
+    captainFirstPlayerRequest({ selectedFirstPlayerTeam: 'team-a' }),
+  )
+  expect(twoVsTwo.ok).toBe(true)
+})
+
+test('captain-assigned provision uses formal WASM assignments and derives 1v1/2v2 lineups from locked rosters', async () => {
+  for (const scenario of [
+    { teamSize: 1 as const, selectedFirstPlayerTeam: 'team-a', personalDeck: false },
+    { teamSize: 1 as const, selectedFirstPlayerTeam: 'team-b', personalDeck: false },
+    { teamSize: 2 as const, selectedFirstPlayerTeam: 'team-a', personalDeck: true },
+    { teamSize: 2 as const, selectedFirstPlayerTeam: 'team-b', personalDeck: true },
+  ]) {
+    const { setup, terminal } = await createFormalContinuation({
+      winner: 'team-a', teamSize: scenario.teamSize, personalDeck: scenario.personalDeck,
+    })
+    expect(terminal).toMatchObject({ ok: true, value: { matchRevision: 3 } })
+    const assignmentRequest = captainFirstPlayerRequest({
+      commandId: `assignment-${scenario.teamSize}-${scenario.selectedFirstPlayerTeam}`,
+      selectedFirstPlayerTeam: scenario.selectedFirstPlayerTeam,
+    })
+    const assignment = await setup.room.assignNextFirstPlayerByCaptain(assignmentRequest)
+    expect(assignment).toMatchObject({ ok: true, value: { matchRevision: 4 } })
+
+    const provisionRequest = captainGameProvisionRequest({
+      commandId: `provision-${scenario.teamSize}-${scenario.selectedFirstPlayerTeam}`,
+      assignmentCommandId: assignmentRequest.commandId,
+    })
+    const provisioned = await setup.room.provisionCaptainAssignedScheduledGame(provisionRequest)
+    expect(provisioned).toMatchObject({
+      ok: true,
+      value: {
+        competitionId: 'competition-1', matchId: 'provision-match',
+        matchRevision: 4, gameNumber: 2, commandId: provisionRequest.commandId,
+        idempotent: false, status: 'provisioned',
+      },
+    })
+    const gameTwo = setup.sql.database.query(
+      `SELECT game_id, match_revision, binding_json FROM competition_game_provision
+       WHERE match_id = 'provision-match' AND game_number = 2`,
+    ).get() as { game_id: string; match_revision: number; binding_json: string }
+    const binding = JSON.parse(gameTwo.binding_json) as CompetitionGameBinding
+    const expectedTurnOrder = scenario.teamSize === 1
+      ? scenario.selectedFirstPlayerTeam === 'team-a' ? ['a-1', 'b-1'] : ['b-1', 'a-1']
+      : scenario.selectedFirstPlayerTeam === 'team-a'
+        ? ['a-1', 'b-1', 'a-2', 'b-2']
+        : ['b-1', 'a-1', 'b-2', 'a-2']
+    expect(gameTwo.match_revision).toBe(4)
+    expect(binding).toMatchObject({
+      expectedMatchRevision: 4,
+      firstPlayer: expectedTurnOrder[0],
+      turnOrder: expectedTurnOrder,
+    })
+    expect(JSON.stringify(provisioned)).not.toMatch(/captain|members|decks|deckSeed|turnOrder|binding|serverState|private/)
+    const storedReceipt = setup.sql.database.query(
+      'SELECT response_json FROM competition_command_receipt WHERE command_id = ?',
+    ).get(provisionRequest.commandId) as { response_json: string }
+    expect(storedReceipt.response_json).not.toMatch(/captain|members|decks|deckSeed|turnOrder|binding|serverState|private/)
+  }
+})
+
+test('captain provision retries after response loss and restart with the same durable identity; semantic reuse conflicts', async () => {
+  let remote: { gameId: string; binding: CompetitionGameBinding } | null = null
+  let attempts = 0
+  const create = async (request: { gameId: string; binding: CompetitionGameBinding }) => {
+    if (request.binding.gameNumber !== 2) {
+      return { gameId: request.gameId, status: 'Waiting', idempotent: false }
+    }
+    attempts += 1
+    if (!remote) remote = structuredClone(request)
+    else expect(request).toEqual(remote)
+    if (attempts === 1) throw new Error('simulated response loss')
+    return { gameId: request.gameId, status: 'Waiting', idempotent: true }
+  }
+  const { setup } = await createFormalContinuation({ winner: 'team-a', create })
+  const assignment = captainFirstPlayerRequest()
+  expect((await setup.room.assignNextFirstPlayerByCaptain(assignment)).ok).toBe(true)
+  const request = captainGameProvisionRequest({ assignmentCommandId: assignment.commandId })
+  const first = await setup.room.provisionCaptainAssignedScheduledGame(request)
+  expect(first).toMatchObject({ ok: true, value: { idempotent: false, status: 'pending' } })
+  const linkageBeforeRestart = setup.sql.database.query(
+    `SELECT game_id, binding_json FROM competition_game_provision
+     WHERE match_id = 'provision-match' AND game_number = 2`,
+  ).get() as { game_id: string; binding_json: string }
+  const engineCount = setup.engineOperations.length
+  setup.sql.database.query(
+    'UPDATE competition_acl SET active = 0 WHERE user_id = ?',
+  ).run(request.callerUserId)
+  setup.sql.database.query(
+    'UPDATE competition_game_provision SET next_attempt_at_ms = 0 WHERE game_number = 2',
+  ).run()
+  const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+  const retry = await restarted.provisionCaptainAssignedScheduledGame({
+    ...request,
+    trustedTimeMs: 50_000,
+  })
+  expect(retry).toMatchObject({
+    ok: true,
+    value: {
+      idempotent: true, status: 'provisioned', gameId: linkageBeforeRestart.game_id,
+      matchRevision: 4, gameNumber: 2,
+    },
+  })
+  expect(JSON.parse(linkageBeforeRestart.binding_json)).toEqual(remote?.binding)
+  expect(setup.engineOperations).toHaveLength(engineCount)
+  expect(attempts).toBe(2)
+  expect(await setup.room.provisionCaptainAssignedScheduledGame({
+    ...request, assignmentCommandId: 'another-assignment',
+  })).toMatchObject({ ok: false, error: { code: 'commandIdConflict' } })
+  expect(await setup.room.provisionCaptainAssignedScheduledGame({
+    ...request, expectedMatchRevision: request.expectedMatchRevision + 1,
+  })).toMatchObject({ ok: false, error: { code: 'commandIdConflict' } })
+})
+
+test('captain provision request rejects caller-owned lineup, binding and seed fields', async () => {
+  const { setup } = await createFormalContinuation({ winner: 'team-a' })
+  const assignment = captainFirstPlayerRequest()
+  expect((await setup.room.assignNextFirstPlayerByCaptain(assignment)).ok).toBe(true)
+  const request = captainGameProvisionRequest({ assignmentCommandId: assignment.commandId })
+  for (const field of ['firstPlayer', 'turnOrder', 'binding', 'deckSeed', 'gameId'] as const) {
+    const spoofed = { ...request, [field]: field === 'turnOrder' ? ['attacker'] : 'attacker' }
+    expect(await setup.room.provisionCaptainAssignedScheduledGame(spoofed as typeof request))
+      .toMatchObject({ ok: false, error: { code: 'invalidRequest' } })
+  }
+  expect(await setup.room.provisionCaptainAssignedScheduledGame({
+    ...request, expectedMatchRevision: 3,
+  })).toMatchObject({ ok: false, error: { code: 'matchRevisionConflict' } })
+  expect(setup.sql.database.query(
+    "SELECT COUNT(*) AS count FROM competition_game_provision WHERE game_number = 2",
+  ).get()).toEqual({ count: 0 })
+})
+
+test('captain provision rejects noncaptains, other roles, inactive accounts and outsiders', async () => {
+  const scenarios = [
+    { label: 'non-captain', callerUserId: 'b-2', acl: null },
+    { label: 'other role', callerUserId: 'referee-1', acl: null, referee: true },
+    { label: 'inactive', callerUserId: 'b-1', acl: { active: 0, participant: 1 } },
+    { label: 'outsider', callerUserId: 'outsider', acl: { active: 1, participant: 0 } },
+  ] as const
+  for (const scenario of scenarios) {
+    const { setup } = await createFormalContinuation({
+      winner: 'team-a', teamSize: scenario.label === 'non-captain' ? 2 : 1,
+      referee: scenario.label === 'other role' ? true : undefined,
+    })
+    const assignment = captainFirstPlayerRequest()
+    expect((await setup.room.assignNextFirstPlayerByCaptain(assignment)).ok).toBe(true)
+    if (scenario.acl) {
+      setup.sql.database.query(
+        'UPDATE competition_acl SET active = ?, participant = ? WHERE user_id = ?',
+      ).run(scenario.acl.active, scenario.acl.participant, scenario.callerUserId)
+    }
+    if (scenario.label === 'outsider') {
+      setup.sql.database.query(
+        `INSERT INTO competition_acl (user_id, role, active, participant)
+         VALUES (?, 'player', 1, 0)`,
+      ).run(scenario.callerUserId)
+    }
+    const result = await setup.room.provisionCaptainAssignedScheduledGame(captainGameProvisionRequest({
+      commandId: `denied-${scenario.label}`,
+      callerUserId: scenario.callerUserId,
+      assignmentCommandId: assignment.commandId,
+    }))
+    expect(result).toMatchObject({ ok: false })
+    expect(setup.sql.database.query(
+      "SELECT COUNT(*) AS count FROM competition_game_provision WHERE game_number = 2",
+    ).get()).toEqual({ count: 0 })
+  }
+})
+
+test('captain provision rejects missing, stale, cross-match, cross-caller and tampered assignment evidence', async () => {
+  const scenarios = [
+    { label: 'missing receipt', mutate: (sql: MemorySql, commandId: string) => {
+      sql.database.query('DELETE FROM competition_command_receipt WHERE command_id = ?').run(commandId)
+    } },
+    { label: 'missing audit', mutate: (sql: MemorySql, commandId: string) => {
+      sql.database.query('DELETE FROM competition_audit WHERE command_id = ?').run(commandId)
+    } },
+    { label: 'old command', useOldCommand: true },
+    { label: 'cross match', mutate: (sql: MemorySql, commandId: string) => {
+      sql.database.query('UPDATE competition_command_receipt SET match_id = ? WHERE command_id = ?')
+        .run('another-match', commandId)
+    } },
+    { label: 'wrong fingerprint', mutate: (sql: MemorySql, commandId: string) => {
+      sql.database.query('UPDATE competition_command_receipt SET fingerprint = ? WHERE command_id = ?')
+        .run('tampered', commandId)
+    } },
+    { label: 'malformed response', mutate: (sql: MemorySql, commandId: string) => {
+      sql.database.query('UPDATE competition_command_receipt SET response_json = ? WHERE command_id = ?')
+        .run('{}', commandId)
+    } },
+    ...(['actor_user_id', 'role', 'operation_type', 'match_id', 'command_id', 'revision', 'outcome_code', 'reason'] as const)
+      .map(field => ({ label: `tampered audit ${field}`, mutate: (sql: MemorySql, commandId: string) => {
+        const values: Record<typeof field, string | number> = {
+          actor_user_id: 'attacker', role: 'organizer', operation_type: 'execute',
+          match_id: 'another-match', command_id: 'another-command', revision: 99,
+          outcome_code: 'failed', reason: '改寫理由',
+        }
+        sql.database.query(`UPDATE competition_audit SET ${field} = ? WHERE command_id = ?`)
+          .run(values[field], commandId)
+      } })),
+    { label: 'tampered audit trusted time', mutate: (sql: MemorySql, commandId: string) => {
+      sql.database.query('UPDATE competition_audit SET trusted_time_ms = ? WHERE command_id = ?')
+        .run(203, commandId)
+    } },
+  ]
+  for (const scenario of scenarios) {
+    const { setup } = await createFormalContinuation({ winner: 'team-a' })
+    const assignment = captainFirstPlayerRequest()
+    expect((await setup.room.assignNextFirstPlayerByCaptain(assignment)).ok).toBe(true)
+    if ('mutate' in scenario && scenario.mutate) scenario.mutate(setup.sql, assignment.commandId)
+    const assignmentCommandId = 'useOldCommand' in scenario && scenario.useOldCommand
+      ? 'formal-game-one-terminal'
+      : assignment.commandId
+    const result = await setup.room.provisionCaptainAssignedScheduledGame(captainGameProvisionRequest({
+      commandId: `evidence-${scenario.label}`,
+      assignmentCommandId,
+    }))
+    expect(result).toMatchObject({ ok: false })
+    expect(setup.sql.database.query(
+      "SELECT COUNT(*) AS count FROM competition_game_provision WHERE game_number = 2",
+    ).get()).toEqual({ count: 0 })
+  }
+})
+
+test('captain provision fails closed after match state or locked roster changes and for an existing game linkage', async () => {
+  for (const changed of ['checkpoint', 'projection', 'view', 'roster', 'already-linked'] as const) {
+    const mutableRoster = lockedRoster(1, false)
+    const { setup } = await createFormalContinuation({ winner: 'team-a', roster: mutableRoster })
+    const assignment = captainFirstPlayerRequest()
+    expect((await setup.room.assignNextFirstPlayerByCaptain(assignment)).ok).toBe(true)
+    if (changed === 'checkpoint') {
+      const row = setup.sql.database.query(
+        'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+      ).get('provision-match') as { match_checkpoint_json: string }
+      const checkpoint = JSON.parse(row.match_checkpoint_json) as JsonObject
+      ;(checkpoint.history as JsonValue[]).push({ type: 'untrustedChange' })
+      setup.sql.database.query('UPDATE competition_matches SET match_checkpoint_json = ? WHERE match_id = ?')
+        .run(JSON.stringify(checkpoint), 'provision-match')
+    } else if (changed === 'projection') {
+      const row = setup.sql.database.query(
+        'SELECT match_projection_json FROM competition_matches WHERE match_id = ?',
+      ).get('provision-match') as { match_projection_json: string }
+      const projection = JSON.parse(row.match_projection_json) as JsonObject
+      ;((projection.public as JsonObject).match as JsonObject).status = 'completed'
+      setup.sql.database.query('UPDATE competition_matches SET match_projection_json = ? WHERE match_id = ?')
+        .run(JSON.stringify(projection), 'provision-match')
+    } else if (changed === 'view') {
+      const delegate = setup.adapter
+      const malformedView: CompetitionEngineAdapter = async engineRequest => {
+        const response = await delegate(engineRequest)
+        return engineRequest.operation.type === 'matchView'
+          ? { ...response, public: { match: { status: 'open' } } }
+          : response
+      }
+      const malformedRoom = new CompetitionRoomClass(
+        stateFor(setup.sql, setup.alarm), setup.env, malformedView,
+      )
+      expect(await malformedRoom.provisionCaptainAssignedScheduledGame(captainGameProvisionRequest({
+        commandId: `changed-${changed}`,
+        assignmentCommandId: assignment.commandId,
+      }))).toMatchObject({ ok: false })
+      continue
+    } else if (changed === 'roster') {
+      const teams = mutableRoster.teams as JsonValue[]
+      ;(teams[1] as JsonObject).captain = 'a-1'
+    } else {
+      setup.sql.database.query(
+        `INSERT INTO competition_game_provision
+          (match_id, game_number, game_id, binding_json, match_revision, next_game_json,
+           command_id, fingerprint, status, attempts, next_attempt_at_ms, error_code, created_trusted_time_ms)
+         VALUES ('provision-match', 2, 'pre-existing-game', '{}', 4, '{}',
+           'existing-game-command', 'existing-fingerprint', 'pending', 0, 0, NULL, 205)`,
+      ).run()
+    }
+    expect(await setup.room.provisionCaptainAssignedScheduledGame(captainGameProvisionRequest({
+      commandId: `changed-${changed}`,
+      assignmentCommandId: assignment.commandId,
+    }))).toMatchObject({ ok: false })
+  }
+})
+
+test('captain provision transaction rolls back all writes and strict ACK retry reuses persisted linkage', async () => {
+  let createCalls = 0
+  const setupResult = await createFormalContinuation({ winner: 'team-a' })
+  const assignment = captainFirstPlayerRequest()
+  expect((await setupResult.setup.room.assignNextFirstPlayerByCaptain(assignment)).ok).toBe(true)
+  const request = captainGameProvisionRequest({ assignmentCommandId: assignment.commandId })
+  setupResult.setup.sql.failNextQueryContaining = 'INSERT INTO competition_command_receipt'
+  const failed = await setupResult.setup.room.provisionCaptainAssignedScheduledGame(request)
+  expect(failed).toMatchObject({ ok: false, error: { code: 'internalFailure' } })
+  expect(setupResult.setup.sql.database.query(
+    "SELECT COUNT(*) AS count FROM competition_game_provision WHERE game_number = 2",
+  ).get()).toEqual({ count: 0 })
+  expect(setupResult.setup.sql.database.query(
+    "SELECT COUNT(*) AS count FROM competition_audit WHERE operation_type = 'provisionCaptainAssignedScheduledGame'",
+  ).get()).toEqual({ count: 0 })
+  expect(setupResult.setup.sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+  ).get(request.commandId)).toEqual({ count: 0 })
+
+  const create = async (game: { gameId: string; binding: CompetitionGameBinding }) => {
+    createCalls += 1
+    return createCalls === 1
+      ? { gameId: game.gameId, status: 'InvalidAck', idempotent: false }
+      : { gameId: game.gameId, status: 'Waiting', idempotent: true }
+  }
+  const retryRoom = new CompetitionRoomClass(
+    stateFor(setupResult.setup.sql, setupResult.setup.alarm),
+    { GAME_ROOM: gameRoomNamespace(create) },
+    setupResult.setup.adapter,
+  )
+  const pending = await retryRoom.provisionCaptainAssignedScheduledGame(request)
+  expect(pending).toMatchObject({ ok: true, value: { status: 'pending', idempotent: false } })
+  setupResult.setup.sql.database.query(
+    'UPDATE competition_game_provision SET next_attempt_at_ms = 0 WHERE game_number = 2',
+  ).run()
+  const linkage = setupResult.setup.sql.database.query(
+    "SELECT game_id, binding_json FROM competition_game_provision WHERE game_number = 2",
+  ).get() as { game_id: string; binding_json: string }
+  const retry = await retryRoom.provisionCaptainAssignedScheduledGame(request)
+  expect(retry).toMatchObject({ ok: true, value: { status: 'provisioned', idempotent: true, gameId: linkage.game_id } })
+  expect(createCalls).toBe(2)
+  expect(setupResult.setup.sql.database.query(
+    "SELECT COUNT(*) AS count FROM competition_audit WHERE operation_type = 'provisionCaptainAssignedScheduledGame'",
+  ).get()).toEqual({ count: 1 })
+})
+
+test('captain provision transaction revalidates assignment receipt and every audit field after engine awaits', async () => {
+  for (const evidence of ['receipt', 'audit', 'audit-time'] as const) {
+    const { setup } = await createFormalContinuation({ winner: 'team-a' })
+    const assignment = captainFirstPlayerRequest({ commandId: `late-${evidence}-assignment` })
+    expect((await setup.room.assignNextFirstPlayerByCaptain(assignment)).ok).toBe(true)
+    const delegate = setup.adapter
+    let mutated = false
+    const mutatingAdapter: CompetitionEngineAdapter = async request => {
+      const response = await delegate(request)
+      if (!mutated && request.operation.type === 'registrationExportLockedRoster') {
+        mutated = true
+        if (evidence === 'receipt') {
+          setup.sql.database.query(
+            'UPDATE competition_command_receipt SET response_json = ? WHERE command_id = ?',
+          ).run('{}', assignment.commandId)
+        } else {
+          setup.sql.database.query(
+            evidence === 'audit'
+              ? 'UPDATE competition_audit SET actor_user_id = ? WHERE command_id = ?'
+              : 'UPDATE competition_audit SET trusted_time_ms = ? WHERE command_id = ?',
+          ).run(evidence === 'audit' ? 'raced-attacker' : 203, assignment.commandId)
+        }
+      }
+      return response
+    }
+    const room = new CompetitionRoomClass(
+      stateFor(setup.sql, setup.alarm), setup.env, mutatingAdapter,
+    )
+    const request = captainGameProvisionRequest({
+      commandId: `late-${evidence}-provision`,
+      assignmentCommandId: assignment.commandId,
+    })
+    expect(await room.provisionCaptainAssignedScheduledGame(request)).toMatchObject({
+      ok: false, error: { code: 'internalFailure' },
+    })
+    expect(mutated).toBe(true)
+    expect(setup.sql.database.query(
+      "SELECT COUNT(*) AS count FROM competition_game_provision WHERE game_number = 2",
+    ).get()).toEqual({ count: 0 })
+    expect(setup.sql.database.query(
+      'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+    ).get(request.commandId)).toEqual({ count: 0 })
+    expect(setup.sql.database.query(
+      "SELECT COUNT(*) AS count FROM competition_audit WHERE operation_type = 'provisionCaptainAssignedScheduledGame'",
+    ).get()).toEqual({ count: 0 })
+  }
+})
+
+test('automatic ordinary-draw linkage prevents a duplicate organizer or captain provision', async () => {
+  const { setup, terminal } = await createFormalContinuation()
+  expect(terminal.ok).toBe(true)
+  const organizerProvision = await setup.room.provisionAssignedScheduledGame(provisionAssignedRequest({
+    commandId: 'organizer-after-captain-feature',
+    expectedMatchRevision: 3,
+    trustedTimeMs: 204,
+  }))
+  expect(organizerProvision).toMatchObject({ ok: false, error: { code: 'gameAlreadyLinked' } })
+  expect(await setup.room.provisionCaptainAssignedScheduledGame(captainGameProvisionRequest({
+    commandId: 'captain-cannot-replace-organizer-linkage',
+    assignmentCommandId: 'no-assignment',
+    expectedMatchRevision: 3,
+  }))).toMatchObject({ ok: false })
+})
+
+test('formal timeoutLoss continuation authorizes the persisted loser captain', async () => {
+  const { setup, terminal } = await createFormalContinuation({ timeoutLoser: 'team-b' })
+  expect(terminal).toMatchObject({
+    ok: true,
+    value: { matchProjection: { public: { match: {
+      rulings: [{ ruling: { type: 'timeoutLoss', loser: 'team-b' } }],
+      nextGame: { gameNumber: 2, firstPlayer: { type: 'pending' } },
+    } } } },
+  })
+  expect(await setup.room.assignNextFirstPlayerByCaptain(captainFirstPlayerRequest({
+    commandId: 'timeout-loser-captain-choice',
+    selectedFirstPlayerTeam: 'team-b',
+  }))).toMatchObject({
+    ok: true,
+    value: { matchProjection: { public: { match: { nextFirstPlayer: 'team-b' } } } },
+  })
+})
+
+test('eliminationDrawLoss continuation is explicitly unresolved for captain selection', async () => {
+  const { setup, terminal } = await createFormalContinuation({ eliminationDrawLoss: true })
+  expect(terminal).toMatchObject({
+    ok: true,
+    value: { matchProjection: { public: { match: {
+      rulings: [{ ruling: { type: 'eliminationDrawLoss', loser: 'team-a' } }],
+    } } } },
+  })
+  expect(await setup.room.assignNextFirstPlayerByCaptain(captainFirstPlayerRequest({
+    commandId: 'elimination-draw-loss-captain-choice',
+  }))).toMatchObject({
+    ok: false,
+    error: { code: 'eliminationDrawLossUnresolved' },
+  })
+})
+
+test('elimination draw requiring a tiebreak cannot use ordinary captain selection', async () => {
+  const { setup, terminal } = await createFormalContinuation({ eliminationNeedsTiebreak: true })
+  expect(terminal).toMatchObject({
+    ok: true,
+    value: { matchProjection: { public: { match: {
+      rulings: [{ ruling: { type: 'needsTiebreak' } }],
+    } } } },
+  })
+  expect(await setup.room.assignNextFirstPlayerByCaptain(captainFirstPlayerRequest({
+    commandId: 'needs-tiebreak-captain-choice',
+  }))).toMatchObject({
+    ok: false,
+    error: { code: 'gameAlreadyLinked' },
+  })
+})
+
+test('ordinary draw cannot authorize a losing-team captain choice', async () => {
+  const { setup, terminal } = await createFormalContinuation()
+  expect(terminal).toMatchObject({ ok: true })
+  expect(await setup.room.assignNextFirstPlayerByCaptain(captainFirstPlayerRequest({
+    commandId: 'ordinary-draw-captain-choice',
+  }))).toMatchObject({
+    ok: false,
+    error: { code: 'gameAlreadyLinked' },
+  })
+})
+
+test('double timeout pending referee state is not a captain-selection ruling', async () => {
+  const { setup, terminal } = await createFormalContinuation({ doubleTimeout: true })
+  expect(terminal).toMatchObject({
+    ok: true,
+    value: { matchProjection: { public: { match: { status: 'awaitingReferee' } } } },
+  })
+  expect(await setup.room.assignNextFirstPlayerByCaptain(captainFirstPlayerRequest({
+    commandId: 'double-timeout-captain-choice',
+  }))).toMatchObject({
+    ok: false,
+    error: { code: 'firstPlayerPolicyUnresolved' },
+  })
+})
+
+test('captain first-player rejects noncaptains, wrong roles, stale revisions, and spoofed fields', async () => {
+  const { setup } = await createFormalContinuation({ winner: 'team-a' })
+  const base = captainFirstPlayerRequest()
+  expect(await setup.room.assignNextFirstPlayerByCaptain({ ...base, callerUserId: 'a-1' }))
+    .toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  expect(await setup.room.assignNextFirstPlayerByCaptain({
+    ...base, expectedMatchRevision: 2, commandId: 'captain-stale-revision',
+  })).toMatchObject({ ok: false, error: { code: 'matchRevisionConflict' } })
+  expect(await setup.room.assignNextFirstPlayerByCaptain({
+    ...base, trustedTimeMs: 202, commandId: 'captain-stale-time',
+  })).toMatchObject({ ok: false, error: { code: 'trustedTimeRegression' } })
+  expect(await setup.room.assignNextFirstPlayerByCaptain({
+    ...base, commandId: 'captain-spoof', firstPlayer: 'a-1',
+  } as unknown as CompetitionRoomAssignNextFirstPlayerByCaptainRequest))
+    .toMatchObject({ ok: false, error: { code: 'invalidRequest' } })
+  const row = setup.sql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match')
+  expect(row).toEqual({ revision: 3 })
+})
+
+test('captain assignment rejects noncaptain teammates, organizer, referee, outsider, inactive participant, and foreign team', async () => {
+  const { setup } = await createFormalContinuation({ winner: 'team-a', teamSize: 2 })
+  setup.sql.database.query(
+    `INSERT INTO competition_acl (user_id, role, active, participant)
+     VALUES ('referee-1', 'referee', 1, 0), ('inactive-captain', 'player', 0, 1)`,
+  ).run()
+  const rejects = [
+    { callerUserId: 'b-2', selectedFirstPlayerTeam: 'team-a', commandId: 'reject-teammate' },
+    { callerUserId: 'organizer-1', selectedFirstPlayerTeam: 'team-a', commandId: 'reject-organizer' },
+    { callerUserId: 'referee-1', selectedFirstPlayerTeam: 'team-a', commandId: 'reject-referee' },
+    { callerUserId: 'outside-user', selectedFirstPlayerTeam: 'team-a', commandId: 'reject-outsider' },
+    { callerUserId: 'inactive-captain', selectedFirstPlayerTeam: 'team-a', commandId: 'reject-inactive' },
+    { callerUserId: 'b-1', selectedFirstPlayerTeam: 'team-c', commandId: 'reject-foreign-team' },
+  ]
+  for (const scenario of rejects) {
+    expect(await setup.room.assignNextFirstPlayerByCaptain(captainFirstPlayerRequest(scenario)))
+      .toMatchObject({ ok: false })
+  }
+  expect(setup.sql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match')).toEqual({ revision: 3 })
+})
+
+test('captain assignment fails closed on matchView or locked roster disagreement', async () => {
+  const badRoster = lockedRoster(1, false)
+  const malformedRoster = await createFormalContinuation({
+    winner: 'team-a',
+    roster: badRoster,
+  })
+  ;(badRoster.teams as JsonValue[]).pop()
+  expect(await malformedRoster.setup.room.assignNextFirstPlayerByCaptain(captainFirstPlayerRequest()))
+    .toMatchObject({ ok: false, error: { code: 'invalidLockedRoster' } })
+
+  const malformedView = await createFormalContinuation({ winner: 'team-a' })
+  const row = malformedView.setup.sql.database.query(
+    'SELECT match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match') as { match_projection_json: string }
+  const projection = JSON.parse(row.match_projection_json) as JsonObject
+  const publicProjection = projection.public as JsonObject
+  const match = publicProjection.match as JsonObject
+  match.nextFirstPlayer = 'team-b'
+  malformedView.setup.sql.database.query(
+    'UPDATE competition_matches SET match_projection_json = ? WHERE match_id = ?',
+  ).run(JSON.stringify(projection), 'provision-match')
+  expect(await malformedView.setup.room.assignNextFirstPlayerByCaptain(captainFirstPlayerRequest()))
+    .toMatchObject({ ok: false, error: { code: 'engineInvalidMatchCheckpoint' } })
+
+  const malformedExport = await createFormalContinuation({ winner: 'team-a' })
+  const badExportRoom = new CompetitionRoomClass(
+    stateFor(malformedExport.setup.sql, malformedExport.setup.alarm),
+    malformedExport.setup.env,
+    async request => {
+      if (request.operation.type === 'registrationExportLockedRoster') {
+        return {
+          ok: true,
+          operation: 'registrationExportLockedRoster',
+          public: { exported: true },
+          private: { extraPrivateField: true },
+          serverState: request.serverState,
+        }
+      }
+      return callCompetitionEngine(request, realCompetitionWasm)
+    },
+  )
+  expect(await badExportRoom.assignNextFirstPlayerByCaptain(captainFirstPlayerRequest({
+    commandId: 'malformed-export-captain-choice',
+  }))).toMatchObject({ ok: false, error: { code: 'invalidLockedRoster' } })
+})
+
+test('captain assignment transaction rolls back and its corrupted receipt fails closed', async () => {
+  const { setup } = await createFormalContinuation({ winner: 'team-a' })
+  const request = captainFirstPlayerRequest({ commandId: 'captain-atomic-retry' })
+  setup.sql.failNextQueryContaining = 'INSERT INTO competition_command_receipt'
+  expect(await setup.room.assignNextFirstPlayerByCaptain(request))
+    .toMatchObject({ ok: false, error: { code: 'internalFailure' } })
+  expect(setup.sql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match')).toEqual({ revision: 3 })
+  expect(setup.sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_audit WHERE command_id = ?',
+  ).get(request.commandId)).toEqual({ count: 0 })
+  expect(setup.sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+  ).get(request.commandId)).toEqual({ count: 0 })
+  expect((await setup.room.assignNextFirstPlayerByCaptain(request)).ok).toBe(true)
+  const stored = setup.sql.database.query(
+    'SELECT response_json FROM competition_command_receipt WHERE command_id = ?',
+  ).get(request.commandId) as { response_json: string }
+  const receipt = JSON.parse(stored.response_json) as JsonObject
+  const value = receipt.value as JsonObject
+  const projection = value.matchProjection as JsonObject
+  const publicProjection = projection.public as JsonObject
+  const match = publicProjection.match as JsonObject
+  match.serverState = { secrets: true }
+  setup.sql.database.query(
+    'UPDATE competition_command_receipt SET response_json = ? WHERE command_id = ?',
+  ).run(JSON.stringify(receipt), request.commandId)
+  expect(await setup.room.assignNextFirstPlayerByCaptain({ ...request, trustedTimeMs: 50_000 }))
+    .toMatchObject({ ok: false, error: { code: 'internalFailure' } })
+  delete match.serverState
+  const nextGame = match.nextGame as JsonObject
+  const firstPlayer = nextGame.firstPlayer as JsonObject
+  firstPlayer.team = 'team-b'
+  setup.sql.database.query(
+    'UPDATE competition_command_receipt SET response_json = ? WHERE command_id = ?',
+  ).run(JSON.stringify(receipt), request.commandId)
+  expect(await setup.room.assignNextFirstPlayerByCaptain({ ...request, trustedTimeMs: 50_001 }))
+    .toMatchObject({ ok: false, error: { code: 'internalFailure' } })
+})
+
+test('formal WASM correction preserves the already linked ordinary-draw continuation', async () => {
+  const { setup } = await createFormalContinuation({ referee: true })
+  const corrected = await setup.room.executeMatch(matchExecuteRequest({
+    type: 'matchCorrectRuling',
+    matchId: 'provision-match',
+    correctionId: 'formal-correction',
+    refereeId: 'referee-1',
+    gameRecordId: 'formal-game-record',
+    replacementRulingRecordId: 'formal-replacement-ruling',
+    replacementRuling: { type: 'gameAccepted', outcome: 'draw' },
+    reason: '核對後維持和局',
+  }, {
+    matchId: 'provision-match',
+    callerUserId: 'referee-1',
+    commandId: 'formal-correction-command',
+    expectedMatchRevision: 3,
+    trustedTimeMs: 204,
+  }))
+  expect(corrected).toMatchObject({
+    ok: true,
+    value: { matchRevision: 4, matchProjection: { operation: 'matchCorrectRuling' } },
+  })
+
+  const provisioned = await setup.room.provisionAssignedScheduledGame(provisionAssignedRequest({
+    commandId: 'formal-corrected-game-two',
+    expectedMatchRevision: 4,
+    trustedTimeMs: 205,
+  }))
+  expect(provisioned).toMatchObject({ ok: false, error: { code: 'gameAlreadyLinked' } })
+  expect(setup.engineOperations.slice(-2)).toEqual(['matchCorrectRuling', 'matchView'])
+})
+
+test('formal WASM match replay accepts a second legitimate first-player assignment', async () => {
+  const { setup, terminal } = await createFormalContinuation({ winner: 'team-a' })
+  expect(terminal).toMatchObject({
+    ok: true,
+    value: { matchProjection: { public: { match: {
+      nextGame: { gameNumber: 2, firstPlayer: { type: 'pending' } },
+    } } } },
+  })
+  await persistFormalNextFirstPlayer(setup, 'team-b')
+  const row = setup.sql.database.query(
+    'SELECT match_checkpoint_json, revision FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match') as { match_checkpoint_json: string; revision: number }
+  const checkpoint = JSON.parse(row.match_checkpoint_json) as JsonObject
+  expect((checkpoint.history as JsonValue[]).map(event => isJsonObject(event) ? event.type : null))
+    .toEqual(['assignFirstPlayer', 'submitGame', 'assignFirstPlayer'])
+  expect(row.revision).toBe(4)
+
+  const provisioned = await setup.room.provisionAssignedScheduledGame(provisionAssignedRequest({
+    commandId: 'formal-second-assignment-game-two',
+    expectedMatchRevision: 4,
+    trustedTimeMs: 205,
+  }))
+  expect(provisioned).toMatchObject({
+    ok: true,
+    value: {
+      matchRevision: 4,
+      gameNumber: 2,
+      binding: { expectedMatchRevision: 4, firstPlayer: 'b-1', turnOrder: ['b-1', 'a-1'] },
+    },
+  })
+})
+
+test('assigned provision rejects malformed, orphaned, duplicated, and inconsistent corrections', async () => {
+  const malformed = await createFormalContinuation({ referee: true })
+  const correction = await malformed.setup.room.executeMatch(matchExecuteRequest({
+    type: 'matchCorrectRuling',
+    matchId: 'provision-match',
+    correctionId: 'correction-for-malformed',
+    refereeId: 'referee-1',
+    gameRecordId: 'formal-game-record',
+    replacementRulingRecordId: 'replacement-for-malformed',
+    replacementRuling: { type: 'gameAccepted', outcome: 'draw' },
+    reason: '合法更正基底',
+  }, {
+    matchId: 'provision-match', callerUserId: 'referee-1',
+    commandId: 'correction-before-malformed', expectedMatchRevision: 3, trustedTimeMs: 204,
+  }))
+  expect(correction.ok).toBe(true)
+  const malformedCheckpointRow = malformed.setup.sql.database.query(
+    'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match') as { match_checkpoint_json: string }
+  const malformedCheckpoint = JSON.parse(malformedCheckpointRow.match_checkpoint_json) as JsonObject
+  const malformedEvent = (malformedCheckpoint.history as JsonValue[]).at(-1) as JsonObject
+  malformedEvent.unexpected = true
+  persistProvisionHistoryMutation(malformed.setup, malformedCheckpoint, 5)
+  expect(await malformed.setup.room.provisionAssignedScheduledGame(provisionAssignedRequest({
+    commandId: 'reject-malformed-correction', expectedMatchRevision: 5, trustedTimeMs: 206,
+  }))).toMatchObject({ ok: false, error: { code: 'engineInvalidMatchCheckpoint' } })
+
+  const duplicated = await createFormalContinuation({ referee: true })
+  const validCorrection = await duplicated.setup.room.executeMatch(matchExecuteRequest({
+    type: 'matchCorrectRuling',
+    matchId: 'provision-match',
+    correctionId: 'duplicate-correction-id',
+    refereeId: 'referee-1',
+    gameRecordId: 'formal-game-record',
+    replacementRulingRecordId: 'duplicate-replacement-id',
+    replacementRuling: { type: 'gameAccepted', outcome: 'draw' },
+    reason: '合法更正基底',
+  }, {
+    matchId: 'provision-match', callerUserId: 'referee-1',
+    commandId: 'correction-before-duplicate', expectedMatchRevision: 3, trustedTimeMs: 204,
+  }))
+  expect(validCorrection.ok).toBe(true)
+  const duplicateCheckpointRow = duplicated.setup.sql.database.query(
+    'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match') as { match_checkpoint_json: string }
+  const duplicateCheckpoint = JSON.parse(duplicateCheckpointRow.match_checkpoint_json) as JsonObject
+  const duplicateEvent = (duplicateCheckpoint.history as JsonValue[]).at(-1) as JsonObject
+  ;(duplicateCheckpoint.history as JsonValue[]).push(structuredClone(duplicateEvent))
+  persistProvisionHistoryMutation(duplicated.setup, duplicateCheckpoint, 5)
+  expect(await duplicated.setup.room.provisionAssignedScheduledGame(provisionAssignedRequest({
+    commandId: 'reject-duplicate-correction', expectedMatchRevision: 5, trustedTimeMs: 206,
+  }))).toMatchObject({ ok: false, error: { code: 'engineInvalidMatchCheckpoint' } })
+
+  const orphan = await createFormalContinuation({ referee: true })
+  const orphanCheckpointRow = orphan.setup.sql.database.query(
+    'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match') as { match_checkpoint_json: string }
+  const orphanCheckpoint = JSON.parse(orphanCheckpointRow.match_checkpoint_json) as JsonObject
+  ;(orphanCheckpoint.history as JsonValue[]).push({
+    type: 'correctRuling',
+    correctionId: 'orphan-correction',
+    refereeId: 'referee-1',
+    gameRecordId: 'missing-game-record',
+    replacementRulingRecordId: 'orphan-replacement-ruling',
+    replacementRuling: { type: 'gameAccepted', outcome: 'draw' },
+    reason: '不存在的局',
+  })
+  persistProvisionHistoryMutation(orphan.setup, orphanCheckpoint, 4)
+  expect(await orphan.setup.room.provisionAssignedScheduledGame(provisionAssignedRequest({
+    commandId: 'reject-orphan-correction', expectedMatchRevision: 4, trustedTimeMs: 205,
+  }))).toMatchObject({ ok: false, error: { code: 'engineInvalidMatchCheckpoint' } })
+
+  const inconsistent = await createFormalContinuation({ referee: true })
+  const goodCorrection = await inconsistent.setup.room.executeMatch(matchExecuteRequest({
+    type: 'matchCorrectRuling',
+    matchId: 'provision-match',
+    correctionId: 'checkpoint-projection-correction',
+    refereeId: 'referee-1',
+    gameRecordId: 'formal-game-record',
+    replacementRulingRecordId: 'checkpoint-projection-ruling',
+    replacementRuling: { type: 'gameAccepted', outcome: 'draw' },
+    reason: '合法更正基底',
+  }, {
+    matchId: 'provision-match', callerUserId: 'referee-1',
+    commandId: 'correction-before-projection-change', expectedMatchRevision: 3, trustedTimeMs: 204,
+  }))
+  expect(goodCorrection.ok).toBe(true)
+  const inconsistentRow = inconsistent.setup.sql.database.query(
+    'SELECT match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match') as { match_projection_json: string }
+  const inconsistentProjection = JSON.parse(inconsistentRow.match_projection_json) as JsonObject
+  ;((inconsistentProjection.public as JsonObject).match as JsonObject).corrections = []
+  inconsistent.setup.sql.database.query(
+    'UPDATE competition_matches SET match_projection_json = ? WHERE match_id = ?',
+  ).run(JSON.stringify(inconsistentProjection), 'provision-match')
+  expect(await inconsistent.setup.room.provisionAssignedScheduledGame(provisionAssignedRequest({
+    commandId: 'reject-correction-projection-mismatch', expectedMatchRevision: 4, trustedTimeMs: 205,
+  }))).toMatchObject({ ok: false, error: { code: 'engineInvalidMatchCheckpoint' } })
+})
+
+test('assigned provision rejects a minimal fake submit history', async () => {
+  const setup = await provisionableRoom()
+  const row = setup.sql.database.query(
+    'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match') as { match_checkpoint_json: string }
+  const checkpoint = JSON.parse(row.match_checkpoint_json) as JsonObject
+  checkpoint.history = [{ type: 'submitGame', gameNumber: 1 }]
+  setup.sql.database.query(
+    'UPDATE competition_matches SET match_checkpoint_json = ? WHERE match_id = ?',
+  ).run(JSON.stringify(checkpoint), 'provision-match')
+  const meta = setup.sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const state = JSON.parse(meta.server_state_json) as JsonObject
+  ;(state.matches as JsonObject)['provision-match'] = checkpoint
+  setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(state))
+  expect(await setup.room.provisionAssignedScheduledGame(provisionAssignedRequest({
+    commandId: 'minimal-history',
+  }))).toMatchObject({ ok: false, error: { code: 'matchNotProvisionable' } })
+})
+
+test('assigned provision rejects a match revision behind its persisted history', async () => {
+  const setup = await provisionableRoom()
+  // materialize revision 1 加上 assignFirstPlayer 與 submitGame 兩事件，至少應為 revision 3。
+  setup.sql.database.query(
+    'UPDATE competition_matches SET revision = 2 WHERE match_id = ?',
+  ).run('provision-match')
+  expect(await setup.room.provisionAssignedScheduledGame(provisionAssignedRequest({
+    commandId: 'stale-history-revision',
+    expectedMatchRevision: 2,
+  }))).toMatchObject({ ok: false, error: { code: 'matchNotProvisionable' } })
+})
+
+test('provisionScheduledGame rejects locked-roster team and personal-deck mismatches without disclosure', async () => {
+  const missingDeck = structuredClone(lockedRoster(1, true))
+  const firstTeam = (missingDeck.teams as JsonValue[])[0] as JsonObject
+  firstTeam.decks = []
+  const deckMismatch = await provisionableRoom({
+    teamSize: 1,
+    personalDeck: true,
+    roster: missingDeck,
+  })
+  const deckResult = await deckMismatch.room.provisionAssignedScheduledGame(
+    provisionAssignedRequest(),
+  )
+  expect(deckResult).toEqual({
+    ok: false,
+    error: {
+      code: 'invalidLockedRoster',
+      message: 'locked roster cannot produce a valid game binding',
+    },
+  })
+  expect(JSON.stringify(deckResult)).not.toContain('a-1-deck')
+  expect(deckMismatch.calls).toHaveLength(0)
+
+  const missingTeam = structuredClone(lockedRoster(1, false))
+  missingTeam.teams = [(missingTeam.teams as JsonValue[])[0]!]
+  const teamMismatch = await provisionableRoom({ roster: missingTeam })
+  expect(await teamMismatch.room.provisionAssignedScheduledGame(
+    provisionAssignedRequest(),
+  )).toEqual({
+    ok: false,
+    error: {
+      code: 'invalidLockedRoster',
+      message: 'locked roster cannot produce a valid game binding',
+    },
+  })
+  expect(teamMismatch.calls).toHaveLength(0)
+})
+
+test('assigned game provision fails closed for pending and malformed match checkpoints', async () => {
+  const pending = await provisionableRoom({ assigned: false })
+  expect(await pending.room.provisionAssignedScheduledGame(provisionAssignedRequest({
+    expectedMatchRevision: 1,
+  }))).toEqual({
+    ok: false,
+    error: { code: 'firstPlayerPending', message: 'next game first player is still pending' },
+  })
+
+  const { room, sql } = await provisionableRoom({ teamSize: 2 })
+  const row = sql.database.query(
+    'SELECT match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get('provision-match') as { match_projection_json: string }
+  const projection = JSON.parse(row.match_projection_json) as JsonObject
+  ;((projection.public as JsonObject).match as JsonObject).status = 'completed'
+  sql.database.query(
+    'UPDATE competition_matches SET match_projection_json = ? WHERE match_id = ?',
+  ).run(JSON.stringify(projection), 'provision-match')
+  expect(await room.provisionAssignedScheduledGame(provisionAssignedRequest({ commandId: 'invalid-completed' })))
+    .toMatchObject({ ok: false, error: { code: 'matchNotProvisionable' } })
+})
+
+test('assigned provision rejects client-owned lineup fields and command reuse conflicts', async () => {
+  const { room, calls } = await provisionableRoom()
+  const request = provisionAssignedRequest()
+  const forbidden = await room.provisionAssignedScheduledGame({ ...request, firstPlayer: 'a-1' } as typeof request)
+  expect(forbidden).toEqual({
+    ok: false,
+    error: { code: 'invalidRequest', message: 'assigned game provision request is invalid' },
+  })
+  const first = await room.provisionAssignedScheduledGame(request)
+  expect(first.ok).toBe(true)
+  expect(await room.provisionAssignedScheduledGame({
+    ...request,
+    commandId: 'different-current-game',
+  })).toEqual({
+    ok: false,
+    error: { code: 'gameAlreadyLinked', message: 'the scheduled game already has a game room linkage' },
+  })
+  const conflict = await room.provisionAssignedScheduledGame({
+    ...request,
+    expectedMatchRevision: request.expectedMatchRevision + 1,
+  })
+  expect(conflict).toEqual({
+    ok: false,
+    error: { code: 'commandIdConflict', message: 'command id was used with another payload' },
+  })
+  expect(calls).toHaveLength(1)
+})
+
+test('the legacy caller-lineup provision RPC is fail closed', async () => {
+  const { room } = await provisionableRoom()
+  expect(await room.provisionScheduledGame({
+    competitionId: 'competition-1',
+    matchId: 'provision-match',
+    callerUserId: 'organizer-1',
+    commandId: 'legacy-provision',
+    expectedMatchRevision: 2,
+    trustedTimeMs: 202,
+    firstPlayer: 'a-1',
+    turnOrder: ['a-1', 'b-1'],
+  })).toEqual({
+    ok: false,
+    error: {
+      code: 'unsupportedOperation',
+      message: 'caller-provided first player and turn order are no longer accepted',
+    },
+  })
+})
+
+test('assigned provision cannot bypass the trusted initial game assignment', async () => {
+  const { room } = await provisionableRoom({ subsequent: false })
+  expect(await room.provisionAssignedScheduledGame(provisionAssignedRequest({
+    expectedMatchRevision: 2,
+  }))).toEqual({
+    ok: false,
+    error: {
+      code: 'initialGameRequiresTrustedAssignment',
+      message: 'the first scheduled game requires the trusted initial provision RPC',
+    },
+  })
+})
+
+test('RPC failure, response loss, restart and alarm reuse the persisted game id, seed and binding', async () => {
+  let remote: { gameId: string; binding: CompetitionGameBinding } | null = null
+  let attempts = 0
+  const create = async (request: { gameId: string; binding: CompetitionGameBinding }) => {
+    attempts += 1
+    if (!remote) remote = structuredClone(request)
+    else expect(request).toEqual(remote)
+    if (attempts === 1) throw new Error('simulated response loss')
+    return { gameId: request.gameId, status: 'Waiting', idempotent: true }
+  }
+  const initial = await provisionableRoom({ create })
+  const result = await initial.room.provisionAssignedScheduledGame(provisionAssignedRequest())
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+  expect(result.value.status).toBe('pending')
+  expect(initial.alarm.scheduledAt).not.toBeNull()
+
+  initial.sql.database.query(
+    'UPDATE competition_game_provision SET next_attempt_at_ms = 0',
+  ).run()
+  const restored = new CompetitionRoomClass(
+    stateFor(initial.sql, initial.alarm),
+    { GAME_ROOM: gameRoomNamespace(create) },
+    initial.adapter,
+  )
+  await restored.alarm()
+  const read = await restored.readProvisionedGame({
+    competitionId: 'competition-1', matchId: 'provision-match', callerUserId: 'organizer-1',
+  })
+  expect(read.ok).toBe(true)
+  if (read.ok) {
+    expect(read.value.status).toBe('provisioned')
+    expect(read.value.gameId).toBe(result.value.gameId)
+    expect(read.value.binding.deckSeed).toBe(result.value.binding.deckSeed)
+  }
+  expect(attempts).toBe(2)
+  expect(initial.alarm.scheduledAt).toBeNull()
+})
+
+test('strict ACK remains pending, while changed match revision blocks stale delivery without another room call', async () => {
+  let invalidCalls = 0
+  const invalid = await provisionableRoom({ create: async request => {
+    invalidCalls += 1
+    return { gameId: request.gameId, status: 'Active', idempotent: false }
+  } })
+  const pending = await invalid.room.provisionAssignedScheduledGame(provisionAssignedRequest())
+  expect(pending.ok).toBe(true)
+  if (pending.ok) expect(pending.value.status).toBe('pending')
+  expect(invalidCalls).toBe(1)
+
+  invalid.sql.database.query(
+    'UPDATE competition_matches SET revision = 4 WHERE match_id = ?',
+  ).run('provision-match')
+  invalid.sql.database.query(
+    'UPDATE competition_game_provision SET next_attempt_at_ms = 0',
+  ).run()
+  const restarted = new CompetitionRoomClass(
+    stateFor(invalid.sql, invalid.alarm),
+    { GAME_ROOM: gameRoomNamespace(async () => {
+      throw new Error('stale linkage must not reach GameRoom')
+    }) },
+    invalid.adapter,
+  )
+  await restarted.alarm()
+  const row = invalid.sql.database.query(
+    'SELECT status, error_code FROM competition_game_provision WHERE game_number = 2',
+  ).get()
+  expect(row).toEqual({ status: 'blocked', error_code: 'staleMatchState' })
+  expect(invalidCalls).toBe(1)
+})
+
+test('provision SQL failure rolls back linkage, receipt and audit without leaking decks', async () => {
+  const setup = await provisionableRoom({ personalDeck: true })
+  setup.sql.failNextQueryContaining = 'INSERT INTO competition_command_receipt'
+  const failed = await setup.room.provisionAssignedScheduledGame(provisionAssignedRequest())
+  expect(failed).toEqual({
+    ok: false,
+    error: { code: 'internalFailure', message: 'competition room operation failed' },
+  })
+  expect(setup.sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_game_provision WHERE match_id = ? AND game_number = 2',
+  ).get('provision-match')).toEqual({ count: 0 })
+  expect(setup.sql.database.query(
+    "SELECT COUNT(*) AS count FROM competition_audit WHERE operation_type = 'provisionAssignedScheduledGame'",
+  ).get()).toEqual({ count: 0 })
+
+  const retried = await setup.room.provisionAssignedScheduledGame(provisionAssignedRequest())
+  expect(retried.ok).toBe(true)
+  expect(setup.sql.database.query(
+    "SELECT COUNT(*) AS count FROM competition_audit WHERE operation_type = 'provisionAssignedScheduledGame'",
+  ).get()).toEqual({ count: 1 })
+  const audit = JSON.stringify(setup.sql.database.query(
+    "SELECT * FROM competition_audit WHERE operation_type = 'provisionAssignedScheduledGame'",
+  ).all())
+  expect(audit).not.toContain('a-1-deck')
+  expect(audit).not.toContain('a-1-card')
+})
+
+test('locked-roster tournament entry supports 1v1 and 2v2 across all formats and keeps seed order', async () => {
+  for (const teamSize of [1, 2] as const) {
+    for (const format of ['singleElimination', 'roundRobin', 'doubleElimination', 'swiss'] as const) {
+      const { room, sql, calls } = await tournamentRoom({ roster: lockedRoster(teamSize, true) })
+      const stage = stageConfig({ format })
+      const request = createTournamentRequest({ commandId: `${teamSize}-${format}`, stage })
+      const result = await room.createTournamentFromLockedRoster(request)
+      if (!result.ok) throw new Error(`${teamSize} ${format}: ${result.error.code} ${result.error.message}`)
+      expect(result.ok).toBe(true)
+      expect(calls.map(call => call.operation.type)).toEqual([
+        'registrationCreate', 'registrationExportLockedRoster', 'tournamentCreate',
+      ])
+      const created = calls[2]
+      expect(created?.serverActor).toEqual({ type: 'organizer', playerId: 'organizer-1' })
+      expect(created?.operation.type === 'tournamentCreate' ? created.operation.config : null)
+        .toEqual({ tournamentId: 'competition-1', stage })
+      if (result.ok) {
+        expect(result.value.revision).toBe(2)
+        expect(result.value.projection.operation).toBe('tournamentCreate')
+        expect(JSON.stringify(result.value)).not.toMatch(/captain|members|decks|a-1-card|b-1-card/)
+      }
+      const audit = await room.audit({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+      const stored = sql.database.query(
+        'SELECT server_state_json, public_projection_json FROM competition_meta',
+      ).all()
+      const receipts = sql.database.query('SELECT response_json FROM competition_command_receipt').all()
+      expect(JSON.stringify({ result, audit, stored, receipts }))
+        .not.toMatch(/captain|members|decks|a-1-card|b-1-card/)
+    }
+  }
+  for (const format of ['singleElimination', 'roundRobin', 'doubleElimination', 'swiss'] as const) {
+    const teams = [
+      { teamId: 'team-a', seed: 1 },
+      { teamId: 'team-b', seed: 2 },
+      { teamId: 'team-c', seed: 3 },
+    ]
+    const setup = await tournamentRoom({ roster: lockedRoster(1, false, teams.map(team => team.teamId)) })
+    const stage = stageConfig({ format, teams })
+    const result = await setup.room.createTournamentFromLockedRoster(
+      createTournamentRequest({ commandId: `odd-${format}`, stage }),
+    )
+    if (!result.ok) throw new Error(`odd ${format}: ${result.error.code} ${result.error.message}`)
+    const tournament = result.value.projection.public
+    expect(tournament).toEqual(createdTournament(stage, 'competition-1'))
+    const publicTournament = tournament as JsonObject
+    const createdStage = (publicTournament.stages as JsonValue[])[0] as JsonObject
+    const firstRound = (createdStage.rounds as JsonValue[])[0] as JsonObject
+    expect((firstRound.matches as JsonValue[]).some(match => isJsonObject(match)
+      && match.status === 'completed' && isJsonObject(match.result)
+      && match.result.type === 'bye')).toBe(true)
+  }
+  const oddTeams = [
+    { teamId: 'team-a', seed: 1 },
+    { teamId: 'team-b', seed: 2 },
+    { teamId: 'team-c', seed: 3 },
+  ]
+  for (const swissPolicy of [
+    { matchPoints: { win: 3, draw: 1, loss: 0, bye: 0 }, tieBreakers: ['matchPoints'] },
+    { matchPoints: { win: 3, draw: 1, loss: 0, bye: 3 }, tieBreakers: ['matchPoints'] },
+  ] as const) {
+    const basePolicy = stageConfig({ format: 'swiss' }).swissPolicy!
+    const stage = stageConfig({ format: 'swiss', teams: oddTeams, swissPolicy: {
+      ...basePolicy,
+      matchPoints: swissPolicy.matchPoints,
+      tieBreakers: [...swissPolicy.tieBreakers],
+    } })
+    const setup = await tournamentRoom({ roster: lockedRoster(1, false, oddTeams.map(team => team.teamId)) })
+    const result = await setup.room.createTournamentFromLockedRoster(createTournamentRequest({ stage }))
+    if (!result.ok) throw new Error(`Swiss initial standings: ${result.error.code}`)
+    const created = createdTournament(stage, 'competition-1')
+    const createdStage = (created.stages as JsonValue[])[0] as JsonObject
+    expect((createdStage.standings as JsonValue[]).map(row =>
+      isJsonObject(row) ? [row.teamId, row.rank, row.matchPoints] : null,
+    )).toEqual(swissPolicy.matchPoints.bye === 0
+      ? [['team-a', 1, 0], ['team-b', 1, 0], ['team-c', 1, 0]]
+      : [['team-a', 1, 3], ['team-b', 2, 0], ['team-c', 2, 0]])
+  }
+  const ordered = await tournamentRoom()
+  const orderedStage = stageConfig({ teams: [
+    { teamId: 'team-b', seed: 9 }, { teamId: 'team-a', seed: 4 },
+  ] })
+  expect((await ordered.room.createTournamentFromLockedRoster(
+    createTournamentRequest({ stage: orderedStage }),
+  )).ok).toBe(true)
+  const operation = ordered.calls.find(call => call.operation.type === 'tournamentCreate')?.operation
+  expect(operation?.type === 'tournamentCreate' ? operation.config.stage.teams : null)
+    .toEqual(orderedStage.teams)
+})
+
+test('real Rust WASM tournament start and match/clock checkpoints pass for 2, 3, and 5 teams', async () => {
+  for (const teamCount of [2, 3, 5]) {
+    const teams = Array.from({ length: teamCount }, (_, index) => ({
+      teamId: `team-${index + 1}`,
+      seed: index + 1,
+    }))
+    for (const format of ['singleElimination', 'doubleElimination', 'roundRobin', 'swiss'] as const) {
+      const setup = await wasmTournamentRoom(lockedRoster(
+        1, false, teams.map(team => team.teamId),
+      ))
+      const stage = stageConfig({ format, teams })
+      const result = await setup.room.createTournamentFromLockedRoster(createTournamentRequest({
+        commandId: `wasm-${teamCount}-${format}`,
+        stage,
+      }))
+      if (!result.ok) {
+        throw new Error(`Rust Tournament::new ${teamCount}/${format}: ${result.error.code} ${result.error.message}`)
+      }
+      expect(setup.calls.map(call => call.operation.type)).toEqual([
+        'registrationCreate', 'registrationExportLockedRoster', 'tournamentCreate',
+      ])
+      expect(result.value.projection.operation).toBe('tournamentCreate')
+      expect(JSON.stringify(result.value)).not.toMatch(/captain|members|decks/)
+      const createdTournament = result.value.projection.public as JsonObject
+      const createdStage = (createdTournament.stages as JsonObject[])[0]!
+      const scheduled = (createdStage.rounds as JsonObject[])
+        .flatMap(round => round.matches as JsonObject[])
+        .find(match => match.status === 'pending' && match.started === false
+          && Array.isArray(match.participants) && match.participants.length === 2)
+      if (scheduled) {
+        const started = await setup.room.startScheduledMatch({
+          competitionId: 'competition-1',
+          stageId: stage.stageId,
+          matchId: scheduled.matchId as string,
+          callerUserId: 'organizer-1',
+          commandId: `wasm-start-${teamCount}-${format}`,
+          expectedRevision: 2,
+          trustedTimeMs: 102,
+          referees: [],
+        })
+        expect(started).toMatchObject({
+          ok: true,
+          value: {
+            revision: 3,
+            matchRevision: 1,
+            tournamentProjection: { operation: 'tournamentStartMatch' },
+            matchProjection: { operation: 'matchCreate' },
+            clockProjection: { operation: 'clockCreate' },
+          },
+        })
+      }
+    }
+  }
+
+  const unusedSwissPolicy = stageConfig({ format: 'swiss' }).swissPolicy!
+  const nonSwissStage: StageConfig = {
+    ...stageConfig(),
+    swissRounds: 0,
+    swissPolicy: {
+      ...unusedSwissPolicy,
+      drawCredit: { numerator: 2, denominator: 1 },
+      opponentWinRateFloorPercent: 80,
+      opponentWinRateCapPercent: 10,
+    },
+  }
+  const nonSwissSetup = await wasmTournamentRoom(lockedRoster(1, false))
+  expect((await nonSwissSetup.room.createTournamentFromLockedRoster(createTournamentRequest({
+    commandId: 'wasm-non-swiss-unused-policy', stage: nonSwissStage,
+  }))).ok).toBe(true)
+
+  const teams = Array.from({ length: 5 }, (_, index) => ({
+    teamId: `five-${index + 1}`,
+    seed: index + 1,
+  }))
+  const basePolicy = stageConfig({ format: 'swiss' }).swissPolicy!
+  const stage: StageConfig = {
+    ...stageConfig({ format: 'swiss', teams }),
+    randomSeed: 3,
+    swissPolicy: {
+      ...basePolicy,
+      matchPoints: { ...basePolicy.matchPoints, bye: 0 },
+      tieBreakers: ['matchPoints', 'seedOrder'],
+    },
+  }
+  const setup = await wasmTournamentRoom(lockedRoster(1, false, teams.map(team => team.teamId)))
+  const result = await setup.room.createTournamentFromLockedRoster(createTournamentRequest({
+    commandId: 'wasm-swiss-zero-bye-points', stage,
+  }))
+  if (!result.ok) throw new Error(`Rust Swiss bye rank: ${result.error.code} ${result.error.message}`)
+  const tournament = result.value.projection.public as JsonObject
+  const rustStage = (tournament.stages as JsonValue[])[0] as JsonObject
+  const byeMatch = ((rustStage.rounds as JsonValue[])[0] as JsonObject).matches as JsonValue[]
+  const bye = byeMatch.find(match => isJsonObject(match) && isJsonObject(match.result)
+    && match.result.type === 'bye')
+  expect(bye).toBeDefined()
+  if (!isJsonObject(bye) || !isJsonObject(bye.result)) throw new Error('Rust Swiss bye fixture missing')
+  const byeTeamId = bye.result.teamId
+  const byeStanding = (rustStage.standings as JsonValue[]).find(row =>
+    isJsonObject(row) && row.teamId === byeTeamId,
+  )
+  expect(byeTeamId).toBe('five-4')
+  expect(byeStanding).toMatchObject({ teamId: 'five-4', matchPoints: 0, rank: 4 })
+})
+
+test('real Rust WASM assigns and provisions the initial game for 1v1 and 2v2 rosters', async () => {
+  for (const teamSize of [1, 2] as const) {
+    const setup = await wasmTournamentRoom(lockedRoster(teamSize, true), () => 0)
+    const stage = stageConfig()
+    const created = await setup.room.createTournamentFromLockedRoster(createTournamentRequest({
+      commandId: `wasm-initial-create-${teamSize}`,
+      stage,
+      trustedTimeMs: 101,
+    }))
+    expect(created.ok).toBe(true)
+    const started = await setup.room.startScheduledMatch({
+      competitionId: 'competition-1',
+      stageId: stage.stageId,
+      matchId: `${stage.stageId}-g0-r1-m1`,
+      callerUserId: 'organizer-1',
+      commandId: `wasm-initial-start-${teamSize}`,
+      expectedRevision: 2,
+      trustedTimeMs: 102,
+      referees: [],
+    })
+    expect(started.ok).toBe(true)
+    const provisioned = await setup.room.provisionInitialScheduledGame({
+      competitionId: 'competition-1',
+      matchId: `${stage.stageId}-g0-r1-m1`,
+      callerUserId: 'organizer-1',
+      commandId: `wasm-initial-game-${teamSize}`,
+      expectedMatchRevision: 1,
+      trustedTimeMs: 103,
+    })
+    expect(provisioned).toMatchObject({ ok: true, value: {
+      matchRevision: 2,
+      gameNumber: 1,
+      status: 'pending',
+      binding: {
+        firstPlayer: 'b-1',
+        turnOrder: teamSize === 1 ? ['b-1', 'a-1'] : ['b-1', 'a-1', 'b-2', 'a-2'],
+      },
+    } })
+    expect(setup.calls.slice(-2).map(call => call.operation.type)).toEqual([
+      'matchAssignFirstPlayer', 'registrationExportLockedRoster',
+    ])
+  }
+})
+
+test('locked roster not ready, export protocol errors, private roster defects, and team mismatch never call create', async () => {
+  const badRosterCases: Array<{ roster: JsonObject; request?: Partial<CompetitionRoomCreateTournamentRequest> }> = [
+    { roster: { ...lockedRoster(1, false), announcement: {
+      ...(lockedRoster(1, false).announcement as JsonObject), organizer: 'impostor',
+    } } },
+    { roster: { ...lockedRoster(1, false), teams: [
+      { teamId: 'team-a', captain: 'a-1', members: ['a-1', 'a-2'], rosterVersion: 1, decks: [] },
+      (lockedRoster(1, false).teams as JsonValue[])[1] as JsonObject,
+    ] } },
+    { roster: { ...lockedRoster(2, false), teams: [
+      { teamId: 'team-a', captain: 'a-1', members: ['a-1'], rosterVersion: 1, decks: [] },
+      (lockedRoster(2, false).teams as JsonValue[])[1] as JsonObject,
+    ] } },
+    { roster: { ...lockedRoster(1, false), teams: [
+      { teamId: 'team-a', captain: 'a-1', members: ['a-1'], rosterVersion: 1, decks: [] },
+      { teamId: 'team-b', captain: 'a-1', members: ['a-1'], rosterVersion: 1, decks: [] },
+    ] } },
+    { roster: { ...lockedRoster(1, true), teams: [
+      { ...(lockedRoster(1, true).teams as JsonValue[])[0] as JsonObject, decks: [] },
+      (lockedRoster(1, true).teams as JsonValue[])[1] as JsonObject,
+    ] } },
+    { roster: { ...lockedRoster(1, true), teams: [
+      { ...(lockedRoster(1, true).teams as JsonValue[])[0] as JsonObject,
+        decks: [{ player: 'a-1', name: 'one', cards: [] }, { player: 'a-1', name: 'two', cards: [] }] },
+      (lockedRoster(1, true).teams as JsonValue[])[1] as JsonObject,
+    ] } },
+    { roster: { ...lockedRoster(1, true), teams: [
+      { ...(lockedRoster(1, true).teams as JsonValue[])[0] as JsonObject,
+        decks: [{ player: 'other', name: 'wrong', cards: [] }] },
+      (lockedRoster(1, true).teams as JsonValue[])[1] as JsonObject,
+    ] } },
+    { roster: { ...lockedRoster(1, false), teams: [
+      { ...(lockedRoster(1, false).teams as JsonValue[])[0] as JsonObject,
+        decks: [{ player: 'a-1', name: 'unexpected', cards: [] }] },
+      (lockedRoster(1, false).teams as JsonValue[])[1] as JsonObject,
+    ] } },
+    { roster: { ...lockedRoster(1, false), teams: [
+      { teamId: 'team-a', captain: 'not-a-member', members: ['a-1'], rosterVersion: 1, decks: [] },
+      (lockedRoster(1, false).teams as JsonValue[])[1] as JsonObject,
+    ] } },
+  ]
+  const badPrivate: JsonObject[] = [
+    { teams: [] },
+    { ...lockedRoster(1, false), extra: true },
+    { ...lockedRoster(1, false), teams: [{ teamId: 'team-a', captain: 'a-1', members: ['a-1'], rosterVersion: 1, decks: [] }] },
+  ]
+  const setups = [
+    await tournamentRoom({ throwExport: true }),
+    await tournamentRoom({ exportResponse: () => ({
+      ok: false, error: { code: 'registrationNotLocked', layer: 'registration', message: 'deadline not reached' },
+    }) }),
+    ...await Promise.all([...badPrivate, ...badRosterCases.map(item => item.roster)]
+      .map(roster => tournamentRoom({ roster }))),
+    await tournamentRoom({ exportResponse: request => ({
+      ok: true, operation: 'registrationExportLockedRoster', public: { exported: true },
+      private: lockedRoster(1, false), serverState: { ...request.serverState, clock: { mutated: true } },
+    }) }),
+    await tournamentRoom({ exportResponse: request => ({
+      ok: true, operation: 'registrationView', public: { exported: true },
+      private: lockedRoster(1, false), serverState: request.serverState,
+    }) }),
+    await tournamentRoom({ exportResponse: request => ({
+      ok: true, operation: 'registrationExportLockedRoster', public: { exported: true, extra: true },
+      private: lockedRoster(1, false), serverState: request.serverState,
+    }) }),
+  ]
+  for (const setup of setups) {
+    const before = setup.sql.database.query(
+      'SELECT revision, server_state_json, public_projection_json, updated_trusted_time_ms FROM competition_meta',
+    ).all()
+    const auditBefore = setup.sql.database.query('SELECT COUNT(*) AS count FROM competition_audit').get()
+    const receiptsBefore = setup.sql.database.query('SELECT COUNT(*) AS count FROM competition_command_receipt').get()
+    expect((await setup.room.createTournamentFromLockedRoster(createTournamentRequest())).ok).toBe(false)
+    expect(setup.calls.some(call => call.operation.type === 'tournamentCreate')).toBe(false)
+    expect(setup.sql.database.query(
+      'SELECT revision, server_state_json, public_projection_json, updated_trusted_time_ms FROM competition_meta',
+    ).all()).toEqual(before)
+    expect(setup.sql.database.query('SELECT COUNT(*) AS count FROM competition_audit').get())
+      .toEqual(auditBefore)
+    expect(setup.sql.database.query('SELECT COUNT(*) AS count FROM competition_command_receipt').get())
+      .toEqual(receiptsBefore)
+  }
+  for (const teams of [
+    [{ teamId: 'team-a', seed: 1 }],
+    [{ teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 2 }, { teamId: 'extra', seed: 3 }],
+    [{ teamId: 'team-a', seed: 1 }, { teamId: 'team-a', seed: 2 }],
+  ]) {
+    const setup = await tournamentRoom()
+    expect((await setup.room.createTournamentFromLockedRoster(
+      createTournamentRequest({ stage: stageConfig({ teams }) }),
+    )).ok).toBe(false)
+    expect(setup.calls.some(call => call.operation.type === 'tournamentCreate')).toBe(false)
+  }
+})
+
+test('receipt identity precedes ACL and state checks; semantic changes conflict and restart retry is idempotent', async () => {
+  const { room, sql, calls } = await tournamentRoom()
+  const request = createTournamentRequest()
+  expect((await room.createTournamentFromLockedRoster({ ...request, callerUserId: 'player-1' })).ok).toBe(false)
+  expect((await room.createTournamentFromLockedRoster({ ...request, callerUserId: 'unknown' })).ok).toBe(false)
+  expect((await room.createTournamentFromLockedRoster(request)).ok).toBe(true)
+  for (const changed of [
+    { ...request, callerUserId: 'different-caller' },
+    { ...request, competitionId: 'different-competition' },
+    { ...request, stage: stageConfig({ teams: [
+      { teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 2 },
+    ] }) },
+  ]) {
+    expect(await room.createTournamentFromLockedRoster(changed)).toMatchObject({
+      ok: false, error: { code: 'commandIdConflict' },
+    })
+  }
+  sql.database.query('UPDATE competition_acl SET active = 0 WHERE user_id = ?').run('organizer-1')
+  const inactiveRetry = await room.createTournamentFromLockedRoster({ ...request, trustedTimeMs: 999 })
+  expect(inactiveRetry.ok).toBe(true)
+  if (inactiveRetry.ok) expect(inactiveRetry.value.idempotent).toBe(true)
+  const restored = new CompetitionRoomClass(stateFor(sql), {}, async request => {
+    throw new Error(`unexpected call ${request.operation.type}`)
+  })
+  const retry = await restored.createTournamentFromLockedRoster({ ...request, trustedTimeMs: 9_999 })
+  expect(retry.ok).toBe(true)
+  if (retry.ok) expect(retry.value.idempotent).toBe(true)
+  expect(calls.filter(call => call.operation.type === 'tournamentCreate')).toHaveLength(1)
+  const inactive = await tournamentRoom()
+  inactive.sql.database.query('UPDATE competition_acl SET active = 0 WHERE user_id = ?').run('organizer-1')
+  expect(await inactive.room.createTournamentFromLockedRoster(createTournamentRequest()))
+    .toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  expect(inactive.calls.some(call => call.operation.type === 'registrationExportLockedRoster')).toBe(false)
+  const referee = await tournamentRoom()
+  expect((await referee.room.grantReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'referee-1',
+    commandId: 'grant-create-referee', expectedRevision: 1, trustedTimeMs: 101,
+  })).ok).toBe(true)
+  expect(await referee.room.createTournamentFromLockedRoster(createTournamentRequest({
+    callerUserId: 'referee-1', expectedRevision: 2, trustedTimeMs: 102,
+  }))).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  expect(referee.calls.some(call => call.operation.type === 'registrationExportLockedRoster')).toBe(false)
+})
+
+test('invalid StageConfig and an existing tournament stop before locked-roster export', async () => {
+  const { room, sql, calls } = await tournamentRoom()
+  expect(await room.createTournamentFromLockedRoster({
+    ...createTournamentRequest(), stage: { ...stageConfig(), extra: true },
+  } as never)).toMatchObject({ ok: false, error: { code: 'invalidStageConfig' } })
+  expect(calls.some(call => call.operation.type === 'registrationExportLockedRoster')).toBe(false)
+  const swiss = stageConfig({ format: 'swiss' })
+  const malformedStages = [
+    { ...stageConfig(), teams: [{ teamId: 'team-a', seed: 1 }] },
+    { ...stageConfig(), teams: [
+      { teamId: 'same', seed: 1 }, { teamId: 'same', seed: 2 },
+    ] },
+    { ...stageConfig(), teams: [
+      { teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 1 },
+    ] },
+    { ...stageConfig(), teams: [
+      { teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 0x1_0000_0000 },
+    ] },
+    { ...stageConfig(), teams: [
+      { teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 0 },
+    ] },
+    { ...stageConfig(), matchFormat: { type: 'firstToWins', value: 0x1_0000 } },
+    { ...swiss, swissRounds: null },
+    { ...swiss, swissRounds: 0 },
+    { ...swiss, swissRounds: 0x1_0000_0000 },
+    { ...swiss, swissPolicy: null },
+    { ...swiss, swissPolicy: {
+      ...swiss.swissPolicy!, drawCredit: { numerator: 2, denominator: 1 },
+    } },
+    { ...swiss, swissPolicy: {
+      ...swiss.swissPolicy!, drawCredit: { numerator: 0, denominator: 0 },
+    } },
+    { ...swiss, swissPolicy: {
+      ...swiss.swissPolicy!, drawCredit: { numerator: 0x1_0000_0000, denominator: 0x1_0000_0000 },
+    } },
+    { ...swiss, swissPolicy: {
+      ...swiss.swissPolicy!, opponentWinRateFloorPercent: 51, opponentWinRateCapPercent: 50,
+    } },
+    { ...swiss, swissPolicy: {
+      ...swiss.swissPolicy!, matchPoints: { ...swiss.swissPolicy!.matchPoints, win: 0x1_0000_0000 },
+    } },
+  ] as StageConfig[]
+  for (const stage of malformedStages) {
+    const invalid = await tournamentRoom()
+    expect(await invalid.room.createTournamentFromLockedRoster(createTournamentRequest({ stage })))
+      .toMatchObject({ ok: false, error: { code: 'invalidStageConfig' } })
+    expect(invalid.calls.map(call => call.operation.type)).toEqual(['registrationCreate'])
+  }
+  for (const trustedTimeMs of [1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    const invalid = await tournamentRoom()
+    expect(await invalid.room.createTournamentFromLockedRoster(createTournamentRequest({ trustedTimeMs })))
+      .toMatchObject({ ok: false, error: { code: 'invalidRequest' } })
+    expect(invalid.calls.map(call => call.operation.type)).toEqual(['registrationCreate'])
+  }
+  const nonSwiss = await tournamentRoom()
+  const rustPermittedUnusedPolicy = {
+    ...stageConfig(),
+    swissRounds: 0,
+    swissPolicy: {
+      ...swiss.swissPolicy!,
+      drawCredit: { numerator: 2, denominator: 1 },
+      opponentWinRateFloorPercent: 80,
+      opponentWinRateCapPercent: 10,
+    },
+  } as StageConfig
+  expect((await nonSwiss.room.createTournamentFromLockedRoster(
+    createTournamentRequest({ stage: rustPermittedUnusedPolicy }),
+  )).ok).toBe(true)
+  expect(nonSwiss.calls.map(call => call.operation.type)).toEqual([
+    'registrationCreate', 'registrationExportLockedRoster', 'tournamentCreate',
+  ])
+
+  const row = sql.database.query('SELECT server_state_json FROM competition_meta').get() as { server_state_json: string }
+  const state = JSON.parse(row.server_state_json)
+  state.tournament = { tournamentId: 'existing' }
+  sql.database.query('UPDATE competition_meta SET server_state_json = ?').run(JSON.stringify(state))
+  expect(await room.createTournamentFromLockedRoster(createTournamentRequest()))
+    .toMatchObject({ ok: false, error: { code: 'tournamentAlreadyExists' } })
+  expect(calls.some(call => call.operation.type === 'registrationExportLockedRoster')).toBe(false)
+})
+
+async function e6c2aLockedMatch(options: {
+  teamSize?: 1 | 2
+  personalDeck?: boolean
+  teamCount?: 2 | 3 | 4 | 5
+  format?: StageConfig['format']
+  matchFormat?: StageConfig['matchFormat']
+  referees?: { refereeId: string; conflictedTeam: string | null }[]
+  clockConfig?: StageConfig['clockConfig']
+  provision?: boolean
+  deliverGames?: boolean
+} = {}) {
+  const teamSize = options.teamSize ?? 1
+  const personalDeck = options.personalDeck ?? false
+  const teamCount = options.teamCount ?? 2
+  const setup = await realRegistrationRoom(teamSize, personalDeck)
+  const accepted = async (action: RegistrationAction, callerUserId = 'organizer-1', trustedTimeMs?: number) => {
+    const result = await setup.room.execute(setup.command(action, callerUserId,
+      trustedTimeMs === undefined ? {} : { trustedTimeMs }))
+    if (!result.ok) throw new Error(`formal E6c2a registration failed: ${result.error.code}`)
+  }
+  await accepted({ type: 'open' })
+  const cards = ['metal', 'wood', 'water', 'fire', 'earth'].flatMap(element => (
+    [3, 2, 3, 2, 2].flatMap((copies, index) => Array.from({ length: copies }, () => `${element}-${index + 1}`))
+  ))
+  for (const prefix of ['a', 'b', 'c', 'd', 'e'].slice(0, teamCount)) {
+    const members = Array.from({ length: teamSize }, (_, index) => `${prefix}-${index + 1}`)
+    const teamId = `team-${prefix}`
+    await accepted({ type: 'registerTeam', teamId, captain: members[0]!, members }, members[0])
+    for (const player of members) {
+      await accepted({ type: 'confirmMembership', teamId, rosterVersion: 1 }, player)
+      if (personalDeck) {
+        await accepted({ type: 'submitDeck', teamId, rosterVersion: 1, name: `${player}-private-deck`, cards }, player)
+      }
+    }
+    await accepted({ type: 'checkInTeam', teamId, rosterVersion: 1 }, members[0])
+  }
+  await atRoundDeliveryTime(60_000, () => setup.room.alarm())
+
+  const stage = stageConfig({
+    format: options.format ?? 'singleElimination',
+    teams: Array.from({ length: teamCount }, (_, index) => ({
+      teamId: `team-${String.fromCharCode(97 + index)}`,
+      seed: index + 1,
+    })),
+  })
+  if (options.matchFormat) stage.matchFormat = options.matchFormat
+  if (options.clockConfig) stage.clockConfig = options.clockConfig
+  const created = await setup.room.createTournamentFromLockedRoster(createTournamentRequest({
+    commandId: 'e6c2a-tournament',
+    expectedRevision: setup.meta().revision,
+    trustedTimeMs: 60_001,
+    stage,
+  }))
+  if (!created.ok) throw new Error(`formal E6c2a tournament failed: ${created.error.code}`)
+  const tournament = created.value.projection.public as JsonObject
+  const firstStage = (tournament.stages as JsonObject[])[0]!
+  const scheduledMatches = (firstStage.rounds as JsonObject[])
+    .flatMap(round => Array.isArray(round.matches) ? round.matches as JsonObject[] : [])
+  const scheduledMatch = scheduledMatches.find(match => match.status === 'pending'
+    && match.started === false && Array.isArray(match.participants) && match.participants.length === 2)
+  if (!scheduledMatch) throw new Error('formal E6c2a tournament has no pending match')
+  const matchId = scheduledMatch.matchId as string
+  for (const referee of options.referees ?? []) {
+    const current = setup.meta()
+    const granted = await setup.room.grantReferee({
+      competitionId: 'competition-1',
+      callerUserId: 'organizer-1',
+      targetUserId: referee.refereeId,
+      commandId: `e6c2a-referee-${referee.refereeId}`,
+      expectedRevision: current.revision,
+      trustedTimeMs: current.updated_trusted_time_ms + 1,
+    })
+    if (!granted.ok) throw new Error(`formal E6c2a referee grant failed: ${granted.error.code}`)
+  }
+  const started = await setup.room.startScheduledMatch({
+    competitionId: 'competition-1',
+    stageId: stage.stageId,
+    matchId,
+    callerUserId: 'organizer-1',
+    commandId: 'e6c2a-start',
+    expectedRevision: setup.meta().revision,
+    trustedTimeMs: setup.meta().updated_trusted_time_ms + 1,
+    referees: options.referees ?? [],
+  })
+  if (!started.ok) throw new Error(`formal E6c2a match start failed: ${started.error.code}`)
+
+  let provisioned: CompetitionRoomResult<CompetitionRoomProvisionInitialScheduledGameValue> | null = null
+  if (options.provision !== false) {
+    if (options.deliverGames === false) Reflect.set(setup.env, 'GAME_ROOM', undefined)
+    provisioned = await setup.room.provisionInitialScheduledGame({
+      competitionId: 'competition-1',
+      matchId,
+      callerUserId: 'organizer-1',
+      commandId: 'e6c2a-game-one',
+      expectedMatchRevision: 1,
+      trustedTimeMs: setup.meta().updated_trusted_time_ms + 1,
+    })
+    if (!provisioned.ok) throw new Error(`formal E6c2a first game failed: ${provisioned.error.code}`)
+  }
+  return { ...setup, stage, matchId, scheduledMatch, provisioned }
+}
+
+function e6c2aReadRequest(
+  matchId: string,
+  callerUserId: string,
+): CompetitionRoomParticipantGameReadRequest {
+  return { competitionId: 'competition-1', matchId, callerUserId }
+}
+
+function e6c2aSnapshot(setup: { sql: MemorySql; alarm: TestAlarmState }) {
+  const tables = [
+    'competition_meta', 'competition_acl', 'competition_private_projection',
+    'competition_audit', 'competition_command_receipt', 'competition_matches',
+    'competition_game_provision', 'competition_clock_control_outbox',
+    'competition_schema_migrations',
+    'competition_round_publication', 'competition_round_room_ledger',
+    'competition_round_release_outbox',
+  ]
+  return {
+    tables: Object.fromEntries(tables.map(table => [
+      table,
+      setup.sql.database.query(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+    ])),
+    alarm: setup.alarm.scheduledAt,
+  }
+}
+
+for (const scenario of [
+  { teamSize: 1 as const, personalDeck: false, callerUserId: 'a-1' },
+  { teamSize: 2 as const, personalDeck: true, callerUserId: 'a-2' },
+]) {
+  test(`E6c2a real locked ${scenario.teamSize}v${scenario.teamSize} participant query is minimal and read-only`, async () => {
+    const setup = await e6c2aLockedMatch(scenario)
+    const request = e6c2aReadRequest(setup.matchId, scenario.callerUserId)
+    const before = e6c2aSnapshot(setup)
+    const engineCallCount = setup.calls.length
+    const gameCallCount = setup.gameCalls.length
+    const result = await setup.room.readParticipantGame(request)
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        competitionId: 'competition-1',
+        matchId: setup.matchId,
+        game: { gameId: setup.provisioned?.ok ? setup.provisioned.value.gameId : '', gameNumber: 1 },
+      },
+    })
+    if (!result.ok) return
+    expect(result.value.matchRevision).toBe((setup.sql.database.query(
+      'SELECT revision FROM competition_matches WHERE match_id = ?',
+    ).get(setup.matchId) as { revision: number }).revision)
+    expect(Object.keys(result.value).sort()).toEqual(['competitionId', 'game', 'matchId', 'matchRevision'])
+    expect(Object.keys(result.value.game!).sort()).toEqual(['gameId', 'gameNumber'])
+    expect(JSON.stringify(result)).not.toMatch(
+      /"(?:binding|roster|decks|deckSnapshot|deckSeed|history|commandId|callerUserId|serverState|members|captain)"\s*:/,
+    )
+    expect(JSON.stringify(result)).not.toContain('-private-deck')
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+    expect(setup.calls.slice(engineCallCount).map(call => call.operation.type))
+      .toEqual(['matchView', 'registrationExportLockedRoster'])
+    expect(setup.gameCalls).toHaveLength(gameCallCount)
+    const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+    const beforeRestartRead = e6c2aSnapshot(setup)
+    expect(await restarted.readParticipantGame(request)).toEqual(result)
+    expect(e6c2aSnapshot(setup)).toEqual(beforeRestartRead)
+    if (scenario.teamSize === 2) {
+      const oppositeTeamMember = await restarted.readParticipantGame(
+        e6c2aReadRequest(setup.matchId, 'b-2'),
+      )
+      expect(oppositeTeamMember).toEqual(result)
+    }
+    expect(setup.gameCalls).toHaveLength(gameCallCount)
+  })
+}
+
+test('malformed tournament success output is rejected without changing persisted state', async () => {
+  const mutations: Array<(request: CompetitionRequest) => CompetitionEngineResponse> = [
+    request => ({ ...validCreateResponse(request), operation: 'tournamentStartMatch' }),
+    request => ({ ...validCreateResponse(request), extra: true } as CompetitionEngineResponse),
+    request => {
+      const response = validCreateResponse(request)
+      if (response.ok) response.serverState.clock = { unexpected: true }
+      return response
+    },
+    request => {
+      const response = validCreateResponse(request)
+      if (response.ok) response.serverState.registration = { privateMutation: true }
+      return response
+    },
+    request => {
+      const response = validCreateResponse(request)
+      if (response.ok) response.serverState.matches = { 'unrelated-match': { history: [] } }
+      return response
+    },
+    request => {
+      const response = validCreateResponse(request)
+      if (response.ok && isJsonObject(response.serverState.tournament)) {
+        const tournament = response.serverState.tournament
+        if (Array.isArray(tournament.stages) && isJsonObject(tournament.stages[0])) {
+          tournament.stages[0].config = { mismatched: true }
+          response.public = tournament
+        }
+      }
+      return response
+    },
+    request => mutateCreatedStage(request, stage => { stage.scheduleGeneration = 1 }),
+    request => mutateCreatedMatch(request, match => { match.status = 'inProgress' }),
+    request => mutateCreatedMatch(request, match => { match.started = true }),
+    request => mutateCreatedMatch(request, match => {
+      match.status = 'completed'
+      match.result = { type: 'forfeit', winnerId: 'team-a', loserId: 'team-b' }
+    }),
+    request => mutateCreatedMatch(request, match => { match.status = 'cancelled' }),
+    request => mutateCreatedMatch(request, match => { match.roundNumber = 9 }),
+    request => mutateCreatedMatch(request, match => { match.sequence = 9 }),
+    ...(['wins', 'draws', 'losses', 'gameWins', 'gameLosses', 'netGameWins', 'dropped'] as const)
+      .map(field => request => mutateCreatedStage(request, stage => {
+        const standings = stage.standings as JsonValue[]
+        const row = standings[0] as JsonObject
+        row[field] = field === 'dropped' ? true : 1
+      })),
+    request => mutateCreatedStage(request, stage => {
+      const standing = (stage.standings as JsonValue[])[0] as JsonObject
+      standing.opponentWinRateBasisPoints = 1
+    }),
+  ]
+  for (const createResponse of mutations) {
+    const { room, sql } = await tournamentRoom({ createResponse })
+    expect((await room.createTournamentFromLockedRoster(createTournamentRequest())).ok).toBe(false)
+    const row = sql.database.query('SELECT revision, server_state_json FROM competition_meta').get() as {
+      revision: number; server_state_json: string
+    }
+    expect(row.revision).toBe(1)
+    expect(JSON.parse(row.server_state_json).tournament).toBeNull()
+  }
+  const doubleStage = stageConfig({ format: 'doubleElimination' })
+  const doubleSetup = await tournamentRoom({ createResponse: request => mutateCreatedStage(
+    request,
+    stage => {
+      const doubleState = stage.doubleState as JsonObject
+      doubleState.winnersPool = [...(doubleState.winnersPool as string[])].reverse()
+    },
+  ) })
+  expect((await doubleSetup.room.createTournamentFromLockedRoster(
+    createTournamentRequest({ stage: doubleStage }),
+  )).ok).toBe(false)
+  expect(doubleSetup.calls.some(call => call.operation.type === 'tournamentCreate')).toBe(true)
+  expect((JSON.parse((doubleSetup.sql.database.query(
+    'SELECT server_state_json FROM competition_meta',
+  ).get() as { server_state_json: string }).server_state_json) as JsonObject).tournament).toBeNull()
+})
+
+function validCreateResponse(request: CompetitionRequest): CompetitionEngineResponse {
+  if (request.operation.type !== 'tournamentCreate') throw new Error('unexpected test operation')
+  const tournament = createdTournament(request.operation.config.stage, request.operation.config.tournamentId)
+  return { ok: true, operation: 'tournamentCreate', public: tournament,
+    serverState: { ...request.serverState, tournament } }
+}
+
+function mutateCreatedStage(
+  request: CompetitionRequest,
+  mutate: (stage: JsonObject) => void,
+): CompetitionEngineResponse {
+  const response = validCreateResponse(request)
+  if (response.ok && isJsonObject(response.serverState.tournament)) {
+    const tournament = response.serverState.tournament
+    if (Array.isArray(tournament.stages) && isJsonObject(tournament.stages[0])) {
+      mutate(tournament.stages[0])
+      response.public = tournament
+    }
+  }
+  return response
+}
+
+function mutateCreatedMatch(
+  request: CompetitionRequest,
+  mutate: (match: JsonObject) => void,
+): CompetitionEngineResponse {
+  return mutateCreatedStage(request, stage => {
+    const round = (stage.rounds as JsonValue[])[0]
+    if (!isJsonObject(round) || !Array.isArray(round.matches)
+      || !isJsonObject(round.matches[0])) return
+    mutate(round.matches[0])
+  })
+}
+
+test('engine failure and late SQL failure leave no audit or receipt and a retry can succeed', async () => {
+  let mode: 'throw' | 'reject' | 'success' = 'throw'
+  const setup = await tournamentRoom({ createResponse: request => {
+    if (mode === 'throw') throw new Error('private captain deck detail')
+    if (mode === 'reject') return {
+      ok: false, error: { code: 'invalidSeed', layer: 'schedule', message: 'private member deck detail' },
+    }
+    return validCreateResponse(request)
+  } })
+  const request = createTournamentRequest()
+  const thrown = await setup.room.createTournamentFromLockedRoster(request)
+  expect(thrown).toMatchObject({ ok: false, error: { code: 'engineProtocolError' } })
+  expect(JSON.stringify(thrown)).not.toMatch(/captain|member|deck/)
+  mode = 'reject'
+  const rejected = await setup.room.createTournamentFromLockedRoster(request)
+  expect(rejected).toMatchObject({ ok: false, error: { code: 'engineRejected' } })
+  expect(JSON.stringify(rejected)).not.toMatch(/captain|member|deck/)
+  expect(setup.sql.database.query("SELECT COUNT(*) AS n FROM competition_audit WHERE operation_type = 'tournamentCreate'").get())
+    .toEqual({ n: 0 })
+  expect(setup.sql.database.query('SELECT COUNT(*) AS n FROM competition_command_receipt').get()).toEqual({ n: 0 })
+  const unchanged = setup.sql.database.query(
+    'SELECT revision, server_state_json, public_projection_json FROM competition_meta',
+  ).get() as { revision: number; server_state_json: string; public_projection_json: string }
+  expect(unchanged.revision).toBe(1)
+  expect(JSON.parse(unchanged.server_state_json).tournament).toBeNull()
+  expect(JSON.parse(unchanged.public_projection_json).operation).toBe('registrationCreate')
+  mode = 'success'
+  expect((await setup.room.createTournamentFromLockedRoster(request)).ok).toBe(true)
+
+  const late = await tournamentRoom()
+  late.sql.failNextQueryContaining = 'INSERT INTO competition_command_receipt'
+  expect(await late.room.createTournamentFromLockedRoster(createTournamentRequest()))
+    .toMatchObject({ ok: false, error: { code: 'internalFailure' } })
+  expect(late.sql.database.query('SELECT revision FROM competition_meta').get()).toEqual({ revision: 1 })
+  const lateState = late.sql.database.query('SELECT server_state_json, public_projection_json FROM competition_meta').get() as {
+    server_state_json: string; public_projection_json: string
+  }
+  expect(JSON.parse(lateState.server_state_json).tournament).toBeNull()
+  expect(JSON.parse(lateState.public_projection_json).operation).toBe('registrationCreate')
+  expect(late.sql.database.query("SELECT COUNT(*) AS n FROM competition_audit WHERE operation_type = 'tournamentCreate'").get())
+    .toEqual({ n: 0 })
+  expect(late.sql.database.query('SELECT COUNT(*) AS n FROM competition_command_receipt').get()).toEqual({ n: 0 })
+  expect((await late.room.createTournamentFromLockedRoster(createTournamentRequest())).ok).toBe(true)
+})
+
+test('E6c2a retains the provisioned current game after an authoritative clock revision advances', async () => {
+  const setup = await e6c2aLockedMatch({ teamSize: 2, personalDeck: true })
+  const linked = setup.sql.database.query(
+    'SELECT game_id, binding_json, match_revision FROM competition_game_provision WHERE match_id = ? AND game_number = 1',
+  ).get(setup.matchId) as { game_id: string; binding_json: string; match_revision: number }
+  const binding = JSON.parse(linked.binding_json) as JsonObject
+  const beforeRevision = setup.sql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get(setup.matchId) as { revision: number }
+  const observed = await setup.room.executeMatch(matchExecuteRequest(
+    { type: 'clockObserve', matchId: setup.matchId },
+    {
+      matchId: setup.matchId,
+      commandId: 'e6c2a-observe-current-game',
+      expectedMatchRevision: beforeRevision.revision,
+      trustedTimeMs: 2_004,
+    },
+  ))
+  expect(observed).toMatchObject({ ok: true, value: { matchRevision: beforeRevision.revision + 1 } })
+  const afterRevision = setup.sql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get(setup.matchId) as { revision: number }
+  expect(linked.match_revision).toBe(binding.expectedMatchRevision)
+  expect(afterRevision.revision).toBeGreaterThan(binding.expectedMatchRevision as number)
+
+  const beforeRead = e6c2aSnapshot(setup)
+  const result = await setup.room.readParticipantGame(e6c2aReadRequest(setup.matchId, 'b-2'))
+  expect(result).toMatchObject({ ok: true, value: {
+    matchRevision: afterRevision.revision,
+    game: { gameId: linked.game_id, gameNumber: 1 },
+  } })
+  expect(e6c2aSnapshot(setup)).toEqual(beforeRead)
+})
+
+async function e6c2aSubmitDraw(
+  setup: Awaited<ReturnType<typeof e6c2aLockedMatch>>,
+  commandId: string,
+) {
+  const row = setup.sql.database.query(
+    'SELECT revision, last_trusted_time_ms, match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get(setup.matchId) as { revision: number; last_trusted_time_ms: number; match_projection_json: string }
+  const match = ((JSON.parse(row.match_projection_json) as JsonObject).public as JsonObject).match as JsonObject
+  const teams = ((match.config as JsonObject).teams as string[])
+  return setup.room.ingestGameTerminal({
+    competitionId: 'competition-1',
+    matchId: setup.matchId,
+    callerUserId: 'organizer-1',
+    commandId,
+    expectedMatchRevision: row.revision,
+    trustedTimeMs: Math.max(row.last_trusted_time_ms, setup.meta().updated_trusted_time_ms) + 1,
+    submissionId: `${commandId}-submission`,
+    gameRecordId: `${commandId}-record`,
+    rulingRecordId: `${commandId}-ruling`,
+    startKind: { type: 'ordinaryNewGame' },
+    firstPlayer: match.nextFirstPlayer as string,
+    terminalEvidence: {
+      type: 'canonicalGameEnded',
+      conclusion: {
+        outcome: { type: 'draw' },
+        causes: [{ type: 'teamHpDepleted', teams }],
+      },
+    },
+  })
+}
+
+test('E6c2a follows the current elimination continuation rather than the finished game linkage', async () => {
+  const setup = await e6c2aLockedMatch({
+    format: 'singleElimination',
+    matchFormat: { type: 'firstToWins', value: 1 },
+  })
+  const terminal = await e6c2aSubmitDraw(setup, 'e6c2a-continuation-terminal')
+  expect(terminal).toMatchObject({ ok: true })
+  const latest = setup.sql.database.query(
+    'SELECT game_id, game_number, status FROM competition_game_provision WHERE match_id = ? ORDER BY game_number',
+  ).all(setup.matchId) as Array<{ game_id: string; game_number: number; status: string }>
+  expect(latest).toHaveLength(2)
+  expect(latest[1]).toMatchObject({ game_number: 2, status: 'provisioned' })
+  const before = e6c2aSnapshot(setup)
+  const result = await setup.room.readParticipantGame(e6c2aReadRequest(setup.matchId, 'b-1'))
+  expect(result).toMatchObject({ ok: true, value: {
+    game: { gameId: latest[1]!.game_id, gameNumber: 2 },
+  } })
+  expect(result.ok && result.value.game?.gameId).not.toBe(latest[0]!.game_id)
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+})
+
+test('E6c2a returns null after an accepted final game with a null authoritative nextGame', async () => {
+  const setup = await e6c2aLockedMatch({
+    format: 'roundRobin',
+    matchFormat: { type: 'fixedGames', value: 1 },
+  })
+  expect(await e6c2aSubmitDraw(setup, 'e6c2a-final-terminal')).toMatchObject({ ok: true })
+  const projection = setup.sql.database.query(
+    'SELECT match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get(setup.matchId) as { match_projection_json: string }
+  const match = ((JSON.parse(projection.match_projection_json) as JsonObject).public as JsonObject).match as JsonObject
+  expect(match.status).toBe('completed')
+  expect(match.nextGame).toBeNull()
+  expect(setup.sql.database.query(
+    'SELECT game_number FROM competition_game_provision WHERE match_id = ?',
+  ).all(setup.matchId)).toEqual([{ game_number: 1 }])
+  const before = e6c2aSnapshot(setup)
+  const result = await setup.room.readParticipantGame(e6c2aReadRequest(setup.matchId, 'a-1'))
+  expect(result).toMatchObject({ ok: true, value: { game: null } })
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+})
+
+test('E6c2a formal first-game win awaiting captain selection never returns the old game', async () => {
+  const setup = await e6c2aLockedMatch({
+    format: 'singleElimination',
+    matchFormat: { type: 'firstToWins', value: 2 },
+  })
+  const row = setup.sql.database.query(
+    'SELECT revision, last_trusted_time_ms, match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get(setup.matchId) as { revision: number; last_trusted_time_ms: number; match_projection_json: string }
+  const match = ((JSON.parse(row.match_projection_json) as JsonObject).public as JsonObject).match as JsonObject
+  const config = match.config as JsonObject
+  const teams = config.teams as string[]
+  const terminal = await setup.room.ingestGameTerminal({
+    competitionId: 'competition-1',
+    matchId: setup.matchId,
+    callerUserId: 'organizer-1',
+    commandId: 'e6c2a-first-win-terminal',
+    expectedMatchRevision: row.revision,
+    trustedTimeMs: Math.max(row.last_trusted_time_ms, setup.meta().updated_trusted_time_ms) + 1,
+    submissionId: 'e6c2a-first-win-submission',
+    gameRecordId: 'e6c2a-first-win-record',
+    rulingRecordId: 'e6c2a-first-win-ruling',
+    startKind: { type: 'ordinaryNewGame' },
+    firstPlayer: match.nextFirstPlayer as string,
+    terminalEvidence: {
+      type: 'canonicalGameEnded',
+      conclusion: {
+        outcome: { type: 'winner', team: teams[0]! },
+        causes: [{ type: 'directVictory', rule: 'participant-query-regression', team: teams[0]! }],
+      },
+    },
+  })
+  expect(terminal).toMatchObject({ ok: true })
+  if (!terminal.ok) throw new Error(`formal first-game terminal failed: ${terminal.error.code}`)
+  const persisted = setup.sql.database.query(
+    'SELECT match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get(setup.matchId) as { match_projection_json: string }
+  const terminalMatch = ((JSON.parse(persisted.match_projection_json) as JsonObject).public as JsonObject)
+    .match as JsonObject
+  expect(terminalMatch).toMatchObject({
+    status: 'awaitingFirstPlayer',
+    games: [{ gameNumber: 1 }],
+    nextGame: { firstPlayer: { type: 'pending' } },
+  })
+  expect(setup.sql.database.query(
+    'SELECT game_number, status FROM competition_game_provision WHERE match_id = ?',
+  ).all(setup.matchId)).toEqual([{ game_number: 1, status: 'provisioned' }])
+
+  const before = e6c2aSnapshot(setup)
+  const result = await setup.room.readParticipantGame(e6c2aReadRequest(setup.matchId, 'a-1'))
+  expect(result).toMatchObject({ ok: true, value: { game: null } })
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+})
+
+test('E6c2a formal double-timeout awaiting referee never returns the terminal game', async () => {
+  const setup = await e6c2aLockedMatch()
+  const row = setup.sql.database.query(
+    'SELECT revision, last_trusted_time_ms, match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get(setup.matchId) as { revision: number; last_trusted_time_ms: number; match_projection_json: string }
+  const match = ((JSON.parse(row.match_projection_json) as JsonObject).public as JsonObject).match as JsonObject
+  const timeoutClock = doubleExpiredPreparationClock({
+    mainTimeMs: 300_000,
+    actionTimeMs: 30_000,
+    outOfTurnChoiceTimeMs: 30_000,
+  })
+  setup.sql.database.query(
+    'UPDATE competition_matches SET clock_checkpoint_json = ? WHERE match_id = ?',
+  ).run(JSON.stringify(timeoutClock), setup.matchId)
+  const meta = setup.sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const serverState = JSON.parse(meta.server_state_json) as JsonObject
+  serverState.clock = timeoutClock
+  setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(serverState))
+
+  const terminal = await setup.room.ingestGameTerminal({
+    competitionId: 'competition-1',
+    matchId: setup.matchId,
+    callerUserId: 'organizer-1',
+    commandId: 'e6c2a-double-timeout-terminal',
+    expectedMatchRevision: row.revision,
+    trustedTimeMs: Math.max(row.last_trusted_time_ms, setup.meta().updated_trusted_time_ms) + 1,
+    submissionId: 'e6c2a-double-timeout-submission',
+    gameRecordId: 'e6c2a-double-timeout-record',
+    rulingRecordId: 'e6c2a-double-timeout-ruling',
+    startKind: { type: 'ordinaryNewGame' },
+    firstPlayer: match.nextFirstPlayer as string,
+    terminalEvidence: {
+      type: 'timeout',
+      timeoutId: 'e6c2a-double-timeout',
+      expiries: [
+        { team: 'team-a', deadlineMonotonicMs: 200 },
+        { team: 'team-b', deadlineMonotonicMs: 200 },
+      ],
+      observedAtMonotonicMs: 200,
+      clockCheckpointDigest: await clockCheckpointDigest(timeoutClock as JsonValue),
+    },
+  })
+  expect(terminal).toMatchObject({
+    ok: true,
+    value: { matchProjection: { public: { match: {
+      status: 'awaitingReferee',
+      games: [{ gameNumber: 1 }],
+      outcome: { type: 'doubleLoss', progression: { type: 'pendingReferee' } },
+      nextGame: null,
+    } } } },
+  })
+  if (!terminal.ok) throw new Error(`formal double-timeout terminal failed: ${terminal.error.code}`)
+  expect(setup.sql.database.query(
+    'SELECT game_number, status FROM competition_game_provision WHERE match_id = ?',
+  ).all(setup.matchId)).toEqual([{ game_number: 1, status: 'provisioned' }])
+
+  const before = e6c2aSnapshot(setup)
+  const result = await setup.room.readParticipantGame(e6c2aReadRequest(setup.matchId, 'b-1'))
+  expect(result).toMatchObject({ ok: true, value: { game: null } })
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+})
+
+test('E6c2a formal NeedsDecision awaiting referee never returns the terminal game', async () => {
+  const setup = await e6c2aLockedMatch()
+  const row = setup.sql.database.query(
+    'SELECT revision, last_trusted_time_ms, match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get(setup.matchId) as { revision: number; last_trusted_time_ms: number; match_projection_json: string }
+  const match = ((JSON.parse(row.match_projection_json) as JsonObject).public as JsonObject).match as JsonObject
+  const decisionClock = terminalClock({
+    mainTimeMs: 300_000,
+    actionTimeMs: 30_000,
+    outOfTurnChoiceTimeMs: 30_000,
+  }, {
+    teams: [
+      { team: 'team-a', mainTimeRemainingMs: 0, actionTurn: 1, actionTimeRemainingMs: 0,
+        actionByoyomiStarted: true, enteredByoyomi: true, byoyomiEntrySequence: 0 },
+      { team: 'team-b', mainTimeRemainingMs: 0, actionTurn: null, actionTimeRemainingMs: null,
+        actionByoyomiStarted: false, enteredByoyomi: true, byoyomiEntrySequence: 0 },
+    ],
+    running: { type: 'action', team: 'team-a', turn: 1 },
+    nextByoyomiEntrySequence: 1,
+  })
+  setup.sql.database.query(
+    'UPDATE competition_matches SET clock_checkpoint_json = ? WHERE match_id = ?',
+  ).run(JSON.stringify(decisionClock), setup.matchId)
+  const meta = setup.sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const serverState = JSON.parse(meta.server_state_json) as JsonObject
+  serverState.clock = decisionClock
+  setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(serverState))
+
+  const terminal = await setup.room.ingestGameTerminal({
+    competitionId: 'competition-1',
+    matchId: setup.matchId,
+    callerUserId: 'organizer-1',
+    commandId: 'e6c2a-needs-decision-terminal',
+    expectedMatchRevision: row.revision,
+    trustedTimeMs: Math.max(row.last_trusted_time_ms, setup.meta().updated_trusted_time_ms) + 1,
+    submissionId: 'e6c2a-needs-decision-submission',
+    gameRecordId: 'e6c2a-needs-decision-record',
+    rulingRecordId: 'e6c2a-needs-decision-ruling',
+    startKind: { type: 'ordinaryNewGame' },
+    firstPlayer: match.nextFirstPlayer as string,
+    terminalEvidence: {
+      type: 'canonicalGameEnded',
+      conclusion: {
+        outcome: { type: 'draw' },
+        causes: [{ type: 'teamHpDepleted', teams: ['team-a', 'team-b'] }],
+      },
+    },
+  })
+  expect(terminal).toMatchObject({
+    ok: true,
+    value: { matchProjection: { public: { match: {
+      status: 'awaitingReferee',
+      games: [{ gameNumber: 1 }],
+      rulings: [{ ruling: { type: 'needsDecision', reason: 'simultaneousByoyomiEntry' } }],
+      nextGame: null,
+    } } } },
+  })
+  if (!terminal.ok) throw new Error(`formal NeedsDecision terminal failed: ${terminal.error.code}`)
+  expect(setup.sql.database.query(
+    'SELECT game_number, status FROM competition_game_provision WHERE match_id = ?',
+  ).all(setup.matchId)).toEqual([{ game_number: 1, status: 'provisioned' }])
+
+  const before = e6c2aSnapshot(setup)
+  const result = await setup.room.readParticipantGame(e6c2aReadRequest(setup.matchId, 'a-1'))
+  expect(result).toMatchObject({ ok: true, value: { game: null } })
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+})
+
+test('E6c2a rejects non-rostered, inactive, non-player and cross-match participants without writes', async () => {
+  const setup = await e6c2aLockedMatch({ teamCount: 3, format: 'roundRobin' })
+  const row = setup.sql.database.query(
+    'SELECT match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get(setup.matchId) as { match_projection_json: string }
+  const match = ((JSON.parse(row.match_projection_json) as JsonObject).public as JsonObject).match as JsonObject
+  const matchTeams = (match.config as JsonObject).teams as string[]
+  const outsideTeam = ['team-a', 'team-b', 'team-c'].find(team => !matchTeams.includes(team))!
+  const outsidePrefix = outsideTeam.slice(-1)
+  setup.sql.database.query(
+    `INSERT INTO competition_acl (user_id, role, active, participant) VALUES ('referee-only', 'referee', 1, 1)`,
+  ).run()
+  setup.sql.database.query(
+    `INSERT INTO competition_acl (user_id, role, active, participant) VALUES ('rosterless-player', 'player', 1, 1)`,
+  ).run()
+  const deniedActors = [
+    'organizer-1',
+    'referee-only',
+    `${outsidePrefix}-1`,
+    'outsider-without-acl',
+    'rosterless-player',
+  ]
+  for (const callerUserId of deniedActors) {
+    const before = e6c2aSnapshot(setup)
+    const result = await setup.room.readParticipantGame(e6c2aReadRequest(setup.matchId, callerUserId))
+    expect(result).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(JSON.stringify(result)).not.toMatch(/binding|deckSnapshot|deckSeed|private-deck/)
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
+  for (const [callerUserId, sql, bindings] of [
+    ['a-1', 'UPDATE competition_acl SET active = 0 WHERE user_id = ?', ['a-1']],
+    ['b-1', 'UPDATE competition_acl SET participant = 0 WHERE user_id = ?', ['b-1']],
+  ] as const) {
+    setup.sql.database.query(sql).run(...bindings)
+    const before = e6c2aSnapshot(setup)
+    expect(await setup.room.readParticipantGame(e6c2aReadRequest(setup.matchId, callerUserId)))
+      .toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
+
+  const playerCannotUseOrganizerLinkageRead = await setup.room.readProvisionedGame({
+    competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'b-2',
+  })
+  expect(playerCannotUseOrganizerLinkageRead).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  expect(await setup.room.readProvisionedGame({
+    competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'organizer-1',
+  })).toMatchObject({ ok: true, value: { binding: { competitionId: 'competition-1' } } })
+})
+
+test('E6c2a exact request rejects caller-supplied game or private fields and missing match is typed', async () => {
+  const setup = await e6c2aLockedMatch()
+  const request = e6c2aReadRequest(setup.matchId, 'a-1')
+  const malformed = { ...request, gameId: 'caller-game', binding: { deckSeed: 'caller-seed' } }
+  expect(await setup.room.readParticipantGame(
+    malformed as unknown as CompetitionRoomParticipantGameReadRequest,
+  )).toMatchObject({ ok: false, error: { code: 'invalidRequest' } })
+  expect(await setup.room.readParticipantGame(e6c2aReadRequest('not-materialized', 'a-1')))
+    .toMatchObject({ ok: false, error: { code: 'matchNotFound' } })
+})
+
+test('E6c2a pending, blocked, unprovisioned and missing linkages never claim a ready game', async () => {
+  const pending = await e6c2aLockedMatch({ deliverGames: false })
+  expect(pending.provisioned).toMatchObject({ ok: true, value: { status: 'pending' } })
+  const pendingBefore = e6c2aSnapshot(pending)
+  expect(await pending.room.readParticipantGame(e6c2aReadRequest(pending.matchId, 'a-1')))
+    .toMatchObject({ ok: true, value: { game: null } })
+  expect(e6c2aSnapshot(pending)).toEqual(pendingBefore)
+
+  const blocked = await e6c2aLockedMatch()
+  blocked.sql.database.query(
+    "UPDATE competition_game_provision SET status = 'blocked' WHERE match_id = ? AND game_number = 1",
+  ).run(blocked.matchId)
+  const blockedBefore = e6c2aSnapshot(blocked)
+  expect(await blocked.room.readParticipantGame(e6c2aReadRequest(blocked.matchId, 'b-1')))
+    .toMatchObject({ ok: true, value: { game: null } })
+  expect(e6c2aSnapshot(blocked)).toEqual(blockedBefore)
+
+  const unprovisioned = await e6c2aLockedMatch({ provision: false })
+  const unprovisionedBefore = e6c2aSnapshot(unprovisioned)
+  expect(await unprovisioned.room.readParticipantGame(e6c2aReadRequest(unprovisioned.matchId, 'a-1')))
+    .toMatchObject({ ok: true, value: { game: null } })
+  expect(e6c2aSnapshot(unprovisioned)).toEqual(unprovisionedBefore)
+
+  const missingLink = await e6c2aLockedMatch()
+  missingLink.sql.database.query(
+    'DELETE FROM competition_game_provision WHERE match_id = ? AND game_number = 1',
+  ).run(missingLink.matchId)
+  const missingBefore = e6c2aSnapshot(missingLink)
+  expect(await missingLink.room.readParticipantGame(e6c2aReadRequest(missingLink.matchId, 'a-1')))
+    .toMatchObject({ ok: true, value: { game: null } })
+  expect(e6c2aSnapshot(missingLink)).toEqual(missingBefore)
+})
+
+test('E6c2a corrupted match mirror, stale nextGame/seating linkage and malformed linkage fail closed without writes', async () => {
+  for (const defect of ['mirror', 'nextGame', 'binding', 'seating', 'fingerprint'] as const) {
+    const setup = await e6c2aLockedMatch()
+    if (defect === 'mirror') {
+      const meta = setup.sql.database.query(
+        'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+      ).get() as { server_state_json: string }
+      const state = JSON.parse(meta.server_state_json) as JsonObject
+      ;(state.matches as JsonObject)[setup.matchId] = { config: { corrupt: true }, history: [] }
+      setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+        .run(JSON.stringify(state))
+    } else if (defect === 'nextGame') {
+      setup.sql.database.query(
+        'UPDATE competition_game_provision SET next_game_json = ? WHERE match_id = ? AND game_number = 1',
+      ).run(JSON.stringify({ gameNumber: 9, kind: { type: 'ordinaryNewGame' }, firstPlayer: { type: 'assigned', team: 'team-a' } }), setup.matchId)
+    } else if (defect === 'binding') {
+      setup.sql.database.query(
+        'UPDATE competition_game_provision SET binding_json = ? WHERE match_id = ? AND game_number = 1',
+      ).run(JSON.stringify({ sentinel: 'private-deck-seed' }), setup.matchId)
+    } else if (defect === 'fingerprint') {
+      setup.sql.database.query(
+        'UPDATE competition_game_provision SET fingerprint = ? WHERE match_id = ? AND game_number = 1',
+      ).run('malformed-fingerprint', setup.matchId)
+    } else {
+      const linked = setup.sql.database.query(
+        'SELECT binding_json FROM competition_game_provision WHERE match_id = ? AND game_number = 1',
+      ).get(setup.matchId) as { binding_json: string }
+      const binding = JSON.parse(linked.binding_json) as JsonObject
+      const turnOrder = [...binding.turnOrder as string[]].reverse()
+      binding.turnOrder = turnOrder
+      binding.firstPlayer = turnOrder[0]!
+      setup.sql.database.query(
+        'UPDATE competition_game_provision SET binding_json = ? WHERE match_id = ? AND game_number = 1',
+      ).run(JSON.stringify(binding), setup.matchId)
+    }
+    const before = e6c2aSnapshot(setup)
+    const result = await setup.room.readParticipantGame(e6c2aReadRequest(setup.matchId, 'a-1'))
+    expect(result).toMatchObject({ ok: false, error: {
+      code: defect === 'mirror' ? 'invalidMatchCheckpoint' : 'invalidGameProvision',
+    } })
+    expect(JSON.stringify(result)).not.toMatch(/private-deck-seed|deckSnapshot|deckSeed|binding/)
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
+})
+
+test('E6d1b formal WASM tournament query exists for the current persisted stage', async () => {
+  const setup = await e6c2aLockedMatch({ format: 'roundRobin', provision: false })
+  const request = {
+    competitionId: 'competition-1',
+    callerUserId: 'organizer-1',
+  } satisfies CompetitionRoomTournamentReadRequest
+  const result = await setup.room.readTournament(request)
+  expect(result).toMatchObject({
+    ok: true,
+    value: { competitionId: 'competition-1', projection: { ok: true, operation: 'tournamentView' } },
+  })
+})
+
+function e6d1bReadRequest(callerUserId: string): CompetitionRoomTournamentReadRequest {
+  return { competitionId: 'competition-1', callerUserId }
+}
+
+async function e6d1bReadCurrentTournament(
+  setup: Awaited<ReturnType<typeof e6c2aLockedMatch>>,
+  callerUserId: string,
+): Promise<JsonObject> {
+  const before = e6c2aSnapshot(setup)
+  const callStart = setup.calls.length
+  const result = await setup.room.readTournament(e6d1bReadRequest(callerUserId))
+  expect(result).toMatchObject({ ok: true, value: {
+    competitionId: 'competition-1',
+    projection: { ok: true, operation: 'tournamentView' },
+  } })
+  if (!result.ok) throw new Error(`formal tournament query failed: ${result.error.code}`)
+
+  const meta = setup.sql.database.query(
+    'SELECT revision, server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { revision: number; server_state_json: string }
+  const authoritativeState = JSON.parse(meta.server_state_json) as JsonObject
+  expect(result.value.revision).toBe(meta.revision)
+  expect(Object.keys(result.value).sort()).toEqual(['competitionId', 'projection', 'revision'])
+  expect(Object.keys(result.value.projection).sort()).toEqual(['ok', 'operation', 'public'])
+  expect(result.value.projection.public).toStrictEqual(authoritativeState.tournament)
+  expect(setup.calls.slice(callStart).map(call => call.operation.type)).toEqual(['tournamentView'])
+  expect(JSON.stringify(result)).not.toMatch(
+    /"(?:serverState|private|announcement|captain|members|decks|rosterVersion|lockedRoster|binding|history|commandId|callerUserId)"\s*:/,
+  )
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+  return result.value.projection.public as JsonObject
+}
+
+async function e6d1bSubmitWinner(
+  setup: Awaited<ReturnType<typeof e6c2aLockedMatch>>,
+  commandId: string,
+) {
+  return e6d1bSubmitScheduledWinner(setup, setup.matchId, commandId)
+}
+
+async function e6d1bSubmitScheduledWinner(
+  setup: Awaited<ReturnType<typeof e6c2aLockedMatch>>,
+  matchId: string,
+  commandId: string,
+) {
+  const row = setup.sql.database.query(
+    'SELECT revision, last_trusted_time_ms, match_projection_json FROM competition_matches WHERE match_id = ?',
+  ).get(matchId) as { revision: number; last_trusted_time_ms: number; match_projection_json: string }
+  const match = ((JSON.parse(row.match_projection_json) as JsonObject).public as JsonObject).match as JsonObject
+  const teams = (match.config as JsonObject).teams as string[]
+  return setup.room.ingestGameTerminal({
+    competitionId: 'competition-1',
+    matchId,
+    callerUserId: 'organizer-1',
+    commandId,
+    expectedMatchRevision: row.revision,
+    trustedTimeMs: Math.max(row.last_trusted_time_ms, setup.meta().updated_trusted_time_ms) + 1,
+    submissionId: `${commandId}-submission`,
+    gameRecordId: `${commandId}-game-record`,
+    rulingRecordId: `${commandId}-ruling`,
+    startKind: { type: 'ordinaryNewGame' },
+    firstPlayer: match.nextFirstPlayer as string,
+    terminalEvidence: {
+      type: 'canonicalGameEnded',
+      conclusion: {
+        outcome: { type: 'winner', team: teams[0]! },
+        causes: [{ type: 'directVictory', rule: 'e6d1b-current-query', team: teams[0]! }],
+      },
+    },
+  })
+}
+
+async function e6d1bFinishScheduledTournament(
+  setup: Awaited<ReturnType<typeof e6c2aLockedMatch>>,
+  commandPrefix: string,
+): Promise<JsonObject> {
+  for (let index = 0; index < 40; index += 1) {
+    const tournament = await e6d1bReadCurrentTournament(setup, 'organizer-1')
+    const stage = (tournament.stages as JsonObject[])[0]
+    if (!stage) throw new Error('formal tournament query omitted its configured stage')
+    if (stage.status === 'finished') return tournament
+
+    const matches = (stage.rounds as JsonObject[])
+      .flatMap(round => round.matches as JsonObject[])
+    const scheduled = matches.find(match => match.status === 'pending' && match.started === false
+      && Array.isArray(match.participants) && match.participants.length === 2)
+    if (!scheduled || typeof scheduled.matchId !== 'string') {
+      throw new Error(`formal ${setup.stage.format} schedule is not finished and has no legal pending match`)
+    }
+
+    const matchId = scheduled.matchId
+    if (matchId !== setup.matchId) {
+      const current = setup.meta()
+      const started = await setup.room.startScheduledMatch({
+        competitionId: 'competition-1',
+        stageId: setup.stage.stageId,
+        matchId,
+        callerUserId: 'organizer-1',
+        commandId: `${commandPrefix}-start-${index}`,
+        expectedRevision: current.revision,
+        trustedTimeMs: current.updated_trusted_time_ms + 1,
+        referees: [],
+      })
+      if (!started.ok) throw new Error(`formal ${setup.stage.format} match start failed: ${started.error.code}`)
+
+      const provisioned = await setup.room.provisionInitialScheduledGame({
+        competitionId: 'competition-1',
+        matchId,
+        callerUserId: 'organizer-1',
+        commandId: `${commandPrefix}-game-${index}`,
+        expectedMatchRevision: 1,
+        trustedTimeMs: setup.meta().updated_trusted_time_ms + 1,
+      })
+      if (!provisioned.ok) {
+        throw new Error(`formal ${setup.stage.format} game provision failed: ${provisioned.error.code}`)
+      }
+    }
+
+    const terminal = await e6d1bSubmitScheduledWinner(
+      setup, matchId, `${commandPrefix}-terminal-${index}`,
+    )
+    if (!terminal.ok) throw new Error(`formal ${setup.stage.format} result failed: ${terminal.error.code}`)
+  }
+  throw new Error(`formal ${setup.stage.format} tournament did not finish within 40 scheduled matches`)
+}
+
+test('E6d1b formal WASM returns current tournament after start, terminal and correction in all formats', async () => {
+  for (const format of ['singleElimination', 'roundRobin', 'doubleElimination', 'swiss'] as const) {
+    const elimination = format === 'singleElimination' || format === 'doubleElimination'
+    const setup = await e6c2aLockedMatch({
+      format,
+      matchFormat: elimination
+        ? { type: 'firstToWins', value: 1 }
+        : { type: 'fixedGames', value: 1 },
+      referees: [{ refereeId: 'referee-1', conflictedTeam: null }],
+    })
+
+    const started = await e6d1bReadCurrentTournament(setup, 'organizer-1')
+    const startedStage = (started.stages as JsonObject[])[0]!
+    expect(startedStage.config).toMatchObject({ format })
+    expect((startedStage.config as JsonObject).clockConfig).toEqual(setup.stage.clockConfig)
+    const startedMatch = (started.stages as JsonObject[])
+      .flatMap(stage => stage.rounds as JsonObject[])
+      .flatMap(round => round.matches as JsonObject[])
+      .find(match => match.matchId === setup.matchId)
+    expect(startedMatch).toMatchObject({ status: 'inProgress', started: true })
+
+    const terminal = await e6d1bSubmitWinner(setup, `e6d1b-${format}-terminal`)
+    expect(terminal).toMatchObject({ ok: true })
+    if (!terminal.ok) throw new Error(`formal ${format} terminal failed: ${terminal.error.code}`)
+    const afterTerminal = await e6d1bReadCurrentTournament(setup, 'organizer-1')
+    if (format === 'singleElimination' || format === 'roundRobin') {
+      expect((afterTerminal.stages as JsonObject[])[0]!.status).toBe('finished')
+    }
+    const terminalMatch = (afterTerminal.stages as JsonObject[])
+      .flatMap(stage => stage.rounds as JsonObject[])
+      .flatMap(round => round.matches as JsonObject[])
+      .find(match => match.matchId === setup.matchId)
+    expect(terminalMatch).toMatchObject({ status: 'completed', started: true })
+
+    const persisted = setup.sql.database.query(
+      'SELECT revision, last_trusted_time_ms, match_projection_json FROM competition_matches WHERE match_id = ?',
+    ).get(setup.matchId) as { revision: number; last_trusted_time_ms: number; match_projection_json: string }
+    const terminalMatchView = ((JSON.parse(persisted.match_projection_json) as JsonObject).public as JsonObject)
+      .match as JsonObject
+    const correctionWinner = ((terminalMatchView.config as JsonObject).teams as string[])[0]!
+    const correction = await setup.room.executeMatch({
+      competitionId: 'competition-1',
+      matchId: setup.matchId,
+      callerUserId: 'referee-1',
+      commandId: `e6d1b-${format}-correction`,
+      expectedMatchRevision: persisted.revision,
+      trustedTimeMs: Math.max(persisted.last_trusted_time_ms, setup.meta().updated_trusted_time_ms) + 1,
+      operation: {
+        type: 'matchCorrectRuling',
+        matchId: setup.matchId,
+        correctionId: `e6d1b-${format}-correction-record`,
+        refereeId: 'referee-1',
+        gameRecordId: `e6d1b-${format}-terminal-game-record`,
+        replacementRulingRecordId: `e6d1b-${format}-replacement-ruling`,
+        replacementRuling: { type: 'gameAccepted', outcome: { winner: correctionWinner } },
+        reason: '正式 WASM 賽程查詢回歸更正',
+      },
+    })
+    expect(correction).toMatchObject({ ok: true })
+    if (!correction.ok) throw new Error(`formal ${format} correction failed: ${correction.error.code}`)
+    const afterCorrection = await e6d1bReadCurrentTournament(setup, 'referee-1')
+    const correctedMatch = (afterCorrection.stages as JsonObject[])
+      .flatMap(stage => stage.rounds as JsonObject[])
+      .flatMap(round => round.matches as JsonObject[])
+      .find(match => match.matchId === setup.matchId)
+    expect(correctedMatch).toMatchObject({ status: 'completed', started: true })
+    expect(setup.calls.filter(call => call.operation.type === 'tournamentCorrectResult')).toHaveLength(1)
+    const correctedMatchRow = setup.sql.database.query(
+      'SELECT match_projection_json FROM competition_matches WHERE match_id = ?',
+    ).get(setup.matchId) as { match_projection_json: string }
+    const correctedPublicMatch = ((JSON.parse(correctedMatchRow.match_projection_json) as JsonObject)
+      .public as JsonObject).match as JsonObject
+    expect(correctedPublicMatch.corrections).toMatchObject([{
+      correctionId: `e6d1b-${format}-correction-record`,
+    }])
+
+    const globalProjection = JSON.parse((setup.sql.database.query(
+      'SELECT public_projection_json FROM competition_meta WHERE singleton = 1',
+    ).get() as { public_projection_json: string }).public_projection_json) as JsonObject
+    expect(globalProjection.operation).not.toBe('tournamentView')
+    const restarted = new CompetitionRoomClass(
+      stateFor(setup.sql, setup.alarm), setup.env, setup.adapter,
+    )
+    const beforeRestartQuery = e6c2aSnapshot(setup)
+    expect(await restarted.readTournament(e6d1bReadRequest('organizer-1')))
+      .toEqual(await setup.room.readTournament(e6d1bReadRequest('organizer-1')))
+    expect(e6c2aSnapshot(setup)).toEqual(beforeRestartQuery)
+  }
+})
+
+test('E6d1b formal WASM reads finished double-elimination and all Swiss rounds after restart', async () => {
+  for (const scenario of [
+    {
+      format: 'doubleElimination' as const,
+      teamCount: 2 as const,
+      matchFormat: { type: 'firstToWins' as const, value: 1 },
+    },
+    {
+      format: 'swiss' as const,
+      teamCount: 5 as const,
+      matchFormat: { type: 'fixedGames' as const, value: 1 },
+    },
+  ]) {
+    const setup = await e6c2aLockedMatch({
+      ...scenario,
+      referees: [{ refereeId: 'referee-1', conflictedTeam: null }],
+    })
+
+    const initialResult = await e6d1bSubmitWinner(setup, `e6d1b-${scenario.format}-initial`)
+    if (!initialResult.ok) {
+      throw new Error(`formal ${scenario.format} initial result failed: ${initialResult.error.code}`)
+    }
+    const persisted = setup.sql.database.query(
+      'SELECT revision, last_trusted_time_ms, match_projection_json FROM competition_matches WHERE match_id = ?',
+    ).get(setup.matchId) as { revision: number; last_trusted_time_ms: number; match_projection_json: string }
+    const completedMatch = ((JSON.parse(persisted.match_projection_json) as JsonObject).public as JsonObject)
+      .match as JsonObject
+    const correctionWinner = ((completedMatch.config as JsonObject).teams as string[])[0]!
+    const corrected = await setup.room.executeMatch({
+      competitionId: 'competition-1',
+      matchId: setup.matchId,
+      callerUserId: 'referee-1',
+      commandId: `e6d1b-${scenario.format}-initial-correction`,
+      expectedMatchRevision: persisted.revision,
+      trustedTimeMs: Math.max(persisted.last_trusted_time_ms, setup.meta().updated_trusted_time_ms) + 1,
+      operation: {
+        type: 'matchCorrectRuling',
+        matchId: setup.matchId,
+        correctionId: `e6d1b-${scenario.format}-initial-correction-record`,
+        refereeId: 'referee-1',
+        gameRecordId: `e6d1b-${scenario.format}-initial-game-record`,
+        replacementRulingRecordId: `e6d1b-${scenario.format}-initial-replacement-ruling`,
+        replacementRuling: { type: 'gameAccepted', outcome: { winner: correctionWinner } },
+        reason: '正式 WASM 完成賽程查詢回歸更正',
+      },
+    })
+    if (!corrected.ok) {
+      throw new Error(`formal ${scenario.format} initial correction failed: ${corrected.error.code}`)
+    }
+
+    await e6d1bFinishScheduledTournament(setup, `e6d1b-${scenario.format}-finish`)
+    const finished = await e6d1bReadCurrentTournament(setup, 'organizer-1')
+    const finishedStage = (finished.stages as JsonObject[])[0]
+    expect(finishedStage?.status).toBe('finished')
+    const finishedRounds = finishedStage?.rounds as JsonObject[]
+    const finishedMatches = finishedRounds.flatMap(round => round.matches as JsonObject[])
+    expect(finishedMatches.length).toBeGreaterThan(1)
+    expect(finishedMatches.every(match => match.status === 'completed')).toBe(true)
+    if (scenario.format === 'swiss') {
+      expect(finishedRounds).toHaveLength(3)
+      expect(finishedRounds.map(round => round.roundNumber)).toEqual([1, 2, 3])
+      expect(finishedStage?.config).toMatchObject({ format: 'swiss', swissRounds: 3 })
+    } else {
+      expect(finishedRounds.map(round => round.kind)).toContain('grandFinal')
+    }
+
+    const authoritative = setup.sql.database.query(
+      'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+    ).get() as { server_state_json: string }
+    expect(finished).toStrictEqual((JSON.parse(authoritative.server_state_json) as JsonObject).tournament)
+
+    const beforeRestartRead = e6c2aSnapshot(setup)
+    const currentResult = await setup.room.readTournament(e6d1bReadRequest('organizer-1'))
+    expect(currentResult).toMatchObject({ ok: true, value: { projection: {
+      ok: true, operation: 'tournamentView', public: finished,
+    } } })
+    if (!currentResult.ok) throw new Error(`formal ${scenario.format} finished query failed`)
+    expect(e6c2aSnapshot(setup)).toEqual(beforeRestartRead)
+
+    const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+    const beforeRestartedQuery = e6c2aSnapshot(setup)
+    expect(await restarted.readTournament(e6d1bReadRequest('organizer-1'))).toEqual(currentResult)
+    expect(e6c2aSnapshot(setup)).toEqual(beforeRestartedQuery)
+  }
+})
+
+test('E6d1b reads the complete schedule with independent live matches and preserves private registration state', async () => {
+  const setup = await e6c2aLockedMatch({ teamCount: 3, format: 'roundRobin', provision: false })
+  const firstView = await e6d1bReadCurrentTournament(setup, 'organizer-1')
+  const firstStage = (firstView.stages as JsonObject[])[0]!
+  const scheduled = (firstStage.rounds as JsonObject[])
+    .flatMap(round => round.matches as JsonObject[])
+  expect(scheduled.length).toBeGreaterThan(1)
+
+  const secondMatch = scheduled.find(match => match.matchId !== setup.matchId
+    && match.status === 'pending' && match.started === false)
+  expect(secondMatch).toBeDefined()
+  if (!secondMatch) throw new Error('formal round-robin fixture has no other pending match')
+  const meta = setup.meta()
+  expect(await setup.room.startScheduledMatch({
+    competitionId: 'competition-1',
+    stageId: setup.stage.stageId,
+    matchId: secondMatch.matchId as string,
+    callerUserId: 'organizer-1',
+    commandId: 'e6d1b-start-second-match',
+    expectedRevision: meta.revision,
+    trustedTimeMs: meta.updated_trusted_time_ms + 1,
+    referees: [],
+  })).toMatchObject({ ok: true })
+  expect(setup.sql.database.query(
+    'SELECT match_id, clock_checkpoint_json FROM competition_matches ORDER BY match_id',
+  ).all()).toHaveLength(2)
+  const activeView = await e6d1bReadCurrentTournament(setup, 'a-1')
+  const allMatches = (activeView.stages as JsonObject[])
+    .flatMap(stage => stage.rounds as JsonObject[])
+    .flatMap(round => round.matches as JsonObject[])
+  expect(allMatches.filter(match => match.status === 'inProgress')).toHaveLength(2)
+
+  const privateSetup = await e6c2aLockedMatch({
+    teamSize: 2,
+    personalDeck: true,
+    format: 'roundRobin',
+    provision: false,
+  })
+  const privateBefore = e6c2aSnapshot(privateSetup)
+  const privateResult = await privateSetup.room.readTournament(e6d1bReadRequest('a-2'))
+  expect(privateResult).toMatchObject({ ok: true, value: {
+    projection: { operation: 'tournamentView' },
+  } })
+  expect(JSON.stringify(privateResult)).not.toMatch(/private-deck|a-1-card|a-2-card|b-1-card|b-2-card/)
+  expect(JSON.stringify(privateResult)).not.toMatch(
+    /"(?:announcement|captain|members|decks|rosterVersion|lockedRoster|serverState|private)"\s*:/,
+  )
+  expect(e6c2aSnapshot(privateSetup)).toEqual(privateBefore)
+})
+
+test('E6d1b never treats the last global projection as the current tournament', async () => {
+  const setup = await e6c2aLockedMatch({ format: 'roundRobin', provision: false })
+  setup.sql.database.query(
+    'UPDATE competition_meta SET public_projection_json = ? WHERE singleton = 1',
+  ).run(JSON.stringify({
+    ok: true,
+    operation: 'registrationCreate',
+    public: { staleSentinel: 'last-global-projection' },
+  }))
+  const before = e6c2aSnapshot(setup)
+  const result = await setup.room.readTournament(e6d1bReadRequest('organizer-1'))
+  expect(result).toMatchObject({ ok: true, value: {
+    projection: { ok: true, operation: 'tournamentView' },
+  } })
+  if (!result.ok) throw new Error(`formal tournament query failed: ${result.error.code}`)
+  const meta = setup.meta()
+  expect(result.value.projection.public).toStrictEqual(
+    (JSON.parse(meta.server_state_json) as JsonObject).tournament,
+  )
+  expect(JSON.stringify(result)).not.toContain('last-global-projection')
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+})
+
+test('E6d1b allows active organizer/referee/player, but rejects revoked, unknown and extra caller identity', async () => {
+  const setup = await e6c2aLockedMatch({
+    referees: [{ refereeId: 'referee-1', conflictedTeam: null }],
+  })
+  for (const caller of ['organizer-1', 'referee-1', 'a-1', 'b-1']) {
+    await e6d1bReadCurrentTournament(setup, caller)
+  }
+
+  const current = setup.meta()
+  expect(await setup.room.revokeReferee({
+    competitionId: 'competition-1',
+    callerUserId: 'organizer-1',
+    targetUserId: 'referee-1',
+    commandId: 'e6d1b-revoke-referee',
+    expectedRevision: current.revision,
+    trustedTimeMs: current.updated_trusted_time_ms + 1,
+  })).toMatchObject({ ok: true })
+  const revokedBefore = e6c2aSnapshot(setup)
+  const revokedReferee = await setup.room.readTournament(e6d1bReadRequest('referee-1'))
+  expect(revokedReferee).toMatchObject({ ok: false, error: { code: 'notParticipant' } })
+  expect(e6c2aSnapshot(setup)).toEqual(revokedBefore)
+
+  setup.sql.database.query('UPDATE competition_acl SET active = 0 WHERE user_id = ?').run('a-1')
+  const revokedPlayerBefore = e6c2aSnapshot(setup)
+  expect(await setup.room.readTournament(e6d1bReadRequest('a-1')))
+    .toMatchObject({ ok: false, error: { code: 'notParticipant' } })
+  expect(e6c2aSnapshot(setup)).toEqual(revokedPlayerBefore)
+
+  const outsiderBefore = e6c2aSnapshot(setup)
+  expect(await setup.room.readTournament(e6d1bReadRequest('unknown-user')))
+    .toMatchObject({ ok: false, error: { code: 'notParticipant' } })
+  expect(e6c2aSnapshot(setup)).toEqual(outsiderBefore)
+
+  const spoofed = {
+    competitionId: 'competition-1',
+    callerUserId: 'organizer-1',
+    serverActor: { type: 'organizer', playerId: 'organizer-1' },
+  }
+  const spoofedBefore = e6c2aSnapshot(setup)
+  expect(await setup.room.readTournament(spoofed as unknown as CompetitionRoomTournamentReadRequest))
+    .toMatchObject({ ok: false, error: { code: 'invalidRequest' } })
+  expect(e6c2aSnapshot(setup)).toEqual(spoofedBefore)
+})
+
+test('E6d1b missing and malformed checkpoints fail closed without persistence changes or leaks', async () => {
+  const uncreated = await realRegistrationRoom()
+  const beforeUncreated = e6c2aSnapshot(uncreated)
+  const callCount = uncreated.calls.length
+  expect(await uncreated.room.readTournament(e6d1bReadRequest('organizer-1')))
+    .toMatchObject({ ok: false, error: { code: 'notReady' } })
+  expect(uncreated.calls).toHaveLength(callCount)
+  expect(e6c2aSnapshot(uncreated)).toEqual(beforeUncreated)
+
+  for (const defect of ['badJson', 'missingShape', 'wrongTournamentId', 'wrongOrganizer'] as const) {
+    const setup = await e6c2aLockedMatch({ provision: false })
+    const row = setup.sql.database.query(
+      'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+    ).get() as { server_state_json: string }
+    if (defect === 'badJson') {
+      setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+        .run('{not-json')
+    } else {
+      const state = JSON.parse(row.server_state_json) as JsonObject
+      if (defect === 'missingShape') delete state.matches
+      if (defect === 'wrongTournamentId') (state.tournament as JsonObject).tournamentId = 'other-competition'
+      if (defect === 'wrongOrganizer') {
+        ((state.registration as JsonObject).announcement as JsonObject).organizer = 'other-organizer'
+      }
+      setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+        .run(JSON.stringify(state))
+    }
+    const before = e6c2aSnapshot(setup)
+    const callsBefore = setup.calls.length
+    const result = await setup.room.readTournament(e6d1bReadRequest('organizer-1'))
+    expect(result).toMatchObject({ ok: false, error: { code: 'invalidTournamentCheckpoint' } })
+    expect(JSON.stringify(result)).not.toMatch(/other-competition|other-organizer|not-json/)
+    expect(setup.calls).toHaveLength(callsBefore)
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
+})
+
+test('E6d1b rejects extra, mismatched and private engine responses without exposing them or writing', async () => {
+  for (const defect of ['extraKey', 'wrongOperation', 'wrongIdentity', 'stateDrift', 'engineReject', 'throw'] as const) {
+    const setup = await e6c2aLockedMatch({ provision: false })
+    const corruptedEngine = async (request: CompetitionRequest): Promise<unknown> => {
+      if (request.operation.type !== 'tournamentView') return setup.adapter(request)
+      if (defect === 'throw') throw new Error('private engine sentinel')
+      const response = await setup.adapter(request)
+      if (!isJsonObject(response)) return response
+      const corrupted = structuredClone(response)
+      if (defect === 'engineReject') {
+        return { ok: false, error: { code: 'secretCode', layer: 'state', message: 'private engine sentinel' } }
+      }
+      if (defect === 'extraKey') corrupted.private = { secret: 'private engine sentinel' }
+      if (defect === 'wrongOperation') corrupted.operation = 'tournamentCreate'
+      if (defect === 'wrongIdentity' && isJsonObject(corrupted.public)) {
+        corrupted.public.tournamentId = 'private engine sentinel'
+      }
+      if (defect === 'stateDrift' && isJsonObject(corrupted.serverState)) {
+        corrupted.serverState.clock = { private: 'private engine sentinel' }
+      }
+      return corrupted
+    }
+    const room = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, corruptedEngine)
+    const before = e6c2aSnapshot(setup)
+    const result = await room.readTournament(e6d1bReadRequest('organizer-1'))
+    expect(result).toMatchObject({ ok: false, error: {
+      code: defect === 'throw' ? 'engineProtocolError' : 'invalidTournamentCheckpoint',
+    } })
+    expect(JSON.stringify(result)).not.toContain('private engine sentinel')
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
+})
+
+test('E6e2a formal 1v1 and 2v2 clock query is minimal, repeatable and entirely read-only', async () => {
+  for (const teamSize of [1, 2] as const) {
+    const setup = await e6c2aLockedMatch({ teamSize, personalDeck: teamSize === 2 })
+    const reader = setup.room
+    const request = {
+      competitionId: 'competition-1', matchId: setup.matchId,
+      callerUserId: teamSize === 2 ? 'a-2' : 'a-1', trustedTimeMs: 5_000,
+    }
+    const before = e6c2aSnapshot(setup)
+    const gameCallsBefore = setup.gameCalls.length
+    const expected = {
+      ok: true,
+      value: {
+        competitionId: 'competition-1', matchId: setup.matchId, matchRevision: 2,
+        matchStatus: 'open',
+        game: { gameId: setup.provisioned?.ok ? setup.provisioned.value.gameId : '', gameNumber: 1 },
+        clock: {
+          sampledAtMs: 5_000,
+          teams: [
+            { team: 'team-a', mainTimeRemainingMs: 300_000, byoyomiTimeRemainingMs: 30_000, byoyomiActive: false },
+            { team: 'team-b', mainTimeRemainingMs: 300_000, byoyomiTimeRemainingMs: 30_000, byoyomiActive: false },
+          ],
+          running: null, paused: null, awaitingAuthority: false,
+        },
+      },
+    }
+    expect(await reader.readMatchClock(request)).toEqual(expected)
+    expect(await reader.readMatchClock(request)).toEqual(expected)
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+    const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+    expect(await restarted.readMatchClock(request)).toEqual(expected)
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+    expect(setup.gameCalls).toHaveLength(gameCallsBefore)
+  }
+})
+
+type E6e2aSetup = Awaited<ReturnType<typeof e6c2aLockedMatch>>
+
+function e6e2aClockRequest(setup: E6e2aSetup,
+  overrides: Partial<CompetitionRoomMatchClockReadRequest> = {}): CompetitionRoomMatchClockReadRequest {
+  return {
+    competitionId: 'competition-1', matchId: setup.matchId,
+    callerUserId: 'organizer-1', trustedTimeMs: 5_000, ...overrides,
+  }
+}
+
+test('E6e2a clock ACL requires active organizer, assigned referee or this match locked player', async () => {
+  const setup = await e6c2aLockedMatch({
+    teamSize: 2, teamCount: 3,
+    referees: [{ refereeId: 'referee-1', conflictedTeam: 'team-b' }],
+  })
+  const config = ((JSON.parse((setup.sql.database.query(
+    'SELECT match_checkpoint_json FROM competition_matches WHERE match_id = ?',
+  ).get(setup.matchId) as { match_checkpoint_json: string }).match_checkpoint_json) as JsonObject).config as JsonObject)
+  const teams = config.teams as string[]
+  expect(teams).toEqual(['team-b', 'team-c'])
+  setup.sql.database.query("INSERT INTO competition_acl(user_id,role,active,participant) VALUES('unassigned-referee','referee',1,0)").run()
+  setup.sql.database.query("INSERT INTO competition_acl(user_id,role,active,participant) VALUES('rosterless','player',1,1)").run()
+  setup.sql.database.query("INSERT INTO competition_acl(user_id,role,active,participant) VALUES('other-organizer','organizer',1,0)").run()
+  for (const callerUserId of ['organizer-1', 'referee-1', 'b-1', 'b-2', 'c-1', 'c-2']) {
+    const before = e6c2aSnapshot(setup)
+    expect(await setup.room.readMatchClock(e6e2aClockRequest(setup, { callerUserId }))).toMatchObject({ ok: true })
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
+  for (const callerUserId of ['outsider', 'a-1', 'a-2', 'rosterless', 'unassigned-referee', 'other-organizer']) {
+    const before = e6c2aSnapshot(setup)
+    expect(await setup.room.readMatchClock(e6e2aClockRequest(setup, { callerUserId })))
+      .toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
+  for (const callerUserId of ['organizer-1', 'referee-1', 'b-1']) {
+    setup.sql.database.query('UPDATE competition_acl SET active = 0 WHERE user_id = ?').run(callerUserId)
+    const before = e6c2aSnapshot(setup)
+    expect(await setup.room.readMatchClock(e6e2aClockRequest(setup, { callerUserId })))
+      .toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+    setup.sql.database.query('UPDATE competition_acl SET active = 1 WHERE user_id = ?').run(callerUserId)
+  }
+})
+
+test('E6e2a exact request, identity and trusted-time regressions fail without dispatch or writes', async () => {
+  const setup = await e6c2aLockedMatch()
+  const before = e6c2aSnapshot(setup)
+  const callsBefore = setup.calls.length
+  for (const field of ['operation', 'firstPlayer', 'team', 'expectedMatchRevision', 'commandId', 'binding', 'serverState']) {
+    const request = e6e2aClockRequest(setup)
+    Reflect.set(request, field, 'private spoof sentinel')
+    expect(await setup.room.readMatchClock(request)).toMatchObject({ ok: false, error: { code: 'invalidRequest' } })
+  }
+  for (const trustedTimeMs of [-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    expect(await setup.room.readMatchClock(e6e2aClockRequest(setup, { trustedTimeMs })))
+      .toMatchObject({ ok: false, error: { code: 'invalidRequest' } })
+  }
+  const symbolRequest = e6e2aClockRequest(setup)
+  Reflect.set(symbolRequest, Symbol('spoof'), true)
+  expect(await setup.room.readMatchClock(symbolRequest)).toMatchObject({ ok: false, error: { code: 'invalidRequest' } })
+  expect(await setup.room.readMatchClock(e6e2aClockRequest(setup, { competitionId: 'other' })))
+    .toMatchObject({ ok: false, error: { code: 'competitionIdMismatch' } })
+  expect(await setup.room.readMatchClock(e6e2aClockRequest(setup, { matchId: 'missing' })))
+    .toMatchObject({ ok: false, error: { code: 'matchNotFound' } })
+  expect(await setup.room.readMatchClock(e6e2aClockRequest(setup, { trustedTimeMs: 100 })))
+    .toMatchObject({ ok: false, error: { code: 'trustedTimeRegression' } })
+  expect(setup.calls).toHaveLength(callsBefore)
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+})
+
+test('E6e2a stored projections reject extra private fields instead of silently normalizing them', async () => {
+  for (const column of ['match_projection_json', 'clock_projection_json'] as const) {
+    const setup = await e6c2aLockedMatch()
+    const stored = setup.sql.database.query(`SELECT ${column} AS projection FROM competition_matches WHERE match_id = ?`)
+      .get(setup.matchId) as { projection: string }
+    const projection = JSON.parse(stored.projection) as JsonObject
+    projection.private = { sentinel: 'secret persisted projection' }
+    setup.sql.database.query(`UPDATE competition_matches SET ${column} = ? WHERE match_id = ?`)
+      .run(JSON.stringify(projection), setup.matchId)
+    const before = e6c2aSnapshot(setup)
+    const result = await setup.room.readMatchClock(e6e2aClockRequest(setup))
+    expect(result.ok).toBe(false)
+    expect(JSON.stringify(result)).not.toContain('secret persisted projection')
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
+})
+
+async function e6e2aClockCommand(setup: E6e2aSetup,
+  operation: CompetitionRoomMatchExecuteRequest['operation'], trustedTimeMs: number,
+  callerUserId = 'organizer-1') {
+  const row = setup.sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?')
+    .get(setup.matchId) as { revision: number }
+  const result = await setup.room.executeMatch({
+    competitionId: 'competition-1', matchId: setup.matchId, callerUserId,
+    commandId: `e6e2a-${operation.type}-${trustedTimeMs}`, expectedMatchRevision: row.revision,
+    trustedTimeMs, operation,
+  })
+  if (!result.ok) throw new Error(`E6e2a formal clock command failed: ${result.error.code}`)
+  return result.value
+}
+
+async function e6e2aCheckedRead(setup: E6e2aSetup, trustedTimeMs: number,
+  callerUserId = 'organizer-1', room = setup.room): Promise<CompetitionRoomMatchClockReadValue> {
+  const before = e6c2aSnapshot(setup)
+  const gameCallsBefore = setup.gameCalls.length
+  const result = await room.readMatchClock(e6e2aClockRequest(setup, { trustedTimeMs, callerUserId }))
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+  expect(setup.gameCalls).toHaveLength(gameCallsBefore)
+  if (!result.ok) throw new Error(`E6e2a clock read failed: ${result.error.code}`)
+  expect(Object.keys(result.value).sort()).toEqual(['clock', 'competitionId', 'game', 'matchId', 'matchRevision', 'matchStatus'])
+  expect(JSON.stringify(result)).not.toMatch(/"(?:private|binding|players|members|deckSnapshot|deckSeed|referees|config|rulings|winner|timeoutRuling|needsDecision|byoyomiEntryOrder|serverState)"\s*:/)
+  return result.value
+}
+
+for (const corruptedDeadline of [5_000, null]) {
+  test(`E6e2a formal stored deadline ${corruptedDeadline} must match the authoritative checkpoint`, async () => {
+    const setup = await e6c2aLockedMatch({ clockConfig: {
+      mainTimeMs: 1_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20,
+    } })
+    await e6e2aClockCommand(setup, {
+      type: 'clockBeginAction', matchId: setup.matchId, team: 'team-a', turn: 1,
+    }, 3_000)
+    const stored = setup.sql.database.query(
+      'SELECT clock_projection_json FROM competition_matches WHERE match_id = ?',
+    ).get(setup.matchId) as { clock_projection_json: string }
+    const projection = JSON.parse(stored.clock_projection_json) as JsonObject
+    const clockPublic = (projection.public as JsonObject).clock as JsonObject
+    expect(clockPublic.nextTimeoutDeadlineMs).toBe(4_100)
+    // 僅污染投影期限；正式 checkpoint、revision、mirror 與 linkage 保持原形。
+    clockPublic.nextTimeoutDeadlineMs = corruptedDeadline
+    setup.sql.database.query(
+      'UPDATE competition_matches SET clock_projection_json = ? WHERE match_id = ?',
+    ).run(JSON.stringify(projection), setup.matchId)
+    const before = e6c2aSnapshot(setup)
+    const gameCallsBefore = setup.gameCalls.length
+    const result = await setup.room.readMatchClock(e6e2aClockRequest(setup, { trustedTimeMs: 4_000 }))
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+    expect(setup.gameCalls).toHaveLength(gameCallsBefore)
+    expect(result).toMatchObject({ ok: false, error: { code: 'invalidClockCheckpoint' } })
+  })
+}
+
+test('E6e2a formal provisioned Waiting clock pause fails before engine, receipt and audit', async () => {
+  const setup = await e6c2aLockedMatch({
+    referees: [{ refereeId: 'referee-1', conflictedTeam: null }],
+  })
+  expect(setup.provisioned).toMatchObject({ ok: true, value: { status: 'provisioned' } })
+  const row = setup.sql.database.query(
+    'SELECT revision, clock_checkpoint_json FROM competition_matches WHERE match_id = ?',
+  ).get(setup.matchId) as { revision: number; clock_checkpoint_json: string }
+  const clock = JSON.parse(row.clock_checkpoint_json) as JsonObject
+  expect(clock.running).toBeNull()
+  expect(clock.paused).toBeNull()
+  expect(clock.preparationStarted).toBe(false)
+  if (!setup.provisioned?.ok) throw new Error('formal current game was not provisioned')
+  const probes: CompetitionGameClockControlEligibilityRequest[] = []
+  setup.env.GAME_ROOM = gameRoomNamespace(
+    async () => { throw new Error('clock control must not provision a game') },
+    async () => { throw new Error('Waiting must not receive clock control') },
+    async request => {
+      probes.push(structuredClone(request))
+      return false
+    },
+  )
+  const commandId = 'e6e2a-waiting-referee-pause'
+  const before = e6c2aSnapshot(setup)
+  const callsBefore = setup.calls.length
+  const gameCallsBefore = setup.gameCalls.length
+  const result = await setup.room.executeMatch({
+    competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'referee-1',
+    commandId, expectedMatchRevision: row.revision, trustedTimeMs: 3_000,
+    operation: { type: 'clockPause', matchId: setup.matchId, reason: '尚未全員準備不可控制' },
+  })
+  const receipt = setup.sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_command_receipt WHERE command_id = ?',
+  ).get(commandId) as { count: number }
+  const audit = setup.sql.database.query(
+    'SELECT COUNT(*) AS count FROM competition_audit WHERE command_id = ?',
+  ).get(commandId) as { count: number }
+  // 小型診斷保留實際副作用證據，不讓測試失敗輸出整份私有 DB。
+  expect({
+    code: result.ok ? 'success' : result.error.code,
+    engineOperations: setup.calls.slice(callsBefore).map(call => call.operation.type),
+    databaseAndAlarmUnchanged: JSON.stringify(e6c2aSnapshot(setup)) === JSON.stringify(before),
+    gameDispatches: setup.gameCalls.length - gameCallsBefore,
+    receipts: receipt.count,
+    audits: audit.count,
+  }).toEqual({
+    code: 'gameRoomNotProvisioned', engineOperations: [], databaseAndAlarmUnchanged: true,
+    gameDispatches: 0, receipts: 0, audits: 0,
+  })
+  expect(probes).toEqual([{
+    competitionId: 'competition-1', matchId: setup.matchId,
+    gameId: setup.provisioned.value.gameId, gameNumber: 1,
+  }])
+})
+
+test('E4d3c-r4 formal Waiting resume fails before engine with one primitive probe', async () => {
+  const setup = await e6c2aLockedMatch({
+    referees: [{ refereeId: 'referee-1', conflictedTeam: null }],
+  })
+  if (!setup.provisioned?.ok) throw new Error('formal current game was not provisioned')
+  const probes: CompetitionGameClockControlEligibilityRequest[] = []
+  let controls = 0
+  setup.env.GAME_ROOM = gameRoomNamespace(
+    async () => { throw new Error('resume must not provision a game') },
+    async () => { controls += 1; throw new Error('Waiting must not receive control') },
+    async request => { probes.push(structuredClone(request)); return false },
+  )
+  const before = e6c2aSnapshot(setup)
+  const callsBefore = setup.calls.length
+  expect(await setup.room.executeMatch({
+    competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'referee-1',
+    commandId: 'e4d3c-r4-waiting-resume', expectedMatchRevision: 2, trustedTimeMs: 3_000,
+    operation: { type: 'clockResume', matchId: setup.matchId, reason: '尚未全員準備不能恢復' },
+  })).toEqual({ ok: false, error: {
+    code: 'gameRoomNotProvisioned',
+    message: 'the current match game must be active before its clock can be controlled',
+  } })
+  expect(probes).toEqual([{
+    competitionId: 'competition-1', matchId: setup.matchId,
+    gameId: setup.provisioned.value.gameId, gameNumber: 1,
+  }])
+  expect(controls).toBe(0)
+  expect(setup.calls).toHaveLength(callsBefore)
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+})
+
+const e4d3cRejectedProbeReplies: Array<{ name: string; value: unknown }> = [
+  { name: 'false', value: false },
+  { name: 'string', value: 'true' },
+  { name: 'number', value: 1 },
+  { name: 'null', value: null },
+  { name: 'undefined', value: undefined },
+  { name: 'array', value: [true] },
+  { name: 'object', value: { ok: true, private: 'PRIVATE_READY' } },
+  { name: 'boxed boolean', value: new Boolean(true) },
+]
+
+for (const rejected of e4d3cRejectedProbeReplies) {
+  test(`E4d3c-r4 formal ${rejected.name} eligibility never dispatches or persists`, async () => {
+    const setup = await e6c2aLockedMatch({
+      referees: [{ refereeId: 'referee-1', conflictedTeam: null }],
+    })
+    const probes: CompetitionGameClockControlEligibilityRequest[] = []
+    let controls = 0
+    setup.env.GAME_ROOM = gameRoomNamespace(
+      async () => { throw new Error('control must not provision a game') },
+      async () => { controls += 1; throw new Error('rejected probe must not send control') },
+      async request => { probes.push(structuredClone(request)); return rejected.value },
+    )
+    const operations: Array<'clockPause' | 'clockResume'> = ['clockPause', 'clockResume']
+    for (const type of operations) {
+      const before = e6c2aSnapshot(setup)
+      const callsBefore = setup.calls.length
+      const probesBefore = probes.length
+      const result = await setup.room.executeMatch({
+        competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'referee-1',
+        commandId: `e4d3c-r4-${rejected.name}-${type}`, expectedMatchRevision: 2, trustedTimeMs: 3_000,
+        operation: { type, matchId: setup.matchId, reason: '僅接受 primitive true' },
+      })
+      expect(result).toMatchObject({ ok: false, error: { code: 'gameRoomNotProvisioned' } })
+      expect(JSON.stringify(result)).not.toContain('PRIVATE_READY')
+      expect(probes).toHaveLength(probesBefore + 1)
+      expect(controls).toBe(0)
+      expect(setup.calls).toHaveLength(callsBefore)
+      expect(e6c2aSnapshot(setup)).toEqual(before)
+    }
+  })
+}
+
+for (const failure of ['missing namespace', 'missing method', 'nonfunction', 'throw', 'get throw', 'accessor throw']) {
+  test(`E4d3c-r4 formal ${failure} capability safely rejects without any writes`, async () => {
+    const setup = await e6c2aLockedMatch({
+      referees: [{ refereeId: 'referee-1', conflictedTeam: null }],
+    })
+    let probes = 0
+    let controls = 0
+    const namespace = gameRoomNamespace(
+      async () => { throw new Error('control must not provision a game') },
+      async () => { controls += 1; throw new Error('rejected capability must not send control') },
+      async () => { probes += 1; throw new Error('PRIVATE_READY transport failure') },
+    )
+    const stub = namespace.get()
+    namespace.get = () => stub
+    if (failure === 'missing method') Reflect.deleteProperty(stub, 'getCompetitionClockControlEligibility')
+    if (failure === 'nonfunction') Reflect.set(stub, 'getCompetitionClockControlEligibility', true)
+    if (failure === 'accessor throw') {
+      Object.defineProperty(stub, 'getCompetitionClockControlEligibility', {
+        get() { throw new Error('PRIVATE_READY getter failure') },
+      })
+    }
+    if (failure === 'get throw') namespace.get = () => { throw new Error('PRIVATE_READY namespace failure') }
+    setup.env.GAME_ROOM = namespace
+    if (failure === 'missing namespace') Reflect.set(setup.env, 'GAME_ROOM', undefined)
+    const before = e6c2aSnapshot(setup)
+    const callsBefore = setup.calls.length
+    expect(await setup.room.executeMatch({
+      competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'referee-1',
+      commandId: `e4d3c-r4-capability-${failure}`, expectedMatchRevision: 2, trustedTimeMs: 3_000,
+      operation: { type: 'clockPause', matchId: setup.matchId, reason: '房間資格 RPC 不可用' },
+    })).toEqual({ ok: false, error: {
+      code: 'gameRoomNotProvisioned',
+      message: 'the current match game must be active before its clock can be controlled',
+    } })
+    expect(probes).toBe(failure === 'throw' ? 1 : 0)
+    expect(controls).toBe(0)
+    expect(setup.calls).toHaveLength(callsBefore)
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  })
+}
+
+test('E4d3c-r4 formal ACL, assigned referee, revision and time reject before eligibility', async () => {
+  const setup = await e6c2aLockedMatch({ referees: [
+    { refereeId: 'referee-1', conflictedTeam: null },
+    { refereeId: 'conflicted-referee', conflictedTeam: 'team-a' },
+  ] })
+  expect((await setup.room.grantReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'unassigned-referee',
+    commandId: 'e4d3c-r4-unassigned-grant', expectedRevision: setup.meta().revision,
+    trustedTimeMs: setup.meta().updated_trusted_time_ms + 1,
+  })).ok).toBe(true)
+  let probes = 0
+  let controls = 0
+  setup.env.GAME_ROOM = gameRoomNamespace(
+    async () => { throw new Error('denied caller must not provision a game') },
+    async () => { controls += 1; throw new Error('denied caller must not send control') },
+    async () => { probes += 1; return true },
+  )
+  const scenarios: Array<{
+    name: string; caller: string; revision: number; time: number; code: string
+  }> = [
+    { name: 'organizer', caller: 'organizer-1', revision: 2, time: 3_000, code: 'forbidden' },
+    { name: 'player', caller: 'a-1', revision: 2, time: 3_000, code: 'forbidden' },
+    { name: 'outsider', caller: 'outsider', revision: 2, time: 3_000, code: 'forbidden' },
+    { name: 'unassigned', caller: 'unassigned-referee', revision: 2, time: 3_000, code: 'forbidden' },
+    { name: 'conflicted', caller: 'conflicted-referee', revision: 2, time: 3_000, code: 'forbidden' },
+    { name: 'revision', caller: 'referee-1', revision: 1, time: 3_000, code: 'matchRevisionConflict' },
+    { name: 'time', caller: 'referee-1', revision: 2, time: 0, code: 'trustedTimeRegression' },
+    { name: 'inactive', caller: 'referee-1', revision: 2, time: 3_000, code: 'forbidden' },
+  ]
+  for (const scenario of scenarios) {
+    if (scenario.name === 'inactive') {
+      // 平台 ACL 故障注入，不改 core checkpoint 或偽造 Active。
+      setup.sql.database.query('UPDATE competition_acl SET active = 0 WHERE user_id = ?').run('referee-1')
+    }
+    const before = e6c2aSnapshot(setup)
+    const callsBefore = setup.calls.length
+    const operations: Array<'clockPause' | 'clockResume'> = ['clockPause', 'clockResume']
+    for (const type of operations) {
+      expect(await setup.room.executeMatch({
+        competitionId: 'competition-1', matchId: setup.matchId, callerUserId: scenario.caller,
+        commandId: `e4d3c-r4-${scenario.name}-${type}`,
+        expectedMatchRevision: scenario.revision, trustedTimeMs: scenario.time,
+        operation: { type, matchId: setup.matchId, reason: '未授權不可探測房間' },
+      })).toMatchObject({ ok: false, error: { code: scenario.code } })
+      expect(probes).toBe(0)
+      expect(controls).toBe(0)
+      expect(setup.calls).toHaveLength(callsBefore)
+      expect(e6c2aSnapshot(setup)).toEqual(before)
+    }
+  }
+})
+
+test('E4d3c-r4 formal native-style callable eligibility controls the clock without reading remote call', async () => {
+  const setup = await e6c2aLockedMatch({
+    referees: [{ refereeId: 'referee-1', conflictedTeam: null }],
+    clockConfig: { mainTimeMs: 1_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20 },
+  })
+  if (!setup.provisioned?.ok) throw new Error('formal current game was not provisioned')
+  const gameId = setup.provisioned.value.gameId
+  const probes: CompetitionGameClockControlEligibilityRequest[] = []
+  const controls: CompetitionClockControlRequest[] = []
+  const originalReceivers: boolean[] = []
+  const unchangedAtProbe: boolean[] = []
+  let callPropertyReads = 0
+  const namespace = gameRoomNamespace(
+    async () => { throw new Error('clock control must not provision a game') },
+    async request => { controls.push(structuredClone(request)); return { ok: true, value: { ...request, idempotent: false } } },
+  )
+  const stub = namespace.get()
+  let before = e6c2aSnapshot(setup)
+  const probe = async function (this: unknown, request: CompetitionGameClockControlEligibilityRequest) {
+    originalReceivers.push(Object.is(this, stub))
+    probes.push(structuredClone(request))
+    unchangedAtProbe.push(JSON.stringify(e6c2aSnapshot(setup)) === JSON.stringify(before))
+    return true
+  }
+  // 原生 RPC callable 的 call 屬性代表遠端 lookup，不是 Function.prototype.call。
+  Object.defineProperty(probe, 'call', {
+    get() {
+      callPropertyReads += 1
+      throw new TypeError('The RPC receiver does not implement the method "call"')
+    },
+  })
+  stub.getCompetitionClockControlEligibility = probe
+  namespace.get = () => stub
+  setup.env.GAME_ROOM = namespace
+  await e6e2aClockCommand(setup, {
+    type: 'clockBeginAction', matchId: setup.matchId, team: 'team-a', turn: 1,
+  }, 3_000)
+  const operations: Array<'clockPause' | 'clockResume'> = ['clockPause', 'clockResume']
+  for (const [index, type] of operations.entries()) {
+    before = e6c2aSnapshot(setup)
+    const callsBefore = setup.calls.length
+    const result = await setup.room.executeMatch({
+      competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'referee-1',
+      commandId: `e4d3c-r4-native-callable-${type}`, expectedMatchRevision: 3 + index,
+      trustedTimeMs: 3_100 + index * 100,
+      operation: { type, matchId: setup.matchId, reason: '原生資格 callable 保留原 receiver' },
+    })
+    // 只輸出固定結果與計數，不在回歸失敗時展開私有快照。
+    expect({ code: result.ok ? 'success' : result.error.code, callPropertyReads, probes: probes.length }).toEqual({
+      code: 'success', callPropertyReads: 0, probes: index + 1,
+    })
+    if (!result.ok) throw new Error('native-style eligibility rejected a valid clock control')
+    expect(result.value.matchRevision).toBe(4 + index)
+    expect(result.value.clockProjection?.operation).toBe(type)
+    expect(setup.calls.slice(callsBefore).map(call => call.operation.type)).toEqual([type])
+    expect(controls).toHaveLength(index + 1)
+    expect(probes[index]).toEqual({
+      competitionId: 'competition-1', matchId: setup.matchId, gameId, gameNumber: 1,
+    })
+    expect(originalReceivers[index]).toBe(true)
+    expect(unchangedAtProbe[index]).toBe(true)
+  }
+})
+
+test('E4d3c-r4 formal successful receipt precedes unavailable probe and changed ACL after restart', async () => {
+  const setup = await e6c2aLockedMatch({
+    referees: [{ refereeId: 'referee-1', conflictedTeam: null }],
+    clockConfig: { mainTimeMs: 1_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20 },
+  })
+  if (!setup.provisioned?.ok) throw new Error('formal current game was not provisioned')
+  const gameId = setup.provisioned.value.gameId
+  const probes: CompetitionGameClockControlEligibilityRequest[] = []
+  const controls: CompetitionClockControlRequest[] = []
+  const namespace = gameRoomNamespace(
+    async () => { throw new Error('pause must not provision a game') },
+    async request => { controls.push(structuredClone(request)); return { ok: true, value: { ...request, idempotent: false } } },
+  )
+  const stub = namespace.get()
+  stub.getCompetitionClockControlEligibility = async function (
+    this: unknown, request: CompetitionGameClockControlEligibilityRequest,
+  ) {
+    expect(Object.is(this, stub)).toBe(true)
+    probes.push(structuredClone(request))
+    return true
+  }
+  namespace.get = () => stub
+  setup.env.GAME_ROOM = namespace
+  await e6e2aClockCommand(setup, {
+    type: 'clockBeginAction', matchId: setup.matchId, team: 'team-a', turn: 1,
+  }, 3_000)
+  const request: CompetitionRoomMatchExecuteRequest = {
+    competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'referee-1',
+    commandId: 'e4d3c-r4-receipt-first-pause', expectedMatchRevision: 3, trustedTimeMs: 3_100,
+    operation: { type: 'clockPause', matchId: setup.matchId, reason: '已提交成功不重新探測' },
+  }
+  const paused = await setup.room.executeMatch(request)
+  if (!paused.ok) throw new Error(`formal pause failed: ${paused.error.code}`)
+  expect(paused.value.matchRevision).toBe(4)
+  expect(probes).toEqual([{ competitionId: 'competition-1', matchId: setup.matchId, gameId, gameNumber: 1 }])
+  expect(controls).toHaveLength(1)
+  setup.sql.database.query('UPDATE competition_acl SET active = 0 WHERE user_id = ?').run('referee-1')
+  namespace.get = () => { throw new Error('PRIVATE_READY retry must not resolve GameRoom') }
+  const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+  const before = e6c2aSnapshot(setup)
+  const callsBefore = setup.calls.length
+  expect(await restarted.executeMatch({ ...request, trustedTimeMs: 0 })).toEqual({
+    ok: true, value: { ...paused.value, idempotent: true },
+  })
+  expect(await restarted.executeMatch({
+    ...request, trustedTimeMs: 0,
+    operation: { type: 'clockPause', matchId: setup.matchId, reason: '不同语意不可沿用收據' },
+  })).toMatchObject({ ok: false, error: { code: 'commandIdConflict' } })
+  expect(probes).toHaveLength(1)
+  expect(controls).toHaveLength(1)
+  expect(setup.calls).toHaveLength(callsBefore)
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+})
+
+for (const teamSize of [1, 2] as const) {
+  for (const windowKind of ['preparation', 'action'] as const) {
+    test(`E6e2a formal ${teamSize}v${teamSize} ${windowKind} pause and resume preserve success retries`, async () => {
+      const setup = await e6c2aLockedMatch({
+        teamSize,
+        referees: [{ refereeId: 'referee-1', conflictedTeam: null }],
+        clockConfig: { mainTimeMs: 1_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20 },
+      })
+      const controls: CompetitionClockControlRequest[] = []
+      const probes: CompetitionGameClockControlEligibilityRequest[] = []
+      let eligible = true
+      // 只替換跨房交付邊界；正式 clock prefix／pause／resume 均走目前 WASM。
+      setup.env.GAME_ROOM = gameRoomNamespace(
+        async () => { throw new Error('clock controls must not provision another game') },
+        async request => {
+          controls.push(structuredClone(request))
+          return { ok: true, value: { ...request, idempotent: false } }
+        },
+        async request => {
+          probes.push(structuredClone(request))
+          return eligible
+        },
+      )
+      const { matchId } = setup
+      await e6e2aClockCommand(setup, windowKind === 'preparation'
+        ? { type: 'clockBeginPreparation', matchId }
+        : { type: 'clockBeginAction', matchId, team: 'team-a', turn: 1 }, 3_000)
+      const window = windowKind === 'preparation'
+        ? { type: 'preparation', teams: ['team-a', 'team-b'] }
+        : { type: 'action', team: 'team-a', turn: 1 }
+      const pauseRequest: CompetitionRoomMatchExecuteRequest = {
+        competitionId: 'competition-1', matchId, callerUserId: 'referee-1',
+        commandId: `e6e2a-${teamSize}-${windowKind}-pause`, expectedMatchRevision: 3,
+        trustedTimeMs: 3_100,
+        operation: { type: 'clockPause', matchId, reason: '正式目前視窗暫停' },
+      }
+      const paused = await setup.room.executeMatch(pauseRequest)
+      expect(paused).toMatchObject({ ok: true, value: {
+        matchRevision: 4, nextClockDeadlineMs: null, idempotent: false,
+        clockProjection: { operation: 'clockPause', public: { clock: {
+          activeWindow: null, pausedWindow: window, nextTimeoutDeadlineMs: null,
+        } } },
+      } })
+      if (!paused.ok) throw new Error(`formal pause failed: ${paused.error.code}`)
+      if (!setup.provisioned?.ok) throw new Error('formal current game was not provisioned')
+      const probeRequest = {
+        competitionId: 'competition-1', matchId,
+        gameId: setup.provisioned.value.gameId, gameNumber: 1,
+      }
+      expect(probes).toEqual([probeRequest])
+      const expectedTeams = [
+        { team: 'team-a', mainTimeRemainingMs: 900, byoyomiTimeRemainingMs: 100, byoyomiActive: false },
+        { team: 'team-b', mainTimeRemainingMs: windowKind === 'preparation' ? 900 : 1_000,
+          byoyomiTimeRemainingMs: 100, byoyomiActive: false },
+      ]
+      expect((await e6e2aCheckedRead(setup, 3_500)).clock).toEqual({
+        sampledAtMs: 3_500, teams: expectedTeams, running: null, paused: window, awaitingAuthority: false,
+      })
+      const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+      const beforeRetry = e6c2aSnapshot(setup)
+      const callsBeforeRetry = setup.calls.length
+      const controlsBeforeRetry = controls.length
+      // 收據重試不再探測，即使此刻房間已不符合新控制資格。
+      eligible = false
+      // matching receipt 必須先於已過期 revision／time，重啟也不重新扣時或提交控制。
+      expect(await restarted.executeMatch({ ...pauseRequest, trustedTimeMs: 0 })).toEqual({
+        ok: true, value: { ...paused.value, idempotent: true },
+      })
+      expect(setup.calls).toHaveLength(callsBeforeRetry)
+      expect(controls).toHaveLength(controlsBeforeRetry)
+      expect(probes).toEqual([probeRequest])
+      expect(e6c2aSnapshot(setup)).toEqual(beforeRetry)
+      eligible = true
+      const resumed = await restarted.executeMatch({
+        competitionId: 'competition-1', matchId, callerUserId: 'referee-1',
+        commandId: `e6e2a-${teamSize}-${windowKind}-resume`, expectedMatchRevision: 4,
+        trustedTimeMs: 4_000,
+        operation: { type: 'clockResume', matchId, reason: '正式暫停視窗恢復' },
+      })
+      expect(resumed).toMatchObject({ ok: true, value: {
+        matchRevision: 5, nextClockDeadlineMs: 5_000,
+        clockProjection: { operation: 'clockResume', public: { clock: {
+          activeWindow: window, pausedWindow: null, nextTimeoutDeadlineMs: 5_000,
+        } } },
+      } })
+      expect(controls.map(control => ({
+        operation: control.operation, matchRevision: control.matchRevision,
+        nextClockDeadlineMs: control.nextClockDeadlineMs,
+      }))).toEqual([
+        { operation: 'clockPause', matchRevision: 4, nextClockDeadlineMs: null },
+        { operation: 'clockResume', matchRevision: 5, nextClockDeadlineMs: 5_000 },
+      ])
+      expect(probes).toEqual([probeRequest, probeRequest])
+      const afterResumeTeams = [
+        { team: 'team-a', mainTimeRemainingMs: 800, byoyomiTimeRemainingMs: 100, byoyomiActive: false },
+        { team: 'team-b', mainTimeRemainingMs: windowKind === 'preparation' ? 800 : 1_000,
+          byoyomiTimeRemainingMs: 100, byoyomiActive: false },
+      ]
+      expect((await e6e2aCheckedRead(setup, 4_100, 'referee-1', restarted)).clock).toEqual({
+        sampledAtMs: 4_100, teams: afterResumeTeams, running: window, paused: null, awaitingAuthority: false,
+      })
+    })
+  }
+}
+
+for (const teamSize of [1, 2] as const) {
+  test(`E6e2a formal ${teamSize}v${teamSize} preparation, action, byoyomi, choice and deadline are sampled exactly`, async () => {
+    const setup = await e6c2aLockedMatch({ teamSize, clockConfig: {
+      mainTimeMs: 1_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20,
+    } })
+    const { matchId } = setup
+    const amounts = (a: number, b: number, byoyomi = 100, active = false) => [
+      { team: 'team-a', mainTimeRemainingMs: a, byoyomiTimeRemainingMs: byoyomi, byoyomiActive: active },
+      { team: 'team-b', mainTimeRemainingMs: b, byoyomiTimeRemainingMs: 100, byoyomiActive: false },
+    ]
+    await e6e2aClockCommand(setup, { type: 'clockBeginPreparation', matchId }, 3_000)
+    expect((await e6e2aCheckedRead(setup, 3_100, 'a-1')).clock).toEqual({
+      sampledAtMs: 3_100, teams: amounts(900, 900),
+      running: { type: 'preparation', teams: ['team-a', 'team-b'] }, paused: null, awaitingAuthority: false,
+    })
+    await e6e2aClockCommand(setup, { type: 'clockFinishPreparation', matchId, team: 'team-a' }, 3_100)
+    expect((await e6e2aCheckedRead(setup, 3_200, 'b-1')).clock).toEqual({
+      sampledAtMs: 3_200, teams: amounts(900, 800),
+      running: { type: 'preparation', teams: ['team-b'] }, paused: null, awaitingAuthority: false,
+    })
+    await e6e2aClockCommand(setup, { type: 'clockFinishPreparation', matchId, team: 'team-b' }, 3_200)
+    expect((await e6e2aCheckedRead(setup, 3_300)).clock).toEqual({
+      sampledAtMs: 3_300, teams: amounts(900, 800), running: null, paused: null, awaitingAuthority: false,
+    })
+    await e6e2aClockCommand(setup, { type: 'clockBeginAction', matchId, team: 'team-a', turn: 1 }, 3_300)
+    expect((await e6e2aCheckedRead(setup, 3_400)).clock).toEqual({
+      sampledAtMs: 3_400, teams: amounts(800, 800),
+      running: { type: 'action', team: 'team-a', turn: 1 }, paused: null, awaitingAuthority: false,
+    })
+    expect((await e6e2aCheckedRead(setup, 4_250)).clock).toEqual({
+      sampledAtMs: 4_250, teams: amounts(0, 800, 50, true),
+      running: { type: 'action', team: 'team-a', turn: 1 }, paused: null, awaitingAuthority: false,
+    })
+    const boundary = await e6e2aCheckedRead(setup, 4_300)
+    expect(boundary.clock).toEqual({
+      sampledAtMs: 4_300, teams: amounts(0, 800, 0, true),
+      running: { type: 'action', team: 'team-a', turn: 1 }, paused: null, awaitingAuthority: true,
+    })
+    expect(boundary.matchStatus).toBe('open')
+    expect(boundary.game?.gameNumber).toBe(1)
+    const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+    expect(await e6e2aCheckedRead(setup, 4_300, 'organizer-1', restarted)).toEqual(boundary)
+    // 顯示 query 不提交取樣；隨後合法較早 mutation 仍從原 checkpoint 扣時計算。
+    await e6e2aClockCommand(setup, { type: 'clockEndWindow', matchId }, 3_400)
+    await e6e2aClockCommand(setup, { type: 'clockBeginOutOfTurnChoice', matchId, team: 'team-b', choiceId: 'choice-1' }, 3_500)
+    expect((await e6e2aCheckedRead(setup, 3_510)).clock).toEqual({
+      sampledAtMs: 3_510, teams: amounts(800, 800),
+      running: { type: 'outOfTurnChoice', team: 'team-b', choiceId: 'choice-1', remainingMs: 10 },
+      paused: null, awaitingAuthority: false,
+    })
+    expect((await e6e2aCheckedRead(setup, 3_520)).clock).toEqual({
+      sampledAtMs: 3_520, teams: amounts(800, 800),
+      running: { type: 'outOfTurnChoice', team: 'team-b', choiceId: 'choice-1', remainingMs: 0 },
+      paused: null, awaitingAuthority: true,
+    })
+  })
+}
+
+test('E6e2a formal zero-action exact deadline and unlimited idle never invent a ruling', async () => {
+  const setup = await e6c2aLockedMatch({ clockConfig: {
+    mainTimeMs: 100, actionTimeMs: 0, outOfTurnChoiceTimeMs: 20,
+  } })
+  await e6e2aClockCommand(setup, { type: 'clockBeginAction', matchId: setup.matchId, team: 'team-a', turn: 1 }, 3_000)
+  expect((await e6e2aCheckedRead(setup, 3_099)).clock).toMatchObject({ awaitingAuthority: false, teams: [
+    { mainTimeRemainingMs: 1, byoyomiTimeRemainingMs: 0 }, { mainTimeRemainingMs: 100 },
+  ] })
+  for (const time of [3_100, 3_101, 3_100]) {
+    const display = (await e6e2aCheckedRead(setup, time)).clock
+    expect(display.awaitingAuthority).toBe(true)
+    expect(display.teams).toEqual([
+      { team: 'team-a', mainTimeRemainingMs: 0, byoyomiTimeRemainingMs: 0, byoyomiActive: true },
+      { team: 'team-b', mainTimeRemainingMs: 100, byoyomiTimeRemainingMs: 0, byoyomiActive: false },
+    ])
+  }
+  const unlimited = await e6c2aLockedMatch({ clockConfig: {
+    mainTimeMs: null, actionTimeMs: null, outOfTurnChoiceTimeMs: null,
+  } })
+  for (const time of [5_000, 50_000]) {
+    expect((await e6e2aCheckedRead(unlimited, time)).clock).toEqual({
+      sampledAtMs: time, teams: [
+        { team: 'team-a', mainTimeRemainingMs: null, byoyomiTimeRemainingMs: null, byoyomiActive: false },
+        { team: 'team-b', mainTimeRemainingMs: null, byoyomiTimeRemainingMs: null, byoyomiActive: false },
+      ], running: null, paused: null, awaitingAuthority: false,
+    })
+  }
+})
+
+async function e6e2aSubmitTerminal(setup: E6e2aSetup, trustedTimeMs: number,
+  outcome: 'draw' | 'winner', timeoutEvidence?: Extract<GameTerminalEvidence, { type: 'timeout' }>) {
+  const row = setup.sql.database.query('SELECT revision, match_projection_json FROM competition_matches WHERE match_id = ?')
+    .get(setup.matchId) as { revision: number; match_projection_json: string }
+  const match = ((JSON.parse(row.match_projection_json) as JsonObject).public as JsonObject).match as JsonObject
+  const nextGame = match.nextGame as JsonObject
+  const bindingRow = setup.sql.database.query('SELECT binding_json FROM competition_game_provision WHERE match_id = ? AND game_number = ?')
+    .get(setup.matchId, nextGame.gameNumber as number) as { binding_json: string }
+  const binding = JSON.parse(bindingRow.binding_json) as CompetitionGameBinding
+  return setup.room.ingestGameTerminal({
+    competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'organizer-1',
+    commandId: `e6e2a-terminal-${trustedTimeMs}`, expectedMatchRevision: row.revision, trustedTimeMs,
+    submissionId: `e6e2a-submission-${trustedTimeMs}`, gameRecordId: `e6e2a-game-record-${trustedTimeMs}`,
+    rulingRecordId: `e6e2a-ruling-${trustedTimeMs}`, startKind: binding.startKind,
+    firstPlayer: match.nextFirstPlayer as string,
+    terminalEvidence: timeoutEvidence ?? { type: 'canonicalGameEnded', conclusion: {
+      outcome: outcome === 'draw' ? { type: 'draw' } : { type: 'winner', team: 'team-a' },
+      causes: outcome === 'draw' ? [{ type: 'teamHpDepleted', teams: ['team-a', 'team-b'] }]
+        : [{ type: 'directVictory', rule: 'e6e2a-formal-terminal', team: 'team-a' }],
+    } },
+  })
+}
+
+test('E6e2a legal waiting, pending, blocked and completed states never return an old game', async () => {
+  const waiting = await e6c2aLockedMatch({ provision: false })
+  const initial = await e6e2aCheckedRead(waiting, 3_000)
+  expect(initial).toMatchObject({ matchStatus: 'awaitingFirstPlayer', matchRevision: 1, game: null })
+  const pending = await e6c2aLockedMatch({ deliverGames: false })
+  expect((await e6e2aCheckedRead(pending, 3_000)).game).toBeNull()
+  pending.sql.database.query("UPDATE competition_game_provision SET status='blocked',error_code='deliveryUnavailable'").run()
+  expect((await e6e2aCheckedRead(pending, 3_000)).game).toBeNull()
+  for (const wins of [1, 2]) {
+    const setup = await e6c2aLockedMatch({ matchFormat: { type: 'firstToWins', value: wins } })
+    expect((await e6e2aSubmitTerminal(setup, 3_000, 'winner')).ok).toBe(true)
+    const value = await e6e2aCheckedRead(setup, 3_001)
+    expect(value.matchStatus).toBe(wins === 1 ? 'completed' : 'awaitingFirstPlayer')
+    expect(value.game).toBeNull()
+    expect(value.clock.teams).toEqual([
+      { team: 'team-a', mainTimeRemainingMs: 300_000, byoyomiTimeRemainingMs: 30_000, byoyomiActive: false },
+      { team: 'team-b', mainTimeRemainingMs: 300_000, byoyomiTimeRemainingMs: 30_000, byoyomiActive: false },
+    ])
+  }
+})
+
+test('E6e2a formal double expiry is readable awaitingReferee without exposing rulings or making decisions', async () => {
+  const setup = await e6c2aLockedMatch({ clockConfig: {
+    mainTimeMs: 1_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20,
+  } })
+  await e6e2aClockCommand(setup, { type: 'clockBeginPreparation', matchId: setup.matchId }, 3_000)
+  const observed = await e6e2aClockCommand(setup, { type: 'clockObserve', matchId: setup.matchId }, 4_100)
+  expect(observed.timeoutEvidence?.expiries).toEqual([
+    { team: 'team-a', deadlineMonotonicMs: 4_100 }, { team: 'team-b', deadlineMonotonicMs: 4_100 },
+  ])
+  if (!observed.timeoutEvidence) throw new Error('formal timeout evidence missing')
+  expect((await e6e2aSubmitTerminal(setup, 4_101, 'draw', observed.timeoutEvidence)).ok).toBe(true)
+  const value = await e6e2aCheckedRead(setup, 4_102)
+  expect(value.matchStatus).toBe('awaitingReferee')
+  expect(value.game).toBeNull()
+  expect(value.clock.awaitingAuthority).toBe(true)
+  expect(value.clock.teams).toEqual([
+    { team: 'team-a', mainTimeRemainingMs: 0, byoyomiTimeRemainingMs: 0, byoyomiActive: true },
+    { team: 'team-b', mainTimeRemainingMs: 0, byoyomiTimeRemainingMs: 0, byoyomiActive: true },
+  ])
+})
+
+for (const teamSize of [1, 2] as const) {
+  for (const format of ['roundRobin', 'singleElimination'] as const) {
+    test(`E6e2a formal ${teamSize}v${teamSize} ${format} draw reads current game and ${format === 'roundRobin' ? 'reset' : 'carry-forward'} exact milliseconds`, async () => {
+      const setup = await e6c2aLockedMatch({ teamSize, personalDeck: teamSize === 2, format,
+        matchFormat: format === 'roundRobin' ? { type: 'fixedGames', value: 3 } : { type: 'firstToWins', value: 1 },
+        clockConfig: { mainTimeMs: 5_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20 },
+      })
+      await e6e2aClockCommand(setup, { type: 'clockBeginAction', matchId: setup.matchId, team: 'team-a', turn: 1 }, 3_000)
+      await e6e2aClockCommand(setup, { type: 'clockEndWindow', matchId: setup.matchId }, 3_123)
+      await e6e2aClockCommand(setup, { type: 'clockBeginAction', matchId: setup.matchId, team: 'team-b', turn: 2 }, 3_123)
+      await e6e2aClockCommand(setup, { type: 'clockEndWindow', matchId: setup.matchId }, 3_190)
+      const terminal = await e6e2aSubmitTerminal(setup, 3_191, 'draw')
+      expect(terminal).toMatchObject({ ok: true, value: { matchRevision: 7 } })
+      const current = await e6e2aCheckedRead(setup, 3_192)
+      expect(current.matchStatus).toBe('open')
+      expect(current.game?.gameNumber).toBe(2)
+      expect(current.game?.gameId).not.toBe(setup.provisioned?.ok ? setup.provisioned.value.gameId : '')
+      expect(current.clock.teams).toEqual([
+        { team: 'team-a', mainTimeRemainingMs: 4_877, byoyomiTimeRemainingMs: 100, byoyomiActive: false },
+        { team: 'team-b', mainTimeRemainingMs: 4_933, byoyomiTimeRemainingMs: 100, byoyomiActive: false },
+      ])
+      await e6e2aClockCommand(setup, {
+        type: 'clockNewGame', matchId: setup.matchId, time: format === 'roundRobin' ? 'reset' : 'carryForward',
+      }, 3_200)
+      const after = await e6e2aCheckedRead(setup, 3_201)
+      expect(after.matchRevision).toBe(8)
+      expect(after.game).toEqual(current.game)
+      expect(after.clock).toEqual({
+        sampledAtMs: 3_201, teams: [
+          { team: 'team-a', mainTimeRemainingMs: format === 'roundRobin' ? 5_000 : 4_877, byoyomiTimeRemainingMs: 100, byoyomiActive: false },
+          { team: 'team-b', mainTimeRemainingMs: format === 'roundRobin' ? 5_000 : 4_933, byoyomiTimeRemainingMs: 100, byoyomiActive: false },
+        ], running: null, paused: null, awaitingAuthority: false,
+      })
+      setup.sql.database.query('DELETE FROM competition_game_provision WHERE match_id=? AND game_number=2')
+        .run(setup.matchId)
+      expect((await e6e2aCheckedRead(setup, 3_202)).game).toBeNull()
+      expect(setup.sql.database.query('SELECT game_number FROM competition_game_provision WHERE match_id=?')
+        .all(setup.matchId)).toEqual([{ game_number: 1 }])
+    })
+  }
+}
+
+// paused fixture 仍由正式 Rust 生成。既有 bridge mutation 名單不含 pause／resume，
+// 本切片不改那個 owner；只在平台 storage 邊界保存真實輸出，再走正式 clockView query。
+async function e6e2aPersistFormalPause(setup: E6e2aSetup) {
+  const row = setup.sql.database.query('SELECT * FROM competition_matches WHERE match_id = ?')
+    .get(setup.matchId) as { revision: number; clock_checkpoint_json: string }
+  const state = JSON.parse(setup.meta().server_state_json) as CompetitionRequest['serverState']
+  const raw = await realCompetitionWasm({
+    serverActor: { type: 'referee', playerId: 'referee-1' }, trustedTimeMs: 3_100,
+    operation: { type: 'clockPause', reason: '正式時計 query fixture' },
+    serverState: { ...state, clock: JSON.parse(row.clock_checkpoint_json) as JsonObject },
+  })
+  if (!isJsonObject(raw) || raw.ok !== true || raw.operation !== 'clockPause'
+    || !isJsonObject(raw.serverState) || !isJsonObject(raw.serverState.clock)) {
+    throw new Error('formal WASM pause fixture failed')
+  }
+  setup.sql.database.query(`UPDATE competition_matches SET clock_checkpoint_json=?, clock_projection_json=?,
+    revision=?, last_trusted_time_ms=? WHERE match_id=?`).run(
+    JSON.stringify(raw.serverState.clock), JSON.stringify({ ok: true, operation: 'clockPause', public: raw.public }),
+    row.revision + 1, 3_100, setup.matchId,
+  )
+}
+
+test('E6e2a formal paused action is stable over elapsed query time and restart', async () => {
+  const setup = await e6c2aLockedMatch({ referees: [{ refereeId: 'referee-1', conflictedTeam: null }],
+    clockConfig: { mainTimeMs: 1_000, actionTimeMs: 0, outOfTurnChoiceTimeMs: 20 },
+  })
+  await e6e2aClockCommand(setup, { type: 'clockBeginAction', matchId: setup.matchId, team: 'team-a', turn: 1 }, 3_000)
+  await e6e2aPersistFormalPause(setup)
+  const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+  for (const time of [3_100, 100_000]) {
+    expect((await e6e2aCheckedRead(setup, time, 'referee-1', restarted)).clock).toEqual({
+      sampledAtMs: time, teams: [
+        { team: 'team-a', mainTimeRemainingMs: 900, byoyomiTimeRemainingMs: 0, byoyomiActive: false },
+        { team: 'team-b', mainTimeRemainingMs: 1_000, byoyomiTimeRemainingMs: 0, byoyomiActive: false },
+      ], running: null, paused: { type: 'action', team: 'team-a', turn: 1 }, awaitingAuthority: false,
+    })
+  }
+})
+
+test('E6e2a damaged match, clock, mirror, schedule and linkage fail closed without side effects', async () => {
+  for (const defect of [
+    'missingClock', 'clockUnknownKey', 'clockConfig', 'clockTeams', 'clockFutureTime',
+    'clockProjection', 'missingClockProjection', 'clockPublicPrivate', 'mirror', 'schedule', 'tournamentIdentity',
+    'minimalHistory', 'revisionFloor', 'linkageStartKind', 'linkageNextGame', 'linkageDeck',
+  ] as const) {
+    const setup = await e6c2aLockedMatch()
+    const row = setup.sql.database.query('SELECT * FROM competition_matches WHERE match_id = ?')
+      .get(setup.matchId) as {
+        match_checkpoint_json: string; clock_checkpoint_json: string; clock_projection_json: string
+      }
+    const state = JSON.parse(setup.meta().server_state_json) as JsonObject
+    const clock = JSON.parse(row.clock_checkpoint_json) as JsonObject
+    const clockProjection = JSON.parse(row.clock_projection_json) as JsonObject
+    if (defect === 'missingClock') {
+      setup.sql.database.query('UPDATE competition_matches SET clock_checkpoint_json = NULL').run()
+    } else if (defect === 'clockUnknownKey' || defect === 'clockConfig' || defect === 'clockTeams' || defect === 'clockFutureTime') {
+      if (defect === 'clockUnknownKey') clock.private = 'clock private sentinel'
+      if (defect === 'clockConfig') (clock.config as JsonObject).mainTimeMs = 400_000
+      if (defect === 'clockTeams') (clock.teams as JsonObject[])[0]!.team = 'other-match-team'
+      if (defect === 'clockFutureTime') clock.lastObservedMs = 100_000
+      setup.sql.database.query('UPDATE competition_matches SET clock_checkpoint_json = ?').run(JSON.stringify(clock))
+    } else if (defect === 'clockProjection' || defect === 'clockPublicPrivate') {
+      if (defect === 'clockProjection') (clockProjection.public as JsonObject).lastObservedMs = 999
+      else (clockProjection.public as JsonObject).ruling = { winner: 'private ruling sentinel' }
+      setup.sql.database.query('UPDATE competition_matches SET clock_projection_json = ?').run(JSON.stringify(clockProjection))
+    } else if (defect === 'missingClockProjection') {
+      setup.sql.database.query('UPDATE competition_matches SET clock_projection_json = NULL').run()
+    } else if (defect === 'mirror' || defect === 'schedule' || defect === 'minimalHistory' || defect === 'tournamentIdentity') {
+      if (defect === 'mirror') (state.matches as JsonObject)[setup.matchId] = { private: 'mirror secret' }
+      if (defect === 'tournamentIdentity') (state.tournament as JsonObject).tournamentId = 'other-competition'
+      if (defect === 'schedule') {
+        const stages = ((state.tournament as JsonObject).stages as JsonObject[])
+        const match = (stages[0]!.rounds as JsonObject[]).flatMap(round => round.matches as JsonObject[])
+          .find(match => match.matchId === setup.matchId)!
+        match.started = false
+      }
+      if (defect === 'minimalHistory') {
+        const checkpoint = JSON.parse(row.match_checkpoint_json) as JsonObject
+        ;(checkpoint.history as JsonValue[]).push({ type: 'submitGame', gameNumber: 1 })
+        setup.sql.database.query('UPDATE competition_matches SET match_checkpoint_json = ?, revision = 3')
+          .run(JSON.stringify(checkpoint))
+        ;(state.matches as JsonObject)[setup.matchId] = checkpoint
+      }
+      setup.sql.database.query('UPDATE competition_meta SET server_state_json = ?').run(JSON.stringify(state))
+    } else if (defect === 'revisionFloor') {
+      setup.sql.database.query('UPDATE competition_matches SET revision = 1').run()
+    } else {
+      const link = setup.sql.database.query('SELECT binding_json,next_game_json FROM competition_game_provision')
+        .get() as { binding_json: string; next_game_json: string }
+      const binding = JSON.parse(link.binding_json) as JsonObject
+      if (defect === 'linkageNextGame') {
+        const nextGame = JSON.parse(link.next_game_json) as JsonObject
+        nextGame.gameNumber = 2
+        setup.sql.database.query('UPDATE competition_game_provision SET next_game_json = ?').run(JSON.stringify(nextGame))
+      } else {
+        if (defect === 'linkageStartKind') binding.startKind = {
+          type: 'eliminationDrawContinuation', continuation: { teams: [
+            { team: 'team-a', mainTimeRemainingMs: 300_000 }, { team: 'team-b', mainTimeRemainingMs: 300_000 },
+          ] },
+        }
+        if (defect === 'linkageDeck') binding.deckSeed = -1
+        setup.sql.database.query('UPDATE competition_game_provision SET binding_json = ?').run(JSON.stringify(binding))
+      }
+    }
+    const before = e6c2aSnapshot(setup)
+    const result = await setup.room.readMatchClock(e6e2aClockRequest(setup))
+    expect(result.ok).toBe(false)
+    expect(JSON.stringify(result)).not.toMatch(/private sentinel|private ruling sentinel|mirror secret|other-match-team/)
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
+})
+
+test('E6e2a malformed core query responses never leak virtual rulings or private data', async () => {
+  for (const defect of [
+    'extraEnvelope', 'unknownSymbol', 'wrongOperation', 'privateDisplay', 'virtualRuling',
+    'wrongTime', 'wrongTeam', 'wrongWindow', 'serverDrift', 'engineReject', 'throw', 'badMatchView', 'badRoster',
+    'matchViewSymbol', 'rosterSymbol',
+  ] as const) {
+    const setup = await e6c2aLockedMatch()
+    const adapter: CompetitionEngineAdapter = async request => {
+      if (defect === 'badMatchView' && request.operation.type === 'matchView') {
+        const response = await setup.adapter(request)
+        if (response.ok) return { ...response, public: { match: { private: 'engine secret sentinel' } } }
+        return response
+      }
+      if (defect === 'badRoster' && request.operation.type === 'registrationExportLockedRoster') {
+        const response = await setup.adapter(request)
+        if (response.ok) return { ...response, private: { private: 'engine secret sentinel' } }
+        return response
+      }
+      if ((defect === 'matchViewSymbol' && request.operation.type === 'matchView')
+        || (defect === 'rosterSymbol' && request.operation.type === 'registrationExportLockedRoster')) {
+        const response = await setup.adapter(request)
+        Reflect.set(response, Symbol('unexpected query key'), true)
+        return response
+      }
+      if (request.operation.type !== 'clockView') return setup.adapter(request)
+      if (defect === 'throw') throw new Error('engine secret sentinel')
+      if (defect === 'engineReject') return {
+        ok: false, error: { code: 'privateCoreCode', layer: 'state', message: 'engine secret sentinel' },
+      }
+      const response = await setup.adapter(request)
+      if (!response.ok) return response
+      const raw = structuredClone(response) as unknown as JsonObject
+      const display = raw.public as JsonObject
+      if (defect === 'extraEnvelope') raw.private = 'engine secret sentinel'
+      if (defect === 'unknownSymbol') Reflect.set(raw, Symbol('unknown transport'), 'engine secret sentinel')
+      if (defect === 'wrongOperation') raw.operation = 'clockObserve'
+      if (defect === 'privateDisplay') display.binding = { deckSeed: 100 }
+      if (defect === 'virtualRuling') display.timeoutRuling = { type: 'timeoutLoss', loser: 'team-a' }
+      if (defect === 'wrongTime') display.sampledAtMs = 100
+      if (defect === 'wrongTeam') (display.teams as JsonObject[])[0]!.team = 'other-match-team'
+      if (defect === 'wrongWindow') display.running = { type: 'action', team: 'other-match-team', turn: 1 }
+      if (defect === 'serverDrift') (raw.serverState as JsonObject).clock = { private: 'engine secret sentinel' }
+      return raw as unknown as CompetitionEngineResponse
+    }
+    const room = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, adapter)
+    const before = e6c2aSnapshot(setup)
+    const result = await room.readMatchClock(e6e2aClockRequest(setup))
+    expect(result).toMatchObject({ ok: false, error: { code: defect === 'badMatchView' || defect === 'matchViewSymbol'
+      ? 'invalidMatchCheckpoint' : defect === 'badRoster' || defect === 'rosterSymbol' ? 'invalidLockedRoster' : 'engineProtocolError' } })
+    expect(JSON.stringify(result)).not.toMatch(/engine secret sentinel|other-match-team|privateCoreCode|timeoutLoss/)
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
+})
+
+test('E6e2a malformed metadata responses fail closed before display with all DB and alarm unchanged', async () => {
+  for (const defect of ['extra', 'symbol', 'publicSymbol', 'snakeCase', 'wrongOperation', 'badDeadline',
+    'wrongDeadline', 'stateDrift', 'stateSymbol', 'reject', 'throw'] as const) {
+    const setup = await e6c2aLockedMatch({ clockConfig: {
+      mainTimeMs: 1000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20,
+    } })
+    await e6e2aClockCommand(setup, {
+      type: 'clockBeginAction', matchId: setup.matchId, team: 'team-a', turn: 1,
+    }, 3000)
+    const adapter: CompetitionEngineAdapter = async request => {
+      if (request.operation.type !== 'clockCheckpointMetadata') return setup.adapter(request)
+      if (defect === 'throw') throw new Error('private metadata sentinel')
+      if (defect === 'reject') return { ok: false,
+        error: { code: 'privateMetadataCode', layer: 'state', message: 'private metadata sentinel' } }
+      const response = await setup.adapter(request)
+      if (!response.ok || !isJsonObject(response.public)) throw new Error('正式 metadata prefix 失敗')
+      if (defect === 'extra') Reflect.set(response, 'private', 'private metadata sentinel')
+      if (defect === 'symbol') Reflect.set(response, Symbol('unknown'), true)
+      if (defect === 'publicSymbol') Reflect.set(response.public, Symbol('unknown'), true)
+      if (defect === 'snakeCase') {
+        Reflect.deleteProperty(response.public, 'nextTimeoutDeadlineMs')
+        Reflect.set(response.public, 'next_timeout_deadline_ms', 4100)
+      }
+      if (defect === 'wrongOperation') Reflect.set(response, 'operation', 'clockObserve')
+      if (defect === 'badDeadline') Reflect.set(response.public, 'nextTimeoutDeadlineMs', -1)
+      if (defect === 'wrongDeadline') Reflect.set(response.public, 'nextTimeoutDeadlineMs', 5000)
+      if (defect === 'stateDrift') response.serverState.clock = { lastObservedMs: 9999 }
+      if (defect === 'stateSymbol') Reflect.set(response.serverState, Symbol('unknown'), true)
+      return response
+    }
+    const room = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, adapter)
+    const before = e6c2aSnapshot(setup)
+    const gameCalls = setup.gameCalls.length
+    const callStart = setup.calls.length
+    const result = await room.readMatchClock(e6e2aClockRequest(setup, { trustedTimeMs: 4000 }))
+    expect(result).toMatchObject({ ok: false, error: {
+      code: defect === 'wrongDeadline' ? 'invalidClockCheckpoint' : 'engineProtocolError',
+    } })
+    expect(JSON.stringify(result)).not.toMatch(/private metadata sentinel|privateMetadataCode|next_timeout/)
+    expect(e6c2aSnapshot(setup)).toStrictEqual(before)
+    expect(setup.gameCalls).toHaveLength(gameCalls)
+    expect(setup.calls.slice(callStart).some(call => call.operation.type === 'clockView')).toBe(false)
+  }
+})
+
+test('E6e2a scoped row clock is used instead of another global clock and mutation allowlists stay closed', async () => {
+  const setup = await e6c2aLockedMatch()
+  const state = JSON.parse(setup.meta().server_state_json) as JsonObject
+  const rowClock = setup.sql.database.query('SELECT clock_checkpoint_json FROM competition_matches WHERE match_id = ?')
+    .get(setup.matchId) as { clock_checkpoint_json: string }
+  const unrelatedClock = JSON.parse(rowClock.clock_checkpoint_json) as JsonObject
+  ;(unrelatedClock.teams as JsonObject[]).forEach((team, index) => { team.team = `other-team-${index}` })
+  state.clock = unrelatedClock
+  setup.sql.database.query('UPDATE competition_meta SET server_state_json = ?').run(JSON.stringify(state))
+  const view = await e6e2aCheckedRead(setup, 5_000)
+  expect(view.clock.teams.map(team => team.team)).toEqual(['team-a', 'team-b'])
+  const callsBefore = setup.calls.length
+  const before = e6c2aSnapshot(setup)
+  for (const type of ['clockView', 'clockCheckpointMetadata']) {
+    const generic = setup.command({ type: 'open' })
+    Reflect.set(generic, 'operation', { type })
+    expect((await setup.room.execute(generic)).ok).toBe(false)
+    const match = matchExecuteRequest({ type: 'clockObserve', matchId: setup.matchId })
+    Reflect.set(match, 'operation', { type, matchId: setup.matchId })
+    expect((await setup.room.executeMatch(match)).ok).toBe(false)
+  }
+  expect(setup.calls).toHaveLength(callsBefore)
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+})
+
+test('E6e2a idle zero allowance and unlimited active windows preserve canonical clock semantics', async () => {
+  const zero = await e6c2aLockedMatch({ clockConfig: {
+    mainTimeMs: 0, actionTimeMs: 0, outOfTurnChoiceTimeMs: 0,
+  } })
+  expect((await e6e2aCheckedRead(zero, 5_000)).clock).toEqual({
+    sampledAtMs: 5_000, teams: [
+      { team: 'team-a', mainTimeRemainingMs: 0, byoyomiTimeRemainingMs: 0, byoyomiActive: false },
+      { team: 'team-b', mainTimeRemainingMs: 0, byoyomiTimeRemainingMs: 0, byoyomiActive: false },
+    ], running: null, paused: null, awaitingAuthority: false,
+  })
+  const unlimited = await e6c2aLockedMatch({ clockConfig: {
+    mainTimeMs: null, actionTimeMs: null, outOfTurnChoiceTimeMs: null,
+  } })
+  await e6e2aClockCommand(unlimited, { type: 'clockBeginAction', matchId: unlimited.matchId, team: 'team-a', turn: 1 }, 3_000)
+  const action = await e6e2aCheckedRead(unlimited, 100_000)
+  expect(action.clock).toEqual({
+    sampledAtMs: 100_000, teams: [
+      { team: 'team-a', mainTimeRemainingMs: null, byoyomiTimeRemainingMs: null, byoyomiActive: false },
+      { team: 'team-b', mainTimeRemainingMs: null, byoyomiTimeRemainingMs: null, byoyomiActive: false },
+    ], running: { type: 'action', team: 'team-a', turn: 1 }, paused: null, awaitingAuthority: false,
+  })
+  await e6e2aClockCommand(unlimited, { type: 'clockEndWindow', matchId: unlimited.matchId }, 3_100)
+  await e6e2aClockCommand(unlimited, {
+    type: 'clockBeginOutOfTurnChoice', matchId: unlimited.matchId, team: 'team-b', choiceId: 'unlimited-choice',
+  }, 3_101)
+  const choice = await e6e2aCheckedRead(unlimited, 100_000)
+  expect(choice.clock).toEqual({
+    ...action.clock, running: { type: 'outOfTurnChoice', team: 'team-b', choiceId: 'unlimited-choice', remainingMs: null },
+  })
+})
+
+test('E6e2a legal global ACL revision/time divergence rejects old query time without writing', async () => {
+  const setup = await e6c2aLockedMatch()
+  const meta = setup.meta()
+  expect((await setup.room.grantReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'new-referee',
+    commandId: 'e6e2a-acl-time', expectedRevision: meta.revision, trustedTimeMs: 10_000,
+  })).ok).toBe(true)
+  const before = e6c2aSnapshot(setup)
+  expect(await setup.room.readMatchClock(e6e2aClockRequest(setup, { trustedTimeMs: 9_999 })))
+    .toMatchObject({ ok: false, error: { code: 'trustedTimeRegression' } })
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+  expect((await e6e2aCheckedRead(setup, 10_000)).matchRevision).toBe(2)
+  expect(await setup.room.readMatchClock(e6e2aClockRequest(setup, { callerUserId: 'new-referee', trustedTimeMs: 10_000 })))
+    .toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+})
+
+test('E6e2a query is serialized ahead of a concurrent clock mutation without committing its sample', async () => {
+  const setup = await e6c2aLockedMatch()
+  let entered = () => {}
+  let release = () => {}
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const released = new Promise<void>(resolve => { release = resolve })
+  const adapter: CompetitionEngineAdapter = async request => {
+    if (request.operation.type === 'clockView') {
+      entered()
+      await released
+    }
+    return setup.adapter(request)
+  }
+  const room = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, adapter)
+  const before = e6c2aSnapshot(setup)
+  const query = room.readMatchClock(e6e2aClockRequest(setup))
+  await started
+  const mutation = room.executeMatch({
+    competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'organizer-1',
+    commandId: 'e6e2a-concurrent-action', expectedMatchRevision: 2, trustedTimeMs: 6_000,
+    operation: { type: 'clockBeginAction', matchId: setup.matchId, team: 'team-a', turn: 1 },
+  })
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+  release()
+  const [readResult, mutationResult] = await Promise.all([query, mutation])
+  expect(readResult).toMatchObject({ ok: true, value: { matchRevision: 2, clock: { running: null } } })
+  expect(mutationResult).toMatchObject({ ok: true, value: { matchRevision: 3 } })
+  expect((await e6e2aCheckedRead(setup, 6_010)).clock.teams[0]!.mainTimeRemainingMs).toBe(299_990)
+})
+
+test('E6e2a even awaiting-first queries reject corrupted locked personal decks and unknown rulesets', async () => {
+  for (const defect of ['deck', 'ruleset'] as const) {
+    const setup = await e6c2aLockedMatch({ teamSize: 2, personalDeck: true, provision: false })
+    const adapter: CompetitionEngineAdapter = async request => {
+      const response = await setup.adapter(request)
+      if (request.operation.type !== 'registrationExportLockedRoster' || !response.ok) return response
+      const roster = structuredClone(response.private) as JsonObject
+      if (defect === 'ruleset') (roster.announcement as JsonObject).ruleset = 'unknown-private-ruleset'
+      else (((roster.teams as JsonObject[])[0]!.decks as JsonObject[])[0]!).cards = [17]
+      return { ...response, private: roster }
+    }
+    const room = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, adapter)
+    const before = e6c2aSnapshot(setup)
+    const result = await room.readMatchClock(e6e2aClockRequest(setup, { callerUserId: 'a-2' }))
+    expect(result).toMatchObject({ ok: false, error: { code: 'invalidLockedRoster' } })
+    expect(JSON.stringify(result)).not.toMatch(/unknown-private-ruleset|unknown-card/)
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
+})
+
+test('E7-self-match formal locked participant referee cannot pause their own provisioned match', async () => {
+  // 報名、鎖名單、配對、授權、開局與時計全部走正式 WASM；不改寫 checkpoint。
+  const setup = await e6c2aLockedMatch({
+    referees: [{ refereeId: 'a-1', conflictedTeam: null }],
+    clockConfig: { mainTimeMs: 1_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20 },
+  })
+  if (!setup.provisioned?.ok) throw new Error('formal self-match current game was not provisioned')
+  const { gameId, binding } = setup.provisioned.value
+  const ownMember = binding.players.find(player => player.userId === 'a-1')
+  const firstMember = binding.players.find(player => player.player === binding.firstPlayer)
+  if (!ownMember || !firstMember) throw new Error('formal self-match binding omitted its locked participant')
+  expect(setup.scheduledMatch.participants).toContain(ownMember.team)
+  expect(setup.sql.database.query('SELECT role, active, participant FROM competition_acl WHERE user_id = ?')
+    .get('a-1')).toEqual({ role: 'referee', active: 1, participant: 1 })
+  expect(setup.calls.filter(call => call.operation.type === 'registrationExecute')
+    .map(call => call.operation.type === 'registrationExecute' ? call.operation.action.type : null))
+    .toEqual(['open', 'registerTeam', 'confirmMembership', 'checkInTeam',
+      'registerTeam', 'confirmMembership', 'checkInTeam', 'lock'])
+  expect(setup.calls.filter(call => call.operation.type === 'matchCreate')
+    .map(call => call.operation.type === 'matchCreate' ? call.operation.config.referees : null))
+    .toEqual([[{ refereeId: 'a-1', conflictedTeam: null }]])
+
+  let deliveredControls = 0
+  // 平台資格／ACK adapter 只隔離接收端，不代表原生 GameRoom 已確認 Active。
+  const namespace = gameRoomNamespace(
+    async () => { throw new Error('self-match clock control must not provision another game') },
+    async request => {
+      deliveredControls += 1
+      return { ok: true, value: { ...request, idempotent: false } }
+    },
+  )
+  const stub = namespace.get()
+  stub.getCompetitionClockControlEligibility = async function (
+    this: unknown, request: CompetitionGameClockControlEligibilityRequest,
+  ) {
+    expect(Object.is(this, stub)).toBe(true)
+    expect(request).toEqual({ competitionId: 'competition-1', matchId: setup.matchId, gameId, gameNumber: 1 })
+    return true
+  }
+  namespace.get = () => stub
+  setup.env.GAME_ROOM = namespace
+  const action = await e6e2aClockCommand(setup, {
+    type: 'clockBeginAction', matchId: setup.matchId, team: firstMember.team, turn: 1,
+  }, 3_000)
+  expect(action.timeoutEvidence).toBeNull()
+  expect(action.nextClockDeadlineMs).toBe(4_100)
+  const before = e6c2aSnapshot(setup)
+  const engineCallsBefore = setup.calls.length
+  const paused = await setup.room.executeMatch({
+    competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'a-1',
+    commandId: 'e7-self-match-pause', expectedMatchRevision: action.matchRevision, trustedTimeMs: 3_100,
+    operation: { type: 'clockPause', matchId: setup.matchId, reason: '自身交手不得執行裁判操作' },
+  })
+  // 失敗只顯示固定代碼與副作用計數，避免展開包含牌組的整份持久快照。
+  expect({
+    code: paused.ok ? 'success' : paused.error.code,
+    stateUnchanged: JSON.stringify(e6c2aSnapshot(setup)) === JSON.stringify(before),
+    clockMutations: setup.calls.slice(engineCallsBefore)
+      .filter(call => call.operation.type === 'clockPause' || call.operation.type === 'clockResume').length,
+    deliveredControls,
+  }).toEqual({ code: 'forbidden', stateUnchanged: true, clockMutations: 0, deliveredControls: 0 })
+})
+
+function e7RefereeControlPlatform(setup: E6e2aSetup) {
+  if (!setup.provisioned?.ok) throw new Error('formal referee current game was not provisioned')
+  const gameId = setup.provisioned.value.gameId
+  const probes: CompetitionGameClockControlEligibilityRequest[] = []
+  const controls: CompetitionClockControlRequest[] = []
+  // 此平台 adapter 只驗 parent ACL；不宣稱原生 GameRoom 的 Active 狀態。
+  const namespace = gameRoomNamespace(
+    async () => { throw new Error('referee control must not provision another game') },
+    async request => { controls.push(structuredClone(request)); return { ok: true, value: { ...request, idempotent: false } } },
+  )
+  const stub = namespace.get()
+  stub.getCompetitionClockControlEligibility = async function (
+    this: unknown, request: CompetitionGameClockControlEligibilityRequest,
+  ) {
+    expect(Object.is(this, stub)).toBe(true)
+    expect(request).toEqual({ competitionId: 'competition-1', matchId: setup.matchId, gameId, gameNumber: 1 })
+    probes.push(structuredClone(request))
+    return true
+  }
+  namespace.get = () => stub
+  setup.env.GAME_ROOM = namespace
+  return { probes, controls }
+}
+
+test('E7-self-match formal noncaptain teammate cannot pause or resume; independent referee still can', async () => {
+  const setup = await e6c2aLockedMatch({
+    teamSize: 2,
+    referees: [{ refereeId: 'a-2', conflictedTeam: null }, { refereeId: 'referee-1', conflictedTeam: null }],
+    clockConfig: { mainTimeMs: 1_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20 },
+  })
+  if (!setup.provisioned?.ok) throw new Error('formal noncaptain game was not provisioned')
+  const binding = setup.provisioned.value.binding
+  const ownMember = binding.players.find(player => player.userId === 'a-2')
+  const firstMember = binding.players.find(player => player.player === binding.firstPlayer)
+  if (!ownMember || !firstMember) throw new Error('formal noncaptain binding omitted a locked member')
+  expect(binding.firstPlayer).not.toBe('a-2')
+  const exported = await setup.room.execute({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', commandId: 'e7-noncaptain-roster',
+    expectedRevision: setup.meta().revision, trustedTimeMs: 3_000, operation: { type: 'registrationExportLockedRoster' },
+  })
+  if (!exported.ok || !('private' in exported.value.projection) || !isJsonObject(exported.value.projection.private)
+    || !Array.isArray(exported.value.projection.private.teams)) throw new Error('formal locked roster export failed')
+  const ownTeam = exported.value.projection.private.teams.find(team => isJsonObject(team) && team.teamId === ownMember.team)
+  if (!isJsonObject(ownTeam)) throw new Error('formal locked roster omitted own team')
+  expect(ownTeam.captain).toBe('a-1')
+  expect(ownTeam.members).toEqual(['a-1', 'a-2'])
+  const platform = e7RefereeControlPlatform(setup)
+  await e6e2aClockCommand(setup, {
+    type: 'clockBeginAction', matchId: setup.matchId, team: firstMember.team, turn: 1,
+  }, 3_000)
+  for (const [index, type] of (['clockPause', 'clockResume'] as const).entries()) {
+    const before = e6c2aSnapshot(setup)
+    const callsBefore = setup.calls.length
+    const row = setup.sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?')
+      .get(setup.matchId) as { revision: number }
+    expect(await setup.room.executeMatch({
+      competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'a-2',
+      commandId: `e7-noncaptain-${type}`, expectedMatchRevision: row.revision, trustedTimeMs: 3_100 + index * 100,
+      operation: { type, matchId: setup.matchId, reason: '非隊長亦不得裁判自己的交手' },
+    })).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+    expect(setup.calls.slice(callsBefore).map(call => call.operation.type)).toEqual(['registrationExportLockedRoster'])
+    expect(platform.probes).toHaveLength(index)
+    expect(platform.controls).toHaveLength(index)
+    const controlled = await e6e2aClockCommand(setup, {
+      type, matchId: setup.matchId, reason: '獨立裁判仍可控制計時',
+    }, 3_101 + index * 100, 'referee-1')
+    expect(controlled.clockProjection?.operation).toBe(type)
+  }
+})
+
+async function e7FiniteTimeoutTerminal(setup: E6e2aSetup, startedAtMs = 3_000) {
+  if (!setup.provisioned?.ok) throw new Error('formal timeout game was not provisioned')
+  const binding = setup.provisioned.value.binding
+  const firstMember = binding.players.find(player => player.player === binding.firstPlayer)
+  if (!firstMember) throw new Error('formal timeout binding omitted first player')
+  const action = await e6e2aClockCommand(setup, {
+    type: 'clockBeginAction', matchId: setup.matchId, team: firstMember.team, turn: 1,
+  }, startedAtMs)
+  if (action.nextClockDeadlineMs === null) throw new Error('formal finite clock omitted deadline')
+  const observed = await e6e2aClockCommand(setup, {
+    type: 'clockObserve', matchId: setup.matchId,
+  }, action.nextClockDeadlineMs)
+  if (!observed.timeoutEvidence) throw new Error('formal finite observation omitted timeout evidence')
+  expect(observed.timeoutEvidence.expiries).toEqual([{ team: firstMember.team, deadlineMonotonicMs: action.nextClockDeadlineMs }])
+  // 傳入正式核心的 timeout evidence，既有 helper 的 canonical fallback 不會使用。
+  const terminal = await e6e2aSubmitTerminal(setup, action.nextClockDeadlineMs + 1, 'draw', observed.timeoutEvidence)
+  if (!terminal.ok || !isJsonObject(terminal.value.matchProjection?.public)
+    || !isJsonObject(terminal.value.matchProjection.public.match)) throw new Error('formal timeout terminal failed')
+  const match = terminal.value.matchProjection.public.match
+  if (!Array.isArray(match.games) || !Array.isArray(match.rulings)) throw new Error('formal timeout match omitted records')
+  const game = match.games.at(-1)
+  if (!isJsonObject(game) || typeof game.gameRecordId !== 'string') throw new Error('formal timeout game record missing')
+  const active = match.rulings.find(ruling => isJsonObject(ruling) && ruling.rulingRecordId === game.rulingRecordId)
+  if (!isJsonObject(active) || !isJsonObject(active.ruling)
+    || active.ruling.type !== 'timeoutLoss' || typeof active.ruling.loser !== 'string') {
+    throw new Error('formal timeout active ruling missing')
+  }
+  const replacementRuling: CompetitionRuling = { type: 'timeoutLoss', loser: active.ruling.loser }
+  return { terminal: terminal.value, gameRecordId: game.gameRecordId, replacementRuling,
+    trustedTimeMs: action.nextClockDeadlineMs + 1 }
+}
+
+test('E7-self-match formal finite timeout completed match rejects same ruling correction by own noncaptain', async () => {
+  const setup = await e6c2aLockedMatch({ teamSize: 2, matchFormat: { type: 'firstToWins', value: 1 },
+    referees: [{ refereeId: 'a-2', conflictedTeam: null }],
+    clockConfig: { mainTimeMs: 1_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20 },
+  })
+  const completed = await e7FiniteTimeoutTerminal(setup)
+  const displayed = await setup.room.readMatchClock(e6e2aClockRequest(setup, { trustedTimeMs: 4_102, callerUserId: 'a-2' }))
+  expect(displayed).toMatchObject({ ok: true, value: { matchStatus: 'completed', game: null } })
+  const before = e6c2aSnapshot(setup)
+  const callsBefore = setup.calls.length
+  expect(await setup.room.executeMatch({
+    competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'a-2',
+    commandId: 'e7-own-completed-correction', expectedMatchRevision: completed.terminal.matchRevision, trustedTimeMs: 4_103,
+    operation: {
+      type: 'matchCorrectRuling', matchId: setup.matchId, refereeId: 'a-2', correctionId: 'e7-own-correction',
+      gameRecordId: completed.gameRecordId, replacementRulingRecordId: 'e7-own-replacement',
+      replacementRuling: completed.replacementRuling, reason: '維持實際 timeout 判定亦不得裁決自己交手',
+    },
+  })).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  expect(e6c2aSnapshot(setup)).toEqual(before)
+  expect(setup.calls.slice(callsBefore).map(call => call.operation.type)).toEqual(['registrationExportLockedRoster'])
+})
+
+test('E7-self-match formal registered teammate can referee another actual RR match and retry successful correction first', async () => {
+  const setup = await e6c2aLockedMatch({ teamSize: 2, teamCount: 4, format: 'roundRobin',
+    matchFormat: { type: 'fixedGames', value: 1 }, referees: [{ refereeId: 'a-2', conflictedTeam: null }],
+    clockConfig: { mainTimeMs: 1_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20 },
+  })
+  if (!setup.provisioned?.ok) throw new Error('formal own RR game was not provisioned')
+  const ownMember = setup.provisioned.value.binding.players.find(player => player.userId === 'a-2')
+  if (!ownMember) throw new Error('formal first RR match did not contain the referee own team')
+  const snapshot = await setup.room.readTournament(e6d1bReadRequest('organizer-1'))
+  if (!snapshot.ok || !isJsonObject(snapshot.value.projection.public)
+    || !Array.isArray(snapshot.value.projection.public.stages)) throw new Error('formal RR query failed')
+  const stage = snapshot.value.projection.public.stages[0]
+  if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) throw new Error('formal RR stage missing')
+  const round = stage.rounds[0]
+  if (!isJsonObject(round) || !Array.isArray(round.matches)) throw new Error('formal RR first round missing')
+  const scheduled = round.matches.find(match => isJsonObject(match) && match.status === 'pending'
+    && match.started === false && Array.isArray(match.participants) && match.participants.length === 2
+    && !match.participants.includes(ownMember.team))
+  if (!isJsonObject(scheduled) || typeof scheduled.matchId !== 'string') throw new Error('formal RR other match missing')
+  const matchId = scheduled.matchId
+  const started = await setup.room.startScheduledMatch({
+    competitionId: 'competition-1', stageId: setup.stage.stageId, matchId, callerUserId: 'organizer-1',
+    commandId: 'e7-other-rr-start', expectedRevision: setup.meta().revision,
+    trustedTimeMs: setup.meta().updated_trusted_time_ms + 1, referees: [{ refereeId: 'a-2', conflictedTeam: null }],
+  })
+  if (!started.ok) throw new Error(`formal other RR start failed: ${started.error.code}`)
+  const provisioned = await setup.room.provisionInitialScheduledGame({
+    competitionId: 'competition-1', matchId, callerUserId: 'organizer-1', commandId: 'e7-other-rr-provision',
+    expectedMatchRevision: 1, trustedTimeMs: setup.meta().updated_trusted_time_ms + 1,
+  })
+  if (!provisioned.ok) throw new Error(`formal other RR provision failed: ${provisioned.error.code}`)
+  expect(provisioned.value.binding.players.some(player => player.userId === 'a-2')).toBe(false)
+  expect(setup.sql.database.query('SELECT role, active, participant FROM competition_acl WHERE user_id = ?')
+    .get('a-2')).toEqual({ role: 'referee', active: 1, participant: 1 })
+  const other = { ...setup, matchId, scheduledMatch: scheduled, provisioned }
+  const platform = e7RefereeControlPlatform(other)
+  const first = provisioned.value.binding.players.find(player => player.player === provisioned.value.binding.firstPlayer)
+  if (!first) throw new Error('formal other RR first player missing')
+  await e6e2aClockCommand(other, { type: 'clockBeginAction', matchId, team: first.team, turn: 1 }, 3_000)
+  const retryControls: Array<{ request: CompetitionRoomMatchExecuteRequest;
+    value: Awaited<ReturnType<typeof e6e2aClockCommand>> }> = []
+  for (const [index, type] of (['clockPause', 'clockResume'] as const).entries()) {
+    const row = other.sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?')
+      .get(matchId) as { revision: number }
+    const request: CompetitionRoomMatchExecuteRequest = {
+      competitionId: 'competition-1', matchId, callerUserId: 'a-2', commandId: `e7-other-${type}`,
+      expectedMatchRevision: row.revision, trustedTimeMs: 3_100 + index * 100,
+      operation: { type, matchId, reason: '本身參賽但非本交手隊員，可合法裁判' },
+    }
+    const result = await other.room.executeMatch(request)
+    if (!result.ok) throw new Error(`formal other referee control failed: ${result.error.code}`)
+    retryControls.push({ request, value: result.value })
+    expect(result.value.clockProjection?.operation).toBe(type)
+    expect(platform.probes).toHaveLength(index + 1)
+    expect(platform.controls).toHaveLength(index + 1)
+  }
+  await e6e2aClockCommand(other, { type: 'clockEndWindow', matchId }, 3_300)
+  const completed = await e7FiniteTimeoutTerminal(other, 3_400)
+  const correction: CompetitionRoomMatchExecuteRequest = {
+    competitionId: 'competition-1', matchId, callerUserId: 'a-2', commandId: 'e7-other-rr-correction',
+    expectedMatchRevision: completed.terminal.matchRevision, trustedTimeMs: completed.trustedTimeMs + 1,
+    operation: { type: 'matchCorrectRuling', matchId, refereeId: 'a-2', correctionId: 'e7-other-rr-correction-record',
+      gameRecordId: completed.gameRecordId, replacementRulingRecordId: 'e7-other-rr-replacement',
+      replacementRuling: completed.replacementRuling, reason: '核對後維持正式 timeout 判定' },
+  }
+  const corrected = await other.room.executeMatch(correction)
+  expect(corrected).toMatchObject({ ok: true, value: { matchRevision: completed.terminal.matchRevision + 1 } })
+  if (!corrected.ok) throw new Error('formal other RR correction failed')
+  expect((await other.room.revokeReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'a-2',
+    commandId: 'e7-other-rr-revoke', expectedRevision: other.meta().revision,
+    trustedTimeMs: Math.max(other.meta().updated_trusted_time_ms, correction.trustedTimeMs) + 1,
+  })).ok).toBe(true)
+  let retriedEngineCalls = 0
+  const restarted = new CompetitionRoomClass(stateFor(other.sql, other.alarm), other.env, async () => {
+    retriedEngineCalls += 1
+    throw new Error('PRIVATE_ROSTER retry must not export or mutate')
+  })
+  const beforeRetry = e6c2aSnapshot(other)
+  expect(await restarted.executeMatch({ ...correction, trustedTimeMs: 0 }))
+    .toEqual({ ok: true, value: { ...corrected.value, idempotent: true } })
+  for (const previous of retryControls) {
+    expect(await restarted.executeMatch({ ...previous.request, trustedTimeMs: 0 }))
+      .toEqual({ ok: true, value: { ...previous.value, idempotent: true } })
+  }
+  expect(retriedEngineCalls).toBe(0)
+  expect(e6c2aSnapshot(other)).toEqual(beforeRetry)
+  if (correction.operation.type !== 'matchCorrectRuling') throw new Error('formal correction operation mismatch')
+  expect(await restarted.executeMatch({ ...correction, operation: { ...correction.operation, reason: '不同語意' } }))
+    .toMatchObject({ ok: false, error: { code: 'commandIdConflict' } })
+})
+
+for (const fault of ['missingCheckpoint', 'malformedCheckpoint', 'unlockedCheckpoint', 'missingTeam',
+  'malformedMembers', 'duplicateMember', 'extraPrivate', 'changedState', 'extraSymbol', 'throw'] as const) {
+  test(`E7-self-match formal ${fault} roster authority rejects without mutation or side effects`, async () => {
+    const setup = await e6c2aLockedMatch({ teamSize: 2, referees: [{ refereeId: 'a-2', conflictedTeam: null }],
+      clockConfig: { mainTimeMs: 1_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20 },
+    })
+    if (!setup.provisioned?.ok) throw new Error('formal roster fault game was not provisioned')
+    const binding = setup.provisioned.value.binding
+    const firstMember = binding.players.find(player => player.player === binding.firstPlayer)
+    if (!firstMember) throw new Error('formal roster fault first player missing')
+    const platform = e7RefereeControlPlatform(setup)
+    await e6e2aClockCommand(setup, { type: 'clockBeginAction', matchId: setup.matchId, team: firstMember.team, turn: 1 }, 3_000)
+    if (fault === 'missingCheckpoint' || fault === 'malformedCheckpoint' || fault === 'unlockedCheckpoint') {
+      // 僅在真合法 prefix 之後注入損壞；不以 forged checkpoint 建立 happy path。
+      const state: unknown = JSON.parse(setup.meta().server_state_json)
+      if (!isJsonObject(state) || !isJsonObject(state.registration) || !Array.isArray(state.registration.commands)) {
+        throw new Error('formal registration checkpoint missing before fault injection')
+      }
+      if (fault === 'missingCheckpoint') state.registration = null
+      else if (fault === 'malformedCheckpoint') state.registration.commands = [{ malformed: true }]
+      else state.registration.commands.pop()
+      setup.sql.database.query('UPDATE competition_meta SET server_state_json = ?').run(JSON.stringify(state))
+    }
+    const adapter: CompetitionEngineAdapter = async request => {
+      if (fault === 'throw' && request.operation.type === 'registrationExportLockedRoster') {
+        throw new Error('PRIVATE_ROSTER secret must not escape')
+      }
+      const response = await setup.adapter(request)
+      if (request.operation.type !== 'registrationExportLockedRoster' || !response.ok) return response
+      if (fault === 'changedState') return { ...response, serverState: { ...response.serverState, registration: null } }
+      if (fault === 'extraSymbol') return Object.assign(response, { [Symbol('PRIVATE_ROSTER')]: 'secret' })
+      const roster = structuredClone(response.private)
+      if (!isJsonObject(roster) || !Array.isArray(roster.teams) || !isJsonObject(roster.teams[0])) {
+        throw new Error('formal private roster missing before fault injection')
+      }
+      if (fault === 'missingTeam') roster.teams = roster.teams.slice(1)
+      else if (fault === 'malformedMembers') roster.teams[0].members = [null, 'secret']
+      else if (fault === 'duplicateMember') {
+        if (!isJsonObject(roster.teams[1]) || !Array.isArray(roster.teams[0].members)
+          || !Array.isArray(roster.teams[1].members)) throw new Error('formal second roster missing')
+        const duplicate = roster.teams[0].members[1]
+        if (typeof duplicate !== 'string') throw new Error('formal duplicate member missing')
+        roster.teams[1].members[1] = duplicate
+      } else if (fault === 'extraPrivate') roster.secret = 'PRIVATE_ROSTER'
+      return { ...response, private: roster }
+    }
+    const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, adapter)
+    const before = e6c2aSnapshot(setup)
+    const callsBefore = setup.calls.length
+    const result = await restarted.executeMatch({
+      competitionId: 'competition-1', matchId: setup.matchId, callerUserId: 'a-2', commandId: `e7-roster-fault-${fault}`,
+      expectedMatchRevision: 3, trustedTimeMs: 3_100,
+      operation: { type: 'clockPause', matchId: setup.matchId, reason: '損壞 authority 不可授權裁判' },
+    })
+    expect(result).toMatchObject({ ok: false, error: { code: 'invalidLockedRoster' } })
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE_ROSTER|secret/)
+    expect(e6c2aSnapshot(setup)).toEqual(before)
+    expect(setup.calls.slice(callsBefore).some(call => call.operation.type === 'clockPause')).toBe(false)
+    expect(platform.probes).toHaveLength(0)
+    expect(platform.controls).toHaveLength(0)
+  })
+}
+
+// 此 prefix 全部 domain operations 使用正式 WASM；平台 adapter 只證明父端未派送，不冒充 child ACK。
+async function roundReleaseParentRoom(teamSize: 1 | 2 = 1, personalDeck = false, options: {
+  transform?: (request: CompetitionRequest, response: CompetitionEngineResponse) => CompetitionEngineResponse
+  randomBit?: () => number
+  enabledRuleModules?: string[]
+} = {}) {
+  const sql = new MemorySql()
+  const alarm: TestAlarmState = { scheduledAt: null }
+  const calls: CompetitionRequest[] = []
+  let platformCalls = 0
+  let randomCalls = 0
+  const env = { GAME_ROOM: {
+    idFromName: (_name: string): DurableObjectId => { platformCalls += 1; throw new Error('bounded publication must not dispatch') },
+    get: (_id: DurableObjectId) => ({
+      createCompetitionGame: async () => { platformCalls += 1; throw new Error('no child ACK in this prefix') },
+      synchronizeCompetitionClock: async () => { platformCalls += 1; throw new Error('no clock control in this prefix') },
+    }),
+  } }
+  const adapter: CompetitionEngineAdapter = async request => {
+    calls.push(structuredClone(request))
+    const response = await callCompetitionEngine(request, realCompetitionWasm)
+    return options.transform ? options.transform(request, response) : response
+  }
+  const bit = () => { randomCalls += 1; return options.randomBit ? options.randomBit() : 0 }
+  const room = new CompetitionRoomClass(stateFor(sql, alarm), env, adapter, bit)
+  const initialized = await room.initializeFromRules({ ...rulesInitialize(), announcement: {
+    ...rulesInitialize().announcement, teamSize,
+    enabledRuleModules: options.enabledRuleModules ?? (personalDeck ? ['personal-deck'] : []),
+    personalDecks: personalDeck ? 'required' : 'disabled',
+  } })
+  if (!initialized.ok) throw new Error(`normal create prefix failed: ${initialized.error.code}`)
+  const meta = () => {
+    const raw = sql.database.query('SELECT * FROM competition_meta').get()
+    if (!isJsonObject(raw) || typeof raw.revision !== 'number'
+      || typeof raw.updated_trusted_time_ms !== 'number' || typeof raw.server_state_json !== 'string') {
+      throw new Error('formal prefix meta is incomplete')
+    }
+    const state: unknown = JSON.parse(raw.server_state_json)
+    if (!isJsonObject(state) || !isJsonObject(state.tournament) && state.tournament !== null) {
+      throw new Error('formal prefix state is malformed')
+    }
+    return { revision: raw.revision, trustedTimeMs: raw.updated_trusted_time_ms, state }
+  }
+  let sequence = 0
+  const registration = async (action: RegistrationAction, callerUserId = 'organizer-1', time?: number) => {
+    const current = meta()
+    const commandId = `round-prefix-${++sequence}-${action.type}`
+    const result = await room.execute({ competitionId: 'competition-1', callerUserId, commandId,
+      expectedRevision: current.revision, trustedTimeMs: time ?? current.trustedTimeMs + 1,
+      operation: { type: 'registrationExecute', commandId, expectedRevision: current.revision, action } })
+    if (!result.ok) throw new Error(`formal registration prefix failed: ${result.error.code}`)
+  }
+  await registration({ type: 'open' })
+  const cards = ['metal', 'wood', 'water', 'fire', 'earth'].flatMap(element => (
+    [3, 2, 3, 2, 2].flatMap((copies, index) => Array.from({ length: copies }, () => `${element}-${index + 1}`))
+  ))
+  for (const prefix of ['a', 'b', 'c', 'd']) {
+    const members = Array.from({ length: teamSize }, (_, index) => `${prefix}-${index + 1}`)
+    const captain = members[0]
+    if (!captain) throw new Error('formal roster has no captain')
+    const teamId = `team-${prefix}`
+    await registration({ type: 'registerTeam', teamId, captain, members }, captain)
+    for (const member of members) {
+      await registration({ type: 'confirmMembership', teamId, rosterVersion: 1 }, member)
+      if (personalDeck) await registration({ type: 'submitDeck', teamId, rosterVersion: 1,
+        name: `${member}-PRIVATE_DECK`, cards }, member)
+    }
+    await registration({ type: 'checkInTeam', teamId, rosterVersion: 1 }, captain)
+  }
+  // 舊 registration deadline 只用來真實 lock；本 fixture 的 T 由後續 organizer explicit 公告另定。
+  await registration({ type: 'lock' }, 'organizer-1', 120_000)
+  const beforeTournament = meta()
+  const created = await room.createTournamentFromLockedRoster({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', commandId: 'round-prefix-tournament',
+    expectedRevision: beforeTournament.revision, trustedTimeMs: beforeTournament.trustedTimeMs + 1,
+    stage: { ...stageConfig({ format: 'roundRobin', teams: ['a', 'b', 'c', 'd'].map((prefix, index) => ({
+      teamId: `team-${prefix}`, seed: index + 1,
+    })) }), matchFormat: { type: 'fixedGames', value: 1 } },
+  })
+  if (!created.ok) throw new Error(`formal tournament prefix failed: ${created.error.code}`)
+  const request = (overrides: Partial<CompetitionRoomAnnounceRoundRequest> = {}): CompetitionRoomAnnounceRoundRequest => ({
+    competitionId: 'competition-1', stageId: 'stage-online', roundNumber: 1,
+    callerUserId: 'organizer-1', commandId: 'round-announcement-1', expectedRevision: meta().revision,
+    trustedTimeMs: meta().trustedTimeMs + 1, roundStartMs: 900_000, refereeAssignments: [], ...overrides,
+  })
+  return { sql, alarm, room, calls, env, adapter, bit, meta, request,
+    counters: () => ({ platformCalls, randomCalls }) }
+}
+
+function roundParentRows(sql: MemorySql, table: string): JsonObject[] {
+  const rows = sql.database.query(`SELECT * FROM ${table} ORDER BY rowid`).all()
+  if (!rows.every(isJsonObject)) throw new Error('formal SQL result is malformed')
+  return rows
+}
+
+for (const scenario of [{ teamSize: 1 as const, personalDeck: false }, { teamSize: 2 as const, personalDeck: true }]) {
+  test(`round-release parent persists the complete Pending ${scenario.teamSize}v${scenario.teamSize} round and immutable receipt atomically`, async () => {
+    const setup = await roundReleaseParentRoom(scenario.teamSize, scenario.personalDeck)
+    const before = setup.meta()
+    const request = setup.request()
+    const callsBefore = setup.calls.length
+    const result = await atRoundDeliveryTime(request.trustedTimeMs, () => setup.room.announceRound(request))
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(`round publication failed: ${result.error.code}`)
+    expect(result.value).toEqual({ competitionId: request.competitionId, revision: request.expectedRevision + 1,
+      commandId: request.commandId, idempotent: false, publication: {
+        roundRef: result.value.publication.roundRef, roundStartMs: request.roundStartMs,
+        publicationVersion: 1, status: 'materializing', releaseDecisionId: null, requiresReferee: false,
+        rooms: result.value.publication.rooms,
+      } })
+    const ledger = roundParentRows(setup.sql, 'competition_round_room_ledger')
+    expect(ledger).toHaveLength(2)
+    expect(result.value.publication.rooms).toHaveLength(ledger.length)
+    expect(result.value.publication.rooms.every(room => room.ackConfirmedAtMs === null)).toBe(true)
+    expect(setup.meta().state.tournament).toStrictEqual(before.state.tournament)
+    expect(setup.counters()).toEqual({ platformCalls: 0, randomCalls: 2 })
+    expect(setup.alarm.scheduledAt).toBe(request.trustedTimeMs + 1_000)
+    expect(roundParentRows(setup.sql, 'competition_game_provision')).toEqual([])
+    const matchRows = roundParentRows(setup.sql, 'competition_matches')
+    expect(matchRows).toHaveLength(ledger.length)
+    for (const row of ledger) {
+      if (typeof row.binding_json !== 'string' || typeof row.binding_ref_json !== 'string'
+        || typeof row.game_id !== 'string') throw new Error('full binding ledger is missing')
+      const binding: unknown = JSON.parse(row.binding_json)
+      validateCompetitionGameBinding(binding)
+      expect(Object.keys(binding)).toHaveLength(17)
+      expect(binding.roundRef).toEqual(result.value.publication.roundRef)
+      expect(binding.roundStartMs).toBe(request.roundStartMs)
+      expect(binding.expectedMatchRevision).toBe(2)
+      expect(binding.gameNumber).toBe(1)
+      expect(binding.players).toHaveLength(scenario.teamSize * 2)
+      expect(binding.deckSnapshot).toHaveLength(scenario.personalDeck ? scenario.teamSize * 2 : 0)
+      expect(binding.firstPlayer).toBe(binding.turnOrder[0])
+      expect(binding.turnOrder.map(player => binding.players.find(entry => entry.player === player)?.team))
+        .toEqual(scenario.teamSize === 1
+          ? [binding.players[0]?.team, binding.players[1]?.team]
+          : [binding.players[0]?.team, binding.players[1]?.team, binding.players[0]?.team, binding.players[1]?.team])
+      expect(await competitionGameBindingRefForRequest({ gameId: row.game_id, binding }))
+        .toStrictEqual(JSON.parse(row.binding_ref_json))
+      const persistedMatch = matchRows.find(entry => entry.match_id === binding.matchId)
+      if (!persistedMatch || typeof persistedMatch.clock_checkpoint_json !== 'string'
+        || typeof persistedMatch.match_checkpoint_json !== 'string') throw new Error('atomic match row missing')
+      expect(persistedMatch.revision).toBe(2)
+      expect(JSON.parse(persistedMatch.match_checkpoint_json).history).toEqual([
+        { type: 'assignFirstPlayer', team: binding.players[0]?.team, reason: '賽事伺服器可信隨機先手' },
+      ])
+      expect(JSON.parse(persistedMatch.clock_checkpoint_json)).toMatchObject({ running: null, paused: null })
+      expect(JSON.parse(persistedMatch.clock_checkpoint_json).lastObservedMs).toBe(request.trustedTimeMs)
+    }
+    const audit = roundParentRows(setup.sql, 'competition_audit').filter(row => row.command_id === request.commandId)
+    expect(audit).toEqual([{ id: audit[0]?.id, match_id: null, actor_user_id: request.callerUserId,
+      role: 'organizer', operation_type: 'announceRound', command_id: request.commandId,
+      revision: request.expectedRevision + 1, outcome_code: 'success', trusted_time_ms: request.trustedTimeMs, reason: null }])
+    expect(JSON.stringify({ result, audit })).not.toMatch(/PRIVATE_DECK|"(?:binding|players|deckSeed|serverState|manifest)"\s*:/)
+    const newOperations = setup.calls.slice(callsBefore).map(call => call.operation.type)
+    expect(newOperations).toEqual(['tournamentView', 'registrationExportLockedRoster',
+      'matchCreate', 'clockCreate', 'matchAssignFirstPlayer', 'matchCreate', 'clockCreate', 'matchAssignFirstPlayer'])
+    const beforeRead = e6c2aSnapshot(setup)
+    expect(await setup.room.readRoundPublication({ competitionId: request.competitionId,
+      stageId: request.stageId, roundNumber: 1, callerUserId: request.callerUserId }))
+      .toEqual({ ok: true, value: { competitionId: request.competitionId,
+        revision: result.value.revision, publication: result.value.publication } })
+    expect(e6c2aSnapshot(setup)).toStrictEqual(beforeRead)
+  })
+}
+
+test('round-release parent receipt retry and restart preserve random side, generation, T, seed and all bindings without re-computation', async () => {
+  const setup = await roundReleaseParentRoom()
+  const request = setup.request()
+  const first = await setup.room.announceRound(request)
+  if (!first.ok) throw new Error('formal announcement failed')
+  const before = e6c2aSnapshot(setup)
+  const beforeCalls = setup.calls.length
+  const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter, setup.bit)
+  for (const trustedTimeMs of [request.trustedTimeMs - 1, request.roundStartMs + 1]) {
+    expect(await restarted.announceRound({ ...request, trustedTimeMs }))
+      .toStrictEqual({ ok: true, value: { ...first.value, idempotent: true } })
+    expect(e6c2aSnapshot(setup)).toStrictEqual(before)
+  }
+  expect(setup.calls).toHaveLength(beforeCalls)
+  expect(setup.counters()).toEqual({ platformCalls: 0, randomCalls: 2 })
+  for (const changed of [{ roundStartMs: request.roundStartMs + 60_000 }, { expectedRevision: request.expectedRevision + 1 },
+    { refereeAssignments: [{ matchId: 'another-match', referees: [] }] }]) {
+    expect(await restarted.announceRound({ ...request, ...changed }))
+      .toMatchObject({ ok: false, error: { code: 'commandIdConflict' } })
+    expect(e6c2aSnapshot(setup)).toStrictEqual(before)
+  }
+})
+
+test('round-release parent rejects known RR future pairings until the complete previous round is accepted', async () => {
+  const setup = await roundReleaseParentRoom()
+  const before = e6c2aSnapshot(setup)
+  const beforeCalls = setup.calls.length
+  expect(await setup.room.announceRound(setup.request({ roundNumber: 2 })))
+    .toMatchObject({ ok: false, error: { code: 'roundNotPublishable' } })
+  expect(e6c2aSnapshot(setup)).toStrictEqual(before)
+  expect(setup.calls.slice(beforeCalls).map(call => call.operation.type)).toEqual(['tournamentView'])
+  expect(setup.counters()).toEqual({ platformCalls: 0, randomCalls: 0 })
+})
+
+test('round-release parent validates exact identity, ACL, revision, time and explicit future cutoff before any materialization', async () => {
+  const setup = await roundReleaseParentRoom()
+  const request = setup.request()
+  const faults = [
+    { expectedRevision: request.expectedRevision - 1, code: 'revisionConflict' },
+    { trustedTimeMs: request.trustedTimeMs - 2, code: 'trustedTimeRegression' },
+    { roundStartMs: request.trustedTimeMs + 299_999, code: 'roundNotPublishable' },
+    { callerUserId: 'a-1', code: 'forbidden' },
+    { competitionId: 'another-room', code: 'competitionIdMismatch' },
+  ]
+  for (const fault of faults) {
+    const { code, ...changes } = fault
+    const before = e6c2aSnapshot(setup)
+    const beforeCalls = setup.calls.length
+    expect(await setup.room.announceRound({ ...request, ...changes })).toMatchObject({ ok: false, error: { code } })
+    expect(e6c2aSnapshot(setup)).toStrictEqual(before)
+    expect(setup.calls).toHaveLength(beforeCalls)
+  }
+  for (const extra of ['binding', 'deckSeed', 'firstPlayer', 'turnOrder', 'gameId', 'initialHp']) {
+    const before = e6c2aSnapshot(setup)
+    expect(await setup.room.announceRound({ ...request, [extra]: 'forged' }))
+      .toMatchObject({ ok: false, error: { code: 'invalidRequest' } })
+    expect(e6c2aSnapshot(setup)).toStrictEqual(before)
+  }
+  expect(await setup.room.readRoundPublication({ competitionId: request.competitionId,
+    stageId: request.stageId, roundNumber: 1, callerUserId: request.callerUserId }))
+    .toEqual({ ok: true, value: { competitionId: request.competitionId, revision: request.expectedRevision, publication: null } })
+  expect(setup.counters()).toEqual({ platformCalls: 0, randomCalls: 0 })
+})
+
+for (const failure of ['competition_round_publication', 'competition_round_room_ledger', 'competition_audit', 'competition_command_receipt']) {
+  test(`round-release parent late SQL ${failure} failure rolls back the entire round and permits a safe retry`, async () => {
+    const setup = await roundReleaseParentRoom()
+    const request = setup.request()
+    const before = e6c2aSnapshot(setup)
+    setup.sql.failNextQueryContaining = `INSERT INTO ${failure}`
+    expect(await setup.room.announceRound(request)).toMatchObject({ ok: false, error: { code: 'internalFailure' } })
+    expect(e6c2aSnapshot(setup)).toStrictEqual(before)
+    expect(setup.counters().platformCalls).toBe(0)
+    expect(await setup.room.announceRound(request)).toMatchObject({ ok: true, value: { idempotent: false } })
+    expect(roundParentRows(setup.sql, 'competition_round_publication')).toHaveLength(1)
+    expect(roundParentRows(setup.sql, 'competition_round_room_ledger')).toHaveLength(2)
+  })
+}
+
+for (const fault of ['exportPrivate', 'secondMatch', 'clockConfig', 'assignExtra', 'randomBit']) {
+  test(`round-release parent ${fault} failure cannot leave a partial round or dispatch`, async () => {
+    let matchCreates = 0
+    let armed = false
+    const setup = await roundReleaseParentRoom(2, true, {
+      randomBit: () => fault === 'randomBit' ? 2 : 0,
+      transform: (request, response) => {
+        if (!armed || !response.ok) return response
+        if (request.operation.type === 'matchCreate') matchCreates += 1
+        if (fault === 'exportPrivate' && request.operation.type === 'registrationExportLockedRoster') {
+          return { ...response, private: { secret: 'PRIVATE_FAULT' } }
+        }
+        if (fault === 'secondMatch' && request.operation.type === 'matchCreate' && matchCreates === 2) {
+          return { ...response, serverState: { ...response.serverState, matches: {} } }
+        }
+        if (fault === 'clockConfig' && request.operation.type === 'clockCreate' && response.serverState.clock) {
+          return { ...response, serverState: { ...response.serverState,
+            clock: { ...response.serverState.clock, config: { mainTimeMs: 1, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 } } } }
+        }
+        if (fault === 'assignExtra' && request.operation.type === 'matchAssignFirstPlayer') {
+          return Object.assign(response, { [Symbol('PRIVATE_FAULT')]: true })
+        }
+        return response
+      },
+    })
+    armed = true
+    const before = e6c2aSnapshot(setup)
+    const result = await setup.room.announceRound(setup.request())
+    expect(result.ok).toBe(false)
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE_FAULT/)
+    expect(e6c2aSnapshot(setup)).toStrictEqual(before)
+    expect(setup.counters().platformCalls).toBe(0)
+  })
+}
+
+for (const fault of ['missingRoom', 'bindingSeed', 'manifestExtra', 'nextGame']) {
+  test(`round-release parent read rejects ${fault} corruption without private output or writes`, async () => {
+    const setup = await roundReleaseParentRoom()
+    const request = setup.request()
+    if (!(await setup.room.announceRound(request)).ok) throw new Error('formal publication prefix failed')
+    const ledger = roundParentRows(setup.sql, 'competition_round_room_ledger')
+    const first = ledger[0]
+    if (!first || typeof first.game_id !== 'string' || typeof first.binding_json !== 'string') throw new Error('ledger missing')
+    if (fault === 'missingRoom') setup.sql.database.query('DELETE FROM competition_round_room_ledger WHERE game_id = ?').run(first.game_id)
+    if (fault === 'bindingSeed') {
+      const binding = JSON.parse(first.binding_json)
+      binding.deckSeed = 'CORRUPT_PRIVATE_SEED'
+      setup.sql.database.query('UPDATE competition_round_room_ledger SET binding_json = ? WHERE game_id = ?')
+        .run(JSON.stringify(binding), first.game_id)
+    }
+    if (fault === 'nextGame') {
+      setup.sql.database.query('UPDATE competition_round_room_ledger SET next_game_json = ? WHERE game_id = ?')
+        .run(JSON.stringify({ gameNumber: 2 }), first.game_id)
+    }
+    if (fault === 'manifestExtra') {
+      const header = roundParentRows(setup.sql, 'competition_round_publication')[0]
+      if (!header || typeof header.manifest_json !== 'string') throw new Error('manifest missing')
+      const manifest = JSON.parse(header.manifest_json)
+      manifest.private = 'CORRUPT_PRIVATE_SEED'
+      setup.sql.database.query('UPDATE competition_round_publication SET manifest_json = ?').run(JSON.stringify(manifest))
+    }
+    const before = e6c2aSnapshot(setup)
+    const result = await setup.room.readRoundPublication({ competitionId: request.competitionId,
+      stageId: request.stageId, roundNumber: 1, callerUserId: request.callerUserId })
+    expect(result).toMatchObject({ ok: false, error: { code: 'invalidRoundPublication' } })
+    expect(JSON.stringify(result)).not.toMatch(/CORRUPT_PRIVATE_SEED/)
+    expect(e6c2aSnapshot(setup)).toStrictEqual(before)
+    expect(setup.counters().platformCalls).toBe(0)
+  })
+}
+
+test('round-release parent trusted random branch one assigns the actual other scheduled team without changing Pending schedule', async () => {
+  const setup = await roundReleaseParentRoom(2, false, { randomBit: () => 1 })
+  const before = setup.meta().state.tournament
+  const result = await setup.room.announceRound(setup.request())
+  if (!result.ok) throw new Error('formal random branch one publication failed')
+  if (!isJsonObject(before) || !Array.isArray(before.stages) || !isJsonObject(before.stages[0])
+    || !Array.isArray(before.stages[0].rounds) || !isJsonObject(before.stages[0].rounds[0])
+    || !Array.isArray(before.stages[0].rounds[0].matches)) throw new Error('formal current round is missing')
+  const matches = before.stages[0].rounds[0].matches
+  const fixtureMembers = new Map(['a', 'b', 'c', 'd'].map(prefix => [
+    `team-${prefix}`, [`${prefix}-1`, `${prefix}-2`],
+  ]))
+  for (const row of roundParentRows(setup.sql, 'competition_round_room_ledger')) {
+    if (typeof row.binding_json !== 'string') throw new Error('formal binding is missing')
+    const binding: unknown = JSON.parse(row.binding_json)
+    validateCompetitionGameBinding(binding)
+    const match = matches.find(entry => isJsonObject(entry) && entry.matchId === binding.matchId)
+    if (!isJsonObject(match) || !Array.isArray(match.participants)
+      || typeof match.participants[0] !== 'string' || typeof match.participants[1] !== 'string') {
+      throw new Error('formal pairing is missing')
+    }
+    const first = fixtureMembers.get(match.participants[1])
+    const other = fixtureMembers.get(match.participants[0])
+    if (!first || !other) throw new Error('formal registered members are missing')
+    expect(binding.firstPlayer).toBe(first[0])
+    expect(binding.turnOrder).toEqual([first[0], other[0], first[1], other[1]])
+    expect(binding.players[0]?.team).toBe(match.participants[1])
+  }
+  expect(setup.meta().state.tournament).toStrictEqual(before)
+  expect(setup.counters()).toEqual({ platformCalls: 0, randomCalls: 2 })
+})
+
+for (const fault of ['version', 'confirmedAck', 'privateExtra']) {
+  test(`round-release parent receipt ${fault} corruption is rejected before any re-computation`, async () => {
+    const setup = await roundReleaseParentRoom()
+    const request = setup.request()
+    if (!(await setup.room.announceRound(request)).ok) throw new Error('formal announcement prefix failed')
+    const row = roundParentRows(setup.sql, 'competition_command_receipt').find(entry => entry.command_id === request.commandId)
+    if (!row || typeof row.response_json !== 'string') throw new Error('formal receipt is missing')
+    const stored = JSON.parse(row.response_json)
+    if (fault === 'version') stored.value.publication.publicationVersion = 2
+    if (fault === 'confirmedAck') stored.value.publication.rooms[0].ackConfirmedAtMs = request.roundStartMs - 300_000
+    if (fault === 'privateExtra') stored.value.private = 'CORRUPT_PRIVATE_RECEIPT'
+    setup.sql.database.query('UPDATE competition_command_receipt SET response_json = ? WHERE command_id = ?')
+      .run(JSON.stringify(stored), request.commandId)
+    const before = e6c2aSnapshot(setup)
+    const callsBefore = setup.calls.length
+    const result = await setup.room.announceRound({ ...request, trustedTimeMs: request.roundStartMs + 1 })
+    expect(result).toMatchObject({ ok: false, error: { code: 'invalidRoundPublication' } })
+    expect(JSON.stringify(result)).not.toMatch(/CORRUPT_PRIVATE_RECEIPT/)
+    expect(e6c2aSnapshot(setup)).toStrictEqual(before)
+    expect(setup.calls).toHaveLength(callsBefore)
+    expect(setup.counters()).toEqual({ platformCalls: 0, randomCalls: 2 })
+  })
+}
+
+/** 僅保存層 adapter：receipt 恢復不應啟動 transaction 或寫入，非報名／開房整合前綴。 */
+class RoundReceiptModuleSql extends MemorySql {
+  writeAttempts = 0
+  transactionAttempts = 0
+
+  override exec<T>(query: string, ...bindings: unknown[]): SqlCursor<T> {
+    if (!query.trim().toUpperCase().startsWith('SELECT')) this.writeAttempts += 1
+    return super.exec<T>(query, ...bindings)
+  }
+
+  override transactionSync<T>(callback: () => T): T {
+    this.transactionAttempts += 1
+    return super.transactionSync(callback)
+  }
+}
+
+async function roundAnnouncementReceiptModule() {
+  const sql = new RoundReceiptModuleSql()
+  const alarm: TestAlarmState = { scheduledAt: 1_600_000 }
+  let engineCalls = 0
+  let platformCalls = 0
+  let randomCalls = 0
+  const engine: CompetitionEngineAdapter = async () => {
+    engineCalls += 1
+    throw new Error('receipt-only module must not execute an engine operation')
+  }
+  const env = { GAME_ROOM: {
+    idFromName: (_name: string): DurableObjectId => {
+      platformCalls += 1
+      throw new Error('receipt-only module must not resolve a child')
+    },
+    get: (_id: DurableObjectId) => ({
+      createCompetitionGame: async () => { platformCalls += 1; throw new Error('unexpected child create') },
+      synchronizeCompetitionClock: async () => { platformCalls += 1; throw new Error('unexpected clock delivery') },
+    }),
+  } }
+  const randomBit = () => { randomCalls += 1; throw new Error('receipt-only module must not draw a first side') }
+  const reopen = () => new CompetitionRoomClass(stateFor(sql, alarm), env, engine, randomBit)
+  const room = reopen()
+  const request: CompetitionRoomAnnounceRoundRequest = {
+    competitionId: 'competition-1', stageId: 'stage-online', roundNumber: 1,
+    callerUserId: 'organizer-1', commandId: 'announcement-receipt-module', expectedRevision: 40,
+    trustedTimeMs: 125_000, roundStartMs: 900_000, refereeAssignments: [],
+  }
+  // 已持久結果的模組 fixture；不用真正報名／WASM／裁判流程建立 receipt。
+  const roundRef = { competitionId: 'competition-1', stageId: 'stage-online',
+    roundNumber: 1, roundGenerationId: 'module-original-generation' }
+  const rooms = [
+    { matchId: 'module-match-1', gameId: 'module-game-1', participants: ['team-a', 'team-b'], bindingDigest: 'a'.repeat(64) },
+    { matchId: 'module-match-2', gameId: 'module-game-2', participants: ['team-c', 'team-d'], bindingDigest: 'b'.repeat(64) },
+  ]
+  const manifest = {
+    announcementCommandId: request.commandId, roundRef, roundStartMs: request.roundStartMs,
+    tournamentRound: { roundNumber: 1, kind: 'main', matches: rooms.map((entry, index) => ({
+      matchId: entry.matchId, stageId: request.stageId, roundNumber: 1, sequence: index + 1,
+      kind: 'main', participants: entry.participants, status: 'pending', result: null,
+      cancellationReason: null, started: false,
+    })) },
+    rooms: rooms.map(entry => ({ matchId: entry.matchId, gameId: entry.gameId, bindingRef: {
+      roundRef, roundStartMs: request.roundStartMs, matchId: entry.matchId,
+      gameId: entry.gameId, gameNumber: 1, bindingDigest: entry.bindingDigest,
+    } })),
+  }
+  const value: CompetitionRoomAnnounceRoundValue = {
+    competitionId: request.competitionId, revision: 41, commandId: request.commandId,
+    idempotent: false, publication: {
+      roundRef, roundStartMs: request.roundStartMs, publicationVersion: 1,
+      status: 'materializing', releaseDecisionId: null, requiresReferee: false,
+      rooms: rooms.map(entry => ({ matchId: entry.matchId, gameId: entry.gameId, ackConfirmedAtMs: null })),
+    },
+  }
+  const success: { ok: true; value: CompetitionRoomAnnounceRoundValue } = { ok: true, value }
+  // 固定已知的排序 JSON bytes，只供匹配原 semantic receipt；不呼產品私有 fingerprint helper。
+  const semanticBytes = new TextEncoder().encode('{"callerUserId":"organizer-1","commandId":"announcement-receipt-module","competitionId":"competition-1","expectedRevision":40,"kind":"announceRound","refereeAssignments":[],"roundNumber":1,"roundStartMs":900000,"stageId":"stage-online"}')
+  const digest = await crypto.subtle.digest('SHA-256', semanticBytes)
+  const fingerprint = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+  sql.database.query(`INSERT INTO competition_meta
+    (singleton, competition_id, organizer_user_id, revision, server_state_json, public_projection_json, updated_trusted_time_ms)
+    VALUES (1, ?, ?, 90, ?, ?, 1500000)`).run(request.competitionId, request.callerUserId,
+    JSON.stringify({ registration: null, clock: null, tournament: null, matches: {} }),
+    JSON.stringify({ ok: true, operation: 'tournamentView', public: {} }))
+  sql.database.query(`INSERT INTO competition_round_publication
+    (round_generation_id, stage_id, round_number, round_start_ms, publication_version, status,
+      release_decision_id, requires_referee, manifest_json, announced_trusted_time_ms)
+    VALUES (?, ?, 1, ?, 1, 'materializing', NULL, 0, ?, ?)`).run(roundRef.roundGenerationId,
+    request.stageId, request.roundStartMs, JSON.stringify(manifest), request.trustedTimeMs)
+  sql.database.query(`INSERT INTO competition_command_receipt
+    (command_id, receipt_kind, match_id, fingerprint, response_json) VALUES (?, 'announceRound', NULL, ?, ?)`)
+    .run(request.commandId, fingerprint, JSON.stringify(success))
+  const counters = () => ({ engineCalls, platformCalls, randomCalls,
+    writeAttempts: sql.writeAttempts, transactionAttempts: sql.transactionAttempts })
+  const snapshot = () => ({ ...e6c2aSnapshot({ sql, alarm }), counters: counters() })
+  const storeReceipt = (receipt: unknown) => sql.database.query(
+    'UPDATE competition_command_receipt SET response_json = ? WHERE command_id = ?',
+  ).run(JSON.stringify(receipt), request.commandId)
+  const storeManifest = (stored: unknown) => sql.database.query(
+    'UPDATE competition_round_publication SET manifest_json = ? WHERE round_generation_id = ?',
+  ).run(JSON.stringify(stored), roundRef.roundGenerationId)
+  return { sql, alarm, room, reopen, request, manifest, success, roundRef, counters, snapshot, storeReceipt, storeManifest }
+}
+
+for (const fault of ['generation', 'matchReplacement', 'gameReplacement', 'omittedRoom', 'addedRoom', 'reorderedRooms']) {
+  test(`round-release parent receipt module rejects ${fault} against the original complete manifest`, async () => {
+    const setup = await roundAnnouncementReceiptModule()
+    const altered = structuredClone(setup.success)
+    const firstRoom = altered.value.publication.rooms[0]
+    if (!firstRoom) throw new Error('module fixture has no original room')
+    if (fault === 'generation') altered.value.publication.roundRef.roundGenerationId = 'another-valid-generation'
+    if (fault === 'matchReplacement') firstRoom.matchId = 'another-valid-match'
+    if (fault === 'gameReplacement') firstRoom.gameId = 'another-valid-game'
+    if (fault === 'omittedRoom') altered.value.publication.rooms.pop()
+    if (fault === 'addedRoom') altered.value.publication.rooms.push({
+      matchId: 'another-valid-match', gameId: 'another-valid-game', ackConfirmedAtMs: null,
+    })
+    if (fault === 'reorderedRooms') altered.value.publication.rooms.reverse()
+    setup.storeReceipt(altered)
+    const before = setup.snapshot()
+    expect(await setup.room.announceRound({ ...setup.request, trustedTimeMs: 1_000_000 }))
+      .toMatchObject({ ok: false, error: { code: 'invalidRoundPublication' } })
+    expect(setup.snapshot()).toStrictEqual(before)
+  })
+}
+
+for (const fault of ['missingOriginal', 'invalidJson', 'missingCommandLink', 'differentCommandLink',
+  'omittedManifestRoom', 'invalidBindingRef', 'duplicateCommandLink']) {
+  test(`round-release parent receipt module fails closed on ${fault} authority without any side effects`, async () => {
+    const setup = await roundAnnouncementReceiptModule()
+    const manifest = structuredClone(setup.manifest)
+    if (fault === 'missingOriginal') {
+      setup.sql.database.query('DELETE FROM competition_round_publication WHERE round_generation_id = ?')
+        .run(setup.roundRef.roundGenerationId)
+    } else if (fault === 'invalidJson') {
+      setup.sql.database.query('UPDATE competition_round_publication SET manifest_json = ?')
+        .run('{"CORRUPT_PRIVATE_MANIFEST":')
+    } else if (fault === 'missingCommandLink') {
+      const { announcementCommandId: _command, ...withoutLink } = manifest
+      setup.storeManifest(withoutLink)
+    } else if (fault === 'differentCommandLink') {
+      manifest.announcementCommandId = 'another-announcement-command'
+      setup.storeManifest(manifest)
+    } else if (fault === 'omittedManifestRoom') {
+      manifest.rooms.pop()
+      setup.storeManifest(manifest)
+    } else if (fault === 'invalidBindingRef') {
+      const firstRoom = manifest.rooms[0]
+      if (!firstRoom) throw new Error('module fixture has no original room')
+      firstRoom.bindingRef.bindingDigest = 'invalid-private-fingerprint'
+      setup.storeManifest(manifest)
+    } else {
+      setup.sql.database.query(`UPDATE competition_round_publication SET status = 'retired'
+        WHERE round_generation_id = ?`).run(setup.roundRef.roundGenerationId)
+      const duplicate = structuredClone(manifest)
+      duplicate.roundRef.roundGenerationId = 'duplicate-command-generation'
+      for (const entry of duplicate.rooms) entry.bindingRef.roundRef.roundGenerationId = duplicate.roundRef.roundGenerationId
+      setup.sql.database.query(`INSERT INTO competition_round_publication
+        (round_generation_id, stage_id, round_number, round_start_ms, publication_version, status,
+          release_decision_id, requires_referee, manifest_json, announced_trusted_time_ms)
+        VALUES (?, ?, 1, ?, 1, 'materializing', NULL, 0, ?, ?)`)
+        .run(duplicate.roundRef.roundGenerationId, setup.request.stageId, setup.request.roundStartMs,
+          JSON.stringify(duplicate), setup.request.trustedTimeMs)
+    }
+    const before = setup.snapshot()
+    const result = await setup.room.announceRound({ ...setup.request, trustedTimeMs: 1_000_000 })
+    expect(result).toMatchObject({ ok: false, error: { code: 'invalidRoundPublication' } })
+    expect(JSON.stringify(result)).not.toMatch(/CORRUPT_PRIVATE_MANIFEST|invalid-private-fingerprint/)
+    expect(setup.snapshot()).toStrictEqual(before)
+  })
+}
+
+for (const status of ['materializing', 'released', 'quiescing', 'retired']) {
+  test(`round-release parent receipt module preserves the original snapshot after ${status} and restart`, async () => {
+    const setup = await roundAnnouncementReceiptModule()
+    setup.sql.database.query(`UPDATE competition_round_publication SET publication_version = 5,
+      status = ?, release_decision_id = ?, requires_referee = ? WHERE round_generation_id = ?`)
+      .run(status, status === 'materializing' ? null : 'later-release-decision',
+        status === 'quiescing' || status === 'retired' ? 1 : 0, setup.roundRef.roundGenerationId)
+    if (status === 'retired') {
+      // 同輪已有新 current 公告；舊 command 仍只恢復原世代，不讀 current 或晚 ACK。
+      const current = structuredClone(setup.manifest)
+      current.announcementCommandId = 'new-current-announcement'
+      current.roundRef.roundGenerationId = 'new-current-generation'
+      current.roundStartMs = 2_400_000
+      for (const entry of current.rooms) {
+        entry.bindingRef.roundRef.roundGenerationId = current.roundRef.roundGenerationId
+        entry.bindingRef.roundStartMs = current.roundStartMs
+      }
+      setup.sql.database.query(`INSERT INTO competition_round_publication
+        (round_generation_id, stage_id, round_number, round_start_ms, publication_version, status,
+          release_decision_id, requires_referee, manifest_json, announced_trusted_time_ms)
+        VALUES (?, ?, 1, ?, 1, 'materializing', NULL, 0, ?, 1600000)`)
+        .run(current.roundRef.roundGenerationId, setup.request.stageId, current.roundStartMs, JSON.stringify(current))
+    }
+    const expected = { ok: true, value: { ...setup.success.value, idempotent: true } }
+    const before = setup.snapshot()
+    expect(await setup.room.announceRound({ ...setup.request, trustedTimeMs: 1_000_000 })).toStrictEqual(expected)
+    expect(setup.snapshot()).toStrictEqual(before)
+    const restarted = setup.reopen()
+    const afterRestart = setup.snapshot()
+    expect(await restarted.announceRound({ ...setup.request, trustedTimeMs: 1 })).toStrictEqual(expected)
+    expect(setup.snapshot()).toStrictEqual(afterRestart)
+  })
+}
+
+test('round-release parent receipt module retains semantic command conflict before original authority lookup', async () => {
+  const setup = await roundAnnouncementReceiptModule()
+  setup.sql.database.query('DELETE FROM competition_round_publication').run()
+  const before = setup.snapshot()
+  expect(await setup.room.announceRound({ ...setup.request, expectedRevision: 41 }))
+    .toMatchObject({ ok: false, error: { code: 'commandIdConflict' } })
+  expect(setup.snapshot()).toStrictEqual(before)
+})
+
+/** 父 delivery 元件 fixture：已持久 P0a 資料與 controlled pure engine，不是真報名／WASM／child。 */
+async function atRoundDeliveryTime<T>(time: number, action: () => Promise<T>): Promise<T> {
+  const previous = Date.now
+  Date.now = () => time
+  try { return await action() } finally { Date.now = previous }
+}
+
+async function roundDeliveryModule(options: { teamSize?: 1 | 2; incompletePrevious?: boolean } = {}) {
+  const base = await roundAnnouncementReceiptModule()
+  const { sql, alarm, request, manifest } = base
+  const teamSize = options.teamSize ?? 1
+  if (options.incompletePrevious) {
+    request.roundNumber = 2
+    manifest.roundRef.roundNumber = 2
+    manifest.tournamentRound.roundNumber = 2
+    for (const match of manifest.tournamentRound.matches) match.roundNumber = 2
+    sql.database.query('UPDATE competition_round_publication SET round_number = 2').run()
+  }
+  const config = stageConfig({ format: 'roundRobin', teams: ['team-a', 'team-b', 'team-c', 'team-d']
+    .map((teamId, index) => ({ teamId, seed: index + 1 })) })
+  const configJson: unknown = JSON.parse(JSON.stringify(config))
+  if (!isJsonObject(configJson)) throw new Error('module stage configuration is not JSON')
+  const tournament: JsonObject = { tournamentId: request.competitionId, stages: [{
+    config: configJson, status: 'active', rounds: [
+      ...(options.incompletePrevious ? [{ ...structuredClone(manifest.tournamentRound), roundNumber: 1,
+        matches: manifest.tournamentRound.matches.map(match => ({ ...match, matchId: `previous-${match.matchId}`, roundNumber: 1 })),
+      }] : []),
+      structuredClone(manifest.tournamentRound),
+    ],
+    standings: config.teams.map(team => ({ teamId: team.teamId, matchPoints: 0, wins: 0, draws: 0, losses: 0,
+      gameWins: 0, gameLosses: 0, netGameWins: 0, opponentWinRateBasisPoints: null, dropped: false, rank: 1 })),
+    corrections: [], lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
+    teams: Object.fromEntries(config.teams.map(team => [team.teamId, { seed: team.seed, dropped: false, hadBye: false }])),
+    doubleState: null,
+  }] }
+  const matches: JsonObject = {}
+  const expected = new Map<string, { gameId: string; binding: CompetitionGameBinding }>()
+  for (const [index, entry] of manifest.rooms.entries()) {
+    const teams = index === 0 ? ['team-a', 'team-b'] : ['team-c', 'team-d']
+    const players = Array.from({ length: teamSize }, (_, member) => teams.map(team => ({
+      userId: `${team}-user-${member + 1}`, player: `${team}-member-${member + 1}`, team,
+    }))).flat()
+    const firstPlayer = players[0]
+    const firstTeam = teams[0]
+    if (!firstPlayer || !firstTeam) throw new Error('module fixed seats missing')
+    const binding: CompetitionGameBinding = {
+      roundRef: manifest.roundRef, roundStartMs: request.roundStartMs,
+      competitionId: request.competitionId, matchId: entry.matchId, gameNumber: 1,
+      organizerUserId: request.callerUserId, expectedMatchRevision: 2,
+      startKind: { type: 'ordinaryNewGame' }, ruleVersion: '5.17', ruleset: 'fewfc-base',
+      enabledRuleModules: [], initialHp: teams.map(team => ({ team, hp: 20 })), players,
+      deckSnapshot: [], firstPlayer: firstPlayer.player,
+      turnOrder: players.map(player => player.player), deckSeed: `module-fixed-seed-${index}`,
+    }
+    validateCompetitionGameBinding(binding)
+    entry.bindingRef = await competitionGameBindingRefForRequest({ gameId: entry.gameId, binding })
+    expected.set(entry.gameId, { gameId: entry.gameId, binding: structuredClone(binding) })
+    const matchConfig = { matchId: entry.matchId, teams, format: config.matchFormat,
+      firstGame: { type: 'pending', reason: '等待可信隨機先手' }, referees: [] }
+    const checkpoint = { config: matchConfig, history: [
+      { type: 'assignFirstPlayer', team: firstTeam, reason: '賽事伺服器可信隨機先手' },
+    ] }
+    const nextGame = { gameNumber: 1, kind: { type: 'ordinaryNewGame' },
+      firstPlayer: { type: 'assigned', team: firstTeam } }
+    const view = { config: matchConfig, status: 'open', score: [0, 0], games: [], rulings: [],
+      corrections: [], outcome: null, nextFirstPlayer: firstTeam, nextGame }
+    const clock = terminalClock({ ...config.clockConfig }, {
+      preparationStarted: false, running: null, paused: null, lastObservedMs: request.trustedTimeMs,
+      teams: teams.map(team => ({ team, mainTimeRemainingMs: 300_000, actionTurn: null,
+        actionTimeRemainingMs: null, actionByoyomiStarted: false, enteredByoyomi: false,
+        byoyomiEntrySequence: null })),
+    })
+    matches[entry.matchId] = checkpoint
+    sql.database.query(`INSERT INTO competition_matches
+      (match_id, stage_id, match_checkpoint_json, clock_checkpoint_json, match_projection_json,
+       clock_projection_json, revision, last_trusted_time_ms) VALUES (?, ?, ?, ?, ?, ?, 2, ?)`)
+      .run(entry.matchId, request.stageId, JSON.stringify(checkpoint), JSON.stringify(clock),
+        JSON.stringify({ ok: true, operation: 'matchAssignFirstPlayer', public: { match: view } }),
+        JSON.stringify({ ok: true, operation: 'clockCreate', public: clockPublicFromCheckpoint(clock) }), request.trustedTimeMs)
+    sql.database.query(`INSERT INTO competition_round_room_ledger
+      (round_generation_id, match_id, game_number, game_id, binding_json, binding_ref_json, next_game_json,
+       match_revision, status, ack_confirmed_at_ms, claim_id, claim_version, attempts, next_attempt_at_ms)
+      VALUES (?, ?, 1, ?, ?, ?, ?, 2, 'pending', NULL, NULL, 0, 0, ?)`)
+      .run(manifest.roundRef.roundGenerationId, entry.matchId, entry.gameId, JSON.stringify(binding),
+        JSON.stringify(entry.bindingRef), JSON.stringify(nextGame), request.trustedTimeMs)
+  }
+  sql.database.query('UPDATE competition_round_publication SET manifest_json = ?')
+    .run(JSON.stringify(manifest))
+  sql.database.query(`UPDATE competition_meta SET revision = 41, server_state_json = ?, updated_trusted_time_ms = ?`)
+    .run(JSON.stringify({ registration: { announcement: { ...validInitialize().announcement, teamSize }, commands: [] },
+      clock: null, tournament, matches }), request.trustedTimeMs)
+  sql.database.query(`INSERT INTO competition_acl (user_id, role, active, participant) VALUES (?, 'organizer', 1, 0)`)
+    .run(request.callerUserId)
+  const engineCalls: string[] = []
+  const engine: CompetitionEngineAdapter = async input => {
+    engineCalls.push(input.operation.type)
+    if (input.operation.type === 'tournamentView') {
+      if (!input.serverState.tournament) throw new Error('module tournament missing')
+      return { ok: true, operation: 'tournamentView', public: input.serverState.tournament, serverState: input.serverState }
+    }
+    if (input.operation.type === 'matchView') {
+      const row = sql.database.query('SELECT match_projection_json FROM competition_matches WHERE match_id = ?')
+        .get(input.operation.matchId)
+      if (!isJsonObject(row) || typeof row.match_projection_json !== 'string') throw new Error('module match missing')
+      const projection: unknown = JSON.parse(row.match_projection_json)
+      if (!isJsonObject(projection) || !isJsonObject(projection.public)) throw new Error('module projection missing')
+      return { ok: true, operation: 'matchView', public: projection.public, serverState: input.serverState }
+    }
+    throw new Error('delivery module permits no engine mutation/export')
+  }
+  const creates: { gameId: string; binding: CompetitionGameBinding }[] = []
+  const releases: unknown[] = []
+  let create: (input: { gameId: string; binding: CompetitionGameBinding }) => Promise<unknown> = async input => {
+    const ref = manifest.rooms.find(entry => entry.gameId === input.gameId)?.bindingRef
+    if (!ref) throw new Error('unexpected module child')
+    return { gameId: input.gameId, bindingDigest: ref.bindingDigest, status: 'Waiting' }
+  }
+  let release: (input: unknown) => Promise<unknown> = async () => true
+  const env = { GAME_ROOM: { idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: (_id: DurableObjectId) => ({
+      createCompetitionGame: async (input: { gameId: string; binding: CompetitionGameBinding }) => {
+        creates.push(structuredClone(input)); return create(input)
+      },
+      releaseCompetitionGame: async (input: unknown) => { releases.push(structuredClone(input)); return release(input) },
+      synchronizeCompetitionClock: async () => { throw new Error('unexpected module clock control') },
+    }),
+  } }
+  const reopen = () => new CompetitionRoomClass(stateFor(sql, alarm), env, engine,
+    () => { throw new Error('delivery must not draw again') })
+  const room = reopen()
+  const read = () => room.readRoundPublication({ competitionId: request.competitionId,
+    stageId: request.stageId, roundNumber: request.roundNumber, callerUserId: request.callerUserId })
+  const at = atRoundDeliveryTime
+  return { ...base, room, reopen, env, read, at, creates, releases, expected, engineCalls,
+    setCreate: (next: typeof create) => { create = next }, setRelease: (next: typeof release) => { release = next } }
+}
+
+for (const teamSize of [1, 2] as const) {
+test(`round-release parent delivery module persists exact ${teamSize}v${teamSize} whole-room proofs then releases after the barrier`, async () => {
+  const setup = await roundDeliveryModule({ teamSize })
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(setup.creates).toStrictEqual([...setup.expected.values()])
+  const ready = await setup.read()
+  expect(ready).toMatchObject({ ok: true, value: { revision: 41, publication: {
+    status: 'released', releaseDecisionId: expect.any(String),
+    rooms: [{ ackConfirmedAtMs: 400_000 }, { ackConfirmedAtMs: 400_000 }],
+  } } })
+  expect(setup.alarm.scheduledAt).toBeNull()
+  const released = await setup.read()
+  expect(released).toMatchObject({ ok: true, value: { revision: 41, publication: { status: 'released' } } })
+  if (!released.ok || !released.value.publication) throw new Error('module publication missing')
+  const decision = released.value.publication.releaseDecisionId
+  expect(setup.releases).toStrictEqual(setup.manifest.rooms.map(entry => ({
+    bindingRef: entry.bindingRef, commandId: decision,
+  })))
+  expect(setup.engineCalls.every(type => ['tournamentView', 'matchView'].includes(type))).toBe(true)
+  const before = e6c2aSnapshot(setup)
+  await setup.at(910_000, () => setup.reopen().alarm())
+  expect(setup.releases).toHaveLength(2)
+  expect(e6c2aSnapshot(setup).tables).toStrictEqual(before.tables)
+})
+}
+
+function moduleReadyAck(setup: Awaited<ReturnType<typeof roundDeliveryModule>>, gameId: string) {
+  const ref = setup.manifest.rooms.find(entry => entry.gameId === gameId)?.bindingRef
+  if (!ref) throw new Error('module binding ref missing')
+  return { gameId, bindingDigest: ref.bindingDigest, status: 'Waiting' }
+}
+
+for (const fault of ['wrong game', 'wrong digest', 'Active', 'private', 'unknown string', 'unknown symbol',
+  'hidden field', 'accessor', 'dispose throw', 'async dispose', 'array'] as const) {
+  test(`round-release parent delivery module rejects ${fault} ACK without proof or release`, async () => {
+    const setup = await roundDeliveryModule()
+    let getters = 0
+    let disposed = 0
+    setup.setCreate(async request => {
+      if (fault === 'array') return Object.defineProperty([], Symbol.dispose, { value: () => { disposed += 1 } })
+      const ack: Record<PropertyKey, unknown> = moduleReadyAck(setup, request.gameId)
+      if (fault === 'wrong game') ack.gameId = 'other-game'
+      if (fault === 'wrong digest') ack.bindingDigest = 'f'.repeat(64)
+      if (fault === 'Active') ack.status = 'Active'
+      if (fault === 'private') ack.binding = request.binding
+      if (fault === 'unknown string') ack.ok = true
+      if (fault === 'unknown symbol') ack[Symbol('unknown')] = true
+      if (fault === 'hidden field') Object.defineProperty(ack, 'unknown', { value: true })
+      if (fault === 'accessor') Object.defineProperty(ack, 'status', { enumerable: true,
+        get: () => { getters += 1; return 'Waiting' } })
+      if (fault === 'async dispose') Object.defineProperty(ack, Symbol.asyncDispose, { value: async () => {} })
+      Object.defineProperty(ack, Symbol.dispose, { value: () => {
+        disposed += 1
+        if (fault === 'dispose throw') throw new Error('private transport detail')
+      } })
+      return ack
+    })
+    const before = e6c2aSnapshot(setup)
+    await setup.at(400_000, () => setup.room.alarm())
+    const read = await setup.read()
+    expect(read).toMatchObject({ ok: true, value: { publication: { status: 'materializing',
+      rooms: [{ ackConfirmedAtMs: null }, { ackConfirmedAtMs: null }],
+    } } })
+    expect(disposed).toBe(2)
+    expect(getters).toBe(0)
+    expect(setup.releases).toEqual([])
+    const after = e6c2aSnapshot(setup)
+    for (const table of ['competition_meta', 'competition_matches', 'competition_audit', 'competition_command_receipt',
+      'competition_private_projection'] as const) expect(after.tables[table]).toStrictEqual(before.tables[table])
+    expect(setup.alarm.scheduledAt).toBe(402_000)
+  })
+}
+
+for (const confirmation of [599_999, 600_000, 600_001]) {
+  test(`round-release parent delivery module uses parent actual C ${confirmation} at the inclusive cutoff`, async () => {
+    const setup = await roundDeliveryModule()
+    await setup.at(confirmation, () => setup.room.alarm())
+    expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
+      rooms: [{ ackConfirmedAtMs: confirmation }, { ackConfirmedAtMs: confirmation }],
+    } } })
+    expect(setup.releases).toHaveLength(confirmation <= 600_000 ? 2 : 0)
+    expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
+      status: confirmation <= 600_000 ? 'released' : 'materializing', roundStartMs: 900_000,
+    } } })
+    if (confirmation > 600_000) expect(setup.alarm.scheduledAt).toBeNull()
+  })
+}
+
+test('round-release parent delivery module frees the tail and samples C after a delayed ACK rather than send time', async () => {
+  const setup = await roundDeliveryModule()
+  setup.setCreate(async request => {
+    const during = await setup.read()
+    expect(during.ok).toBe(true)
+    Date.now = () => 600_001
+    return moduleReadyAck(setup, request.gameId)
+  })
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
+    rooms: [{ ackConfirmedAtMs: 600_001 }, { ackConfirmedAtMs: 600_001 }],
+  } } })
+  await setup.at(900_000, () => setup.room.alarm())
+  expect(setup.releases).toEqual([])
+})
+
+test('round-release parent delivery module preserves native callable receiver and exact requests without reading call', async () => {
+  const setup = await roundDeliveryModule()
+  const originalGet = setup.env.GAME_ROOM.get
+  let disposed = 0
+  let calls = 0
+  setup.env.GAME_ROOM.get = id => {
+    const stub = originalGet(id)
+    stub.createCompetitionGame = async function (this: typeof stub, request) {
+      expect(this).toBe(stub)
+      calls += 1
+      expect(request).toStrictEqual(setup.expected.get(request.gameId))
+      const ack = moduleReadyAck(setup, request.gameId)
+      Object.defineProperty(ack, Symbol.dispose, { value: function (this: typeof ack) {
+        expect(this).toBe(ack); disposed += 1
+      } })
+      return ack
+    }
+    stub.releaseCompetitionGame = async function (this: typeof stub, request) {
+      expect(this).toBe(stub)
+      const during = await setup.read()
+      expect(during).toMatchObject({ ok: true, value: { publication: { status: 'released' } } })
+      return true
+    }
+    for (const method of [stub.createCompetitionGame, stub.releaseCompetitionGame]) {
+      Object.defineProperty(method, 'call', { get: () => { throw new Error('remote call property is not Function.call') } })
+    }
+    return stub
+  }
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(calls).toBe(2)
+  expect(disposed).toBe(2)
+  expect(await setup.read()).toMatchObject({ ok: true, value: { publication: { status: 'released' } } })
+  expect(roundParentRows(setup.sql, 'competition_round_release_outbox').every(row => row.status === 'completed')).toBe(true)
+})
+
+test('round-release parent delivery module recovers create and release response loss with the same snapshot and decision', async () => {
+  const setup = await roundDeliveryModule()
+  let lostCreate = false
+  setup.setCreate(async request => {
+    if (!lostCreate) { lostCreate = true; throw new Error('lost module create response') }
+    return moduleReadyAck(setup, request.gameId)
+  })
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
+    rooms: [{ ackConfirmedAtMs: null }, { ackConfirmedAtMs: 400_000 }],
+  } } })
+  let lostRelease = false
+  setup.setRelease(async () => {
+    if (!lostRelease) { lostRelease = true; throw new Error('lost module release response') }
+    return true
+  })
+  await setup.at(402_000, () => setup.reopen().alarm())
+  expect(setup.creates[2]).toStrictEqual(setup.creates[0])
+  expect(setup.alarm.scheduledAt).toBe(404_000)
+  const released = await setup.read()
+  await setup.at(404_000, () => setup.reopen().alarm())
+  expect(setup.releases[2]).toStrictEqual(setup.releases[0])
+  expect(await setup.read()).toStrictEqual(released)
+  const beforeRetry = e6c2aSnapshot(setup)
+  expect(await setup.room.announceRound({ ...setup.request, trustedTimeMs: 1 })).toStrictEqual({
+    ok: true, value: { ...setup.success.value, idempotent: true },
+  })
+  expect(e6c2aSnapshot(setup)).toStrictEqual(beforeRetry)
+})
+
+for (const result of [false, 'true', 1, null, { ok: true }]) {
+  test(`round-release parent delivery module retains release pending for non-true ${JSON.stringify(result)}`, async () => {
+    const setup = await roundDeliveryModule()
+    setup.setRelease(async () => result)
+    await setup.at(400_000, () => setup.room.alarm())
+    expect(roundParentRows(setup.sql, 'competition_round_release_outbox').map(row => row.status))
+      .toEqual(['pending', 'pending'])
+    expect(setup.alarm.scheduledAt).toBe(402_000)
+    const original = structuredClone(setup.releases)
+    setup.setRelease(async () => true)
+    await setup.at(402_000, () => setup.reopen().alarm())
+    expect(setup.releases.slice(2)).toStrictEqual(original)
+  })
+}
+
+test('round-release parent delivery module disposes invalid object release results without treating them as boolean ACK', async () => {
+  const setup = await roundDeliveryModule()
+  let disposed = 0
+  setup.setRelease(async () => Object.defineProperty({ ok: true }, Symbol.dispose, { value: () => { disposed += 1 } }))
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(disposed).toBe(2)
+  expect(roundParentRows(setup.sql, 'competition_round_release_outbox').every(row => row.status === 'pending')).toBe(true)
+})
+
+test('round-release parent delivery module rolls back a failed materialization claim before foreign create', async () => {
+  const setup = await roundDeliveryModule()
+  const before = e6c2aSnapshot(setup)
+  setup.sql.failNextQueryContaining = 'SET claim_id = ?, claim_version = ?'
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(setup.creates).toEqual([])
+  expect(e6c2aSnapshot(setup).tables).toStrictEqual(before.tables)
+  await setup.at(401_000, () => setup.reopen().alarm())
+  expect(setup.creates).toStrictEqual([...setup.expected.values()])
+})
+
+test('round-release parent delivery module keeps SQL-failed ACK unproved and safely retries its original claim snapshot', async () => {
+  const setup = await roundDeliveryModule()
+  let inject = true
+  setup.setCreate(async request => {
+    if (inject) { inject = false; setup.sql.failNextQueryContaining = "SET status = 'confirmed'" }
+    return moduleReadyAck(setup, request.gameId)
+  })
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
+    rooms: [{ ackConfirmedAtMs: null }, { ackConfirmedAtMs: 400_000 }],
+  } } })
+  expect(setup.alarm.scheduledAt).toBe(430_000)
+  await setup.at(430_000, () => setup.reopen().alarm())
+  expect(setup.creates[2]).toStrictEqual(setup.creates[0])
+  expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
+    rooms: [{ ackConfirmedAtMs: 430_000 }, { ackConfirmedAtMs: 400_000 }],
+  } } })
+})
+
+test('round-release parent delivery module atomically rolls back decision and all release intents on late SQL failure', async () => {
+  const setup = await roundDeliveryModule()
+  const lastGameId = setup.manifest.rooms.at(-1)?.gameId
+  if (!lastGameId) throw new Error('module last room missing')
+  setup.setCreate(async request => {
+    if (request.gameId === lastGameId) setup.sql.failNextQueryContaining = 'INSERT INTO competition_round_release_outbox'
+    return moduleReadyAck(setup, request.gameId)
+  })
+  const before = e6c2aSnapshot(setup)
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(setup.releases).toEqual([])
+  expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
+    status: 'materializing', releaseDecisionId: null,
+    rooms: [{ ackConfirmedAtMs: 400_000 }, { ackConfirmedAtMs: 400_000 }],
+  } } })
+  const afterFailure = e6c2aSnapshot(setup)
+  for (const table of ['competition_meta', 'competition_matches', 'competition_audit',
+    'competition_command_receipt', 'competition_private_projection'] as const) {
+    expect(afterFailure.tables[table]).toStrictEqual(before.tables[table])
+  }
+  expect(setup.alarm.scheduledAt).toBe(401_000)
+  await setup.at(401_000, () => setup.reopen().alarm())
+  expect(setup.releases).toHaveLength(2)
+  expect(await setup.read()).toMatchObject({ ok: true, value: { publication: { status: 'released' } } })
+})
+
+test('round-release parent delivery module rejects stale claim ACK and recovers after durable lease expiry', async () => {
+  const setup = await roundDeliveryModule()
+  let stale = true
+  setup.setCreate(async request => {
+    if (stale) {
+      stale = false
+      // 保存層 fault；不是假冒正常更正 prefix 或 child 實際 start。
+      setup.sql.database.query('UPDATE competition_round_room_ledger SET claim_version = claim_version + 1 WHERE game_id = ?')
+        .run(request.gameId)
+    }
+    return moduleReadyAck(setup, request.gameId)
+  })
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
+    rooms: [{ ackConfirmedAtMs: null }, { ackConfirmedAtMs: 400_000 }],
+  } } })
+  await setup.at(430_000, () => setup.reopen().alarm())
+  expect(setup.creates[2]).toStrictEqual(setup.creates[0])
+  expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
+    rooms: [{ ackConfirmedAtMs: 430_000 }, { ackConfirmedAtMs: 400_000 }],
+  } } })
+})
+
+for (const status of ['quiescing', 'retired'] as const) {
+  test(`round-release parent delivery module stops new work and discards in-flight ACK after ${status} fence`, async () => {
+    const setup = await roundDeliveryModule()
+    setup.setCreate(async request => {
+      // 純 storage adapter 的 generation/fence fault，不宣稱 jointcorrection已完成。
+      setup.sql.database.query('UPDATE competition_round_publication SET status = ?, publication_version = publication_version + 1')
+        .run(status)
+      return moduleReadyAck(setup, request.gameId)
+    })
+    await setup.at(400_000, () => setup.room.alarm())
+    expect(setup.creates).toHaveLength(1)
+    expect(roundParentRows(setup.sql, 'competition_round_room_ledger').every(row => row.ack_confirmed_at_ms === null)).toBe(true)
+    await setup.at(900_000, () => setup.reopen().alarm())
+    expect(setup.creates).toHaveLength(1)
+    expect(setup.releases).toEqual([])
+    expect(setup.alarm.scheduledAt).toBeNull()
+    expect(await setup.room.announceRound({ ...setup.request, trustedTimeMs: 1 }))
+      .toStrictEqual({ ok: true, value: { ...setup.success.value, idempotent: true } })
+  })
+}
+
+for (const fault of ['missing room', 'binding extra', 'wrong full digest', 'mirror mismatch', 'clock mismatch',
+  'projection deadline', 'inactive organizer', 'unfinished previous round'] as const) {
+  test(`round-release parent delivery module fails closed on ${fault} authority without dispatch or mutation`, async () => {
+    const setup = await roundDeliveryModule({ incompletePrevious: fault === 'unfinished previous round' })
+    const first = setup.manifest.rooms[0]
+    if (!first) throw new Error('module first room missing')
+    if (fault === 'missing room') setup.sql.database.query('DELETE FROM competition_round_room_ledger WHERE game_id = ?').run(first.gameId)
+    if (fault === 'binding extra' || fault === 'wrong full digest') {
+      const binding = structuredClone(setup.expected.get(first.gameId)?.binding)
+      if (!binding) throw new Error('module binding missing')
+      const stored = fault === 'binding extra' ? { ...binding, private: true } : { ...binding, deckSeed: 'tampered-fixed-seed' }
+      setup.sql.database.query('UPDATE competition_round_room_ledger SET binding_json = ? WHERE game_id = ?')
+        .run(JSON.stringify(stored), first.gameId)
+    }
+    if (fault === 'inactive organizer') setup.sql.database.query('UPDATE competition_acl SET active = 0').run()
+    if (fault === 'mirror mismatch') {
+      const meta = roundParentRows(setup.sql, 'competition_meta')[0]
+      if (!meta || typeof meta.server_state_json !== 'string') throw new Error('module meta missing')
+      const state: unknown = JSON.parse(meta.server_state_json)
+      if (!isJsonObject(state) || !isJsonObject(state.matches) || !isJsonObject(state.tournament)
+        || !Array.isArray(state.tournament.stages) || !isJsonObject(state.tournament.stages[0])
+        || !Array.isArray(state.tournament.stages[0].rounds)) throw new Error('module state missing')
+      state.matches[first.matchId] = { unexpected: true }
+      setup.sql.database.query('UPDATE competition_meta SET server_state_json = ?').run(JSON.stringify(state))
+    }
+    if (fault === 'clock mismatch' || fault === 'projection deadline') {
+      const column = fault === 'clock mismatch' ? 'clock_checkpoint_json' : 'clock_projection_json'
+      const row = roundParentRows(setup.sql, 'competition_matches').find(entry => entry.match_id === first.matchId)
+      const stored = row?.[column]
+      if (typeof stored !== 'string') throw new Error('module clock missing')
+      const clock: unknown = JSON.parse(stored)
+      if (!isJsonObject(clock)) throw new Error('module clock shape missing')
+      if (fault === 'clock mismatch') clock.running = { type: 'action', team: 'team-a', turn: 1 }
+      else {
+        if (!isJsonObject(clock.public)) throw new Error('module public clock missing')
+        clock.public.nextTimeoutDeadlineMs = 500_000
+      }
+      setup.sql.database.query(`UPDATE competition_matches SET ${column} = ? WHERE match_id = ?`)
+        .run(JSON.stringify(clock), first.matchId)
+    }
+    const before = e6c2aSnapshot(setup)
+    await setup.at(400_000, () => setup.room.alarm())
+    expect(setup.creates).toEqual([])
+    expect(setup.releases).toEqual([])
+    expect(e6c2aSnapshot(setup).tables).toStrictEqual(before.tables)
+  })
+}
+
+test('round-release parent delivery module preserves earliest legacy control due and retries an alarm scheduling failure', async () => {
+  const setup = await roundDeliveryModule()
+  const first = setup.manifest.rooms[0]
+  if (!first) throw new Error('module first room missing')
+  setup.sql.database.query(`INSERT INTO competition_clock_control_outbox
+    (control_id, competition_id, match_id, game_id, game_number, source_command_id, match_revision,
+     operation, trusted_time_ms, next_clock_deadline_ms, attempts, next_attempt_at_ms, status)
+    VALUES ('module-control', 'competition-1', ?, ?, 1, 'module-pause', 2, 'clockPause', 125000, NULL, 0, 500000, 'pending')`)
+    .run(first.matchId, first.gameId)
+  setup.alarm.failSetAlarmCount = 1
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(setup.creates).toStrictEqual([...setup.expected.values()])
+  expect(setup.alarm.scheduledAt).toBe(500_000)
+  expect(roundParentRows(setup.sql, 'competition_clock_control_outbox')[0]?.status).toBe('pending')
+})
+
+test('round-release parent alarm fairness preserves valid round retries beside a malformed legacy clock due', async () => {
+  const setup = await roundReleaseParentRoom()
+  const request = setup.request()
+  const malformedDue = 'legacy-corrupt-clock-due'
+  const clockCalls: CompetitionClockControlRequest[] = []
+  setup.env.GAME_ROOM = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: (_id: DurableObjectId) => ({
+      createCompetitionGame: async () => { throw new Error('controlled round retry') },
+      releaseCompetitionGame: async () => true,
+      synchronizeCompetitionClock: async (control: CompetitionClockControlRequest) => {
+        clockCalls.push(structuredClone(control))
+        return { ok: true, value: { ...structuredClone(control), idempotent: false } }
+      },
+    }),
+  }
+  // 其他欄位是可派送的既有形狀；只將 legacy due 改成 SQLite 可存的文字值。
+  setup.sql.database.query(`INSERT INTO competition_clock_control_outbox
+    (control_id, competition_id, match_id, game_id, game_number, source_command_id, match_revision,
+     operation, trusted_time_ms, next_clock_deadline_ms, attempts, next_attempt_at_ms, status,
+     claim_id, claim_version)
+    VALUES ('legacy-malformed-clock-due', 'competition-1', 'legacy-clock-match', 'legacy-clock-game',
+      1, 'legacy-clock-command', 2, 'clockPause', ?, NULL, 0, ?, 'pending', NULL, 0)`)
+    .run(request.trustedTimeMs, malformedDue)
+
+  const announced = await atRoundDeliveryTime(request.trustedTimeMs, () => setup.room.announceRound(request))
+  if (!announced.ok) throw new Error(`valid round fixture announcement failed: ${announced.error.code}`)
+  const alarmAfterAnnouncement = setup.alarm.scheduledAt
+  const controlAfterAnnouncement = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, claim_id, claim_version
+     FROM competition_clock_control_outbox WHERE control_id = 'legacy-malformed-clock-due'`,
+  ).get()
+
+  // 以預期的有效 retry alarm 時點呼叫公開 handler；不直接呼叫排程或 claim helper。
+  await atRoundDeliveryTime(request.trustedTimeMs + 1_000, () => setup.room.alarm())
+  const controlAfterAlarm = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, claim_id, claim_version
+     FROM competition_clock_control_outbox WHERE control_id = 'legacy-malformed-clock-due'`,
+  ).get()
+  const roundRetries = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, claim_id FROM competition_round_room_ledger ORDER BY game_id`,
+  ).all() as JsonObject[]
+
+  expect(alarmAfterAnnouncement).toBe(request.trustedTimeMs + 1_000)
+  expect(controlAfterAnnouncement).toEqual({ status: 'pending', attempts: 0,
+    next_attempt_at_ms: malformedDue, claim_id: null, claim_version: 0 })
+  expect(clockCalls).toEqual([])
+  expect(controlAfterAlarm).toEqual(controlAfterAnnouncement)
+  expect(roundRetries).toHaveLength(2)
+  expect(roundRetries.every(row => row.status === 'pending' && row.attempts === 1
+    && row.next_attempt_at_ms === request.trustedTimeMs + 3_000 && row.claim_id === null)).toBe(true)
+  expect(setup.alarm.scheduledAt).toBe(request.trustedTimeMs + 3_000)
+})
+
+test('round-release parent alarm fairness keeps a malformed clock stream head while other game work proceeds', async () => {
+  const setup = await roundReleaseParentRoom()
+  const request = setup.request()
+  const clockCalls: CompetitionClockControlRequest[] = []
+  const heldGameId = 'legacy-malformed-clock-stream-game'
+  const heldMatchId = 'legacy-malformed-clock-stream-match'
+  const malformedDue = -1
+  const laterSameGame = {
+    controlId: 'legacy-clock-higher-revision', competitionId: 'competition-1',
+    matchId: heldMatchId, gameId: heldGameId, gameNumber: 1,
+    sourceCommandId: 'legacy-clock-higher-command', matchRevision: 3,
+    operation: 'clockResume' as const, trustedTimeMs: request.trustedTimeMs + 1,
+    nextClockDeadlineMs: null,
+  }
+  const otherGameRequest: CompetitionClockControlRequest = {
+    controlId: 'other-game-valid-clock-control', competitionId: 'competition-1',
+    matchId: 'other-valid-clock-match', gameId: 'other-valid-clock-game', gameNumber: 1,
+    sourceCommandId: 'other-valid-clock-command', matchRevision: 2,
+    operation: 'clockPause', trustedTimeMs: request.trustedTimeMs, nextClockDeadlineMs: null,
+  }
+  setup.env.GAME_ROOM = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: (_id: DurableObjectId) => ({
+      createCompetitionGame: async () => { throw new Error('controlled round retry') },
+      releaseCompetitionGame: async () => true,
+      synchronizeCompetitionClock: async (control: CompetitionClockControlRequest) => {
+        clockCalls.push(structuredClone(control))
+        return { ok: true, value: { ...structuredClone(control), idempotent: false } }
+      },
+    }),
+  }
+  const insertControl = (control: CompetitionClockControlRequest, due: number) => {
+    setup.sql.database.query(`INSERT INTO competition_clock_control_outbox
+      (control_id, competition_id, match_id, game_id, game_number, source_command_id, match_revision,
+       operation, trusted_time_ms, next_clock_deadline_ms, attempts, next_attempt_at_ms, status,
+       claim_id, claim_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', NULL, 0)`)
+      .run(control.controlId, control.competitionId, control.matchId, control.gameId, control.gameNumber,
+        control.sourceCommandId, control.matchRevision, control.operation, control.trustedTimeMs,
+        control.nextClockDeadlineMs, due)
+  }
+  insertControl({ ...otherGameRequest, controlId: 'legacy-clock-malformed-head',
+    matchId: heldMatchId, gameId: heldGameId, sourceCommandId: 'legacy-clock-malformed-command',
+    matchRevision: 2, operation: 'clockPause' }, malformedDue)
+  insertControl(laterSameGame, 0)
+  insertControl(otherGameRequest, request.trustedTimeMs + 2_000)
+
+  const announced = await atRoundDeliveryTime(request.trustedTimeMs, () => setup.room.announceRound(request))
+  if (!announced.ok) throw new Error(`valid round fixture announcement failed: ${announced.error.code}`)
+  expect(setup.alarm.scheduledAt).toBe(request.trustedTimeMs + 1_000)
+
+  await atRoundDeliveryTime(request.trustedTimeMs + 1_000, () => setup.room.alarm())
+  const malformedAfterFirstAlarm = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, claim_id, claim_version
+     FROM competition_clock_control_outbox WHERE control_id = 'legacy-clock-malformed-head'`,
+  ).get()
+  const laterAfterFirstAlarm = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, claim_id, claim_version
+     FROM competition_clock_control_outbox WHERE control_id = 'legacy-clock-higher-revision'`,
+  ).get()
+  expect(clockCalls).toEqual([])
+  expect(malformedAfterFirstAlarm).toEqual({ status: 'pending', attempts: 0,
+    next_attempt_at_ms: malformedDue, claim_id: null, claim_version: 0 })
+  expect(laterAfterFirstAlarm).toEqual({ status: 'pending', attempts: 0,
+    next_attempt_at_ms: 0, claim_id: null, claim_version: 0 })
+  expect(setup.alarm.scheduledAt).toBe(request.trustedTimeMs + 2_000)
+
+  await atRoundDeliveryTime(request.trustedTimeMs + 2_000, () => setup.room.alarm())
+  const malformedAfterSecondAlarm = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, claim_id, claim_version
+     FROM competition_clock_control_outbox WHERE control_id = 'legacy-clock-malformed-head'`,
+  ).get()
+  const laterAfterSecondAlarm = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, claim_id, claim_version
+     FROM competition_clock_control_outbox WHERE control_id = 'legacy-clock-higher-revision'`,
+  ).get()
+  const otherAfterSecondAlarm = setup.sql.database.query(
+    `SELECT status, claim_id, claim_version FROM competition_clock_control_outbox
+     WHERE control_id = 'other-game-valid-clock-control'`,
+  ).get()
+  const roundRetries = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, claim_id FROM competition_round_room_ledger ORDER BY game_id`,
+  ).all() as JsonObject[]
+
+  expect(clockCalls).toEqual([otherGameRequest])
+  expect(malformedAfterSecondAlarm).toEqual(malformedAfterFirstAlarm)
+  expect(laterAfterSecondAlarm).toEqual(laterAfterFirstAlarm)
+  expect(otherAfterSecondAlarm).toEqual({ status: 'completed', claim_id: null, claim_version: 1 })
+  expect(roundRetries).toHaveLength(2)
+  expect(roundRetries.every(row => row.status === 'pending' && row.attempts === 1
+    && row.next_attempt_at_ms === request.trustedTimeMs + 3_000 && row.claim_id === null)).toBe(true)
+  expect(setup.alarm.scheduledAt).toBe(request.trustedTimeMs + 3_000)
+})
+
+test('round-release parent alarm fairness preserves valid future provision alarm beside malformed due', async () => {
+  let createCalls = 0
+  const setup = await provisionableRoom({ assigned: true, subsequent: false, create: async () => {
+    createCalls += 1
+    throw new Error('controlled provision retry')
+  } })
+  const now = 204
+  const validDue = now + 2_000
+  const malformedDue = -9_007_199_254_740_992
+  const validProvision = await seedTrustedDispatcherProvision(setup.sql, {
+    commandId: 'malformed-provision-due-valid-future', gameNumber: 1, status: 'pending',
+  })
+  setup.sql.database.query(`UPDATE competition_game_provision SET next_attempt_at_ms = ?
+    WHERE match_id = 'provision-match' AND game_number = 1`).run(validDue)
+  const validBefore = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, error_code, claim_id, claim_version
+     FROM competition_game_provision WHERE match_id = 'provision-match' AND game_number = 1`,
+  ).get()
+  expect(validBefore).toEqual({ status: 'pending', attempts: 0,
+    next_attempt_at_ms: validDue, error_code: null, claim_id: null, claim_version: 0 })
+  expect(setup.sql.database.query(
+    `SELECT game_id, binding_json, match_revision, next_game_json
+     FROM competition_game_provision WHERE match_id = 'provision-match' AND game_number = 1`,
+  ).get()).toEqual({ game_id: validProvision.gameId, binding_json: JSON.stringify(validProvision.binding),
+    match_revision: 2, next_game_json: JSON.stringify(validProvision.nextGame) })
+
+  setup.sql.database.query(`INSERT INTO competition_game_provision
+    (match_id, game_number, game_id, binding_json, match_revision, next_game_json,
+     command_id, fingerprint, status, attempts, next_attempt_at_ms, error_code,
+     created_trusted_time_ms, claim_id, claim_version)
+    VALUES ('malformed-provision-match', 1, 'malformed-provision-game', '{}', 1, '{}',
+      'malformed-provision-command', 'malformed-provision-fingerprint', 'pending', 0, ?, NULL,
+      1, NULL, 0)`).run(malformedDue)
+  const malformedBefore = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, error_code, claim_id, claim_version
+     FROM competition_game_provision WHERE match_id = 'malformed-provision-match' AND game_number = 1`,
+  ).get()
+
+  await atRoundDeliveryTime(now, () => setup.room.alarm())
+  const malformedAfter = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, error_code, claim_id, claim_version
+     FROM competition_game_provision WHERE match_id = 'malformed-provision-match' AND game_number = 1`,
+  ).get()
+  const validAfterFirstAlarm = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, error_code, claim_id, claim_version
+     FROM competition_game_provision WHERE match_id = 'provision-match' AND game_number = 1`,
+  ).get()
+
+  expect(malformedBefore).toEqual({ status: 'pending', attempts: 0,
+    next_attempt_at_ms: malformedDue, error_code: null, claim_id: null, claim_version: 0 })
+  expect(malformedAfter).toEqual(malformedBefore)
+  expect(validAfterFirstAlarm).toEqual(validBefore)
+  expect(createCalls).toBe(0)
+  expect(setup.alarm.scheduledAt).toBe(validDue)
+
+  await atRoundDeliveryTime(now, () => setup.room.alarm())
+  const malformedAfterRepeat = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, error_code, claim_id, claim_version
+     FROM competition_game_provision WHERE match_id = 'malformed-provision-match' AND game_number = 1`,
+  ).get()
+  const validAfterRepeat = setup.sql.database.query(
+    `SELECT status, attempts, next_attempt_at_ms, error_code, claim_id, claim_version
+     FROM competition_game_provision WHERE match_id = 'provision-match' AND game_number = 1`,
+  ).get()
+  expect(malformedAfterRepeat).toEqual(malformedBefore)
+  expect(validAfterRepeat).toEqual(validBefore)
+  expect(createCalls).toBe(0)
+  expect(setup.alarm.scheduledAt).toBe(validDue)
+})
+
+async function trustedDispatcherProvisionBinding(matchId: string, gameNumber: number, expectedMatchRevision: number) {
+  const gameId = `competition-game-${await legacyFingerprint({
+    kind: 'competition-game', competitionId: 'competition-1', matchId, gameNumber,
+  })}`
+  const binding: CompetitionGameBinding = {
+    roundRef: {
+      competitionId: 'competition-1', stageId: 'stage-1', roundNumber: 1,
+      roundGenerationId: 'dispatcher-fixture-round-generation',
+    },
+    roundStartMs: 900_000,
+    competitionId: 'competition-1', matchId, gameNumber,
+    organizerUserId: 'organizer-1', expectedMatchRevision,
+    startKind: { type: 'ordinaryNewGame' },
+    ruleVersion: '5.17', ruleset: 'fewfc-base', enabledRuleModules: [],
+    initialHp: [{ team: 'team-a', hp: 20 }, { team: 'team-b', hp: 20 }],
+    players: [
+      { userId: 'a-1', player: 'a-1', team: 'team-a' },
+      { userId: 'b-1', player: 'b-1', team: 'team-b' },
+    ],
+    deckSnapshot: [], firstPlayer: 'a-1', turnOrder: ['a-1', 'b-1'],
+    deckSeed: 'trusted-dispatcher-fixture-seed',
+  }
+  validateCompetitionGameBinding(binding)
+  const bindingRef = await competitionGameBindingRefForRequest({ gameId, binding })
+  return { gameId, binding, bindingRef }
+}
+
+async function seedTrustedDispatcherProvision(
+  sql: MemorySql,
+  options: { status: 'pending' | 'provisioned'; commandId: string; gameNumber?: number },
+) {
+  const gameNumber = options.gameNumber ?? 1
+  const matchId = 'provision-match'
+  const expectedMatchRevision = 2
+  const { gameId, binding, bindingRef } = await trustedDispatcherProvisionBinding(
+    matchId, gameNumber, expectedMatchRevision,
+  )
+  const nextGame = {
+    gameNumber,
+    kind: { type: 'ordinaryNewGame' },
+    firstPlayer: { type: 'assigned', team: 'team-a' },
+  }
+  const fingerprint = await legacyFingerprint({
+    competitionId: 'competition-1', matchId, callerUserId: 'organizer-1',
+    commandId: options.commandId, expectedMatchRevision,
+  })
+  sql.database.query(
+    `INSERT INTO competition_game_provision
+      (match_id, game_number, game_id, binding_json, match_revision, next_game_json,
+       command_id, fingerprint, status, attempts, next_attempt_at_ms, error_code,
+       created_trusted_time_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, NULL, 202)`,
+  ).run(matchId, gameNumber, gameId, JSON.stringify(binding), expectedMatchRevision,
+    JSON.stringify(nextGame), options.commandId, fingerprint, options.status)
+  sql.database.query(
+    `INSERT INTO competition_command_receipt
+      (command_id, receipt_kind, match_id, fingerprint, response_json)
+     VALUES (?, 'provisionAssignedScheduledGame', ?, ?, ?)`,
+  ).run(options.commandId, matchId, fingerprint, JSON.stringify({ ok: true, value: {
+    competitionId: 'competition-1', matchId, matchRevision: expectedMatchRevision,
+    gameNumber, gameId, commandId: options.commandId, idempotent: false,
+    status: 'pending', binding,
+  } }))
+  sql.database.query(
+    `INSERT INTO competition_audit
+      (match_id, actor_user_id, role, operation_type, command_id, revision,
+       outcome_code, trusted_time_ms, reason)
+     VALUES (?, 'organizer-1', 'organizer', 'provisionAssignedScheduledGame', ?, ?, 'pending', 202, NULL)`,
+  ).run(matchId, options.commandId, expectedMatchRevision)
+  return { gameId, binding, bindingRef, nextGame, fingerprint }
+}
+
+test('round-release parent alarm fairness keeps unrelated reads available during gated clock eligibility', async () => {
+  let signalEligibilityEntered!: (request: CompetitionGameClockControlEligibilityRequest) => void
+  const eligibilityEntered = new Promise<CompetitionGameClockControlEligibilityRequest>(resolve => {
+    signalEligibilityEntered = resolve
+  })
+  let releaseEligibility!: () => void
+  const eligibilityGate = new Promise<void>(resolve => { releaseEligibility = resolve })
+  const eligibilityCalls: CompetitionGameClockControlEligibilityRequest[] = []
+  const setup = await provisionableRoom({
+    referee: true,
+    assigned: true,
+    subsequent: false,
+    eligibility: async request => {
+      eligibilityCalls.push(structuredClone(request))
+      signalEligibilityEntered(structuredClone(request))
+      await eligibilityGate
+      return true
+    },
+  })
+  // 使用一致的已持久 provision binding 作 dispatcher 輸入；不宣稱真實 GameStarted。
+  const provision = await seedTrustedDispatcherProvision(setup.sql, {
+    status: 'provisioned', commandId: 'round-release-eligibility-existing-provision',
+  })
+  const pauseCommand = matchExecuteRequest(
+    { type: 'clockPause', matchId: 'provision-match', reason: 'eligibility gate fairness fixture' },
+    {
+      matchId: 'provision-match', callerUserId: 'referee-1',
+      commandId: 'round-release-eligibility-gated-pause',
+      expectedMatchRevision: 2, trustedTimeMs: 202,
+    },
+  )
+  const pausePromise = setup.room.executeMatch(pauseCommand)
+  const pauseSettled = pausePromise.then(
+    value => ({ kind: 'fulfilled' as const, value }),
+    error => ({ kind: 'rejected' as const, error }),
+  )
+  type PauseOutcome = Awaited<typeof pauseSettled>
+  type GateRace = PauseOutcome | {
+    kind: 'eligibility-entered'; request: CompetitionGameClockControlEligibilityRequest
+  }
+  type ReadOutcome =
+    | { kind: 'fulfilled'; value: Awaited<ReturnType<typeof setup.room.read>> }
+    | { kind: 'rejected'; error: unknown }
+  let gateRace: GateRace | null = null
+  let pauseOutcomeWhileGateHeld: PauseOutcome | null = null
+  let readOutcomePromise: Promise<ReadOutcome> | null = null
+  let readOutcomeWhileGateHeld: ReadOutcome | null = null
+  let commandSettledWhileGateHeld: boolean | null = null
+  let readCompletedWhileGateHeld: boolean | null = null
+  let readSucceededWhileGateHeld: boolean | null = null
+  let matchRevisionWhileGateHeld: { revision: number } | undefined
+  let pauseReceiptWhileGateHeld: { command_id: string } | null
+  let pauseControlWhileGateHeld: { control_id: string } | null
+
+  void pauseSettled.then(outcome => { pauseOutcomeWhileGateHeld = outcome })
+  try {
+    gateRace = await Promise.race([
+      eligibilityEntered.then(request => ({ kind: 'eligibility-entered' as const, request })),
+      pauseSettled,
+    ])
+    if (gateRace.kind === 'eligibility-entered') {
+      readOutcomePromise = setup.room.read({
+        competitionId: 'competition-1', callerUserId: 'organizer-1',
+      }).then(
+        value => ({ kind: 'fulfilled' as const, value }),
+        error => ({ kind: 'rejected' as const, error }),
+      )
+      void readOutcomePromise.then(outcome => { readOutcomeWhileGateHeld = outcome })
+      for (let turn = 0; turn < 64; turn += 1) await Promise.resolve()
+      commandSettledWhileGateHeld = pauseOutcomeWhileGateHeld !== null
+      readCompletedWhileGateHeld = readOutcomeWhileGateHeld !== null
+      readSucceededWhileGateHeld = readOutcomeWhileGateHeld?.kind === 'fulfilled'
+        && readOutcomeWhileGateHeld.value.ok
+      matchRevisionWhileGateHeld = setup.sql.database.query(
+        'SELECT revision FROM competition_matches WHERE match_id = ?',
+      ).get('provision-match') as { revision: number } | undefined
+      pauseReceiptWhileGateHeld = setup.sql.database.query(
+        'SELECT command_id FROM competition_command_receipt WHERE command_id = ?',
+      ).get(pauseCommand.commandId) as { command_id: string } | null
+      pauseControlWhileGateHeld = setup.sql.database.query(
+        'SELECT control_id FROM competition_clock_control_outbox WHERE source_command_id = ?',
+      ).get(pauseCommand.commandId) as { control_id: string } | null
+      // Eligibility gate 已 entered；其後 read 沒有新的本地 crypto 命令，固定 checkpoint 只觀察 settle。
+    }
+  } finally {
+    releaseEligibility()
+  }
+
+  const pauseResult = await pauseSettled
+  if (gateRace === null) throw new Error('clock eligibility gate race produced no outcome')
+  if (gateRace.kind !== 'eligibility-entered') {
+    if (gateRace.kind === 'rejected') throw gateRace.error
+    throw new Error('pause command settled before entering the gated eligibility RPC')
+  }
+  if (pauseResult.kind === 'rejected') throw pauseResult.error
+  if (!readOutcomePromise) throw new Error('public read did not start after eligibility gate entry')
+  const finalRead = await readOutcomePromise
+
+  expect(eligibilityCalls).toEqual([{
+    competitionId: 'competition-1', matchId: 'provision-match',
+    gameId: provision.gameId, gameNumber: 1,
+  }])
+  expect(gateRace.request).toEqual({
+    competitionId: 'competition-1', matchId: 'provision-match',
+    gameId: provision.gameId, gameNumber: 1,
+  })
+  expect(commandSettledWhileGateHeld).toBe(false)
+  expect(matchRevisionWhileGateHeld).toEqual({ revision: 2 })
+  expect(pauseReceiptWhileGateHeld).toBeNull()
+  expect(pauseControlWhileGateHeld).toBeNull()
+  expect(readCompletedWhileGateHeld).toBe(true)
+  expect(readSucceededWhileGateHeld).toBe(true)
+  expect(finalRead).toMatchObject({ kind: 'fulfilled', value: { ok: true } })
+  expect(pauseResult.value).toMatchObject({ ok: true, value: {
+    matchRevision: 3, commandId: pauseCommand.commandId,
+  } })
+})
+
+test('round-release parent alarm fairness rejects eligibility after referee authority changes', async () => {
+  let signalEligibilityEntered!: (request: CompetitionGameClockControlEligibilityRequest) => void
+  const eligibilityEntered = new Promise<CompetitionGameClockControlEligibilityRequest>(resolve => {
+    signalEligibilityEntered = resolve
+  })
+  let releaseEligibility!: () => void
+  const eligibilityGate = new Promise<void>(resolve => { releaseEligibility = resolve })
+  const eligibilityCalls: CompetitionGameClockControlEligibilityRequest[] = []
+  const controlCalls: CompetitionClockControlRequest[] = []
+  const setup = await provisionableRoom({
+    referee: true,
+    assigned: true,
+    subsequent: false,
+    eligibility: async request => {
+      eligibilityCalls.push(structuredClone(request))
+      signalEligibilityEntered(structuredClone(request))
+      await eligibilityGate
+      return true
+    },
+    synchronize: async request => {
+      controlCalls.push(structuredClone(request))
+      return { ok: true, value: { ...request, idempotent: false } }
+    },
+  })
+  // 使用自洽的持久 provision 輸入；不宣稱此 fixture 建立了真實 GameStarted。
+  const provision = await seedTrustedDispatcherProvision(setup.sql, {
+    status: 'provisioned', commandId: 'round-release-stale-eligibility-provision',
+  })
+  const roomBefore = await setup.room.read({
+    competitionId: 'competition-1', callerUserId: 'organizer-1',
+  })
+  if (!roomBefore.ok) throw new Error('organizer could not read the fixture revision')
+  const matchBefore = await setup.room.readMatch({
+    competitionId: 'competition-1', matchId: 'provision-match', callerUserId: 'organizer-1',
+  })
+  if (!matchBefore.ok) throw new Error('organizer could not read the fixture match')
+  expect(matchBefore.value.matchRevision).toBe(2)
+
+  const pauseCommand = matchExecuteRequest(
+    { type: 'clockPause', matchId: 'provision-match', reason: 'stale eligibility after referee change' },
+    {
+      matchId: 'provision-match', callerUserId: 'referee-1',
+      commandId: 'round-release-stale-eligibility-pause',
+      expectedMatchRevision: matchBefore.value.matchRevision, trustedTimeMs: 202,
+    },
+  )
+  const pausePromise = setup.room.executeMatch(pauseCommand)
+  const pauseSettled = pausePromise.then(
+    value => ({ kind: 'fulfilled' as const, value }),
+    error => ({ kind: 'rejected' as const, error }),
+  )
+  type PauseOutcome = Awaited<typeof pauseSettled>
+  type GateRace = PauseOutcome | {
+    kind: 'eligibility-entered'; request: CompetitionGameClockControlEligibilityRequest
+  }
+  let gateRace: GateRace | null = null
+  let revokePromise: ReturnType<typeof setup.room.revokeReferee> | null = null
+  let grantPromise: ReturnType<typeof setup.room.grantReferee> | null = null
+
+  try {
+    gateRace = await Promise.race([
+      eligibilityEntered.then(request => ({ kind: 'eligibility-entered' as const, request })),
+      pauseSettled,
+    ])
+    if (gateRace.kind === 'eligibility-entered') {
+      expect(gateRace.request).toEqual({
+        competitionId: 'competition-1', matchId: 'provision-match',
+        gameId: provision.gameId, gameNumber: 1,
+      })
+      // 先撤銷再恢復同一裁判；兩個正式 public command 排在 late ACK 重驗之前。
+      revokePromise = setup.room.revokeReferee({
+        competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'referee-1',
+        commandId: 'round-release-stale-eligibility-revoke',
+        expectedRevision: roomBefore.value.revision, trustedTimeMs: 202,
+      })
+      grantPromise = setup.room.grantReferee({
+        competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'referee-1',
+        commandId: 'round-release-stale-eligibility-regrant',
+        expectedRevision: roomBefore.value.revision + 1, trustedTimeMs: 202,
+      })
+    }
+  } finally {
+    releaseEligibility()
+  }
+
+  if (gateRace === null) throw new Error('stale eligibility gate race produced no outcome')
+  if (gateRace.kind !== 'eligibility-entered') {
+    if (gateRace.kind === 'rejected') throw gateRace.error
+    throw new Error('pause command settled before entering the gated eligibility RPC')
+  }
+  if (!revokePromise || !grantPromise) throw new Error('referee authority changes were not queued')
+  const [pauseResult, revoked, granted] = await Promise.all([
+    pauseSettled, revokePromise, grantPromise,
+  ])
+  if (pauseResult.kind === 'rejected') throw pauseResult.error
+
+  expect(eligibilityCalls).toEqual([{
+    competitionId: 'competition-1', matchId: 'provision-match',
+    gameId: provision.gameId, gameNumber: 1,
+  }])
+  expect(revoked).toMatchObject({ ok: true, value: { targetUserId: 'referee-1', active: false } })
+  expect(granted).toMatchObject({ ok: true, value: { targetUserId: 'referee-1', role: 'referee', active: true } })
+  expect(setup.sql.database.query(
+    'SELECT role, active FROM competition_acl WHERE user_id = ?',
+  ).get('referee-1')).toEqual({ role: 'referee', active: 1 })
+  expect(pauseResult.value.ok).toBe(false)
+  expect(controlCalls).toEqual([])
+  expect(await setup.room.read({ competitionId: 'competition-1', callerUserId: 'organizer-1' }))
+    .toMatchObject({ ok: true, value: { revision: roomBefore.value.revision + 2 } })
+  expect(await setup.room.readMatch({
+    competitionId: 'competition-1', matchId: 'provision-match', callerUserId: 'organizer-1',
+  })).toMatchObject({ ok: true, value: { matchRevision: matchBefore.value.matchRevision } })
+  expect(setup.sql.database.query(
+    'SELECT command_id FROM competition_command_receipt WHERE command_id = ?',
+  ).get(pauseCommand.commandId)).toBeNull()
+  expect(setup.sql.database.query(
+    'SELECT control_id FROM competition_clock_control_outbox WHERE source_command_id = ?',
+  ).get(pauseCommand.commandId)).toBeNull()
+})
+
+test('round-release parent alarm fairness lets a public clock command read proceed during gated clock RPC', async () => {
+  const setup = await provisionableRoom({ referee: true, assigned: true, subsequent: false })
+  const provision = await seedTrustedDispatcherProvision(setup.sql, {
+    status: 'provisioned', commandId: 'round-release-command-fairness-existing-provision',
+  })
+  expect(provision.bindingRef).toMatchObject({
+    roundRef: provision.binding.roundRef, roundStartMs: provision.binding.roundStartMs,
+    matchId: provision.binding.matchId, gameId: provision.gameId,
+    gameNumber: provision.binding.gameNumber,
+  })
+  const storedMatch = setup.sql.database.query(
+    `SELECT revision, match_projection_json, clock_checkpoint_json, clock_projection_json
+     FROM competition_matches WHERE match_id = 'provision-match'`,
+  ).get() as {
+    revision: number; match_projection_json: string
+    clock_checkpoint_json: string | null; clock_projection_json: string | null
+  }
+  expect(storedMatch.revision).toBe(2)
+  expect(JSON.parse(storedMatch.match_projection_json)).toMatchObject({
+    public: { match: { status: 'open', nextGame: provision.nextGame } },
+  })
+  expect(JSON.parse(storedMatch.clock_checkpoint_json ?? 'null')).toMatchObject({
+    running: { type: 'action', team: 'team-a', turn: 1 },
+  })
+  expect(JSON.parse(storedMatch.clock_projection_json ?? 'null')).toMatchObject({
+    public: { activeWindow: { type: 'action', team: 'team-a', turn: 1 } },
+  })
+
+  let signalClockEntered!: (request: CompetitionClockControlRequest) => void
+  const clockEntered = new Promise<CompetitionClockControlRequest>(resolve => {
+    signalClockEntered = resolve
+  })
+  let releaseClock!: () => void
+  const clockGate = new Promise<void>(resolve => { releaseClock = resolve })
+  const controlCalls: CompetitionClockControlRequest[] = []
+  const eligibilityCalls: CompetitionGameClockControlEligibilityRequest[] = []
+  setup.env.GAME_ROOM = gameRoomNamespace(
+    async () => { throw new Error('clock pause must not provision another game') },
+    async request => {
+      controlCalls.push(structuredClone(request))
+      signalClockEntered(structuredClone(request))
+      await clockGate
+      return { ok: true, value: { ...request, idempotent: false } }
+    },
+    async request => { eligibilityCalls.push(structuredClone(request)); return true },
+  )
+
+  const command = matchExecuteRequest(
+    { type: 'clockPause', matchId: 'provision-match', reason: 'round-release command fairness fixture' },
+    {
+      matchId: 'provision-match', callerUserId: 'referee-1',
+      commandId: 'round-release-command-fairness-pause',
+      expectedMatchRevision: 2, trustedTimeMs: 202,
+    },
+  )
+  const commandPromise = setup.room.executeMatch(command)
+  const commandSettled = commandPromise.then(
+    value => ({ kind: 'fulfilled' as const, value }),
+    error => ({ kind: 'rejected' as const, error }),
+  )
+  let gateRace: Awaited<typeof commandSettled> | {
+    kind: 'clock-entered'; request: CompetitionClockControlRequest
+  } | null = null
+  let readSettled: Awaited<ReturnType<typeof setup.room.readMatch>> | null = null
+  let readCompletedWhileHeld: boolean | null = null
+  let readSucceededWhileHeld: boolean | null = null
+  try {
+    gateRace = await Promise.race([
+      clockEntered.then(request => ({ kind: 'clock-entered' as const, request })),
+      commandSettled,
+    ])
+    if (gateRace.kind === 'clock-entered') {
+      expect(setup.sql.database.query(
+        `SELECT receipt_kind, match_id FROM competition_command_receipt WHERE command_id = ?`,
+      ).get(command.commandId)).toEqual({ receipt_kind: 'matchExecute', match_id: 'provision-match' })
+      expect(setup.sql.database.query(
+        `SELECT status, source_command_id, operation FROM competition_clock_control_outbox
+         WHERE source_command_id = ?`,
+      ).get(command.commandId)).toMatchObject({
+        status: 'pending', source_command_id: command.commandId, operation: 'clockPause',
+      })
+
+      const readPromise = setup.room.readMatch({
+        competitionId: 'competition-1', matchId: 'provision-match', callerUserId: 'organizer-1',
+      })
+      const readOutcome = readPromise.then(
+        value => ({ kind: 'fulfilled' as const, value }),
+        error => ({ kind: 'rejected' as const, error }),
+      )
+      void readOutcome.then(result => {
+        if (result.kind === 'fulfilled') readSettled = result.value
+      })
+      for (let turn = 0; turn < 64; turn += 1) await Promise.resolve()
+      readCompletedWhileHeld = readSettled !== null
+      readSucceededWhileHeld = readSettled?.ok === true
+      // 固定 microtask checkpoint 是 queue 進展 oracle，不用 timeout／sleep 判斷失敗。
+    }
+  } finally {
+    releaseClock()
+  }
+  const commandResult = await commandSettled
+  if (gateRace === null) throw new Error('public clock command gate race produced no outcome')
+  if (gateRace.kind !== 'clock-entered') {
+    if (gateRace.kind === 'rejected') throw gateRace.error
+    throw new Error('public clock command settled before entering the gated GameRoom RPC')
+  }
+  if (commandResult.kind === 'rejected') throw commandResult.error
+  const finalRead = readSettled ?? await setup.room.readMatch({
+    competitionId: 'competition-1', matchId: 'provision-match', callerUserId: 'organizer-1',
+  })
+
+  expect(readCompletedWhileHeld).toBe(true)
+  expect(readSucceededWhileHeld).toBe(true)
+  expect(finalRead).toMatchObject({ ok: true, value: { matchRevision: 3 } })
+  expect(commandResult.value).toMatchObject({ ok: true, value: {
+    matchRevision: 3, commandId: command.commandId, idempotent: false,
+  } })
+  expect(eligibilityCalls).toEqual([{
+    competitionId: 'competition-1', matchId: 'provision-match',
+    gameId: provision.gameId, gameNumber: 1,
+  }])
+  expect(controlCalls).toHaveLength(1)
+  expect(gateRace.request).toMatchObject({
+    competitionId: 'competition-1', matchId: 'provision-match', gameId: provision.gameId,
+    gameNumber: 1, sourceCommandId: command.commandId, matchRevision: 3,
+    operation: 'clockPause', trustedTimeMs: 202, nextClockDeadlineMs: null,
+  })
+  expect(setup.sql.database.query(
+    'SELECT status, claim_id FROM competition_clock_control_outbox WHERE source_command_id = ?',
+  ).get(command.commandId)).toEqual({ status: 'completed', claim_id: null })
+})
+
+test('round-release parent alarm fairness lets a public read proceed during gated pending game provision', async () => {
+  let signalCreateEntered!: (request: { gameId: string; binding: CompetitionGameBinding }) => void
+  const createEntered = new Promise<{ gameId: string; binding: CompetitionGameBinding }>(resolve => {
+    signalCreateEntered = resolve
+  })
+  let releaseCreate!: () => void
+  const createGate = new Promise<void>(resolve => { releaseCreate = resolve })
+  const createCalls: { gameId: string; binding: CompetitionGameBinding }[] = []
+  const setup = await provisionableRoom({
+    referee: true, assigned: true, subsequent: false,
+    create: async request => {
+      createCalls.push(structuredClone(request))
+      signalCreateEntered(structuredClone(request))
+      await createGate
+      return { gameId: request.gameId, status: 'Waiting', idempotent: false }
+    },
+  })
+  const provision = await seedTrustedDispatcherProvision(setup.sql, {
+    status: 'pending', commandId: 'round-release-command-fairness-pending-provision',
+  })
+  expect(provision.bindingRef).toMatchObject({
+    roundRef: provision.binding.roundRef, roundStartMs: provision.binding.roundStartMs,
+    matchId: provision.binding.matchId, gameId: provision.gameId,
+    gameNumber: provision.binding.gameNumber,
+  })
+  expect(setup.sql.database.query(
+    `SELECT status, claim_id, claim_version FROM competition_game_provision
+     WHERE match_id = 'provision-match' AND game_number = 1`,
+  ).get()).toEqual({ status: 'pending', claim_id: null, claim_version: 0 })
+
+  const alarmPromise = setup.room.alarm()
+  const alarmSettled = alarmPromise.then(
+    () => ({ kind: 'fulfilled' as const }),
+    error => ({ kind: 'rejected' as const, error }),
+  )
+  let gateRace: Awaited<typeof alarmSettled> | {
+    kind: 'create-entered'; request: { gameId: string; binding: CompetitionGameBinding }
+  } | null = null
+  let readSettled: Awaited<ReturnType<typeof setup.room.readMatch>> | null = null
+  let readCompletedWhileHeld: boolean | null = null
+  let readSucceededWhileHeld: boolean | null = null
+  try {
+    gateRace = await Promise.race([
+      createEntered.then(request => ({ kind: 'create-entered' as const, request })),
+      alarmSettled,
+    ])
+    if (gateRace.kind === 'create-entered') {
+      const claimed = setup.sql.database.query(
+        `SELECT status, claim_id, claim_version FROM competition_game_provision
+         WHERE match_id = 'provision-match' AND game_number = 1`,
+      ).get() as { status: string; claim_id: string | null; claim_version: number }
+      expect(claimed).toMatchObject({ status: 'pending', claim_version: 1 })
+      expect(claimed.claim_id).toEqual(expect.any(String))
+      expect(gateRace.request).toStrictEqual({ gameId: provision.gameId, binding: provision.binding })
+
+      const readPromise = setup.room.readMatch({
+        competitionId: 'competition-1', matchId: 'provision-match', callerUserId: 'organizer-1',
+      })
+      const readOutcome = readPromise.then(
+        value => ({ kind: 'fulfilled' as const, value }),
+        error => ({ kind: 'rejected' as const, error }),
+      )
+      void readOutcome.then(result => {
+        if (result.kind === 'fulfilled') readSettled = result.value
+      })
+      for (let turn = 0; turn < 64; turn += 1) await Promise.resolve()
+      readCompletedWhileHeld = readSettled !== null
+      readSucceededWhileHeld = readSettled?.ok === true
+      // 固定 microtask checkpoint 是 queue 進展 oracle，不用 timeout／sleep 判斷失敗。
+    }
+  } finally {
+    releaseCreate()
+  }
+  const alarmResult = await alarmSettled
+  if (gateRace === null) throw new Error('pending provision alarm gate race produced no outcome')
+  if (gateRace.kind !== 'create-entered') {
+    if (gateRace.kind === 'rejected') throw gateRace.error
+    throw new Error('alarm settled before entering the gated pending game provision RPC')
+  }
+  if (alarmResult.kind === 'rejected') throw alarmResult.error
+  const finalRead = readSettled ?? await setup.room.readMatch({
+    competitionId: 'competition-1', matchId: 'provision-match', callerUserId: 'organizer-1',
+  })
+
+  expect(readCompletedWhileHeld).toBe(true)
+  expect(readSucceededWhileHeld).toBe(true)
+  expect(finalRead).toMatchObject({ ok: true, value: { matchRevision: 2 } })
+  expect(createCalls).toStrictEqual([{ gameId: provision.gameId, binding: provision.binding }])
+  expect(setup.sql.database.query(
+    `SELECT status, claim_id, claim_version FROM competition_game_provision
+     WHERE match_id = 'provision-match' AND game_number = 1`,
+  ).get()).toEqual({ status: 'provisioned', claim_id: null, claim_version: 1 })
+})
+
+test('round-release parent alarm fairness rejects pending provision with a mismatched binding game number', async () => {
+  const createCalls: { gameId: string; binding: CompetitionGameBinding }[] = []
+  const setup = await provisionableRoom({
+    assigned: true, subsequent: false,
+    create: async request => {
+      createCalls.push(structuredClone(request))
+      return { gameId: request.gameId, status: 'Waiting', idempotent: false }
+    },
+  })
+  // 完整持久 binding 與局別來源自洽；此接縫隔離 dispatcher，不證明原生開局歷史。
+  const provision = await seedTrustedDispatcherProvision(setup.sql, {
+    status: 'pending', commandId: 'round-release-mismatched-binding-game-number',
+  })
+  const linkedBefore = setup.sql.database.query(
+    `SELECT * FROM competition_game_provision
+     WHERE match_id = 'provision-match' AND game_number = 1`,
+  ).get()
+  expect(linkedBefore).toMatchObject({
+    game_id: provision.gameId, game_number: 1, match_revision: 2,
+    binding_json: JSON.stringify(provision.binding), next_game_json: JSON.stringify(provision.nextGame),
+    status: 'pending', attempts: 0, next_attempt_at_ms: 0, claim_id: null, claim_version: 0,
+  })
+  const mismatchedBinding = { ...structuredClone(provision.binding), gameNumber: 2 }
+  validateCompetitionGameBinding(mismatchedBinding)
+  setup.sql.database.query(`UPDATE competition_game_provision SET binding_json = ?
+    WHERE match_id = 'provision-match' AND game_number = 1`).run(JSON.stringify(mismatchedBinding))
+  const corruptedBefore = setup.sql.database.query(
+    `SELECT * FROM competition_game_provision
+     WHERE match_id = 'provision-match' AND game_number = 1`,
+  ).get()
+  expect(corruptedBefore).toStrictEqual({
+    ...linkedBefore, binding_json: JSON.stringify(mismatchedBinding),
+  })
+  const matchBefore = setup.sql.database.query(
+    "SELECT * FROM competition_matches WHERE match_id = 'provision-match'",
+  ).get()
+  const metaBefore = setup.sql.database.query('SELECT * FROM competition_meta').get()
+  const readRequest = {
+    competitionId: 'competition-1', matchId: 'provision-match', callerUserId: 'organizer-1',
+  }
+  const readBefore = await setup.room.readMatch(readRequest)
+  expect(readBefore).toMatchObject({ ok: true, value: { matchRevision: 2 } })
+
+  await atRoundDeliveryTime(204, () => setup.room.alarm())
+
+  expect(createCalls).toStrictEqual([])
+  expect(setup.sql.database.query(
+    `SELECT * FROM competition_game_provision
+     WHERE match_id = 'provision-match' AND game_number = 1`,
+  ).get()).toStrictEqual({
+    ...corruptedBefore, status: 'blocked', error_code: expect.stringMatching(/\S/),
+  })
+  expect(await setup.room.readMatch(readRequest)).toStrictEqual(readBefore)
+  expect(setup.sql.database.query(
+    "SELECT * FROM competition_matches WHERE match_id = 'provision-match'",
+  ).get()).toStrictEqual(matchBefore)
+  expect(setup.sql.database.query('SELECT * FROM competition_meta').get()).toStrictEqual(metaBefore)
+})
+
+test('round-release parent alarm fairness dispatches due round and control ACKs while pending provision RPC is held', async () => {
+  const setup = await roundDeliveryModule()
+  const now = 400_000
+  const provisionMatchId = 'provision-match'
+  const controlMatchId = 'fairness-control-match'
+  const provisionCommandId = 'round-release-fairness-held-pending-provision'
+  const controlProvisionCommandId = 'round-release-fairness-existing-control-game'
+  const sourceCommandId = 'round-release-fairness-independent-clock-pause'
+  const reason = 'pending provision fairness dispatcher fixture'
+  const meta = setup.sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const state: unknown = JSON.parse(meta.server_state_json)
+  if (!isJsonObject(state) || !isJsonObject(state.tournament)
+    || !Array.isArray(state.tournament.stages) || !isJsonObject(state.matches)) {
+    throw new Error('fairness module state is malformed')
+  }
+  const stage = state.tournament.stages[0]
+  if (!isJsonObject(stage) || !isJsonObject(stage.config) || !Array.isArray(stage.rounds)
+    || !isJsonObject(stage.config.clockConfig)) throw new Error('fairness module stage is malformed')
+  expect(state.tournament.stages).toHaveLength(1)
+  const clockConfig = stage.config.clockConfig
+  const futureMatches: JsonObject[] = []
+  // RR 預生成排程的可信 current-match 快照與整輪 Pending 分開；不偽造 child 開局或宣稱線上跨輪接線。
+  for (const [index, fixture] of [
+    { matchId: provisionMatchId, teams: ['team-a', 'team-c'], revision: 2 },
+    { matchId: controlMatchId, teams: ['team-b', 'team-d'], revision: 3 },
+  ].entries()) {
+    const template = setup.manifest.rooms[index]
+    if (!template) throw new Error('fairness module match template is missing')
+    const stored = setup.sql.database.query(
+      'SELECT match_checkpoint_json, match_projection_json FROM competition_matches WHERE match_id = ?',
+    ).get(template.matchId) as { match_checkpoint_json: string; match_projection_json: string }
+    const checkpoint: JsonObject = JSON.parse(stored.match_checkpoint_json)
+    const projection: JsonObject = JSON.parse(stored.match_projection_json)
+    if (!isJsonObject(checkpoint.config) || !isJsonObject(projection.public)
+      || !isJsonObject(projection.public.match)) throw new Error('fairness module match template is malformed')
+    const firstTeam = fixture.teams[0]
+    if (!firstTeam) throw new Error('fairness module first team is missing')
+    checkpoint.config.matchId = fixture.matchId
+    checkpoint.config.teams = fixture.teams
+    checkpoint.config.referees = fixture.matchId === controlMatchId
+      ? [{ refereeId: 'referee-1', conflictedTeam: null }] : []
+    checkpoint.history = [{ type: 'assignFirstPlayer', team: firstTeam, reason: '可信 dispatcher 先手快照' }]
+    const view = projection.public.match
+    view.config = structuredClone(checkpoint.config)
+    view.nextFirstPlayer = firstTeam
+    view.nextGame = { gameNumber: 1, kind: { type: 'ordinaryNewGame' },
+      firstPlayer: { type: 'assigned', team: firstTeam } }
+    const isControl = fixture.matchId === controlMatchId
+    const clock = terminalClock(clockConfig, {
+      preparationStarted: isControl, running: null,
+      paused: isControl ? { type: 'action', team: firstTeam, turn: 1 } : null,
+      lastObservedMs: setup.request.trustedTimeMs,
+      teams: fixture.teams.map((team, member) => ({ team, mainTimeRemainingMs: 300_000,
+        actionTurn: isControl && member === 0 ? 1 : null,
+        // 主時間尚未耗盡，不應已有行動讀秒的剩餘額度。
+        actionTimeRemainingMs: null,
+        actionByoyomiStarted: false, enteredByoyomi: false, byoyomiEntrySequence: null })),
+    })
+    const clockProjection = isControl
+      ? { ok: true, operation: 'clockPause', public: { result: { type: 'paused' }, clock: clockPublicFromCheckpoint(clock) } }
+      : { ok: true, operation: 'clockCreate', public: clockPublicFromCheckpoint(clock) }
+    setup.sql.database.query(`INSERT INTO competition_matches
+      (match_id, stage_id, match_checkpoint_json, clock_checkpoint_json, match_projection_json,
+       clock_projection_json, revision, last_trusted_time_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(fixture.matchId, setup.request.stageId, JSON.stringify(checkpoint), JSON.stringify(clock),
+        JSON.stringify(projection), JSON.stringify(clockProjection), fixture.revision, setup.request.trustedTimeMs)
+    state.matches[fixture.matchId] = checkpoint
+    futureMatches.push({ matchId: fixture.matchId, stageId: setup.request.stageId, roundNumber: 2,
+      sequence: index + 1, kind: 'main', participants: fixture.teams, status: 'inProgress',
+      result: null, cancellationReason: null, started: true })
+  }
+  stage.rounds.push({ roundNumber: 2, kind: 'main', matches: futureMatches })
+  setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(state))
+  setup.sql.database.query(`INSERT INTO competition_acl
+    (user_id, role, active, participant) VALUES ('referee-1', 'referee', 1, 0)`).run()
+
+  const seeded = await seedTrustedDispatcherProvision(setup.sql, {
+    status: 'pending', commandId: provisionCommandId,
+  })
+  const provisionBinding: CompetitionGameBinding = { ...structuredClone(seeded.binding),
+    roundRef: { ...seeded.binding.roundRef, stageId: setup.request.stageId, roundNumber: 2 },
+    initialHp: [{ team: 'team-a', hp: 20 }, { team: 'team-c', hp: 20 }],
+    players: [{ userId: 'a-1', player: 'a-1', team: 'team-a' },
+      { userId: 'c-1', player: 'c-1', team: 'team-c' }],
+    turnOrder: ['a-1', 'c-1'],
+  }
+  validateCompetitionGameBinding(provisionBinding)
+  setup.sql.database.query(`UPDATE competition_game_provision SET binding_json = ?, next_attempt_at_ms = ?
+    WHERE match_id = ? AND game_number = 1`).run(JSON.stringify(provisionBinding), now, provisionMatchId)
+  setup.sql.database.query(`UPDATE competition_command_receipt SET response_json = ? WHERE command_id = ?`)
+    .run(JSON.stringify({ ok: true, value: { competitionId: setup.request.competitionId,
+      matchId: provisionMatchId, matchRevision: 2, gameNumber: 1, gameId: seeded.gameId,
+      commandId: provisionCommandId, idempotent: false, status: 'pending', binding: provisionBinding } }), provisionCommandId)
+  const controlSeed = await trustedDispatcherProvisionBinding(controlMatchId, 1, 2)
+  const controlBinding: CompetitionGameBinding = { ...structuredClone(controlSeed.binding),
+    roundRef: { ...provisionBinding.roundRef },
+    initialHp: [{ team: 'team-b', hp: 20 }, { team: 'team-d', hp: 20 }],
+    players: [{ userId: 'b-1', player: 'b-1', team: 'team-b' },
+      { userId: 'd-1', player: 'd-1', team: 'team-d' }],
+    firstPlayer: 'b-1', turnOrder: ['b-1', 'd-1'],
+  }
+  validateCompetitionGameBinding(controlBinding)
+  const controlProvisionFingerprint = await legacyFingerprint({ competitionId: setup.request.competitionId,
+    matchId: controlMatchId, callerUserId: setup.request.callerUserId,
+    commandId: controlProvisionCommandId, expectedMatchRevision: 2 })
+  const controlNextGame = { gameNumber: 1, kind: { type: 'ordinaryNewGame' },
+    firstPlayer: { type: 'assigned', team: 'team-b' } }
+  setup.sql.database.query(`INSERT INTO competition_game_provision
+    (match_id, game_number, game_id, binding_json, match_revision, next_game_json, command_id,
+     fingerprint, status, attempts, next_attempt_at_ms, error_code, created_trusted_time_ms)
+    VALUES (?, 1, ?, ?, 2, ?, ?, ?, 'provisioned', 0, ?, NULL, ?)`)
+    .run(controlMatchId, controlSeed.gameId, JSON.stringify(controlBinding), JSON.stringify(controlNextGame),
+      controlProvisionCommandId, controlProvisionFingerprint, now, setup.request.trustedTimeMs)
+  setup.sql.database.query(`INSERT INTO competition_command_receipt
+    (command_id, receipt_kind, match_id, fingerprint, response_json)
+    VALUES (?, 'provisionAssignedScheduledGame', ?, ?, ?)`)
+    .run(controlProvisionCommandId, controlMatchId, controlProvisionFingerprint, JSON.stringify({ ok: true, value: {
+      competitionId: setup.request.competitionId, matchId: controlMatchId, matchRevision: 2,
+      gameNumber: 1, gameId: controlSeed.gameId, commandId: controlProvisionCommandId,
+      idempotent: false, status: 'pending', binding: controlBinding,
+    } }))
+  const controlId = `competition-clock-control:${await legacyFingerprint([
+    'competition-clock-control', setup.request.competitionId, controlMatchId,
+    controlSeed.gameId, 1, sourceCommandId, 3,
+  ])}`
+  const controlRequest: CompetitionClockControlRequest = { controlId,
+    competitionId: setup.request.competitionId, matchId: controlMatchId, gameId: controlSeed.gameId,
+    gameNumber: 1, sourceCommandId, matchRevision: 3, operation: 'clockPause',
+    trustedTimeMs: setup.request.trustedTimeMs, nextClockDeadlineMs: null }
+  const controlFingerprint = await legacyFingerprint({ competitionId: setup.request.competitionId,
+    matchId: controlMatchId, callerUserId: 'referee-1', commandId: sourceCommandId,
+    expectedMatchRevision: 2, operation: { type: 'clockPause', matchId: controlMatchId, reason } })
+  setup.sql.database.query(`INSERT INTO competition_command_receipt
+    (command_id, receipt_kind, match_id, fingerprint, response_json) VALUES (?, 'matchExecute', ?, ?, ?)`)
+    .run(sourceCommandId, controlMatchId, controlFingerprint, JSON.stringify({ ok: true, value: {
+      competitionId: setup.request.competitionId, matchId: controlMatchId, matchRevision: 3,
+      commandId: sourceCommandId, idempotent: false, timeoutEvidence: null, nextClockDeadlineMs: null,
+      matchProjection: null, clockProjection: null,
+    } }))
+  for (const audit of [
+    { commandId: controlProvisionCommandId, caller: setup.request.callerUserId, role: 'organizer',
+      operation: 'provisionAssignedScheduledGame', revision: 2, outcome: 'pending', reason: null },
+    { commandId: sourceCommandId, caller: 'referee-1', role: 'referee',
+      operation: 'clockPause', revision: 3, outcome: 'success', reason },
+  ]) {
+    setup.sql.database.query(`INSERT INTO competition_audit
+      (match_id, actor_user_id, role, operation_type, command_id, revision, outcome_code, trusted_time_ms, reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(controlMatchId, audit.caller, audit.role, audit.operation, audit.commandId,
+        audit.revision, audit.outcome, setup.request.trustedTimeMs, audit.reason)
+  }
+  setup.sql.database.query(`INSERT INTO competition_clock_control_outbox
+    (control_id, competition_id, match_id, game_id, game_number, source_command_id, match_revision,
+     operation, trusted_time_ms, next_clock_deadline_ms, attempts, next_attempt_at_ms, status)
+    VALUES (?, ?, ?, ?, 1, ?, 3, 'clockPause', ?, NULL, 0, ?, 'pending')`)
+    .run(controlId, setup.request.competitionId, controlMatchId, controlSeed.gameId, sourceCommandId,
+      setup.request.trustedTimeMs, now)
+  expect(roundParentRows(setup.sql, 'competition_round_room_ledger').map(row => ({ status: row.status,
+    ack: row.ack_confirmed_at_ms, due: row.next_attempt_at_ms, claimId: row.claim_id, version: row.claim_version })))
+    .toEqual([{ status: 'pending', ack: null, due: setup.request.trustedTimeMs, claimId: null, version: 0 },
+      { status: 'pending', ack: null, due: setup.request.trustedTimeMs, claimId: null, version: 0 }])
+  expect(setup.sql.database.query(`SELECT status, next_attempt_at_ms, claim_id, claim_version
+    FROM competition_game_provision WHERE match_id = ? AND game_number = 1`).get(provisionMatchId))
+    .toEqual({ status: 'pending', next_attempt_at_ms: now, claim_id: null, claim_version: 0 })
+  expect(setup.sql.database.query(`SELECT status, next_attempt_at_ms, claim_id, claim_version
+    FROM competition_clock_control_outbox WHERE control_id = ?`).get(controlId))
+    .toEqual({ status: 'pending', next_attempt_at_ms: now, claim_id: null, claim_version: 0 })
+  expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
+    status: 'materializing', rooms: [{ ackConfirmedAtMs: null }, { ackConfirmedAtMs: null }],
+  } } })
+  expect(await setup.room.readMatch({ competitionId: setup.request.competitionId,
+    matchId: provisionMatchId, callerUserId: setup.request.callerUserId }))
+    .toMatchObject({ ok: true, value: { matchRevision: 2 } })
+  expect(await setup.room.readMatch({ competitionId: setup.request.competitionId,
+    matchId: controlMatchId, callerUserId: setup.request.callerUserId }))
+    .toMatchObject({ ok: true, value: { matchRevision: 3 } })
+
+  let signalProvisionEntered!: (request: { gameId: string; binding: CompetitionGameBinding }) => void
+  const provisionEntered = new Promise<{ gameId: string; binding: CompetitionGameBinding }>(resolve => {
+    signalProvisionEntered = resolve
+  })
+  let releaseProvision!: () => void
+  const provisionGate = new Promise<void>(resolve => { releaseProvision = resolve })
+  let gateReleased = false
+  const provisionCalls: { gameId: string; binding: CompetitionGameBinding }[] = []
+  const roundCalls: { gameId: string; binding: CompetitionGameBinding }[] = []
+  const controlCalls: CompetitionClockControlRequest[] = []
+  setup.setCreate(async request => {
+    if (request.gameId === seeded.gameId) {
+      provisionCalls.push(structuredClone(request))
+      signalProvisionEntered(structuredClone(request))
+      await provisionGate
+      return { gameId: request.gameId, status: 'Waiting', idempotent: false }
+    }
+    await provisionEntered
+    roundCalls.push(structuredClone(request))
+    return moduleReadyAck(setup, request.gameId)
+  })
+  const originalGet = setup.env.GAME_ROOM.get
+  setup.env.GAME_ROOM.get = id => ({ ...originalGet(id),
+    synchronizeCompetitionClock: async (request: CompetitionClockControlRequest) => {
+      await provisionEntered
+      controlCalls.push(structuredClone(request))
+      return { ok: true, value: { ...request, idempotent: false } }
+    },
+  })
+  let signalOtherCommits!: () => void
+  const otherCommits = new Promise<void>(resolve => { signalOtherCommits = resolve })
+  let scheduledAt = setup.alarm.scheduledAt
+  const alarmDescriptor = Object.getOwnPropertyDescriptor(setup.alarm, 'scheduledAt')
+  if (!alarmDescriptor) throw new Error('fairness module alarm descriptor is missing')
+  // 觀察既有 storage.setAlarm 邊界；ACK 已寫入且交易返回後才排 alarm，不 mock 私有 pump。
+  Object.defineProperty(setup.alarm, 'scheduledAt', { configurable: true, enumerable: true,
+    get: () => scheduledAt,
+    set: (value: number | null) => {
+      scheduledAt = value
+      const roundRows = roundParentRows(setup.sql, 'competition_round_room_ledger')
+      const controlRow = setup.sql.database.query(
+        'SELECT status FROM competition_clock_control_outbox WHERE control_id = ?',
+      ).get(controlId) as { status: string } | null
+      if (roundRows.length === setup.manifest.rooms.length
+        && roundRows.every(row => row.status === 'confirmed') && controlRow?.status === 'completed') {
+        signalOtherCommits()
+      }
+    },
+  })
+  await setup.at(now, async () => {
+    const alarmPromise = setup.room.alarm()
+    const alarmSettled = alarmPromise.then(() => ({ kind: 'fulfilled' as const }),
+      error => ({ kind: 'rejected' as const, error }))
+    try {
+      const entered = await Promise.race([
+        provisionEntered.then(request => ({ kind: 'provision-entered' as const, request })), alarmSettled,
+      ])
+      if (entered.kind !== 'provision-entered') {
+        if (entered.kind === 'rejected') throw entered.error
+        throw new Error('alarm settled before pending provision entered its create RPC gate')
+      }
+      expect(entered.request).toStrictEqual({ gameId: seeded.gameId, binding: provisionBinding })
+      expect(setup.sql.database.query(`SELECT status, claim_id, claim_version
+        FROM competition_game_provision WHERE match_id = ? AND game_number = 1`).get(provisionMatchId))
+        .toEqual({ status: 'pending', claim_id: expect.any(String), claim_version: 1 })
+      const committed = await Promise.race([
+        otherCommits.then(() => ({ kind: 'committed' as const })), alarmSettled,
+      ])
+      if (committed.kind !== 'committed') {
+        if (committed.kind === 'rejected') throw committed.error
+        throw new Error('alarm settled without committing the due round and control ACKs')
+      }
+      // 真持久 ACK checkpoint 在釋放 provision 前；不以 read 或 alarm 全部結束代替公平派送。
+      expect(gateReleased).toBe(false)
+      expect(provisionCalls).toStrictEqual([{ gameId: seeded.gameId, binding: provisionBinding }])
+      expect(roundCalls).toStrictEqual([...setup.expected.values()])
+      expect(controlCalls).toStrictEqual([controlRequest])
+      expect(roundParentRows(setup.sql, 'competition_round_room_ledger').map(row => ({ status: row.status,
+        ack: row.ack_confirmed_at_ms, claimId: row.claim_id, version: row.claim_version })))
+        .toEqual([{ status: 'confirmed', ack: now, claimId: null, version: 1 },
+          { status: 'confirmed', ack: now, claimId: null, version: 1 }])
+      expect(setup.sql.database.query(`SELECT status, claim_id, claim_version
+        FROM competition_clock_control_outbox WHERE control_id = ?`).get(controlId))
+        .toEqual({ status: 'completed', claim_id: null, claim_version: 1 })
+      expect(setup.sql.database.query(`SELECT status, claim_id, claim_version
+        FROM competition_game_provision WHERE match_id = ? AND game_number = 1`).get(provisionMatchId))
+        .toEqual({ status: 'pending', claim_id: expect.any(String), claim_version: 1 })
+      expect(setup.alarm.scheduledAt).toBe(now + 1_000)
+      expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
+        status: 'released', rooms: [{ ackConfirmedAtMs: now }, { ackConfirmedAtMs: now }],
+      } } })
+    } finally {
+      gateReleased = true
+      releaseProvision()
+      const outcome = await alarmSettled
+      Object.defineProperty(setup.alarm, 'scheduledAt', { ...alarmDescriptor, value: scheduledAt })
+      setup.env.GAME_ROOM.get = originalGet
+      if (outcome.kind === 'rejected') throw outcome.error
+    }
+  })
+  expect(setup.sql.database.query(`SELECT status, claim_id, claim_version, error_code
+    FROM competition_game_provision WHERE match_id = ? AND game_number = 1`).get(provisionMatchId))
+    .toEqual({ status: 'provisioned', claim_id: null, claim_version: 1, error_code: null })
+  expect(setup.sql.database.query(`SELECT status FROM competition_game_provision
+    WHERE match_id = ? AND game_number = 1`).get(controlMatchId)).toEqual({ status: 'provisioned' })
+  expect(setup.alarm.scheduledAt).toBeNull()
+})
+
+test('round-release parent alarm fairness preserves per-match clock order while another due control proceeds', async () => {
+  const eligibilityChecks: CompetitionGameClockControlEligibilityRequest[] = []
+  // 此受控資格接縫只隔離 dispatcher 命令測試，不代表 child 真正 Active 或已發生 GameStarted。
+  const setup = await provisionableRoom({
+    referee: true,
+    assigned: true,
+    subsequent: false,
+    eligibility: async request => {
+      eligibilityChecks.push(structuredClone(request))
+      return true
+    },
+  })
+  const provision = await seedTrustedDispatcherProvision(setup.sql, {
+    status: 'provisioned', commandId: 'round-release-clock-order-existing-provision',
+  })
+
+  let signalPauseEntered!: (request: CompetitionClockControlRequest) => void
+  const pauseEntered = new Promise<CompetitionClockControlRequest>(resolve => {
+    signalPauseEntered = resolve
+  })
+  let releasePause!: () => void
+  const pauseGate = new Promise<void>(resolve => { releasePause = resolve })
+  let signalOtherEntered!: (request: CompetitionClockControlRequest) => void
+  const otherEntered = new Promise<CompetitionClockControlRequest>(resolve => {
+    signalOtherEntered = resolve
+  })
+  const controlCalls: CompetitionClockControlRequest[] = []
+  const originalGet = setup.env.GAME_ROOM.get
+  setup.env.GAME_ROOM.get = id => {
+    const stub = originalGet(id)
+    return {
+      ...stub,
+      synchronizeCompetitionClock: async request => {
+        controlCalls.push(structuredClone(request))
+        if (request.matchId === 'provision-match' && request.operation === 'clockPause') {
+          signalPauseEntered(structuredClone(request))
+          await pauseGate
+        }
+        if (request.matchId === 'other-match') signalOtherEntered(structuredClone(request))
+        return { ok: true, value: { ...request, idempotent: false } }
+      },
+    }
+  }
+
+  const pauseCommand = matchExecuteRequest(
+    { type: 'clockPause', matchId: 'provision-match', reason: 'per-match clock order fixture' },
+    {
+      matchId: 'provision-match', callerUserId: 'referee-1',
+      commandId: 'round-release-clock-order-pause-3',
+      expectedMatchRevision: 2, trustedTimeMs: 202,
+    },
+  )
+  const pausePromise = setup.room.executeMatch(pauseCommand)
+  const pauseSettled = pausePromise.then(
+    value => ({ kind: 'fulfilled' as const, value }),
+    error => ({ kind: 'rejected' as const, error }),
+  )
+  let pauseRace: Awaited<typeof pauseSettled> | {
+    kind: 'pause-entered'; request: CompetitionClockControlRequest
+  } | null = null
+  let alarmSettled: { kind: 'fulfilled' } | { kind: 'rejected'; error: unknown } | null = null
+  let alarmOutcomePromise: Promise<{ kind: 'fulfilled' } | { kind: 'rejected'; error: unknown }> | null = null
+  let otherRace: { kind: 'fulfilled' } | { kind: 'rejected'; error: unknown } | {
+    kind: 'other-entered'; request: CompetitionClockControlRequest
+  } | null = null
+  let resumeSettled: Awaited<typeof pauseSettled> | null = null
+  let readSettled: Awaited<ReturnType<typeof setup.room.readMatch>> | null = null
+  let readFailure: { error: unknown } | null = null
+  let readCompletedWhilePauseHeld: boolean | null = null
+  let readSucceededWhilePauseHeld: boolean | null = null
+  let resumeReceiptBeforePauseRelease: { receipt_kind: string; match_id: string } | undefined
+  let resumeOutboxBeforePauseRelease: { status: string; match_revision: number; operation: string } | undefined
+  let pauseRetryAtBeforeRelease: number | null = null
+  let resumeDueAtBeforeRelease: number | null = null
+  let alarmAtBeforeRelease: number | null = null
+  let callsBeforePauseRelease: CompetitionClockControlRequest[] = []
+
+  try {
+    pauseRace = await Promise.race([
+      pauseEntered.then(request => ({ kind: 'pause-entered' as const, request })),
+      pauseSettled,
+    ])
+    if (pauseRace.kind === 'pause-entered') {
+      expect(pauseRace.request).toMatchObject({
+        matchId: 'provision-match', gameId: provision.gameId,
+        gameNumber: 1, matchRevision: 3, operation: 'clockPause',
+      })
+      expect(eligibilityChecks).toEqual([{
+        competitionId: 'competition-1', matchId: 'provision-match',
+        gameId: provision.gameId, gameNumber: 1,
+      }])
+      expect(setup.sql.database.query(
+        `SELECT status, match_revision, operation, claim_id, claim_version
+         FROM competition_clock_control_outbox WHERE source_command_id = ?`,
+      ).get(pauseCommand.commandId)).toMatchObject({
+        status: 'pending', match_revision: 3, operation: 'clockPause', claim_version: 1,
+      })
+
+      // 隔離 dispatcher 輸入：此已持久 due outbox 有一致命令收據／稽核，但不宣稱建立來源對局歷史。
+      const otherCommandId = 'round-release-clock-order-other-pause'
+      const otherRequest = matchExecuteRequest(
+        { type: 'clockPause', matchId: 'other-match', reason: 'independent due control fixture' },
+        {
+          matchId: 'other-match', callerUserId: 'referee-1', commandId: otherCommandId,
+          expectedMatchRevision: 1, trustedTimeMs: 202,
+        },
+      )
+      const otherFingerprint = await legacyFingerprint({
+        competitionId: otherRequest.competitionId,
+        matchId: otherRequest.matchId,
+        callerUserId: otherRequest.callerUserId,
+        commandId: otherRequest.commandId,
+        expectedMatchRevision: otherRequest.expectedMatchRevision,
+        operation: otherRequest.operation,
+      })
+      const otherGameId = 'round-release-independent-game'
+      const otherControlId = `competition-clock-control:${await legacyFingerprint([
+        'competition-clock-control', otherRequest.competitionId, otherRequest.matchId,
+        otherGameId, 1, otherCommandId, 2,
+      ])}`
+      setup.sql.database.query(
+        `INSERT INTO competition_command_receipt
+          (command_id, receipt_kind, match_id, fingerprint, response_json)
+         VALUES (?, 'matchExecute', ?, ?, ?)`,
+      ).run(otherCommandId, otherRequest.matchId, otherFingerprint, JSON.stringify({ ok: true }))
+      setup.sql.database.query(
+        `INSERT INTO competition_audit
+          (match_id, actor_user_id, role, operation_type, command_id, revision,
+           outcome_code, trusted_time_ms, reason)
+         VALUES (?, 'referee-1', 'referee', 'clockPause', ?, 2, 'success', 202, ?)`,
+      ).run(otherRequest.matchId, otherCommandId, 'independent due control fixture')
+      setup.sql.database.query(
+        `INSERT INTO competition_clock_control_outbox
+          (control_id, competition_id, match_id, game_id, game_number, source_command_id,
+           match_revision, operation, trusted_time_ms, next_clock_deadline_ms, attempts,
+           next_attempt_at_ms, status)
+         VALUES (?, ?, ?, ?, 1, ?, 2, 'clockPause', 202, NULL, 0, 0, 'pending')`,
+      ).run(otherControlId, otherRequest.competitionId, otherRequest.matchId,
+        otherGameId, otherCommandId)
+
+      const alarmPromise = setup.room.alarm()
+      const pendingAlarmOutcome = alarmPromise.then(
+        () => ({ kind: 'fulfilled' as const }),
+        error => ({ kind: 'rejected' as const, error }),
+      )
+      alarmOutcomePromise = pendingAlarmOutcome
+      otherRace = await Promise.race([
+        otherEntered.then(request => ({ kind: 'other-entered' as const, request })),
+        pendingAlarmOutcome,
+      ])
+      if (otherRace.kind === 'other-entered') {
+        expect(otherRace.request).toMatchObject({
+          matchId: 'other-match', gameId: otherGameId, operation: 'clockPause',
+        })
+        alarmSettled = await pendingAlarmOutcome
+        if (alarmSettled.kind === 'rejected') throw alarmSettled.error
+
+        const resumeCommand = matchExecuteRequest(
+          { type: 'clockResume', matchId: 'provision-match', reason: 'per-match clock order fixture' },
+          {
+            matchId: 'provision-match', callerUserId: 'referee-1',
+            commandId: 'round-release-clock-order-resume-4',
+            expectedMatchRevision: 3, trustedTimeMs: 203,
+          },
+        )
+        const resumePromise = setup.room.executeMatch(resumeCommand)
+        resumeSettled = await resumePromise.then(
+          value => ({ kind: 'fulfilled' as const, value }),
+          error => ({ kind: 'rejected' as const, error }),
+        )
+
+        const readOutcome = await setup.room.readMatch({
+          competitionId: 'competition-1', matchId: 'provision-match', callerUserId: 'organizer-1',
+        }).then(
+          value => ({ kind: 'fulfilled' as const, value }),
+          error => ({ kind: 'rejected' as const, error }),
+        )
+        if (readOutcome.kind === 'fulfilled') {
+          readSettled = readOutcome.value
+          readCompletedWhilePauseHeld = true
+          readSucceededWhilePauseHeld = readOutcome.value.ok
+        } else {
+          readFailure = { error: readOutcome.error }
+          readCompletedWhilePauseHeld = false
+          readSucceededWhilePauseHeld = false
+        }
+        resumeReceiptBeforePauseRelease = setup.sql.database.query(
+          `SELECT receipt_kind, match_id FROM competition_command_receipt
+           WHERE command_id = 'round-release-clock-order-resume-4'`,
+        ).get() as { receipt_kind: string; match_id: string } | undefined
+        resumeOutboxBeforePauseRelease = setup.sql.database.query(
+          `SELECT status, match_revision, operation FROM competition_clock_control_outbox
+           WHERE source_command_id = 'round-release-clock-order-resume-4'`,
+        ).get() as { status: string; match_revision: number; operation: string } | undefined
+        const pauseRetry = setup.sql.database.query(
+          `SELECT next_attempt_at_ms FROM competition_clock_control_outbox
+           WHERE source_command_id = 'round-release-clock-order-pause-3'`,
+        ).get() as { next_attempt_at_ms: number } | undefined
+        const resumeDue = setup.sql.database.query(
+          `SELECT next_attempt_at_ms FROM competition_clock_control_outbox
+           WHERE source_command_id = 'round-release-clock-order-resume-4'`,
+        ).get() as { next_attempt_at_ms: number } | undefined
+        pauseRetryAtBeforeRelease = pauseRetry?.next_attempt_at_ms ?? null
+        resumeDueAtBeforeRelease = resumeDue?.next_attempt_at_ms ?? null
+        alarmAtBeforeRelease = setup.alarm.scheduledAt
+        callsBeforePauseRelease = structuredClone(controlCalls)
+        // 等公開命令與唯讀結果實際 settle 後，再檢查 gate 仍 held 時的派送順序。
+      }
+    }
+  } finally {
+    releasePause()
+    if (alarmOutcomePromise && !alarmSettled) alarmSettled = await alarmOutcomePromise
+  }
+
+  const pauseResult = await pauseSettled
+  if (pauseRace === null) throw new Error('pause control gate race produced no outcome')
+  if (pauseRace.kind !== 'pause-entered') {
+    if (pauseRace.kind === 'rejected') throw pauseRace.error
+    throw new Error('pause command settled before entering the gated clock RPC')
+  }
+  if (pauseResult.kind === 'rejected') throw pauseResult.error
+  if (otherRace === null) throw new Error('other control gate race produced no outcome')
+  if (otherRace.kind !== 'other-entered') {
+    if (otherRace.kind === 'rejected') throw otherRace.error
+    throw new Error('alarm settled before dispatching the independent due control')
+  }
+  if (!alarmSettled) throw new Error('alarm settlement was not observed')
+  if (alarmSettled.kind === 'rejected') throw alarmSettled.error
+  if (!resumeSettled) throw new Error('resume command did not start after independent control ACK')
+  const resumeResult = resumeSettled
+  if (resumeResult.kind === 'rejected') throw resumeResult.error
+  if (readFailure) throw readFailure.error
+  const finalRead = readSettled ?? await setup.room.readMatch({
+    competitionId: 'competition-1', matchId: 'provision-match', callerUserId: 'organizer-1',
+  })
+
+  expect(readCompletedWhilePauseHeld).toBe(true)
+  expect(readSucceededWhilePauseHeld).toBe(true)
+  expect(callsBeforePauseRelease.map(request => [request.matchId, request.matchRevision, request.operation]))
+    .toEqual([['provision-match', 3, 'clockPause'], ['other-match', 2, 'clockPause']])
+  expect(resumeReceiptBeforePauseRelease).toEqual({
+    receipt_kind: 'matchExecute', match_id: 'provision-match',
+  })
+  expect(resumeOutboxBeforePauseRelease).toMatchObject({
+    status: 'pending', match_revision: 4, operation: 'clockResume',
+  })
+  expect(pauseRetryAtBeforeRelease).not.toBeNull()
+  expect(resumeDueAtBeforeRelease).not.toBeNull()
+  if (pauseRetryAtBeforeRelease === null || resumeDueAtBeforeRelease === null) {
+    throw new Error('same-game clock stream retry deadlines were not persisted')
+  }
+  expect(pauseRetryAtBeforeRelease).toBeGreaterThan(resumeDueAtBeforeRelease)
+  expect(alarmAtBeforeRelease).toBe(pauseRetryAtBeforeRelease)
+  expect(finalRead).toMatchObject({ ok: true, value: { matchRevision: 4 } })
+  expect(resumeResult.value).toMatchObject({ ok: true, value: {
+    matchRevision: 4, commandId: 'round-release-clock-order-resume-4',
+  } })
+  expect(setup.sql.database.query(
+    `SELECT status, match_revision, operation FROM competition_clock_control_outbox
+     WHERE source_command_id = 'round-release-clock-order-resume-4'`,
+  ).get()).toEqual({ status: 'pending', match_revision: 4, operation: 'clockResume' })
+  await setup.room.alarm()
+  expect(controlCalls.map(request => [request.matchId, request.matchRevision, request.operation]))
+    .toEqual([
+      ['provision-match', 3, 'clockPause'],
+      ['other-match', 2, 'clockPause'],
+      ['provision-match', 4, 'clockResume'],
+    ])
+  expect(setup.sql.database.query(
+    `SELECT status, claim_id, claim_version FROM competition_clock_control_outbox
+     WHERE source_command_id IN ('round-release-clock-order-pause-3', 'round-release-clock-order-resume-4')
+     ORDER BY match_revision`,
+  ).all()).toEqual([
+    { status: 'completed', claim_id: null, claim_version: 1 },
+    { status: 'completed', claim_id: null, claim_version: 1 },
+  ])
+})
+
+test('round-release parent alarm fairness dispatches a linked due clock control while round RPC is gated', async () => {
+  const setup = await roundDeliveryModule()
+  const first = setup.manifest.rooms[0]
+  if (!first) throw new Error('module first room missing')
+  const currentBinding = setup.expected.get(first.gameId)?.binding
+  if (!currentBinding) throw new Error('module current binding missing')
+  const currentMeta = setup.sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const currentStateValue: unknown = JSON.parse(currentMeta.server_state_json)
+  if (!isJsonObject(currentStateValue) || !isJsonObject(currentStateValue.tournament)
+    || !Array.isArray(currentStateValue.tournament.stages)) {
+    throw new Error('module current tournament is malformed')
+  }
+  expect(currentStateValue.tournament.stages).toHaveLength(1)
+  expect(setup.manifest.tournamentRound.matches).toHaveLength(2)
+
+  const stableStringifyFixture = (value: unknown): string => {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'
+    if (Array.isArray(value)) return `[${value.map(stableStringifyFixture).join(',')}]`
+    const object = value as Record<string, unknown>
+    return `{${Object.keys(object).sort().map(key =>
+      `${JSON.stringify(key)}:${stableStringifyFixture(object[key])}`).join(',')}}`
+  }
+  const fixtureFingerprint = async (value: unknown): Promise<string> => {
+    const digest = await crypto.subtle.digest(
+      'SHA-256', new TextEncoder().encode(stableStringifyFixture(value)),
+    )
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+  }
+
+  // 只預置可信 persisted outbox 與其關聯快照，驗 alarm 排程；不宣稱覆蓋 command 生成歷史。
+  const competitionId = setup.request.competitionId
+  const matchId = first.matchId
+  const gameNumber = 2
+  const matchRevision = 2
+  const sourceCommandId = 'round-release-fairness-clock-pause'
+  const provisionCommandId = 'round-release-fairness-provision-game-two'
+  const gameId = `competition-game-${await fixtureFingerprint({
+    kind: 'competition-game', competitionId, matchId, gameNumber,
+  })}`
+  const gameTwoBinding: CompetitionGameBinding = { ...structuredClone(currentBinding), gameNumber }
+  const firstPlayer = gameTwoBinding.players.find(player => player.player === gameTwoBinding.firstPlayer)
+  if (!firstPlayer) throw new Error('module game-two binding has no assigned first player')
+  const nextGame = {
+    gameNumber,
+    kind: { type: 'ordinaryNewGame' },
+    firstPlayer: { type: 'assigned', team: firstPlayer.team },
+  }
+  const provisionFingerprint = await fixtureFingerprint({
+    competitionId, matchId, callerUserId: setup.request.callerUserId,
+    commandId: provisionCommandId, expectedMatchRevision: matchRevision,
+  })
+  const pauseFingerprint = await fixtureFingerprint({
+    competitionId, matchId, callerUserId: 'referee-1', commandId: sourceCommandId,
+    expectedMatchRevision: 1,
+    operation: { type: 'clockPause', matchId, reason: 'alarm fairness module fixture' },
+  })
+  const controlId = `competition-clock-control:${await fixtureFingerprint([
+    'competition-clock-control', competitionId, matchId, gameId, gameNumber, sourceCommandId, matchRevision,
+  ])}`
+  const controlRequest: CompetitionClockControlRequest = {
+    controlId, competitionId, matchId, gameId, gameNumber, sourceCommandId, matchRevision,
+    operation: 'clockPause', trustedTimeMs: setup.request.trustedTimeMs, nextClockDeadlineMs: null,
+  }
+
+  setup.sql.database.query(
+    `INSERT INTO competition_acl (user_id, role, active, participant) VALUES ('referee-1', 'referee', 1, 0)`,
+  ).run()
+  setup.sql.database.query(
+    `INSERT INTO competition_game_provision
+      (match_id, game_number, game_id, binding_json, match_revision, next_game_json,
+       command_id, fingerprint, status, attempts, next_attempt_at_ms, error_code, created_trusted_time_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'provisioned', 0, 400000, NULL, ?)`,
+  ).run(matchId, gameNumber, gameId, JSON.stringify(gameTwoBinding), matchRevision,
+    JSON.stringify(nextGame), provisionCommandId, provisionFingerprint, setup.request.trustedTimeMs)
+  setup.sql.database.query(
+    `INSERT INTO competition_command_receipt
+      (command_id, receipt_kind, match_id, fingerprint, response_json) VALUES (?, ?, ?, ?, ?)`,
+  ).run(provisionCommandId, 'provisionAssignedScheduledGame', matchId, provisionFingerprint,
+    JSON.stringify({ ok: true, value: {
+      competitionId, matchId, matchRevision, gameNumber, gameId, commandId: provisionCommandId,
+      idempotent: false, status: 'pending', binding: gameTwoBinding,
+    } }))
+  setup.sql.database.query(
+    `INSERT INTO competition_audit
+      (match_id, actor_user_id, role, operation_type, command_id, revision, outcome_code,
+       trusted_time_ms, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(matchId, setup.request.callerUserId, 'organizer', 'provisionAssignedScheduledGame',
+    provisionCommandId, matchRevision, 'pending', setup.request.trustedTimeMs, null)
+  setup.sql.database.query(
+    `INSERT INTO competition_command_receipt
+      (command_id, receipt_kind, match_id, fingerprint, response_json) VALUES (?, 'matchExecute', ?, ?, ?)`,
+  ).run(sourceCommandId, matchId, pauseFingerprint, JSON.stringify({ ok: true, value: {
+    competitionId, matchId, matchRevision, commandId: sourceCommandId, idempotent: false,
+    timeoutEvidence: null, nextClockDeadlineMs: null, matchProjection: null, clockProjection: null,
+  } }))
+  setup.sql.database.query(
+    `INSERT INTO competition_audit
+      (match_id, actor_user_id, role, operation_type, command_id, revision, outcome_code,
+       trusted_time_ms, reason) VALUES (?, 'referee-1', 'referee', 'clockPause', ?, ?, 'success', ?, ?)`,
+  ).run(matchId, sourceCommandId, matchRevision, setup.request.trustedTimeMs, 'alarm fairness module fixture')
+  setup.sql.database.query(
+    `INSERT INTO competition_clock_control_outbox
+      (control_id, competition_id, match_id, game_id, game_number, source_command_id,
+       match_revision, operation, trusted_time_ms, next_clock_deadline_ms, attempts,
+       next_attempt_at_ms, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'clockPause', ?, NULL, 0, 400000, 'pending')`,
+  ).run(controlId, competitionId, matchId, gameId, gameNumber, sourceCommandId,
+    matchRevision, setup.request.trustedTimeMs)
+
+  expect(setup.manifest.rooms).toHaveLength(2)
+  expect(roundParentRows(setup.sql, 'competition_round_room_ledger').map(row => row.status))
+    .toEqual(['pending', 'pending'])
+  expect(setup.sql.database.query(
+    'SELECT revision FROM competition_matches WHERE match_id = ?',
+  ).get(matchId)).toEqual({ revision: matchRevision })
+  expect(setup.sql.database.query(
+    `SELECT game_number, game_id, match_revision, status FROM competition_game_provision
+     WHERE match_id = ? AND game_number = ?`,
+  ).get(matchId, gameNumber)).toEqual({
+    game_number: gameNumber, game_id: gameId, match_revision: matchRevision, status: 'provisioned',
+  })
+  expect(setup.sql.database.query(
+    'SELECT receipt_kind, match_id, fingerprint FROM competition_command_receipt WHERE command_id = ?',
+  ).get(provisionCommandId)).toEqual({
+    receipt_kind: 'provisionAssignedScheduledGame', match_id: matchId, fingerprint: provisionFingerprint,
+  })
+  expect(setup.sql.database.query(
+    'SELECT operation_type, match_id, revision, outcome_code FROM competition_audit WHERE command_id = ?',
+  ).get(provisionCommandId)).toEqual({
+    operation_type: 'provisionAssignedScheduledGame', match_id: matchId,
+    revision: matchRevision, outcome_code: 'pending',
+  })
+  expect(setup.sql.database.query(
+    'SELECT receipt_kind, match_id FROM competition_command_receipt WHERE command_id = ?',
+  ).get(sourceCommandId)).toEqual({ receipt_kind: 'matchExecute', match_id: matchId })
+  expect(setup.sql.database.query(
+    'SELECT operation_type, match_id, revision, outcome_code FROM competition_audit WHERE command_id = ?',
+  ).get(sourceCommandId)).toEqual({
+    operation_type: 'clockPause', match_id: matchId, revision: matchRevision, outcome_code: 'success',
+  })
+  expect(setup.sql.database.query(
+    `SELECT game_id, game_number, match_revision, source_command_id, operation
+     FROM competition_clock_control_outbox WHERE control_id = ?`,
+  ).get(controlId)).toEqual({
+    game_id: gameId, game_number: gameNumber, match_revision: matchRevision,
+    source_command_id: sourceCommandId, operation: 'clockPause',
+  })
+
+  let releaseLegacyControl!: () => void
+  const legacyControlGate = new Promise<void>(resolve => { releaseLegacyControl = resolve })
+  const legacyCalls: CompetitionClockControlRequest[] = []
+  const originalGet = setup.env.GAME_ROOM.get
+  setup.env.GAME_ROOM.get = id => {
+    const stub = originalGet(id)
+    return {
+      ...stub,
+      synchronizeCompetitionClock: async (request: CompetitionClockControlRequest) => {
+        legacyCalls.push(structuredClone(request))
+        await legacyControlGate
+        return { ok: true, value: { ...request, idempotent: false } }
+      },
+    }
+  }
+
+  let signalRoundCreateEntered!: (request: { gameId: string; binding: CompetitionGameBinding }) => void
+  const roundCreateEntered = new Promise<{ gameId: string; binding: CompetitionGameBinding }>(resolve => {
+    signalRoundCreateEntered = resolve
+  })
+  let releaseRoundCreate!: () => void
+  const roundCreateGate = new Promise<void>(resolve => { releaseRoundCreate = resolve })
+  let firstRoundCreate = true
+  setup.setCreate(async request => {
+    if (firstRoundCreate) {
+      firstRoundCreate = false
+      signalRoundCreateEntered(structuredClone(request))
+      await roundCreateGate
+    }
+    return moduleReadyAck(setup, request.gameId)
+  })
+
+  let controlCallCountBeforeRelease: number | null = null
+  let controlStatusBeforeRelease: string | undefined
+  let controlClaimBeforeRelease: { claim_id: string | null; claim_version: number } | undefined
+  const alarmPromise = setup.at(400_000, () => setup.room.alarm())
+  const alarmSettled = alarmPromise.then(
+    () => ({ kind: 'fulfilled' as const }),
+    error => ({ kind: 'rejected' as const, error }),
+  )
+  let duplicateControlCallCountBeforeRelease: number | null = null
+  let gateRace: Awaited<typeof alarmSettled> | {
+    kind: 'round-create-entered'; request: { gameId: string; binding: CompetitionGameBinding }
+  } | null = null
+  try {
+    gateRace = await Promise.race([
+      roundCreateEntered.then(request => ({ kind: 'round-create-entered' as const, request })),
+      alarmSettled,
+    ])
+    if (gateRace.kind === 'round-create-entered') {
+      // 固定 microtask checkpoint 只讓已派發 RPC 顯現，不以任意睡眠／超時當失敗 oracle。
+      for (let turn = 0; turn < 64; turn += 1) await Promise.resolve()
+      controlCallCountBeforeRelease = legacyCalls.length
+      const statusBefore = setup.sql.database.query(
+        'SELECT status, claim_id, claim_version FROM competition_clock_control_outbox WHERE control_id = ?',
+      ).get(controlId) as { status: string; claim_id: string | null; claim_version: number } | undefined
+      controlStatusBeforeRelease = statusBefore?.status
+      if (statusBefore) controlClaimBeforeRelease = {
+        claim_id: statusBefore.claim_id,
+        claim_version: statusBefore.claim_version,
+      }
+    }
+  } finally {
+    const duplicateAlarmPromise = setup.at(400_000, () => setup.room.alarm())
+    const duplicateAlarmSettled = duplicateAlarmPromise.then(
+      () => ({ kind: 'fulfilled' as const }),
+      error => ({ kind: 'rejected' as const, error }),
+    )
+    for (let turn = 0; turn < 64; turn += 1) await Promise.resolve()
+    duplicateControlCallCountBeforeRelease = legacyCalls.length
+    releaseRoundCreate()
+    releaseLegacyControl()
+    const duplicateAlarmResult = await duplicateAlarmSettled
+    if (duplicateAlarmResult.kind === 'rejected') throw duplicateAlarmResult.error
+  }
+  const alarmResult = await alarmSettled
+  if (gateRace === null) throw new Error('parent alarm gate race produced no outcome')
+  if (gateRace.kind !== 'round-create-entered') {
+    if (gateRace.kind === 'rejected') throw gateRace.error
+    throw new Error('parent alarm settled before entering the gated round child RPC')
+  }
+  if (alarmResult.kind === 'rejected') throw alarmResult.error
+
+  expect(setup.expected.has(gateRace.request.gameId)).toBe(true)
+  expect(controlCallCountBeforeRelease).toBe(1)
+  expect(duplicateControlCallCountBeforeRelease).toBe(1)
+  expect(controlStatusBeforeRelease).toBe('pending')
+  expect(controlClaimBeforeRelease).toMatchObject({ claim_version: 1 })
+  expect(controlClaimBeforeRelease?.claim_id).toEqual(expect.any(String))
+  expect(legacyCalls).toEqual([controlRequest])
+  expect(setup.creates.map(call => call.gameId).sort())
+    .toEqual([...setup.expected.keys()].sort())
+  expect(roundParentRows(setup.sql, 'competition_clock_control_outbox')[0])
+    .toMatchObject({ control_id: controlId, status: 'completed', claim_id: null, claim_version: 1 })
+  expect(roundParentRows(setup.sql, 'competition_game_provision'))
+    .toContainEqual(expect.objectContaining({ game_id: gameId, status: 'provisioned' }))
+  expect(roundParentRows(setup.sql, 'competition_round_room_ledger').every(row => row.status === 'confirmed')).toBe(true)
+  expect(setup.alarm.scheduledAt).toBeNull()
+})
+
+test('round-release parent delivery module retains a missing release capability and serves pure minimal current view', async () => {
+  const setup = await roundDeliveryModule()
+  const originalGet = setup.env.GAME_ROOM.get
+  setup.env.GAME_ROOM.get = id => {
+    const stub = originalGet(id)
+    Object.defineProperty(stub, 'releaseCompetitionGame', { value: undefined })
+    return stub
+  }
+  const beforeRelease = e6c2aSnapshot(setup)
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(setup.releases).toEqual([])
+  expect(roundParentRows(setup.sql, 'competition_round_release_outbox').every(row => row.status === 'pending')).toBe(true)
+  const beforeRead = e6c2aSnapshot(setup)
+  const read = await setup.read()
+  expect(read).toMatchObject({ ok: true, value: { revision: 41, publication: { status: 'released', roundStartMs: 900_000 } } })
+  expect(JSON.stringify(read)).not.toMatch(/"(?:binding|bindingRef|players|deckSeed|turnOrder|serverState|manifest|initialHp)"\s*:/)
+  expect(e6c2aSnapshot(setup)).toStrictEqual(beforeRead)
+  for (const table of ['competition_meta', 'competition_matches', 'competition_audit', 'competition_command_receipt'] as const) {
+    expect(beforeRead.tables[table]).toStrictEqual(beforeRelease.tables[table])
+  }
+})
+
+test('round-release parent delivery module retries a failed release ACK commit without changing its durable decision', async () => {
+  const setup = await roundDeliveryModule()
+  let fail = true
+  setup.setRelease(async () => {
+    if (fail) { fail = false; setup.sql.failNextQueryContaining = "SET status = 'completed', claim_id = NULL" }
+    return true
+  })
+  await setup.at(400_000, () => setup.room.alarm())
+  const released = await setup.read()
+  expect(setup.alarm.scheduledAt).toBe(430_000)
+  expect(roundParentRows(setup.sql, 'competition_round_release_outbox').map(row => row.status)).toEqual(['pending', 'completed'])
+  await setup.at(430_000, () => setup.reopen().alarm())
+  expect(setup.releases[2]).toStrictEqual(setup.releases[0])
+  expect(await setup.read()).toStrictEqual(released)
+})
+
+test('round-release parent delivery module never proves an ACK from a regressed actual parent clock', async () => {
+  const setup = await roundDeliveryModule()
+  setup.setCreate(async request => {
+    Date.now = () => 100_000
+    return moduleReadyAck(setup, request.gameId)
+  })
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(setup.creates).toHaveLength(1)
+  expect(await setup.read()).toMatchObject({ ok: true, value: { publication: {
+    rooms: [{ ackConfirmedAtMs: null }, { ackConfirmedAtMs: null }],
+  } } })
+  setup.setCreate(async request => moduleReadyAck(setup, request.gameId))
+  await setup.at(430_000, () => setup.reopen().alarm())
+  expect(setup.creates[2]).toStrictEqual(setup.creates[0])
+})
+
+test('round-release parent delivery module rechecks organizer authority after foreign create without failed receipts', async () => {
+  const setup = await roundDeliveryModule()
+  const before = e6c2aSnapshot(setup)
+  setup.setCreate(async request => {
+    setup.sql.database.query("UPDATE competition_acl SET active = 0 WHERE role = 'organizer'").run()
+    return moduleReadyAck(setup, request.gameId)
+  })
+  await setup.at(400_000, () => setup.room.alarm())
+  expect(setup.creates).toHaveLength(1)
+  expect(roundParentRows(setup.sql, 'competition_round_room_ledger').every(row => row.ack_confirmed_at_ms === null)).toBe(true)
+  expect(setup.releases).toEqual([])
+  const after = e6c2aSnapshot(setup)
+  expect(after.tables.competition_command_receipt).toStrictEqual(before.tables.competition_command_receipt)
+  expect(after.tables.competition_audit).toStrictEqual(before.tables.competition_audit)
+})
+
+test('round-release parent delivery module does not dispatch from an incomplete durable release outbox after restart', async () => {
+  const setup = await roundDeliveryModule()
+  await setup.at(400_000, () => setup.room.alarm())
+  setup.setRelease(async () => false)
+  await setup.at(900_000, () => setup.room.alarm())
+  const first = setup.manifest.rooms[0]
+  if (!first) throw new Error('module first room missing')
+  setup.sql.database.query('DELETE FROM competition_round_release_outbox WHERE game_id = ?').run(first.gameId)
+  const before = e6c2aSnapshot(setup)
+  const count = setup.releases.length
+  await setup.at(902_000, () => setup.reopen().alarm())
+  expect(setup.releases).toHaveLength(count)
+  expect(e6c2aSnapshot(setup).tables).toStrictEqual(before.tables)
+})
+
+const roundReleasePouchModules = [
+  'personal-deck', 'five-directions-legend', 'star', 'hero-schools', 'spirit', 'pouch',
+]
+
+for (const preparing of [false, true]) {
+test(`round-release parent ingests an early ${preparing ? 'Pouch preparation' : 'direct action'} GameStarted and starts the schedule at the child sample`, async () => {
+  mock.module('../rules-engine', () => ({
+    callRuleModuleResolution: async (modules: string[] = []) => ({ modules }),
+    callRulesEngine: async (request: {
+      setup: {
+        ruleVersion: '5.16' | '5.17'
+        enabledRuleModules: string[]
+        players: ReturnType<typeof emptyPublicState>['players']
+        turnOrder: string[]
+        initialHp?: ReturnType<typeof emptyPublicState>['hp']
+      }
+    }) => {
+      const setup = request.setup
+      const turnOrder = setup.turnOrder
+      const pouchPreparation = setup.enabledRuleModules.includes('pouch')
+      return {
+        type: 'ready',
+        record: [],
+        state: {
+          ...emptyPublicState(turnOrder),
+          ruleVersion: setup.ruleVersion,
+          enabledRuleModules: setup.enabledRuleModules,
+          status: pouchPreparation ? 'Preparing' : 'InProgress',
+          phase: pouchPreparation ? 'TurnStart' : 'ActiveEffects',
+          currentPlayer: pouchPreparation ? null : turnOrder[0] ?? null,
+          turnNumber: 1,
+          players: setup.players,
+          turnOrder,
+          hp: setup.initialHp ?? emptyPublicState(turnOrder).hp,
+          initialPouchSelection: pouchPreparation ? { remainingPlayers: turnOrder } : null,
+        },
+        battleRecord: { preparation: { entries: [] }, turns: [] },
+        playableActions: [],
+        interaction: { canChooseInitialPouch: pouchPreparation },
+      }
+    },
+  }))
+  const { GameRoom } = await import('./game-room')
+
+  class ChildStorage {
+    readonly values = new Map<string, unknown>()
+    alarm: number | null = null
+
+    get<T>(key: string): Promise<T | undefined>
+    get<T>(keys: string[]): Promise<Map<string, T>>
+    async get<T>(key: string | string[]): Promise<T | undefined | Map<string, T>> {
+      if (typeof key === 'string') return this.values.get(key) as T | undefined
+      return new Map(key.filter(entry => this.values.has(entry))
+        .map(entry => [entry, this.values.get(entry) as T]))
+    }
+
+    async put(key: string | Record<string, unknown>, value?: unknown): Promise<void> {
+      if (typeof key === 'string') {
+        this.values.set(key, value)
+        return
+      }
+      for (const [entry, entryValue] of Object.entries(key)) this.values.set(entry, entryValue)
+    }
+
+    async delete(key: string | string[]): Promise<boolean> {
+      if (Array.isArray(key)) {
+        let deleted = false
+        for (const entry of key) deleted = this.values.delete(entry) || deleted
+        return deleted
+      }
+      return this.values.delete(key)
+    }
+
+    async list<T>(options?: { prefix?: string }): Promise<Map<string, T>> {
+      return new Map([...this.values.entries()]
+        .filter(([key]) => !options?.prefix || key.startsWith(options.prefix))
+        .map(([key, value]) => [key, value as T]))
+    }
+
+    async setAlarm(time: number | Date): Promise<void> {
+      this.alarm = time instanceof Date ? time.getTime() : time
+    }
+
+    async deleteAlarm(): Promise<void> {
+      this.alarm = null
+    }
+
+    async transaction<T>(operation: (storage: ChildStorage) => Promise<T>): Promise<T> {
+      const values = structuredClone([...this.values.entries()])
+      const alarm = this.alarm
+      try {
+        return await operation(this)
+      } catch (error) {
+        this.values.clear()
+        for (const [key, value] of values) this.values.set(key, value)
+        this.alarm = alarm
+        throw error
+      }
+    }
+  }
+
+  class ChildSocket {
+    readyState = 1
+    private attachment: unknown = undefined
+
+    serializeAttachment(value: unknown): void {
+      this.attachment = structuredClone(value)
+    }
+
+    deserializeAttachment(): unknown {
+      return structuredClone(this.attachment)
+    }
+
+    send(_value: string): void {}
+
+    close(): void {
+      this.readyState = 3
+    }
+  }
+
+  const startedRequests: CompetitionRoomInitialGameStartedRequest[] = []
+  const childParentAck = (request: CompetitionRoomInitialGameStartedRequest) => ({ ok: true as const, value: {
+    competitionId: request.competitionId,
+    matchId: request.matchId,
+    matchRevision: request.expectedMatchRevision + 1,
+    commandId: request.commandId,
+    idempotent: false,
+    timeoutEvidence: null,
+    nextClockDeadlineMs: null,
+    matchProjection: null,
+    clockProjection: null,
+  } })
+  const childParentNamespace = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: () => ({
+      ingestInitialGameStarted: async (request: CompetitionRoomInitialGameStartedRequest) => {
+        startedRequests.push(structuredClone(request))
+        throw new Error('simulate initial GameStarted response loss; parent ingestion is asserted below')
+      },
+      executeMatch: async () => { throw new Error('first GameStarted must not use generic clock RPC') },
+      ingestGameTerminal: async () => { throw new Error('unexpected terminal delivery') },
+    }),
+  }
+  const childRooms = new Map<string, ReturnType<typeof createChildRoom>>()
+  const childCreateRequests = new Map<string, CompetitionGameCreateRequest>()
+
+  async function drainChildWaits(pendingWaits: Promise<unknown>[]) {
+    while (pendingWaits.length > 0) {
+      const current = pendingWaits.splice(0)
+      await Promise.all(current)
+    }
+  }
+
+  function createChildRoom() {
+    const storage = new ChildStorage()
+    const sockets: ChildSocket[] = []
+    const pendingWaits: Promise<unknown>[] = []
+    const state = {
+      storage,
+      waitUntil(promise: Promise<unknown>) { pendingWaits.push(promise.catch(() => undefined)) },
+      getWebSockets: () => sockets,
+      acceptWebSocket(socket: ChildSocket) { sockets.push(socket) },
+    }
+    const notifications = {
+      idFromName: (name: string) => name as unknown as DurableObjectId,
+      get: () => ({ fetch: async () => new Response(null, { status: 204 }) }),
+    }
+    const room = new GameRoom(state as unknown as DurableObjectState, {
+      PLAYER_NOTIFICATIONS: notifications,
+      COMPETITION_ROOM: childParentNamespace,
+    } as never)
+    return { room, storage, sockets, pendingWaits }
+  }
+
+  const gameRoomNamespace = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: (id: DurableObjectId) => {
+      const gameId = String(id)
+      return {
+        createCompetitionGame: async (request: CompetitionGameCreateRequest) => {
+          let child = childRooms.get(gameId)
+          if (!child) {
+            child = createChildRoom()
+            childRooms.set(gameId, child)
+          }
+          childCreateRequests.set(gameId, structuredClone(request))
+          return await child.room.createCompetitionGame(request)
+        },
+        releaseCompetitionGame: async (request: CompetitionGameAdmissionRequest) => {
+          const child = childRooms.get(gameId)
+          if (!child) throw new Error('parent released a child before its public create RPC')
+          return await child.room.releaseCompetitionGame(request)
+        },
+        synchronizeCompetitionClock: async () => {
+          throw new Error('first GameStarted must not use referee clock control')
+        },
+      }
+    },
+  }
+
+  const at = async <T>(time: number, operation: () => Promise<T>): Promise<T> => {
+    const previous = Date.now
+    Date.now = () => time
+    try { return await operation() } finally { Date.now = previous }
+  }
+
+  const setup = await roundReleaseParentRoom(preparing ? 2 : 1, preparing, {
+    enabledRuleModules: preparing ? roundReleasePouchModules : [],
+  })
+  const engineCalls: CompetitionRequest[] = []
+  const engine: CompetitionEngineAdapter = async request => {
+    engineCalls.push(structuredClone(request))
+    return await setup.adapter(request)
+  }
+  const roundStartMs = 1_900_000_000_000
+  const startedAtMs = roundStartMs - 60_000
+  const announcement = setup.request({ roundStartMs })
+  const announced = await setup.room.announceRound(announcement)
+  if (!announced.ok) throw new Error(`round announcement failed: ${announced.error.code}`)
+  const parent = new CompetitionRoomClass(
+    stateFor(setup.sql, setup.alarm),
+    { GAME_ROOM: gameRoomNamespace } as never,
+    engine,
+    setup.bit,
+  )
+  const readPublicationRequest = {
+    competitionId: announcement.competitionId,
+    stageId: announcement.stageId,
+    roundNumber: announcement.roundNumber,
+    callerUserId: announcement.callerUserId,
+  }
+  const publicationBeforeRelease = await parent.readRoundPublication(readPublicationRequest)
+  expect(publicationBeforeRelease).toMatchObject({
+    ok: true,
+    value: { publication: { status: 'materializing', rooms: [
+      { ackConfirmedAtMs: null }, { ackConfirmedAtMs: null },
+    ] } },
+  })
+
+  const cutoffMs = roundStartMs - 300_000
+  await at(cutoffMs, () => parent.alarm())
+  const publicationWithAllRoomProofs = await parent.readRoundPublication(readPublicationRequest)
+  expect(publicationWithAllRoomProofs).toMatchObject({
+    ok: true,
+    value: { publication: { status: 'released', rooms: [
+      { ackConfirmedAtMs: cutoffMs }, { ackConfirmedAtMs: cutoffMs },
+    ] } },
+  })
+  if (!publicationWithAllRoomProofs.ok || !publicationWithAllRoomProofs.value.publication) {
+    throw new Error('materialized round publication disappeared')
+  }
+  const targetRoom = publicationWithAllRoomProofs.value.publication.rooms[0]
+  const siblingRoom = publicationWithAllRoomProofs.value.publication.rooms.find(
+    room => room.matchId !== targetRoom?.matchId,
+  )
+  if (!targetRoom || !siblingRoom) throw new Error('materialized round does not contain two fixed rooms')
+  const child = childRooms.get(targetRoom.gameId)
+  const childRequest = childCreateRequests.get(targetRoom.gameId)
+  if (!child || !childRequest) throw new Error('public child create producer did not capture the target room')
+  expect(childRequest.binding.gameNumber).toBe(1)
+  expect(childRequest.binding.enabledRuleModules).toEqual(preparing ? roundReleasePouchModules : [])
+  expect(childRequest.binding.expectedMatchRevision).toBe(2)
+
+  const connectAndReady = async (userId: string) => {
+    const globals = globalThis as unknown as Record<string, unknown>
+    const previousPair = globals.WebSocketPair
+    globals.WebSocketPair = class {
+      client = new ChildSocket()
+      server = new ChildSocket()
+    }
+    try {
+      const response = await child.room.fetch(new Request('https://game-room.internal/socket', {
+        headers: {
+          Upgrade: 'websocket',
+          'x-fewfc-user-id': userId,
+          'x-fewfc-user-name': encodeURIComponent(userId),
+        },
+      }))
+      expect(response.status).toBe(101)
+    } finally {
+      if (previousPair === undefined) Reflect.deleteProperty(globals, 'WebSocketPair')
+      else globals.WebSocketPair = previousPair
+    }
+    expect(await child.room.setCompetitionReady({ actorUserId: userId, ready: true }))
+      .toEqual({ ok: true, ready: true })
+  }
+  await at(startedAtMs, async () => {
+    for (const player of childRequest.binding.players) await connectAndReady(player.userId)
+    await drainChildWaits(child.pendingWaits)
+    await child.room.alarm()
+    await drainChildWaits(child.pendingWaits)
+  })
+  const released = await parent.readRoundPublication(readPublicationRequest)
+  if (!released.ok || !released.value.publication) throw new Error('whole-round release proof missing')
+  expect(released.value.publication.status).toBe('released')
+  expect(released.value.publication.rooms).toHaveLength(2)
+  expect(released.value.publication.rooms.every(room => room.ackConfirmedAtMs === cutoffMs)).toBe(true)
+  expect(released.value.publication.rooms.find(room => room.matchId === targetRoom.matchId)?.gameId)
+    .toBe(targetRoom.gameId)
+
+  await at(startedAtMs, async () => {
+    const childRecord = await child.storage.get<Record<string, unknown>>('gameRecord')
+    const childAdmission = await child.storage.get<unknown>('competitionGameAdmission')
+    const childEvidence = await child.storage.get<unknown>('competitionInitialStartEvidence')
+    const childQueue = await child.storage.get<unknown>('competitionDeliveryQueue')
+    const gameStartedEvents = [...child.storage.values.entries()]
+      .filter(([key, value]) => key.startsWith('event:')
+        && isJsonObject(value) && value.type === 'GameStarted')
+      .map(([, value]) => value)
+    if (!childRecord || typeof childRecord.sequence !== 'number'
+      || !Number.isSafeInteger(childRecord.sequence) || childRecord.sequence < 0
+      || typeof childRecord.gameInstanceId !== 'string'
+      || !isJsonObject(childAdmission) || !isJsonObject(childAdmission.start)
+      || !isJsonObject(childEvidence) || !isJsonObject(childQueue)
+      || !Array.isArray(childQueue.entries) || gameStartedEvents.length !== 1) {
+      throw new Error('GameRoom did not persist a verifiable first-start record and lineage')
+    }
+    const gameStarted = gameStartedEvents[0]
+    if (!isJsonObject(gameStarted) || !isJsonObject(gameStarted.payload)) {
+      throw new Error('GameRoom persisted a malformed GameStarted event')
+    }
+    const pendingInitialEntries = childQueue.entries.filter(entry => (
+      isJsonObject(entry) && entry.kind === 'competitionInitialGameStarted'
+    ))
+    expect(pendingInitialEntries).toHaveLength(1)
+    const pendingInitial = pendingInitialEntries[0]
+    if (!isJsonObject(pendingInitial) || !isJsonObject(pendingInitial.evidence)) {
+      throw new Error('GameRoom did not persist its initial-start queue evidence')
+    }
+    expect(gameStarted.sequence).toBe(childRecord.sequence)
+    expect(gameStarted.createdAt).toBe(new Date(startedAtMs).toISOString())
+    expect(gameStarted.payload).toMatchObject({
+      gameInstanceId: childRecord.gameInstanceId,
+      firstPlayer: childRequest.binding.firstPlayer,
+    })
+    expect(childRecord.setup.enabledRuleModules).toEqual(childRequest.binding.enabledRuleModules)
+    expect(childAdmission.start).toMatchObject({
+      gameInstanceId: childRecord.gameInstanceId,
+      startSequence: gameStarted.sequence,
+      startedAtMs,
+    })
+    expect(childEvidence).toMatchObject({
+      gameInstanceId: childRecord.gameInstanceId,
+      startSequence: gameStarted.sequence,
+      startedAtMs,
+      initialWindow: preparing ? { type: 'preparation' } : { type: 'action' },
+    })
+    expect(pendingInitial.evidence).toStrictEqual(childEvidence)
+
+    // 首個 alarm 提交開局事件／outbox；下一個 alarm 才派送持久 outbox。
+    await child.room.alarm()
+    await drainChildWaits(child.pendingWaits)
+  })
+  const childRequestToParent = startedRequests[0]
+  if (!childRequestToParent) throw new Error('child did not deliver its persisted initial-start request')
+  expect(startedRequests).toHaveLength(1)
+  expect(isCompetitionRoomInitialGameStartedRequest(childRequestToParent)).toBe(true)
+  expect(childRequestToParent.evidence.bindingRef)
+    .toStrictEqual(await competitionGameBindingRefForRequest(childRequest))
+  expect(childRequestToParent.evidence)
+    .toStrictEqual(await child.storage.get('competitionInitialStartEvidence'))
+  expect(childRequestToParent.evidence.releaseDecisionId).toBe(released.value.publication.releaseDecisionId)
+  expect(childRequestToParent.evidence.startedAtMs).toBe(startedAtMs)
+  expect(childRequestToParent.evidence.initialWindow.type).toBe(preparing ? 'preparation' : 'action')
+
+  const tournamentBefore = await parent.readTournament({
+    competitionId: announcement.competitionId,
+    callerUserId: announcement.callerUserId,
+  })
+  const siblingBefore = await parent.readMatch({
+    competitionId: announcement.competitionId,
+    matchId: siblingRoom.matchId,
+    callerUserId: announcement.callerUserId,
+  })
+  if (!tournamentBefore.ok || !siblingBefore.ok) throw new Error('authoritative pre-start query failed')
+  const targetBefore = await parent.readMatch({
+    competitionId: announcement.competitionId,
+    matchId: targetRoom.matchId,
+    callerUserId: announcement.callerUserId,
+  })
+  if (!targetBefore.ok) throw new Error('authoritative pending-match query failed')
+  expect(targetBefore.value.matchRevision).toBe(childRequest.binding.expectedMatchRevision)
+  const beforeTournament = tournamentBefore.value.projection.public
+  if (!isJsonObject(beforeTournament) || !Array.isArray(beforeTournament.stages)) {
+    throw new Error('pre-start tournament projection is malformed')
+  }
+  const beforeStage = beforeTournament.stages[0]
+  if (!isJsonObject(beforeStage) || !Array.isArray(beforeStage.rounds)) {
+    throw new Error('pre-start tournament stage is missing')
+  }
+  const beforeRound = beforeStage.rounds[0]
+  if (!isJsonObject(beforeRound) || !Array.isArray(beforeRound.matches)) {
+    throw new Error('pre-start tournament round is missing')
+  }
+  expect(beforeRound.matches.find(match => isJsonObject(match) && match.matchId === targetRoom.matchId))
+    .toMatchObject({ status: 'pending', started: false })
+
+  const rpc: Partial<CompetitionRoomRoundReleaseRpc> = parent
+  expect(typeof rpc.ingestInitialGameStarted).toBe('function')
+  if (!rpc.ingestInitialGameStarted) throw new Error('initial GameStarted receiver is not callable')
+  const parentSampleMs = startedAtMs + 1_000
+  const result = await at(parentSampleMs, () => rpc.ingestInitialGameStarted!(childRequestToParent))
+  expect(result.ok).toBe(true)
+  if (!result.ok) throw new Error(`initial GameStarted ingest failed: ${result.error.code}`)
+  expect(Reflect.ownKeys(result.value).sort()).toEqual([
+    'clockProjection', 'commandId', 'competitionId', 'idempotent', 'matchId',
+    'matchProjection', 'matchRevision', 'nextClockDeadlineMs', 'timeoutEvidence',
+  ])
+  expect(result.value).toMatchObject({
+    competitionId: announcement.competitionId,
+    matchId: targetRoom.matchId,
+    matchRevision: childRequestToParent.expectedMatchRevision + 1,
+    commandId: childRequestToParent.commandId,
+    idempotent: false,
+    timeoutEvidence: null,
+  })
+  expect(result.value.nextClockDeadlineMs).toEqual(expect.any(Number))
+  const startClockOperation = preparing ? 'clockBeginPreparation' : 'clockBeginAction'
+  expect(result.value.clockProjection).toMatchObject({ operation: startClockOperation })
+  const ackClock = result.value.clockProjection?.public
+  if (!isJsonObject(ackClock) || !isJsonObject(ackClock.clock)) {
+    throw new Error('initial ACK omitted its authoritative action-clock projection')
+  }
+  expect(ackClock.clock.lastObservedMs).toBe(startedAtMs)
+
+  const scheduleOperations = engineCalls.filter(call => call.operation.type === 'tournamentStartMatch'
+    || call.operation.type === 'clockBeginAction' || call.operation.type === 'clockBeginPreparation')
+  expect(scheduleOperations.map(call => call.operation.type)).toEqual([
+    'tournamentStartMatch', startClockOperation,
+  ])
+  expect(scheduleOperations[0]?.trustedTimeMs).toBe(parentSampleMs)
+  expect(scheduleOperations[1]?.trustedTimeMs).toBe(startedAtMs)
+  if (preparing) {
+    if (scheduleOperations[1]?.operation.type !== 'clockBeginPreparation') {
+      throw new Error('Pouch GameStarted did not begin the expected preparation clock')
+    }
+    expect(childRequestToParent.evidence.initialWindow).toEqual({ type: 'preparation' })
+  } else {
+    if (scheduleOperations[1]?.operation.type !== 'clockBeginAction') {
+      throw new Error('direct GameStarted did not begin the expected action clock')
+    }
+    expect(childRequestToParent.evidence.initialWindow).toEqual({
+      type: 'action', team: scheduleOperations[1].operation.team, turn: scheduleOperations[1].operation.turn,
+    })
+  }
+
+  const matchAfter = await parent.readMatch({
+    competitionId: announcement.competitionId,
+    matchId: targetRoom.matchId,
+    callerUserId: announcement.callerUserId,
+  })
+  if (!matchAfter.ok) throw new Error('authoritative started-match query failed')
+  expect(matchAfter.value.matchRevision).toBe(result.value.matchRevision)
+  expect(matchAfter.value.clockProjection).toMatchObject({ operation: startClockOperation })
+  const storedClock = matchAfter.value.clockProjection?.public
+  if (!isJsonObject(storedClock) || !isJsonObject(storedClock.clock)) {
+    throw new Error('authoritative match query omitted its persisted action-clock projection')
+  }
+  expect(storedClock.clock.lastObservedMs).toBe(startedAtMs)
+
+  const tournamentAfter = await parent.readTournament({
+    competitionId: announcement.competitionId,
+    callerUserId: announcement.callerUserId,
+  })
+  if (!tournamentAfter.ok) throw new Error('authoritative tournament query failed')
+  expect(tournamentAfter.value.revision).toBe(tournamentBefore.value.revision + 1)
+  const tournament = tournamentAfter.value.projection.public
+  if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+    throw new Error('authoritative tournament projection is malformed')
+  }
+  const firstStage = tournament.stages[0]
+  if (!isJsonObject(firstStage) || !Array.isArray(firstStage.rounds)) {
+    throw new Error('authoritative tournament stage is missing')
+  }
+  const firstRound = firstStage.rounds[0]
+  if (!isJsonObject(firstRound) || !Array.isArray(firstRound.matches)) {
+    throw new Error('authoritative tournament round is missing')
+  }
+  expect(firstRound.matches.find(match => isJsonObject(match) && match.matchId === targetRoom.matchId))
+    .toMatchObject({ status: 'inProgress', started: true })
+  expect(firstRound.matches.find(match => isJsonObject(match) && match.matchId === siblingRoom.matchId))
+    .toMatchObject({ status: 'pending', started: false })
+
+  const siblingAfter = await parent.readMatch({
+    competitionId: announcement.competitionId,
+    matchId: siblingRoom.matchId,
+    callerUserId: announcement.callerUserId,
+  })
+  expect(siblingAfter).toStrictEqual(siblingBefore)
+  const publicationAfter = await parent.readRoundPublication(readPublicationRequest)
+  expect(publicationAfter.ok && released.ok
+    ? publicationAfter.value.publication : null).toStrictEqual(released.value.publication)
+
+  const beforeParentSample = await parent.readMatchClock({
+    competitionId: announcement.competitionId,
+    matchId: targetRoom.matchId,
+    callerUserId: announcement.callerUserId,
+    trustedTimeMs: parentSampleMs - 1,
+  })
+  expect(beforeParentSample).toMatchObject({ ok: false, error: { code: 'trustedTimeRegression' } })
+})
+}
+
+test('round-release initial GameStarted retries the same durable child entry after committed parent response loss and restart', async () => {
+  mock.module('../rules-engine', () => ({
+    callRuleModuleResolution: async (modules: string[] = []) => ({ modules }),
+    callRulesEngine: async (request: {
+      setup: {
+        ruleVersion: '5.16' | '5.17'
+        enabledRuleModules: string[]
+        players: ReturnType<typeof emptyPublicState>['players']
+        turnOrder: string[]
+        initialHp?: ReturnType<typeof emptyPublicState>['hp']
+      }
+    }) => {
+      const setup = request.setup
+      const turnOrder = setup.turnOrder
+      return {
+        type: 'ready',
+        record: [],
+        state: {
+          ...emptyPublicState(turnOrder),
+          ruleVersion: setup.ruleVersion,
+          enabledRuleModules: setup.enabledRuleModules,
+          status: 'InProgress',
+          phase: 'ActiveEffects',
+          currentPlayer: turnOrder[0] ?? null,
+          turnNumber: 1,
+          players: setup.players,
+          turnOrder,
+          hp: setup.initialHp ?? emptyPublicState(turnOrder).hp,
+          initialPouchSelection: null,
+        },
+        battleRecord: { preparation: { entries: [] }, turns: [] },
+        playableActions: [],
+        interaction: { canChooseInitialPouch: false },
+      }
+    },
+  }))
+  const { GameRoom } = await import('./game-room')
+
+  // 這是跨 instance 共用的 child durable-storage seam；只重建 DO，不重建其內容。
+  class ChildStorage {
+    readonly values = new Map<string, unknown>()
+    alarm: number | null = null
+
+    get<T>(key: string): Promise<T | undefined>
+    get<T>(keys: string[]): Promise<Map<string, T>>
+    async get<T>(key: string | string[]): Promise<T | undefined | Map<string, T>> {
+      if (typeof key === 'string') return this.values.get(key) as T | undefined
+      return new Map(key.filter(entry => this.values.has(entry))
+        .map(entry => [entry, this.values.get(entry) as T]))
+    }
+
+    async put(key: string | Record<string, unknown>, value?: unknown): Promise<void> {
+      if (typeof key === 'string') {
+        this.values.set(key, value)
+        return
+      }
+      for (const [entry, entryValue] of Object.entries(key)) this.values.set(entry, entryValue)
+    }
+
+    async delete(key: string | string[]): Promise<boolean> {
+      if (Array.isArray(key)) {
+        let deleted = false
+        for (const entry of key) deleted = this.values.delete(entry) || deleted
+        return deleted
+      }
+      return this.values.delete(key)
+    }
+
+    async list<T>(options?: { prefix?: string }): Promise<Map<string, T>> {
+      return new Map([...this.values.entries()]
+        .filter(([key]) => !options?.prefix || key.startsWith(options.prefix))
+        .map(([key, value]) => [key, value as T]))
+    }
+
+    async setAlarm(time: number | Date): Promise<void> {
+      this.alarm = time instanceof Date ? time.getTime() : time
+    }
+
+    async deleteAlarm(): Promise<void> {
+      this.alarm = null
+    }
+
+    async transaction<T>(operation: (storage: ChildStorage) => Promise<T>): Promise<T> {
+      const values = structuredClone([...this.values.entries()])
+      const alarm = this.alarm
+      try {
+        return await operation(this)
+      } catch (error) {
+        this.values.clear()
+        for (const [entry, entryValue] of values) this.values.set(entry, entryValue)
+        this.alarm = alarm
+        throw error
+      }
+    }
+  }
+
+  class ChildSocket {
+    readyState = 1
+    private attachment: unknown = undefined
+
+    serializeAttachment(value: unknown): void {
+      this.attachment = structuredClone(value)
+    }
+
+    deserializeAttachment(): unknown {
+      return structuredClone(this.attachment)
+    }
+
+    send(_value: string): void {}
+
+    close(): void {
+      this.readyState = 3
+    }
+  }
+
+  type ParentAck = Awaited<ReturnType<CompetitionRoom['ingestInitialGameStarted']>>
+  const parentRequests: CompetitionRoomInitialGameStartedRequest[] = []
+  const parentAcks: ParentAck[] = []
+  let loseFirstResponse = true
+  let parent: CompetitionRoom
+  const childParentNamespace = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: () => ({
+      ingestInitialGameStarted: async (request: CompetitionRoomInitialGameStartedRequest) => {
+        parentRequests.push(structuredClone(request))
+        const ack = await parent.ingestInitialGameStarted(request)
+        parentAcks.push(structuredClone(ack))
+        if (loseFirstResponse) {
+          loseFirstResponse = false
+          throw new Error('simulated transport response loss after parent commit')
+        }
+        return ack
+      },
+      executeMatch: async () => { throw new Error('initial GameStarted must not use generic clock RPC') },
+      ingestGameTerminal: async () => { throw new Error('unexpected terminal delivery') },
+    }),
+  }
+  const childRooms = new Map<string, ReturnType<typeof createChildRoom>>()
+  const childCreateRequests = new Map<string, CompetitionGameCreateRequest>()
+
+  async function drainChildWaits(pendingWaits: Promise<unknown>[]) {
+    while (pendingWaits.length > 0) {
+      const current = pendingWaits.splice(0)
+      await Promise.all(current)
+    }
+  }
+
+  function createChildRoom(storage = new ChildStorage()) {
+    const sockets: ChildSocket[] = []
+    const pendingWaits: Promise<unknown>[] = []
+    const state = {
+      storage,
+      waitUntil(promise: Promise<unknown>) { pendingWaits.push(promise.catch(() => undefined)) },
+      getWebSockets: () => sockets,
+      acceptWebSocket(socket: ChildSocket) { sockets.push(socket) },
+    }
+    const notifications = {
+      idFromName: (name: string) => name as unknown as DurableObjectId,
+      get: () => ({ fetch: async () => new Response(null, { status: 204 }) }),
+    }
+    const room = new GameRoom(state as unknown as DurableObjectState, {
+      PLAYER_NOTIFICATIONS: notifications,
+      COMPETITION_ROOM: childParentNamespace,
+    } as never)
+    return { room, storage, sockets, pendingWaits }
+  }
+
+  async function connectAndReady(child: ReturnType<typeof createChildRoom>, userId: string) {
+    const globals = globalThis as unknown as Record<string, unknown>
+    const previousPair = globals.WebSocketPair
+    globals.WebSocketPair = class {
+      client = new ChildSocket()
+      server = new ChildSocket()
+    }
+    try {
+      const response = await child.room.fetch(new Request('https://game-room.internal/socket', {
+        headers: { Upgrade: 'websocket', 'x-fewfc-user-id': userId,
+          'x-fewfc-user-name': encodeURIComponent(userId) },
+      }))
+      expect(response.status).toBe(101)
+    } finally {
+      if (previousPair === undefined) Reflect.deleteProperty(globals, 'WebSocketPair')
+      else globals.WebSocketPair = previousPair
+    }
+    expect(await child.room.setCompetitionReady({ actorUserId: userId, ready: true }))
+      .toEqual({ ok: true, ready: true })
+  }
+
+  const gameRoomNamespace = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: (id: DurableObjectId) => {
+      const gameId = String(id)
+      return {
+        createCompetitionGame: async (request: CompetitionGameCreateRequest) => {
+          let child = childRooms.get(gameId)
+          if (!child) {
+            child = createChildRoom()
+            childRooms.set(gameId, child)
+          }
+          childCreateRequests.set(gameId, structuredClone(request))
+          return await child.room.createCompetitionGame(request)
+        },
+        releaseCompetitionGame: async (request: CompetitionGameAdmissionRequest) => {
+          const child = childRooms.get(gameId)
+          if (!child) throw new Error('parent released a child before its public create RPC')
+          return await child.room.releaseCompetitionGame(request)
+        },
+        synchronizeCompetitionClock: async () => {
+          throw new Error('initial GameStarted must not use referee clock control')
+        },
+      }
+    },
+  }
+
+  const at = async <T>(time: number, operation: () => Promise<T>): Promise<T> => {
+    const previous = Date.now
+    Date.now = () => time
+    try { return await operation() } finally { Date.now = previous }
+  }
+
+  const setup = await roundReleaseParentRoom(1, false)
+  const engineCalls: CompetitionRequest[] = []
+  const engine: CompetitionEngineAdapter = async request => {
+    engineCalls.push(structuredClone(request))
+    return await setup.adapter(request)
+  }
+  const roundStartMs = 1_900_000_000_000
+  const startedAtMs = roundStartMs - 60_000
+  const announcement = setup.request({ roundStartMs })
+  const announced = await setup.room.announceRound(announcement)
+  if (!announced.ok) throw new Error(`round announcement failed: ${announced.error.code}`)
+  const parentEnvironment = { GAME_ROOM: gameRoomNamespace } as never
+  const reopenParent = () => new CompetitionRoomClass(
+    stateFor(setup.sql, setup.alarm), parentEnvironment, engine, setup.bit,
+  )
+  parent = reopenParent()
+  const readPublicationRequest = {
+    competitionId: announcement.competitionId,
+    stageId: announcement.stageId,
+    roundNumber: announcement.roundNumber,
+    callerUserId: announcement.callerUserId,
+  }
+  const cutoffMs = roundStartMs - 300_000
+  await at(cutoffMs, () => parent.alarm())
+  const publication = await parent.readRoundPublication(readPublicationRequest)
+  if (!publication.ok || !publication.value.publication) {
+    throw new Error('released round publication or whole-room proof is missing')
+  }
+  const targetRoom = publication.value.publication.rooms[0]
+  if (!targetRoom) throw new Error('released round has no target room')
+  const initialChild = childRooms.get(targetRoom.gameId)
+  const childRequest = childCreateRequests.get(targetRoom.gameId)
+  if (!initialChild || !childRequest) throw new Error('public child create producer did not capture target room')
+  let child = initialChild
+  const released = await parent.readRoundPublication(readPublicationRequest)
+  if (!released.ok || !released.value.publication || released.value.publication.status !== 'released') {
+    throw new Error('whole-round release decision was not durably published')
+  }
+  expect(released.value.publication.rooms.every(room => room.ackConfirmedAtMs === cutoffMs)).toBe(true)
+
+  await at(startedAtMs, async () => {
+    for (const player of childRequest.binding.players) await connectAndReady(child, player.userId)
+    await drainChildWaits(child.pendingWaits)
+  })
+  const storedRecord = await child.storage.get<Record<string, unknown>>('gameRecord')
+  const storedAdmission = await child.storage.get<unknown>('competitionGameAdmission')
+  const storedEvidence = await child.storage.get<unknown>('competitionInitialStartEvidence')
+  const storedQueue = await child.storage.get<unknown>('competitionDeliveryQueue')
+  const startedEvents = [...child.storage.values.entries()]
+    .filter(([key, value]) => key.startsWith('event:') && isJsonObject(value) && value.type === 'GameStarted')
+    .map(([, value]) => value)
+  if (!storedRecord || typeof storedRecord.sequence !== 'number'
+    || !isJsonObject(storedAdmission) || !isJsonObject(storedAdmission.start)
+    || !isJsonObject(storedEvidence) || !isJsonObject(storedQueue)
+    || !Array.isArray(storedQueue.entries) || storedQueue.entries.length !== 1 || startedEvents.length !== 1) {
+    throw new Error('child did not durably create exactly one first-start event and delivery entry')
+  }
+  const gameStarted = startedEvents[0]
+  const initialEntry = storedQueue.entries[0]
+  if (!isJsonObject(gameStarted) || !isJsonObject(initialEntry) || !isJsonObject(initialEntry.evidence)) {
+    throw new Error('durable child start event or queue entry is malformed')
+  }
+  expect(gameStarted.sequence).toBe(storedRecord.sequence)
+  expect(gameStarted.createdAt).toBe(new Date(startedAtMs).toISOString())
+  expect(storedAdmission.start).toMatchObject({
+    gameInstanceId: storedRecord.gameInstanceId,
+    startSequence: gameStarted.sequence,
+    startedAtMs,
+  })
+  expect(storedEvidence).toMatchObject({
+    gameInstanceId: storedRecord.gameInstanceId,
+    startSequence: gameStarted.sequence,
+    startedAtMs,
+  })
+  expect(initialEntry).toMatchObject({
+    kind: 'competitionInitialGameStarted',
+    attempts: 0,
+    nextAttemptAt: startedAtMs,
+    evidence: storedEvidence,
+  })
+  const childStartSnapshot = structuredClone({
+    record: storedRecord,
+    admission: storedAdmission,
+    evidence: storedEvidence,
+    gameStarted,
+    nextSequence: await child.storage.get('nextSequence'),
+  })
+
+  async function publicParentSnapshot(room: CompetitionRoom) {
+    const tournament = await room.readTournament({
+      competitionId: announcement.competitionId,
+      callerUserId: announcement.callerUserId,
+    })
+    const match = await room.readMatch({
+      competitionId: announcement.competitionId,
+      matchId: targetRoom.matchId,
+      callerUserId: announcement.callerUserId,
+    })
+    const audit = await room.audit({
+      competitionId: announcement.competitionId,
+      callerUserId: announcement.callerUserId,
+      limit: 100,
+    })
+    if (!tournament.ok || !match.ok || !audit.ok) throw new Error('parent public snapshot query failed')
+    return structuredClone({
+      tournamentRevision: tournament.value.revision,
+      match: match.value,
+      audit: audit.value.records,
+    })
+  }
+  const beforeDelivery = await publicParentSnapshot(parent)
+  expect(beforeDelivery.match.matchRevision).toBe(childRequest.binding.expectedMatchRevision)
+
+  // 真正呼叫父 receiver；只在父方法已回成功 ACK（SQL 已 commit）後丟棄 transport response。
+  await at(startedAtMs + 1_000, () => child.room.alarm())
+  expect(parentRequests).toHaveLength(1)
+  expect(parentAcks).toHaveLength(1)
+  expect(parentAcks[0]?.ok).toBe(true)
+  if (!parentAcks[0]?.ok) throw new Error('parent did not commit the first-start request before response loss')
+  expect(parentAcks[0].value.idempotent).toBe(false)
+  expect(parentRequests[0]?.evidence).toStrictEqual(storedEvidence)
+
+  const retryQueue = await child.storage.get<unknown>('competitionDeliveryQueue')
+  if (!isJsonObject(retryQueue) || !Array.isArray(retryQueue.entries) || retryQueue.entries.length !== 1) {
+    throw new Error('lost response did not retain the durable first-start entry')
+  }
+  expect(retryQueue).toMatchObject({
+    revisionCursor: childRequest.binding.expectedMatchRevision,
+    entries: [{
+      kind: 'competitionInitialGameStarted',
+      commandId: initialEntry.commandId,
+      expectedMatchRevision: initialEntry.expectedMatchRevision,
+      evidence: storedEvidence,
+      attempts: 1,
+      nextAttemptAt: startedAtMs + 3_000,
+    }],
+  })
+  expect(child.storage.alarm).toBe(startedAtMs + 3_000)
+  const committedParentSnapshot = await publicParentSnapshot(parent)
+  expect(committedParentSnapshot.tournamentRevision).toBe(beforeDelivery.tournamentRevision + 1)
+  expect(committedParentSnapshot.match.matchRevision).toBe(childRequest.binding.expectedMatchRevision + 1)
+  expect(committedParentSnapshot.audit.filter(record => record.commandId === parentRequests[0]?.commandId))
+    .toHaveLength(1)
+  expect(committedParentSnapshot.audit.find(record => record.commandId === parentRequests[0]?.commandId))
+    .toMatchObject({ operationType: 'startScheduledMatch', trustedTimeMs: startedAtMs + 1_000 })
+  const committedStartOperations = engineCalls.filter(call => (
+    call.operation.type === 'tournamentStartMatch' || call.operation.type === 'clockBeginAction'
+  )).length
+
+  // 模擬兩邊 DO instance 重啟；只共用其已持久化的 child storage 與 parent SQL。
+  parent = reopenParent()
+  child = createChildRoom(child.storage)
+  childRooms.set(targetRoom.gameId, child)
+  expect(await publicParentSnapshot(parent)).toStrictEqual(committedParentSnapshot)
+  await at(startedAtMs + 3_000, () => child.room.alarm())
+
+  expect(parentRequests).toHaveLength(2)
+  expect(parentRequests[1]).toStrictEqual(parentRequests[0])
+  expect(parentAcks).toHaveLength(2)
+  expect(parentAcks[1]?.ok).toBe(true)
+  if (!parentAcks[1]?.ok || !parentAcks[0]?.ok) throw new Error('durable retry did not receive parent receipt ACK')
+  expect(parentAcks[1].value).toStrictEqual({ ...parentAcks[0].value, idempotent: true })
+  expect(Reflect.ownKeys(parentAcks[1].value).sort()).toEqual([
+    'clockProjection', 'commandId', 'competitionId', 'idempotent', 'matchId',
+    'matchProjection', 'matchRevision', 'nextClockDeadlineMs', 'timeoutEvidence',
+  ])
+  expect(engineCalls.filter(call => (
+    call.operation.type === 'tournamentStartMatch' || call.operation.type === 'clockBeginAction'
+  ))).toHaveLength(committedStartOperations)
+  expect(await publicParentSnapshot(parent)).toStrictEqual(committedParentSnapshot)
+
+  const finalQueue = await child.storage.get<unknown>('competitionDeliveryQueue')
+  expect(finalQueue).toMatchObject({
+    revisionCursor: childRequest.binding.expectedMatchRevision + 1,
+    entries: [],
+  })
+  expect(await child.storage.get<Record<string, unknown>>('gameRecord')).toStrictEqual(childStartSnapshot.record)
+  expect(await child.storage.get('competitionGameAdmission')).toStrictEqual(childStartSnapshot.admission)
+  expect(await child.storage.get('competitionInitialStartEvidence')).toStrictEqual(childStartSnapshot.evidence)
+  expect(await child.storage.get('nextSequence')).toBe(childStartSnapshot.nextSequence)
+  expect([...child.storage.values.entries()]
+    .filter(([key, value]) => key.startsWith('event:') && isJsonObject(value) && value.type === 'GameStarted')
+    .map(([, value]) => value)).toEqual([childStartSnapshot.gameStarted])
+})
+
+test('round-release parent accepts the second room initial GameStarted after the first room starts without replacing the whole-round proof', async () => {
+  function cloneSnapshot<T>(label: string, value: T): T {
+    try {
+      return structuredClone(value)
+    } catch (cause) {
+      throw new Error(`second-room fixture snapshot failed: ${label}`, { cause })
+    }
+  }
+
+  mock.module('../rules-engine', () => ({
+    callRuleModuleResolution: async (modules: string[] = []) => ({ modules }),
+    callRulesEngine: async (request: {
+      setup: {
+        ruleVersion: '5.16' | '5.17'
+        enabledRuleModules: string[]
+        players: ReturnType<typeof emptyPublicState>['players']
+        turnOrder: string[]
+        initialHp?: ReturnType<typeof emptyPublicState>['hp']
+      }
+    }) => {
+      const setup = request.setup
+      const turnOrder = setup.turnOrder
+      return {
+        type: 'ready',
+        record: [],
+        state: {
+          ...emptyPublicState(turnOrder),
+          ruleVersion: setup.ruleVersion,
+          enabledRuleModules: setup.enabledRuleModules,
+          status: 'InProgress',
+          phase: 'ActiveEffects',
+          currentPlayer: turnOrder[0] ?? null,
+          turnNumber: 1,
+          players: setup.players,
+          turnOrder,
+          hp: setup.initialHp ?? emptyPublicState(turnOrder).hp,
+          initialPouchSelection: null,
+        },
+        battleRecord: { preparation: { entries: [] }, turns: [] },
+        playableActions: [],
+        interaction: { canChooseInitialPouch: false },
+      }
+    },
+  }))
+  const { GameRoom } = await import('./game-room')
+
+  // 沿既有 Bun storage seam；所有 start／evidence／FIFO 寫入都由真 GameRoom 產生。
+  class ChildStorage {
+    readonly values = new Map<string, unknown>()
+    alarm: number | null = null
+
+    get<T>(key: string): Promise<T | undefined>
+    get<T>(keys: string[]): Promise<Map<string, T>>
+    async get<T>(key: string | string[]): Promise<T | undefined | Map<string, T>> {
+      if (typeof key === 'string') return this.values.get(key) as T | undefined
+      return new Map(key.filter(entry => this.values.has(entry))
+        .map(entry => [entry, this.values.get(entry) as T]))
+    }
+
+    async put(key: string | Record<string, unknown>, value?: unknown): Promise<void> {
+      if (typeof key === 'string') {
+        this.values.set(key, value)
+        return
+      }
+      for (const [entry, entryValue] of Object.entries(key)) this.values.set(entry, entryValue)
+    }
+
+    async delete(key: string | string[]): Promise<boolean> {
+      if (Array.isArray(key)) {
+        let deleted = false
+        for (const entry of key) deleted = this.values.delete(entry) || deleted
+        return deleted
+      }
+      return this.values.delete(key)
+    }
+
+    async list<T>(options?: { prefix?: string }): Promise<Map<string, T>> {
+      return new Map([...this.values.entries()]
+        .filter(([key]) => !options?.prefix || key.startsWith(options.prefix))
+        .map(([key, value]) => [key, value as T]))
+    }
+
+    async setAlarm(time: number | Date): Promise<void> {
+      this.alarm = time instanceof Date ? time.getTime() : time
+    }
+
+    async deleteAlarm(): Promise<void> {
+      this.alarm = null
+    }
+
+    async transaction<T>(operation: (storage: ChildStorage) => Promise<T>): Promise<T> {
+      const values = structuredClone([...this.values.entries()])
+      const alarm = this.alarm
+      try {
+        return await operation(this)
+      } catch (error) {
+        this.values.clear()
+        for (const [entry, entryValue] of values) this.values.set(entry, entryValue)
+        this.alarm = alarm
+        throw error
+      }
+    }
+  }
+
+  class ChildSocket {
+    readyState = 1
+    private attachment: unknown = undefined
+
+    serializeAttachment(value: unknown): void { this.attachment = structuredClone(value) }
+    deserializeAttachment(): unknown { return structuredClone(this.attachment) }
+    send(_value: string): void {}
+    close(): void { this.readyState = 3 }
+  }
+
+  type ParentAck = Awaited<ReturnType<CompetitionRoom['ingestInitialGameStarted']>>
+  const deliveries: Array<{ request: CompetitionRoomInitialGameStartedRequest; response: ParentAck }> = []
+  let parent: CompetitionRoom
+  const childParentNamespace = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: () => ({
+      ingestInitialGameStarted: async (request: CompetitionRoomInitialGameStartedRequest) => {
+        const ownedRequest = structuredClone(request)
+        const response = await parent.ingestInitialGameStarted(request)
+        deliveries.push({ request: ownedRequest, response: structuredClone(response) })
+        return response
+      },
+      executeMatch: async () => { throw new Error('initial GameStarted must not use generic clock RPC') },
+      ingestGameTerminal: async () => { throw new Error('unexpected terminal delivery') },
+    }),
+  }
+  const childRooms = new Map<string, ReturnType<typeof createChildRoom>>()
+  const childCreateRequests = new Map<string, CompetitionGameCreateRequest>()
+  const childReleaseRequests: CompetitionGameAdmissionRequest[] = []
+
+  async function drainChildWaits(child: ReturnType<typeof createChildRoom>) {
+    while (child.pendingWaits.length > 0) await Promise.all(child.pendingWaits.splice(0))
+  }
+
+  function createChildRoom() {
+    const storage = new ChildStorage()
+    const sockets: ChildSocket[] = []
+    const pendingWaits: Promise<unknown>[] = []
+    const state = {
+      storage,
+      waitUntil(promise: Promise<unknown>) { pendingWaits.push(promise.catch(() => undefined)) },
+      getWebSockets: () => sockets,
+      acceptWebSocket(socket: ChildSocket) { sockets.push(socket) },
+    }
+    const notifications = {
+      idFromName: (name: string) => name as unknown as DurableObjectId,
+      get: () => ({ fetch: async () => new Response(null, { status: 204 }) }),
+    }
+    const room = new GameRoom(state as unknown as DurableObjectState, {
+      PLAYER_NOTIFICATIONS: notifications,
+      COMPETITION_ROOM: childParentNamespace,
+    } as never)
+    return { room, storage, pendingWaits }
+  }
+
+  async function connectAndReady(child: ReturnType<typeof createChildRoom>, userId: string) {
+    const globals = globalThis as unknown as Record<string, unknown>
+    const previousPair = globals.WebSocketPair
+    globals.WebSocketPair = class { client = new ChildSocket(); server = new ChildSocket() }
+    try {
+      const response = await child.room.fetch(new Request('https://game-room.internal/socket', {
+        headers: { Upgrade: 'websocket', 'x-fewfc-user-id': userId,
+          'x-fewfc-user-name': encodeURIComponent(userId) },
+      }))
+      expect(response.status).toBe(101)
+    } finally {
+      if (previousPair === undefined) Reflect.deleteProperty(globals, 'WebSocketPair')
+      else globals.WebSocketPair = previousPair
+    }
+    expect(await child.room.setCompetitionReady({ actorUserId: userId, ready: true }))
+      .toEqual({ ok: true, ready: true })
+  }
+
+  const gameRoomNamespace = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: (id: DurableObjectId) => {
+      const gameId = String(id)
+      return {
+        createCompetitionGame: async (request: CompetitionGameCreateRequest) => {
+          let child = childRooms.get(gameId)
+          if (!child) {
+            child = createChildRoom()
+            childRooms.set(gameId, child)
+          }
+          childCreateRequests.set(gameId, structuredClone(request))
+          const ack = await child.room.createCompetitionGame(request)
+          return ack
+        },
+        releaseCompetitionGame: async (request: CompetitionGameAdmissionRequest) => {
+          const child = childRooms.get(gameId)
+          if (!child) throw new Error('parent released a child before its public create RPC')
+          childReleaseRequests.push(structuredClone(request))
+          return await child.room.releaseCompetitionGame(request)
+        },
+        synchronizeCompetitionClock: async () => {
+          throw new Error('initial GameStarted must not use referee clock control')
+        },
+      }
+    },
+  }
+  const at = async <T>(time: number, operation: () => Promise<T>): Promise<T> => {
+    const previous = Date.now
+    Date.now = () => time
+    try { return await operation() } finally { Date.now = previous }
+  }
+
+  const setup = await roundReleaseParentRoom(1, false)
+  const roundStartMs = 1_900_000_000_000
+  const firstStartedAtMs = roundStartMs - 60_000
+  const secondStartedAtMs = firstStartedAtMs + 500
+  const firstParentSampleMs = firstStartedAtMs + 1_000
+  const secondParentSampleMs = secondStartedAtMs + 1_500
+  const announcement = setup.request({ roundStartMs })
+  const announced = await setup.room.announceRound(announcement)
+  if (!announced.ok) throw new Error(`round announcement failed: ${announced.error.code}`)
+  parent = new CompetitionRoomClass(
+    stateFor(setup.sql, setup.alarm), { GAME_ROOM: gameRoomNamespace } as never, setup.adapter, setup.bit,
+  )
+  const publicationQuery = {
+    competitionId: announcement.competitionId, stageId: announcement.stageId,
+    roundNumber: announcement.roundNumber, callerUserId: announcement.callerUserId,
+  }
+  const cutoffMs = roundStartMs - 300_000
+  await at(cutoffMs, () => parent.alarm())
+  const materialized = await parent.readRoundPublication(publicationQuery)
+  if (!materialized.ok || !materialized.value.publication) throw new Error('materialized round publication is missing')
+  expect(materialized.value.publication.rooms).toHaveLength(2)
+  expect(childCreateRequests.size).toBe(2)
+  expect(materialized.value.publication.rooms.every(room => room.ackConfirmedAtMs === cutoffMs)).toBe(true)
+  const targets = materialized.value.publication.rooms.map(room => {
+    const child = childRooms.get(room.gameId)
+    const request = childCreateRequests.get(room.gameId)
+    if (!child || !request) throw new Error('public create did not capture both fixed child rooms')
+    expect(request.binding).toMatchObject({ gameNumber: 1, expectedMatchRevision: 2, enabledRuleModules: [] })
+    return { ...room, child, request }
+  })
+  const first = targets[0]
+  const second = targets[1]
+  if (!first || !second) throw new Error('round fixture must contain two non-bye rooms')
+  expect(first.matchId).not.toBe(second.matchId)
+  expect(first.gameId).not.toBe(second.gameId)
+
+  const released = await parent.readRoundPublication(publicationQuery)
+  if (!released.ok || !released.value.publication) throw new Error('whole-round release publication is missing')
+  // 先保留真 public 全值與 primitive，避免 asymmetric expected 污染後續 lineage 比對。
+  const releasedPublication = cloneSnapshot('released publication before assertions', released.value.publication)
+  const releaseDecisionId = releasedPublication.releaseDecisionId
+  expect(typeof releaseDecisionId).toBe('string')
+  expect(released.value.publication).toMatchObject({ status: 'released', releaseDecisionId })
+  expect(released.value.publication.rooms).toStrictEqual(materialized.value.publication.rooms)
+  expect(childReleaseRequests).toHaveLength(2)
+  expect(cloneSnapshot('released publication after assertions', released.value.publication)).toStrictEqual(releasedPublication)
+  const originalReleaseRequests = cloneSnapshot('release requests', childReleaseRequests)
+
+  // 只讀 SQL semantic snapshot：保留每個欄位及原始 JSON 字串，不複製 driver row 身分。
+  function persistedRows(table: 'competition_round_publication' | 'competition_round_room_ledger'
+    | 'competition_round_release_outbox' | 'competition_matches'): JsonObject[] {
+    return roundParentRows(setup.sql, table).map((row, index) => {
+      const columns: Array<[string, string | number | null]> = []
+      for (const key of Reflect.ownKeys(row)) {
+        const descriptor = Object.getOwnPropertyDescriptor(row, key)
+        if (typeof key !== 'string' || !descriptor || !descriptor.enumerable || !('value' in descriptor)) {
+          throw new Error(`second-room SQL snapshot has a non-data column: ${table}[${index}]`)
+        }
+        const value: unknown = descriptor.value
+        if (value !== null && typeof value !== 'string'
+          && !(typeof value === 'number' && Number.isFinite(value))) {
+          throw new Error(`second-room SQL snapshot has a non-scalar value: ${table}[${index}].${key}`)
+        }
+        columns.push([key, value])
+      }
+      return Object.fromEntries(columns)
+    })
+  }
+  const wholeRoundProof = () => ({
+    publication: persistedRows('competition_round_publication'),
+    ledger: persistedRows('competition_round_room_ledger'),
+    release: persistedRows('competition_round_release_outbox'),
+  })
+  const originalWholeProof = wholeRoundProof()
+
+  async function captureChildStart(target: typeof targets[number], startedAtMs: number) {
+    await at(startedAtMs, async () => {
+      for (const player of target.request.binding.players) await connectAndReady(target.child, player.userId)
+      await drainChildWaits(target.child)
+    })
+    const record = await target.child.storage.get<Record<string, unknown>>('gameRecord')
+    const admission = await target.child.storage.get<unknown>('competitionGameAdmission')
+    const evidence = await target.child.storage.get<unknown>('competitionInitialStartEvidence')
+    const queue = await target.child.storage.get<unknown>('competitionDeliveryQueue')
+    const events = [...target.child.storage.values.entries()]
+      .filter(([key, value]) => key.startsWith('event:') && isJsonObject(value) && value.type === 'GameStarted')
+      .map(([, value]) => value)
+    if (!record || typeof record.sequence !== 'number' || !Number.isSafeInteger(record.sequence) || record.sequence < 0
+      || !isJsonObject(admission) || !isJsonObject(admission.start) || !isJsonObject(evidence)
+      || !isJsonObject(queue) || !Array.isArray(queue.entries) || queue.entries.length !== 1 || events.length !== 1) {
+      throw new Error('child did not produce a verifiable first-start event, evidence and FIFO entry')
+    }
+    const event = events[0]
+    const entry = queue.entries[0]
+    if (!isJsonObject(event) || !isJsonObject(event.payload) || !isJsonObject(entry)) {
+      throw new Error('durable initial-start event or entry is malformed')
+    }
+    const label = `child start ${target.gameId}`
+    const evidenceBeforeAssertions = cloneSnapshot(`${label}.evidence.beforeAssertions`, evidence)
+    expect(event).toMatchObject({ sequence: record.sequence, createdAt: new Date(startedAtMs).toISOString(),
+      payload: { gameInstanceId: record.gameInstanceId, firstPlayer: target.request.binding.firstPlayer } })
+    expect(admission.start).toMatchObject({ gameInstanceId: record.gameInstanceId,
+      startSequence: event.sequence, startedAtMs })
+    expect(evidence).toMatchObject({ gameInstanceId: record.gameInstanceId, startSequence: event.sequence,
+      startedAtMs, releaseDecisionId, initialWindow: { type: 'action' } })
+    expect(evidence.bindingRef).toStrictEqual(await competitionGameBindingRefForRequest(target.request))
+    // Matcher expected 用完整獨立副本，不能持有 storage raw evidence 或回傳 snapshot 的引用。
+    expect(entry).toMatchObject({ kind: 'competitionInitialGameStarted',
+      evidence: cloneSnapshot(`${label}.entryMatcherExpectedEvidence`, evidenceBeforeAssertions),
+      expectedMatchRevision: target.request.binding.expectedMatchRevision, attempts: 0, nextAttemptAt: startedAtMs })
+    expect(await target.child.storage.get('competitionBinding')).toStrictEqual(target.request.binding)
+    const evidenceAfterAssertions = cloneSnapshot(`${label}.evidence.afterAssertions`, evidence)
+    expect(evidenceAfterAssertions).toStrictEqual(evidenceBeforeAssertions)
+    // 完整分項 snapshot 保留資料並定位失敗來源，不依賴 fake storage 的跨欄位傳址。
+    return {
+      record: cloneSnapshot(`${label}.record`, record),
+      admission: cloneSnapshot(`${label}.admission`, admission),
+      evidence: evidenceBeforeAssertions,
+      event: cloneSnapshot(`${label}.event`, event),
+      queue: cloneSnapshot(`${label}.queue`, queue),
+      entry: cloneSnapshot(`${label}.entry`, entry),
+    }
+  }
+  // 兩個子房先各自提交真 start；在此之前 parent 尚未收到任何 initial delivery。
+  const firstStart = await captureChildStart(first, firstStartedAtMs)
+  const secondStart = await captureChildStart(second, secondStartedAtMs)
+  expect(deliveries).toHaveLength(0)
+  expect(secondStart.evidence.startedAtMs).toBeLessThan(firstParentSampleMs)
+
+  async function readParent() {
+    const query = { competitionId: announcement.competitionId, callerUserId: announcement.callerUserId }
+    const tournament = await parent.readTournament(query)
+    const firstMatch = await parent.readMatch({ ...query, matchId: first.matchId })
+    const secondMatch = await parent.readMatch({ ...query, matchId: second.matchId })
+    const audit = await parent.audit({ ...query, limit: 100 })
+    if (!tournament.ok || !firstMatch.ok || !secondMatch.ok || !audit.ok) throw new Error('public parent state query failed')
+    return cloneSnapshot('public parent state', { tournament: tournament.value, first: firstMatch.value,
+      second: secondMatch.value, audit: audit.value.records })
+  }
+  function scheduledMatches(value: JsonValue) {
+    if (!isJsonObject(value) || !Array.isArray(value.stages)) throw new Error('tournament stages are missing')
+    const stage = value.stages.find(entry => isJsonObject(entry) && isJsonObject(entry.config)
+      && entry.config.stageId === announcement.stageId)
+    if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) throw new Error('published stage is missing')
+    const round = stage.rounds.find(entry => isJsonObject(entry) && entry.roundNumber === announcement.roundNumber)
+    if (!isJsonObject(round) || !Array.isArray(round.matches)) throw new Error('published round matches are missing')
+    return round.matches
+  }
+  function clockView(value: JsonValue | undefined) {
+    if (!isJsonObject(value) || !isJsonObject(value.clock)) throw new Error('initial action-clock projection is missing')
+    return value.clock
+  }
+  function storedMatch(matchId: string) {
+    const row = persistedRows('competition_matches').find(entry => entry.match_id === matchId)
+    if (!row) throw new Error('persisted target match row is missing')
+    return row
+  }
+  const before = await readParent()
+  expect(scheduledMatches(before.tournament.projection.public)).toEqual(expect.arrayContaining([
+    expect.objectContaining({ matchId: first.matchId, status: 'pending', started: false }),
+    expect.objectContaining({ matchId: second.matchId, status: 'pending', started: false }),
+  ]))
+  expect(before.first.matchRevision).toBe(first.request.binding.expectedMatchRevision)
+  expect(before.second.matchRevision).toBe(second.request.binding.expectedMatchRevision)
+
+  await at(firstParentSampleMs, () => first.child.room.alarm())
+  expect(deliveries).toHaveLength(1)
+  const firstDelivery = deliveries[0]
+  if (!firstDelivery) throw new Error('first child did not deliver its durable initial entry')
+  expect(isCompetitionRoomInitialGameStartedRequest(firstDelivery.request)).toBe(true)
+  expect(firstDelivery.request.evidence).toStrictEqual(firstStart.evidence)
+  expect(firstDelivery.response).toMatchObject({ ok: true })
+  if (!firstDelivery.response.ok) throw new Error(`first receiver prerequisite failed: ${firstDelivery.response.error.code}`)
+  const afterFirst = await readParent()
+  const firstScheduled = scheduledMatches(afterFirst.tournament.projection.public)
+    .find(entry => isJsonObject(entry) && entry.matchId === first.matchId)
+  expect(firstScheduled).toMatchObject({ status: 'inProgress', started: true })
+  expect(scheduledMatches(afterFirst.tournament.projection.public)
+    .find(entry => isJsonObject(entry) && entry.matchId === second.matchId))
+    .toMatchObject({ status: 'pending', started: false })
+  expect(afterFirst.tournament.revision).toBe(before.tournament.revision + 1)
+  expect(afterFirst.first.matchRevision).toBe(first.request.binding.expectedMatchRevision + 1)
+  expect(clockView(afterFirst.first.clockProjection?.public).lastObservedMs).toBe(firstStartedAtMs)
+  expect(afterFirst.second).toStrictEqual(before.second)
+  expect(afterFirst.second.clockProjection).toMatchObject({ operation: 'clockCreate' })
+  expect(await second.child.storage.get('competitionDeliveryQueue')).toStrictEqual(secondStart.queue)
+  const publicationAfterFirst = await parent.readRoundPublication(publicationQuery)
+  expect(publicationAfterFirst).toMatchObject({ ok: true })
+  if (!publicationAfterFirst.ok) throw new Error('stored whole-round publication became unreadable after first start')
+  expect(publicationAfterFirst.value.publication).toStrictEqual(releasedPublication)
+  expect(wholeRoundProof()).toStrictEqual(originalWholeProof)
+  const firstStoredAfterCommit = storedMatch(first.matchId)
+  const firstAudit = afterFirst.audit.filter(record => record.matchId === first.matchId)
+  expect(firstAudit.filter(record => record.commandId === firstDelivery.request.commandId))
+    .toEqual([expect.objectContaining({ operationType: 'startScheduledMatch', trustedTimeMs: firstParentSampleMs })])
+
+  await at(secondParentSampleMs, () => second.child.room.alarm())
+  expect(deliveries).toHaveLength(2)
+  const secondDelivery = deliveries[1]
+  if (!secondDelivery) throw new Error('second child did not deliver its durable initial entry')
+  expect(isCompetitionRoomInitialGameStartedRequest(secondDelivery.request)).toBe(true)
+  expect(secondDelivery.request).toMatchObject({ matchId: second.matchId,
+    commandId: secondStart.entry.commandId, expectedMatchRevision: second.request.binding.expectedMatchRevision })
+  expect(secondDelivery.request.evidence).toStrictEqual(secondStart.evidence)
+  // 唯一新 target：第一房已 Started 的同一全輪 proof 必須仍接受第二房的真 initial entry。
+  expect(secondDelivery.response).toMatchObject({ ok: true })
+  if (!secondDelivery.response.ok) throw new Error(`second initial receiver failed: ${secondDelivery.response.error.code}`)
+  const ack = secondDelivery.response.value
+  const ackBeforeAssertions = cloneSnapshot('second initial ACK before assertions', ack)
+  const nextClockDeadlineMs = ackBeforeAssertions.nextClockDeadlineMs
+  expect(typeof nextClockDeadlineMs).toBe('number')
+  expect(Reflect.ownKeys(ack).sort()).toEqual([
+    'clockProjection', 'commandId', 'competitionId', 'idempotent', 'matchId',
+    'matchProjection', 'matchRevision', 'nextClockDeadlineMs', 'timeoutEvidence',
+  ])
+  expect(ack).toMatchObject({ competitionId: announcement.competitionId, matchId: second.matchId,
+    commandId: secondDelivery.request.commandId, matchRevision: second.request.binding.expectedMatchRevision + 1,
+    idempotent: false, timeoutEvidence: null, nextClockDeadlineMs })
+  expect(ack.clockProjection).toMatchObject({ operation: 'clockBeginAction' })
+  expect(clockView(ack.clockProjection?.public).lastObservedMs).toBe(secondStartedAtMs)
+  expect(cloneSnapshot('second initial ACK after assertions', ack)).toStrictEqual(ackBeforeAssertions)
+  const afterSecond = await readParent()
+  expect(afterSecond.tournament.revision).toBe(afterFirst.tournament.revision + 1)
+  expect(afterSecond.second).toStrictEqual({ competitionId: announcement.competitionId,
+    matchId: second.matchId, matchRevision: ack.matchRevision,
+    matchProjection: ack.matchProjection, clockProjection: ack.clockProjection })
+  expect(scheduledMatches(afterSecond.tournament.projection.public)
+    .find(entry => isJsonObject(entry) && entry.matchId === second.matchId))
+    .toMatchObject({ status: 'inProgress', started: true })
+  expect(afterSecond.first).toStrictEqual(afterFirst.first)
+  expect(scheduledMatches(afterSecond.tournament.projection.public)
+    .find(entry => isJsonObject(entry) && entry.matchId === first.matchId)).toStrictEqual(firstScheduled)
+  expect(storedMatch(first.matchId)).toStrictEqual(firstStoredAfterCommit)
+  const secondStoredAfterCommit = storedMatch(second.matchId)
+  expect(secondStoredAfterCommit).toMatchObject({ revision: ack.matchRevision, last_trusted_time_ms: secondStartedAtMs })
+  if (typeof secondStoredAfterCommit.clock_checkpoint_json !== 'string') throw new Error('second persisted clock is missing')
+  expect(JSON.parse(secondStoredAfterCommit.clock_checkpoint_json)).toMatchObject({ lastObservedMs: secondStartedAtMs })
+  expect(afterSecond.audit.filter(record => record.matchId === first.matchId)).toStrictEqual(firstAudit)
+  expect(afterSecond.audit).toHaveLength(afterFirst.audit.length + 1)
+  expect(afterSecond.audit.filter(record => record.commandId === secondDelivery.request.commandId))
+    .toEqual([expect.objectContaining({ matchId: second.matchId, operationType: 'startScheduledMatch',
+      trustedTimeMs: secondParentSampleMs })])
+  const publicationAfterSecond = await parent.readRoundPublication(publicationQuery)
+  expect(publicationAfterSecond).toMatchObject({ ok: true })
+  if (!publicationAfterSecond.ok) throw new Error('stored whole-round publication became unreadable after second start')
+  expect(publicationAfterSecond.value.publication).toStrictEqual(releasedPublication)
+  expect(wholeRoundProof()).toStrictEqual(originalWholeProof)
+  expect(childReleaseRequests).toStrictEqual(originalReleaseRequests)
+
+  for (const [index, target] of targets.entries()) {
+    const start = index === 0 ? firstStart : secondStart
+    const delivery = deliveries[index]
+    if (!delivery) throw new Error('initial-start delivery receipt is missing')
+    const receipts = roundParentRows(setup.sql, 'competition_command_receipt')
+      .filter(row => row.command_id === delivery.request.commandId)
+    expect(receipts).toHaveLength(1)
+    const receipt = receipts[0]
+    if (!receipt || typeof receipt.response_json !== 'string') throw new Error('persisted initial receipt is malformed')
+    expect(receipt).toMatchObject({ receipt_kind: 'ingestInitialGameStarted', match_id: target.matchId })
+    expect(JSON.parse(receipt.response_json)).toStrictEqual({ ack: delivery.response, evidence: start.evidence })
+    expect(await target.child.storage.get('competitionDeliveryQueue')).toMatchObject({
+      revisionCursor: target.request.binding.expectedMatchRevision + 1, entries: [],
+    })
+    expect(await target.child.storage.get('competitionBinding')).toStrictEqual(target.request.binding)
+    expect(await target.child.storage.get('gameRecord')).toStrictEqual(start.record)
+    expect(await target.child.storage.get('competitionGameAdmission')).toStrictEqual(start.admission)
+    expect(await target.child.storage.get('competitionInitialStartEvidence')).toStrictEqual(start.evidence)
+    expect([...target.child.storage.values.entries()]
+      .filter(([key, value]) => key.startsWith('event:') && isJsonObject(value) && value.type === 'GameStarted')
+      .map(([, value]) => value)).toEqual([start.event])
+  }
+})
+
+test('round-release initial GameStarted late receipt failure rolls back the joint parent commit and retries the same child entry', async () => {
+  function cloneSnapshot<T>(label: string, value: T): T {
+    try { return structuredClone(value) } catch (cause) {
+      throw new Error('initial rollback fixture snapshot failed: ' + label, { cause })
+    }
+  }
+  // 僅 RulesEngine system boundary 使用既有 fixed harness；首局 event/evidence 由 GameRoom 提交。
+  mock.module('../rules-engine', () => ({
+    callRuleModuleResolution: async (modules: string[] = []) => ({ modules }),
+    callRulesEngine: async (request: {
+      setup: {
+        ruleVersion: '5.16' | '5.17'
+        enabledRuleModules: string[]
+        players: ReturnType<typeof emptyPublicState>['players']
+        turnOrder: string[]
+        initialHp?: ReturnType<typeof emptyPublicState>['hp']
+      }
+    }) => {
+      const setup = request.setup
+      const turnOrder = setup.turnOrder
+      return {
+        type: 'ready', record: [],
+        state: {
+          ...emptyPublicState(turnOrder), ruleVersion: setup.ruleVersion,
+          enabledRuleModules: setup.enabledRuleModules, status: 'InProgress', phase: 'ActiveEffects',
+          currentPlayer: turnOrder[0] ?? null, turnNumber: 1, players: setup.players, turnOrder,
+          hp: setup.initialHp ?? emptyPublicState(turnOrder).hp, initialPouchSelection: null,
+        },
+        battleRecord: { preparation: { entries: [] }, turns: [] }, playableActions: [],
+        interaction: { canChooseInitialPouch: false },
+      }
+    },
+  }))
+  const { GameRoom } = await import('./game-room')
+
+  // 沿既有 Bun KV seam，不改共同 helper，也不聲稱平台 storage/restart 實證。
+  class ChildStorage {
+    readonly values = new Map<string, unknown>()
+    alarm: number | null = null
+
+    get<T>(key: string): Promise<T | undefined>
+    get<T>(keys: string[]): Promise<Map<string, T>>
+    async get<T>(key: string | string[]): Promise<T | undefined | Map<string, T>> {
+      if (typeof key === 'string') return this.values.get(key) as T | undefined
+      return new Map(key.filter(entry => this.values.has(entry))
+        .map(entry => [entry, this.values.get(entry) as T]))
+    }
+
+    async put(key: string | Record<string, unknown>, value?: unknown): Promise<void> {
+      if (typeof key === 'string') { this.values.set(key, value); return }
+      for (const [entry, entryValue] of Object.entries(key)) this.values.set(entry, entryValue)
+    }
+
+    async delete(key: string | string[]): Promise<boolean> {
+      if (!Array.isArray(key)) return this.values.delete(key)
+      let deleted = false
+      for (const entry of key) deleted = this.values.delete(entry) || deleted
+      return deleted
+    }
+
+    async list<T>(options?: { prefix?: string }): Promise<Map<string, T>> {
+      return new Map([...this.values.entries()]
+        .filter(([key]) => !options?.prefix || key.startsWith(options.prefix))
+        .map(([key, value]) => [key, value as T]))
+    }
+
+    async setAlarm(time: number | Date): Promise<void> {
+      this.alarm = time instanceof Date ? time.getTime() : time
+    }
+    async deleteAlarm(): Promise<void> { this.alarm = null }
+
+    async transaction<T>(operation: (storage: ChildStorage) => Promise<T>): Promise<T> {
+      const values = structuredClone([...this.values.entries()])
+      const alarm = this.alarm
+      try { return await operation(this) } catch (error) {
+        this.values.clear()
+        for (const [entry, entryValue] of values) this.values.set(entry, entryValue)
+        this.alarm = alarm
+        throw error
+      }
+    }
+  }
+  class ChildSocket {
+    readyState = 1
+    private attachment: unknown = undefined
+    serializeAttachment(value: unknown): void { this.attachment = structuredClone(value) }
+    deserializeAttachment(): unknown { return structuredClone(this.attachment) }
+    send(_value: string): void {}
+    close(): void { this.readyState = 3 }
+  }
+
+  type ParentAck = Awaited<ReturnType<CompetitionRoom['ingestInitialGameStarted']>>
+  const requests: CompetitionRoomInitialGameStartedRequest[] = []
+  const acknowledgements: ParentAck[] = []
+  let parent: CompetitionRoom
+  const parentNamespace = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: () => ({
+      ingestInitialGameStarted: async (request: CompetitionRoomInitialGameStartedRequest) => {
+        requests.push(cloneSnapshot('transport request', request))
+        const response = await parent.ingestInitialGameStarted(request)
+        acknowledgements.push(cloneSnapshot('transport acknowledgement', response))
+        return response
+      },
+      executeMatch: async () => { throw new Error('initial delivery must not use generic clock RPC') },
+      ingestGameTerminal: async () => { throw new Error('unexpected terminal delivery') },
+    }),
+  }
+  function createChildRoom() {
+    const storage = new ChildStorage()
+    const sockets: ChildSocket[] = []
+    const pendingWaits: Promise<unknown>[] = []
+    const waitErrors: unknown[] = []
+    const state = {
+      storage,
+      waitUntil(promise: Promise<unknown>) { pendingWaits.push(promise.catch(error => { waitErrors.push(error) })) },
+      getWebSockets: () => sockets,
+      acceptWebSocket(socket: ChildSocket) { sockets.push(socket) },
+    }
+    const notifications = {
+      idFromName: (name: string) => name as unknown as DurableObjectId,
+      get: () => ({ fetch: async () => new Response(null, { status: 204 }) }),
+    }
+    const room = new GameRoom(state as unknown as DurableObjectState, {
+      PLAYER_NOTIFICATIONS: notifications, COMPETITION_ROOM: parentNamespace,
+    } as never)
+    return { room, storage, pendingWaits, waitErrors }
+  }
+  async function connectAndReady(child: ReturnType<typeof createChildRoom>, userId: string) {
+    const globals = globalThis as unknown as Record<string, unknown>
+    const previousPair = globals.WebSocketPair
+    globals.WebSocketPair = class { client = new ChildSocket(); server = new ChildSocket() }
+    try {
+      const response = await child.room.fetch(new Request('https://game-room.internal/socket', {
+        headers: { Upgrade: 'websocket', 'x-fewfc-user-id': userId,
+          'x-fewfc-user-name': encodeURIComponent(userId) },
+      }))
+      expect(response.status).toBe(101)
+    } finally {
+      if (previousPair === undefined) Reflect.deleteProperty(globals, 'WebSocketPair')
+      else globals.WebSocketPair = previousPair
+    }
+    expect(await child.room.setCompetitionReady({ actorUserId: userId, ready: true }))
+      .toStrictEqual({ ok: true, ready: true })
+  }
+  async function drainChildWaits(child: ReturnType<typeof createChildRoom>) {
+    while (child.pendingWaits.length > 0) await Promise.all(child.pendingWaits.splice(0))
+    if (child.waitErrors.length > 0) {
+      throw new Error('initial rollback fixture child waitUntil failed', { cause: child.waitErrors[0] })
+    }
+  }
+  const childRooms = new Map<string, ReturnType<typeof createChildRoom>>()
+  const createRequests = new Map<string, CompetitionGameCreateRequest>()
+  const releaseRequests: CompetitionGameAdmissionRequest[] = []
+  const gameNamespace = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: (id: DurableObjectId) => {
+      const gameId = String(id)
+      return {
+        createCompetitionGame: async (request: CompetitionGameCreateRequest) => {
+          let child = childRooms.get(gameId)
+          if (!child) { child = createChildRoom(); childRooms.set(gameId, child) }
+          createRequests.set(gameId, cloneSnapshot('create request', request))
+          return await child.room.createCompetitionGame(request)
+        },
+        releaseCompetitionGame: async (request: CompetitionGameAdmissionRequest) => {
+          const child = childRooms.get(gameId)
+          if (!child) throw new Error('release arrived before public child create')
+          releaseRequests.push(cloneSnapshot('release request', request))
+          return await child.room.releaseCompetitionGame(request)
+        },
+        synchronizeCompetitionClock: async () => { throw new Error('unexpected referee clock control') },
+      }
+    },
+  }
+  const at = async <T>(time: number, operation: () => Promise<T>): Promise<T> => {
+    const previous = Date.now
+    Date.now = () => time
+    try { return await operation() } finally { Date.now = previous }
+  }
+  const setup = await roundReleaseParentRoom(1, false)
+  const engineCalls: CompetitionRequest[] = []
+  const engine: CompetitionEngineAdapter = async request => {
+    engineCalls.push(cloneSnapshot('parent engine request', request))
+    return await setup.adapter(request)
+  }
+  const roundStartMs = 1_900_000_000_000
+  const startedAtMs = roundStartMs - 60_000
+  const firstDeliveryAtMs = startedAtMs + 1_000
+  const cutoffMs = roundStartMs - 300_000
+  const announcement = setup.request({ roundStartMs })
+  const announced = await setup.room.announceRound(announcement)
+  if (!announced.ok) throw new Error('round announcement failed: ' + announced.error.code)
+  parent = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm),
+    { GAME_ROOM: gameNamespace } as never, engine, setup.bit)
+  const query = { competitionId: announcement.competitionId, callerUserId: announcement.callerUserId }
+  const publicationQuery = { ...query, stageId: announcement.stageId, roundNumber: announcement.roundNumber }
+  await at(cutoffMs, () => parent.alarm())
+  const materialized = await parent.readRoundPublication(publicationQuery)
+  if (!materialized.ok || !materialized.value.publication) throw new Error('materialized whole round is missing')
+  expect(materialized.value.publication.rooms).toHaveLength(2)
+  expect(createRequests.size).toBe(2)
+  expect(materialized.value.publication.rooms.every(room => room.ackConfirmedAtMs === cutoffMs)).toBe(true)
+  const targets = materialized.value.publication.rooms.map(room => {
+    const child = childRooms.get(room.gameId)
+    const request = createRequests.get(room.gameId)
+    if (!child || !request) throw new Error('public create did not capture both fixed rooms')
+    validateCompetitionGameBinding(request.binding)
+    expect(request.binding).toMatchObject({ gameNumber: 1, expectedMatchRevision: 2, enabledRuleModules: [] })
+    expect(request.binding.roundStartMs).toBe(roundStartMs)
+    return { ...room, child, request }
+  })
+  const target = targets[0]
+  const sibling = targets[1]
+  if (!target || !sibling) throw new Error('fixture requires two non-bye rooms')
+  expect(target.matchId).not.toBe(sibling.matchId)
+
+  const released = await parent.readRoundPublication(publicationQuery)
+  if (!released.ok || !released.value.publication) throw new Error('released whole round is missing')
+  const releasedPublication = cloneSnapshot('released publication', released.value.publication)
+  const releaseDecisionId = releasedPublication.releaseDecisionId
+  expect(typeof releaseDecisionId).toBe('string')
+  expect(releasedPublication.status).toBe('released')
+  expect(releasedPublication.rooms).toStrictEqual(materialized.value.publication.rooms)
+  expect(releaseRequests).toHaveLength(2)
+  for (const room of targets) {
+    expect(releaseRequests.find(request => request.bindingRef.gameId === room.gameId)).toStrictEqual({
+      bindingRef: await competitionGameBindingRefForRequest(room.request), commandId: releaseDecisionId,
+    })
+  }
+  const originalReleases = cloneSnapshot('whole-round release requests', releaseRequests)
+
+  // 完整 scalar SQL semantic rows：不 clone driver identity、不省欄、不改原始 JSON 字串。
+  function persistedTables(): Record<string, JsonObject[]> {
+    const names = setup.sql.database.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()
+    const tables: Record<string, JsonObject[]> = {}
+    for (const entry of names) {
+      if (!isJsonObject(entry) || typeof entry.name !== 'string' || !/^[a-z_][a-z0-9_]*$/.test(entry.name)) {
+        throw new Error('SQL snapshot table identity is malformed')
+      }
+      const table = entry.name
+      tables[table] = setup.sql.database.query('SELECT * FROM ' + table + ' ORDER BY rowid').all().map((row, index) => {
+        if (!isJsonObject(row)) throw new Error('SQL snapshot row is malformed: ' + table + '[' + index + ']')
+        const columns: Array<[string, string | number | null]> = []
+        for (const key of Reflect.ownKeys(row)) {
+          const descriptor = Object.getOwnPropertyDescriptor(row, key)
+          if (typeof key !== 'string' || !descriptor || !descriptor.enumerable || !('value' in descriptor)) {
+            throw new Error('SQL snapshot column is not own data: ' + table + '[' + index + ']')
+          }
+          const value: unknown = descriptor.value
+          if (value !== null && typeof value !== 'string'
+            && !(typeof value === 'number' && Number.isFinite(value))) {
+            throw new Error('SQL snapshot scalar is malformed: ' + table + '[' + index + '].' + key)
+          }
+          columns.push([key, value])
+        }
+        return Object.fromEntries(columns)
+      })
+    }
+    return tables
+  }
+  async function publicParentSnapshot() {
+    const tournament = await parent.readTournament(query)
+    const matches = await Promise.all(targets.map(async room => {
+      const result = await parent.readMatch({ ...query, matchId: room.matchId })
+      if (!result.ok) throw new Error('public match snapshot failed: ' + result.error.code)
+      return result.value
+    }))
+    const audit = await parent.audit({ ...query, limit: 100 })
+    const publication = await parent.readRoundPublication(publicationQuery)
+    if (!tournament.ok || !audit.ok || !publication.ok) throw new Error('public parent snapshot failed')
+    return cloneSnapshot('public parent', { tournament: tournament.value, matches,
+      audit: audit.value.records, publication: publication.value })
+  }
+  function scheduledMatch(value: JsonValue, matchId: string): JsonObject {
+    if (!isJsonObject(value) || !Array.isArray(value.stages)) throw new Error('public tournament stages are missing')
+    const stage = value.stages.find(entry => isJsonObject(entry) && isJsonObject(entry.config)
+      && entry.config.stageId === announcement.stageId)
+    if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) throw new Error('public current stage is missing')
+    const round = stage.rounds.find(entry => isJsonObject(entry) && entry.roundNumber === announcement.roundNumber)
+    if (!isJsonObject(round) || !Array.isArray(round.matches)) throw new Error('public current round is missing')
+    const match = round.matches.find(entry => isJsonObject(entry) && entry.matchId === matchId)
+    if (!isJsonObject(match)) throw new Error('public scheduled match is missing')
+    return match
+  }
+  function clockView(value: JsonValue | undefined): JsonObject {
+    if (!isJsonObject(value) || !isJsonObject(value.clock)) throw new Error('public initial clock is missing')
+    return value.clock
+  }
+  async function childLineage() {
+    return cloneSnapshot('complete child start lineage', {
+      binding: await target.child.storage.get('competitionBinding'),
+      record: await target.child.storage.get('gameRecord'),
+      admission: await target.child.storage.get('competitionGameAdmission'),
+      evidence: await target.child.storage.get('competitionInitialStartEvidence'),
+      nextSequence: await target.child.storage.get('nextSequence'),
+      events: [...target.child.storage.values.entries()]
+        .filter(([key, value]) => key.startsWith('event:') && isJsonObject(value) && value.type === 'GameStarted')
+        .map(([, value]) => value),
+    })
+  }
+  const beforePublic = await publicParentSnapshot()
+  const beforeTables = persistedTables()
+  for (const table of ['competition_meta', 'competition_matches', 'competition_audit',
+    'competition_command_receipt', 'competition_round_publication', 'competition_round_room_ledger',
+    'competition_round_release_outbox', 'sqlite_sequence']) {
+    expect(Object.hasOwn(beforeTables, table)).toBe(true)
+  }
+  for (const room of targets) {
+    expect(scheduledMatch(beforePublic.tournament.projection.public, room.matchId))
+      .toMatchObject({ status: 'pending', started: false })
+    expect(beforePublic.matches.find(match => match.matchId === room.matchId))
+      .toMatchObject({ matchRevision: room.request.binding.expectedMatchRevision,
+        clockProjection: { operation: 'clockCreate' } })
+  }
+  expect(requests).toHaveLength(0)
+  await at(startedAtMs, async () => {
+    for (const player of target.request.binding.players) await connectAndReady(target.child, player.userId)
+    await drainChildWaits(target.child)
+  })
+  const startFacts = await childLineage()
+  const record = startFacts.record
+  const admission = startFacts.admission
+  const evidence = startFacts.evidence
+  const event = startFacts.events[0]
+  const initialQueue = cloneSnapshot('initial durable queue', await target.child.storage.get<unknown>('competitionDeliveryQueue'))
+  if (!isJsonObject(record) || typeof record.gameInstanceId !== 'string'
+    || typeof record.sequence !== 'number' || !Number.isSafeInteger(record.sequence) || record.sequence < 0
+    || !isJsonObject(admission) || !isJsonObject(admission.start) || !isJsonObject(evidence)
+    || startFacts.events.length !== 1 || !isJsonObject(event) || !isJsonObject(event.payload)
+    || !isJsonObject(initialQueue) || !Array.isArray(initialQueue.entries) || initialQueue.entries.length !== 1) {
+    throw new Error('public child start did not produce canonical event, admission, evidence and FIFO')
+  }
+  const initialEntry = initialQueue.entries[0]
+  if (!isJsonObject(initialEntry)) throw new Error('public-produced initial entry is malformed')
+  expect(event.sequence).toBe(record.sequence)
+  expect(event.createdAt).toBe(new Date(startedAtMs).toISOString())
+  expect(event.payload.gameInstanceId).toBe(record.gameInstanceId)
+  expect(event.payload.firstPlayer).toBe(target.request.binding.firstPlayer)
+  expect(admission.start).toMatchObject({ gameInstanceId: record.gameInstanceId,
+    startSequence: event.sequence, startedAtMs })
+  expect(evidence).toMatchObject({ gameInstanceId: record.gameInstanceId,
+    startSequence: event.sequence, startedAtMs, releaseDecisionId, initialWindow: { type: 'action' } })
+  expect(evidence.bindingRef).toStrictEqual(await competitionGameBindingRefForRequest(target.request))
+  expect(initialEntry).toMatchObject({ kind: 'competitionInitialGameStarted',
+    expectedMatchRevision: target.request.binding.expectedMatchRevision, attempts: 0, nextAttemptAt: startedAtMs })
+  expect(initialEntry.evidence).toStrictEqual(evidence)
+  expect(initialQueue.revisionCursor).toBe(target.request.binding.expectedMatchRevision)
+  expect(startFacts.binding).toStrictEqual(target.request.binding)
+  expect(await childLineage()).toStrictEqual(startFacts)
+  expect(cloneSnapshot('raw queue after assertions', await target.child.storage.get('competitionDeliveryQueue')))
+    .toStrictEqual(initialQueue)
+  expect(requests).toHaveLength(0)
+  expect(persistedTables()).toStrictEqual(beforeTables)
+  expect(await publicParentSnapshot()).toStrictEqual(beforePublic)
+
+  // 唯一 fault 位於最後 receipt SQL；child 真 start 已提交，不以父 rollback 撤回。
+  const engineBeforeFailure = engineCalls.length
+  setup.sql.failNextQueryContaining = 'INSERT INTO competition_command_receipt'
+  await at(firstDeliveryAtMs, async () => {
+    await target.child.room.alarm()
+    await drainChildWaits(target.child)
+  })
+  expect(requests).toHaveLength(1)
+  const firstRequest = requests[0]
+  if (!firstRequest) throw new Error('child did not deliver its canonical initial FIFO entry')
+  expect(isCompetitionRoomInitialGameStartedRequest(firstRequest)).toBe(true)
+  expect(firstRequest.commandId).toBe(initialEntry.commandId)
+  expect(firstRequest.evidence).toStrictEqual(evidence)
+  // 第一 target：合法 initial delivery 的晚 receipt throw 必須回固定 internalFailure。
+  expect(acknowledgements[0]).toStrictEqual({
+    ok: false, error: { code: 'internalFailure', message: 'competition room operation failed' },
+  })
+  expect(acknowledgements).toHaveLength(1)
+  expect(setup.sql.failNextQueryContaining).toBeNull()
+  expect(engineCalls.slice(engineBeforeFailure)
+    .filter(call => call.operation.type === 'tournamentStartMatch' || call.operation.type === 'clockBeginAction')
+    .map(call => ({ operation: call.operation.type, sample: call.trustedTimeMs }))).toStrictEqual([
+    { operation: 'tournamentStartMatch', sample: firstDeliveryAtMs },
+    { operation: 'clockBeginAction', sample: startedAtMs },
+  ])
+  expect(persistedTables()).toStrictEqual(beforeTables)
+  expect(await publicParentSnapshot()).toStrictEqual(beforePublic)
+  expect(await childLineage()).toStrictEqual(startFacts)
+  const retryQueue = cloneSnapshot('retained retry queue', await target.child.storage.get<unknown>('competitionDeliveryQueue'))
+  if (!isJsonObject(retryQueue) || !Array.isArray(retryQueue.entries) || retryQueue.entries.length !== 1
+    || !isJsonObject(retryQueue.entries[0]) || typeof retryQueue.entries[0].nextAttemptAt !== 'number') {
+    throw new Error('failed parent commit did not retain one retryable initial entry')
+  }
+  const retryDueMs = retryQueue.entries[0].nextAttemptAt
+  expect(retryQueue).toStrictEqual({ ...initialQueue,
+    entries: [{ ...initialEntry, attempts: 1, nextAttemptAt: firstDeliveryAtMs + 2_000 }] })
+  expect(target.child.storage.alarm).toBe(retryDueMs)
+  expect(retryDueMs).toBeGreaterThan(firstDeliveryAtMs)
+
+  // 依持久 retry due 派送同一 entry；只准此次完整 joint commit 成功一次。
+  setup.sql.failNextQueryContaining = null
+  await at(retryDueMs, async () => {
+    await target.child.room.alarm()
+    await drainChildWaits(target.child)
+  })
+  expect(requests).toHaveLength(2)
+  expect(requests[1]).toStrictEqual(firstRequest)
+  expect(acknowledgements).toHaveLength(2)
+  const success = acknowledgements[1]
+  expect(success).toMatchObject({ ok: true })
+  if (!success?.ok) throw new Error('same durable entry retry did not commit: ' + success?.error.code)
+  const ack = cloneSnapshot('success nine-field ACK', success.value)
+  expect(Reflect.ownKeys(ack).sort()).toStrictEqual([
+    'clockProjection', 'commandId', 'competitionId', 'idempotent', 'matchId',
+    'matchProjection', 'matchRevision', 'nextClockDeadlineMs', 'timeoutEvidence',
+  ])
+  expect(ack).toMatchObject({ competitionId: announcement.competitionId, matchId: target.matchId,
+    commandId: firstRequest.commandId, matchRevision: target.request.binding.expectedMatchRevision + 1,
+    idempotent: false, timeoutEvidence: null, clockProjection: { operation: 'clockBeginAction' } })
+  expect(typeof ack.nextClockDeadlineMs).toBe('number')
+  expect(clockView(ack.clockProjection?.public).lastObservedMs).toBe(startedAtMs)
+  const afterPublic = await publicParentSnapshot()
+  const afterTables = persistedTables()
+  expect(afterPublic.tournament.revision).toBe(beforePublic.tournament.revision + 1)
+  expect(afterPublic.matches.find(match => match.matchId === target.matchId)).toStrictEqual({
+    competitionId: announcement.competitionId, matchId: target.matchId, matchRevision: ack.matchRevision,
+    matchProjection: ack.matchProjection, clockProjection: ack.clockProjection,
+  })
+  expect(scheduledMatch(afterPublic.tournament.projection.public, target.matchId))
+    .toMatchObject({ status: 'inProgress', started: true })
+  expect(afterPublic.matches.find(match => match.matchId === sibling.matchId))
+    .toStrictEqual(beforePublic.matches.find(match => match.matchId === sibling.matchId))
+  expect(scheduledMatch(afterPublic.tournament.projection.public, sibling.matchId))
+    .toStrictEqual(scheduledMatch(beforePublic.tournament.projection.public, sibling.matchId))
+  expect(afterPublic.publication.publication).toStrictEqual(releasedPublication)
+  expect(releaseRequests).toStrictEqual(originalReleases)
+  expect(Object.keys(afterTables)).toStrictEqual(Object.keys(beforeTables))
+  for (const table of Object.keys(beforeTables)) {
+    if (!['competition_meta', 'competition_matches', 'competition_audit',
+      'competition_command_receipt', 'sqlite_sequence'].includes(table)) {
+      expect(afterTables[table]).toStrictEqual(beforeTables[table])
+    }
+  }
+  expect(afterTables.competition_matches.filter(row => row.match_id !== target.matchId))
+    .toStrictEqual(beforeTables.competition_matches.filter(row => row.match_id !== target.matchId))
+  expect(afterTables.competition_meta).toHaveLength(1)
+  const meta = afterTables.competition_meta[0]
+  const matchRow = afterTables.competition_matches.find(row => row.match_id === target.matchId)
+  if (!meta || typeof meta.server_state_json !== 'string' || typeof meta.public_projection_json !== 'string'
+    || !matchRow || typeof matchRow.match_checkpoint_json !== 'string' || typeof matchRow.clock_checkpoint_json !== 'string') {
+    throw new Error('joint meta/match/clock checkpoint is missing')
+  }
+  expect(meta.revision).toBe(beforePublic.tournament.revision + 1)
+  expect(meta.updated_trusted_time_ms).toBe(retryDueMs)
+  expect(matchRow.revision).toBe(ack.matchRevision)
+  expect(matchRow.last_trusted_time_ms).toBe(startedAtMs)
+  expect(JSON.parse(matchRow.clock_checkpoint_json)).toMatchObject({ lastObservedMs: startedAtMs })
+  const previousMeta = beforeTables.competition_meta[0]
+  const previousMatch = beforeTables.competition_matches.find(row => row.match_id === target.matchId)
+  if (!previousMeta || typeof previousMeta.server_state_json !== 'string' || !previousMatch) {
+    throw new Error('joint commit baseline is missing')
+  }
+  expect({ ...meta, server_state_json: previousMeta.server_state_json,
+    public_projection_json: previousMeta.public_projection_json, revision: previousMeta.revision,
+    updated_trusted_time_ms: previousMeta.updated_trusted_time_ms }).toStrictEqual(previousMeta)
+  expect({ ...matchRow, clock_checkpoint_json: previousMatch.clock_checkpoint_json,
+    clock_projection_json: previousMatch.clock_projection_json, match_projection_json: previousMatch.match_projection_json,
+    revision: previousMatch.revision, last_trusted_time_ms: previousMatch.last_trusted_time_ms }).toStrictEqual(previousMatch)
+  const mirror: unknown = JSON.parse(meta.server_state_json)
+  const previousMirror: unknown = JSON.parse(previousMeta.server_state_json)
+  const storedPublic: unknown = JSON.parse(meta.public_projection_json)
+  if (!isJsonObject(mirror) || !isJsonObject(mirror.matches) || !isJsonObject(previousMirror)
+    || !isJsonObject(storedPublic) || !isJsonObject(storedPublic.public)
+    || !isJsonObject(storedPublic.public.tournament)) throw new Error('joint parent mirrors are malformed')
+  expect({ ...mirror, tournament: previousMirror.tournament, matches: previousMirror.matches }).toStrictEqual(previousMirror)
+  expect(mirror.matches[target.matchId]).toStrictEqual(JSON.parse(matchRow.match_checkpoint_json))
+  expect(storedPublic).toStrictEqual({
+    ok: true, operation: 'tournamentStartMatch',
+    public: { result: { type: 'started' }, tournament: afterPublic.tournament.projection.public },
+  })
+  expect(scheduledMatch(storedPublic.public.tournament, target.matchId))
+    .toStrictEqual(scheduledMatch(afterPublic.tournament.projection.public, target.matchId))
+  expect(afterPublic.audit).toHaveLength(beforePublic.audit.length + 1)
+  expect(afterPublic.audit.filter(row => row.commandId !== firstRequest.commandId)).toStrictEqual(beforePublic.audit)
+  expect(afterPublic.audit.filter(row => row.commandId === firstRequest.commandId)).toMatchObject([{
+    matchId: target.matchId, operationType: 'startScheduledMatch', trustedTimeMs: retryDueMs,
+    revision: beforePublic.tournament.revision + 1,
+  }])
+  expect(afterTables.competition_audit).toHaveLength(beforeTables.competition_audit.length + 1)
+  expect(afterTables.competition_audit.filter(row => row.command_id !== firstRequest.commandId))
+    .toStrictEqual(beforeTables.competition_audit)
+  expect(afterTables.competition_command_receipt).toHaveLength(beforeTables.competition_command_receipt.length + 1)
+  expect(afterTables.competition_command_receipt.filter(row => row.command_id !== firstRequest.commandId))
+    .toStrictEqual(beforeTables.competition_command_receipt)
+  const receipts = afterTables.competition_command_receipt.filter(row => row.command_id === firstRequest.commandId)
+  expect(receipts).toHaveLength(1)
+  const receipt = receipts[0]
+  if (!receipt || typeof receipt.response_json !== 'string') throw new Error('joint initial receipt/evidence is missing')
+  expect(receipt).toMatchObject({ receipt_kind: 'ingestInitialGameStarted', match_id: target.matchId })
+  expect(typeof receipt.fingerprint).toBe('string')
+  expect(JSON.parse(receipt.response_json)).toStrictEqual({ ack: success, evidence })
+  expect(afterTables.sqlite_sequence).toStrictEqual(beforeTables.sqlite_sequence.map(row => {
+    if (row.name !== 'competition_audit') return row
+    if (typeof row.seq !== 'number') throw new Error('audit sequence baseline is malformed')
+    return { ...row, seq: row.seq + 1 }
+  }))
+  expect(await childLineage()).toStrictEqual(startFacts)
+  const finalQueue = cloneSnapshot('success cleared queue', await target.child.storage.get('competitionDeliveryQueue'))
+  expect(finalQueue).toStrictEqual({ ...retryQueue, revisionCursor: target.request.binding.expectedMatchRevision + 1,
+    entries: [], nextClockDeadlineMs: ack.nextClockDeadlineMs })
+
+  // 收據語義 continuation：同 command 不可替換首局 sample；原 request 只恢復原 ACK。
+  const receiptBaseline = cloneSnapshot('immutable initial receipt baseline', {
+    request: firstRequest, ack, public: afterPublic, tables: afterTables,
+    lineage: startFacts, queue: finalQueue,
+  })
+  // 只作既成功命令的負控制，不生成另一個正向 GameStarted／producer 證據。
+  const alteredInitialRequest = cloneSnapshot('altered initial receipt negative request', {
+    ...firstRequest,
+    evidence: { ...firstRequest.evidence, startedAtMs: firstRequest.evidence.startedAtMs + 1 },
+  })
+  expect(alteredInitialRequest.commandId).toBe(receiptBaseline.request.commandId)
+  expect(alteredInitialRequest.evidence.startedAtMs).toBe(startedAtMs + 1)
+  expect(Number.isSafeInteger(alteredInitialRequest.evidence.startedAtMs)).toBe(true)
+  expect(alteredInitialRequest.evidence.startedAtMs).toBeLessThan(announcement.roundStartMs)
+  expect(isCompetitionRoomInitialGameStartedRequest(alteredInitialRequest)).toBe(true)
+  const engineBeforeConflict = engineCalls.length
+  const conflict = await at(retryDueMs + 1_000, () => parent.ingestInitialGameStarted(alteredInitialRequest))
+  expect(conflict).toStrictEqual({
+    ok: false, error: { code: 'commandIdConflict', message: 'command id was used with another payload' },
+  })
+  // 公開 query 會呼叫 engine；receipt RPC 的零新增在 query snapshot 前立即核對。
+  expect(engineCalls).toHaveLength(engineBeforeConflict)
+  expect(persistedTables()).toStrictEqual(receiptBaseline.tables)
+  expect(await publicParentSnapshot()).toStrictEqual(receiptBaseline.public)
+  expect(await childLineage()).toStrictEqual(receiptBaseline.lineage)
+  expect(cloneSnapshot('queue after semantic conflict', await target.child.storage.get('competitionDeliveryQueue')))
+    .toStrictEqual(receiptBaseline.queue)
+  expect(firstRequest).toStrictEqual(receiptBaseline.request)
+
+  const engineBeforeOriginalRetry = engineCalls.length
+  const originalRetry = await at(retryDueMs + 2_000, () => parent.ingestInitialGameStarted(firstRequest))
+  expect(originalRetry).toStrictEqual({ ok: true, value: { ...receiptBaseline.ack, idempotent: true } })
+  expect(engineCalls).toHaveLength(engineBeforeOriginalRetry)
+  expect(persistedTables()).toStrictEqual(receiptBaseline.tables)
+  expect(await publicParentSnapshot()).toStrictEqual(receiptBaseline.public)
+  expect(await childLineage()).toStrictEqual(receiptBaseline.lineage)
+  expect(cloneSnapshot('queue after original receipt retry', await target.child.storage.get('competitionDeliveryQueue')))
+    .toStrictEqual(receiptBaseline.queue)
+  expect(firstRequest).toStrictEqual(receiptBaseline.request)
+
+  // 新 parent instance 收據 continuation：共用原 SQL／alarm／bindings，child KV 不重建。
+  // 這是 Bun harness 的 instance 重建，不是平台 restart／native 證據。
+  const previousParentInstance = parent
+  parent = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm),
+    { GAME_ROOM: gameNamespace } as never, engine, setup.bit)
+  expect(parent).not.toBe(previousParentInstance)
+  expect(persistedTables()).toStrictEqual(receiptBaseline.tables)
+  expect(await publicParentSnapshot()).toStrictEqual(receiptBaseline.public)
+  expect(isCompetitionRoomInitialGameStartedRequest(alteredInitialRequest)).toBe(true)
+  const engineBeforeRecreatedConflict = engineCalls.length
+  const recreatedConflict = await at(retryDueMs + 3_000,
+    () => parent.ingestInitialGameStarted(alteredInitialRequest))
+  expect(recreatedConflict).toStrictEqual({
+    ok: false, error: { code: 'commandIdConflict', message: 'command id was used with another payload' },
+  })
+  expect(engineCalls).toHaveLength(engineBeforeRecreatedConflict)
+  expect(persistedTables()).toStrictEqual(receiptBaseline.tables)
+  expect(await publicParentSnapshot()).toStrictEqual(receiptBaseline.public)
+  expect(await childLineage()).toStrictEqual(receiptBaseline.lineage)
+  expect(cloneSnapshot('queue after recreated parent semantic conflict',
+    await target.child.storage.get('competitionDeliveryQueue'))).toStrictEqual(receiptBaseline.queue)
+  expect(firstRequest).toStrictEqual(receiptBaseline.request)
+
+  const engineBeforeRecreatedOriginalRetry = engineCalls.length
+  const recreatedOriginalRetry = await at(retryDueMs + 4_000,
+    () => parent.ingestInitialGameStarted(firstRequest))
+  expect(recreatedOriginalRetry).toStrictEqual({ ok: true, value: { ...receiptBaseline.ack, idempotent: true } })
+  expect(engineCalls).toHaveLength(engineBeforeRecreatedOriginalRetry)
+  expect(persistedTables()).toStrictEqual(receiptBaseline.tables)
+  expect(await publicParentSnapshot()).toStrictEqual(receiptBaseline.public)
+  expect(await childLineage()).toStrictEqual(receiptBaseline.lineage)
+  expect(cloneSnapshot('queue after recreated parent original receipt retry',
+    await target.child.storage.get('competitionDeliveryQueue'))).toStrictEqual(receiptBaseline.queue)
+  expect(firstRequest).toStrictEqual(receiptBaseline.request)
+
+  // Other-command 首局 identity continuation：只作已成功首局的負控制，不生成新 canonical event。
+  // command literals 只供此負控制；不計算或聲稱它們是 producer command derivation。
+  const otherCommandIdentityNegatives = [
+    { label: 'sample', commandId: 'rollback-initial-other-command-sample',
+      evidence: { ...firstRequest.evidence, startedAtMs: firstRequest.evidence.startedAtMs + 1 } },
+    { label: 'instance', commandId: 'rollback-initial-other-command-instance',
+      evidence: { ...firstRequest.evidence, gameInstanceId: 'rollback-initial-other-game-instance' } },
+    { label: 'sequence', commandId: 'rollback-initial-other-command-sequence',
+      evidence: { ...firstRequest.evidence, startSequence: firstRequest.evidence.startSequence + 1 } },
+  ]
+  expect(new Set(otherCommandIdentityNegatives.map(negative => negative.commandId)).size).toBe(3)
+  for (const [index, negative] of otherCommandIdentityNegatives.entries()) {
+    const negativeRequest = cloneSnapshot('other-command identity ' + negative.label + ' negative request', {
+      ...firstRequest, commandId: negative.commandId, evidence: negative.evidence,
+    })
+    expect(negativeRequest.commandId).not.toBe(firstRequest.commandId)
+    expect(receiptBaseline.tables.competition_command_receipt
+      .some(row => row.command_id === negativeRequest.commandId)).toBe(false)
+    expect(negativeRequest.evidence).not.toStrictEqual(receiptBaseline.request.evidence)
+    expect(isCompetitionRoomInitialGameStartedRequest(negativeRequest)).toBe(true)
+    const engineBeforeIdentityConflict = engineCalls.length
+    const identityConflict = await at(retryDueMs + 5_000 + index * 1_000,
+      () => parent.ingestInitialGameStarted(negativeRequest))
+    expect(identityConflict).toStrictEqual({
+      ok: false, error: { code: 'initialGameStartedConflict', message: 'this scheduled match already has a first-start receipt' },
+    })
+    expect(engineCalls).toHaveLength(engineBeforeIdentityConflict)
+    expect(persistedTables()).toStrictEqual(receiptBaseline.tables)
+    expect(await publicParentSnapshot()).toStrictEqual(receiptBaseline.public)
+    expect(await childLineage()).toStrictEqual(receiptBaseline.lineage)
+    expect(cloneSnapshot('queue after other-command identity ' + negative.label + ' conflict',
+      await target.child.storage.get('competitionDeliveryQueue'))).toStrictEqual(receiptBaseline.queue)
+    expect(firstRequest).toStrictEqual(receiptBaseline.request)
+  }
+})

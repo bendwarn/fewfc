@@ -1,5 +1,10 @@
+/// <reference types="@cloudflare/workers-types" />
+
 import { createError, type H3Event } from 'h3'
 import { parseAppEnvironment } from './app-environment'
+import type { CompetitionRoom } from '../../worker/durable-objects/competition-room'
+
+export type CompetitionRoomNamespaceBinding = DurableObjectNamespace<CompetitionRoom>
 
 export interface DurableObjectNamespaceBinding {
   idFromName(name: string): unknown
@@ -13,6 +18,7 @@ export interface WorkerEnv {
   GAME_ROOM: DurableObjectNamespaceBinding
   PLAYER_NOTIFICATIONS: DurableObjectNamespaceBinding
   REPLAY: DurableObjectNamespaceBinding
+  COMPETITION_ROOM?: CompetitionRoomNamespaceBinding
   APP_ENV?: string
   BETTER_AUTH_SECRET?: string
   BETTER_AUTH_URL?: string

@@ -31,7 +31,31 @@ export interface CompetitionAnnouncement {
   personalDecks: PersonalDeckPolicy
   registrationDeadline: number
   checkInDeadline: number
+  plan: CompetitionAnnouncementPlan
 }
+
+/** 賽前同一版本公開的資格、種子、時計與固定排序政策。 */
+export interface CompetitionAnnouncementPlan {
+  initialSeedPolicy: 'randomDrawAfterRegistrationDeadline'
+  swissPairingPolicy: 'publishedRulesWithPersistedRandomSeed'
+  rankingPolicy: 'matchPointsThenOpponentWinsThenOpponentLosses'
+  exactRankingTiePolicy: 'organizerOrUnconflictedRefereeWithPublicReason'
+  stages: AnnouncedTournamentStage[]
+}
+
+export interface AnnouncedTournamentStage {
+  stageId: string
+  format: TournamentFormat
+  matchFormat: MatchFormat
+  clockConfig: ClockConfig
+  swissRounds: number | null
+  swissMatchPoints: MatchPoints | null
+  qualification: AnnouncedStageQualification
+}
+
+export type AnnouncedStageQualification =
+  | { type: 'allEligibleTeams' }
+  | { type: 'sourceSlots'; slots: StageQualificationSlot[] }
 
 /** 可信伺服器的規則設定純查詢，不接受公告、生命或任何持久化寫入要求。 */
 export interface CompetitionRulesSettings {

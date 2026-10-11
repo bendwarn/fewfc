@@ -14,7 +14,8 @@ interface VersionExports extends WebAssembly.Exports {
 // 此整合測試使用正式建置的 WASM，確保前端版本篩選與 Rust 公開契約一致。
 test('version-filtered UI catalog matches the built Rust version resolver', async () => {
   const bytes = await Bun.file(new URL('../worker/wasm/fewfc.wasm', import.meta.url)).arrayBuffer()
-  const { instance } = await WebAssembly.instantiate(bytes, {})
+  const module = await WebAssembly.compile(bytes)
+  const instance = await WebAssembly.instantiate(module, {})
   const wasm = instance.exports as VersionExports
   function output<T>(packed: bigint): T {
     const pointer = Number(packed >> 32n)

@@ -387,12 +387,32 @@ export function requireReadyRulesResult(result: RulesEngineResult): RulesReadyRe
   }
 }
 
+/** 伺服器驗證固定 binding 後，允許玩家房間回應公開的競賽識別資訊。 */
+export interface GameRoomCompetitionContext {
+  competitionId: string
+  matchId: string
+  gameNumber: number
+}
+
+/** 只做白名單投影；呼叫端仍須先驗證完整持久 binding，不能將它當授權驗證。 */
+export function projectGameRoomCompetitionContext(
+  binding: GameRoomCompetitionContext,
+): GameRoomCompetitionContext {
+  return {
+    competitionId: binding.competitionId,
+    matchId: binding.matchId,
+    gameNumber: binding.gameNumber,
+  }
+}
+
 export interface GameRoomResponse extends Omit<
   RulesReadyResult,
   'type' | 'record' | 'trustedRandomCandidates'
 > {
   gameId: string
   metadata: GameRoomMetadata
+  /** 普通房不含此欄位；不得包含私密 binding、牌組或時計 revision。 */
+  competition?: GameRoomCompetitionContext
   invitation?: GameRoomInvitation
   lockedDeckName?: string
   savableReplay?: SavableReplay
