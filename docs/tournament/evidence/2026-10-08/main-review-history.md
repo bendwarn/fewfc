@@ -32,15 +32,15 @@
 
 ## 本輪首輪凍結元件實證
 
-Maxwell交付 source ，lifecycle 不變。中央只跑 `cargo test --lib competition_registration::tests::opening_freeze_`：1abc88啟動／031f54完成，**7 passed／0 failed／166 filtered out、exit0**。沒有執行 lifecycle integration、HP resolver案例、WASM／全套測試。末SHA直接核 b5813c吻合。
+Maxwell交付 source ，lifecycle 不變。中央只跑 `cargo test --lib competition_registration::tests::opening_freeze_`：1abc88啟動／031f54完成，**7 passed／0 failed／166 filtered out、exit0**。沒有執行 lifecycle integration、HP resolver案例、WASM／全套測試。
 
 七個案例覆蓋三個新截止action的F−1／F／after、required公開理由與private邊界、Lock角色／不得提前、晚收據不倒退Locked、disabled／withdrawn理由矩陣、換名單與重交後重確認、損壞CheckedIn資料失敗不留成功收據／不半分類其他隊伍。只證Rust元件，不證at-F牆鐘觀測或網站全部提前開房。
 
-R1已交Einstein Standards／Dirac Spec有限現況審核；新的TS公共parser／UI及父權威提交仍HOLD。child型別窄修source ，其餘3SHA未變；原生storage Pick與transaction/alarm能力分離，9個double cast移除，無運行語意或cases變更。Einstein終核P3待件，原16不重跑。
+R1已交Einstein Standards／Dirac Spec有限現況審核；新的TS公共parser／UI及父權威提交仍HOLD。child型別窄修source ，其餘來源未變；原生storage Pick與transaction/alarm能力分離，9個double cast移除，無運行語意或cases變更。Einstein終核P3待件，原16不重跑。
 
 ## parent P2 修補元件实证
 
-Jason交付source ／test ，shared兩檔原SHA不變。主審讀全部新receipt分支、original lookup、private parser與18-case區段及owner紀錄。
+Jason交付source ／test ，shared兩檔未變。主審讀全部新receipt分支、original lookup、private parser與18-case區段及owner紀錄。
 
 中央只跑 `bun test apps/web/worker/durable-objects/competition-room.test.ts --test-name-pattern 'round-release parent receipt module'`：7825f9啟動／9af36b完成，**18 pass／0 fail／264 filtered／51 expect calls、exit0**。保存層fixture明標已持久模組狀態，engine/random/foreign能力一呼就throw，公開DO重試是被測者；不是假造全程ACK／GameStarted證據。沒有呼叫WASM或真房間，原22不執行。
 
@@ -48,9 +48,9 @@ Jason交付source ／test ，shared兩檔原SHA不變。主審讀全部新receip
 
 ## 元件關卡後互斥相依
 
-- R1兩軸report ／已主審全文核，0 findings、末產品SHA一致，限定gate PASS。Maxwell轉唯一frontend registration schema／ownTeam鏡像／資料期限／排除文案及Nuxt元件工作；Rust54bb/d471凍結。
+- R1兩軸report ／已主審全文核，0 findings、產品來源未變，限定gate PASS。Maxwell轉唯一frontend registration schema／ownTeam鏡像／資料期限／排除文案及Nuxt元件工作；Rust54bb/d471凍結。
 - child P3closure report 已核，0 findings，未動運行語意的type delta與原Spec0相容。Lagrange於有限parentStandards終核後，續唯一child4檔 initial FIFO／strict ACK／cursor／remote lane接線；shared wire已過才准import，不證父receiver存在。
-- parent修補末兩軸report ／已核：Standards0／原P2closed且Spec0，末4SHA同freeze。结合本轮18组件结果，限定P0a PASS；已交Jason唯一parent4续claims／strict Waiting ACK／父实际C cutoff／durable release／singlealarm。initialS-A/P8、jointcorrection与整链验收仍後续，不能提前叫Timing完成。
+- parent修補末兩軸report ／已核：Standards0／原P2closed且Spec0，來源維持凍結。结合本轮18组件结果，限定P0a PASS；已交Jason唯一parent4续claims／strict Waiting ACK／父实际C cutoff／durable release／singlealarm。initialS-A/P8、jointcorrection与整链验收仍後续，不能提前叫Timing完成。
 - stage研究92行／版本 已主審全文核。已完成且無產品owner的Linnaeus正常close，沒有中止活躍工作或删除記錄。新Descartes `01a11748-0ae5-7de1-b6b9-902b882180a8`只擁有src/tournament.rs的純資格解析與unit cases，one readonly Interface、明確Finished winner或RR/Swiss unique standing rank→explicit seed；不建Stage或改Tournament schema、不猜淘汰低名次/遞補/並列，不接I/O／WASM。其他研究/產品dirty保留。
 
 ## 新公告HTTP切片

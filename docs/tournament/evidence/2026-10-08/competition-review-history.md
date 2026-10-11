@@ -272,23 +272,23 @@ timeout evidence 修後 helper ／pure test ，其餘三 UI 檔維持凍結。�
 
 後續 §16 方向已由主審核實：完整 binding required17、完整 request 的唯一 fingerprint helper、同步擷取 snapshot 後才 await；Lagrange 先寫 tmp staging patch，不直接改 shared 產品。父頁完整 freeze、兩軸／集中驗證與管理 A 真原生關卡通過且服務關閉後，才授權正式 shared 切換，再按互斥 ownership 接父／子 producer-consumer；目前不是 Timing workflow PASS。主審另成功全文取得同 pinned Bracket rounds.py／rescheduling_test.py，僅借 plan→apply、不導入或翻譯外部實作，預計 end_time 不當全輪完成／房間 ACK 證據。
 
-管理 A 父頁／真原生關卡已通過：parent ／new spec ，原A4不變。首次新Nuxt的2項fixture失敗已窄修；Spec另P3父mutation互斥缺測以不同賽事A locked unknown→B合法open補公開DOM／HTTP正反對照，原12cases逐位元保留。最新三正式檔 main15018／d6fc00 **54／54、exit0**、一般type78889 **exit0**，產品仍同正常build6192／release-bundled，兩軸終核0及末六SHA一致。真Worker／Brave main19600／a16984 **exit0**：設定摘要／keyboard／單次POST3及Stage8／两UUID／matchingACK5後雙權威refresh／相同managedDOM／非主辦停用／繁中privacy與390px皆過。native前兩次只因CLI VM與Playwright JSON realm不同造成harness exact4誤拒，真安全probe確認wire同值／欄位／descriptor均正確；主審僅窄修native nativeObject prototype判別，原closedkeys／所有驗收要求保留，自有actualexact scratch3／18及nodecheck0。只RR1v1單階段建立，不當開房／全賽制native／五分鐘或整場辦賽完成。自有Brave32193／Worker43759退出0，資料保留。
+管理 A 父頁／真原生關卡已通過：parent ／new spec ，原A4不變。首次新Nuxt的2項fixture失敗已窄修；Spec另P3父mutation互斥缺測以不同賽事A locked unknown→B合法open補公開DOM／HTTP正反對照，原12cases逐位元保留。最新三正式檔 main15018／d6fc00 **54／54、exit0**、一般type78889 **exit0**，產品仍同正常build6192／release-bundled，兩軸終核0，來源未變。真Worker／Brave main19600／a16984 **exit0**：設定摘要／keyboard／單次POST3及Stage8／两UUID／matchingACK5後雙權威refresh／相同managedDOM／非主辦停用／繁中privacy與390px皆過。native前兩次只因CLI VM與Playwright JSON realm不同造成harness exact4誤拒，真安全probe確認wire同值／欄位／descriptor均正確；主審僅窄修native nativeObject prototype判別，原closedkeys／所有驗收要求保留，自有actualexact scratch3／18及nodecheck0。只RR1v1單階段建立，不當開房／全賽制native／五分鐘或整場辦賽完成。自有Brave32193／Worker43759退出0，資料保留。
 
 上述管理關卡後，正式shared下一切片已交Lagrange唯一兩檔實作：required17、完整strict validation/equality及唯一完整fingerprint helper。staging patch已主審全文讀、readonly apply-check0；尚不表示shared新tests或Timing通過。父／子DO與HTTP仍等shared正式freeze／審核後明示互斥授權，未同步時不部署、不做optional／legacy回退。
 
-required17 shared 限定關卡現已通過：兩正式檔 ／，主審全文讀批准diff及actual修改seams，readonly reverse-check0、whitespace0；集中 `round-release` **29 tests／1066 assertions、exit0**（其他14項未執行），沿Nuxt strict基底、既有Bun／Node型別的隔離兩檔檢查exit0。首次只缺測試型別路徑，修檢查環境而非產品；原28cases保留、新增15，沒有HP專項或舊紀錄相容。獨立Standards hard／smell0、Spec0，完整report及起末SHA一致。此關卡只放行完整資料／內容比較，不證current manifest／實體全房ACK／ACL／GameStarted；最新wholeproject type／build及Timing仍HOLD，不能部署半套。
+required17 shared 限定關卡現已通過：兩正式檔 ／，主審全文讀批准diff及actual修改seams，readonly reverse-check0、whitespace0；集中 `round-release` **29 tests／1066 assertions、exit0**（其他14項未執行），沿Nuxt strict基底、既有Bun／Node型別的隔離兩檔檢查exit0。首次只缺測試型別路徑，修檢查環境而非產品；原28cases保留、新增15，沒有HP專項或舊紀錄相容。獨立Standards hard／smell0、Spec0，完整report已核，來源未變。此關卡只放行完整資料／內容比較，不證current manifest／實體全房ACK／ACL／GameStarted；最新wholeproject type／build及Timing仍HOLD，不能部署半套。
 
 主審依此明示啟動互斥相依實作：Jason唯一父 `shared/competition-room`及父DO／tests，Lagrange唯一子DO及competition／start-clock tests／fixture，Maxwell唯一既有HTTP helper／tests與start route test。完整binding兩shared檔保持freeze；先收斂父首次開局交付exact介面，再讓子FIFO接入，禁止各自猜wire。子release／revoke已定caps可先獨立實作；父需完成持久整輪manifest／實際全部ACK與cutoff／到T release／Waiting撤銷共同更正／fresh主辦公告；HTTP此片只同步required17驗證、不啟用新公告route或回假已start。Einstein作獨立審核准备／合法延遲clock anchor證據盤點，產品不改。所有執行仍由主審集中，未freeze／審核不得放行下游HTTP或UI。
 
 首輪仍有已核實相依缺口：`competition_registration.rs:842`的Lock只接受開始期限後，detail頁也仍顯示此限制。不能直接把同一開始時間當父manifest的T又宣稱提前五分鐘全房就緒；首輪公告wire／提前名單與牌組凍結須另接專用流程。當前父切片可先處理真locked roster→主辦明示futureT，但不因此放行首輪全流程、不假取可信now、不靜默延T。此缺口不阻止互斥父／子／HTTP實作進行，也不准任一owner越界改核心或前端。
 
-HTTP required17 三檔通過限定關卡：freeze ／／，集中daf319 **40 tests／418 assertions、exit0**（原32＋新8）。唯一完整shared validator先驗raw binding，再核linkage；公開八欄及root平台RPC cleanup範圍保留，route source不改。獨立Standards hard／heuristic0、Spec0，主審全文讀兩report及實際整合seam／cases，末三SHA精確不變、直接搜尋無trailing空白／conflictmarker。這只證HTTP資料接線與mock RPC/H3邊界，不證native、首輪公告／release或提前開房；父／子source仍在互斥實作，wholeproject型別／建置等同步freeze後才驗，新公告HTTP／UI等待專用父RPC關卡。
+HTTP required17 三檔通過限定關卡：freeze ／／，集中daf319 **40 tests／418 assertions、exit0**（原32＋新8）。唯一完整shared validator先驗raw binding，再核linkage；公開八欄及root平台RPC cleanup範圍保留，route source不改。獨立Standards hard／heuristic0、Spec0，主審全文讀兩report及實際整合seam／cases，來源未變、直接搜尋無trailing空白／conflictmarker。這只證HTTP資料接線與mock RPC/H3邊界，不證native、首輪公告／release或提前開房；父／子source仍在互斥實作，wholeproject型別／建置等同步freeze後才驗，新公告HTTP／UI等待專用父RPC關卡。
 
 父共同 wire 小checkpoint ／已交付；中央b641be **7 tests／108 assertions、exit0**（既有15項filtered），同Nuxt strict基底限定型別0。主審已全文讀兩檔及owner checkpoint；Standards／Spec正分開審核，還不能批准child import或稱父runtime／Timing完成。Jason保共同wire凍結、續唯一父DO實作；Lagrange另獲最小shape-only admission parser export兩shared互斥授權，避免首次命令以received ID自比冒授權，該delta仍須獨立凍結驗證。
 
-Admission shape-only delta ／已freeze；central2cf6e9 **32／1155、exit0**（原29＋新3、14filtered）、isolatedstrict8cc7e5 exit0。main唯讀去新增區段之SHA精確回原兩freeze，所有舊內容保留。新入口只轉接唯一parser，不改expected身分guard／required17／digest；兩軸終核仍待，不由pure32宣稱child/runtimePASS。父wire Standards0已全文核，Spec仍待；首輪freeze的primary研究由Maxwell平行進行、無產品授權。
+Admission shape-only delta ／已freeze；central2cf6e9 **32／1155、exit0**（原29＋新3、14filtered）、isolatedstrict8cc7e5 exit0。main唯讀確認移除新增區段後與原凍結內容相同，所有舊內容保留。新入口只轉接唯一parser，不改expected身分guard／required17／digest；兩軸終核仍待，不由pure32宣稱child/runtimePASS。父wire Standards0已全文核，Spec仍待；首輪freeze的primary研究由Maxwell平行進行、無產品授權。
 
-Admission 最小delta兩軸完整report現已主審全文核、起末SHA吻合，Standards hard／heuristic0、Spec0，限定gate PASS；Dirac本片審完正常close、無資料删除，Lagrange可消費唯一shape入口但不得當授權本身。父wire Spec提出公告重試原snapshot與mutable current狀態的1P2，正在核純wire與持久receipt責任邊界；不直接当未實作runtime red，父wire/childinitial依賴仍HOLD。
+Admission 最小delta兩軸完整report現已主審全文核、來源未變，Standards hard／heuristic0、Spec0，限定gate PASS；Dirac本片審完正常close、無資料删除，Lagrange可消費唯一shape入口但不得當授權本身。父wire Spec提出公告重試原snapshot與mutable current狀態的1P2，正在核純wire與持久receipt責任邊界；不直接当未實作runtime red，父wire/childinitial依賴仍HOLD。
 
 父公告成功值已收斂成第一次semantic receipt的原snapshot，當前mutable狀態由read取得；不要求pureguard知道未給的原manifest/generation。main46261e公開guard純DTO tracer **1pass／5fail／14assertions、exit1**，接受currentversion/ACK/status的缺口已重現（非runtime/native/歷史receipt漏洞）。已只授權Jason最小共同guard/正式cases與其必要的一個announceRound auditliteral/serializationcase，其他wire/initial九欄不變；修後兩軸/central green前仍hold initialimport，父DO publication有界實作繼續。
 
@@ -298,7 +298,7 @@ Admission 最小delta兩軸完整report現已主審全文核、起末SHA吻合�
 
 子房間bounded檢查點第一次集中驗證未通過：逐案輸出有3pass／13fail，其中10項逾時；runner未正常結束，由主審停止並取得exit130，**不當作完整正常總結**。隔離「未release、玩家準備」正式案例58c446 actual0pass／1fail／2assertions、exit1，沒有逾時。正式normalizer與正式raw snapshot guard的自有診斷771018 actual1／5、exit0，確認ready流程新增own `gameInstanceId: undefined`，下一次讀取會被原strict guard拒絕；不能因此放寬guard、假設其他逾時同一原因或放行initial交付。修正仍由唯一child owner負責。
 
-父共同wire退修限定關卡現已通過：新freeze ／，formal16df2f **9／138、exit0**、原red tracer另e0c970 **6／19、exit0**、isolatedstrict1c3aae **exit0**。完整兩軸報告主審全文核：Standards hard／heuristic0、Spec原P2已閉且無open finding、起末SHA吻合。只放行共同interface及 truthful `announceRound` auditliteral，父runtime／childlocal／Timing未通過；child先退修local，再接唯一初局FIFO。Bun pending拒絕matcher在解barrier前先阻塞的自有有界diagnostic55f24a actual0／1、exit1，證明另一測試死鎖原因；不以此推其他案例已綠或改產品競態協議。
+父共同wire退修限定關卡現已通過：新freeze ／，formal16df2f **9／138、exit0**、原red tracer另e0c970 **6／19、exit0**、isolatedstrict1c3aae **exit0**。完整兩軸報告主審全文核：Standards hard／heuristic0、Spec原P2已閉且無open finding、來源未變。只放行共同interface及 truthful `announceRound` auditliteral，父runtime／childlocal／Timing未通過；child先退修local，再接唯一初局FIFO。Bun pending拒絕matcher在解barrier前先阻塞的自有有界diagnostic55f24a actual0／1、exit1，證明另一測試死鎖原因；不以此推其他案例已綠或改產品競態協議。
 
 子房間兩根因限定修正freeze ／（正式clockfixture ／wrapper 不變）：中央1ca558 **16／222、exit0，其他70項filtered**。競賽metadata改validated owned clone，普通房normalizer與strictguard不動；三競態case普通Promise capture後真entered／revoke／unblock，再驗settled，保70＋16原案例及own-undefined正反control。Standards／Spec全文審正在進行；首局FIFO仍明示HOLD，不部署。
 
@@ -333,11 +333,11 @@ Admission 最小delta兩軸完整report現已主審全文核、起末SHA吻合�
 
 首輪 Rust R1 限定關卡已通過：source ／lifecycle ，中央 `031f54` **7模組tests／0fail／166filtered、exit0**，不執行 lifecycle integration／HP案例／WASM。主審全文核 Einstein Standards0（report ）及 Dirac Spec0（），起末產品 版本 吻合；required公開 `exclusionReasons` 與三個closed camelCase literal、receipt／截止／Lock／重確認／故障rollback有元件證據。已按互斥 ownership交 Maxwell同步 TS exact公共parser及ownTeam映射／前端文案、資料期限與Nuxt元件案例；Rust兩檔凍結，不因前端待接聲稱正常首輪全流程完成。
 
-child P3型別窄修 ／其餘3SHA不變，主審核全部精確型別delta／原生能力，Einstein bounded closure documented hard／heuristic0，原Linnaeus Spec0仍適用未變的運行語意。原16不重跑或升格成修後整合驗證。已授權原owner Lagrange在父P2 Standards有限終核後，沿既有已過的shared初局wire接唯一initialFIFO／strict9 ACK／持久cursor／remote-outside-mutator；禁止越界改parent/shared／Rust，component mocks先行，不放行wholeTiming／native。
+child P3型別窄修 ／其餘來源未變，主審核全部精確型別delta／原生能力，Einstein bounded closure documented hard／heuristic0，原Linnaeus Spec0仍適用未變的運行語意。原16不重跑或升格成修後整合驗證。已授權原owner Lagrange在父P2 Standards有限終核後，沿既有已過的shared初局wire接唯一initialFIFO／strict9 ACK／持久cursor／remote-outside-mutator；禁止越界改parent/shared／Rust，component mocks先行，不放行wholeTiming／native。
 
 parent P2窄修元件亦已通過：source ／test ，shared兩檔不變。中央 `9af36b` **18pass／0fail／264filtered／51expect、exit0**；保存層receipt-only fixture經公開DO測試，engine/random／foreign一呼就throw，不呼WASM／子房或跨模組報名前綴。原command required private manifest關聯與generation／完整rooms一致、missing/corrupt拒絕、retired＋newcurrent仍恢復原snapshot有證據。兩軸bounded終核仍待，不以18元件綠直接放行dispatcher／release／receiver或重跑旧22。
 
-parent P2的兩軸有限終核現已到件：Standards 0、Spec 原P2關閉且0，主審全文核及末4SHA吻合，限定P0a gate PASS。Jason續唯一parent4檔claims／實際Waiting ACK／父C cutoff／durable release／singlealarm；初局S-A receiver及共同撤銷仍未放行。新輪次HTTP adapter由Mencius只寫新helper與兩條GET／POST及各自tests，不碰凍結shared／parent／child或Maxwell頁面；契約只接受path selector、sessionactor及exact公告輸入，不讓HTTP client自證全房就緒或GameStarted。此派工不代表整條Timing完成。
+parent P2的兩軸有限終核現已到件：Standards 0、Spec 原P2關閉且0，主審全文核，來源未變，限定P0a gate PASS。Jason續唯一parent4檔claims／實際Waiting ACK／父C cutoff／durable release／singlealarm；初局S-A receiver及共同撤銷仍未放行。新輪次HTTP adapter由Mencius只寫新helper與兩條GET／POST及各自tests，不碰凍結shared／parent／child或Maxwell頁面；契約只接受path selector、sessionactor及exact公告輸入，不讓HTTP client自證全房就緒或GameStarted。此派工不代表整條Timing完成。
 
 多階段primary研究92行 已主審全文核。Descartes只擁有 `src/tournament.rs` 的純資格解析元件：Finished winner，或RR／Swiss真正且唯一的standing rank，映射主辦明列seed；不建立階段／改schema／猜淘汰名次、並列或遞補。不與parent、HTTP、frontend共享寫入；整場收尾及多階段持久串接仍待後續契約。
 

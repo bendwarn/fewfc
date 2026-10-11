@@ -3,7 +3,7 @@
 ## Repository Validation
 
 - This repository is a Rust crate. Prefer `cargo test` for the main validation path unless the task specifically touches package tooling.
-- 審核與分批提交以 Git 的基準 ref、diff 和工作區狀態為準；開始審核或整理提交前讀取 `docs/agents/git-review.md`。
+- 審核以 Git 基準 ref、diff 與工作區狀態確認變更範圍。
 
 ## Online Game Commands
 

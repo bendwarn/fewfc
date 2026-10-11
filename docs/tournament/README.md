@@ -10,7 +10,6 @@
 | 查領域詞義 | [CONTEXT](../../CONTEXT.md) |
 | 修改原始遊戲結論與競賽判定的邊界 | [ADR0039](../adr/0039-separate-competition-rulings-from-game-conclusions.md) |
 | 查歷史驗證／審核的範圍與結果 | [驗證歷史](evidence/README.md) |
-| 審核變更或整理提交 | [Git 審核流程](../agents/git-review.md) |
 | 查曾失敗的做法與工作產物 | [tour-attempt 索引](../../scratch/tour-attempt/README.md) |
 
 ## 功能開始前的參考

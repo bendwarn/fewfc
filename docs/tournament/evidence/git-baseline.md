@@ -1,10 +1,10 @@
 # 2026-10-11 Git 工作基線
 
-本輪將先前的競賽工作分批提交，版本與差異從 Git 取得。後續審核依[Git 審核流程](../../agents/git-review.md)，指定基準 ref 與檔案範圍，再閱讀 committed、staged、unstaged 及 untracked 內容。
+本輪將先前的競賽工作分批提交，供後續審核從 Git 基準 ref 與差異取得變更範圍。
 
 | 批次 | Git 提交 | 範圍 |
 | --- | --- | --- |
-| 開發設定 | `fd8e16a` | 開發設定、scratch／Wrangler cache 忽略規則及共用 Git 審核流程。 |
+| 開發設定 | `fd8e16a` | 開發設定、scratch／Wrangler cache 忽略規則及代理規則。 |
 | Rust 核心 | `d2a4a38` | 報名、時計、交手、四賽制與競賽 JSON／WASM 入口，領域詞彙、ADR 與回歸案例。 |
 | 服務／API | `706350c` | CompetitionRoom、GameRoom 競賽接線、共享契約、HTTP／RPC helpers、Worker bindings 與案例。 |
 | 網站介面 | `819e056` | 競賽管理、公告、牌組、玩家入口、準備、時計、裁判介面與 Nuxt／純模組案例。 |
