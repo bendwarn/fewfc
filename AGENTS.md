@@ -3,6 +3,7 @@
 ## Repository Validation
 
 - This repository is a Rust crate. Prefer `cargo test` for the main validation path unless the task specifically touches package tooling.
+- 審核與分批提交以 Git 的基準 ref、diff 和工作區狀態為準；開始審核或整理提交前讀取 `docs/agents/git-review.md`。
 
 ## Online Game Commands
 
@@ -26,7 +27,7 @@
   Workflow` and `Toolbar Action`.
 
 ## 雜項
-- ./tmp 可以放不用加到repo的檔案，避免需要在repo建立檔案
+- ./scratch 可以放不用加到repo的檔案，避免需要在repo建立檔案
 - 程式註解使用中文
 
 ### Issue tracker

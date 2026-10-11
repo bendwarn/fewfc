@@ -1,5 +1,7 @@
 /target
-/tmp/
+/scratch/
+# Wrangler local runtime cache
+/.wrangler/
 # Playwright CLI output (may contain credentials)
 .playwright-cli/
 
