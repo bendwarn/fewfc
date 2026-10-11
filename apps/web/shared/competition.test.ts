@@ -343,9 +343,11 @@ test('qualified-stage TS bridge contract encodes both operations and the exact c
   const forgedTeams: QualifiedStageTemplate = { ...qualifiedStageTemplates[0]!, teams: [{ teamId: 'forged', seed: 1 }] }
   // @ts-expect-error template 欄位使用 camelCase wire contract。
   const forgedSnakeCase: QualifiedStageTemplate = { ...qualifiedStageTemplates[0]!, random_seed: 19 }
-  // @ts-expect-error 來源只能是核心支援的封閉 union，不能由 caller 直接指定隊伍。
   const forgedSource: StageQualificationSlot = {
-    sourceStageId: 'source-a', source: { type: 'callerTeam', teamId: 'forged' }, destinationSeed: 1,
+    sourceStageId: 'source-a',
+    // @ts-expect-error 來源只能是核心支援的封閉 union，不能由 caller 直接指定隊伍。
+    source: { type: 'callerTeam', teamId: 'forged' },
+    destinationSeed: 1,
   }
   void [forgedTeams, forgedSnakeCase, forgedSource]
 })

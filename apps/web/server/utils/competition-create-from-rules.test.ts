@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import type { H3Event } from 'h3'
 import { createCompetitionAnnouncementDraftFixture } from '../../tests/fixtures/competition-announcement'
+import type { JsonValue } from '../../shared/competition'
 import { createCompetitionFromRules } from './competition-create-from-rules'
 
 function reverseObjectKeys(value: unknown): unknown {
@@ -68,5 +69,14 @@ test('accepts an initialized announcement whose JSON object keys are reordered',
   const result = await createCompetitionFromRules(event, announcement, 'organizer')
 
   expect(initializeCalls).toBe(1)
-  expect(result.projection.public.announcement.plan).toEqual(announcement.plan)
+  const publicProjection = result.projection.public
+  if (publicProjection === null || typeof publicProjection !== 'object' || Array.isArray(publicProjection)) {
+    throw new Error('initialized competition must contain an object public projection')
+  }
+  const createdAnnouncement = publicProjection.announcement
+  if (createdAnnouncement === null || typeof createdAnnouncement !== 'object' || Array.isArray(createdAnnouncement)) {
+    throw new Error('initialized competition must contain an object announcement')
+  }
+  const expectedPlan: JsonValue = JSON.parse(JSON.stringify(announcement.plan))
+  expect(createdAnnouncement.plan).toEqual(expectedPlan)
 })

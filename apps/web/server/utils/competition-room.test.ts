@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import type { H3Event } from 'h3'
-import type { StageConfig } from '../../shared/competition'
+import type { CompetitionAnnouncementPlan, StageConfig } from '../../shared/competition'
 
 const announcementPlan = {
   initialSeedPolicy: 'randomDrawAfterRegistrationDeadline',
@@ -12,7 +12,7 @@ const announcementPlan = {
     clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
     swissRounds: null, swissPolicy: null, qualification: { type: 'allEligibleTeams' },
   }],
-}
+} satisfies CompetitionAnnouncementPlan
 import { validateCompetitionGameBinding, type CompetitionGameBinding } from '../../shared/competition-game-room'
 import {
   boundedAuditLimit,

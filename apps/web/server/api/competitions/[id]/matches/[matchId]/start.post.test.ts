@@ -349,7 +349,8 @@ test('round-release H3 adapter preserves root-only receiver-bound disposer clean
   resetState([startedResource, provisionedResource])
   const response = await post({ stageId: 'stage-1', expectedRevision: 5, commandId: 'root-command' }, 'session-user')
   expect(response.status).toBe(200)
-  expect(await response.json()).toEqual({
+  const body: unknown = await response.json()
+  expect(body).toEqual({
     competitionId: 'path-competition', matchId: 'path-match', competitionRevision: 6,
     matchRevision: 2, gameNumber: 1, gameId: 'generated-game-id', commandId: 'root-command', status: 'pending',
   })

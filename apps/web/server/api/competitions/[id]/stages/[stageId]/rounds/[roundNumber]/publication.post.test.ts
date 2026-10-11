@@ -1,6 +1,6 @@
 import { createError, createApp, createRouter, eventHandler, toWebHandler } from 'h3'
 import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test'
-import type { CompetitionRoomAnnounceRoundRequest } from '../../../../../../../shared/competition-room'
+import type { CompetitionRoomAnnounceRoundRequest } from '../../../../../../../../shared/competition-room'
 
 let sessionCalls: string[] = []
 let roomNames: string[] = []

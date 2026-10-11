@@ -213,7 +213,7 @@ function readValue(pub: unknown = publication(), overrides: Record<string, unkno
   return { competitionId, revision: 17, publication: pub, ...overrides }
 }
 
-function ack(value: CompetitionRoundPublicationIntent, pub = publication(), overrides: Record<string, unknown> = {}) {
+function ack(value: CompetitionRoundPublicationIntent, pub: unknown = publication(), overrides: Record<string, unknown> = {}) {
   return {
     competitionId, revision: value.body.expectedRevision + 1, commandId: value.body.commandId,
     idempotent: false, publication: pub, ...overrides,
@@ -347,7 +347,9 @@ test('announcement read exact scope yields an owned immutable public snapshot an
   const rawPublication = publication()
   const raw = readValue(rawPublication)
   const snapshot = parseCompetitionRoundPublicationReadSnapshot(raw, value.scope)
-  rawPublication.rooms[0].gameId = 'mutated-after-parse'
+  const firstRoom = rawPublication.rooms[0]
+  if (!firstRoom) throw new Error('publication fixture must contain a room')
+  firstRoom.gameId = 'mutated-after-parse'
   expect(snapshot.publication?.rooms[0]?.gameId).toBe('game-0')
   expect(Object.isFrozen(snapshot.publication?.rooms[0])).toBe(true)
   expect(parseCompetitionRoundPublicationReadSnapshot(readValue(null), value.scope).publication).toBeNull()

@@ -1,6 +1,6 @@
 import { createApp, createError, createRouter, eventHandler, toWebHandler } from 'h3'
 import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test'
-import type { CompetitionRoomRoundPublicationReadRequest } from '../../../../../../../shared/competition-room'
+import type { CompetitionRoomRoundPublicationReadRequest } from '../../../../../../../../shared/competition-room'
 
 let sessionCalls: string[] = []
 let roomNames: string[] = []
@@ -111,7 +111,8 @@ describe('round-publication HTTP module GET', () => {
       'session-user',
     )
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({
+    const body: unknown = await response.json()
+    expect(body).toEqual({
       competitionId: 'competition-1', revision: 9, publication: publication(),
     })
     expect(sessionCalls).toEqual(['session-user'])
@@ -126,14 +127,16 @@ describe('round-publication HTTP module GET', () => {
     resetState([readSuccess({ publication: null })])
     const response = await get(undefined, 'session-user')
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ competitionId: 'competition-1', revision: 9, publication: null })
+    const body: unknown = await response.json()
+    expect(body).toEqual({ competitionId: 'competition-1', revision: 9, publication: null })
   })
 
   test('round-publication HTTP module reads a schema-valid publication time from its response snapshot', async () => {
     resetState([readSuccess({ publication: publication({ roundStartMs: roundStartMs + 1 }) })])
     const response = await get(undefined, 'session-user')
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({
+    const body: unknown = await response.json()
+    expect(body).toEqual({
       competitionId: 'competition-1', revision: 9,
       publication: publication({ roundStartMs: roundStartMs + 1 }),
     })
