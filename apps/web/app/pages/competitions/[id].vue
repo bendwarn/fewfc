@@ -159,6 +159,7 @@
         :session-identity="session.userId.value"
         :context-revision="registration.revision"
         :context-ready="sessionLoaded && Boolean(registration)"
+        :registration-locked="automaticInitialScheduleExpected"
       />
 
       <section class="panel teams-card" aria-labelledby="teams-title">
@@ -266,30 +267,15 @@
         :aria-live="mutationError ? 'assertive' : 'polite'"
       >
         <p>{{ mutationError || '先前命令的結果仍未確認。重新整理只更新賽事狀態，不會清除這個命令；可用相同命令安全重試。' }}</p>
-        <button v-if="pendingCommand" class="ghost-button" type="button" :disabled="mutationBusy || tournamentCreatePending || roundPublicationPending !== null" @click="retryPendingCommand">
+        <button v-if="pendingCommand" class="ghost-button" type="button" :disabled="mutationBusy || roundPublicationPending !== null" @click="retryPendingCommand">
           {{ mutationBusy ? '正在以相同命令重試…' : '以相同命令重試' }}
         </button>
       </section>
     </template>
 
-    <p v-if="tournamentNavigationMessage" class="panel notice-panel" role="status" aria-live="polite">
-      {{ tournamentNavigationMessage }}
-    </p>
     <p v-if="roundPublicationNavigationMessage" class="panel notice-panel" role="status" aria-live="polite">
       {{ roundPublicationNavigationMessage }}
     </p>
-
-    <!-- 穩定 sibling 保留未知 intent；自身 pending 不回灌 busy，避免鎖死同命令重試。 -->
-    <CompetitionTournamentManagement
-      :competition-id="competitionId"
-      :session-user-id="session.userId.value"
-      :registration="registrationInCurrentScope ? registration : null"
-      :context-ready="tournamentContextReady"
-      :busy="mutationBusy || pendingCommand !== null || roundPublicationPending !== null"
-      @created="onTournamentCreated"
-      @pending-change="onTournamentPendingChange"
-      @unresolved="onTournamentUnresolved"
-    />
 
     <!-- 公告元件穩定掛載；busy 只隔離既有寫操作，不回灌自身 pending。 -->
     <CompetitionRoundPublication
@@ -297,7 +283,7 @@
       :session-user-id="session.userId.value"
       :registration="registrationInCurrentScope ? registration : null"
       :context-ready="tournamentContextReady"
-      :busy="mutationBusy || pendingCommand !== null || tournamentCreatePending"
+      :busy="mutationBusy || pendingCommand !== null"
       @pending-change="onRoundPublicationPendingChange"
       @unresolved="onRoundPublicationUnresolved"
     />
@@ -355,8 +341,6 @@ const notice = ref('')
 const pendingCommand = ref<RegistrationCommandBody | null>(null)
 const otherMemberIdsText = ref('')
 const participantMatchId = ref('')
-const tournamentCreatePending = ref(false)
-const tournamentNavigationMessage = ref('')
 const roundPublicationPending = shallowRef<CompetitionRoundPublicationIntent | null>(null)
 const roundPublicationNavigationMessage = ref('')
 const registrationIdentity = shallowRef<{ competitionId: string, userId: string } | null>(null)
@@ -373,6 +357,11 @@ const registrationInCurrentScope = computed(() => {
 const tournamentContextReady = computed(() => sessionLoaded.value && !loading.value
   && !loadError.value && !sessionError.value && !mutationError.value && !mutationBusy.value && !pendingCommand.value
   && registrationInCurrentScope.value && registration.value?.lifecycle === 'locked')
+const automaticInitialScheduleExpected = computed(() => {
+  const current = registration.value
+  return Boolean(registrationInCurrentScope.value && current?.lifecycle === 'locked'
+    && current.teams.filter(team => team.status === 'checkedIn').length >= 2)
+})
 
 const isOrganizer = computed(() => Boolean(registration.value
   && session.userId.value
@@ -435,7 +424,7 @@ const ownDeckSubmitted = computed(() => {
     && ownTeam.ownDeckSubmitted)
 })
 const actionsDisabled = computed(() => loading.value || mutationBusy.value || Boolean(loadError.value)
-  || Boolean(pendingCommand.value) || tournamentCreatePending.value || Boolean(roundPublicationPending.value))
+  || Boolean(pendingCommand.value) || Boolean(roundPublicationPending.value))
 
 async function bootstrap() {
   sessionError.value = ''
@@ -495,15 +484,6 @@ async function loadRegistration() {
   }
 }
 
-function onTournamentPendingChange(value: boolean) {
-  tournamentCreatePending.value = value
-  if (!value) tournamentNavigationMessage.value = ''
-}
-
-function onTournamentUnresolved() {
-  tournamentNavigationMessage.value = '建立賽程的結果仍未確認，可能已建立；離開或關閉頁面不會取消伺服器操作。'
-}
-
 function onRoundPublicationPendingChange(value: CompetitionRoundPublicationIntent | null) {
   // 原 intent 只由公告元件的命令結果更新；GET 與目前輪次進度不會清除。
   roundPublicationPending.value = value
@@ -513,21 +493,6 @@ function onRoundPublicationPendingChange(value: CompetitionRoundPublicationInten
 function onRoundPublicationUnresolved(value: CompetitionRoundPublicationIntent) {
   roundPublicationPending.value = value
   roundPublicationNavigationMessage.value = '輪次公告的結果仍未確認，其他寫入操作暫停；重新整理只更新狀態，不會取消原命令。請以原主辦帳號手動重試相同公告命令。'
-}
-
-function onTournamentCreated(value: unknown) {
-  if (!tournamentContextReady.value || !isOrganizer.value || !value || typeof value !== 'object' || Array.isArray(value)) return
-  const keys = Reflect.ownKeys(value)
-  if (keys.length !== 2 || !keys.includes('competitionId') || !keys.includes('revision')
-    || keys.some(key => {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key)
-      return !descriptor || !('value' in descriptor)
-    })) return
-  if (!('competitionId' in value) || value.competitionId !== competitionId.value
-    || !('revision' in value) || typeof value.revision !== 'number'
-    || !Number.isSafeInteger(value.revision) || value.revision < 1) return
-  // 原收據可能早於最新 GET；child 已驗 receipt，parent 只重新讀權威狀態，不拼 revision。
-  void loadRegistration()
 }
 
 async function mutate(action: RegistrationMutationAction) {
@@ -542,7 +507,7 @@ async function mutate(action: RegistrationMutationAction) {
 }
 
 async function retryPendingCommand() {
-  if (!pendingCommand.value || mutationBusy.value || tournamentCreatePending.value || roundPublicationPending.value) return
+  if (!pendingCommand.value || mutationBusy.value || roundPublicationPending.value) return
   await sendPendingCommand()
 }
 
@@ -644,15 +609,8 @@ watch(() => [competitionId.value, session.userId.value], () => {
 onBeforeRouteUpdate(to => {
   const nextCompetitionId = typeof to.params.id === 'string' ? to.params.id.trim() : ''
   if (pendingCommand.value && nextCompetitionId !== competitionId.value) {
-    tournamentNavigationMessage.value = '報名命令的結果仍未確認，請先在目前賽事確認結果；尚不能切換賽事。'
+    notice.value = '報名命令的結果仍未確認，請先在目前賽事確認結果；尚不能切換賽事。'
     return false
-  }
-})
-
-onBeforeRouteLeave(() => {
-  if (tournamentCreatePending.value) {
-    tournamentNavigationMessage.value = '建立賽程的結果仍未確認，可能已建立。請先在原賽事與原帳號確認收據；離開不會取消建立。'
-    if (!window.confirm('建立賽程的結果仍未確認，可能已建立。離開不會取消伺服器操作，尚未確認的命令也不會跨頁面保存。確定要離開嗎？')) return false
   }
 })
 

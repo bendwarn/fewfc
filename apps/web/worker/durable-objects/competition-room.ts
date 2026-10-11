@@ -37,7 +37,6 @@ import {
   validateCompetitionGameBinding,
   type CompetitionGameBinding,
   type CompetitionGameCreateRequest,
-  type CompetitionGameRoomResult,
   type CompetitionClockControlRequest,
   type CompetitionGameClockControlEligibilityRequest,
   isCompetitionClockControlAck,
@@ -343,6 +342,19 @@ interface ClockControlRow {
   claim_version: number
 }
 
+interface InitialSeedingIntentRow {
+  [key: string]: ArrayBuffer | string | number | null
+  competition_id: string
+  command_id: string
+  stage_id: string
+  stage_json: string
+  status: 'pending' | 'completed'
+  attempts: number
+  next_attempt_at_ms: number
+  last_error: string | null
+  created_trusted_time_ms: number
+}
+
 interface GameProvisionDeliveryClaim {
   row: GameProvisionRow
   binding: CompetitionGameBinding
@@ -408,7 +420,7 @@ interface ScheduledMatchMaterialization {
   result: JsonValue
 }
 
-const SCHEMA_VERSION = 11
+const SCHEMA_VERSION = 12
 
 const OPERATION_NAMES: CompetitionOperationName[] = [
   'registrationCreate',
@@ -450,18 +462,21 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
   private readonly storage: DurableObjectState['storage']
   private readonly roomEnv: CompetitionRoomEnv
   private readonly randomBit: () => number
+  private readonly randomUint32: () => number
 
   constructor(
     ctx: DurableObjectState,
     env: CompetitionRoomEnv,
     engine: CompetitionEngineAdapter = callCompetitionEngine,
     randomBit: () => number = secureRandomBit,
+    randomUint32: () => number = secureRandomUint32,
   ) {
     super(ctx, env)
     this.storage = ctx.storage
     this.roomEnv = env
     this.engine = engine
     this.randomBit = randomBit
+    this.randomUint32 = randomUint32
     void ctx.blockConcurrencyWhile(async () => {
       this.migrate()
     })
@@ -491,6 +506,9 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         ? await this.freezeRegistrationIfDue(request.trustedTimeMs)
         : false
       const result = await this.executeInternal(request)
+      if (request?.operation?.type === 'registrationExecute' && result.ok) {
+        await this.pumpInitialSeedingInternal()
+      }
       if ((request?.operation?.type === 'registrationExecute' || freezeWasDue)
         && !(result.ok === false && result.error.code === 'alarmSchedulingFailed')) {
         try { await this.scheduleSharedAlarm() } catch {
@@ -650,7 +668,21 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
   async readTournament(
     request: CompetitionRoomTournamentReadRequest,
   ): Promise<CompetitionRoomTournamentReadResult> {
-    return this.serialized(() => this.readTournamentInternal(request))
+    return this.serialized(async () => {
+      const result = await this.readTournamentInternal(request)
+      const pendingSeeding = this.storage.sql.exec<{
+        [key: string]: ArrayBuffer | string | number | null
+        pending: number
+      }>(
+        `SELECT 1 AS pending FROM competition_initial_seeding WHERE status = 'pending' LIMIT 1`,
+      ).toArray()[0]
+      if (pendingSeeding) {
+        try { await this.scheduleSharedAlarm() } catch {
+          console.warn('CompetitionRoom retained automatic initial seeding after alarm scheduling failure')
+        }
+      }
+      return result
+    })
   }
 
   /**
@@ -706,6 +738,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     // 每種工作各自有界循環；claim 與 ACK 短暫進 tail，foreign RPC 全在 tail 外。
     const legacyBatch: LegacyAlarmBatch = { remaining: 16 }
     await Promise.all([
+      this.serialized(() => this.pumpInitialSeedingInternal()),
       this.pumpRoundDeliveries(),
       this.pumpGameProvisionDeliveries(legacyBatch),
       this.pumpClockControlDeliveries(legacyBatch),
@@ -1083,6 +1116,25 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         )
       }
 
+      if (currentVersion < 12) {
+        this.storage.sql.exec(`
+          CREATE TABLE competition_initial_seeding (
+            competition_id TEXT PRIMARY KEY,
+            command_id TEXT NOT NULL UNIQUE,
+            stage_id TEXT NOT NULL,
+            stage_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'completed')),
+            attempts INTEGER NOT NULL CHECK (attempts >= 0),
+            next_attempt_at_ms INTEGER NOT NULL,
+            last_error TEXT,
+            created_trusted_time_ms INTEGER NOT NULL
+          )
+        `)
+        this.storage.sql.exec(
+          'INSERT INTO competition_schema_migrations (version, applied_at_trusted_time_ms) VALUES (12, 0)',
+        )
+      }
+
       const finalVersion = this.storage.sql.exec<{
         [key: string]: ArrayBuffer | string | number | null
         version: number
@@ -1145,7 +1197,9 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       } catch {
         return roomFailure('invalidRoundPublication', 'stored round announcement receipt is invalid')
       }
-      return roomSuccess({ ...stored.value, idempotent: true })
+      return roomSuccess<CompetitionRoomAnnounceRoundValue>({
+        ...(stored.value as unknown as CompetitionRoomAnnounceRoundValue), idempotent: true,
+      })
     }
     if (!Number.isSafeInteger(current.revision) || current.revision < 1
       || !safeNonNegativeInteger(current.updated_trusted_time_ms) || !nonEmpty(current.organizer_user_id)) {
@@ -1907,6 +1961,27 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     ).toArray()[0]
   }
 
+  private publishedRoundBindingContext(
+    matchId: string,
+  ): { roundRef: CompetitionRoundRef; roundStartMs: number } | null {
+    const current = this.meta()
+    if (!current) return null
+    const headers = this.storage.sql.exec<RoundPublicationRow>(
+      `SELECT * FROM competition_round_publication WHERE status != 'retired' ORDER BY rowid`,
+    ).toArray()
+    for (const header of headers) {
+      try {
+        const manifest = parseRoundManifest(header, current.competition_id)
+        if (manifest.rooms.some(room => room.matchId === matchId)) {
+          return { roundRef: structuredClone(manifest.roundRef), roundStartMs: manifest.roundStartMs }
+        }
+      } catch {
+        // 損壞的其他輪公告不會成為這場比賽的 binding authority。
+      }
+    }
+    return null
+  }
+
   private originalRoundPublication(commandId: string): RoundPublicationRow {
     // 關聯與完整 manifest 同交易持久化；retired 不排除。CASE 避免損壞 JSON 造成非封閉 SQL 例外。
     const rows = this.storage.sql.exec<RoundPublicationRow>(
@@ -2449,7 +2524,11 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
           gameId: claim.row.game_id,
           binding: structuredClone(claim.binding),
         })
-        accepted = isStrictGameProvisionAck(ack, claim.row.game_id)
+        const bindingRef = await competitionGameBindingRefForRequest({
+          gameId: claim.row.game_id,
+          binding: claim.binding,
+        })
+        accepted = isCompetitionRoomReadyAck(ack, bindingRef)
         if (!accepted) errorCode = 'invalidGameRoomAck'
       } catch {
         // 失敗保留同一持久 linkage，晚 ACK 只由原 claim 收斂。
@@ -2888,6 +2967,52 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       }
     }
 
+    let initialSeedingIntent: InitialSeedingIntentRow | null = null
+    if (operation.type === 'registrationExecute' && operation.action.type === 'lock') {
+      const lockedRoster = await this.exportLockedRosterFromState(
+        response.serverState,
+        current.organizer_user_id,
+        request.trustedTimeMs,
+      )
+      if (!lockedRoster) {
+        return roomFailure('engineProtocolError', 'locked roster export returned an invalid response')
+      }
+      if (lockedRoster.teamIds.length >= 2) {
+        const plan = parseCompetitionAnnouncementPlan(lockedRoster.announcement.plan)
+        const announcedStage = plan?.stages[0]
+        if (!announcedStage || announcedStage.qualification.type !== 'allEligibleTeams') {
+          return roomFailure('engineProtocolError', 'first announced stage is unavailable for automatic seeding')
+        }
+        let drawn: ReturnType<typeof drawInitialSeedTeams>
+        try {
+          drawn = drawInitialSeedTeams(lockedRoster.teamIds, this.randomUint32)
+        } catch {
+          return roomFailure('randomSourceFailure', 'trusted random source failed during initial seeding')
+        }
+        const stage: StageConfig = {
+          stageId: announcedStage.stageId,
+          format: announcedStage.format,
+          teams: drawn.teams,
+          randomSeed: drawn.randomSeed,
+          matchFormat: announcedStage.matchFormat,
+          clockConfig: announcedStage.clockConfig,
+          swissRounds: announcedStage.swissRounds,
+          swissPolicy: announcedStage.swissPolicy,
+        }
+        initialSeedingIntent = {
+          competition_id: current.competition_id,
+          command_id: `initial-seeding:${crypto.randomUUID()}`,
+          stage_id: stage.stageId,
+          stage_json: JSON.stringify(stage),
+          status: 'pending',
+          attempts: 0,
+          next_attempt_at_ms: 0,
+          last_error: null,
+          created_trusted_time_ms: request.trustedTimeMs,
+        }
+      }
+    }
+
     if (operation.type === 'registrationExecute' && operation.action.type === 'open') {
       const deadline = registrationFreezeDeadline(response.serverState.registration, current.organizer_user_id)
       if (deadline === null) {
@@ -2933,6 +3058,20 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         JSON.stringify(storedProjection),
         request.trustedTimeMs,
       )
+      if (initialSeedingIntent) {
+        this.storage.sql.exec(
+          `INSERT INTO competition_initial_seeding
+             (competition_id, command_id, stage_id, stage_json, status, attempts,
+              next_attempt_at_ms, last_error, created_trusted_time_ms)
+           VALUES (?, ?, ?, ?, 'pending', 0, ?, NULL, ?)`,
+          initialSeedingIntent.competition_id,
+          initialSeedingIntent.command_id,
+          initialSeedingIntent.stage_id,
+          initialSeedingIntent.stage_json,
+          initialSeedingIntent.next_attempt_at_ms,
+          initialSeedingIntent.created_trusted_time_ms,
+        )
+      }
       if (projected.private !== undefined && mayReceivePrivate) {
         this.storage.sql.exec(
           `INSERT INTO competition_private_projection
@@ -4043,6 +4182,10 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       || exportResponse.public.exported !== true) {
       return { ok: false, result: roomFailure('engineProtocolError', 'locked roster export returned an invalid response') }
     }
+    const roundContext = this.publishedRoundBindingContext(input.request.matchId)
+    if (!roundContext) {
+      return { ok: false, result: roomFailure('roundNotPublishable', 'the scheduled match has no published round binding') }
+    }
     const provision = await deriveScheduledGameProvision(
       exportResponse.private,
       input.request.competitionId,
@@ -4050,6 +4193,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       input.current.organizer_user_id,
       input.nextRevision,
       intent.value,
+      roundContext,
     )
     if (!provision.ok) {
       return { ok: false, result: roomFailure(provision.code, provision.message) }
@@ -4425,6 +4569,20 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('trustedTimeRegression', 'trusted server time cannot move backwards')
     }
 
+    const seedingIntent = this.initialSeedingIntent(request.competitionId)
+    let persistedStage: unknown
+    try {
+      persistedStage = seedingIntent ? JSON.parse(seedingIntent.stage_json) as unknown : null
+    } catch {
+      return roomFailure('invalidStageConfig', 'persisted initial seeding config is invalid')
+    }
+    if (!seedingIntent || seedingIntent.status !== 'pending'
+      || request.commandId !== seedingIntent.command_id
+      || seedingIntent.stage_id !== request.stage.stageId
+      || !sameJson(persistedStage, request.stage)) {
+      return roomFailure('operationNotAllowed', 'tournament creation must use the persisted initial draw')
+    }
+
     const serverState = parseServerState(current.server_state_json)
     if (!serverState.registration) {
       return roomFailure('registrationNotLocked', 'registration must be locked before tournament creation')
@@ -4539,6 +4697,13 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         JSON.stringify(stripPrivate(projection)),
         request.trustedTimeMs,
       )
+      this.storage.sql.exec(
+        `UPDATE competition_initial_seeding
+         SET status = 'completed', last_error = NULL
+         WHERE competition_id = ? AND command_id = ? AND status = 'pending'`,
+        request.competitionId,
+        request.commandId,
+      )
       this.insertAudit({
         actorUserId: request.callerUserId,
         role: 'organizer',
@@ -4556,6 +4721,156 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       )
     })
     return result
+  }
+
+  private async exportLockedRosterFromState(
+    serverState: CompetitionServerState,
+    organizerUserId: string,
+    trustedTimeMs: number,
+  ): Promise<{ teamIds: string[], announcement: JsonObject } | null> {
+    let response: CompetitionEngineResponse
+    try {
+      response = await this.engine({
+        serverActor: actorFor('organizer', organizerUserId),
+        trustedTimeMs,
+        operation: { type: 'registrationExportLockedRoster' },
+        serverState,
+      })
+    } catch {
+      return null
+    }
+    if (!response.ok || response.operation !== 'registrationExportLockedRoster'
+      || !hasExactKeys(response as unknown as JsonObject, ['ok', 'operation', 'public', 'private', 'serverState'])
+      || !isJsonObject(response.public) || !hasExactKeys(response.public, ['exported'])
+      || response.public.exported !== true || !sameJson(response.serverState, serverState)) return null
+    const roster = parseLockedRoster(response.private, organizerUserId)
+    return roster ? { teamIds: roster.teamIds, announcement: roster.announcement } : null
+  }
+
+  private initialSeedingIntent(competitionId: string): InitialSeedingIntentRow | undefined {
+    const row = this.storage.sql.exec<InitialSeedingIntentRow>(
+      'SELECT * FROM competition_initial_seeding WHERE competition_id = ?',
+      competitionId,
+    ).toArray()[0]
+    return row && (row.status === 'pending' || row.status === 'completed')
+      && safeNonNegativeInteger(row.attempts)
+      && safeNonNegativeInteger(row.next_attempt_at_ms)
+      && safeNonNegativeInteger(row.created_trusted_time_ms)
+      ? row
+      : undefined
+  }
+
+  private async ensureInitialSeedingIntentForLockedRoom(
+    serverState: CompetitionServerState,
+    current: CompetitionTournamentReadMetaRow,
+  ): Promise<void> {
+    if (serverState.tournament !== null || !isLockedRegistrationCheckpoint(
+      serverState.registration, current.organizer_user_id,
+    ) || this.initialSeedingIntent(current.competition_id)) return
+    const lockedRoster = await this.exportLockedRosterFromState(
+      serverState,
+      current.organizer_user_id,
+      current.updated_trusted_time_ms,
+    )
+    if (!lockedRoster || lockedRoster.teamIds.length < 2) return
+    const plan = parseCompetitionAnnouncementPlan(lockedRoster.announcement.plan)
+    const announcedStage = plan?.stages[0]
+    if (!announcedStage || announcedStage.qualification.type !== 'allEligibleTeams') return
+    let drawn: ReturnType<typeof drawInitialSeedTeams>
+    try {
+      drawn = drawInitialSeedTeams(lockedRoster.teamIds, this.randomUint32)
+    } catch {
+      return
+    }
+    const stage: StageConfig = {
+      stageId: announcedStage.stageId,
+      format: announcedStage.format,
+      teams: drawn.teams,
+      randomSeed: drawn.randomSeed,
+      matchFormat: announcedStage.matchFormat,
+      clockConfig: announcedStage.clockConfig,
+      swissRounds: announcedStage.swissRounds,
+      swissPolicy: announcedStage.swissPolicy,
+    }
+    const intent: InitialSeedingIntentRow = {
+      competition_id: current.competition_id,
+      command_id: `initial-seeding:${crypto.randomUUID()}`,
+      stage_id: stage.stageId,
+      stage_json: JSON.stringify(stage),
+      status: 'pending',
+      attempts: 0,
+      next_attempt_at_ms: 0,
+      last_error: null,
+      created_trusted_time_ms: current.updated_trusted_time_ms,
+    }
+    this.storage.transactionSync(() => {
+      const latest = this.meta()
+      if (!latest || latest.competition_id !== current.competition_id
+        || latest.revision !== current.revision
+        || latest.server_state_json !== current.server_state_json) return
+      this.storage.sql.exec(
+        `INSERT OR IGNORE INTO competition_initial_seeding
+           (competition_id, command_id, stage_id, stage_json, status, attempts,
+            next_attempt_at_ms, last_error, created_trusted_time_ms)
+         VALUES (?, ?, ?, ?, 'pending', 0, ?, NULL, ?)`,
+        intent.competition_id,
+        intent.command_id,
+        intent.stage_id,
+        intent.stage_json,
+        intent.next_attempt_at_ms,
+        intent.created_trusted_time_ms,
+      )
+    })
+  }
+
+  private async pumpInitialSeedingInternal(): Promise<void> {
+    try {
+      const row = this.storage.sql.exec<InitialSeedingIntentRow>(
+        `SELECT * FROM competition_initial_seeding
+         WHERE status = 'pending' ORDER BY created_trusted_time_ms LIMIT 1`,
+      ).toArray()[0]
+      if (!row || !safeNonNegativeInteger(row.attempts) || !safeNonNegativeInteger(row.next_attempt_at_ms)) return
+      const now = Date.now()
+      if (row.next_attempt_at_ms > now) return
+      const current = this.meta()
+      if (!current || current.competition_id !== row.competition_id) return
+      let stage: StageConfig
+      try {
+        const parsed: unknown = JSON.parse(row.stage_json)
+        if (!isJsonObject(parsed) || !hasExactKeys(parsed, [
+          'stageId', 'format', 'teams', 'randomSeed', 'matchFormat', 'clockConfig', 'swissRounds', 'swissPolicy',
+        ]) || parsed.stageId !== row.stage_id) throw new Error('invalid saved stage')
+        stage = parsed as unknown as StageConfig
+      } catch {
+        this.deferInitialSeeding(row, 'invalidPersistedConfig', now)
+        return
+      }
+      const result = await this.createTournamentFromLockedRosterInternal({
+        competitionId: row.competition_id,
+        callerUserId: current.organizer_user_id,
+        commandId: row.command_id,
+        expectedRevision: current.revision,
+        trustedTimeMs: Math.max(now, current.updated_trusted_time_ms),
+        stage,
+      })
+      if (!result.ok) this.deferInitialSeeding(row, result.error.code, now)
+    } catch {
+      console.warn('CompetitionRoom retained automatic initial seeding after an attempt failure')
+    }
+  }
+
+  private deferInitialSeeding(row: InitialSeedingIntentRow, errorCode: string, now: number): void {
+    if (!safeNonNegativeInteger(row.attempts + 1)) return
+    const nextAttempt = checkedRoundRetryTime(now, Math.min(60_000, 1_000 * 2 ** Math.min(row.attempts + 1, 6)))
+    this.storage.sql.exec(
+      `UPDATE competition_initial_seeding
+       SET attempts = attempts + 1, next_attempt_at_ms = ?, last_error = ?
+       WHERE competition_id = ? AND command_id = ? AND status = 'pending'`,
+      nextAttempt,
+      errorCode,
+      row.competition_id,
+      row.command_id,
+    )
   }
 
   private async provisionScheduledGameInternal(
@@ -4638,7 +4953,11 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       matchId: request.matchId,
       gameNumber: intent.value.gameNumber,
     })}`
+    const roundContext = this.publishedRoundBindingContext(request.matchId)
+    if (!roundContext) return roomFailure('roundNotPublishable', 'the scheduled match has no published round binding')
     const binding: CompetitionGameBinding = {
+      roundRef: roundContext.roundRef,
+      roundStartMs: roundContext.roundStartMs,
       competitionId: request.competitionId,
       matchId: request.matchId,
       gameNumber: intent.value.gameNumber,
@@ -5011,6 +5330,8 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       || exportResponse.public.exported !== true) {
       return roomFailure('engineProtocolError', 'locked roster export returned an invalid response')
     }
+    const roundContext = this.publishedRoundBindingContext(request.matchId)
+    if (!roundContext) return roomFailure('roundNotPublishable', 'the scheduled match has no published round binding')
     const provision = await deriveScheduledGameProvision(
       exportResponse.private,
       request.competitionId,
@@ -5018,6 +5339,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       current.organizer_user_id,
       row.revision,
       intent.value,
+      roundContext,
     )
     if (!provision.ok) return roomFailure(provision.code, provision.message)
     const { gameId, binding } = provision.value
@@ -5244,6 +5566,8 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       assignedFirstPlayerTeam,
       nextGame: currentNextGame,
     }
+    const roundContext = this.publishedRoundBindingContext(request.matchId)
+    if (!roundContext) return roomFailure('roundNotPublishable', 'the scheduled match has no published round binding')
     const provision = await deriveScheduledGameProvision(
       rawRoster,
       request.competitionId,
@@ -5251,6 +5575,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       current.organizer_user_id,
       row.revision,
       provisionIntent,
+      roundContext,
     )
     if (!provision.ok) return roomFailure(provision.code, provision.message)
     const { gameId, binding } = provision.value
@@ -5459,7 +5784,11 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       matchId: request.matchId,
       gameNumber: 1,
     })}`
+    const roundContext = this.publishedRoundBindingContext(request.matchId)
+    if (!roundContext) return roomFailure('roundNotPublishable', 'the scheduled match has no published round binding')
     const binding: CompetitionGameBinding = {
+      roundRef: roundContext.roundRef,
+      roundStartMs: roundContext.roundStartMs,
       competitionId: request.competitionId,
       matchId: request.matchId,
       gameNumber: 1,
@@ -5767,7 +6096,8 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     try {
       const parsedBinding = JSON.parse(linked.binding_json) as unknown
       if (!isJsonObject(parsedBinding) || !hasExactKeys(parsedBinding, [
-        'competitionId', 'matchId', 'gameNumber', 'organizerUserId', 'expectedMatchRevision',
+        'roundRef', 'roundStartMs', 'competitionId', 'matchId', 'gameNumber',
+        'organizerUserId', 'expectedMatchRevision',
         'startKind', 'ruleVersion', 'ruleset', 'enabledRuleModules', 'initialHp', 'players',
         'deckSnapshot', 'firstPlayer', 'turnOrder', 'deckSeed',
       ])) throw new Error('invalid participant game binding')
@@ -6030,7 +6360,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       || !nonEmpty(request.competitionId) || !nonEmpty(request.callerUserId)) {
       return roomFailure('invalidRequest', 'competition id and caller user id are required')
     }
-    const current = this.storage.sql.exec<CompetitionTournamentReadMetaRow>(
+    let current = this.storage.sql.exec<CompetitionTournamentReadMetaRow>(
       `SELECT competition_id, organizer_user_id, revision, server_state_json, updated_trusted_time_ms
        FROM competition_meta WHERE singleton = 1`,
     ).toArray()[0]
@@ -6049,13 +6379,30 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('notParticipant', 'caller is not an active competition participant')
     }
 
-    const serverState = parseParticipantServerState(current.server_state_json)
+    let serverState = parseParticipantServerState(current.server_state_json)
     if (!serverState
       || registrationCheckpointRevision(serverState.registration, current.organizer_user_id) === null) {
       return roomFailure('invalidTournamentCheckpoint', 'tournament checkpoint is malformed')
     }
     if (serverState.tournament === null) {
-      return roomFailure('notReady', 'tournament is not ready')
+      if (isLockedRegistrationCheckpoint(serverState.registration, current.organizer_user_id)) {
+        await this.ensureInitialSeedingIntentForLockedRoom(serverState, current)
+        await this.pumpInitialSeedingInternal()
+        const latest = this.meta()
+        if (latest && latest.competition_id === current.competition_id) {
+          current = {
+            competition_id: latest.competition_id,
+            organizer_user_id: latest.organizer_user_id,
+            revision: latest.revision,
+            server_state_json: latest.server_state_json,
+            updated_trusted_time_ms: latest.updated_trusted_time_ms,
+          }
+          serverState = parseParticipantServerState(latest.server_state_json)
+        }
+      }
+      if (!serverState || serverState.tournament === null) {
+        return roomFailure('notReady', 'tournament is not ready')
+      }
     }
     if (!isTournamentForCompetition(serverState.tournament, current.competition_id)) {
       return roomFailure('invalidTournamentCheckpoint', 'tournament checkpoint is malformed')
@@ -6110,6 +6457,12 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
   private async scheduleSharedAlarm(registrationOverride?: unknown): Promise<void> {
     const provision = this.nextProvisionRow()
     const control = this.nextClockControlRow()
+    const initialSeeding = this.storage.sql.exec<{
+      [key: string]: ArrayBuffer | string | number | null
+      due: number
+    }>(
+      `SELECT MIN(next_attempt_at_ms) AS due FROM competition_initial_seeding WHERE status = 'pending'`,
+    ).one().due
     const now = Date.now()
     const current = this.meta()
     let registrationDeadline: number | null = null
@@ -6137,6 +6490,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     const dueTimes = [
       provision?.next_attempt_at_ms,
       control?.next_attempt_at_ms,
+      safeNonNegativeInteger(initialSeeding) ? initialSeeding : undefined,
       registrationDeadline === null
         ? undefined
         : registrationDeadline > Math.max(now, current?.updated_trusted_time_ms ?? 0)
@@ -8120,6 +8474,13 @@ function registrationCheckpointRevision(value: unknown, organizerUserId: string)
   return value.commands.length
 }
 
+function isLockedRegistrationCheckpoint(value: unknown, organizerUserId: string): boolean {
+  if (registrationCheckpointRevision(value, organizerUserId) === null
+    || !isJsonObject(value) || !Array.isArray(value.commands) || value.commands.length === 0) return false
+  const last = value.commands[value.commands.length - 1]
+  return isJsonObject(last) && isJsonObject(last.action) && last.action.type === 'lock'
+}
+
 function registrationFreezeDeadline(value: unknown, organizerUserId: string): number | null {
   if (registrationCheckpointRevision(value, organizerUserId) === null || !isJsonObject(value)
     || !isJsonObject(value.announcement) || !Array.isArray(value.commands)) return null
@@ -8135,7 +8496,10 @@ function registrationFreezeDeadline(value: unknown, organizerUserId: string): nu
   return opened && !locked && safeNonNegativeInteger(deadline) ? deadline : null
 }
 
-function parseLockedRoster(value: unknown, organizerUserId: string): { teamIds: string[] } | null {
+function parseLockedRoster(
+  value: unknown,
+  organizerUserId: string,
+): { teamIds: string[], announcement: JsonObject } | null {
   if (!isJsonObject(value) || !hasExactKeys(value, ['announcement', 'teams'])
     || !isRegistrationAnnouncement(value.announcement, organizerUserId) || !Array.isArray(value.teams)) return null
   const announcement = value.announcement
@@ -8166,7 +8530,7 @@ function parseLockedRoster(value: unknown, organizerUserId: string): { teamIds: 
     }
     teamIds.push(team.teamId)
   }
-  return isUniqueNonEmptyStringArray(teamIds) ? { teamIds } : null
+  return isUniqueNonEmptyStringArray(teamIds) ? { teamIds, announcement } : null
 }
 
 function isTournamentForCompetition(value: JsonObject, competitionId: string): boolean {
@@ -9863,6 +10227,50 @@ function secureRandomBit(): number {
   return bytes[0]! & 1
 }
 
+/** 以伺服器 CSPRNG 抽出不偏斜的首輪種子順序，呼叫端須在建立賽程前持久保存結果。 */
+function drawInitialSeedTeams(
+  teamIds: string[],
+  randomUint32: () => number = secureRandomUint32,
+): { teams: StageConfig['teams']; randomSeed: number } {
+  if (!isUniqueNonEmptyStringArray(teamIds) || teamIds.length < 2 || teamIds.length > 0xffff_ffff) {
+    throw new Error('首輪抽籤名單不合法')
+  }
+  const shuffled = [...teamIds].sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const otherIndex = secureRandomIndex(index + 1, randomUint32)
+    ;[shuffled[index], shuffled[otherIndex]] = [shuffled[otherIndex]!, shuffled[index]!]
+  }
+  return {
+    teams: shuffled.map((teamId, index) => ({ teamId, seed: index + 1 })),
+    randomSeed: checkedRandomUint32(randomUint32),
+  }
+}
+
+function secureRandomIndex(exclusiveUpperBound: number, randomUint32: () => number): number {
+  const range = 0x1_0000_0000
+  if (!Number.isSafeInteger(exclusiveUpperBound) || exclusiveUpperBound < 1 || exclusiveUpperBound > range) {
+    throw new Error('首輪抽籤範圍不合法')
+  }
+  const acceptanceLimit = range - (range % exclusiveUpperBound)
+  let value: number
+  do { value = checkedRandomUint32(randomUint32) } while (value >= acceptanceLimit)
+  return value % exclusiveUpperBound
+}
+
+function checkedRandomUint32(randomUint32: () => number): number {
+  const value = randomUint32()
+  if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff_ffff) {
+    throw new Error('伺服器隨機來源未回傳有效的 32 位元整數')
+  }
+  return value
+}
+
+function secureRandomUint32(): number {
+  const value = new Uint32Array(1)
+  crypto.getRandomValues(value)
+  return value[0]!
+}
+
 type ProvisionIntent = {
   teams: [string, string]
   gameNumber: number
@@ -10704,6 +11112,7 @@ async function deriveScheduledGameProvision(
   organizerUserId: string,
   expectedMatchRevision: number,
   intent: ProvisionIntent,
+  roundContext: { roundRef: CompetitionRoundRef; roundStartMs: number },
 ): Promise<{ ok: true; value: { gameId: string; binding: CompetitionGameBinding } }
   | { ok: false; code: string; message: string }> {
   const roster = deriveLockedRosterBinding(
@@ -10719,6 +11128,8 @@ async function deriveScheduledGameProvision(
     kind: 'competition-game', competitionId, matchId, gameNumber: intent.gameNumber,
   })}`
   const binding: CompetitionGameBinding = {
+    roundRef: structuredClone(roundContext.roundRef),
+    roundStartMs: roundContext.roundStartMs,
     competitionId,
     matchId,
     gameNumber: intent.gameNumber,
@@ -10751,14 +11162,6 @@ function parseStoredCompetitionGameBinding(value: string): CompetitionGameBindin
   const parsed = JSON.parse(value) as unknown
   validateCompetitionGameBinding(parsed)
   return parsed
-}
-
-function isStrictGameProvisionAck(value: unknown, gameId: string): value is CompetitionGameRoomResult {
-  if (!isJsonObject(value)) return false
-  if (!hasExactKeys(value, ['gameId', 'idempotent', 'status'])) return false
-  return value.gameId === gameId
-    && value.status === 'Waiting'
-    && typeof value.idempotent === 'boolean'
 }
 
 function parseServerState(value: string): CompetitionServerState {

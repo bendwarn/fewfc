@@ -138,7 +138,10 @@ function props() {
 }
 
 beforeEach(() => fetchMock.mockReset())
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 it('loads all four formats through the exact session-backed GET and displays server rank/result without raw history', async () => {
   fetchMock.mockResolvedValue(tournamentResponse('competition a'))
@@ -216,6 +219,32 @@ it('maps not-ready and forbidden responses to fixed safe states with manual retr
   expect(wrapper.get('[role="alert"]').text()).toBe('目前帳號沒有這場賽事的賽程讀取權限。')
   expect(wrapper.text()).not.toContain('private ACL detail')
   expect(fetchMock).toHaveBeenCalledTimes(2)
+  await wrapper.unmount()
+})
+
+it('automatically refreshes a locked registration after notReady and renders the persisted seeded teams', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  fetchMock
+    .mockRejectedValueOnce({ statusCode: 409, data: { code: 'notReady' } })
+    .mockResolvedValueOnce(tournamentResponse('competition a', 10))
+  const wrapper = await mountSuspended(CompetitionTournamentView, {
+    props: { ...props(), registrationLocked: true },
+  })
+  await flushPromises()
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(wrapper.get('[role="status"]').text()).toContain('系統正在依公告自動抽籤並建立首輪')
+  await vi.advanceTimersByTimeAsync(4_999)
+  await flushPromises()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+
+  await vi.advanceTimersByTimeAsync(1)
+  await flushPromises()
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'GET', retry: 0 })
+  expect(wrapper.get('.revision-note').text()).toBe('賽程版本 10')
+  expect(wrapper.get('.seed-list').text()).toContain('種子 1team-a')
+  expect(wrapper.get('.seed-list').text()).toContain('種子 2team-b')
   await wrapper.unmount()
 })
 

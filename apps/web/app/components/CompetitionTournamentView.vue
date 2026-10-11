@@ -29,7 +29,9 @@
       :role="loadError.kind === 'notReady' ? 'status' : 'alert'"
       aria-live="polite"
     >
-      {{ loadError.message }}
+      {{ registrationLocked && loadError.kind === 'notReady'
+        ? '報名名單已鎖定，系統正在依公告自動抽籤並建立首輪；完成後此頁會自動更新。'
+        : loadError.message }}
     </p>
 
     <div v-else-if="tournament" class="tournament-content">
@@ -247,7 +249,7 @@ import {
   type TournamentViewStageConfig,
 } from '~/lib/competition-tournament-view'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   competitionId: string
   /** 僅用於使登入者切換時失效；不會送入 GET。 */
   sessionIdentity: string | null
@@ -255,7 +257,9 @@ const props = defineProps<{
   contextRevision: number | null
   /** 父頁已確認 session 與公告 projection 載入完成，不代表 API 授權。 */
   contextReady: boolean
-}>()
+  /** 凍結後尚未建立首輪時持續查詢權威賽程。 */
+  registrationLocked?: boolean
+}>(), { registrationLocked: false })
 
 const mounted = ref(false)
 const loading = ref(false)
@@ -263,6 +267,7 @@ const tournament = ref<CompetitionTournamentViewData | null>(null)
 const loadError = ref<CompetitionTournamentViewLoadError | null>(null)
 let requestSequence = 0
 let activeRequest: AbortController | null = null
+let retryTimer: ReturnType<typeof setTimeout> | null = null
 
 const normalizedCompetitionId = computed(() => normalizeCompetitionId(props.competitionId))
 const canRead = computed(() => props.contextReady
@@ -305,12 +310,20 @@ async function loadTournament() {
     if (isCurrentRequest(sequence, identity)) {
       loading.value = false
       activeRequest = null
+      if (props.registrationLocked && loadError.value?.kind === 'notReady') {
+        retryTimer = setTimeout(() => {
+          retryTimer = null
+          void loadTournament()
+        }, 5_000)
+      }
     }
   }
 }
 
 function invalidateRequest() {
   requestSequence += 1
+  if (retryTimer !== null) clearTimeout(retryTimer)
+  retryTimer = null
   activeRequest?.abort()
   activeRequest = null
   loading.value = false

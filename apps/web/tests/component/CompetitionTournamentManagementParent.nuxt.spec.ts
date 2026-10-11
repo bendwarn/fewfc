@@ -6,7 +6,6 @@ import { useNuxtApp, useRouter } from '#app'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { StageConfig } from '../../shared/competition'
 import { usePlayerSession } from '~/composables/usePlayerSession'
-import CompetitionTournamentManagement from '~/components/CompetitionTournamentManagement.vue'
 import CompetitionRoundPublication from '~/components/CompetitionRoundPublication.vue'
 import { parseCompetitionTournamentViewResponse } from '~/lib/competition-tournament-view'
 
@@ -16,7 +15,6 @@ vi.mock('~/lib/auth-client', () => ({ authClient: { getSession: getSessionMock }
 
 const teamIds: [string, string] = ['b45abe94-a252-4e3d-bff2-7d26c6e2fabc', '535ec115-7bf4-4bbf-b0d3-c6e0ee76c8b7']
 const stageId = 'cd0d3e8b-7c87-46c1-b50d-deb6fb2ad5fa'
-const commandId = 'b9ae10af-54da-429e-a10c-5e8de84021a2'
 const queryId = '8aa75538-3917-4f13-a676-c0ad58379636'
 const notReady = { statusCode: 409, data: { code: 'notReady' } }
 function stage(): StageConfig {
@@ -33,10 +31,6 @@ function publicSnapshot(competitionId = 'competition-a') {
 function readTournament(competitionId = 'competition-a', revision = 20) {
   return { competitionId, revision, projection: { ok: true, operation: 'tournamentView', public: publicSnapshot(competitionId) } }
 }
-function ack() {
-  return { competitionId: 'competition-a', revision: 5, commandId, idempotent: true,
-    projection: { ok: true, operation: 'tournamentCreate', public: publicSnapshot() } }
-}
 function registrationResponse(competitionId = 'competition-a', revision = 4, lifecycle: 'locked' | 'open' = 'locked') {
   // 公告沿既有 public DTO；不測生命值、不假造新增建立 payload。
   return { competitionId, revision, projection: { ok: true, operation: 'registrationView', public: {
@@ -49,7 +43,7 @@ function registrationResponse(competitionId = 'competition-a', revision = 4, lif
         exactRankingTiePolicy: 'organizerOrUnconflictedRefereeWithPublicReason',
         stages: [{ stageId: 'stage-1', format: 'roundRobin', matchFormat: { type: 'fixedGames', value: 1 },
           clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 30_000 },
-          swissRounds: null, swissMatchPoints: null, qualification: { type: 'allEligibleTeams' } }],
+          swissRounds: null, swissPolicy: null, qualification: { type: 'allEligibleTeams' } }],
       } },
     lifecycle, revision: 2, teams: teamIds.map((teamId, index) => ({ teamId, captain: `captain-${index}`, members: [`captain-${index}`],
       rosterVersion: 1, confirmedMembers: [`captain-${index}`], status: 'checkedIn', exclusionReasons: [] })),
@@ -94,10 +88,8 @@ function requestSignal(call: unknown[]): AbortSignal {
   return options.signal
 }
 
-let post = deferred()
 let registrationRevision = 4
 let lifecycle: 'locked' | 'open' = 'locked'
-let tournamentAvailable = false
 const queuedRegistrationReads: ReturnType<typeof deferred>[] = []
 const cleanups: (() => void)[] = []
 const RouteHost = defineComponent({ setup: () => () => h(NuxtPage) })
@@ -116,35 +108,10 @@ async function mountPage() {
   await flushPromises()
   return wrapper
 }
-type PageWrapper = Awaited<ReturnType<typeof mountPage>>
-async function prepareCreate(wrapper: PageWrapper) {
-  const inputs: [string, string][] = [['tournament-format', 'roundRobin'], ['tournament-team-seed-0', '2'],
-    ['tournament-team-seed-1', '1'], ['tournament-random-seed', '77'], ['tournament-games', '3'],
-    ['tournament-clock-main', '5'], ['tournament-byoyomi', '30']]
-  for (const [testId, value] of inputs) await wrapper.get(`[data-testid="${testId}"]`).setValue(value)
-  await wrapper.get('[data-testid="tournament-form"]').trigger('submit')
-  await wrapper.get('[data-testid="tournament-acknowledge"]').setValue(true)
-}
-async function sendCreate(wrapper: PageWrapper) {
-  await prepareCreate(wrapper)
-  const uuid = vi.mocked(crypto.randomUUID)
-  uuid.mockReturnValueOnce(stageId).mockReturnValueOnce(commandId)
-  const baseline = uuid.mock.calls.length
-  await wrapper.get('[data-testid="tournament-confirm-create"]').trigger('click')
-  expect(uuid.mock.calls.length - baseline).toBe(2)
-  expect(uuid.mock.results.slice(baseline).map(result => result.type === 'return' ? result.value : undefined)).toEqual([stageId, commandId])
-  expect(tournamentPosts()).toHaveLength(1)
-  const body: unknown = tournamentPosts()[0]?.[1]?.body
-  expect(body).toEqual({ commandId, expectedRevision: 4, stage: stage() })
-  expect(tournamentPosts()[0]?.[1]).toMatchObject({ method: 'POST', retry: 0 })
-}
-
 beforeEach(() => {
   queuedRegistrationReads.splice(0)
   registrationRevision = 4
   lifecycle = 'locked'
-  tournamentAvailable = false
-  post = deferred()
   currentSession().clear()
   getSessionMock.mockReset().mockResolvedValue({ data: { user: { id: 'organizer-a', name: '測試主辦' } }, error: null })
   vi.spyOn(crypto, 'randomUUID').mockReturnValue(queryId)
@@ -155,9 +122,8 @@ beforeEach(() => {
       return queuedRegistrationReads.shift()?.promise ?? Promise.resolve(registrationResponse(competitionId, registrationRevision, lifecycle))
     }
     if (path.endsWith('/tournament') && method(options) === 'GET') {
-      return tournamentAvailable ? Promise.resolve(readTournament(decodeURIComponent(path.split('/')[3] ?? ''))) : Promise.reject(notReady)
+      return Promise.reject(notReady)
     }
-    if (path.endsWith('/tournament') && method(options) === 'POST') return post.promise
     throw new Error('fixture 非預期的 transport')
   })
 })
@@ -167,368 +133,84 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('unknown 建立跨父刷新保留同 DOM／原 expected／兩 UUID，GET20 不解收據且 retry0 UUID', async () => {
+it('locked registration shows that the server is preparing the automatic initial schedule', async () => {
   const page = await mountPage()
-  const child = page.findComponent(CompetitionTournamentManagement)
-  const panel = page.get('.tournament-management').element
-  await sendCreate(page)
-  post.reject({ statusCode: 503 })
-  await flushPromises()
-  const retry = page.get('[data-testid="tournament-same-command-retry"]').element
-  const originalSummary = page.get('[data-testid="tournament-summary"]').text()
-  expect(page.get('[data-testid="tournament-same-command-retry"]').attributes('disabled')).toBeUndefined()
-  const refresh = deferred()
-  queuedRegistrationReads.push(refresh)
-  await page.get('.detail-heading .refresh-button').trigger('click')
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(page.get('[data-testid="tournament-same-command-retry"]').element).toBe(retry)
-  expect(page.get('[data-testid="tournament-same-command-retry"]').attributes('disabled')).toBeDefined()
-  expect(child.emitted('unresolved')).toBeUndefined()
-  tournamentAvailable = true
-  registrationRevision = 20
-  refresh.resolve(registrationResponse('competition-a', 20))
-  await flushPromises()
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(page.get('[data-testid="tournament-summary"]').text()).toBe(originalSummary)
-  expect(page.get('[data-testid="tournament-same-command-retry"]').attributes('disabled')).toBeUndefined()
-  expect(child.emitted('created')).toBeUndefined()
-  expect(child.emitted('unresolved')).toBeUndefined()
-  expect(page.get('.tournament-view .revision-note').text()).toContain('20')
-  post = deferred()
-  const uuidBaseline = vi.mocked(crypto.randomUUID).mock.calls.length
-  await page.get('[data-testid="tournament-same-command-retry"]').trigger('click')
-  expect(vi.mocked(crypto.randomUUID).mock.calls.length - uuidBaseline).toBe(0)
-  expect(tournamentPosts()).toHaveLength(2)
-  const firstBody: unknown = tournamentPosts()[0]?.[1]?.body
-  const retryBody: unknown = tournamentPosts()[1]?.[1]?.body
-  expect(retryBody).toEqual(firstBody)
-  expect(retryBody).toEqual({ commandId, expectedRevision: 4, stage: stage() })
-  post.resolve(ack())
-  await flushPromises()
-  expect(child.emitted('created')).toEqual([[{ competitionId: 'competition-a', revision: 5 }]])
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(page.find('[data-testid="tournament-same-command-retry"]').exists()).toBe(false)
-  expect(page.get('.tournament-view .revision-note').text()).toContain('20')
-  expect(registrationReads()).toHaveLength(3)
-})
-
-it('matching ACK 只啟動 registrationView，等待權威刷新才呈現新版本與賽程', async () => {
-  const page = await mountPage()
-  const panel = page.get('.tournament-management').element
-  await sendCreate(page)
-  const refresh = deferred()
-  queuedRegistrationReads.push(refresh)
-  const readBaseline = registrationReads().length
-  tournamentAvailable = true
-  post.resolve(ack())
-  await flushPromises()
-  expect(registrationReads().length - readBaseline).toBe(1)
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(page.text()).toContain('正在載入賽事報名狀態')
-  expect(page.find('.tournament-view .revision-note').exists()).toBe(false)
-  expect(page.find('[data-testid="tournament-same-command-retry"]').exists()).toBe(false)
-  const queryOptions: unknown = registrationReads().at(-1)?.[1]
-  expect(queryOptions).toMatchObject({ method: 'POST', retry: 0, body: {
-    commandId: queryId, expectedRevision: 4, operation: { type: 'registrationView' },
-  } })
-  refresh.resolve(registrationResponse('competition-a', 20))
-  await flushPromises()
-  expect(page.get('.revision-label').text()).toBe('狀態版本 20')
-  expect(page.get('.tournament-view .revision-note').text()).toContain('20')
-  expect(tournamentPosts()).toHaveLength(1)
-  const reads = fetchMock.mock.calls.filter(call => typeof call[0] === 'string' && call[0].endsWith('/tournament') && method(call[1]) === 'GET')
-  for (const call of reads) {
-    expect(call[0]).toBe('/api/competitions/competition-a/tournament')
-    expect(call[1]).toMatchObject({ method: 'GET', retry: 0 })
-    expect(call[1]?.body).toBeUndefined()
-    expect(call[1]?.query).toBeUndefined()
-  }
-})
-
-it.each(['非主辦', '未登入', '未鎖定'])('%s 沒有建立能力，不從公告角色提示產生 mutation', async kind => {
-  if (kind === '非主辦') getSessionMock.mockResolvedValue({ data: { user: { id: 'viewer', name: '觀看者' } }, error: null })
-  if (kind === '未登入') getSessionMock.mockResolvedValue({ data: null, error: null })
-  if (kind === '未鎖定') lifecycle = 'open'
-  const page = await mountPage()
-  expect(page.get('.tournament-management').text()).toContain(kind === '非主辦'
-    ? '目前帳號不是公告所列主辦方' : kind === '未登入' ? '請先登入主辦帳號' : '正在確認賽事狀態')
-  expect(page.find('[data-testid="tournament-form"]').exists()).toBe(false)
-  expect(page.get('[data-testid="tournament-refresh"]').attributes('disabled')).toBeDefined()
+  const getCalls = fetchMock.mock.calls.filter(call => call[0] === '/api/competitions/competition-a/tournament'
+    && method(call[1]) === 'GET')
+  expect(getCalls.length).toBeGreaterThan(0)
+  expect(page.get('.tournament-view [role="status"]').text())
+    .toContain('名單已鎖定，系統正在依公告自動抽籤並建立首輪')
   expect(tournamentPosts()).toHaveLength(0)
-  // 事件是公開 seam；foreign／extra／unsafe event 不得觸發 parent query。
-  const child = page.findComponent(CompetitionTournamentManagement)
-  const baseline = registrationReads().length
-  child.vm.$emit('created', { competitionId: 'competition-a', revision: 5 })
-  await flushPromises()
-  expect(registrationReads()).toHaveLength(baseline)
+  expect(fetchMock.mock.calls.filter(call => registrationAction(call[1]) === 'lock')).toHaveLength(0)
 })
 
-it('created adapter 拒絕 foreign／extra／不安全 event，當前有效 receipt 才 readonly refresh', async () => {
-  const page = await mountPage()
-  const child = page.findComponent(CompetitionTournamentManagement)
-  const baseline = registrationReads().length
-  const invalidEvents: unknown[] = [{ competitionId: 'competition-b', revision: 5 }, { competitionId: 'competition-a', revision: 5, callerUserId: 'organizer-a' },
-    { competitionId: 'competition-a', revision: 0 }, { competitionId: 'competition-a', revision: Number.MAX_SAFE_INTEGER + 1 }]
-  for (const value of invalidEvents) child.vm.$emit('created', value)
-  await flushPromises()
-  expect(registrationReads()).toHaveLength(baseline)
-  expect(tournamentPosts()).toHaveLength(0)
-  child.vm.$emit('created', { competitionId: 'competition-a', revision: 5 })
-  await flushPromises()
-  expect(registrationReads()).toHaveLength(baseline + 1)
-  expect(tournamentPosts()).toHaveLength(0)
-})
-
-it('A 真 unknown intent 在合法 open B 停用父 mutation 且零 dispatch，readonly 可刷新，回 A 原命令 retry', async () => {
-  let aRevision = 4
-  let aTournamentExists = false
-  // 兩個不同賽事各自合法：A 始終 locked，B 始終 open；不將同一名單解鎖來製造操作。
+it('a signed-in non-organizer sees the safe tournament permission error without a mutation', async () => {
+  getSessionMock.mockResolvedValue({ data: { user: { id: 'viewer', name: '觀看者' } }, error: null })
   fetchMock.mockImplementation((path: unknown, options: unknown) => {
-    if (path === '/api/competitions/competition-a/commands' && operation(options) === 'registrationView') {
-      return Promise.resolve(registrationResponse('competition-a', aRevision, 'locked'))
+    if (typeof path === 'string' && path.endsWith('/commands') && operation(options) === 'registrationView') {
+      return Promise.resolve(registrationResponse(decodeURIComponent(path.split('/')[3] ?? '')))
     }
-    if (path === '/api/competitions/competition-b/commands' && operation(options) === 'registrationView') {
-      return Promise.resolve(registrationResponse('competition-b', 7, 'open'))
-    }
-    if (operation(options) === 'registrationExecute') return Promise.reject({ statusCode: 503 })
-    if (path === '/api/competitions/competition-a/tournament' && method(options) === 'POST') return post.promise
-    if (path === '/api/competitions/competition-b/tournament' && method(options) === 'POST') return Promise.reject({ statusCode: 503 })
     if (typeof path === 'string' && path.endsWith('/tournament') && method(options) === 'GET') {
-      return path === '/api/competitions/competition-a/tournament' && aTournamentExists
-        ? Promise.resolve(readTournament('competition-a', aRevision)) : Promise.reject(notReady)
+      return Promise.reject({ statusCode: 403, message: 'private ACL detail' })
     }
-    throw new Error('fixture 非預期的 transport')
+    throw new Error('唯讀權限 fixture 不接受寫入')
   })
   const page = await mountPage()
-  const router = currentRouter()
-  const child = page.findComponent(CompetitionTournamentManagement)
-  const panel = page.get('.tournament-management').element
-  await sendCreate(page)
-  post.reject({ statusCode: 503 })
-  await flushPromises()
-  expect(page.get('[data-testid="tournament-same-command-retry"]').attributes('disabled')).toBeUndefined()
-  await router.push('/competitions/competition-b')
-  await nextTick()
-  await flushPromises()
-  expect(router.currentRoute.value.path).toBe('/competitions/competition-b')
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(page.find('[data-testid="tournament-summary"]').exists()).toBe(false)
-  expect(page.get('[data-testid="tournament-same-command-retry"]').attributes('disabled')).toBeDefined()
-  const register = page.get('.register-form button[type="submit"]')
-  expect(register.text()).toBe('登記隊伍')
-  expect(register.attributes('disabled')).toBeDefined()
-  await register.trigger('click')
-  await flushPromises()
-  expect(fetchMock.mock.calls.filter(call => operation(call[1]) === 'registrationExecute')).toHaveLength(0)
-  expect(tournamentPosts()).toHaveLength(1)
-  expect(tournamentPosts().filter(call => call[0] === '/api/competitions/competition-b/tournament')).toHaveLength(0)
-  const bReadBaseline = registrationReads().filter(call => call[0] === '/api/competitions/competition-b/commands').length
-  expect(page.get('.detail-heading .refresh-button').attributes('disabled')).toBeUndefined()
-  await page.get('.detail-heading .refresh-button').trigger('click')
-  await flushPromises()
-  const bReads = registrationReads().filter(call => call[0] === '/api/competitions/competition-b/commands')
-  expect(bReads).toHaveLength(bReadBaseline + 1)
-  const queryBody: unknown = bReads.at(-1)?.[1]?.body
-  expect(queryBody).toEqual({ commandId: queryId, expectedRevision: 7, operation: { type: 'registrationView' } })
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(page.get('.register-form button[type="submit"]').attributes('disabled')).toBeDefined()
-  expect(fetchMock.mock.calls.filter(call => operation(call[1]) === 'registrationExecute')).toHaveLength(0)
-  expect(tournamentPosts()).toHaveLength(1)
-  expect(child.emitted('created')).toBeUndefined()
-  expect(child.emitted('unresolved')).toBeUndefined()
-  await router.push('/competitions/competition-a')
-  await nextTick()
-  await flushPromises()
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(page.get('[data-testid="tournament-summary"]').text()).toContain('77')
-  expect(page.get('[data-testid="tournament-same-command-retry"]').attributes('disabled')).toBeUndefined()
-  post = deferred()
-  const retryUuidBaseline = vi.mocked(crypto.randomUUID).mock.calls.length
-  await page.get('[data-testid="tournament-same-command-retry"]').trigger('click')
-  expect(vi.mocked(crypto.randomUUID).mock.calls.length - retryUuidBaseline).toBe(0)
-  expect(tournamentPosts()).toHaveLength(2)
-  expect(tournamentPosts().map(call => call[0])).toEqual(['/api/competitions/competition-a/tournament', '/api/competitions/competition-a/tournament'])
-  const firstBody: unknown = tournamentPosts()[0]?.[1]?.body
-  const retryBody: unknown = tournamentPosts()[1]?.[1]?.body
-  expect(firstBody).toEqual({ commandId, expectedRevision: 4, stage: stage() })
-  expect(retryBody).toEqual(firstBody)
-  aRevision = 5
-  aTournamentExists = true
-  post.resolve(ack())
-  await flushPromises()
-  expect(child.emitted('created')).toEqual([[{ competitionId: 'competition-a', revision: 5 }]])
-  expect(child.emitted('unresolved')).toBeUndefined()
-  // matching ACK 解除建立賽程互斥後，B 的普通報名操作恢復可用。
-  await router.push('/competitions/competition-b')
-  await nextTick()
-  await flushPromises()
-  const unlockedControl = page.get('.register-form button[type="submit"]')
-  expect(unlockedControl.text()).toBe('登記隊伍')
-  expect(unlockedControl.attributes('disabled')).toBeUndefined()
-  await unlockedControl.trigger('click')
-  await flushPromises()
-  const commands = fetchMock.mock.calls.filter(call => method(call[1]) === 'POST' && registrationAction(call[1]) === 'registerTeam')
-  expect(commands).toHaveLength(1)
-  expect(commands[0]?.[0]).toBe('/api/competitions/competition-b/commands')
-  const controlBody: unknown = commands[0]?.[1]?.body
-  expect(controlBody).toMatchObject({ commandId: queryId, expectedRevision: 7,
-    operation: { type: 'registrationExecute', action: { type: 'registerTeam', members: ['organizer-a'] } } })
-  expect(tournamentPosts()).toHaveLength(2)
+  expect(page.get('.tournament-view [role="alert"]').text())
+    .toBe('目前帳號沒有這場賽事的賽程讀取權限。')
+  expect(page.text()).not.toContain('private ACL detail')
+  expect(fetchMock.mock.calls.filter(call => method(call[1]) === 'POST'
+    && operation(call[1]) !== 'registrationView')).toHaveLength(0)
 })
 
-it.each(['success', 'error'])('session 切換時 readonly 舊 %s／finally 不能清新 loading 或回灌舊 context', async result => {
+it('a signed-out parent waits for an authenticated session before reading either projection', async () => {
+  getSessionMock.mockResolvedValue({ data: null, error: null })
   const page = await mountPage()
-  const panel = page.get('.tournament-management').element
+  expect(page.get('.status-panel').text()).toContain('登入後即可查看賽事公告與報名狀態')
+  expect(fetchMock).not.toHaveBeenCalled()
+})
+
+it('session switch aborts the prior tournament read and ignores its late schedule', async () => {
   const oldRead = deferred()
-  queuedRegistrationReads.push(oldRead)
-  await page.get('.detail-heading .refresh-button').trigger('click')
-  const oldSignal = requestSignal(registrationReads().at(-1) ?? [])
-  const newRead = deferred()
-  queuedRegistrationReads.push(newRead)
+  const currentRead = deferred()
+  let tournamentReadCount = 0
+  fetchMock.mockImplementation((path: unknown, options: unknown) => {
+    if (typeof path !== 'string') throw new Error('fixture 只接受明確路徑')
+    if (path.endsWith('/commands') && operation(options) === 'registrationView') {
+      return queuedRegistrationReads.shift()?.promise ?? Promise.resolve(registrationResponse())
+    }
+    if (path.endsWith('/tournament') && method(options) === 'GET') {
+      tournamentReadCount += 1
+      return tournamentReadCount === 1 ? oldRead.promise : currentRead.promise
+    }
+    throw new Error('身分切換 fixture 不接受寫入')
+  })
+  const page = await mountPage()
+  const originalTournamentCall = fetchMock.mock.calls.find(call => call[0] === '/api/competitions/competition-a/tournament'
+    && method(call[1]) === 'GET')
+  if (!originalTournamentCall) throw new Error('初始賽程查詢遺失')
+  const originalSignal = requestSignal(originalTournamentCall)
+  const refreshedRegistration = deferred()
+  queuedRegistrationReads.push(refreshedRegistration)
+
   currentSession().setUser({ id: 'viewer', name: '觀看者' })
   await nextTick()
-  expect(oldSignal.aborted).toBe(true)
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(page.get('[data-testid="tournament-refresh"]').attributes('disabled')).toBeDefined()
-  if (result === 'success') oldRead.resolve(registrationResponse('competition-a', 999))
-  else oldRead.reject({ statusCode: 503, message: '不可反射的内部訊息' })
-  await flushPromises()
-  expect(page.text()).toContain('正在載入賽事報名狀態')
-  expect(page.find('.revision-label').exists()).toBe(false)
-  expect(page.get('[data-testid="tournament-refresh"]').attributes('disabled')).toBeDefined()
-  expect(page.text()).not.toContain('999')
-  expect(page.text()).not.toContain('不可反射的内部訊息')
-  newRead.resolve(registrationResponse('competition-a', 20))
-  await flushPromises()
-  expect(page.get('.revision-label').text()).toBe('狀態版本 20')
-  expect(page.get('.tournament-management').text()).toContain('目前帳號不是公告所列主辦方')
-  expect(tournamentPosts()).toHaveLength(0)
-})
-
-it('真 NuxtPage 同 record A→B→A 保留 DOM／未知 snapshot，舊 success/error 不回灌新 scope', async () => {
-  const page = await mountPage()
-  const router = currentRouter()
-  const child = page.findComponent(CompetitionTournamentManagement)
-  const panel = page.get('.tournament-management').element
-  await sendCreate(page)
-  const originalPost = post
-  const originalSignal = requestSignal(tournamentPosts()[0] ?? [])
-  const readB = deferred()
-  queuedRegistrationReads.push(readB)
-  await router.push('/competitions/competition-b')
-  await nextTick()
-  await flushPromises()
-  expect(router.currentRoute.value.path).toBe('/competitions/competition-b')
   expect(originalSignal.aborted).toBe(true)
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(page.find('[data-testid="tournament-summary"]').exists()).toBe(false)
-  expect(page.get('[data-testid="tournament-same-command-retry"]').attributes('disabled')).toBeDefined()
-  const bSignal = requestSignal(registrationReads().at(-1) ?? [])
-  const readA = deferred()
-  queuedRegistrationReads.push(readA)
-  await router.push('/competitions/competition-a')
-  await nextTick()
+  refreshedRegistration.resolve(registrationResponse('competition-a', 20))
   await flushPromises()
-  expect(bSignal.aborted).toBe(true)
-  originalPost.resolve(ack())
-  readB.reject({ statusCode: 503 })
-  await flushPromises()
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(page.text()).toContain('正在載入賽事報名狀態')
-  expect(child.emitted('created')).toBeUndefined()
-  expect(child.emitted('unresolved')).toBeUndefined()
-  readA.resolve(registrationResponse('competition-a', 20))
-  await flushPromises()
-  expect(page.get('[data-testid="tournament-summary"]').text()).toContain('77')
-  expect(page.get('[data-testid="tournament-same-command-retry"]').attributes('disabled')).toBeUndefined()
-  post = deferred()
-  const baseline = vi.mocked(crypto.randomUUID).mock.calls.length
-  await page.get('[data-testid="tournament-same-command-retry"]').trigger('click')
-  expect(vi.mocked(crypto.randomUUID).mock.calls.length - baseline).toBe(0)
-  const body: unknown = tournamentPosts()[1]?.[1]?.body
-  expect(body).toEqual({ commandId, expectedRevision: 4, stage: stage() })
-  expect(tournamentPosts()).toHaveLength(2)
-})
+  expect(tournamentReadCount).toBeGreaterThanOrEqual(2)
+  const currentTournamentCall = fetchMock.mock.calls.filter(call => call[0] === '/api/competitions/competition-a/tournament'
+    && method(call[1]) === 'GET').at(-1)
+  if (!currentTournamentCall) throw new Error('目前身分的賽程查詢遺失')
+  expect(requestSignal(currentTournamentCall).aborted).toBe(false)
 
-it('未知 intent 跨 session／登出遮蔽摘要，回原帳號同 body retry 不自我 busy 鎖死', async () => {
-  const page = await mountPage()
-  const panel = page.get('.tournament-management').element
-  await sendCreate(page)
-  post.reject({ statusCode: 503 })
+  oldRead.resolve(readTournament('competition-a', 99))
   await flushPromises()
-  currentSession().setUser({ id: 'viewer' })
-  await nextTick()
+  expect(page.find('.tournament-view .revision-note').exists()).toBe(false)
+  currentRead.resolve(readTournament('competition-a', 30))
   await flushPromises()
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(page.find('[data-testid="tournament-summary"]').exists()).toBe(false)
-  expect(page.get('[data-testid="tournament-same-command-retry"]').attributes('disabled')).toBeDefined()
-  currentSession().clear()
-  await nextTick()
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(page.get('.tournament-management').text()).toContain('請先登入主辦帳號')
-  expect(page.find('[data-testid="tournament-summary"]').exists()).toBe(false)
-  currentSession().setUser({ id: 'organizer-a' })
-  await nextTick()
-  await flushPromises()
-  expect(page.get('[data-testid="tournament-summary"]').text()).toContain('77')
-  expect(page.get('[data-testid="tournament-same-command-retry"]').attributes('disabled')).toBeUndefined()
-  post = deferred()
-  const baseline = vi.mocked(crypto.randomUUID).mock.calls.length
-  await page.get('[data-testid="tournament-same-command-retry"]').trigger('click')
-  expect(vi.mocked(crypto.randomUUID).mock.calls.length - baseline).toBe(0)
-  const body: unknown = tournamentPosts()[1]?.[1]?.body
-  expect(body).toEqual({ commandId, expectedRevision: 4, stage: stage() })
-})
-
-it('不同 record 離頁需明示確認，拒絕時保留 DOM／intent；確認後不宣稱取消或跨卸載保存', async () => {
-  const page = await mountPage()
-  const router = currentRouter()
-  const removeRoute = router.addRoute({ name: 'management-test-exit', path: '/management-test-exit', component: defineComponent({
-    setup: () => () => h('p', '正式 fixture 離頁目的地'),
-  }) })
-  cleanups.push(removeRoute)
-  const child = page.findComponent(CompetitionTournamentManagement)
-  const panel = page.get('.tournament-management').element
-  await sendCreate(page)
-  post.reject({ statusCode: 503 })
-  await flushPromises()
-  // Nuxt DOM 未必提供 confirm；明示補外部瀏覽器 seam，並恢復原 descriptor／缺省狀態。
-  const confirm = vi.fn<(message?: string) => boolean>().mockReturnValue(false).mockReturnValueOnce(false).mockReturnValueOnce(true)
-  const originalConfirm = Object.getOwnPropertyDescriptor(window, 'confirm')
-  Object.defineProperty(window, 'confirm', { configurable: true, writable: true, value: confirm })
-  cleanups.push(() => {
-    if (originalConfirm) Object.defineProperty(window, 'confirm', originalConfirm)
-    else Reflect.deleteProperty(window, 'confirm')
-  })
-  await router.push('/management-test-exit')
-  await nextTick()
-  expect(router.currentRoute.value.path).toBe('/competitions/competition-a')
-  expect(page.get('.tournament-management').element).toBe(panel)
-  expect(child.emitted('unresolved')).toBeUndefined()
-  expect(page.text()).toContain('離開不會取消建立')
-  expect(confirm).toHaveBeenCalledWith('建立賽程的結果仍未確認，可能已建立。離開不會取消伺服器操作，尚未確認的命令也不會跨頁面保存。確定要離開嗎？')
-  const unload = new Event('beforeunload', { cancelable: true })
-  window.dispatchEvent(unload)
-  expect(unload.defaultPrevented).toBe(true)
-  post = deferred()
-  const retryBaseline = vi.mocked(crypto.randomUUID).mock.calls.length
-  await page.get('[data-testid="tournament-same-command-retry"]').trigger('click')
-  expect(vi.mocked(crypto.randomUUID).mock.calls.length - retryBaseline).toBe(0)
-  const pendingSignal = requestSignal(tournamentPosts()[1] ?? [])
-  const readsBeforeExit = registrationReads().length
-  await router.push('/management-test-exit')
-  await flushPromises()
-  expect(confirm).toHaveBeenCalledTimes(2)
-  expect(confirm).toHaveBeenNthCalledWith(2, '建立賽程的結果仍未確認，可能已建立。離開不會取消伺服器操作，尚未確認的命令也不會跨頁面保存。確定要離開嗎？')
-  expect(router.currentRoute.value.path).toBe('/management-test-exit')
-  expect(child.emitted('unresolved')).toEqual([[]])
-  expect(pendingSignal.aborted).toBe(true)
-  expect(page.find('.tournament-management').exists()).toBe(false)
-  post.resolve(ack())
-  await flushPromises()
-  expect(child.emitted('created')).toBeUndefined()
-  expect(registrationReads()).toHaveLength(readsBeforeExit)
-  expect(tournamentPosts()).toHaveLength(2)
+  expect(page.get('.tournament-view .revision-note').text()).toBe('賽程版本 30')
+  expect(page.text()).not.toContain('賽程版本 99')
 })
 
 it('registration submission pending 阻止換 competition，不把原 commands body 送新路徑', async () => {
@@ -634,7 +316,6 @@ it('輪次公告父頁接線：unknown 刷新後保留原命令手動 retry 並�
   })
   const page = await mountPage()
   const child = page.findComponent(CompetitionRoundPublication)
-  const management = page.findComponent(CompetitionTournamentManagement)
   expect(child.exists()).toBe(true)
   expect(page.get('.revision-label').text()).toBe('狀態版本 4')
   const panel = page.get('.round-publication').element
@@ -654,9 +335,6 @@ it('輪次公告父頁接線：unknown 刷新後保留原命令手動 retry 並�
   expect(child.emitted('unresolved')).toHaveLength(1)
   expect(page.get('[data-testid="round-same-command-retry"]').attributes('disabled')).toBeUndefined()
   expect(child.props('busy')).toBe(false)
-  // 以另一個真元件的公開 busy／DOM 門檻驗父互斥；不假造其他命令或直接改 pending。
-  expect(management.props('busy')).toBe(true)
-  expect(page.get('[data-testid="tournament-refresh"]').attributes('disabled')).toBeDefined()
 
   const retry = page.get('[data-testid="round-same-command-retry"]').element
   const refresh = deferred()
@@ -681,7 +359,6 @@ it('輪次公告父頁接線：unknown 刷新後保留原命令手動 retry 並�
   expect(page.get('.round-publication').text()).toContain('目前輪次已有交手開始')
   expect(child.emitted('announced')).toBeUndefined()
   expect(posts()).toHaveLength(1)
-  expect(management.props('busy')).toBe(true)
   expect(child.props('busy')).toBe(false)
   expect(page.get('[data-testid="round-same-command-retry"]').attributes('disabled')).toBeUndefined()
   announcementPost = deferred()
@@ -705,7 +382,6 @@ it('輪次公告父頁接線：unknown 刷新後保留原命令手動 retry 並�
   expect(child.emitted('announced')).toEqual([[{ competitionId: 'competition-a', stageId, roundNumber: 1,
     commandId: announcementId, revision: 21, roundStartMs }]])
   expect(page.find('[data-testid="round-same-command-retry"]').exists()).toBe(false)
-  expect(management.props('busy')).toBe(false)
   expect(posts()).toHaveLength(2)
   expect(tournamentPosts()).toHaveLength(0)
   expect(fetchMock.mock.calls.filter(call => operation(call[1]) === 'registrationExecute')).toHaveLength(0)
@@ -928,7 +604,6 @@ it('真 NuxtPage 輪次公告 A→B→A 後拒收舊 valid ACK，保留原 inten
   expect(page.text()).not.toContain('公告收據已確認')
   expect(page.get('.revision-label').text()).toBe('狀態版本 4')
   expect(page.get('.tournament-view .revision-note').text()).toBe('賽程版本 20')
-  expect(page.findComponent(CompetitionTournamentManagement).props('busy')).toBe(true)
   expect(posts()).toHaveLength(1)
   expect(posts()[0]?.[1]?.body).toEqual(originalBody)
   expect(uuid.mock.calls.length).toBe(uuidBeforeLateAck)
@@ -1012,7 +687,6 @@ it('輪次公告父頁接線：原收據結清 unknown 命令但不覆寫同輪 
   })
   const page = await mountPage()
   const child = page.findComponent(CompetitionRoundPublication)
-  const management = page.findComponent(CompetitionTournamentManagement)
   expect(child.exists()).toBe(true)
   expect(page.get('.revision-label').text()).toBe('狀態版本 4')
   const uuid = vi.mocked(crypto.randomUUID)
@@ -1029,7 +703,6 @@ it('輪次公告父頁接線：原收據結清 unknown 命令但不覆寫同輪 
   announcementPost.reject({ statusCode: 503 })
   await flushPromises()
   expect(child.emitted('unresolved')).toHaveLength(1)
-  expect(management.props('busy')).toBe(true)
   expect(page.get('[data-testid="round-same-command-retry"]').attributes('disabled')).toBeUndefined()
 
   refreshed = true
@@ -1045,7 +718,6 @@ it('輪次公告父頁接線：原收據結清 unknown 命令但不覆寫同輪 
   expect(page.get('.round-publication').text()).toContain('原公告命令仍未確認')
   expect(page.get('[data-testid="round-same-command-retry"]').attributes('disabled')).toBeUndefined()
   expect(child.emitted('announced')).toBeUndefined()
-  expect(management.props('busy')).toBe(true)
   expect(posts()).toHaveLength(1)
   expect(posts()[0]?.[1]?.body).toEqual(literalBody)
   expect(uuid.mock.calls.length).toBe(uuidBeforeRefresh)
@@ -1066,7 +738,6 @@ it('輪次公告父頁接線：原收據結清 unknown 命令但不覆寫同輪 
   expect(child.emitted('announced')).toEqual([[{ competitionId: 'competition-a', stageId, roundNumber: 1,
     commandId: announcementId, revision: 21, roundStartMs }]])
   expect(page.find('[data-testid="round-same-command-retry"]').exists()).toBe(false)
-  expect(management.props('busy')).toBe(false)
   expect(page.get('.revision-label').text()).toBe('狀態版本 4')
   expect(posts()).toHaveLength(2)
   expect(uuid.mock.calls.length).toBe(uuidBeforeRetry)
