@@ -178,6 +178,8 @@
                     :competition-id="competitionId"
                     :match-id="match.matchId"
                     :session-user-id="sessionIdentity"
+                    :participant-team-id="participantTeamId ?? null"
+                    :participant-is-captain="participantIsCaptain"
                     enabled
                   />
                   <p v-if="match.cancellationReason !== null" class="muted">
@@ -270,8 +272,10 @@ const props = withDefaults(defineProps<{
   registrationLocked?: boolean
   /** 只供標記本人交手；授權仍由參賽者唯讀 API 核實。 */
   participantTeamId?: string | null
+  /** 只控制網站是否顯示先手選擇；CompetitionRoom 仍會重驗隊長授權。 */
+  participantIsCaptain?: boolean
   participantEntryEnabled?: boolean
-}>(), { registrationLocked: false })
+}>(), { registrationLocked: false, participantIsCaptain: false })
 
 const mounted = ref(false)
 const loading = ref(false)

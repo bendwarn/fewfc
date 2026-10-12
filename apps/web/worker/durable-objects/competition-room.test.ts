@@ -7696,7 +7696,7 @@ test('formal timeoutLoss continuation authorizes the persisted loser captain', a
   })
 })
 
-test('eliminationDrawLoss continuation is explicitly unresolved for captain selection', async () => {
+test('eliminationDrawLoss lets the judged losing-team captain choose the ordinary next-game first player', async () => {
   const { setup, terminal } = await createFormalContinuation({ eliminationDrawLoss: true })
   expect(terminal).toMatchObject({
     ok: true,
@@ -7705,10 +7705,15 @@ test('eliminationDrawLoss continuation is explicitly unresolved for captain sele
     } } } },
   })
   expect(await setup.room.assignNextFirstPlayerByCaptain(captainFirstPlayerRequest({
+    callerUserId: 'a-1',
     commandId: 'elimination-draw-loss-captain-choice',
+    selectedFirstPlayerTeam: 'team-b',
   }))).toMatchObject({
-    ok: false,
-    error: { code: 'eliminationDrawLossUnresolved' },
+    ok: true,
+    value: { matchProjection: { public: { match: {
+      nextFirstPlayer: 'team-b',
+      nextGame: { firstPlayer: { type: 'assigned', team: 'team-b' } },
+    } } } },
   })
 })
 

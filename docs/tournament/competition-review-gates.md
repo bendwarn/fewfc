@@ -4,6 +4,8 @@
 
 2026-10-12 票 06 經最新修正後獨立複審限定 PASS：629 pass／0 fail，Standards 硬性 0／heuristic 0、Spec 0，型別與差異檢查通過。放行範圍與原始證據見下表；native Worker／Brave／首場全流程仍由 22 集中驗收。
 
+同日票 08 修正後獨立末審限定 PASS：464 pass／0 fail，Standards 硬性 0／heuristic 0、Spec 0，型別與差異檢查通過。原先手提交後的 409／未知結果後續 401 恢復缺口已閉合，指定範圍與證據見下表。
+
 ## 執行邊界與完成條件
 
 依 2026-10-09 使用者新指示，先閉合正常完賽主線，再補會卡住賽程的自動例外；人工裁判介面與更正流程延後。交付順序、範圍及直接功能相依只見[正式票據索引](tickets/README.md)，不另建待辦副本。
@@ -21,6 +23,7 @@
 | 06 固定輪次房間與通知／來源對話最新修正→獨立主審 | 限定 PASS：首輪沿用 T、後續 E→A→T 兩段窗口、整批 ACK 與入口屏障、延誤持久 requiresReferee、固定成員與通知重試均有案例。前次通知回退 P2 已閉合；接收端收據故障後可重傳穩定 ID，前端以獨立按帳號持久 ID 抑制重播，含重新掛載。Standards 硬性 0／heuristic 0，Spec 0 | [最新報告／兩軸／原始 log](../../scratch/ticket06-receipt-review-2026-10-12/report.md)。主審序列重跑父房 355、子房 139、契約/helpers/API 78、Nuxt 六檔 43、既有固定時間故障 13、後端收據故障 1，共 629 pass／0 fail；型別與 diff check 通過。06 六項驗收勾選。真 GameRoom／PlayerNotifications 方法與既有 WASM 負控制均在 fixture 邊界；不外推 native Worker／Brave／22 全流程／28 進階矩陣或無限歷史通知去重。 |
 | 05 自動抽籤並建立首輪／本輪獨立主審 | 限定 PASS：固定亂數的兩隊／奇數隊抽籤、正常輪空、持久建立意圖、相同收據及 alarm 重試均有正向案例；父頁與 notReady 自動更新案例通過。Standards 硬性 0、Spec 0 | [本輪報告／兩軸／原始 log](../../scratch/four-feature-review/report.md)。CompetitionRoom 完整 349 pass／0 fail；沿公告與凍結名單建立同一首輪，不要求 F 後確認；05 四項驗收已勾選。完整 Swiss 政策擴充已有來源使用者授權；指定種子來源僅在支援時適用，不外推 22／28。 |
 | 07 權威隊伍時計／本輪獨立主審 | 限定 PASS：終局先關玩家視窗，再依 FIFO 送終局；重試、restart、strict ACK 及固定時計 ID 斷言均通過。Standards 硬性 0、Spec 0；GameRoom 完整 125 pass／0 fail，ClockDisplay 共用 Nuxt 驗證通過 | [本輪報告／兩軸／原始 log](../../scratch/four-feature-review/report.md)。原 FIFO 測試 P2 已閉合，07 六項驗收已勾選；既有同隊／回合外、有限額度、零不限時路由保留。18 真超時裁決與 22／28 集中界線保留。 |
+| 08 普通下一局與敗方隊長先手／修正後獨立末審 | 限定 PASS：正常敗方隊長及判負 Draw 的選擇／普通下一局入口、普通 Draw 交換、固定名冊、版本與一般重試均通過。既有未知命令在後續 401 時保留；同帳號重掛後以原命令恢復並進新房，首次明確認證拒絕仍清除本機命令。普通局時計走 reset，不使用加賽沿用。Standards 硬性 0／heuristic 0，Spec 0 | [最新報告／兩軸／有效 log](../../scratch/ticket08-final-review-2026-10-12/report.md)。本輪父房 355、helper/API 74、真 H3 錯誤契約 1、正式＋獨立 Nuxt 四檔 34，共 464 pass／0 fail；typecheck／diff check 通過。08 四項驗收勾選。前次缺陷已閉合；不外推 native Worker／Brave／22 集中全流程或 28 進階矩陣。 |
 | 04 報名截止自動凍結／來源對話最後修正→主審末審 | 限定 PASS：alarm P2 與最後測試預期 P2 均閉合；Standards 硬性 0／heuristic 0，Spec 0。本輪作者 E6a2 15 pass／0 fail、288 assertions，1v1／2v2 正式交付與重放全綠。僅測試檔改為從已提交 checkpoint 取預期版號，其他來源未改。沿用同版本 Nuxt／pure／獨立故障證據，驗證集合跨輪合計 258 pass／6 skip／0 fail，本輪新執行只有 15 例 | [最後修正報告／固定版本／原始 log](../../scratch/tour-attempt/ticket04-final-review/report.md)、[alarm 修復與原紅例](../../scratch/tour-attempt/ticket03-04-review/report.md)、[前次失敗](../../scratch/tour-attempt/ticket04-review/report.md)。04 四項驗收已勾選；放行 F 自動凍結、遲交接受點、排除理由、固定參賽快照交付與正常重試。05 的 03＋04 前置已通過，可依唯一寫入權開始其實作；legacy initial 障礙仍既存 HOLD，不外推 22 真 Worker／Brave／全流程。 |
 | 03 賽前完整公告／本輪獨立主審 | 限定 PASS：完整 SwissStandingPolicy 公告契約、Rust／TypeScript 驗證與玩家可讀政策已核對；Standards 硬性 0、Spec 0。共用純模組／API 230 pass、6 skip、Nuxt 八檔 107 pass；Rust DTO 與公告案例通過 | [本輪報告／兩軸／原始 log](../../scratch/four-feature-review/report.md)。本輪按 HEAD `653a516` 的指定功能差異提交；全量 Cargo 的既有單敗決賽 API oracle 與型別檢查的既有測試錯誤仍保留，不外推 22／28。 |
 | 02 等待房斷線清除準備／來源對話交付→主審驗證 | 限定 PASS：DO 全檔 118 green／1 既存 fail（修改前同樣失敗），元件 12 green，主審獨立 4 green。Standards 0／Spec 0 個有效 finding， | [本輪審核與原始 log](../../scratch/tour-attempt/ticket02-review/report.md)。只放行等待房斷線／重連、2v2 開局競態、同人多分頁／舊回呼、Preparing／Active 負控制；不外推 01 提前開局、17 缺席或 22 全流程。全檔既存 randomness-restart payload 失敗另保留，不宣稱全綠。 |

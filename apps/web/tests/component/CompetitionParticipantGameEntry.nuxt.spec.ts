@@ -2,6 +2,7 @@ import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { ofetch } from 'ofetch'
 import CompetitionParticipantGameEntry from '~/components/CompetitionParticipantGameEntry.vue'
 
 const fetchMock = vi.hoisted(() => vi.fn())
@@ -19,7 +20,83 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  window.sessionStorage.clear()
 })
+
+const nextGameTeams = ['team-a', 'team-b'] as const
+const nextGameProps = {
+  competitionId: 'competition-next-game', matchId: 'match-next-game', sessionUserId: 'captain-b',
+  participantTeamId: nextGameTeams[1], participantIsCaptain: true, enabled: true,
+}
+
+function nextGameParticipant(game: unknown = null) {
+  return {
+    competitionId: nextGameProps.competitionId,
+    matchId: nextGameProps.matchId,
+    matchRevision: game ? 8 : 7,
+    game,
+  }
+}
+
+function nextGameMatch(assigned = false) {
+  const ruling = { type: 'gameAccepted', outcome: { winner: nextGameTeams[0] } }
+  const firstPlayer = assigned
+    ? { type: 'assigned', team: nextGameTeams[0] }
+    : { type: 'pending', reason: '敗方隊長選擇' }
+  return {
+    competitionId: nextGameProps.competitionId,
+    matchId: nextGameProps.matchId,
+    matchRevision: assigned ? 8 : 7,
+    matchProjection: {
+      ok: true,
+      operation: 'matchView',
+      public: { match: {
+        config: {
+          matchId: nextGameProps.matchId,
+          teams: nextGameTeams,
+          format: { type: 'fixedGames', value: 3 },
+          firstGame: { type: 'assigned', team: nextGameTeams[0] },
+          referees: [],
+        },
+        status: assigned ? 'open' : 'awaitingFirstPlayer',
+        score: [1, 0],
+        games: [{
+          gameNumber: 1,
+          gameRecordId: 'game-record-1',
+          startKind: { type: 'ordinaryNewGame' },
+          firstPlayer: nextGameTeams[0],
+          terminalEvidence: { type: 'canonicalGameEnded', conclusion: {
+            outcome: { type: 'winner', team: nextGameTeams[0] },
+            causes: [{ type: 'teamHpDepleted', teams: [nextGameTeams[1]] }],
+          } },
+          rulingRecordId: 'ruling-1',
+        }],
+        rulings: [{ rulingRecordId: 'ruling-1', gameRecordId: 'game-record-1', ruling }],
+        corrections: [],
+        outcome: null,
+        nextFirstPlayer: assigned ? nextGameTeams[0] : null,
+        nextGame: {
+          gameNumber: 2,
+          kind: { type: 'ordinaryNewGame' },
+          firstPlayer,
+        },
+      } },
+    },
+    clockProjection: null,
+  }
+}
+
+function nextGameAcknowledgement(command: { commandId: string; expectedMatchRevision: number }) {
+  return {
+    competitionId: nextGameProps.competitionId,
+    matchId: nextGameProps.matchId,
+    matchRevision: command.expectedMatchRevision + 1,
+    gameNumber: 2,
+    gameId: 'next-game-room',
+    commandId: command.commandId,
+    status: 'provisioned',
+  }
+}
 
 it('queries the exact participant path only after explicit ID submission and links only a valid current game', async () => {
   fetchMock.mockResolvedValue({
@@ -194,4 +271,196 @@ it('never creates a room link from a response containing an unknown field', asyn
   expect(wrapper.text()).not.toContain('must-not-render')
   expect(wrapper.find('a.room-link').exists()).toBe(false)
   await wrapper.unmount()
+})
+
+it.each(['gameRoomNotProvisioned', 'trustedTimeRegression'])(
+  'retains and resumes the same captain command after the real H3 %s response and a component remount',
+  async (code) => {
+    window.sessionStorage.clear()
+    fetchMock.mockResolvedValueOnce(nextGameParticipant())
+    fetchMock.mockResolvedValueOnce(nextGameMatch())
+    const first = await mountSuspended(CompetitionParticipantGameEntry, { props: nextGameProps })
+    try {
+      await flushPromises()
+      await first.get('input[type=radio]').setValue()
+
+      const h3Error = JSON.stringify({
+        statusCode: 409,
+        statusMessage: code === 'trustedTimeRegression' ? '賽事時間狀態無法倒退。' : '對局尚未就緒，計時無法操作。',
+        stack: [],
+        data: { code },
+      })
+      const actualOfetch = ofetch.create({}, {
+        fetch: async () => new Response(h3Error, {
+          status: 409,
+          headers: { 'content-type': 'application/json' },
+        }),
+      })
+      const parsedFetchError = await actualOfetch('/api/competitions/next-game', {
+        method: 'POST', retry: 0,
+      }).then(() => { throw new Error('expected a conflict response') }, error => error)
+      expect(parsedFetchError).toMatchObject({ status: 409, data: { data: { code } } })
+      const storageKey = 'fewfc:competition-next-game:' + JSON.stringify([
+        nextGameProps.competitionId, nextGameProps.matchId, nextGameProps.sessionUserId,
+      ])
+      fetchMock.mockImplementationOnce((_url, options) => {
+        expect(JSON.parse(window.sessionStorage.getItem(storageKey) ?? 'null')).toEqual(options.body)
+        return Promise.reject(parsedFetchError)
+      })
+
+      await first.get('.first-player-form').trigger('submit')
+      await flushPromises()
+      const originalCommand = JSON.parse(window.sessionStorage.getItem(storageKey) ?? 'null')
+      expect(first.find('.pending-command button').exists()).toBe(true)
+      expect(originalCommand).toMatchObject({
+        selectedFirstPlayerTeam: nextGameTeams[0],
+        expectedMatchRevision: 7,
+      })
+    } finally {
+      await first.unmount()
+    }
+
+    fetchMock.mockResolvedValueOnce(nextGameParticipant())
+    fetchMock.mockResolvedValueOnce(nextGameMatch(true))
+    const restored = await mountSuspended(CompetitionParticipantGameEntry, { props: nextGameProps })
+    try {
+      await flushPromises()
+      expect(restored.find('.first-player-form').exists()).toBe(false)
+      expect(restored.find('.pending-command button').exists()).toBe(true)
+      const originalCommand = JSON.parse(window.sessionStorage.getItem(
+        'fewfc:competition-next-game:' + JSON.stringify([
+          nextGameProps.competitionId, nextGameProps.matchId, nextGameProps.sessionUserId,
+        ]),
+      ) ?? 'null')
+      fetchMock.mockImplementationOnce((_url, options) => Promise.resolve(nextGameAcknowledgement(options.body)))
+      fetchMock.mockResolvedValueOnce(nextGameParticipant({ gameId: 'next-game-room', gameNumber: 2 }))
+      await restored.get('.pending-command button').trigger('click')
+      await flushPromises()
+
+      const posts = fetchMock.mock.calls.filter(([_url, options]) => options?.method === 'POST')
+      expect(posts).toHaveLength(2)
+      expect(posts[0]?.[1]?.body).toEqual(originalCommand)
+      expect(posts[1]?.[1]?.body).toEqual(originalCommand)
+      expect(restored.get('a.room-link').attributes('href')).toBe('/rooms/next-game-room')
+      expect(window.sessionStorage.getItem('fewfc:competition-next-game:' + JSON.stringify([
+        nextGameProps.competitionId, nextGameProps.matchId, nextGameProps.sessionUserId,
+      ]))).toBeNull()
+    } finally {
+      await restored.unmount()
+    }
+  },
+)
+
+it('keeps a partially submitted command across a later authentication rejection and same-account remount', async () => {
+  const h3FetchError = async (statusCode: number, statusMessage: string, code?: string) => {
+    const body = JSON.stringify({
+      statusCode,
+      statusMessage,
+      stack: [],
+      ...(code ? { data: { code } } : {}),
+    })
+    const fetcher = ofetch.create({}, {
+      fetch: async () => new Response(body, {
+        status: statusCode,
+        headers: { 'content-type': 'application/json' },
+      }),
+    })
+    return fetcher('/api/competitions/next-game', { method: 'POST', retry: 0 })
+      .then(() => { throw new Error('expected an H3 error') }, error => error)
+  }
+  const secondStepFailure = await h3FetchError(502, '賽事服務暫時無法處理要求。', 'engineProtocolError')
+  const authenticationFailure = await h3FetchError(401, 'Authentication required.')
+  expect(secondStepFailure).toMatchObject({ status: 502 })
+  expect(authenticationFailure).toMatchObject({ status: 401 })
+
+  fetchMock.mockResolvedValueOnce(nextGameParticipant())
+  fetchMock.mockResolvedValueOnce(nextGameMatch())
+  const storageKey = 'fewfc:competition-next-game:' + JSON.stringify([
+    nextGameProps.competitionId, nextGameProps.matchId, nextGameProps.sessionUserId,
+  ])
+  const first = await mountSuspended(CompetitionParticipantGameEntry, { props: nextGameProps })
+  let originalCommand: unknown
+  try {
+    await flushPromises()
+    await first.get('input[type=radio]').setValue()
+
+    fetchMock.mockRejectedValueOnce(secondStepFailure)
+    await first.get('.first-player-form').trigger('submit')
+    await flushPromises()
+    originalCommand = JSON.parse(window.sessionStorage.getItem(storageKey) ?? 'null')
+    expect(first.find('.pending-command button').exists()).toBe(true)
+    expect(originalCommand).toMatchObject({
+      selectedFirstPlayerTeam: nextGameTeams[0],
+      expectedMatchRevision: 7,
+    })
+
+    // 這次 401 尚未進入 DO，不能清除前次 502 留下的未知命令。
+    fetchMock.mockRejectedValueOnce(authenticationFailure)
+    await first.get('.pending-command button').trigger('click')
+    await flushPromises()
+    expect(first.find('.pending-command button').exists()).toBe(true)
+    expect(JSON.parse(window.sessionStorage.getItem(storageKey) ?? 'null')).toEqual(originalCommand)
+  } finally {
+    await first.unmount()
+  }
+
+  fetchMock.mockResolvedValueOnce(nextGameParticipant())
+  fetchMock.mockResolvedValueOnce(nextGameMatch(true))
+  const restored = await mountSuspended(CompetitionParticipantGameEntry, { props: nextGameProps })
+  try {
+    await flushPromises()
+    expect(restored.find('.first-player-form').exists()).toBe(false)
+    expect(restored.find('.pending-command button').exists()).toBe(true)
+
+    fetchMock.mockImplementationOnce((_url, options) => Promise.resolve(nextGameAcknowledgement(options.body)))
+    fetchMock.mockResolvedValueOnce(nextGameParticipant({ gameId: 'next-game-room', gameNumber: 2 }))
+    await restored.get('.pending-command button').trigger('click')
+    await flushPromises()
+
+    const posts = fetchMock.mock.calls.filter(([_url, options]) => options?.method === 'POST')
+    expect(posts).toHaveLength(3)
+    expect(posts.map(([, options]) => options?.body)).toEqual([
+      originalCommand, originalCommand, originalCommand,
+    ])
+    expect(restored.get('a.room-link').attributes('href')).toBe('/rooms/next-game-room')
+    expect(window.sessionStorage.getItem(storageKey)).toBeNull()
+  } finally {
+    await restored.unmount()
+  }
+})
+
+it('clears a first captain command rejected by authentication before any outcome becomes unknown', async () => {
+  fetchMock.mockResolvedValueOnce(nextGameParticipant())
+  fetchMock.mockResolvedValueOnce(nextGameMatch())
+  const storageKey = 'fewfc:competition-next-game:' + JSON.stringify([
+    nextGameProps.competitionId, nextGameProps.matchId, nextGameProps.sessionUserId,
+  ])
+  const unauthorizedFetch = ofetch.create({}, {
+    fetch: async () => new Response(JSON.stringify({
+      statusCode: 401,
+      statusMessage: 'Authentication required.',
+      stack: [],
+    }), {
+      status: 401,
+      headers: { 'content-type': 'application/json' },
+    }),
+  })
+  const unauthorized = await unauthorizedFetch('/api/competitions/next-game', {
+    method: 'POST', retry: 0,
+  }).then(() => { throw new Error('expected an H3 authentication error') }, error => error)
+  expect(unauthorized).toMatchObject({ status: 401 })
+
+  const wrapper = await mountSuspended(CompetitionParticipantGameEntry, { props: nextGameProps })
+  try {
+    await flushPromises()
+    await wrapper.get('input[type=radio]').setValue()
+    fetchMock.mockRejectedValueOnce(unauthorized)
+    await wrapper.get('.first-player-form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('.pending-command button').exists()).toBe(false)
+    expect(window.sessionStorage.getItem(storageKey)).toBeNull()
+  } finally {
+    await wrapper.unmount()
+  }
 })

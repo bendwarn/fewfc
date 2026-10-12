@@ -11515,9 +11515,8 @@ function deriveCaptainMatchIntent(
     if (active.length !== 1 || !isJsonObject(active[0]) || !isJsonObject(active[0].ruling)) return fail()
     const ruling = parseCompetitionRuling(active[0].ruling, teams)
     if (!ruling) return fail()
-    if (ruling.type === 'eliminationDrawLoss') return fail('eliminationDrawLossUnresolved')
     let losingTeam: string
-    if (ruling.type === 'timeoutLoss') {
+    if (ruling.type === 'timeoutLoss' || ruling.type === 'eliminationDrawLoss') {
       losingTeam = ruling.loser
     } else if (ruling.type === 'gameAccepted'
       && isJsonObject(ruling.outcome) && nonEmpty(ruling.outcome['winner'])) {

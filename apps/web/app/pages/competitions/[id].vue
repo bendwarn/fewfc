@@ -152,6 +152,7 @@
         :context-ready="sessionLoaded && Boolean(registration)"
         :registration-locked="automaticInitialScheduleExpected"
         :participant-team-id="currentTeam?.teamId ?? null"
+        :participant-is-captain="isCurrentCaptain"
         :participant-entry-enabled="canLookupParticipantGame"
       />
 

@@ -210,14 +210,48 @@ test('second-step failure can retry with the same root and command ids without r
   Date.now = () => { nowCalls += 1; return 1000 + nowCalls }
   try {
     const failed = await post(validBody, 'captain-user')
-    const failedText = await failed.text()
+    const failedBody = await failed.json()
     expect(failed.status).toBe(409)
-    expect(failedText).not.toContain('private delivery detail')
+    expect(failedBody).toMatchObject({ data: { code: 'gameRoomNotProvisioned' } })
+    expect(JSON.stringify(failedBody)).not.toContain('private delivery detail')
     expect(calls).toEqual(['assignNextFirstPlayerByCaptain', 'provisionCaptainAssignedScheduledGame'])
 
     const retried = await post(validBody, 'captain-user')
     expect(retried.status).toBe(200)
     expect(calls.slice(2)).toEqual(['assignNextFirstPlayerByCaptain', 'provisionCaptainAssignedScheduledGame'])
+    expect(assignmentRequests[0]?.commandId).toBe(assignmentRequests[1]?.commandId)
+    expect(provisionRequests[0]?.commandId).toBe(provisionRequests[1]?.commandId)
+    expect(assignmentRequests[0]?.expectedMatchRevision).toBe(assignmentRequests[1]?.expectedMatchRevision)
+    expect(provisionRequests[0]?.expectedMatchRevision).toBe(provisionRequests[1]?.expectedMatchRevision)
+    expect(assignmentRequests[0]?.trustedTimeMs).toBe(provisionRequests[0]?.trustedTimeMs)
+    expect(assignmentRequests[1]?.trustedTimeMs).toBe(provisionRequests[1]?.trustedTimeMs)
+    expect(nowCalls).toBe(2)
+  } finally {
+    Date.now = realNow
+  }
+})
+
+test('second-step trusted-time regression exposes its exact H3 code and can retry the same provision command', async () => {
+  resetState([
+    assignmentEnvelope(),
+    assignmentEnvelope({ idempotent: true }),
+  ], [
+    { ok: false, error: { code: 'trustedTimeRegression', message: 'private time detail' } },
+    provisionEnvelope({ idempotent: true, status: 'provisioned' }),
+  ])
+  const realNow = Date.now
+  let nowCalls = 0
+  Date.now = () => { nowCalls += 1; return 1000 + nowCalls }
+  try {
+    const failed = await post(validBody, 'captain-user')
+    expect(failed.status).toBe(409)
+    const failedBody = await failed.json()
+    expect(failedBody).toMatchObject({ data: { code: 'trustedTimeRegression' } })
+    expect(JSON.stringify(failedBody)).not.toContain('private time detail')
+
+    const retried = await post(validBody, 'captain-user')
+    expect(retried.status).toBe(200)
+    expect(await retried.json()).toMatchObject({ commandId: 'root', status: 'provisioned' })
     expect(assignmentRequests[0]?.commandId).toBe(assignmentRequests[1]?.commandId)
     expect(provisionRequests[0]?.commandId).toBe(provisionRequests[1]?.commandId)
     expect(assignmentRequests[0]?.expectedMatchRevision).toBe(assignmentRequests[1]?.expectedMatchRevision)
