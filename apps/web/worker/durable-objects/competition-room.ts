@@ -223,6 +223,7 @@ interface MatchRow {
   clock_projection_json: string | null
   revision: number
   last_trusted_time_ms: number
+  tournament_result_confirmed_at_ms: number | null
 }
 
 interface GameProvisionRow {
@@ -250,6 +251,7 @@ interface RoundPublicationRow {
   stage_id: string
   round_number: number
   round_start_ms: number
+  release_not_before_ms: number
   publication_version: number
   status: CompetitionRoomRoundPublication['status']
   release_decision_id: string | null
@@ -310,6 +312,7 @@ interface NoShowOutboxRow {
   claim_version: number
   attempts: number
   next_attempt_at_ms: number
+  result_confirmed_at_ms: number | null
 }
 
 interface RoundDeliveryAuthority {
@@ -447,7 +450,7 @@ interface ScheduledMatchMaterialization {
   result: JsonValue
 }
 
-const SCHEMA_VERSION = 13
+const SCHEMA_VERSION = 15
 
 const OPERATION_NAMES: CompetitionOperationName[] = [
   'registrationCreate',
@@ -548,7 +551,11 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
 
   /** 先原子保存完整整輪 manifest/房間 ledger；foreign 建房另由持久 claim 交付。 */
   async announceRound(request: CompetitionRoomAnnounceRoundRequest): Promise<CompetitionRoomAnnounceRoundResult> {
-    const result = await this.serialized(() => this.announceRoundInternal(request))
+    const cutoff = isCompetitionRoomAnnounceRoundRequest(request)
+      ? competitionRoundReadyCutoffMs(request.roundStartMs)
+      : null
+    const releaseNotBeforeMs = cutoff ?? 0
+    const result = await this.serialized(() => this.announceRoundInternal(request, releaseNotBeforeMs))
     if (result.ok && !result.value.idempotent) {
       // 原成功收據不回填 ACK；先持久成功再排工作，排程失敗亦獨立嘗試交付。
       const scheduled = await this.serialized(async () => {
@@ -597,6 +604,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     if (result.ok && pauseResume) {
       await this.dispatchClockControlForCommand(result.value.commandId)
     }
+    if (result.ok) await this.kickAutomaticRoundAdvance()
     return result
   }
 
@@ -695,21 +703,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
   async readTournament(
     request: CompetitionRoomTournamentReadRequest,
   ): Promise<CompetitionRoomTournamentReadResult> {
-    return this.serialized(async () => {
-      const result = await this.readTournamentInternal(request)
-      const pendingSeeding = this.storage.sql.exec<{
-        [key: string]: ArrayBuffer | string | number | null
-        pending: number
-      }>(
-        `SELECT 1 AS pending FROM competition_initial_seeding WHERE status = 'pending' LIMIT 1`,
-      ).toArray()[0]
-      if (pendingSeeding) {
-        try { await this.scheduleSharedAlarm() } catch {
-          console.warn('CompetitionRoom retained automatic initial seeding after alarm scheduling failure')
-        }
-      }
-      return result
-    })
+    return this.serialized(() => this.readTournamentInternal(request))
   }
 
   /**
@@ -719,7 +713,10 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     request: CompetitionRoomTerminalIngestRequest,
   ): Promise<CompetitionRoomTerminalIngestResult> {
     const result = await this.serialized(() => this.ingestGameTerminalInternal(request))
-    if (result.ok) await this.dispatchAutomaticDrawProvision(result.value.matchId, result.value)
+    if (result.ok) {
+      await this.dispatchAutomaticDrawProvision(result.value.matchId, result.value)
+      await this.kickAutomaticRoundAdvance()
+    }
     return result
   }
 
@@ -761,6 +758,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       } catch {
         console.warn('CompetitionRoom retained registration freeze after alarm execution failure')
       }
+      this.expireMissedRoundReadinessWindows(Date.now())
     })
     // 每種工作各自有界循環；claim 與 ACK 短暫進 tail，foreign RPC 全在 tail 外。
     const legacyBatch: LegacyAlarmBatch = { remaining: 16 }
@@ -772,7 +770,14 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       this.pumpClockControlDeliveries(legacyBatch),
     ])
     await this.serialized(async () => {
-      try { await this.scheduleSharedAlarm() } catch {
+      let advancement: 'announced' | 'retry' | 'none' = 'none'
+      try { advancement = await this.publishNextAutomaticRoundIfReady() } catch {
+        console.warn('CompetitionRoom retained automatic round advancement after an attempt failure')
+        advancement = 'retry'
+      }
+      this.expireMissedRoundReadinessWindows(Date.now())
+      const retry = advancement === 'retry' ? [checkedRoundRetryTime(Date.now(), 5_000)] : []
+      try { await this.scheduleSharedAlarm(undefined, retry) } catch {
         console.warn('CompetitionRoom retained due work after alarm scheduling failure')
       }
     })
@@ -794,6 +799,21 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     } finally {
       release()
     }
+  }
+
+  private async kickAutomaticRoundAdvance(): Promise<void> {
+    const announced = await this.serialized(async () => {
+      try { return await this.publishNextAutomaticRoundIfReady() } catch {
+        console.warn('CompetitionRoom retained automatic round advancement after an attempt failure')
+        return 'retry' as const
+      }
+    })
+    if (announced === 'none') return
+    const retry = announced === 'retry' ? [checkedRoundRetryTime(Date.now(), 5_000)] : []
+    const scheduled = await this.serialized(async () => {
+      try { await this.scheduleSharedAlarm(undefined, retry); return true } catch { return false }
+    })
+    if (!scheduled) await this.pumpRoundDeliveries()
   }
 
   /** 先在短 serial turn 取得目前狀態，再由既有 durable queue 在 tail 外派送。 */
@@ -1188,6 +1208,34 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         )
       }
 
+      if (currentVersion < 14) {
+        this.storage.sql.exec(`ALTER TABLE competition_round_publication
+          ADD COLUMN release_not_before_ms INTEGER NOT NULL DEFAULT 0 CHECK (release_not_before_ms >= 0)`)
+        this.storage.sql.exec(
+          'INSERT INTO competition_schema_migrations (version, applied_at_trusted_time_ms) VALUES (14, 0)',
+        )
+      }
+
+      if (currentVersion < 15) {
+        this.storage.sql.exec(`ALTER TABLE competition_matches
+          ADD COLUMN tournament_result_confirmed_at_ms INTEGER
+          CHECK (tournament_result_confirmed_at_ms IS NULL OR tournament_result_confirmed_at_ms >= 0)`)
+        this.storage.sql.exec(`ALTER TABLE competition_no_show_outbox
+          ADD COLUMN result_confirmed_at_ms INTEGER
+          CHECK (result_confirmed_at_ms IS NULL OR result_confirmed_at_ms >= 0)`)
+        this.storage.sql.exec(`UPDATE competition_no_show_outbox
+          SET result_confirmed_at_ms = (
+            SELECT MAX(audit.trusted_time_ms) FROM competition_audit audit
+            WHERE audit.command_id = competition_no_show_outbox.command_id
+              AND audit.operation_type = 'tournamentSubmitResult'
+              AND audit.outcome_code = 'success'
+          )
+          WHERE result_confirmed_at_ms IS NULL`)
+        this.storage.sql.exec(
+          'INSERT INTO competition_schema_migrations (version, applied_at_trusted_time_ms) VALUES (15, 0)',
+        )
+      }
+
       const finalVersion = this.storage.sql.exec<{
         [key: string]: ArrayBuffer | string | number | null
         version: number
@@ -1202,6 +1250,8 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
 
   private async announceRoundInternal(
     input: CompetitionRoomAnnounceRoundRequest,
+    releaseNotBeforeMs = 0,
+    requiresReferee = false,
   ): Promise<CompetitionRoomAnnounceRoundResult> {
     if (!isCompetitionRoomAnnounceRoundRequest(input)) {
       return roomFailure('invalidRequest', 'round announcement request is invalid')
@@ -1270,7 +1320,10 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('trustedTimeRegression', 'trusted server time cannot move backwards')
     }
     const cutoff = competitionRoundReadyCutoffMs(request.roundStartMs)
-    if (cutoff === null || request.trustedTimeMs > cutoff) {
+    if (!safeNonNegativeInteger(releaseNotBeforeMs)
+      || (releaseNotBeforeMs !== 0 && releaseNotBeforeMs !== cutoff)
+      || (requiresReferee && releaseNotBeforeMs === 0)
+      || cutoff === null || (!requiresReferee && request.trustedTimeMs > cutoff)) {
       return roomFailure('roundNotPublishable', 'round start must allow the complete room readiness window')
     }
     if (this.currentRoundPublication(request.stageId, request.roundNumber)) {
@@ -1290,7 +1343,10 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     let round: JsonObject
     let schedules: ScheduledMatchMaterialization[]
     try {
-      const selected = selectPublishableRound(state.tournament, request.stageId, request.roundNumber)
+      const selected = selectPublishableRound(
+        state.tournament, request.stageId, request.roundNumber,
+        match => this.isAuthoritativeNoShowResult(match),
+      )
       round = selected.round
       schedules = selected.schedules
       // 整個前輪的實際結果與 parent mirror 都必須接受，不只看任一晉級分支。
@@ -1376,7 +1432,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     }
     const publication: CompetitionRoomRoundPublication = {
       roundRef, roundStartMs: request.roundStartMs, publicationVersion: 1, status: 'materializing',
-      releaseDecisionId: null, requiresReferee: false,
+      releaseDecisionId: null, requiresReferee,
       rooms: manifest.rooms.map(room => ({ matchId: room.matchId, gameId: room.gameId, ackConfirmedAtMs: null })),
     }
     const result = roomSuccess<CompetitionRoomAnnounceRoundValue>({
@@ -1407,11 +1463,11 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       updated.matches = { ...(updated.matches ?? {}) }
       this.storage.sql.exec(
         `INSERT INTO competition_round_publication
-          (round_generation_id, stage_id, round_number, round_start_ms, publication_version,
+          (round_generation_id, stage_id, round_number, round_start_ms, release_not_before_ms, publication_version,
            status, release_decision_id, requires_referee, manifest_json, announced_trusted_time_ms)
-         VALUES (?, ?, ?, ?, 1, 'materializing', NULL, 0, ?, ?)`,
-        roundRef.roundGenerationId, request.stageId, request.roundNumber, request.roundStartMs,
-        JSON.stringify(manifest), request.trustedTimeMs,
+         VALUES (?, ?, ?, ?, ?, 1, 'materializing', NULL, ?, ?, ?)`,
+        roundRef.roundGenerationId, request.stageId, request.roundNumber, request.roundStartMs, releaseNotBeforeMs,
+        requiresReferee ? 1 : 0, JSON.stringify(manifest), request.trustedTimeMs,
       )
       for (const room of prepared) {
         updated.matches[room.matchId] = room.checkpoint
@@ -1514,6 +1570,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       match_id: schedule.matchId, stage_id: request.stageId, match_checkpoint_json: JSON.stringify(checkpoint),
       clock_checkpoint_json: JSON.stringify(clock), match_projection_json: JSON.stringify(createdProjection),
       clock_projection_json: JSON.stringify(clockProjection), revision: 1, last_trusted_time_ms: request.trustedTimeMs,
+      tournament_result_confirmed_at_ms: null,
     }, {
       competitionId: request.competitionId, matchId: schedule.matchId, callerUserId: request.callerUserId,
       commandId: request.commandId, expectedMatchRevision: 1, trustedTimeMs: request.trustedTimeMs,
@@ -1631,7 +1688,10 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       const publication: CompetitionRoomRoundPublication = {
         roundRef: manifest.roundRef, roundStartMs: header.round_start_ms, publicationVersion: header.publication_version,
         status: header.status, releaseDecisionId: header.release_decision_id,
-        requiresReferee: header.requires_referee === 1, rooms,
+        requiresReferee: header.requires_referee === 1 || (header.release_not_before_ms > 0
+          && Date.now() >= header.release_not_before_ms
+          && !this.roundHasCompleteTimelyReleaseAcks(header, request.competitionId)),
+        rooms,
       }
       if (!isCompetitionRoomRoundPublication(publication)) throw new Error('public round publication is malformed')
       return roomSuccess({ competitionId: request.competitionId, revision: current.revision, publication })
@@ -2086,7 +2146,10 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     const matches: MatchRow[] = []
     if (pending) {
       const state = parseServerState(current.server_state_json)
-      const selected = selectPublishableRound(state.tournament, header.stage_id, header.round_number)
+      const selected = selectPublishableRound(
+        state.tournament, header.stage_id, header.round_number,
+        match => this.isAuthoritativeNoShowResult(match),
+      )
       // 不用單條晉級來源或靜態 standings 冒充整前輪實際完成。
       for (const previous of selected.previousMatches) {
         if (isCoreBye(previous)) continue
@@ -2206,19 +2269,77 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
   private roundsReadyForRelease(): RoundPublicationRow[] {
     const current = this.meta()
     if (!current) return []
+    const now = Date.now()
     return this.storage.sql.exec<RoundPublicationRow>(
       "SELECT * FROM competition_round_publication WHERE status = 'materializing' AND requires_referee = 0",
     ).toArray().filter(header => {
       try {
-        const manifest = parseRoundManifest(header, current.competition_id)
-        const cutoff = competitionRoundReadyCutoffMs(header.round_start_ms)
-        const rows = this.roundRoomLedger(header.round_generation_id)
-        return cutoff !== null && header.release_decision_id === null && rows.length === manifest.rooms.length
-          && manifest.rooms.every(expected => rows.some(row => row.game_id === expected.gameId
-            && row.match_id === expected.matchId && row.game_number === 1 && row.status === 'confirmed'
-            && safeNonNegativeInteger(row.ack_confirmed_at_ms) && row.ack_confirmed_at_ms <= cutoff))
+        // 自動輪次要在公告點前完成整批子房放行；到點才開始派送會壓縮報到窗口。
+        return (header.release_not_before_ms === 0 || header.release_not_before_ms > now)
+          && header.release_decision_id === null
+          && this.roundHasCompleteTimelyCreationAcks(header, current.competition_id)
       } catch { return false }
     })
+  }
+
+  private roundsWaitingForReleaseWindow(): RoundPublicationRow[] {
+    const current = this.meta()
+    if (!current) return []
+    const now = Date.now()
+    return this.storage.sql.exec<RoundPublicationRow>(
+      "SELECT * FROM competition_round_publication WHERE status IN ('materializing', 'released') AND requires_referee = 0",
+    ).toArray().filter(header => {
+      try {
+        return header.release_not_before_ms > now
+          && this.roundHasCompleteTimelyCreationAcks(header, current.competition_id)
+      } catch { return false }
+    })
+  }
+
+  private roundHasCompleteTimelyCreationAcks(header: RoundPublicationRow, competitionId: string): boolean {
+    const manifest = parseRoundManifest(header, competitionId)
+    const cutoff = competitionRoundReadyCutoffMs(header.round_start_ms)
+    const rows = this.roundRoomLedger(header.round_generation_id)
+    return cutoff !== null && rows.length === manifest.rooms.length
+      && manifest.rooms.every(expected => rows.some(row => row.game_id === expected.gameId
+        && row.match_id === expected.matchId && row.game_number === 1 && row.status === 'confirmed'
+        && safeNonNegativeInteger(row.ack_confirmed_at_ms) && row.ack_confirmed_at_ms <= cutoff))
+  }
+
+  private roundHasCompleteTimelyReleaseAcks(header: RoundPublicationRow, competitionId: string): boolean {
+    if (header.release_not_before_ms === 0) return true
+    if (!nonEmpty(header.release_decision_id)) return false
+    const manifest = parseRoundManifest(header, competitionId)
+    const rows = this.roundReleaseRows(header.round_generation_id)
+    return rows.length === manifest.rooms.length && manifest.rooms.every(expected => rows.some(row => (
+      row.game_id === expected.gameId && row.release_decision_id === header.release_decision_id
+      && row.status === 'completed' && safeNonNegativeInteger(row.completed_at_ms)
+      && row.completed_at_ms <= header.release_not_before_ms
+    )))
+  }
+
+  private expireMissedRoundReadinessWindows(now: number): void {
+    if (!safeNonNegativeInteger(now)) return
+    const current = this.meta()
+    if (!current) return
+    const due = this.storage.sql.exec<RoundPublicationRow>(
+      `SELECT * FROM competition_round_publication
+       WHERE status IN ('materializing', 'released') AND requires_referee = 0
+         AND release_not_before_ms > 0 AND release_not_before_ms <= ?`, now,
+    ).toArray()
+    for (const header of due) {
+      if (header.status === 'released'
+        && this.roundHasCompleteTimelyReleaseAcks(header, current.competition_id)) continue
+      if (!safeNonNegativeInteger(header.publication_version + 1)) continue
+      this.storage.transactionSync(() => {
+        const latest = this.currentRoundPublication(header.stage_id, header.round_number)
+        if (!sameJson(latest, header)) return
+        this.storage.sql.exec(`UPDATE competition_round_publication
+          SET requires_referee = 1, publication_version = publication_version + 1
+          WHERE round_generation_id = ? AND status = ? AND requires_referee = 0`,
+        header.round_generation_id, header.status)
+      })
+    }
   }
 
   /** 一次只 claim 一項；lease 僅供重新取工作，不授予 release 或解除 fence。 */
@@ -2374,6 +2495,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       const claim = await this.serialized(async () => {
         let next: RoundDeliveryClaim | 'decision' | null
         try {
+          this.expireMissedRoundReadinessWindows(Date.now())
           next = await this.claimRoundDelivery(Date.now())
         } catch {
           console.warn('CompetitionRoom retained invalid round delivery authority')
@@ -2434,6 +2556,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       || !isTeamPair(match.participants) || !isJsonObject(match.result)) return false
     const row = this.noShowOutbox(match.matchId)
     if (!row || row.status !== 'completed' || !validNoShowOutboxRow(row)
+      || !safeNonNegativeInteger(row.result_confirmed_at_ms)
       || row.decision_json === null) return false
     let decision: unknown
     try { decision = JSON.parse(row.decision_json) } catch { return false }
@@ -2662,6 +2785,11 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
           SET revision = ?, server_state_json = ?, public_projection_json = ?, updated_trusted_time_ms = ?
           WHERE singleton = 1`, revision, JSON.stringify(persistedState),
         JSON.stringify(stripPrivate(projection)), trustedTimeMs)
+        this.storage.sql.exec(`UPDATE competition_no_show_outbox
+          SET result_confirmed_at_ms = ?
+          WHERE round_generation_id = ? AND match_id = ? AND status = 'pending'
+            AND claim_id = ? AND claim_version = ?`,
+        trustedTimeMs, row.round_generation_id, row.match_id, row.claim_id, row.claim_version)
         this.insertAudit({ actorUserId: current.organizer_user_id, role: 'organizer',
           operationType: 'tournamentSubmitResult', commandId: row.command_id, revision,
           outcomeCode: 'success', trustedTimeMs, reason: '賽前未完成報到自動判負' })
@@ -3990,7 +4118,9 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         `UPDATE competition_matches
          SET match_checkpoint_json = ?, clock_checkpoint_json = ?,
              match_projection_json = ?, clock_projection_json = ?,
-             revision = ?, last_trusted_time_ms = ?
+             revision = ?, last_trusted_time_ms = ?,
+             tournament_result_confirmed_at_ms = CASE WHEN ? IS NULL
+               THEN tournament_result_confirmed_at_ms ELSE ? END
          WHERE match_id = ?`,
         JSON.stringify(nextMatch),
         nextClock ? JSON.stringify(nextClock) : null,
@@ -3998,6 +4128,8 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         nextClockProjection ? JSON.stringify(nextClockProjection) : null,
         nextRevision,
         request.trustedTimeMs,
+        tournamentApplyTimeMs,
+        tournamentApplyTimeMs,
         request.matchId,
       )
       this.storage.sql.exec(
@@ -4419,7 +4551,9 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         `UPDATE competition_matches
          SET match_checkpoint_json = ?, clock_checkpoint_json = ?,
              match_projection_json = ?, clock_projection_json = ?,
-             revision = ?, last_trusted_time_ms = ?
+             revision = ?, last_trusted_time_ms = ?,
+             tournament_result_confirmed_at_ms = CASE WHEN ? IS NULL
+               THEN tournament_result_confirmed_at_ms ELSE ? END
          WHERE match_id = ?`,
         JSON.stringify(nextMatch),
         nextClock ? JSON.stringify(nextClock) : null,
@@ -4427,6 +4561,8 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         nextClockProjection ? JSON.stringify(nextClockProjection) : null,
         nextRevision,
         request.trustedTimeMs,
+        tournamentApplyTimeMs,
+        tournamentApplyTimeMs,
         request.matchId,
       )
       this.storage.sql.exec(
@@ -5217,11 +5353,19 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     try {
       const row = this.storage.sql.exec<InitialSeedingIntentRow>(
         `SELECT * FROM competition_initial_seeding
-         WHERE status = 'pending' ORDER BY created_trusted_time_ms LIMIT 1`,
+         WHERE status = 'pending' OR (status = 'completed' AND last_error IS NOT NULL
+           AND last_error != 'roundNotPublishable')
+         ORDER BY created_trusted_time_ms LIMIT 1`,
       ).toArray()[0]
       if (!row || !safeNonNegativeInteger(row.attempts) || !safeNonNegativeInteger(row.next_attempt_at_ms)) return
       const now = Date.now()
       if (row.next_attempt_at_ms > now) return
+      if (row.status === 'completed') {
+        try { await this.publishAutomaticInitialRoundIfNeeded(row) } catch {
+          this.deferAutomaticRoundPublication(row, 'automaticRoundPublicationFailure', Date.now())
+        }
+        return
+      }
       const current = this.meta()
       if (!current || current.competition_id !== row.competition_id) return
       let stage: StageConfig
@@ -5244,9 +5388,198 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         stage,
       })
       if (!result.ok) this.deferInitialSeeding(row, result.error.code, now)
+      else {
+        try { await this.publishAutomaticInitialRoundIfNeeded(row) } catch {
+          this.deferAutomaticRoundPublication(row, 'automaticRoundPublicationFailure', Date.now())
+        }
+      }
     } catch {
       console.warn('CompetitionRoom retained automatic initial seeding after an attempt failure')
     }
+  }
+
+  /** 前輪權威完成後，預留最多五分鐘備妥下一輪，公告點後再留五分鐘報到。 */
+  private async publishNextAutomaticRoundIfReady(): Promise<'announced' | 'retry' | 'none'> {
+    const current = this.meta()
+    if (!current || !safeNonNegativeInteger(current.updated_trusted_time_ms)) return 'none'
+    let state: CompetitionServerState
+    try { state = parseServerState(current.server_state_json) } catch { return 'none' }
+    const tournament = state.tournament
+    if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+      return 'none'
+    }
+    const activeStages = tournament.stages.filter(stage => isJsonObject(stage) && stage.status === 'active')
+    if (activeStages.length !== 1) return 'none'
+    const stage = activeStages[0]
+    if (!isJsonObject(stage) || !isJsonObject(stage.config)
+      || typeof stage.config.stageId !== 'string' || !Array.isArray(stage.rounds)) return 'none'
+    const stageIndex = tournament.stages.indexOf(stage)
+    if (stageIndex < 0 || tournament.stages.slice(0, stageIndex).some(previous =>
+      !isJsonObject(previous) || previous.status !== 'completed')) return 'none'
+    const stageId = stage.config.stageId
+    const rounds = stage.rounds.filter((round): round is JsonObject => isJsonObject(round)
+      && safeNonNegativeInteger(round.roundNumber) && round.roundNumber > 0).sort((left, right) =>
+      Number(left.roundNumber) - Number(right.roundNumber))
+    for (const round of rounds) {
+      const roundNumber = round.roundNumber as number
+      if ((roundNumber === 1 && stageIndex === 0) || this.currentRoundPublication(stageId, roundNumber)) continue
+      let selected: ReturnType<typeof selectPublishableRound>
+      try {
+        selected = selectPublishableRound(tournament, stageId, roundNumber,
+          match => this.isAuthoritativeNoShowResult(match))
+      } catch { continue }
+      if (roundNumber > 1 && selected.previousMatches.length === 0) continue
+
+      const completedRounds = roundNumber > 1
+        ? rounds.filter(entry => Number(entry.roundNumber) < roundNumber)
+        : tournament.stages.slice(0, stageIndex).flatMap(previousStage =>
+            isJsonObject(previousStage) && Array.isArray(previousStage.rounds) ? previousStage.rounds : [])
+      const previousMatches: JsonObject[] = []
+      for (const completedRound of completedRounds) {
+        if (!isJsonObject(completedRound) || !Array.isArray(completedRound.matches)) return 'retry'
+        for (const match of completedRound.matches) {
+          if (!isJsonObject(match) || match.status !== 'completed' || match.result === null
+            || match.cancellationReason !== null) return 'retry'
+          if (isCoreBye(match)) {
+            previousMatches.push(match)
+            continue
+          }
+          const played = Array.isArray(match.participants) && match.participants.length === 2
+            && match.started === true
+          const noShow = Array.isArray(match.participants) && match.participants.length === 2
+            && match.started === false && this.isAuthoritativeNoShowResult(match)
+          if (!played && !noShow) return 'retry'
+          previousMatches.push(match)
+        }
+      }
+      const playedResults = previousMatches.filter(match => !isCoreBye(match))
+      const previousMatchTimes = playedResults.flatMap(match => {
+        if (typeof match.matchId !== 'string') return []
+        if (this.isAuthoritativeNoShowResult(match)) {
+          const ruling = this.noShowOutbox(match.matchId)
+          return ruling && safeNonNegativeInteger(ruling.result_confirmed_at_ms)
+            ? [ruling.result_confirmed_at_ms] : []
+        }
+        const row = this.match(match.matchId)
+        if (!row) return []
+        const confirmedAt = row.tournament_result_confirmed_at_ms ?? row.last_trusted_time_ms
+        return safeNonNegativeInteger(confirmedAt) ? [confirmedAt] : []
+      })
+      if (previousMatchTimes.length !== playedResults.length) return 'retry'
+      const completedAtMs = previousMatchTimes.length > 0
+        ? Math.max(...previousMatchTimes)
+        : current.updated_trusted_time_ms
+      const announceAtMs = floorCompetitionMinute(checkedAdd(completedAtMs, 5 * 60_000))
+      const roundStartMs = announceAtMs === null ? null : checkedAdd(announceAtMs, 5 * 60_000)
+      const now = Date.now()
+      if (announceAtMs === null || roundStartMs === null || !safeNonNegativeInteger(now)) return 'none'
+      const trustedTimeMs = Math.max(now, current.updated_trusted_time_ms)
+      if (!safeNonNegativeInteger(trustedTimeMs)) return 'none'
+      const missedPreparationWindow = trustedTimeMs >= announceAtMs
+      const commandDigest = await semanticFingerprint({
+        kind: 'automatic-next-round', competitionId: current.competition_id,
+        stageId, roundNumber, completedAtMs,
+      })
+      const result = await this.announceRoundInternal({
+        competitionId: current.competition_id,
+        stageId,
+        roundNumber,
+        callerUserId: current.organizer_user_id,
+        commandId: `automatic-next-round-${commandDigest}`,
+        expectedRevision: current.revision,
+        trustedTimeMs,
+        roundStartMs,
+        refereeAssignments: [],
+      }, announceAtMs, missedPreparationWindow)
+      if (result.ok) return result.value.idempotent ? 'none' : 'announced'
+      return result.error.code === 'engineProtocolError' || result.error.code === 'revisionConflict'
+        ? 'retry'
+        : 'none'
+    }
+    return 'none'
+  }
+
+  /** 首輪沿用公告 T；不因開房延誤而改寫時間或略過五分鐘窗口。 */
+  private async publishAutomaticInitialRoundIfNeeded(row: InitialSeedingIntentRow): Promise<void> {
+    const current = this.meta()
+    if (!current || current.competition_id !== row.competition_id) {
+      this.markAutomaticInitialRoundNotPublishable(row)
+      return
+    }
+    if (this.currentRoundPublication(row.stage_id, 1)) {
+      this.storage.sql.exec(
+        `UPDATE competition_initial_seeding SET last_error = NULL, attempts = 0, next_attempt_at_ms = 0
+         WHERE competition_id = ? AND command_id = ? AND status = 'completed'`,
+        row.competition_id, row.command_id,
+      )
+      return
+    }
+    let state: CompetitionServerState
+    try { state = parseServerState(current.server_state_json) } catch {
+      this.markAutomaticInitialRoundNotPublishable(row)
+      return
+    }
+    const registration = state.registration
+    const announcement = isJsonObject(registration) && isJsonObject(registration.announcement)
+      ? registration.announcement : null
+    const roundStartMs = announcement?.checkInDeadline
+    if (!safeNonNegativeInteger(roundStartMs) || roundStartMs % 60_000 !== 0) {
+      this.markAutomaticInitialRoundNotPublishable(row)
+      return
+    }
+    const cutoff = competitionRoundReadyCutoffMs(roundStartMs)
+    const trustedTimeMs = Math.max(Date.now(), current.updated_trusted_time_ms)
+    if (cutoff === null || !safeNonNegativeInteger(trustedTimeMs)) {
+      this.markAutomaticInitialRoundNotPublishable(row)
+      return
+    }
+    const missedPreparationWindow = trustedTimeMs > cutoff
+    const commandDigest = await semanticFingerprint({
+      kind: 'automatic-initial-round', competitionId: row.competition_id,
+      stageId: row.stage_id, roundNumber: 1,
+    })
+    const result = await this.announceRoundInternal({
+      competitionId: row.competition_id,
+      stageId: row.stage_id,
+      roundNumber: 1,
+      callerUserId: current.organizer_user_id,
+      commandId: `automatic-round-${commandDigest}`,
+      expectedRevision: current.revision,
+      trustedTimeMs,
+      roundStartMs,
+      refereeAssignments: [],
+    }, cutoff, missedPreparationWindow)
+    if (result.ok) {
+      this.storage.sql.exec(
+        `UPDATE competition_initial_seeding SET last_error = NULL, attempts = 0, next_attempt_at_ms = 0
+         WHERE competition_id = ? AND command_id = ? AND status = 'completed'`,
+        row.competition_id, row.command_id,
+      )
+      return
+    }
+    if (result.error.code === 'roundNotPublishable') {
+      this.markAutomaticInitialRoundNotPublishable(row)
+      return
+    }
+    this.deferAutomaticRoundPublication(row, result.error.code, Date.now())
+  }
+
+  private markAutomaticInitialRoundNotPublishable(row: InitialSeedingIntentRow): void {
+    this.storage.sql.exec(
+      `UPDATE competition_initial_seeding SET last_error = 'roundNotPublishable', next_attempt_at_ms = 0
+       WHERE competition_id = ? AND command_id = ? AND status = 'completed'`,
+      row.competition_id, row.command_id,
+    )
+  }
+
+  private deferAutomaticRoundPublication(row: InitialSeedingIntentRow, errorCode: string, now: number): void {
+    if (!safeNonNegativeInteger(row.attempts + 1)) return
+    const nextAttempt = checkedRoundRetryTime(now, Math.min(60_000, 1_000 * 2 ** Math.min(row.attempts + 1, 6)))
+    this.storage.sql.exec(
+      `UPDATE competition_initial_seeding SET attempts = attempts + 1, next_attempt_at_ms = ?, last_error = ?
+       WHERE competition_id = ? AND command_id = ? AND status = 'completed'`,
+      nextAttempt, errorCode, row.competition_id, row.command_id,
+    )
   }
 
   private deferInitialSeeding(row: InitialSeedingIntentRow, errorCode: string, now: number): void {
@@ -6472,6 +6805,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('invalidLockedRoster', 'participant game roster is unavailable')
     }
     const linked = this.gameProvision(request.matchId, intent.value.gameNumber)
+      ?? await this.confirmedRoundParticipantLink(request.matchId, intent.value.gameNumber)
     if (!linked) {
       return roomSuccess({
         competitionId: request.competitionId,
@@ -6497,17 +6831,26 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     } catch {
       return roomFailure('invalidGameProvision', 'participant game linkage is unavailable')
     }
-    const expectedGameId = `competition-game-${await semanticFingerprint({
-      kind: 'competition-game',
-      competitionId: request.competitionId,
-      matchId: request.matchId,
-      gameNumber: intent.value.gameNumber,
-    })}`
+    const expectedGameIds = await Promise.all([
+      semanticFingerprint({
+        kind: 'competition-game',
+        competitionId: request.competitionId,
+        matchId: request.matchId,
+        gameNumber: intent.value.gameNumber,
+      }),
+      semanticFingerprint({
+        kind: 'round-initial-game',
+        roundRef: binding.roundRef,
+        matchId: request.matchId,
+        gameNumber: intent.value.gameNumber,
+      }),
+    ])
+    const expectedGameIdsWithPrefix = expectedGameIds.map(value => `competition-game-${value}`)
     if (!['pending', 'provisioned', 'blocked'].includes(linked.status)
       || linked.match_id !== request.matchId
       || linked.game_number !== intent.value.gameNumber
       || !nonEmpty(linked.game_id)
-      || linked.game_id !== expectedGameId
+      || !expectedGameIdsWithPrefix.includes(linked.game_id)
       || !nonEmpty(linked.command_id)
       || !/^[0-9a-f]{64}$/.test(linked.fingerprint)
       || !safeNonNegativeInteger(linked.attempts)
@@ -6545,6 +6888,75 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         ? { gameId: linked.game_id, gameNumber: intent.value.gameNumber }
         : null,
     })
+  }
+
+  /** 只將目前有效輪次中已取得實體房 ACK 的 ledger 投影為玩家可進入連結。 */
+  private async confirmedRoundParticipantLink(
+    matchId: string,
+    gameNumber: number,
+  ): Promise<GameProvisionRow | undefined> {
+    if (gameNumber !== 1) return undefined
+    const ledgers = this.storage.sql.exec<RoundRoomLedgerRow>(
+      `SELECT * FROM competition_round_room_ledger
+       WHERE match_id = ? AND game_number = 1 ORDER BY rowid DESC`, matchId,
+    ).toArray()
+    for (const ledger of ledgers) {
+      if (!['confirmed', 'started'].includes(ledger.status)
+        || !safeNonNegativeInteger(ledger.ack_confirmed_at_ms)) continue
+      const header = this.storage.sql.exec<RoundPublicationRow>(
+        'SELECT * FROM competition_round_publication WHERE round_generation_id = ?',
+        ledger.round_generation_id,
+      ).toArray()[0]
+      const release = this.storage.sql.exec<RoundReleaseRow>(
+        `SELECT * FROM competition_round_release_outbox
+         WHERE round_generation_id = ? AND game_id = ?`,
+        ledger.round_generation_id, ledger.game_id,
+      ).toArray()[0]
+      const current = this.meta()
+      if (!header || !release || release.status !== 'completed' || !current || header.status !== 'released'
+        || header.requires_referee !== 0
+        || (header.release_not_before_ms > 0 && (Date.now() < header.release_not_before_ms
+          || !this.roundHasCompleteTimelyCreationAcks(header, current.competition_id)
+          || !this.roundHasCompleteTimelyReleaseAcks(header, current.competition_id)))
+        || !sameJson(this.currentRoundPublication(header.stage_id, header.round_number), header)) continue
+      try {
+        const manifest = parseRoundManifest(header, current.competition_id)
+        const expected = manifest.rooms.find(room => room.matchId === matchId && room.gameId === ledger.game_id)
+        const binding: unknown = JSON.parse(ledger.binding_json)
+        const bindingRef: unknown = JSON.parse(ledger.binding_ref_json)
+        if (!expected || !isCompetitionGameBindingRef(bindingRef)
+          || !sameJson(bindingRef, expected.bindingRef)
+          || !isJsonObject(binding)) continue
+        validateCompetitionGameBinding(binding)
+        if (binding.competitionId !== current.competition_id || binding.matchId !== matchId
+          || binding.gameNumber !== 1 || binding.roundStartMs !== manifest.roundStartMs
+          || !sameJson(binding.roundRef, manifest.roundRef)) continue
+        const fingerprint = await semanticFingerprint({
+          kind: 'round-participant-game-link', roundRef: manifest.roundRef,
+          matchId, gameId: ledger.game_id,
+        })
+        return {
+          match_id: ledger.match_id,
+          game_number: ledger.game_number,
+          game_id: ledger.game_id,
+          binding_json: ledger.binding_json,
+          match_revision: ledger.match_revision,
+          next_game_json: ledger.next_game_json,
+          command_id: manifest.announcementCommandId,
+          fingerprint,
+          status: 'provisioned',
+          attempts: 0,
+          next_attempt_at_ms: 0,
+          error_code: null,
+          created_trusted_time_ms: header.announced_trusted_time_ms,
+          claim_id: null,
+          claim_version: 0,
+        }
+      } catch {
+        continue
+      }
+    }
+    return undefined
   }
 
   private async readMatchClockInternal(
@@ -6844,14 +7256,19 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     )
   }
 
-  private async scheduleSharedAlarm(registrationOverride?: unknown): Promise<void> {
+  private async scheduleSharedAlarm(
+    registrationOverride?: unknown,
+    additionalDueTimes: readonly number[] = [],
+  ): Promise<void> {
     const provision = this.nextProvisionRow()
     const control = this.nextClockControlRow()
     const initialSeeding = this.storage.sql.exec<{
       [key: string]: ArrayBuffer | string | number | null
       due: number
     }>(
-      `SELECT MIN(next_attempt_at_ms) AS due FROM competition_initial_seeding WHERE status = 'pending'`,
+      `SELECT MIN(next_attempt_at_ms) AS due FROM competition_initial_seeding
+       WHERE status = 'pending' OR (status = 'completed' AND last_error IS NOT NULL
+         AND last_error != 'roundNotPublishable')`,
     ).one().due
     const now = Date.now()
     const current = this.meta()
@@ -6877,13 +7294,25 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
        JOIN competition_round_publication publication USING (round_generation_id)
        WHERE outbox.status = 'pending' AND publication.status = 'released' AND publication.requires_referee = 0`,
     ).toArray().map(row => row.due).filter(safeNonNegativeInteger)
+    const missedRoundWindows = this.storage.sql.exec<RoundPublicationRow>(
+      `SELECT * FROM competition_round_publication
+       WHERE status IN ('materializing', 'released') AND requires_referee = 0
+         AND release_not_before_ms > 0 AND release_not_before_ms <= ?`, now,
+    ).toArray().filter(header => {
+      if (header.status !== 'released' || !current) return true
+      try { return !this.roundHasCompleteTimelyReleaseAcks(header, current.competition_id) } catch {
+        return true
+      }
+    })
     const noShowJobs = this.storage.sql.exec<{ [key: string]: ArrayBuffer | string | number | null; due: number }>(
       `SELECT next_attempt_at_ms AS due FROM competition_no_show_outbox WHERE status = 'pending'`,
     ).toArray().map(row => row.due).filter(safeNonNegativeInteger)
     const dueTimes = [
       provision?.next_attempt_at_ms,
       control?.next_attempt_at_ms,
-      safeNonNegativeInteger(initialSeeding) ? initialSeeding : undefined,
+      safeNonNegativeInteger(initialSeeding)
+        ? initialSeeding > now ? initialSeeding : checkedRoundRetryTime(now, 1_000)
+        : undefined,
       registrationDeadline === null
         ? undefined
         : registrationDeadline > Math.max(now, current?.updated_trusted_time_ms ?? 0)
@@ -6891,8 +7320,11 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
           : checkedRoundRetryTime(now, 1_000),
       // 過期工作以有界 retry 再排，不讓到 T 但 authority 損壞形成即刻空轉。
       ...roundJobs.map(due => due > now ? due : checkedRoundRetryTime(now, 1_000)),
+      ...missedRoundWindows.map(() => checkedRoundRetryTime(now, 1_000)),
       ...noShowJobs.map(due => due > now ? due : checkedRoundRetryTime(now, 1_000)),
+      ...this.roundsWaitingForReleaseWindow().map(header => header.release_not_before_ms),
       ...this.roundsReadyForRelease().map(() => checkedRoundRetryTime(now, 1_000)),
+      ...additionalDueTimes,
     ].filter(safeNonNegativeInteger)
     if (dueTimes.length) {
       const due = Math.min(...dueTimes)
@@ -7627,7 +8059,8 @@ function validNoShowOutboxRow(row: NoShowOutboxRow): boolean {
     || !['pending', 'completed'].includes(row.status)
     || (row.claim_id !== null && !nonEmpty(row.claim_id))
     || !safeNonNegativeInteger(row.claim_version) || !safeNonNegativeInteger(row.attempts)
-    || !safeNonNegativeInteger(row.next_attempt_at_ms)) return false
+    || !safeNonNegativeInteger(row.next_attempt_at_ms)
+    || (row.result_confirmed_at_ms !== null && !safeNonNegativeInteger(row.result_confirmed_at_ms))) return false
   if (row.decision_json !== null) {
     try {
       if (!isCompetitionGameNoShowDecision(JSON.parse(row.decision_json))) return false
@@ -7724,14 +8157,16 @@ function selectPublishableRound(
   tournament: JsonObject | null,
   stageId: string,
   roundNumber: number,
+  isAuthoritativeNoShow: (match: JsonObject) => boolean,
 ): { round: JsonObject; schedules: ScheduledMatchMaterialization[]; previousMatches: JsonObject[] } {
-  // 多階段前置尚未有核定契約，不從 stage 的排序推測新的跨階段 policy。
-  if (!isJsonObject(tournament) || !Array.isArray(tournament.stages) || tournament.stages.length !== 1) {
+  if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
     throw new Error('current stage prerequisites cannot be established')
   }
-  const stage = tournament.stages[0]
-  if (!isJsonObject(stage) || !isJsonObject(stage.config) || stage.config.stageId !== stageId
-    || stage.status !== 'active' || !Array.isArray(stage.rounds)) throw new Error('active stage is missing')
+  const activeStages = tournament.stages.filter(entry => isJsonObject(entry) && entry.status === 'active')
+  const stage = activeStages.find(entry => isJsonObject(entry) && isJsonObject(entry.config)
+    && entry.config.stageId === stageId)
+  if (activeStages.length !== 1 || !isJsonObject(stage) || !isJsonObject(stage.config)
+    || stage.config.stageId !== stageId || !Array.isArray(stage.rounds)) throw new Error('active stage is missing')
   const round = stage.rounds.find(entry => isJsonObject(entry) && entry.roundNumber === roundNumber)
   if (!isJsonObject(round) || !Array.isArray(round.matches) || round.matches.length === 0) {
     throw new Error('current round is missing')
@@ -7743,9 +8178,16 @@ function selectPublishableRound(
     if (previous.roundNumber >= roundNumber) continue
     for (const match of previous.matches) {
       if (!isJsonObject(match) || match.status !== 'completed' || match.result === null
-        || match.cancellationReason !== null
-        || (!isCoreBye(match) && (!Array.isArray(match.participants) || match.participants.length !== 2
-          || match.started !== true))) throw new Error('the complete previous round is unfinished')
+        || match.cancellationReason !== null) throw new Error('the complete previous round is unfinished')
+      if (isCoreBye(match)) {
+        previousMatches.push(match)
+        continue
+      }
+      const played = Array.isArray(match.participants) && match.participants.length === 2
+        && match.started === true
+      const authoritativeNoShow = Array.isArray(match.participants) && match.participants.length === 2
+        && match.started === false && isAuthoritativeNoShow(match)
+      if (!played && !authoritativeNoShow) throw new Error('the complete previous round is unfinished')
       previousMatches.push(match)
     }
   }
@@ -7775,12 +8217,14 @@ function parseRoundManifest(
     || raw.roundRef.stageId !== header.stage_id || raw.roundRef.roundNumber !== header.round_number
     || raw.roundStartMs !== header.round_start_ms
     || cutoff === null
+    || !safeNonNegativeInteger(header.release_not_before_ms)
+    || (header.release_not_before_ms !== 0 && header.release_not_before_ms !== cutoff)
     // receipt 只讀不可變公告身分；後來的操作版本／status／ACK 不決定原成功是否可恢復。
     || (purpose === 'current' && (!Number.isSafeInteger(header.publication_version) || header.publication_version < 1
       || !['materializing', 'released', 'quiescing', 'retired'].includes(header.status)
       || ![0, 1].includes(header.requires_referee)))
     || !safeNonNegativeInteger(header.announced_trusted_time_ms)
-    || header.announced_trusted_time_ms > cutoff
+    || (header.announced_trusted_time_ms > cutoff && header.requires_referee !== 1)
     || !isJsonObject(raw.tournamentRound)
     || !hasExactKeys(raw.tournamentRound, ['roundNumber', 'kind', 'matches'])
     || raw.tournamentRound.roundNumber !== header.round_number
@@ -8521,6 +8965,11 @@ function checkedAdd(left: number, right: number): number | null {
   if (!safeNonNegativeInteger(left) || !safeNonNegativeInteger(right)
     || left > Number.MAX_SAFE_INTEGER - right) return null
   return left + right
+}
+
+function floorCompetitionMinute(value: number | null): number | null {
+  if (!safeNonNegativeInteger(value)) return null
+  return value - value % 60_000
 }
 
 function safeNonNegativeInteger(value: unknown): value is number {

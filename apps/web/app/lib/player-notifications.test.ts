@@ -2,10 +2,15 @@ import { describe, expect, test } from 'bun:test'
 import type { PlayerNotification } from '../../shared/game-room'
 import {
   PLAYER_NOTIFICATION_ROOM_LIMIT,
+  PLAYER_NOTIFICATION_HANDLED_ID_LIMIT,
   PLAYER_NOTIFICATION_TTL_MS,
   mergePlayerNotification,
+  normalizeHandledPlayerNotificationIds,
+  playerNotificationHandledIdStorageKey,
   playerNotificationStorageKey,
+  restoreHandledPlayerNotificationIds,
   restorePlayerNotifications,
+  serializeHandledPlayerNotificationIds,
   serializePlayerNotifications,
 } from './player-notifications'
 
@@ -30,6 +35,13 @@ describe('mergePlayerNotification', () => {
     const latest = notification('2', 'room-a', 'yourTurn', '房間 A 輪到你行動。')
 
     expect(mergePlayerNotification([previous], latest)).toEqual([latest])
+  })
+
+  test('treats a replayed notification id as the same already-processed event', () => {
+    const delivered = notification('1', 'room-a', 'roomChanged', '賽事房間已開放。')
+    const current = [delivered]
+
+    expect(mergePlayerNotification(current, { ...delivered })).toBe(current)
   })
 
   test('keeps notifications from different rooms in newest-first order', () => {
@@ -116,5 +128,24 @@ describe('retained Player Notifications', () => {
 
     expect(playerNotificationStorageKey('player-a')).not.toBe(playerNotificationStorageKey('player-b'))
     expect(restorePlayerNotifications(serializePlayerNotifications([current]), currentNow)).toEqual([current])
+  })
+})
+
+describe('handled Player Notification IDs', () => {
+  test('persists IDs independently from the one-per-room notification list', () => {
+    const ids = ['room-change-id', 'game-started-id']
+    const serialized = serializeHandledPlayerNotificationIds(ids)
+
+    expect(playerNotificationHandledIdStorageKey('player-a'))
+      .not.toBe(playerNotificationHandledIdStorageKey('player-b'))
+    expect(restoreHandledPlayerNotificationIds(serialized)).toEqual(ids)
+  })
+
+  test('keeps only the most recent bounded set of valid unique IDs', () => {
+    const ids = Array.from({ length: PLAYER_NOTIFICATION_HANDLED_ID_LIMIT + 2 }, (_, index) => `id-${index}`)
+
+    expect(normalizeHandledPlayerNotificationIds(['first', 'first', '', 1, ...ids])).toEqual(ids.slice(-PLAYER_NOTIFICATION_HANDLED_ID_LIMIT))
+    expect(restoreHandledPlayerNotificationIds(JSON.stringify({ version: 2, ids: ['ignored'] }))).toEqual([])
+    expect(restoreHandledPlayerNotificationIds('{broken json')).toEqual([])
   })
 })

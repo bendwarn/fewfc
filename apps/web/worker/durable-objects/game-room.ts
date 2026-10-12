@@ -31,6 +31,7 @@ import {
   competitionGameBindingEquals,
   competitionGameBindingRefForRequest,
   competitionGameNoShowCommandId,
+  competitionRoundReadyCutoffMs,
   competitionRulesSetup,
   validateCompetitionGameBinding,
   validateCompetitionGameRequest,
@@ -65,12 +66,20 @@ import {
 } from '../../shared/competition-game-room'
 import {
   isCompetitionRoomInitialGameStartedRequest,
+  isCompetitionRoomRoundPublicationReadValue,
   type CompetitionRoomInitialGameStartedRequest,
   type CompetitionRoomInitialGameStartedResult,
+  type CompetitionRoomRoundPublicationReadRequest,
+  type CompetitionRoomRoundPublicationReadResult,
   type CompetitionRoomTerminalIngestRequest,
   type CompetitionRoomTerminalIngestResult,
 } from '../../shared/competition-room'
-import { isJsonValue, type CompetitionOperationName } from '../../shared/competition'
+import {
+  isExactCompetitionJson,
+  isJsonObject,
+  isJsonValue,
+  type CompetitionOperationName,
+} from '../../shared/competition'
 import type { BattleRecord, PlayableAction, PlayerId, PublicGameState } from '../../app/types/fewfc'
 import { replacePlayerLabels } from '../../shared/utils/battle-record-display'
 import {
@@ -116,6 +125,9 @@ interface CompetitionRoomNamespace {
     ingestGameTerminal(
       request: CompetitionRoomTerminalIngestRequest,
     ): Promise<CompetitionRoomTerminalIngestResult>
+    readRoundPublication(
+      request: CompetitionRoomRoundPublicationReadRequest,
+    ): Promise<CompetitionRoomRoundPublicationReadResult>
   }
 }
 
@@ -236,6 +248,19 @@ interface CompetitionGameAdmission {
   }>
 }
 
+interface CompetitionRoomReadyNoticeRecipient {
+  userId: string
+  notificationId: string
+  createdAt: string
+  sent: boolean
+}
+
+interface CompetitionRoomReadyNoticeOutbox {
+  schemaVersion: 1
+  bindingRef: CompetitionGameBindingRef
+  recipients: CompetitionRoomReadyNoticeRecipient[]
+}
+
 interface CompetitionGameNoShowSnapshot {
   schemaVersion: 1
   bindingRef: CompetitionGameBindingRef
@@ -247,6 +272,7 @@ interface CompetitionGameNoShowSnapshot {
 const competitionAdmissionKey = 'competitionGameAdmission'
 const competitionInitialStartEvidenceKey = 'competitionInitialStartEvidence'
 const competitionNoShowDecisionKey = 'competitionNoShowDecision'
+const competitionRoomReadyNoticeOutboxKey = 'competitionRoomReadyNoticeOutbox'
 
 interface NotificationEnvelope {
   targetUserId: string
@@ -268,6 +294,7 @@ type RulesEngineAction =
 export class GameRoom extends DurableObject<GameRoomEnv> {
   private operationTail: Promise<void> = Promise.resolve()
   private competitionDeliveryInFlight: Promise<void> | null = null
+  private competitionReadyNoticeInFlight = false
 
   /** 純伺服器資格探測只回 primitive，不提供房間或牌組資料。 */
   async getCompetitionClockControlEligibility(
@@ -416,6 +443,7 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   async releaseCompetitionGame(request: CompetitionGameAdmissionRequest): Promise<boolean> {
     const released = await this.changeCompetitionAdmission(request, 'release') === true
     if (released) {
+      this.queueCompetitionRoomReadyNotice()
       try {
         const metadata = await this.metadata()
         const binding = await this.competitionBinding()
@@ -427,6 +455,195 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       }
     }
     return released
+  }
+
+  /** 放行許可持久化後才提醒；通知失敗不會改變房間授權或賽程 ACK。 */
+  private queueCompetitionRoomReadyNotice(): void {
+    if (this.competitionReadyNoticeInFlight) return
+    this.competitionReadyNoticeInFlight = true
+    this.ctx.waitUntil((async () => {
+      try {
+        if (await this.ctx.storage.get<boolean>('competitionRoomReadyNoticeSent') === true) return
+        const metadata = await this.metadata()
+        const binding = await this.competitionBinding()
+        const admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+        if (!metadata || !binding || !competitionBindingIsValid(binding)
+          || !hasCompetitionReadyMetadataShape(metadata)
+          || !competitionAdmissionMatchesBinding(admission, metadata, binding)
+          || (admission.status !== 'released' && admission.status !== 'started')) return
+        const noticeAtMs = competitionRoundReadyCutoffMs(binding.roundStartMs)
+        if (noticeAtMs === null) return
+        if (Date.now() < noticeAtMs) {
+          await this.serialized(async () => {
+            await this.scheduleCompetitionAdmissionAlarm(
+              this.ctx.storage, metadata, binding, admission,
+              await this.ctx.storage.get<unknown>(this.competitionDeliveryQueueKey()),
+            )
+          })
+          return
+        }
+        if (!await this.competitionRoundPlayerEntryAllowed(metadata.gameId, binding, admission)) return
+        const outbox = await this.serialized(async () => {
+          const currentMetadata = await this.metadata()
+          const currentBinding = await this.competitionBinding()
+          const currentAdmission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+          if (!currentMetadata || !currentBinding || !isCompetitionGameAdmission(currentAdmission)
+            || !competitionAdmissionMatchesBinding(currentAdmission, currentMetadata, currentBinding)
+            || (currentAdmission.status !== 'released' && currentAdmission.status !== 'started')
+            || !await this.competitionRoundPlayerEntryAllowed(
+              currentMetadata.gameId, currentBinding, currentAdmission,
+            )) return null
+
+          const existing = await this.ctx.storage.get<unknown>(competitionRoomReadyNoticeOutboxKey)
+          if (existing !== undefined) {
+            if (!isCompetitionRoomReadyNoticeOutbox(existing)
+              || stableDeliveryFingerprint(existing.bindingRef) !== stableDeliveryFingerprint(currentAdmission.bindingRef)) {
+              throw new Error('competition room ready notice outbox is invalid')
+            }
+            return structuredClone(existing)
+          }
+
+          const recipients = [...currentMetadata.members, ...currentMetadata.observers]
+            .map(member => member.userId)
+            .filter((userId, index, all) => all.indexOf(userId) === index)
+            .map(userId => ({
+              userId,
+              notificationId: crypto.randomUUID(),
+              createdAt: new Date().toISOString(),
+              sent: false,
+            }))
+          const created: CompetitionRoomReadyNoticeOutbox = {
+            schemaVersion: 1,
+            bindingRef: structuredClone(currentAdmission.bindingRef),
+            recipients,
+          }
+          await this.ctx.storage.put(competitionRoomReadyNoticeOutboxKey, created)
+          return created
+        })
+        if (!outbox) return
+
+        for (const recipient of outbox.recipients) {
+          if (recipient.sent) continue
+          const maySend = await this.serialized(async () => {
+            const currentMetadata = await this.metadata()
+            const currentBinding = await this.competitionBinding()
+            const currentAdmission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+            const storedOutbox = await this.ctx.storage.get<unknown>(competitionRoomReadyNoticeOutboxKey)
+            return Boolean(currentMetadata && currentBinding && isCompetitionGameAdmission(currentAdmission)
+              && competitionAdmissionMatchesBinding(currentAdmission, currentMetadata, currentBinding)
+              && (currentAdmission.status === 'released' || currentAdmission.status === 'started')
+              && isCompetitionRoomReadyNoticeOutbox(storedOutbox)
+              && stableDeliveryFingerprint(storedOutbox.bindingRef)
+                === stableDeliveryFingerprint(currentAdmission.bindingRef)
+              && storedOutbox.recipients.some(item => item.userId === recipient.userId
+                && item.notificationId === recipient.notificationId && !item.sent)
+              && await this.competitionRoundPlayerEntryAllowed(
+                currentMetadata.gameId, currentBinding, currentAdmission,
+              ))
+          })
+          if (!maySend) return
+
+          await this.sendNotification(recipient.userId, {
+            kind: 'roomChanged',
+            message: '賽事固定房間已開放，可從賽事頁進入。',
+          }, {
+            id: recipient.notificationId,
+            gameId: metadata.gameId,
+            createdAt: recipient.createdAt,
+          })
+          await this.serialized(async () => {
+            const storedOutbox = await this.ctx.storage.get<unknown>(competitionRoomReadyNoticeOutboxKey)
+            if (!isCompetitionRoomReadyNoticeOutbox(storedOutbox)
+              || stableDeliveryFingerprint(storedOutbox.bindingRef)
+                !== stableDeliveryFingerprint(outbox.bindingRef)) {
+              throw new Error('competition room ready notice outbox changed during delivery')
+            }
+            const current = storedOutbox.recipients.find(item => item.userId === recipient.userId
+              && item.notificationId === recipient.notificationId)
+            if (!current) throw new Error('competition room ready notice recipient is missing')
+            if (!current.sent) {
+              current.sent = true
+              await this.ctx.storage.put(competitionRoomReadyNoticeOutboxKey, storedOutbox)
+            }
+          })
+        }
+
+        await this.serialized(async () => {
+          const currentMetadata = await this.metadata()
+          const currentBinding = await this.competitionBinding()
+          const currentAdmission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+          const storedOutbox = await this.ctx.storage.get<unknown>(competitionRoomReadyNoticeOutboxKey)
+          if (!currentMetadata || !currentBinding || !isCompetitionGameAdmission(currentAdmission)
+            || !competitionAdmissionMatchesBinding(currentAdmission, currentMetadata, currentBinding)
+            || (currentAdmission.status !== 'released' && currentAdmission.status !== 'started')
+            || !isCompetitionRoomReadyNoticeOutbox(storedOutbox)
+            || stableDeliveryFingerprint(storedOutbox.bindingRef)
+              !== stableDeliveryFingerprint(currentAdmission.bindingRef)
+            || !storedOutbox.recipients.every(recipient => recipient.sent)
+            || !await this.competitionRoundPlayerEntryAllowed(
+              currentMetadata.gameId, currentBinding, currentAdmission,
+            )
+            || await this.ctx.storage.get<boolean>('competitionRoomReadyNoticeSent') === true) return
+          await this.ctx.storage.put('competitionRoomReadyNoticeSent', true)
+          await this.scheduleCompetitionAdmissionAlarm(
+            this.ctx.storage, currentMetadata, currentBinding, currentAdmission,
+            await this.ctx.storage.get<unknown>(this.competitionDeliveryQueueKey()),
+          )
+        })
+      } catch {
+        // 通知失敗以短 alarm 重試；玩家仍可從賽事頁進入。
+        try {
+          await this.serialized(async () => {
+            const metadata = await this.metadata()
+            const binding = await this.competitionBinding()
+            const admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+            if (metadata && binding && isCompetitionGameAdmission(admission)) {
+              await this.scheduleCompetitionAdmissionAlarm(
+                this.ctx.storage, metadata, binding, admission,
+                await this.ctx.storage.get<unknown>(this.competitionDeliveryQueueKey()),
+              )
+            }
+          })
+        } catch {
+          // 下一次玩家請求或房間工作會重新排程共用 alarm。
+        }
+      } finally {
+        this.competitionReadyNoticeInFlight = false
+      }
+    })())
+  }
+
+  /** 固定首局入口等父房整輪公告；子房本地 release permit 不足以提早開門。 */
+  private async competitionRoundPlayerEntryAllowed(
+    gameId: string,
+    binding: CompetitionGameBinding,
+    admission: CompetitionGameAdmission,
+  ): Promise<boolean> {
+    const noticeAtMs = competitionRoundReadyCutoffMs(binding.roundStartMs)
+    if (noticeAtMs === null || Date.now() < noticeAtMs
+      || (admission.status !== 'released' && admission.status !== 'started')) return false
+    if (binding.gameNumber !== 1) return true
+    const namespace = this.env.COMPETITION_ROOM
+    if (!namespace) return false
+    const request: CompetitionRoomRoundPublicationReadRequest = {
+      competitionId: binding.competitionId,
+      stageId: binding.roundRef.stageId,
+      roundNumber: binding.roundRef.roundNumber,
+      callerUserId: binding.organizerUserId,
+    }
+    const result: unknown = await namespace.get(namespace.idFromName(binding.competitionId))
+      .readRoundPublication(request)
+    if (!isExactCompetitionJson(result) || !isJsonObject(result)
+      || !hasExactKeys(result, ['ok', 'value']) || result.ok !== true
+      || !isCompetitionRoomRoundPublicationReadValue(result.value, request)) return false
+    const publication = result.value.publication
+    const room = publication?.rooms.find(entry => entry.gameId === gameId
+      && entry.matchId === binding.matchId)
+    return publication !== null && publication.status === 'released' && !publication.requiresReferee
+      && publication.releaseDecisionId === admission.releaseCommandId
+      && publication.roundStartMs === binding.roundStartMs
+      && stableDeliveryFingerprint(publication.roundRef) === stableDeliveryFingerprint(binding.roundRef)
+      && room !== undefined && room.ackConfirmedAtMs !== null && room.ackConfirmedAtMs <= noticeAtMs
   }
 
   /** 撤銷與 start 共用同一 mutator／交易提交點；primitive ACK 不攜帶私密資料。 */
@@ -1281,6 +1498,46 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
         const result = await this.legacyPurgeVerification()
         return this.json(result, result.status === 'Absent' ? 404 : 200)
       })
+    }
+
+    let competitionBinding: CompetitionGameBinding | undefined
+    try {
+      competitionBinding = await this.competitionBinding()
+    } catch (error) {
+      // 損壞的 present binding 交給各路徑原有錯誤處理，不讓入口閘門先改變回應契約。
+      // Storage I/O 失敗則必須在任何 socket 或請求副作用前拒絕。
+      if (!(error instanceof CompetitionGameBindingError)) {
+        return this.json({
+          error: '賽事房間入口狀態暫時無法驗證。',
+          code: 'competitionRoundNotAnnounced',
+        }, 409)
+      }
+    }
+    if (competitionBinding?.gameNumber === 1) {
+      let metadata: GameRoomMetadata | undefined
+      let admission: unknown
+      let preserveExistingFailure = false
+      try {
+        metadata = await this.metadata()
+        admission = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+      } catch (error) {
+        // 結構損壞保留既有 handler 回應；暫時儲存讀取失敗一律 fail closed。
+        if (!(error instanceof CompetitionGameBindingError)) {
+          return this.json({
+            error: '賽事房間入口狀態暫時無法驗證。',
+            code: 'competitionRoundNotAnnounced',
+          }, 409)
+        }
+        preserveExistingFailure = true
+      }
+      if (!preserveExistingFailure && (!metadata
+        || !competitionAdmissionMatchesBinding(admission, metadata, competitionBinding)
+        || !await this.competitionRoundPlayerEntryAllowed(metadata.gameId, competitionBinding, admission))) {
+        return this.json({
+          error: '賽事房間尚未到公告開放時間或整輪入口尚未就緒。',
+          code: 'competitionRoundNotAnnounced',
+        }, 409)
+      }
     }
 
     if (request.method === 'GET' && url.pathname.endsWith('/socket')) {
@@ -2743,6 +3000,8 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
 
   /** Durable Objects 每個房間共用唯一 alarm；alarm 與玩家命令共用 serialized 邊界。 */
   async alarm() {
+    // 子房可在公告點前備妥；公告通知只在 T-五分鐘後送出。
+    this.queueCompetitionRoomReadyNotice()
     const alarmWork = await this.serialized(async () => {
       const binding = await this.competitionBinding()
       // Waiting alarm 保留原本損壞／未準備時的清除收尾，不透過唯讀查詢修補 metadata。
@@ -3061,11 +3320,12 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private async sendNotification(
     userId: string,
     notification: Pick<PlayerNotification, 'kind' | 'message'>,
+    identity?: Pick<PlayerNotification, 'id' | 'gameId' | 'createdAt'>,
   ) {
     const id = this.env.PLAYER_NOTIFICATIONS.idFromName('global')
     const target = this.env.PLAYER_NOTIFICATIONS.get(id)
 
-    await target.fetch('https://player-notifications.internal/notify', {
+    const response = await target.fetch('https://player-notifications.internal/notify', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -3073,14 +3333,15 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       body: JSON.stringify({
         targetUserId: userId,
         notification: {
-          id: crypto.randomUUID(),
-          gameId: (await this.requireMetadata()).gameId,
+          id: identity?.id ?? crypto.randomUUID(),
+          gameId: identity?.gameId ?? (await this.requireMetadata()).gameId,
           kind: notification.kind,
           message: notification.message,
-          createdAt: new Date().toISOString(),
+          createdAt: identity?.createdAt ?? new Date().toISOString(),
         },
       } satisfies NotificationEnvelope),
     })
+    if (!response.ok) throw new Error('player notification delivery failed')
   }
 
   private randomSetup(
@@ -3755,13 +4016,20 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
     }
     if (competitionBindingIsValid(binding) && hasCompetitionReadyMetadataShape(metadata)
       && competitionAdmissionMatchesBinding(admission, metadata, binding)
-      && admission.status === 'released' && metadata.status === 'Waiting') {
-      if (this.competitionStartAdmitted(metadata, binding, admission, now)) {
-        candidates.push(admission.startRetryAtMs ?? now)
+      && (admission.status === 'released' || admission.status === 'started')) {
+      const noticeAtMs = competitionRoundReadyCutoffMs(binding.roundStartMs)
+      if (metadata.status !== 'Dissolved' && noticeAtMs !== null
+        && await storage.get<boolean>('competitionRoomReadyNoticeSent') !== true) {
+        candidates.push(noticeAtMs > now ? noticeAtMs : now + 5_000)
       }
-      if (now < binding.roundStartMs) {
-        // 即使開局重試排在 T 後，也要先在 T 固定一次房間報到快照。
-        candidates.push(binding.roundStartMs)
+      if (admission.status === 'released' && metadata.status === 'Waiting') {
+        if (this.competitionStartAdmitted(metadata, binding, admission, now)) {
+          candidates.push(admission.startRetryAtMs ?? now)
+        }
+        if (now < binding.roundStartMs) {
+          // 即使開局重試排在 T 後，也要先在 T 固定一次房間報到快照。
+          candidates.push(binding.roundStartMs)
+        }
       }
     }
     if (candidates.length === 0) await storage.deleteAlarm?.()
@@ -4982,6 +5250,23 @@ function sameCompetitionBindingRef(left: CompetitionGameBindingRef, right: Compe
   return isCompetitionGameAdmissionRequest(
     { bindingRef: left, commandId: 'identity' }, { bindingRef: right, commandId: 'identity' },
   )
+}
+
+function isCompetitionRoomReadyNoticeOutbox(
+  value: unknown,
+): value is CompetitionRoomReadyNoticeOutbox {
+  if (!isCompetitionSnapshotData(value) || !isRecord(value)
+    || !hasCompetitionSnapshotKeys(value, ['schemaVersion', 'bindingRef', 'recipients'])
+    || value.schemaVersion !== 1 || !isCompetitionGameBindingRef(value.bindingRef)
+    || !Array.isArray(value.recipients)) return false
+  const recipients = value.recipients
+  return recipients.every(recipient => isCompetitionSnapshotData(recipient) && isRecord(recipient)
+    && hasCompetitionSnapshotKeys(recipient, ['userId', 'notificationId', 'createdAt', 'sent'])
+    && isNonEmpty(recipient.userId) && isNonEmpty(recipient.notificationId)
+    && typeof recipient.createdAt === 'string' && Number.isFinite(Date.parse(recipient.createdAt))
+    && typeof recipient.sent === 'boolean')
+    && new Set(recipients.map(recipient => (recipient as CompetitionRoomReadyNoticeRecipient).userId)).size
+      === recipients.length
 }
 
 function newCompetitionAdmission(

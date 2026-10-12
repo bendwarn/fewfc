@@ -11,9 +11,12 @@ import {
 } from '../../shared/competition-game-room'
 import {
   isCompetitionRoomInitialGameStartedRequest,
+  type CompetitionRoomRoundPublicationReadRequest,
   type CompetitionRoomInitialGameStartedRequest,
 } from '../../shared/competition-room'
+import { competitionRoundReadyCutoffMs } from '../../shared/competition-game-room'
 import { emptyPublicState, type GameRecord, type GameRoomMetadata } from '../../shared/game-room'
+import { mergePlayerNotification } from '../../app/lib/player-notifications'
 import type { PublicGameState } from '../../app/types/fewfc'
 
 let rulesEngineMode:
@@ -210,6 +213,7 @@ mock.module('../rules-engine', () => ({
 }))
 
 const { GameRoom, competitionTerminalIdentity } = await import('./game-room')
+const { PlayerNotifications } = await import('./player-notifications')
 
 class MemoryStorage {
   readonly values = new Map<string, unknown>()
@@ -360,11 +364,12 @@ function gameRoom(
   competitionRoom?: {
     idFromName(name: string): DurableObjectId
     get(id: DurableObjectId): {
+      readRoundPublication?(request: CompetitionRoomRoundPublicationReadRequest): Promise<unknown>
       ingestInitialGameStarted?(request: CompetitionRoomInitialGameStartedRequest): Promise<unknown>
       executeMatch?(request: unknown): Promise<unknown>
       ingestGameTerminal(request: unknown): Promise<unknown>
     }
-  },
+  } | null,
 ) {
   const sockets: FakeSocket[] = []
   const pendingWaits: Promise<unknown>[] = []
@@ -384,13 +389,80 @@ function gameRoom(
       get: () => ({ fetch: async () => new Response(null, { status: 204 }) }),
     },
   }
-  if (competitionRoom) env.COMPETITION_ROOM = competitionRoom
+  const defaultParentNamespace = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: () => ({
+      readRoundPublication: async (request: CompetitionRoomRoundPublicationReadRequest) => {
+        const storedBinding = await storage.get<CompetitionGameBinding>('competitionBinding')
+        const admission = await storage.get<Record<string, unknown>>('competitionGameAdmission')
+        if (!storedBinding || !admission || storedBinding.competitionId !== request.competitionId
+          || storedBinding.roundRef.stageId !== request.stageId
+          || storedBinding.roundRef.roundNumber !== request.roundNumber) {
+          return { ok: true, value: { competitionId: request.competitionId, revision: 1, publication: null } }
+        }
+        const noticeAtMs = competitionRoundReadyCutoffMs(storedBinding.roundStartMs)
+        if (noticeAtMs === null) return { ok: false, error: { code: 'invalidFixture' } }
+        const released = admission.status === 'released' || admission.status === 'started'
+        return { ok: true, value: {
+          competitionId: request.competitionId,
+          revision: 1,
+          publication: {
+            roundRef: storedBinding.roundRef,
+            roundStartMs: storedBinding.roundStartMs,
+            publicationVersion: 1,
+            status: released ? 'released' : 'materializing',
+            releaseDecisionId: released ? admission.releaseCommandId : null,
+            requiresReferee: false,
+            rooms: [{
+              matchId: storedBinding.matchId,
+              gameId: admission.bindingRef && typeof admission.bindingRef === 'object'
+                ? (admission.bindingRef as { gameId?: unknown }).gameId : 'missing-game',
+              ackConfirmedAtMs: released ? noticeAtMs : null,
+            }],
+          },
+        } }
+      },
+      ingestInitialGameStarted: async (request: CompetitionRoomInitialGameStartedRequest) => (
+        initialFifoAck(request)
+      ),
+      executeMatch: async (request: unknown) => {
+        const operation = typeof request === 'object' && request !== null
+          ? (request as { operation?: { type?: unknown } }).operation : undefined
+        return operation?.type === 'clockEndWindow'
+          ? clockEndWindowSuccess(request as Record<string, unknown>)
+          : terminalSuccess(request)
+      },
+      ingestGameTerminal: async (request: unknown) => terminalSuccess(request),
+    }),
+  }
+  const parentNamespace = competitionRoom === null ? null : competitionRoom ? {
+    idFromName: (name: string) => competitionRoom.idFromName(name),
+    get: (id: DurableObjectId) => {
+      const source = competitionRoom.get(id)
+      const fallback = defaultParentNamespace.get(id)
+      return new Proxy(source, {
+        get(target, property) {
+          const value = Reflect.get(target, property, target)
+          if (property === 'readRoundPublication' && typeof value !== 'function') {
+            return fallback.readRoundPublication
+          }
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+    },
+  } : defaultParentNamespace
+  if (parentNamespace) env.COMPETITION_ROOM = parentNamespace
+  const room = new GameRoom(state as unknown as DurableObjectState, env as never)
+  pendingWaitsByRoom.set(room, pendingWaits)
   return {
-    room: new GameRoom(state as unknown as DurableObjectState, env as never),
+    room,
     sockets,
     pendingWaits,
+    env,
   }
 }
+
+const pendingWaitsByRoom = new WeakMap<object, Promise<unknown>[]>()
 
 async function drainWaitUntil(pendingWaits: Promise<unknown>[]) {
   while (pendingWaits.length > 0) {
@@ -425,26 +497,41 @@ async function connectCompetitionMember(
   room: InstanceType<typeof GameRoom>,
   sockets: FakeSocket[],
   userId: string,
+  enforceRoundEntry = false,
 ): Promise<FakeSocket> {
   const global = globalThis as Record<string, unknown>
   const originalPair = global.WebSocketPair
+  const entryAllowed = Reflect.get(room, 'competitionRoundPlayerEntryAllowed')
   global.WebSocketPair = class {
     client = new FakeSocket()
     server = new FakeSocket()
   }
   try {
-    const response = await room.fetch(new Request('https://game-room.internal/socket', {
+    const request = new Request('https://game-room.internal/socket', {
       headers: {
         Upgrade: 'websocket',
         'x-fewfc-user-id': userId,
         'x-fewfc-user-name': encodeURIComponent(userId),
       },
-    }))
+    })
+    // 大部分案例測連線後的規則；公告入口契約由專屬案例使用真閘門驗證。
+    const response = enforceRoundEntry ? await room.fetch(request) : await fetchWithoutRoundEntry(room, request)
     expect(response.status).toBe(101)
   } finally {
     global.WebSocketPair = originalPair
+    if (!enforceRoundEntry) Reflect.set(room, 'competitionRoundPlayerEntryAllowed', entryAllowed)
   }
   return sockets.at(-1)!
+}
+
+async function fetchWithoutRoundEntry(room: InstanceType<typeof GameRoom>, request: Request) {
+  const entryAllowed = Reflect.get(room, 'competitionRoundPlayerEntryAllowed')
+  try {
+    Reflect.set(room, 'competitionRoundPlayerEntryAllowed', async () => true)
+    return await room.fetch(request)
+  } finally {
+    Reflect.set(room, 'competitionRoundPlayerEntryAllowed', entryAllowed)
+  }
 }
 
 function storedRoomEvents(storage: MemoryStorage): Array<Record<string, unknown>> {
@@ -459,7 +546,7 @@ function binding(overrides: Partial<CompetitionGameBinding> = {}): CompetitionGa
     roundRef: {
       competitionId: 'competition-1', stageId: 'stage-1', roundNumber: 1, roundGenerationId: 'generation-1',
     },
-    roundStartMs: Date.now() + 600_000,
+    roundStartMs: Date.now() + 60_000,
     competitionId: 'competition-1',
     matchId: 'match-1',
     gameNumber: 1,
@@ -492,6 +579,8 @@ async function createReleasedCompetitionGame(room: InstanceType<typeof GameRoom>
   const ack = await room.createCompetitionGame(request)
   const bindingRef = await competitionGameBindingRefForRequest(request)
   expect(await room.releaseCompetitionGame({ bindingRef, commandId: 'formal-round-release' })).toBe(true)
+  const pendingWaits = pendingWaitsByRoom.get(room)
+  if (pendingWaits) await drainWaitUntil(pendingWaits)
   return ack
 }
 
@@ -500,8 +589,40 @@ async function roundReleaseFixture(
   namespace?: Parameters<typeof gameRoom>[1],
   storage = new MemoryStorage(),
 ) {
-  const created = gameRoom(storage, namespace)
-  const fixed = binding({ roundStartMs: Date.now() + 600_000, ...overrides })
+  const fixed = binding({ roundStartMs: Date.now() + 60_000, ...overrides })
+  const noticeAtMs = competitionRoundReadyCutoffMs(fixed.roundStartMs)
+  if (noticeAtMs === null) throw new Error('round release fixture start is invalid')
+  const parentPublication = {
+    roundRef: fixed.roundRef,
+    roundStartMs: fixed.roundStartMs,
+    publicationVersion: 1,
+    status: 'released' as const,
+    releaseDecisionId: 'round-release-decision',
+    requiresReferee: false,
+    rooms: [{ matchId: fixed.matchId, gameId: 'round-release-game', ackConfirmedAtMs: noticeAtMs }],
+  }
+  const parentNamespace = {
+    idFromName: (name: string) => namespace?.idFromName(name) ?? name as unknown as DurableObjectId,
+    get: (id: DurableObjectId) => {
+      const existing = namespace?.get(id)
+      return {
+        ...Object.fromEntries(Reflect.ownKeys(existing ?? {}).map(key => {
+          const value = Reflect.get(existing ?? {}, key, existing ?? {})
+          return [key, typeof value === 'function' ? value.bind(existing) : value]
+        })),
+        readRoundPublication: existing?.readRoundPublication ?? (async (
+          request: CompetitionRoomRoundPublicationReadRequest,
+        ) => ({ ok: true, value: {
+          competitionId: request.competitionId, revision: 1,
+          publication: request.competitionId === fixed.competitionId
+            && request.stageId === fixed.roundRef.stageId
+            && request.roundNumber === fixed.roundRef.roundNumber
+            ? parentPublication : null,
+        } })),
+      }
+    },
+  }
+  const created = gameRoom(storage, parentNamespace)
   const request = { gameId: 'round-release-game', binding: fixed }
   const ack = await created.room.createCompetitionGame(request)
   const bindingRef = await competitionGameBindingRefForRequest(request)
@@ -546,9 +667,13 @@ test('round-release child exact3 ACK only proves immutable unreleased Waiting, n
   await expect(room.createCompetitionGame(request)).rejects.toThrow('competition game binding does not match')
 })
 
-test('round-release child unreleased connected ready stays Waiting after T across direct start, alarm and restart', async () => {
+test('round-release child keeps an unreleased round inaccessible and never starts it', async () => {
   const fixture = await roundReleaseFixture()
-  await roundReleaseReady(fixture)
+  const response = await fixture.room.fetch(new Request('https://game-room.internal/socket', {
+    headers: { Upgrade: 'websocket', 'x-fewfc-user-id': 'user-a', 'x-fewfc-user-name': 'user-a' },
+  }))
+  expect(response.status).toBe(409)
+  expect(await response.json()).toMatchObject({ code: 'competitionRoundNotAnnounced' })
   const realNow = Date.now
   try {
     Date.now = () => fixture.request.binding.roundStartMs + 1
@@ -559,6 +684,307 @@ test('round-release child unreleased connected ready stays Waiting after T acros
     expect(rulesEngineBoundaryCalls).toBe(engine)
     expect(fixture.storage.alarm).toBeNull()
   } finally { Date.now = realNow }
+})
+
+for (const key of ['competitionBinding', 'metadata', 'competitionGameAdmission']) {
+  test(`round-release child fails closed when ${key} cannot be read at socket entry`, async () => {
+    const realNow = Date.now
+    const global = globalThis as Record<string, unknown>
+    const originalPair = global.WebSocketPair
+    Date.now = () => 590_000
+    global.WebSocketPair = class {
+      client = new FakeSocket()
+      server = new FakeSocket()
+    }
+    try {
+      const fixture = await roundReleaseFixture({ roundStartMs: 900_000 })
+      const originalGet = fixture.storage.get.bind(fixture.storage)
+      let failed = false
+      fixture.storage.get = async (input: string | string[]) => {
+        if (!failed && input === key) {
+          failed = true
+          throw new Error('transient storage read failure')
+        }
+        return await originalGet(input as string) as never
+      }
+      const response = await fixture.room.fetch(new Request('https://game-room.internal/socket', {
+        headers: { Upgrade: 'websocket', 'x-fewfc-user-id': 'user-a', 'x-fewfc-user-name': 'user-a' },
+      }))
+      await drainWaitUntil(fixture.pendingWaits)
+      expect(failed).toBe(true)
+      expect(response.status).not.toBe(101)
+      expect(fixture.sockets).toHaveLength(0)
+    } finally {
+      Date.now = realNow
+      global.WebSocketPair = originalPair
+    }
+  })
+}
+
+test('round-release child notification retry resumes only recipients without a durable success record', async () => {
+  const realNow = Date.now
+  Date.now = () => 600_000
+  try {
+    const fixture = await roundReleaseFixture({ roundStartMs: 900_000 })
+    const deliveries: Array<{ targetUserId: string; notification: { id: string } }> = []
+    let failUserB = true
+    const env = fixture.env as { PLAYER_NOTIFICATIONS: {
+      idFromName(name: string): DurableObjectId
+      get(id: DurableObjectId): { fetch(url: string, init: RequestInit): Promise<Response> }
+    } }
+    env.PLAYER_NOTIFICATIONS = {
+      idFromName: () => 'global' as unknown as DurableObjectId,
+      get: () => ({
+        async fetch(_url, init) {
+          const envelope = JSON.parse(init.body as string) as typeof deliveries[number]
+          if (envelope.targetUserId === 'user-b' && failUserB) throw new Error('temporary notification failure')
+          deliveries.push(envelope)
+          return new Response(null, { status: 204 })
+        },
+      }),
+    }
+
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(deliveries.map(delivery => delivery.targetUserId)).toEqual(['user-a'])
+    expect(fixture.storage.values.get('competitionRoomReadyNoticeSent')).toBeUndefined()
+    expect(fixture.storage.values.get('competitionRoomReadyNoticeOutbox')).toMatchObject({
+      recipients: [{ userId: 'user-a', sent: true }, { userId: 'user-b', sent: false }],
+    })
+
+    failUserB = false
+    Date.now = () => 605_000
+    await fixture.room.alarm()
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(deliveries.map(delivery => delivery.targetUserId)).toEqual(['user-a', 'user-b'])
+    expect(fixture.storage.values.get('competitionRoomReadyNoticeSent')).toBe(true)
+  } finally {
+    Date.now = realNow
+  }
+})
+
+test('round-release child retains notification retry after every member starts the room', async () => {
+  const realNow = Date.now
+  Date.now = () => 600_000
+  let rejectNotice: (error: Error) => void = () => {}
+  let markNoticeEntered: () => void = () => {}
+  const noticeEntered = new Promise<void>(resolve => { markNoticeEntered = resolve })
+  const noticeRequest = new Promise<Response>((_resolve, reject) => { rejectNotice = reject })
+  try {
+    const parent = {
+      idFromName: (name: string) => name as unknown as DurableObjectId,
+      get: () => ({ ingestInitialGameStarted: async (request: CompetitionRoomInitialGameStartedRequest) => (
+        initialFifoAck(request)
+      ) }),
+    }
+    const fixture = await roundReleaseFixture({ roundStartMs: 900_000 }, parent)
+    const env = fixture.env as { PLAYER_NOTIFICATIONS: {
+      idFromName(name: string): DurableObjectId
+      get(id: DurableObjectId): { fetch(url: string, init: RequestInit): Promise<Response> }
+    } }
+    env.PLAYER_NOTIFICATIONS = {
+      idFromName: () => 'global' as unknown as DurableObjectId,
+      get: () => ({ async fetch(_url, init) {
+        const envelope = JSON.parse(init.body as string) as { notification: { message: string } }
+        if (envelope.notification.message === '賽事固定房間已開放，可從賽事頁進入。') {
+          markNoticeEntered()
+          return noticeRequest
+        }
+        return new Response(null, { status: 204 })
+      } }),
+    }
+
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+    await noticeEntered
+    const noticeWaits = fixture.pendingWaits.splice(0)
+    await connectCompetitionMember(fixture.room, fixture.sockets, 'user-a', true)
+    await connectCompetitionMember(fixture.room, fixture.sockets, 'user-b', true)
+    expect(await fixture.room.setCompetitionReady({ actorUserId: 'user-a', ready: true }))
+      .toEqual({ ok: true, ready: true })
+    expect(await fixture.room.setCompetitionReady({ actorUserId: 'user-b', ready: true }))
+      .toEqual({ ok: true, ready: true })
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(fixture.storage.values.get('metadata')).toMatchObject({ status: 'Active' })
+    expect(fixture.storage.values.get('competitionGameAdmission')).toMatchObject({ status: 'started' })
+
+    await fixture.room.alarm()
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(fixture.storage.values.get('competitionDeliveryQueue')).toMatchObject({ entries: [] })
+    rejectNotice(new Error('temporary ready notice failure'))
+    await Promise.all(noticeWaits)
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(fixture.storage.values.get('competitionRoomReadyNoticeOutbox')).toMatchObject({
+      recipients: [{ sent: false }, { sent: false }],
+    })
+    expect(fixture.storage.values.get('competitionRoomReadyNoticeSent')).not.toBe(true)
+    expect(fixture.storage.alarm).toBe(605_000)
+  } finally {
+    rejectNotice(new Error('finish notification fixture'))
+    Date.now = realNow
+  }
+})
+
+test('round-release child and notification receiver deduplicate a successful POST replay by ID', async () => {
+  const realNow = Date.now
+  Date.now = () => 600_000
+  try {
+    const fixture = await roundReleaseFixture({ roundStartMs: 900_000 })
+    const playerNotificationStorage = new MemoryStorage()
+    const userA = new FakeSocket()
+    const userB = new FakeSocket()
+    userA.serializeAttachment({ userId: 'user-a' })
+    userB.serializeAttachment({ userId: 'user-b' })
+    const hubState = {
+      storage: playerNotificationStorage,
+      getWebSockets: () => [userA, userB],
+    } as unknown as DurableObjectState
+    const newHub = () => new PlayerNotifications(hubState, {} as never)
+    let hub = newHub()
+    const originalGet = fixture.storage.get.bind(fixture.storage)
+    let failReceiptRead = false
+    fixture.storage.get = async (key: string | string[]) => {
+      if (key === 'competitionRoomReadyNoticeOutbox' && failReceiptRead) {
+        failReceiptRead = false
+        throw new Error('post-send local receipt read failed')
+      }
+      return await originalGet(key as string) as never
+    }
+    const env = fixture.env as { PLAYER_NOTIFICATIONS: {
+      idFromName(name: string): DurableObjectId
+      get(id: DurableObjectId): { fetch(url: string, init: RequestInit): Promise<Response> }
+    } }
+    let injectReceiptFailure = true
+    env.PLAYER_NOTIFICATIONS = {
+      idFromName: () => 'global' as unknown as DurableObjectId,
+      get: () => ({ async fetch(url, init) {
+        const response = await hub.fetch(new Request(url, init))
+        if (injectReceiptFailure) {
+          injectReceiptFailure = false
+          failReceiptRead = true
+          // 重啟接收 DO，只保留其持久收件收據與 WebSocket attachment。
+          hub = newHub()
+        }
+        return response
+      } }),
+    }
+
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(userA.sent).toHaveLength(1)
+    expect(fixture.storage.values.get('competitionRoomReadyNoticeOutbox')).toMatchObject({
+      recipients: [{ userId: 'user-a', sent: false }, { userId: 'user-b', sent: false }],
+    })
+
+    Date.now = () => 605_000
+    await fixture.room.alarm()
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(userA.sent).toHaveLength(1)
+    expect(userB.sent).toHaveLength(1)
+    expect(fixture.storage.values.get('competitionRoomReadyNoticeSent')).toBe(true)
+    const first = JSON.parse(userA.sent[0] ?? '{}').data as import('../../shared/game-room').PlayerNotification
+    const retained = [first]
+    expect(mergePlayerNotification(retained, { ...first })).toBe(retained)
+  } finally {
+    Date.now = realNow
+  }
+})
+
+test('round-release receiver receipt write failure retries the stable ready notice after game start', async () => {
+  const realNow = Date.now
+  Date.now = () => 600_000
+  try {
+    const parent = {
+      idFromName: (name: string) => name as unknown as DurableObjectId,
+      get: () => ({ ingestInitialGameStarted: async (request: CompetitionRoomInitialGameStartedRequest) => (
+        initialFifoAck(request)
+      ) }),
+    }
+    const fixture = await roundReleaseFixture({ roundStartMs: 900_000 }, parent)
+    const hubStorage = new MemoryStorage()
+    const userA = new FakeSocket()
+    const userB = new FakeSocket()
+    userA.serializeAttachment({ userId: 'user-a' })
+    userB.serializeAttachment({ userId: 'user-b' })
+    let failReceiptWrite = true
+    const originalPut = hubStorage.put.bind(hubStorage)
+    hubStorage.put = async (key, value) => {
+      if (typeof key === 'string' && key.startsWith('playerNotificationReceipts:') && failReceiptWrite) {
+        failReceiptWrite = false
+        throw new Error('simulated receiver receipt storage failure')
+      }
+      return originalPut(key, value)
+    }
+    const hubState = { storage: hubStorage, getWebSockets: () => [userA, userB] }
+    const newHub = () => new PlayerNotifications(hubState as unknown as DurableObjectState, {} as never)
+    let hub = newHub()
+    const env = fixture.env as { PLAYER_NOTIFICATIONS: {
+      idFromName(name: string): DurableObjectId
+      get(id: DurableObjectId): { fetch(url: string, init: RequestInit): Promise<Response> }
+    } }
+    env.PLAYER_NOTIFICATIONS = {
+      idFromName: () => 'global' as unknown as DurableObjectId,
+      get: () => ({ async fetch(url, init) {
+        try {
+          return await hub.fetch(new Request(url, init))
+        } catch (error) {
+          // 重建接收物件但保留持久儲存與 socket，驗證不是記憶體 fallback。
+          hub = newHub()
+          throw error
+        }
+      } }),
+    }
+
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(failReceiptWrite).toBe(false)
+    expect(fixture.storage.values.get('competitionRoomReadyNoticeSent')).not.toBe(true)
+
+    await connectCompetitionMember(fixture.room, fixture.sockets, 'user-a', true)
+    await connectCompetitionMember(fixture.room, fixture.sockets, 'user-b', true)
+    expect(await fixture.room.setCompetitionReady({ actorUserId: 'user-a', ready: true }))
+      .toEqual({ ok: true, ready: true })
+    expect(await fixture.room.setCompetitionReady({ actorUserId: 'user-b', ready: true }))
+      .toEqual({ ok: true, ready: true })
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(fixture.storage.values.get('metadata')).toMatchObject({ status: 'Active' })
+
+    Date.now = () => 605_000
+    await fixture.room.alarm()
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(fixture.storage.values.get('competitionRoomReadyNoticeSent')).toBe(true)
+    expect(fixture.storage.values.get('competitionRoomReadyNoticeOutbox')).toMatchObject({
+      recipients: [{ userId: 'user-a', sent: true }, { userId: 'user-b', sent: true }],
+    })
+
+    const messages = userA.sent.map(value => JSON.parse(value).data as import('../../shared/game-room').PlayerNotification)
+    expect(messages.map(message => message.kind)).toEqual(['roomChanged', 'gameStarted', 'roomChanged'])
+    expect(messages[2]?.id).toBe(messages[0]?.id)
+  } finally {
+    Date.now = realNow
+  }
+})
+
+test('round-release child opens a released room exactly at the whole-round announcement time', async () => {
+  const realNow = Date.now
+  const roundStartMs = realNow() + 600_000
+  const fixture = await roundReleaseFixture({ roundStartMs })
+  const noticeAtMs = competitionRoundReadyCutoffMs(roundStartMs)
+  if (noticeAtMs === null) throw new Error('round release fixture start is invalid')
+  try {
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+    const early = await fixture.room.fetch(new Request('https://game-room.internal/socket', {
+      headers: { Upgrade: 'websocket', 'x-fewfc-user-id': 'user-a', 'x-fewfc-user-name': 'user-a' },
+    }))
+    expect(early.status).toBe(409)
+    expect(await early.json()).toMatchObject({ code: 'competitionRoundNotAnnounced' })
+
+    Date.now = () => noticeAtMs
+    await connectCompetitionMember(fixture.room, fixture.sockets, 'user-a', true)
+    expect(fixture.storage.values.get('metadata')).toMatchObject({ status: 'Waiting' })
+    roundReleaseNoStart(fixture.storage)
+  } finally {
+    Date.now = realNow
+  }
 })
 
 test('round-release child release immediately starts a room that was already fully ready', async () => {
@@ -575,11 +1001,11 @@ test('round-release child release immediately starts a room that was already ful
     }),
   }
   const fixture = await roundReleaseFixture({}, namespace)
-  await roundReleaseReady(fixture)
   const realNow = Date.now
   const startedAtMs = fixture.request.binding.roundStartMs - 60_000
   try {
     Date.now = () => startedAtMs
+    await roundReleaseReady(fixture)
     expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
     await drainWaitUntil(fixture.pendingWaits)
     await fixture.room.alarm()
@@ -659,6 +1085,7 @@ test('round-release child released early ready starts before T with the actual t
 test('round-release child a released unready T alarm does not busyloop or claim a forfeit', async () => {
   const fixture = await roundReleaseFixture()
   expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+  await drainWaitUntil(fixture.pendingWaits)
   expect(fixture.storage.alarm).toBe(fixture.request.binding.roundStartMs)
   const realNow = Date.now
   try {
@@ -748,10 +1175,10 @@ test('round-release child records two absent teams as a double no-show without s
 
 test('round-release child preserves an earlier real start when a member disconnects after T', async () => {
   const fixture = await roundReleaseFixture()
-  await roundReleaseReady(fixture)
   const realNow = Date.now
   try {
     Date.now = () => fixture.request.binding.roundStartMs - 1
+    await roundReleaseReady(fixture)
     expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
     await drainWaitUntil(fixture.pendingWaits)
 
@@ -948,13 +1375,13 @@ test('round-release child legacy ready endpoint cannot backfill check-in after T
   const realNow = Date.now
   const deadlineMs = 2_000_000_050_000
   try {
-    Date.now = () => deadlineMs - 2_000
+    Date.now = () => deadlineMs - 300_000
     const fixture = await roundReleaseFixture({ roundStartMs: deadlineMs })
+    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
     await connectCompetitionMember(fixture.room, fixture.sockets, 'user-a')
     await connectCompetitionMember(fixture.room, fixture.sockets, 'user-b')
     expect(await fixture.room.setCompetitionReady({ actorUserId: 'user-a', ready: true }))
       .toEqual({ ok: true, ready: true })
-    expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
     await drainWaitUntil(fixture.pendingWaits)
     expect(fixture.storage.alarm).toBe(deadlineMs)
     roundReleaseNoStart(fixture.storage)
@@ -1973,7 +2400,7 @@ function expectSafeCompetitionContext(value: unknown) {
 }
 
 async function post(room: InstanceType<typeof GameRoom>, body: unknown) {
-  return await room.fetch(new Request('https://game-room.internal/', {
+  return await fetchWithoutRoundEntry(room, new Request('https://game-room.internal/', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),

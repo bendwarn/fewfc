@@ -40,6 +40,8 @@ import type {
   CompetitionRoomMatchClockReadValue,
   CompetitionRoomAnnounceRoundRequest,
   CompetitionRoomAnnounceRoundValue,
+  CompetitionRoomRoundPublicationReadRequest,
+  CompetitionRoomRoundPublicationReadResult,
   CompetitionRoomInitialGameStartedRequest,
   CompetitionRoomRoundReleaseRpc,
 } from '../../shared/competition-room'
@@ -73,6 +75,7 @@ mock.module('cloudflare:workers', () => ({
 }))
 
 const { CompetitionRoom: CompetitionRoomClass } = await import('./competition-room')
+const { GameRoom: GameRoomClass } = await import('./game-room')
 
 interface CompetitionWasmExports extends WebAssembly.Exports {
   memory: WebAssembly.Memory
@@ -631,6 +634,8 @@ async function wasmTournamentRoom(
 
 function persistTestPublishedRound(sql: MemorySql, stageId: string, round: JsonObject) {
   const roundNumber = round.roundNumber as number
+  if (sql.database.query(`SELECT 1 FROM competition_round_publication
+    WHERE stage_id = ? AND round_number = ?`).get(stageId, roundNumber)) return
   const roundKind = typeof round.kind === 'string' ? round.kind : 'main'
   const roundStartMs = 900_000 + roundNumber * 1_000
   const roundRef = {
@@ -1881,11 +1886,11 @@ for (const scenario of [{ teamSize: 1 as const, personalDeck: false }, { teamSiz
     await registerRealTeams(setup, scenario.teamSize, scenario.personalDeck)
     let frozenDecks: JsonObject[] = []
     if (scenario.personalDeck) {
-      const exported = await setup.room.execute({
+      const exported = await atRoundDeliveryTime(60_003, () => setup.room.execute({
         competitionId: 'competition-1', callerUserId: 'organizer-1', commandId: 'automatic-freeze-export',
         expectedRevision: setup.meta().revision, trustedTimeMs: 60_001,
         operation: { type: 'registrationExportLockedRoster' },
-      })
+      }))
       if (!exported.ok || !isJsonObject(exported.value.projection.private)
         || !Array.isArray(exported.value.projection.private.teams)
         || !exported.value.projection.private.teams.every(team => isJsonObject(team)
@@ -1934,7 +1939,7 @@ for (const scenario of [{ teamSize: 1 as const, personalDeck: false }, { teamSiz
         expectedRevision: setup.meta().revision, trustedTimeMs: 60_001, operation: { type },
       })
     )
-    const exported = await query('registrationExportLockedRoster')
+    const exported = await atRoundDeliveryTime(60_003, () => query('registrationExportLockedRoster'))
     expect(exported).toMatchObject({ ok: true, value: { projection: {
       private: { announcement: { ruleset: 'base' }, teams: [{ teamId: 'team-a' }, { teamId: 'team-b' }] },
     } } })
@@ -1963,15 +1968,21 @@ for (const scenario of [{ teamSize: 1 as const, personalDeck: false }, { teamSiz
     const matchId = (((firstStage.rounds as JsonObject[])[0]!.matches as JsonObject[])[0]!.matchId) as string
     const announcementRequest: CompetitionRoomAnnounceRoundRequest = {
       competitionId: 'competition-1', stageId: stage.stageId, roundNumber: 1,
-      callerUserId: 'organizer-1', commandId: 'real-handoff-announce',
+      callerUserId: 'organizer-1', commandId: 'unused-before-auto-round-receipt',
       expectedRevision: setup.meta().revision, trustedTimeMs: 60_003, roundStartMs: 600_000,
       refereeAssignments: [],
     }
-    const announced = await atRoundDeliveryTime(60_003, () => setup.room.announceRound(announcementRequest))
+    const announced = await setup.room.readRoundPublication({ competitionId: 'competition-1',
+      stageId: stage.stageId, roundNumber: 1, callerUserId: 'organizer-1' })
     expect(announced).toMatchObject({ ok: true, value: { publication: {
       roundStartMs: 600_000, rooms: [{ matchId }],
     } } })
-    if (!announced.ok) throw new Error(`real round announcement failed: ${announced.error.code}`)
+    if (!announced.ok || !announced.value.publication) throw new Error('automatic first round publication missing')
+    const publicationReceipt = setup.sql.database.query(`SELECT command_id FROM competition_command_receipt
+      WHERE receipt_kind = 'announceRound'`).get() as { command_id: string } | undefined
+    if (!publicationReceipt) throw new Error('automatic first round receipt missing')
+    announcementRequest.commandId = publicationReceipt.command_id
+    announcementRequest.expectedRevision = announced.value.revision - 1
     await atRoundDeliveryTime(61_003, () => setup.room.alarm())
     expect(setup.gameCalls).toHaveLength(1)
     expect(setup.gameCalls[0]!.binding).toMatchObject({
@@ -1980,10 +1991,11 @@ for (const scenario of [{ teamSize: 1 as const, personalDeck: false }, { teamSiz
       roundStartMs: 600_000,
       turnOrder: ['a-1', 'b-1', ...(scenario.teamSize === 2 ? ['a-2', 'b-2'] : [])],
     })
-    const deliveredPublication = await setup.room.readRoundPublication({ competitionId: 'competition-1',
-      stageId: stage.stageId, roundNumber: 1, callerUserId: 'organizer-1' })
+    const deliveredPublication = await atRoundDeliveryTime(61_003, () => setup.room.readRoundPublication({
+      competitionId: 'competition-1', stageId: stage.stageId, roundNumber: 1, callerUserId: 'organizer-1',
+    }))
     expect(deliveredPublication).toMatchObject({ ok: true, value: { publication: {
-      rooms: [{ matchId, ackConfirmedAtMs: 61_003 }],
+      requiresReferee: false, rooms: [{ matchId, ackConfirmedAtMs: 60_000 }],
     } } })
     expect(((JSON.parse(setup.meta().server_state_json) as JsonObject).registration as JsonObject)
       .announcement).toMatchObject({ ruleset: 'base' })
@@ -3087,7 +3099,7 @@ test('schema migrations are versioned and private rows carry projection identity
   const versions = sql.database.query(
     'SELECT version FROM competition_schema_migrations ORDER BY version',
   ).all() as Array<{ version: number }>
-  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
   const privateColumns = sql.database.query(
     'PRAGMA table_info(competition_private_projection)',
   ).all() as Array<{ name: string }>
@@ -3243,7 +3255,7 @@ test('legacy unversioned tables migrate in place and preserve readable/idempoten
   const versions = sql.database.query(
     'SELECT version FROM competition_schema_migrations ORDER BY version',
   ).all() as Array<{ version: number }>
-  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
   const privateRow = sql.database.query(
     'SELECT payload_json, revision, operation_type FROM competition_private_projection WHERE user_id = ?',
   ).all('legacy-player') as Array<{ payload_json: string; revision: number; operation_type: string }>
@@ -5563,7 +5575,7 @@ test('v3 migration creates match rows and adds nullable audit identity', async (
   const read = await room.readMatch({ competitionId: 'competition-1', matchId: 'legacy-match', callerUserId: 'viewer' })
   expect(read.ok).toBe(true)
   const schema = sql.database.query('SELECT MAX(version) AS version FROM competition_schema_migrations').get() as { version: number }
-  expect(schema.version).toBe(13)
+  expect(schema.version).toBe(15)
   const columns = sql.database.query('PRAGMA table_info(competition_audit)').all() as Array<{ name: string }>
   expect(columns.some(column => column.name === 'match_id')).toBe(true)
   const rows = sql.database.query('SELECT match_id, revision FROM competition_matches').all() as Array<{ match_id: string; revision: number }>
@@ -8800,6 +8812,9 @@ async function e6c2aLockedMatch(options: {
     }],
   }
   const setup = await realRegistrationRoom(teamSize, personalDeck, 120_000, () => 0, plan)
+  // 此 fixture 由測例逐輪建立／啟動，停用外層自動推進以免重複物化手動安排的輪次。
+  ;(setup.room as unknown as { kickAutomaticRoundAdvance: () => Promise<void> })
+    .kickAutomaticRoundAdvance = async () => {}
   const accepted = async (action: RegistrationAction, callerUserId = 'organizer-1', trustedTimeMs?: number) => {
     const result = await setup.room.execute(setup.command(action, callerUserId,
       trustedTimeMs === undefined ? {} : { trustedTimeMs }))
@@ -8821,7 +8836,14 @@ async function e6c2aLockedMatch(options: {
     }
     await accepted({ type: 'checkInTeam', teamId, rosterVersion: 1 }, members[0])
   }
+  // 此 helper 手動安排比賽，先只建立賽程，避免自動首輪發布搶先物化其 fixture match。
+  const roomMethods = setup.room as unknown as {
+    publishAutomaticInitialRoundIfNeeded: (row: unknown) => Promise<void>
+  }
+  const initialPublisher = roomMethods.publishAutomaticInitialRoundIfNeeded
+  roomMethods.publishAutomaticInitialRoundIfNeeded = async () => {}
   await atRoundDeliveryTime(60_000, () => setup.room.alarm())
+  roomMethods.publishAutomaticInitialRoundIfNeeded = initialPublisher
 
   const seededState = JSON.parse(setup.meta().server_state_json) as JsonObject
   const tournament = seededState.tournament
@@ -9713,7 +9735,10 @@ async function e6d1bFinishScheduledTournament(
       && (round.matches as JsonObject[]).some(match => match.matchId === matchId))
     if (!scheduledRound) throw new Error(`formal ${setup.stage.format} match has no containing round`)
     persistTestPublishedRound(setup.sql, setup.stage.stageId, scheduledRound)
-    if (matchId !== setup.matchId) {
+    const matchAlreadyMaterialized = setup.sql.database.query(
+      'SELECT 1 FROM competition_matches WHERE match_id = ?',
+    ).get(matchId)
+    if (matchId !== setup.matchId && !matchAlreadyMaterialized) {
       const current = setup.meta()
       const started = await setup.room.startScheduledMatch({
         competitionId: 'competition-1',
@@ -11714,6 +11739,52 @@ async function roundReleaseParentRoom(teamSize: 1 | 2 = 1, personalDeck = false,
     counters: () => ({ platformCalls, randomCalls }) }
 }
 
+async function automaticInitialRoundPublicationAt(now: number) {
+  const setup = await roundReleaseParentRoom()
+  const current = setup.meta()
+  if (!isJsonObject(current.state.registration) || !isJsonObject(current.state.registration.announcement)
+    || !isJsonObject(current.state.tournament) || !Array.isArray(current.state.tournament.stages)) {
+    throw new Error('formal initial publication fixture is incomplete')
+  }
+  const firstStage = current.state.tournament.stages[0]
+  if (!isJsonObject(firstStage) || !isJsonObject(firstStage.config)
+    || typeof firstStage.config.stageId !== 'string') throw new Error('formal first stage missing')
+  const roundStartMs = 900_000
+  current.state.registration.announcement.checkInDeadline = roundStartMs
+  setup.sql.database.query(`UPDATE competition_meta
+    SET server_state_json = ?, updated_trusted_time_ms = 120000 WHERE singleton = 1`)
+    .run(JSON.stringify(current.state))
+  setup.sql.database.query(`UPDATE competition_initial_seeding
+    SET command_id = 'automatic-initial-publication-test', stage_id = ?, stage_json = ?,
+      status = 'completed', attempts = 0, next_attempt_at_ms = 0, last_error = NULL,
+      created_trusted_time_ms = 120000 WHERE competition_id = 'competition-1'`)
+    .run(firstStage.config.stageId, JSON.stringify(firstStage.config))
+  const row = setup.sql.database.query(`SELECT * FROM competition_initial_seeding
+    WHERE command_id = 'automatic-initial-publication-test'`).get()
+  if (!row) throw new Error('formal initial seeding intent missing')
+  const publish = (CompetitionRoomClass.prototype as unknown as {
+    publishAutomaticInitialRoundIfNeeded: (this: unknown, row: unknown) => Promise<void>
+  }).publishAutomaticInitialRoundIfNeeded
+  await atRoundDeliveryTime(now, () => Reflect.apply(publish, setup.room, [row]))
+  return { ...setup, roundStartMs }
+}
+
+test('automatic first round persists T minus five minutes as its whole-round readiness deadline', async () => {
+  const setup = await automaticInitialRoundPublicationAt(125_000)
+  expect(setup.sql.database.query(`SELECT round_start_ms, release_not_before_ms, requires_referee
+    FROM competition_round_publication`).get()).toEqual({
+    round_start_ms: 900_000, release_not_before_ms: 600_000, requires_referee: 0,
+  })
+})
+
+test('automatic first round published after T minus five minutes keeps T and requires a referee', async () => {
+  const setup = await automaticInitialRoundPublicationAt(600_001)
+  expect(setup.sql.database.query(`SELECT round_start_ms, release_not_before_ms, requires_referee
+    FROM competition_round_publication`).get()).toEqual({
+    round_start_ms: 900_000, release_not_before_ms: 600_000, requires_referee: 1,
+  })
+})
+
 function roundParentRows(sql: MemorySql, table: string): JsonObject[] {
   const rows = sql.database.query(`SELECT * FROM ${table} ORDER BY rowid`).all()
   if (!rows.every(isJsonObject)) throw new Error('formal SQL result is malformed')
@@ -11783,13 +11854,73 @@ for (const scenario of [{ teamSize: 1 as const, personalDeck: false }, { teamSiz
     expect(newOperations).toEqual(['tournamentView', 'registrationExportLockedRoster',
       'matchCreate', 'clockCreate', 'matchAssignFirstPlayer', 'matchCreate', 'clockCreate', 'matchAssignFirstPlayer'])
     const beforeRead = e6c2aSnapshot(setup)
-    expect(await setup.room.readRoundPublication({ competitionId: request.competitionId,
-      stageId: request.stageId, roundNumber: 1, callerUserId: request.callerUserId }))
+    expect(await atRoundDeliveryTime(request.trustedTimeMs, () => setup.room.readRoundPublication({
+      competitionId: request.competitionId,
+      stageId: request.stageId, roundNumber: 1, callerUserId: request.callerUserId,
+    })))
       .toEqual({ ok: true, value: { competitionId: request.competitionId,
         revision: result.value.revision, publication: result.value.publication } })
     expect(e6c2aSnapshot(setup)).toStrictEqual(beforeRead)
   })
 }
+
+test('round-release public announcement keeps the complete timely release ACK barrier', async () => {
+  const setup = await roundReleaseParentRoom(1, false, { randomBit: () => 0 })
+  const request = setup.request({ roundStartMs: 900_000 })
+  const announced = await atRoundDeliveryTime(request.trustedTimeMs, () => setup.room.announceRound(request))
+  if (!announced.ok) throw new Error(`manual announcement failed: ${announced.error.code}`)
+
+  const created = new Map<string, CompetitionGameCreateRequest>()
+  let firstGameId: string | undefined
+  const gameNamespace = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: () => ({
+      createCompetitionGame: async (input: CompetitionGameCreateRequest) => {
+        firstGameId ??= input.gameId
+        created.set(input.gameId, structuredClone(input))
+        const ref = await competitionGameBindingRefForRequest(input)
+        return { gameId: input.gameId, bindingDigest: ref.bindingDigest, status: 'Waiting' as const }
+      },
+      releaseCompetitionGame: async (input: CompetitionGameAdmissionRequest) => {
+        if (input.bindingRef.gameId !== firstGameId) throw new Error('one fixed room is not released yet')
+        return true
+      },
+    }),
+  }
+  Reflect.set(setup.env, 'GAME_ROOM', gameNamespace)
+  await atRoundDeliveryTime(590_000, () => setup.room.alarm())
+
+  const releaseRows = setup.sql.database.query(
+    'SELECT status FROM competition_round_release_outbox ORDER BY game_id',
+  ).all()
+  expect(releaseRows.filter(row => row.status === 'completed')).toHaveLength(1)
+  expect(releaseRows.filter(row => row.status === 'pending')).toHaveLength(1)
+  expect(created.size).toBe(2)
+
+  const target = created.get(firstGameId ?? '')
+  const releaseRow = setup.sql.database.query(
+    'SELECT release_decision_id FROM competition_round_release_outbox WHERE game_id = ?',
+  ).get(firstGameId)
+  if (!target || !isJsonObject(releaseRow) || typeof releaseRow.release_decision_id !== 'string') {
+    throw new Error('partial release fixture is missing its authoritative binding or command')
+  }
+  const child = { env: { COMPETITION_ROOM: {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: () => ({ readRoundPublication: (read: CompetitionRoomRoundPublicationReadRequest) => (
+      setup.room.readRoundPublication(read)
+    ) }),
+  } } }
+  const allowed = await atRoundDeliveryTime(600_000, () => Reflect.apply(
+    Reflect.get(GameRoomClass.prototype, 'competitionRoundPlayerEntryAllowed'), child,
+    [target.gameId, target.binding, { status: 'released', releaseCommandId: releaseRow.release_decision_id }],
+  ))
+  const publication = await atRoundDeliveryTime(600_000, () => setup.room.readRoundPublication({
+    competitionId: request.competitionId, stageId: request.stageId,
+    roundNumber: request.roundNumber, callerUserId: request.callerUserId,
+  }))
+  expect(publication).toMatchObject({ ok: true, value: { publication: { requiresReferee: true } } })
+  expect(allowed).toBe(false)
+})
 
 test('round-release parent receipt retry and restart preserve random side, generation, T, seed and all bindings without re-computation', async () => {
   const setup = await roundReleaseParentRoom()
@@ -12216,10 +12347,17 @@ async function atRoundDeliveryTime<T>(time: number, action: () => Promise<T>): P
   try { return await action() } finally { Date.now = previous }
 }
 
-async function roundDeliveryModule(options: { teamSize?: 1 | 2; incompletePrevious?: boolean } = {}) {
+async function roundDeliveryModule(options: {
+  teamSize?: 1 | 2
+  incompletePrevious?: boolean
+  initialReadyDeadline?: boolean
+} = {}) {
   const base = await roundAnnouncementReceiptModule()
   const { sql, alarm, request, manifest } = base
   const teamSize = options.teamSize ?? 1
+  if (options.initialReadyDeadline) {
+    sql.database.query('UPDATE competition_round_publication SET release_not_before_ms = 600000').run()
+  }
   if (options.incompletePrevious) {
     request.roundNumber = 2
     manifest.roundRef.roundNumber = 2
@@ -12393,6 +12531,91 @@ async function roundDeliveryModule(options: { teamSize?: 1 | 2; incompletePrevio
     failNextNoShowSubmit: () => { failNextNoShowSubmit = true },
   }
 }
+
+function gameRoomParentReader(setup: Awaited<ReturnType<typeof roundDeliveryModule>>) {
+  return { env: { COMPETITION_ROOM: {
+    idFromName: (name: string) => name,
+    get: () => ({ readRoundPublication: () => setup.read() }),
+  } } }
+}
+
+async function moduleRoomEntryAllowed(
+  setup: Awaited<ReturnType<typeof roundDeliveryModule>>,
+  gameId: string,
+  admission: { status: 'released'; releaseCommandId: string },
+) {
+  const room = setup.expected.get(gameId)
+  if (!room) throw new Error('module room binding missing')
+  return Reflect.apply(
+    GameRoomClass.prototype['competitionRoundPlayerEntryAllowed'] as (...args: unknown[]) => boolean,
+    gameRoomParentReader(setup),
+    [gameId, room.binding, admission],
+  ) as Promise<boolean>
+}
+
+test('round-release first round keeps every room closed while one release ACK is pending at T minus five minutes', async () => {
+  const setup = await roundDeliveryModule({ initialReadyDeadline: true })
+  const rooms = [...setup.expected.values()]
+  const lateRoom = rooms[1]
+  if (!lateRoom) throw new Error('module fixture requires two rooms')
+  setup.setRelease(async request => {
+    if ((request as { bindingRef?: { gameId?: string } }).bindingRef?.gameId === lateRoom.gameId) {
+      throw new Error('second room release is pending')
+    }
+    return true
+  })
+  await setup.at(590_000, () => setup.room.alarm())
+  expect(setup.sql.database.query('SELECT status FROM competition_round_release_outbox ORDER BY rowid').all())
+    .toEqual([{ status: 'completed' }, { status: 'pending' }])
+  const first = rooms[0]
+  if (!first) throw new Error('module fixture has no first room')
+  const releaseCommandId = (setup.releases[0] as { commandId: string } | undefined)?.commandId
+  if (!releaseCommandId) throw new Error('module fixture has no round release decision')
+  await setup.at(600_000, () => setup.room.alarm())
+  const publication = await setup.at(600_000, () => setup.read())
+  expect(publication).toMatchObject({ ok: true, value: { publication: {
+    status: 'released', requiresReferee: true,
+  } } })
+  expect(await setup.at(600_000, () => moduleRoomEntryAllowed(setup, first.gameId, {
+    status: 'released', releaseCommandId,
+  }))).toBe(false)
+  expect(setup.sql.database.query('SELECT requires_referee, round_start_ms FROM competition_round_publication').get())
+    .toEqual({ requires_referee: 1, round_start_ms: 900_000 })
+})
+
+test('round-release first round late release retry cannot reopen after T minus five minutes', async () => {
+  const setup = await roundDeliveryModule({ initialReadyDeadline: true })
+  setup.setRelease(async () => { throw new Error('temporary release failure') })
+  await setup.at(590_000, () => setup.room.alarm())
+  await setup.at(600_000, () => setup.room.alarm())
+  setup.setRelease(async () => true)
+  await setup.at(660_000, () => setup.reopen().alarm())
+  const first = [...setup.expected.values()][0]
+  if (!first) throw new Error('module fixture has no first room')
+  const releaseCommandId = (setup.releases[0] as { commandId: string } | undefined)?.commandId
+  if (!releaseCommandId) throw new Error('module fixture has no round release decision')
+  expect(await setup.at(660_000, () => moduleRoomEntryAllowed(setup, first.gameId, {
+    status: 'released', releaseCommandId,
+  }))).toBe(false)
+  expect(setup.sql.database.query('SELECT requires_referee, round_start_ms FROM competition_round_publication').get())
+    .toEqual({ requires_referee: 1, round_start_ms: 900_000 })
+  expect(setup.sql.database.query('SELECT status FROM competition_round_release_outbox').all())
+    .toEqual([{ status: 'pending' }, { status: 'pending' }])
+})
+
+test('round-release first round allows entry after every room released before the deadline', async () => {
+  const setup = await roundDeliveryModule({ initialReadyDeadline: true })
+  await setup.at(590_000, () => setup.room.alarm())
+  const first = [...setup.expected.values()][0]
+  if (!first) throw new Error('module fixture has no first room')
+  const releaseCommandId = (setup.releases[0] as { commandId: string } | undefined)?.commandId
+  if (!releaseCommandId) throw new Error('module fixture has no round release decision')
+  expect(await setup.at(600_000, () => moduleRoomEntryAllowed(setup, first.gameId, {
+    status: 'released', releaseCommandId,
+  }))).toBe(true)
+  expect(setup.sql.database.query('SELECT requires_referee FROM competition_round_publication').get())
+    .toEqual({ requires_referee: 0 })
+})
 
 for (const teamSize of [1, 2] as const) {
 test(`round-release parent delivery module persists exact ${teamSize}v${teamSize} whole-room proofs then releases after the barrier`, async () => {
@@ -14645,6 +14868,8 @@ test(`round-release parent ingests an early ${preparing ? 'Pouch preparation' : 
   }
 
   const startedRequests: CompetitionRoomInitialGameStartedRequest[] = []
+  let readPublication: ((request: CompetitionRoomRoundPublicationReadRequest) =>
+    Promise<CompetitionRoomRoundPublicationReadResult>) | null = null
   const childParentAck = (request: CompetitionRoomInitialGameStartedRequest) => ({ ok: true as const, value: {
     competitionId: request.competitionId,
     matchId: request.matchId,
@@ -14659,6 +14884,10 @@ test(`round-release parent ingests an early ${preparing ? 'Pouch preparation' : 
   const childParentNamespace = {
     idFromName: (name: string) => name as unknown as DurableObjectId,
     get: () => ({
+      readRoundPublication: async (request: CompetitionRoomRoundPublicationReadRequest) => {
+        if (!readPublication) throw new Error('round publication parent is not ready')
+        return readPublication(request)
+      },
       ingestInitialGameStarted: async (request: CompetitionRoomInitialGameStartedRequest) => {
         startedRequests.push(structuredClone(request))
         throw new Error('simulate initial GameStarted response loss; parent ingestion is asserted below')
@@ -14749,6 +14978,7 @@ test(`round-release parent ingests an early ${preparing ? 'Pouch preparation' : 
     engine,
     setup.bit,
   )
+  readPublication = request => parent.readRoundPublication(request)
   const readPublicationRequest = {
     competitionId: announcement.competitionId,
     stageId: announcement.stageId,
@@ -14764,12 +14994,13 @@ test(`round-release parent ingests an early ${preparing ? 'Pouch preparation' : 
   })
 
   const cutoffMs = roundStartMs - 300_000
-  await at(cutoffMs, () => parent.alarm())
+  const deliveryMs = cutoffMs - 1
+  await at(deliveryMs, () => parent.alarm())
   const publicationWithAllRoomProofs = await parent.readRoundPublication(readPublicationRequest)
   expect(publicationWithAllRoomProofs).toMatchObject({
     ok: true,
     value: { publication: { status: 'released', rooms: [
-      { ackConfirmedAtMs: cutoffMs }, { ackConfirmedAtMs: cutoffMs },
+      { ackConfirmedAtMs: deliveryMs }, { ackConfirmedAtMs: deliveryMs },
     ] } },
   })
   if (!publicationWithAllRoomProofs.ok || !publicationWithAllRoomProofs.value.publication) {
@@ -14820,7 +15051,7 @@ test(`round-release parent ingests an early ${preparing ? 'Pouch preparation' : 
   if (!released.ok || !released.value.publication) throw new Error('whole-round release proof missing')
   expect(released.value.publication.status).toBe('released')
   expect(released.value.publication.rooms).toHaveLength(2)
-  expect(released.value.publication.rooms.every(room => room.ackConfirmedAtMs === cutoffMs)).toBe(true)
+  expect(released.value.publication.rooms.every(room => room.ackConfirmedAtMs === deliveryMs)).toBe(true)
   expect(released.value.publication.rooms.find(room => room.matchId === targetRoom.matchId)?.gameId)
     .toBe(targetRoom.gameId)
 
@@ -15150,6 +15381,8 @@ test('round-release initial GameStarted retries the same durable child entry aft
   const childParentNamespace = {
     idFromName: (name: string) => name as unknown as DurableObjectId,
     get: () => ({
+      readRoundPublication: (request: CompetitionRoomRoundPublicationReadRequest) =>
+        parent.readRoundPublication(request),
       ingestInitialGameStarted: async (request: CompetitionRoomInitialGameStartedRequest) => {
         parentRequests.push(structuredClone(request))
         const ack = await parent.ingestInitialGameStarted(request)
@@ -15270,7 +15503,8 @@ test('round-release initial GameStarted retries the same durable child entry aft
     callerUserId: announcement.callerUserId,
   }
   const cutoffMs = roundStartMs - 300_000
-  await at(cutoffMs, () => parent.alarm())
+  const deliveryMs = cutoffMs - 1
+  await at(deliveryMs, () => parent.alarm())
   const publication = await parent.readRoundPublication(readPublicationRequest)
   if (!publication.ok || !publication.value.publication) {
     throw new Error('released round publication or whole-room proof is missing')
@@ -15285,7 +15519,7 @@ test('round-release initial GameStarted retries the same durable child entry aft
   if (!released.ok || !released.value.publication || released.value.publication.status !== 'released') {
     throw new Error('whole-round release decision was not durably published')
   }
-  expect(released.value.publication.rooms.every(room => room.ackConfirmedAtMs === cutoffMs)).toBe(true)
+  expect(released.value.publication.rooms.every(room => room.ackConfirmedAtMs === deliveryMs)).toBe(true)
 
   await at(startedAtMs, async () => {
     for (const player of childRequest.binding.players) await connectAndReady(child, player.userId)
@@ -15552,6 +15786,8 @@ test('round-release parent accepts the second room initial GameStarted after the
   const childParentNamespace = {
     idFromName: (name: string) => name as unknown as DurableObjectId,
     get: () => ({
+      readRoundPublication: (request: CompetitionRoomRoundPublicationReadRequest) =>
+        parent.readRoundPublication(request),
       ingestInitialGameStarted: async (request: CompetitionRoomInitialGameStartedRequest) => {
         const ownedRequest = structuredClone(request)
         const response = await parent.ingestInitialGameStarted(request)
@@ -15659,12 +15895,13 @@ test('round-release parent accepts the second room initial GameStarted after the
     roundNumber: announcement.roundNumber, callerUserId: announcement.callerUserId,
   }
   const cutoffMs = roundStartMs - 300_000
-  await at(cutoffMs, () => parent.alarm())
+  const deliveryMs = cutoffMs - 1
+  await at(deliveryMs, () => parent.alarm())
   const materialized = await parent.readRoundPublication(publicationQuery)
   if (!materialized.ok || !materialized.value.publication) throw new Error('materialized round publication is missing')
   expect(materialized.value.publication.rooms).toHaveLength(2)
   expect(childCreateRequests.size).toBe(2)
-  expect(materialized.value.publication.rooms.every(room => room.ackConfirmedAtMs === cutoffMs)).toBe(true)
+  expect(materialized.value.publication.rooms.every(room => room.ackConfirmedAtMs === deliveryMs)).toBe(true)
   const targets = materialized.value.publication.rooms.map(room => {
     const child = childRooms.get(room.gameId)
     const request = childCreateRequests.get(room.gameId)
@@ -16013,6 +16250,8 @@ test('round-release initial GameStarted late receipt failure rolls back the join
   const parentNamespace = {
     idFromName: (name: string) => name as unknown as DurableObjectId,
     get: () => ({
+      readRoundPublication: (request: CompetitionRoomRoundPublicationReadRequest) =>
+        parent.readRoundPublication(request),
       ingestInitialGameStarted: async (request: CompetitionRoomInitialGameStartedRequest) => {
         requests.push(cloneSnapshot('transport request', request))
         const response = await parent.ingestInitialGameStarted(request)
@@ -16105,6 +16344,7 @@ test('round-release initial GameStarted late receipt failure rolls back the join
   const startedAtMs = roundStartMs - 60_000
   const firstDeliveryAtMs = startedAtMs + 1_000
   const cutoffMs = roundStartMs - 300_000
+  const deliveryMs = cutoffMs - 1
   const announcement = setup.request({ roundStartMs })
   const announced = await setup.room.announceRound(announcement)
   if (!announced.ok) throw new Error('round announcement failed: ' + announced.error.code)
@@ -16112,12 +16352,12 @@ test('round-release initial GameStarted late receipt failure rolls back the join
     { GAME_ROOM: gameNamespace } as never, engine, setup.bit)
   const query = { competitionId: announcement.competitionId, callerUserId: announcement.callerUserId }
   const publicationQuery = { ...query, stageId: announcement.stageId, roundNumber: announcement.roundNumber }
-  await at(cutoffMs, () => parent.alarm())
+  await at(deliveryMs, () => parent.alarm())
   const materialized = await parent.readRoundPublication(publicationQuery)
   if (!materialized.ok || !materialized.value.publication) throw new Error('materialized whole round is missing')
   expect(materialized.value.publication.rooms).toHaveLength(2)
   expect(createRequests.size).toBe(2)
-  expect(materialized.value.publication.rooms.every(room => room.ackConfirmedAtMs === cutoffMs)).toBe(true)
+  expect(materialized.value.publication.rooms.every(room => room.ackConfirmedAtMs === deliveryMs)).toBe(true)
   const targets = materialized.value.publication.rooms.map(room => {
     const child = childRooms.get(room.gameId)
     const request = createRequests.get(room.gameId)

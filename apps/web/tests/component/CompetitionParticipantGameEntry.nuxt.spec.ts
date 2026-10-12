@@ -133,7 +133,7 @@ it('explains a successful null result without inferring whether the match is pen
   })
   await flushPromises()
 
-  expect(wrapper.get('.state-note').text()).toBe('目前沒有可加入當局，請稍後重新查詢或向主辦方確認。')
+  expect(wrapper.get('.state-note').text()).toBe('房間尚未就緒，賽事頁會自動重新查詢；也可以立即重試。 立即重試')
   expect(wrapper.find('a.room-link').exists()).toBe(false)
   await wrapper.unmount()
 })

@@ -2,6 +2,8 @@
 
 2026-10-11 本輪重審 03 公告、05 初始種子、07 權威時計與 17 缺席：四票均在各自範圍限定 PASS，依使用者要求按功能提交。17 最新截止／舊準備端點／noShow 後斷線修正已經獨立兩軸與固定時間案例驗證。19 瑞士雙負退出亦限定 PASS，剩餘修正、回歸測試與文件一併整理提交。產品政策以[設計](competitive-play-design.md)為準。本文件只管理現況、互斥範圍、驗證與相依放行，不複述玩法規則。
 
+2026-10-12 票 06 經最新修正後獨立複審限定 PASS：629 pass／0 fail，Standards 硬性 0／heuristic 0、Spec 0，型別與差異檢查通過。放行範圍與原始證據見下表；native Worker／Brave／首場全流程仍由 22 集中驗收。
+
 ## 執行邊界與完成條件
 
 依 2026-10-09 使用者新指示，先閉合正常完賽主線，再補會卡住賽程的自動例外；人工裁判介面與更正流程延後。交付順序、範圍及直接功能相依只見[正式票據索引](tickets/README.md)，不另建待辦副本。
@@ -16,6 +18,7 @@
 
 | 切片／負責者 | 狀態與唯一寫入範圍 | 下一關卡／證據 |
 | --- | --- | --- |
+| 06 固定輪次房間與通知／來源對話最新修正→獨立主審 | 限定 PASS：首輪沿用 T、後續 E→A→T 兩段窗口、整批 ACK 與入口屏障、延誤持久 requiresReferee、固定成員與通知重試均有案例。前次通知回退 P2 已閉合；接收端收據故障後可重傳穩定 ID，前端以獨立按帳號持久 ID 抑制重播，含重新掛載。Standards 硬性 0／heuristic 0，Spec 0 | [最新報告／兩軸／原始 log](../../scratch/ticket06-receipt-review-2026-10-12/report.md)。主審序列重跑父房 355、子房 139、契約/helpers/API 78、Nuxt 六檔 43、既有固定時間故障 13、後端收據故障 1，共 629 pass／0 fail；型別與 diff check 通過。06 六項驗收勾選。真 GameRoom／PlayerNotifications 方法與既有 WASM 負控制均在 fixture 邊界；不外推 native Worker／Brave／22 全流程／28 進階矩陣或無限歷史通知去重。 |
 | 05 自動抽籤並建立首輪／本輪獨立主審 | 限定 PASS：固定亂數的兩隊／奇數隊抽籤、正常輪空、持久建立意圖、相同收據及 alarm 重試均有正向案例；父頁與 notReady 自動更新案例通過。Standards 硬性 0、Spec 0 | [本輪報告／兩軸／原始 log](../../scratch/four-feature-review/report.md)。CompetitionRoom 完整 349 pass／0 fail；沿公告與凍結名單建立同一首輪，不要求 F 後確認；05 四項驗收已勾選。完整 Swiss 政策擴充已有來源使用者授權；指定種子來源僅在支援時適用，不外推 22／28。 |
 | 07 權威隊伍時計／本輪獨立主審 | 限定 PASS：終局先關玩家視窗，再依 FIFO 送終局；重試、restart、strict ACK 及固定時計 ID 斷言均通過。Standards 硬性 0、Spec 0；GameRoom 完整 125 pass／0 fail，ClockDisplay 共用 Nuxt 驗證通過 | [本輪報告／兩軸／原始 log](../../scratch/four-feature-review/report.md)。原 FIFO 測試 P2 已閉合，07 六項驗收已勾選；既有同隊／回合外、有限額度、零不限時路由保留。18 真超時裁決與 22／28 集中界線保留。 |
 | 04 報名截止自動凍結／來源對話最後修正→主審末審 | 限定 PASS：alarm P2 與最後測試預期 P2 均閉合；Standards 硬性 0／heuristic 0，Spec 0。本輪作者 E6a2 15 pass／0 fail、288 assertions，1v1／2v2 正式交付與重放全綠。僅測試檔改為從已提交 checkpoint 取預期版號，其他來源未改。沿用同版本 Nuxt／pure／獨立故障證據，驗證集合跨輪合計 258 pass／6 skip／0 fail，本輪新執行只有 15 例 | [最後修正報告／固定版本／原始 log](../../scratch/tour-attempt/ticket04-final-review/report.md)、[alarm 修復與原紅例](../../scratch/tour-attempt/ticket03-04-review/report.md)、[前次失敗](../../scratch/tour-attempt/ticket04-review/report.md)。04 四項驗收已勾選；放行 F 自動凍結、遲交接受點、排除理由、固定參賽快照交付與正常重試。05 的 03＋04 前置已通過，可依唯一寫入權開始其實作；legacy initial 障礙仍既存 HOLD，不外推 22 真 Worker／Brave／全流程。 |
@@ -44,9 +47,9 @@
 | 決賽冠軍空缺UI／Popper P2修復→獨立末審 | 限定PASS：／helperdef7e／pure2073／Nuxt e5f070，17distinctgreen。Main完整讀修後Standards `1ffa9b` hard0／fixture重複非阻擋與Spec `01bc7c` 0／原P2 closed，再fresh4檔案 `0888f2`一致；reviewers已回收，四檔凍結 | [原case](../../scratch/tour-attempt/tournament-final-vacancy-ui.md)、[P2 case／修復](../../scratch/tour-attempt/tournament-view-zero-main-display.md)、[末Standards](../../scratch/tour-attempt/tournament-view-zero-main-final-standards-review.md)、[末Spec](../../scratch/tour-attempt/tournament-view-zero-main-final-spec-review.md)、[集中派工](../../scratch/tour-attempt/main-competition-2026-10-09.md)。只main設定0→不限時及真final空缺呈現，genericduration0／finite等控制保留；不外推native/全矩陣 |
 | 有限choice Rust JSON contract／Chandrasekhar→Newton舊oracle對齊 | 限定PASS：，20distinctgreen。Main全讀末Standards `3a7292` hard0／既有P3非阻擋及獨立末Spec `f1fa2f` 0，各再核來源內容；兩檔凍結，reviewers完成已回收 | [新tracer](../../scratch/tour-attempt/clock-finite-choice-json-contract.md)、[choice/C1對齊](../../scratch/tour-attempt/clock-json-legacy-oracle-alignment.md)、[末Standards](../../scratch/tour-attempt/clock-json-contract-final-standards-review.md)、[末Spec](../../scratch/tour-attempt/clock-json-contract-final-spec-review.md)、[集中紀錄](../../scratch/tour-attempt/main-competition-2026-10-09.md)。真handle_request_json／camelCase／mutation view與readonly display分層；不外推freshWASM／DO或全部時計矩陣 |
 | 網站分鐘主時間／固定讀秒／Pascal→獨立審核 | 限定PASS：四來源未變，pure 元件全12／113green `184fe1`；Nuxt 元件完整22green `568dda`。Standards hard0／選項集合重複P3非阻擋；Spec無P1/P2／摘要單位P3非阻擋。四檔凍結 | [交付／失敗](../../scratch/tour-attempt/clock-settings-ui-policy.md)、[Standards](../../scratch/tour-attempt/clock-settings-ui-standards-review.md)、[Spec](../../scratch/tour-attempt/clock-settings-ui-spec-review.md)。只證分鐘／固定讀秒及既有毫秒wire；核心C1、後端時計／頁面／WASM／native仍未放行，兩項P3留作維護追蹤 |
-| 後端開始時間／原Laplace派工待接手 | 原代理受用量限制，沒有交付新分鐘測例或產品修復。正常逐輪改為自動推進後，先在真正backend接受點驗證自動產生T的分鐘精度與完整五分鐘窗口；原手動公告測例計畫不直接當作新自動流程的驗收 | 尚未實作／驗證；產品及fixture須協調唯一owner，不沿用「已派工」當進度。既有binding在建房前固定T，確立T與實際就緒的銜接須先做case-first切片，不以通知時間或瀏覽器時間補造權威 |
+| 後端輪次時間／自動發布 | 2026-10-12 由票 06 最新元件實證與兩軸複審限定 PASS，包含 E 的權威取樣、分鐘邊界、整輪 ACK、延誤 fail closed 與一般重試 | 以本表 06 關卡及最新報告為準；原手動公告歷史案例不代替新自動流程，真 Worker／Brave／集中整合仍留 22。 |
 
-接續派工前重新確認代理狀態與檔案所有權，不把舊派工視為仍在實作。當前相關核心維持凍結；01 父 initial receiver 以本票限定 PASS（Preparing 測例及 mock 範圍見上列與交付紀錄），native／fresh Rules Engine 全流程留待 22；分鐘政策尚無交付。優先按票據索引 P0／P1 安排唯一 writer，19 Swiss 雙負退出已限定通過，其餘自動例外依票據序列接續，Active 改判新功能延後。Main 獨占關卡／索引與 runner；作者不末自審，既有 dirty 與限定 PASS 成果保留。
+接續派工前重新確認代理狀態與檔案所有權，不把舊派工視為仍在實作。當前相關核心維持凍結；01 父 initial receiver 以本票限定 PASS（Preparing 測例及 mock 範圍見上列與交付紀錄），native／fresh Rules Engine 全流程留待 22；06 最新分鐘與自動發布關卡見上表。優先按票據索引 P0／P1 安排唯一 writer，19 Swiss 雙負退出已限定通過，其餘自動例外依票據序列接續，Active 改判新功能延後。Main 獨占關卡／索引與 runner；作者不末自審，既有 dirty 與限定 PASS 成果保留。
 
 工作紀錄在 `scratch/tour-attempt`，原始報告保留當時測試結果、範圍與限制；待審交付須依 Git 基準閱讀完整原始碼、測試與差異，不能以表中摘要放行。歷史 PASS 只涵蓋已驗證的內容與切片。
 
@@ -62,7 +65,7 @@
 
 瑞士積分唯讀核對：契約有勝／和／敗／輪空四個非負整數欄位，但主積分累計未套用非零敗場積分；記入 [13](tickets/13-swiss-rounds-and-scoring.md) 的待修正範圍。賽前設定與公布值不能不同於實際累計，也不把原對手勝率設定當成新勝分／負分排序。
 
-2026-10-09通知鏈核對：一般GameRoom的joinGame會經afterRoomMutation通知成員；createCompetitionGame直接寫入固定成員，create／release目前沒有呼叫該通知鏈，因此還要補觸發點，不能把已有通知通道當成競賽已接線。PlayerNotifications目前只推給在線socket，未收到推播者仍由賽事頁取得入口；本片不另建離線訊息系統。手動公告元件的歷史限定PASS保留，但不代表自動推進PASS。
+2026-10-12 票 06 最新切片已限定 PASS，見[本輪報告](../../scratch/ticket06-receipt-review-2026-10-12/report.md)。首輪沿用公告 `checkInDeadline` 作 T；後續輪次與唯一進行中階段由前輪權威結果確認的 E 計算分鐘 A、T，整批建房與放行 ACK 必須及時完成。父房公告、玩家入口、子房 HTTP／WebSocket 入口及在線提醒的屏障，與延誤持久 `requiresReferee` 狀態，已由固定時間與故障案例驗證。通知以每位收件人的穩定 ID/outbox 重試，開局後仍保留 alarm；前端按帳號保存獨立去重 ID，接收收據失敗後重播及重新掛載均不回退較新的開局提醒。PlayerNotifications 只推給在線 socket，未收到推播仍可從賽事頁進入，不另建離線訊息系統。這是目前來源的指定元件／fixture 放行；手動公告歷史 PASS 與 22／28 集中界線保留。
 
 ### 自動例外收尾
 

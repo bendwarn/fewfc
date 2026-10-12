@@ -145,21 +145,14 @@
         @submit-deck="mutate"
       />
 
-      <CompetitionParticipantGameEntry
-        v-if="canLookupParticipantGame"
-        v-model:match-id="participantMatchId"
-        :competition-id="competitionId"
-        :session-user-id="session.userId.value"
-        :enabled="canLookupParticipantGame"
-        editable
-      />
-
       <CompetitionTournamentView
         :competition-id="competitionId"
         :session-identity="session.userId.value"
         :context-revision="registration.revision"
         :context-ready="sessionLoaded && Boolean(registration)"
         :registration-locked="automaticInitialScheduleExpected"
+        :participant-team-id="currentTeam?.teamId ?? null"
+        :participant-entry-enabled="canLookupParticipantGame"
       />
 
       <section class="panel teams-card" aria-labelledby="teams-title">
@@ -283,6 +276,7 @@
       :session-user-id="session.userId.value"
       :registration="registrationInCurrentScope ? registration : null"
       :context-ready="tournamentContextReady"
+      :automatic-initial-stage-id="automaticInitialStageId"
       :busy="mutationBusy || pendingCommand !== null"
       @pending-change="onRoundPublicationPendingChange"
       @unresolved="onRoundPublicationUnresolved"
@@ -340,7 +334,6 @@ const mutationError = ref('')
 const notice = ref('')
 const pendingCommand = ref<RegistrationCommandBody | null>(null)
 const otherMemberIdsText = ref('')
-const participantMatchId = ref('')
 const roundPublicationPending = shallowRef<CompetitionRoundPublicationIntent | null>(null)
 const roundPublicationNavigationMessage = ref('')
 const registrationIdentity = shallowRef<{ competitionId: string, userId: string } | null>(null)
@@ -357,11 +350,15 @@ const registrationInCurrentScope = computed(() => {
 const tournamentContextReady = computed(() => sessionLoaded.value && !loading.value
   && !loadError.value && !sessionError.value && !mutationError.value && !mutationBusy.value && !pendingCommand.value
   && registrationInCurrentScope.value && registration.value?.lifecycle === 'locked')
-const automaticInitialScheduleExpected = computed(() => {
+const automaticInitialStageId = computed(() => {
   const current = registration.value
-  return Boolean(registrationInCurrentScope.value && current?.lifecycle === 'locked'
-    && current.teams.filter(team => team.status === 'checkedIn').length >= 2)
+  const firstStage = current?.plan.stages[0]
+  if (!registrationInCurrentScope.value || current?.lifecycle !== 'locked'
+    || current.teams.filter(team => team.status === 'checkedIn').length < 2
+    || firstStage?.qualification.type !== 'allEligibleTeams') return null
+  return firstStage.stageId
 })
+const automaticInitialScheduleExpected = computed(() => automaticInitialStageId.value !== null)
 
 const isOrganizer = computed(() => Boolean(registration.value
   && session.userId.value

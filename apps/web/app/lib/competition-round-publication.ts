@@ -123,7 +123,6 @@ export function createCompetitionRoundPublicationContext(
 export function findCurrentCompetitionRoundPublicationTarget(
   view: CompetitionTournamentViewData,
 ): CompetitionRoundPublicationTargetResult {
-  if (view.stages.length !== 1) return { kind: 'blocked', reason: 'singleActiveStageRequired' }
   const activeStages = view.stages.filter(stage => stage.status === 'active')
   if (activeStages.length !== 1) return { kind: 'blocked', reason: 'singleActiveStageRequired' }
   const stage = activeStages[0]

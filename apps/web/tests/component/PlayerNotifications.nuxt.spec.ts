@@ -5,6 +5,7 @@ import type { PlayerNotification } from '#shared/game-room'
 import { usePlayerNotifications } from '~/composables/usePlayerNotifications'
 import {
   PLAYER_NOTIFICATION_TTL_MS,
+  playerNotificationHandledIdStorageKey,
   playerNotificationStorageKey,
   restorePlayerNotifications,
   serializePlayerNotifications,
@@ -152,6 +153,50 @@ it('hides ordinary prompts after five seconds or dismissal without consuming the
   expect(notifications.visibleNotifications.value).toEqual([])
   expect(notifications.notifications.value.map(item => item.gameId)).toEqual(['room-b', 'room-a'])
   await wrapper.unmount()
+})
+
+it('does not replay a replaced room notification after a newer game notification', async () => {
+  const sockets: FakeWebSocket[] = []
+  installWebSocket(sockets)
+  const { wrapper, notifications } = await mountNotifications()
+  notifications.setUserId('player-a')
+  notifications.connect()
+
+  const roomChanged = notification('stable-room-change-id', 'room-a', 'roomChanged')
+  const gameStarted = notification('game-started-id', 'room-a', 'gameStarted')
+  sockets[0]?.receive(roomChanged)
+  sockets[0]?.receive(gameStarted)
+  sockets[0]?.receive(roomChanged)
+
+  expect(notifications.visibleNotifications.value.map(item => item.kind)).toEqual(['gameStarted'])
+  expect(notifications.notifications.value.map(item => item.kind)).toEqual(['gameStarted'])
+  expect(window.localStorage.getItem(playerNotificationHandledIdStorageKey('player-a')))
+    .toContain('stable-room-change-id')
+  await wrapper.unmount()
+})
+
+it('restores handled IDs after remount even when a newer same-room notice replaced them', async () => {
+  const firstSockets: FakeWebSocket[] = []
+  installWebSocket(firstSockets)
+  const first = await mountNotifications()
+  first.notifications.setUserId('player-a')
+  first.notifications.connect()
+  const roomChanged = notification('stable-room-change-id', 'room-a', 'roomChanged')
+  const gameStarted = notification('game-started-id', 'room-a', 'gameStarted')
+  firstSockets[0]?.receive(roomChanged)
+  firstSockets[0]?.receive(gameStarted)
+  await first.wrapper.unmount()
+
+  const secondSockets: FakeWebSocket[] = []
+  installWebSocket(secondSockets)
+  const second = await mountNotifications()
+  second.notifications.setUserId('player-a')
+  second.notifications.connect()
+  secondSockets[0]?.receive(roomChanged)
+
+  expect(second.notifications.visibleNotifications.value).toEqual([])
+  expect(second.notifications.notifications.value.map(item => item.kind)).toEqual(['gameStarted'])
+  await second.wrapper.unmount()
 })
 
 it('preserves an account storage entry through logout and restores only its dot', async () => {

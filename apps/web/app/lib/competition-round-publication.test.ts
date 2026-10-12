@@ -382,7 +382,7 @@ test('unknown or malformed receipt keeps original intent; only first definitive 
   expect(command.body.commandId).toBe('8f4d34de-2b13-4bce-9f10-2a9f648db1c8')
 })
 
-test('輪次公告阻擋仍含已結束階段的多階段賽事', () => {
+test('輪次公告選取目前進行階段，不受已結束階段影響', () => {
   const parsed = tournament(currentRound(), { finishedStageCount: 1 })
   expect(parsed.stages.map(stage => [stage.config.stageId, stage.status])).toEqual([
     [stageId, 'active'], ['finished-stage-1', 'finished'],
@@ -391,6 +391,7 @@ test('輪次公告阻擋仍含已結束階段的多階段賽事', () => {
     ['match-a', 'match-b', 'current-bye'], ['finished-stage-1-match-1'],
   ])
   expect(findCurrentCompetitionRoundPublicationTarget(parsed)).toEqual({
-    kind: 'blocked', reason: 'singleActiveStageRequired',
+    kind: 'ready',
+    target: { stageId, roundNumber: 1, matchIds: ['match-a', 'match-b'] },
   })
 })

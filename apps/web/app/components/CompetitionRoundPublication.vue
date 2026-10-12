@@ -36,6 +36,7 @@ const props = withDefaults(defineProps<{
   registration: CompetitionRegistrationState | null
   contextReady: boolean
   busy?: boolean
+  automaticInitialStageId?: string | null
 }>(), { busy: false })
 
 const emit = defineEmits<{
@@ -88,6 +89,9 @@ let readController: AbortController | null = null
 let postController: AbortController | null = null
 
 const selectedTarget = computed(() => targetResult.value?.kind === 'ready' ? targetResult.value.target : null)
+const isAutomaticInitialRound = computed(() => Boolean(selectedTarget.value
+  && props.automaticInitialStageId === selectedTarget.value.stageId
+  && selectedTarget.value.roundNumber === 1))
 const targetScope = computed<CompetitionRoundPublicationScope | null>(() => {
   const current = context.value
   const target = selectedTarget.value
@@ -123,9 +127,10 @@ const currentPublicationMatchesTarget = computed(() => {
 })
 const canAnnounce = computed(() => Boolean(contextEnabled.value && !pending.value && !reading.value && !sending.value
   && !requiresRefresh.value && !readError.value && selectedTarget.value && hasPublicationRead.value
-  && publication.value === null))
+  && publication.value === null && !isAutomaticInitialRound.value))
 const showAnnouncementForm = computed(() => Boolean(selectedTarget.value && hasPublicationRead.value
-  && contextEnabled.value && publication.value === null && !readError.value && !requiresRefresh.value && !pending.value))
+  && contextEnabled.value && publication.value === null && !readError.value && !requiresRefresh.value && !pending.value
+  && !isAutomaticInitialRound.value))
 const timePreview = computed(() => {
   if (!roundStartLocal.value) return null
   try {
@@ -138,7 +143,7 @@ const timePreview = computed(() => {
 function targetBlockMessage(result: CompetitionRoundPublicationTargetResult | null): string {
   if (!result || result.kind !== 'blocked') return ''
   return {
-    singleActiveStageRequired: '目前不是單一明確的進行中階段；多階段／歧義賽程不能由本片公告。',
+    singleActiveStageRequired: '目前沒有唯一明確的進行中階段；歧義賽程不能由本片公告。',
     scheduleNeedsReview: '賽程有未解決警示，請先由主辦或裁判處理。',
     noCurrentRound: '賽程尚未提供可公告的明確輪次；本元件不建立配對或新輪。',
     previousRoundIncomplete: '前輪尚未全部完成，不能公告下一輪。',
@@ -382,6 +387,9 @@ onBeforeUnmount(() => {
     <p v-if="reading" role="status" aria-live="polite">正在讀取最新賽程與輪次公告…</p>
     <p v-if="readError" role="alert">{{ readError }}</p>
     <p v-if="targetResult?.kind === 'blocked' && !reading" role="status">{{ targetBlockMessage(targetResult) }}</p>
+    <p v-if="isAutomaticInitialRound && !publication && !reading" role="status">
+      首輪沿用賽事公告的比賽開始時間，由系統自動建立固定房間。
+    </p>
     <p v-if="notice" role="status" aria-live="polite">{{ notice }}</p>
 
     <p v-if="selectedTarget && !reading" role="status">

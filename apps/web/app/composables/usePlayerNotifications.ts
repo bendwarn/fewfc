@@ -6,9 +6,13 @@ import {
   isTransientPlayerNotification,
   mergePlayerNotification,
   normalizePlayerNotifications,
+  normalizeHandledPlayerNotificationIds,
   PLAYER_NOTIFICATION_TTL_MS,
+  playerNotificationHandledIdStorageKey,
   playerNotificationStorageKey,
+  restoreHandledPlayerNotificationIds,
   restorePlayerNotifications,
+  serializeHandledPlayerNotificationIds,
   serializePlayerNotifications,
 } from '../lib/player-notifications'
 
@@ -23,10 +27,61 @@ export function usePlayerNotifications() {
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined
   let retentionExpiryTimer: ReturnType<typeof setTimeout> | undefined
   const notificationTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const handledNotificationIds = new Set<string>()
   let reconnectAttempt = 0
   let shouldConnect = false
   let activeUserId = ''
   let storageUsable = true
+
+  function replaceHandledNotificationIds(ids: readonly unknown[]) {
+    handledNotificationIds.clear()
+    for (const id of normalizeHandledPlayerNotificationIds(ids)) {
+      handledNotificationIds.add(id)
+    }
+  }
+
+  function persistHandledNotificationIds() {
+    if (!import.meta.client || !activeUserId) return
+    const key = playerNotificationHandledIdStorageKey(activeUserId)
+    let stored: string[]
+    try {
+      stored = restoreHandledPlayerNotificationIds(window.localStorage.getItem(key))
+    } catch {
+      return
+    }
+
+    // 收據獨立於每房只保留一筆的通知清單，避免新訊息取代舊訊息後遺失去重 ID。
+    const merged = normalizeHandledPlayerNotificationIds([
+      ...stored,
+      ...handledNotificationIds,
+    ])
+    replaceHandledNotificationIds(merged)
+    try {
+      window.localStorage.setItem(key, serializeHandledPlayerNotificationIds(merged))
+    } catch {
+      // 儲存空間不可用時，仍以目前頁面的記憶體收據防止一般重試重複顯示。
+    }
+  }
+
+  function rememberHandledNotification(id: string) {
+    if (!id || handledNotificationIds.has(id)) return
+    replaceHandledNotificationIds([...handledNotificationIds, id])
+    persistHandledNotificationIds()
+  }
+
+  function mergeStoredHandledNotificationIds() {
+    if (!import.meta.client || !activeUserId) return
+    try {
+      replaceHandledNotificationIds([
+        ...handledNotificationIds,
+        ...restoreHandledPlayerNotificationIds(
+          window.localStorage.getItem(playerNotificationHandledIdStorageKey(activeUserId)),
+        ),
+      ])
+    } catch {
+      // 收據讀取失敗不影響目前頁面的通知處理。
+    }
+  }
 
   function clearNotificationTimer(id: string) {
     const timer = notificationTimers.get(id)
@@ -108,6 +163,7 @@ export function usePlayerNotifications() {
     disconnect()
     activeUserId = userId
     storageUsable = true
+    replaceHandledNotificationIds([])
     visibleNotifications.value.forEach(notification => clearNotificationTimer(notification.id))
     visibleNotifications.value = []
     notifications.value = []
@@ -119,16 +175,28 @@ export function usePlayerNotifications() {
     } catch {
       // 讀取失敗不能阻止正常的房間連線。
     }
+    try {
+      replaceHandledNotificationIds(restoreHandledPlayerNotificationIds(
+        window.localStorage.getItem(playerNotificationHandledIdStorageKey(userId)),
+      ))
+    } catch {
+      // 收據讀取失敗不能阻止正常的房間連線。
+    }
   }
 
   function receiveNotification(notification: PlayerNotification) {
+    if (handledNotificationIds.has(notification.id)
+      || notifications.value.some(current => current.id === notification.id)
+      || visibleNotifications.value.some(current => current.id === notification.id)) return
     if (isTransientPlayerNotification(notification)) {
       dismissRoom(notification.gameId)
       showNotification(notification)
+      rememberHandledNotification(notification.id)
       return
     }
     mutateRetainedNotifications(current => mergePlayerNotification(current, notification))
     showNotification(notification)
+    rememberHandledNotification(notification.id)
   }
 
   function connect() {
@@ -222,15 +290,21 @@ export function usePlayerNotifications() {
   }
 
   function handleStorage(event: StorageEvent) {
-    if (!activeUserId || (event.key !== null && event.key !== playerNotificationStorageKey(activeUserId))) return
-    try {
-      // 事件的 newValue 可能已落後於目前儲存值，必須重新讀取才不會復活已消耗的房間。
-      replaceRetainedNotifications(restorePlayerNotifications(
-        window.localStorage.getItem(playerNotificationStorageKey(activeUserId)),
-      ))
-    } catch {
-      replaceRetainedNotifications([])
+    if (!activeUserId) return
+    const notificationKey = playerNotificationStorageKey(activeUserId)
+    const handledIdKey = playerNotificationHandledIdStorageKey(activeUserId)
+    if (event.key !== null && event.key !== notificationKey && event.key !== handledIdKey) return
+    if (event.key === null || event.key === notificationKey) {
+      try {
+        // 事件的 newValue 可能已落後於目前儲存值，必須重新讀取才不會復活已消耗的房間。
+        replaceRetainedNotifications(restorePlayerNotifications(
+          window.localStorage.getItem(notificationKey),
+        ))
+      } catch {
+        replaceRetainedNotifications([])
+      }
     }
+    if (event.key === null || event.key === handledIdKey) mergeStoredHandledNotificationIds()
   }
 
   if (import.meta.client) {

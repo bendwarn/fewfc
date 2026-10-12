@@ -441,7 +441,6 @@ export function isCompetitionRoomAnnounceRoundValue(
       && roundReleasePublicationIdentity(value.publication, expected)
       && value.publication.roundStartMs === expected.roundStartMs
       && value.publication.publicationVersion === 1 && value.publication.status === 'materializing'
-      && value.publication.requiresReferee === false
       && value.publication.rooms.every(room => room.ackConfirmedAtMs === null)
   } catch {
     return false

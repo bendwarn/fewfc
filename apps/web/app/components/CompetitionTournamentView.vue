@@ -173,6 +173,13 @@
                     </span>
                   </p>
                   <p class="match-fact">開局狀態：{{ match.started ? '已開始' : '尚未開始' }}</p>
+                  <CompetitionParticipantGameEntry
+                    v-if="isCurrentParticipantMatch(match)"
+                    :competition-id="competitionId"
+                    :match-id="match.matchId"
+                    :session-user-id="sessionIdentity"
+                    enabled
+                  />
                   <p v-if="match.cancellationReason !== null" class="muted">
                     取消原因已記錄；詳細內容不在此頁顯示。
                   </p>
@@ -246,6 +253,7 @@ import {
   tournamentTimeLimitLabel,
   type CompetitionTournamentViewData,
   type CompetitionTournamentViewLoadError,
+  type TournamentViewMatch,
   type TournamentViewMatchResult,
   type TournamentViewStageConfig,
 } from '~/lib/competition-tournament-view'
@@ -258,8 +266,11 @@ const props = withDefaults(defineProps<{
   contextRevision: number | null
   /** 父頁已確認 session 與公告 projection 載入完成，不代表 API 授權。 */
   contextReady: boolean
-  /** 凍結後尚未建立首輪時持續查詢權威賽程。 */
+  /** 凍結後持續查詢自動建立中的首輪與進行中賽程入口。 */
   registrationLocked?: boolean
+  /** 只供標記本人交手；授權仍由參賽者唯讀 API 核實。 */
+  participantTeamId?: string | null
+  participantEntryEnabled?: boolean
 }>(), { registrationLocked: false })
 
 const mounted = ref(false)
@@ -277,6 +288,10 @@ const canRead = computed(() => props.contextReady
   && typeof props.contextRevision === 'number'
   && Number.isSafeInteger(props.contextRevision)
   && props.contextRevision > 0)
+const shouldAutoRefresh = computed(() => props.registrationLocked && (
+  loadError.value?.kind === 'notReady'
+  || (props.participantEntryEnabled && Boolean(tournament.value?.stages.some(stage => stage.status === 'active')))
+))
 const requestContext = computed(() => JSON.stringify([
   normalizedCompetitionId.value,
   props.sessionIdentity,
@@ -292,6 +307,19 @@ function tournamentResultLabel(
     const team = stage.teams.find(entry => entry.teamId === teamId)
     return team ? `種子 ${team.seed}` : '該隊'
   })
+}
+
+function isCurrentParticipantMatch(match: TournamentViewMatch): boolean {
+  const teamId = props.participantTeamId
+  if (!props.participantEntryEnabled || !teamId
+    || !match.participants.includes(teamId)
+    || !['pending', 'inProgress'].includes(match.status)) return false
+  const currentMatch = tournament.value?.stages
+    .filter(stage => stage.status === 'active')
+    .flatMap(stage => stage.rounds.flatMap(round => round.matches))
+    .find(candidate => candidate.participants.includes(teamId)
+      && ['pending', 'inProgress'].includes(candidate.status))
+  return currentMatch?.matchId === match.matchId
 }
 
 async function loadTournament() {
@@ -321,7 +349,7 @@ async function loadTournament() {
     if (isCurrentRequest(sequence, identity)) {
       loading.value = false
       activeRequest = null
-      if (props.registrationLocked && loadError.value?.kind === 'notReady') {
+      if (shouldAutoRefresh.value) {
         retryTimer = setTimeout(() => {
           retryTimer = null
           void loadTournament()

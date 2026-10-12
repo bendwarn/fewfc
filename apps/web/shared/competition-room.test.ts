@@ -651,13 +651,15 @@ test('round-release announce success and retry keep the immutable initial snapsh
     expect(isCompetitionRoomAnnounceRoundValue({ ...initial, idempotent }, {
       ...request, trustedTimeMs: request.roundStartMs + 1,
     })).toBe(true)
+    const lateRequest = { ...request, trustedTimeMs: request.roundStartMs - 300_000 + 1 }
+    expect(isCompetitionRoomAnnounceRoundValue({ ...initial, idempotent,
+      publication: { ...publication, requiresReferee: true } }, lateRequest)).toBe(true)
   }
   const room = publication.rooms[0]
   if (!room) throw new Error('共同 wire fixture 缺少房間')
   // 單欄故障與合法 current 狀態都不許取代原 receipt；不冒充真 proof 或持久 generation。
   const currentSnapshots: CompetitionRoomRoundPublication[] = [
     { ...publication, publicationVersion: 2 },
-    { ...publication, requiresReferee: true },
     { ...publication, rooms: [{ ...room, ackConfirmedAtMs: publication.roundStartMs - 300_000 }] },
     { ...publication, rooms: [{ ...room, ackConfirmedAtMs: publication.roundStartMs - 299_999 }] },
     { ...publication, status: 'quiescing' },

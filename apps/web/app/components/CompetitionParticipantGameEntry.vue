@@ -6,7 +6,7 @@
         <h2 id="participant-game-entry-title">進入目前競賽對局</h2>
       </div>
     </div>
-    <p class="explanation">輸入主辦方提供的交手 ID，查詢你目前可加入的當局。查詢不會加入房間，也不會變更賽事或對局狀態。</p>
+    <p class="explanation">此入口依你的固定隊伍與目前賽程查詢可加入的當局。查詢不會加入房間，也不會變更賽事或對局狀態。</p>
 
     <form v-if="editable" class="lookup-form" @submit.prevent="lookup">
       <label :for="matchIdInputId">
@@ -41,7 +41,8 @@
       <button class="ghost-button" type="button" :disabled="!canLookup" @click="lookup">重新查詢</button>
     </div>
     <p v-else-if="lookupCompleted && !game" class="state-note" role="status" aria-live="polite">
-      目前沒有可加入當局，請稍後重新查詢或向主辦方確認。
+      房間尚未就緒，賽事頁會自動重新查詢；也可以立即重試。
+      <button class="ghost-button" type="button" :disabled="!canLookup" @click="lookup">立即重試</button>
     </p>
     <div v-else-if="game && roomPath" class="current-game" role="status" aria-live="polite">
       <p>查詢到目前可加入的第 {{ game.gameNumber }} 局。</p>
@@ -81,6 +82,7 @@ const loadError = ref('')
 const mounted = ref(false)
 let requestSequence = 0
 let activeRequest: AbortController | null = null
+let retryTimer: ReturnType<typeof setTimeout> | null = null
 
 const normalizedCompetitionId = computed(() => normalizeCompetitionParticipantGameId(props.competitionId))
 const normalizedMatchId = computed(() => normalizeCompetitionParticipantGameId(props.matchId))
@@ -100,6 +102,8 @@ function clearCurrentLookup() {
   requestSequence += 1
   activeRequest?.abort()
   activeRequest = null
+  if (retryTimer !== null) clearTimeout(retryTimer)
+  retryTimer = null
   game.value = null
   loading.value = false
   lookupCompleted.value = false
@@ -140,8 +144,17 @@ async function lookup() {
     if (isCurrentRequest(sequence, identity)) {
       loading.value = false
       activeRequest = null
+      if (!props.editable && (loadError.value || (lookupCompleted.value && !game.value))) scheduleLookupRetry()
     }
   }
+}
+
+function scheduleLookupRetry() {
+  if (retryTimer !== null || !props.enabled) return
+  retryTimer = setTimeout(() => {
+    retryTimer = null
+    void lookup()
+  }, loadError.value ? 15_000 : 5_000)
 }
 
 function requestIdentity(): string {
