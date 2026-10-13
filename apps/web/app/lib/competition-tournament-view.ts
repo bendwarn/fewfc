@@ -77,8 +77,20 @@ export interface TournamentViewStanding {
   gameLosses: number
   netGameWins: number
   opponentWinRateBasisPoints: number | null
+  opponentWinScore: string
+  opponentLossScore: string
   dropped: boolean
   rank: number | null
+}
+
+export interface TournamentViewRankingTieDecision {
+  tiedTeamIds: string[]
+  orderedTeamIds: string[]
+  matchPoints: string
+  opponentWinScore: string
+  opponentLossScore: string
+  decidedBy: { type: 'organizer' | 'referee', userId: string }
+  reason: string
 }
 
 export interface TournamentViewStage {
@@ -86,6 +98,7 @@ export interface TournamentViewStage {
   status: TournamentStageStatusView
   rounds: TournamentViewRound[]
   standings: TournamentViewStanding[]
+  rankingTieDecisions: TournamentViewRankingTieDecision[]
   hasScheduleWarning: boolean
   correctionCount: number
   scheduleGeneration: number
@@ -269,7 +282,7 @@ export function singleEliminationDoubleLossFinal(stage: TournamentViewStage): To
 function parseStage(input: unknown): TournamentViewStage | null {
   const value = exactRecord(input, [
     'config', 'status', 'rounds', 'standings', 'corrections', 'lastScheduleError',
-    'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState',
+    'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions',
   ])
   if (!value || (value.status !== 'active' && value.status !== 'finished')
     || !(value.lastScheduleError === null || typeof value.lastScheduleError === 'string')
@@ -286,8 +299,10 @@ function parseStage(input: unknown): TournamentViewStage | null {
   const rounds = parseArray(value.rounds, round => parseRound(round, config.stageId, teamIds, config.format))
   const supersededRounds = parseArray(value.supersededRounds, round => parseRound(round, config.stageId, teamIds, config.format))
   const standings = parseArray(value.standings, standing => parseStanding(standing, teamIds))
+  const rankingTieDecisions = parseArray(value.rankingTieDecisions,
+    decision => parseRankingTieDecision(decision, teamIds))
   const corrections = parseArray(value.corrections, parseCorrection)
-  if (!rounds || !supersededRounds || !standings || !corrections
+  if (!rounds || !supersededRounds || !standings || !rankingTieDecisions || !corrections
     || new Set(standings.map(standing => standing.teamId)).size !== standings.length
     || new Set(rounds.map(round => `${round.kind}:${round.roundNumber}`)).size !== rounds.length
     || !validBronzeRounds(rounds, config.format, true)
@@ -300,6 +315,7 @@ function parseStage(input: unknown): TournamentViewStage | null {
     status,
     rounds,
     standings,
+    rankingTieDecisions,
     hasScheduleWarning: lastScheduleError !== null,
     correctionCount: corrections.length,
     scheduleGeneration,
@@ -630,7 +646,7 @@ function parseMatchResult(
 function parseStanding(input: unknown, teamIds: ReadonlySet<string>): TournamentViewStanding | null {
   const value = exactRecord(input, [
     'teamId', 'matchPoints', 'wins', 'draws', 'losses', 'gameWins', 'gameLosses',
-    'netGameWins', 'opponentWinRateBasisPoints', 'dropped', 'rank',
+    'netGameWins', 'opponentWinRateBasisPoints', 'opponentWinScore', 'opponentLossScore', 'dropped', 'rank',
   ])
   if (!value || !isNonEmptyString(value.teamId) || !teamIds.has(value.teamId)
     || !isU64DecimalString(value.matchPoints)
@@ -642,6 +658,8 @@ function parseStanding(input: unknown, teamIds: ReadonlySet<string>): Tournament
     || !isSafeInteger(value.netGameWins)
     || !(value.opponentWinRateBasisPoints === null
       || (isNonNegativeSafeInteger(value.opponentWinRateBasisPoints) && value.opponentWinRateBasisPoints <= 10_000))
+    || !isU64DecimalString(value.opponentWinScore)
+    || !isU64DecimalString(value.opponentLossScore)
     || typeof value.dropped !== 'boolean'
     || !(value.rank === null || isPositiveSafeInteger(value.rank))) return null
 
@@ -654,6 +672,8 @@ function parseStanding(input: unknown, teamIds: ReadonlySet<string>): Tournament
   const gameLosses = value.gameLosses
   const netGameWins = value.netGameWins
   const opponentWinRateBasisPoints = value.opponentWinRateBasisPoints
+  const opponentWinScore = value.opponentWinScore
+  const opponentLossScore = value.opponentLossScore
   const dropped = value.dropped
   const rank = value.rank
 
@@ -667,9 +687,49 @@ function parseStanding(input: unknown, teamIds: ReadonlySet<string>): Tournament
     gameLosses,
     netGameWins,
     opponentWinRateBasisPoints,
+    opponentWinScore,
+    opponentLossScore,
     dropped,
     rank,
   }
+}
+
+function parseRankingTieDecision(
+  input: unknown,
+  teamIds: ReadonlySet<string>,
+): TournamentViewRankingTieDecision | null {
+  const value = exactRecord(input, [
+    'tiedTeamIds', 'orderedTeamIds', 'matchPoints', 'opponentWinScore', 'opponentLossScore', 'decidedBy', 'reason',
+  ])
+  const decidedBy = value && exactRecord(value.decidedBy, ['type', 'userId'])
+  if (!value || !Array.isArray(value.tiedTeamIds) || !Array.isArray(value.orderedTeamIds)
+    || value.tiedTeamIds.length < 2 || value.orderedTeamIds.length !== value.tiedTeamIds.length
+    || !value.tiedTeamIds.every((teamId): teamId is string => typeof teamId === 'string' && teamIds.has(teamId))
+    || !value.orderedTeamIds.every((teamId): teamId is string => typeof teamId === 'string' && teamIds.has(teamId))
+    || new Set(value.tiedTeamIds).size !== value.tiedTeamIds.length
+    || new Set(value.orderedTeamIds).size !== value.orderedTeamIds.length
+    || !sameStringSet(value.tiedTeamIds as string[], value.orderedTeamIds as string[])
+    || !isU64DecimalString(value.matchPoints)
+    || !isU64DecimalString(value.opponentWinScore)
+    || !isU64DecimalString(value.opponentLossScore)
+    || !decidedBy || (decidedBy.type !== 'organizer' && decidedBy.type !== 'referee')
+    || !isNonEmptyString(decidedBy.userId)
+    || typeof value.reason !== 'string' || !value.reason.trim()) return null
+  const tiedTeamIds = value.tiedTeamIds as string[]
+  if (tiedTeamIds.some((teamId, index) => index > 0 && tiedTeamIds[index - 1]! >= teamId)) return null
+  return {
+    tiedTeamIds,
+    orderedTeamIds: value.orderedTeamIds as string[],
+    matchPoints: value.matchPoints,
+    opponentWinScore: value.opponentWinScore,
+    opponentLossScore: value.opponentLossScore,
+    decidedBy: { type: decidedBy.type, userId: decidedBy.userId },
+    reason: value.reason,
+  }
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every(value => right.includes(value))
 }
 
 function parseCorrection(input: unknown): true | null {

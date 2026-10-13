@@ -218,7 +218,7 @@
 
         <section v-else class="standings-section" :aria-labelledby="standingsHeadingId(stage.config.stageId)">
           <h4 :id="standingsHeadingId(stage.config.stageId)">伺服器排名與積分</h4>
-          <p class="muted">依賽事服務提供的順序顯示；名次只採用服務提供的值，不由隊伍位置推算。</p>
+          <p class="muted">正式名次先比自身賽事積分，再比不同對手勝分較多、負分較少。血量、耗時、種子與配對抽籤不作排名鍵；全項相同時等待公開裁決。</p>
           <p v-if="!stage.standings.length" class="muted">目前沒有可顯示排名。</p>
           <ol v-else class="standing-list">
             <li v-for="standing in stage.standings" :key="standing.teamId" class="standing-card">
@@ -229,13 +229,73 @@
               <dl class="standing-facts">
                 <div><dt>賽事積分</dt><dd>{{ standing.matchPoints }}</dd></div>
                 <div><dt>勝／和／負</dt><dd>{{ standing.wins }}／{{ standing.draws }}／{{ standing.losses }}</dd></div>
-                <div><dt>勝／負局</dt><dd>{{ standing.gameWins }}／{{ standing.gameLosses }}</dd></div>
-                <div><dt>淨勝局</dt><dd>{{ standing.netGameWins }}</dd></div>
-                <div><dt>對手勝率基點</dt><dd>{{ standing.opponentWinRateBasisPoints ?? '未提供' }}</dd></div>
+                <div><dt>不同對手勝分</dt><dd>{{ standing.opponentWinScore }}</dd></div>
+                <div><dt>不同對手負分</dt><dd>{{ standing.opponentLossScore }}</dd></div>
                 <div><dt>已退賽</dt><dd>{{ standing.dropped ? '是' : '否' }}</dd></div>
               </dl>
             </li>
           </ol>
+
+          <section v-if="stage.rankingTieDecisions.length" class="tie-decisions" aria-label="公開同分裁決紀錄">
+            <h5>公開同分裁決紀錄</h5>
+            <ul>
+              <li v-for="(decision, index) in stage.rankingTieDecisions" :key="`${decision.tiedTeamIds.join(',')}-${index}`">
+                <p>同分隊伍：<span class="identifier">{{ decision.tiedTeamIds.join('、') }}</span></p>
+                <p>裁決順序：<span class="identifier">{{ decision.orderedTeamIds.join(' → ') }}</span></p>
+                <p>裁決者：{{ decision.decidedBy.type === 'organizer' ? '主辦' : '指定裁判' }}・<span class="identifier">{{ decision.decidedBy.userId }}</span></p>
+                <p>理由：{{ decision.reason }}</p>
+              </li>
+            </ul>
+          </section>
+
+          <section
+            v-for="tie in unresolvedRankingTies(stage)"
+            :key="tie.key"
+            class="ranking-tie-panel"
+            :aria-labelledby="`${tie.key}-title`"
+          >
+            <h5 :id="`${tie.key}-title`">同分順序待裁決</h5>
+            <p class="muted">本群組的三項比較值完全相同，相關資格與前三名尚未確定。請主辦或無利益衝突的指定裁判明示完整順序並填寫公開理由。</p>
+            <p class="tie-score">積分 {{ tie.matchPoints }}・勝分 {{ tie.opponentWinScore }}・負分 {{ tie.opponentLossScore }}</p>
+            <ol class="tie-order-list" :aria-label="`裁決${tie.tiedTeamIds.join('、')}的完整順序`">
+              <li v-for="(teamId, position) in tie.tiedTeamIds" :key="teamId">
+                <label :for="`${tie.key}-position-${position}`">第 {{ position + 1 }} 順位
+                  <select
+                    :id="`${tie.key}-position-${position}`"
+                    v-model="rankingTieDraft(tie).orderedTeamIds[position]"
+                    :disabled="rankingTieBusy === tie.key"
+                  >
+                    <option value="">選擇隊伍</option>
+                    <option
+                      v-for="candidate in tie.tiedTeamIds"
+                      :key="candidate"
+                      :value="candidate"
+                      :disabled="rankingTieDraft(tie).orderedTeamIds.some((selected, selectedPosition) => selected === candidate && selectedPosition !== position)"
+                    >{{ candidate }}</option>
+                  </select>
+                </label>
+              </li>
+            </ol>
+            <label :for="`${tie.key}-reason`">公開裁決理由
+              <textarea
+                :id="`${tie.key}-reason`"
+                v-model="rankingTieDraft(tie).reason"
+                rows="3"
+                required
+                :disabled="rankingTieBusy === tie.key"
+              />
+            </label>
+            <p class="muted">送出時會由賽事服務核對目前版本、主辦／裁判權限，以及裁決者是否屬於同分隊伍。</p>
+            <p v-if="rankingTieMessages[tie.key]" role="status" aria-live="polite">{{ rankingTieMessages[tie.key] }}</p>
+            <button
+              class="refresh-button tie-submit"
+              type="button"
+              :disabled="!canSubmitRankingTie(tie)"
+              @click="submitRankingTie(stage, tie)"
+            >
+              {{ rankingTieBusy === tie.key ? '正在保存裁決…' : '公開保存同分順序' }}
+            </button>
+          </section>
         </section>
 
         <section v-if="stage.supersededRounds.length" class="superseded-section" :aria-labelledby="supersededHeadingId(stage.config.stageId)">
@@ -312,6 +372,9 @@ const mounted = ref(false)
 const loading = ref(false)
 const tournament = ref<CompetitionTournamentViewData | null>(null)
 const loadError = ref<CompetitionTournamentViewLoadError | null>(null)
+const rankingTieBusy = ref<string | null>(null)
+const rankingTieMessages = reactive<Record<string, string>>({})
+const rankingTieDrafts = reactive<Record<string, { orderedTeamIds: string[], reason: string }>>({})
 let requestSequence = 0
 let activeRequest: AbortController | null = null
 let retryTimer: ReturnType<typeof setTimeout> | null = null
@@ -359,6 +422,74 @@ function isCurrentParticipantMatch(match: TournamentViewMatch): boolean {
 
 function swissTeamWins(stage: TournamentViewStage, teamId: string): number | null {
   return stage.standings.find(standing => standing.teamId === teamId)?.wins ?? null
+}
+
+interface UnresolvedRankingTie {
+  key: string
+  matchPoints: string
+  opponentWinScore: string
+  opponentLossScore: string
+  tiedTeamIds: string[]
+}
+
+function unresolvedRankingTies(stage: TournamentViewStage): UnresolvedRankingTie[] {
+  if (stage.status !== 'finished' || !['roundRobin', 'swiss'].includes(stage.config.format)) return []
+  const groups = new Map<string, UnresolvedRankingTie>()
+  for (const standing of stage.standings) {
+    if (standing.rank !== null) continue
+    const key = `ranking-tie-${encodeURIComponent(stage.config.stageId)}-${standing.matchPoints}-${standing.opponentWinScore}-${standing.opponentLossScore}`
+    const group = groups.get(key) ?? {
+      key,
+      matchPoints: standing.matchPoints,
+      opponentWinScore: standing.opponentWinScore,
+      opponentLossScore: standing.opponentLossScore,
+      tiedTeamIds: [],
+    }
+    group.tiedTeamIds.push(standing.teamId)
+    groups.set(key, group)
+  }
+  return [...groups.values()].filter(group => group.tiedTeamIds.length > 1)
+}
+
+function rankingTieDraft(tie: UnresolvedRankingTie) {
+  rankingTieDrafts[tie.key] ??= { orderedTeamIds: Array.from({ length: tie.tiedTeamIds.length }, () => ''), reason: '' }
+  return rankingTieDrafts[tie.key]!
+}
+
+function canSubmitRankingTie(tie: UnresolvedRankingTie): boolean {
+  if (rankingTieBusy.value !== null || !canRead.value || !tournament.value) return false
+  const draft = rankingTieDraft(tie)
+  return draft.orderedTeamIds.length === tie.tiedTeamIds.length
+    && draft.orderedTeamIds.every(teamId => tie.tiedTeamIds.includes(teamId))
+    && new Set(draft.orderedTeamIds).size === tie.tiedTeamIds.length
+    && Boolean(draft.reason.trim())
+}
+
+async function submitRankingTie(stage: TournamentViewStage, tie: UnresolvedRankingTie) {
+  const competitionId = normalizedCompetitionId.value
+  if (!canSubmitRankingTie(tie) || !tournament.value || !competitionId) return
+  const draft = rankingTieDraft(tie)
+  rankingTieBusy.value = tie.key
+  rankingTieMessages[tie.key] = ''
+  try {
+    await $fetch(`/api/competitions/${encodeURIComponent(competitionId)}/tournament/ranking-tie`, {
+      method: 'POST',
+      body: {
+        commandId: `ranking-tie-${crypto.randomUUID()}`,
+        expectedRevision: tournament.value.revision,
+        stageId: stage.config.stageId,
+        orderedTeamIds: [...draft.orderedTeamIds],
+        reason: draft.reason.trim(),
+      },
+      retry: 0,
+    })
+    rankingTieMessages[tie.key] = '同分順序已提交，正在確認公開賽程。'
+  } catch {
+    rankingTieMessages[tie.key] = '裁決未確認；正在重新查詢最新賽程，請依目前公開紀錄確認結果。'
+  } finally {
+    rankingTieBusy.value = null
+    await loadTournament()
+  }
 }
 
 async function loadTournament() {
@@ -561,6 +692,15 @@ onBeforeUnmount(() => {
 .standing-heading { align-items: center; }
 .standing-heading h5 { min-width: 0; overflow-wrap: anywhere; font-size: .88rem; }
 .standing-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.tie-decisions, .ranking-tie-panel { display: grid; gap: .65rem; border-top: 1px solid var(--app-border); padding-top: .9rem; }
+.tie-decisions h5, .ranking-tie-panel h5 { margin: 0; font-size: .9rem; }
+.tie-decisions ul, .tie-order-list { display: grid; gap: .55rem; margin: 0; padding-left: 1.25rem; }
+.tie-decisions li { display: grid; gap: .2rem; border: 1px solid var(--app-border); border-radius: 8px; padding: .65rem; background: var(--app-surface-muted); }
+.tie-decisions p, .tie-score { margin: 0; font-size: .85rem; line-height: 1.5; }
+.tie-order-list label, .ranking-tie-panel label { display: grid; gap: .3rem; font-size: .82rem; }
+.tie-order-list select, .ranking-tie-panel textarea { width: 100%; min-height: 2.6rem; border: 1px solid var(--app-border-strong); border-radius: 8px; padding: .55rem .7rem; background: var(--app-control); color: var(--app-text); font: inherit; }
+.ranking-tie-panel textarea { resize: vertical; }
+.tie-submit { justify-self: start; }
 .old-round { border-style: dashed; opacity: .82; }
 
 @media (max-width: 600px) {

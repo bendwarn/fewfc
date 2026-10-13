@@ -469,6 +469,7 @@ const OPERATION_NAMES: CompetitionOperationName[] = [
   'clockNewGame',
   'clockRuleGame',
   'tournamentCreate',
+  'tournamentAdjudicateRankingTie',
   'tournamentStartMatch',
   'tournamentSubmitResult',
   'tournamentCorrectResult',
@@ -3439,6 +3440,17 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
 
     const serverActor = actorFor(role, request.callerUserId)
     const serverState = parseServerState(current.server_state_json)
+    if (request.operation.type === 'tournamentAdjudicateRankingTie') {
+      const judgeError = await this.validateRankingTieAdjudicator(
+        request.operation,
+        request.callerUserId,
+        role,
+        serverState,
+        current,
+        request.trustedTimeMs,
+      )
+      if (judgeError) return roomFailure(judgeError.code, judgeError.message)
+    }
     let operation = request.operation
     let registrationRevision: number | null = null
     if (operation.type === 'registrationExecute') {
@@ -5289,7 +5301,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     serverState: CompetitionServerState,
     organizerUserId: string,
     trustedTimeMs: number,
-  ): Promise<{ teamIds: string[], announcement: JsonObject } | null> {
+  ): Promise<{ teamIds: string[], announcement: JsonObject, teams: { teamId: string, members: string[] }[] } | null> {
     let response: CompetitionEngineResponse
     try {
       response = await this.engine({
@@ -5306,7 +5318,36 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       || !isJsonObject(response.public) || !hasExactKeys(response.public, ['exported'])
       || response.public.exported !== true || !sameJson(response.serverState, serverState)) return null
     const roster = parseLockedRoster(response.private, organizerUserId)
-    return roster ? { teamIds: roster.teamIds, announcement: roster.announcement } : null
+    return roster ? { teamIds: roster.teamIds, announcement: roster.announcement, teams: roster.teams } : null
+  }
+
+  /** 同分裁決以凍結隊員名單核實主辦／裁判是否屬於該群組。 */
+  private async validateRankingTieAdjudicator(
+    operation: Extract<CompetitionOperation, { type: 'tournamentAdjudicateRankingTie' }>,
+    callerUserId: string,
+    role: CompetitionRoomRole,
+    serverState: CompetitionServerState,
+    current: CompetitionMetaRow,
+    trustedTimeMs: number,
+  ): Promise<{ code: string, message: string } | null> {
+    if (role !== 'organizer' && role !== 'referee') {
+      return { code: 'forbidden', message: 'only the organizer or a designated referee may adjudicate ranking ties' }
+    }
+    const roster = await this.exportLockedRosterFromState(serverState, current.organizer_user_id, trustedTimeMs)
+    if (!roster || !serverState.tournament || !isTournamentForCompetition(serverState.tournament, current.competition_id)) {
+      return { code: 'invalidLockedRoster', message: 'ranking tie judge membership cannot be verified' }
+    }
+    const byTeam = new Map(roster.teams.map(team => [team.teamId, team.members]))
+    for (const teamId of operation.orderedTeamIds) {
+      const members = byTeam.get(teamId)
+      if (!members) {
+        return { code: 'invalidLockedRoster', message: 'ranking tie teams do not match the locked roster' }
+      }
+      if (members.includes(callerUserId)) {
+        return { code: 'forbidden', message: 'a ranking tie judge cannot belong to a tied team' }
+      }
+    }
+    return null
   }
 
   private initialSeedingIntent(competitionId: string): InitialSeedingIntentRow | undefined {
@@ -9420,11 +9461,12 @@ function registrationFreezeDeadline(value: unknown, organizerUserId: string): nu
 function parseLockedRoster(
   value: unknown,
   organizerUserId: string,
-): { teamIds: string[], announcement: JsonObject } | null {
+): { teamIds: string[], announcement: JsonObject, teams: { teamId: string, members: string[] }[] } | null {
   if (!isJsonObject(value) || !hasExactKeys(value, ['announcement', 'teams'])
     || !isRegistrationAnnouncement(value.announcement, organizerUserId) || !Array.isArray(value.teams)) return null
   const announcement = value.announcement
   const teamIds: string[] = []
+  const teams: { teamId: string, members: string[] }[] = []
   const allMembers = new Set<string>()
   for (const team of value.teams) {
     if (!isJsonObject(team) || !hasExactKeys(team, ['teamId', 'captain', 'members', 'rosterVersion', 'decks'])
@@ -9450,8 +9492,9 @@ function parseLockedRoster(
       if (!isUniqueNonEmptyStringArray(deckPlayers) || !sameTeamSet(deckPlayers, members)) return null
     }
     teamIds.push(team.teamId)
+    teams.push({ teamId: team.teamId, members: [...members] })
   }
-  return isUniqueNonEmptyStringArray(teamIds) ? { teamIds, announcement } : null
+  return isUniqueNonEmptyStringArray(teamIds) ? { teamIds, announcement, teams } : null
 }
 
 function isTournamentForCompetition(value: JsonObject, competitionId: string): boolean {
@@ -9473,9 +9516,10 @@ function validCreatedTournament(
   const stage = tournament.stages[0]
   if (!isJsonObject(stage) || !hasExactKeys(stage, [
     'config', 'status', 'rounds', 'standings', 'corrections', 'lastScheduleError',
-    'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState',
+    'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions',
   ]) || stage.status !== 'active' || !Array.isArray(stage.rounds)
-    || !Array.isArray(stage.standings) || !Array.isArray(stage.corrections)
+    || !Array.isArray(stage.standings) || !Array.isArray(stage.rankingTieDecisions)
+    || stage.rankingTieDecisions.length !== 0 || !Array.isArray(stage.corrections)
     || stage.lastScheduleError !== null || !Number.isSafeInteger(stage.scheduleGeneration)
     || stage.scheduleGeneration !== 0 || !Array.isArray(stage.supersededRounds)
     || !isJsonObject(stage.teams)
@@ -9531,7 +9575,7 @@ function validInitialStandings(
   const rowsValid = value.every(row => isJsonObject(row)
     && hasExactKeys(row, [
       'teamId', 'matchPoints', 'wins', 'draws', 'losses', 'gameWins', 'gameLosses',
-      'netGameWins', 'opponentWinRateBasisPoints', 'dropped', 'rank',
+      'netGameWins', 'opponentWinRateBasisPoints', 'opponentWinScore', 'opponentLossScore', 'dropped', 'rank',
     ])
     && nonEmpty(row.teamId) && teamIds.includes(row.teamId) && !seen.has(row.teamId)
     && (seen.add(row.teamId), true)
@@ -9545,27 +9589,25 @@ function validInitialStandings(
       ? config.swissPolicy?.matchPoints.bye ?? 0 : 0)
     && Number.isSafeInteger(row.netGameWins)
     && row.opponentWinRateBasisPoints === null
+    && row.opponentWinScore === '0' && row.opponentLossScore === '0'
     && typeof row.dropped === 'boolean'
     && (row.rank === null || (Number.isSafeInteger(row.rank) && (row.rank as number) > 0)))
     && seen.size === teamIds.length
   if (!rowsValid) return false
+  if (config.format === 'roundRobin') return value.every(row => isJsonObject(row) && row.rank === null)
   if (config.format !== 'swiss') return value.every(row => isJsonObject(row) && row.rank === 1)
   const byePoints = config.swissPolicy?.matchPoints.bye ?? 0
-  const useSeedOrder = config.swissPolicy?.tieBreakers.includes('seedOrder') ?? false
   const matchPointsFor = (teamId: string): number => byeTeams.has(teamId) ? byePoints : 0
-  const ordered = [...config.teams].sort((left, right) => {
-    const points = matchPointsFor(right.teamId) - matchPointsFor(left.teamId)
-    return points || (useSeedOrder ? left.seed - right.seed : 0)
-  })
-  let previousKey = ''
-  let expectedRank = 0
-  const ranks = new Map<string, number>()
-  ordered.forEach((team, index) => {
-    const key = `${matchPointsFor(team.teamId)}:${useSeedOrder ? team.seed : ''}`
-    if (key !== previousKey) expectedRank = index + 1
-    ranks.set(team.teamId, expectedRank)
-    previousKey = key
-  })
+  const ordered = [...config.teams].sort((left, right) => matchPointsFor(right.teamId) - matchPointsFor(left.teamId))
+  const ranks = new Map<string, number | null>()
+  for (let start = 0; start < ordered.length;) {
+    let end = start + 1
+    while (end < ordered.length
+      && matchPointsFor(ordered[end]!.teamId) === matchPointsFor(ordered[start]!.teamId)) end += 1
+    const rank = end - start > 1 ? null : start + 1
+    for (const team of ordered.slice(start, end)) ranks.set(team.teamId, rank)
+    start = end
+  }
   return value.every(row => isJsonObject(row) && ranks.get(row.teamId as string) === row.rank)
 }
 
@@ -9743,7 +9785,7 @@ function deriveScheduledMatch(
   for (const rawStage of tournament.stages) {
     if (!isJsonObject(rawStage) || !hasExactKeys(rawStage, [
       'config', 'status', 'rounds', 'standings', 'corrections', 'lastScheduleError',
-      'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState',
+      'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions',
     ]) || !isJsonObject(rawStage.config) || !hasExactKeys(rawStage.config, [
       'stageId', 'format', 'teams', 'randomSeed', 'matchFormat', 'clockConfig', 'swissRounds', 'swissPolicy',
     ])
@@ -10569,7 +10611,7 @@ function clockEligibilitySnapshot(
   })
 }
 
-function operationReason(operation: MatchExecuteOperation): string | null {
+function operationReason(operation: { type: string }): string | null {
   return 'reason' in operation && typeof operation.reason === 'string'
     ? operation.reason
     : null

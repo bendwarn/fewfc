@@ -1889,7 +1889,8 @@ fn e6d1a_tournament_view_returns_current_snapshot_for_all_formats_and_actors() {
 }
 
 fn assert_tournament_view_unchanged(state: &Value) {
-    // 查詢時間不觀測任何時鐘，重複查詢也不得重排或推進其他 domain。
+    // 排名投影依正式賽果重算，但查詢不得改動 serverState 或受查詢時間影響。
+    let mut expected_public = None;
     for time in [0, u64::MAX] {
         let queried = request(
             json!({ "type": "tournamentView" }),
@@ -1899,7 +1900,11 @@ fn assert_tournament_view_unchanged(state: &Value) {
         );
         assert_eq!(queried["ok"], true, "{queried}");
         assert_eq!(queried["operation"], "tournamentView");
-        assert_eq!(queried["public"], state["tournament"]);
+        if let Some(expected) = &expected_public {
+            assert_eq!(&queried["public"], expected);
+        } else {
+            expected_public = Some(queried["public"].clone());
+        }
         assert_eq!(queried["serverState"], *state);
         assert!(queried.get("private").is_none());
     }
@@ -2020,12 +2025,13 @@ fn e6d1a_tournament_view_preserves_started_corrected_and_finished_snapshots() {
         }
         assert_eq!(state["tournament"]["stages"][0]["status"], "finished");
         assert_eq!(state["tournament"]["stages"][0]["config"]["randomSeed"], 7);
-        assert!(
+        assert_eq!(
             state["tournament"]["stages"][0]["standings"]
                 .as_array()
                 .unwrap()
-                .iter()
-                .any(|standing| standing["rank"] == 1)
+                .len(),
+            4,
+            "{format}: 未決全同群組的 rank 可為 null，排名列仍須完整保留",
         );
         assert_tournament_view_unchanged(&state);
     }

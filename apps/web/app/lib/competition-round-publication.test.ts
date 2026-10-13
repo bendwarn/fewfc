@@ -71,11 +71,11 @@ function finishedRoundRobinStage(id: string) {
     }] }],
     standings: [
       { teamId: 'team-a', matchPoints: '3', wins: 1, draws: 0, losses: 0, gameWins: 1, gameLosses: 0,
-        netGameWins: 1, opponentWinRateBasisPoints: null, dropped: false, rank: 1 },
+        netGameWins: 1, opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 1 },
       { teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 1, gameWins: 0, gameLosses: 1,
-        netGameWins: -1, opponentWinRateBasisPoints: null, dropped: false, rank: 2 },
+        netGameWins: -1, opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 2 },
     ],
-    corrections: [], lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
+    rankingTieDecisions: [], corrections: [], lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
     teams: { 'team-a': { seed: 1, dropped: false, hadBye: false }, 'team-b': { seed: 2, dropped: false, hadBye: false } },
     doubleState: null,
   }
@@ -103,7 +103,7 @@ function tournament(
       clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 15_000 },
       swissRounds: null, swissPolicy: null,
     },
-    status, rounds: id === stageId ? rounds : [], standings: [], corrections: [],
+    status, rounds: id === stageId ? rounds : [], standings: [], rankingTieDecisions: [], corrections: [],
     lastScheduleError: options.warning && id === stageId ? 'stale schedule' : null,
     scheduleGeneration: 0, supersededRounds: [],
     teams: {

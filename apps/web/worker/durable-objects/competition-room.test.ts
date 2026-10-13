@@ -351,6 +351,15 @@ function createTournamentRequest(
   }
 }
 
+function setRankingTieTournament(setup: { sql: MemorySql }) {
+  const row = setup.sql.database.query('SELECT server_state_json FROM competition_meta').get() as {
+    server_state_json: string
+  }
+  const state = JSON.parse(row.server_state_json) as JsonObject
+  state.tournament = { tournamentId: 'competition-1', stages: [{}] }
+  setup.sql.database.query('UPDATE competition_meta SET server_state_json = ?').run(JSON.stringify(state))
+}
+
 function persistLockedCreateFixture(sql: MemorySql, stage: StageConfig, commandId: string) {
   const row = sql.database.query('SELECT server_state_json FROM competition_meta WHERE singleton = 1').get() as {
     server_state_json: string
@@ -406,23 +415,22 @@ function createdTournament(stage: StageConfig, tournamentId: string): JsonObject
         ? left.seed - right.seed : left.teamId.localeCompare(right.teamId))
     })
     : [...stage.teams].sort((left, right) => left.teamId.localeCompare(right.teamId))
-  let previousSwissKey = ''
-  let swissRank = 0
-  const standings = standingOrder.map((team, index) => {
+  const standings = standingOrder.map(team => {
     const matchPoints = stage.format === 'swiss' && byeTeams.has(team.teamId)
       ? stage.swissPolicy?.matchPoints.bye ?? 0 : 0
-    if (stage.format === 'swiss') {
-      const key = `${matchPoints}:${stage.swissPolicy?.tieBreakers.includes('seedOrder') ? team.seed : ''}`
-      if (key !== previousSwissKey) swissRank = index + 1
-      previousSwissKey = key
-    }
+    const pointsFor = (teamId: string) => stage.format === 'swiss' && byeTeams.has(teamId)
+      ? stage.swissPolicy?.matchPoints.bye ?? 0 : 0
+    const samePointCount = standingOrder.filter(candidate => pointsFor(candidate.teamId) === matchPoints).length
+    const higherPointCount = standingOrder.filter(candidate => pointsFor(candidate.teamId) > matchPoints).length
     return {
       teamId: team.teamId,
       matchPoints: String(matchPoints), wins: 0, draws: 0, losses: 0,
       gameWins: 0, gameLosses: 0, netGameWins: 0,
       opponentWinRateBasisPoints: null,
-      dropped: false,
-      rank: stage.format === 'swiss' ? swissRank : 1,
+      opponentWinScore: '0', opponentLossScore: '0', dropped: false,
+      rank: stage.format === 'roundRobin' ? null
+        : stage.format === 'swiss' ? samePointCount > 1 ? null : higherPointCount + 1
+          : 1,
     }
   })
   return {
@@ -432,6 +440,7 @@ function createdTournament(stage: StageConfig, tournamentId: string): JsonObject
       status: 'active',
       rounds,
       standings,
+      rankingTieDecisions: [],
       corrections: [],
       lastScheduleError: null,
       scheduleGeneration: 0,
@@ -1669,6 +1678,7 @@ function seedScheduledMatches(
         matches: [match],
       })),
       standings: [],
+      rankingTieDecisions: [],
       corrections: [],
       lastScheduleError: null,
       scheduleGeneration: 1,
@@ -8527,8 +8537,8 @@ test('locked-roster tournament entry supports 1v1 and 2v2 across all formats and
     expect((createdStage.standings as JsonValue[]).map(row =>
       isJsonObject(row) ? [row.teamId, row.rank, row.matchPoints] : null,
     )).toEqual(swissPolicy.matchPoints.bye === 0
-      ? [['team-a', 1, '0'], ['team-b', 1, '0'], ['team-c', 1, '0']]
-      : [['team-a', 1, '3'], ['team-b', 2, '0'], ['team-c', 2, '0']])
+      ? [['team-a', null, '0'], ['team-b', null, '0'], ['team-c', null, '0']]
+      : [['team-a', 1, '3'], ['team-b', null, '0'], ['team-c', null, '0']])
   }
   const orderedStage = stageConfig({ teams: [
     { teamId: 'team-b', seed: 9 }, { teamId: 'team-a', seed: 4 },
@@ -8654,7 +8664,7 @@ test('real Rust WASM tournament start and match/clock checkpoints pass for 2, 3,
     isJsonObject(row) && row.teamId === byeTeamId,
   )
   expect(byeTeamId).toBe('five-4')
-  expect(byeStanding).toMatchObject({ teamId: 'five-4', matchPoints: '0', rank: 4 })
+  expect(byeStanding).toMatchObject({ teamId: 'five-4', matchPoints: '0', rank: null })
 })
 
 test('real Rust WASM assigns and provisions the initial game for 1v1 and 2v2 rosters', async () => {
@@ -8844,6 +8854,70 @@ test('receipt identity precedes ACL and state checks; semantic changes conflict 
     callerUserId: 'referee-1', expectedRevision: 2, trustedTimeMs: 102,
   }))).toMatchObject({ ok: false, error: { code: 'forbidden' } })
   expect(referee.calls.some(call => call.operation.type === 'registrationExportLockedRoster')).toBe(false)
+})
+
+test('ranking tie decisions require current official authority and reject stale room versions', async () => {
+  const player = await tournamentRoom()
+  setRankingTieTournament(player)
+  player.sql.database.query(`INSERT INTO competition_acl (user_id, role, active, participant)
+    VALUES ('participant-user', 'player', 1, 1)`).run()
+  const operation = {
+    type: 'tournamentAdjudicateRankingTie' as const,
+    stageId: 'stage-online', orderedTeamIds: ['team-b', 'team-a'], reason: '公開理由',
+  }
+  expect(await player.room.execute(executeRequest(operation, {
+    callerUserId: 'participant-user', commandId: 'player-tie', expectedRevision: 1,
+  }))).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  expect(player.calls.some(call => call.operation.type === operation.type)).toBe(false)
+  expect(player.calls.some(call => call.operation.type === 'registrationExportLockedRoster')).toBe(false)
+
+  const stale = await tournamentRoom()
+  setRankingTieTournament(stale)
+  expect(await stale.room.execute(executeRequest(operation, {
+    commandId: 'stale-tie', expectedRevision: 2,
+  }))).toMatchObject({ ok: false, error: { code: 'revisionConflict' } })
+  expect(stale.calls.some(call => call.operation.type === operation.type)).toBe(false)
+  expect(stale.calls.some(call => call.operation.type === 'registrationExportLockedRoster')).toBe(false)
+})
+
+test('ranking tie conflict checks use tied-team membership and permit an independent designated referee', async () => {
+  const conflictedRoster = lockedRoster(1, false)
+  const tiedMember = (conflictedRoster.teams as JsonObject[])[0]!
+  tiedMember.members = ['organizer-1']
+  tiedMember.captain = 'organizer-1'
+  const conflicted = await tournamentRoom({ roster: conflictedRoster })
+  setRankingTieTournament(conflicted)
+  const operation = {
+    type: 'tournamentAdjudicateRankingTie' as const,
+    stageId: 'stage-online', orderedTeamIds: ['team-b', 'team-a'], reason: '公開理由',
+  }
+  expect(await conflicted.room.execute(executeRequest(operation, {
+    commandId: 'conflicted-organizer-tie', expectedRevision: 1,
+  }))).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  expect(conflicted.calls.some(call => call.operation.type === operation.type)).toBe(false)
+
+  const independentRoster = lockedRoster(1, false, ['team-a', 'team-b', 'team-c'])
+  const nonTiedMember = (independentRoster.teams as JsonObject[])[2]!
+  nonTiedMember.members = ['organizer-1']
+  nonTiedMember.captain = 'organizer-1'
+  const independentOrganizer = await tournamentRoom({ roster: independentRoster })
+  setRankingTieTournament(independentOrganizer)
+  expect(await independentOrganizer.room.execute(executeRequest(operation, {
+    commandId: 'non-tied-organizer', expectedRevision: 1,
+  }))).toMatchObject({ ok: true })
+  expect(independentOrganizer.calls.some(call => call.operation.type === operation.type)).toBe(true)
+
+  const referee = await tournamentRoom()
+  setRankingTieTournament(referee)
+  expect((await referee.room.grantReferee({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', targetUserId: 'referee-1',
+    commandId: 'grant-ranking-referee', expectedRevision: 1, trustedTimeMs: 102,
+  })).ok).toBe(true)
+  expect(await referee.room.execute(executeRequest(operation, {
+    callerUserId: 'referee-1', commandId: 'independent-referee-tie', expectedRevision: 2, trustedTimeMs: 103,
+  }))).toMatchObject({ ok: true })
+  const decisionCall = referee.calls.find(call => call.operation.type === operation.type)
+  expect(decisionCall?.serverActor).toEqual({ type: 'referee', playerId: 'referee-1' })
 })
 
 test('invalid StageConfig and an existing tournament stop before locked-roster export', async () => {
@@ -13594,8 +13668,8 @@ async function roundDeliveryModule(options: {
       structuredClone(manifest.tournamentRound),
     ],
     standings: config.teams.map(team => ({ teamId: team.teamId, matchPoints: '0', wins: 0, draws: 0, losses: 0,
-      gameWins: 0, gameLosses: 0, netGameWins: 0, opponentWinRateBasisPoints: null, dropped: false, rank: 1 })),
-    corrections: [], lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
+      gameWins: 0, gameLosses: 0, netGameWins: 0, opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 1 })),
+    rankingTieDecisions: [], corrections: [], lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
     teams: Object.fromEntries(config.teams.map(team => [team.teamId, { seed: team.seed, dropped: false, hadBye: false }])),
     doubleState: null,
   }] }

@@ -1089,6 +1089,41 @@ export interface RegistrationCommandInput {
   operation: Extract<CompetitionOperation, { type: 'registrationView' | 'registrationExecute' }>
 }
 
+export interface ExecuteCommandInput {
+  commandId: string
+  expectedRevision: number
+  operation: CompetitionRoomExecuteRequest['operation']
+}
+
+/** 同分裁決 HTTP 入口只允許完整名單順序與公開理由，不接受一般 engine operation。 */
+export function buildRankingTieDecisionCommand(input: unknown): ExecuteCommandInput {
+  const body = record(input)
+  if (Object.keys(body).some(key => ![
+    'commandId', 'expectedRevision', 'stageId', 'orderedTeamIds', 'reason',
+  ].includes(key))) throw badRequest('同分裁決欄位不受支援。')
+  const commandId = commandIdValue(body.commandId)
+  const expectedRevision = revisionValue(body.expectedRevision)
+  const stageId = nonEmptyString(body.stageId)
+  const reason = nonEmptyString(body.reason)
+  if (!commandId || !stageId || !reason || reason.length > 2_000
+    || !Array.isArray(body.orderedTeamIds)
+    || body.orderedTeamIds.length < 2
+    || !body.orderedTeamIds.every(nonEmptyString)
+    || new Set(body.orderedTeamIds).size !== body.orderedTeamIds.length) {
+    throw badRequest('同分裁決必須提供階段、不同隊伍的完整順序與公開理由。')
+  }
+  return {
+    commandId,
+    expectedRevision,
+    operation: {
+      type: 'tournamentAdjudicateRankingTie',
+      stageId,
+      orderedTeamIds: body.orderedTeamIds as string[],
+      reason: reason.trim(),
+    },
+  }
+}
+
 export function buildRegistrationCommand(
   input: unknown,
   callerUserId: string,
@@ -1143,7 +1178,7 @@ export function buildRegistrationCommand(
 export function buildExecuteRequest(
   competitionId: string,
   callerUserId: string,
-  command: RegistrationCommandInput,
+  command: ExecuteCommandInput,
   clock: TrustedClock = Date.now,
 ): CompetitionRoomExecuteRequest {
   return {
@@ -1475,7 +1510,7 @@ function nonNegativeInteger(value: unknown, field: string): number {
 }
 
 function revisionValue(value: unknown): number {
-  if (!Number.isInteger(value) || (value as number) < 1) {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
     throw badRequest('expectedRevision 必須是正整數。')
   }
   return value as number

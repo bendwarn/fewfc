@@ -602,6 +602,7 @@ function parseOperationName(value: unknown): CompetitionOperationName {
     'tournamentPreviewQualifiedStage',
     'tournamentCreateQualifiedStage',
     'tournamentView',
+    'tournamentAdjudicateRankingTie',
     'tournamentStartMatch',
     'tournamentSubmitResult',
     'tournamentCorrectResult',

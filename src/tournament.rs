@@ -737,8 +737,41 @@ pub struct Standing {
     pub game_losses: u32,
     pub net_game_wins: i32,
     pub opponent_win_rate_basis_points: Option<u32>,
+    /// 本階段不同對手的最終交手勝場總和，不是自身勝場或局勝場。
+    #[serde(default, with = "u64_decimal_string")]
+    pub opponent_win_score: u64,
+    /// 本階段不同對手的最終交手敗場總和，不是自身敗場或扣分。
+    #[serde(default, with = "u64_decimal_string")]
+    pub opponent_loss_score: u64,
     pub dropped: bool,
     pub rank: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
+pub enum RankingDecisionActor {
+    Organizer { user_id: String },
+    Referee { user_id: String },
+}
+
+/// 全項相同的同分群組由合格裁決者指定順序；保存比較值以避免更正後重用舊裁決。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RankingTieDecision {
+    pub tied_team_ids: Vec<TeamId>,
+    pub ordered_team_ids: Vec<TeamId>,
+    #[serde(with = "u64_decimal_string")]
+    pub match_points: u64,
+    #[serde(with = "u64_decimal_string")]
+    pub opponent_win_score: u64,
+    #[serde(with = "u64_decimal_string")]
+    pub opponent_loss_score: u64,
+    pub decided_by: RankingDecisionActor,
+    pub reason: String,
 }
 
 mod u64_decimal_string {
@@ -844,6 +877,8 @@ pub struct Stage {
     status: StageStatus,
     rounds: Vec<Round>,
     standings: Vec<Standing>,
+    #[serde(default)]
+    ranking_tie_decisions: Vec<RankingTieDecision>,
     corrections: Vec<ResultCorrection>,
     last_schedule_error: Option<String>,
     schedule_generation: u64,
@@ -911,6 +946,13 @@ pub enum ScheduleError {
     EmptyCorrectionReason,
     NoLegalSwissPairing,
     DoubleLossNeedsReferee(MatchId),
+    RankingTieStageNotFinished(StageId),
+    RankingTieUnsupportedFormat(StageId),
+    RankingTieNotFound(StageId),
+    RankingTieOrderMismatch(StageId),
+    RankingTieAlreadyDecided(StageId),
+    EmptyRankingDecisionReason,
+    InvalidRankingDecisionActor,
     InvalidOperation(String),
 }
 
@@ -947,6 +989,23 @@ impl Display for ScheduleError {
             Self::DoubleLossNeedsReferee(id) => {
                 write!(f, "雙方判負已保留，淘汰賽後續需裁判處理：{id}")
             }
+            Self::RankingTieStageNotFinished(stage) => {
+                write!(f, "階段尚未完成，不可裁決同分名次：{stage}")
+            }
+            Self::RankingTieUnsupportedFormat(stage) => {
+                write!(f, "此階段不使用積分同分裁決：{stage}")
+            }
+            Self::RankingTieNotFound(stage) => {
+                write!(f, "指定隊伍目前不構成全項相同的同分群組：{stage}")
+            }
+            Self::RankingTieOrderMismatch(stage) => {
+                write!(f, "裁決順序必須恰好列出同分群組的每一隊：{stage}")
+            }
+            Self::RankingTieAlreadyDecided(stage) => {
+                write!(f, "此同分群組已有有效裁決：{stage}")
+            }
+            Self::EmptyRankingDecisionReason => write!(f, "同分裁決必須填寫公開理由"),
+            Self::InvalidRankingDecisionActor => write!(f, "同分裁決者身分無效"),
             Self::InvalidOperation(reason) => write!(f, "操作無效：{reason}"),
         }
     }
@@ -1017,12 +1076,64 @@ impl Tournament {
             .ok_or_else(|| ScheduleError::NoSuchStage(stage_id.clone()))
     }
 
+    /// 只可由主辦或指定裁判處理已完成循環／瑞士階段的全同群組。
+    pub fn adjudicate_ranking_tie(
+        &mut self,
+        stage_id: &StageId,
+        ordered_team_ids: Vec<TeamId>,
+        decided_by: RankingDecisionActor,
+        reason: String,
+    ) -> Result<(), ScheduleError> {
+        let mut candidate = self.clone();
+        candidate.refresh_rankings();
+        let stage = candidate
+            .stages
+            .iter_mut()
+            .find(|stage| &stage.config.stage_id == stage_id)
+            .ok_or_else(|| ScheduleError::NoSuchStage(stage_id.clone()))?;
+        stage.adjudicate_ranking_tie(ordered_team_ids, decided_by, reason)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    /// 整場只有在所有階段收尾且沒有未決正式同分時才具備排名完成條件。
+    pub fn rankings_resolved(&self) -> bool {
+        let mut projection = self.clone();
+        projection.refresh_rankings();
+        !projection.stages.is_empty()
+            && projection.stages.iter().all(|stage| {
+                stage.status == StageStatus::Finished
+                    && stage.unresolved_ranking_tie_groups().is_empty()
+            })
+    }
+
+    /// 由階段賽果重算排名供公開投影使用，不改動權威快照。
+    pub fn ranking_projection(&self) -> Self {
+        let mut projection = self.clone();
+        projection.refresh_rankings();
+        projection
+    }
+
+    fn refresh_rankings(&mut self) {
+        for stage in &mut self.stages {
+            stage.refresh_standings();
+        }
+    }
+
     /// 依呼叫端明確指定的來源名額解析固定隊伍與目的 seed，不修改 Tournament。
     ///
     /// slots 至少兩筆；來源、隊伍與正 seed 均須唯一。名次比對 standings.rank 的實值，
     /// 結果保留 slots 順序與 seed 對應。來源未完成、仍有未決賽程、名次不唯一或隊伍
     /// 無法確定時，以封閉的 StageQualificationBlocker 阻擋整次解析。
     pub fn resolve_stage_qualification(
+        &self,
+        slots: &[StageQualificationSlot],
+    ) -> Result<ResolvedStageQualification, StageQualificationBlocker> {
+        let projection = self.ranking_projection();
+        projection.resolve_stage_qualification_current(slots)
+    }
+
+    fn resolve_stage_qualification_current(
         &self,
         slots: &[StageQualificationSlot],
     ) -> Result<ResolvedStageQualification, StageQualificationBlocker> {
@@ -1105,16 +1216,6 @@ impl Tournament {
                             format: stage.config.format,
                         });
                     }
-                    if let Some(standing) = stage
-                        .standings
-                        .iter()
-                        .find(|standing| standing.rank.is_none())
-                    {
-                        return Err(StageQualificationBlocker::StandingRankUnavailable {
-                            source_stage_id: slot.source_stage_id.clone(),
-                            team_id: standing.team_id.clone(),
-                        });
-                    }
                     let ranked_teams: Vec<_> = stage
                         .standings
                         .iter()
@@ -1122,6 +1223,12 @@ impl Tournament {
                         .collect();
                     let standing = match ranked_teams.as_slice() {
                         [] => {
+                            if let Some(team_id) = stage.unresolved_ranking_tie_at_rank(*rank) {
+                                return Err(StageQualificationBlocker::StandingRankUnavailable {
+                                    source_stage_id: slot.source_stage_id.clone(),
+                                    team_id,
+                                });
+                            }
                             return Err(StageQualificationBlocker::StandingRankNotFound {
                                 source_stage_id: slot.source_stage_id.clone(),
                                 rank: *rank,
@@ -1183,7 +1290,8 @@ impl Tournament {
         &self,
         template: QualifiedStageTemplate,
     ) -> Result<QualifiedStagePlan, QualifiedStagePlanError> {
-        if self
+        let projection = self.ranking_projection();
+        if projection
             .stages
             .iter()
             .any(|stage| stage.config.stage_id == template.stage_id)
@@ -1191,8 +1299,8 @@ impl Tournament {
             return Err(QualifiedStagePlanError::DuplicateStageId(template.stage_id));
         }
 
-        let qualification = self
-            .resolve_stage_qualification(&template.source_slots)
+        let qualification = projection
+            .resolve_stage_qualification_current(&template.source_slots)
             .map_err(QualifiedStagePlanError::QualificationBlocked)?;
         let planned_stage = Stage::new(template.stage_config(qualification.seeded_teams.clone()))
             .map_err(QualifiedStagePlanError::InvalidTemplate)?;
@@ -1203,7 +1311,7 @@ impl Tournament {
             if !seen_source_ids.insert(slot.source_stage_id.clone()) {
                 continue;
             }
-            let source_stage = self
+            let source_stage = projection
                 .stages
                 .iter()
                 .find(|stage| stage.config.stage_id == slot.source_stage_id)
@@ -1218,7 +1326,7 @@ impl Tournament {
         }
 
         Ok(QualifiedStagePlan {
-            tournament_id: self.tournament_id.clone(),
+            tournament_id: projection.tournament_id.clone(),
             template,
             source_stages,
             qualification,
@@ -1231,13 +1339,14 @@ impl Tournament {
         &mut self,
         plan: QualifiedStagePlan,
     ) -> Result<ResolvedStageQualification, QualifiedStagePlanError> {
-        if self.tournament_id != plan.tournament_id {
+        let mut candidate = self.ranking_projection();
+        if candidate.tournament_id != plan.tournament_id {
             return Err(QualifiedStagePlanError::ForeignTournament {
                 planned_tournament_id: plan.tournament_id,
-                current_tournament_id: self.tournament_id.clone(),
+                current_tournament_id: candidate.tournament_id.clone(),
             });
         }
-        if self
+        if candidate
             .stages
             .iter()
             .any(|stage| stage.config.stage_id == plan.template.stage_id)
@@ -1249,7 +1358,7 @@ impl Tournament {
 
         for source_snapshot in &plan.source_stages {
             let source_stage_id = &source_snapshot.config.stage_id;
-            let current_source = self
+            let current_source = candidate
                 .stages
                 .iter()
                 .find(|stage| &stage.config.stage_id == source_stage_id);
@@ -1260,8 +1369,8 @@ impl Tournament {
             }
         }
 
-        let current_qualification = self
-            .resolve_stage_qualification(&plan.template.source_slots)
+        let current_qualification = candidate
+            .resolve_stage_qualification_current(&plan.template.source_slots)
             .map_err(|_| QualifiedStagePlanError::StalePlan)?;
         if current_qualification != plan.qualification
             || plan.planned_stage.config
@@ -1273,7 +1382,8 @@ impl Tournament {
         }
 
         let qualification = plan.qualification;
-        self.stages.push(plan.planned_stage);
+        candidate.stages.push(plan.planned_stage);
+        *self = candidate;
         Ok(qualification)
     }
 
@@ -1400,6 +1510,8 @@ struct StageSnapshot {
     status: StageStatus,
     rounds: Vec<Round>,
     standings: Vec<Standing>,
+    #[serde(default)]
+    ranking_tie_decisions: Vec<RankingTieDecision>,
     corrections: Vec<ResultCorrection>,
     #[serde(default)]
     last_schedule_error: Option<String>,
@@ -1422,6 +1534,7 @@ impl<'de> Deserialize<'de> for Stage {
             status: snapshot.status,
             rounds: snapshot.rounds,
             standings: snapshot.standings,
+            ranking_tie_decisions: snapshot.ranking_tie_decisions,
             corrections: snapshot.corrections,
             last_schedule_error: snapshot.last_schedule_error,
             schedule_generation: snapshot.schedule_generation,
@@ -1487,6 +1600,7 @@ impl Stage {
             status: StageStatus::Active,
             rounds: vec![],
             standings: vec![],
+            ranking_tie_decisions: vec![],
             corrections: vec![],
             last_schedule_error: None,
             schedule_generation: 0,
@@ -1511,6 +1625,159 @@ impl Stage {
 
     pub fn standings(&self) -> &[Standing] {
         &self.standings
+    }
+
+    pub fn ranking_tie_decisions(&self) -> &[RankingTieDecision] {
+        &self.ranking_tie_decisions
+    }
+
+    /// 傳回尚未由有效公開裁決解開的正式全同群組。
+    pub fn unresolved_ranking_tie_groups(&self) -> Vec<Vec<TeamId>> {
+        if !matches!(
+            self.config.format,
+            TournamentFormat::RoundRobin | TournamentFormat::Swiss
+        ) {
+            return Vec::new();
+        }
+        let mut groups: BTreeMap<(u64, u64, u64), Vec<TeamId>> = BTreeMap::new();
+        for standing in &self.standings {
+            groups
+                .entry((
+                    standing.match_points,
+                    standing.opponent_win_score,
+                    standing.opponent_loss_score,
+                ))
+                .or_default()
+                .push(standing.team_id.clone());
+        }
+        groups
+            .into_iter()
+            .filter_map(
+                |((match_points, opponent_win_score, opponent_loss_score), mut team_ids)| {
+                    if team_ids.len() < 2 {
+                        return None;
+                    }
+                    team_ids.sort();
+                    let active = self.ranking_tie_decisions.iter().any(|decision| {
+                        decision.tied_team_ids == team_ids
+                            && decision.match_points == match_points
+                            && decision.opponent_win_score == opponent_win_score
+                            && decision.opponent_loss_score == opponent_loss_score
+                    });
+                    (!active).then_some(team_ids)
+                },
+            )
+            .collect()
+    }
+
+    fn unresolved_ranking_tie_at_rank(&self, rank: u32) -> Option<TeamId> {
+        if !matches!(
+            self.config.format,
+            TournamentFormat::RoundRobin | TournamentFormat::Swiss
+        ) {
+            return None;
+        }
+        let requested_rank = usize::try_from(rank).ok()?;
+        if requested_rank == 0 {
+            return None;
+        }
+
+        let ordered = self.standing_order_for_rank(&self.standings);
+        let mut start = 0;
+        while start < ordered.len() {
+            let mut end = start + 1;
+            while end < ordered.len()
+                && self.compare_standing_rank_keys(&ordered[start], &ordered[end], &self.standings)
+                    == Ordering::Equal
+            {
+                end += 1;
+            }
+            if end - start > 1 && requested_rank > start && requested_rank <= end {
+                return ordered[start..end].iter().min().cloned();
+            }
+            start = end;
+        }
+        None
+    }
+
+    fn adjudicate_ranking_tie(
+        &mut self,
+        ordered_team_ids: Vec<TeamId>,
+        decided_by: RankingDecisionActor,
+        reason: String,
+    ) -> Result<(), ScheduleError> {
+        let stage_id = self.config.stage_id.clone();
+        if self.status != StageStatus::Finished {
+            return Err(ScheduleError::RankingTieStageNotFinished(stage_id));
+        }
+        if !matches!(
+            self.config.format,
+            TournamentFormat::RoundRobin | TournamentFormat::Swiss
+        ) {
+            return Err(ScheduleError::RankingTieUnsupportedFormat(stage_id));
+        }
+        let reason = reason.trim().to_string();
+        if reason.is_empty() {
+            return Err(ScheduleError::EmptyRankingDecisionReason);
+        }
+        let adjudicator_id = match &decided_by {
+            RankingDecisionActor::Organizer { user_id }
+            | RankingDecisionActor::Referee { user_id } => user_id,
+        };
+        if adjudicator_id.trim().is_empty() || adjudicator_id.trim() != adjudicator_id {
+            return Err(ScheduleError::InvalidRankingDecisionActor);
+        }
+        if ordered_team_ids.len() < 2
+            || ordered_team_ids.iter().collect::<BTreeSet<_>>().len() != ordered_team_ids.len()
+        {
+            return Err(ScheduleError::RankingTieOrderMismatch(stage_id));
+        }
+        let ordered_set = ordered_team_ids.iter().cloned().collect::<BTreeSet<_>>();
+        let first = ordered_team_ids.first().unwrap();
+        let Some(first_standing) = self
+            .standings
+            .iter()
+            .find(|standing| &standing.team_id == first)
+        else {
+            return Err(ScheduleError::RankingTieNotFound(stage_id));
+        };
+        let mut tied_team_ids = self
+            .standings
+            .iter()
+            .filter(|standing| {
+                standing.match_points == first_standing.match_points
+                    && standing.opponent_win_score == first_standing.opponent_win_score
+                    && standing.opponent_loss_score == first_standing.opponent_loss_score
+            })
+            .map(|standing| standing.team_id.clone())
+            .collect::<Vec<_>>();
+        tied_team_ids.sort();
+        if tied_team_ids.len() < 2 {
+            return Err(ScheduleError::RankingTieNotFound(stage_id));
+        }
+        let tied_set = tied_team_ids.iter().cloned().collect::<BTreeSet<_>>();
+        if tied_set != ordered_set {
+            return Err(ScheduleError::RankingTieOrderMismatch(stage_id));
+        }
+        if self.ranking_tie_decisions.iter().any(|decision| {
+            decision.tied_team_ids == tied_team_ids
+                && decision.match_points == first_standing.match_points
+                && decision.opponent_win_score == first_standing.opponent_win_score
+                && decision.opponent_loss_score == first_standing.opponent_loss_score
+        }) {
+            return Err(ScheduleError::RankingTieAlreadyDecided(stage_id));
+        }
+        self.ranking_tie_decisions.push(RankingTieDecision {
+            tied_team_ids,
+            ordered_team_ids,
+            match_points: first_standing.match_points,
+            opponent_win_score: first_standing.opponent_win_score,
+            opponent_loss_score: first_standing.opponent_loss_score,
+            decided_by,
+            reason,
+        });
+        self.refresh_standings();
+        Ok(())
     }
 
     pub fn config(&self) -> &StageConfig {
@@ -1675,6 +1942,47 @@ impl Stage {
                         "季軍賽必須與唯一兩隊冠軍賽同列於最新輪次".to_string(),
                     ));
                 }
+            }
+        }
+        let mut decision_keys = BTreeSet::new();
+        for decision in &self.ranking_tie_decisions {
+            let adjudicator_id = match &decision.decided_by {
+                RankingDecisionActor::Organizer { user_id }
+                | RankingDecisionActor::Referee { user_id } => user_id,
+            };
+            let tied_set = decision
+                .tied_team_ids
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let ordered_set = decision
+                .ordered_team_ids
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let mut sorted_tied_ids = decision.tied_team_ids.clone();
+            sorted_tied_ids.sort();
+            if decision.tied_team_ids.len() < 2
+                || tied_set.len() != decision.tied_team_ids.len()
+                || decision.ordered_team_ids.len() != decision.tied_team_ids.len()
+                || ordered_set != tied_set
+                || decision.tied_team_ids != sorted_tied_ids
+                || !tied_set
+                    .iter()
+                    .all(|team_id| config_teams.contains(team_id))
+                || adjudicator_id.trim().is_empty()
+                || adjudicator_id.trim() != adjudicator_id
+                || decision.reason.trim().is_empty()
+                || !decision_keys.insert((
+                    decision.tied_team_ids.clone(),
+                    decision.match_points,
+                    decision.opponent_win_score,
+                    decision.opponent_loss_score,
+                ))
+            {
+                return Err(ScheduleError::InvalidSnapshot(
+                    "同分裁決紀錄格式無效".to_string(),
+                ));
             }
         }
         Ok(())
@@ -2687,41 +2995,143 @@ impl Stage {
         result
     }
 
+    /// 正式勝分／負分只看真正交手過的不同對手；賽前未開打缺席不建立對手關係。
+    fn ranking_opponents(&self) -> BTreeMap<TeamId, BTreeSet<TeamId>> {
+        let mut result: BTreeMap<TeamId, BTreeSet<TeamId>> = self
+            .teams
+            .keys()
+            .cloned()
+            .map(|team_id| (team_id, BTreeSet::new()))
+            .collect();
+        for match_ in self.rounds.iter().flat_map(|round| &round.matches) {
+            if match_.participants.len() != 2
+                || !matches!(match_.status, MatchStatus::Completed)
+                || match_
+                    .result
+                    .as_ref()
+                    .is_none_or(|result| matches!(result, MatchResult::NoShow { .. }))
+            {
+                continue;
+            }
+            let first = match_.participants[0].clone();
+            let second = match_.participants[1].clone();
+            result
+                .entry(first.clone())
+                .or_default()
+                .insert(second.clone());
+            result.entry(second).or_default().insert(first);
+        }
+        result
+    }
+
     fn refresh_standings(&mut self) {
         self.standings = self.compute_standings();
         if self.has_single_elimination_final_double_loss() {
             // 冠軍空缺階段的其餘名次也未確認；保留真實統計，不填不可靠名次。
             return;
         }
-        let ordered = self.swiss_order_for_rank(&self.standings);
-        let mut previous: Option<Standing> = None;
-        let mut rank = 0;
-        for (index, team_id) in ordered.into_iter().enumerate() {
-            let current = self
-                .standings
-                .iter()
-                .find(|row| row.team_id == team_id)
-                .unwrap()
-                .clone();
-            if previous.as_ref().is_none_or(|previous| {
-                self.compare_rank_keys(&previous.team_id, &current.team_id, &self.standings)
-                    != Ordering::Equal
-            }) {
-                rank = index as u32 + 1;
+        let ordered = self.standing_order_for_rank(&self.standings);
+        let mut start = 0;
+        while start < ordered.len() {
+            let mut end = start + 1;
+            while end < ordered.len()
+                && self.compare_standing_rank_keys(&ordered[start], &ordered[end], &self.standings)
+                    == Ordering::Equal
+            {
+                end += 1;
             }
-            if let Some(row) = self.standings.iter_mut().find(|row| row.team_id == team_id) {
-                row.rank = Some(rank);
+            let unresolved_formal_tie = end - start > 1
+                && matches!(
+                    self.config.format,
+                    TournamentFormat::RoundRobin | TournamentFormat::Swiss
+                );
+            for team_id in &ordered[start..end] {
+                if let Some(row) = self
+                    .standings
+                    .iter_mut()
+                    .find(|row| &row.team_id == team_id)
+                {
+                    // 全項相同時名次未決；不能自動並列或讓 seed／ID 決定排序。
+                    row.rank = if unresolved_formal_tie {
+                        None
+                    } else {
+                        Some(start as u32 + 1)
+                    };
+                }
             }
-            previous = Some(current);
+            start = end;
         }
         self.standings
             .sort_by_key(|row| row.rank.unwrap_or(u32::MAX));
     }
 
-    fn swiss_order_for_rank(&self, standings: &[Standing]) -> Vec<TeamId> {
+    fn standing_order_for_rank(&self, standings: &[Standing]) -> Vec<TeamId> {
         let mut order: Vec<TeamId> = standings.iter().map(|row| row.team_id.clone()).collect();
-        order.sort_by(|left, right| self.compare_rank_keys(left, right, standings));
+        order.sort_by(|left, right| self.compare_standing_rank_keys(left, right, standings));
         order
+    }
+
+    /// 正式循環／瑞士名次固定使用公告積分、不同對手勝分、不同對手負分。
+    /// Swiss 配對另外沿用其公告 tie-breakers，不會因正式排名政策而改變。
+    fn compare_standing_rank_keys(
+        &self,
+        left: &TeamId,
+        right: &TeamId,
+        standings: &[Standing],
+    ) -> Ordering {
+        if !matches!(
+            self.config.format,
+            TournamentFormat::RoundRobin | TournamentFormat::Swiss
+        ) {
+            return self.compare_rank_keys(left, right, standings);
+        }
+        let left_row = standings.iter().find(|row| &row.team_id == left).unwrap();
+        let right_row = standings.iter().find(|row| &row.team_id == right).unwrap();
+        let ordering = right_row
+            .match_points
+            .cmp(&left_row.match_points)
+            .then_with(|| {
+                right_row
+                    .opponent_win_score
+                    .cmp(&left_row.opponent_win_score)
+            })
+            .then_with(|| {
+                left_row
+                    .opponent_loss_score
+                    .cmp(&right_row.opponent_loss_score)
+            });
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+        let mut tied_team_ids = standings
+            .iter()
+            .filter(|row| {
+                row.match_points == left_row.match_points
+                    && row.opponent_win_score == left_row.opponent_win_score
+                    && row.opponent_loss_score == left_row.opponent_loss_score
+            })
+            .map(|row| row.team_id.clone())
+            .collect::<Vec<_>>();
+        tied_team_ids.sort();
+        let Some(decision) = self.ranking_tie_decisions.iter().find(|decision| {
+            decision.tied_team_ids == tied_team_ids
+                && decision.match_points == left_row.match_points
+                && decision.opponent_win_score == left_row.opponent_win_score
+                && decision.opponent_loss_score == left_row.opponent_loss_score
+        }) else {
+            return Ordering::Equal;
+        };
+        let left_order = decision
+            .ordered_team_ids
+            .iter()
+            .position(|team_id| team_id == left)
+            .unwrap();
+        let right_order = decision
+            .ordered_team_ids
+            .iter()
+            .position(|team_id| team_id == right)
+            .unwrap();
+        left_order.cmp(&right_order)
     }
 
     fn compare_rank_keys(&self, left: &TeamId, right: &TeamId, standings: &[Standing]) -> Ordering {
@@ -2904,6 +3314,8 @@ impl Stage {
                         game_losses: 0,
                         net_game_wins: 0,
                         opponent_win_rate_basis_points: None,
+                        opponent_win_score: 0,
+                        opponent_loss_score: 0,
                         dropped: entry.dropped || double_loss_exits.contains(team_id),
                         rank: None,
                     },
@@ -2991,6 +3403,24 @@ impl Stage {
         }
         for row in rows.values_mut() {
             row.net_game_wins = row.game_wins as i32 - row.game_losses as i32;
+        }
+        let match_records: BTreeMap<TeamId, (u64, u64)> = rows
+            .iter()
+            .map(|(team_id, row)| {
+                (
+                    team_id.clone(),
+                    (u64::from(row.wins), u64::from(row.losses)),
+                )
+            })
+            .collect();
+        let ranking_opponents = self.ranking_opponents();
+        for row in rows.values_mut() {
+            for opponent in ranking_opponents.get(&row.team_id).into_iter().flatten() {
+                if let Some((wins, losses)) = match_records.get(opponent) {
+                    row.opponent_win_score += wins;
+                    row.opponent_loss_score += losses;
+                }
+            }
         }
         if self.config.format == TournamentFormat::Swiss {
             let policy = self.config.swiss_policy.as_ref().unwrap();
@@ -3531,6 +3961,64 @@ mod tests {
         }
     }
 
+    fn ranking_fixture_match(
+        stage: &mut Stage,
+        match_id: &str,
+        participants: &[&str],
+        result: Option<MatchResult>,
+        started: bool,
+    ) {
+        let round_number = stage.rounds.len() as u32 + 1;
+        let participants = participants
+            .iter()
+            .map(|team| TeamId::from(*team))
+            .collect();
+        stage.rounds.push(Round {
+            round_number,
+            kind: RoundKind::Main,
+            matches: vec![ScheduledMatch {
+                match_id: MatchId::from(match_id),
+                stage_id: stage.config.stage_id.clone(),
+                round_number,
+                sequence: 1,
+                kind: RoundKind::Main,
+                purpose: MatchPurpose::Standard,
+                participants,
+                status: if result.is_some() {
+                    MatchStatus::Completed
+                } else {
+                    MatchStatus::Cancelled
+                },
+                result,
+                cancellation_reason: None,
+                started,
+            }],
+        });
+    }
+
+    fn ranking_standing(
+        team: &str,
+        match_points: u64,
+        opponent_wins: u64,
+        opponent_losses: u64,
+    ) -> Standing {
+        Standing {
+            team_id: TeamId::from(team),
+            match_points,
+            wins: 0,
+            draws: 0,
+            losses: 0,
+            game_wins: 100,
+            game_losses: 0,
+            net_game_wins: 100,
+            opponent_win_rate_basis_points: Some(10_000),
+            opponent_win_score: opponent_wins,
+            opponent_loss_score: opponent_losses,
+            dropped: false,
+            rank: None,
+        }
+    }
+
     #[test]
     fn serializes_public_multiword_fields_as_camel_case() {
         let json = serde_json::to_value(SeededTeam {
@@ -3666,6 +4154,427 @@ mod tests {
                 .unwrap()
                 .wins,
             1
+        );
+    }
+
+    #[test]
+    fn formal_standing_order_uses_only_the_three_published_comparison_keys() {
+        let stage = Stage::new(config(TournamentFormat::RoundRobin, 4)).unwrap();
+        let mut rows = vec![
+            ranking_standing("t1", 8, 0, 99),
+            ranking_standing("t2", 7, 99, 0),
+            ranking_standing("t3", 7, 3, 9),
+            ranking_standing("t4", 7, 2, 8),
+        ];
+
+        assert_eq!(
+            stage.compare_standing_rank_keys(&TeamId::from("t1"), &TeamId::from("t2"), &rows),
+            Ordering::Less,
+            "自身積分優先於勝分／負分"
+        );
+        assert_eq!(
+            stage.compare_standing_rank_keys(&TeamId::from("t3"), &TeamId::from("t4"), &rows),
+            Ordering::Less,
+            "勝分較多優先"
+        );
+        rows[2].opponent_win_score = rows[3].opponent_win_score;
+        assert_eq!(
+            stage.compare_standing_rank_keys(&TeamId::from("t3"), &TeamId::from("t4"), &rows),
+            Ordering::Greater,
+            "同勝分時負分較少優先"
+        );
+        rows[2].opponent_loss_score = rows[3].opponent_loss_score;
+        assert_eq!(
+            stage.compare_standing_rank_keys(&TeamId::from("t3"), &TeamId::from("t4"), &rows),
+            Ordering::Equal,
+            "局數、對手勝率、種子及隊伍 ID 不得破除全同"
+        );
+    }
+
+    #[test]
+    fn opponent_scores_use_unique_played_opponents_and_their_final_match_records() {
+        let mut stage = Stage::new(config(TournamentFormat::RoundRobin, 5)).unwrap();
+        stage.rounds.clear();
+        stage.status = StageStatus::Finished;
+        ranking_fixture_match(
+            &mut stage,
+            "ab-first",
+            &["t1", "t2"],
+            Some(MatchResult::win("t1", "t2")),
+            true,
+        );
+        ranking_fixture_match(
+            &mut stage,
+            "ab-rematch",
+            &["t1", "t2"],
+            Some(MatchResult::win("t2", "t1")),
+            true,
+        );
+        ranking_fixture_match(
+            &mut stage,
+            "bc",
+            &["t2", "t3"],
+            Some(MatchResult::win("t2", "t3")),
+            true,
+        );
+        ranking_fixture_match(
+            &mut stage,
+            "ac-no-show",
+            &["t1", "t3"],
+            Some(MatchResult::NoShow {
+                absent_teams: vec![TeamId::from("t1")],
+                winner_id: Some(TeamId::from("t3")),
+            }),
+            false,
+        );
+        ranking_fixture_match(
+            &mut stage,
+            "bd-double-loss",
+            &["t2", "t4"],
+            Some(MatchResult::DoubleLoss),
+            true,
+        );
+        ranking_fixture_match(
+            &mut stage,
+            "be-draw",
+            &["t2", "t5"],
+            Some(MatchResult::draw()),
+            true,
+        );
+        ranking_fixture_match(
+            &mut stage,
+            "ec",
+            &["t5", "t3"],
+            Some(MatchResult::win("t5", "t3")),
+            true,
+        );
+        ranking_fixture_match(
+            &mut stage,
+            "td-bye",
+            &["t4"],
+            Some(MatchResult::Bye {
+                team_id: TeamId::from("t4"),
+            }),
+            false,
+        );
+        ranking_fixture_match(&mut stage, "ad-cancelled", &["t1", "t4"], None, false);
+        stage.refresh_standings();
+
+        let standing = |team: &str| {
+            stage
+                .standings
+                .iter()
+                .find(|row| row.team_id.0 == team)
+                .unwrap()
+        };
+        assert_eq!(
+            (
+                standing("t1").opponent_win_score,
+                standing("t1").opponent_loss_score
+            ),
+            (2, 2)
+        );
+        assert_eq!(
+            (
+                standing("t2").opponent_win_score,
+                standing("t2").opponent_loss_score
+            ),
+            (3, 5)
+        );
+        assert_eq!(
+            (
+                standing("t3").opponent_win_score,
+                standing("t3").opponent_loss_score
+            ),
+            (3, 2)
+        );
+        assert_eq!((standing("t4").wins, standing("t4").losses), (0, 1));
+        assert_eq!(standing("t1").losses, 2, "合法缺席結果仍計入自身交手敗場");
+
+        let json = serde_json::to_value(standing("t1")).unwrap();
+        assert_eq!(json["opponentWinScore"], "2");
+        assert_eq!(json["opponentLossScore"], "2");
+        assert!(json.get("opponent_win_score").is_none());
+    }
+
+    #[test]
+    fn exact_ranking_ties_block_qualification_and_completion_until_public_decision() {
+        let mut stage = Stage::new(config(TournamentFormat::RoundRobin, 3)).unwrap();
+        stage.rounds.clear();
+        stage.status = StageStatus::Finished;
+        ranking_fixture_match(
+            &mut stage,
+            "ac",
+            &["t1", "t3"],
+            Some(MatchResult::win("t1", "t3")),
+            true,
+        );
+        ranking_fixture_match(
+            &mut stage,
+            "bc",
+            &["t2", "t3"],
+            Some(MatchResult::win("t2", "t3")),
+            true,
+        );
+        ranking_fixture_match(
+            &mut stage,
+            "ab",
+            &["t1", "t2"],
+            Some(MatchResult::draw()),
+            true,
+        );
+        stage.refresh_standings();
+        assert_eq!(
+            stage.unresolved_ranking_tie_groups(),
+            vec![vec![TeamId::from("t1"), TeamId::from("t2")]]
+        );
+
+        let mut tournament = Tournament {
+            tournament_id: "event".into(),
+            stages: vec![stage],
+        };
+        assert!(!tournament.rankings_resolved());
+        assert_eq!(
+            tournament.resolve_stage_qualification(&[
+                stage_qualification_slot(
+                    "stage",
+                    StageQualificationSource::UniqueStandingRank { rank: 1 },
+                    1
+                ),
+                stage_qualification_slot(
+                    "stage",
+                    StageQualificationSource::UniqueStandingRank { rank: 3 },
+                    3
+                ),
+            ]),
+            Err(StageQualificationBlocker::StandingRankUnavailable {
+                source_stage_id: StageId::from("stage"),
+                team_id: TeamId::from("t1"),
+            })
+        );
+        assert_eq!(
+            tournament.adjudicate_ranking_tie(
+                &StageId::from("stage"),
+                vec![TeamId::from("t2"), TeamId::from("t1")],
+                RankingDecisionActor::Referee {
+                    user_id: "independent-referee".into()
+                },
+                "公開理由：已核對同分依據".into(),
+            ),
+            Ok(())
+        );
+        assert!(tournament.rankings_resolved());
+        let stage = tournament.stage(&StageId::from("stage")).unwrap();
+        assert_eq!(
+            stage
+                .standings()
+                .iter()
+                .find(|row| row.team_id.0 == "t2")
+                .unwrap()
+                .rank,
+            Some(1)
+        );
+        assert_eq!(
+            stage
+                .standings()
+                .iter()
+                .find(|row| row.team_id.0 == "t1")
+                .unwrap()
+                .rank,
+            Some(2)
+        );
+        assert_eq!(
+            stage
+                .standings()
+                .iter()
+                .find(|row| row.team_id.0 == "t3")
+                .unwrap()
+                .rank,
+            Some(3)
+        );
+        assert!(stage.unresolved_ranking_tie_groups().is_empty());
+        let decision = serde_json::to_value(&stage.ranking_tie_decisions()[0]).unwrap();
+        assert_eq!(decision["orderedTeamIds"], serde_json::json!(["t2", "t1"]));
+        assert_eq!(
+            decision["decidedBy"],
+            serde_json::json!({"type": "referee", "userId": "independent-referee"})
+        );
+        assert_eq!(decision["reason"], "公開理由：已核對同分依據");
+        assert_eq!(decision["matchPoints"], "4");
+        assert_eq!(
+            tournament.adjudicate_ranking_tie(
+                &StageId::from("stage"),
+                vec![TeamId::from("t1"), TeamId::from("t2")],
+                RankingDecisionActor::Organizer {
+                    user_id: "organizer".into()
+                },
+                "再次覆寫".into(),
+            ),
+            Err(ScheduleError::RankingTieAlreadyDecided(StageId::from(
+                "stage"
+            )))
+        );
+    }
+
+    #[test]
+    fn legacy_tournament_snapshot_recomputes_formal_ranks_from_match_records() {
+        let mut stage = Stage::new(config(TournamentFormat::RoundRobin, 2)).unwrap();
+        let match_id = stage.rounds()[0].matches[0].match_id.clone();
+        stage
+            .submit_result(&match_id, MatchResult::win("t1", "t2"))
+            .unwrap();
+        let tournament = Tournament {
+            tournament_id: "event".into(),
+            stages: vec![stage],
+        };
+        let mut legacy = serde_json::to_value(tournament).unwrap();
+        let stage = legacy["stages"][0].as_object_mut().unwrap();
+        stage.remove("rankingTieDecisions");
+        for standing in stage["standings"].as_array_mut().unwrap() {
+            let standing = standing.as_object_mut().unwrap();
+            standing.remove("opponentWinScore");
+            standing.remove("opponentLossScore");
+        }
+
+        let restored: Tournament = serde_json::from_value(legacy).unwrap();
+        let stage = restored.stage(&StageId::from("stage")).unwrap();
+        assert!(stage.ranking_tie_decisions().is_empty());
+        let stored_standing = |team: &str| {
+            stage
+                .standings()
+                .iter()
+                .find(|row| row.team_id.0 == team)
+                .unwrap()
+        };
+        assert_eq!(
+            (
+                stored_standing("t1").opponent_win_score,
+                stored_standing("t1").opponent_loss_score
+            ),
+            (0, 0)
+        );
+        assert_eq!(
+            (
+                stored_standing("t2").opponent_win_score,
+                stored_standing("t2").opponent_loss_score
+            ),
+            (0, 0)
+        );
+
+        let projection = restored.ranking_projection();
+        let stage = projection.stage(&StageId::from("stage")).unwrap();
+        let standing = |team: &str| {
+            stage
+                .standings()
+                .iter()
+                .find(|row| row.team_id.0 == team)
+                .unwrap()
+        };
+        assert_eq!(
+            (
+                standing("t1").opponent_win_score,
+                standing("t1").opponent_loss_score
+            ),
+            (0, 1)
+        );
+        assert_eq!(
+            (
+                standing("t2").opponent_win_score,
+                standing("t2").opponent_loss_score
+            ),
+            (1, 0)
+        );
+        assert_eq!(
+            (standing("t1").rank, standing("t2").rank),
+            (Some(1), Some(2))
+        );
+        assert_eq!(
+            restored,
+            serde_json::from_value(serde_json::to_value(&restored).unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn ranking_tie_decision_rejects_partial_stale_and_unfinished_inputs() {
+        let mut stage = Stage::new(config(TournamentFormat::RoundRobin, 3)).unwrap();
+        let mut tournament = Tournament {
+            tournament_id: "event".into(),
+            stages: vec![stage.clone()],
+        };
+        assert_eq!(
+            tournament.adjudicate_ranking_tie(
+                &StageId::from("stage"),
+                vec![TeamId::from("t1"), TeamId::from("t2")],
+                RankingDecisionActor::Organizer {
+                    user_id: "organizer".into()
+                },
+                "理由".into(),
+            ),
+            Err(ScheduleError::RankingTieStageNotFinished(StageId::from(
+                "stage"
+            )))
+        );
+
+        stage.rounds.clear();
+        stage.status = StageStatus::Finished;
+        ranking_fixture_match(
+            &mut stage,
+            "cycle-a",
+            &["t1", "t2"],
+            Some(MatchResult::win("t1", "t2")),
+            true,
+        );
+        ranking_fixture_match(
+            &mut stage,
+            "cycle-b",
+            &["t2", "t3"],
+            Some(MatchResult::win("t2", "t3")),
+            true,
+        );
+        ranking_fixture_match(
+            &mut stage,
+            "cycle-c",
+            &["t3", "t1"],
+            Some(MatchResult::win("t3", "t1")),
+            true,
+        );
+        stage.refresh_standings();
+        tournament.stages[0] = stage;
+        assert_eq!(
+            tournament.adjudicate_ranking_tie(
+                &StageId::from("stage"),
+                vec![TeamId::from("t1"), TeamId::from("t2")],
+                RankingDecisionActor::Organizer {
+                    user_id: "organizer".into()
+                },
+                "理由".into(),
+            ),
+            Err(ScheduleError::RankingTieOrderMismatch(StageId::from(
+                "stage"
+            ))),
+            "不可裁決三隊同分中的任意兩隊"
+        );
+        assert_eq!(
+            tournament.adjudicate_ranking_tie(
+                &StageId::from("stage"),
+                vec![TeamId::from("t1"), TeamId::from("t2"), TeamId::from("t3")],
+                RankingDecisionActor::Organizer {
+                    user_id: "organizer".into()
+                },
+                "   ".into(),
+            ),
+            Err(ScheduleError::EmptyRankingDecisionReason)
+        );
+        assert_eq!(
+            tournament.adjudicate_ranking_tie(
+                &StageId::from("stage"),
+                vec![TeamId::from("unknown"), TeamId::from("t1")],
+                RankingDecisionActor::Organizer {
+                    user_id: "organizer".into()
+                },
+                "理由".into(),
+            ),
+            Err(ScheduleError::RankingTieNotFound(StageId::from("stage")))
         );
     }
 
@@ -4960,10 +5869,9 @@ mod tests {
                     3,
                 ),
             ]),
-            Err(StageQualificationBlocker::StandingRankNotUnique {
+            Err(StageQualificationBlocker::StandingRankUnavailable {
                 source_stage_id: StageId::from("stage"),
-                rank: 1,
-                team_ids: vec![TeamId::from("t1"), TeamId::from("t2")],
+                team_id: TeamId::from("t1"),
             })
         );
         assert_eq!(
@@ -4979,9 +5887,9 @@ mod tests {
                     3,
                 ),
             ]),
-            Err(StageQualificationBlocker::StandingRankNotFound {
+            Err(StageQualificationBlocker::StandingRankUnavailable {
                 source_stage_id: StageId::from("stage"),
-                rank: 2,
+                team_id: TeamId::from("t1"),
             })
         );
         assert_eq!(
@@ -5004,7 +5912,115 @@ mod tests {
     }
 
     #[test]
-    fn stage_qualification_blocks_dropped_and_unassigned_standing_rows() {
+    fn stage_qualification_allows_unique_ranks_above_an_unresolved_tie() {
+        let mut stage = Stage::new(config(TournamentFormat::RoundRobin, 4)).unwrap();
+        let pending_match_ids: Vec<_> = stage
+            .rounds()
+            .iter()
+            .flat_map(|round| &round.matches)
+            .filter(|match_| match_.status == MatchStatus::Pending)
+            .map(|match_| match_.match_id.clone())
+            .collect();
+        for match_id in pending_match_ids {
+            let match_ = stage.find_match(&match_id).unwrap().clone();
+            let [first, second] = match_.participants.as_slice() else {
+                panic!("循環賽場次應有兩名參賽隊伍");
+            };
+            let result = if first == &TeamId::from("t1") || second == &TeamId::from("t1") {
+                let loser = if first == &TeamId::from("t1") {
+                    second
+                } else {
+                    first
+                };
+                MatchResult::win(TeamId::from("t1"), loser.clone())
+            } else if first == &TeamId::from("t2") || second == &TeamId::from("t2") {
+                let loser = if first == &TeamId::from("t2") {
+                    second
+                } else {
+                    first
+                };
+                MatchResult::win(TeamId::from("t2"), loser.clone())
+            } else {
+                MatchResult::draw()
+            };
+            stage.submit_result(&match_id, result).unwrap();
+        }
+
+        assert_eq!(stage.status(), StageStatus::Finished);
+        assert_eq!(
+            stage
+                .standings()
+                .iter()
+                .map(|standing| (&standing.team_id, standing.rank))
+                .collect::<BTreeMap<_, _>>(),
+            BTreeMap::from([
+                (&TeamId::from("t1"), Some(1)),
+                (&TeamId::from("t2"), Some(2)),
+                (&TeamId::from("t3"), None),
+                (&TeamId::from("t4"), None),
+            ])
+        );
+
+        let tournament = stage_qualification_tournament(stage);
+        let top_two_slots = [
+            stage_qualification_slot(
+                "stage",
+                StageQualificationSource::UniqueStandingRank { rank: 1 },
+                1,
+            ),
+            stage_qualification_slot(
+                "stage",
+                StageQualificationSource::UniqueStandingRank { rank: 2 },
+                2,
+            ),
+        ];
+        assert_eq!(
+            tournament
+                .resolve_stage_qualification(&top_two_slots)
+                .unwrap()
+                .seeded_teams()
+                .iter()
+                .map(|team| team.team_id.clone())
+                .collect::<Vec<_>>(),
+            vec![TeamId::from("t1"), TeamId::from("t2")]
+        );
+        assert_eq!(
+            tournament
+                .plan_qualified_stage(qualified_stage_plan_template(
+                    "next-stage",
+                    TournamentFormat::SingleElimination,
+                    top_two_slots.to_vec(),
+                ))
+                .unwrap()
+                .qualification()
+                .seeded_teams()
+                .iter()
+                .map(|team| team.team_id.clone())
+                .collect::<Vec<_>>(),
+            vec![TeamId::from("t1"), TeamId::from("t2")]
+        );
+        assert_eq!(
+            tournament.resolve_stage_qualification(&[
+                stage_qualification_slot(
+                    "stage",
+                    StageQualificationSource::UniqueStandingRank { rank: 1 },
+                    1,
+                ),
+                stage_qualification_slot(
+                    "stage",
+                    StageQualificationSource::UniqueStandingRank { rank: 3 },
+                    2,
+                ),
+            ]),
+            Err(StageQualificationBlocker::StandingRankUnavailable {
+                source_stage_id: StageId::from("stage"),
+                team_id: TeamId::from("t3"),
+            })
+        );
+    }
+
+    #[test]
+    fn stage_qualification_blocks_dropped_team_even_when_ranked() {
         let mut dropped_stage = Stage::new(config(TournamentFormat::RoundRobin, 2)).unwrap();
         dropped_stage.drop_team(&TeamId::from("t1")).unwrap();
         assert_eq!(dropped_stage.status(), StageStatus::Finished);
@@ -5027,29 +6043,6 @@ mod tests {
                 team_id: TeamId::from("t1"),
             })
         );
-
-        let mut unassigned_stage = stage_qualification_finish_with_winner(
-            Stage::new(config(TournamentFormat::RoundRobin, 2)).unwrap(),
-            &TeamId::from("t1"),
-        );
-        // 此處僅注入負例，驗證完成階段若含未定 rank 不會被解析。
-        unassigned_stage.standings[0].rank = None;
-        let unassigned_tournament = stage_qualification_tournament(unassigned_stage);
-        assert!(matches!(
-            unassigned_tournament.resolve_stage_qualification(&[
-                stage_qualification_slot(
-                    "stage",
-                    StageQualificationSource::UniqueStandingRank { rank: 1 },
-                    1,
-                ),
-                stage_qualification_slot(
-                    "stage",
-                    StageQualificationSource::UniqueStandingRank { rank: 2 },
-                    2,
-                ),
-            ]),
-            Err(StageQualificationBlocker::StandingRankUnavailable { .. })
-        ));
     }
 
     #[test]
@@ -5689,10 +6682,9 @@ mod tests {
                 ],
             ),
             QualifiedStagePlanError::QualificationBlocked(
-                StageQualificationBlocker::StandingRankNotUnique {
+                StageQualificationBlocker::StandingRankUnavailable {
                     source_stage_id: StageId::from("stage"),
-                    rank: 1,
-                    team_ids: vec![TeamId::from("t1"), TeamId::from("t2")],
+                    team_id: TeamId::from("t1"),
                 },
             ),
         );

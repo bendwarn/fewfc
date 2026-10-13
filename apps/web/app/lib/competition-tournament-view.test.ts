@@ -52,14 +52,15 @@ function stageFixture(format: string, stageId: string) {
       {
         teamId: 'team-a', matchPoints: '0', wins: 0, draws: 0, losses: 0,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
-        opponentWinRateBasisPoints: null, dropped: false, rank: null,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
       },
       {
         teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 0,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
-        opponentWinRateBasisPoints: null, dropped: false, rank: null,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
       },
     ],
+    rankingTieDecisions: [],
     corrections: [],
     lastScheduleError: null,
     scheduleGeneration: 0,
@@ -173,7 +174,7 @@ function singleEliminationBronzeResponse(): unknown {
   })
   const rows = teamIds.map(teamId => ({
     teamId, matchPoints: '3', wins: 1, draws: 0, losses: 0, gameWins: 2, gameLosses: 0,
-    netGameWins: 2, opponentWinRateBasisPoints: null, dropped: false, rank: null,
+    netGameWins: 2, opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
   }))
   Object.assign(stage, {
     config: { ...stage.config, teams: teamIds.map((teamId, index) => ({ teamId, seed: index + 1 })) },
@@ -239,6 +240,52 @@ test('preserves exact decimal-string Match Points through the full u64 range', (
   }
 })
 
+test('parses opponent scores and public tie decisions as exact decimal-string ranking facts', () => {
+  const decision = {
+    tiedTeamIds: ['team-a', 'team-b'],
+    orderedTeamIds: ['team-b', 'team-a'],
+    matchPoints: '18446744073709551615',
+    opponentWinScore: '18446744073709551614',
+    opponentLossScore: '0',
+    decidedBy: { type: 'referee', userId: 'referee-1' },
+    reason: '公開理由',
+  }
+  const parsed = parseCompetitionTournamentViewResponse(responseWithStageOverrides(1, {
+    status: 'finished',
+    standings: [
+      { ...stageFixture('roundRobin', 'round-robin-stage').standings[0],
+        matchPoints: decision.matchPoints, opponentWinScore: decision.opponentWinScore,
+        opponentLossScore: decision.opponentLossScore, rank: 2 },
+      { ...stageFixture('roundRobin', 'round-robin-stage').standings[1],
+        matchPoints: decision.matchPoints, opponentWinScore: decision.opponentWinScore,
+        opponentLossScore: decision.opponentLossScore, rank: 1 },
+    ],
+    rankingTieDecisions: [decision],
+  }), 'competition-a')
+  expect(parsed.stages[1]?.standings.map(row => [row.opponentWinScore, row.opponentLossScore])).toEqual([
+    ['18446744073709551614', '0'], ['18446744073709551614', '0'],
+  ])
+  expect(parsed.stages[1]?.rankingTieDecisions[0]?.orderedTeamIds).toEqual(['team-b', 'team-a'])
+  expect(parsed.stages[1]?.rankingTieDecisions[0]?.reason).toBe('公開理由')
+
+  for (const malformed of [
+    { ...decision, tiedTeamIds: ['team-b', 'team-a'] },
+    { ...decision, orderedTeamIds: ['team-a', 'team-a'] },
+    { ...decision, opponentWinScore: 18 },
+    { ...decision, opponentLossScore: '18446744073709551616' },
+    { ...decision, decidedBy: { type: 'player', userId: 'player-1' } },
+    { ...decision, reason: '   ' },
+    { ...decision, private: 'secret' },
+  ]) {
+    expect(() => parseCompetitionTournamentViewResponse(responseWithStageOverrides(1, {
+      status: 'finished', rankingTieDecisions: [malformed],
+    }), 'competition-a')).toThrow()
+  }
+  expect(() => parseCompetitionTournamentViewResponse(responseWithStandingOverrides(1, {
+    opponentWinScore: '018',
+  }), 'competition-a')).toThrow()
+})
+
 test('parses the bronze purpose only for the same-round single-elimination podium pair', () => {
   const parsed = parseCompetitionTournamentViewResponse(singleEliminationBronzeResponse(), 'competition-a')
   const finalRound = parsed.stages[0]?.rounds[1]
@@ -259,6 +306,7 @@ test('preserves server bye and double-loss states and never renders raw schedule
     return {
       ...stage,
       lastScheduleError: 'private referee payload',
+      rankingTieDecisions: [],
       corrections: [{
         matchId: 'double-stage-match-1',
         previousResult: { type: 'draw', firstGames: 1, secondGames: 1 },
@@ -416,7 +464,7 @@ test('projects a Swiss round without double-loss exits and marks both teams as e
       gameLosses: teamId === 'team-d' || teamId === 'team-f' ? 1 : 0,
       netGameWins: 0,
       opponentWinRateBasisPoints: null,
-      dropped: exitedTeamIds.has(teamId),
+      opponentWinScore: '0', opponentLossScore: '0', dropped: exitedTeamIds.has(teamId),
       rank: null,
     })),
   }

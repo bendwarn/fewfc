@@ -70,14 +70,15 @@ function stageFixture(format: string, stageId: string) {
       {
         teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 1,
         gameWins: 1, gameLosses: 2, netGameWins: -1,
-        opponentWinRateBasisPoints: null, dropped: false, rank: null,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
       },
       {
         teamId: 'team-a', matchPoints: '3', wins: 1, draws: 0, losses: 0,
         gameWins: 2, gameLosses: 1, netGameWins: 1,
-        opponentWinRateBasisPoints: 5_000, dropped: false, rank: 1,
+        opponentWinRateBasisPoints: 5_000, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 1,
       },
     ],
+    rankingTieDecisions: [],
     corrections: format === 'roundRobin'
       ? [{
           matchId,
@@ -126,6 +127,24 @@ function tournamentResponse(competitionId = 'competition-a', revision = 9) {
       },
     },
   }
+}
+
+function rankingTieResponse(competitionId = 'competition a', revision = 9) {
+  const response = tournamentResponse(competitionId, revision)
+  const stage = response.projection.public.stages[1]!
+  stage.status = 'finished'
+  Object.assign(stage.rounds[0]!.matches[0]!, {
+    status: 'completed', result: { type: 'draw', firstGames: 1, secondGames: 1 }, started: true,
+  })
+  stage.standings = [
+    { teamId: 'team-a', matchPoints: '1', wins: 0, draws: 1, losses: 0,
+      gameWins: 1, gameLosses: 1, netGameWins: 0, opponentWinRateBasisPoints: null,
+      opponentWinScore: '2', opponentLossScore: '1', dropped: false, rank: null },
+    { teamId: 'team-b', matchPoints: '1', wins: 0, draws: 1, losses: 0,
+      gameWins: 1, gameLosses: 1, netGameWins: 0, opponentWinRateBasisPoints: null,
+      opponentWinScore: '2', opponentLossScore: '1', dropped: false, rank: null },
+  ]
+  return response
 }
 
 function swissPlayedResponse(status: 'active' | 'finished' = 'active') {
@@ -197,15 +216,15 @@ function swissMultiRoundResponse() {
     ],
     standings: [
       { teamId: 'team-a', matchPoints: '9', wins: 2, draws: 0, losses: 0, gameWins: 4, gameLosses: 1,
-        netGameWins: 3, opponentWinRateBasisPoints: 6_000, dropped: false, rank: 1 },
+        netGameWins: 3, opponentWinRateBasisPoints: 6_000, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 1 },
       { teamId: 'team-b', matchPoints: '3', wins: 1, draws: 0, losses: 1, gameWins: 3, gameLosses: 3,
-        netGameWins: 0, opponentWinRateBasisPoints: 5_000, dropped: false, rank: 2 },
+        netGameWins: 0, opponentWinRateBasisPoints: 5_000, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 2 },
       { teamId: 'team-c', matchPoints: '6', wins: 1, draws: 0, losses: 0, gameWins: 2, gameLosses: 1,
-        netGameWins: 1, opponentWinRateBasisPoints: 5_500, dropped: false, rank: 3 },
+        netGameWins: 1, opponentWinRateBasisPoints: 5_500, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 3 },
       { teamId: 'team-d', matchPoints: '0', wins: 0, draws: 0, losses: 2, gameWins: 2, gameLosses: 4,
-        netGameWins: -2, opponentWinRateBasisPoints: 4_000, dropped: false, rank: 4 },
+        netGameWins: -2, opponentWinRateBasisPoints: 4_000, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 4 },
       { teamId: 'team-e', matchPoints: '3', wins: 0, draws: 0, losses: 1, gameWins: 1, gameLosses: 2,
-        netGameWins: -1, opponentWinRateBasisPoints: 4_500, dropped: false, rank: 5 },
+        netGameWins: -1, opponentWinRateBasisPoints: 4_500, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 5 },
     ],
   })
   return response
@@ -271,7 +290,7 @@ function doubleEliminationFinalsResponse(withReset: boolean) {
       gameLosses: [withReset ? 2 : 0, 4, 4, 4][index],
       netGameWins: [withReset ? 4 : 6, -2, -4, withReset ? 2 : 0][index],
       opponentWinRateBasisPoints: null,
-      dropped: false,
+      opponentWinScore: '0', opponentLossScore: '0', dropped: false,
       rank: [1, 3, 4, 2][index],
     })),
     teams: Object.fromEntries(teamIds.map((teamId, index) => [teamId, {
@@ -379,6 +398,46 @@ it('shows every team Match wins to participants and spectators during Swiss roun
   expect(finishedSwiss.findAll('.standing-card')).toHaveLength(2)
   expect(finishedSwiss.get('.standings-section').text()).toContain('伺服器排名與積分')
   await finished.unmount()
+})
+
+it('shows formal opponent scores and submits a complete public ranking tie decision', async () => {
+  fetchMock
+    .mockResolvedValueOnce(rankingTieResponse())
+    .mockResolvedValueOnce({ ok: true })
+    .mockResolvedValueOnce(rankingTieResponse())
+  const wrapper = await mountSuspended(CompetitionTournamentView, { props: props() })
+  await flushPromises()
+
+  const roundRobin = wrapper.get('article[aria-labelledby="tournament-stage-round-robin-stage"]')
+  const tiePanel = roundRobin.get('.ranking-tie-panel')
+  expect(roundRobin.text()).toContain('不同對手勝分')
+  expect(roundRobin.text()).toContain('不同對手負分')
+  expect(roundRobin.text()).toContain('積分 1・勝分 2・負分 1')
+  expect(roundRobin.text()).not.toContain('淨勝局')
+
+  const positions = tiePanel.findAll('select')
+  expect(positions).toHaveLength(2)
+  await positions[0]!.setValue('team-b')
+  await positions[1]!.setValue('team-a')
+  await tiePanel.get('textarea').setValue('依公開的同分處理理由排序')
+  const submit = tiePanel.get('button.tie-submit')
+  expect((submit.element as HTMLButtonElement).disabled).toBe(false)
+  await submit.trigger('click')
+  await flushPromises()
+
+  expect(fetchMock).toHaveBeenCalledTimes(3)
+  expect(fetchMock.mock.calls.map(([, options]) => options?.method)).toEqual(['GET', 'POST', 'GET'])
+  expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/competitions/competition%20a/tournament/ranking-tie')
+  expect(fetchMock.mock.calls[1]?.[1]?.body).toMatchObject({
+    expectedRevision: 9,
+    stageId: 'round-robin-stage',
+    orderedTeamIds: ['team-b', 'team-a'],
+    reason: '依公開的同分處理理由排序',
+  })
+  expect(fetchMock.mock.calls[1]?.[1]?.body.commandId).toMatch(/^ranking-tie-/)
+  expect(JSON.stringify(fetchMock.mock.calls[1]?.[1]?.body)).not.toContain('member-a')
+  expect(wrapper.text()).toContain('同分順序已提交，正在確認公開賽程。')
+  await wrapper.unmount()
 })
 
 it('shows the complete double-elimination route with and without the grand-final reset Match', async () => {
@@ -646,24 +705,25 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
       {
         teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 1,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
-        opponentWinRateBasisPoints: null, dropped: false, rank: null,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
       },
       {
         teamId: 'team-c', matchPoints: '3', wins: 1, draws: 0, losses: 1,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
-        opponentWinRateBasisPoints: null, dropped: false, rank: null,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
       },
       {
         teamId: 'team-d', matchPoints: '0', wins: 0, draws: 0, losses: 1,
         gameWins: 0, gameLosses: 1, netGameWins: -1,
-        opponentWinRateBasisPoints: null, dropped: false, rank: null,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
       },
       {
         teamId: 'team-a', matchPoints: '3', wins: 1, draws: 0, losses: 1,
         gameWins: 1, gameLosses: 0, netGameWins: 1,
-        opponentWinRateBasisPoints: null, dropped: false, rank: null,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
       },
     ],
+    rankingTieDecisions: [],
     corrections: [{
       matchId: 'vacant-final-stage-g0-r1-m1',
       previousResult: { type: 'win', winnerId: 'team-d', loserId: 'team-a', winnerGames: 1, loserGames: 0 },
@@ -755,19 +815,19 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
     }))).toEqual([
       {
         team: 'team-b', rank: '排名未確定',
-        facts: [['賽事積分', '0'], ['勝／和／負', '0／0／1'], ['勝／負局', '0／0'], ['淨勝局', '0'], ['對手勝率基點', '未提供'], ['已退賽', '否']],
+        facts: [['賽事積分', '0'], ['勝／和／負', '0／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
       },
       {
         team: 'team-c', rank: '排名未確定',
-        facts: [['賽事積分', '3'], ['勝／和／負', '1／0／1'], ['勝／負局', '0／0'], ['淨勝局', '0'], ['對手勝率基點', '未提供'], ['已退賽', '否']],
+        facts: [['賽事積分', '3'], ['勝／和／負', '1／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
       },
       {
         team: 'team-d', rank: '排名未確定',
-        facts: [['賽事積分', '0'], ['勝／和／負', '0／0／1'], ['勝／負局', '0／1'], ['淨勝局', '-1'], ['對手勝率基點', '未提供'], ['已退賽', '否']],
+        facts: [['賽事積分', '0'], ['勝／和／負', '0／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
       },
       {
         team: 'team-a', rank: '排名未確定',
-        facts: [['賽事積分', '3'], ['勝／和／負', '1／0／1'], ['勝／負局', '1／0'], ['淨勝局', '1'], ['對手勝率基點', '未提供'], ['已退賽', '否']],
+        facts: [['賽事積分', '3'], ['勝／和／負', '1／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
       },
     ])
     expect(finalStage.text()).not.toContain('第 1 名')
@@ -808,14 +868,15 @@ it('displays configured zero Team Main Time as unlimited through the valid tourn
       {
         teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 0,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
-        opponentWinRateBasisPoints: null, dropped: false, rank: null,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
       },
       {
         teamId: 'team-a', matchPoints: '0', wins: 0, draws: 0, losses: 0,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
-        opponentWinRateBasisPoints: null, dropped: false, rank: null,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
       },
     ],
+    rankingTieDecisions: [],
     corrections: [],
     lastScheduleError: null,
     scheduleGeneration: 0,
@@ -903,11 +964,11 @@ it('displays configured zero Team Main Time as unlimited through the valid tourn
     }))).toEqual([
       {
         team: 'team-b', rank: '排名未確定',
-        facts: [['賽事積分', '0'], ['勝／和／負', '0／0／0'], ['勝／負局', '0／0'], ['淨勝局', '0'], ['對手勝率基點', '未提供'], ['已退賽', '否']],
+        facts: [['賽事積分', '0'], ['勝／和／負', '0／0／0'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
       },
       {
         team: 'team-a', rank: '排名未確定',
-        facts: [['賽事積分', '0'], ['勝／和／負', '0／0／0'], ['勝／負局', '0／0'], ['淨勝局', '0'], ['對手勝率基點', '未提供'], ['已退賽', '否']],
+        facts: [['賽事積分', '0'], ['勝／和／負', '0／0／0'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
       },
     ])
     expect(finiteStage.get('.stage-heading .status-badge').text()).toBe('進行中')

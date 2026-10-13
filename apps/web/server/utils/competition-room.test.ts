@@ -39,6 +39,7 @@ import {
   buildClockControlCommand,
   buildClockControlRequest,
   projectClockControlPublicValue,
+  buildRankingTieDecisionCommand,
   buildCaptainNextGameCommand,
   deriveCaptainNextGameChildCommandIds,
   buildCaptainNextGameCompositeRequests,
@@ -181,6 +182,45 @@ test('clock-control builder rejects every extra field and malformed public field
   ]) {
     expect(() => buildClockControlCommand(body)).toThrow()
   }
+})
+
+test('ranking tie decision builder accepts only a complete decision command and server-derived envelope', () => {
+  const command = buildRankingTieDecisionCommand({
+    commandId: ' tie-command ', expectedRevision: 8, stageId: ' stage-1 ',
+    orderedTeamIds: ['team-b', 'team-a'], reason: '  公開理由  ',
+  })
+  expect(command).toEqual({
+    commandId: 'tie-command', expectedRevision: 8,
+    operation: {
+      type: 'tournamentAdjudicateRankingTie', stageId: 'stage-1',
+      orderedTeamIds: ['team-b', 'team-a'], reason: '公開理由',
+    },
+  })
+  expect(buildExecuteRequest('competition-1', 'session-user', command, () => 123)).toEqual({
+    competitionId: 'competition-1', callerUserId: 'session-user',
+    commandId: 'tie-command', expectedRevision: 8, trustedTimeMs: 123,
+    operation: {
+      type: 'tournamentAdjudicateRankingTie', stageId: 'stage-1',
+      orderedTeamIds: ['team-b', 'team-a'], reason: '公開理由',
+    },
+  })
+
+  const valid = {
+    commandId: 'command', expectedRevision: 1, stageId: 'stage-1',
+    orderedTeamIds: ['team-a', 'team-b'], reason: '公開理由',
+  }
+  for (const body of [
+    null,
+    { ...valid, serverState: {} },
+    { ...valid, callerUserId: 'spoof' },
+    { ...valid, operation: { type: 'tournamentAdjudicateRankingTie' } },
+    { ...valid, orderedTeamIds: ['team-a', 'team-a'] },
+    { ...valid, orderedTeamIds: ['team-a', ' '] },
+    { ...valid, reason: '  ' },
+    { ...valid, reason: 'x'.repeat(2_001) },
+    { ...valid, expectedRevision: Number.MAX_SAFE_INTEGER + 1 },
+    { ...valid, commandId: '' },
+  ]) expect(() => buildRankingTieDecisionCommand(body)).toThrow()
 })
 
 test('clock-control response projection validates the exact value and strips every internal field', () => {

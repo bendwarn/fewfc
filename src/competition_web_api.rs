@@ -23,8 +23,8 @@ use crate::competition_registration::{
 };
 use crate::domain::{GameConclusion, GameEndCause, GameOutcome, TeamId as DomainTeamId};
 use crate::tournament::{
-    MatchId, MatchResult, QualifiedStagePlanError, QualifiedStageTemplate, ScheduleError, StageId,
-    TeamId as ScheduleTeamId, Tournament, TournamentConfig, UpdateOutcome,
+    MatchId, MatchResult, QualifiedStagePlanError, QualifiedStageTemplate, RankingDecisionActor,
+    ScheduleError, StageId, TeamId as ScheduleTeamId, Tournament, TournamentConfig, UpdateOutcome,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -238,6 +238,11 @@ pub enum CompetitionOperation {
     TournamentPreviewQualifiedStage(QualifiedStageBridgeInput),
     TournamentCreateQualifiedStage(QualifiedStageBridgeInput),
     TournamentView(TournamentViewInput),
+    TournamentAdjudicateRankingTie {
+        stage_id: String,
+        ordered_team_ids: Vec<ScheduleTeamId>,
+        reason: String,
+    },
     TournamentStartMatch {
         stage_id: String,
         match_id: String,
@@ -1104,8 +1109,41 @@ fn dispatch(
             let tournament = state.tournament.as_ref().ok_or_else(|| {
                 BridgeError::new("missingState", "state", "缺少 tournament snapshot")
             })?;
-            // request 的 Tournament Deserialize 已驗證快照；查詢不重建、配對或推進狀態。
-            let public = serde_json::to_value(tournament).map_err(serialize_error)?;
+            // 只在公開投影中由正式賽果重算排名，不改動唯讀查詢回傳的 serverState。
+            let public =
+                serde_json::to_value(tournament.ranking_projection()).map_err(serialize_error)?;
+            Ok((public, None, state))
+        }
+        CompetitionOperation::TournamentAdjudicateRankingTie {
+            stage_id,
+            ordered_team_ids,
+            reason,
+        } => {
+            actor.require_official()?;
+            let decided_by = match actor {
+                CompetitionServerActor::Organizer { player_id } => {
+                    RankingDecisionActor::Organizer { user_id: player_id }
+                }
+                CompetitionServerActor::Referee { player_id } => {
+                    RankingDecisionActor::Referee { user_id: player_id }
+                }
+                CompetitionServerActor::Player { .. } => {
+                    unreachable!("require_official 已拒絕玩家")
+                }
+            };
+            let mut tournament = state.tournament.take().ok_or_else(|| {
+                BridgeError::new("missingState", "state", "缺少 tournament snapshot")
+            })?;
+            tournament
+                .adjudicate_ranking_tie(
+                    &StageId::from(stage_id),
+                    ordered_team_ids,
+                    decided_by,
+                    reason,
+                )
+                .map_err(schedule_error)?;
+            let public = serde_json::to_value(&tournament).map_err(serialize_error)?;
+            state.tournament = Some(tournament);
             Ok((public, None, state))
         }
         operation @ (CompetitionOperation::TournamentStartMatch { .. }
@@ -1651,6 +1689,9 @@ fn operation_name(operation: &CompetitionOperation) -> String {
         }
         CompetitionOperation::TournamentCreateQualifiedStage(_) => "tournamentCreateQualifiedStage",
         CompetitionOperation::TournamentView(_) => "tournamentView",
+        CompetitionOperation::TournamentAdjudicateRankingTie { .. } => {
+            "tournamentAdjudicateRankingTie"
+        }
         CompetitionOperation::TournamentStartMatch { .. } => "tournamentStartMatch",
         CompetitionOperation::TournamentSubmitResult { .. } => "tournamentSubmitResult",
         CompetitionOperation::TournamentCorrectResult { .. } => "tournamentCorrectResult",
@@ -1754,6 +1795,13 @@ fn schedule_error(error: ScheduleError) -> BridgeError {
         ScheduleError::EmptyCorrectionReason => "emptyCorrectionReason",
         ScheduleError::NoLegalSwissPairing => "noLegalSwissPairing",
         ScheduleError::DoubleLossNeedsReferee(_) => "doubleLossNeedsReferee",
+        ScheduleError::RankingTieStageNotFinished(_) => "rankingTieStageNotFinished",
+        ScheduleError::RankingTieUnsupportedFormat(_) => "rankingTieUnsupportedFormat",
+        ScheduleError::RankingTieNotFound(_) => "rankingTieNotFound",
+        ScheduleError::RankingTieOrderMismatch(_) => "rankingTieOrderMismatch",
+        ScheduleError::RankingTieAlreadyDecided(_) => "rankingTieAlreadyDecided",
+        ScheduleError::EmptyRankingDecisionReason => "emptyRankingDecisionReason",
+        ScheduleError::InvalidRankingDecisionActor => "invalidRankingDecisionActor",
         ScheduleError::InvalidOperation(_) => "invalidOperation",
     };
     BridgeError::new("scheduleError", "validation", &format!("{code}: {error}"))
@@ -1825,6 +1873,27 @@ mod tests {
         assert_eq!(request["serverActor"]["playerId"], "ref");
         assert_eq!(request["operation"]["choiceId"], "choice-1");
         assert!(request.get("trusted_time_ms").is_none());
+    }
+
+    #[test]
+    fn ranking_tie_action_uses_exact_camel_case_fields() {
+        let operation = CompetitionOperation::TournamentAdjudicateRankingTie {
+            stage_id: "stage-1".into(),
+            ordered_team_ids: vec![
+                ScheduleTeamId::from("team-b"),
+                ScheduleTeamId::from("team-a"),
+            ],
+            reason: "公開理由".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(operation).unwrap(),
+            json!({
+                "type": "tournamentAdjudicateRankingTie",
+                "stageId": "stage-1",
+                "orderedTeamIds": ["team-b", "team-a"],
+                "reason": "公開理由"
+            })
+        );
     }
 
     #[test]
@@ -2498,6 +2567,85 @@ mod tests {
                     qualified_stage_bridge_rank_slots("source-a", 1, 2))}),
         );
         qualified_stage_bridge_assert_error(&duplicate_target, "duplicateStageId");
+    }
+
+    #[test]
+    fn qualified_stage_bridge_allows_top_two_when_lower_ranks_are_tied() {
+        let mut server_state = qualified_stage_bridge_create_tournament(
+            qualified_stage_bridge_state_with_other_domains(),
+            "source-a",
+            &["a", "b", "c", "d"],
+        );
+        while let Some(match_) = qualified_stage_bridge_pending_match(&server_state, "source-a") {
+            let match_id = match_["matchId"].as_str().unwrap().to_string();
+            let mut participants: Vec<_> = match_["participants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|team_id| team_id.as_str().unwrap())
+                .collect();
+            participants.sort_unstable();
+
+            let start = qualified_stage_bridge_call_official(
+                server_state,
+                json!({"type": "tournamentStartMatch", "stageId": "source-a", "matchId": match_id}),
+            );
+            server_state = qualified_stage_bridge_next_state(&start);
+
+            let result = if participants == ["c", "d"] {
+                json!({"type": "draw", "firstGames": 0, "secondGames": 0})
+            } else {
+                let winner = if participants.contains(&"a") {
+                    "a"
+                } else {
+                    "b"
+                };
+                let loser = participants
+                    .iter()
+                    .copied()
+                    .find(|team_id| *team_id != winner)
+                    .unwrap();
+                json!({"type": "win", "winnerId": winner, "loserId": loser,
+                    "winnerGames": 1, "loserGames": 0})
+            };
+            let submitted = qualified_stage_bridge_call_official(
+                server_state,
+                json!({"type": "tournamentSubmitResult", "stageId": "source-a",
+                    "matchId": match_id, "result": result}),
+            );
+            server_state = qualified_stage_bridge_next_state(&submitted);
+        }
+
+        let stage = server_state["tournament"]["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|stage| stage["config"]["stageId"] == "source-a")
+            .unwrap();
+        let standings = stage["standings"].as_array().unwrap();
+        let standing = |team_id: &str| {
+            standings
+                .iter()
+                .find(|row| row["teamId"] == team_id)
+                .unwrap()
+        };
+        assert_eq!(standing("a")["rank"], 1);
+        assert_eq!(standing("b")["rank"], 2);
+        assert_eq!(standing("c")["rank"], Value::Null);
+        assert_eq!(standing("d")["rank"], Value::Null);
+
+        let preview = qualified_stage_bridge_call_official(
+            server_state.clone(),
+            json!({"type": "tournamentPreviewQualifiedStage", "template":
+                qualified_stage_bridge_template("next", "singleElimination",
+                    qualified_stage_bridge_rank_slots("source-a", 1, 2))}),
+        );
+        qualified_stage_bridge_assert_ok(&preview);
+        assert_eq!(
+            preview["public"]["qualification"]["seededTeams"],
+            json!([{"teamId": "a", "seed": 1}, {"teamId": "b", "seed": 2}])
+        );
+        assert_eq!(preview["serverState"], server_state);
     }
 
     #[test]

@@ -293,6 +293,7 @@ export type CompetitionOperation =
   | { type: 'tournamentCreateQualifiedStage'; template: QualifiedStageTemplate }
   /** 唯讀目前賽程；只能由可信伺服器注入 checkpoint，不是公開 raw HTTP 操作。 */
   | { type: 'tournamentView' }
+  | { type: 'tournamentAdjudicateRankingTie'; stageId: string; orderedTeamIds: string[]; reason: string }
   | { type: 'tournamentStartMatch'; stageId: string; matchId: string }
   | {
       type: 'tournamentSubmitResult'

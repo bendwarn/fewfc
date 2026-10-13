@@ -806,11 +806,11 @@ test('E6d1a tournamentView recognizes the pure query and strips private checkpoi
       }] }],
       standings: [
         { teamId: 'team-a', matchPoints: '3', wins: 1, draws: 0, losses: 0,
-          gameWins: 1, gameLosses: 0, netGameWins: 1, opponentWinRateBasisPoints: null, dropped: false, rank: 1 },
+          gameWins: 1, gameLosses: 0, netGameWins: 1, opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 1 },
         { teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 1,
-          gameWins: 0, gameLosses: 1, netGameWins: -1, opponentWinRateBasisPoints: null, dropped: false, rank: 2 },
+          gameWins: 0, gameLosses: 1, netGameWins: -1, opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 2 },
       ],
-      corrections: [], lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
+      rankingTieDecisions: [], corrections: [], lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
       teams: { 'team-a': { seed: 1, dropped: false, hadBye: false }, 'team-b': { seed: 2, dropped: false, hadBye: false } },
       doubleState: null,
     }],
@@ -1131,7 +1131,7 @@ function qualifiedStageBridgePlannedStage(template: QualifiedStageTemplate): Jso
       swissRounds: template.swissRounds,
       swissPolicy: structuredClone(template.swissPolicy),
     },
-    status: 'active', rounds: [], standings: [], corrections: [], lastScheduleError: null,
+    status: 'active', rounds: [], standings: [], rankingTieDecisions: [], corrections: [], lastScheduleError: null,
     scheduleGeneration: 0, supersededRounds: [],
     teams: {
       'team-a': { seed: 7, dropped: false, hadBye: false },
