@@ -1337,6 +1337,11 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       serverActor: actorFor('organizer', request.callerUserId), trustedTimeMs: request.trustedTimeMs,
       operation: { type: 'tournamentView' }, serverState: state,
     })
+    if (!tournamentResponse.ok) {
+      return isRetryableAutomaticRoundAdvancementError(tournamentResponse.error.code)
+        ? roomFailure(tournamentResponse.error.code, 'current tournament query failed')
+        : roomFailure('invalidTournamentCheckpoint', 'current tournament query is invalid')
+    }
     if (!isValidRoundTournamentView(tournamentResponse, state, request.competitionId)) {
       return roomFailure('invalidTournamentCheckpoint', 'current tournament query is invalid')
     }
@@ -1364,7 +1369,13 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
           serverActor: actorFor('organizer', request.callerUserId), trustedTimeMs: request.trustedTimeMs,
           operation: { type: 'matchView', matchId: row.match_id }, serverState: scopedState,
         })
-        if (!view.ok || !isValidStoredMatchView(view, scopedState, row) || !submission
+        if (!view.ok) {
+          if (isRetryableAutomaticRoundAdvancementError(view.error.code)) {
+            return roomFailure(view.error.code, 'previous-round match query failed')
+          }
+          throw new Error('previous-round match query was rejected')
+        }
+        if (!isValidStoredMatchView(view, scopedState, row) || !submission
           || !isJsonObject(view.public) || !isJsonObject(view.public.match)
           || !isJsonObject(checkpoint.config) || !isValidMatchFormat(checkpoint.config.format)
           || !Array.isArray(checkpoint.history) || row.revision < 1 + checkpoint.history.length
@@ -1402,7 +1413,12 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       serverActor: actorFor('organizer', request.callerUserId), trustedTimeMs: request.trustedTimeMs,
       operation: { type: 'registrationExportLockedRoster' }, serverState: state,
     })
-    if (!exportResponse.ok || !isExactCompetitionJson(exportResponse)
+    if (!exportResponse.ok) {
+      return isRetryableAutomaticRoundAdvancementError(exportResponse.error.code)
+        ? roomFailure(exportResponse.error.code, 'locked roster export query failed')
+        : roomFailure('invalidLockedRoster', 'locked roster export is invalid')
+    }
+    if (!isExactCompetitionJson(exportResponse)
       || !isJsonObject(exportResponse) || !hasExactKeys(exportResponse, ['ok', 'operation', 'public', 'private', 'serverState'])
       || exportResponse.operation !== 'registrationExportLockedRoster'
       || !sameJson(exportResponse.serverState, state) || !isJsonObject(exportResponse.public)
@@ -1539,7 +1555,12 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       serverActor: actorFor('organizer', request.callerUserId), trustedTimeMs: request.trustedTimeMs,
       operation: matchOperation, serverState: emptyServerState(),
     })
-    if (!created.ok || !isExactCompetitionJson(created) || !isJsonObject(created)
+    if (!created.ok) {
+      return isRetryableAutomaticRoundAdvancementError(created.error.code)
+        ? roomFailure(created.error.code, 'round match creation failed temporarily')
+        : roomFailure('engineInvalidMatchCheckpoint', 'round match creation returned an invalid checkpoint')
+    }
+    if (!isExactCompetitionJson(created) || !isJsonObject(created)
       || !hasExactKeys(created, ['ok', 'operation', 'public', 'serverState']) || created.operation !== 'matchCreate'
       || validateScopedEngineState(created.serverState, schedule.matchId, null, null, matchOperation)) {
       return roomFailure('engineInvalidMatchCheckpoint', 'round match creation returned an invalid checkpoint')
@@ -1554,7 +1575,12 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       operation: engineOperation(clockOperation),
       serverState: { registration: null, clock: null, tournament: null, matches: { [schedule.matchId]: checkpoint } },
     })
-    if (!clockCreated.ok || !isExactCompetitionJson(clockCreated) || !isJsonObject(clockCreated)
+    if (!clockCreated.ok) {
+      return isRetryableAutomaticRoundAdvancementError(clockCreated.error.code)
+        ? roomFailure(clockCreated.error.code, 'round clock creation failed temporarily')
+        : roomFailure('engineInvalidClockCheckpoint', 'round clock creation returned an invalid checkpoint')
+    }
+    if (!isExactCompetitionJson(clockCreated) || !isJsonObject(clockCreated)
       || !hasExactKeys(clockCreated, ['ok', 'operation', 'public', 'serverState']) || clockCreated.operation !== 'clockCreate'
       || validateScopedEngineState(clockCreated.serverState, schedule.matchId, checkpoint, null, clockOperation)) {
       return roomFailure('engineInvalidClockCheckpoint', 'round clock creation returned an invalid checkpoint')
@@ -1590,6 +1616,9 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       operation: { type: 'matchAssignFirstPlayer', matchId: schedule.matchId, team: firstTeam, reason: INITIAL_FIRST_PLAYER_REASON },
       serverState: { registration: null, clock, tournament: null, matches: { [schedule.matchId]: checkpoint } },
     })
+    if (!assigned.ok && isRetryableAutomaticRoundAdvancementError(assigned.error.code)) {
+      return roomFailure(assigned.error.code, 'round first-player assignment failed temporarily')
+    }
     const verified = isExactCompetitionJson(assigned)
       ? validateInitialFirstPlayerResponse(assigned, schedule.matchId, pending, firstTeam, INITIAL_FIRST_PLAYER_REASON)
       : null
@@ -3358,6 +3387,13 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     }
     if (request.operation.type === 'tournamentStartMatch') {
       return roomFailure('operationNotAllowed', 'tournamentStartMatch must use startScheduledMatch')
+    }
+    if (request.operation.type === 'tournamentSubmitResult'
+      || request.operation.type === 'tournamentCorrectResult') {
+      return roomFailure(
+        'operationNotAllowed',
+        'tournament results must come from a completed competition match lifecycle',
+      )
     }
     if (isClockOperation(request.operation)) {
       return roomFailure('operationNotAllowed', 'clock operations must use executeMatch')
@@ -5492,9 +5528,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         refereeAssignments: [],
       }, announceAtMs, missedPreparationWindow)
       if (result.ok) return result.value.idempotent ? 'none' : 'announced'
-      return result.error.code === 'engineProtocolError' || result.error.code === 'revisionConflict'
-        ? 'retry'
-        : 'none'
+      return isRetryableAutomaticRoundAdvancementError(result.error.code) ? 'retry' : 'none'
     }
     return 'none'
   }
@@ -8130,6 +8164,11 @@ function emptyServerState(): CompetitionServerState {
 
 function actorFor(role: CompetitionRoomRole, userId: string): CompetitionServerActor {
   return { type: role, playerId: userId }
+}
+
+function isRetryableAutomaticRoundAdvancementError(code: string): boolean {
+  return code === 'engineProtocolError' || code === 'revisionConflict'
+    || code === 'internalFailure' || code === 'randomSourceFailure'
 }
 
 function isValidRoundTournamentView(

@@ -4198,6 +4198,41 @@ test('terminal ingest derives canonical decisive ruling and commits one revision
   ])
 })
 
+test('raw tournament result writes cannot bypass the completed Match lifecycle', async () => {
+  const calls: CompetitionRequest[] = []
+  const { room, sql } = await terminalRoom({ calls })
+  const before = terminalStateSnapshot(sql)
+  const auditBefore = sql.database.query('SELECT COUNT(*) AS count FROM competition_audit').get()
+  const receiptsBefore = sql.database.query('SELECT COUNT(*) AS count FROM competition_command_receipt').get()
+  const operations: CompetitionRoomExecuteRequest['operation'][] = [
+    { type: 'tournamentSubmitResult', stageId: 'stage-1', matchId: 'terminal-match',
+      result: { type: 'win', winnerId: 'team-a', loserId: 'team-b', winnerGames: 1, loserGames: 0 } },
+    { type: 'tournamentCorrectResult', stageId: 'stage-1', matchId: 'terminal-match',
+      replacement: { type: 'win', winnerId: 'team-a', loserId: 'team-b', winnerGames: 1, loserGames: 0 },
+      reason: '不能繞過真正 Match 更正入口' },
+  ]
+
+  for (const [index, operation] of operations.entries()) {
+    expect(await room.execute({
+      competitionId: 'competition-1', callerUserId: 'organizer-1',
+      commandId: `raw-tournament-result-${index}`, expectedRevision: 2,
+      trustedTimeMs: 201, operation,
+    })).toEqual({
+      ok: false,
+      error: {
+        code: 'operationNotAllowed',
+        message: 'tournament results must come from a completed competition match lifecycle',
+      },
+    })
+  }
+
+  expect(terminalStateSnapshot(sql)).toEqual(before)
+  expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_audit').get()).toEqual(auditBefore)
+  expect(sql.database.query('SELECT COUNT(*) AS count FROM competition_command_receipt').get()).toEqual(receiptsBefore)
+  expect(calls.filter(call => call.operation.type === 'tournamentSubmitResult'
+    || call.operation.type === 'tournamentCorrectResult')).toEqual([])
+})
+
 test('completed match maps each recorded game into its tournament result and survives restart retry', async () => {
   const calls: CompetitionRequest[] = []
   const { room, sql } = await terminalRoom({ calls })
@@ -8899,6 +8934,7 @@ async function e6c2aLockedMatch(options: {
   teamCount?: 2 | 3 | 4 | 5
   format?: StageConfig['format']
   matchFormat?: StageConfig['matchFormat']
+  automaticRoundProgression?: boolean
   referees?: { refereeId: string; conflictedTeam: string | null }[]
   clockConfig?: StageConfig['clockConfig']
   provision?: boolean
@@ -8928,9 +8964,11 @@ async function e6c2aLockedMatch(options: {
     }],
   }
   const setup = await realRegistrationRoom(teamSize, personalDeck, 120_000, () => 0, plan)
-  // 此 fixture 由測例逐輪建立／啟動，停用外層自動推進以免重複物化手動安排的輪次。
-  ;(setup.room as unknown as { kickAutomaticRoundAdvance: () => Promise<void> })
-    .kickAutomaticRoundAdvance = async () => {}
+  if (!options.automaticRoundProgression) {
+    // 逐輪手動安排的既有 fixture 不應觸發外層自動物化。
+    ;(setup.room as unknown as { kickAutomaticRoundAdvance: () => Promise<void> })
+      .kickAutomaticRoundAdvance = async () => {}
+  }
   const accepted = async (action: RegistrationAction, callerUserId = 'organizer-1', trustedTimeMs?: number) => {
     const result = await setup.room.execute(setup.command(action, callerUserId,
       trustedTimeMs === undefined ? {} : { trustedTimeMs }))
@@ -9019,6 +9057,268 @@ function e6MatchTeams(setup: { sql: MemorySql; matchId: string }): string[] {
     .get(setup.matchId) as { match_checkpoint_json: string }
   const checkpoint = JSON.parse(row.match_checkpoint_json) as JsonObject
   return [...((checkpoint.config as JsonObject).teams as string[])]
+}
+
+type E6TournamentSetup = Awaited<ReturnType<typeof e6c2aLockedMatch>>
+
+async function e6StartAndProvisionOtherFirstRoundMatches(setup: E6TournamentSetup): Promise<string[]> {
+  const state = JSON.parse(setup.meta().server_state_json) as JsonObject
+  const tournament = state.tournament
+  if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+    throw new Error('automatic progression fixture has no tournament')
+  }
+  const stage = tournament.stages.find(value => isJsonObject(value) && isJsonObject(value.config)
+    && value.config.stageId === setup.stage.stageId)
+  if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) throw new Error('automatic progression stage missing')
+  const firstRound = stage.rounds.find(value => isJsonObject(value) && value.roundNumber === 1)
+  if (!isJsonObject(firstRound) || !Array.isArray(firstRound.matches)) throw new Error('first tournament round missing')
+  const matchIds = firstRound.matches.flatMap(value => isJsonObject(value)
+    && typeof value.matchId === 'string' && value.participants instanceof Array && value.participants.length === 2
+    ? [value.matchId] : [])
+  for (const matchId of matchIds) {
+    if (matchId === setup.matchId) continue
+    let current = setup.meta()
+    const started = await setup.room.startScheduledMatch({
+      competitionId: 'competition-1', stageId: setup.stage.stageId, matchId,
+      callerUserId: 'organizer-1', commandId: `ticket10-start-${matchId}`,
+      expectedRevision: current.revision, trustedTimeMs: current.updated_trusted_time_ms + 1, referees: [],
+    })
+    if (!started.ok) throw new Error(`automatic progression match start failed: ${started.error.code}`)
+    current = setup.meta()
+    const provisioned = await setup.room.provisionInitialScheduledGame({
+      competitionId: 'competition-1', matchId, callerUserId: 'organizer-1',
+      commandId: `ticket10-provision-${matchId}`, expectedMatchRevision: 1,
+      trustedTimeMs: current.updated_trusted_time_ms + 1,
+    })
+    if (!provisioned.ok) throw new Error(`automatic progression game provision failed: ${provisioned.error.code}`)
+  }
+  return matchIds
+}
+
+async function e6SubmitTournamentGame(
+  setup: E6TournamentSetup,
+  matchId: string,
+  trustedTimeMs: number,
+  outcome: { type: 'draw' } | { type: 'winner'; team: string },
+) {
+  const row = setup.sql.database.query(`SELECT revision, match_projection_json
+    FROM competition_matches WHERE match_id = ?`).get(matchId) as {
+      revision: number; match_projection_json: string
+    }
+  const projection = JSON.parse(row.match_projection_json) as JsonObject
+  const publicProjection = projection.public
+  const match = isJsonObject(publicProjection) ? publicProjection.match : null
+  if (!isJsonObject(match) || !isJsonObject(match.nextGame)
+    || typeof match.nextGame.gameNumber !== 'number' || typeof match.nextFirstPlayer !== 'string') {
+    throw new Error('automatic progression fixture has no current game intent')
+  }
+  const gameNumber = match.nextGame.gameNumber
+  const gameRow = setup.sql.database.query(`SELECT binding_json FROM competition_game_provision
+    WHERE match_id = ? AND game_number = ?`).get(matchId, gameNumber) as { binding_json: string } | undefined
+  if (!gameRow) throw new Error('automatic progression fixture has no current game binding')
+  const binding = JSON.parse(gameRow.binding_json) as CompetitionGameBinding
+  const request: CompetitionRoomTerminalIngestRequest = {
+    competitionId: 'competition-1', matchId, callerUserId: 'organizer-1',
+    commandId: `ticket10-terminal-${matchId}-${gameNumber}`,
+    expectedMatchRevision: row.revision, trustedTimeMs,
+    submissionId: `ticket10-submission-${matchId}-${gameNumber}`,
+    gameRecordId: `ticket10-game-${matchId}-${gameNumber}`,
+    rulingRecordId: `ticket10-ruling-${matchId}-${gameNumber}`,
+    startKind: binding.startKind, firstPlayer: match.nextFirstPlayer,
+    terminalEvidence: {
+      type: 'canonicalGameEnded',
+      conclusion: outcome.type === 'draw'
+        ? { outcome: { type: 'draw' }, causes: [{ type: 'teamHpDepleted', teams: binding.initialHp.map(team => team.team) }] }
+        : { outcome: { type: 'winner', team: outcome.team }, causes: [{ type: 'directVictory', rule: 'ticket10-test', team: outcome.team }] },
+    },
+  }
+  return {
+    request,
+    result: await atRoundDeliveryTime(trustedTimeMs, () => setup.room.ingestGameTerminal(request)),
+  }
+}
+
+function e6RoundPublicationRows(setup: E6TournamentSetup): JsonObject[] {
+  const rows = setup.sql.database.query(`SELECT stage_id, round_number, round_generation_id,
+    status, requires_referee, release_not_before_ms FROM competition_round_publication ORDER BY round_number`).all()
+  if (!rows.every(isJsonObject)) throw new Error('automatic progression publication rows are malformed')
+  return rows
+}
+
+async function e6ReadTournament(setup: E6TournamentSetup): Promise<JsonObject> {
+  const result = await setup.room.readTournament({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
+  if (!result.ok || !isJsonObject(result.value.projection.public)) {
+    throw new Error('automatic progression tournament projection is unavailable')
+  }
+  return result.value.projection.public
+}
+
+test('round-robin publishes the next round only after every Match, not every Game, is complete', async () => {
+  const setup = await e6c2aLockedMatch({
+    teamCount: 4, format: 'roundRobin', matchFormat: { type: 'fixedGames', value: 2 },
+    automaticRoundProgression: true,
+  })
+  const firstRoundMatchIds = await e6StartAndProvisionOtherFirstRoundMatches(setup)
+  expect(firstRoundMatchIds).toHaveLength(2)
+  expect(e6RoundPublicationRows(setup)).toHaveLength(1)
+
+  let time = Math.max(200_000, setup.meta().updated_trusted_time_ms + 1)
+  const firstMatchFirstGame = await e6SubmitTournamentGame(setup, firstRoundMatchIds[0]!, time++, { type: 'draw' })
+  expect(firstMatchFirstGame.result).toMatchObject({
+    ok: true, value: { matchProjection: { public: { match: { status: 'open' } } } },
+  })
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(0)
+  expect(e6RoundPublicationRows(setup)).toHaveLength(1)
+
+  const firstMatchFinalGame = await e6SubmitTournamentGame(setup, firstRoundMatchIds[0]!, time++, { type: 'draw' })
+  expect(firstMatchFinalGame.result).toMatchObject({
+    ok: true, value: { matchProjection: { public: { match: { status: 'completed' } } } },
+  })
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(1)
+  expect(e6RoundPublicationRows(setup)).toHaveLength(1)
+
+  const secondMatchFirstGame = await e6SubmitTournamentGame(setup, firstRoundMatchIds[1]!, time++, { type: 'draw' })
+  expect(secondMatchFirstGame.result).toMatchObject({
+    ok: true, value: { matchProjection: { public: { match: { status: 'open' } } } },
+  })
+  expect(e6RoundPublicationRows(setup)).toHaveLength(1)
+
+  setup.sql.failNextQueryContaining = 'INSERT INTO competition_round_publication'
+  const secondMatchFinalGame = await e6SubmitTournamentGame(setup, firstRoundMatchIds[1]!, time++, { type: 'draw' })
+  expect(secondMatchFinalGame.result).toMatchObject({
+    ok: true, value: { matchProjection: { public: { match: { status: 'completed' } } } },
+  })
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(2)
+  expect(e6RoundPublicationRows(setup)).toHaveLength(1)
+  expect(setup.alarm.scheduledAt).toBe(time - 1 + 5_000)
+
+  const retry = await atRoundDeliveryTime(time, () => setup.room.ingestGameTerminal({
+    ...secondMatchFinalGame.request, trustedTimeMs: time,
+  }))
+  expect(retry).toMatchObject({ ok: true, value: { idempotent: true } })
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(2)
+  const tournament = await e6ReadTournament(setup)
+  const stage = (tournament.stages as JsonObject[])[0]!
+  const rounds = stage.rounds as JsonObject[]
+  expect(rounds).toHaveLength(3)
+  expect((rounds[0]!.matches as JsonObject[]).every(match => match.status === 'completed')).toBe(true)
+  expect((rounds[1]!.matches as JsonObject[]).every(match => match.status === 'pending')).toBe(true)
+  expect(e6RoundPublicationRows(setup)).toHaveLength(2)
+  expect(setup.sql.database.query(`SELECT command_id FROM competition_audit
+    WHERE operation_type = 'announceRound'`).all()).toHaveLength(1)
+  const drawStandings = stage.standings as JsonObject[]
+  expect(drawStandings.every(standing => standing.draws === 1 && standing.matchPoints === 1)).toBe(true)
+})
+
+test('single-elimination advances and publishes from the completed round winners exactly once', async () => {
+  const setup = await e6c2aLockedMatch({
+    teamCount: 4, format: 'singleElimination', matchFormat: { type: 'firstToWins', value: 1 },
+    automaticRoundProgression: true,
+  })
+  const firstRoundMatchIds = await e6StartAndProvisionOtherFirstRoundMatches(setup)
+  expect(firstRoundMatchIds).toHaveLength(2)
+  expect(e6RoundPublicationRows(setup)).toHaveLength(1)
+  const state = JSON.parse(setup.meta().server_state_json) as JsonObject
+  const tournament = state.tournament as JsonObject
+  const initialStage = (tournament.stages as JsonObject[])[0]!
+  const firstRound = (initialStage.rounds as JsonObject[])[0]!
+  const winners = new Set<string>()
+  let time = Math.max(220_000, setup.meta().updated_trusted_time_ms + 1)
+  let lastTerminal: Awaited<ReturnType<typeof e6SubmitTournamentGame>> | null = null
+
+  for (const matchId of firstRoundMatchIds) {
+    const scheduled = (firstRound.matches as JsonObject[]).find(match => match.matchId === matchId)
+    if (!scheduled || !Array.isArray(scheduled.participants) || typeof scheduled.participants[0] !== 'string') {
+      throw new Error('single-elimination first-round participants are missing')
+    }
+    const winner = scheduled.participants[0]
+    winners.add(winner)
+    lastTerminal = await e6SubmitTournamentGame(setup, matchId, time++, { type: 'winner', team: winner })
+    expect(lastTerminal.result).toMatchObject({
+      ok: true, value: { matchProjection: { public: { match: { status: 'completed' } } } },
+    })
+    if (matchId !== firstRoundMatchIds.at(-1)) expect(e6RoundPublicationRows(setup)).toHaveLength(1)
+  }
+
+  expect(lastTerminal).not.toBeNull()
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(2)
+  const tournamentAfter = await e6ReadTournament(setup)
+  const stageAfter = (tournamentAfter.stages as JsonObject[])[0]!
+  const rounds = stageAfter.rounds as JsonObject[]
+  expect(rounds).toHaveLength(2)
+  expect((rounds[1]!.matches as JsonObject[]).flatMap(match => match.participants as string[]).sort())
+    .toEqual([...winners].sort())
+  expect((rounds[1]!.matches as JsonObject[]).every(match => match.status === 'pending')).toBe(true)
+  expect(e6RoundPublicationRows(setup)).toHaveLength(2)
+
+  const beforeRetry = setup.sql.database.query(`SELECT server_state_json, revision FROM competition_meta`).get()
+  const retry = await atRoundDeliveryTime(time, () => setup.room.ingestGameTerminal({
+    ...lastTerminal!.request, trustedTimeMs: time,
+  }))
+  expect(retry).toMatchObject({ ok: true, value: { idempotent: true } })
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(2)
+  expect(setup.sql.database.query(`SELECT server_state_json, revision FROM competition_meta`).get()).toEqual(beforeRetry)
+  expect(e6RoundPublicationRows(setup)).toHaveLength(2)
+})
+
+for (const failedOperation of [
+  'tournamentView', 'matchView', 'registrationExportLockedRoster', 'matchCreate', 'clockCreate',
+  'matchAssignFirstPlayer',
+] as const) {
+  test(`automatic round advancement retries transient ${failedOperation} failures after terminal ACK`, async () => {
+    const setup = await e6c2aLockedMatch({
+      teamCount: 4, format: 'roundRobin', matchFormat: { type: 'fixedGames', value: 1 },
+      automaticRoundProgression: true,
+    })
+    const matchIds = await e6StartAndProvisionOtherFirstRoundMatches(setup)
+    let time = Math.max(200_000, setup.meta().updated_trusted_time_ms + 1)
+    const first = await e6SubmitTournamentGame(setup, matchIds[0]!, time++, { type: 'draw' })
+    expect(first.result).toMatchObject({ ok: true })
+    expect(e6RoundPublicationRows(setup)).toHaveLength(1)
+
+    // 清掉前場留下的工作，確認新 alarm 是最後一場結果建立的重試。
+    await atRoundDeliveryTime(time++, () => setup.room.alarm())
+    expect(setup.alarm.scheduledAt).toBeNull()
+
+    let injected = false
+    Reflect.set(setup.room, 'engine', async (request: CompetitionRequest) => {
+      if (!injected && request.operation.type === failedOperation) {
+        injected = true
+        throw new Error(`injected transient ${failedOperation} failure`)
+      }
+      return setup.adapter(request)
+    })
+    const finalTime = time++
+    const final = await e6SubmitTournamentGame(setup, matchIds[1]!, finalTime, { type: 'draw' })
+    expect(final.result).toMatchObject({ ok: true })
+    expect(injected).toBe(true)
+    expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(2)
+    expect(e6RoundPublicationRows(setup)).toHaveLength(1)
+    expect(setup.alarm.scheduledAt).toBe(finalTime + 5_000)
+
+    // terminal 已成功 ACK；恢復只靠 durable alarm，無須重送 terminal。
+    await atRoundDeliveryTime(finalTime + 5_000, () => setup.room.alarm())
+    expect(e6RoundPublicationRows(setup)).toHaveLength(2)
+    expect(setup.sql.database.query(`SELECT command_id FROM competition_audit
+      WHERE operation_type = 'announceRound'`).all()).toHaveLength(1)
+    expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(2)
+
+    const tournament = await e6ReadTournament(setup)
+    const stage = (tournament.stages as JsonObject[])[0]!
+    expect((stage.standings as JsonObject[]).every(standing =>
+      standing.draws === 1 && standing.matchPoints === 1)).toBe(true)
+    const beforeRetry = setup.sql.database.query(
+      'SELECT server_state_json, revision FROM competition_meta',
+    ).get()
+    expect(await atRoundDeliveryTime(finalTime + 5_001, () => setup.room.ingestGameTerminal({
+      ...final.request, trustedTimeMs: finalTime + 5_001,
+    }))).toMatchObject({ ok: true, value: { idempotent: true } })
+    expect(setup.sql.database.query(
+      'SELECT server_state_json, revision FROM competition_meta',
+    ).get()).toEqual(beforeRetry)
+    expect(e6RoundPublicationRows(setup)).toHaveLength(2)
+    expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(2)
+  })
 }
 
 const e6LogicalTimeOffsetMs = 60_000

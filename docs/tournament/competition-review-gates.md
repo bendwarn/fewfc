@@ -8,6 +8,8 @@
 
 2026-10-13 票 09 獨立審核限定 PASS：1,379 pass／0 fail，Standards 硬性 0／heuristic 0、Spec 0，型別與差異檢查通過。本次來源重建 WASM 後驗證自動加賽與時計沿用；同時入秒不再轉人工裁決，真正雙超時仍保留雙負。
 
+同日票 10 六條暫時性 engine failure 路徑修正後獨立複審限定 PASS：Standards 硬性 0／heuristic 0、Spec 0，原 P1 已閉合。本輪 1,225 pass／1 個既有票外時計測試預期失敗，型別與差異檢查通過；已核對該失敗的 Rust／bridge／案例及 WASM 與基準相同，不由本票變更造成。
+
 ## 執行邊界與完成條件
 
 依 2026-10-09 使用者新指示，先閉合正常完賽主線，再補會卡住賽程的自動例外；人工裁判介面與更正流程延後。交付順序、範圍及直接功能相依只見[正式票據索引](tickets/README.md)，不另建待辦副本。
@@ -22,6 +24,7 @@
 
 | 切片／負責者 | 狀態與唯一寫入範圍 | 下一關卡／證據 |
 | --- | --- | --- |
+| 10 結果驅動循環與單敗自動下一輪／六路修正後獨立複審 | 限定 PASS：真正 Match 完成才計入賽程；循環／單敗整輪結果確認後自動建立第二輪，保留共用開房、時間、通知及網站權威查詢。通用結果寫入不能繞過生命週期；正常結果重試不重建、不重計。六種引擎暫錯均經 alarm 恢復唯一下一輪，真正無效權威資料仍拒絕。Standards 硬性 0／heuristic 0，Spec 0 | [最新報告／兩軸／原始 log](../../scratch/ticket10-retry-review-2026-10-13/report.md)。主審序列執行 Cargo 737、父房 365、六路獨立故障＋控制 7、契約/helper/API 98 pass／1 既有票外 fail、Nuxt 18，共 1,225 pass／1 fail／0 skip；typecheck／diff check 通過。原 P1 已閉合，10 四項驗收勾選。既有 bridge 時計 oracle 在有限主時間他隊 choice 預期 3020、正式 WASM 4020；來源及 artifact 與基準相同，政策要求先扣主時間，故不構成本票 finding。平台及終局證據仍為 fixture，不外推 native Worker／Brave／22 全流程或 28 進階矩陣。 |
 | 09 淘汰和局判定與時計沿用加賽／來源對話交付→獨立主審 | 限定 PASS：可區分先後的 Draw 判先入者負；未入或同時入秒的 Draw 自動建立沿用時計加賽，有限主時間耗盡後仍沿用零，不補時間；不限時與重複 Draw 政策保留。原始 Draw、普通下一局及真正雙超時分支均保持。Standards 硬性 0／heuristic 0，Spec 0 | [本輪報告／兩軸／原始 log](../../scratch/ticket09-review-2026-10-13/report.md)。主審序列執行 Cargo 全量 737、父房完整 356、子房完整 139、契約/helper/API 九檔 147，共 1,379 pass／0 fail；WASM 重建、typecheck／diff check 通過。09 五項驗收勾選。Rust／Web API 自然產生同時入秒；Worker 由有效 SQLite checkpoint 驗證真正 Rust/WASM 判定、自動 provision 與時計接續。平台仍為 fixture，不外推 native Worker／Brave／22 集中全流程或 28 進階矩陣。 |
 | 06 固定輪次房間與通知／來源對話最新修正→獨立主審 | 限定 PASS：首輪沿用 T、後續 E→A→T 兩段窗口、整批 ACK 與入口屏障、延誤持久 requiresReferee、固定成員與通知重試均有案例。前次通知回退 P2 已閉合；接收端收據故障後可重傳穩定 ID，前端以獨立按帳號持久 ID 抑制重播，含重新掛載。Standards 硬性 0／heuristic 0，Spec 0 | [最新報告／兩軸／原始 log](../../scratch/ticket06-receipt-review-2026-10-12/report.md)。主審序列重跑父房 355、子房 139、契約/helpers/API 78、Nuxt 六檔 43、既有固定時間故障 13、後端收據故障 1，共 629 pass／0 fail；型別與 diff check 通過。06 六項驗收勾選。真 GameRoom／PlayerNotifications 方法與既有 WASM 負控制均在 fixture 邊界；不外推 native Worker／Brave／22 全流程／28 進階矩陣或無限歷史通知去重。 |
 | 05 自動抽籤並建立首輪／本輪獨立主審 | 限定 PASS：固定亂數的兩隊／奇數隊抽籤、正常輪空、持久建立意圖、相同收據及 alarm 重試均有正向案例；父頁與 notReady 自動更新案例通過。Standards 硬性 0、Spec 0 | [本輪報告／兩軸／原始 log](../../scratch/four-feature-review/report.md)。CompetitionRoom 完整 349 pass／0 fail；沿公告與凍結名單建立同一首輪，不要求 F 後確認；05 四項驗收已勾選。完整 Swiss 政策擴充已有來源使用者授權；指定種子來源僅在支援時適用，不外推 22／28。 |
