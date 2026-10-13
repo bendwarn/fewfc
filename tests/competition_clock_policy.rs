@@ -1,5 +1,5 @@
 use fewfc::competition_clock::{
-    CheckpointWindow, ClockConfig, ClockError, ClockUpdate, CompetitionClock,
+    ByoyomiEntryOrder, CheckpointWindow, ClockConfig, ClockError, ClockUpdate, CompetitionClock,
     CompetitionClockCheckpoint, CompetitionRuling, GameResultMode, NewGameTime,
 };
 use fewfc::domain::{GameConclusion, GameEndCause, GameOutcome, TeamId};
@@ -412,6 +412,77 @@ fn configured_zero_elimination_draw_carries_unlimited_time_without_a_cap() {
         CompetitionRuling::NeedsTiebreak { .. }
     ));
     assert_eq!(conclusion, original_conclusion);
+}
+
+#[test]
+fn simultaneous_byoyomi_entry_elimination_draw_continues_with_carried_clock() {
+    let team_a = TeamId::new("team-a");
+    let team_b = TeamId::new("team-b");
+    let config = ClockConfig {
+        main_time_ms: Some(100),
+        action_time_ms: Some(30),
+        ..ClockConfig::default()
+    };
+    let mut clock = CompetitionClock::new([team_a.clone(), team_b.clone()], config, 0).unwrap();
+    let conclusion = GameConclusion::new(
+        GameOutcome::Draw,
+        vec![GameEndCause::TeamHpDepleted {
+            teams: vec![team_a.clone(), team_b.clone()],
+        }],
+    );
+
+    clock.begin_preparation(0).unwrap();
+    assert_eq!(clock.observe(100), Ok(ClockUpdate::Advanced));
+    assert_eq!(
+        clock.recorded_byoyomi_order(),
+        ByoyomiEntryOrder::Simultaneous
+    );
+    clock.finish_preparation(&team_a, 100).unwrap();
+    clock.finish_preparation(&team_b, 100).unwrap();
+
+    let first_ruling = clock
+        .rule_game(&conclusion, GameResultMode::Elimination)
+        .unwrap();
+    let first_continuation = match first_ruling {
+        CompetitionRuling::NeedsTiebreak { continuation } => continuation,
+        other => panic!("expected simultaneous entry to continue, got {other:?}"),
+    };
+    assert!(
+        first_continuation
+            .teams
+            .iter()
+            .all(|team| team.main_time_remaining_ms == Some(0))
+    );
+
+    let mut tiebreak = clock.new_game(NewGameTime::CarryForward, 100).unwrap();
+    assert!(
+        tiebreak
+            .snapshot()
+            .iter()
+            .all(|team| team.main_time_remaining_ms == Some(0) && !team.entered_byoyomi)
+    );
+    assert_eq!(tiebreak.begin_preparation(100), Ok(ClockUpdate::Advanced));
+    assert_eq!(tiebreak.observe(101), Ok(ClockUpdate::Advanced));
+    assert_eq!(
+        tiebreak.recorded_byoyomi_order(),
+        ByoyomiEntryOrder::Simultaneous
+    );
+    tiebreak.finish_preparation(&team_a, 101).unwrap();
+    tiebreak.finish_preparation(&team_b, 101).unwrap();
+
+    let second_ruling = tiebreak
+        .rule_game(&conclusion, GameResultMode::Elimination)
+        .unwrap();
+    let second_continuation = match second_ruling {
+        CompetitionRuling::NeedsTiebreak { continuation } => continuation,
+        other => panic!("expected another simultaneous Draw continuation, got {other:?}"),
+    };
+    assert!(
+        second_continuation
+            .teams
+            .iter()
+            .all(|team| team.main_time_remaining_ms == Some(0))
+    );
 }
 
 #[test]

@@ -324,7 +324,7 @@ fn starting_after_idle_does_not_charge_the_idle_interval() {
 }
 
 #[test]
-fn carry_forward_requires_a_stopped_clock_without_byoyomi_entry() {
+fn carry_forward_rejects_a_running_clock_or_a_distinguishing_byoyomi_entry() {
     let mut clock =
         CompetitionClock::new([team("a"), team("b")], ClockConfig::default(), 0).unwrap();
     clock.begin_action(&team("a"), 1, 0).unwrap();

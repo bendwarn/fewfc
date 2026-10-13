@@ -1037,6 +1037,49 @@ function persistTestClockConfig(sql: MemorySql, matchId: string, config: StageCo
     .run(JSON.stringify(serverState), JSON.stringify(publicProjection))
 }
 
+function persistSimultaneousByoyomiEntry(sql: MemorySql, matchId: string) {
+  const row = sql.database.query(`SELECT clock_checkpoint_json, clock_projection_json
+    FROM competition_matches WHERE match_id = ?`).get(matchId) as {
+      clock_checkpoint_json: string
+      clock_projection_json: string
+    }
+  const checkpoint = JSON.parse(row.clock_checkpoint_json) as JsonObject
+  checkpoint.running = null
+  checkpoint.paused = null
+  checkpoint.preparationStarted = false
+  checkpoint.doubleExpired = false
+  checkpoint.expiredTeam = null
+  checkpoint.needsDecision = null
+  checkpoint.lastObservedMs = (sql.database.query(
+    'SELECT last_trusted_time_ms FROM competition_matches WHERE match_id = ?',
+  ).get(matchId) as { last_trusted_time_ms: number }).last_trusted_time_ms
+  checkpoint.nextByoyomiEntrySequence = 1
+  checkpoint.teams = (checkpoint.teams as JsonObject[]).map(team => ({
+    ...team,
+    mainTimeRemainingMs: 0,
+    actionTimeRemainingMs: null,
+    actionByoyomiStarted: false,
+    enteredByoyomi: true,
+    byoyomiEntrySequence: 0,
+  }))
+
+  const clockProjection = JSON.parse(row.clock_projection_json) as JsonObject
+  if (!isJsonObject(clockProjection.public) || !('clock' in clockProjection.public)) {
+    throw new Error('test clock projection is missing its public clock')
+  }
+  clockProjection.public.clock = clockPublicFromCheckpoint(checkpoint)
+
+  const meta = sql.database.query(
+    'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string }
+  const serverState = JSON.parse(meta.server_state_json) as JsonObject
+  serverState.clock = checkpoint
+  sql.database.query(`UPDATE competition_matches SET clock_checkpoint_json = ?, clock_projection_json = ?
+    WHERE match_id = ?`).run(JSON.stringify(checkpoint), JSON.stringify(clockProjection), matchId)
+  sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
+    .run(JSON.stringify(serverState))
+}
+
 function expiredActionClock(config: JsonObject, team = 'team-a'): JsonObject {
   const other = team === 'team-a' ? 'team-b' : 'team-a'
   return terminalClock(config, {
@@ -7005,7 +7048,11 @@ test('non-winning or unresolved terminal rulings do not auto-provision a continu
   }
 })
 
-async function createRealEliminationContinuation(teamSize: 1 | 2, personalDeck: boolean) {
+async function createRealEliminationContinuation(
+  teamSize: 1 | 2,
+  personalDeck: boolean,
+  simultaneousByoyomi = false,
+) {
   const stage: StageConfig = {
     ...stageConfig({ teams: [{ teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 2 }] }),
     matchFormat: { type: 'firstToWins', value: 1 },
@@ -7031,6 +7078,7 @@ async function createRealEliminationContinuation(teamSize: 1 | 2, personalDeck: 
   await runFormalContinuationClock(setup, { type: 'clockEndWindow', matchId }, 1444)
   await runFormalContinuationClock(setup, { type: 'clockBeginAction', matchId, team: 'team-b', turn: 2 }, 1444)
   await runFormalContinuationClock(setup, { type: 'clockEndWindow', matchId }, 2111)
+  if (simultaneousByoyomi) persistSimultaneousByoyomiEntry(setup.sql, matchId)
   const terminalRequest: CompetitionRoomTerminalIngestRequest = {
     competitionId: 'competition-1', matchId, callerUserId: 'organizer-1',
     commandId: 'formal-elimination-terminal-one', expectedMatchRevision: 6, trustedTimeMs: 2112,
@@ -7222,6 +7270,69 @@ test('formal Rust/WASM elimination tiebreaks carry exact milliseconds and comple
       'SELECT COUNT(*) AS count FROM competition_audit WHERE command_id = ?',
     ).get(thirdRequest.commandId)).toEqual({ count: 1 })
   }
+})
+
+test('formal simultaneous byoyomi entry automatically provisions and carries an elimination tiebreak', async () => {
+  const { setup, matchId, terminal, terminalRequest } = await createRealEliminationContinuation(1, false, true)
+  expect(terminal).toMatchObject({
+    ok: true,
+    value: { matchRevision: 7, matchProjection: { public: { match: {
+      status: 'open', score: [0, 0], nextFirstPlayer: 'team-b',
+      games: [{ terminalEvidence: { type: 'canonicalGameEnded', conclusion: { outcome: { type: 'draw' } } } }],
+      nextGame: {
+        gameNumber: 2,
+        kind: {
+          type: 'eliminationDrawContinuation',
+          continuation: { teams: [
+            { team: 'team-a', mainTimeRemainingMs: 0 },
+            { team: 'team-b', mainTimeRemainingMs: 0 },
+          ] },
+        },
+        firstPlayer: { type: 'assigned', team: 'team-b' },
+      },
+      rulings: [{ ruling: { type: 'needsTiebreak' } }],
+    } } } },
+  })
+  if (!terminal.ok) throw new Error('expected simultaneous-entry Draw to start a tiebreak')
+
+  const linked = setup.sql.database.query(
+    'SELECT game_id, binding_json, status FROM competition_game_provision WHERE game_number = 2',
+  ).get() as { game_id: string; binding_json: string; status: string }
+  expect(linked.status).toBe('provisioned')
+  const binding = JSON.parse(linked.binding_json) as CompetitionGameBinding
+  expect(binding).toMatchObject({
+    gameNumber: 2,
+    startKind: {
+      type: 'eliminationDrawContinuation',
+      continuation: { teams: [
+        { team: 'team-a', mainTimeRemainingMs: 0 },
+        { team: 'team-b', mainTimeRemainingMs: 0 },
+      ] },
+    },
+  })
+
+  const carried = await runFormalContinuationClock(setup, {
+    type: 'clockNewGame', matchId, time: 'carryForward',
+  }, 2200)
+  expect(carried.clockProjection).toMatchObject({ public: { clock: { teams: [
+    { team: 'team-a', mainTimeRemainingMs: 0 },
+    { team: 'team-b', mainTimeRemainingMs: 0 },
+  ] } } })
+  const action = await runFormalContinuationClock(setup, {
+    type: 'clockBeginAction', matchId, team: 'team-b', turn: 1,
+  }, 2201)
+  expect(action.clockProjection).toMatchObject({
+    public: {
+      result: { type: 'enteredByoyomi', team: 'team-b' },
+      clock: { nextTimeoutDeadlineMs: 2231 },
+    },
+  })
+  expect(setup.sql.database.query(
+    'SELECT game_number FROM competition_game_provision ORDER BY game_number',
+  ).all()).toEqual([{ game_number: 1 }, { game_number: 2 }])
+  expect(terminalRequest.terminalEvidence).toMatchObject({
+    type: 'canonicalGameEnded', conclusion: { outcome: { type: 'draw' } },
+  })
 })
 
 test('formal WASM continuation allows only the losing captain and persists an exact assignment receipt', async () => {
@@ -9423,34 +9534,34 @@ test('E6c2a formal double-timeout awaiting referee never returns the terminal ga
   expect(e6c2aSnapshot(setup)).toEqual(before)
 })
 
-test('E6c2a formal NeedsDecision awaiting referee never returns the terminal game', async () => {
+test('E6c2a formal simultaneous byoyomi Draw provisions and returns the elimination tiebreak', async () => {
   const setup = await e6c2aLockedMatch()
   const row = setup.sql.database.query(
     'SELECT revision, last_trusted_time_ms, match_projection_json FROM competition_matches WHERE match_id = ?',
   ).get(setup.matchId) as { revision: number; last_trusted_time_ms: number; match_projection_json: string }
   const match = ((JSON.parse(row.match_projection_json) as JsonObject).public as JsonObject).match as JsonObject
-  const decisionClock = terminalClock({
+  const simultaneousClock = terminalClock({
     mainTimeMs: 300_000,
     actionTimeMs: 30_000,
     outOfTurnChoiceTimeMs: 30_000,
   }, {
     teams: [
-      { team: 'team-a', mainTimeRemainingMs: 0, actionTurn: 1, actionTimeRemainingMs: 0,
-        actionByoyomiStarted: true, enteredByoyomi: true, byoyomiEntrySequence: 0 },
+      { team: 'team-a', mainTimeRemainingMs: 0, actionTurn: 1, actionTimeRemainingMs: null,
+        actionByoyomiStarted: false, enteredByoyomi: true, byoyomiEntrySequence: 0 },
       { team: 'team-b', mainTimeRemainingMs: 0, actionTurn: null, actionTimeRemainingMs: null,
         actionByoyomiStarted: false, enteredByoyomi: true, byoyomiEntrySequence: 0 },
     ],
-    running: { type: 'action', team: 'team-a', turn: 1 },
+    running: null,
     nextByoyomiEntrySequence: 1,
   })
   setup.sql.database.query(
     'UPDATE competition_matches SET clock_checkpoint_json = ? WHERE match_id = ?',
-  ).run(JSON.stringify(decisionClock), setup.matchId)
+  ).run(JSON.stringify(simultaneousClock), setup.matchId)
   const meta = setup.sql.database.query(
     'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
   ).get() as { server_state_json: string }
   const serverState = JSON.parse(meta.server_state_json) as JsonObject
-  serverState.clock = decisionClock
+  serverState.clock = simultaneousClock
   setup.sql.database.query('UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1')
     .run(JSON.stringify(serverState))
 
@@ -9477,20 +9588,28 @@ test('E6c2a formal NeedsDecision awaiting referee never returns the terminal gam
   expect(terminal).toMatchObject({
     ok: true,
     value: { matchProjection: { public: { match: {
-      status: 'awaitingReferee',
-      games: [{ gameNumber: 1 }],
-      rulings: [{ ruling: { type: 'needsDecision', reason: 'simultaneousByoyomiEntry' } }],
-      nextGame: null,
+      status: 'open',
+      games: [{ gameNumber: 1, terminalEvidence: { type: 'canonicalGameEnded', conclusion: {
+        outcome: { type: 'draw' },
+      } } }],
+      rulings: [{ ruling: { type: 'needsTiebreak', continuation: { teams: [
+        { team: 'team-a', mainTimeRemainingMs: 0 },
+        { team: 'team-b', mainTimeRemainingMs: 0 },
+      ] } } }],
+      nextGame: { gameNumber: 2, kind: { type: 'eliminationDrawContinuation' } },
     } } } },
   })
-  if (!terminal.ok) throw new Error(`formal NeedsDecision terminal failed: ${terminal.error.code}`)
+  if (!terminal.ok) throw new Error(`formal simultaneous-entry terminal failed: ${terminal.error.code}`)
   expect(setup.sql.database.query(
     'SELECT game_number, status FROM competition_game_provision WHERE match_id = ?',
-  ).all(setup.matchId)).toEqual([{ game_number: 1, status: 'provisioned' }])
+  ).all(setup.matchId)).toEqual([
+    { game_number: 1, status: 'provisioned' },
+    { game_number: 2, status: 'provisioned' },
+  ])
 
   const before = e6c2aSnapshot(setup)
   const result = await setup.room.readParticipantGame(e6c2aReadRequest(setup.matchId, 'a-1'))
-  expect(result).toMatchObject({ ok: true, value: { game: null } })
+  expect(result).toMatchObject({ ok: true, value: { game: { gameNumber: 2 } } })
   expect(e6c2aSnapshot(setup)).toEqual(before)
 })
 

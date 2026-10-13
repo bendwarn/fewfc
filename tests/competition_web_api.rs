@@ -727,6 +727,78 @@ fn e6e1_clock_state(config: Value, time: u64, state: Value) -> Value {
     created["serverState"].clone()
 }
 
+#[test]
+fn simultaneous_byoyomi_draw_returns_a_camel_case_tiebreak_ruling() {
+    let config = json!({
+        "mainTimeMs": 100,
+        "actionTimeMs": 30,
+        "outOfTurnChoiceTimeMs": 20,
+    });
+    let state = e6e1_clock_state(config, 0, empty_state());
+    let started = request(
+        json!({ "type": "clockBeginPreparation" }),
+        organizer(),
+        0,
+        state,
+    );
+    assert_eq!(started["ok"], true, "{started}");
+    let entered = request(
+        json!({ "type": "clockObserve" }),
+        organizer(),
+        100,
+        started["serverState"].clone(),
+    );
+    assert_eq!(entered["ok"], true, "{entered}");
+    assert_eq!(
+        entered["public"]["clock"]["byoyomiEntryOrder"],
+        "simultaneous"
+    );
+
+    let team_a_finished = request(
+        json!({ "type": "clockFinishPreparation", "team": "a" }),
+        organizer(),
+        100,
+        entered["serverState"].clone(),
+    );
+    assert_eq!(team_a_finished["ok"], true, "{team_a_finished}");
+    let team_b_finished = request(
+        json!({ "type": "clockFinishPreparation", "team": "b" }),
+        organizer(),
+        100,
+        team_a_finished["serverState"].clone(),
+    );
+    assert_eq!(team_b_finished["ok"], true, "{team_b_finished}");
+
+    let draw = request(
+        json!({
+            "type": "clockRuleGame",
+            "mode": "elimination",
+            "conclusion": {
+                "outcome": { "type": "draw" },
+                "causes": [{ "type": "teamHpDepleted", "teams": ["a", "b"] }],
+            },
+        }),
+        organizer(),
+        100,
+        team_b_finished["serverState"].clone(),
+    );
+    assert_eq!(draw["ok"], true, "{draw}");
+    assert_eq!(draw["public"]["result"]["type"], "needsTiebreak");
+    assert_eq!(
+        draw["public"]["result"]["continuation"]["teams"],
+        json!([
+            { "team": "a", "mainTimeRemainingMs": 0 },
+            { "team": "b", "mainTimeRemainingMs": 0 },
+        ])
+    );
+    assert_eq!(draw["serverState"], team_b_finished["serverState"]);
+    assert!(
+        draw["public"]["result"]
+            .get("main_time_remaining_ms")
+            .is_none()
+    );
+}
+
 fn e6e1_query(state: &Value, time: u64) -> Value {
     let queried = request(
         json!({"type":"clockView"}),

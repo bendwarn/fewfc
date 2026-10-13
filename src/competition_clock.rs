@@ -604,12 +604,13 @@ impl CompetitionClock {
     /// 普通新局重置所有主時間；淘汰賽和局加賽才可要求沿用主時間。
     pub fn new_game(&self, time: NewGameTime, monotonic_ms: u64) -> Result<Self, ClockError> {
         self.require_not_paused()?;
+        let byoyomi_order = self.recorded_byoyomi_order();
         if time == NewGameTime::CarryForward
             && (self.state.needs_decision.is_some()
                 || self.state.double_expired
                 || self.state.expired_team.is_some()
                 || self.state.running.is_some()
-                || self.state.teams.iter().any(|team| team.entered_byoyomi))
+                || matches!(byoyomi_order, ByoyomiEntryOrder::First(_)))
         {
             return Err(ClockError::CannotCarryForwardAfterDecision);
         }
@@ -681,12 +682,11 @@ impl CompetitionClock {
                         reason: EliminationDrawLossReason::EnteredByoyomiFirst,
                     })
                 }
-                ByoyomiEntryOrder::None => Ok(CompetitionRuling::NeedsTiebreak {
-                    continuation: self.carry_forward_snapshot(),
-                }),
-                ByoyomiEntryOrder::Simultaneous => Ok(CompetitionRuling::NeedsDecision {
-                    reason: NeedsDecisionReason::SimultaneousByoyomiEntry,
-                }),
+                ByoyomiEntryOrder::None | ByoyomiEntryOrder::Simultaneous => {
+                    Ok(CompetitionRuling::NeedsTiebreak {
+                        continuation: self.carry_forward_snapshot(),
+                    })
+                }
             },
         }
     }
@@ -1354,7 +1354,7 @@ pub enum CompetitionRuling {
     },
 }
 
-/// 淘汰賽和局且無人進讀秒時，加賽沿用的主時間。
+/// 淘汰賽和局且讀秒進入先後無法決勝時，加賽沿用的主時間。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EliminationContinuation {
@@ -1943,7 +1943,7 @@ mod tests {
     }
 
     #[test]
-    fn unlimited_time_advances_action_and_carries_draw_but_simultaneous_entry_needs_decision() {
+    fn unlimited_time_carries_draw_when_byoyomi_order_does_not_distinguish_a_loser() {
         let config = ClockConfig {
             main_time_ms: Some(0),
             ..ClockConfig::default()
@@ -1990,8 +1990,19 @@ mod tests {
                 GameResultMode::Elimination,
                 ByoyomiEntryOrder::Simultaneous,
             ),
-            Ok(CompetitionRuling::NeedsDecision {
-                reason: NeedsDecisionReason::SimultaneousByoyomiEntry
+            Ok(CompetitionRuling::NeedsTiebreak {
+                continuation: EliminationContinuation {
+                    teams: vec![
+                        TeamMainTime {
+                            team: team("a"),
+                            main_time_remaining_ms: None,
+                        },
+                        TeamMainTime {
+                            team: team("b"),
+                            main_time_remaining_ms: None,
+                        },
+                    ],
+                },
             })
         );
     }
@@ -2020,11 +2031,6 @@ mod tests {
         .unwrap();
         assert_eq!(serialized["teams"][0]["mainTimeRemainingMs"], 1);
         assert_eq!(serialized.get("main_time_remaining_ms"), None);
-        assert_eq!(
-            ruling,
-            CompetitionRuling::NeedsDecision {
-                reason: NeedsDecisionReason::SimultaneousByoyomiEntry
-            }
-        );
+        assert!(matches!(ruling, CompetitionRuling::NeedsTiebreak { .. }));
     }
 }
