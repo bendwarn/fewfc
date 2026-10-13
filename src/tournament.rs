@@ -229,6 +229,20 @@ pub enum RoundKind {
     GrandFinalReset,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum MatchPurpose {
+    #[default]
+    Standard,
+    Bronze,
+}
+
+impl MatchPurpose {
+    fn is_standard(&self) -> bool {
+        *self == Self::Standard
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StageStatus {
@@ -382,6 +396,8 @@ pub struct ScheduledMatch {
     pub round_number: u32,
     pub sequence: u32,
     pub kind: RoundKind,
+    #[serde(default, skip_serializing_if = "MatchPurpose::is_standard")]
+    pub purpose: MatchPurpose,
     pub participants: Vec<TeamId>,
     pub status: MatchStatus,
     pub result: Option<MatchResult>,
@@ -1494,6 +1510,15 @@ impl Stage {
                         "交手的階段或輪次欄位不一致".to_string(),
                     ));
                 }
+                if match_.purpose == MatchPurpose::Bronze
+                    && (self.config.format != TournamentFormat::SingleElimination
+                        || match_.kind != RoundKind::Main
+                        || match_.participants.len() != 2)
+                {
+                    return Err(ScheduleError::InvalidSnapshot(
+                        "季軍賽只能是單敗 Main round 的兩隊交手".to_string(),
+                    ));
+                }
                 if !match_ids.insert(match_.match_id.clone()) {
                     return Err(ScheduleError::InvalidSnapshot(
                         "matchId 不可重複".to_string(),
@@ -1539,6 +1564,35 @@ impl Stage {
                             ));
                         }
                     }
+                }
+            }
+            if round
+                .matches
+                .iter()
+                .any(|match_| match_.purpose == MatchPurpose::Bronze)
+            {
+                let bronze_matches = round
+                    .matches
+                    .iter()
+                    .filter(|match_| match_.purpose == MatchPurpose::Bronze)
+                    .count();
+                let standard_matches: Vec<_> = round
+                    .matches
+                    .iter()
+                    .filter(|match_| match_.purpose == MatchPurpose::Standard)
+                    .collect();
+                if bronze_matches != 1
+                    || round.matches.len() != 2
+                    || standard_matches.len() != 1
+                    || standard_matches[0].participants.len() != 2
+                    || !self
+                        .rounds
+                        .last()
+                        .is_some_and(|latest| latest.round_number == round.round_number)
+                {
+                    return Err(ScheduleError::InvalidSnapshot(
+                        "季軍賽必須與唯一兩隊冠軍賽同列於最新輪次".to_string(),
+                    ));
                 }
             }
         }
@@ -1930,7 +1984,12 @@ impl Stage {
         let Some((final_round, previous_rounds)) = self.rounds.split_last() else {
             return false;
         };
-        let [final_match] = final_round.matches.as_slice() else {
+        let standard_matches: Vec<_> = final_round
+            .matches
+            .iter()
+            .filter(|match_| match_.purpose == MatchPurpose::Standard)
+            .collect();
+        let [final_match] = standard_matches.as_slice() else {
             return false;
         };
         self.config.format == TournamentFormat::SingleElimination
@@ -1939,6 +1998,7 @@ impl Stage {
             && final_match.participants.len() == 2
             && final_match.status == MatchStatus::Completed
             && final_match.result.as_ref().is_some_and(MatchResult::is_double_loss)
+            && final_round.matches.iter().all(is_closed)
             && previous_rounds
                 .iter()
                 .all(|round| round.matches.iter().all(is_closed))
@@ -2015,7 +2075,10 @@ impl Stage {
         if let Some(double_loss) = round
             .matches
             .iter()
-            .find(|match_| match_.result.as_ref().is_some_and(MatchResult::is_double_loss))
+            .find(|match_| {
+                match_.purpose == MatchPurpose::Standard
+                    && match_.result.as_ref().is_some_and(MatchResult::is_double_loss)
+            })
         {
             // 先依原交手位置組分支，才移除無 winner 的空位，不能壓縮全部勝者。
             let pairs = round
@@ -2049,7 +2112,29 @@ impl Stage {
             self.status = StageStatus::Finished;
             return Ok(());
         }
+        let can_schedule_bronze = winners.len() == 2
+            && round
+                .matches
+                .iter()
+                .filter(|match_| match_.purpose == MatchPurpose::Standard)
+                .count()
+                == 2;
+        let semifinal_losers = if can_schedule_bronze {
+            completed_losers(round)?
+        } else {
+            Vec::new()
+        };
+        let can_schedule_bronze = can_schedule_bronze
+            && semifinal_losers.len() == 2
+            && semifinal_losers.iter().all(|team_id| {
+                self.teams
+                    .get(team_id)
+                    .is_some_and(|entry| !entry.dropped)
+            });
         self.append_elimination_round(RoundKind::Main, pair_adjacent_with_byes(&winners), true);
+        if can_schedule_bronze {
+            self.append_bronze_match(semifinal_losers);
+        }
         Ok(())
     }
 
@@ -2211,6 +2296,7 @@ impl Stage {
                     round_number,
                     sequence: index as u32 + 1,
                     kind,
+                    purpose: MatchPurpose::Standard,
                     participants,
                     status: MatchStatus::Pending,
                     result: None,
@@ -2230,6 +2316,29 @@ impl Stage {
             round_number,
             kind,
             matches,
+        });
+    }
+
+    fn append_bronze_match(&mut self, participants: Vec<TeamId>) {
+        let stage_id = self.config.stage_id.clone();
+        let round = self.rounds.last_mut().expect("季軍賽須接在冠軍賽後");
+        let sequence = round.matches.len() as u32 + 1;
+        let match_id = MatchId(format!(
+            "{}-g{}-r{}-m{}",
+            stage_id.0, self.schedule_generation, round.round_number, sequence
+        ));
+        round.matches.push(ScheduledMatch {
+            match_id,
+            stage_id,
+            round_number: round.round_number,
+            sequence,
+            kind: RoundKind::Main,
+            purpose: MatchPurpose::Bronze,
+            participants,
+            status: MatchStatus::Pending,
+            result: None,
+            cancellation_reason: None,
+            started: false,
         });
     }
 
@@ -2461,6 +2570,19 @@ impl Stage {
     fn compare_rank_keys(&self, left: &TeamId, right: &TeamId, standings: &[Standing]) -> Ordering {
         let left_row = standings.iter().find(|row| &row.team_id == left).unwrap();
         let right_row = standings.iter().find(|row| &row.team_id == right).unwrap();
+        if self.config.format == TournamentFormat::SingleElimination
+            && self.status == StageStatus::Finished
+        {
+            match (
+                self.single_elimination_placement(left),
+                self.single_elimination_placement(right),
+            ) {
+                (Some(left_rank), Some(right_rank)) => return left_rank.cmp(&right_rank),
+                (Some(_), None) => return Ordering::Less,
+                (None, Some(_)) => return Ordering::Greater,
+                (None, None) => {}
+            }
+        }
         if let Some(champion) = self.elimination_champion() {
             if left == &champion && right != &champion {
                 return Ordering::Less;
@@ -2532,6 +2654,35 @@ impl Stage {
             }
         }
         ordering
+    }
+
+    fn single_elimination_placement(&self, team_id: &TeamId) -> Option<u32> {
+        let round = self.rounds.last()?;
+        let final_match = round
+            .matches
+            .iter()
+            .find(|match_| match_.purpose == MatchPurpose::Standard)?;
+        let bronze_match = round
+            .matches
+            .iter()
+            .find(|match_| match_.purpose == MatchPurpose::Bronze)?;
+        let final_result = final_match.result.as_ref()?;
+        let bronze_result = bronze_match.result.as_ref()?;
+        let champion = final_result.winner()?;
+        let finalist = final_result.loser()?;
+        let bronze_winner = bronze_result.winner()?;
+        let bronze_loser = bronze_result.loser()?;
+        if team_id == champion {
+            Some(1)
+        } else if team_id == finalist {
+            Some(2)
+        } else if team_id == bronze_winner {
+            Some(3)
+        } else if team_id == bronze_loser {
+            Some(4)
+        } else {
+            None
+        }
     }
 
     fn elimination_champion(&self) -> Option<TeamId> {
@@ -2940,6 +3091,7 @@ fn completed_winners(round: &Round) -> Result<Vec<TeamId>, ScheduleError> {
     round
         .matches
         .iter()
+        .filter(|match_| match_.purpose == MatchPurpose::Standard)
         .filter_map(|match_| match_.result.as_ref())
         .map(|result| {
             result
@@ -2954,6 +3106,7 @@ fn completed_losers(round: &Round) -> Result<Vec<TeamId>, ScheduleError> {
     round
         .matches
         .iter()
+        .filter(|match_| match_.purpose == MatchPurpose::Standard)
         .filter_map(|match_| match_.result.as_ref())
         .filter_map(|result| result.loser().cloned())
         .collect::<Vec<_>>()

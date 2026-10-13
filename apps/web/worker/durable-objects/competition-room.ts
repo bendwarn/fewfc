@@ -8271,10 +8271,9 @@ function parseRoundManifest(
     || !Array.isArray(raw.rooms) || raw.rooms.length === 0) throw new Error('round manifest is invalid')
   const matchIds = new Set<string>()
   for (const match of raw.tournamentRound.matches) {
-    if (!isJsonObject(match) || !hasExactKeys(match, [
-      'matchId', 'stageId', 'roundNumber', 'sequence', 'kind', 'participants', 'status',
-      'result', 'cancellationReason', 'started',
-    ]) || !nonEmpty(match.matchId) || match.stageId !== header.stage_id
+    if (!isJsonObject(match) || !hasExactScheduledMatchKeys(match)
+      || !isValidScheduledMatchPurpose(match, 'singleElimination', raw.tournamentRound.kind)
+      || !nonEmpty(match.matchId) || match.stageId !== header.stage_id
       || match.roundNumber !== header.round_number || match.kind !== raw.tournamentRound.kind
       || !safeNonNegativeInteger(match.sequence) || !Array.isArray(match.participants)) {
       throw new Error('manifest schedule snapshot is invalid')
@@ -8306,16 +8305,19 @@ function samePublishedRoundPairs(tournament: JsonValue, manifest: RoundManifest)
   if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) return false
   const stage = tournament.stages.find(entry => isJsonObject(entry) && isJsonObject(entry.config)
     && entry.config.stageId === manifest.roundRef.stageId)
-  if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) return false
+  if (!isJsonObject(stage) || !isJsonObject(stage.config) || !Array.isArray(stage.rounds)) return false
+  const stageFormat = stage.config.format
   const round = stage.rounds.find(entry => isJsonObject(entry) && entry.roundNumber === manifest.roundRef.roundNumber)
   if (!isJsonObject(round) || round.kind !== manifest.tournamentRound.kind
     || !Array.isArray(round.matches) || !Array.isArray(manifest.tournamentRound.matches)
     || round.matches.length !== manifest.tournamentRound.matches.length) return false
   const matches = round.matches
   return manifest.tournamentRound.matches.every(original => isJsonObject(original)
+    && isValidScheduledMatchPurpose(original, stageFormat, manifest.tournamentRound.kind)
     && matches.some(current => isJsonObject(current)
       && ['matchId', 'stageId', 'roundNumber', 'sequence', 'kind', 'participants']
-        .every(key => sameJson(current[key], original[key]))))
+        .every(key => sameJson(current[key], original[key]))
+      && sameJson(current.purpose ?? null, original.purpose ?? null)))
 }
 
 function publicProjection(
@@ -9777,10 +9779,9 @@ function deriveScheduledMatch(
         throw new Error('tournament round checkpoint is malformed')
       }
       for (const rawMatch of rawRound.matches) {
-        if (!isJsonObject(rawMatch) || !hasExactKeys(rawMatch, [
-          'matchId', 'stageId', 'roundNumber', 'sequence', 'kind', 'participants', 'status',
-          'result', 'cancellationReason', 'started',
-        ]) || typeof rawMatch.matchId !== 'string'
+        if (!isJsonObject(rawMatch) || !hasExactScheduledMatchKeys(rawMatch)
+          || !isValidScheduledMatchPurpose(rawMatch, rawStage.config.format, rawRound.kind)
+          || typeof rawMatch.matchId !== 'string'
           || !nonEmpty(rawMatch.matchId) || rawMatch.stageId !== currentStageId
           || !safeNonNegativeInteger(rawMatch.roundNumber) || rawMatch.roundNumber !== rawRound.roundNumber
           || !safeNonNegativeInteger(rawMatch.sequence) || !isValidRoundKind(rawMatch.kind)
@@ -9796,6 +9797,9 @@ function deriveScheduledMatch(
         if (!matchIds.add(rawMatch.matchId)) throw new Error('duplicate tournament match')
         if (currentStageId === stageId && rawMatch.matchId === matchId) selectedMatch = rawMatch
       }
+    }
+    if (!isValidBronzeSchedule(rawStage.rounds, rawStage.config.format)) {
+      throw new Error('bronze schedule is malformed')
     }
   }
 
@@ -10423,6 +10427,49 @@ function isRoundKindAllowedForFormat(
 ): boolean {
   if (format === 'doubleElimination') return kind !== 'main'
   return kind === 'main'
+}
+
+function hasExactScheduledMatchKeys(value: JsonObject): boolean {
+  const keys = [
+    'matchId', 'stageId', 'roundNumber', 'sequence', 'kind', 'participants', 'status',
+    'result', 'cancellationReason', 'started',
+  ]
+  return hasExactKeys(value, Object.hasOwn(value, 'purpose') ? [...keys, 'purpose'] : keys)
+}
+
+function isValidScheduledMatchPurpose(
+  value: JsonObject,
+  format: unknown,
+  roundKind: unknown,
+): boolean {
+  return !Object.hasOwn(value, 'purpose')
+    || (value.purpose === 'bronze' && format === 'singleElimination' && roundKind === 'main')
+}
+
+function isValidBronzeSchedule(rounds: JsonValue[], format: unknown): boolean {
+  const bronzeRounds = rounds.flatMap((round, index) => {
+    if (!isJsonObject(round) || !Array.isArray(round.matches)
+      || !round.matches.some(match => isJsonObject(match) && match.purpose === 'bronze')) return []
+    return [{ round, index }]
+  })
+  if (!bronzeRounds.length) return true
+  if (format !== 'singleElimination' || bronzeRounds.length !== 1) return false
+  const bronzeRound = bronzeRounds[0]
+  if (!bronzeRound || bronzeRound.index !== rounds.length - 1
+    || !isJsonObject(bronzeRound.round) || bronzeRound.round.kind !== 'main'
+    || !Array.isArray(bronzeRound.round.matches) || bronzeRound.round.matches.length !== 2) return false
+  const matches = bronzeRound.round.matches
+  const bronze = matches.filter(match => isJsonObject(match) && match.purpose === 'bronze')
+  const championship = matches.filter(match => isJsonObject(match) && !Object.hasOwn(match, 'purpose'))
+  if (bronze.length !== 1 || championship.length !== 1) return false
+  const bronzeMatch = bronze[0]
+  const championshipMatch = championship[0]
+  if (!isJsonObject(bronzeMatch) || !isJsonObject(championshipMatch)
+    || !Array.isArray(bronzeMatch.participants) || bronzeMatch.participants.length !== 2
+    || !Array.isArray(championshipMatch.participants) || championshipMatch.participants.length !== 2) return false
+  const bronzeParticipants = bronzeMatch.participants
+  const championshipParticipants = championshipMatch.participants
+  return !bronzeParticipants.some(team => championshipParticipants.includes(team))
 }
 
 function validStageTeams(value: JsonValue[]): boolean {

@@ -482,6 +482,7 @@ export interface TournamentConfig {
 }
 
 export type RoundKind = 'main' | 'winners' | 'losers' | 'grandFinal' | 'grandFinalReset'
+export type TournamentMatchPurpose = 'bronze'
 export type MatchStatus = 'pending' | 'inProgress' | 'completed' | 'cancelled'
 
 export interface ScheduledMatch {
@@ -490,6 +491,7 @@ export interface ScheduledMatch {
   roundNumber: number
   sequence: number
   kind: RoundKind
+  purpose?: TournamentMatchPurpose
   participants: string[]
   status: MatchStatus
   result: MatchResult | null

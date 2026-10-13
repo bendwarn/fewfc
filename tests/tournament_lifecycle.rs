@@ -65,7 +65,6 @@ fn elimination_finishes_with_expected_loss_counts_and_champion() {
                 let mut tournament = tournament(format, count);
                 let stage_id = StageId("stage".into());
                 let mut losses = BTreeMap::<TeamId, u32>::new();
-                let mut last_winner = None;
                 let mut played = 0;
                 while tournament.stage(&stage_id).unwrap().status() != StageStatus::Finished {
                     let pending = tournament
@@ -88,20 +87,37 @@ fn elimination_finishes_with_expected_loss_counts_and_champion() {
                             MatchResult::win(winner.clone(), loser),
                         )
                         .unwrap_or_else(|e| panic!("{format:?}, {count}隊, {played}場: {e:?}"));
-                    last_winner = Some(winner);
                     played += 1;
                     assert!(played <= 2 * count, "賽程不能無限延長");
                 }
-                let champion = last_winner.unwrap();
+                let stage = tournament.stage(&stage_id).unwrap();
+                let champion = stage.winner().expect("已結束淘汰賽必須有冠軍");
                 let required_losses = if format == TournamentFormat::SingleElimination {
                     1
                 } else {
                     2
                 };
+                let bronze_loser = stage
+                    .rounds()
+                    .last()
+                    .and_then(|round| {
+                        round
+                            .matches
+                            .iter()
+                            .find(|match_| match_.purpose == MatchPurpose::Bronze)
+                    })
+                    .and_then(|match_| match_.result.as_ref())
+                    .and_then(|result| match result {
+                        MatchResult::Win { loser_id, .. }
+                        | MatchResult::Forfeit { loser_id, .. } => Some(loser_id.clone()),
+                        _ => None,
+                    });
                 for team in &tournament.stage(&stage_id).unwrap().config().teams {
                     let actual = losses.get(&team.team_id).copied().unwrap_or(0);
                     if team.team_id == champion {
                         assert!(actual < required_losses);
+                    } else if Some(team.team_id.clone()) == bronze_loser {
+                        assert_eq!(actual, 2, "季軍賽敗方必須有兩敗");
                     } else {
                         assert_eq!(
                             actual, required_losses,
@@ -121,8 +137,14 @@ fn elimination_finishes_with_expected_loss_counts_and_champion() {
                     Some(1),
                     "{format:?}, {count}隊, choose_second={choose_second}: 最終決賽勝者必須排名第一"
                 );
-                let stage = tournament.stage(&stage_id).unwrap();
-                let final_match = &stage.rounds().last().unwrap().matches[0];
+                let final_match = stage
+                    .rounds()
+                    .last()
+                    .unwrap()
+                    .matches
+                    .iter()
+                    .find(|match_| match_.purpose == MatchPurpose::Standard)
+                    .unwrap();
                 let runner_up = final_match
                     .participants
                     .iter()

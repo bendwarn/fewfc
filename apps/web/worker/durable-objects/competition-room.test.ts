@@ -9100,6 +9100,7 @@ async function e6SubmitTournamentGame(
   matchId: string,
   trustedTimeMs: number,
   outcome: { type: 'draw' } | { type: 'winner'; team: string },
+  publishedBinding?: CompetitionGameBinding,
 ) {
   const row = setup.sql.database.query(`SELECT revision, match_projection_json
     FROM competition_matches WHERE match_id = ?`).get(matchId) as {
@@ -9113,10 +9114,13 @@ async function e6SubmitTournamentGame(
     throw new Error('automatic progression fixture has no current game intent')
   }
   const gameNumber = match.nextGame.gameNumber
-  const gameRow = setup.sql.database.query(`SELECT binding_json FROM competition_game_provision
-    WHERE match_id = ? AND game_number = ?`).get(matchId, gameNumber) as { binding_json: string } | undefined
-  if (!gameRow) throw new Error('automatic progression fixture has no current game binding')
-  const binding = JSON.parse(gameRow.binding_json) as CompetitionGameBinding
+  let binding = publishedBinding
+  if (!binding) {
+    const gameRow = setup.sql.database.query(`SELECT binding_json FROM competition_game_provision
+      WHERE match_id = ? AND game_number = ?`).get(matchId, gameNumber) as { binding_json: string } | undefined
+    if (!gameRow) throw new Error('automatic progression fixture has no current game binding')
+    binding = JSON.parse(gameRow.binding_json) as CompetitionGameBinding
+  }
   const request: CompetitionRoomTerminalIngestRequest = {
     competitionId: 'competition-1', matchId, callerUserId: 'organizer-1',
     commandId: `ticket10-terminal-${matchId}-${gameNumber}`,
@@ -9210,7 +9214,7 @@ test('round-robin publishes the next round only after every Match, not every Gam
   expect(drawStandings.every(standing => standing.draws === 1 && standing.matchPoints === 1)).toBe(true)
 })
 
-test('single-elimination advances and publishes from the completed round winners exactly once', async () => {
+test('single-elimination publishes the championship and bronze matches together and closes after both results', async () => {
   const setup = await e6c2aLockedMatch({
     teamCount: 4, format: 'singleElimination', matchFormat: { type: 'firstToWins', value: 1 },
     automaticRoundProgression: true,
@@ -9246,18 +9250,339 @@ test('single-elimination advances and publishes from the completed round winners
   const stageAfter = (tournamentAfter.stages as JsonObject[])[0]!
   const rounds = stageAfter.rounds as JsonObject[]
   expect(rounds).toHaveLength(2)
-  expect((rounds[1]!.matches as JsonObject[]).flatMap(match => match.participants as string[]).sort())
-    .toEqual([...winners].sort())
-  expect((rounds[1]!.matches as JsonObject[]).every(match => match.status === 'pending')).toBe(true)
+  const finalRoundMatches = rounds[1]!.matches as JsonObject[]
+  expect(finalRoundMatches).toHaveLength(2)
+  const championship = finalRoundMatches.find(match => !Object.hasOwn(match, 'purpose'))
+  const bronze = finalRoundMatches.find(match => match.purpose === 'bronze')
+  expect(championship?.participants).toEqual(expect.arrayContaining([...winners]))
+  expect(bronze?.participants).toHaveLength(2)
+  expect(finalRoundMatches.every(match => match.status === 'pending')).toBe(true)
+  const allTeams = ((initialStage.config as JsonObject).teams as JsonObject[])
+    .map(team => team.teamId)
+  expect(new Set(finalRoundMatches.flatMap(match => match.participants as string[]))).toEqual(
+    new Set(allTeams),
+  )
   expect(e6RoundPublicationRows(setup)).toHaveLength(2)
+
+  const publicationRow = setup.sql.database.query(`SELECT manifest_json FROM competition_round_publication
+    WHERE stage_id = ? AND round_number = ?`).get(setup.stage.stageId, rounds[1]!.roundNumber) as {
+      manifest_json: string
+    }
+  const manifest = JSON.parse(publicationRow.manifest_json) as JsonObject
+  expect((manifest.rooms as JsonObject[]).map(room => room.matchId).sort())
+    .toEqual(finalRoundMatches.map(match => match.matchId).sort())
+  expect((manifest.rooms as JsonObject[])).toHaveLength(2)
+
+  if (!championship || !bronze
+    || typeof championship.matchId !== 'string' || typeof bronze.matchId !== 'string'
+    || !Array.isArray(championship.participants) || !Array.isArray(bronze.participants)) {
+    throw new Error('published championship or bronze match is missing')
+  }
+  mock.module('../rules-engine', () => ({
+    callRuleModuleResolution: async (modules: string[] = []) => ({ modules }),
+    callRulesEngine: async (request: {
+      setup: {
+        ruleVersion: '5.16' | '5.17'
+        enabledRuleModules: string[]
+        players: ReturnType<typeof emptyPublicState>['players']
+        turnOrder: string[]
+        initialHp?: ReturnType<typeof emptyPublicState>['hp']
+      }
+    }) => {
+      const game = request.setup
+      const turnOrder = game.turnOrder
+      return {
+        type: 'ready',
+        record: [],
+        state: {
+          ...emptyPublicState(turnOrder),
+          ruleVersion: game.ruleVersion,
+          enabledRuleModules: game.enabledRuleModules,
+          status: 'InProgress',
+          phase: 'ActiveEffects',
+          currentPlayer: turnOrder[0] ?? null,
+          turnNumber: 1,
+          players: game.players,
+          turnOrder,
+          hp: game.initialHp ?? emptyPublicState(turnOrder).hp,
+          initialPouchSelection: null,
+        },
+        battleRecord: { preparation: { entries: [] }, turns: [] },
+        playableActions: [],
+        interaction: { canChooseInitialPouch: false },
+      }
+    },
+  }))
+  const { GameRoom } = await import('./game-room')
+
+  // 讓真正的 GameRoom 產生開局事件、首局證據與 parent ingest 請求。
+  class ChildStorage {
+    readonly values = new Map<string, unknown>()
+    alarm: number | null = null
+
+    get<T>(key: string): Promise<T | undefined>
+    get<T>(keys: string[]): Promise<Map<string, T>>
+    async get<T>(key: string | string[]): Promise<T | undefined | Map<string, T>> {
+      if (typeof key === 'string') return this.values.get(key) as T | undefined
+      return new Map(key.filter(entry => this.values.has(entry))
+        .map(entry => [entry, this.values.get(entry) as T]))
+    }
+
+    async put(key: string | Record<string, unknown>, value?: unknown): Promise<void> {
+      if (typeof key === 'string') {
+        this.values.set(key, value)
+        return
+      }
+      for (const [entry, entryValue] of Object.entries(key)) this.values.set(entry, entryValue)
+    }
+
+    async delete(key: string | string[]): Promise<boolean> {
+      if (Array.isArray(key)) {
+        let deleted = false
+        for (const entry of key) deleted = this.values.delete(entry) || deleted
+        return deleted
+      }
+      return this.values.delete(key)
+    }
+
+    async list<T>(options?: { prefix?: string }): Promise<Map<string, T>> {
+      return new Map([...this.values.entries()]
+        .filter(([key]) => !options?.prefix || key.startsWith(options.prefix))
+        .map(([key, value]) => [key, value as T]))
+    }
+
+    async setAlarm(time: number | Date): Promise<void> {
+      this.alarm = time instanceof Date ? time.getTime() : time
+    }
+
+    async deleteAlarm(): Promise<void> { this.alarm = null }
+
+    async transaction<T>(operation: (storage: ChildStorage) => Promise<T>): Promise<T> {
+      const values = structuredClone([...this.values.entries()])
+      const alarm = this.alarm
+      try {
+        return await operation(this)
+      } catch (error) {
+        this.values.clear()
+        for (const [entry, entryValue] of values) this.values.set(entry, entryValue)
+        this.alarm = alarm
+        throw error
+      }
+    }
+  }
+
+  class ChildSocket {
+    readyState = 1
+    private attachment: unknown = undefined
+
+    serializeAttachment(value: unknown): void { this.attachment = structuredClone(value) }
+    deserializeAttachment(): unknown { return structuredClone(this.attachment) }
+    send(_value: string): void {}
+    close(): void { this.readyState = 3 }
+  }
+
+  type ParentAck = Awaited<ReturnType<CompetitionRoom['ingestInitialGameStarted']>>
+  const initialStarts: Array<{ request: CompetitionRoomInitialGameStartedRequest; response: ParentAck }> = []
+  const childRooms = new Map<string, {
+    room: InstanceType<typeof GameRoom>; storage: ChildStorage; pendingWaits: Promise<unknown>[]
+  }>()
+  const childCreateRequests = new Map<string, CompetitionGameCreateRequest>()
+  const childReleaseRequests: CompetitionGameAdmissionRequest[] = []
+  const childParentNamespace = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: () => ({
+      readRoundPublication: (request: CompetitionRoomRoundPublicationReadRequest) =>
+        setup.room.readRoundPublication(request),
+      ingestInitialGameStarted: async (request: CompetitionRoomInitialGameStartedRequest) => {
+        const ownedRequest = structuredClone(request)
+        const response = await setup.room.ingestInitialGameStarted(request)
+        initialStarts.push({ request: ownedRequest, response: structuredClone(response) })
+        return response
+      },
+      executeMatch: async () => { throw new Error('initial GameStarted must not use generic clock RPC') },
+      ingestGameTerminal: async () => { throw new Error('unexpected terminal delivery') },
+    }),
+  }
+  function createChildRoom() {
+    const storage = new ChildStorage()
+    const sockets: ChildSocket[] = []
+    const pendingWaits: Promise<unknown>[] = []
+    const state = {
+      storage,
+      waitUntil(promise: Promise<unknown>) { pendingWaits.push(promise.catch(() => undefined)) },
+      getWebSockets: () => sockets,
+      acceptWebSocket(socket: ChildSocket) { sockets.push(socket) },
+    }
+    const notifications = {
+      idFromName: (name: string) => name as unknown as DurableObjectId,
+      get: () => ({ fetch: async () => new Response(null, { status: 204 }) }),
+    }
+    const room = new GameRoom(state as unknown as DurableObjectState, {
+      PLAYER_NOTIFICATIONS: notifications,
+      COMPETITION_ROOM: childParentNamespace,
+    } as never)
+    return { room, storage, pendingWaits }
+  }
+  async function connectAndReady(child: ReturnType<typeof createChildRoom>, userId: string) {
+    const globals = globalThis as unknown as Record<string, unknown>
+    const previousPair = globals.WebSocketPair
+    globals.WebSocketPair = class { client = new ChildSocket(); server = new ChildSocket() }
+    try {
+      const response = await child.room.fetch(new Request('https://game-room.internal/socket', {
+        headers: { Upgrade: 'websocket', 'x-fewfc-user-id': userId,
+          'x-fewfc-user-name': encodeURIComponent(userId) },
+      }))
+      expect(response.status).toBe(101)
+    } finally {
+      if (previousPair === undefined) Reflect.deleteProperty(globals, 'WebSocketPair')
+      else globals.WebSocketPair = previousPair
+    }
+    expect(await child.room.setCompetitionReady({ actorUserId: userId, ready: true }))
+      .toEqual({ ok: true, ready: true })
+  }
+  async function drainChildWaits(child: ReturnType<typeof createChildRoom>) {
+    while (child.pendingWaits.length > 0) await Promise.all(child.pendingWaits.splice(0))
+  }
+
+  const gameRoomNamespace = {
+    idFromName: (name: string) => name as unknown as DurableObjectId,
+    get: (id: DurableObjectId) => {
+      const gameId = String(id)
+      return {
+        createCompetitionGame: async (request: CompetitionGameCreateRequest) => {
+          let child = childRooms.get(gameId)
+          if (!child) {
+            child = createChildRoom()
+            childRooms.set(gameId, child)
+          }
+          childCreateRequests.set(gameId, structuredClone(request))
+          return await child.room.createCompetitionGame(request)
+        },
+        releaseCompetitionGame: async (request: CompetitionGameAdmissionRequest) => {
+          const child = childRooms.get(gameId)
+          if (!child) throw new Error('parent released a child before its public create RPC')
+          childReleaseRequests.push(structuredClone(request))
+          return await child.room.releaseCompetitionGame(request)
+        },
+        synchronizeCompetitionClock: async () => {
+          throw new Error('initial GameStarted must not use referee clock control')
+        },
+      }
+    },
+  }
+  Reflect.set(setup.env, 'GAME_ROOM', gameRoomNamespace)
+
+  const publicationQuery = {
+    competitionId: 'competition-1', stageId: setup.stage.stageId,
+    roundNumber: rounds[1]!.roundNumber as number, callerUserId: 'organizer-1',
+  }
+  const deliveryRow = setup.sql.database.query(`SELECT manifest_json FROM competition_round_publication
+    WHERE stage_id = ? AND round_number = ?`).get(setup.stage.stageId, publicationQuery.roundNumber) as {
+      manifest_json: string
+    }
+  const deliveryManifest = JSON.parse(deliveryRow.manifest_json) as JsonObject
+  const roundStartMs = deliveryManifest.roundStartMs
+  if (typeof roundStartMs !== 'number') throw new Error('automatic round start time is missing')
+  const deliveryCutoffMs = roundStartMs - 300_000
+  await atRoundDeliveryTime(deliveryCutoffMs - 1, () => setup.room.alarm())
+  const delivered = await setup.room.readRoundPublication(publicationQuery)
+  if (!delivered.ok || !delivered.value.publication) throw new Error('released final round publication is missing')
+  expect(delivered.value.publication.status).toBe('released')
+  expect(delivered.value.publication.rooms).toHaveLength(2)
+  expect(delivered.value.publication.rooms.every(room => room.ackConfirmedAtMs === deliveryCutoffMs - 1)).toBe(true)
+  expect(childCreateRequests.size).toBe(2)
+  expect(childReleaseRequests).toHaveLength(2)
+  expect(new Set(childReleaseRequests.map(request => request.bindingRef.matchId)))
+    .toEqual(new Set([championship.matchId, bronze.matchId]))
+  const releasedRooms = delivered.value.publication.rooms.map(room => {
+    const child = childRooms.get(room.gameId)
+    const request = childCreateRequests.get(room.gameId)
+    if (!child || !request) throw new Error('both fixed final rooms must be created before release')
+    expect(request.binding).toMatchObject({ matchId: room.matchId, gameNumber: 1 })
+    return { ...room, child, request }
+  })
+
+  const startAtMs = roundStartMs - 60_000
+  await atRoundDeliveryTime(startAtMs, async () => {
+    for (const target of releasedRooms) {
+      for (const player of target.request.binding.players) await connectAndReady(target.child, player.userId)
+      await drainChildWaits(target.child)
+      await target.child.room.alarm()
+      await drainChildWaits(target.child)
+    }
+  })
+  expect(initialStarts).toHaveLength(2)
+  expect(initialStarts.every(start => start.response.ok)).toBe(true)
+  expect(new Set(initialStarts.map(start => start.request.matchId)))
+    .toEqual(new Set([championship.matchId, bronze.matchId]))
+  for (const target of releasedRooms) {
+    const record = await target.child.storage.get<Record<string, unknown>>('gameRecord')
+    const evidence = await target.child.storage.get<unknown>('competitionInitialStartEvidence')
+    const admission = await target.child.storage.get<unknown>('competitionGameAdmission')
+    const queue = await target.child.storage.get<unknown>('competitionDeliveryQueue')
+    expect(record?.sequence).toBeGreaterThan(0)
+    expect(isJsonObject(evidence)).toBe(true)
+    expect(admission).toMatchObject({ status: 'started' })
+    expect(queue).toMatchObject({ entries: [] })
+    expect([...target.child.storage.values.values()].filter(value =>
+      isJsonObject(value) && value.type === 'GameStarted')).toHaveLength(1)
+    expect(initialStarts.find(start => start.request.matchId === target.matchId)?.request.evidence)
+      .toStrictEqual(evidence)
+  }
+
+  const startedTournament = await e6ReadTournament(setup)
+  const startedStage = (startedTournament.stages as JsonObject[])[0]!
+  const startedRound = (startedStage.rounds as JsonObject[])[1]!
+  expect((startedRound.matches as JsonObject[]).every(match => match.status === 'inProgress')).toBe(true)
+  expect(e6RoundPublicationRows(setup)).toHaveLength(2)
+
+  const finalWinner = championship.participants[0]
+  const bronzeWinner = bronze.participants[0]
+  if (typeof finalWinner !== 'string' || typeof bronzeWinner !== 'string') {
+    throw new Error('championship or bronze participants are missing')
+  }
+  const championshipRoom = releasedRooms.find(room => room.matchId === championship.matchId)
+  const bronzeRoom = releasedRooms.find(room => room.matchId === bronze.matchId)
+  if (!championshipRoom || !bronzeRoom) throw new Error('published final room bindings are missing')
+  time = startAtMs + 1_000
+  const firstFinished = await e6SubmitTournamentGame(
+    setup, championship.matchId as string, time++, { type: 'winner', team: finalWinner },
+    championshipRoom.request.binding,
+  )
+  expect(firstFinished.result).toMatchObject({ ok: true, value: { matchProjection: { public: { match: { status: 'completed' } } } } })
+  const afterChampionship = await e6ReadTournament(setup)
+  const pendingStage = (afterChampionship.stages as JsonObject[])[0]!
+  expect(pendingStage.status).toBe('active')
+  expect((pendingStage.rounds as JsonObject[])).toHaveLength(2)
+  expect(((pendingStage.rounds as JsonObject[])[1]!.matches as JsonObject[])
+    .some(match => match.purpose === 'bronze' && match.status === 'inProgress')).toBe(true)
 
   const beforeRetry = setup.sql.database.query(`SELECT server_state_json, revision FROM competition_meta`).get()
   const retry = await atRoundDeliveryTime(time, () => setup.room.ingestGameTerminal({
-    ...lastTerminal!.request, trustedTimeMs: time,
+    ...firstFinished.request, trustedTimeMs: time,
   }))
   expect(retry).toMatchObject({ ok: true, value: { idempotent: true } })
-  expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(2)
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(3)
   expect(setup.sql.database.query(`SELECT server_state_json, revision FROM competition_meta`).get()).toEqual(beforeRetry)
+  expect(e6RoundPublicationRows(setup)).toHaveLength(2)
+
+  const bronzeFinished = await e6SubmitTournamentGame(
+    setup, bronze.matchId as string, time++, { type: 'winner', team: bronzeWinner },
+    bronzeRoom.request.binding,
+  )
+  expect(bronzeFinished.result).toMatchObject({ ok: true, value: { matchProjection: { public: { match: { status: 'completed' } } } } })
+  const afterBoth = await e6ReadTournament(setup)
+  const finishedStage = (afterBoth.stages as JsonObject[])[0]!
+  expect(finishedStage.status).toBe('finished')
+  expect((finishedStage.rounds as JsonObject[])).toHaveLength(2)
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(4)
+  expect(e6RoundPublicationRows(setup)).toHaveLength(2)
+
+  const completedRetry = await atRoundDeliveryTime(time, () => setup.room.ingestGameTerminal({
+    ...bronzeFinished.request, trustedTimeMs: time,
+  }))
+  expect(completedRetry).toMatchObject({ ok: true, value: { idempotent: true } })
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(4)
   expect(e6RoundPublicationRows(setup)).toHaveLength(2)
 })
 

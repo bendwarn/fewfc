@@ -153,6 +153,58 @@ function responseWithStandingOverrides(stageIndex: number, overrides: Record<str
   }
 }
 
+function singleEliminationBronzeResponse(): unknown {
+  const fixture = response()
+  const stage = fixture.projection.public.stages[0]
+  if (!stage) throw new Error('missing single-elimination fixture')
+  const stageId = stage.config.stageId
+  const teamIds = ['team-a', 'team-b', 'team-c', 'team-d']
+  const makeMatch = (
+    matchId: string,
+    roundNumber: number,
+    sequence: number,
+    participants: string[],
+    status: 'pending' | 'completed',
+    purpose?: 'bronze',
+    result: unknown = null,
+  ) => ({
+    matchId, stageId, roundNumber, sequence, kind: 'main', ...(purpose ? { purpose } : {}), participants,
+    status, result, cancellationReason: null, started: status === 'completed',
+  })
+  const rows = teamIds.map(teamId => ({
+    teamId, matchPoints: 3, wins: 1, draws: 0, losses: 0, gameWins: 2, gameLosses: 0,
+    netGameWins: 2, opponentWinRateBasisPoints: null, dropped: false, rank: null,
+  }))
+  Object.assign(stage, {
+    config: { ...stage.config, teams: teamIds.map((teamId, index) => ({ teamId, seed: index + 1 })) },
+    teams: Object.fromEntries(teamIds.map((teamId, index) => [teamId, {
+      seed: index + 1, dropped: false, hadBye: false,
+    }])),
+    standings: rows,
+    rounds: [
+      {
+        roundNumber: 1,
+        kind: 'main',
+        matches: [
+          makeMatch('single-stage-g0-r1-m1', 1, 1, ['team-a', 'team-b'], 'completed', undefined,
+            { type: 'win', winnerId: 'team-a', loserId: 'team-b', winnerGames: 2, loserGames: 0 }),
+          makeMatch('single-stage-g0-r1-m2', 1, 2, ['team-c', 'team-d'], 'completed', undefined,
+            { type: 'win', winnerId: 'team-c', loserId: 'team-d', winnerGames: 2, loserGames: 0 }),
+        ],
+      },
+      {
+        roundNumber: 2,
+        kind: 'main',
+        matches: [
+          makeMatch('single-stage-g0-r2-m1', 2, 1, ['team-a', 'team-c'], 'pending'),
+          makeMatch('single-stage-g0-r2-m2', 2, 2, ['team-b', 'team-d'], 'pending', 'bronze'),
+        ],
+      },
+    ],
+  })
+  return fixture
+}
+
 test('parses the exact current tournament projection without inferring rank from array position', () => {
   const parsed = parseCompetitionTournamentViewResponse(response(), 'competition-a')
 
@@ -170,6 +222,19 @@ test('parses the exact current tournament projection without inferring rank from
   ])
   expect(parsed.stages[2]).not.toHaveProperty('teams')
   expect(parsed.stages[2]).not.toHaveProperty('doubleState')
+})
+
+test('parses the bronze purpose only for the same-round single-elimination podium pair', () => {
+  const parsed = parseCompetitionTournamentViewResponse(singleEliminationBronzeResponse(), 'competition-a')
+  const finalRound = parsed.stages[0]?.rounds[1]
+  expect(finalRound?.matches.map(match => match.purpose)).toEqual(['standard', 'bronze'])
+
+  expect(() => parseCompetitionTournamentViewResponse(
+    responseWithMatchOverrides(1, { purpose: 'bronze' }), 'competition-a',
+  )).toThrow()
+  expect(() => parseCompetitionTournamentViewResponse(
+    responseWithMatchOverrides(0, { purpose: 'championship' }), 'competition-a',
+  )).toThrow()
 })
 
 test('preserves server bye and double-loss states and never renders raw schedule or correction reasons', () => {

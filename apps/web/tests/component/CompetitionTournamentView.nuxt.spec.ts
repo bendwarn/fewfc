@@ -490,7 +490,7 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
     kind: 'main',
     matches: [{
       matchId: 'vacant-final-stage-g1-r2-m1', stageId: 'vacant-final-stage',
-      roundNumber: 2, sequence: 1, kind: 'main', participants: ['team-a', 'team-c'],
+      roundNumber: 2, sequence: 1, kind: 'main', purpose: 'standard', participants: ['team-a', 'team-c'],
       status: 'completed', result: { type: 'doubleLoss' }, cancellationReason: null, started: true,
     }],
   })
@@ -639,7 +639,7 @@ it('displays configured zero Team Main Time as unlimited through the valid tourn
   ])
   expect(parsed.stages[0]?.rounds[0]?.matches[0]).toEqual({
     matchId: 'zero-main-stage-g0-r1-m1', stageId: 'zero-main-stage',
-    roundNumber: 1, sequence: 1, kind: 'main', participants: ['team-a', 'team-b'],
+    roundNumber: 1, sequence: 1, kind: 'main', purpose: 'standard', participants: ['team-a', 'team-b'],
     status: 'pending', result: null, cancellationReason: null, started: false,
   })
   expect(parsed.stages[0]?.standings.map(row => [row.teamId, row.matchPoints, row.wins, row.draws, row.losses, row.rank]))

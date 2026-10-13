@@ -2,6 +2,7 @@ export type TournamentFormatView = 'singleElimination' | 'roundRobin' | 'doubleE
 export type TournamentRoundKindView = 'main' | 'winners' | 'losers' | 'grandFinal' | 'grandFinalReset'
 export type TournamentStageStatusView = 'active' | 'finished'
 export type TournamentMatchStatusView = 'pending' | 'inProgress' | 'completed' | 'cancelled'
+export type TournamentMatchPurposeView = 'standard' | 'bronze'
 export type SwissTieBreakerView =
   | 'matchPoints'
   | 'headToHeadMatchPoints'
@@ -52,6 +53,7 @@ export interface TournamentViewMatch {
   roundNumber: number
   sequence: number
   kind: TournamentRoundKindView
+  purpose: TournamentMatchPurposeView
   participants: string[]
   status: TournamentMatchStatusView
   result: TournamentViewMatchResult | null
@@ -281,13 +283,15 @@ function parseStage(input: unknown): TournamentViewStage | null {
   const teamIds = new Set(config.teams.map(team => team.teamId))
   if (!validTeamEntries(value.teams, config.teams)
     || !validDoubleState(value.doubleState, config.format, teamIds)) return null
-  const rounds = parseArray(value.rounds, round => parseRound(round, config.stageId, teamIds))
-  const supersededRounds = parseArray(value.supersededRounds, round => parseRound(round, config.stageId, teamIds))
+  const rounds = parseArray(value.rounds, round => parseRound(round, config.stageId, teamIds, config.format))
+  const supersededRounds = parseArray(value.supersededRounds, round => parseRound(round, config.stageId, teamIds, config.format))
   const standings = parseArray(value.standings, standing => parseStanding(standing, teamIds))
   const corrections = parseArray(value.corrections, parseCorrection)
   if (!rounds || !supersededRounds || !standings || !corrections
     || new Set(standings.map(standing => standing.teamId)).size !== standings.length
-    || new Set(rounds.map(round => `${round.kind}:${round.roundNumber}`)).size !== rounds.length) return null
+    || new Set(rounds.map(round => `${round.kind}:${round.roundNumber}`)).size !== rounds.length
+    || !validBronzeRounds(rounds, config.format, true)
+    || !validBronzeRounds(supersededRounds, config.format, false)) return null
   const allMatches = [...rounds, ...supersededRounds].flatMap(round => round.matches)
   if (new Set(allMatches.map(match => match.matchId)).size !== allMatches.length) return null
 
@@ -466,13 +470,14 @@ function parseRound(
   input: unknown,
   expectedStageId: string,
   teamIds: ReadonlySet<string>,
+  format: TournamentFormatView,
 ): TournamentViewRound | null {
   const value = exactRecord(input, ['roundNumber', 'kind', 'matches'])
   if (!value || !isPositiveSafeInteger(value.roundNumber) || !isRoundKind(value.kind)) return null
   const roundNumber = value.roundNumber
   const kind = value.kind
   const matches = parseArray(value.matches, match =>
-    parseMatch(match, expectedStageId, roundNumber, kind, teamIds))
+    parseMatch(match, expectedStageId, roundNumber, kind, teamIds, format))
   if (!matches) return null
   return { roundNumber, kind, matches }
 }
@@ -483,15 +488,19 @@ function parseMatch(
   expectedRoundNumber: number,
   expectedKind: TournamentRoundKindView,
   teamIds: ReadonlySet<string>,
+  format: TournamentFormatView,
 ): TournamentViewMatch | null {
+  const hasPurpose = isPlainRecord(input) && Object.hasOwn(input, 'purpose')
   const value = exactRecord(input, [
     'matchId', 'stageId', 'roundNumber', 'sequence', 'kind', 'participants', 'status',
-    'result', 'cancellationReason', 'started',
+    'result', 'cancellationReason', 'started', ...(hasPurpose ? ['purpose'] : []),
   ])
   if (!value || !isNonEmptyString(value.matchId) || !isNonEmptyString(value.stageId)
     || value.stageId !== expectedStageId || !isPositiveSafeInteger(value.roundNumber)
     || value.roundNumber !== expectedRoundNumber || !isNonNegativeSafeInteger(value.sequence)
     || !isRoundKind(value.kind) || value.kind !== expectedKind || !isMatchStatus(value.status)
+    || (hasPurpose && (value.purpose !== 'bronze'
+      || format !== 'singleElimination' || value.kind !== 'main'))
     || !(value.cancellationReason === null || typeof value.cancellationReason === 'string')
     || typeof value.started !== 'boolean') return null
 
@@ -521,12 +530,35 @@ function parseMatch(
     roundNumber,
     sequence,
     kind,
+    purpose: hasPurpose ? 'bronze' : 'standard',
     participants,
     status,
     result,
     cancellationReason,
     started,
   }
+}
+
+function validBronzeRounds(
+  rounds: readonly TournamentViewRound[],
+  format: TournamentFormatView,
+  requireLatest: boolean,
+): boolean {
+  for (const [index, round] of rounds.entries()) {
+    const bronzeMatches = round.matches.filter(match => match.purpose === 'bronze')
+    if (!bronzeMatches.length) continue
+    const [bronzeMatch] = bronzeMatches
+    const championshipMatches = round.matches.filter(match => match.purpose === 'standard')
+    if (format !== 'singleElimination' || round.kind !== 'main'
+      || bronzeMatches.length !== 1 || round.matches.length !== 2
+      || championshipMatches.length !== 1 || bronzeMatch?.participants.length !== 2
+      || championshipMatches[0]?.participants.length !== 2
+      || bronzeMatch.participants.some(team => championshipMatches[0]?.participants.includes(team))) {
+      return false
+    }
+    if (requireLatest && index !== rounds.length - 1) return false
+  }
+  return true
 }
 
 function parseMatchResult(

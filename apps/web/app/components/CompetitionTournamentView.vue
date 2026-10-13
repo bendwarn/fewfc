@@ -155,7 +155,12 @@
               <div v-else class="match-list">
                 <article v-for="match in round.matches" :key="match.matchId" class="match-card">
                   <header class="match-heading">
-                    <h6>交手 {{ match.sequence }} <span class="identifier">{{ match.matchId }}</span></h6>
+                    <h6>
+                      交手 {{ match.sequence }}
+                      <span v-if="match.purpose === 'bronze'" class="purpose-label">季軍賽</span>
+                      <span v-else-if="round.matches.some(candidate => candidate.purpose === 'bronze')" class="purpose-label">冠軍賽</span>
+                      <span class="identifier">{{ match.matchId }}</span>
+                    </h6>
                     <span class="status-badge">{{ tournamentMatchStatusLabel(match.status) }}</span>
                   </header>
                   <p class="match-fact">
@@ -222,7 +227,12 @@
               <div class="match-list">
                 <article v-for="match in round.matches" :key="match.matchId" class="match-card">
                   <header class="match-heading">
-                    <h6>交手 {{ match.sequence }} <span class="identifier">{{ match.matchId }}</span></h6>
+                  <h6>
+                    交手 {{ match.sequence }}
+                    <span v-if="match.purpose === 'bronze'" class="purpose-label">季軍賽</span>
+                    <span v-else-if="round.matches.some(candidate => candidate.purpose === 'bronze')" class="purpose-label">冠軍賽</span>
+                    <span class="identifier">{{ match.matchId }}</span>
+                  </h6>
                     <span class="status-badge">{{ tournamentMatchStatusLabel(match.status) }}・舊輪次</span>
                   </header>
                   <p class="match-fact">
@@ -484,6 +494,7 @@ onBeforeUnmount(() => {
 .muted { color: var(--app-text-muted); }
 .identifier { min-width: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, monospace; }
 .stage-title .identifier { color: var(--app-text-muted); font-size: .82rem; }
+.purpose-label { justify-self: start; border: 1px solid var(--app-border-strong); border-radius: 999px; padding: .1rem .5rem; color: var(--app-text); font-size: .72rem; }
 
 .refresh-button {
   flex: 0 0 auto;

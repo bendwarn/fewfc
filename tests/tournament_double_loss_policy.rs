@@ -1,8 +1,8 @@
 use fewfc::competition_clock::ClockConfig;
 use fewfc::competition_match::MatchFormat;
 use fewfc::tournament::{
-    MatchResult, MatchStatus, RoundKind, SeededTeam, StageConfig, StageId, StageStatus, TeamId,
-    Tournament, TournamentConfig, TournamentFormat, UpdateOutcome,
+    MatchPurpose, MatchResult, MatchStatus, RoundKind, SeededTeam, StageConfig, StageId,
+    StageStatus, TeamId, Tournament, TournamentConfig, TournamentFormat, UpdateOutcome,
 };
 
 #[test]
@@ -405,8 +405,19 @@ fn single_elimination_four_team_final_double_loss_preserves_stats_after_restore_
     }
     assert_eq!(next_stage.rounds()[1].round_number, 2);
     assert_eq!(next_stage.rounds()[1].kind, RoundKind::Main);
-    assert_eq!(next_stage.rounds()[1].matches.len(), 1);
-    let original_final = next_stage.rounds()[1].matches[0].clone();
+    assert_eq!(next_stage.rounds()[1].matches.len(), 2);
+    let original_final = next_stage.rounds()[1]
+        .matches
+        .iter()
+        .find(|match_| match_.purpose == MatchPurpose::Standard)
+        .unwrap()
+        .clone();
+    let original_bronze = next_stage.rounds()[1]
+        .matches
+        .iter()
+        .find(|match_| match_.purpose == MatchPurpose::Bronze)
+        .unwrap()
+        .clone();
     assert_eq!(original_final.stage_id, stage_id);
     assert_eq!(original_final.round_number, 2);
     assert_eq!(original_final.kind, RoundKind::Main);
@@ -426,7 +437,11 @@ fn single_elimination_four_team_final_double_loss_preserves_stats_after_restore_
     let started_stage = tournament.stage(&stage_id).unwrap();
     assert_eq!(started_stage.rounds().len(), 2);
     assert_eq!(&started_stage.rounds()[0], &completed_semifinals);
-    let started_final = &started_stage.rounds()[1].matches[0];
+    let started_final = started_stage.rounds()[1]
+        .matches
+        .iter()
+        .find(|match_| match_.purpose == MatchPurpose::Standard)
+        .unwrap();
     assert_eq!(started_final.match_id, original_final.match_id);
     assert_eq!(started_final.participants, original_final.participants);
     assert_eq!(started_final.status, MatchStatus::InProgress);
@@ -442,16 +457,29 @@ fn single_elimination_four_team_final_double_loss_preserves_stats_after_restore_
     let stage = tournament.stage(&stage_id).unwrap();
     assert_eq!(tournament.stages().len(), 1);
     assert_eq!(stage.config(), &config);
-    assert_eq!(stage.status(), StageStatus::Finished);
+    assert_eq!(stage.status(), StageStatus::Active);
     assert_eq!(stage.winner(), None);
     assert_eq!(stage.last_schedule_error(), None);
-    assert!(stage.current_round().is_none());
+    assert!(stage.current_round().is_some());
     assert!(stage.corrections().is_empty());
     assert!(stage.superseded_rounds().is_empty());
     assert_eq!(stage.rounds().len(), 2, "不新增決勝交手或假輪次");
     assert_eq!(&stage.rounds()[0], &completed_semifinals);
-    assert_eq!(stage.rounds()[1].matches.len(), 1);
-    let final_match = &stage.rounds()[1].matches[0];
+    assert_eq!(stage.rounds()[1].matches.len(), 2);
+    let final_match = stage.rounds()[1]
+        .matches
+        .iter()
+        .find(|match_| match_.purpose == MatchPurpose::Standard)
+        .unwrap();
+    let bronze_match = stage.rounds()[1]
+        .matches
+        .iter()
+        .find(|match_| match_.purpose == MatchPurpose::Bronze)
+        .unwrap();
+    assert_eq!(bronze_match.match_id, original_bronze.match_id);
+    assert_eq!(bronze_match.participants, original_bronze.participants);
+    assert_eq!(bronze_match.status, MatchStatus::Pending);
+    assert_eq!(bronze_match.result, None);
     assert_eq!(final_match.match_id, original_final.match_id);
     assert_eq!(final_match.stage_id, original_final.stage_id);
     assert_eq!(final_match.round_number, original_final.round_number);
@@ -513,39 +541,28 @@ fn single_elimination_four_team_final_double_loss_preserves_stats_after_restore_
     assert_eq!(forfeit_loser_row.game_wins, 0);
     assert_eq!(forfeit_loser_row.game_losses, 0);
     assert_eq!(forfeit_loser_row.net_game_wins, 0);
-    assert_eq!(win_row.rank, None, "有勝局的 finalist 不能被補成冠軍");
-    assert_eq!(
-        forfeit_row.rank, None,
-        "棄權晉級的 finalist 也不能被補成亞軍"
-    );
-
     // 只序列化剛由公共操作建立的現況，不手造 snapshot 或模擬舊資料遷移。
     let snapshot = serde_json::to_value(&tournament).unwrap();
-    let serialized_rows = snapshot["stages"][0]["standings"].as_array().unwrap();
-    for team_id in [&win_finalist, &forfeit_finalist] {
-        let serialized_row = serialized_rows
-            .iter()
-            .find(|row| {
-                row.get("teamId").and_then(serde_json::Value::as_str) == Some(team_id.0.as_str())
-            })
-            .unwrap();
-        assert_eq!(serialized_row.get("rank"), Some(&serde_json::Value::Null));
-    }
+    assert_eq!(snapshot["stages"][0]["status"], "active");
+    assert_eq!(snapshot["stages"][0]["rounds"][1]["matches"].as_array().unwrap().len(), 2);
     let mut restored: Tournament = serde_json::from_value(snapshot.clone())
         .expect("真實四隊 prefix 與決賽雙負的 current Tournament 必須能 serde 還原");
     assert_eq!(serde_json::to_value(&restored).unwrap(), snapshot);
     let restored_stage = restored.stage(&stage_id).unwrap();
-    assert_eq!(restored_stage.status(), StageStatus::Finished);
+    assert_eq!(restored_stage.status(), StageStatus::Active);
     assert_eq!(restored_stage.winner(), None);
     assert_eq!(restored_stage.last_schedule_error(), None);
-    for team_id in [&win_finalist, &forfeit_finalist] {
-        let restored_row = restored_stage
-            .standings()
+    let restored_round = restored_stage.current_round().unwrap();
+    assert_eq!(restored_round.matches.len(), 2);
+    assert_eq!(
+        restored_round
+            .matches
             .iter()
-            .find(|row| &row.team_id == team_id)
-            .unwrap();
-        assert_eq!(restored_row.rank, None);
-    }
+            .find(|match_| match_.purpose == MatchPurpose::Bronze)
+            .unwrap()
+            .status,
+        MatchStatus::Pending
+    );
     assert_eq!(
         restored
             .submit_result(&stage_id, &original_final.match_id, MatchResult::DoubleLoss)
@@ -555,7 +572,7 @@ fn single_elimination_four_team_final_double_loss_preserves_stats_after_restore_
     assert_eq!(
         serde_json::to_value(&restored).unwrap(),
         snapshot,
-        "同結果 retry 不得更動任何原交手、開賽事實、統計或無名次投影"
+        "同結果 retry 不得更動任何原交手、開賽事實、統計或待賽季軍狀態"
     );
 }
 
