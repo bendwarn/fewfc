@@ -556,7 +556,9 @@ pub struct CompetitionAnnouncementPlan {
 }
 
 /// 驗證公告的來源圖及每階段設定；不產生隊伍、種子或配對。
-pub fn validate_competition_announcement_plan(plan: &CompetitionAnnouncementPlan) -> Result<(), String> {
+pub fn validate_competition_announcement_plan(
+    plan: &CompetitionAnnouncementPlan,
+) -> Result<(), String> {
     if plan.stages.is_empty() {
         return Err("公告至少要有一個賽事階段".to_string());
     }
@@ -570,7 +572,8 @@ pub fn validate_competition_announcement_plan(plan: &CompetitionAnnouncementPlan
         {
             return Err("階段識別碼不可空白或重複".to_string());
         }
-        stage.match_format
+        stage
+            .match_format
             .validate()
             .map_err(|error| error.to_string())?;
         validate_announced_clock(&stage.clock_config)?;
@@ -600,7 +603,9 @@ pub fn validate_competition_announcement_plan(plan: &CompetitionAnnouncementPlan
                 let mut destination_seeds = BTreeSet::new();
                 let mut sources = BTreeSet::new();
                 for slot in slots {
-                    if slot.destination_seed == 0 || !destination_seeds.insert(slot.destination_seed) {
+                    if slot.destination_seed == 0
+                        || !destination_seeds.insert(slot.destination_seed)
+                    {
                         return Err("晉級名額的目的種子必須是不同的正整數".to_string());
                     }
                     if !stage_ids.contains(&slot.source_stage_id) {
@@ -613,10 +618,22 @@ pub fn validate_competition_announcement_plan(plan: &CompetitionAnnouncementPlan
                     let source_stage = &plan.stages[source_index];
                     match &slot.source {
                         StageQualificationSource::FinishedStageWinner
-                            if matches!(source_stage.format, TournamentFormat::SingleElimination | TournamentFormat::DoubleElimination) => {}
+                            if matches!(
+                                source_stage.format,
+                                TournamentFormat::SingleElimination
+                                    | TournamentFormat::DoubleElimination
+                            ) => {}
                         StageQualificationSource::UniqueStandingRank { rank }
-                            if *rank > 0 && matches!(source_stage.format, TournamentFormat::RoundRobin | TournamentFormat::Swiss) => {}
-                        _ => return Err("晉級來源必須符合來源階段可提供的勝者或唯一名次".to_string()),
+                            if *rank > 0
+                                && matches!(
+                                    source_stage.format,
+                                    TournamentFormat::RoundRobin | TournamentFormat::Swiss
+                                ) => {}
+                        _ => {
+                            return Err(
+                                "晉級來源必須符合來源階段可提供的勝者或唯一名次".to_string()
+                            );
+                        }
                     }
                     if !sources.insert((slot.source_stage_id.clone(), slot.source.clone())) {
                         return Err("相同晉級來源不可重複設定".to_string());
@@ -634,7 +651,9 @@ fn validate_announced_clock(config: &ClockConfig) -> Result<(), String> {
         Some(value) if value % 60_000 == 0 => {}
         _ => return Err("主時間必須以分鐘設定；0 表示不限時".to_string()),
     }
-    if !config.action_time_ms.is_some_and(|value| BYOYOMI_OPTIONS_MS.contains(&value))
+    if !config
+        .action_time_ms
+        .is_some_and(|value| BYOYOMI_OPTIONS_MS.contains(&value))
         || config.action_time_ms != config.out_of_turn_choice_time_ms
     {
         return Err("讀秒只可選 30 秒、1 分鐘或 3 分鐘，且共用於行動與回合外選擇".to_string());
@@ -708,7 +727,9 @@ pub struct TournamentConfig {
 #[serde(rename_all = "camelCase")]
 pub struct Standing {
     pub team_id: TeamId,
-    pub match_points: u32,
+    /// 累計分數以字串傳輸，避免 JavaScript 整數精度截斷；還原快照仍接受舊數值。
+    #[serde(with = "u64_decimal_string")]
+    pub match_points: u64,
     pub wins: u32,
     pub draws: u32,
     pub losses: u32,
@@ -718,6 +739,63 @@ pub struct Standing {
     pub opponent_win_rate_basis_points: Option<u32>,
     pub dropped: bool,
     pub rank: Option<u32>,
+}
+
+mod u64_decimal_string {
+    use serde::de::{self, Visitor};
+    use serde::{Deserializer, Serializer};
+    use std::fmt;
+
+    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct U64Visitor;
+
+        impl Visitor<'_> for U64Visitor {
+            type Value = u64;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a non-negative integer or canonical decimal string")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(value)
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                u64::try_from(value).map_err(E::custom)
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value.is_empty()
+                    || (value.len() > 1 && value.starts_with('0'))
+                    || !value.bytes().all(|byte| byte.is_ascii_digit())
+                {
+                    return Err(E::custom("matchPoints must be a canonical decimal string"));
+                }
+                value.parse().map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_any(U64Visitor)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1110,9 +1188,7 @@ impl Tournament {
             .iter()
             .any(|stage| stage.config.stage_id == template.stage_id)
         {
-            return Err(QualifiedStagePlanError::DuplicateStageId(
-                template.stage_id,
-            ));
+            return Err(QualifiedStagePlanError::DuplicateStageId(template.stage_id));
         }
 
         let qualification = self
@@ -1275,7 +1351,12 @@ fn ensure_stage_qualification_source_is_closed(
         .rounds
         .iter()
         .flat_map(|round| &round.matches)
-        .find(|match_| match_.result.as_ref().is_some_and(MatchResult::is_double_loss))
+        .find(|match_| {
+            match_
+                .result
+                .as_ref()
+                .is_some_and(MatchResult::is_double_loss)
+        })
     {
         return Err(StageQualificationBlocker::DoubleLossNeedsReferee {
             source_stage_id: stage.config.stage_id.clone(),
@@ -1827,7 +1908,10 @@ impl Stage {
             .flat_map(|round| &round.matches)
             .filter(|match_| {
                 match_.status == MatchStatus::Completed
-                    && match_.result.as_ref().is_some_and(MatchResult::is_double_loss)
+                    && match_
+                        .result
+                        .as_ref()
+                        .is_some_and(MatchResult::is_double_loss)
             })
             .map(|match_| {
                 (
@@ -1845,12 +1929,14 @@ impl Stage {
                     && match_.result.is_none()
                 {
                     if let Some((_, _, source_match_id)) =
-                        double_losses.iter().find(|(round_number, participants, _)| {
-                            match_.round_number > *round_number
-                                && participants
-                                    .iter()
-                                    .any(|team_id| match_.participants.contains(team_id))
-                        })
+                        double_losses
+                            .iter()
+                            .find(|(round_number, participants, _)| {
+                                match_.round_number > *round_number
+                                    && participants
+                                        .iter()
+                                        .any(|team_id| match_.participants.contains(team_id))
+                            })
                     {
                         match_.status = MatchStatus::Cancelled;
                         match_.cancellation_reason = Some(
@@ -1872,7 +1958,8 @@ impl Stage {
         source_round: u32,
         source_teams: &[TeamId],
     ) {
-        if self.config.format != TournamentFormat::RoundRobin || self.status != StageStatus::Active {
+        if self.config.format != TournamentFormat::RoundRobin || self.status != StageStatus::Active
+        {
             return;
         }
         let expected_reason = Self::round_robin_double_loss_cancellation_reason(source_match_id);
@@ -1882,7 +1969,10 @@ impl Stage {
             .flat_map(|round| &round.matches)
             .filter(|match_| {
                 match_.status == MatchStatus::Completed
-                    && match_.result.as_ref().is_some_and(MatchResult::is_double_loss)
+                    && match_
+                        .result
+                        .as_ref()
+                        .is_some_and(MatchResult::is_double_loss)
             })
             .flat_map(|match_| match_.participants.iter().cloned())
             .collect();
@@ -1997,7 +2087,10 @@ impl Stage {
             && final_match.kind == RoundKind::Main
             && final_match.participants.len() == 2
             && final_match.status == MatchStatus::Completed
-            && final_match.result.as_ref().is_some_and(MatchResult::is_double_loss)
+            && final_match
+                .result
+                .as_ref()
+                .is_some_and(MatchResult::is_double_loss)
             && final_round.matches.iter().all(is_closed)
             && previous_rounds
                 .iter()
@@ -2056,11 +2149,16 @@ impl Stage {
             self.config.format,
             TournamentFormat::SingleElimination | TournamentFormat::DoubleElimination
         ) {
-            if let Some(match_) = self
-                .rounds
-                .iter()
-                .flat_map(|round| &round.matches)
-                .find(|match_| match_.result.as_ref().is_some_and(MatchResult::is_double_loss))
+            if let Some(match_) =
+                self.rounds
+                    .iter()
+                    .flat_map(|round| &round.matches)
+                    .find(|match_| {
+                        match_
+                            .result
+                            .as_ref()
+                            .is_some_and(MatchResult::is_double_loss)
+                    })
             {
                 return Err(ScheduleError::DoubleLossNeedsReferee(
                     match_.match_id.clone(),
@@ -2072,14 +2170,13 @@ impl Stage {
 
     fn progress_single(&mut self) -> Result<(), ScheduleError> {
         let round = self.rounds.last().expect("至少有一輪");
-        if let Some(double_loss) = round
-            .matches
-            .iter()
-            .find(|match_| {
-                match_.purpose == MatchPurpose::Standard
-                    && match_.result.as_ref().is_some_and(MatchResult::is_double_loss)
-            })
-        {
+        if let Some(double_loss) = round.matches.iter().find(|match_| {
+            match_.purpose == MatchPurpose::Standard
+                && match_
+                    .result
+                    .as_ref()
+                    .is_some_and(MatchResult::is_double_loss)
+        }) {
             // 先依原交手位置組分支，才移除無 winner 的空位，不能壓縮全部勝者。
             let pairs = round
                 .matches
@@ -2126,11 +2223,9 @@ impl Stage {
         };
         let can_schedule_bronze = can_schedule_bronze
             && semifinal_losers.len() == 2
-            && semifinal_losers.iter().all(|team_id| {
-                self.teams
-                    .get(team_id)
-                    .is_some_and(|entry| !entry.dropped)
-            });
+            && semifinal_losers
+                .iter()
+                .all(|team_id| self.teams.get(team_id).is_some_and(|entry| !entry.dropped));
         self.append_elimination_round(RoundKind::Main, pair_adjacent_with_byes(&winners), true);
         if can_schedule_bronze {
             self.append_bronze_match(semifinal_losers);
@@ -2451,7 +2546,7 @@ impl Stage {
 
     fn swiss_pairing(&self, ordered: &[TeamId]) -> Result<Vec<Vec<TeamId>>, ScheduleError> {
         let double_loss_exits = self.swiss_double_loss_exits();
-        let active: Vec<TeamId> = ordered
+        let mut active: Vec<TeamId> = ordered
             .iter()
             .filter(|team_id| self.is_swiss_team_eligible(team_id, &double_loss_exits))
             .cloned()
@@ -2459,26 +2554,87 @@ impl Stage {
         if active.is_empty() {
             return Err(ScheduleError::NoLegalSwissPairing);
         }
+        let round_seed = split_mix64(self.config.random_seed ^ (self.rounds.len() as u64 + 1));
+        self.shuffle_swiss_pairing_ties(
+            &mut active,
+            split_mix64(round_seed ^ SWISS_TIE_ORDER_SEED_DOMAIN),
+        );
         let opponents = self.opponents();
+        let match_points: BTreeMap<TeamId, u64> = self
+            .compute_standings()
+            .into_iter()
+            .map(|standing| (standing.team_id.clone(), standing.match_points))
+            .collect();
+        let mut pairing_seed = split_mix64(round_seed ^ SWISS_MATCHING_SEED_DOMAIN);
         if active.len() % 2 == 0 {
             let mut remaining = active;
-            let mut pairs = vec![];
-            pair_backtracking(&mut remaining, &opponents, &mut pairs)?;
+            let (_, pairs) =
+                pair_backtracking(&mut remaining, &opponents, &match_points, &mut pairing_seed)?;
             return Ok(pairs);
         }
-        let bye_candidates = active
+        let mut bye_candidates: Vec<TeamId> = active
             .iter()
             .rev()
-            .filter(|team_id| self.teams.get(*team_id).is_some_and(|entry| !entry.had_bye));
+            .filter(|team_id| self.teams.get(*team_id).is_some_and(|entry| !entry.had_bye))
+            .cloned()
+            .collect();
+        if !self.rounds.is_empty() {
+            shuffle_team_ids(
+                &mut bye_candidates,
+                split_mix64(round_seed ^ SWISS_BYE_ORDER_SEED_DOMAIN),
+            );
+        }
+        let mut best: Option<(usize, Vec<Vec<TeamId>>)> = None;
         for bye_team in bye_candidates {
             let mut remaining = active.clone();
-            remaining.retain(|team_id| team_id != bye_team);
-            let mut pairs = vec![vec![bye_team.clone()]];
-            if pair_backtracking(&mut remaining, &opponents, &mut pairs).is_ok() {
-                return Ok(pairs);
+            remaining.retain(|team_id| team_id != &bye_team);
+            if let Ok((cross_group_pairs, next_pairs)) =
+                pair_backtracking(&mut remaining, &opponents, &match_points, &mut pairing_seed)
+            {
+                if let Some((best_cross_group_pairs, _)) = &best {
+                    if cross_group_pairs >= *best_cross_group_pairs {
+                        if *best_cross_group_pairs == 0 {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+                let mut pairs = vec![vec![bye_team]];
+                pairs.extend(next_pairs);
+                best = Some((cross_group_pairs, pairs));
+                if cross_group_pairs == 0 {
+                    break;
+                }
             }
         }
-        Err(ScheduleError::NoLegalSwissPairing)
+        best.map(|(_, pairs)| pairs)
+            .ok_or(ScheduleError::NoLegalSwissPairing)
+    }
+
+    fn shuffle_swiss_pairing_ties(&self, ordered: &mut [TeamId], seed: u64) {
+        if self.rounds.is_empty() || ordered.len() < 2 {
+            return;
+        }
+        let standings = self.compute_standings();
+        let mut range_start = 0;
+        let mut group_index = 0u64;
+        while range_start < ordered.len() {
+            let mut range_end = range_start + 1;
+            while range_end < ordered.len()
+                && self.compare_rank_keys(&ordered[range_start], &ordered[range_end], &standings)
+                    == Ordering::Equal
+            {
+                range_end += 1;
+            }
+            if range_end - range_start > 1 {
+                shuffle_team_ids(
+                    &mut ordered[range_start..range_end],
+                    split_mix64(seed ^ group_index),
+                );
+            }
+            group_index += 1;
+            range_start = range_end;
+        }
     }
 
     fn is_swiss_team_eligible(
@@ -2486,9 +2642,7 @@ impl Stage {
         team_id: &TeamId,
         double_loss_exits: &BTreeSet<TeamId>,
     ) -> bool {
-        self.teams
-            .get(team_id)
-            .is_some_and(|entry| !entry.dropped)
+        self.teams.get(team_id).is_some_and(|entry| !entry.dropped)
             && !double_loss_exits.contains(team_id)
     }
 
@@ -2501,7 +2655,10 @@ impl Stage {
             .flat_map(|round| &round.matches)
             .filter(|match_| {
                 match_.status == MatchStatus::Completed
-                    && match_.result.as_ref().is_some_and(MatchResult::is_double_loss)
+                    && match_
+                        .result
+                        .as_ref()
+                        .is_some_and(MatchResult::is_double_loss)
             })
             .flat_map(|match_| match_.participants.iter().cloned())
             .collect()
@@ -2700,7 +2857,7 @@ impl Stage {
         }
     }
 
-    fn head_to_head_points(&self, team_id: &TeamId, standings: &[Standing]) -> u32 {
+    fn head_to_head_points(&self, team_id: &TeamId, standings: &[Standing]) -> u64 {
         let team_points = standings
             .iter()
             .find(|row| &row.team_id == team_id)
@@ -2711,7 +2868,7 @@ impl Stage {
             .filter(|row| row.match_points == team_points)
             .map(|row| row.team_id.clone())
             .collect::<BTreeSet<_>>();
-        let mut points = 0;
+        let mut points = 0_u64;
         for round in &self.rounds {
             for match_ in &round.matches {
                 if match_.participants.len() != 2
@@ -2722,7 +2879,7 @@ impl Stage {
                     continue;
                 }
                 if let Some(result) = &match_.result {
-                    points += match_result_points(result, team_id, &self.config);
+                    points += u64::from(match_result_points(result, team_id, &self.config));
                 }
             }
         }
@@ -2758,6 +2915,10 @@ impl Stage {
                 let Some(result) = &match_.result else {
                     continue;
                 };
+                for team_id in &match_.participants {
+                    rows.get_mut(team_id).unwrap().match_points +=
+                        u64::from(match_result_points(result, team_id, &self.config));
+                }
                 match result {
                     MatchResult::DoubleLoss => {
                         for team_id in &match_.participants {
@@ -2768,14 +2929,8 @@ impl Stage {
                         absent_teams,
                         winner_id: None,
                     } => {
-                        let loss_points = if self.config.format == TournamentFormat::Swiss {
-                            self.config.swiss_policy.as_ref().unwrap().match_points.loss
-                        } else {
-                            0
-                        };
                         for team_id in absent_teams {
                             let standing = rows.get_mut(team_id).unwrap();
-                            standing.match_points += loss_points;
                             standing.losses += 1;
                         }
                     }
@@ -2784,12 +2939,6 @@ impl Stage {
                         loser_id,
                         ..
                     } => {
-                        let points = if self.config.format == TournamentFormat::Swiss {
-                            self.config.swiss_policy.as_ref().unwrap().match_points.win
-                        } else {
-                            3
-                        };
-                        rows.get_mut(winner_id).unwrap().match_points += points;
                         rows.get_mut(winner_id).unwrap().wins += 1;
                         rows.get_mut(loser_id).unwrap().losses += 1;
                         let (winner_score, loser_score) = result.game_score(winner_id).unwrap();
@@ -2802,12 +2951,6 @@ impl Stage {
                         winner_id,
                         loser_id,
                     } => {
-                        let points = if self.config.format == TournamentFormat::Swiss {
-                            self.config.swiss_policy.as_ref().unwrap().match_points.win
-                        } else {
-                            3
-                        };
-                        rows.get_mut(winner_id).unwrap().match_points += points;
                         rows.get_mut(winner_id).unwrap().wins += 1;
                         rows.get_mut(loser_id).unwrap().losses += 1;
                     }
@@ -2815,30 +2958,14 @@ impl Stage {
                         absent_teams,
                         winner_id: Some(winner_id),
                     } => {
-                        let (win_points, loss_points) = if self.config.format
-                            == TournamentFormat::Swiss
-                        {
-                            let points = &self.config.swiss_policy.as_ref().unwrap().match_points;
-                            (points.win, points.loss)
-                        } else {
-                            (3, 0)
-                        };
-                        rows.get_mut(winner_id).unwrap().match_points += win_points;
                         rows.get_mut(winner_id).unwrap().wins += 1;
                         for team_id in absent_teams {
                             let standing = rows.get_mut(team_id).unwrap();
-                            standing.match_points += loss_points;
                             standing.losses += 1;
                         }
                     }
                     MatchResult::Draw { .. } => {
-                        let points = if self.config.format == TournamentFormat::Swiss {
-                            self.config.swiss_policy.as_ref().unwrap().match_points.draw
-                        } else {
-                            1
-                        };
                         for team_id in &match_.participants {
-                            rows.get_mut(team_id).unwrap().match_points += points;
                             rows.get_mut(team_id).unwrap().draws += 1;
                         }
                         if match_.participants.len() == 2 {
@@ -2858,14 +2985,7 @@ impl Stage {
                                 first_games;
                         }
                     }
-                    MatchResult::Bye { team_id } => {
-                        let points = if self.config.format == TournamentFormat::Swiss {
-                            self.config.swiss_policy.as_ref().unwrap().match_points.bye
-                        } else {
-                            0
-                        };
-                        rows.get_mut(team_id).unwrap().match_points += points;
-                    }
+                    MatchResult::Bye { .. } => {}
                 }
             }
         }
@@ -3028,13 +3148,21 @@ fn seeded_order(teams: &[SeededTeam]) -> Vec<TeamId> {
 
 fn shuffled_order(teams: &[SeededTeam], seed: u64) -> Vec<TeamId> {
     let mut order = seeded_order(teams);
+    shuffle_team_ids(&mut order, seed);
+    order
+}
+
+const SWISS_TIE_ORDER_SEED_DOMAIN: u64 = 0x5449_455f_4f52_4445;
+const SWISS_BYE_ORDER_SEED_DOMAIN: u64 = 0x4259_455f_4f52_4445;
+const SWISS_MATCHING_SEED_DOMAIN: u64 = 0x5041_4952_494e_4753;
+
+fn shuffle_team_ids(order: &mut [TeamId], seed: u64) {
     let mut state = seed;
     for index in (1..order.len()).rev() {
         state = split_mix64(state);
         let swap_index = (state % u64::from(index as u32 + 1)) as usize;
         order.swap(index, swap_index);
     }
-    order
 }
 
 fn split_mix64(mut value: u64) -> u64 {
@@ -3206,7 +3334,9 @@ fn validate_match_result(
                 _ => false,
             };
             if !valid || !outcome_matches {
-                return Err(ScheduleError::ResultDoesNotMatchParticipants(match_id.clone()));
+                return Err(ScheduleError::ResultDoesNotMatchParticipants(
+                    match_id.clone(),
+                ));
             }
         }
         MatchResult::Draw {
@@ -3236,30 +3366,100 @@ fn validate_match_result(
 fn pair_backtracking(
     remaining: &mut Vec<TeamId>,
     opponents: &BTreeMap<TeamId, BTreeSet<TeamId>>,
-    pairs: &mut Vec<Vec<TeamId>>,
-) -> Result<(), ScheduleError> {
+    match_points: &BTreeMap<TeamId, u64>,
+    seed: &mut u64,
+) -> Result<(usize, Vec<Vec<TeamId>>), ScheduleError> {
     if remaining.is_empty() {
-        return Ok(());
+        return Ok((0, Vec::new()));
     }
     let first = remaining.remove(0);
-    for index in 0..remaining.len() {
-        let candidate = remaining[index].clone();
-        if opponents
+    let mut same_points_candidates = Vec::new();
+    let mut cross_group_candidates = Vec::new();
+    for candidate in remaining.iter().filter(|candidate| {
+        !opponents
             .get(&first)
-            .is_some_and(|played| played.contains(&candidate))
-        {
-            continue;
+            .is_some_and(|played| played.contains(*candidate))
+    }) {
+        if match_points[&first] == match_points[candidate] {
+            same_points_candidates.push(candidate.clone());
+        } else {
+            cross_group_candidates.push(candidate.clone());
         }
+    }
+    *seed = split_mix64(*seed);
+    shuffle_team_ids(&mut same_points_candidates, *seed);
+    *seed = split_mix64(*seed);
+    shuffle_team_ids(&mut cross_group_candidates, *seed);
+    let candidates = same_points_candidates
+        .into_iter()
+        .map(|team_id| (team_id, false))
+        .chain(
+            cross_group_candidates
+                .into_iter()
+                .map(|team_id| (team_id, true)),
+        );
+
+    let mut best: Option<(usize, Vec<Vec<TeamId>>)> = None;
+    for (candidate, crosses_group) in candidates {
+        let index = remaining
+            .iter()
+            .position(|team_id| team_id == &candidate)
+            .expect("瑞士配對候選仍在待配名單");
         let second = remaining.remove(index);
-        pairs.push(vec![first.clone(), second.clone()]);
-        if pair_backtracking(remaining, opponents, pairs).is_ok() {
-            return Ok(());
+        let cross_cost = usize::from(crosses_group);
+        let lower_bound =
+            cross_cost + minimum_required_cross_group_pairs(remaining, opponents, match_points);
+        if best
+            .as_ref()
+            .is_none_or(|(best_cost, _)| lower_bound < *best_cost)
+        {
+            if let Ok((suffix_cost, suffix_pairs)) =
+                pair_backtracking(remaining, opponents, match_points, seed)
+            {
+                let total_cost = cross_cost + suffix_cost;
+                if best
+                    .as_ref()
+                    .is_none_or(|(best_cost, _)| total_cost < *best_cost)
+                {
+                    let mut pairs = vec![vec![first.clone(), second.clone()]];
+                    pairs.extend(suffix_pairs);
+                    best = Some((total_cost, pairs));
+                }
+            }
         }
-        pairs.pop();
         remaining.insert(index, second);
     }
     remaining.insert(0, first);
-    Err(ScheduleError::NoLegalSwissPairing)
+    best.ok_or(ScheduleError::NoLegalSwissPairing)
+}
+
+fn minimum_required_cross_group_pairs(
+    remaining: &[TeamId],
+    opponents: &BTreeMap<TeamId, BTreeSet<TeamId>>,
+    match_points: &BTreeMap<TeamId, u64>,
+) -> usize {
+    let mut group_sizes = BTreeMap::new();
+    let mut isolated_by_group = BTreeMap::new();
+    for team_id in remaining {
+        *group_sizes.entry(match_points[team_id]).or_insert(0usize) += 1;
+        let has_same_points_opponent = remaining.iter().any(|candidate| {
+            team_id != candidate
+                && match_points[team_id] == match_points[candidate]
+                && !opponents
+                    .get(team_id)
+                    .is_some_and(|played| played.contains(candidate))
+        });
+        if !has_same_points_opponent {
+            *isolated_by_group
+                .entry(match_points[team_id])
+                .or_insert(0usize) += 1;
+        }
+    }
+    let parity_bound = group_sizes.values().filter(|size| *size % 2 == 1).count() / 2;
+    let isolated_count: usize = isolated_by_group.values().sum();
+    let isolated_bound = (isolated_count + 1) / 2;
+    let group_isolated_bound = isolated_by_group.values().copied().max().unwrap_or(0);
+    parity_bound.max(isolated_bound).max(group_isolated_bound)
 }
 
 fn match_result_points(result: &MatchResult, team_id: &TeamId, config: &StageConfig) -> u32 {
@@ -3290,6 +3490,7 @@ fn match_result_points(result: &MatchResult, team_id: &TeamId, config: &StageCon
             ..
         } if winner_id == team_id => points.win,
         MatchResult::NoShow { absent_teams, .. } if absent_teams.contains(team_id) => points.loss,
+        MatchResult::DoubleLoss => points.loss,
         MatchResult::Draw { .. } if config.format == TournamentFormat::Swiss => points.draw,
         MatchResult::Draw { .. } => points.draw,
         MatchResult::Bye { team_id: bye_team } if bye_team == team_id => points.bye,
@@ -3346,7 +3547,8 @@ mod tests {
             initial_seed_policy: InitialSeedPolicy::RandomDrawAfterRegistrationDeadline,
             swiss_pairing_policy: SwissPairingPolicy::PublishedRulesWithPersistedRandomSeed,
             ranking_policy: CompetitionRankingPolicy::MatchPointsThenOpponentWinsThenOpponentLosses,
-            exact_ranking_tie_policy: ExactRankingTiePolicy::OrganizerOrUnconflictedRefereeWithPublicReason,
+            exact_ranking_tie_policy:
+                ExactRankingTiePolicy::OrganizerOrUnconflictedRefereeWithPublicReason,
             stages: vec![AnnouncedTournamentStage {
                 stage_id: StageId::from("stage-1"),
                 format: TournamentFormat::Swiss,
@@ -3358,7 +3560,12 @@ mod tests {
                 },
                 swiss_rounds: Some(5),
                 swiss_policy: Some(SwissStandingPolicy {
-                    match_points: MatchPoints { win: 3, draw: 1, loss: 0, bye: 3 },
+                    match_points: MatchPoints {
+                        win: 3,
+                        draw: 1,
+                        loss: 0,
+                        bye: 3,
+                    },
                     draw_credit: DrawCredit::new(1, 2).unwrap(),
                     opponent_win_rate_floor_percent: None,
                     opponent_win_rate_cap_percent: None,
@@ -3400,9 +3607,13 @@ mod tests {
             },
             ..plan.stages[0].clone()
         };
-        assert!(validate_competition_announcement_plan(&CompetitionAnnouncementPlan {
-            stages: vec![invalid_clock], ..plan.clone()
-        }).is_err());
+        assert!(
+            validate_competition_announcement_plan(&CompetitionAnnouncementPlan {
+                stages: vec![invalid_clock],
+                ..plan.clone()
+            })
+            .is_err()
+        );
 
         let mut unknown_nested = value.clone();
         unknown_nested["stages"][0]["clockConfig"]["unannounced"] = serde_json::json!(true);
@@ -3440,8 +3651,22 @@ mod tests {
         assert!(!match_.started);
         assert_eq!(match_.result, Some(result));
         let standings = stage.standings();
-        assert_eq!(standings.iter().find(|row| row.team_id.0 == "t1").unwrap().losses, 1);
-        assert_eq!(standings.iter().find(|row| row.team_id.0 == "t2").unwrap().wins, 1);
+        assert_eq!(
+            standings
+                .iter()
+                .find(|row| row.team_id.0 == "t1")
+                .unwrap()
+                .losses,
+            1
+        );
+        assert_eq!(
+            standings
+                .iter()
+                .find(|row| row.team_id.0 == "t2")
+                .unwrap()
+                .wins,
+            1
+        );
     }
 
     #[test]
@@ -3459,8 +3684,22 @@ mod tests {
         let match_id = stage.rounds()[0].matches[0].match_id.clone();
         stage.submit_result(&match_id, result).unwrap();
         let standings = stage.standings();
-        assert_eq!(standings.iter().find(|row| row.team_id.0 == "t1").unwrap().losses, 1);
-        assert_eq!(standings.iter().find(|row| row.team_id.0 == "t2").unwrap().losses, 1);
+        assert_eq!(
+            standings
+                .iter()
+                .find(|row| row.team_id.0 == "t1")
+                .unwrap()
+                .losses,
+            1
+        );
+        assert_eq!(
+            standings
+                .iter()
+                .find(|row| row.team_id.0 == "t2")
+                .unwrap()
+                .losses,
+            1
+        );
     }
 
     #[test]
@@ -3481,11 +3720,19 @@ mod tests {
             .unwrap();
         let standings = single_absence.standings();
         assert_eq!(
-            standings.iter().find(|row| row.team_id.0 == "t1").unwrap().match_points,
+            standings
+                .iter()
+                .find(|row| row.team_id.0 == "t1")
+                .unwrap()
+                .match_points,
             2
         );
         assert_eq!(
-            standings.iter().find(|row| row.team_id.0 == "t2").unwrap().match_points,
+            standings
+                .iter()
+                .find(|row| row.team_id.0 == "t2")
+                .unwrap()
+                .match_points,
             3
         );
 
@@ -3502,11 +3749,19 @@ mod tests {
             .unwrap();
         let standings = double_absence.standings();
         assert_eq!(
-            standings.iter().find(|row| row.team_id.0 == "t1").unwrap().match_points,
+            standings
+                .iter()
+                .find(|row| row.team_id.0 == "t1")
+                .unwrap()
+                .match_points,
             2
         );
         assert_eq!(
-            standings.iter().find(|row| row.team_id.0 == "t2").unwrap().match_points,
+            standings
+                .iter()
+                .find(|row| row.team_id.0 == "t2")
+                .unwrap()
+                .match_points,
             2
         );
     }
@@ -3554,6 +3809,649 @@ mod tests {
         config.swiss_rounds = Some(rounds);
         config.swiss_policy = Some(policy);
         config
+    }
+
+    #[test]
+    fn swiss_pairing_ties_use_the_persisted_seed_for_each_round() {
+        let policy = swiss_policy(DrawCredit::new(1, 2).unwrap());
+        let stage_for_seed = |seed| {
+            let mut config = swiss_config(4, 2, policy.clone());
+            config.random_seed = seed;
+            Stage::new(config).unwrap()
+        };
+        let first = stage_for_seed(7);
+        let same_seed = stage_for_seed(7);
+        let different_seed = stage_for_seed(8);
+
+        let pairing_for = |stage: &Stage| stage.swiss_pairing(&stage.swiss_order()).unwrap();
+        assert_eq!(pairing_for(&first), pairing_for(&same_seed));
+        assert_ne!(pairing_for(&first), pairing_for(&different_seed));
+    }
+
+    #[test]
+    fn swiss_pairing_seed_selects_between_multiple_legal_matchings() {
+        let teams = ["a", "b", "c", "d"].map(TeamId::from).to_vec();
+        let opponents: BTreeMap<TeamId, BTreeSet<TeamId>> = teams
+            .iter()
+            .cloned()
+            .map(|team_id| (team_id, BTreeSet::new()))
+            .collect();
+        let pairing_for_seed = |seed| {
+            let mut remaining = teams.clone();
+            let match_points = teams.iter().cloned().map(|team_id| (team_id, 0)).collect();
+            let mut seed = seed;
+            let (cross_group_pairs, pairs) =
+                pair_backtracking(&mut remaining, &opponents, &match_points, &mut seed).unwrap();
+            assert_eq!(cross_group_pairs, 0);
+            pairs
+        };
+
+        assert_eq!(pairing_for_seed(7), pairing_for_seed(7));
+        assert_ne!(pairing_for_seed(7), pairing_for_seed(9));
+    }
+
+    #[test]
+    fn swiss_pairing_crosses_score_groups_when_rematches_block_same_points() {
+        let teams = ["a", "b", "c", "d"].map(TeamId::from).to_vec();
+        let match_points: BTreeMap<TeamId, u64> = [
+            (TeamId::from("a"), 3),
+            (TeamId::from("b"), 3),
+            (TeamId::from("c"), 0),
+            (TeamId::from("d"), 0),
+        ]
+        .into_iter()
+        .collect();
+        let opponents = BTreeMap::from([
+            (TeamId::from("a"), BTreeSet::from([TeamId::from("b")])),
+            (TeamId::from("b"), BTreeSet::from([TeamId::from("a")])),
+            (TeamId::from("c"), BTreeSet::from([TeamId::from("d")])),
+            (TeamId::from("d"), BTreeSet::from([TeamId::from("c")])),
+        ]);
+        let mut remaining = teams;
+        let mut seed = 7;
+        let (cross_group_pairs, pairs) =
+            pair_backtracking(&mut remaining, &opponents, &match_points, &mut seed).unwrap();
+
+        assert_eq!(cross_group_pairs, 2);
+        assert_eq!(pairs.len(), 2);
+        assert!(
+            pairs
+                .iter()
+                .all(|pair| !opponents[&pair[0]].contains(&pair[1]))
+        );
+        assert!(
+            pairs
+                .iter()
+                .all(|pair| match_points[&pair[0]] != match_points[&pair[1]])
+        );
+    }
+
+    #[test]
+    fn swiss_pairing_selects_bye_to_avoid_unnecessary_score_group_crossing() {
+        let mut stage = Stage::new(swiss_config(
+            5,
+            2,
+            swiss_policy(DrawCredit::new(1, 2).unwrap()),
+        ))
+        .unwrap();
+        let first_round = stage.rounds()[0].clone();
+        let previous_bye = first_round
+            .matches
+            .iter()
+            .find_map(
+                |match_| match (match_.participants.as_slice(), match_.result.as_ref()) {
+                    ([team_id], Some(MatchResult::Bye { .. })) => Some(team_id.clone()),
+                    _ => None,
+                },
+            )
+            .unwrap();
+        for match_ in first_round.matches {
+            if match_.participants.len() == 2 {
+                let winner = match_.participants[0].clone();
+                let loser = match_.participants[1].clone();
+                stage
+                    .submit_result(&match_.match_id, MatchResult::win(winner, loser))
+                    .unwrap();
+            }
+        }
+
+        let points: BTreeMap<TeamId, u64> = stage
+            .standings()
+            .into_iter()
+            .map(|standing| (standing.team_id.clone(), standing.match_points))
+            .collect();
+        let second_round = &stage.rounds()[1];
+        let second_bye = second_round
+            .matches
+            .iter()
+            .find_map(
+                |match_| match (match_.participants.as_slice(), match_.result.as_ref()) {
+                    ([team_id], Some(MatchResult::Bye { .. })) => Some(team_id),
+                    _ => None,
+                },
+            )
+            .unwrap();
+
+        assert_ne!(second_bye, &previous_bye);
+        assert!(
+            second_round
+                .matches
+                .iter()
+                .filter(|match_| match_.participants.len() == 2)
+                .all(|match_| points[&match_.participants[0]] == points[&match_.participants[1]])
+        );
+    }
+
+    #[test]
+    fn swiss_pairing_uses_persisted_seed_to_break_equal_cost_bye_ties() {
+        let complete_second_round = |seed| {
+            let mut policy = swiss_policy(DrawCredit::new(1, 2).unwrap());
+            policy.match_points.bye = 1;
+            policy.tie_breakers = vec![SwissTieBreaker::MatchPoints];
+            let mut config = swiss_config(5, 2, policy);
+            config.random_seed = seed;
+            config.teams = ["a", "b", "c", "d", "e"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, team_id)| SeededTeam {
+                    team_id: TeamId::from(team_id),
+                    seed: index as u32 + 1,
+                })
+                .collect();
+            let mut stage = Stage::new(config).unwrap();
+            let first_round = stage.rounds()[0].clone();
+            let previous_bye = first_round
+                .matches
+                .iter()
+                .find(|match_| match_.participants.len() == 1)
+                .unwrap()
+                .participants[0]
+                .clone();
+            let played: Vec<_> = first_round
+                .matches
+                .iter()
+                .filter(|match_| match_.participants.len() == 2)
+                .cloned()
+                .collect();
+            assert_eq!(played.len(), 2);
+
+            let winner = played[1].participants[0].clone();
+            let loser = played[1].participants[1].clone();
+            stage
+                .submit_result(&played[0].match_id, MatchResult::DoubleLoss)
+                .unwrap();
+            stage
+                .submit_result(
+                    &played[1].match_id,
+                    MatchResult::win(winner.clone(), loser.clone()),
+                )
+                .unwrap();
+
+            (
+                stage.rounds()[1].clone(),
+                first_round,
+                winner,
+                loser,
+                previous_bye,
+            )
+        };
+        let assert_equal_cost_bye_alternatives =
+            |first_round: &Round, winner: &TeamId, loser: &TeamId, previous_bye: &TeamId| {
+                let match_points = BTreeMap::from([
+                    (winner.clone(), 3),
+                    (loser.clone(), 0),
+                    (previous_bye.clone(), 1),
+                ]);
+                let alternatives = [
+                    (winner, [loser, previous_bye]),
+                    (loser, [winner, previous_bye]),
+                ];
+                for (bye_team, pair) in alternatives {
+                    assert_ne!(bye_team, previous_bye);
+                    assert_ne!(match_points[pair[0]], match_points[pair[1]]);
+                    assert!(first_round.matches.iter().all(|match_| {
+                        !pair
+                            .iter()
+                            .all(|team_id| match_.participants.contains(team_id))
+                    }));
+                }
+            };
+
+        let (seed7_round, seed7_first, seed7_winner, seed7_loser, seed7_previous_bye) =
+            complete_second_round(7);
+        let (seed7_repeat, _, _, _, _) = complete_second_round(7);
+        assert_eq!(seed7_round, seed7_repeat);
+        assert_eq!(seed7_winner, TeamId::from("a"));
+        assert_eq!(seed7_loser, TeamId::from("b"));
+        assert_eq!(seed7_previous_bye, TeamId::from("c"));
+        assert_equal_cost_bye_alternatives(
+            &seed7_first,
+            &seed7_winner,
+            &seed7_loser,
+            &seed7_previous_bye,
+        );
+
+        let (seed8_round, seed8_first, seed8_winner, seed8_loser, seed8_previous_bye) =
+            complete_second_round(8);
+        let (seed8_repeat, _, _, _, _) = complete_second_round(8);
+        assert_eq!(seed8_round, seed8_repeat);
+        assert_equal_cost_bye_alternatives(
+            &seed8_first,
+            &seed8_winner,
+            &seed8_loser,
+            &seed8_previous_bye,
+        );
+
+        let seed8_bye = seed8_round
+            .matches
+            .iter()
+            .find(|match_| match_.participants.len() == 1)
+            .unwrap()
+            .participants[0]
+            .clone();
+        assert_eq!(
+            seed8_bye, seed8_winner,
+            "固定種子 8 應抽中等成本候選中的勝方輪空"
+        );
+        assert_ne!(seed8_bye, seed8_previous_bye);
+
+        let seed8_cross_group_match = seed8_round
+            .matches
+            .iter()
+            .find(|match_| match_.participants.len() == 2)
+            .unwrap();
+        assert!(seed8_cross_group_match.participants.contains(&seed8_loser));
+        assert!(
+            seed8_cross_group_match
+                .participants
+                .contains(&seed8_previous_bye)
+        );
+
+        let seed7_bye = seed7_round
+            .matches
+            .iter()
+            .find(|match_| match_.participants.len() == 1)
+            .unwrap()
+            .participants[0]
+            .clone();
+        assert_ne!(seed7_bye, seed7_previous_bye);
+        let seed7_cross_group_match = seed7_round
+            .matches
+            .iter()
+            .find(|match_| match_.participants.len() == 2)
+            .unwrap();
+        assert!(seed7_bye == seed7_winner || seed7_bye == seed7_loser);
+        let seed7_other_candidate = if seed7_bye == seed7_winner {
+            &seed7_loser
+        } else {
+            &seed7_winner
+        };
+        assert!(
+            seed7_cross_group_match
+                .participants
+                .contains(seed7_other_candidate)
+        );
+        assert!(
+            seed7_cross_group_match
+                .participants
+                .contains(&seed7_previous_bye)
+        );
+    }
+
+    #[test]
+    fn swiss_pairing_prefers_complete_same_points_solution_before_crossing_groups() {
+        let mut policy = swiss_policy(DrawCredit::new(1, 2).unwrap());
+        policy.tie_breakers = vec![SwissTieBreaker::MatchPoints];
+        let mut config = swiss_config(8, 2, policy);
+        config.teams = ["a", "b", "c", "d", "e", "f", "g", "h"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, team_id)| SeededTeam {
+                team_id: TeamId::from(team_id),
+                seed: index as u32 + 1,
+            })
+            .collect();
+        config.random_seed = 7;
+        let mut stage = Stage::new(config).unwrap();
+        let first_round = stage.rounds()[0].clone();
+        for match_ in first_round.matches {
+            let winner = match_.participants[0].clone();
+            let loser = match_.participants[1].clone();
+            stage
+                .submit_result(&match_.match_id, MatchResult::win(winner, loser))
+                .unwrap();
+        }
+
+        let points: BTreeMap<TeamId, u64> = stage
+            .standings()
+            .into_iter()
+            .map(|standing| (standing.team_id.clone(), standing.match_points))
+            .collect();
+        let second_round = &stage.rounds()[1];
+        for match_ in &second_round.matches {
+            assert_eq!(
+                points[&match_.participants[0]], points[&match_.participants[1]],
+                "有完整不重賽同積分方案時，不應產生不必要的跨組配對"
+            );
+        }
+    }
+
+    #[test]
+    fn swiss_progresses_all_announced_rounds_and_scores_custom_match_points_once() {
+        let match_points = MatchPoints {
+            win: 4,
+            draw: 2,
+            loss: 1,
+            bye: 6,
+        };
+        let mut policy = swiss_policy(DrawCredit::new(1, 2).unwrap());
+        policy.match_points = match_points.clone();
+        let mut stage = Stage::new(swiss_config(5, 3, policy)).unwrap();
+        let mut expected: BTreeMap<TeamId, (u64, u32, u32, u32)> = stage
+            .config
+            .teams
+            .iter()
+            .map(|team| (team.team_id.clone(), (0, 0, 0, 0)))
+            .collect();
+        let mut bye_teams = BTreeSet::new();
+        let mut opponents: BTreeMap<TeamId, BTreeSet<TeamId>> = stage
+            .config
+            .teams
+            .iter()
+            .map(|team| (team.team_id.clone(), BTreeSet::new()))
+            .collect();
+
+        for round_number in 1..=3 {
+            assert_eq!(stage.rounds().len(), round_number as usize);
+            let round = stage.rounds().last().unwrap().clone();
+            assert_eq!(round.round_number, round_number);
+            let mut completion_retry_checked = false;
+            for match_ in round.matches {
+                assert_eq!(
+                    match_.match_id.0,
+                    format!("stage-g0-r{round_number}-m{}", match_.sequence)
+                );
+                if match_.participants.len() == 1 {
+                    let team_id = match_.participants[0].clone();
+                    assert!(matches!(match_.result, Some(MatchResult::Bye { .. })));
+                    assert!(bye_teams.insert(team_id.clone()));
+                    expected.get_mut(&team_id).unwrap().0 += u64::from(match_points.bye);
+                    continue;
+                }
+
+                let first = match_.participants[0].clone();
+                let second = match_.participants[1].clone();
+                assert!(opponents.get_mut(&first).unwrap().insert(second.clone()));
+                assert!(opponents.get_mut(&second).unwrap().insert(first.clone()));
+                let (result, score_changes) = match round_number {
+                    1 => {
+                        let changes = [
+                            (first.clone(), (u64::from(match_points.win), 1, 0, 0)),
+                            (second.clone(), (u64::from(match_points.loss), 0, 0, 1)),
+                        ];
+                        (MatchResult::win(first, second), changes)
+                    }
+                    2 => {
+                        let changes = [
+                            (first.clone(), (u64::from(match_points.draw), 0, 1, 0)),
+                            (second.clone(), (u64::from(match_points.draw), 0, 1, 0)),
+                        ];
+                        (MatchResult::draw(), changes)
+                    }
+                    3 if match_.sequence == 1 => {
+                        let changes = [
+                            (first.clone(), (u64::from(match_points.loss), 0, 0, 1)),
+                            (second.clone(), (u64::from(match_points.loss), 0, 0, 1)),
+                        ];
+                        (MatchResult::DoubleLoss, changes)
+                    }
+                    _ => {
+                        let changes = [
+                            (first.clone(), (u64::from(match_points.win), 1, 0, 0)),
+                            (second.clone(), (u64::from(match_points.loss), 0, 0, 1)),
+                        ];
+                        (
+                            MatchResult::Forfeit {
+                                winner_id: first,
+                                loser_id: second,
+                            },
+                            changes,
+                        )
+                    }
+                };
+                for (team_id, change) in score_changes {
+                    let actual = expected.get_mut(&team_id).unwrap();
+                    actual.0 += change.0;
+                    actual.1 += change.1;
+                    actual.2 += change.2;
+                    actual.3 += change.3;
+                }
+                assert_eq!(
+                    stage
+                        .submit_result(&match_.match_id, result.clone())
+                        .unwrap(),
+                    UpdateOutcome::Applied
+                );
+                if round_number == 1 && stage.rounds().len() == 2 {
+                    let generated_round = stage.rounds()[1].clone();
+                    assert_eq!(
+                        stage.submit_result(&match_.match_id, result).unwrap(),
+                        UpdateOutcome::AlreadyRecorded
+                    );
+                    assert_eq!(stage.rounds().len(), 2);
+                    assert_eq!(stage.rounds()[1], generated_round);
+                    completion_retry_checked = true;
+                }
+            }
+
+            if round_number == 1 {
+                assert!(completion_retry_checked);
+                assert_eq!(stage.rounds().len(), 2);
+                let snapshot = serde_json::to_value(&stage).unwrap();
+                let restored: Stage = serde_json::from_value(snapshot).unwrap();
+                assert_eq!(restored, stage);
+                stage = restored;
+            }
+        }
+
+        assert_eq!(stage.status(), StageStatus::Finished);
+        assert_eq!(stage.rounds().len(), 3);
+        assert_eq!(stage.schedule_generation, 0);
+        assert_eq!(bye_teams.len(), 3);
+        for row in stage.standings() {
+            let expected = expected.get(&row.team_id).unwrap();
+            assert_eq!(row.match_points, expected.0, "{} points", row.team_id);
+            assert_eq!(row.wins, expected.1, "{} wins", row.team_id);
+            assert_eq!(row.draws, expected.2, "{} draws", row.team_id);
+            assert_eq!(row.losses, expected.3, "{} losses", row.team_id);
+        }
+        for (team_id, played) in opponents {
+            let expected_matches = 3 - u32::from(bye_teams.contains(&team_id));
+            assert_eq!(
+                played.len(),
+                expected_matches as usize,
+                "{team_id} opponents"
+            );
+        }
+    }
+
+    #[test]
+    fn swiss_accumulates_announced_u32_points_exactly_across_rounds_and_snapshots() {
+        let mut policy = swiss_policy(DrawCredit::new(1, 2).unwrap());
+        policy.match_points = MatchPoints {
+            win: 0,
+            draw: 0,
+            loss: u32::MAX,
+            bye: 0,
+        };
+        policy.tie_breakers = vec![SwissTieBreaker::MatchPoints];
+        let mut config = swiss_config(4, 2, policy);
+        config.random_seed = 7;
+        config.teams = ["a", "b", "c", "d"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, team_id)| SeededTeam {
+                team_id: TeamId::from(team_id),
+                seed: index as u32 + 1,
+            })
+            .collect();
+        let stage_id = config.stage_id.clone();
+        let mut tournament = Tournament::new(TournamentConfig {
+            tournament_id: "large-points".to_string(),
+            stage: config,
+        })
+        .unwrap();
+
+        let first_round = tournament.stage(&stage_id).unwrap().rounds()[0].clone();
+        assert_eq!(
+            first_round
+                .matches
+                .iter()
+                .map(|match_| match_.participants.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                vec![TeamId::from("b"), TeamId::from("a")],
+                vec![TeamId::from("c"), TeamId::from("d")],
+            ]
+        );
+        for match_ in &first_round.matches {
+            let winner = match_.participants[0].clone();
+            let loser = match_.participants[1].clone();
+            assert_eq!(
+                tournament
+                    .submit_result(&stage_id, &match_.match_id, MatchResult::win(winner, loser),)
+                    .unwrap(),
+                UpdateOutcome::Applied
+            );
+        }
+
+        let second_round = tournament.stage(&stage_id).unwrap().rounds()[1].clone();
+        let pairings: BTreeSet<BTreeSet<TeamId>> = second_round
+            .matches
+            .iter()
+            .map(|match_| match_.participants.iter().cloned().collect())
+            .collect();
+        assert_eq!(
+            pairings,
+            BTreeSet::from([
+                BTreeSet::from([TeamId::from("a"), TeamId::from("d")]),
+                BTreeSet::from([TeamId::from("b"), TeamId::from("c")]),
+            ])
+        );
+        assert!(second_round.matches.iter().all(|match_| {
+            first_round.matches.iter().all(|previous| {
+                previous.participants != match_.participants
+                    && previous
+                        .participants
+                        .iter()
+                        .rev()
+                        .ne(match_.participants.iter())
+            })
+        }));
+
+        let b_c_match = second_round
+            .matches
+            .iter()
+            .find(|match_| match_.participants.contains(&TeamId::from("b")))
+            .unwrap();
+        assert_eq!(
+            tournament
+                .submit_result(&stage_id, &b_c_match.match_id, MatchResult::draw())
+                .unwrap(),
+            UpdateOutcome::Applied
+        );
+
+        let a_loss_points = tournament
+            .stage(&stage_id)
+            .unwrap()
+            .standings()
+            .iter()
+            .find(|standing| standing.team_id == TeamId::from("a"))
+            .unwrap()
+            .match_points;
+        let d_loss_points = tournament
+            .stage(&stage_id)
+            .unwrap()
+            .standings()
+            .iter()
+            .find(|standing| standing.team_id == TeamId::from("d"))
+            .unwrap()
+            .match_points;
+        assert_eq!(a_loss_points, u64::from(u32::MAX));
+        assert_eq!(d_loss_points, u64::from(u32::MAX));
+
+        let snapshot = serde_json::to_value(&tournament).unwrap();
+        assert_eq!(
+            snapshot["stages"][0]["standings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|standing| standing["teamId"] == "d")
+                .unwrap()["matchPoints"],
+            serde_json::json!("4294967295")
+        );
+        let mut legacy_snapshot = snapshot.clone();
+        for standing in legacy_snapshot["stages"][0]["standings"]
+            .as_array_mut()
+            .unwrap()
+        {
+            standing["matchPoints"] = serde_json::json!(
+                standing["matchPoints"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap()
+            );
+        }
+        let restored: Tournament = serde_json::from_value(snapshot).unwrap();
+        let restored_from_legacy_snapshot: Tournament =
+            serde_json::from_value(legacy_snapshot).unwrap();
+        assert_eq!(restored, tournament);
+        assert_eq!(restored_from_legacy_snapshot, tournament);
+        tournament = restored;
+
+        let a_d_match = tournament.stage(&stage_id).unwrap().rounds()[1]
+            .matches
+            .iter()
+            .find(|match_| match_.participants.contains(&TeamId::from("a")))
+            .unwrap()
+            .clone();
+        let result = MatchResult::win(TeamId::from("a"), TeamId::from("d"));
+        assert_eq!(
+            tournament
+                .submit_result(&stage_id, &a_d_match.match_id, result.clone())
+                .unwrap(),
+            UpdateOutcome::Applied
+        );
+        assert_eq!(
+            tournament
+                .submit_result(&stage_id, &a_d_match.match_id, result)
+                .unwrap(),
+            UpdateOutcome::AlreadyRecorded
+        );
+        assert_eq!(tournament.stage(&stage_id).unwrap().rounds().len(), 2);
+        assert_eq!(
+            tournament
+                .stage(&stage_id)
+                .unwrap()
+                .standings()
+                .iter()
+                .find(|standing| standing.team_id == TeamId::from("d"))
+                .unwrap()
+                .match_points,
+            8_589_934_590
+        );
+
+        let public_dto = serde_json::to_value(&tournament).unwrap();
+        assert_eq!(
+            public_dto["stages"][0]["standings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|standing| standing["teamId"] == "d")
+                .unwrap()["matchPoints"],
+            serde_json::json!("8589934590")
+        );
     }
 
     fn stage_qualification_tournament(stage: Stage) -> Tournament {
@@ -4230,8 +5128,7 @@ mod tests {
             &TeamId::from("t1"),
         );
         unresolved_match_stage.rounds[0].matches[0].status = MatchStatus::InProgress;
-        let unresolved_match_tournament =
-            stage_qualification_tournament(unresolved_match_stage);
+        let unresolved_match_tournament = stage_qualification_tournament(unresolved_match_stage);
         assert!(matches!(
             unresolved_match_tournament.resolve_stage_qualification(&rank_slots),
             Err(StageQualificationBlocker::SourceMatchUnresolved {
@@ -4242,9 +5139,7 @@ mod tests {
 
         let mut double_loss_stage =
             Stage::new(config(TournamentFormat::DoubleElimination, 2)).unwrap();
-        let double_loss_match = double_loss_stage.rounds()[0].matches[0]
-            .match_id
-            .clone();
+        let double_loss_match = double_loss_stage.rounds()[0].matches[0].match_id.clone();
         assert!(matches!(
             double_loss_stage.submit_result(&double_loss_match, MatchResult::DoubleLoss),
             Ok(UpdateOutcome::AppliedWithScheduleError(_))
@@ -4389,13 +5284,11 @@ mod tests {
             })
         );
         assert_eq!(
-            tournament.resolve_stage_qualification(&[
-                stage_qualification_slot(
-                    "stage",
-                    StageQualificationSource::UniqueStandingRank { rank: 1 },
-                    1,
-                ),
-            ]),
+            tournament.resolve_stage_qualification(&[stage_qualification_slot(
+                "stage",
+                StageQualificationSource::UniqueStandingRank { rank: 1 },
+                1,
+            ),]),
             Err(StageQualificationBlocker::TooFewSlots { count: 1 })
         );
     }
@@ -4421,25 +5314,31 @@ mod tests {
             serde_json::to_value(StageQualificationSource::FinishedStageWinner).unwrap(),
             serde_json::json!({"type": "finishedStageWinner"})
         );
-        assert!(serde_json::from_value::<StageQualificationSlot>(serde_json::json!({
-            "sourceStageId": "qualifier",
-            "source": {"type": "placement", "rank": 2},
-            "destinationSeed": 7
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<StageQualificationSlot>(serde_json::json!({
-            "sourceStageId": "qualifier",
-            "source": {"type": "uniqueStandingRank", "rank": 2, "fallback": true},
-            "destinationSeed": 7
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<StageQualificationSlot>(serde_json::json!({
-            "sourceStageId": "qualifier",
-            "source": {"type": "finishedStageWinner"},
-            "destinationSeed": 7,
-            "defaultRank": 1
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<StageQualificationSlot>(serde_json::json!({
+                "sourceStageId": "qualifier",
+                "source": {"type": "placement", "rank": 2},
+                "destinationSeed": 7
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<StageQualificationSlot>(serde_json::json!({
+                "sourceStageId": "qualifier",
+                "source": {"type": "uniqueStandingRank", "rank": 2, "fallback": true},
+                "destinationSeed": 7
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<StageQualificationSlot>(serde_json::json!({
+                "sourceStageId": "qualifier",
+                "source": {"type": "finishedStageWinner"},
+                "destinationSeed": 7,
+                "defaultRank": 1
+            }))
+            .is_err()
+        );
         assert_eq!(
             serde_json::to_value(StageQualificationBlocker::StandingRankNotFound {
                 source_stage_id: StageId::from("qualifier"),
@@ -4464,10 +5363,7 @@ mod tests {
             TournamentFormat::SingleElimination | TournamentFormat::DoubleElimination
         );
         let (swiss_rounds, swiss_policy) = if format == TournamentFormat::Swiss {
-            (
-                Some(1),
-                Some(swiss_policy(DrawCredit::new(1, 2).unwrap())),
-            )
+            (Some(1), Some(swiss_policy(DrawCredit::new(1, 2).unwrap())))
         } else {
             (None, None)
         };
@@ -4489,16 +5385,8 @@ mod tests {
 
     fn qualified_stage_plan_winner_slots() -> Vec<StageQualificationSlot> {
         vec![
-            stage_qualification_slot(
-                "stage-a",
-                StageQualificationSource::FinishedStageWinner,
-                7,
-            ),
-            stage_qualification_slot(
-                "stage-b",
-                StageQualificationSource::FinishedStageWinner,
-                2,
-            ),
+            stage_qualification_slot("stage-a", StageQualificationSource::FinishedStageWinner, 7),
+            stage_qualification_slot("stage-b", StageQualificationSource::FinishedStageWinner, 2),
         ]
     }
 
@@ -4545,13 +5433,18 @@ mod tests {
                 "t2" => 1,
                 _ => 2,
             };
-            let (winner, loser) = if priority(&match_.participants[0])
-                < priority(&match_.participants[1])
-            {
-                (match_.participants[0].clone(), match_.participants[1].clone())
-            } else {
-                (match_.participants[1].clone(), match_.participants[0].clone())
-            };
+            let (winner, loser) =
+                if priority(&match_.participants[0]) < priority(&match_.participants[1]) {
+                    (
+                        match_.participants[0].clone(),
+                        match_.participants[1].clone(),
+                    )
+                } else {
+                    (
+                        match_.participants[1].clone(),
+                        match_.participants[0].clone(),
+                    )
+                };
             source
                 .submit_result(&match_.match_id, MatchResult::win(winner, loser))
                 .unwrap();
@@ -4603,7 +5496,10 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(plan.planned_stage().config().stage_id, StageId::from("ranked-next"));
+        assert_eq!(
+            plan.planned_stage().config().stage_id,
+            StageId::from("ranked-next")
+        );
         assert_eq!(plan.planned_stage().status(), StageStatus::Active);
         assert_eq!(tournament.stages().len(), 1);
         assert_eq!(serde_json::to_value(&tournament).unwrap(), before);
@@ -4637,15 +5533,16 @@ mod tests {
             TournamentFormat::RoundRobin,
             TournamentFormat::Swiss,
         ] {
-            let mut tournament = stage_qualification_two_stage_winners(TournamentFormat::RoundRobin);
-            let template = qualified_stage_plan_template(
-                "next",
-                format,
-                qualified_stage_plan_winner_slots(),
-            );
+            let mut tournament =
+                stage_qualification_two_stage_winners(TournamentFormat::RoundRobin);
+            let template =
+                qualified_stage_plan_template("next", format, qualified_stage_plan_winner_slots());
             let plan = tournament.plan_qualified_stage(template).unwrap();
             let applied = tournament.apply_qualified_stage(plan).unwrap();
-            assert_eq!(serde_json::to_value(&applied).unwrap(), expected_qualification);
+            assert_eq!(
+                serde_json::to_value(&applied).unwrap(),
+                expected_qualification
+            );
 
             let stage = tournament.stage(&StageId::from("next")).unwrap();
             assert_eq!(stage.config().format, format);
@@ -4666,7 +5563,10 @@ mod tests {
                 stage.config().swiss_rounds,
                 (format == TournamentFormat::Swiss).then_some(1_u32)
             );
-            assert_eq!(stage.config().swiss_policy.is_some(), format == TournamentFormat::Swiss);
+            assert_eq!(
+                stage.config().swiss_policy.is_some(),
+                format == TournamentFormat::Swiss
+            );
             assert_eq!(stage.status(), StageStatus::Active);
             let matches: Vec<_> = stage
                 .rounds()
@@ -4674,9 +5574,11 @@ mod tests {
                 .flat_map(|round| &round.matches)
                 .collect();
             assert!(!matches.is_empty());
-            assert!(matches.iter().all(|match_| {
-                match_.status == MatchStatus::Pending && !match_.started
-            }));
+            assert!(
+                matches
+                    .iter()
+                    .all(|match_| { match_.status == MatchStatus::Pending && !match_.started })
+            );
             assert_eq!(tournament.stages().len(), 3);
         }
     }
@@ -4706,11 +5608,7 @@ mod tests {
         );
 
         let duplicate_team = vec![
-            stage_qualification_slot(
-                "stage-a",
-                StageQualificationSource::FinishedStageWinner,
-                1,
-            ),
+            stage_qualification_slot("stage-a", StageQualificationSource::FinishedStageWinner, 1),
             stage_qualification_slot(
                 "stage-a",
                 StageQualificationSource::UniqueStandingRank { rank: 1 },
@@ -4823,12 +5721,10 @@ mod tests {
                     ),
                 ],
             ),
-            QualifiedStagePlanError::QualificationBlocked(
-                StageQualificationBlocker::DroppedTeam {
-                    source_stage_id: StageId::from("stage"),
-                    team_id: TeamId::from("t1"),
-                },
-            ),
+            QualifiedStagePlanError::QualificationBlocked(StageQualificationBlocker::DroppedTeam {
+                source_stage_id: StageId::from("stage"),
+                team_id: TeamId::from("t1"),
+            }),
         );
     }
 
@@ -4851,11 +5747,8 @@ mod tests {
             QualifiedStagePlanError::DuplicateStageId(StageId::from("next")),
         );
 
-        let source_tournament =
-            stage_qualification_two_stage_winners(TournamentFormat::RoundRobin);
-        let foreign_plan = source_tournament
-            .plan_qualified_stage(template)
-            .unwrap();
+        let source_tournament = stage_qualification_two_stage_winners(TournamentFormat::RoundRobin);
+        let foreign_plan = source_tournament.plan_qualified_stage(template).unwrap();
         let mut foreign_tournament = Tournament {
             tournament_id: "foreign".to_string(),
             stages: source_tournament.stages.clone(),
@@ -4926,12 +5819,7 @@ mod tests {
         corrected_source
             .submit_result(
                 &source_match.match_id,
-                MatchResult::win_with_games(
-                    original_winner.clone(),
-                    original_loser.clone(),
-                    2,
-                    1,
-                ),
+                MatchResult::win_with_games(original_winner.clone(), original_loser.clone(), 2, 1),
             )
             .unwrap();
         let other_source = stage_qualification_finish_with_winner(
@@ -4976,8 +5864,7 @@ mod tests {
 
     #[test]
     fn qualified_stage_plan_rejects_stale_internal_plan_without_mutation() {
-        let mut tournament =
-            stage_qualification_two_stage_winners(TournamentFormat::RoundRobin);
+        let mut tournament = stage_qualification_two_stage_winners(TournamentFormat::RoundRobin);
         let mut plan = tournament
             .plan_qualified_stage(qualified_stage_plan_template(
                 "next",

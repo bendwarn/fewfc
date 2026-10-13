@@ -69,7 +69,7 @@ export interface TournamentViewRound {
 
 export interface TournamentViewStanding {
   teamId: string
-  matchPoints: number
+  matchPoints: string
   wins: number
   draws: number
   losses: number
@@ -633,7 +633,7 @@ function parseStanding(input: unknown, teamIds: ReadonlySet<string>): Tournament
     'netGameWins', 'opponentWinRateBasisPoints', 'dropped', 'rank',
   ])
   if (!value || !isNonEmptyString(value.teamId) || !teamIds.has(value.teamId)
-    || !isNonNegativeSafeInteger(value.matchPoints)
+    || !isU64DecimalString(value.matchPoints)
     || !isNonNegativeSafeInteger(value.wins)
     || !isNonNegativeSafeInteger(value.draws)
     || !isNonNegativeSafeInteger(value.losses)
@@ -751,6 +751,12 @@ function isSafeInteger(value: unknown): value is number {
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
   return isSafeInteger(value) && value >= 0
+}
+
+function isU64DecimalString(value: unknown): value is string {
+  return typeof value === 'string'
+    && /^(0|[1-9][0-9]*)$/.test(value)
+    && (value.length < 20 || (value.length === 20 && value <= '18446744073709551615'))
 }
 
 function isPositiveSafeInteger(value: unknown): value is number {

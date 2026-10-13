@@ -1092,8 +1092,7 @@ fn dispatch(
             let qualification = tournament
                 .apply_qualified_stage(plan)
                 .map_err(qualified_stage_plan_error)?;
-            let current_tournament =
-                serde_json::to_value(&tournament).map_err(serialize_error)?;
+            let current_tournament = serde_json::to_value(&tournament).map_err(serialize_error)?;
             let public = json!({
                 "qualification": qualification,
                 "currentTournament": current_tournament,
@@ -1650,9 +1649,7 @@ fn operation_name(operation: &CompetitionOperation) -> String {
         CompetitionOperation::TournamentPreviewQualifiedStage(_) => {
             "tournamentPreviewQualifiedStage"
         }
-        CompetitionOperation::TournamentCreateQualifiedStage(_) => {
-            "tournamentCreateQualifiedStage"
-        }
+        CompetitionOperation::TournamentCreateQualifiedStage(_) => "tournamentCreateQualifiedStage",
         CompetitionOperation::TournamentView(_) => "tournamentView",
         CompetitionOperation::TournamentStartMatch { .. } => "tournamentStartMatch",
         CompetitionOperation::TournamentSubmitResult { .. } => "tournamentSubmitResult",
@@ -1832,25 +1829,22 @@ mod tests {
 
     #[test]
     fn qualified_stage_bridge_operations_use_exact_camel_case_contract() {
-        let template: QualifiedStageTemplate = serde_json::from_value(
-            qualified_stage_bridge_template(
+        let template: QualifiedStageTemplate =
+            serde_json::from_value(qualified_stage_bridge_template(
                 "next",
                 "roundRobin",
                 qualified_stage_bridge_final_winner_slots(),
-            ),
-        )
-        .unwrap();
-        let preview = serde_json::to_value(
-            CompetitionOperation::TournamentPreviewQualifiedStage(QualifiedStageBridgeInput {
+            ))
+            .unwrap();
+        let preview = serde_json::to_value(CompetitionOperation::TournamentPreviewQualifiedStage(
+            QualifiedStageBridgeInput {
                 template: template.clone(),
-            }),
-        )
+            },
+        ))
         .unwrap();
-        let create = serde_json::to_value(
-            CompetitionOperation::TournamentCreateQualifiedStage(QualifiedStageBridgeInput {
-                template,
-            }),
-        )
+        let create = serde_json::to_value(CompetitionOperation::TournamentCreateQualifiedStage(
+            QualifiedStageBridgeInput { template },
+        ))
         .unwrap();
 
         for (wire, operation) in [
@@ -1865,16 +1859,19 @@ mod tests {
                 wire["template"]["sourceSlots"][0]["sourceStageId"],
                 "source-a"
             );
-            assert_eq!(
-                wire["template"]["sourceSlots"][0]["destinationSeed"],
-                7
-            );
+            assert_eq!(wire["template"]["sourceSlots"][0]["destinationSeed"], 7);
             assert!(wire["template"].get("random_seed").is_none());
             assert!(wire["template"].get("source_slots").is_none());
-            assert!(wire["template"]["sourceSlots"][0]
-                .get("source_stage_id").is_none());
-            assert!(wire["template"]["sourceSlots"][0]
-                .get("destination_seed").is_none());
+            assert!(
+                wire["template"]["sourceSlots"][0]
+                    .get("source_stage_id")
+                    .is_none()
+            );
+            assert!(
+                wire["template"]["sourceSlots"][0]
+                    .get("destination_seed")
+                    .is_none()
+            );
         }
     }
 
@@ -1957,10 +1954,7 @@ mod tests {
         json!({"type": "organizer", "playerId": "organizer"})
     }
 
-    fn qualified_stage_bridge_call_official(
-        server_state: Value,
-        operation: Value,
-    ) -> Value {
+    fn qualified_stage_bridge_call_official(server_state: Value, operation: Value) -> Value {
         qualified_stage_bridge_call_as(
             Some(server_state),
             qualified_stage_bridge_organizer(),
@@ -1969,12 +1963,23 @@ mod tests {
     }
 
     fn qualified_stage_bridge_assert_ok(response: &Value) {
-        assert_eq!(response["ok"], json!(true), "unexpected bridge response: {response}");
+        assert_eq!(
+            response["ok"],
+            json!(true),
+            "unexpected bridge response: {response}"
+        );
     }
 
     fn qualified_stage_bridge_assert_error(response: &Value, code: &str) {
-        assert_eq!(response["ok"], json!(false), "unexpected bridge response: {response}");
-        assert_eq!(response["error"]["code"], code, "unexpected bridge error: {response}");
+        assert_eq!(
+            response["ok"],
+            json!(false),
+            "unexpected bridge response: {response}"
+        );
+        assert_eq!(
+            response["error"]["code"], code,
+            "unexpected bridge error: {response}"
+        );
         assert!(response.get("serverState").is_none());
     }
 
@@ -2100,11 +2105,7 @@ mod tests {
         server_state
     }
 
-    fn qualified_stage_bridge_template(
-        stage_id: &str,
-        format: &str,
-        source_slots: Value,
-    ) -> Value {
+    fn qualified_stage_bridge_template(stage_id: &str, format: &str, source_slots: Value) -> Value {
         let elimination = format == "singleElimination" || format == "doubleElimination";
         let swiss_policy = if format == "swiss" {
             json!({
@@ -2133,7 +2134,11 @@ mod tests {
         })
     }
 
-    fn qualified_stage_bridge_rank_slots(stage_id: &str, first_seed: u64, second_seed: u64) -> Value {
+    fn qualified_stage_bridge_rank_slots(
+        stage_id: &str,
+        first_seed: u64,
+        second_seed: u64,
+    ) -> Value {
         json!([
             {
                 "sourceStageId": stage_id,
@@ -2187,7 +2192,7 @@ mod tests {
                 let winner = preferred_winner
                     .filter(|preferred| *preferred == first || *preferred == second)
                     .unwrap_or(first);
-                let loser = if winner == first {second} else {first};
+                let loser = if winner == first { second } else { first };
                 json!({"type": "win", "winnerId": winner, "loserId": loser,
                     "winnerGames": 1, "loserGames": 0})
             };
@@ -2218,20 +2223,16 @@ mod tests {
             .to_string()
     }
 
-    fn qualified_stage_bridge_add_source_b_with_tournament_api(
-        mut server_state: Value,
-    ) -> Value {
-        let mut tournament: Tournament =
-            serde_json::from_value(server_state["tournament"].clone())
-                .expect("fixture tournament state deserializes through its public DTO");
-        let template: QualifiedStageTemplate = serde_json::from_value(
-            qualified_stage_bridge_template(
+    fn qualified_stage_bridge_add_source_b_with_tournament_api(mut server_state: Value) -> Value {
+        let mut tournament: Tournament = serde_json::from_value(server_state["tournament"].clone())
+            .expect("fixture tournament state deserializes through its public DTO");
+        let template: QualifiedStageTemplate =
+            serde_json::from_value(qualified_stage_bridge_template(
                 "source-b",
                 "roundRobin",
                 qualified_stage_bridge_rank_slots("source-a", 1, 2),
-            ),
-        )
-        .expect("source-b fixture template deserializes through its public DTO");
+            ))
+            .expect("source-b fixture template deserializes through its public DTO");
         let plan = tournament
             .plan_qualified_stage(template)
             .expect("public Tournament API plans source-b from completed source-a");
@@ -2249,12 +2250,21 @@ mod tests {
             "source-a",
             &["source-a1", "source-a2"],
         );
-        let state = qualified_stage_bridge_finish_stage(state, "source-a", Some("source-a1"), false);
+        let state =
+            qualified_stage_bridge_finish_stage(state, "source-a", Some("source-a1"), false);
         let first_winner = qualified_stage_bridge_stage_winner(&state, "source-a");
         let state = qualified_stage_bridge_add_source_b_with_tournament_api(state);
-        let other_winner = if first_winner == "source-a1" {"source-a2"} else {"source-a1"};
-        let state = qualified_stage_bridge_finish_stage(state, "source-b", Some(other_winner), false);
-        assert_ne!(first_winner, qualified_stage_bridge_stage_winner(&state, "source-b"));
+        let other_winner = if first_winner == "source-a1" {
+            "source-a2"
+        } else {
+            "source-a1"
+        };
+        let state =
+            qualified_stage_bridge_finish_stage(state, "source-b", Some(other_winner), false);
+        assert_ne!(
+            first_winner,
+            qualified_stage_bridge_stage_winner(&state, "source-b")
+        );
         state
     }
 
@@ -2300,7 +2310,12 @@ mod tests {
             ],
         });
 
-        for format in ["singleElimination", "doubleElimination", "roundRobin", "swiss"] {
+        for format in [
+            "singleElimination",
+            "doubleElimination",
+            "roundRobin",
+            "swiss",
+        ] {
             let template = qualified_stage_bridge_template(
                 &format.to_string(),
                 format,
@@ -2320,9 +2335,16 @@ mod tests {
             assert_eq!(planned_stage["config"]["randomSeed"], 19);
             assert_eq!(planned_stage["config"]["format"], format);
             assert!(planned_stage["config"].get("random_seed").is_none());
-            assert!(preview["public"]["qualification"].get("seeded_teams").is_none());
-            assert!(preview["public"]["qualification"]["sourceMappings"][0]
-                .get("source_stage_id").is_none());
+            assert!(
+                preview["public"]["qualification"]
+                    .get("seeded_teams")
+                    .is_none()
+            );
+            assert!(
+                preview["public"]["qualification"]["sourceMappings"][0]
+                    .get("source_stage_id")
+                    .is_none()
+            );
 
             let created = qualified_stage_bridge_call_official(
                 server_state.clone(),
@@ -2332,10 +2354,25 @@ mod tests {
             assert_eq!(created["operation"], "tournamentCreateQualifiedStage");
             assert_eq!(created["public"]["qualification"], expected_qualification);
             assert_eq!(created["public"].as_object().unwrap().len(), 2);
-            assert_eq!(created["public"]["currentTournament"], created["serverState"]["tournament"]);
-            assert_eq!(created["serverState"]["tournament"]["stages"].as_array().unwrap().len(), 3);
-            assert_eq!(created["serverState"]["tournament"]["stages"][2]["config"]["stageId"], format);
-            assert_eq!(created["serverState"]["registration"], server_state["registration"]);
+            assert_eq!(
+                created["public"]["currentTournament"],
+                created["serverState"]["tournament"]
+            );
+            assert_eq!(
+                created["serverState"]["tournament"]["stages"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                3
+            );
+            assert_eq!(
+                created["serverState"]["tournament"]["stages"][2]["config"]["stageId"],
+                format
+            );
+            assert_eq!(
+                created["serverState"]["registration"],
+                server_state["registration"]
+            );
             assert_eq!(created["serverState"]["clock"], server_state["clock"]);
             assert_eq!(created["serverState"]["matches"], server_state["matches"]);
         }
@@ -2416,10 +2453,8 @@ mod tests {
             qualified_stage_bridge_assert_error(&response, "invalidRequest");
 
             let mut operation = json!({"type": operation_type, "template": template.clone()});
-            operation["previewProof"] =
-                json!({"seededTeams": [{"teamId": "forged", "seed": 1}]});
-            let response =
-                qualified_stage_bridge_call_official(server_state.clone(), operation);
+            operation["previewProof"] = json!({"seededTeams": [{"teamId": "forged", "seed": 1}]});
+            let response = qualified_stage_bridge_call_official(server_state.clone(), operation);
             qualified_stage_bridge_assert_error(&response, "invalidRequest");
         }
     }
@@ -2429,11 +2464,8 @@ mod tests {
         let server_state = qualified_stage_bridge_finished_single_source();
         let valid_slots = qualified_stage_bridge_rank_slots("source-a", 1, 2);
 
-        let mut invalid_template = qualified_stage_bridge_template(
-            "next",
-            "roundRobin",
-            valid_slots.clone(),
-        );
+        let mut invalid_template =
+            qualified_stage_bridge_template("next", "roundRobin", valid_slots.clone());
         invalid_template["matchFormat"] = json!({"type": "fixedGames", "value": 0});
         let response = qualified_stage_bridge_call_official(
             server_state.clone(),
@@ -2507,12 +2539,11 @@ mod tests {
             "source-a",
             &["source-a1", "source-a2"],
         );
-        let dropped_state = qualified_stage_bridge_next_state(
-            &qualified_stage_bridge_call_official(
+        let dropped_state =
+            qualified_stage_bridge_next_state(&qualified_stage_bridge_call_official(
                 dropped_state,
                 json!({"type": "tournamentDropTeam", "stageId": "source-a", "teamId": "source-a1"}),
-            ),
-        );
+            ));
         let dropped = qualified_stage_bridge_call_official(
             dropped_state,
             json!({"type": "tournamentPreviewQualifiedStage", "template":
@@ -2539,9 +2570,12 @@ mod tests {
         let source_b_match = qualified_stage_bridge_pending_match(&server_state, "source-b");
         let source_b_match = source_b_match.unwrap_or_else(|| {
             server_state["tournament"]["stages"]
-                .as_array().unwrap().iter()
-                .find(|stage| stage["config"]["stageId"] == "source-b").unwrap()
-                ["rounds"][0]["matches"][0].clone()
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|stage| stage["config"]["stageId"] == "source-b")
+                .unwrap()["rounds"][0]["matches"][0]
+                .clone()
         });
         let source_b_match_id = source_b_match["matchId"].as_str().unwrap();
         let participants = source_b_match["participants"].as_array().unwrap();
@@ -2566,7 +2600,10 @@ mod tests {
             preview["public"]["qualification"]["seededTeams"][1]["teamId"],
             "source-a2",
         );
-        assert_eq!(qualified_stage_bridge_stage_winner(&current_state, "source-b"), original_first_winner);
+        assert_eq!(
+            qualified_stage_bridge_stage_winner(&current_state, "source-b"),
+            original_first_winner
+        );
 
         let create = qualified_stage_bridge_call_official(
             current_state,

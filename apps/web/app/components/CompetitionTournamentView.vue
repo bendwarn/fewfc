@@ -3,7 +3,7 @@
     <header class="view-heading">
       <div class="heading-copy">
         <p class="eyebrow">伺服器目前賽程</p>
-        <h2 id="tournament-view-title">目前賽程、輪次與排名</h2>
+        <h2 id="tournament-view-title">目前賽程、輪次與結果</h2>
         <p class="muted">只讀顯示賽事服務提供的階段與結果；不會建立或變更賽程。</p>
       </div>
       <button
@@ -196,7 +196,27 @@
           </div>
         </section>
 
-        <section class="standings-section" :aria-labelledby="standingsHeadingId(stage.config.stageId)">
+        <section
+          v-if="stage.config.format === 'swiss' && stage.status === 'active'"
+          class="standings-section"
+          :aria-labelledby="standingsHeadingId(stage.config.stageId)"
+        >
+          <h4 :id="standingsHeadingId(stage.config.stageId)">瑞士輪進度</h4>
+          <ul class="swiss-progress-list" aria-label="各隊目前勝場">
+            <li
+              v-for="team in stage.config.teams"
+              :key="team.teamId"
+              class="swiss-progress-item"
+              :data-team-id="team.teamId"
+            >
+              <span class="identifier">{{ team.teamId }}</span>
+              <span>自身交手勝場：{{ swissTeamWins(stage, team.teamId) ?? '未提供' }}</span>
+            </li>
+          </ul>
+          <p class="muted">正式排名將於階段結束後公布。</p>
+        </section>
+
+        <section v-else class="standings-section" :aria-labelledby="standingsHeadingId(stage.config.stageId)">
           <h4 :id="standingsHeadingId(stage.config.stageId)">伺服器排名與積分</h4>
           <p class="muted">依賽事服務提供的順序顯示；名次只採用服務提供的值，不由隊伍位置推算。</p>
           <p v-if="!stage.standings.length" class="muted">目前沒有可顯示排名。</p>
@@ -267,6 +287,7 @@ import {
   type CompetitionTournamentViewLoadError,
   type TournamentViewMatch,
   type TournamentViewMatchResult,
+  type TournamentViewStage,
   type TournamentViewStageConfig,
 } from '~/lib/competition-tournament-view'
 
@@ -334,6 +355,10 @@ function isCurrentParticipantMatch(match: TournamentViewMatch): boolean {
     .find(candidate => candidate.participants.includes(teamId)
       && ['pending', 'inProgress'].includes(candidate.status))
   return currentMatch?.matchId === match.matchId
+}
+
+function swissTeamWins(stage: TournamentViewStage, teamId: string): number | null {
+  return stage.standings.find(standing => standing.teamId === teamId)?.wins ?? null
 }
 
 async function loadTournament() {
@@ -474,7 +499,7 @@ onBeforeUnmount(() => {
 }
 
 .heading-copy, .tournament-content, .stage-card, .config-section, .rounds-section,
-.standings-section, .superseded-section, .round-list, .match-list, .standing-list,
+.standings-section, .superseded-section, .round-list, .match-list, .standing-list, .swiss-progress-list,
 .config-list, .standing-facts, .seed-list, .swiss-policy-block {
   display: grid;
   min-width: 0;
@@ -523,8 +548,9 @@ onBeforeUnmount(() => {
 .config-list dd, .standing-facts dd { margin: 0; overflow-wrap: anywhere; font-size: .875rem; }
 .wide-fact { grid-column: 1 / -1; }
 .seed-list-block, .swiss-policy-block { min-width: 0; }
-.seed-list, .standing-list { margin: 0; padding: 0; list-style: none; }
+.seed-list, .standing-list, .swiss-progress-list { margin: 0; padding: 0; list-style: none; }
 .seed-list li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .75rem; border: 1px solid var(--app-border); border-radius: 8px; padding: .55rem .7rem; background: var(--app-surface-muted); font-size: .82rem; }
+.swiss-progress-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; border: 1px solid var(--app-border); border-radius: 8px; padding: .55rem .7rem; background: var(--app-surface-muted); font-size: .82rem; }
 .review-note { margin: 0; border-left: 3px solid var(--app-accent); padding: .65rem .8rem; background: var(--app-accent-soft); font-size: .875rem; line-height: 1.55; }
 .correction-note { font-size: .8rem; }
 .round-card, .match-card, .standing-card { display: grid; min-width: 0; gap: .65rem; border: 1px solid var(--app-border); border-radius: 9px; padding: .75rem; background: var(--app-surface-muted); }
@@ -546,6 +572,7 @@ onBeforeUnmount(() => {
   .wide-fact { grid-column: auto; }
   .status-badge { white-space: normal; }
   .standing-facts { grid-template-columns: minmax(0, 1fr); }
+  .swiss-progress-item { grid-template-columns: minmax(0, 1fr); }
   .match-heading { align-items: flex-start; flex-direction: column; }
 }
 </style>

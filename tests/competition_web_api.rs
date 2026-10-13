@@ -1748,11 +1748,13 @@ fn single_elimination_final_double_loss_finishes_without_schedule_error() {
         "doubleLoss"
     );
     assert!(state["stages"][0]["lastScheduleError"].is_null());
-    assert!(state["stages"][0]["standings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|standing| standing["rank"].is_null()));
+    assert!(
+        state["stages"][0]["standings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|standing| standing["rank"].is_null())
+    );
 
     let restored = request(
         json!({ "type": "tournamentView" }),
@@ -2904,7 +2906,10 @@ fn finite_other_team_choice_json_contract_separates_authority_from_readonly_samp
         "byoyomiEntrySequence": null,
     });
     assert_eq!(ended["public"]["clock"]["teams"][0], team_a_after_action);
-    assert_eq!(ended["serverState"]["clock"]["teams"][0], team_a_after_action);
+    assert_eq!(
+        ended["serverState"]["clock"]["teams"][0],
+        team_a_after_action
+    );
 
     let choice = request(
         json!({ "type": "clockBeginOutOfTurnChoice", "team": "b", "choiceId": "42" }),

@@ -171,7 +171,10 @@ fn swiss_double_loss_exits_both_teams_before_second_round_and_preserves_history(
         assert_eq!(stage.rounds()[0].matches[0], recorded_double_loss);
         if index == 1 {
             assert_eq!(stage.rounds().len(), 1, "前輪未全閉合不得建第二輪");
-            assert_eq!(stage.rounds()[0].matches[2], original_first_round.matches[2]);
+            assert_eq!(
+                stage.rounds()[0].matches[2],
+                original_first_round.matches[2]
+            );
         }
     }
 
@@ -273,7 +276,8 @@ fn swiss_double_loss_exits_both_teams_before_second_round_and_preserves_history(
         "Swiss 雙負兩隊必須退出本階段，第二輪不能重新配入"
     );
     assert_eq!(
-        second_round.matches.len(), 2,
+        second_round.matches.len(),
+        2,
         "四個未雙負隊伍只配兩組真交手"
     );
     for team_id in &remaining_teams {
@@ -450,7 +454,8 @@ fn swiss_double_loss_exits_both_teams_before_second_round_and_preserves_history(
     assert_eq!(finished.last_schedule_error(), None);
     assert_eq!(finished.config(), &config);
     assert_eq!(
-        finished.rounds().len(), 2,
+        finished.rounds().len(),
+        2,
         "只完成公告兩輪，不加假輪次或交手"
     );
     assert!(finished.current_round().is_none());
@@ -521,7 +526,10 @@ fn swiss_double_loss_exits_both_teams_before_second_round_and_preserves_history(
     assert_eq!(standings.iter().map(|row| row.wins).sum::<u32>(), 4);
     assert_eq!(standings.iter().map(|row| row.losses).sum::<u32>(), 6);
     assert_eq!(standings.iter().map(|row| row.draws).sum::<u32>(), 0);
-    assert_eq!(standings.iter().map(|row| row.match_points).sum::<u32>(), 12);
+    assert_eq!(
+        standings.iter().map(|row| row.match_points).sum::<u64>(),
+        12
+    );
     assert_eq!(standings.iter().map(|row| row.game_wins).sum::<u32>(), 4);
     assert_eq!(standings.iter().map(|row| row.game_losses).sum::<u32>(), 4);
 }

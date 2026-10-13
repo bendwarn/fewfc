@@ -906,11 +906,17 @@ fn pause_resume_preserves_preparation_and_out_of_turn_windows() {
     let mut restored = CompetitionClock::from_checkpoint(checkpoint.clone()).unwrap();
     assert_eq!(restored.checkpoint(), checkpoint);
     assert_eq!(restored.observe(50), Ok(ClockUpdate::Unchanged));
-    assert_eq!(snapshot(&restored, "b").main_time_remaining_ms, Some(299_995));
+    assert_eq!(
+        snapshot(&restored, "b").main_time_remaining_ms,
+        Some(299_995)
+    );
     restored.resume(100).unwrap();
     assert_eq!(restored.next_timeout_deadline_ms(), Ok(Some(300_115)));
     assert_eq!(restored.observe(115), Ok(ClockUpdate::Advanced));
-    assert_eq!(snapshot(&restored, "b").main_time_remaining_ms, Some(299_980));
+    assert_eq!(
+        snapshot(&restored, "b").main_time_remaining_ms,
+        Some(299_980)
+    );
     assert_eq!(restored.expired_team(), None);
     assert_eq!(
         restored.observe(300_095),
@@ -922,7 +928,10 @@ fn pause_resume_preserves_preparation_and_out_of_turn_windows() {
         restored.observe(300_115),
         Ok(ClockUpdate::TimedOut { team: team("b") })
     );
-    assert_eq!(snapshot(&restored, "a").main_time_remaining_ms, Some(300_000));
+    assert_eq!(
+        snapshot(&restored, "a").main_time_remaining_ms,
+        Some(300_000)
+    );
 }
 
 #[test]

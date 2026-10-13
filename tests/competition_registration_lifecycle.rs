@@ -1,5 +1,5 @@
-use fewfc::competition_match::MatchFormat;
 use fewfc::competition_clock::ClockConfig;
+use fewfc::competition_match::MatchFormat;
 use fewfc::competition_registration::*;
 use fewfc::domain::{Player, PlayerId, RuleModuleId, RuleVersion, RulesetId, TeamId};
 use fewfc::rules::OfficialRules;
@@ -14,7 +14,8 @@ fn announcement_plan() -> CompetitionAnnouncementPlan {
         initial_seed_policy: InitialSeedPolicy::RandomDrawAfterRegistrationDeadline,
         swiss_pairing_policy: SwissPairingPolicy::PublishedRulesWithPersistedRandomSeed,
         ranking_policy: CompetitionRankingPolicy::MatchPointsThenOpponentWinsThenOpponentLosses,
-        exact_ranking_tie_policy: ExactRankingTiePolicy::OrganizerOrUnconflictedRefereeWithPublicReason,
+        exact_ranking_tie_policy:
+            ExactRankingTiePolicy::OrganizerOrUnconflictedRefereeWithPublicReason,
         stages: vec![AnnouncedTournamentStage {
             stage_id: StageId::from("stage-1"),
             format: TournamentFormat::RoundRobin,
@@ -497,7 +498,11 @@ fn opening_deck_action(id: &str) -> RegistrationAction {
         team_id: team(),
         roster_version: 1,
         name: deck.name,
-        cards: deck.cards.iter().map(|card| card.as_str().to_string()).collect(),
+        cards: deck
+            .cards
+            .iter()
+            .map(|card| card.as_str().to_string())
+            .collect(),
     }
 }
 
@@ -569,7 +574,10 @@ fn opening_freeze_all_data_actions_share_exclusive_registration_deadline() {
             if time == 59_999 {
                 assert_eq!(result.unwrap().revision, before.revision + 1);
             } else {
-                assert!(matches!(result, Err(RegistrationError::InvalidTimestamp { .. })));
+                assert!(matches!(
+                    result,
+                    Err(RegistrationError::InvalidTimestamp { .. })
+                ));
                 assert_eq!(state.public_view(), before);
                 assert_eq!(state.private_view(&player("captain")), private);
             }
@@ -603,7 +611,11 @@ fn complete_opening_team(
 fn opening_freeze_lock_keeps_deadline_authority_and_failure_atomicity() {
     let mut state = opening_registration_state(2, PersonalDeckPolicy::Required);
     register_opening_team(&mut state, &["captain", "member"]);
-    complete_opening_team(&mut state, &["captain", "member"], PersonalDeckPolicy::Required);
+    complete_opening_team(
+        &mut state,
+        &["captain", "member"],
+        PersonalDeckPolicy::Required,
+    );
     let before = state.public_view();
     let private = state.private_view(&player("captain"));
     let early = apply(
@@ -612,7 +624,10 @@ fn opening_freeze_lock_keeps_deadline_authority_and_failure_atomicity() {
         RegistrationAction::Lock {},
         59_999,
     );
-    assert!(matches!(early, Err(RegistrationError::InvalidTimestamp { .. })));
+    assert!(matches!(
+        early,
+        Err(RegistrationError::InvalidTimestamp { .. })
+    ));
     assert_eq!(state.public_view(), before);
     assert_eq!(state.private_view(&player("captain")), private);
     for actor in [
@@ -657,8 +672,14 @@ fn opening_freeze_late_lock_exports_the_same_fixed_snapshot() {
     )
     .unwrap();
     let expected = on_deadline.export_locked_roster().unwrap();
-    assert_eq!(expected.announcement.check_in_deadline, TrustedTimestamp::from_millis(120_000));
-    assert_eq!(expected.teams[0].members, vec![player("captain"), player("member")]);
+    assert_eq!(
+        expected.announcement.check_in_deadline,
+        TrustedTimestamp::from_millis(120_000)
+    );
+    assert_eq!(
+        expected.teams[0].members,
+        vec![player("captain"), player("member")]
+    );
     assert_eq!(expected.teams[0].decks.len(), 2);
     for time in [60_050, 60_250] {
         let mut delayed = before_deadline.clone();
@@ -671,7 +692,10 @@ fn opening_freeze_late_lock_exports_the_same_fixed_snapshot() {
         .unwrap();
         assert_eq!(delayed.export_locked_roster().unwrap(), expected);
         assert_eq!(delayed.public_view(), on_deadline.public_view());
-        assert_eq!(delayed.private_view(&player("member")), on_deadline.private_view(&player("member")));
+        assert_eq!(
+            delayed.private_view(&player("member")),
+            on_deadline.private_view(&player("member"))
+        );
     }
 }
 
@@ -702,7 +726,9 @@ fn opening_freeze_successful_receipts_survive_deadline_and_lock_without_reapplyi
             actor: RegistrationActor::Player(player("captain")),
             action,
         };
-        let result = state.execute(command.clone(), TrustedTimestamp::from_millis(time)).unwrap();
+        let result = state
+            .execute(command.clone(), TrustedTimestamp::from_millis(time))
+            .unwrap();
         receipts.push((command, result));
     }
     let lock = RegistrationCommand {
@@ -711,14 +737,18 @@ fn opening_freeze_successful_receipts_survive_deadline_and_lock_without_reapplyi
         actor: RegistrationActor::Organizer(player("organizer")),
         action: RegistrationAction::Lock {},
     };
-    let locked = state.execute(lock.clone(), TrustedTimestamp::from_millis(60_000)).unwrap();
+    let locked = state
+        .execute(lock.clone(), TrustedTimestamp::from_millis(60_000))
+        .unwrap();
     receipts.push((lock, locked));
     let before = state.public_view();
     let private = state.private_view(&player("captain"));
     let export = state.export_locked_roster().unwrap();
     for (command, result) in &receipts {
         assert_eq!(
-            state.execute(command.clone(), TrustedTimestamp::from_millis(1_000)).unwrap(),
+            state
+                .execute(command.clone(), TrustedTimestamp::from_millis(1_000))
+                .unwrap(),
             *result
         );
         assert_eq!(state.public_view(), before);
@@ -741,9 +771,28 @@ fn opening_freeze_exclusion_reasons_describe_only_missing_frozen_data() {
         MissingCaptainConfirmation, MissingMemberConfirmations, MissingRequiredDecks,
     };
     let cases = [
-        (false, false, false, vec![MissingMemberConfirmations, MissingRequiredDecks, MissingCaptainConfirmation]),
-        (false, true, false, vec![MissingMemberConfirmations, MissingCaptainConfirmation]),
-        (true, false, false, vec![MissingRequiredDecks, MissingCaptainConfirmation]),
+        (
+            false,
+            false,
+            false,
+            vec![
+                MissingMemberConfirmations,
+                MissingRequiredDecks,
+                MissingCaptainConfirmation,
+            ],
+        ),
+        (
+            false,
+            true,
+            false,
+            vec![MissingMemberConfirmations, MissingCaptainConfirmation],
+        ),
+        (
+            true,
+            false,
+            false,
+            vec![MissingRequiredDecks, MissingCaptainConfirmation],
+        ),
         (true, true, false, vec![MissingCaptainConfirmation]),
         (true, true, true, vec![]),
     ];
@@ -760,7 +809,10 @@ fn opening_freeze_exclusion_reasons_describe_only_missing_frozen_data() {
             apply(
                 &mut state,
                 RegistrationActor::Player(player("captain")),
-                RegistrationAction::CheckInTeam { team_id: team(), roster_version: 1 },
+                RegistrationAction::CheckInTeam {
+                    team_id: team(),
+                    roster_version: 1,
+                },
                 4,
             )
             .unwrap();
@@ -805,7 +857,7 @@ fn opening_freeze_disabled_decks_and_withdrawn_teams_have_no_false_reasons() {
             &mut state,
             RegistrationActor::Organizer(player("organizer")),
             RegistrationAction::Lock {},
-                60_000,
+            60_000,
         )
         .unwrap();
         let public = state.public_view();
@@ -831,7 +883,11 @@ fn opening_freeze_disabled_decks_and_withdrawn_teams_have_no_false_reasons() {
         60_000,
     )
     .unwrap();
-    assert!(checked_in.public_view().teams[0].exclusion_reasons.is_empty());
+    assert!(
+        checked_in.public_view().teams[0]
+            .exclusion_reasons
+            .is_empty()
+    );
     assert_eq!(checked_in.export_locked_roster().unwrap().teams.len(), 1);
 }
 
@@ -849,23 +905,36 @@ fn opening_freeze_public_exclusion_reasons_are_exact_camel_case_closed_and_priva
     .unwrap();
     let public = state.public_view();
     let wire = serde_json::to_value(&public.teams[0]).unwrap();
-    assert_eq!(wire, serde_json::json!({
-        "teamId": "team-a",
-        "captain": "captain",
-        "members": ["captain", "member"],
-        "rosterVersion": 1,
-        "confirmedMembers": [],
-        "status": "notCheckedIn",
-        "exclusionReasons": [
-            "missingMemberConfirmations", "missingRequiredDecks", "missingCaptainConfirmation"
-        ]
-    }));
-    assert_eq!(serde_json::from_value::<PublicTeamView>(wire.clone()).unwrap(), public.teams[0]);
+    assert_eq!(
+        wire,
+        serde_json::json!({
+            "teamId": "team-a",
+            "captain": "captain",
+            "members": ["captain", "member"],
+            "rosterVersion": 1,
+            "confirmedMembers": [],
+            "status": "notCheckedIn",
+            "exclusionReasons": [
+                "missingMemberConfirmations", "missingRequiredDecks", "missingCaptainConfirmation"
+            ]
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<PublicTeamView>(wire.clone()).unwrap(),
+        public.teams[0]
+    );
     let mut missing = wire;
     missing.as_object_mut().unwrap().remove("exclusionReasons");
     assert!(serde_json::from_value::<PublicTeamView>(missing).is_err());
-    for unknown in ["unknown", "missing_required_decks", "MissingCaptainConfirmation"] {
-        assert!(serde_json::from_value::<RegistrationExclusionReason>(serde_json::json!(unknown)).is_err());
+    for unknown in [
+        "unknown",
+        "missing_required_decks",
+        "MissingCaptainConfirmation",
+    ] {
+        assert!(
+            serde_json::from_value::<RegistrationExclusionReason>(serde_json::json!(unknown))
+                .is_err()
+        );
     }
     let private = state.private_view(&player("captain"));
     assert_eq!(private.public_view, public);

@@ -68,12 +68,12 @@ function stageFixture(format: string, stageId: string) {
     rounds: [{ roundNumber: 1, kind, matches: [match] }],
     standings: [
       {
-        teamId: 'team-b', matchPoints: 0, wins: 0, draws: 0, losses: 1,
+        teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 1,
         gameWins: 1, gameLosses: 2, netGameWins: -1,
         opponentWinRateBasisPoints: null, dropped: false, rank: null,
       },
       {
-        teamId: 'team-a', matchPoints: 3, wins: 1, draws: 0, losses: 0,
+        teamId: 'team-a', matchPoints: '3', wins: 1, draws: 0, losses: 0,
         gameWins: 2, gameLosses: 1, netGameWins: 1,
         opponentWinRateBasisPoints: 5_000, dropped: false, rank: 1,
       },
@@ -128,6 +128,89 @@ function tournamentResponse(competitionId = 'competition-a', revision = 9) {
   }
 }
 
+function swissPlayedResponse(status: 'active' | 'finished' = 'active') {
+  const response = tournamentResponse('competition a', 10)
+  const swiss = response.projection.public.stages.find(stage => stage.config.stageId === 'swiss-stage')
+  if (!swiss) throw new Error('missing Swiss fixture stage')
+  swiss.status = status
+  swiss.config.swissRounds = 1
+  const match = swiss.rounds[0]?.matches[0]
+  if (!match) throw new Error('missing Swiss fixture Match')
+  Object.assign(match, {
+    participants: ['team-a', 'team-b'],
+    result: { type: 'win', winnerId: 'team-a', loserId: 'team-b', winnerGames: 2, loserGames: 1 },
+    started: true,
+  })
+  swiss.teams['team-a'].hadBye = false
+  return response
+}
+
+function swissMultiRoundResponse() {
+  const response = swissPlayedResponse()
+  const swiss = response.projection.public.stages.find(stage => stage.config.stageId === 'swiss-stage')
+  if (!swiss) throw new Error('missing Swiss fixture stage')
+  const teamIds = ['team-a', 'team-b', 'team-c', 'team-d', 'team-e']
+  Object.assign(swiss.config, {
+    teams: teamIds.map((teamId, index) => ({ teamId, seed: index + 1 })),
+    swissRounds: 3,
+  })
+  Object.assign(swiss.teams, {
+    'team-c': { seed: 3, dropped: false, hadBye: false },
+    'team-d': { seed: 4, dropped: false, hadBye: false },
+    'team-e': { seed: 5, dropped: false, hadBye: true },
+  })
+  swiss.teams['team-a'].hadBye = true
+  swiss.teams['team-c'].hadBye = true
+  const makeMatch = (
+    roundNumber: number,
+    sequence: number,
+    participants: string[],
+    status: 'pending' | 'completed',
+    result: unknown,
+    started: boolean,
+  ) => ({
+    matchId: `swiss-stage-g0-r${roundNumber}-m${sequence}`,
+    stageId: 'swiss-stage', roundNumber, sequence, kind: 'main',
+    participants, status, result, cancellationReason: null, started,
+  })
+  Object.assign(swiss, {
+    rounds: [
+      { roundNumber: 1, kind: 'main', matches: [
+        makeMatch(1, 1, ['team-a', 'team-b'], 'completed',
+          { type: 'win', winnerId: 'team-a', loserId: 'team-b', winnerGames: 2, loserGames: 1 }, true),
+        makeMatch(1, 2, ['team-c', 'team-d'], 'completed',
+          { type: 'win', winnerId: 'team-c', loserId: 'team-d', winnerGames: 2, loserGames: 1 }, true),
+        makeMatch(1, 3, ['team-e'], 'completed', { type: 'bye', teamId: 'team-e' }, false),
+      ] },
+      { roundNumber: 2, kind: 'main', matches: [
+        makeMatch(2, 1, ['team-a', 'team-d'], 'completed',
+          { type: 'win', winnerId: 'team-a', loserId: 'team-d', winnerGames: 2, loserGames: 1 }, true),
+        makeMatch(2, 2, ['team-b', 'team-e'], 'completed',
+          { type: 'win', winnerId: 'team-b', loserId: 'team-e', winnerGames: 2, loserGames: 1 }, true),
+        makeMatch(2, 3, ['team-c'], 'completed', { type: 'bye', teamId: 'team-c' }, false),
+      ] },
+      { roundNumber: 3, kind: 'main', matches: [
+        makeMatch(3, 1, ['team-a'], 'completed', { type: 'bye', teamId: 'team-a' }, false),
+        makeMatch(3, 2, ['team-b', 'team-c'], 'pending', null, false),
+        makeMatch(3, 3, ['team-d', 'team-e'], 'pending', null, false),
+      ] },
+    ],
+    standings: [
+      { teamId: 'team-a', matchPoints: '9', wins: 2, draws: 0, losses: 0, gameWins: 4, gameLosses: 1,
+        netGameWins: 3, opponentWinRateBasisPoints: 6_000, dropped: false, rank: 1 },
+      { teamId: 'team-b', matchPoints: '3', wins: 1, draws: 0, losses: 1, gameWins: 3, gameLosses: 3,
+        netGameWins: 0, opponentWinRateBasisPoints: 5_000, dropped: false, rank: 2 },
+      { teamId: 'team-c', matchPoints: '6', wins: 1, draws: 0, losses: 0, gameWins: 2, gameLosses: 1,
+        netGameWins: 1, opponentWinRateBasisPoints: 5_500, dropped: false, rank: 3 },
+      { teamId: 'team-d', matchPoints: '0', wins: 0, draws: 0, losses: 2, gameWins: 2, gameLosses: 4,
+        netGameWins: -2, opponentWinRateBasisPoints: 4_000, dropped: false, rank: 4 },
+      { teamId: 'team-e', matchPoints: '3', wins: 0, draws: 0, losses: 1, gameWins: 1, gameLosses: 2,
+        netGameWins: -1, opponentWinRateBasisPoints: 4_500, dropped: false, rank: 5 },
+    ],
+  })
+  return response
+}
+
 function doubleEliminationFinalsResponse(withReset: boolean) {
   const response = tournamentResponse('competition a', 10)
   const stage = response.projection.public.stages[2]!
@@ -180,7 +263,7 @@ function doubleEliminationFinalsResponse(withReset: boolean) {
     ],
     standings: teamIds.map((teamId, index) => ({
       teamId,
-      matchPoints: [9, 3, 0, withReset ? 9 : 6][index],
+      matchPoints: String([9, 3, 0, withReset ? 9 : 6][index]),
       wins: [3, 1, 0, withReset ? 3 : 2][index],
       draws: 0,
       losses: [withReset ? 1 : 0, 2, 2, 2][index],
@@ -258,6 +341,44 @@ it('loads all four formats through the exact session-backed GET and displays ser
   expect(wrapper.text()).not.toContain('private cancellation note')
   expect(wrapper.text()).not.toContain('member-a')
   await wrapper.unmount()
+})
+
+it('shows every team Match wins to participants and spectators during Swiss rounds, then publishes standings', async () => {
+  const expectedWins = [
+    ['team-a', '2'], ['team-b', '1'], ['team-c', '1'], ['team-d', '0'], ['team-e', '0'],
+  ] as const
+
+  for (const participantTeamId of ['team-a', undefined]) {
+    fetchMock.mockResolvedValueOnce(swissMultiRoundResponse())
+    const wrapper = await mountSuspended(CompetitionTournamentView, {
+      props: { ...props(), ...(participantTeamId ? { participantTeamId } : {}) },
+    })
+    await flushPromises()
+
+    const swiss = wrapper.get('article[aria-labelledby="tournament-stage-swiss-stage"]')
+    const progress = swiss.get('.standings-section')
+    expect(progress.text()).toContain('瑞士輪進度')
+    expect(progress.findAll('.swiss-progress-item')).toHaveLength(expectedWins.length)
+    for (const [teamId, wins] of expectedWins) {
+      const teamProgress = progress.get(`[data-team-id="${teamId}"]`)
+      expect(teamProgress.text()).toContain(teamId)
+      expect(teamProgress.text()).toContain(`自身交手勝場：${wins}`)
+    }
+    expect(swiss.findAll('.rounds-section .round-card')).toHaveLength(3)
+    expect(swiss.findAll('.standing-card')).toHaveLength(0)
+    expect(progress.text()).not.toContain('賽事積分')
+    expect(progress.text()).not.toContain('對手勝率')
+    expect(progress.text()).not.toContain('第 1 名')
+    await wrapper.unmount()
+  }
+
+  fetchMock.mockResolvedValueOnce(swissPlayedResponse('finished'))
+  const finished = await mountSuspended(CompetitionTournamentView, { props: props() })
+  await flushPromises()
+  const finishedSwiss = finished.get('article[aria-labelledby="tournament-stage-swiss-stage"]')
+  expect(finishedSwiss.findAll('.standing-card')).toHaveLength(2)
+  expect(finishedSwiss.get('.standings-section').text()).toContain('伺服器排名與積分')
+  await finished.unmount()
 })
 
 it('shows the complete double-elimination route with and without the grand-final reset Match', async () => {
@@ -523,22 +644,22 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
     // 保留服務提供的順序；位置與 null rank 都不是冠軍判定的來源。
     standings: [
       {
-        teamId: 'team-b', matchPoints: 0, wins: 0, draws: 0, losses: 1,
+        teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 1,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
         opponentWinRateBasisPoints: null, dropped: false, rank: null,
       },
       {
-        teamId: 'team-c', matchPoints: 3, wins: 1, draws: 0, losses: 1,
+        teamId: 'team-c', matchPoints: '3', wins: 1, draws: 0, losses: 1,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
         opponentWinRateBasisPoints: null, dropped: false, rank: null,
       },
       {
-        teamId: 'team-d', matchPoints: 0, wins: 0, draws: 0, losses: 1,
+        teamId: 'team-d', matchPoints: '0', wins: 0, draws: 0, losses: 1,
         gameWins: 0, gameLosses: 1, netGameWins: -1,
         opponentWinRateBasisPoints: null, dropped: false, rank: null,
       },
       {
-        teamId: 'team-a', matchPoints: 3, wins: 1, draws: 0, losses: 1,
+        teamId: 'team-a', matchPoints: '3', wins: 1, draws: 0, losses: 1,
         gameWins: 1, gameLosses: 0, netGameWins: 1,
         opponentWinRateBasisPoints: null, dropped: false, rank: null,
       },
@@ -685,12 +806,12 @@ it('displays configured zero Team Main Time as unlimited through the valid tourn
     rounds: [{ roundNumber: 1, kind: 'main', matches: [pendingMatch] }],
     standings: [
       {
-        teamId: 'team-b', matchPoints: 0, wins: 0, draws: 0, losses: 0,
+        teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 0,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
         opponentWinRateBasisPoints: null, dropped: false, rank: null,
       },
       {
-        teamId: 'team-a', matchPoints: 0, wins: 0, draws: 0, losses: 0,
+        teamId: 'team-a', matchPoints: '0', wins: 0, draws: 0, losses: 0,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
         opponentWinRateBasisPoints: null, dropped: false, rank: null,
       },
@@ -750,7 +871,7 @@ it('displays configured zero Team Main Time as unlimited through the valid tourn
     status: 'pending', result: null, cancellationReason: null, started: false,
   })
   expect(parsed.stages[0]?.standings.map(row => [row.teamId, row.matchPoints, row.wins, row.draws, row.losses, row.rank]))
-    .toEqual([['team-b', 0, 0, 0, 0, null], ['team-a', 0, 0, 0, 0, null]])
+    .toEqual([['team-b', '0', 0, 0, 0, null], ['team-a', '0', 0, 0, 0, null]])
   // 保護既有純 duration observable；不以其輸出計算後面的 DOM 政策期望。
   expect(tournamentTimeLimitLabel(0)).toBe('0 秒')
   expect(tournamentTimeLimitLabel(30_000)).toBe('30 秒')

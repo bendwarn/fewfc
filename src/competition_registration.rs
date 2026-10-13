@@ -10,7 +10,7 @@ use crate::domain::{
     RuleVersion, RulesetId, TeamHp, TeamId,
 };
 use crate::rules::{DeckListSource, OfficialRules};
-use crate::tournament::{validate_competition_announcement_plan, CompetitionAnnouncementPlan};
+use crate::tournament::{CompetitionAnnouncementPlan, validate_competition_announcement_plan};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1086,12 +1086,12 @@ pub fn validate_announcement(
         || announcement.check_in_deadline.as_millis() % 60_000 != 0
     {
         return Err(RegistrationError::InvalidAnnouncement {
-            reason: "registration deadline and competition start time must use whole minutes".to_string(),
+            reason: "registration deadline and competition start time must use whole minutes"
+                .to_string(),
         });
     }
-    validate_competition_announcement_plan(&announcement.plan).map_err(|reason| {
-        RegistrationError::InvalidAnnouncement { reason }
-    })?;
+    validate_competition_announcement_plan(&announcement.plan)
+        .map_err(|reason| RegistrationError::InvalidAnnouncement { reason })?;
     match &announcement.registration_mode {
         RegistrationMode::Public => {}
         RegistrationMode::InviteOnly { invited_captains } => {
@@ -1283,7 +1283,8 @@ mod tests {
             initial_seed_policy: InitialSeedPolicy::RandomDrawAfterRegistrationDeadline,
             swiss_pairing_policy: SwissPairingPolicy::PublishedRulesWithPersistedRandomSeed,
             ranking_policy: CompetitionRankingPolicy::MatchPointsThenOpponentWinsThenOpponentLosses,
-            exact_ranking_tie_policy: ExactRankingTiePolicy::OrganizerOrUnconflictedRefereeWithPublicReason,
+            exact_ranking_tie_policy:
+                ExactRankingTiePolicy::OrganizerOrUnconflictedRefereeWithPublicReason,
             stages: vec![AnnouncedTournamentStage {
                 stage_id: StageId::from("stage-1"),
                 format: TournamentFormat::RoundRobin,
@@ -1789,11 +1790,7 @@ mod tests {
         }
     }
 
-    fn opening_prepare_data(
-        state: &mut RegistrationState,
-        members: &[&str],
-        roster_version: u64,
-    ) {
+    fn opening_prepare_data(state: &mut RegistrationState, members: &[&str], roster_version: u64) {
         for id in members {
             state
                 .execute(
@@ -1931,7 +1928,11 @@ mod tests {
         let mut missing = wire;
         missing.as_object_mut().unwrap().remove("exclusionReasons");
         assert!(serde_json::from_value::<PublicTeamView>(missing).is_err());
-        for unknown in ["unknown", "missing_required_decks", "MissingCaptainConfirmation"] {
+        for unknown in [
+            "unknown",
+            "missing_required_decks",
+            "MissingCaptainConfirmation",
+        ] {
             assert!(
                 serde_json::from_value::<RegistrationExclusionReason>(serde_json::json!(unknown))
                     .is_err()
@@ -2020,7 +2021,10 @@ mod tests {
         let before = state.public_view();
         let private = state.private_view(&player("captain-a"));
         let export = state.export_locked_roster().unwrap();
-        assert_eq!(state.execute(confirmation.clone(), now(500)).unwrap(), receipt);
+        assert_eq!(
+            state.execute(confirmation.clone(), now(500)).unwrap(),
+            receipt
+        );
         assert_eq!(state.public_view(), before);
         assert_eq!(state.private_view(&player("captain-a")), private);
         assert_eq!(state.export_locked_roster().unwrap(), export);
@@ -2040,29 +2044,81 @@ mod tests {
         };
         let cases = [
             (
-                PersonalDeckPolicy::Required, false, false, false, false,
-                vec![MissingMemberConfirmations, MissingRequiredDecks, MissingCaptainConfirmation],
+                PersonalDeckPolicy::Required,
+                false,
+                false,
+                false,
+                false,
+                vec![
+                    MissingMemberConfirmations,
+                    MissingRequiredDecks,
+                    MissingCaptainConfirmation,
+                ],
             ),
             (
-                PersonalDeckPolicy::Required, false, true, false, false,
+                PersonalDeckPolicy::Required,
+                false,
+                true,
+                false,
+                false,
                 vec![MissingMemberConfirmations, MissingCaptainConfirmation],
             ),
             (
-                PersonalDeckPolicy::Required, true, false, false, false,
+                PersonalDeckPolicy::Required,
+                true,
+                false,
+                false,
+                false,
                 vec![MissingRequiredDecks, MissingCaptainConfirmation],
             ),
             (
-                PersonalDeckPolicy::Required, true, true, false, false,
+                PersonalDeckPolicy::Required,
+                true,
+                true,
+                false,
+                false,
                 vec![MissingCaptainConfirmation],
             ),
-            (PersonalDeckPolicy::Required, true, true, true, false, vec![]),
             (
-                PersonalDeckPolicy::Disabled, true, false, false, false,
+                PersonalDeckPolicy::Required,
+                true,
+                true,
+                true,
+                false,
+                vec![],
+            ),
+            (
+                PersonalDeckPolicy::Disabled,
+                true,
+                false,
+                false,
+                false,
                 vec![MissingCaptainConfirmation],
             ),
-            (PersonalDeckPolicy::Disabled, true, false, true, false, vec![]),
-            (PersonalDeckPolicy::Required, false, false, false, true, vec![]),
-            (PersonalDeckPolicy::Disabled, false, false, false, true, vec![]),
+            (
+                PersonalDeckPolicy::Disabled,
+                true,
+                false,
+                true,
+                false,
+                vec![],
+            ),
+            (
+                PersonalDeckPolicy::Required,
+                false,
+                false,
+                false,
+                true,
+                vec![],
+            ),
+            (
+                PersonalDeckPolicy::Disabled,
+                false,
+                false,
+                false,
+                true,
+                vec![],
+            ),
         ];
         for (policy, confirmed, submitted, captain_complete, withdrawn, expected) in cases {
             let mut state = if policy == PersonalDeckPolicy::Required {
@@ -2184,11 +2240,25 @@ mod tests {
             if replace_roster {
                 assert_eq!(before.teams[0].roster_version, 2);
                 assert!(before.teams[0].confirmed_members.is_empty());
-                assert!(state.private_view(&player("captain-a")).own_team.unwrap().own_deck.is_none());
+                assert!(
+                    state
+                        .private_view(&player("captain-a"))
+                        .own_team
+                        .unwrap()
+                        .own_deck
+                        .is_none()
+                );
                 assert!(state.private_view(&player("member-a")).own_team.is_none());
             } else {
                 assert_eq!(before.teams[0].confirmed_members.len(), 2);
-                assert!(state.private_view(&player("captain-a")).own_team.unwrap().own_deck.is_some());
+                assert!(
+                    state
+                        .private_view(&player("captain-a"))
+                        .own_team
+                        .unwrap()
+                        .own_deck
+                        .is_some()
+                );
             }
             // 同一資料變更若在截止前重新完成確認，仍可合法納入。
             let mut completed = state.clone();
@@ -2237,7 +2307,11 @@ mod tests {
             };
             assert_eq!(state.public_view().teams[0].exclusion_reasons, expected);
             assert!(state.export_locked_roster().unwrap().teams.is_empty());
-            assert!(completed.public_view().teams[0].exclusion_reasons.is_empty());
+            assert!(
+                completed.public_view().teams[0]
+                    .exclusion_reasons
+                    .is_empty()
+            );
             assert_eq!(completed.export_locked_roster().unwrap().teams.len(), 1);
         }
     }
@@ -2290,9 +2364,15 @@ mod tests {
             );
             let error = state.execute(lock.clone(), now(60_000)).unwrap_err();
             match corruption {
-                "confirmation" => assert!(matches!(error, RegistrationError::MissingConfirmations { .. })),
+                "confirmation" => assert!(matches!(
+                    error,
+                    RegistrationError::MissingConfirmations { .. }
+                )),
                 "missing-deck" => assert!(matches!(error, RegistrationError::MissingDecks { .. })),
-                "invalid-deck" => assert!(matches!(error, RegistrationError::InvalidPersonalDeck { .. })),
+                "invalid-deck" => assert!(matches!(
+                    error,
+                    RegistrationError::InvalidPersonalDeck { .. }
+                )),
                 _ => unreachable!(),
             }
             assert_eq!(state.public_view(), before);

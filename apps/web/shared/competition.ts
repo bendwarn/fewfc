@@ -507,7 +507,7 @@ export interface TournamentRound {
 
 export interface Standing {
   teamId: string
-  matchPoints: number
+  matchPoints: string
   wins: number
   draws: number
   losses: number

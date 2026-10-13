@@ -56,7 +56,12 @@ string_id!(RefereeId);
 
 /// 固定局數或先取得指定勝局數的交手格式。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "type", content = "value", deny_unknown_fields)]
+#[serde(
+    rename_all = "camelCase",
+    tag = "type",
+    content = "value",
+    deny_unknown_fields
+)]
 pub enum MatchFormat {
     FixedGames(u16),
     FirstToWins(u16),

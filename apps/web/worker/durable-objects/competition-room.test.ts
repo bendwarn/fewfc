@@ -418,7 +418,7 @@ function createdTournament(stage: StageConfig, tournamentId: string): JsonObject
     }
     return {
       teamId: team.teamId,
-      matchPoints, wins: 0, draws: 0, losses: 0,
+      matchPoints: String(matchPoints), wins: 0, draws: 0, losses: 0,
       gameWins: 0, gameLosses: 0, netGameWins: 0,
       opponentWinRateBasisPoints: null,
       dropped: false,
@@ -8527,8 +8527,8 @@ test('locked-roster tournament entry supports 1v1 and 2v2 across all formats and
     expect((createdStage.standings as JsonValue[]).map(row =>
       isJsonObject(row) ? [row.teamId, row.rank, row.matchPoints] : null,
     )).toEqual(swissPolicy.matchPoints.bye === 0
-      ? [['team-a', 1, 0], ['team-b', 1, 0], ['team-c', 1, 0]]
-      : [['team-a', 1, 3], ['team-b', 2, 0], ['team-c', 2, 0]])
+      ? [['team-a', 1, '0'], ['team-b', 1, '0'], ['team-c', 1, '0']]
+      : [['team-a', 1, '3'], ['team-b', 2, '0'], ['team-c', 2, '0']])
   }
   const orderedStage = stageConfig({ teams: [
     { teamId: 'team-b', seed: 9 }, { teamId: 'team-a', seed: 4 },
@@ -8654,7 +8654,7 @@ test('real Rust WASM tournament start and match/clock checkpoints pass for 2, 3,
     isJsonObject(row) && row.teamId === byeTeamId,
   )
   expect(byeTeamId).toBe('five-4')
-  expect(byeStanding).toMatchObject({ teamId: 'five-4', matchPoints: 0, rank: 4 })
+  expect(byeStanding).toMatchObject({ teamId: 'five-4', matchPoints: '0', rank: 4 })
 })
 
 test('real Rust WASM assigns and provisions the initial game for 1v1 and 2v2 rosters', async () => {
@@ -9211,7 +9211,7 @@ test('round-robin publishes the next round only after every Match, not every Gam
   expect(setup.sql.database.query(`SELECT command_id FROM competition_audit
     WHERE operation_type = 'announceRound'`).all()).toHaveLength(1)
   const drawStandings = stage.standings as JsonObject[]
-  expect(drawStandings.every(standing => standing.draws === 1 && standing.matchPoints === 1)).toBe(true)
+  expect(drawStandings.every(standing => standing.draws === 1 && standing.matchPoints === '1')).toBe(true)
 })
 
 test('single-elimination publishes the championship and bronze matches together and closes after both results', async () => {
@@ -9631,7 +9631,7 @@ for (const failedOperation of [
     const tournament = await e6ReadTournament(setup)
     const stage = (tournament.stages as JsonObject[])[0]!
     expect((stage.standings as JsonObject[]).every(standing =>
-      standing.draws === 1 && standing.matchPoints === 1)).toBe(true)
+      standing.draws === 1 && standing.matchPoints === '1')).toBe(true)
     const beforeRetry = setup.sql.database.query(
       'SELECT server_state_json, revision FROM competition_meta',
     ).get()
@@ -13593,7 +13593,7 @@ async function roundDeliveryModule(options: {
       }] : []),
       structuredClone(manifest.tournamentRound),
     ],
-    standings: config.teams.map(team => ({ teamId: team.teamId, matchPoints: 0, wins: 0, draws: 0, losses: 0,
+    standings: config.teams.map(team => ({ teamId: team.teamId, matchPoints: '0', wins: 0, draws: 0, losses: 0,
       gameWins: 0, gameLosses: 0, netGameWins: 0, opponentWinRateBasisPoints: null, dropped: false, rank: 1 })),
     corrections: [], lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
     teams: Object.fromEntries(config.teams.map(team => [team.teamId, { seed: team.seed, dropped: false, hadBye: false }])),

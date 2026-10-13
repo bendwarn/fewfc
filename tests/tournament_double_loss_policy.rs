@@ -108,7 +108,10 @@ fn single_elimination_two_team_final_double_loss_finishes_without_champion() {
 
     let serialized_stage = serde_json::to_value(stage).unwrap();
     assert_eq!(serialized_stage["status"], serde_json::json!("finished"));
-    assert_eq!(serialized_stage["lastScheduleError"], serde_json::Value::Null);
+    assert_eq!(
+        serialized_stage["lastScheduleError"],
+        serde_json::Value::Null
+    );
     assert_eq!(
         serialized_stage["rounds"][0]["matches"][0]["result"],
         serde_json::json!({ "type": "doubleLoss" }),
@@ -239,7 +242,10 @@ fn single_elimination_final_double_loss_leaves_both_finalists_unranked() {
     }
     let serialized_stage = serde_json::to_value(stage).unwrap();
     assert_eq!(serialized_stage["status"], serde_json::json!("finished"));
-    assert_eq!(serialized_stage["lastScheduleError"], serde_json::Value::Null);
+    assert_eq!(
+        serialized_stage["lastScheduleError"],
+        serde_json::Value::Null
+    );
     assert_eq!(
         serialized_stage["rounds"][0]["matches"][0]["result"],
         serde_json::json!({ "type": "doubleLoss" })
@@ -544,7 +550,13 @@ fn single_elimination_four_team_final_double_loss_preserves_stats_after_restore_
     // 只序列化剛由公共操作建立的現況，不手造 snapshot 或模擬舊資料遷移。
     let snapshot = serde_json::to_value(&tournament).unwrap();
     assert_eq!(snapshot["stages"][0]["status"], "active");
-    assert_eq!(snapshot["stages"][0]["rounds"][1]["matches"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        snapshot["stages"][0]["rounds"][1]["matches"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     let mut restored: Tournament = serde_json::from_value(snapshot.clone())
         .expect("真實四隊 prefix 與決賽雙負的 current Tournament 必須能 serde 還原");
     assert_eq!(serde_json::to_value(&restored).unwrap(), snapshot);
@@ -667,7 +679,8 @@ fn single_elimination_nonfinal_double_loss_preserves_vacant_bracket_position() {
     assert_eq!(after_double_loss.last_schedule_error(), None);
     assert_eq!(after_double_loss.status(), StageStatus::Active);
     assert_eq!(
-        after_double_loss.rounds().len(), 1,
+        after_double_loss.rounds().len(),
+        1,
         "其餘首輪未決不能建下一輪"
     );
     let recorded_double_loss = after_double_loss.rounds()[0].matches[0].clone();
@@ -732,10 +745,7 @@ fn single_elimination_nonfinal_double_loss_preserves_vacant_bracket_position() {
         assert_eq!(stage.last_schedule_error(), None);
         assert_eq!(stage.status(), StageStatus::Active);
         if index < 3 {
-            assert_eq!(
-                stage.rounds().len(), 1,
-                "仍有原首輪未決不能提早建下一輪"
-            );
+            assert_eq!(stage.rounds().len(), 1, "仍有原首輪未決不能提早建下一輪");
             assert_eq!(
                 &stage.rounds()[0].matches[index + 1..],
                 &original_first_round.matches[index + 1..]
@@ -846,10 +856,7 @@ fn single_elimination_nonfinal_double_loss_preserves_vacant_bracket_position() {
         .start_match(&stage_id, &original_second_match.match_id)
         .expect("另一分支的第二輪真交手必須公開開賽");
     let started_stage = tournament.stage(&stage_id).unwrap();
-    assert_eq!(
-        started_stage.rounds().len(), 2,
-        "第二輪未決不能先建決賽"
-    );
+    assert_eq!(started_stage.rounds().len(), 2, "第二輪未決不能先建決賽");
     assert_eq!(started_stage.rounds()[1].matches[0], bye);
     let started_second_match = &started_stage.rounds()[1].matches[1];
     assert_eq!(
@@ -1195,7 +1202,10 @@ fn single_elimination_final_double_loss_after_prior_vacancy_finishes_without_ran
     assert_eq!(started_stage.rounds()[1].matches[0], bye);
     let started_semifinal = &started_stage.rounds()[1].matches[1];
     assert_eq!(started_semifinal.match_id, original_semifinal.match_id);
-    assert_eq!(started_semifinal.participants, original_semifinal.participants);
+    assert_eq!(
+        started_semifinal.participants,
+        original_semifinal.participants
+    );
     assert_eq!(started_semifinal.status, MatchStatus::InProgress);
     assert!(started_semifinal.started);
     assert_eq!(started_semifinal.result, None);
@@ -1286,10 +1296,7 @@ fn single_elimination_final_double_loss_after_prior_vacancy_finishes_without_ran
     assert!(finished.superseded_rounds().is_empty());
     assert_eq!(tournament.stages().len(), 1);
     assert_eq!(finished.config(), &config);
-    assert_eq!(
-        finished.rounds().len(), 3,
-        "冠軍空缺不加決勝交手或假輪次"
-    );
+    assert_eq!(finished.rounds().len(), 3, "冠軍空缺不加決勝交手或假輪次");
     assert_eq!(&finished.rounds()[0], &completed_first_round);
     assert_eq!(&finished.rounds()[1], &completed_second_round);
     assert_eq!(finished.rounds()[2].matches.len(), 1);
@@ -1386,7 +1393,12 @@ fn single_elimination_final_double_loss_after_prior_vacancy_finishes_without_ran
     assert_eq!(restored_stage.status(), StageStatus::Finished);
     assert_eq!(restored_stage.winner(), None);
     assert_eq!(restored_stage.last_schedule_error(), None);
-    assert!(restored_stage.standings().iter().all(|row| row.rank.is_none()));
+    assert!(
+        restored_stage
+            .standings()
+            .iter()
+            .all(|row| row.rank.is_none())
+    );
     assert_eq!(
         restored
             .submit_result(&stage_id, &original_final.match_id, MatchResult::DoubleLoss)

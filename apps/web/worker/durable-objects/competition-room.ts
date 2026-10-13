@@ -9535,13 +9535,14 @@ function validInitialStandings(
     ])
     && nonEmpty(row.teamId) && teamIds.includes(row.teamId) && !seen.has(row.teamId)
     && (seen.add(row.teamId), true)
-    && ['matchPoints', 'wins', 'draws', 'losses', 'gameWins', 'gameLosses']
+    && ['wins', 'draws', 'losses', 'gameWins', 'gameLosses']
       .every(key => Number.isSafeInteger(row[key]) && (row[key] as number) >= 0)
     && row.wins === 0 && row.draws === 0 && row.losses === 0
     && row.gameWins === 0 && row.gameLosses === 0 && row.netGameWins === 0
     && row.dropped === false
-    && row.matchPoints === (config.format === 'swiss' && byeTeams.has(row.teamId)
-      ? config.swissPolicy?.matchPoints.bye : 0)
+    && isU64DecimalString(row.matchPoints)
+    && row.matchPoints === String(config.format === 'swiss' && byeTeams.has(row.teamId)
+      ? config.swissPolicy?.matchPoints.bye ?? 0 : 0)
     && Number.isSafeInteger(row.netGameWins)
     && row.opponentWinRateBasisPoints === null
     && typeof row.dropped === 'boolean'
@@ -10397,6 +10398,12 @@ function validateTournamentSubmitResponse(
 /** 新時計 query 不允許 transport 或 Symbol 額外鍵混入內部語意 request／engine 回應。 */
 function hasExactClockQueryKeys(value: JsonObject, keys: string[]): boolean {
   return Reflect.ownKeys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key))
+}
+
+function isU64DecimalString(value: JsonValue | undefined): value is string {
+  return typeof value === 'string'
+    && /^(0|[1-9][0-9]*)$/.test(value)
+    && (value.length < 20 || (value.length === 20 && value <= '18446744073709551615'))
 }
 
 function hasExactKeys(value: JsonObject, keys: string[]): boolean {

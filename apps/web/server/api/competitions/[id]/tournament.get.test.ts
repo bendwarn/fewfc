@@ -37,8 +37,8 @@ function tournament(format: 'singleElimination' | 'roundRobin' | 'doubleEliminat
       },
       status: 'finished',
       standings: [
-        { teamId: 'team-a', rank: 1, matchPoints: 3 },
-        { teamId: 'team-b', rank: 2, matchPoints: 0 },
+        { teamId: 'team-a', rank: 1, matchPoints: '3' },
+        { teamId: 'team-b', rank: 2, matchPoints: '0' },
       ],
       rounds: rounds.map((roundNumber, index) => ({
         roundNumber,

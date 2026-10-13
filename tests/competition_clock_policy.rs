@@ -76,7 +76,9 @@ fn finite_main_time_expiry_keeps_byoyomi_deadline_and_times_out() {
     assert_eq!(clock.next_timeout_deadline_ms(), Ok(Some(1_130)));
     assert_eq!(
         clock.observe(1_130),
-        Ok(ClockUpdate::TimedOut { team: team_a.clone() })
+        Ok(ClockUpdate::TimedOut {
+            team: team_a.clone()
+        })
     );
     assert_eq!(clock.expired_team(), Some(&team_a));
 }
@@ -284,15 +286,9 @@ fn configured_zero_windows_round_trip_running_and_paused_checkpoints() {
             assert_eq!(restored.next_timeout_deadline_ms(), Ok(None));
             if paused {
                 let resumed_at_ms = start_ms + 1;
-                assert_eq!(
-                    restored.resume(resumed_at_ms),
-                    Ok(ClockUpdate::Resumed)
-                );
+                assert_eq!(restored.resume(resumed_at_ms), Ok(ClockUpdate::Resumed));
                 let observed_at_ms = resumed_at_ms + 86_400_000;
-                assert_eq!(
-                    restored.observe(observed_at_ms),
-                    Ok(ClockUpdate::Advanced)
-                );
+                assert_eq!(restored.observe(observed_at_ms), Ok(ClockUpdate::Advanced));
                 assert_eq!(restored.config(), config);
                 assert_eq!(restored.needs_decision(), None);
                 assert_eq!(restored.expired_team(), None);
@@ -379,24 +375,21 @@ fn configured_zero_elimination_draw_carries_unlimited_time_without_a_cap() {
     ));
     assert_eq!(conclusion, original_conclusion);
 
-    let mut tiebreak = clock
-        .new_game(NewGameTime::CarryForward, start_ms)
-        .unwrap();
+    let mut tiebreak = clock.new_game(NewGameTime::CarryForward, start_ms).unwrap();
     assert_eq!(tiebreak.config(), config);
-    assert!(tiebreak
-        .snapshot()
-        .iter()
-        .all(|team| team.main_time_remaining_ms == Some(0)));
+    assert!(
+        tiebreak
+            .snapshot()
+            .iter()
+            .all(|team| team.main_time_remaining_ms == Some(0))
+    );
     assert_eq!(
         tiebreak.begin_action(&team_a, 1, start_ms),
         Ok(ClockUpdate::Advanced)
     );
     assert_eq!(tiebreak.next_timeout_deadline_ms(), Ok(None));
     let after_action_ms = start_ms + 60_000;
-    assert_eq!(
-        tiebreak.observe(after_action_ms),
-        Ok(ClockUpdate::Advanced)
-    );
+    assert_eq!(tiebreak.observe(after_action_ms), Ok(ClockUpdate::Advanced));
     assert_eq!(tiebreak.next_timeout_deadline_ms(), Ok(None));
     assert!(tiebreak.snapshot().iter().all(|team| !team.entered_byoyomi));
     assert_eq!(
@@ -512,29 +505,28 @@ fn raw_unlimited_main_time_elimination_draw_carries_unlimited_time() {
         other => panic!("expected an unlimited tiebreak continuation, got {other:?}"),
     };
     assert_eq!(continuation.teams.len(), 2);
-    assert!(continuation
-        .teams
-        .iter()
-        .all(|team| team.main_time_remaining_ms.is_none()));
+    assert!(
+        continuation
+            .teams
+            .iter()
+            .all(|team| team.main_time_remaining_ms.is_none())
+    );
     assert_eq!(conclusion, original_conclusion);
 
-    let mut tiebreak = clock
-        .new_game(NewGameTime::CarryForward, start_ms)
-        .unwrap();
+    let mut tiebreak = clock.new_game(NewGameTime::CarryForward, start_ms).unwrap();
     assert_eq!(tiebreak.config(), config);
-    assert!(tiebreak
-        .snapshot()
-        .iter()
-        .all(|team| team.main_time_remaining_ms.is_none()));
+    assert!(
+        tiebreak
+            .snapshot()
+            .iter()
+            .all(|team| team.main_time_remaining_ms.is_none())
+    );
     assert_eq!(
         tiebreak.begin_action(&team_a, 1, start_ms),
         Ok(ClockUpdate::Advanced)
     );
     let after_action_ms = start_ms + 60_000;
-    assert_eq!(
-        tiebreak.observe(after_action_ms),
-        Ok(ClockUpdate::Advanced)
-    );
+    assert_eq!(tiebreak.observe(after_action_ms), Ok(ClockUpdate::Advanced));
     assert_eq!(tiebreak.next_timeout_deadline_ms(), Ok(None));
     assert!(tiebreak.snapshot().iter().all(|team| !team.entered_byoyomi));
     assert_eq!(

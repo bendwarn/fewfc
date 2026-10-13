@@ -340,10 +340,12 @@ fn active_round_robin_double_loss_correction_restores_original_unplayed_future_m
         .cloned()
         .collect();
     assert_eq!(original_future_matches.len(), 4);
-    assert!(original_future_matches.iter().all(|scheduled| scheduled
-        .participants
-        .iter()
-        .any(|team_id| double_loss_match.participants.contains(team_id))));
+    assert!(original_future_matches.iter().all(|scheduled| {
+        scheduled
+            .participants
+            .iter()
+            .any(|team_id| double_loss_match.participants.contains(team_id))
+    }));
 
     assert_eq!(
         tournament.start_match(&stage_id, &double_loss_match.match_id),
@@ -366,7 +368,10 @@ fn active_round_robin_double_loss_correction_restores_original_unplayed_future_m
     assert!(played_double_loss.started);
     assert_eq!(stage.status(), StageStatus::Active);
     assert_eq!(stage.last_schedule_error(), None);
-    assert_eq!(public_match(stage, &other_first_match.match_id), other_first_match);
+    assert_eq!(
+        public_match(stage, &other_first_match.match_id),
+        other_first_match
+    );
     assert!(stage.corrections().is_empty());
     for original in &original_future_matches {
         let cancelled = public_match(stage, &original.match_id);
@@ -397,7 +402,10 @@ fn active_round_robin_double_loss_correction_restores_original_unplayed_future_m
     );
     let stage = tournament.stage(&stage_id).unwrap();
     assert_eq!(stage.status(), StageStatus::Active);
-    assert_eq!(public_match(stage, &other_first_match.match_id), other_first_match);
+    assert_eq!(
+        public_match(stage, &other_first_match.match_id),
+        other_first_match
+    );
 
     // 第一政策 target：撤銷 DL 的退出效果，恢復原未玩配對，不生成替代交手。
     for original in &original_future_matches {
@@ -464,7 +472,10 @@ fn active_round_robin_double_loss_correction_restores_original_unplayed_future_m
 
     // 只驗純 core 的公開 start seam，不把預生成配對當作 DO 房間已可開賽。
     let next_match = &original_future_matches[0];
-    assert_eq!(tournament.start_match(&stage_id, &next_match.match_id), Ok(()));
+    assert_eq!(
+        tournament.start_match(&stage_id, &next_match.match_id),
+        Ok(())
+    );
     let stage = tournament.stage(&stage_id).unwrap();
     let started = public_match(stage, &next_match.match_id);
     assert_eq!(started.status, MatchStatus::InProgress);
@@ -476,8 +487,14 @@ fn active_round_robin_double_loss_correction_restores_original_unplayed_future_m
         assert_eq!(&public_match(stage, &original.match_id), original);
     }
     assert_eq!(stage.status(), StageStatus::Active);
-    assert_eq!(public_match(stage, &other_first_match.match_id), other_first_match);
-    assert_eq!(public_match(stage, &double_loss_match.match_id), corrected_match);
+    assert_eq!(
+        public_match(stage, &other_first_match.match_id),
+        other_first_match
+    );
+    assert_eq!(
+        public_match(stage, &double_loss_match.match_id),
+        corrected_match
+    );
     assert_eq!(stage.standings(), corrected_standings.as_slice());
     assert_eq!(stage.corrections(), correction_audit.as_slice());
     assert_eq!(stage.rounds().len(), 3);

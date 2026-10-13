@@ -70,9 +70,9 @@ function finishedRoundRobinStage(id: string) {
       cancellationReason: null, started: true,
     }] }],
     standings: [
-      { teamId: 'team-a', matchPoints: 3, wins: 1, draws: 0, losses: 0, gameWins: 1, gameLosses: 0,
+      { teamId: 'team-a', matchPoints: '3', wins: 1, draws: 0, losses: 0, gameWins: 1, gameLosses: 0,
         netGameWins: 1, opponentWinRateBasisPoints: null, dropped: false, rank: 1 },
-      { teamId: 'team-b', matchPoints: 0, wins: 0, draws: 0, losses: 1, gameWins: 0, gameLosses: 1,
+      { teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 1, gameWins: 0, gameLosses: 1,
         netGameWins: -1, opponentWinRateBasisPoints: null, dropped: false, rank: 2 },
     ],
     corrections: [], lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],

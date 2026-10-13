@@ -50,12 +50,12 @@ function stageFixture(format: string, stageId: string) {
     }],
     standings: [
       {
-        teamId: 'team-a', matchPoints: 0, wins: 0, draws: 0, losses: 0,
+        teamId: 'team-a', matchPoints: '0', wins: 0, draws: 0, losses: 0,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
         opponentWinRateBasisPoints: null, dropped: false, rank: null,
       },
       {
-        teamId: 'team-b', matchPoints: 0, wins: 0, draws: 0, losses: 0,
+        teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 0,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
         opponentWinRateBasisPoints: null, dropped: false, rank: null,
       },
@@ -172,7 +172,7 @@ function singleEliminationBronzeResponse(): unknown {
     status, result, cancellationReason: null, started: status === 'completed',
   })
   const rows = teamIds.map(teamId => ({
-    teamId, matchPoints: 3, wins: 1, draws: 0, losses: 0, gameWins: 2, gameLosses: 0,
+    teamId, matchPoints: '3', wins: 1, draws: 0, losses: 0, gameWins: 2, gameLosses: 0,
     netGameWins: 2, opponentWinRateBasisPoints: null, dropped: false, rank: null,
   }))
   Object.assign(stage, {
@@ -222,6 +222,21 @@ test('parses the exact current tournament projection without inferring rank from
   ])
   expect(parsed.stages[2]).not.toHaveProperty('teams')
   expect(parsed.stages[2]).not.toHaveProperty('doubleState')
+})
+
+test('preserves exact decimal-string Match Points through the full u64 range', () => {
+  for (const matchPoints of ['8589934590', '18446744073709551615']) {
+    const parsed = parseCompetitionTournamentViewResponse(
+      responseWithStandingOverrides(0, { matchPoints }), 'competition-a',
+    )
+    expect(parsed.stages[0]?.standings[0]?.matchPoints).toBe(matchPoints)
+  }
+
+  for (const matchPoints of [8589934590, '018', '18446744073709551616']) {
+    expect(() => parseCompetitionTournamentViewResponse(
+      responseWithStandingOverrides(0, { matchPoints }), 'competition-a',
+    )).toThrow()
+  }
 })
 
 test('parses the bronze purpose only for the same-round single-elimination podium pair', () => {
@@ -393,7 +408,7 @@ test('projects a Swiss round without double-loss exits and marks both teams as e
     ],
     standings: teamIds.map(teamId => ({
       teamId,
-      matchPoints: teamId === 'team-c' || teamId === 'team-e' ? 3 : 0,
+      matchPoints: teamId === 'team-c' || teamId === 'team-e' ? '3' : '0',
       wins: teamId === 'team-c' || teamId === 'team-e' ? 1 : 0,
       draws: 0,
       losses: exitedTeamIds.has(teamId) || teamId === 'team-d' || teamId === 'team-f' ? 1 : 0,

@@ -291,7 +291,10 @@ impl CompetitionClock {
                             ..
                         }) if deciding_team == &team.team
                             && !sampled.is_main_time_configuration_unlimited()
-                            && team.main_time_remaining_ms == Some(0) => Some(*remaining),
+                            && team.main_time_remaining_ms == Some(0) =>
+                        {
+                            Some(*remaining)
+                        }
                         _ => None,
                     };
                     ClockDisplayTeam {
@@ -474,9 +477,10 @@ impl CompetitionClock {
             RunningWindow::OutOfTurnChoice {
                 team, remaining_ms, ..
             } => match (self.team_state(team)?.main_time_remaining_ms, *remaining_ms) {
-                (Some(main), Some(choice)) if !self.is_main_time_configuration_unlimited() => {
-                    Some(main.checked_add(choice).ok_or(ClockError::TimeArithmeticOverflow)?)
-                }
+                (Some(main), Some(choice)) if !self.is_main_time_configuration_unlimited() => Some(
+                    main.checked_add(choice)
+                        .ok_or(ClockError::TimeArithmeticOverflow)?,
+                ),
                 _ => *remaining_ms,
             },
         };
@@ -830,7 +834,8 @@ impl CompetitionClock {
                 if !self.is_main_time_configuration_unlimited() && remaining_ms.is_some() {
                     if let Some(main) = self.team_state(&team)?.main_time_remaining_ms {
                         if elapsed < main {
-                            self.team_state_mut(&team)?.main_time_remaining_ms = Some(main - elapsed);
+                            self.team_state_mut(&team)?.main_time_remaining_ms =
+                                Some(main - elapsed);
                             return Ok(ClockUpdate::Advanced);
                         }
                         self.team_state_mut(&team)?.main_time_remaining_ms = Some(0);
@@ -872,7 +877,7 @@ impl CompetitionClock {
                         }
                     }
                 }
-            },
+            }
             RunningWindow::Action { team, .. } => self.consume_action_elapsed(&team, elapsed),
         }
     }

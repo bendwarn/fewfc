@@ -1,7 +1,7 @@
 use fewfc::competition_clock::ClockConfig;
 use fewfc::competition_match::MatchFormat;
 use fewfc::tournament::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn tournament(format: TournamentFormat, count: u32) -> Tournament {
     Tournament::new(TournamentConfig {
@@ -584,6 +584,146 @@ fn swiss_rounds_preserve_draws_and_never_repeat_opponents() {
         }
         assert!(stage.standings().iter().all(|r| r.losses == 0));
     }
+}
+
+#[test]
+fn swiss_head_to_head_u32_max_points_advance_three_rounds_without_rematches() {
+    let stage_id = StageId::from("swiss-head-to-head-large-points");
+    let mut config = tournament(TournamentFormat::RoundRobin, 4)
+        .stage(&StageId("stage".into()))
+        .unwrap()
+        .config()
+        .clone();
+    config.stage_id = stage_id.clone();
+    config.format = TournamentFormat::Swiss;
+    config.random_seed = 7;
+    config.teams = ["a", "b", "c", "d"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, team_id)| SeededTeam {
+            team_id: TeamId::from(team_id),
+            seed: index as u32 + 1,
+        })
+        .collect();
+    config.swiss_rounds = Some(3);
+    config.swiss_policy = Some(SwissStandingPolicy {
+        match_points: MatchPoints {
+            win: u32::MAX,
+            draw: u32::MAX,
+            loss: u32::MAX,
+            bye: u32::MAX,
+        },
+        draw_credit: DrawCredit::new(1, 2).unwrap(),
+        opponent_win_rate_floor_percent: None,
+        opponent_win_rate_cap_percent: None,
+        exclude_byes_from_opponent_win_rate: true,
+        tie_breakers: vec![SwissTieBreaker::HeadToHeadMatchPoints],
+    });
+    let mut tournament = Tournament::new(TournamentConfig {
+        tournament_id: "swiss-head-to-head-large-points".into(),
+        stage: config,
+    })
+    .unwrap();
+
+    let pairings = |round: &Round| {
+        round
+            .matches
+            .iter()
+            .map(|match_| match_.participants.iter().cloned().collect::<BTreeSet<_>>())
+            .collect::<BTreeSet<_>>()
+    };
+    let first_round = tournament.stage(&stage_id).unwrap().rounds()[0].clone();
+    let first_pairings = pairings(&first_round);
+    assert_eq!(
+        first_pairings,
+        BTreeSet::from([
+            BTreeSet::from([TeamId::from("a"), TeamId::from("b")]),
+            BTreeSet::from([TeamId::from("c"), TeamId::from("d")]),
+        ])
+    );
+    for match_ in &first_round.matches {
+        assert_eq!(
+            tournament
+                .submit_result(
+                    &stage_id,
+                    &match_.match_id,
+                    MatchResult::win(
+                        match_.participants[0].clone(),
+                        match_.participants[1].clone(),
+                    ),
+                )
+                .unwrap(),
+            UpdateOutcome::Applied
+        );
+    }
+
+    let second_round = tournament.stage(&stage_id).unwrap().rounds()[1].clone();
+    let second_pairings = pairings(&second_round);
+    assert_eq!(
+        second_pairings,
+        BTreeSet::from([
+            BTreeSet::from([TeamId::from("a"), TeamId::from("d")]),
+            BTreeSet::from([TeamId::from("b"), TeamId::from("c")]),
+        ])
+    );
+    assert!(first_pairings.is_disjoint(&second_pairings));
+    for match_ in &second_round.matches {
+        assert_eq!(
+            tournament
+                .submit_result(
+                    &stage_id,
+                    &match_.match_id,
+                    MatchResult::win(
+                        match_.participants[0].clone(),
+                        match_.participants[1].clone(),
+                    ),
+                )
+                .unwrap(),
+            UpdateOutcome::Applied
+        );
+    }
+
+    let stage = tournament.stage(&stage_id).unwrap();
+    assert_eq!(stage.rounds().len(), 3, "公告第三輪應可建立");
+    let third_round = stage.rounds()[2].clone();
+    let third_pairings = pairings(&third_round);
+    assert!(first_pairings.is_disjoint(&third_pairings));
+    assert!(second_pairings.is_disjoint(&third_pairings));
+    assert_eq!(stage.standings().len(), 4);
+    assert!(
+        stage
+            .standings()
+            .iter()
+            .all(|standing| standing.match_points == 8_589_934_590)
+    );
+
+    let last_result_match = &second_round.matches[0];
+    let last_result = MatchResult::win(
+        last_result_match.participants[0].clone(),
+        last_result_match.participants[1].clone(),
+    );
+    let before_retry = serde_json::to_value(&tournament).unwrap();
+    assert_eq!(
+        tournament
+            .submit_result(&stage_id, &last_result_match.match_id, last_result.clone())
+            .unwrap(),
+        UpdateOutcome::AlreadyRecorded
+    );
+    assert_eq!(serde_json::to_value(&tournament).unwrap(), before_retry);
+
+    let mut restored: Tournament = serde_json::from_value(before_retry.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&restored).unwrap(), before_retry);
+    assert_eq!(
+        pairings(&restored.stage(&stage_id).unwrap().rounds()[2]),
+        third_pairings
+    );
+    assert_eq!(
+        restored
+            .submit_result(&stage_id, &last_result_match.match_id, last_result)
+            .unwrap(),
+        UpdateOutcome::AlreadyRecorded
+    );
+    assert_eq!(serde_json::to_value(&restored).unwrap(), before_retry);
 }
 
 #[test]
