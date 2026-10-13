@@ -128,6 +128,85 @@ function tournamentResponse(competitionId = 'competition-a', revision = 9) {
   }
 }
 
+function doubleEliminationFinalsResponse(withReset: boolean) {
+  const response = tournamentResponse('competition a', 10)
+  const stage = response.projection.public.stages[2]!
+  const teamIds = ['team-a', 'team-b', 'team-c', 'team-d']
+  const makeMatch = (
+    roundNumber: number,
+    kind: 'winners' | 'losers' | 'grandFinal' | 'grandFinalReset',
+    sequence: number,
+    winnerId: string,
+    loserId: string,
+  ) => ({
+    matchId: `double-stage-r${roundNumber}-m${sequence}`,
+    stageId: 'double-stage',
+    roundNumber,
+    sequence,
+    kind,
+    participants: [winnerId, loserId],
+    status: 'completed',
+    result: { type: 'win', winnerId, loserId, winnerGames: 2, loserGames: 0 },
+    cancellationReason: null,
+    started: true,
+  })
+
+  Object.assign(stage, {
+    config: {
+      ...stage.config,
+      teams: teamIds.map((teamId, index) => ({ teamId, seed: index + 1 })),
+    },
+    status: 'finished',
+    rounds: [
+      { roundNumber: 1, kind: 'winners', matches: [
+        makeMatch(1, 'winners', 1, 'team-a', 'team-d'),
+        makeMatch(1, 'winners', 2, 'team-b', 'team-c'),
+      ] },
+      { roundNumber: 2, kind: 'losers', matches: [
+        makeMatch(2, 'losers', 1, 'team-d', 'team-c'),
+      ] },
+      { roundNumber: 3, kind: 'winners', matches: [
+        makeMatch(3, 'winners', 1, 'team-a', 'team-b'),
+      ] },
+      { roundNumber: 4, kind: 'losers', matches: [
+        makeMatch(4, 'losers', 1, 'team-d', 'team-b'),
+      ] },
+      { roundNumber: 5, kind: 'grandFinal', matches: [
+        makeMatch(5, 'grandFinal', 1, withReset ? 'team-d' : 'team-a', withReset ? 'team-a' : 'team-d'),
+      ] },
+      ...(withReset ? [{ roundNumber: 6, kind: 'grandFinalReset', matches: [
+        makeMatch(6, 'grandFinalReset', 1, 'team-a', 'team-d'),
+      ] }] : []),
+    ],
+    standings: teamIds.map((teamId, index) => ({
+      teamId,
+      matchPoints: [9, 3, 0, withReset ? 9 : 6][index],
+      wins: [3, 1, 0, withReset ? 3 : 2][index],
+      draws: 0,
+      losses: [withReset ? 1 : 0, 2, 2, 2][index],
+      gameWins: [6, 2, 0, withReset ? 6 : 4][index],
+      gameLosses: [withReset ? 2 : 0, 4, 4, 4][index],
+      netGameWins: [withReset ? 4 : 6, -2, -4, withReset ? 2 : 0][index],
+      opponentWinRateBasisPoints: null,
+      dropped: false,
+      rank: [1, 3, 4, 2][index],
+    })),
+    teams: Object.fromEntries(teamIds.map((teamId, index) => [teamId, {
+      seed: index + 1, dropped: false, hadBye: false,
+    }])),
+    doubleState: {
+      phase: 'finished',
+      winnersPool: [],
+      losersWaiting: [],
+      lowerPool: [],
+      winnersChampion: 'team-a',
+      losersChampion: 'team-d',
+      grandFinalWinner: 'team-a',
+    },
+  })
+  return response
+}
+
 function props() {
   return {
     competitionId: ' competition a ',
@@ -179,6 +258,34 @@ it('loads all four formats through the exact session-backed GET and displays ser
   expect(wrapper.text()).not.toContain('private cancellation note')
   expect(wrapper.text()).not.toContain('member-a')
   await wrapper.unmount()
+})
+
+it('shows the complete double-elimination route with and without the grand-final reset Match', async () => {
+  for (const withReset of [false, true]) {
+    fetchMock.mockResolvedValue(doubleEliminationFinalsResponse(withReset))
+    const wrapper = await mountSuspended(CompetitionTournamentView, { props: props() })
+    await flushPromises()
+
+    const doubleStage = wrapper.findAll('.stage-card')
+      .find(card => card.find('h3').text() === '雙敗淘汰')
+    expect(doubleStage).toBeDefined()
+    expect(doubleStage!.findAll('.round-card > h5').map(heading => heading.text())).toEqual([
+      '勝部・第 1 輪',
+      '敗部・第 2 輪',
+      '勝部・第 3 輪',
+      '敗部・第 4 輪',
+      '總決賽・第 5 輪',
+      ...(withReset ? ['總決賽重置・第 6 輪'] : []),
+    ])
+    const finalMatchId = withReset ? 'double-stage-r6-m1' : 'double-stage-r5-m1'
+    const finalMatch = doubleStage!.findAll('.match-card')
+      .find(match => match.text().includes(finalMatchId))
+    expect(finalMatch?.text()).toContain('team-a')
+    expect(finalMatch?.text()).toContain('team-d')
+    expect(finalMatch?.text()).toContain('team-a 勝出 2–0')
+    expect(doubleStage!.text()).toContain('第 1 名')
+    await wrapper.unmount()
+  }
 })
 
 it('shows accessible loading state and only issues another GET after explicit refresh', async () => {
