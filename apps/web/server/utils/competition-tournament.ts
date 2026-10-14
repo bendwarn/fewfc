@@ -147,7 +147,9 @@ export function buildCompetitionTournamentReadRequest(
   callerUserId: unknown,
 ): CompetitionRoomTournamentReadRequest {
   const normalizedCompetitionId = normalizeCompetitionTournamentPathId(competitionId)
-  if (typeof callerUserId !== 'string' || !callerUserId.trim()) throw httpError('invalidRequest')
+  if (callerUserId !== null && (typeof callerUserId !== 'string' || !callerUserId.trim())) {
+    throw httpError('invalidRequest')
+  }
   return { competitionId: normalizedCompetitionId, callerUserId }
 }
 
@@ -189,7 +191,8 @@ function projectReadResult(
       throw httpError('competitionRoomProtocolError')
     }
     const value = input.value
-    if (!hasExactKeys(value, ['competitionId', 'revision', 'projection'])
+    if ((!hasExactKeys(value, ['competitionId', 'revision', 'projection'])
+        && !hasExactKeys(value, ['competitionId', 'revision', 'projection', 'publication']))
       || value.competitionId !== expectedCompetitionId
       || typeof value.revision !== 'number'
       || !Number.isSafeInteger(value.revision)
@@ -197,6 +200,10 @@ function projectReadResult(
       || !hasExactKeys(value.projection, ['ok', 'operation', 'public'])
       || value.projection.ok !== true
       || value.projection.operation !== 'tournamentView') {
+      throw httpError('competitionRoomProtocolError')
+    }
+
+    if (Object.hasOwn(value, 'publication') && !isPublication(value.publication)) {
       throw httpError('competitionRoomProtocolError')
     }
 
@@ -214,6 +221,7 @@ function projectReadResult(
       competitionId: value.competitionId,
       revision: value.revision,
       projection: { ok: true, operation: 'tournamentView', public: publicValue as JsonValue },
+      ...(Object.hasOwn(value, 'publication') ? { publication: value.publication as CompetitionRoomTournamentReadValue['publication'] } : {}),
     }
   } catch (error) {
     if (isRecord(error) && typeof error.statusCode === 'number'
@@ -224,6 +232,29 @@ function projectReadResult(
     }
     throw httpError('competitionRoomProtocolError')
   }
+}
+
+function isPublication(value: unknown): boolean {
+  return isPlainRecord(value)
+    && hasExactKeys(value, ['completedAtTrustedTimeMs', 'lockedDecks', 'replays'])
+    && Number.isSafeInteger(value.completedAtTrustedTimeMs)
+    && (value.completedAtTrustedTimeMs as number) >= 0
+    && Array.isArray(value.lockedDecks)
+    && value.lockedDecks.every(team => isPlainRecord(team)
+      && hasExactKeys(team, ['teamId', 'decks'])
+      && typeof team.teamId === 'string' && team.teamId.trim() !== ''
+      && Array.isArray(team.decks) && team.decks.every(deck => isPlainRecord(deck)
+        && hasExactKeys(deck, ['player', 'name', 'cards'])
+        && typeof deck.player === 'string' && deck.player.trim() !== ''
+        && typeof deck.name === 'string' && deck.name.trim() !== ''
+        && Array.isArray(deck.cards) && deck.cards.every(card => typeof card === 'string')))
+    && Array.isArray(value.replays)
+    && value.replays.every(replay => isPlainRecord(replay)
+      && hasExactKeys(replay, ['matchId', 'gameId', 'gameNumber', 'replayId'])
+      && typeof replay.matchId === 'string' && replay.matchId.trim() !== ''
+      && typeof replay.gameId === 'string' && replay.gameId.trim() !== ''
+      && Number.isSafeInteger(replay.gameNumber) && (replay.gameNumber as number) > 0
+      && typeof replay.replayId === 'string' && replay.replayId.trim() !== '')
 }
 
 /** 測試可直接驗證 semantic DTO；native RPC disposer 僅由 read helper 的 transport scope 處理。 */

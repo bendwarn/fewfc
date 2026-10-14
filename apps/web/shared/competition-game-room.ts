@@ -308,6 +308,18 @@ export interface CompetitionGameRoomResult {
   idempotent: boolean
 }
 
+export interface CompetitionReplayDraftRequest {
+  competitionId: string
+  gameId: string
+}
+
+export function isCompetitionReplayDraftRequest(value: unknown): value is CompetitionReplayDraftRequest {
+  return isRecord(value)
+    && hasExactKeys(value, ['competitionId', 'gameId'])
+    && isNonEmptyId(value.competitionId) && value.competitionId.trim() === value.competitionId
+    && isNonEmptyId(value.gameId) && value.gameId.trim() === value.gameId
+}
+
 /** 驗證跨 DO 控制回覆的完整 camelCase payload，避免只憑部分欄位推進 revision。 */
 export function isCompetitionClockControlAck(
   value: unknown,

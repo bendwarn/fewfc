@@ -101,6 +101,9 @@ import {
   type CompetitionRoomTournamentReadRequest,
   type CompetitionRoomTournamentReadResult,
   type CompetitionRoomTournamentReadValue,
+  type CompetitionRoomPublication,
+  type CompetitionRoomPublishedReplay,
+  competitionReplayId,
   type CompetitionRoomProvisionScheduledGameRequest,
   type CompetitionRoomProvisionScheduledGameResult,
   type CompetitionRoomProvisionScheduledGameValue,
@@ -165,6 +168,14 @@ interface CompetitionTournamentReadMetaRow {
   revision: number
   server_state_json: string
   updated_trusted_time_ms: number
+}
+
+interface CompetitionCompletionRow {
+  [key: string]: ArrayBuffer | string | number | null
+  competition_id: string
+  completed_at_trusted_time_ms: number
+  locked_decks_json: string
+  replay_refs_json: string
 }
 
 interface AclRow {
@@ -467,7 +478,7 @@ interface ScheduledMatchMaterialization {
   result: JsonValue
 }
 
-const SCHEMA_VERSION = 17
+const SCHEMA_VERSION = 18
 
 const OPERATION_NAMES: CompetitionOperationName[] = [
   'registrationCreate',
@@ -1296,6 +1307,18 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
           WHERE template_json IS NOT NULL`)
         this.storage.sql.exec(
           'INSERT INTO competition_schema_migrations (version, applied_at_trusted_time_ms) VALUES (17, 0)',
+        )
+      }
+
+      if (currentVersion < 18) {
+        this.storage.sql.exec(`CREATE TABLE IF NOT EXISTS competition_completion (
+          competition_id TEXT PRIMARY KEY,
+          completed_at_trusted_time_ms INTEGER NOT NULL CHECK (completed_at_trusted_time_ms >= 0),
+          locked_decks_json TEXT NOT NULL,
+          replay_refs_json TEXT NOT NULL
+        )`)
+        this.storage.sql.exec(
+          'INSERT INTO competition_schema_migrations (version, applied_at_trusted_time_ms) VALUES (18, 0)',
         )
       }
 
@@ -5363,7 +5386,11 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     serverState: CompetitionServerState,
     organizerUserId: string,
     trustedTimeMs: number,
-  ): Promise<{ teamIds: string[], announcement: JsonObject, teams: { teamId: string, members: string[] }[] } | null> {
+  ): Promise<{
+    teamIds: string[]
+    announcement: JsonObject
+    teams: { teamId: string, members: string[], decks: { player: string, name: string, cards: string[] }[] }[]
+  } | null> {
     let response: CompetitionEngineResponse
     try {
       response = await this.engine({
@@ -5914,7 +5941,228 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     const roundPublication = await this.publishNextAutomaticRoundIfReady()
     if (stageTransition === 'retry' || roundPublication === 'retry') return 'retry'
     if (stageTransition === 'created' || roundPublication === 'announced') return 'announced'
+    await this.completeCompetitionIfReady()
     return 'none'
+  }
+
+  /** 只在全部公告階段收尾、賽果閉合且正式名次不再待裁決時凍結公開資料。 */
+  private async completeCompetitionIfReady(): Promise<void> {
+    const current = this.meta()
+    if (!current || this.competitionCompletion(current.competition_id)) return
+    let state: CompetitionServerState
+    try { state = parseServerState(current.server_state_json) } catch { return }
+    const tournament = state.tournament
+    if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)
+      || !isLockedRegistrationCheckpoint(state.registration, current.organizer_user_id)) return
+    const stages = tournament.stages
+    if (stages.length === 0
+      || !stages.every(stage => this.isCompletionCandidateStage(stage))) return
+
+    const registration = state.registration as JsonObject
+    const registrationAnnouncement = registration.announcement as JsonObject
+    const plan = parseCompetitionAnnouncementPlan(registrationAnnouncement.plan)
+    // 凍結公告已保存完整階段計畫；數量或識別碼不符時，不可能完成發布。
+    if (!plan || plan.stages.length !== stages.length
+      || plan.stages.some((announced, index) => {
+        const stage = stages[index]
+        return !isJsonObject(stage) || !isJsonObject(stage.config)
+          || stage.config.stageId !== announced.stageId
+      })) return
+
+    // 先驗證每場已完成賽事都有持久重播來源，避免在無法公告時重複查詢私密鎖定名單。
+    const replayRefsByStage = stages.map(stage => (
+      isJsonObject(stage) ? this.competitionReplayRefs(current.competition_id, stage) : null
+    ))
+    if (replayRefsByStage.some(replayRefs => replayRefs === null)) return
+
+    const roster = await this.exportLockedRosterFromState(
+      state, current.organizer_user_id,
+      Math.max(Date.now(), current.updated_trusted_time_ms),
+    )
+    if (!roster || !sameJson(roster.announcement, registrationAnnouncement)
+      || !sameJson(parseCompetitionAnnouncementPlan(roster.announcement.plan), plan)) return
+
+    const replayRefs: CompetitionRoomPublishedReplay[] = []
+    const participatingTeamIds = new Set<string>()
+    let finalStage: JsonObject | undefined
+    for (let index = 0; index < plan.stages.length; index += 1) {
+      const announced = plan.stages[index]
+      const stage = stages[index]
+      const stageConfig = isJsonObject(stage) && isJsonObject(stage.config) ? stage.config : null
+      if (!announced || !this.isCompletionCandidateStage(stage)
+        || !stageConfig || stageConfig.stageId !== announced.stageId
+        || !Array.isArray(stageConfig.teams)) return
+
+      const stageTeamIds = stageConfig.teams.map(team => (team as JsonObject).teamId as string)
+      for (const team of stageConfig.teams) {
+        if (isJsonObject(team) && nonEmpty(team.teamId)) participatingTeamIds.add(team.teamId)
+      }
+      const stageReplays = replayRefsByStage[index]
+      if (stageReplays === null || stageReplays === undefined) return
+      replayRefs.push(...stageReplays)
+      finalStage = stage
+    }
+
+    // 即使實際參賽隊伍少於三隊，缺少的獎牌席位仍是明確空缺；不要求補出虛構名次。
+    if (!finalStage || !participatingTeamIds.size) return
+    const lockedDecks = roster.teams.filter(team => participatingTeamIds.has(team.teamId)).map(team => ({
+      teamId: team.teamId,
+      decks: team.decks.map(deck => ({ ...deck, cards: [...deck.cards] })),
+    }))
+    const completedAt = Math.max(Date.now(), current.updated_trusted_time_ms)
+    if (!safeNonNegativeInteger(completedAt)) return
+
+    this.storage.transactionSync(() => {
+      const latest = this.meta()
+      if (!latest || latest.competition_id !== current.competition_id
+        || latest.revision !== current.revision
+        || latest.server_state_json !== current.server_state_json) return
+      this.storage.sql.exec(
+        `INSERT OR IGNORE INTO competition_completion
+           (competition_id, completed_at_trusted_time_ms, locked_decks_json, replay_refs_json)
+         VALUES (?, ?, ?, ?)`,
+        current.competition_id, completedAt, JSON.stringify(lockedDecks), JSON.stringify(replayRefs),
+      )
+    })
+  }
+
+  private isCompletionCandidateStage(value: unknown): value is JsonObject {
+    if (!isJsonObject(value) || value.status !== 'finished' || value.lastScheduleError !== null
+      || !isJsonObject(value.config) || !Array.isArray(value.config.teams)
+      || !value.config.teams.every(team => isJsonObject(team) && nonEmpty(team.teamId))
+      || !Array.isArray(value.rounds) || !value.rounds.every(round => (
+        isJsonObject(round) && Array.isArray(round.matches)
+      )) || !Array.isArray(value.standings) || !Array.isArray(value.rankingTieDecisions)) return false
+
+    const config = value.config as JsonObject
+    const stages = value.rounds as JsonObject[]
+    const standings = value.standings as JsonValue[]
+    const stageTeamIds = (config.teams as JsonObject[]).map(team => team.teamId as string)
+    const standingTeamIds = standings.map(standing => (
+      isJsonObject(standing) && nonEmpty(standing.teamId) ? standing.teamId : ''
+    ))
+    if (new Set(stageTeamIds).size !== stageTeamIds.length
+      || standingTeamIds.some(teamId => !teamId)
+      || new Set(standingTeamIds).size !== standingTeamIds.length
+      || standingTeamIds.length !== stageTeamIds.length
+      || stageTeamIds.some(teamId => !standingTeamIds.includes(teamId))) return false
+
+    const matches = stages.flatMap(round => round.matches as JsonValue[])
+    if (!matches.every(match => {
+      if (!isJsonObject(match)) return false
+      if (match.status === 'completed') return isJsonObject(match.result)
+      return match.status === 'cancelled' && nonEmpty(match.cancellationReason)
+    })) return false
+
+    const singleEntrantWithoutMatches = matches.length === 0
+      && stageTeamIds.length === 1 && standings.length === 1
+      && isJsonObject(standings[0]) && standings[0].rank === 1
+    if (singleEntrantWithoutMatches || this.isExplicitFinalDoubleLoss(value)) return true
+
+    const ranks = standings.map(row => isJsonObject(row) ? row.rank : null)
+    return ranks.length > 0
+      && ranks.every(safePositiveIntegerValue)
+      && new Set(ranks).size === ranks.length
+  }
+
+  /** 單敗決賽雙負會明確空出冠亞軍，Rust 保留真實名次欄位但不虛構 rank。 */
+  private isExplicitFinalDoubleLoss(stage: JsonObject): boolean {
+    if (!isJsonObject(stage.config) || stage.config.format !== 'singleElimination'
+      || !Array.isArray(stage.rounds) || stage.rounds.length === 0) return false
+    const rounds = stage.rounds
+    const finalRound = rounds[rounds.length - 1]
+    if (!isJsonObject(finalRound) || finalRound.kind !== 'main'
+      || !Array.isArray(finalRound.matches)) return false
+    // Rust 的 Standard Match 不序列化 purpose；只有季軍賽會帶入該欄位。
+    const standardMatches = finalRound.matches.filter(match => (
+      isJsonObject(match) && !Object.hasOwn(match, 'purpose')
+    ))
+    if (standardMatches.length !== 1) return false
+    const finalMatch = standardMatches[0]
+    if (!isJsonObject(finalMatch) || finalMatch.kind !== 'main'
+      || !Array.isArray(finalMatch.participants) || finalMatch.participants.length !== 2
+      || finalMatch.status !== 'completed'
+      || !isJsonObject(finalMatch.result) || finalMatch.result.type !== 'doubleLoss') return false
+    if (!finalRound.matches.every(match => isJsonObject(match)
+      && (match.status === 'completed' || match.status === 'cancelled'
+        && nonEmpty(match.cancellationReason)))) return false
+    return rounds.slice(0, -1).every(round => isJsonObject(round) && Array.isArray(round.matches)
+      && round.matches.every(match => isJsonObject(match)
+        && (match.status === 'completed' || match.status === 'cancelled'
+          && nonEmpty(match.cancellationReason))))
+  }
+
+  private competitionCompletion(competitionId: string): CompetitionCompletionRow | undefined {
+    const row = this.storage.sql.exec<CompetitionCompletionRow>(
+      'SELECT * FROM competition_completion WHERE competition_id = ?', competitionId,
+    ).toArray()[0]
+    if (!row || row.competition_id !== competitionId
+      || !safeNonNegativeInteger(row.completed_at_trusted_time_ms)
+      || typeof row.locked_decks_json !== 'string' || typeof row.replay_refs_json !== 'string') return undefined
+    try {
+      const decks: unknown = JSON.parse(row.locked_decks_json)
+      const replays: unknown = JSON.parse(row.replay_refs_json)
+      if (!Array.isArray(decks) || !decks.every(team => isJsonObject(team)
+        && hasExactKeys(team, ['teamId', 'decks']) && nonEmpty(team.teamId)
+        && Array.isArray(team.decks) && team.decks.every(deck => isJsonObject(deck)
+          && hasExactKeys(deck, ['player', 'name', 'cards']) && nonEmpty(deck.player)
+          && nonEmpty(deck.name) && isStringArray(deck.cards)))
+        || !Array.isArray(replays) || !replays.every(replay => isJsonObject(replay)
+          && hasExactKeys(replay, ['matchId', 'gameId', 'gameNumber', 'replayId'])
+          && nonEmpty(replay.matchId) && nonEmpty(replay.gameId)
+          && safePositiveIntegerValue(replay.gameNumber) && nonEmpty(replay.replayId))) return undefined
+      return row
+    } catch {
+      return undefined
+    }
+  }
+
+  private competitionReplayRefs(
+    competitionId: string,
+    stage: JsonObject,
+  ): CompetitionRoomPublishedReplay[] | null {
+    if (!Array.isArray(stage.rounds)) return null
+    const refs: CompetitionRoomPublishedReplay[] = []
+    for (const round of stage.rounds) {
+      if (!isJsonObject(round) || !Array.isArray(round.matches)) return null
+      for (const scheduled of round.matches) {
+        if (!isJsonObject(scheduled) || scheduled.status !== 'completed') continue
+        if (!nonEmpty(scheduled.matchId)) return null
+        const resultType = isJsonObject(scheduled.result) ? scheduled.result.type : null
+        const expectsReplay = resultType === 'win' || resultType === 'draw' || resultType === 'doubleLoss'
+        const matchRow = this.match(scheduled.matchId)
+        if (!matchRow) {
+          if (expectsReplay) return null
+          continue
+        }
+        let projection: CompetitionRoomMatchProjection | null
+        try { projection = parseOptionalProjection(matchRow.match_projection_json) } catch { return null }
+        const publicMatch = projection && isJsonObject(projection.public)
+          && isJsonObject(projection.public.match) ? projection.public.match : null
+        const games = publicMatch && Array.isArray(publicMatch.games) ? publicMatch.games : null
+        if (games === null || (expectsReplay && games.length === 0)) return null
+        for (const game of games) {
+          if (!isJsonObject(game) || !safePositiveIntegerValue(game.gameNumber)) return null
+          const provision = this.storage.sql.exec<{
+            [key: string]: ArrayBuffer | string | number | null
+            game_id: string
+            status: string
+          }>(
+            `SELECT game_id, status FROM competition_game_provision
+             WHERE match_id = ? AND game_number = ?`,
+            scheduled.matchId, game.gameNumber,
+          ).toArray()[0]
+          if (!provision || provision.status !== 'provisioned' || !nonEmpty(provision.game_id)) return null
+          refs.push({
+            matchId: scheduled.matchId,
+            gameId: provision.game_id,
+            gameNumber: game.gameNumber,
+            replayId: competitionReplayId(competitionId, provision.game_id),
+          })
+        }
+      }
+    }
+    return refs
   }
 
   /** 前輪權威完成後，預留最多五分鐘備妥下一輪，公告點後再留五分鐘報到。 */
@@ -7692,7 +7940,8 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
   ): Promise<CompetitionRoomTournamentReadResult> {
     if (!isJsonObject(request)
       || !hasExactKeys(request, ['competitionId', 'callerUserId'])
-      || !nonEmpty(request.competitionId) || !nonEmpty(request.callerUserId)) {
+      || !nonEmpty(request.competitionId)
+      || (request.callerUserId !== null && !nonEmpty(request.callerUserId))) {
       return roomFailure('invalidRequest', 'competition id and caller user id are required')
     }
     let current = this.storage.sql.exec<CompetitionTournamentReadMetaRow>(
@@ -7708,9 +7957,10 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       || !nonEmpty(current.organizer_user_id)) {
       return roomFailure('invalidTournamentCheckpoint', 'tournament checkpoint is malformed')
     }
-    const caller = this.acl(request.callerUserId)
-    if (!caller || caller.active !== 1
-      || !['organizer', 'referee', 'player'].includes(caller.role)) {
+    const completion = this.competitionCompletion(current.competition_id)
+    const caller = request.callerUserId === null ? undefined : this.acl(request.callerUserId)
+    if (!completion && (!caller || caller.active !== 1
+      || !['organizer', 'referee', 'player'].includes(caller.role))) {
       return roomFailure('notParticipant', 'caller is not an active competition participant')
     }
 
@@ -7746,7 +7996,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     let response: CompetitionEngineResponse
     try {
       response = await this.engine({
-        serverActor: actorFor(caller.role, request.callerUserId),
+        serverActor: actorFor(caller?.role ?? 'organizer', request.callerUserId ?? current.organizer_user_id),
         trustedTimeMs: current.updated_trusted_time_ms,
         operation: { type: 'tournamentView' },
         serverState,
@@ -7767,6 +8017,13 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return roomFailure('invalidTournamentCheckpoint', 'tournament checkpoint is malformed')
     }
 
+    const publication: CompetitionRoomPublication | undefined = completion
+      ? {
+          completedAtTrustedTimeMs: completion.completed_at_trusted_time_ms,
+          lockedDecks: JSON.parse(completion.locked_decks_json),
+          replays: JSON.parse(completion.replay_refs_json),
+        }
+      : undefined
     return roomSuccess<CompetitionRoomTournamentReadValue>({
       competitionId: current.competition_id,
       revision: current.revision,
@@ -7775,6 +8032,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         operation: 'tournamentView',
         public: raw.public,
       },
+      ...(publication ? { publication } : {}),
     })
   }
 
@@ -9526,6 +9784,10 @@ function safeNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
+function safePositiveIntegerValue(value: unknown): value is number {
+  return safeNonNegativeInteger(value) && value > 0
+}
+
 function parseClockRuleGameResult(
   publicValue: JsonValue,
   teams: string[],
@@ -9929,12 +10191,16 @@ function registrationFreezeDeadline(value: unknown, organizerUserId: string): nu
 function parseLockedRoster(
   value: unknown,
   organizerUserId: string,
-): { teamIds: string[], announcement: JsonObject, teams: { teamId: string, members: string[] }[] } | null {
+): {
+  teamIds: string[]
+  announcement: JsonObject
+  teams: { teamId: string, members: string[], decks: { player: string, name: string, cards: string[] }[] }[]
+} | null {
   if (!isJsonObject(value) || !hasExactKeys(value, ['announcement', 'teams'])
     || !isRegistrationAnnouncement(value.announcement, organizerUserId) || !Array.isArray(value.teams)) return null
   const announcement = value.announcement
   const teamIds: string[] = []
-  const teams: { teamId: string, members: string[] }[] = []
+  const teams: { teamId: string, members: string[], decks: { player: string, name: string, cards: string[] }[] }[] = []
   const allMembers = new Set<string>()
   for (const team of value.teams) {
     if (!isJsonObject(team) || !hasExactKeys(team, ['teamId', 'captain', 'members', 'rosterVersion', 'decks'])
@@ -9960,7 +10226,15 @@ function parseLockedRoster(
       if (!isUniqueNonEmptyStringArray(deckPlayers) || !sameTeamSet(deckPlayers, members)) return null
     }
     teamIds.push(team.teamId)
-    teams.push({ teamId: team.teamId, members: [...members] })
+    teams.push({
+      teamId: team.teamId,
+      members: [...members],
+      decks: decks.map(deck => ({
+        player: deck.player as string,
+        name: deck.name as string,
+        cards: [...deck.cards as string[]],
+      })),
+    })
   }
   return isUniqueNonEmptyStringArray(teamIds) ? { teamIds, announcement, teams } : null
 }

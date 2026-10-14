@@ -203,7 +203,7 @@ mock.module('../rules-engine', () => ({
       : state
     return {
       type: 'ready',
-      record: finished ? [{ events: recordEvents }] : [],
+      record: finished ? [{ source: 'Automatic', events: recordEvents }] : [],
       state: returnedState,
       battleRecord: { preparation: { entries: [] }, turns: [] },
       playableActions: [],
@@ -4244,6 +4244,57 @@ test('terminal identity is collision-free for colon-containing tuples and stable
     .toBe(['competition:match', '1', 2, 'instance'].join(':'))
   expect(left).not.toBe(right)
   expect(retry).toBe(left)
+})
+
+test.serial('ticket 16 builds a stable public replay draft from the finished room snapshot and durable GameStarted event', async () => {
+  rulesEngineMode = 'finished'
+  const storage = new MemoryStorage()
+  try {
+    const { room, request, pendingWaits } = await startTerminalRoom(storage)
+    const draftRequest = { competitionId: request.binding.competitionId, gameId: request.gameId }
+    expect(await room.getCompetitionReplayDraft(draftRequest)).toBeNull()
+
+    const recordBefore = await storage.get<Record<string, unknown>>('gameRecord')
+    const response = await post(room, {
+      type: 'submitCommand', commandId: 'ticket16-finish-game',
+      gameInstanceId: recordBefore?.gameInstanceId,
+      transactionId: 'ticket16-finish-transaction', actorUserId: 'user-a',
+      action: { type: 'passAction', reason: 'NoCardsInHand' },
+    })
+    expect(response.status).toBe(200)
+    await drainWaitUntil(pendingWaits)
+    expect(await storage.get<Record<string, unknown>>('metadata')).toMatchObject({ status: 'Finished' })
+
+    const admission = await storage.get<{ start: { startSequence: number } }>('competitionGameAdmission')
+    if (!admission?.start) throw new Error('durable competition start is missing')
+    const startKey = `event:${admission.start.startSequence.toString().padStart(12, '0')}`
+    const startEvent = await storage.get<Record<string, unknown>>(startKey)
+    expect(startEvent).toMatchObject({ type: 'GameStarted', sequence: admission.start.startSequence })
+
+    const readsBeforeDraft = storage.readRequests.length
+    const draft = await room.getCompetitionReplayDraft(draftRequest)
+    const draftReads = storage.readRequests.slice(readsBeforeDraft)
+    expect(draftReads.some(keys => Array.isArray(keys) && keys.includes(startKey))).toBe(true)
+    expect(draft).toMatchObject({
+      replayId: 'competition:competition-1:competition-terminal-game',
+      sourceGameId: request.gameId,
+      finishedAt: expect.any(String),
+      result: { status: 'Finished' },
+      firstPlayer: 'player-a',
+    })
+    const terminalDecision = structuredClone(draft?.record.at(-1))
+    expect(terminalDecision).toMatchObject({
+      source: 'Automatic',
+      events: [expect.objectContaining({ GameEnded: expect.any(Object) })],
+    })
+
+    await storage.put(startKey, { ...startEvent, type: 'notGameStarted' })
+    expect(await room.getCompetitionReplayDraft(draftRequest)).toBeNull()
+    await storage.put(startKey, startEvent)
+    expect(await room.getCompetitionReplayDraft(draftRequest)).toEqual(draft)
+  } finally {
+    rulesEngineMode = 'normal'
+  }
 })
 
 test('canonical Finished commits game record, metadata, receipt, event, terminal outbox and alarm atomically', async () => {

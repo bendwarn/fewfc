@@ -1,5 +1,5 @@
 import { defineEventHandler, getQuery, getRequestHeader, getRouterParam, type H3Event } from 'h3'
-import { requireSession } from '../../../utils/auth'
+import { optionalSession } from '../../../utils/auth'
 import {
   assertCompetitionTournamentQuery,
   normalizeCompetitionTournamentPathId,
@@ -20,10 +20,10 @@ function hasRequestBody(event: H3Event): boolean {
 }
 
 export default defineEventHandler(async (event) => {
-  const session = await requireSession(event)
+  const session = await optionalSession(event)
   const competitionId = normalizeCompetitionTournamentPathId(getRouterParam(event, 'id'))
 
   assertCompetitionTournamentQuery(getQuery(event), hasRequestBody(event))
 
-  return await readCompetitionTournament(event, competitionId, session.user.id)
+  return await readCompetitionTournament(event, competitionId, session?.user.id ?? null)
 })

@@ -105,11 +105,21 @@ export interface TournamentViewStage {
   supersededRounds: TournamentViewRound[]
 }
 
+export interface CompetitionTournamentPublicationView {
+  completedAtTrustedTimeMs: number
+  lockedDecks: Array<{
+    teamId: string
+    decks: Array<{ player: string, name: string, cards: string[] }>
+  }>
+  replays: Array<{ matchId: string, gameId: string, gameNumber: number, replayId: string }>
+}
+
 export interface CompetitionTournamentViewData {
   competitionId: string
   revision: number
   tournamentId: string
   stages: TournamentViewStage[]
+  publication?: CompetitionTournamentPublicationView
 }
 
 export interface CompetitionTournamentViewLoadError {
@@ -132,6 +142,7 @@ export function parseCompetitionTournamentViewResponse(
   try {
     const expectedId = normalizeId(expectedCompetitionId)
     const envelope = exactRecord(input, ['competitionId', 'revision', 'projection'])
+      ?? exactRecord(input, ['competitionId', 'revision', 'projection', 'publication'])
     if (!expectedId || expectedId !== expectedCompetitionId || !envelope
       || envelope.competitionId !== expectedId || !isPositiveSafeInteger(envelope.revision)) {
       throw new CompetitionTournamentViewProtocolError()
@@ -151,14 +162,57 @@ export function parseCompetitionTournamentViewResponse(
       throw new CompetitionTournamentViewProtocolError()
     }
 
+    const publication = Object.hasOwn(envelope, 'publication')
+      ? parsePublication(envelope.publication)
+      : undefined
+    if (Object.hasOwn(envelope, 'publication') && !publication) {
+      throw new CompetitionTournamentViewProtocolError()
+    }
+
     return {
       competitionId: expectedId,
       revision: envelope.revision,
       tournamentId: expectedId,
       stages,
+      ...(publication ? { publication } : {}),
     }
   } catch {
     throw new CompetitionTournamentViewProtocolError()
+  }
+}
+
+function parsePublication(input: unknown): CompetitionTournamentPublicationView | null {
+  const value = exactRecord(input, ['completedAtTrustedTimeMs', 'lockedDecks', 'replays'])
+  if (!value || !isNonNegativeSafeInteger(value.completedAtTrustedTimeMs)) return null
+  const lockedDecks = parseArray(value.lockedDecks, (inputTeam) => {
+    const team = exactRecord(inputTeam, ['teamId', 'decks'])
+    if (!team || !isNonEmptyString(team.teamId)) return null
+    const decks = parseArray(team.decks, (inputDeck) => {
+      const deck = exactRecord(inputDeck, ['player', 'name', 'cards'])
+      if (!deck || !isNonEmptyString(deck.player) || !isNonEmptyString(deck.name)) return null
+      const cards = parseArray(deck.cards, card => isNonEmptyString(card) ? card : null)
+      return cards ? { player: deck.player, name: deck.name, cards } : null
+    })
+    return decks ? { teamId: team.teamId, decks } : null
+  })
+  const replays = parseArray(value.replays, (inputReplay) => {
+    const replay = exactRecord(inputReplay, ['matchId', 'gameId', 'gameNumber', 'replayId'])
+    if (!replay || !isNonEmptyString(replay.matchId) || !isNonEmptyString(replay.gameId)
+      || !isPositiveSafeInteger(replay.gameNumber) || !isNonEmptyString(replay.replayId)) return null
+    return {
+      matchId: replay.matchId,
+      gameId: replay.gameId,
+      gameNumber: replay.gameNumber,
+      replayId: replay.replayId,
+    }
+  })
+  if (!lockedDecks || !replays
+    || new Set(lockedDecks.map(team => team.teamId)).size !== lockedDecks.length
+    || new Set(replays.map(replay => replay.replayId)).size !== replays.length) return null
+  return {
+    completedAtTrustedTimeMs: value.completedAtTrustedTimeMs,
+    lockedDecks,
+    replays,
   }
 }
 
@@ -179,7 +233,7 @@ export function presentCompetitionTournamentViewError(
     return { kind: 'error', message: '登入狀態已失效，請重新登入後再查詢。' }
   }
   if (status === 403) {
-    return { kind: 'forbidden', message: '目前帳號沒有這場賽事的賽程讀取權限。' }
+    return { kind: 'forbidden', message: '此賽事目前沒有可公開查閱的賽程。' }
   }
   if (status === 404) {
     return { kind: 'error', message: '找不到這場賽事，請確認賽事 ID。' }

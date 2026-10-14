@@ -12,6 +12,11 @@ export type AuthNavigationResult = { allow: true } | { redirect: string }
 const AUTHENTICATION_PATHS = new Set(['/login'])
 const PUBLIC_PATHS = new Set(['/', '/login', '/privacy'])
 
+function isPublicCompetitionPath(path: string): boolean {
+  return /^\/competitions\/[^/]+$/.test(path)
+    || /^\/replays\/competition(?::|%3a)[^/]+$/i.test(path)
+}
+
 export function resolveAuthNavigation(input: AuthNavigationInput): AuthNavigationResult {
   if (input.authenticated) {
     if (AUTHENTICATION_PATHS.has(input.path) || input.path === '/') {
@@ -21,7 +26,7 @@ export function resolveAuthNavigation(input: AuthNavigationInput): AuthNavigatio
     return { allow: true }
   }
 
-  if (PUBLIC_PATHS.has(input.path)) {
+  if (PUBLIC_PATHS.has(input.path) || isPublicCompetitionPath(input.path)) {
     return { allow: true }
   }
 

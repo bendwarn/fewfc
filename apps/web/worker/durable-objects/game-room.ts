@@ -50,6 +50,7 @@ import {
   type CompetitionGameRevokeResult,
   type CompetitionRoomReadyAck,
   type CompetitionGameClockControlEligibilityRequest,
+  type CompetitionReplayDraftRequest,
   type CompetitionGameCreateRequest,
   type CompetitionGameReadyRequest,
   type CompetitionGameReadyResult,
@@ -59,6 +60,7 @@ import {
   isCompetitionGameNoShowDecision,
   isCompetitionGameReadyRequest,
   isCompetitionGameClockControlEligibilityRequest,
+  isCompetitionReplayDraftRequest,
   isCompetitionGameAdmissionRequestShape,
   isCompetitionGameAdmissionRequest,
   isCompetitionGameInitialStartEvidence,
@@ -73,6 +75,7 @@ import {
   type CompetitionRoomRoundPublicationReadResult,
   type CompetitionRoomTerminalIngestRequest,
   type CompetitionRoomTerminalIngestResult,
+  competitionReplayId,
 } from '../../shared/competition-room'
 import {
   isExactCompetitionJson,
@@ -347,6 +350,68 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       return true
     } catch {
       return false
+    }
+  }
+
+  /** 賽事已授權公開後，從已完成的競賽局建立可重試的唯讀重播草稿。 */
+  async getCompetitionReplayDraft(
+    request: CompetitionReplayDraftRequest,
+  ): Promise<CompletedReplayDraft | null> {
+    try {
+      if (!isCompetitionReplayDraftRequest(request)) return null
+      // 先用 admission 找到事件鍵，再用同一批 get 讀取最終 admission 與該事件，
+      // 避免把不同版本的 room state 拼成可公開的 replay draft。
+      const admissionHint = await this.ctx.storage.get<unknown>(competitionAdmissionKey)
+      const hintedStart = isRecord(admissionHint) && isRecord(admissionHint.start)
+        ? admissionHint.start
+        : null
+      const hintedSequence = hintedStart && isSafeNonNegativeInteger(hintedStart.startSequence)
+        && hintedStart.startSequence > 0
+        ? hintedStart.startSequence
+        : null
+      const snapshotKeys = [
+        'metadata', 'competitionBinding', 'gameRecord', competitionAdmissionKey,
+        ...(hintedSequence === null ? [] : [this.eventKey(hintedSequence)]),
+      ]
+      const current = await this.ctx.storage.get<unknown>(snapshotKeys)
+      const metadata = current.get('metadata')
+      const binding = current.get('competitionBinding')
+      const record = current.get('gameRecord')
+      const admission = current.get(competitionAdmissionKey)
+      if (!isCompetitionSnapshotData(metadata) || !hasCompetitionReadyMetadataShape(metadata)
+        || !competitionBindingIsValid(binding) || !isCompetitionSnapshotData(record)
+        || metadata.status !== 'Finished' || metadata.gameId !== request.gameId
+        || binding.competitionId !== request.competitionId || !this.competitionMembersMatchBinding(metadata, binding)
+        || !competitionAdmissionMatchesBinding(admission, metadata, binding) || admission.status !== 'started'
+        || !this.hasDurableCompetitionStart(current, metadata, binding, admission)
+        || !this.isCompleteCompetitionGameRecord(record, metadata, binding)
+        || !isSafeNonNegativeInteger(record.sequence) || record.sequence < 1
+        || typeof record.finishedAt !== 'string' || !record.finishedAt.trim()
+        || !record.rulesRecord.every(decision => isRecord(decision)
+          && hasCompetitionSnapshotKeys(decision, ['source', 'events']) && Array.isArray(decision.events))) {
+        return null
+      }
+      const finished = await this.callReadyRules({ type: 'refresh' }, 'observer', record)
+      const conclusion = finished.state.gameConclusion
+      if (finished.state.status !== 'Finished' || !isCompetitionGameConclusion(conclusion)
+        || !conclusionUsesSetupTeams(conclusion, record)
+        || !hasCanonicalTerminalRecord(record.rulesRecord, conclusion)) return null
+
+      return {
+        schemaVersion: 1,
+        replayId: competitionReplayId(request.competitionId, metadata.gameId),
+        sourceGameId: metadata.gameId,
+        finishedAt: record.finishedAt,
+        setup: record.setup,
+        record: record.rulesRecord,
+        players: metadata.members.map(member => ({ player: member.player, displayName: member.displayName })),
+        originalUserIds: metadata.members.map(member => member.userId),
+        roomName: metadata.name,
+        result: { status: finished.state.status, hp: finished.state.hp },
+        firstPlayer: record.firstPlayer,
+      }
+    } catch {
+      return null
     }
   }
 

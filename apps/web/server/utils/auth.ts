@@ -157,10 +157,15 @@ export function authForEvent(event: H3Event) {
   })
 }
 
-export async function requireSession(event: H3Event) {
-  const session = await authForEvent(event).api.getSession({
+/** 讀取公開賽事時允許沒有登入者，其他資料仍由各端點決定授權。 */
+export async function optionalSession(event: H3Event) {
+  return await authForEvent(event).api.getSession({
     headers: event.headers,
   })
+}
+
+export async function requireSession(event: H3Event) {
+  const session = await optionalSession(event)
 
   if (!session?.user) {
     throw createError({

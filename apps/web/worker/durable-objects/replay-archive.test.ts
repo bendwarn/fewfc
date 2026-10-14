@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'bun:test'
 
+const rulesRequests: Array<{ action: { type: string }, viewer: string }> = []
+
 mock.module('cloudflare:workers', () => ({
   DurableObject: class {
     protected ctx: unknown
@@ -12,6 +14,19 @@ mock.module('cloudflare:workers', () => ({
   },
 }))
 
+mock.module('../rules-engine', () => ({
+  callRulesEngine: async (request: { action: { type: string }, viewer: string }) => {
+    rulesRequests.push(structuredClone(request))
+    return {
+      currentStep: 0,
+      totalSteps: 0,
+      state: { hands: [{ cards: { kind: request.viewer === 'observer' ? 'hidden' : 'known' } }] },
+      battleRecord: { preparation: { entries: [] }, turns: [] },
+      interaction: { canChooseInitialPouch: false },
+    }
+  },
+}))
+
 const { ReplayArchive } = await import('./replay-archive')
 
 class MemoryStorage {
@@ -20,6 +35,10 @@ class MemoryStorage {
 
   async get<T>(key: string): Promise<T | undefined> {
     return this.values.get(key) as T | undefined
+  }
+
+  async put(key: string, value: unknown): Promise<void> {
+    this.values.set(key, structuredClone(value))
   }
 
   async deleteAll(): Promise<void> {
@@ -78,4 +97,44 @@ test('ReplayArchive 清理僅接受其自身 sourceGameId 證明的關聯，且�
   expect(retry.status).toBe(404)
   expect(await retry.json()).toEqual({ status: 'absent', purged: false, epoch: 'cutover-75' })
   expect(storage.deleteAllCalls).toBe(1)
+})
+
+test('公開競賽重播使用 observer projection，私有重播維持 Replay projection', async () => {
+  const storage = new MemoryStorage()
+  const archive = replayArchive(storage)
+  const draft = {
+    schemaVersion: 1,
+    replayId: 'competition:competition-1:game-1',
+    sourceGameId: 'game-1',
+    finishedAt: '2026-10-14T00:00:00.000Z',
+    setup: {},
+    record: [],
+    players: [{ player: 'player-a', displayName: '甲' }],
+    originalUserIds: ['user-a'],
+    roomName: 'game-1',
+    result: {},
+    firstPlayer: 'player-a',
+  }
+  const created = await archive.fetch(new Request('https://replay.internal/create', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ archive: draft, lifecycle: { referenceCount: 1, version: 1 } }),
+  }))
+  expect(created.status).toBe(201)
+
+  const publicFrameResponse = await archive.fetch(new Request(
+    'https://replay.internal/?step=0&public=1',
+  ))
+  expect(publicFrameResponse.status).toBe(200)
+  const publicFrame = await publicFrameResponse.json() as { state: { hands: Array<{ cards: { kind: string } }> } }
+  expect(publicFrame.state.hands[0]?.cards.kind).toBe('hidden')
+  expect(rulesRequests[0]).toMatchObject({
+    action: { type: 'publicReplayFrame', step: 0 }, viewer: 'observer',
+  })
+
+  const privateFrameResponse = await archive.fetch(new Request('https://replay.internal/?step=0'))
+  expect(privateFrameResponse.status).toBe(200)
+  const privateFrame = await privateFrameResponse.json() as { state: { hands: Array<{ cards: { kind: string } }> } }
+  expect(privateFrame.state.hands[0]?.cards.kind).toBe('known')
+  expect(rulesRequests[1]).toMatchObject({ action: { type: 'replayFrame', step: 0 }, viewer: 'replay' })
 })

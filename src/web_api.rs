@@ -180,14 +180,29 @@ fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
     let formation_names = rules.formation_names(&setup).map_err(ApiError::Game)?;
     let viewer = viewer_from_request(request.viewer.as_deref());
     let deck_seed = request.deck_seed.clone();
-    if let ApiAction::ReplayFrame { step, perspective } = request.action {
+    if let ApiAction::ReplayFrame { step, perspective } = &request.action {
         let recorded_decisions = request.record.unwrap_or_default();
-        let frame = replay_frame(&setup, &recorded_decisions, step).map_err(ApiError::Game)?;
+        let frame = replay_frame(&setup, &recorded_decisions, *step).map_err(ApiError::Game)?;
         return replay_response_for(
             frame,
             &setup,
             &recorded_decisions,
-            perspective.map(PlayerId::new),
+            perspective.clone().map(PlayerId::new),
+            Viewer::Replay,
+            &card_labels,
+            &card_facts,
+            &formation_names,
+        );
+    }
+    if let ApiAction::PublicReplayFrame { step, perspective } = &request.action {
+        let recorded_decisions = request.record.unwrap_or_default();
+        let frame = replay_frame(&setup, &recorded_decisions, *step).map_err(ApiError::Game)?;
+        return replay_response_for(
+            frame,
+            &setup,
+            &recorded_decisions,
+            perspective.clone().map(PlayerId::new),
+            Viewer::Observer,
             &card_labels,
             &card_facts,
             &formation_names,
@@ -196,7 +211,9 @@ fn handle(request: ApiRequest) -> Result<ApiResult, ApiError> {
     let mut record = record_from_request(&rules, &setup, request.record, deck_seed.as_deref())?;
 
     match request.action {
-        ApiAction::ReplayFrame { .. } => unreachable!("replay frames return before record loading"),
+        ApiAction::ReplayFrame { .. } | ApiAction::PublicReplayFrame { .. } => {
+            unreachable!("replay frames return before record loading")
+        }
         ApiAction::Start => {
             record = GameRecord::start(
                 setup.clone(),
@@ -636,6 +653,7 @@ fn replay_response_for(
     setup: &GameSetup,
     recorded_decisions: &[RecordedDecision],
     perspective: Option<PlayerId>,
+    viewer: Viewer,
     card_labels: &HashMap<CardInstanceId, String>,
     card_facts: &HashMap<CardInstanceId, WebCardFact>,
     formation_names: &HashMap<String, String>,
@@ -643,14 +661,14 @@ fn replay_response_for(
     let vocabulary = PlayerVocabulary::for_modules(&frame.state.enabled_rule_modules);
     let recorded_prefix = recorded_decision_prefix(recorded_decisions, frame.events.len());
     let mut state = WebPublicGameState::from_public(
-        crate::public_view::state_for(&frame.state, Viewer::Replay),
+        crate::public_view::state_for(&frame.state, viewer.clone()),
         card_labels,
         card_facts,
         formation_names,
     );
     state.set_terminal_resolution(terminal_resolution_for(
         &recorded_prefix,
-        Viewer::Replay,
+        viewer.clone(),
         card_labels,
         card_facts,
         formation_names,
@@ -660,9 +678,13 @@ fn replay_response_for(
         total_steps: frame.total_steps,
         state,
         battle_record: battle_record_for(
-            public_decision_feed(&recorded_prefix, Viewer::Replay),
+            public_decision_feed(&recorded_prefix, viewer.clone()),
             &frame.state,
-            perspective.or_else(|| setup.turn_order.first().cloned()),
+            if matches!(viewer, Viewer::Replay) {
+                perspective.or_else(|| setup.turn_order.first().cloned())
+            } else {
+                None
+            },
             card_labels,
             formation_names,
             &vocabulary,
@@ -744,6 +766,11 @@ struct WebSetupDeckList {
 #[serde(deny_unknown_fields)]
 enum ApiAction {
     ReplayFrame {
+        step: usize,
+        #[serde(default)]
+        perspective: Option<String>,
+    },
+    PublicReplayFrame {
         step: usize,
         #[serde(default)]
         perspective: Option<String>,
@@ -6720,6 +6747,36 @@ mod tests {
         assert!(json.get("totalSteps").is_some());
         assert!(json.get("current_step").is_none());
         assert!(json.get("total_steps").is_none());
+    }
+
+    #[test]
+    fn public_replay_frame_keeps_private_hands_hidden() {
+        let public = handle_request_json(
+            r#"{"action":{"type":"publicReplayFrame","step":0},"viewer":"observer","record":[]}"#,
+        )
+        .expect("public replay frame should serialize");
+        let public: serde_json::Value = serde_json::from_str(&public).unwrap();
+        assert_eq!(public["type"], "replayFrame");
+        assert!(
+            public["state"]["hands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|hand| hand["cards"]["kind"] == "hidden")
+        );
+
+        let private = handle_request_json(
+            r#"{"action":{"type":"replayFrame","step":0},"viewer":"replay","record":[]}"#,
+        )
+        .expect("private replay frame should serialize");
+        let private: serde_json::Value = serde_json::from_str(&private).unwrap();
+        assert!(
+            private["state"]["hands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|hand| hand["cards"]["kind"] == "known")
+        );
     }
 
     #[test]

@@ -28,8 +28,15 @@
     </section>
 
     <section v-else-if="!session.userId.value" class="panel status-panel">
-      <p>登入後即可查看賽事公告與報名狀態。</p>
+      <p>登入後即可查看賽事公告與報名狀態；已完成賽事的結果、凍結牌組與公開重播可在此查閱。</p>
       <NuxtLink class="primary-button link-button" :to="{ path: '/login', query: { redirect: route.fullPath } }">登入</NuxtLink>
+      <CompetitionTournamentView
+        v-if="competitionId"
+        :competition-id="competitionId"
+        :session-identity="null"
+        :context-revision="null"
+        :context-ready="sessionLoaded"
+      />
     </section>
 
     <section v-else-if="!competitionId" class="panel status-panel" role="status">

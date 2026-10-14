@@ -74,7 +74,11 @@ export class ReplayArchive extends DurableObject {
       if (!Number.isInteger(step) || step < 0) {
         return Response.json({ error: 'invalid replay step' }, { status: 400 })
       }
-      return await this.frame(step, url.searchParams.get('perspective') ?? undefined)
+      return await this.frame(
+        step,
+        url.searchParams.get('perspective') ?? undefined,
+        url.searchParams.get('public') === '1',
+      )
     }
     if (request.method === 'DELETE') {
       return await this.delete(await request.json() as ReplayArchiveLifecycle)
@@ -124,7 +128,7 @@ export class ReplayArchive extends DurableObject {
     return Response.json({ status: 'deleted', purged: true, epoch })
   }
 
-  private async frame(step: number, perspective?: string): Promise<Response> {
+  private async frame(step: number, perspective?: string, publicOnly = false): Promise<Response> {
     const archive = await this.ctx.storage.get<CompletedReplayDraft>('archive')
     if (!archive) return Response.json({ error: 'replay not found' }, { status: 404 })
     const effectivePerspective = resolveReplayPerspective(
@@ -138,8 +142,12 @@ export class ReplayArchive extends DurableObject {
 
     try {
       const frame = await callRulesEngine({
-        action: { type: 'replayFrame', step, perspective: effectivePerspective },
-        viewer: 'replay',
+        action: {
+          type: publicOnly ? 'publicReplayFrame' : 'replayFrame',
+          step,
+          perspective: effectivePerspective,
+        },
+        viewer: publicOnly ? 'observer' : 'replay',
         setup: archive.setup,
         record: archive.record,
       }) as unknown as ReplayFrame

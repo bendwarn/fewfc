@@ -78,6 +78,10 @@ test('normalizes only the path id and builds the exact read request from the ses
     competitionId,
     callerUserId: 'session-user',
   })
+  expect(buildCompetitionTournamentReadRequest(competitionId, null)).toEqual({
+    competitionId,
+    callerUserId: null,
+  })
   expect(Object.keys(buildCompetitionTournamentReadRequest(competitionId, 'session-user')).sort())
     .toEqual(['callerUserId', 'competitionId'])
   for (const invalid of ['', '  ', null, 1]) {
@@ -110,6 +114,28 @@ test('projects the complete finished current public tournament for all four form
       projection: { ok: true, operation: 'tournamentView', public: publicValue },
     })
     expect(projected.projection.public).toStrictEqual(publicValue)
+  }
+})
+
+test('projects only exact post-completion decks and published replay references', () => {
+  const publication = {
+    completedAtTrustedTimeMs: 2_000,
+    lockedDecks: [{ teamId: 'team-a', decks: [{ player: 'a-1', name: 'frozen', cards: ['card-a'] }] }],
+    replays: [{ matchId: 'match-a', gameId: 'game-a', gameNumber: 1, replayId: 'competition:competition-1:game-a' }],
+  }
+  expect(projectCompetitionTournamentReadResult(
+    success(tournament('roundRobin'), { publication }), competitionId,
+  )).toMatchObject({ publication })
+
+  for (const invalid of [
+    { ...publication, privateRoster: [] },
+    { ...publication, lockedDecks: [{ teamId: 'team-a', decks: [{ player: 'a-1', name: 'frozen', cards: [], accountDeck: true }] }] },
+    { ...publication, replays: [{ ...publication.replays[0], shuffleOrder: [] }] },
+  ]) {
+    const error = captureError(() => projectCompetitionTournamentReadResult(
+      success(tournament('roundRobin'), { publication: invalid }), competitionId,
+    ))
+    expect(error).toMatchObject({ statusCode: 502, data: { code: 'competitionRoomProtocolError' } })
   }
 })
 

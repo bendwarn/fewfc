@@ -142,7 +142,46 @@ export interface CompetitionRoomReadValue {
 /** 供目前登入者唯讀取得已驗證的完整公開賽程；不接受時間或投影選擇器。 */
 export interface CompetitionRoomTournamentReadRequest {
   competitionId: string
-  callerUserId: string
+  callerUserId: string | null
+}
+
+export interface CompetitionRoomPublishedDecks {
+  teamId: string
+  decks: Array<{ player: string, name: string, cards: string[] }>
+}
+
+export interface CompetitionRoomPublishedReplay {
+  matchId: string
+  gameId: string
+  gameNumber: number
+  replayId: string
+}
+
+export interface CompetitionRoomPublication {
+  completedAtTrustedTimeMs: number
+  lockedDecks: CompetitionRoomPublishedDecks[]
+  replays: CompetitionRoomPublishedReplay[]
+}
+
+/** 競賽重播識別碼可逆解析，且重試時保持穩定。 */
+export function competitionReplayId(competitionId: string, gameId: string): string {
+  const encode = (value: string) => encodeURIComponent(value).replaceAll(':', '%3A')
+  return `competition:${encode(competitionId)}:${encode(gameId)}`
+}
+
+export function parseCompetitionReplayId(value: unknown): { competitionId: string, gameId: string } | null {
+  if (typeof value !== 'string' || !value.startsWith('competition:')) return null
+  const separator = value.lastIndexOf(':')
+  if (separator <= 'competition:'.length || separator === value.length - 1) return null
+  try {
+    const competitionId = decodeURIComponent(value.slice('competition:'.length, separator))
+    const gameId = decodeURIComponent(value.slice(separator + 1))
+    return competitionId && gameId && competitionReplayId(competitionId, gameId) === value
+      ? { competitionId, gameId }
+      : null
+  } catch {
+    return null
+  }
 }
 
 export interface CompetitionRoomTournamentReadValue {
@@ -153,6 +192,7 @@ export interface CompetitionRoomTournamentReadValue {
     operation: 'tournamentView'
     public: JsonValue
   }
+  publication?: CompetitionRoomPublication
 }
 
 export type CompetitionRoomTournamentReadResult =

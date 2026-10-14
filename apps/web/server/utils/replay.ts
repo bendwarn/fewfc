@@ -1,5 +1,7 @@
 import { createError, type H3Event } from 'h3'
 import type { CompletedReplayDraft } from '../../shared/game-room'
+import type { CompetitionReplayDraftRequest } from '../../shared/competition-game-room'
+import { competitionReplayId } from '../../shared/competition-room'
 import type { ReplayArchiveLifecycle, ReplayFrame } from '../../worker/durable-objects/replay-archive'
 import { workerEnv, type DurableObjectNamespaceBinding } from './worker-env'
 
@@ -68,6 +70,63 @@ export async function completedReplayDraft(
   return await response.json() as CompletedReplayDraft
 }
 
+export async function competitionReplayDraft(
+  event: H3Event,
+  competitionId: string,
+  gameId: string,
+): Promise<CompletedReplayDraft> {
+  const request: CompetitionReplayDraftRequest = { competitionId, gameId }
+  const namespace = workerEnv(event).GAME_ROOM
+  const room = namespace.get(namespace.idFromName(gameId)) as unknown as {
+    getCompetitionReplayDraft(input: CompetitionReplayDraftRequest): Promise<unknown>
+  }
+  let value: unknown
+  try {
+    value = await room.getCompetitionReplayDraft(request)
+  } catch {
+    throw createError({ statusCode: 503, statusMessage: 'Competition replay is temporarily unavailable.' })
+  }
+  if (!isCompetitionReplayDraft(value, competitionReplayId(competitionId, gameId), gameId)) {
+    throw createError({ statusCode: 404, statusMessage: 'Competition replay is unavailable.' })
+  }
+  return value
+}
+
+function isCompetitionReplayDraft(
+  value: unknown,
+  expectedReplayId: string,
+  expectedGameId: string,
+): value is CompletedReplayDraft {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    'schemaVersion', 'replayId', 'sourceGameId', 'finishedAt', 'setup', 'record',
+    'players', 'originalUserIds', 'roomName', 'result', 'firstPlayer',
+  ]) || value.schemaVersion !== 1 || value.replayId !== expectedReplayId
+    || value.sourceGameId !== expectedGameId || !isNonEmptyString(value.finishedAt)
+    || !isRecord(value.setup) || !Array.isArray(value.record)
+    || !Array.isArray(value.players) || !Array.isArray(value.originalUserIds)
+    || value.players.length !== value.originalUserIds.length
+    || !value.players.every(player => isRecord(player)
+      && hasExactKeys(player, ['player', 'displayName'])
+      && isNonEmptyString(player.player) && typeof player.displayName === 'string')
+    || !value.originalUserIds.every(isNonEmptyString)
+    || typeof value.roomName !== 'string' || !isRecord(value.result)
+    || !isNonEmptyString(value.firstPlayer)) return false
+  return true
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Reflect.ownKeys(value).length === keys.length
+    && keys.every(key => Object.hasOwn(value, key))
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
 export async function createReplayArchive(
   event: H3Event,
   draft: CompletedReplayDraft,
@@ -111,8 +170,17 @@ async function releaseReplayReference(database: D1Database, replayId: string) {
   return await lifecycleFor(database, replayId)
 }
 
-export async function replayFrame(event: H3Event, replayId: string, step: number): Promise<ReplayFrame | null> {
-  const response = await replayRequest(event, replayId, `?step=${step}`)
+export async function replayFrame(
+  event: H3Event,
+  replayId: string,
+  step: number,
+  perspective?: string,
+  publicOnly = false,
+): Promise<ReplayFrame | null> {
+  const query = new URLSearchParams({ step: String(step) })
+  if (perspective !== undefined) query.set('perspective', perspective)
+  if (publicOnly) query.set('public', '1')
+  const response = await replayRequest(event, replayId, `?${query.toString()}`)
   if (response.status === 404) return null
   if (!response.ok) throw createError({ statusCode: response.status, statusMessage: 'Unable to load replay.' })
   return await response.json() as ReplayFrame

@@ -546,7 +546,7 @@ it('maps not-ready and forbidden responses to fixed safe states with manual retr
   expect(wrapper.text()).not.toContain('private server detail')
   await wrapper.get('button.refresh-button').trigger('click')
   await flushPromises()
-  expect(wrapper.get('[role="alert"]').text()).toBe('目前帳號沒有這場賽事的賽程讀取權限。')
+  expect(wrapper.get('[role="alert"]').text()).toBe('此賽事目前沒有可公開查閱的賽程。')
   expect(wrapper.text()).not.toContain('private ACL detail')
   expect(fetchMock).toHaveBeenCalledTimes(2)
   await wrapper.unmount()
@@ -576,6 +576,71 @@ it('automatically refreshes a locked registration after notReady and renders the
   expect(wrapper.get('.seed-list').text()).toContain('種子 1team-a')
   expect(wrapper.get('.seed-list').text()).toContain('種子 2team-b')
   await wrapper.unmount()
+})
+
+it('renders frozen deck labels in Chinese, shows a readable fallback, and retries the card catalog lookup', async () => {
+  const completed = {
+    ...tournamentResponse('competition a'),
+    publication: {
+      completedAtTrustedTimeMs: 2_000,
+      lockedDecks: [{ teamId: '00000000-0000-4000-8000-000000000001', decks: [{
+        player: '00000000-0000-4000-8000-000000000002', name: 'frozen deck', cards: ['metal-1', 'metal-1', 'unlisted-card'],
+      }] }],
+      replays: [{
+        matchId: '00000000-0000-4000-8000-000000000003', gameId: 'game-1', gameNumber: 1,
+        replayId: 'competition:competition%20a:game-1',
+      }],
+    },
+  }
+  let catalogCalls = 0
+  let rejectFirstCatalog!: (error: Error) => void
+  fetchMock.mockImplementation(async (url: string) => {
+    if (url === '/api/rules/catalog') {
+      catalogCalls += 1
+      if (catalogCalls === 1) {
+        return await new Promise<unknown>((_resolve, reject) => { rejectFirstCatalog = reject })
+      }
+      return { deckComposition: { cardDefinitions: [{ id: 'metal-1', name: '金一' }] } }
+    }
+    return completed
+  })
+
+  const wrapper = await mountSuspended(CompetitionTournamentView, {
+    props: { ...props(), sessionIdentity: null, contextRevision: null },
+  })
+  try {
+    await flushPromises()
+    expect(wrapper.get('.publication-card').text()).toContain('本場賽事已完成')
+    expect(wrapper.get('.publication-card').text()).toContain('正在載入牌組卡牌名稱')
+    expect(wrapper.get('.published-replay-list').text()).toContain('重播 1・第 1 局')
+    expect(wrapper.get('.published-replay-list a').attributes('href')).toContain('/replays/')
+    expect(wrapper.find('.published-card-list').exists()).toBe(false)
+
+    rejectFirstCatalog(new Error('private catalog failure'))
+    await flushPromises()
+    expect(wrapper.get('.publication-card').text()).toContain('卡牌名稱暫時無法載入')
+    expect(wrapper.get('.published-card-list').text()).toContain('未知卡牌 × 2')
+    expect(wrapper.get('.published-card-list').text()).not.toContain('metal-1')
+    expect(wrapper.get('.published-card-list').text()).not.toContain('unlisted-card')
+    expect(catalogCalls).toBe(1)
+
+    await wrapper.get('.catalog-retry-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.published-card-list').text()).toContain('金一 × 2')
+    expect(wrapper.get('.published-card-list').text()).toContain('未知卡牌')
+    expect(wrapper.get('.published-card-list').text()).not.toContain('metal-1')
+    expect(wrapper.get('.published-card-list').text()).not.toContain('unlisted-card')
+    expect(catalogCalls).toBe(2)
+
+    const publicationText = wrapper.get('.publication-card').text()
+    expect(publicationText).toContain('隊伍 1')
+    expect(publicationText).toContain('frozen deck・隊員 1')
+    expect(publicationText).not.toContain('00000000-0000-4000-8000-000000000001')
+    expect(publicationText).not.toContain('00000000-0000-4000-8000-000000000002')
+    expect(publicationText).not.toContain('00000000-0000-4000-8000-000000000003')
+  } finally {
+    await wrapper.unmount()
+  }
 })
 
 it('fails closed for a malformed projection and displays an empty round without inferring a final state', async () => {

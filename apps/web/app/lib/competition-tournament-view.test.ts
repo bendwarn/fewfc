@@ -225,6 +225,26 @@ test('parses the exact current tournament projection without inferring rank from
   expect(parsed.stages[2]).not.toHaveProperty('doubleState')
 })
 
+test('parses only the frozen publication payload for a completed tournament', () => {
+  const publication = {
+    completedAtTrustedTimeMs: 2_000,
+    lockedDecks: [{ teamId: 'team-a', decks: [{ player: 'a-1', name: 'frozen', cards: ['card-a', 'card-b'] }] }],
+    replays: [{ matchId: 'match-a', gameId: 'game-a', gameNumber: 1, replayId: 'competition:competition-a:game-a' }],
+  }
+  const parsed = parseCompetitionTournamentViewResponse({ ...response(), publication }, 'competition-a')
+  expect(parsed.publication).toEqual(publication)
+
+  for (const invalid of [
+    { ...publication, privateState: {} },
+    { ...publication, lockedDecks: [{ ...publication.lockedDecks[0], accountDeck: true }] },
+    { ...publication, replays: [{ ...publication.replays[0], shuffleOrder: ['secret'] }] },
+    { ...publication, completedAtTrustedTimeMs: -1 },
+  ]) {
+    expect(() => parseCompetitionTournamentViewResponse({ ...response(), publication: invalid }, 'competition-a'))
+      .toThrow()
+  }
+})
+
 test('preserves exact decimal-string Match Points through the full u64 range', () => {
   for (const matchPoints of ['8589934590', '18446744073709551615']) {
     const parsed = parseCompetitionTournamentViewResponse(
@@ -561,7 +581,7 @@ test('maps not-ready, forbidden, and malformed responses to fixed Chinese messag
   expect(presentCompetitionTournamentViewError({
     statusCode: 403,
     message: 'private response detail',
-  })).toEqual({ kind: 'forbidden', message: '目前帳號沒有這場賽事的賽程讀取權限。' })
+  })).toEqual({ kind: 'forbidden', message: '此賽事目前沒有可公開查閱的賽程。' })
   expect(presentCompetitionTournamentViewError({
     statusCode: 503,
     message: 'private response detail',
@@ -581,7 +601,7 @@ test('recognizes ofetch accessor status and the actual nested H3 error data with
   const forbidden = new Error('private ACL detail')
   Object.defineProperty(forbidden, 'statusCode', { get: () => 403 })
   expect(presentCompetitionTournamentViewError(forbidden)).toEqual({
-    kind: 'forbidden', message: '目前帳號沒有這場賽事的賽程讀取權限。',
+    kind: 'forbidden', message: '此賽事目前沒有可公開查閱的賽程。',
   })
   const badGetter = new Error('private getter detail')
   Object.defineProperty(badGetter, 'statusCode', { get: () => { throw new Error('private getter throws') } })

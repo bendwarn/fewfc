@@ -38,7 +38,13 @@ describe('authentication navigation policy', () => {
     })).toEqual({ allow: true })
   })
 
-  test('retains replay deep links and query semantics through authentication', () => {
+  test('allows competition replay pages anonymously while ordinary saved replays remain private', () => {
+    expect(resolveAuthNavigation({
+      authenticated: false,
+      path: '/replays/competition%3Aevent-1%3Agame-1',
+      fullPath: '/replays/competition%3Aevent-1%3Agame-1?step=12',
+    })).toEqual({ allow: true })
+
     expect(resolveAuthNavigation({
       authenticated: false,
       path: '/replays/replay-9',
@@ -51,6 +57,14 @@ describe('authentication navigation policy', () => {
       fullPath: '/login?redirect=%2Freplays%2Freplay-9%3Fstep%3D12',
       redirect: '/replays/replay-9?step=12',
     })).toEqual({ redirect: '/replays/replay-9?step=12' })
+  })
+
+  test('allows competition result pages while signed out', () => {
+    expect(resolveAuthNavigation({
+      authenticated: false,
+      path: '/competitions/event-1',
+      fullPath: '/competitions/event-1',
+    })).toEqual({ allow: true })
   })
 
   test('sends an unknown protected route to login', () => {

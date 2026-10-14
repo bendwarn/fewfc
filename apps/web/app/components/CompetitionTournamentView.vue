@@ -37,6 +37,59 @@
     <div v-else-if="tournament" class="tournament-content">
       <p class="revision-note" role="status">賽程版本 {{ tournament.revision }}</p>
 
+      <section v-if="tournament.publication" class="publication-card" aria-labelledby="publication-title">
+        <p class="eyebrow">賽事結果</p>
+        <h3 id="publication-title">本場賽事已完成</h3>
+        <p class="muted">完成時間：{{ new Date(tournament.publication.completedAtTrustedTimeMs).toLocaleString('zh-TW') }}</p>
+
+        <section class="published-replays" aria-labelledby="published-replays-title">
+          <h4 id="published-replays-title">公開重播</h4>
+          <p v-if="!tournament.publication.replays.length" class="muted">本場賽事沒有可公開的對局重播。</p>
+          <ul v-else class="published-replay-list">
+            <li v-for="(replay, replayIndex) in tournament.publication.replays" :key="replay.replayId">
+              <NuxtLink :to="`/replays/${encodeURIComponent(replay.replayId)}`">
+                重播 {{ replayIndex + 1 }}・第 {{ replay.gameNumber }} 局
+              </NuxtLink>
+            </li>
+          </ul>
+        </section>
+
+        <section class="published-decks" aria-labelledby="published-decks-title">
+          <h4 id="published-decks-title">凍結牌組</h4>
+          <p v-if="!tournament.publication.lockedDecks.length" class="muted">沒有可公開的凍結牌組。</p>
+          <p v-else-if="publishedCardCatalogState === 'idle' || publishedCardCatalogState === 'loading'" class="muted" role="status">
+            正在載入牌組卡牌名稱…
+          </p>
+          <p v-else-if="publishedCardCatalogState === 'unavailable'" class="muted" role="status">
+            卡牌名稱暫時無法載入；未能對應的項目會顯示為「未知卡牌」。
+          </p>
+          <button
+            v-if="publishedCardCatalogState === 'unavailable'"
+            class="catalog-retry-button"
+            type="button"
+            @click="loadPublishedCardCatalog"
+          >
+            重新載入卡牌名稱
+          </button>
+          <div v-if="publishedCardCatalogState === 'ready' || publishedCardCatalogState === 'unavailable'" class="published-deck-list">
+            <article v-for="(team, teamIndex) in tournament.publication.lockedDecks" :key="team.teamId" class="published-deck">
+              <h5>隊伍 {{ teamIndex + 1 }}</h5>
+              <ul>
+                <li v-for="(deck, deckIndex) in team.decks" :key="`${deck.player}-${deck.name}`">
+                  <strong>{{ deck.name }}</strong>・隊員 {{ deckIndex + 1 }}
+                  <p v-if="!deck.cards.length" class="published-card-list muted">空牌組</p>
+                  <ul v-else class="published-card-list">
+                    <li v-for="card in publishedDeckCardLabels(deck.cards)" :key="card.id">
+                      {{ card.name }}<span v-if="card.count > 1"> × {{ card.count }}</span>
+                    </li>
+                  </ul>
+                </li>
+              </ul>
+            </article>
+          </div>
+        </section>
+      </section>
+
       <article
         v-for="stage in tournament.stages"
         :key="stage.config.stageId"
@@ -350,6 +403,7 @@ import {
   type TournamentViewStage,
   type TournamentViewStageConfig,
 } from '~/lib/competition-tournament-view'
+import { useRulesCatalog } from '~/lib/rules-catalog'
 
 const props = withDefaults(defineProps<{
   competitionId: string
@@ -373,6 +427,7 @@ const loading = ref(false)
 const tournament = ref<CompetitionTournamentViewData | null>(null)
 const loadError = ref<CompetitionTournamentViewLoadError | null>(null)
 const rankingTieBusy = ref<string | null>(null)
+const rulesCatalog = useRulesCatalog()
 const rankingTieMessages = reactive<Record<string, string>>({})
 const rankingTieDrafts = reactive<Record<string, { orderedTeamIds: string[], reason: string }>>({})
 let requestSequence = 0
@@ -382,10 +437,8 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null
 const normalizedCompetitionId = computed(() => normalizeCompetitionId(props.competitionId))
 const canRead = computed(() => props.contextReady
   && Boolean(normalizedCompetitionId.value)
-  && Boolean(props.sessionIdentity?.trim())
-  && typeof props.contextRevision === 'number'
-  && Number.isSafeInteger(props.contextRevision)
-  && props.contextRevision > 0)
+  && (props.contextRevision === null
+    || (Number.isSafeInteger(props.contextRevision) && props.contextRevision > 0)))
 const shouldAutoRefresh = computed(() => props.registrationLocked && (
   loadError.value?.kind === 'notReady'
   || (props.participantEntryEnabled && Boolean(tournament.value?.stages.some(stage => stage.status === 'active')))
@@ -396,6 +449,39 @@ const requestContext = computed(() => JSON.stringify([
   props.contextRevision,
   props.contextReady,
 ]))
+const publishedCardNames = computed(() => new Map(
+  (rulesCatalog.catalog.value?.deckComposition.cardDefinitions ?? [])
+    .map(definition => [definition.id, definition.name] as const),
+))
+
+function publishedDeckCardLabels(cards: string[]) {
+  const counts = new Map<string, number>()
+  for (const card of cards) counts.set(card, (counts.get(card) ?? 0) + 1)
+  return [...counts].map(([id, count]) => ({
+    id,
+    name: publishedCardNames.value.get(id)?.trim() || '未知卡牌',
+    count,
+  }))
+}
+
+type PublishedCardCatalogState = 'idle' | 'loading' | 'ready' | 'unavailable'
+const publishedCardCatalogState = ref<PublishedCardCatalogState>('idle')
+let publishedCardCatalogRequest: Promise<void> | null = null
+
+async function loadPublishedCardCatalog(): Promise<void> {
+  if (rulesCatalog.catalog.value) {
+    publishedCardCatalogState.value = 'ready'
+    return
+  }
+  if (publishedCardCatalogRequest) return await publishedCardCatalogRequest
+
+  publishedCardCatalogState.value = 'loading'
+  publishedCardCatalogRequest = rulesCatalog.load().then(
+    () => { publishedCardCatalogState.value = 'ready' },
+    () => { publishedCardCatalogState.value = 'unavailable' },
+  ).finally(() => { publishedCardCatalogRequest = null })
+  await publishedCardCatalogRequest
+}
 
 function tournamentResultLabel(
   stage: TournamentViewStageConfig,
@@ -512,6 +598,9 @@ async function loadTournament() {
     )
     if (!isCurrentRequest(sequence, identity)) return
     tournament.value = parseCompetitionTournamentViewResponse(response, competitionId)
+    if (tournament.value.publication) {
+      void loadPublishedCardCatalog()
+    }
   } catch (error) {
     if (!isCurrentRequest(sequence, identity)) return
     loadError.value = presentCompetitionTournamentViewError(error)
@@ -702,6 +791,18 @@ onBeforeUnmount(() => {
 .ranking-tie-panel textarea { resize: vertical; }
 .tie-submit { justify-self: start; }
 .old-round { border-style: dashed; opacity: .82; }
+.publication-card { display: grid; gap: .8rem; border: 1px solid var(--app-accent); border-radius: 12px; padding: 1rem; background: var(--app-accent-soft); }
+.publication-card h3, .published-replays h4, .published-decks h4, .published-deck h5 { margin: 0; }
+.published-replays, .published-decks, .published-deck { display: grid; min-width: 0; gap: .6rem; }
+.published-replay-list, .published-deck-list, .published-deck ul, .published-card-list { display: grid; gap: .4rem; margin: 0; padding: 0; list-style: none; }
+.published-replay-list li, .published-deck { min-width: 0; border: 1px solid var(--app-border); border-radius: 8px; padding: .65rem .75rem; background: var(--app-surface-muted); }
+.published-replay-list a { color: var(--app-link); }
+.published-deck h5 { overflow-wrap: anywhere; font-size: .85rem; }
+.published-deck ul { margin-top: .5rem; }
+.published-card-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); font-size: .82rem; }
+.published-deck > ul { padding-left: 0; }
+.catalog-retry-button { justify-self: start; min-height: 2.5rem; border: 1px solid var(--app-border-strong); border-radius: 8px; padding: .45rem .75rem; background: var(--app-control); color: var(--app-text); cursor: pointer; }
+.catalog-retry-button:focus-visible { outline: 3px solid var(--app-focus-ring); outline-offset: 2px; }
 
 @media (max-width: 600px) {
   .tournament-view { padding: 1rem; }

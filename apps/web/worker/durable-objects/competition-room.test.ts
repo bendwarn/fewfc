@@ -3158,7 +3158,14 @@ test('schema migrations are versioned and private rows carry projection identity
   const versions = sql.database.query(
     'SELECT version FROM competition_schema_migrations ORDER BY version',
   ).all() as Array<{ version: number }>
-  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
+  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18])
+  expect(sql.database.query('PRAGMA table_info(competition_completion)')
+    .all().map((column: { name: string }) => column.name)).toEqual([
+    'competition_id',
+    'completed_at_trusted_time_ms',
+    'locked_decks_json',
+    'replay_refs_json',
+  ])
   expect(sql.database.query('PRAGMA table_info(competition_automatic_stage_transition)')
     .all().map((column: { name: string }) => column.name))
     .toContain('qualification_confirmed_trusted_time_ms')
@@ -3317,7 +3324,7 @@ test('legacy unversioned tables migrate in place and preserve readable/idempoten
   const versions = sql.database.query(
     'SELECT version FROM competition_schema_migrations ORDER BY version',
   ).all() as Array<{ version: number }>
-  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
+  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18])
   const privateRow = sql.database.query(
     'SELECT payload_json, revision, operation_type FROM competition_private_projection WHERE user_id = ?',
   ).all('legacy-player') as Array<{ payload_json: string; revision: number; operation_type: string }>
@@ -5672,11 +5679,64 @@ test('v3 migration creates match rows and adds nullable audit identity', async (
   const read = await room.readMatch({ competitionId: 'competition-1', matchId: 'legacy-match', callerUserId: 'viewer' })
   expect(read.ok).toBe(true)
   const schema = sql.database.query('SELECT MAX(version) AS version FROM competition_schema_migrations').get() as { version: number }
-  expect(schema.version).toBe(17)
+  expect(schema.version).toBe(18)
   const columns = sql.database.query('PRAGMA table_info(competition_audit)').all() as Array<{ name: string }>
   expect(columns.some(column => column.name === 'match_id')).toBe(true)
   const rows = sql.database.query('SELECT match_id, revision FROM competition_matches').all() as Array<{ match_id: string; revision: number }>
   expect(rows).toEqual([{ match_id: 'legacy-match', revision: 0 }])
+})
+
+test('ticket 16 accepts a finished single-elimination double loss with a completed Bronze match as an explicit vacancy', async () => {
+  const setup = await e6c2aLockedMatch({ teamCount: 4, format: 'singleElimination',
+    matchFormat: { type: 'firstToWins', value: 1 } })
+  let state = JSON.parse(setup.meta().server_state_json) as CompetitionServerState
+  let now = setup.meta().updated_trusted_time_ms
+  async function submit(operation: CompetitionRequest['operation']) {
+    const response = await setup.adapter({
+      serverActor: { type: 'organizer', playerId: 'organizer-1' },
+      trustedTimeMs: ++now,
+      operation,
+      serverState: state,
+    })
+    if (!response.ok) throw new Error(JSON.stringify(response.error))
+    state = response.serverState
+  }
+
+  for (let index = 0; index < 8; index += 1) {
+    const tournament = state.tournament as JsonObject
+    const stage = (tournament.stages as JsonObject[])[0]!
+    if (stage.status === 'finished') break
+    const rounds = stage.rounds as JsonObject[]
+    const match = rounds.flatMap(round => round.matches as JsonObject[])
+      .find(candidate => candidate.status === 'inProgress' || candidate.status === 'pending')
+    if (!match) throw new Error('未找到尚未收尾的賽事')
+    const matchId = match.matchId as string
+    if (match.status === 'pending') {
+      await submit({ type: 'tournamentStartMatch', stageId: setup.stage.stageId, matchId })
+    }
+    const isFinalChampionship = rounds.length === 2
+      && (rounds[1]!.matches as JsonObject[]).some(candidate => candidate.matchId === matchId)
+      && match.purpose !== 'bronze'
+    const participants = match.participants as string[]
+    await submit({ type: 'tournamentSubmitResult', stageId: setup.stage.stageId, matchId,
+      result: isFinalChampionship ? { type: 'doubleLoss' } : {
+        type: 'win', winnerId: participants[0]!, loserId: participants[1]!, winnerGames: 1, loserGames: 0,
+      },
+    })
+  }
+
+  const stage = ((state.tournament as JsonObject).stages as JsonObject[])[0]!
+  expect(stage.status).toBe('finished')
+  const rounds = stage.rounds as JsonObject[]
+  const finalMatches = rounds.at(-1)!.matches as JsonObject[]
+  expect(finalMatches).toHaveLength(2)
+  expect(finalMatches.every(match => match.status === 'completed')).toBe(true)
+  expect(finalMatches.filter(match => !Object.hasOwn(match, 'purpose'))).toHaveLength(1)
+  expect(finalMatches.find(match => !Object.hasOwn(match, 'purpose'))?.result).toEqual({ type: 'doubleLoss' })
+  expect(finalMatches.find(match => match.purpose === 'bronze')?.result).toMatchObject({ type: 'win' })
+  expect((stage.standings as JsonObject[]).every(standing => standing.rank === null)).toBe(true)
+  expect((setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
+    .isCompletionCandidateStage(stage)).toBe(true)
 })
 
 test('assigned provision derives a 1v1 preconstructed-deck binding for the next game', async () => {
@@ -10079,6 +10139,7 @@ function e6c2aSnapshot(setup: { sql: MemorySql; alarm: TestAlarmState }) {
     'competition_game_provision', 'competition_clock_control_outbox',
     'competition_schema_migrations',
     'competition_automatic_stage_transition',
+    'competition_completion',
     'competition_round_publication', 'competition_round_room_ledger',
     'competition_round_release_outbox',
   ]
@@ -10749,7 +10810,7 @@ test('E6d1b formal WASM tournament query exists for the current persisted stage'
   })
 })
 
-function e6d1bReadRequest(callerUserId: string): CompetitionRoomTournamentReadRequest {
+function e6d1bReadRequest(callerUserId: string | null): CompetitionRoomTournamentReadRequest {
   return { competitionId: 'competition-1', callerUserId }
 }
 
@@ -10771,13 +10832,22 @@ async function e6d1bReadCurrentTournament(
   ).get() as { revision: number; server_state_json: string }
   const authoritativeState = JSON.parse(meta.server_state_json) as JsonObject
   expect(result.value.revision).toBe(meta.revision)
-  expect(Object.keys(result.value).sort()).toEqual(['competitionId', 'projection', 'revision'])
+  expect(Object.keys(result.value).sort()).toEqual(result.value.publication
+    ? ['competitionId', 'projection', 'publication', 'revision']
+    : ['competitionId', 'projection', 'revision'])
   expect(Object.keys(result.value.projection).sort()).toEqual(['ok', 'operation', 'public'])
   expect(result.value.projection.public).toStrictEqual(authoritativeState.tournament)
   expect(setup.calls.slice(callStart).map(call => call.operation.type)).toEqual(['tournamentView'])
-  expect(JSON.stringify(result)).not.toMatch(
+  const privateProjectionCheck = structuredClone(result)
+  if (privateProjectionCheck.ok) delete privateProjectionCheck.value.publication
+  expect(JSON.stringify(privateProjectionCheck)).not.toMatch(
     /"(?:serverState|private|announcement|captain|members|decks|rosterVersion|lockedRoster|binding|history|commandId|callerUserId)"\s*:/,
   )
+  if (result.value.publication) {
+    expect(Object.keys(result.value.publication).sort()).toEqual([
+      'completedAtTrustedTimeMs', 'lockedDecks', 'replays',
+    ])
+  }
   expect(e6c2aSnapshot(setup)).toEqual(before)
   return result.value.projection.public as JsonObject
 }
@@ -10902,6 +10972,119 @@ async function e6d1bFinishScheduledTournament(
   }
   throw new Error(`formal ${setup.stage.format} tournament did not finish within 40 scheduled matches`)
 }
+
+test.serial('ticket 16 completes a uniquely ranked single-stage tournament and publishes immutable data on retry', async () => {
+  const setup = await e6c2aLockedMatch({
+    format: 'roundRobin',
+    matchFormat: { type: 'fixedGames', value: 1 },
+    personalDeck: true,
+    automaticRoundProgression: true,
+  })
+  const beforeFinish = e6c2aSnapshot(setup)
+  expect(await setup.room.readTournament(e6d1bReadRequest(null)))
+    .toMatchObject({ ok: false, error: { code: 'notParticipant' } })
+  expect(e6c2aSnapshot(setup)).toEqual(beforeFinish)
+
+  const terminal = await e6d1bSubmitWinner(setup, 'ticket16-final-result')
+  expect(terminal).toMatchObject({ ok: true })
+  expect((await e6d1bReadCurrentTournament(setup, 'organizer-1')).stages).toHaveLength(1)
+  const completion = setup.sql.database.query(
+    `SELECT competition_id, completed_at_trusted_time_ms, locked_decks_json, replay_refs_json
+     FROM competition_completion WHERE competition_id = ?`,
+  ).get('competition-1') as {
+    competition_id: string
+    completed_at_trusted_time_ms: number
+    locked_decks_json: string
+    replay_refs_json: string
+  } | undefined
+  expect(completion).toBeDefined()
+  expect(Number(completion?.completed_at_trusted_time_ms)).toBeGreaterThanOrEqual(
+    Number(setup.meta().updated_trusted_time_ms),
+  )
+  const decks = JSON.parse(completion!.locked_decks_json) as JsonObject[]
+  expect(decks).toHaveLength(2)
+  expect(decks.map(team => team.teamId).sort()).toEqual(['team-a', 'team-b'])
+  expect(JSON.stringify(decks)).toContain('a-1-private-deck')
+
+  const firstPublicRead = await setup.room.readTournament(e6d1bReadRequest(null))
+  expect(firstPublicRead).toMatchObject({ ok: true, value: {
+    publication: {
+      completedAtTrustedTimeMs: completion?.completed_at_trusted_time_ms,
+      lockedDecks: decks,
+      replays: [{ matchId: setup.matchId, gameNumber: 1 }],
+    },
+  } })
+  if (!firstPublicRead.ok) throw new Error('completed tournament was not public')
+  const publishedReplays = JSON.parse(completion!.replay_refs_json) as JsonObject[]
+  expect(firstPublicRead.value.publication?.replays).toEqual(publishedReplays)
+  expect(firstPublicRead.value.publication?.replays[0]?.replayId).toBe(
+    `competition:competition-1:${setup.provisioned?.ok ? setup.provisioned.value.gameId : ''}`,
+  )
+
+  const beforeRetry = e6c2aSnapshot(setup)
+  await (setup.room as unknown as { completeCompetitionIfReady: () => Promise<void> })
+    .completeCompetitionIfReady()
+  expect(e6c2aSnapshot(setup)).toEqual(beforeRetry)
+  expect(await setup.room.readTournament(e6d1bReadRequest(null))).toEqual(firstPublicRead)
+
+  const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+  const beforeRestartRead = e6c2aSnapshot(setup)
+  expect(await restarted.readTournament(e6d1bReadRequest(null))).toEqual(firstPublicRead)
+  expect(e6c2aSnapshot(setup)).toEqual(beforeRestartRead)
+})
+
+test('ticket 16 withholds publication when a completed stage has unresolved podium ranks', async () => {
+  const setup = await e6c2aLockedMatch({
+    format: 'roundRobin',
+    matchFormat: { type: 'fixedGames', value: 1 },
+  })
+  const result = await e6SubmitTournamentGame(
+    setup, setup.matchId, setup.meta().updated_trusted_time_ms + 1, { type: 'draw' },
+  )
+  expect(result.result).toMatchObject({ ok: true })
+  const tournament = await e6d1bReadCurrentTournament(setup, 'organizer-1')
+  const stage = (tournament.stages as JsonObject[])[0]!
+  expect(stage.status).toBe('finished')
+  expect((stage.standings as JsonObject[]).every(standing => standing.rank === null)).toBe(true)
+
+  await (setup.room as unknown as { completeCompetitionIfReady: () => Promise<void> })
+    .completeCompetitionIfReady()
+  expect(setup.sql.database.query('SELECT 1 FROM competition_completion').all()).toHaveLength(0)
+  expect(await setup.room.readTournament(e6d1bReadRequest(null)))
+    .toMatchObject({ ok: false, error: { code: 'notParticipant' } })
+})
+
+test('ticket 16 waits for every announced stage before ending the competition', async () => {
+  const firstStage = stageConfig({
+    format: 'roundRobin',
+    teams: [{ teamId: 'team-a', seed: 1 }, { teamId: 'team-b', seed: 2 }],
+  })
+  firstStage.matchFormat = { type: 'fixedGames', value: 1 }
+  const plan = ticket15TwoStagePlan(
+    firstStage,
+    { mainTimeMs: 900_000, actionTimeMs: 60_000, outOfTurnChoiceTimeMs: 60_000 },
+    { type: 'fixedGames', value: 1 },
+  )
+  const setup = await e6c2aLockedMatch({
+    format: 'roundRobin',
+    matchFormat: { type: 'fixedGames', value: 1 },
+    announcedPlan: plan,
+  })
+  const result = await e6SubmitTournamentGame(
+    setup, setup.matchId, setup.meta().updated_trusted_time_ms + 1,
+    { type: 'winner', team: 'team-a' },
+  )
+  expect(result.result).toMatchObject({ ok: true })
+  const tournament = await e6d1bReadCurrentTournament(setup, 'organizer-1')
+  expect((tournament.stages as JsonObject[])).toHaveLength(1)
+  expect((tournament.stages as JsonObject[])[0]?.status).toBe('finished')
+
+  await (setup.room as unknown as { completeCompetitionIfReady: () => Promise<void> })
+    .completeCompetitionIfReady()
+  expect(setup.sql.database.query('SELECT 1 FROM competition_completion').all()).toHaveLength(0)
+  expect(await setup.room.readTournament(e6d1bReadRequest(null)))
+    .toMatchObject({ ok: false, error: { code: 'notParticipant' } })
+})
 
 test.serial('four-team double elimination automatically publishes and opens every advancing round, with and without its reset', async () => {
   mock.module('../rules-engine', () => ({

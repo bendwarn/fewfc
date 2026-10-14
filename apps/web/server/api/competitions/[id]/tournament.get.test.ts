@@ -1,4 +1,4 @@
-import { createApp, createError, createRouter, eventHandler, toWebHandler } from 'h3'
+import { createApp, createRouter, eventHandler, toWebHandler } from 'h3'
 import { afterEach, expect, mock, test } from 'bun:test'
 import type { CompetitionRoomTournamentReadRequest } from '../../../../shared/competition-room'
 
@@ -10,11 +10,10 @@ let rpcError: unknown = null
 let namespaceAvailable = true
 
 mock.module('../../../utils/auth', () => ({
-  requireSession: async (event: { headers: Headers }) => {
+  optionalSession: async (event: { headers: Headers }) => {
     const userId = event.headers.get('x-test-session')
     sessionCalls.push(userId ?? '')
-    if (!userId) throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })
-    return { user: { id: userId } }
+    return userId ? { user: { id: userId } } : null
   },
 }))
 
@@ -142,6 +141,31 @@ test('authenticated GET trims path, uses canonical session actor, and returns th
   expect(rpcRequests).toHaveLength(1)
 })
 
+test('anonymous GET reaches the completion gate and returns only its published payload', async () => {
+  const current = tournament('singleElimination')
+  const publication = {
+    completedAtTrustedTimeMs: 2_000,
+    lockedDecks: [{ teamId: 'team-a', decks: [{ player: 'a-1', name: 'frozen', cards: ['card-a'] }] }],
+    replays: [{ matchId: 'match-1', gameId: 'game-1', gameNumber: 1, replayId: 'competition:competition-1:game-1' }],
+  }
+  reset(success(current, { publication }))
+  const response = await get()
+  expect(response.status).toBe(200)
+  const body: unknown = await response.json()
+  expect(body).toEqual({
+    competitionId: 'competition-1', revision: 8,
+    projection: { ok: true, operation: 'tournamentView', public: current }, publication,
+  })
+  expect(sessionCalls).toEqual([''])
+  expect(rpcRequests).toEqual([{ competitionId: 'competition-1', callerUserId: null }])
+
+  reset({ ok: false, error: { code: 'notParticipant', message: 'private ACL reason' } })
+  const active = await get()
+  expect(active.status).toBe(403)
+  expect(await active.text()).not.toContain('private ACL reason')
+  expect(rpcRequests).toEqual([{ competitionId: 'competition-1', callerUserId: null }])
+})
+
 test('returns full current public DTOs for all four formats including completed schedules', async () => {
   for (const format of ['singleElimination', 'roundRobin', 'doubleElimination', 'swiss'] as const) {
     const current = tournament(format)
@@ -159,9 +183,9 @@ test('returns full current public DTOs for all four formats including completed 
   }
 })
 
-test('requires session first and rejects invalid path, spoofed query, and body before RPC dispatch', async () => {
+test('rejects invalid path, spoofed query, and body before RPC dispatch', async () => {
   reset()
-  expect((await get('/api/competitions/%20/tournament')).status).toBe(401)
+  expect((await get('/api/competitions/%20/tournament')).status).toBe(400)
   expect(sessionCalls).toEqual([''])
   expect((await get('/api/competitions/%20/tournament', 'session-user')).status).toBe(400)
   for (const query of [

@@ -35,9 +35,24 @@ import {
   isCompetitionRoomRoundPublicationReadValue,
   isCompetitionRoomRoundPublication,
   isCompetitionRoomInitialGameStartedRequest,
+  competitionReplayId,
+  parseCompetitionReplayId,
 } from './competition-room'
 import type { CompetitionAnnouncement, StageConfig } from './competition'
 import { isCompetitionGameInitialStartEvidence } from './competition-game-room'
+
+test('competition replay identifiers round-trip as stable opaque ids', () => {
+  for (const [competitionId, gameId] of [
+    ['competition-1', 'game-1'],
+    ['competition:private-id', 'game:private-id'],
+    ['competition%id', 'game%id'],
+  ] as const) {
+    const replayId = competitionReplayId(competitionId, gameId)
+    expect(parseCompetitionReplayId(replayId)).toEqual({ competitionId, gameId })
+  }
+  expect(parseCompetitionReplayId('competition:bad%ZZ:game')).toBeNull()
+  expect(parseCompetitionReplayId('account:replay-1')).toBeNull()
+})
 
 test('E6e2a clock read contract has only trusted identity and minimal camelCase display fields', () => {
   const request = {
