@@ -92,6 +92,8 @@ P2 的 [17–21](tickets/README.md#逐票入口與功能相依) 是正式辦賽�
 
 [17](tickets/17-automatic-no-show-rulings.md) **限定 PASS**：2026-10-11 [本輪兩軸報告與原始證據](../../scratch/ticket17-ready-endpoints-review/report.md)確認先前截止快照／即時開局資格、舊準備端點旁路 P1 與 noShow 後斷線寫入 P2 全部閉合。Standards 硬性 0／重複 request 建構非阻擋建議 1，Spec 0；主審精確路徑 child 131／0、parent 349／0、五檔 helpers 106／0、Nuxt 元件 10／0、獨立固定時間 6／0、typecheck 與 diff check 通過。排除 19 的提交快照重新建置 Cargo 733 pass／1 fail，唯一失敗是 19 的已提交 Swiss 退出紅例；原始基準同例亦 0／1，非 17 回歸，三個 NoShow 新 Rust 案例全綠。分離後 view 測試 9／0。17 四項驗收勾選；只提交 17，不帶入 19 或 AGENTS.md 修改，不外推真 Worker／Brave／22／28 整合驗收。
 
+2026-10-14 票 17 於 HEAD `8a02589` **複審限定 PASS**，見[目前來源兩軸報告](../../scratch/ticket17-current-head-review-2026-10-14/report.md)。Standards 硬性 0／既有 request 建構重複的 Low 建議 1，Spec 0；本輪序列重跑 Cargo 759／0、child 140／0、parent 374／0、五檔 helpers 110／0、Nuxt 15／0、固定時間反例 6／0、真實入口整合 3／0，共 1,407／0，typecheck／fmt 通過。舊六例直接重跑曾因票 06 新入口契約在 release 前連線得到 1／5；原始失敗紀錄保留，僅調整公告／連線 fixture 後六例原斷言不變且全綠，另以未繞過入口的三例補驗，非產品回歸。原提交 `cddd7b8` 保留、四項驗收勾選維持；本輪不改產品碼、不新增或重複提交，不外推票 20／21 或真 Worker／Brave／22／28 整合驗收。
+
 [20](tickets/20-double-loss-vacancy-completion.md) 維持一票，名次空缺政策已確認、needs-info 阻擋解除；當前雙敗阻擋路徑的修復與本票完整現況／元件實證仍未完成，不以政策確認代替放行。產品取值只見[設計](competitive-play-design.md#雙負空缺與後續階段)。
 
 ### 延後功能
