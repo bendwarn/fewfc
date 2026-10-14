@@ -1817,6 +1817,108 @@ mod tests {
     }
 
     #[test]
+    fn preparation_timeout_requires_full_byoyomi_and_same_deadline_double_expires() {
+        let mut clock = CompetitionClock::new(
+            [team("a"), team("b")],
+            ClockConfig {
+                main_time_ms: Some(100),
+                action_time_ms: Some(30),
+                ..ClockConfig::default()
+            },
+            10,
+        )
+        .unwrap();
+        clock.begin_preparation(10).unwrap();
+
+        assert_eq!(clock.observe(110).unwrap(), ClockUpdate::Advanced);
+        assert_eq!(clock.expired_team(), None);
+        assert!(remaining(&clock, "a").entered_byoyomi);
+        assert!(remaining(&clock, "b").entered_byoyomi);
+        assert_eq!(remaining(&clock, "a").action_time_remaining_ms, Some(30));
+        assert_eq!(remaining(&clock, "b").action_time_remaining_ms, Some(30));
+
+        assert_eq!(
+            clock.observe(140).unwrap(),
+            ClockUpdate::DoubleTimedOut {
+                teams: [team("a"), team("b")],
+            }
+        );
+        assert_eq!(
+            clock.timeout_ruling(),
+            Some(CompetitionRuling::DoubleTimeoutLoss {
+                teams: [team("a"), team("b")],
+            })
+        );
+
+        let frozen = clock.clone();
+        assert_eq!(clock.observe(140), Ok(ClockUpdate::Unchanged));
+        assert_eq!(clock, frozen);
+        let frozen_checkpoint = clock.checkpoint();
+        assert_eq!(clock.observe(141), Ok(ClockUpdate::Unchanged));
+        let mut expected_checkpoint = frozen_checkpoint;
+        expected_checkpoint.last_observed_ms = 141;
+        assert_eq!(clock.checkpoint(), expected_checkpoint);
+        assert_eq!(clock.timeout_ruling(), frozen.timeout_ruling());
+        assert_eq!(clock.snapshot(), frozen.snapshot());
+    }
+
+    #[test]
+    fn late_preparation_observation_rules_only_the_earliest_expiry() {
+        let mut clock = CompetitionClock::new(
+            [team("a"), team("b")],
+            ClockConfig {
+                main_time_ms: Some(100),
+                action_time_ms: Some(30),
+                ..ClockConfig::default()
+            },
+            0,
+        )
+        .unwrap();
+        clock.begin_action(&team("a"), 1, 0).unwrap();
+        clock.observe(50).unwrap();
+        clock.end_window(50).unwrap();
+        clock.begin_action(&team("b"), 2, 50).unwrap();
+        clock.observe(70).unwrap();
+        clock.end_window(70).unwrap();
+
+        let mut continuation = clock.new_game(NewGameTime::CarryForward, 70).unwrap();
+        assert_eq!(
+            remaining(&continuation, "a").main_time_remaining_ms,
+            Some(50)
+        );
+        assert_eq!(
+            remaining(&continuation, "b").main_time_remaining_ms,
+            Some(80)
+        );
+        continuation.begin_preparation(70).unwrap();
+
+        // 一次延遲觀測已越過兩個期限，仍只裁決較早耗盡的隊伍。
+        assert_eq!(
+            continuation.observe(180).unwrap(),
+            ClockUpdate::TimedOut { team: team("a") }
+        );
+        assert_eq!(
+            continuation.timeout_ruling(),
+            Some(CompetitionRuling::TimeoutLoss { loser: team("a") })
+        );
+        assert_eq!(
+            remaining(&continuation, "b").action_time_remaining_ms,
+            Some(30)
+        );
+
+        let frozen = continuation.clone();
+        assert_eq!(continuation.observe(180), Ok(ClockUpdate::Unchanged));
+        assert_eq!(continuation, frozen);
+        let frozen_checkpoint = continuation.checkpoint();
+        assert_eq!(continuation.observe(181), Ok(ClockUpdate::Unchanged));
+        let mut expected_checkpoint = frozen_checkpoint;
+        expected_checkpoint.last_observed_ms = 181;
+        assert_eq!(continuation.checkpoint(), expected_checkpoint);
+        assert_eq!(continuation.timeout_ruling(), frozen.timeout_ruling());
+        assert_eq!(continuation.snapshot(), frozen.snapshot());
+    }
+
+    #[test]
     fn out_of_turn_choice_uses_independent_time() {
         let mut clock = clock();
         clock

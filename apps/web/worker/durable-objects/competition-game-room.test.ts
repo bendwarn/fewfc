@@ -36,6 +36,8 @@ let rulesEngineStartGateEntered: (() => void) | null = null
 let rulesEngineStartStateOverride: Partial<PublicGameState> | null = null
 let rulesModuleGate: Promise<void> | null = null
 let rulesModuleGateEntered: (() => void) | null = null
+let rulesEnginePassActionGate: Promise<void> | null = null
+let rulesEnginePassActionGateEntered: (() => void) | null = null
 const rulesEngineStartCalls: Array<Record<string, unknown>> = []
 let rulesEngineBoundaryCalls = 0
 let competitionContextPrivateHands = false
@@ -86,6 +88,10 @@ mock.module('../rules-engine', () => ({
         rulesEngineStartGateEntered?.()
         await rulesEngineStartGate
       }
+    }
+    if (request.action?.type === 'passAction' && rulesEnginePassActionGate) {
+      rulesEnginePassActionGateEntered?.()
+      await rulesEnginePassActionGate
     }
     if (rulesEngineMode === 'randomInterrupted') {
       const hasPendingRandomness = request.record?.some(entry => (
@@ -5405,6 +5411,13 @@ test('invalid clock timeout evidence retains the head and cursor', async () => {
       ...value,
       expiries: [{ team: 'team-a', deadlineMonotonicMs: 601 }],
     })],
+    ['different double-expiry deadlines', (value: Record<string, unknown>) => ({
+      ...value,
+      expiries: [
+        { team: 'team-a', deadlineMonotonicMs: 500 },
+        { team: 'team-b', deadlineMonotonicMs: 550 },
+      ],
+    })],
     ['non hex digest', (value: Record<string, unknown>) => ({
       ...value,
       clockCheckpointDigest: 'not-a-sha256-digest',
@@ -5648,6 +5661,14 @@ function initialFifoAck(request: CompetitionRoomInitialGameStartedRequest, nextC
   } }
 }
 
+async function requireClockDeadline(storage: MemoryStorage): Promise<number> {
+  const queue = await storage.get<Record<string, unknown>>('competitionDeliveryQueue')
+  if (typeof queue?.nextClockDeadlineMs !== 'number') {
+    throw new Error('initial ACK did not persist an authoritative clock deadline')
+  }
+  return queue.nextClockDeadlineMs
+}
+
 async function withInitialFifoTime(run: (time: { now: number }) => Promise<void>) {
   const realNow = Date.now
   const time = { now: 1_900_000_000_000 - 600_000 }
@@ -5655,6 +5676,8 @@ async function withInitialFifoTime(run: (time: { now: number }) => Promise<void>
   try { await run(time) } finally {
     Date.now = realNow
     rulesEngineMode = 'normal'
+    rulesEnginePassActionGate = null
+    rulesEnginePassActionGateEntered = null
   }
 }
 
@@ -5663,6 +5686,7 @@ async function initialFifoFixture(
   time: { now: number },
   receive: (request: CompetitionRoomInitialGameStartedRequest) => Promise<unknown> = async request => initialFifoAck(request),
   preparing = false,
+  storage = new MemoryStorage(),
 ) {
   rulesEngineMode = preparing ? 'clockTransition' : 'normal'
   const initialCalls: CompetitionRoomInitialGameStartedRequest[] = []
@@ -5703,7 +5727,7 @@ async function initialFifoFixture(
   }
   const fixture = await roundReleaseFixture({ roundStartMs: 1_900_000_000_000,
     ...(preparing ? { enabledRuleModules: ['pouch', 'personal-deck'] } : {}),
-  }, namespace)
+  }, namespace, storage)
   await roundReleaseReady(fixture)
   roundReleaseNoStart(fixture.storage)
   time.now = fixture.request.binding.roundStartMs - 17
@@ -5967,6 +5991,208 @@ test('round-release initial FIFO accepts the exact nine-field ACK with root disp
     expect(fixture.clockCalls).toHaveLength(1)
     expect(fixture.clockCalls[0]).toMatchObject({ expectedMatchRevision: 2,
       trustedTimeMs: time.now, operation: { type: 'clockObserve', matchId: fixture.request.binding.matchId } })
+  })
+})
+
+test('ticket 18 accepts before D and rejects new player commands at D and D+1 before alarm', async () => {
+  await withInitialFifoTime(async time => {
+    for (const offset of [-1, 0, 1]) {
+      time.now = 1_900_000_000_000 - 600_000
+      const fixture = await initialFifoFixture(time, async request => (
+        initialFifoAck(request, request.evidence.startedAtMs + 1_000)
+      ))
+      await fixture.room.alarm()
+      const deadline = await requireClockDeadline(fixture.storage)
+      const record = await fixture.storage.get<GameRecord>('gameRecord')
+      if (!record) throw new Error('missing active record')
+      time.now = deadline + offset
+      const beforeRecord = structuredClone(record)
+      const beforeEvents = structuredClone(storedRoomEvents(fixture.storage))
+      const engineCallsBefore = rulesEngineBoundaryCalls
+      const command = {
+        type: 'submitCommand', commandId: `deadline-command-${offset}`,
+        gameInstanceId: record.gameInstanceId, transactionId: `deadline-transaction-${offset}`,
+        actorUserId: 'user-a', action: { type: 'passAction', reason: 'NoCardsInHand' },
+      }
+
+      const response = await post(fixture.room, command)
+      if (offset === -1) {
+        expect(response.status).toBe(200)
+        await drainWaitUntil(fixture.pendingWaits)
+        expect(await fixture.storage.get('gameRecord')).not.toStrictEqual(beforeRecord)
+        expect(rulesEngineBoundaryCalls).toBeGreaterThan(engineCallsBefore)
+        expect((await fixture.storage.get('competitionDeliveryQueue'))).toMatchObject({
+          nextClockDeadlineMs: deadline,
+        })
+        continue
+      }
+
+      expect(response.status).toBe(409)
+      expect(rulesEngineBoundaryCalls).toBe(engineCallsBefore)
+      expect(await fixture.storage.get('gameRecord')).toStrictEqual(beforeRecord)
+      expect(storedRoomEvents(fixture.storage)).toStrictEqual(beforeEvents)
+      expect(await fixture.storage.get(`commandReceipt:${record.gameInstanceId}:${command.commandId}`)).toBeUndefined()
+      await drainWaitUntil(fixture.pendingWaits)
+      expect(fixture.clockCalls).toHaveLength(1)
+      expect(fixture.clockCalls[0]).toMatchObject({
+        trustedTimeMs: deadline,
+        operation: { type: 'clockObserve', matchId: fixture.request.binding.matchId },
+      })
+    }
+  })
+})
+
+test('ticket 18 rechecks the deadline inside canonical commit when Rules Engine crosses D', async () => {
+  await withInitialFifoTime(async time => {
+    const fixture = await initialFifoFixture(time, async request => (
+      initialFifoAck(request, request.evidence.startedAtMs + 1_000)
+    ))
+    await fixture.room.alarm()
+    const deadline = await requireClockDeadline(fixture.storage)
+    const record = await fixture.storage.get<GameRecord>('gameRecord')
+    if (!record) throw new Error('missing active record')
+    const beforeRecord = structuredClone(record)
+    const beforeEvents = structuredClone(storedRoomEvents(fixture.storage))
+    const engineCallsBefore = rulesEngineBoundaryCalls
+    let enter = () => {}
+    let unblock = () => {}
+    const entered = new Promise<void>(resolve => { enter = resolve })
+    const blocked = new Promise<void>(resolve => { unblock = resolve })
+    time.now = deadline - 1
+    rulesEnginePassActionGate = blocked
+    rulesEnginePassActionGateEntered = enter
+    const pending = post(fixture.room, {
+      type: 'submitCommand', commandId: 'deadline-crossing-command',
+      gameInstanceId: record.gameInstanceId, transactionId: 'deadline-crossing-transaction',
+      actorUserId: 'user-a', action: { type: 'passAction', reason: 'NoCardsInHand' },
+    })
+    try {
+      await entered
+      time.now = deadline + 1
+      unblock()
+      const response = await pending
+      expect(response.status).toBe(409)
+    } finally {
+      unblock()
+      rulesEnginePassActionGate = null
+      rulesEnginePassActionGateEntered = null
+    }
+    expect(rulesEngineBoundaryCalls).toBeGreaterThan(engineCallsBefore)
+    expect(await fixture.storage.get('gameRecord')).toStrictEqual(beforeRecord)
+    expect(storedRoomEvents(fixture.storage)).toStrictEqual(beforeEvents)
+    expect(await fixture.storage.get(`commandReceipt:${record.gameInstanceId}:deadline-crossing-command`)).toBeUndefined()
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(fixture.clockCalls).toHaveLength(1)
+    expect(fixture.clockCalls[0]).toMatchObject({
+      trustedTimeMs: deadline,
+      operation: { type: 'clockObserve', matchId: fixture.request.binding.matchId },
+    })
+  })
+})
+
+test('ticket 18 rechecks the deadline immediately before canonical storage writes', async () => {
+  await withInitialFifoTime(async time => {
+    const storage = new AdvancingStartSampleStorage(time)
+    const fixture = await initialFifoFixture(time, async request => (
+      initialFifoAck(request, request.evidence.startedAtMs + 1_000)
+    ), false, storage)
+    await fixture.room.alarm()
+    const deadline = await requireClockDeadline(storage)
+    const record = await storage.get<GameRecord>('gameRecord')
+    if (!record) throw new Error('missing active record')
+    const beforeRecord = structuredClone(record)
+    const beforeEvents = structuredClone(storedRoomEvents(storage))
+    const engineCallsBefore = rulesEngineBoundaryCalls
+    time.now = deadline - 1
+    storage.advanceNextSequenceRead = true
+
+    const response = await post(fixture.room, {
+      type: 'submitCommand', commandId: 'deadline-transaction-crossing-command',
+      gameInstanceId: record.gameInstanceId, transactionId: 'deadline-transaction-crossing-transaction',
+      actorUserId: 'user-a', action: { type: 'passAction', reason: 'NoCardsInHand' },
+    })
+
+    expect(storage.advanceNextSequenceRead).toBe(false)
+    expect(time.now).toBeGreaterThan(deadline)
+    expect(response.status).toBe(409)
+    expect(rulesEngineBoundaryCalls).toBeGreaterThan(engineCallsBefore)
+    expect(await storage.get('gameRecord')).toStrictEqual(beforeRecord)
+    expect(storedRoomEvents(storage)).toStrictEqual(beforeEvents)
+    expect(await storage.get(`commandReceipt:${record.gameInstanceId}:deadline-transaction-crossing-command`)).toBeUndefined()
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(fixture.clockCalls).toHaveLength(1)
+    expect(fixture.clockCalls[0]).toMatchObject({
+      trustedTimeMs: deadline,
+      operation: { type: 'clockObserve', matchId: fixture.request.binding.matchId },
+    })
+  })
+})
+
+test('ticket 18 keeps a queued deadline observation authoritative while its ACK is pending', async () => {
+  await withInitialFifoTime(async time => {
+    let entered = () => {}
+    let unblock = () => {}
+    const receiverEntered = new Promise<void>(resolve => { entered = resolve })
+    const blockedAck = new Promise<void>(resolve => { unblock = resolve })
+    const fixture = await initialFifoFixture(time, async request => (
+      initialFifoAck(request, request.evidence.startedAtMs + 1_000)
+    ))
+    await fixture.room.alarm()
+    const deadline = await requireClockDeadline(fixture.storage)
+    const target = fixture.namespace.get(fixture.namespace.idFromName('competition-1'))
+    expect(Reflect.set(target, 'executeMatch', async (request: unknown): Promise<unknown> => {
+      const typed = request as Record<string, unknown>
+      const operation = typed.operation as { type?: string }
+      if (operation.type === 'clockObserve') {
+        entered()
+        await blockedAck
+        return clockSuccess(typed, {
+          type: 'timeout', timeoutId: 'deadline-ack-pending',
+          expiries: [{ team: 'team-a', deadlineMonotonicMs: deadline }],
+          observedAtMonotonicMs: deadline + 1,
+          clockCheckpointDigest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        })
+      }
+      return terminalSuccess(request)
+    })).toBe(true)
+    const record = await fixture.storage.get<GameRecord>('gameRecord')
+    if (!record) throw new Error('missing active record')
+    const beforeRecord = structuredClone(record)
+    const beforeEvents = structuredClone(storedRoomEvents(fixture.storage))
+    const engineCallsBefore = rulesEngineBoundaryCalls
+    time.now = deadline + 1
+    const alarm = captureInitialDelivery(fixture.room.alarm())
+    try {
+      await waitForInitialReceiver(receiverEntered, alarm)
+      const queue = await fixture.storage.get<Record<string, unknown>>('competitionDeliveryQueue')
+      expect(queue?.entries).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'competitionClockMutation', trustedTimeMs: deadline,
+          operation: { type: 'clockObserve', matchId: fixture.request.binding.matchId },
+        }),
+      ]))
+
+      const response = await post(fixture.room, {
+        type: 'submitCommand', commandId: 'deadline-pending-ack-command',
+        gameInstanceId: record.gameInstanceId, transactionId: 'deadline-pending-ack-transaction',
+        actorUserId: 'user-a', action: { type: 'passAction', reason: 'NoCardsInHand' },
+      })
+      expect(response.status).toBe(409)
+      expect(rulesEngineBoundaryCalls).toBe(engineCallsBefore)
+      expect(await fixture.storage.get('gameRecord')).toStrictEqual(beforeRecord)
+      expect(storedRoomEvents(fixture.storage)).toStrictEqual(beforeEvents)
+      expect(await fixture.storage.get(`commandReceipt:${record.gameInstanceId}:deadline-pending-ack-command`)).toBeUndefined()
+    } finally {
+      unblock()
+      expect(await alarm).toEqual({ completed: true })
+    }
+    await drainWaitUntil(fixture.pendingWaits)
+    expect(await fixture.storage.get('competitionDeliveryQueue')).toMatchObject({
+      terminalTimeout: {
+        type: 'timeout', timeoutId: 'deadline-ack-pending',
+        expiries: [{ team: 'team-a', deadlineMonotonicMs: deadline }],
+      },
+    })
   })
 })
 

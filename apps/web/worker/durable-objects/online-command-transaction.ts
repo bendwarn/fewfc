@@ -38,6 +38,10 @@ interface TransactionStorage {
   transaction<T>(callback: (storage: TransactionStorage) => Promise<T>): Promise<T>
 }
 
+export interface OnlineCommandReadStorage {
+  get<T>(key: string): Promise<T | undefined>
+}
+
 /** canonical checkpoint 與跨 DO terminal delivery 的同一原子寫入描述。 */
 export interface CanonicalCompetitionDeliveryCommit {
   storageKey: string
@@ -74,7 +78,10 @@ interface OnlineCommandTransactionHost {
     commandId: string,
     nextSequence: number,
   ): Promise<CanonicalCompetitionDeliveryCommit | undefined> | CanonicalCompetitionDeliveryCommit | undefined
-  competitionCommandFrozen?(): Promise<boolean> | boolean
+  competitionCommandFrozen?(
+    storage?: OnlineCommandReadStorage,
+    gameInstanceId?: string,
+  ): Promise<boolean> | boolean
 }
 
 export interface ExecutedPlayerCommand {
@@ -381,6 +388,13 @@ async function drainTrustedRandomness(
   let currentMetadata = metadata
 
   while (true) {
+    if (await host.competitionCommandFrozen?.()) {
+      throw new OnlineCommandTransactionError(
+        'commandValidation',
+        409,
+        '本場競賽已因時間結束，正在提交競賽判定。',
+      )
+    }
     const request = pending.request
     const answer: TrustedRandomnessAction = {
       type: 'resolveRandomness',
@@ -539,6 +553,13 @@ async function commitCanonical(
         throw new Error('terminal outbox storage does not support alarms')
       }
       await storage.setAlarm(input.competitionDelivery.alarmAt)
+    }
+    if (await host.competitionCommandFrozen?.(storage, input.record.gameInstanceId)) {
+      throw new OnlineCommandTransactionError(
+        'commandValidation',
+        409,
+        '本場競賽已因時間結束，正在提交競賽判定。',
+      )
     }
     await storage.put(values)
     if (!input.transaction) await storage.delete(transactionKey(input.record.gameInstanceId))

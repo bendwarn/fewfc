@@ -92,6 +92,7 @@ import {
 import { RulesEngineError } from '../rules-engine-error'
 import {
   type CanonicalCompetitionDeliveryCommit,
+  type OnlineCommandReadStorage,
   executePlayerCommand,
   OnlineCommandTransactionError,
 } from './online-command-transaction'
@@ -3032,12 +3033,46 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
       competitionDelivery: (record, previous, result, commandId, nextSequence) => (
         this.competitionDeliveryFor(record, previous, result, commandId, nextSequence)
       ),
-      competitionCommandFrozen: async () => {
-        const binding = await this.competitionBinding()
+      competitionCommandFrozen: async (readStorage?: OnlineCommandReadStorage, gameInstanceId?: string) => {
+        let binding: CompetitionGameBinding | undefined
+        if (readStorage) {
+          const storedBinding = await readStorage.get<unknown>('competitionBinding')
+          if (storedBinding !== undefined) {
+            validateCompetitionGameBinding(storedBinding)
+            binding = storedBinding
+          }
+        } else {
+          binding = await this.competitionBinding()
+        }
         if (!binding) return false
-        const record = await this.requireGameRecord()
-        const queue = await this.competitionDeliveryQueue(binding, record.gameInstanceId)
-        return Boolean(queue.pendingTimeout || queue.terminalTimeout || queue.refereePaused)
+        const record = gameInstanceId
+          ? undefined
+          : readStorage
+            ? await readStorage.get<GameRecord>('gameRecord')
+            : await this.requireGameRecord()
+        const activeGameInstanceId = gameInstanceId ?? record?.gameInstanceId
+        if (!activeGameInstanceId) return false
+        const queue = await this.competitionDeliveryQueue(binding, activeGameInstanceId, readStorage)
+        const now = Date.now()
+        const deadline = queue.nextClockDeadlineMs ?? null
+        const deadlineExpired = !queue.refereePaused && deadline !== null && deadline <= now
+        const frozen = Boolean(queue.pendingTimeout || queue.terminalTimeout || queue.refereePaused || deadlineExpired)
+
+        if (deadlineExpired && !readStorage) {
+          const observation = await this.enqueueDueClockObservation(
+            queue,
+            binding,
+            activeGameInstanceId,
+            now,
+          )
+          if (observation) await this.persistCompetitionDeliveryQueue(observation)
+        }
+        if (deadlineExpired || queue.pendingTimeout) {
+          this.ctx.waitUntil(this.deliverCompetitionQueue().catch(error => {
+            console.error('competition timeout delivery failed', error)
+          }))
+        }
+        return frozen
       },
     }, request)
 
@@ -3959,8 +3994,11 @@ export class GameRoom extends DurableObject<GameRoomEnv> {
   private async competitionDeliveryQueue(
     binding: CompetitionGameBinding,
     gameInstanceId?: string,
+    readStorage?: OnlineCommandReadStorage,
   ): Promise<CompetitionDeliveryQueue> {
-    const raw = await this.ctx.storage.get<unknown>(this.competitionDeliveryQueueKey())
+    const raw = readStorage
+      ? await readStorage.get<unknown>(this.competitionDeliveryQueueKey())
+      : await this.ctx.storage.get<unknown>(this.competitionDeliveryQueueKey())
     if (raw === undefined) return emptyCompetitionDeliveryQueue(binding.expectedMatchRevision)
     if (!isCompetitionDeliveryQueue(raw)
       || !competitionQueueMatchesBinding(raw, binding, gameInstanceId)
@@ -5158,6 +5196,9 @@ function isTimeoutEvidence(value: unknown): value is CompetitionPendingTimeout['
     && isNonEmpty(value.timeoutId)
     && Array.isArray(value.expiries) && value.expiries.length >= 1 && value.expiries.length <= 2
     && new Set(value.expiries.map(expiry => isRecord(expiry) ? expiry.team : undefined)).size === value.expiries.length
+    && (value.expiries.length === 1
+      || (isRecord(value.expiries[0]) && isRecord(value.expiries[1])
+        && value.expiries[0].deadlineMonotonicMs === value.expiries[1].deadlineMonotonicMs))
     && value.expiries.every(expiry => isRecord(expiry)
       && hasExactKeys(expiry, ['team', 'deadlineMonotonicMs'])
       && isNonEmpty(expiry.team)

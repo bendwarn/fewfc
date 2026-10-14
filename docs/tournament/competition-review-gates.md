@@ -94,6 +94,8 @@ P2 的 [17–21](tickets/README.md#逐票入口與功能相依) 是正式辦賽�
 
 2026-10-14 票 17 於 HEAD `8a02589` **複審限定 PASS**，見[目前來源兩軸報告](../../scratch/ticket17-current-head-review-2026-10-14/report.md)。Standards 硬性 0／既有 request 建構重複的 Low 建議 1，Spec 0；本輪序列重跑 Cargo 759／0、child 140／0、parent 374／0、五檔 helpers 110／0、Nuxt 15／0、固定時間反例 6／0、真實入口整合 3／0，共 1,407／0，typecheck／fmt 通過。舊六例直接重跑曾因票 06 新入口契約在 release 前連線得到 1／5；原始失敗紀錄保留，僅調整公告／連線 fixture 後六例原斷言不變且全綠，另以未繞過入口的三例補驗，非產品回歸。原提交 `cddd7b8` 保留、四項驗收勾選維持；本輪不改產品碼、不新增或重複提交，不外推票 20／21 或真 Worker／Brave／22／28 整合驗收。
 
+[18](tickets/18-byoyomi-expiration-rulings.md) **限定 PASS**：2026-10-14 [兩軸末審與固定來源證據](../../scratch/ticket18-final-review-2026-10-14/report.md)確認 Standards 0、Spec 0。截止到達即封鎖新命令／未完成隨機續行，持久化原截止的觀測並沿 FIFO 交付；canonical 交易在序號讀取與 alarm 設定之後、原子寫入之前，以同一 snapshot 再次核對截止，先前入口與交易內兩種 P1 競態均閉合。child 144／0、parent 375／0、兩檔 helpers 56／0、三個獨立固定反例 3／0；沿用完全相同 Rust source hash 的 Cargo 761／0，合計 1,339／0，typecheck／fmt／diff check 通過。初版與[第二輪 HOLD](../../scratch/ticket18-retry-review-2026-10-14/findings.md)原始失敗證據保留；正式新案例已經真正 initial ACK 後讀持久截止，沒有靠測例自算期限放行。票 18 五項勾選；只提交相符六個來源／測例與本票／關卡文件，不外推票 20／21 或 native Worker／Brave／22／28 平台矩陣。
+
 [20](tickets/20-double-loss-vacancy-completion.md) 維持一票，名次空缺政策已確認、needs-info 阻擋解除；當前雙敗阻擋路徑的修復與本票完整現況／元件實證仍未完成，不以政策確認代替放行。產品取值只見[設計](competitive-play-design.md#雙負空缺與後續階段)。
 
 ### 延後功能

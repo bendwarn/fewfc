@@ -4899,6 +4899,28 @@ test('timeout ingest rejects digest, observation, flags, and team mismatches', a
   }
 })
 
+test('timeout ingest rejects double-loss evidence with different expiry deadlines', async () => {
+  const { room, sql } = await terminalRoom()
+  const checkpoint = doubleExpiredPreparationClock(
+    { mainTimeMs: 5_000, actionTimeMs: 30, outOfTurnChoiceTimeMs: 20 },
+  )
+  replaceMatchClock(sql, checkpoint)
+  const result = await room.ingestGameTerminal(await terminalTestRequest({ terminalEvidence: {
+    type: 'timeout',
+    timeoutId: 'timeout-different-double-deadlines',
+    expiries: [
+      { team: 'team-a', deadlineMonotonicMs: 200 },
+      { team: 'team-b', deadlineMonotonicMs: 201 },
+    ],
+    observedAtMonotonicMs: 201,
+    clockCheckpointDigest: await clockCheckpointDigest(checkpoint),
+  } }))
+
+  expect(result.ok).toBe(false)
+  expect(sql.database.query('SELECT revision FROM competition_matches WHERE match_id = ?')
+    .get('terminal-match')).toEqual({ revision: 1 })
+})
+
 test('terminal ingest rejects caller ruling or mode overrides and direct terminal bypasses', async () => {
   const { room } = await terminalRoom()
   const request = await terminalTestRequest()

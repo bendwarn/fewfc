@@ -9216,14 +9216,22 @@ function isGameTerminalEvidence(value: unknown): value is GameTerminalEvidence {
     || Object.keys(value).length !== 5
     || !nonEmpty(value.timeoutId)
     || !Array.isArray(value.expiries)
-    || (typeof value.observedAtMonotonicMs !== 'number'
-      || !Number.isSafeInteger(value.observedAtMonotonicMs)
-      || value.observedAtMonotonicMs < 0)
     || !nonEmpty(value.clockCheckpointDigest)) return false
+  const observedAtMonotonicMs = value.observedAtMonotonicMs
+  if (typeof observedAtMonotonicMs !== 'number'
+    || !Number.isSafeInteger(observedAtMonotonicMs)
+    || observedAtMonotonicMs < 0) return false
   if (value.expiries.length < 1 || value.expiries.length > 2) return false
   const expiries = value.expiries
-  return expiries.every(isValidTimeoutExpiry)
-    && new Set(expiries.map(expiry => expiry.team)).size === expiries.length
+  if (!expiries.every(isValidTimeoutExpiry)) return false
+  const validExpiries = expiries as Array<JsonObject & {
+    team: string
+    deadlineMonotonicMs: number
+  }>
+  return new Set(validExpiries.map(expiry => expiry.team)).size === validExpiries.length
+    && validExpiries.every(expiry => expiry.deadlineMonotonicMs <= observedAtMonotonicMs)
+    && (validExpiries.length === 1
+      || validExpiries[0]?.deadlineMonotonicMs === validExpiries[1]?.deadlineMonotonicMs)
 }
 
 function isValidTimeoutExpiry(value: JsonValue): value is JsonObject & {
@@ -9455,9 +9463,10 @@ async function deriveTimeoutRuling(
   const checkpointTeams = (checkpoint.teams as JsonObject[]).map(team => team.team as string)
   if (checkpoint.doubleExpired !== true || checkpoint.expiredTeam !== null
     || expiredTeams.length !== 2
+    || evidence.expiries[0]?.deadlineMonotonicMs !== evidence.expiries[1]?.deadlineMonotonicMs
     || new Set(expiredTeams).size !== 2
     || !checkpointTeams.every(team => expiredTeams.includes(team))) {
-    return roomFailure('invalidTimeoutEvidence', 'double timeout flags do not match the evidence')
+    return roomFailure('invalidTimeoutEvidence', 'double timeout deadlines or flags do not match the evidence')
   }
   return { ok: true, value: { type: 'doubleTimeoutLoss', teams: [expiredTeams[0]!, expiredTeams[1]!] } }
 }
