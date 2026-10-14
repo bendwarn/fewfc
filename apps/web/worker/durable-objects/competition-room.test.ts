@@ -1788,14 +1788,20 @@ async function realRegistrationRoom(
   randomUint32: () => number = () => 0,
   plan: CompetitionAnnouncementPlan = announcedPlan,
   trustedTimeMs = 100,
+  failQualifiedStageCreateCount = 0,
 ) {
   const sql = new MemorySql()
   const alarm: TestAlarmState = { scheduledAt: null }
   const calls: CompetitionRequest[] = []
   const gameCalls: Array<{ gameId: string; binding: CompetitionGameBinding }> = []
+  let remainingQualifiedStageCreateFailures = failQualifiedStageCreateCount
   // 所有核心 operation 都送正式 WASM；只替換平台 SQLite／GameRoom RPC 邊界。
   const adapter: CompetitionEngineAdapter = async request => {
     calls.push(structuredClone(request))
+    if (request.operation.type === 'tournamentCreateQualifiedStage' && remainingQualifiedStageCreateFailures > 0) {
+      remainingQualifiedStageCreateFailures -= 1
+      return { ok: false, error: { code: 'internalFailure', layer: 'runtime', message: 'transient test failure' } }
+    }
     return callCompetitionEngine(request, realCompetitionWasm)
   }
   const env = { GAME_ROOM: gameRoomNamespace(async request => {
@@ -3152,7 +3158,10 @@ test('schema migrations are versioned and private rows carry projection identity
   const versions = sql.database.query(
     'SELECT version FROM competition_schema_migrations ORDER BY version',
   ).all() as Array<{ version: number }>
-  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
+  expect(sql.database.query('PRAGMA table_info(competition_automatic_stage_transition)')
+    .all().map((column: { name: string }) => column.name))
+    .toContain('qualification_confirmed_trusted_time_ms')
   const privateColumns = sql.database.query(
     'PRAGMA table_info(competition_private_projection)',
   ).all() as Array<{ name: string }>
@@ -3308,7 +3317,7 @@ test('legacy unversioned tables migrate in place and preserve readable/idempoten
   const versions = sql.database.query(
     'SELECT version FROM competition_schema_migrations ORDER BY version',
   ).all() as Array<{ version: number }>
-  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+  expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
   const privateRow = sql.database.query(
     'SELECT payload_json, revision, operation_type FROM competition_private_projection WHERE user_id = ?',
   ).all('legacy-player') as Array<{ payload_json: string; revision: number; operation_type: string }>
@@ -5663,7 +5672,7 @@ test('v3 migration creates match rows and adds nullable audit identity', async (
   const read = await room.readMatch({ competitionId: 'competition-1', matchId: 'legacy-match', callerUserId: 'viewer' })
   expect(read.ok).toBe(true)
   const schema = sql.database.query('SELECT MAX(version) AS version FROM competition_schema_migrations').get() as { version: number }
-  expect(schema.version).toBe(15)
+  expect(schema.version).toBe(17)
   const columns = sql.database.query('PRAGMA table_info(competition_audit)').all() as Array<{ name: string }>
   expect(columns.some(column => column.name === 'match_id')).toBe(true)
   const rows = sql.database.query('SELECT match_id, revision FROM competition_matches').all() as Array<{ match_id: string; revision: number }>
@@ -9008,6 +9017,9 @@ async function e6c2aLockedMatch(options: {
   teamCount?: 2 | 3 | 4 | 5
   format?: StageConfig['format']
   matchFormat?: StageConfig['matchFormat']
+  randomUint32?: () => number
+  announcedPlan?: CompetitionAnnouncementPlan
+  failQualifiedStageCreateCount?: number
   automaticRoundProgression?: boolean
   referees?: { refereeId: string; conflictedTeam: string | null }[]
   clockConfig?: StageConfig['clockConfig']
@@ -9025,7 +9037,7 @@ async function e6c2aLockedMatch(options: {
     })),
   })
   if (options.matchFormat) stage.matchFormat = options.matchFormat
-  const plan: CompetitionAnnouncementPlan = {
+  const plan: CompetitionAnnouncementPlan = options.announcedPlan ?? {
     ...structuredClone(announcedPlan),
     stages: [{
       stageId: stage.stageId,
@@ -9037,7 +9049,10 @@ async function e6c2aLockedMatch(options: {
       qualification: { type: 'allEligibleTeams' },
     }],
   }
-  const setup = await realRegistrationRoom(teamSize, personalDeck, 120_000, () => 0, plan)
+  const setup = await realRegistrationRoom(
+    teamSize, personalDeck, 120_000, options.randomUint32 ?? (() => 0),
+    plan, 100, options.failQualifiedStageCreateCount ?? 0,
+  )
   if (!options.automaticRoundProgression) {
     // 逐輪手動安排的既有 fixture 不應觸發外層自動物化。
     ;(setup.room as unknown as { kickAutomaticRoundAdvance: () => Promise<void> })
@@ -9222,6 +9237,276 @@ function e6RoundPublicationRows(setup: E6TournamentSetup): JsonObject[] {
   if (!rows.every(isJsonObject)) throw new Error('automatic progression publication rows are malformed')
   return rows
 }
+
+function ticket15TwoStagePlan(
+  sourceStage: StageConfig,
+  nextClock: StageConfig['clockConfig'],
+  nextMatchFormat: StageConfig['matchFormat'],
+): CompetitionAnnouncementPlan {
+  return {
+    ...structuredClone(announcedPlan),
+    stages: [
+      {
+        stageId: sourceStage.stageId,
+        format: sourceStage.format,
+        matchFormat: sourceStage.matchFormat,
+        clockConfig: sourceStage.clockConfig,
+        swissRounds: null,
+        swissPolicy: null,
+        qualification: { type: 'allEligibleTeams' },
+      },
+      {
+        stageId: 'stage-followup',
+        format: 'roundRobin',
+        matchFormat: nextMatchFormat,
+        clockConfig: nextClock,
+        swissRounds: null,
+        swissPolicy: null,
+        qualification: {
+          type: 'sourceSlots',
+          slots: [
+            { sourceStageId: sourceStage.stageId, source: { type: 'uniqueStandingRank', rank: 1 }, destinationSeed: 7 },
+            { sourceStageId: sourceStage.stageId, source: { type: 'uniqueStandingRank', rank: 2 }, destinationSeed: 3 },
+          ],
+        },
+      },
+    ],
+  }
+}
+
+test('a completed source Tournament Stage advances once and retries reuse its saved seed and published clock', async () => {
+  const sourceStage = stageConfig({ format: 'roundRobin' })
+  sourceStage.matchFormat = { type: 'fixedGames', value: 1 }
+  const nextClock = { mainTimeMs: 900_000, actionTimeMs: 60_000, outOfTurnChoiceTimeMs: 60_000 }
+  const nextMatchFormat = { type: 'fixedGames' as const, value: 2 }
+  const announced = ticket15TwoStagePlan(sourceStage, nextClock, nextMatchFormat)
+  let randomCalls = 0
+  const setup = await e6c2aLockedMatch({
+    format: 'roundRobin',
+    matchFormat: { type: 'fixedGames', value: 1 },
+    announcedPlan: announced,
+    automaticRoundProgression: true,
+    failQualifiedStageCreateCount: 1,
+    randomUint32: () => { randomCalls += 1; return 0 },
+  })
+  const beforeTransitionRandomCalls = randomCalls
+  const time = Math.max(200_000, setup.meta().updated_trusted_time_ms + 1)
+  await atRoundDeliveryTime(time - 1, () => setup.room.alarm())
+  expect(setup.sql.database.query(`SELECT 1 FROM competition_automatic_stage_transition
+    WHERE competition_id = ? AND stage_id = ?`).get('competition-1', 'stage-followup')).toBeNull()
+  const terminal = await e6SubmitTournamentGame(setup, setup.matchId, time, { type: 'draw' })
+  expect(terminal.result).toMatchObject({ ok: true, value: { matchProjection: { public: { match: { status: 'completed' } } } } })
+
+  const waitingTransition = setup.sql.database.query(`SELECT status, template_json FROM competition_automatic_stage_transition
+    WHERE competition_id = ? AND stage_id = ?`).get('competition-1', 'stage-followup') as {
+      status: string; template_json: string | null
+    }
+  expect(waitingTransition).toStrictEqual({ status: 'waiting', template_json: null })
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentPreviewQualifiedStage')).toHaveLength(1)
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentCreateQualifiedStage')).toHaveLength(0)
+  expect(randomCalls).toBe(beforeTransitionRandomCalls)
+
+  const sourceResultAnnounceAt = Math.floor((time + 5 * 60_000) / 60_000) * 60_000
+  const adjudicationTime = sourceResultAnnounceAt + 2 * 60_000
+  expect(adjudicationTime).toBeGreaterThan(sourceResultAnnounceAt)
+  const adjudicationMeta = setup.meta()
+  const adjudication = await atRoundDeliveryTime(adjudicationTime, () => setup.room.execute({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', commandId: 'stage-source-ranking-tie',
+    expectedRevision: adjudicationMeta.revision, trustedTimeMs: adjudicationTime,
+    operation: {
+      type: 'tournamentAdjudicateRankingTie', stageId: sourceStage.stageId,
+      orderedTeamIds: ['team-b', 'team-a'], reason: '依公告確認後續種子順序。',
+    },
+  }))
+  expect(adjudication).toMatchObject({ ok: true })
+
+  const transition = setup.sql.database.query(`SELECT * FROM competition_automatic_stage_transition
+    WHERE competition_id = ? AND stage_id = ?`).get('competition-1', 'stage-followup') as {
+      status: string; template_json: string; next_attempt_at_ms: number
+    }
+  expect(transition.status).toBe('pending')
+  const savedTemplate = JSON.parse(transition.template_json) as JsonObject
+  const savedRandomSeed = savedTemplate.randomSeed
+  expect(savedTemplate.sourceSlots).toStrictEqual(announced.stages[1]!.qualification.type === 'sourceSlots'
+    ? announced.stages[1]!.qualification.slots : [])
+  expect(randomCalls).toBe(beforeTransitionRandomCalls + 1)
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentPreviewQualifiedStage')).toHaveLength(2)
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentCreateQualifiedStage')).toHaveLength(1)
+
+  await atRoundDeliveryTime(transition.next_attempt_at_ms, () => setup.room.alarm())
+
+  const completedTournament = await e6ReadTournament(setup)
+  const stages = completedTournament.stages as JsonObject[]
+  expect(stages.map(stage => [((stage.config as JsonObject).stageId), stage.status])).toEqual([
+    [sourceStage.stageId, 'finished'], ['stage-followup', 'active'],
+  ])
+  const followupConfig = stages[1]!.config as JsonObject
+  expect(followupConfig.randomSeed).toBe(savedRandomSeed)
+  expect(followupConfig.matchFormat).toStrictEqual(nextMatchFormat)
+  expect(followupConfig.clockConfig).toStrictEqual(nextClock)
+  expect(followupConfig.teams).toStrictEqual([
+    { teamId: 'team-b', seed: 7 }, { teamId: 'team-a', seed: 3 },
+  ])
+  expect(randomCalls).toBe(beforeTransitionRandomCalls + 1)
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentPreviewQualifiedStage')).toHaveLength(2)
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentCreateQualifiedStage')).toHaveLength(2)
+  const completedTransition = setup.sql.database.query(`SELECT status, template_json, qualification_json,
+    qualification_confirmed_trusted_time_ms, completed_trusted_time_ms FROM competition_automatic_stage_transition
+    WHERE competition_id = ? AND stage_id = ?`).get('competition-1', 'stage-followup') as {
+      status: string; template_json: string; qualification_json: string
+      qualification_confirmed_trusted_time_ms: number; completed_trusted_time_ms: number
+    }
+  expect(completedTransition).toMatchObject({
+    status: 'completed', template_json: transition.template_json,
+  })
+  expect(completedTransition.qualification_confirmed_trusted_time_ms).toBe(adjudicationTime)
+  expect(completedTransition.completed_trusted_time_ms).toBe(transition.next_attempt_at_ms)
+  expect(JSON.parse(completedTransition.qualification_json)).toStrictEqual({
+    seededTeams: [
+      { teamId: 'team-b', seed: 7 },
+      { teamId: 'team-a', seed: 3 },
+    ],
+    sourceMappings: [
+      {
+        sourceStageId: sourceStage.stageId,
+        source: { type: 'uniqueStandingRank', rank: 1 },
+        teamId: 'team-b',
+        destinationSeed: 7,
+      },
+      {
+        sourceStageId: sourceStage.stageId,
+        source: { type: 'uniqueStandingRank', rank: 2 },
+        teamId: 'team-a',
+        destinationSeed: 3,
+      },
+    ],
+  })
+
+  const publication = setup.sql.database.query(`SELECT status FROM competition_round_publication
+    WHERE stage_id = ? AND round_number = 1`).get('stage-followup') as { status: string } | undefined
+  expect(publication).toBeDefined()
+  const openingPublication = setup.sql.database.query(`SELECT round_start_ms, release_not_before_ms, status
+    FROM competition_round_publication WHERE stage_id = ? AND round_number = 1`).get('stage-followup') as {
+      round_start_ms: number; release_not_before_ms: number; status: string
+    }
+  expect(openingPublication.status).toBe('materializing')
+  const releaseNotBeforeMs = Number(openingPublication.release_not_before_ms)
+  expect(releaseNotBeforeMs).toBeGreaterThan(adjudicationTime)
+  expect(Number(openingPublication.round_start_ms) - releaseNotBeforeMs).toBe(5 * 60_000)
+  const sourceResult = setup.sql.database.query(`SELECT tournament_result_confirmed_at_ms
+    FROM competition_matches WHERE match_id = ?`).get(setup.matchId) as {
+      tournament_result_confirmed_at_ms: number
+    }
+  const expectedAnnounceAt = Math.floor((Math.max(
+    Number(sourceResult.tournament_result_confirmed_at_ms),
+    Number(completedTransition.qualification_confirmed_trusted_time_ms),
+  ) + 5 * 60_000) / 60_000) * 60_000
+  expect(releaseNotBeforeMs).toBe(expectedAnnounceAt)
+  await atRoundDeliveryTime(releaseNotBeforeMs - 1, () => setup.room.alarm())
+  expect(setup.sql.database.query(`SELECT status FROM competition_round_publication
+    WHERE stage_id = ? AND round_number = 1`).get('stage-followup')).toEqual({ status: 'released' })
+  const followupRound = (stages[1]!.rounds as JsonObject[])[0]!
+  const followupMatchId = ((followupRound.matches as JsonObject[])[0]!).matchId as string
+  const openedStageRoom = setup.gameCalls.find(call => call.binding.matchId === followupMatchId)
+  expect(openedStageRoom?.binding).toMatchObject({
+    matchId: followupMatchId,
+    roundStartMs: openingPublication.round_start_ms,
+    roundRef: { stageId: 'stage-followup', roundNumber: 1 },
+  })
+  expect(openedStageRoom?.binding.players
+    .map(player => [player.userId, player.team]).sort(([left], [right]) => left!.localeCompare(right!)))
+    .toEqual([['a-1', 'team-a'], ['b-1', 'team-b']])
+  const nextMatch = setup.sql.database.query(`SELECT clock_checkpoint_json FROM competition_matches
+    WHERE stage_id = ?`).get('stage-followup') as { clock_checkpoint_json: string } | undefined
+  expect(nextMatch).toBeDefined()
+  expect((JSON.parse(nextMatch!.clock_checkpoint_json) as JsonObject).config).toStrictEqual(nextClock)
+})
+
+test('a delayed stage-creation retry preserves the original announcement cutoff and requires referee handling after it is missed', async () => {
+  const sourceStage = stageConfig({ format: 'roundRobin' })
+  sourceStage.matchFormat = { type: 'fixedGames', value: 1 }
+  const announced = ticket15TwoStagePlan(sourceStage,
+    { mainTimeMs: 900_000, actionTimeMs: 60_000, outOfTurnChoiceTimeMs: 60_000 },
+    { type: 'fixedGames', value: 2 })
+  let randomCalls = 0
+  const setup = await e6c2aLockedMatch({
+    format: 'roundRobin',
+    matchFormat: { type: 'fixedGames', value: 1 },
+    announcedPlan: announced,
+    automaticRoundProgression: true,
+    failQualifiedStageCreateCount: 9,
+    randomUint32: () => { randomCalls += 1; return 0 },
+  })
+  const randomCallsBeforeTransition = randomCalls
+  const resultTime = Math.max(200_000, setup.meta().updated_trusted_time_ms + 1)
+  await atRoundDeliveryTime(resultTime - 1, () => setup.room.alarm())
+  expect(setup.sql.database.query(`SELECT 1 FROM competition_automatic_stage_transition
+    WHERE competition_id = ? AND stage_id = ?`).get('competition-1', 'stage-followup')).toBeNull()
+  expect((await e6SubmitTournamentGame(setup, setup.matchId, resultTime, { type: 'draw' })).result)
+    .toMatchObject({ ok: true })
+
+  const sourceResultAnnounceAt = Math.floor((resultTime + 5 * 60_000) / 60_000) * 60_000
+  const qualificationConfirmedAt = sourceResultAnnounceAt + 2 * 60_000
+  const adjudicationMeta = setup.meta()
+  expect(await atRoundDeliveryTime(qualificationConfirmedAt, () => setup.room.execute({
+    competitionId: 'competition-1', callerUserId: 'organizer-1', commandId: 'stage-source-ranking-tie-delayed',
+    expectedRevision: adjudicationMeta.revision, trustedTimeMs: qualificationConfirmedAt,
+    operation: {
+      type: 'tournamentAdjudicateRankingTie', stageId: sourceStage.stageId,
+      orderedTeamIds: ['team-b', 'team-a'], reason: '依公告確認後續種子順序。',
+    },
+  }))).toMatchObject({ ok: true })
+
+  const firstRetry = setup.sql.database.query(`SELECT status, template_json, qualification_confirmed_trusted_time_ms,
+    next_attempt_at_ms FROM competition_automatic_stage_transition
+    WHERE competition_id = ? AND stage_id = ?`).get('competition-1', 'stage-followup') as {
+      status: string; template_json: string; qualification_confirmed_trusted_time_ms: number
+      next_attempt_at_ms: number
+    }
+  expect(firstRetry.status).toBe('pending')
+  expect(firstRetry.qualification_confirmed_trusted_time_ms).toBe(qualificationConfirmedAt)
+  const fixedTemplate = firstRetry.template_json
+  const fixedAnnounceAt = Math.floor((qualificationConfirmedAt + 5 * 60_000) / 60_000) * 60_000
+  let pending = firstRetry
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await atRoundDeliveryTime(pending.next_attempt_at_ms, () => setup.room.alarm())
+    pending = setup.sql.database.query(`SELECT status, template_json,
+      qualification_confirmed_trusted_time_ms, next_attempt_at_ms
+      FROM competition_automatic_stage_transition WHERE competition_id = ? AND stage_id = ?`)
+      .get('competition-1', 'stage-followup') as typeof firstRetry
+    expect(pending.status).toBe('pending')
+    expect(pending.template_json).toBe(fixedTemplate)
+    expect(pending.qualification_confirmed_trusted_time_ms).toBe(qualificationConfirmedAt)
+  }
+
+  const successfulCreateAt = pending.next_attempt_at_ms
+  expect(successfulCreateAt).toBeGreaterThan(fixedAnnounceAt)
+  await atRoundDeliveryTime(successfulCreateAt, () => setup.room.alarm())
+
+  const completed = setup.sql.database.query(`SELECT status, qualification_confirmed_trusted_time_ms,
+    completed_trusted_time_ms FROM competition_automatic_stage_transition
+    WHERE competition_id = ? AND stage_id = ?`).get('competition-1', 'stage-followup') as {
+      status: string; qualification_confirmed_trusted_time_ms: number; completed_trusted_time_ms: number
+    }
+  expect(completed).toEqual({
+    status: 'completed',
+    qualification_confirmed_trusted_time_ms: qualificationConfirmedAt,
+    completed_trusted_time_ms: successfulCreateAt,
+  })
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentCreateQualifiedStage')).toHaveLength(10)
+  expect(randomCalls).toBe(randomCallsBeforeTransition + 1)
+  const publication = setup.sql.database.query(`SELECT round_start_ms, release_not_before_ms,
+    status, requires_referee FROM competition_round_publication WHERE stage_id = ? AND round_number = 1`)
+    .get('stage-followup') as {
+      round_start_ms: number; release_not_before_ms: number; status: string; requires_referee: number
+    } | undefined
+  expect(publication).toEqual({
+    round_start_ms: fixedAnnounceAt + 5 * 60_000,
+    release_not_before_ms: fixedAnnounceAt,
+    status: 'materializing',
+    requires_referee: 1,
+  })
+})
 
 async function e6ReadTournament(setup: E6TournamentSetup): Promise<JsonObject> {
   const result = await setup.room.readTournament({ competitionId: 'competition-1', callerUserId: 'organizer-1' })
@@ -9793,6 +10078,7 @@ function e6c2aSnapshot(setup: { sql: MemorySql; alarm: TestAlarmState }) {
     'competition_audit', 'competition_command_receipt', 'competition_matches',
     'competition_game_provision', 'competition_clock_control_outbox',
     'competition_schema_migrations',
+    'competition_automatic_stage_transition',
     'competition_round_publication', 'competition_round_room_ledger',
     'competition_round_release_outbox',
   ]

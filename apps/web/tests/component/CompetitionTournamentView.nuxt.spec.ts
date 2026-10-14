@@ -309,12 +309,18 @@ function doubleEliminationFinalsResponse(withReset: boolean) {
   return response
 }
 
-function props() {
+function props(overrides: Partial<{
+  registrationLocked: boolean
+  participantEntryEnabled: boolean
+  participantTeamId: string
+  participantIsCaptain: boolean
+}> = {}) {
   return {
     competitionId: ' competition a ',
     sessionIdentity: 'member-a',
     contextRevision: 7,
     contextReady: true,
+    ...overrides,
   }
 }
 
@@ -360,6 +366,43 @@ it('loads all four formats through the exact session-backed GET and displays ser
   expect(wrapper.text()).not.toContain('private cancellation note')
   expect(wrapper.text()).not.toContain('member-a')
   await wrapper.unmount()
+})
+
+it('shows a newly advanced stage and its participant game entry from the saved tournament projection', async () => {
+  const response = tournamentResponse('competition a', 10)
+  const source = stageFixture('roundRobin', 'stage-source')
+  source.status = 'finished'
+  const followup = stageFixture('roundRobin', 'stage-followup')
+  followup.status = 'active'
+  Object.assign(followup.rounds[0]!.matches[0]!, {
+    participants: ['team-a', 'team-b'], status: 'pending', result: null, started: false,
+  })
+  response.projection.public.stages = [source, followup]
+  fetchMock.mockResolvedValueOnce(response)
+
+  const wrapper = await mountSuspended(CompetitionTournamentView, {
+    props: props({
+      registrationLocked: true,
+      participantEntryEnabled: true,
+      participantTeamId: 'team-a',
+      participantIsCaptain: true,
+    }),
+    global: {
+      stubs: {
+        CompetitionParticipantGameEntry: { template: '<a data-testid="participant-game-entry">參加交手</a>' },
+      },
+    },
+  })
+  try {
+    await flushPromises()
+    expect(wrapper.findAll('article.stage-card')).toHaveLength(2)
+    const newStage = wrapper.get('article[aria-labelledby="tournament-stage-stage-followup"]')
+    expect(newStage.get('.stage-heading h3').text()).toBe('循環賽')
+    expect(newStage.get('.rounds-section .match-heading .identifier').text()).toBe('stage-followup-match-1')
+    expect(newStage.get('[data-testid="participant-game-entry"]').text()).toBe('參加交手')
+  } finally {
+    await wrapper.unmount()
+  }
 })
 
 it('shows every team Match wins to participants and spectators during Swiss rounds, then publishes standings', async () => {

@@ -17,6 +17,7 @@ import {
   type JsonValue,
   type MatchFormat,
   type StageConfig,
+  type QualifiedStageTemplate,
   type RoundKind,
   type PublicCompetitionSuccess,
   type CompetitionRuling,
@@ -385,6 +386,22 @@ interface InitialSeedingIntentRow {
   created_trusted_time_ms: number
 }
 
+interface AutomaticStageTransitionRow {
+  [key: string]: ArrayBuffer | string | number | null
+  competition_id: string
+  stage_id: string
+  command_id: string
+  template_json: string | null
+  qualification_json: string | null
+  qualification_confirmed_trusted_time_ms: number | null
+  completed_trusted_time_ms: number | null
+  status: 'waiting' | 'pending' | 'completed'
+  attempts: number
+  next_attempt_at_ms: number
+  last_error: string | null
+  created_trusted_time_ms: number
+}
+
 interface GameProvisionDeliveryClaim {
   row: GameProvisionRow
   binding: CompetitionGameBinding
@@ -450,7 +467,7 @@ interface ScheduledMatchMaterialization {
   result: JsonValue
 }
 
-const SCHEMA_VERSION = 15
+const SCHEMA_VERSION = 17
 
 const OPERATION_NAMES: CompetitionOperationName[] = [
   'registrationCreate',
@@ -526,7 +543,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
   }
 
   async execute(request: CompetitionRoomExecuteRequest): Promise<CompetitionRoomExecuteResult> {
-    return this.serialized(async () => {
+    const result = await this.serialized(async () => {
       // 明示 Lock 本身就是截止凍結，避免先自動鎖定再讓原命令遇到過期版號。
       const rawOperation: unknown = request?.operation
       const isExplicitLock = isJsonObject(rawOperation)
@@ -548,6 +565,13 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       }
       return result
     })
+    const operationType = request?.operation?.type
+    if (result.ok && (operationType === 'tournamentAdjudicateRankingTie'
+      || operationType === 'tournamentDropTeam'
+      || operationType === 'tournamentCreateQualifiedStage')) {
+      await this.kickAutomaticRoundAdvance()
+    }
+    return result
   }
 
   /** 先原子保存完整整輪 manifest/房間 ledger；foreign 建房另由持久 claim 交付。 */
@@ -772,7 +796,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     ])
     await this.serialized(async () => {
       let advancement: 'announced' | 'retry' | 'none' = 'none'
-      try { advancement = await this.publishNextAutomaticRoundIfReady() } catch {
+      try { advancement = await this.publishNextAutomaticProgression() } catch {
         console.warn('CompetitionRoom retained automatic round advancement after an attempt failure')
         advancement = 'retry'
       }
@@ -804,7 +828,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
 
   private async kickAutomaticRoundAdvance(): Promise<void> {
     const announced = await this.serialized(async () => {
-      try { return await this.publishNextAutomaticRoundIfReady() } catch {
+      try { return await this.publishNextAutomaticProgression() } catch {
         console.warn('CompetitionRoom retained automatic round advancement after an attempt failure')
         return 'retry' as const
       }
@@ -1234,6 +1258,44 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
           WHERE result_confirmed_at_ms IS NULL`)
         this.storage.sql.exec(
           'INSERT INTO competition_schema_migrations (version, applied_at_trusted_time_ms) VALUES (15, 0)',
+        )
+      }
+
+      if (currentVersion < 16) {
+        this.storage.sql.exec(`CREATE TABLE competition_automatic_stage_transition (
+          competition_id TEXT NOT NULL,
+          stage_id TEXT NOT NULL,
+          command_id TEXT NOT NULL UNIQUE,
+          template_json TEXT,
+          qualification_json TEXT,
+          completed_trusted_time_ms INTEGER CHECK (
+            completed_trusted_time_ms IS NULL OR completed_trusted_time_ms >= 0
+          ),
+          status TEXT NOT NULL CHECK (status IN ('waiting', 'pending', 'completed')),
+          attempts INTEGER NOT NULL CHECK (attempts >= 0),
+          next_attempt_at_ms INTEGER NOT NULL,
+          last_error TEXT,
+          created_trusted_time_ms INTEGER NOT NULL,
+          PRIMARY KEY (competition_id, stage_id)
+        )`)
+        this.storage.sql.exec(
+          'INSERT INTO competition_schema_migrations (version, applied_at_trusted_time_ms) VALUES (16, 0)',
+        )
+      }
+
+      if (currentVersion < 17) {
+        this.storage.sql.exec(`ALTER TABLE competition_automatic_stage_transition
+          ADD COLUMN qualification_confirmed_trusted_time_ms INTEGER CHECK (
+            qualification_confirmed_trusted_time_ms IS NULL OR qualification_confirmed_trusted_time_ms >= 0
+          )`)
+        // 既有已固定模板沒有可還原的資格確認時間；保留資料並停止自動重試，避免重算準備窗口。
+        this.storage.sql.exec(`UPDATE competition_automatic_stage_transition
+          SET status = CASE WHEN status = 'completed' THEN 'completed' ELSE 'waiting' END,
+              attempts = 0, next_attempt_at_ms = 0,
+              last_error = 'qualificationConfirmationTimeUnavailable'
+          WHERE template_json IS NOT NULL`)
+        this.storage.sql.exec(
+          'INSERT INTO competition_schema_migrations (version, applied_at_trusted_time_ms) VALUES (17, 0)',
         )
       }
 
@@ -5475,6 +5537,386 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     }
   }
 
+  private automaticStageTransition(
+    competitionId: string,
+    stageId: string,
+  ): AutomaticStageTransitionRow | undefined {
+    const row = this.storage.sql.exec<AutomaticStageTransitionRow>(
+      `SELECT * FROM competition_automatic_stage_transition
+       WHERE competition_id = ? AND stage_id = ?`,
+      competitionId, stageId,
+    ).toArray()[0]
+    return row && nonEmpty(row.competition_id) && row.stage_id === stageId
+      && nonEmpty(row.command_id) && (row.template_json === null || typeof row.template_json === 'string')
+      && (row.qualification_json === null || typeof row.qualification_json === 'string')
+      && (row.qualification_confirmed_trusted_time_ms === null
+        || safeNonNegativeInteger(row.qualification_confirmed_trusted_time_ms))
+      && (row.completed_trusted_time_ms === null || safeNonNegativeInteger(row.completed_trusted_time_ms))
+      && ['waiting', 'pending', 'completed'].includes(row.status)
+      && safeNonNegativeInteger(row.attempts) && safeNonNegativeInteger(row.next_attempt_at_ms)
+      && safeNonNegativeInteger(row.created_trusted_time_ms)
+      ? row : undefined
+  }
+
+  private setAutomaticStageTransitionWaiting(
+    row: AutomaticStageTransitionRow,
+    reason: string,
+  ): void {
+    this.storage.sql.exec(
+      `UPDATE competition_automatic_stage_transition
+       SET status = 'waiting', next_attempt_at_ms = 0, last_error = ?
+       WHERE competition_id = ? AND stage_id = ? AND status != 'completed'`,
+      reason, row.competition_id, row.stage_id,
+    )
+  }
+
+  private deferAutomaticStageTransition(
+    row: AutomaticStageTransitionRow,
+    errorCode: string,
+    now: number,
+  ): void {
+    if (!safeNonNegativeInteger(row.attempts + 1)) return
+    const delay = Math.min(60_000, 1_000 * 2 ** Math.min(row.attempts + 1, 6))
+    const nextAttempt = checkedRoundRetryTime(now, delay)
+    this.storage.sql.exec(
+      `UPDATE competition_automatic_stage_transition
+       SET status = 'pending', attempts = attempts + 1, next_attempt_at_ms = ?, last_error = ?
+       WHERE competition_id = ? AND stage_id = ? AND status != 'completed'`,
+      nextAttempt, errorCode, row.competition_id, row.stage_id,
+    )
+  }
+
+  private handleAutomaticStageTransitionFailure(
+    row: AutomaticStageTransitionRow,
+    errorCode: string,
+    now: number,
+  ): 'none' | 'retry' {
+    if (errorCode === 'qualificationBlocked') {
+      this.setAutomaticStageTransitionWaiting(row, errorCode)
+      return 'none'
+    }
+    if (isRetryableAutomaticRoundAdvancementError(errorCode)) {
+      this.deferAutomaticStageTransition(row, errorCode, now)
+      return 'retry'
+    }
+    this.setAutomaticStageTransitionWaiting(row, errorCode)
+    return 'none'
+  }
+
+  private async advanceNextAnnouncedStageIfReady(): Promise<'created' | 'retry' | 'none'> {
+    const current = this.meta()
+    if (!current) return 'none'
+    let state: CompetitionServerState
+    try { state = parseServerState(current.server_state_json) } catch { return 'none' }
+    const registration = state.registration
+    const announcement = isJsonObject(registration) && isJsonObject(registration.announcement)
+      ? registration.announcement : null
+    const plan = announcement ? parseCompetitionAnnouncementPlan(announcement.plan) : null
+    const tournament = state.tournament
+    if (!plan || !isJsonObject(tournament) || !Array.isArray(tournament.stages)
+      || tournament.stages.length === 0 || tournament.stages.length >= plan.stages.length) return 'none'
+
+    const stageIndex = tournament.stages.length
+    for (let index = 0; index < stageIndex; index += 1) {
+      const stage = tournament.stages[index]
+      const announced = plan.stages[index]
+      if (!announced || !isJsonObject(stage) || stage.status !== 'finished'
+        || !isJsonObject(stage.config) || stage.config.stageId !== announced.stageId) return 'none'
+    }
+    const announcedStage = plan.stages[stageIndex]
+    if (!announcedStage || announcedStage.qualification.type !== 'sourceSlots') return 'none'
+
+    let row = this.automaticStageTransition(current.competition_id, announcedStage.stageId)
+    if (!row) {
+      const commandDigest = await semanticFingerprint({
+        kind: 'automatic-qualified-stage', competitionId: current.competition_id,
+        stageId: announcedStage.stageId,
+      })
+      this.storage.sql.exec(
+        `INSERT OR IGNORE INTO competition_automatic_stage_transition
+           (competition_id, stage_id, command_id, template_json, status, attempts,
+            next_attempt_at_ms, last_error, created_trusted_time_ms)
+         VALUES (?, ?, ?, NULL, 'waiting', 0, 0, NULL, ?)`,
+        current.competition_id, announcedStage.stageId,
+        `automatic-qualified-stage-${commandDigest}`, current.updated_trusted_time_ms,
+      )
+      row = this.automaticStageTransition(current.competition_id, announcedStage.stageId)
+    }
+    if (!row || row.competition_id !== current.competition_id) return 'retry'
+    if (row.status === 'completed') {
+      // 權威提交與意圖完成狀態同一個 SQLite transaction；此組合表示 checkpoint 損壞。
+      console.error('CompetitionRoom found a completed stage transition without its Tournament Stage')
+      return 'none'
+    }
+    if (row.template_json !== null && !safeNonNegativeInteger(row.qualification_confirmed_trusted_time_ms)) {
+      this.setAutomaticStageTransitionWaiting(row, 'qualificationConfirmationTimeUnavailable')
+      return 'none'
+    }
+    const now = Date.now()
+    if (row.status === 'pending' && row.next_attempt_at_ms > now) return 'retry'
+
+    let template: QualifiedStageTemplate | null = null
+    if (row.template_json !== null) {
+      try {
+        const parsed: unknown = JSON.parse(row.template_json)
+        if (!isJsonObject(parsed) || !hasExactKeys(parsed, [
+          'stageId', 'format', 'randomSeed', 'matchFormat', 'clockConfig', 'swissRounds', 'swissPolicy', 'sourceSlots',
+        ]) || parsed.stageId !== announcedStage.stageId
+          || parsed.format !== announcedStage.format
+          || !safeNonNegativeInteger(parsed.randomSeed)
+          || !sameJson(parsed.matchFormat, announcedStage.matchFormat)
+          || !sameJson(parsed.clockConfig, announcedStage.clockConfig)
+          || !sameJson(parsed.swissRounds, announcedStage.swissRounds)
+          || !sameJson(parsed.swissPolicy, announcedStage.swissPolicy)
+          || !sameJson(parsed.sourceSlots, announcedStage.qualification.slots)) throw new Error('invalid transition template')
+        template = parsed as unknown as QualifiedStageTemplate
+      } catch {
+        this.setAutomaticStageTransitionWaiting(row, 'invalidPersistedTemplate')
+        return 'none'
+      }
+    }
+
+    if (!template) {
+      const previewTemplate: QualifiedStageTemplate = {
+        stageId: announcedStage.stageId,
+        format: announcedStage.format,
+        randomSeed: 0,
+        matchFormat: announcedStage.matchFormat,
+        clockConfig: announcedStage.clockConfig,
+        swissRounds: announcedStage.swissRounds,
+        swissPolicy: announcedStage.swissPolicy,
+        sourceSlots: announcedStage.qualification.slots,
+      }
+      const qualificationConfirmedAtMs = Math.max(now, current.updated_trusted_time_ms)
+      if (!safeNonNegativeInteger(qualificationConfirmedAtMs)) {
+        this.deferAutomaticStageTransition(row, 'invalidTrustedTime', now)
+        return 'retry'
+      }
+      let preview: CompetitionEngineResponse
+      try {
+        preview = await this.engine({
+          serverActor: actorFor('organizer', current.organizer_user_id),
+          trustedTimeMs: qualificationConfirmedAtMs,
+          operation: { type: 'tournamentPreviewQualifiedStage', template: previewTemplate },
+          serverState: state,
+        })
+      } catch {
+        this.deferAutomaticStageTransition(row, 'engineProtocolError', now)
+        return 'retry'
+      }
+      if (!preview.ok) {
+        return this.handleAutomaticStageTransitionFailure(row, preview.error.code, now)
+      }
+      if (!this.isValidQualifiedStagePreview(preview, state, previewTemplate, current.competition_id)) {
+        this.deferAutomaticStageTransition(row, 'engineProtocolError', now)
+        return 'retry'
+      }
+
+      let randomSeed: number
+      try { randomSeed = checkedRandomUint32(this.randomUint32) } catch {
+        this.deferAutomaticStageTransition(row, 'randomSourceFailure', now)
+        return 'retry'
+      }
+      template = { ...previewTemplate, randomSeed }
+      this.storage.sql.exec(
+        `UPDATE competition_automatic_stage_transition
+         SET template_json = ?, qualification_confirmed_trusted_time_ms = ?,
+             status = 'pending', next_attempt_at_ms = 0, last_error = NULL
+         WHERE competition_id = ? AND stage_id = ? AND template_json IS NULL AND status != 'completed'`,
+        JSON.stringify(template), qualificationConfirmedAtMs, current.competition_id, announcedStage.stageId,
+      )
+      row = this.automaticStageTransition(current.competition_id, announcedStage.stageId)
+      if (!row || row.template_json === null
+        || !safeNonNegativeInteger(row.qualification_confirmed_trusted_time_ms)) return 'retry'
+      template = JSON.parse(row.template_json) as QualifiedStageTemplate
+    }
+
+    const latest = this.meta()
+    if (!latest || latest.competition_id !== current.competition_id) return 'retry'
+    let latestState: CompetitionServerState
+    try { latestState = parseServerState(latest.server_state_json) } catch { return 'retry' }
+    if (!sameJson(latestState, state)) return 'retry'
+    const trustedTimeMs = Math.max(Date.now(), latest.updated_trusted_time_ms)
+    if (!safeNonNegativeInteger(trustedTimeMs)) return 'retry'
+
+    let response: CompetitionEngineResponse
+    try {
+      response = await this.engine({
+        serverActor: actorFor('organizer', latest.organizer_user_id),
+        trustedTimeMs,
+        operation: { type: 'tournamentCreateQualifiedStage', template },
+        serverState: latestState,
+      })
+    } catch {
+      this.deferAutomaticStageTransition(row, 'engineProtocolError', Date.now())
+      return 'retry'
+    }
+    if (!response.ok) {
+      return this.handleAutomaticStageTransitionFailure(row, response.error.code, Date.now())
+    }
+    if (!this.isValidQualifiedStageCreate(response, latestState, template, current.competition_id)) {
+      this.deferAutomaticStageTransition(row, 'engineProtocolError', Date.now())
+      return 'retry'
+    }
+    const createdResponse = response as unknown as JsonObject
+    if (!isJsonObject(createdResponse.public) || !isJsonObject(createdResponse.public.qualification)) {
+      this.deferAutomaticStageTransition(row, 'engineProtocolError', Date.now())
+      return 'retry'
+    }
+    const createdQualification = createdResponse.public.qualification
+
+    let projection: CompetitionRoomPublicProjection
+    try { projection = stripPrivate(publicProjection(response, 'organizer')) } catch {
+      this.deferAutomaticStageTransition(row, 'engineProtocolError', Date.now())
+      return 'retry'
+    }
+    const revision = latest.revision + 1
+    this.storage.transactionSync(() => {
+      const currentMeta = this.meta()
+      const currentIntent = this.automaticStageTransition(currentMeta?.competition_id ?? '', announcedStage.stageId)
+      if (!currentMeta || currentMeta.competition_id !== latest.competition_id
+        || currentMeta.revision !== latest.revision
+        || currentMeta.server_state_json !== latest.server_state_json
+        || !currentIntent || currentIntent.status === 'completed'
+        || currentIntent.template_json !== row.template_json) {
+        throw new Error('automatic stage transition changed before durable commit')
+      }
+      this.storage.sql.exec(
+        `UPDATE competition_meta
+         SET revision = ?, server_state_json = ?, public_projection_json = ?, updated_trusted_time_ms = ?
+         WHERE singleton = 1`,
+        revision, JSON.stringify(response.serverState), JSON.stringify(projection), trustedTimeMs,
+      )
+      this.storage.sql.exec(
+        `UPDATE competition_automatic_stage_transition
+         SET status = 'completed', qualification_json = ?, completed_trusted_time_ms = ?, attempts = 0,
+             next_attempt_at_ms = 0, last_error = NULL
+         WHERE competition_id = ? AND stage_id = ? AND status != 'completed'`,
+        JSON.stringify(createdQualification), trustedTimeMs,
+        currentMeta.competition_id, announcedStage.stageId,
+      )
+      this.insertAudit({
+        actorUserId: currentMeta.organizer_user_id,
+        role: 'organizer',
+        operationType: 'tournamentCreateQualifiedStage',
+        commandId: row.command_id,
+        revision,
+        outcomeCode: 'success',
+        trustedTimeMs,
+      })
+    })
+    return 'created'
+  }
+
+  private isValidQualifiedStagePreview(
+    response: Extract<CompetitionEngineResponse, { ok: true }>,
+    inputState: CompetitionServerState,
+    template: QualifiedStageTemplate,
+    tournamentId: string,
+  ): boolean {
+    const raw = response as unknown as JsonObject
+    return isExactCompetitionJson(raw) && hasExactKeys(raw, ['ok', 'operation', 'public', 'serverState'])
+      && raw.ok === true && raw.operation === 'tournamentPreviewQualifiedStage'
+      && isJsonObject(raw.public) && hasExactKeys(raw.public, ['qualification', 'plannedStage'])
+      && this.isResolvedQualification(raw.public.qualification, template.sourceSlots.length)
+      && isJsonObject(raw.public.plannedStage)
+      && this.isQualifiedPlannedStage(raw.public.plannedStage, template, raw.public.qualification)
+      && sameJson(raw.serverState, inputState)
+      && isTournamentForCompetition(inputState.tournament ?? {}, tournamentId)
+  }
+
+  private isValidQualifiedStageCreate(
+    response: Extract<CompetitionEngineResponse, { ok: true }>,
+    inputState: CompetitionServerState,
+    template: QualifiedStageTemplate,
+    tournamentId: string,
+  ): boolean {
+    const raw = response as unknown as JsonObject
+    if (!isExactCompetitionJson(raw) || !hasExactKeys(raw, ['ok', 'operation', 'public', 'serverState'])
+      || raw.ok !== true || raw.operation !== 'tournamentCreateQualifiedStage'
+      || !isJsonObject(raw.public) || !hasExactKeys(raw.public, ['qualification', 'currentTournament'])
+      || !this.isResolvedQualification(raw.public.qualification, template.sourceSlots.length)
+      || !isJsonObject(raw.public.currentTournament) || !isJsonObject(raw.serverState)
+      || !hasExactKeys(raw.serverState, ['registration', 'clock', 'tournament', 'matches'])
+      || !sameJson(raw.serverState.registration, inputState.registration)
+      || !sameJson(raw.serverState.clock, inputState.clock)
+      || !sameJson(raw.serverState.matches ?? {}, inputState.matches ?? {})
+      || !isJsonObject(raw.serverState.tournament)
+      || !sameJson(raw.public.currentTournament, raw.serverState.tournament)
+      || containsPrivateRosterFields(raw.public.currentTournament)
+      || !isTournamentForCompetition(raw.public.currentTournament, tournamentId)) return false
+
+    const previousStages = inputState.tournament?.stages
+    const nextStages = raw.public.currentTournament.stages
+    if (!Array.isArray(previousStages) || !Array.isArray(nextStages)
+      || nextStages.length !== previousStages.length + 1) return false
+    for (let index = 0; index < previousStages.length; index += 1) {
+      const previous = previousStages[index]
+      const next = nextStages[index]
+      if (!isJsonObject(previous) || !isJsonObject(next)
+        || !isJsonObject(previous.config) || !isJsonObject(next.config)
+        || previous.config.stageId !== next.config.stageId) return false
+    }
+    const plannedStage = nextStages.at(-1)
+    return isJsonObject(plannedStage) && this.isQualifiedPlannedStage(
+      plannedStage, template, raw.public.qualification,
+    )
+  }
+
+  private isResolvedQualification(value: unknown, slotCount: number): value is JsonObject {
+    if (!isJsonObject(value) || !hasExactKeys(value, ['seededTeams', 'sourceMappings'])
+      || !Array.isArray(value.seededTeams) || value.seededTeams.length !== slotCount
+      || !Array.isArray(value.sourceMappings) || value.sourceMappings.length !== slotCount) return false
+    const teamIds = new Set<string>()
+    const seeds = new Set<number>()
+    for (const team of value.seededTeams) {
+      if (!isJsonObject(team) || !hasExactKeys(team, ['teamId', 'seed'])
+        || !nonEmpty(team.teamId) || !Number.isInteger(team.seed) || Number(team.seed) < 1
+        || teamIds.has(team.teamId as string) || seeds.has(team.seed as number)) return false
+      teamIds.add(team.teamId as string)
+      seeds.add(team.seed as number)
+    }
+    return value.sourceMappings.every(mapping => isJsonObject(mapping)
+      && hasExactKeys(mapping, ['sourceStageId', 'source', 'teamId', 'destinationSeed'])
+      && nonEmpty(mapping.sourceStageId) && nonEmpty(mapping.teamId)
+      && teamIds.has(mapping.teamId as string)
+      && Number.isInteger(mapping.destinationSeed) && Number(mapping.destinationSeed) > 0)
+  }
+
+  private isQualifiedPlannedStage(
+    stage: JsonObject,
+    template: QualifiedStageTemplate,
+    qualification: unknown,
+  ): boolean {
+    if (!this.isResolvedQualification(qualification, template.sourceSlots.length)
+      || !hasExactKeys(stage, [
+        'config', 'status', 'rounds', 'standings', 'corrections', 'lastScheduleError',
+        'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions',
+      ]) || stage.status !== 'active' || !isJsonObject(stage.config)) return false
+    const expectedConfig = {
+      stageId: template.stageId,
+      format: template.format,
+      teams: qualification.seededTeams,
+      randomSeed: template.randomSeed,
+      matchFormat: template.matchFormat,
+      clockConfig: template.clockConfig,
+      swissRounds: template.swissRounds,
+      swissPolicy: template.swissPolicy,
+    }
+    return sameJson(stage.config, expectedConfig)
+      && Array.isArray(stage.rounds) && Array.isArray(stage.standings)
+      && Array.isArray(stage.corrections) && Array.isArray(stage.supersededRounds)
+      && Array.isArray(stage.rankingTieDecisions) && safeNonNegativeInteger(stage.scheduleGeneration)
+  }
+
+  private async publishNextAutomaticProgression(): Promise<'announced' | 'retry' | 'none'> {
+    const stageTransition = await this.advanceNextAnnouncedStageIfReady()
+    const roundPublication = await this.publishNextAutomaticRoundIfReady()
+    if (stageTransition === 'retry' || roundPublication === 'retry') return 'retry'
+    if (stageTransition === 'created' || roundPublication === 'announced') return 'announced'
+    return 'none'
+  }
+
   /** 前輪權威完成後，預留最多五分鐘備妥下一輪，公告點後再留五分鐘報到。 */
   private async publishNextAutomaticRoundIfReady(): Promise<'announced' | 'retry' | 'none'> {
     const current = this.meta()
@@ -5492,7 +5934,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       || typeof stage.config.stageId !== 'string' || !Array.isArray(stage.rounds)) return 'none'
     const stageIndex = tournament.stages.indexOf(stage)
     if (stageIndex < 0 || tournament.stages.slice(0, stageIndex).some(previous =>
-      !isJsonObject(previous) || previous.status !== 'completed')) return 'none'
+      !isJsonObject(previous) || previous.status !== 'finished')) return 'none'
     const stageId = stage.config.stageId
     const rounds = stage.rounds.filter((round): round is JsonObject => isJsonObject(round)
       && safeNonNegativeInteger(round.roundNumber) && round.roundNumber > 0).sort((left, right) =>
@@ -5543,8 +5985,24 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         return safeNonNegativeInteger(confirmedAt) ? [confirmedAt] : []
       })
       if (previousMatchTimes.length !== playedResults.length) return 'retry'
-      const completedAtMs = previousMatchTimes.length > 0
-        ? Math.max(...previousMatchTimes)
+      const transition = stageIndex > 0
+        ? this.automaticStageTransition(current.competition_id, stageId) : undefined
+      if (transition?.status === 'completed'
+        && !safeNonNegativeInteger(transition.qualification_confirmed_trusted_time_ms)) {
+        this.storage.sql.exec(
+          `UPDATE competition_automatic_stage_transition
+           SET last_error = 'qualificationConfirmationTimeUnavailable'
+           WHERE competition_id = ? AND stage_id = ? AND status = 'completed'`,
+          current.competition_id, stageId,
+        )
+        return 'none'
+      }
+      const qualificationConfirmedAtMs = transition?.status === 'completed'
+        ? transition.qualification_confirmed_trusted_time_ms : null
+      const completedTimes = qualificationConfirmedAtMs === null
+        ? previousMatchTimes : [...previousMatchTimes, qualificationConfirmedAtMs]
+      const completedAtMs = completedTimes.length > 0
+        ? Math.max(...completedTimes)
         : current.updated_trusted_time_ms
       const announceAtMs = floorCompetitionMinute(checkedAdd(completedAtMs, 5 * 60_000))
       const roundStartMs = announceAtMs === null ? null : checkedAdd(announceAtMs, 5 * 60_000)
@@ -7345,6 +7803,13 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
        WHERE status = 'pending' OR (status = 'completed' AND last_error IS NOT NULL
          AND last_error != 'roundNotPublishable')`,
     ).one().due
+    const automaticStageTransition = this.storage.sql.exec<{
+      [key: string]: ArrayBuffer | string | number | null
+      due: number
+    }>(
+      `SELECT MIN(next_attempt_at_ms) AS due FROM competition_automatic_stage_transition
+       WHERE status = 'pending'`,
+    ).one().due
     const now = Date.now()
     const current = this.meta()
     let registrationDeadline: number | null = null
@@ -7387,6 +7852,9 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       control?.next_attempt_at_ms,
       safeNonNegativeInteger(initialSeeding)
         ? initialSeeding > now ? initialSeeding : checkedRoundRetryTime(now, 1_000)
+        : undefined,
+      safeNonNegativeInteger(automaticStageTransition)
+        ? automaticStageTransition > now ? automaticStageTransition : checkedRoundRetryTime(now, 1_000)
         : undefined,
       registrationDeadline === null
         ? undefined
