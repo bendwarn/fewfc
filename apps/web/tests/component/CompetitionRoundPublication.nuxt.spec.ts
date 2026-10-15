@@ -61,7 +61,7 @@ function tournament(revision = 17, id = competitionId, rounds: unknown[] = [{
       clockConfig: { mainTimeMs: 300_000, actionTimeMs: 30_000, outOfTurnChoiceTimeMs: 15_000 },
       swissRounds: null, swissPolicy: null },
       status: 'active', rounds,
-      standings: [], rankingTieDecisions: [], corrections: [], lastScheduleError: null,
+      standings: [], resolution: null, rankingTieDecisions: [], corrections: [], lastScheduleError: null,
       scheduleGeneration: 0, supersededRounds: [],
       teams: {
         'team-a': { seed: 1, dropped: false, hadBye: false },

@@ -442,6 +442,7 @@ function createdTournament(stage: StageConfig, tournamentId: string): JsonObject
       status: 'active',
       rounds,
       standings,
+      resolution: null,
       rankingTieDecisions: [],
       corrections: [],
       lastScheduleError: null,
@@ -1690,6 +1691,7 @@ function seedScheduledMatches(
         matches: [match],
       })),
       standings: [],
+      resolution: null,
       rankingTieDecisions: [],
       corrections: [],
       lastScheduleError: null,
@@ -10422,6 +10424,146 @@ function ticket15TwoStagePlan(
   }
 }
 
+function ticket21TwoStagePlan(
+  sourceStage: StageConfig,
+  slots: { rank: number; destinationSeed: number }[],
+): CompetitionAnnouncementPlan {
+  const plan = ticket15TwoStagePlan(
+    sourceStage,
+    { mainTimeMs: 900_000, actionTimeMs: 60_000, outOfTurnChoiceTimeMs: 60_000 },
+    { type: 'fixedGames', value: 1 },
+  )
+  const nextStage = plan.stages[1]
+  if (!nextStage) throw new Error('ticket 21 fixture has no follow-up stage')
+  plan.stages[1] = {
+    ...nextStage,
+    qualification: {
+      type: 'sourceSlots',
+      slots: slots.map(slot => ({
+        sourceStageId: sourceStage.stageId,
+        source: { type: 'uniqueStandingRank', rank: slot.rank },
+        destinationSeed: slot.destinationSeed,
+      })),
+    },
+  }
+  return plan
+}
+
+test.serial('ticket 21 gives a one-team follow-up stage its winner without a match and retries creation idempotently', async () => {
+  const sourceStage = stageConfig({ format: 'roundRobin' })
+  sourceStage.matchFormat = { type: 'fixedGames', value: 1 }
+  const setup = await e6c2aLockedMatch({
+    format: 'roundRobin',
+    matchFormat: { type: 'fixedGames', value: 1 },
+    announcedPlan: ticket21TwoStagePlan(sourceStage, [
+      { rank: 1, destinationSeed: 7 },
+      { rank: 3, destinationSeed: 3 },
+    ]),
+    automaticRoundProgression: true,
+    failQualifiedStageCreateCount: 1,
+  })
+  const resultTime = Math.max(200_000, setup.meta().updated_trusted_time_ms + 1)
+  expect((await e6SubmitTournamentGame(
+    setup, setup.matchId, resultTime, { type: 'winner', team: 'team-a' },
+  )).result).toMatchObject({ ok: true })
+
+  const firstAttempt = setup.sql.database.query(`SELECT status, next_attempt_at_ms
+    FROM competition_automatic_stage_transition WHERE competition_id = ? AND stage_id = ?`)
+    .get('competition-1', 'stage-followup') as { status: string; next_attempt_at_ms: number }
+  expect(firstAttempt.status).toBe('pending')
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentCreateQualifiedStage')).toHaveLength(1)
+
+  await atRoundDeliveryTime(firstAttempt.next_attempt_at_ms, () => setup.room.alarm())
+
+  const tournament = await e6ReadTournament(setup)
+  const stages = tournament.stages as JsonObject[]
+  expect(stages.map(stage => [((stage.config as JsonObject).stageId), stage.status])).toEqual([
+    [sourceStage.stageId, 'finished'], ['stage-followup', 'finished'],
+  ])
+  const followup = stages[1]!
+  expect((followup.config as JsonObject).teams).toStrictEqual([{ teamId: 'team-a', seed: 7 }])
+  expect(followup.rounds).toStrictEqual([])
+  expect(followup.standings).toMatchObject([{ teamId: 'team-a', rank: 1 }])
+  expect(followup.standings).toHaveLength(1)
+  expect(followup.resolution).toStrictEqual({ type: 'winnerWithoutMatch', teamId: 'team-a' })
+  expect(setup.sql.database.query(`SELECT 1 FROM competition_matches WHERE stage_id = ?`)
+    .all('stage-followup')).toHaveLength(0)
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentCreateQualifiedStage')).toHaveLength(2)
+  expect(setup.sql.database.query(`SELECT status FROM competition_automatic_stage_transition
+    WHERE competition_id = ? AND stage_id = ?`).get('competition-1', 'stage-followup'))
+    .toEqual({ status: 'completed' })
+  expect(setup.sql.database.query(`SELECT 1 FROM competition_completion WHERE competition_id = ?`)
+    .get('competition-1')).toBeDefined()
+
+  const beforeRetry = e6c2aSnapshot(setup)
+  await (setup.room as unknown as { completeCompetitionIfReady: () => Promise<void> })
+    .completeCompetitionIfReady()
+  expect(e6c2aSnapshot(setup)).toEqual(beforeRetry)
+})
+
+test.serial('ticket 21 explicitly cancels a zero-team follow-up stage and publishes the completed competition', async () => {
+  const sourceStage = stageConfig({ format: 'roundRobin' })
+  sourceStage.matchFormat = { type: 'fixedGames', value: 1 }
+  const setup = await e6c2aLockedMatch({
+    format: 'roundRobin',
+    matchFormat: { type: 'fixedGames', value: 1 },
+    announcedPlan: ticket21TwoStagePlan(sourceStage, [
+      { rank: 3, destinationSeed: 7 },
+      { rank: 4, destinationSeed: 3 },
+    ]),
+    automaticRoundProgression: true,
+    failQualifiedStageCreateCount: 1,
+  })
+  const resultTime = Math.max(200_000, setup.meta().updated_trusted_time_ms + 1)
+  expect((await e6SubmitTournamentGame(
+    setup, setup.matchId, resultTime, { type: 'winner', team: 'team-a' },
+  )).result).toMatchObject({ ok: true })
+
+  const firstAttempt = setup.sql.database.query(`SELECT status, next_attempt_at_ms
+    FROM competition_automatic_stage_transition WHERE competition_id = ? AND stage_id = ?`)
+    .get('competition-1', 'stage-followup') as { status: string; next_attempt_at_ms: number }
+  expect(firstAttempt.status).toBe('pending')
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentCreateQualifiedStage')).toHaveLength(1)
+  await atRoundDeliveryTime(firstAttempt.next_attempt_at_ms, () => setup.room.alarm())
+
+  const tournament = await e6ReadTournament(setup)
+  const stages = tournament.stages as JsonObject[]
+  const followup = stages[1]!
+  expect(followup.status).toBe('finished')
+  expect((followup.config as JsonObject).teams).toStrictEqual([])
+  expect(followup.rounds).toStrictEqual([])
+  expect(followup.standings).toStrictEqual([])
+  expect(followup.resolution).toStrictEqual({ type: 'cancelled', reason: 'noQualifiedParticipants' })
+  expect(setup.sql.database.query(`SELECT 1 FROM competition_matches WHERE stage_id = ?`)
+    .all('stage-followup')).toHaveLength(0)
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentCreateQualifiedStage')).toHaveLength(2)
+  expect(setup.sql.database.query(`SELECT status, qualification_json FROM competition_automatic_stage_transition
+    WHERE competition_id = ? AND stage_id = ?`).get('competition-1', 'stage-followup'))
+    .toMatchObject({ status: 'completed' })
+  expect(JSON.parse((setup.sql.database.query(`SELECT qualification_json
+    FROM competition_automatic_stage_transition WHERE competition_id = ? AND stage_id = ?`)
+    .get('competition-1', 'stage-followup') as { qualification_json: string }).qualification_json))
+    .toStrictEqual({
+      seededTeams: [],
+      sourceMappings: [
+        {
+          sourceStageId: sourceStage.stageId,
+          source: { type: 'uniqueStandingRank', rank: 3 },
+          teamId: null,
+          destinationSeed: 7,
+        },
+        {
+          sourceStageId: sourceStage.stageId,
+          source: { type: 'uniqueStandingRank', rank: 4 },
+          teamId: null,
+          destinationSeed: 3,
+        },
+      ],
+    })
+  expect(setup.sql.database.query(`SELECT 1 FROM competition_completion WHERE competition_id = ?`)
+    .get('competition-1')).toBeDefined()
+})
+
 test('a completed source Tournament Stage advances once and retries reuse its saved seed and published clock', async () => {
   const sourceStage = stageConfig({ format: 'roundRobin' })
   sourceStage.matchFormat = { type: 'fixedGames', value: 1 }
@@ -15257,7 +15399,7 @@ async function roundDeliveryModule(options: {
     ],
     standings: config.teams.map(team => ({ teamId: team.teamId, matchPoints: '0', wins: 0, draws: 0, losses: 0,
       gameWins: 0, gameLosses: 0, netGameWins: 0, opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 1 })),
-    rankingTieDecisions: [], corrections: [], lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
+    resolution: null, rankingTieDecisions: [], corrections: [], lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
     teams: Object.fromEntries(config.teams.map(team => [team.teamId, { seed: team.seed, dropped: false, hadBye: false }])),
     doubleState: null,
   }] }

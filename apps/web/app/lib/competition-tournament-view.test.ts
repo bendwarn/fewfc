@@ -7,6 +7,8 @@ import {
   singleEliminationVacancySummary,
   tournamentFormatLabel,
   tournamentMatchResultLabel,
+  tournamentStageResolutionLabel,
+  tournamentStageStatusLabel,
   tournamentTimeLimitLabel,
 } from './competition-tournament-view'
 
@@ -63,6 +65,7 @@ function stageFixture(format: string, stageId: string) {
         opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
       },
     ],
+    resolution: null,
     rankingTieDecisions: [],
     corrections: [],
     lastScheduleError: null,
@@ -228,6 +231,40 @@ test('parses the exact current tournament projection without inferring rank from
   expect(parsed.stages[2]).not.toHaveProperty('doubleState')
 })
 
+test('parses and labels qualified-stage winners and cancellations without matches', () => {
+  const machineTeamId = '2f76d85c-512b-4ea6-9297-5a6953ed114c'
+  const oneTeam = parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, {
+    config: {
+      ...stageFixture('singleElimination', 'single-stage').config,
+      teams: [{ teamId: machineTeamId, seed: 8 }],
+    },
+    status: 'finished',
+    rounds: [],
+    standings: [{ ...stageFixture('singleElimination', 'single-stage').standings[0], teamId: machineTeamId, rank: 1 }],
+    teams: { [machineTeamId]: { seed: 8, dropped: false, hadBye: false } },
+    resolution: { type: 'winnerWithoutMatch', teamId: machineTeamId },
+  }), 'competition-a').stages[0]!
+  expect(oneTeam.config.teams).toEqual([{ teamId: machineTeamId, seed: 8 }])
+  const winnerMessage = tournamentStageResolutionLabel(oneTeam.resolution)
+  expect(winnerMessage).toContain('直接成為階段勝者')
+  expect(winnerMessage).toContain('遊戲')
+  expect(winnerMessage).not.toContain(machineTeamId)
+  expect(winnerMessage).not.toContain('Game')
+  expect(oneTeam.rounds).toEqual([])
+
+  const noTeams = parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, {
+    config: { ...stageFixture('singleElimination', 'single-stage').config, teams: [] },
+    status: 'finished',
+    rounds: [],
+    standings: [],
+    teams: {},
+    resolution: { type: 'cancelled', reason: 'noQualifiedParticipants' },
+  }), 'competition-a').stages[0]!
+  expect(tournamentStageStatusLabel(noTeams.status, noTeams.resolution)).toBe('階段已取消')
+  expect(tournamentStageResolutionLabel(noTeams.resolution)).toContain('無合格參賽者')
+  expect(noTeams.rounds).toEqual([])
+})
+
 test('parses only the frozen publication payload for a completed tournament', () => {
   const publication = {
     completedAtTrustedTimeMs: 2_000,
@@ -329,6 +366,7 @@ test('preserves server bye and double-loss states and never renders raw schedule
     return {
       ...stage,
       lastScheduleError: 'private referee payload',
+      resolution: null,
       rankingTieDecisions: [],
       corrections: [{
         matchId: 'double-stage-match-1',

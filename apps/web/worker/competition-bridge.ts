@@ -187,15 +187,21 @@ function sameQualifiedStageJson(left: unknown, right: unknown): boolean {
 }
 
 function isQualificationForTemplate(value: unknown, template: QualifiedStageTemplate): boolean {
-  if (!isResolvedStageQualification(value) || value.seededTeams.length !== template.sourceSlots.length
+  if (!isResolvedStageQualification(value) || value.seededTeams.length > template.sourceSlots.length
     || value.sourceMappings.length !== template.sourceSlots.length) return false
-  return template.sourceSlots.every((slot, index) => {
+  const mappedTeams: Array<{ teamId: string, seed: number }> = []
+  const validMappings = template.sourceSlots.every((slot, index) => {
     const mapping = value.sourceMappings[index]
     if (!mapping || mapping.sourceStageId !== slot.sourceStageId
       || mapping.destinationSeed !== slot.destinationSeed
       || !sameQualifiedStageJson(mapping.source, slot.source)) return false
-    return value.seededTeams.some(team => team.teamId === mapping.teamId && team.seed === mapping.destinationSeed)
+    if (mapping.teamId === null) return true
+    const seededTeam = value.seededTeams.find(team => team.teamId === mapping.teamId)
+    if (!seededTeam || seededTeam.seed !== mapping.destinationSeed) return false
+    mappedTeams.push({ teamId: mapping.teamId, seed: mapping.destinationSeed })
+    return true
   })
+  return validMappings && sameQualifiedStageJson(mappedTeams, value.seededTeams)
 }
 
 /**
@@ -490,7 +496,7 @@ function isStageQualificationMapping(value: unknown): boolean {
     && hasDisplayKeys(value, ['sourceStageId', 'source', 'teamId', 'destinationSeed'])
     && typeof value.sourceStageId === 'string'
     && isStageQualificationSource(value.source)
-    && typeof value.teamId === 'string'
+    && (value.teamId === null || typeof value.teamId === 'string')
     && typeof value.destinationSeed === 'number'
 }
 

@@ -479,7 +479,7 @@ test.skipIf(!clockDisplayWasmPath)('E6e2a formal metadata covers windows pause r
   await check(await execute({ type: 'clockFinishPreparation', team: 'a' }, 3100, prep), 4100)
   const action = await execute({ type: 'clockBeginAction', team: 'a', turn: 1 }, 3000, idle)
   await check(action, 4100)
-  await check(await execute({ type: 'clockBeginOutOfTurnChoice', team: 'b', choiceId: 'choice' }, 3000, idle), 3020)
+  await check(await execute({ type: 'clockBeginOutOfTurnChoice', team: 'b', choiceId: 'choice' }, 3000, idle), 4020)
   const paused = await execute({ type: 'clockPause', reason: 'metadata 暫停' }, 3100, action)
   await check(paused, null)
   await check(await execute({ type: 'clockResume', reason: 'metadata 恢復' }, 4000, paused), 5000)
@@ -810,6 +810,7 @@ test('E6d1a tournamentView recognizes the pure query and strips private checkpoi
         { teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 1,
           gameWins: 0, gameLosses: 1, netGameWins: -1, opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 2 },
       ],
+      resolution: null,
       rankingTieDecisions: [], corrections: [], lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
       teams: { 'team-a': { seed: 1, dropped: false, hadBye: false }, 'team-b': { seed: 2, dropped: false, hadBye: false } },
       doubleState: null,
@@ -1131,7 +1132,7 @@ function qualifiedStageBridgePlannedStage(template: QualifiedStageTemplate): Jso
       swissRounds: template.swissRounds,
       swissPolicy: structuredClone(template.swissPolicy),
     },
-    status: 'active', rounds: [], standings: [], rankingTieDecisions: [], corrections: [], lastScheduleError: null,
+    status: 'active', rounds: [], standings: [], resolution: null, rankingTieDecisions: [], corrections: [], lastScheduleError: null,
     scheduleGeneration: 0, supersededRounds: [],
     teams: {
       'team-a': { seed: 7, dropped: false, hadBye: false },

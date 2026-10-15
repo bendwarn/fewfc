@@ -445,7 +445,8 @@ export interface QualifiedStageTemplate {
 export interface StageQualificationMapping {
   sourceStageId: string
   source: StageQualificationSource
-  teamId: string
+  /** 已確定空缺的公告名額會保留來源映射，但沒有晉級隊伍。 */
+  teamId: string | null
   destinationSeed: number
 }
 
@@ -523,6 +524,7 @@ export interface Standing {
 export interface TournamentStage {
   config: StageConfig
   status: 'active' | 'finished'
+  resolution: TournamentStageResolution | null
   rounds: TournamentRound[]
   standings: Standing[]
   corrections: JsonValue[]
@@ -530,6 +532,10 @@ export interface TournamentStage {
   scheduleGeneration: number
   supersededRounds: TournamentRound[]
 }
+
+export type TournamentStageResolution =
+  | { type: 'winnerWithoutMatch'; teamId: string }
+  | { type: 'cancelled'; reason: 'noQualifiedParticipants' }
 
 export interface TournamentSnapshot {
   tournamentId: string

@@ -104,7 +104,7 @@
             </h3>
             <p class="identifier">{{ stage.config.stageId }}</p>
           </div>
-          <span class="status-badge">{{ tournamentStageStatusLabel(stage.status) }}</span>
+          <span class="status-badge">{{ tournamentStageStatusLabel(stage.status, stage.resolution) }}</span>
         </header>
 
         <section class="config-section" :aria-labelledby="configHeadingId(stage.config.stageId)">
@@ -190,6 +190,9 @@
 
         <p v-if="stage.hasScheduleWarning" class="review-note" role="status">
           賽程狀態待主辦方或裁判確認；此頁不推定缺少配對的原因或後續名次。
+        </p>
+        <p v-if="stage.resolution" class="review-note" role="status">
+          {{ tournamentStageResolutionLabel(stage.resolution) }}
         </p>
         <p v-if="singleEliminationDoubleLossFinal(stage)" class="review-note" role="status">
           決賽雙負，冠軍空缺
@@ -396,6 +399,7 @@ import {
   tournamentMatchResultLabel,
   tournamentMatchStatusLabel,
   tournamentRoundKindLabel,
+  tournamentStageResolutionLabel,
   tournamentStageStatusLabel,
   tournamentTimeLimitLabel,
   type CompetitionTournamentViewData,

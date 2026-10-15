@@ -5845,7 +5845,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     return isExactCompetitionJson(raw) && hasExactKeys(raw, ['ok', 'operation', 'public', 'serverState'])
       && raw.ok === true && raw.operation === 'tournamentPreviewQualifiedStage'
       && isJsonObject(raw.public) && hasExactKeys(raw.public, ['qualification', 'plannedStage'])
-      && this.isResolvedQualification(raw.public.qualification, template.sourceSlots.length)
+      && this.isResolvedQualification(raw.public.qualification, template.sourceSlots)
       && isJsonObject(raw.public.plannedStage)
       && this.isQualifiedPlannedStage(raw.public.plannedStage, template, raw.public.qualification)
       && sameJson(raw.serverState, inputState)
@@ -5862,7 +5862,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     if (!isExactCompetitionJson(raw) || !hasExactKeys(raw, ['ok', 'operation', 'public', 'serverState'])
       || raw.ok !== true || raw.operation !== 'tournamentCreateQualifiedStage'
       || !isJsonObject(raw.public) || !hasExactKeys(raw.public, ['qualification', 'currentTournament'])
-      || !this.isResolvedQualification(raw.public.qualification, template.sourceSlots.length)
+      || !this.isResolvedQualification(raw.public.qualification, template.sourceSlots)
       || !isJsonObject(raw.public.currentTournament) || !isJsonObject(raw.serverState)
       || !hasExactKeys(raw.serverState, ['registration', 'clock', 'tournament', 'matches'])
       || !sameJson(raw.serverState.registration, inputState.registration)
@@ -5890,10 +5890,14 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     )
   }
 
-  private isResolvedQualification(value: unknown, slotCount: number): value is JsonObject {
+  private isResolvedQualification(
+    value: unknown,
+    slots: QualifiedStageTemplate['sourceSlots'],
+  ): value is JsonObject {
     if (!isJsonObject(value) || !hasExactKeys(value, ['seededTeams', 'sourceMappings'])
-      || !Array.isArray(value.seededTeams) || value.seededTeams.length !== slotCount
-      || !Array.isArray(value.sourceMappings) || value.sourceMappings.length !== slotCount) return false
+      || !Array.isArray(value.seededTeams) || value.seededTeams.length > slots.length
+      || !Array.isArray(value.sourceMappings) || value.sourceMappings.length !== slots.length) return false
+    const sourceMappings = value.sourceMappings as JsonValue[]
     const teamIds = new Set<string>()
     const seeds = new Set<number>()
     for (const team of value.seededTeams) {
@@ -5903,11 +5907,21 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       teamIds.add(team.teamId as string)
       seeds.add(team.seed as number)
     }
-    return value.sourceMappings.every(mapping => isJsonObject(mapping)
-      && hasExactKeys(mapping, ['sourceStageId', 'source', 'teamId', 'destinationSeed'])
-      && nonEmpty(mapping.sourceStageId) && nonEmpty(mapping.teamId)
-      && teamIds.has(mapping.teamId as string)
-      && Number.isInteger(mapping.destinationSeed) && Number(mapping.destinationSeed) > 0)
+    const mappedTeams: Array<{ teamId: string, seed: number }> = []
+    const mappingsValid = slots.every((slot, index) => {
+      const mapping = sourceMappings[index]
+      if (!isJsonObject(mapping) || !hasExactKeys(mapping, [
+        'sourceStageId', 'source', 'teamId', 'destinationSeed',
+      ]) || mapping.sourceStageId !== slot.sourceStageId
+        || !sameJson(mapping.source, slot.source)
+        || mapping.destinationSeed !== slot.destinationSeed
+        || !(mapping.teamId === null || nonEmpty(mapping.teamId))) return false
+      if (mapping.teamId === null) return true
+      if (!teamIds.has(mapping.teamId)) return false
+      mappedTeams.push({ teamId: mapping.teamId, seed: Number(mapping.destinationSeed) })
+      return true
+    })
+    return mappingsValid && sameJson(mappedTeams, value.seededTeams)
   }
 
   private isQualifiedPlannedStage(
@@ -5915,11 +5929,11 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     template: QualifiedStageTemplate,
     qualification: unknown,
   ): boolean {
-    if (!this.isResolvedQualification(qualification, template.sourceSlots.length)
+    if (!this.isResolvedQualification(qualification, template.sourceSlots)
       || !hasExactKeys(stage, [
         'config', 'status', 'rounds', 'standings', 'corrections', 'lastScheduleError',
-        'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions',
-      ]) || stage.status !== 'active' || !isJsonObject(stage.config)) return false
+        'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions', 'resolution',
+      ]) || !isJsonObject(stage.config)) return false
     const expectedConfig = {
       stageId: template.stageId,
       format: template.format,
@@ -5930,18 +5944,56 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       swissRounds: template.swissRounds,
       swissPolicy: template.swissPolicy,
     }
+    const seededTeams = (qualification as JsonObject).seededTeams
+    if (!Array.isArray(seededTeams)) return false
+    const actualTeamCount = seededTeams.length
+    const expectedStatus = actualTeamCount >= 2 ? 'active' : 'finished'
+    const expectedResolution = actualTeamCount === 0
+      ? { type: 'cancelled', reason: 'noQualifiedParticipants' }
+      : actualTeamCount === 1 && isJsonObject(seededTeams[0])
+        ? { type: 'winnerWithoutMatch', teamId: seededTeams[0].teamId }
+        : null
+    if (stage.status !== expectedStatus || !sameJson(stage.resolution, expectedResolution)) return false
     return sameJson(stage.config, expectedConfig)
-      && Array.isArray(stage.rounds) && Array.isArray(stage.standings)
+      && Array.isArray(stage.rounds) && (actualTeamCount >= 2 || stage.rounds.length === 0)
+      && Array.isArray(stage.standings)
+      && (actualTeamCount !== 0 || stage.standings.length === 0)
+      && (actualTeamCount !== 1 || (stage.standings.length === 1 && isJsonObject(stage.standings[0])
+        && stage.standings[0].teamId === (seededTeams[0] as JsonObject).teamId
+        && stage.standings[0].rank === 1))
       && Array.isArray(stage.corrections) && Array.isArray(stage.supersededRounds)
       && Array.isArray(stage.rankingTieDecisions) && safeNonNegativeInteger(stage.scheduleGeneration)
   }
 
   private async publishNextAutomaticProgression(): Promise<'announced' | 'retry' | 'none'> {
-    const stageTransition = await this.advanceNextAnnouncedStageIfReady()
+    let createdStage = false
+    for (;;) {
+      const stageTransition = await this.advanceNextAnnouncedStageIfReady()
+      if (stageTransition === 'retry') return 'retry'
+      if (stageTransition !== 'created') break
+
+      const current = this.meta()
+      let state: CompetitionServerState | null = null
+      try { if (current) state = parseServerState(current.server_state_json) } catch {}
+      const stages = isJsonObject(state?.tournament) && Array.isArray(state.tournament.stages)
+        ? state.tournament.stages : []
+      const latestStage = stages.at(-1)
+      const resolvedWithoutMatches = isJsonObject(latestStage)
+        && latestStage.status === 'finished'
+        && isJsonObject(latestStage.resolution)
+        && (latestStage.resolution.type === 'winnerWithoutMatch'
+          || latestStage.resolution.type === 'cancelled')
+        && Array.isArray(latestStage.rounds) && latestStage.rounds.length === 0
+      if (!resolvedWithoutMatches) {
+        createdStage = true
+        break
+      }
+      createdStage = true
+    }
     const roundPublication = await this.publishNextAutomaticRoundIfReady()
-    if (stageTransition === 'retry' || roundPublication === 'retry') return 'retry'
-    if (stageTransition === 'created' || roundPublication === 'announced') return 'announced'
+    if (roundPublication === 'retry') return 'retry'
     await this.completeCompetitionIfReady()
+    if (createdStage || roundPublication === 'announced') return 'announced'
     return 'none'
   }
 
@@ -6054,10 +6106,24 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       return match.status === 'cancelled' && nonEmpty(match.cancellationReason)
     })) return false
 
-    const singleEntrantWithoutMatches = matches.length === 0
-      && stageTeamIds.length === 1 && standings.length === 1
-      && isJsonObject(standings[0]) && standings[0].rank === 1
-    if (singleEntrantWithoutMatches || this.isClosedEliminationVacancy(value)) return true
+    if (stageTeamIds.length === 0) {
+      return value.resolution !== null && isJsonObject(value.resolution)
+        && hasExactKeys(value.resolution, ['type', 'reason'])
+        && value.resolution.type === 'cancelled'
+        && value.resolution.reason === 'noQualifiedParticipants'
+        && matches.length === 0 && standings.length === 0
+    }
+    if (stageTeamIds.length === 1) {
+      return value.resolution !== null && isJsonObject(value.resolution)
+        && hasExactKeys(value.resolution, ['type', 'teamId'])
+        && value.resolution.type === 'winnerWithoutMatch'
+        && value.resolution.teamId === stageTeamIds[0]
+        && matches.length === 0 && standings.length === 1
+        && isJsonObject(standings[0]) && standings[0].teamId === stageTeamIds[0]
+        && standings[0].rank === 1
+    }
+    if (value.resolution !== null) return false
+    if (this.isClosedEliminationVacancy(value)) return true
 
     const ranks = standings.map(row => isJsonObject(row) ? row.rank : null)
     return ranks.length > 0
@@ -10659,11 +10725,11 @@ function validCreatedTournament(
   const stage = tournament.stages[0]
   if (!isJsonObject(stage) || !hasExactKeys(stage, [
     'config', 'status', 'rounds', 'standings', 'corrections', 'lastScheduleError',
-    'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions',
+    'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions', 'resolution',
   ]) || stage.status !== 'active' || !Array.isArray(stage.rounds)
     || !Array.isArray(stage.standings) || !Array.isArray(stage.rankingTieDecisions)
     || stage.rankingTieDecisions.length !== 0 || !Array.isArray(stage.corrections)
-    || stage.lastScheduleError !== null || !Number.isSafeInteger(stage.scheduleGeneration)
+    || stage.lastScheduleError !== null || stage.resolution !== null || !Number.isSafeInteger(stage.scheduleGeneration)
     || stage.scheduleGeneration !== 0 || !Array.isArray(stage.supersededRounds)
     || !isJsonObject(stage.teams)
     || !sameJson(stage.config, requestedStage)) return false
@@ -10873,6 +10939,7 @@ function validDoubleStateCheckpoint(
   teamIds: string[],
 ): boolean {
   if (format !== 'doubleElimination') return value === null
+  if (teamIds.length < 2) return value === null
   if (!isJsonObject(value)) return false
   const baseKeys = [
     'phase', 'winnersPool', 'losersWaiting', 'lowerPool', 'winnersChampion',
@@ -10975,7 +11042,7 @@ function deriveScheduledMatch(
   for (const rawStage of tournament.stages) {
     if (!isJsonObject(rawStage) || !hasExactKeys(rawStage, [
       'config', 'status', 'rounds', 'standings', 'corrections', 'lastScheduleError',
-      'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions',
+      'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions', 'resolution',
     ]) || !isJsonObject(rawStage.config) || !hasExactKeys(rawStage.config, [
       'stageId', 'format', 'teams', 'randomSeed', 'matchFormat', 'clockConfig', 'swissRounds', 'swissPolicy',
     ])
@@ -10997,6 +11064,7 @@ function deriveScheduledMatch(
     if (!isValidTournamentFormat(rawStage.config.format)
       || !isValidStageStatus(rawStage.status)
       || !validStageTeams(rawStage.config.teams)
+      || !validNoMatchStageResolution(rawStage)
       || !isValidMatchFormat(rawStage.config.matchFormat)
       || !isValidClockConfig(rawStage.config.clockConfig)
       || !isCompatibleStageMatchFormat(rawStage.config.format, rawStage.config.matchFormat)) {
@@ -11737,6 +11805,31 @@ function isValidBronzeSchedule(rounds: JsonValue[], format: unknown): boolean {
 function validStageTeams(value: JsonValue[]): boolean {
   const ids = value.map(team => isJsonObject(team) && typeof team.teamId === 'string' ? team.teamId : null)
   return ids.every(id => id !== null && nonEmpty(id)) && new Set(ids).size === ids.length
+}
+
+function validNoMatchStageResolution(stage: JsonObject): boolean {
+  if (!isJsonObject(stage.config) || !Array.isArray(stage.config.teams)
+    || !Array.isArray(stage.rounds) || !Array.isArray(stage.standings)) return false
+  const teamIds = stage.config.teams.flatMap(team => (
+    isJsonObject(team) && nonEmpty(team.teamId) ? [team.teamId] : []
+  ))
+  if (teamIds.length !== stage.config.teams.length) return false
+  if (teamIds.length >= 2) return stage.resolution === null
+  if (stage.status !== 'finished' || stage.rounds.length !== 0 || stage.doubleState !== null) return false
+  if (teamIds.length === 0) {
+    return stage.resolution !== null && isJsonObject(stage.resolution)
+      && hasExactKeys(stage.resolution, ['type', 'reason'])
+      && stage.resolution.type === 'cancelled'
+      && stage.resolution.reason === 'noQualifiedParticipants'
+      && stage.standings.length === 0
+  }
+  const [teamId] = teamIds
+  return stage.resolution !== null && isJsonObject(stage.resolution)
+    && hasExactKeys(stage.resolution, ['type', 'teamId'])
+    && stage.resolution.type === 'winnerWithoutMatch'
+    && stage.resolution.teamId === teamId
+    && stage.standings.length === 1 && isJsonObject(stage.standings[0])
+    && stage.standings[0].teamId === teamId && stage.standings[0].rank === 1
 }
 
 function isValidMatchFormat(value: unknown): value is MatchFormat {

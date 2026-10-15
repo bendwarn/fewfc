@@ -112,7 +112,8 @@ pub enum StageQualificationSource {
 pub struct StageQualificationMapping {
     pub source_stage_id: StageId,
     pub source: StageQualificationSource,
-    pub team_id: TeamId,
+    /// 已明確空缺的來源名額保留映射，但沒有隊伍可帶入目的階段。
+    pub team_id: Option<TeamId>,
     pub destination_seed: u32,
 }
 
@@ -248,6 +249,26 @@ impl MatchPurpose {
 pub enum StageStatus {
     Active,
     Finished,
+}
+
+/// 已公告階段由來源資格直接決定、無須建立交手時的結束事實。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type",
+    deny_unknown_fields
+)]
+pub enum StageResolution {
+    WinnerWithoutMatch { team_id: TeamId },
+    Cancelled { reason: StageCancellationReason },
+}
+
+/// 階段取消的明示原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StageCancellationReason {
+    NoQualifiedParticipants,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -879,6 +900,8 @@ struct DoubleState {
 pub struct Stage {
     config: StageConfig,
     status: StageStatus,
+    #[serde(default)]
+    resolution: Option<StageResolution>,
     rounds: Vec<Round>,
     standings: Vec<Standing>,
     #[serde(default)]
@@ -1126,7 +1149,7 @@ impl Tournament {
 
     /// 依呼叫端明確指定的來源名額解析固定隊伍與目的 seed，不修改 Tournament。
     ///
-    /// slots 至少兩筆；來源、隊伍與正 seed 均須唯一。名次比對 standings.rank 的實值，
+    /// slots 至少一筆；來源、隊伍與正 seed 均須唯一。名次比對 standings.rank 的實值，
     /// 結果保留 slots 順序與 seed 對應。來源未完成、仍有未決賽程、名次不唯一或隊伍
     /// 無法確定時，以封閉的 StageQualificationBlocker 阻擋整次解析。
     pub fn resolve_stage_qualification(
@@ -1167,7 +1190,7 @@ impl Tournament {
                 });
             }
         }
-        if slots.len() < 2 {
+        if slots.is_empty() {
             return Err(StageQualificationBlocker::TooFewSlots { count: slots.len() });
         }
 
@@ -1186,11 +1209,20 @@ impl Tournament {
 
             let team_id = match &slot.source {
                 StageQualificationSource::FinishedStageWinner => {
-                    let team_id = stage.winner().ok_or_else(|| {
-                        StageQualificationBlocker::WinnerNotDetermined {
-                            source_stage_id: slot.source_stage_id.clone(),
+                    let Some(team_id) = stage.winner() else {
+                        if stage.has_explicit_vacant_winner() {
+                            source_mappings.push(StageQualificationMapping {
+                                source_stage_id: slot.source_stage_id.clone(),
+                                source: slot.source.clone(),
+                                team_id: None,
+                                destination_seed: slot.destination_seed,
+                            });
+                            continue;
                         }
-                    })?;
+                        return Err(StageQualificationBlocker::WinnerNotDetermined {
+                            source_stage_id: slot.source_stage_id.clone(),
+                        });
+                    };
                     let Some(entry) = stage.teams.get(&team_id) else {
                         return Err(StageQualificationBlocker::SourceTeamMissing {
                             source_stage_id: slot.source_stage_id.clone(),
@@ -1208,7 +1240,7 @@ impl Tournament {
                             team_id,
                         });
                     }
-                    team_id
+                    Some(team_id)
                 }
                 StageQualificationSource::UniqueStandingRank { rank } => {
                     if !matches!(
@@ -1232,6 +1264,17 @@ impl Tournament {
                                     source_stage_id: slot.source_stage_id.clone(),
                                     team_id,
                                 });
+                            }
+                            if usize::try_from(*rank)
+                                .is_ok_and(|requested_rank| requested_rank > stage.standings.len())
+                            {
+                                source_mappings.push(StageQualificationMapping {
+                                    source_stage_id: slot.source_stage_id.clone(),
+                                    source: slot.source.clone(),
+                                    team_id: None,
+                                    destination_seed: slot.destination_seed,
+                                });
+                                continue;
                             }
                             return Err(StageQualificationBlocker::StandingRankNotFound {
                                 source_stage_id: slot.source_stage_id.clone(),
@@ -1259,22 +1302,36 @@ impl Tournament {
                         });
                     };
                     if entry.dropped || standing.dropped {
+                        if standing.dropped && stage.double_loss_exits().contains(&standing.team_id)
+                        {
+                            source_mappings.push(StageQualificationMapping {
+                                source_stage_id: slot.source_stage_id.clone(),
+                                source: slot.source.clone(),
+                                team_id: None,
+                                destination_seed: slot.destination_seed,
+                            });
+                            continue;
+                        }
                         return Err(StageQualificationBlocker::DroppedTeam {
                             source_stage_id: slot.source_stage_id.clone(),
                             team_id: standing.team_id.clone(),
                         });
                     }
-                    standing.team_id.clone()
+                    Some(standing.team_id.clone())
                 }
             };
 
-            if !seen_teams.insert(team_id.clone()) {
-                return Err(StageQualificationBlocker::DuplicateTeam { team_id });
+            if let Some(team_id) = &team_id {
+                if !seen_teams.insert(team_id.clone()) {
+                    return Err(StageQualificationBlocker::DuplicateTeam {
+                        team_id: team_id.clone(),
+                    });
+                }
+                seeded_teams.push(SeededTeam {
+                    team_id: team_id.clone(),
+                    seed: slot.destination_seed,
+                });
             }
-            seeded_teams.push(SeededTeam {
-                team_id: team_id.clone(),
-                seed: slot.destination_seed,
-            });
             source_mappings.push(StageQualificationMapping {
                 source_stage_id: slot.source_stage_id.clone(),
                 source: slot.source.clone(),
@@ -1306,8 +1363,9 @@ impl Tournament {
         let qualification = projection
             .resolve_stage_qualification_current(&template.source_slots)
             .map_err(QualifiedStagePlanError::QualificationBlocked)?;
-        let planned_stage = Stage::new(template.stage_config(qualification.seeded_teams.clone()))
-            .map_err(QualifiedStagePlanError::InvalidTemplate)?;
+        let planned_stage =
+            Stage::new_qualified(template.stage_config(qualification.seeded_teams.clone()))
+                .map_err(QualifiedStagePlanError::InvalidTemplate)?;
 
         let mut seen_source_ids = BTreeSet::new();
         let mut source_stages = Vec::new();
@@ -1493,6 +1551,8 @@ fn ensure_stage_qualification_source_is_closed(
 struct StageSnapshot {
     config: StageConfig,
     status: StageStatus,
+    #[serde(default)]
+    resolution: Option<StageResolution>,
     rounds: Vec<Round>,
     standings: Vec<Standing>,
     #[serde(default)]
@@ -1517,6 +1577,7 @@ impl<'de> Deserialize<'de> for Stage {
         let stage = Self {
             config: snapshot.config,
             status: snapshot.status,
+            resolution: snapshot.resolution,
             rounds: snapshot.rounds,
             standings: snapshot.standings,
             ranking_tie_decisions: snapshot.ranking_tie_decisions,
@@ -1566,6 +1627,58 @@ impl<'de> Deserialize<'de> for Tournament {
 impl Stage {
     fn new(config: StageConfig) -> Result<Self, ScheduleError> {
         validate_config(&config)?;
+        Self::new_with_validated_config(config)
+    }
+
+    /// 只有已完成資格解析的後續階段可用零隊或一隊建立終局權威。
+    fn new_qualified(config: StageConfig) -> Result<Self, ScheduleError> {
+        validate_config_with_minimum_teams(&config, 0)?;
+        if config.teams.len() >= 2 {
+            return Self::new_with_validated_config(config);
+        }
+
+        let resolution = if let Some(team) = config.teams.first() {
+            StageResolution::WinnerWithoutMatch {
+                team_id: team.team_id.clone(),
+            }
+        } else {
+            StageResolution::Cancelled {
+                reason: StageCancellationReason::NoQualifiedParticipants,
+            }
+        };
+        let teams = config
+            .teams
+            .iter()
+            .map(|team| {
+                (
+                    team.team_id.clone(),
+                    TeamEntry {
+                        seed: team.seed,
+                        dropped: false,
+                        had_bye: false,
+                    },
+                )
+            })
+            .collect();
+        let mut stage = Self {
+            config,
+            status: StageStatus::Finished,
+            resolution: Some(resolution),
+            rounds: vec![],
+            standings: vec![],
+            ranking_tie_decisions: vec![],
+            corrections: vec![],
+            last_schedule_error: None,
+            schedule_generation: 0,
+            superseded_rounds: vec![],
+            teams,
+            double_state: None,
+        };
+        stage.refresh_standings();
+        Ok(stage)
+    }
+
+    fn new_with_validated_config(config: StageConfig) -> Result<Self, ScheduleError> {
         let teams = config
             .teams
             .iter()
@@ -1583,6 +1696,7 @@ impl Stage {
         let mut stage = Self {
             config,
             status: StageStatus::Active,
+            resolution: None,
             rounds: vec![],
             standings: vec![],
             ranking_tie_decisions: vec![],
@@ -1794,6 +1908,13 @@ impl Stage {
         if self.status != StageStatus::Finished {
             return None;
         }
+        match &self.resolution {
+            Some(StageResolution::WinnerWithoutMatch { team_id }) => {
+                return Some(team_id.clone());
+            }
+            Some(StageResolution::Cancelled { .. }) => return None,
+            None => {}
+        }
         match self.config.format {
             TournamentFormat::SingleElimination => self.elimination_champion(),
             TournamentFormat::DoubleElimination => self
@@ -1813,8 +1934,65 @@ impl Stage {
         }
     }
 
+    fn has_explicit_vacant_winner(&self) -> bool {
+        if self.status != StageStatus::Finished {
+            return false;
+        }
+        if matches!(
+            &self.resolution,
+            Some(StageResolution::Cancelled {
+                reason: StageCancellationReason::NoQualifiedParticipants,
+            })
+        ) {
+            return true;
+        }
+        match self.config.format {
+            TournamentFormat::SingleElimination => {
+                self.has_single_elimination_empty_champion_path()
+            }
+            TournamentFormat::DoubleElimination => {
+                self.has_double_elimination_final_double_loss()
+                    || self.is_double_elimination_finished_without_champion()
+            }
+            TournamentFormat::RoundRobin | TournamentFormat::Swiss => false,
+        }
+    }
+
+    /// 只在最後仍有晉級機會的交手全以雙負結束時承認單敗空冠軍。
+    fn has_single_elimination_empty_champion_path(&self) -> bool {
+        if self.config.format != TournamentFormat::SingleElimination
+            || self.status != StageStatus::Finished
+            || self.last_schedule_error.is_some()
+            || self.rounds.is_empty()
+            || self
+                .rounds
+                .iter()
+                .any(|round| !round.matches.iter().all(is_closed))
+        {
+            return false;
+        }
+
+        let final_round = self.rounds.last().expect("已確認至少有一輪");
+        let final_matches: Vec<_> = final_round
+            .matches
+            .iter()
+            .filter(|match_| match_.purpose == MatchPurpose::Standard)
+            .collect();
+        final_round.kind == RoundKind::Main
+            && !final_matches.is_empty()
+            && final_matches.iter().all(|match_| {
+                match_.kind == RoundKind::Main
+                    && match_.status == MatchStatus::Completed
+                    && match_
+                        .result
+                        .as_ref()
+                        .is_some_and(MatchResult::is_double_loss)
+            })
+    }
+
     fn validate_snapshot(&self) -> Result<(), ScheduleError> {
-        validate_config(&self.config)?;
+        let minimum_teams = if self.resolution.is_some() { 0 } else { 2 };
+        validate_config_with_minimum_teams(&self.config, minimum_teams)?;
         let config_teams: BTreeSet<_> = self
             .config
             .teams
@@ -1826,6 +2004,44 @@ impl Stage {
             return Err(ScheduleError::InvalidSnapshot(
                 "teams 與 config.teams 不一致".to_string(),
             ));
+        }
+        match &self.resolution {
+            Some(StageResolution::WinnerWithoutMatch { team_id }) => {
+                if self.status != StageStatus::Finished
+                    || self.config.teams.len() != 1
+                    || self.config.teams[0].team_id != *team_id
+                    || !self.rounds.is_empty()
+                    || self.last_schedule_error.is_some()
+                    || self.standings.len() != 1
+                    || self.standings[0].team_id != *team_id
+                    || self.standings[0].rank != Some(1)
+                {
+                    return Err(ScheduleError::InvalidSnapshot(
+                        "無交手階段勝者的終局資料不一致".to_string(),
+                    ));
+                }
+            }
+            Some(StageResolution::Cancelled {
+                reason: StageCancellationReason::NoQualifiedParticipants,
+            }) => {
+                if self.status != StageStatus::Finished
+                    || !self.config.teams.is_empty()
+                    || !self.rounds.is_empty()
+                    || !self.standings.is_empty()
+                    || self.last_schedule_error.is_some()
+                {
+                    return Err(ScheduleError::InvalidSnapshot(
+                        "零合格隊伍階段的取消資料不一致".to_string(),
+                    ));
+                }
+            }
+            None => {
+                if self.config.teams.len() < 2 {
+                    return Err(ScheduleError::InvalidSnapshot(
+                        "零隊或一隊階段必須記錄明示終局處置".to_string(),
+                    ));
+                }
+            }
         }
         let mut match_ids = BTreeSet::new();
         for round in &self.rounds {
@@ -3086,6 +3302,19 @@ impl Stage {
 
     fn refresh_standings(&mut self) {
         self.standings = self.compute_standings();
+        match &self.resolution {
+            Some(StageResolution::WinnerWithoutMatch { team_id }) => {
+                for standing in &mut self.standings {
+                    standing.rank = (standing.team_id == *team_id).then_some(1);
+                }
+                return;
+            }
+            Some(StageResolution::Cancelled { .. }) => {
+                self.standings.clear();
+                return;
+            }
+            None => {}
+        }
         if self.config.format == TournamentFormat::SingleElimination
             && self.status == StageStatus::Finished
         {
@@ -3913,7 +4142,14 @@ impl Stage {
 }
 
 fn validate_config(config: &StageConfig) -> Result<(), ScheduleError> {
-    if config.teams.len() < 2 {
+    validate_config_with_minimum_teams(config, 2)
+}
+
+fn validate_config_with_minimum_teams(
+    config: &StageConfig,
+    minimum_teams: usize,
+) -> Result<(), ScheduleError> {
+    if config.teams.len() < minimum_teams {
         return Err(ScheduleError::EmptyTeams);
     }
     competition_clock::validate_config(config.clock_config)
@@ -6202,13 +6438,13 @@ mod tests {
                 StageQualificationMapping {
                     source_stage_id: StageId::from("stage"),
                     source: StageQualificationSource::UniqueStandingRank { rank: 2 },
-                    team_id: TeamId::from("t2"),
+                    team_id: Some(TeamId::from("t2")),
                     destination_seed: 9,
                 },
                 StageQualificationMapping {
                     source_stage_id: StageId::from("stage"),
                     source: StageQualificationSource::UniqueStandingRank { rank: 1 },
-                    team_id: TeamId::from("t1"),
+                    team_id: Some(TeamId::from("t1")),
                     destination_seed: 3,
                 },
             ]
@@ -6609,21 +6845,20 @@ mod tests {
         assert_eq!(double_loss_stage.status(), StageStatus::Finished);
         let double_loss_tournament = stage_qualification_tournament(double_loss_stage);
         assert_eq!(
-            double_loss_tournament.resolve_stage_qualification(&[
-                stage_qualification_slot(
+            double_loss_tournament
+                .resolve_stage_qualification(&[stage_qualification_slot(
                     "stage",
                     StageQualificationSource::FinishedStageWinner,
                     1,
-                ),
-                stage_qualification_slot(
-                    "stage",
-                    StageQualificationSource::UniqueStandingRank { rank: 1 },
-                    2,
-                ),
-            ]),
-            Err(StageQualificationBlocker::WinnerNotDetermined {
+                )])
+                .unwrap()
+                .source_mappings(),
+            &[StageQualificationMapping {
                 source_stage_id: StageId::from("stage"),
-            })
+                source: StageQualificationSource::FinishedStageWinner,
+                team_id: None,
+                destination_seed: 1,
+            }]
         );
     }
 
@@ -6745,13 +6980,22 @@ mod tests {
                 rank: 0,
             })
         );
-        assert_eq!(
-            tournament.resolve_stage_qualification(&[stage_qualification_slot(
+        let one_slot = tournament
+            .resolve_stage_qualification(&[stage_qualification_slot(
                 "stage",
                 StageQualificationSource::UniqueStandingRank { rank: 1 },
                 1,
-            ),]),
-            Err(StageQualificationBlocker::TooFewSlots { count: 1 })
+            )])
+            .unwrap();
+        assert_eq!(one_slot.seeded_teams().len(), 1);
+        assert_eq!(one_slot.seeded_teams()[0].team_id, TeamId::from("t1"));
+        assert_eq!(
+            one_slot.source_mappings()[0].team_id,
+            Some(TeamId::from("t1"))
+        );
+        assert_eq!(
+            tournament.resolve_stage_qualification(&[]),
+            Err(StageQualificationBlocker::TooFewSlots { count: 0 })
         );
     }
 
@@ -6965,6 +7209,282 @@ mod tests {
         assert_eq!(plan.planned_stage().status(), StageStatus::Active);
         assert_eq!(tournament.stages().len(), 1);
         assert_eq!(serde_json::to_value(&tournament).unwrap(), before);
+    }
+
+    #[test]
+    fn qualified_stage_with_one_resolved_team_finishes_without_creating_a_match() {
+        let mut source_config = config(TournamentFormat::RoundRobin, 2);
+        source_config.stage_id = StageId::from("source");
+        let source = stage_qualification_finish_with_winner(
+            Stage::new(source_config).unwrap(),
+            &TeamId::from("t1"),
+        );
+        let mut tournament = stage_qualification_tournament(source);
+        let slots = vec![
+            stage_qualification_slot(
+                "source",
+                StageQualificationSource::UniqueStandingRank { rank: 1 },
+                7,
+            ),
+            stage_qualification_slot(
+                "source",
+                StageQualificationSource::UniqueStandingRank { rank: 3 },
+                2,
+            ),
+        ];
+        let plan = tournament
+            .plan_qualified_stage(qualified_stage_plan_template(
+                "one-team-stage",
+                TournamentFormat::SingleElimination,
+                slots,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            plan.qualification().seeded_teams(),
+            &[SeededTeam {
+                team_id: TeamId::from("t1"),
+                seed: 7,
+            }]
+        );
+        assert_eq!(plan.qualification().source_mappings()[1].team_id, None);
+        assert_eq!(plan.planned_stage().status(), StageStatus::Finished);
+        assert!(plan.planned_stage().rounds().is_empty());
+        assert_eq!(plan.planned_stage().winner(), Some(TeamId::from("t1")));
+        assert_eq!(
+            serde_json::to_value(plan.planned_stage()).unwrap()["resolution"],
+            serde_json::json!({"type": "winnerWithoutMatch", "teamId": "t1"})
+        );
+
+        let qualification = tournament.apply_qualified_stage(plan).unwrap();
+        let stage = tournament.stage(&StageId::from("one-team-stage")).unwrap();
+        assert_eq!(qualification.seeded_teams().len(), 1);
+        assert_eq!(stage.config().teams[0].seed, 7);
+        assert!(stage.rounds().is_empty());
+        assert_eq!(stage.winner(), Some(TeamId::from("t1")));
+        assert!(tournament.rankings_resolved());
+
+        let restored: Tournament =
+            serde_json::from_value(serde_json::to_value(&tournament).unwrap()).unwrap();
+        assert_eq!(restored, tournament);
+    }
+
+    #[test]
+    fn qualified_stage_with_only_vacant_sources_is_explicitly_cancelled() {
+        let mut source_config = config(TournamentFormat::RoundRobin, 2);
+        source_config.stage_id = StageId::from("source");
+        let source = stage_qualification_finish_with_winner(
+            Stage::new(source_config).unwrap(),
+            &TeamId::from("t1"),
+        );
+        let mut tournament = stage_qualification_tournament(source);
+        let plan = tournament
+            .plan_qualified_stage(qualified_stage_plan_template(
+                "empty-stage",
+                TournamentFormat::RoundRobin,
+                vec![stage_qualification_slot(
+                    "source",
+                    StageQualificationSource::UniqueStandingRank { rank: 4 },
+                    9,
+                )],
+            ))
+            .unwrap();
+
+        assert!(plan.qualification().seeded_teams().is_empty());
+        assert_eq!(plan.qualification().source_mappings()[0].team_id, None);
+        assert_eq!(plan.planned_stage().status(), StageStatus::Finished);
+        assert!(plan.planned_stage().rounds().is_empty());
+        assert_eq!(plan.planned_stage().winner(), None);
+        assert_eq!(
+            serde_json::to_value(plan.planned_stage()).unwrap()["resolution"],
+            serde_json::json!({"type": "cancelled", "reason": "noQualifiedParticipants"})
+        );
+
+        tournament.apply_qualified_stage(plan).unwrap();
+        let stage = tournament.stage(&StageId::from("empty-stage")).unwrap();
+        assert!(stage.config().teams.is_empty());
+        assert!(stage.standings().is_empty());
+        assert!(stage.rounds().is_empty());
+        assert_eq!(stage.winner(), None);
+        assert!(tournament.rankings_resolved());
+
+        let restored: Tournament =
+            serde_json::from_value(serde_json::to_value(&tournament).unwrap()).unwrap();
+        assert_eq!(restored, tournament);
+    }
+
+    #[test]
+    fn qualified_stage_winner_source_resolves_when_every_single_elimination_entry_double_loses() {
+        let mut source_config = config(TournamentFormat::SingleElimination, 4);
+        source_config.stage_id = StageId::from("source");
+        let mut source = Stage::new(source_config).unwrap();
+        let first_round_matches = source.rounds()[0].matches.clone();
+        assert_eq!(first_round_matches.len(), 2);
+        for match_ in first_round_matches {
+            source
+                .submit_result(&match_.match_id, MatchResult::DoubleLoss)
+                .unwrap();
+        }
+        assert_eq!(source.status(), StageStatus::Finished);
+        assert_eq!(source.winner(), None);
+        assert!(source.standings().iter().all(|standing| standing.dropped));
+
+        let tournament = stage_qualification_tournament(source);
+        let plan = tournament
+            .plan_qualified_stage(qualified_stage_plan_template(
+                "empty-after-empty-bracket",
+                TournamentFormat::RoundRobin,
+                vec![stage_qualification_slot(
+                    "source",
+                    StageQualificationSource::FinishedStageWinner,
+                    7,
+                )],
+            ))
+            .unwrap();
+
+        assert!(plan.qualification().seeded_teams().is_empty());
+        assert_eq!(plan.qualification().source_mappings()[0].team_id, None);
+        assert_eq!(plan.planned_stage().winner(), None);
+        assert_eq!(
+            serde_json::to_value(plan.planned_stage()).unwrap()["resolution"],
+            serde_json::json!({"type": "cancelled", "reason": "noQualifiedParticipants"})
+        );
+    }
+
+    #[test]
+    fn qualified_stage_winner_source_resolves_after_normal_single_elimination_prefix() {
+        for (team_count, normal_round_count) in [(4, 0), (8, 1), (16, 2)] {
+            let mut source_config = config(TournamentFormat::SingleElimination, team_count);
+            source_config.stage_id = StageId::from("source");
+            let mut source = Stage::new(source_config).unwrap();
+
+            for round_index in 0..=normal_round_count {
+                let round = source.rounds.last().unwrap().clone();
+                for match_ in round.matches {
+                    let result = if round_index == normal_round_count {
+                        MatchResult::DoubleLoss
+                    } else {
+                        MatchResult::win(
+                            match_.participants[0].clone(),
+                            match_.participants[1].clone(),
+                        )
+                    };
+                    source.submit_result(&match_.match_id, result).unwrap();
+                }
+            }
+
+            assert_eq!(source.status(), StageStatus::Finished);
+            assert_eq!(source.winner(), None);
+            assert!(source.last_schedule_error.is_none());
+            assert!(
+                source
+                    .rounds()
+                    .iter()
+                    .all(|round| round.matches.iter().all(is_closed))
+            );
+
+            let tournament = stage_qualification_tournament(source);
+            let plan = tournament
+                .plan_qualified_stage(qualified_stage_plan_template(
+                    "empty-after-normal-prefix",
+                    TournamentFormat::RoundRobin,
+                    vec![stage_qualification_slot(
+                        "source",
+                        StageQualificationSource::FinishedStageWinner,
+                        7,
+                    )],
+                ))
+                .unwrap();
+
+            assert!(plan.qualification().seeded_teams().is_empty());
+            assert_eq!(
+                plan.qualification().source_mappings(),
+                &[StageQualificationMapping {
+                    source_stage_id: StageId::from("source"),
+                    source: StageQualificationSource::FinishedStageWinner,
+                    team_id: None,
+                    destination_seed: 7,
+                }]
+            );
+            assert_eq!(
+                plan.planned_stage().resolution,
+                Some(StageResolution::Cancelled {
+                    reason: StageCancellationReason::NoQualifiedParticipants,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn ranked_double_loss_exits_become_vacant_sources_after_explicit_decisions() {
+        for format in [TournamentFormat::RoundRobin, TournamentFormat::Swiss] {
+            let mut tournament = stage_qualification_tournament(stage_qualification_new_stage(
+                format, "source", "exit",
+            ));
+            let source_id = StageId::from("source");
+            let match_id = tournament.stages()[0].rounds()[0].matches[0]
+                .match_id
+                .clone();
+            tournament
+                .submit_result(&source_id, &match_id, MatchResult::DoubleLoss)
+                .unwrap();
+
+            let rank_slots = [
+                stage_qualification_slot(
+                    "source",
+                    StageQualificationSource::UniqueStandingRank { rank: 1 },
+                    7,
+                ),
+                stage_qualification_slot(
+                    "source",
+                    StageQualificationSource::UniqueStandingRank { rank: 2 },
+                    3,
+                ),
+            ];
+            assert!(matches!(
+                tournament.resolve_stage_qualification(&rank_slots),
+                Err(StageQualificationBlocker::StandingRankUnavailable { .. })
+            ));
+
+            tournament
+                .adjudicate_ranking_tie(
+                    &source_id,
+                    vec![TeamId::from("exit2"), TeamId::from("exit1")],
+                    RankingDecisionActor::Organizer {
+                        user_id: "organizer".to_string(),
+                    },
+                    "明確裁決退出隊伍的原排名".to_string(),
+                )
+                .unwrap();
+            let source = tournament.stage(&source_id).unwrap();
+            assert_eq!(source.ranking_tie_decisions().len(), 1);
+            assert!(source.standings().iter().all(|standing| standing.dropped));
+            assert_eq!(source.standings()[0].team_id, TeamId::from("exit2"));
+            assert_eq!(source.standings()[0].rank, Some(1));
+
+            let plan = tournament
+                .plan_qualified_stage(qualified_stage_plan_template(
+                    "cancelled-after-exits",
+                    TournamentFormat::DoubleElimination,
+                    rank_slots.to_vec(),
+                ))
+                .unwrap();
+            assert!(plan.qualification().seeded_teams().is_empty());
+            assert_eq!(
+                plan.qualification()
+                    .source_mappings()
+                    .iter()
+                    .map(|mapping| mapping.team_id.clone())
+                    .collect::<Vec<_>>(),
+                vec![None, None]
+            );
+            assert_eq!(plan.planned_stage().status(), StageStatus::Finished);
+            assert_eq!(plan.planned_stage().winner(), None);
+            assert_eq!(
+                serde_json::to_value(plan.planned_stage()).unwrap()["resolution"],
+                serde_json::json!({"type": "cancelled", "reason": "noQualifiedParticipants"})
+            );
+        }
     }
 
     #[test]

@@ -78,6 +78,7 @@ function stageFixture(format: string, stageId: string) {
         opponentWinRateBasisPoints: 5_000, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 1,
       },
     ],
+    resolution: null,
     rankingTieDecisions: [],
     corrections: format === 'roundRobin'
       ? [{
@@ -127,6 +128,33 @@ function tournamentResponse(competitionId = 'competition-a', revision = 9) {
       },
     },
   }
+}
+
+function noMatchResolutionResponse(kind: 'winner' | 'cancelled') {
+  const response = tournamentResponse('competition a', 10)
+  const stage = response.projection.public.stages[0]!
+  const teamId = kind === 'winner' ? '2f76d85c-512b-4ea6-9297-5a6953ed114c' : null
+  const teamStanding = stage.standings.find(standing => standing.teamId === 'team-a')
+  if (!teamStanding) throw new Error('missing single-elimination team standing fixture')
+  Object.assign(stage, {
+    config: {
+      ...stage.config,
+      teams: teamId ? [{ teamId, seed: 8 }] : [],
+    },
+    status: 'finished',
+    rounds: [],
+    standings: teamId ? [{ ...teamStanding, teamId, rank: 1, dropped: false }] : [],
+    corrections: [],
+    lastScheduleError: null,
+    scheduleGeneration: 0,
+    supersededRounds: [],
+    teams: teamId ? { [teamId]: { seed: 8, dropped: false, hadBye: false } } : {},
+    doubleState: null,
+    resolution: teamId
+      ? { type: 'winnerWithoutMatch', teamId }
+      : { type: 'cancelled', reason: 'noQualifiedParticipants' },
+  })
+  return response
 }
 
 function rankingTieResponse(competitionId = 'competition a', revision = 9) {
@@ -366,6 +394,31 @@ it('loads all four formats through the exact session-backed GET and displays ser
   expect(wrapper.text()).not.toContain('private cancellation note')
   expect(wrapper.text()).not.toContain('member-a')
   await wrapper.unmount()
+})
+
+it('shows Chinese no-match winner and cancellation states without exposing a team machine id', async () => {
+  const machineTeamId = '2f76d85c-512b-4ea6-9297-5a6953ed114c'
+  for (const kind of ['winner', 'cancelled'] as const) {
+    fetchMock.mockResolvedValueOnce(noMatchResolutionResponse(kind))
+    const wrapper = await mountSuspended(CompetitionTournamentView, { props: props() })
+    try {
+      await flushPromises()
+      const stage = wrapper.findAll('article.stage-card')[0]!
+      const message = stage.get('.review-note').text()
+      expect(stage.get('.status-badge').text()).toBe(kind === 'winner' ? '階段已結束' : '階段已取消')
+      expect(message).not.toContain(machineTeamId)
+      expect(message).not.toContain('Game')
+      if (kind === 'winner') {
+        expect(message).toContain('唯一合格隊伍直接成為階段勝者')
+        expect(message).toContain('未建立交手或遊戲')
+      } else {
+        expect(message).toContain('無合格參賽者，階段已取消')
+        expect(message).toContain('原因')
+      }
+    } finally {
+      await wrapper.unmount()
+    }
+  }
 })
 
 it('shows a newly advanced stage and its participant game entry from the saved tournament projection', async () => {
@@ -840,6 +893,7 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
         opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: true, rank: null,
       },
     ],
+    resolution: null,
     rankingTieDecisions: [],
     corrections: [{
       matchId: 'vacant-final-stage-g0-r1-m1',
@@ -1020,6 +1074,7 @@ it('displays the authoritative single-elimination final vacancy when the bronze 
       ] },
     ],
     standings,
+    resolution: null,
     rankingTieDecisions: [],
     corrections: [],
     lastScheduleError: null,
@@ -1084,6 +1139,7 @@ it('displays configured zero Team Main Time as unlimited through the valid tourn
         opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
       },
     ],
+    resolution: null,
     rankingTieDecisions: [],
     corrections: [],
     lastScheduleError: null,

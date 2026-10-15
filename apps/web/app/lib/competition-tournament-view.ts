@@ -1,6 +1,9 @@
 export type TournamentFormatView = 'singleElimination' | 'roundRobin' | 'doubleElimination' | 'swiss'
 export type TournamentRoundKindView = 'main' | 'winners' | 'losers' | 'grandFinal' | 'grandFinalReset'
 export type TournamentStageStatusView = 'active' | 'finished'
+export type TournamentStageResolutionView =
+  | { type: 'winnerWithoutMatch', teamId: string }
+  | { type: 'cancelled', reason: 'noQualifiedParticipants' }
 export type TournamentMatchStatusView = 'pending' | 'inProgress' | 'completed' | 'cancelled'
 export type TournamentMatchPurposeView = 'standard' | 'bronze'
 export type SwissTieBreakerView =
@@ -96,6 +99,7 @@ export interface TournamentViewRankingTieDecision {
 export interface TournamentViewStage {
   config: TournamentViewStageConfig
   status: TournamentStageStatusView
+  resolution: TournamentStageResolutionView | null
   rounds: TournamentViewRound[]
   standings: TournamentViewStanding[]
   rankingTieDecisions: TournamentViewRankingTieDecision[]
@@ -269,8 +273,21 @@ export function tournamentRoundKindLabel(kind: TournamentRoundKindView): string 
   }[kind]
 }
 
-export function tournamentStageStatusLabel(status: TournamentStageStatusView): string {
+export function tournamentStageStatusLabel(
+  status: TournamentStageStatusView,
+  resolution: TournamentStageResolutionView | null = null,
+): string {
+  if (resolution?.type === 'cancelled') return '階段已取消'
   return status === 'active' ? '進行中' : '階段已結束'
+}
+
+export function tournamentStageResolutionLabel(
+  resolution: TournamentStageResolutionView | null,
+): string | null {
+  if (!resolution) return null
+  return resolution.type === 'winnerWithoutMatch'
+    ? '唯一合格隊伍直接成為階段勝者，未建立交手或遊戲。'
+    : '無合格參賽者，階段已取消。原因：公告資格來源皆為明確空缺名額。'
 }
 
 export function tournamentMatchStatusLabel(status: TournamentMatchStatusView): string {
@@ -486,7 +503,7 @@ function isDoubleLossVacancy(match: TournamentViewMatch): boolean {
 function parseStage(input: unknown): TournamentViewStage | null {
   const value = exactRecord(input, [
     'config', 'status', 'rounds', 'standings', 'corrections', 'lastScheduleError',
-    'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions',
+    'scheduleGeneration', 'supersededRounds', 'teams', 'doubleState', 'rankingTieDecisions', 'resolution',
   ])
   if (!value || (value.status !== 'active' && value.status !== 'finished')
     || !(value.lastScheduleError === null || typeof value.lastScheduleError === 'string')
@@ -505,18 +522,21 @@ function parseStage(input: unknown): TournamentViewStage | null {
   const standings = parseArray(value.standings, standing => parseStanding(standing, teamIds))
   const rankingTieDecisions = parseArray(value.rankingTieDecisions,
     decision => parseRankingTieDecision(decision, teamIds))
+  const resolution = parseStageResolution(value.resolution)
   const corrections = parseArray(value.corrections, parseCorrection)
-  if (!rounds || !supersededRounds || !standings || !rankingTieDecisions || !corrections
+  if (!rounds || !supersededRounds || !standings || !rankingTieDecisions || resolution === undefined || !corrections
     || new Set(standings.map(standing => standing.teamId)).size !== standings.length
     || new Set(rounds.map(round => `${round.kind}:${round.roundNumber}`)).size !== rounds.length
     || !validBronzeRounds(rounds, config.format, true)
-    || !validBronzeRounds(supersededRounds, config.format, false)) return null
+    || !validBronzeRounds(supersededRounds, config.format, false)
+    || !validStageResolution(status, config, resolution, rounds, standings)) return null
   const allMatches = [...rounds, ...supersededRounds].flatMap(round => round.matches)
   if (new Set(allMatches.map(match => match.matchId)).size !== allMatches.length) return null
 
   return {
     config,
     status,
+    resolution,
     rounds,
     standings,
     rankingTieDecisions,
@@ -525,6 +545,37 @@ function parseStage(input: unknown): TournamentViewStage | null {
     scheduleGeneration,
     supersededRounds,
   }
+}
+
+function parseStageResolution(input: unknown): TournamentStageResolutionView | null | undefined {
+  if (input === null) return null
+  const winner = exactRecord(input, ['type', 'teamId'])
+  if (winner?.type === 'winnerWithoutMatch' && isNonEmptyString(winner.teamId)) {
+    return { type: 'winnerWithoutMatch', teamId: winner.teamId }
+  }
+  const cancelled = exactRecord(input, ['type', 'reason'])
+  if (cancelled?.type === 'cancelled' && cancelled.reason === 'noQualifiedParticipants') {
+    return { type: 'cancelled', reason: 'noQualifiedParticipants' }
+  }
+  return undefined
+}
+
+function validStageResolution(
+  status: TournamentStageStatusView,
+  config: TournamentViewStageConfig,
+  resolution: TournamentStageResolutionView | null,
+  rounds: TournamentViewRound[],
+  standings: TournamentViewStanding[],
+): boolean {
+  if (config.teams.length >= 2) return resolution === null
+  if (status !== 'finished' || rounds.length !== 0) return false
+  if (config.teams.length === 0) {
+    return resolution?.type === 'cancelled' && standings.length === 0
+  }
+  const soleTeamId = config.teams[0]?.teamId
+  return typeof soleTeamId === 'string'
+    && resolution?.type === 'winnerWithoutMatch' && resolution.teamId === soleTeamId
+    && standings.length === 1 && standings[0]?.teamId === soleTeamId && standings[0].rank === 1
 }
 
 /** 接受核心既有 checkpoint 欄位但不輸出至 UI；不從它推算配對、勝者或名次。 */
@@ -543,7 +594,7 @@ function validDoubleState(
   format: TournamentFormatView,
   teamIds: ReadonlySet<string>,
 ): boolean {
-  if (format !== 'doubleElimination') return input === null
+  if (format !== 'doubleElimination' || teamIds.size < 2) return input === null
   const raw = asPlainRecord(input)
   if (!raw) return false
   const requiredKeys = [
@@ -603,7 +654,7 @@ function parseStageConfig(input: unknown): TournamentViewStageConfig | null {
     if (!parsedPolicy) return null
     swissPolicy = parsedPolicy
   }
-  if (!teams || teams.length < 2 || !matchFormat || !clockConfig || swissRounds === undefined
+  if (!teams || !matchFormat || !clockConfig || swissRounds === undefined
     || new Set(teams.map(team => team.teamId)).size !== teams.length
     || new Set(teams.map(team => team.seed)).size !== teams.length) return null
 
