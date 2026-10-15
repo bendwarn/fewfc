@@ -483,7 +483,7 @@ fn elimination_draw_produces_a_distinct_carry_forward_continuation_intent() {
 }
 
 #[test]
-fn timeout_counts_as_a_win_but_double_loss_has_no_winner_and_needs_referee() {
+fn timeout_counts_as_a_win_but_double_loss_exits_the_stage_without_a_winner() {
     let mut clock = CompetitionClock::new(
         [team("a"), team("b")],
         ClockConfig {
@@ -556,14 +556,23 @@ fn timeout_counts_as_a_win_but_double_loss_has_no_winner_and_needs_referee() {
         ruling: double_clock.timeout_ruling().unwrap(),
     };
     double_match.submit_game(double_result.clone()).unwrap();
-    assert_eq!(double_match.status(), MatchStatus::AwaitingReferee);
+    assert_eq!(double_match.status(), MatchStatus::Completed);
     assert!(matches!(
         double_match.outcome(),
         Some(MatchOutcome::DoubleLoss {
             teams,
-            progression: DoubleLossProgression::PendingReferee { .. }
+            progression: DoubleLossProgression::StageExit
         }) if teams == &[team("a"), team("b")]
     ));
+    assert_eq!(
+        serde_json::to_value(double_match.outcome().unwrap()).unwrap(),
+        serde_json::json!({
+            "type": "doubleLoss",
+            "teams": ["a", "b"],
+            "progression": { "type": "stageExit" }
+        }),
+        "新雙負結果必須以 stageExit 明確輸出，並由賽程接續空缺"
+    );
     assert_eq!(
         double_match.submit_game(double_result).unwrap(),
         fewfc::competition_match::SubmissionOutcome::AlreadyRecorded

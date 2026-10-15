@@ -96,7 +96,9 @@ P2 的 [17–21](tickets/README.md#逐票入口與功能相依) 是正式辦賽�
 
 [18](tickets/18-byoyomi-expiration-rulings.md) **限定 PASS**：2026-10-14 [兩軸末審與固定來源證據](../../scratch/ticket18-final-review-2026-10-14/report.md)確認 Standards 0、Spec 0。截止到達即封鎖新命令／未完成隨機續行，持久化原截止的觀測並沿 FIFO 交付；canonical 交易在序號讀取與 alarm 設定之後、原子寫入之前，以同一 snapshot 再次核對截止，先前入口與交易內兩種 P1 競態均閉合。child 144／0、parent 375／0、兩檔 helpers 56／0、三個獨立固定反例 3／0；沿用完全相同 Rust source hash 的 Cargo 761／0，合計 1,339／0，typecheck／fmt／diff check 通過。初版與[第二輪 HOLD](../../scratch/ticket18-retry-review-2026-10-14/findings.md)原始失敗證據保留；正式新案例已經真正 initial ACK 後讀持久截止，沒有靠測例自算期限放行。票 18 五項勾選；只提交相符六個來源／測例與本票／關卡文件，不外推票 20／21 或 native Worker／Brave／22／28 平台矩陣。
 
-[20](tickets/20-double-loss-vacancy-completion.md) 維持一票，名次空缺政策已確認、needs-info 阻擋解除；當前雙敗阻擋路徑的修復與本票完整現況／元件實證仍未完成，不以政策確認代替放行。產品取值只見[設計](competitive-play-design.md#雙負空缺與後續階段)。
+[20](tickets/20-double-loss-vacancy-completion.md) **限定 PASS**：2026-10-15 第九次複審完整目前15檔，Standards 硬性0／Low建議2（非阻擋），Spec 0，見[本輪兩軸報告與完整證據](../../scratch/ticket20-ninth-retry-review-2026-10-15/report.md)。循環取消未開打交手、單敗原位置空缺與季軍、雙敗各部／總決賽／重置賽退出及已定名次保存均通過指定元件／純模組驗收；新checkpoint契約與UI重複宣告阻擋全閉合。主審本輪新跑正式1,385／0（Cargo773、父房384、子房144、helpers68、Nuxt16），歷史原槽位／名次／契約檢查另27／0，WASM build／typecheck／fmt／diff全通過。驗證後15來源摘要與兩份WASM一致，八項驗收全部勾選，依通過後提交授權將本票與關卡合計16檔提交。保留原始失敗證據，維持三賽制同票；後續階段零／一隊及native Worker／Brave集中矩陣仍依21／22／28。產品政策只見[設計](competitive-play-design.md#雙負空缺與後續階段)。
+
+[初審](../../scratch/ticket20-review-2026-10-15/report.md)、[第一次](../../scratch/ticket20-retry-review-2026-10-15/report.md)、[第二次](../../scratch/ticket20-second-retry-review-2026-10-15/report.md)、[第三次](../../scratch/ticket20-third-retry-review-2026-10-15/report.md)、[第四次](../../scratch/ticket20-fourth-retry-review-2026-10-15/report.md)、[第五次](../../scratch/ticket20-fifth-retry-review-2026-10-15/report.md)、[第六次](../../scratch/ticket20-sixth-retry-review-2026-10-15/report.md)、[第七次](../../scratch/ticket20-seventh-retry-review-2026-10-15/report.md)及[第八次複審](../../scratch/ticket20-eighth-retry-review-2026-10-15/report.md)證據保留。前輪原槽位、全空層、跨Rust／TS checkpoint契約與UI宣告問題均已在本輪目前版本重新驗證閉合；不以歷史PASS替代目前來源驗收。
 
 ### 延後功能
 

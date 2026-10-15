@@ -356,7 +356,7 @@ it('loads all four formats through the exact session-backed GET and displays ser
   expect(drawCredit?.get('dd').text()).toBe('1／2')
   expect(wrapper.text()).toContain('交手 4')
   expect(wrapper.text()).toContain('雙方判負（不推定勝者）')
-  expect(wrapper.text()).toContain('淘汰賽待裁判處理')
+  expect(wrapper.text()).not.toContain('淘汰賽待裁判處理')
   expect(wrapper.text()).toContain('team-a 輪空')
   expect(wrapper.text()).toContain('已被替代的舊輪次')
   expect(wrapper.text()).toContain('排名未確定')
@@ -801,34 +801,43 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
       {
         roundNumber: 2,
         kind: 'main',
-        matches: [{
-          matchId: 'vacant-final-stage-g1-r2-m1', stageId: 'vacant-final-stage',
-          roundNumber: 2, sequence: 1, kind: 'main', participants: ['team-a', 'team-c'],
-          status: 'completed', result: { type: 'doubleLoss' }, cancellationReason: null, started: true,
-        }],
+        matches: [
+          {
+            matchId: 'vacant-final-stage-g1-r2-m1', stageId: 'vacant-final-stage',
+            roundNumber: 2, sequence: 1, kind: 'main', participants: ['team-a', 'team-c'],
+            status: 'completed', result: { type: 'doubleLoss' }, cancellationReason: null, started: true,
+          },
+          {
+            matchId: 'vacant-final-stage-g1-r2-m2', stageId: 'vacant-final-stage',
+            roundNumber: 2, sequence: 2, kind: 'main', purpose: 'bronze', participants: ['team-b', 'team-d'],
+            status: 'completed',
+            result: { type: 'win', winnerId: 'team-b', loserId: 'team-d', winnerGames: 1, loserGames: 0 },
+            cancellationReason: null, started: true,
+          },
+        ],
       },
     ],
     // 保留服務提供的順序；位置與 null rank 都不是冠軍判定的來源。
     standings: [
       {
-        teamId: 'team-b', matchPoints: '0', wins: 0, draws: 0, losses: 1,
-        gameWins: 0, gameLosses: 0, netGameWins: 0,
-        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
+        teamId: 'team-b', matchPoints: '3', wins: 1, draws: 0, losses: 1,
+        gameWins: 1, gameLosses: 1, netGameWins: 0,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 3,
       },
       {
         teamId: 'team-c', matchPoints: '3', wins: 1, draws: 0, losses: 1,
         gameWins: 0, gameLosses: 0, netGameWins: 0,
-        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: true, rank: null,
       },
       {
-        teamId: 'team-d', matchPoints: '0', wins: 0, draws: 0, losses: 1,
-        gameWins: 0, gameLosses: 1, netGameWins: -1,
-        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
+        teamId: 'team-d', matchPoints: '0', wins: 0, draws: 0, losses: 2,
+        gameWins: 0, gameLosses: 2, netGameWins: -2,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: 4,
       },
       {
         teamId: 'team-a', matchPoints: '3', wins: 1, draws: 0, losses: 1,
         gameWins: 1, gameLosses: 0, netGameWins: 1,
-        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: false, rank: null,
+        opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0', dropped: true, rank: null,
       },
     ],
     rankingTieDecisions: [],
@@ -884,14 +893,23 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
   expect(parsedFinal.rounds[1]).toEqual({
     roundNumber: 2,
     kind: 'main',
-    matches: [{
-      matchId: 'vacant-final-stage-g1-r2-m1', stageId: 'vacant-final-stage',
-      roundNumber: 2, sequence: 1, kind: 'main', purpose: 'standard', participants: ['team-a', 'team-c'],
-      status: 'completed', result: { type: 'doubleLoss' }, cancellationReason: null, started: true,
-    }],
+    matches: [
+      {
+        matchId: 'vacant-final-stage-g1-r2-m1', stageId: 'vacant-final-stage',
+        roundNumber: 2, sequence: 1, kind: 'main', purpose: 'standard', participants: ['team-a', 'team-c'],
+        status: 'completed', result: { type: 'doubleLoss' }, cancellationReason: null, started: true,
+      },
+      {
+        matchId: 'vacant-final-stage-g1-r2-m2', stageId: 'vacant-final-stage',
+        roundNumber: 2, sequence: 2, kind: 'main', purpose: 'bronze', participants: ['team-b', 'team-d'],
+        status: 'completed',
+        result: { type: 'win', winnerId: 'team-b', loserId: 'team-d', winnerGames: 1, loserGames: 0 },
+        cancellationReason: null, started: true,
+      },
+    ],
   })
   expect(parsedFinal.standings.map(row => [row.teamId, row.rank])).toEqual([
-    ['team-b', null], ['team-c', null], ['team-d', null], ['team-a', null],
+    ['team-b', 3], ['team-c', null], ['team-d', 4], ['team-a', null],
   ])
 
   fetchMock.mockResolvedValueOnce(response)
@@ -913,7 +931,8 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
     expect(finalStage.text()).toContain('階段已結束')
     expect(finalStage.get('.rounds-section').findAll('.match-card').map(match =>
       match.get('.match-heading h6 .identifier').text())).toEqual([
-      'vacant-final-stage-g0-r1-m1', 'vacant-final-stage-g0-r1-m2', 'vacant-final-stage-g1-r2-m1',
+      'vacant-final-stage-g0-r1-m1', 'vacant-final-stage-g0-r1-m2',
+      'vacant-final-stage-g1-r2-m1', 'vacant-final-stage-g1-r2-m2',
     ])
     expect(finalStage.get('.rounds-section').text()).toContain('雙方判負（不推定勝者）')
     expect(finalStage.findAll('.standing-card').map(card => ({
@@ -922,20 +941,20 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
       facts: card.findAll('.standing-facts > div').map(fact => [fact.get('dt').text(), fact.get('dd').text()]),
     }))).toEqual([
       {
-        team: 'team-b', rank: '排名未確定',
-        facts: [['賽事積分', '0'], ['勝／和／負', '0／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
+        team: 'team-b', rank: '第 3 名',
+        facts: [['賽事積分', '3'], ['勝／和／負', '1／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
       },
       {
         team: 'team-c', rank: '排名未確定',
-        facts: [['賽事積分', '3'], ['勝／和／負', '1／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
+        facts: [['賽事積分', '3'], ['勝／和／負', '1／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '是']],
       },
       {
-        team: 'team-d', rank: '排名未確定',
-        facts: [['賽事積分', '0'], ['勝／和／負', '0／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
+        team: 'team-d', rank: '第 4 名',
+        facts: [['賽事積分', '0'], ['勝／和／負', '0／0／2'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
       },
       {
         team: 'team-a', rank: '排名未確定',
-        facts: [['賽事積分', '3'], ['勝／和／負', '1／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '否']],
+        facts: [['賽事積分', '3'], ['勝／和／負', '1／0／1'], ['不同對手勝分', '0'], ['不同對手負分', '0'], ['已退賽', '是']],
       },
     ])
     expect(finalStage.text()).not.toContain('第 1 名')
@@ -944,13 +963,94 @@ it('displays an accessible champion vacancy for a finished true single-eliminati
     expect(finalStage.get('.superseded-section').text()).toContain('vacant-final-stage-g0-r2-m1')
     expect(wrapper.text()).not.toContain('private semifinal correction history')
     expect(wrapper.text()).not.toContain('private referee detail')
-    expect(unresolvedStage.text()).toContain('淘汰賽待裁判處理')
+    expect(unresolvedStage.text()).toContain('賽程狀態待主辦方或裁判確認')
 
     // 第一個新政策 target：已結清的 SE 真決賽要有可存取的冠軍空缺訊息。
     expect(finalStage.findAll('[role="status"], [role="alert"], [aria-live]').map(message => message.text()))
       .toContain('決賽雙負，冠軍空缺')
     expect(finalStage.text()).not.toContain('淘汰賽待裁判處理')
     expect(unresolvedStage.text()).not.toContain('決賽雙負，冠軍空缺')
+  } finally {
+    await wrapper.unmount()
+  }
+})
+
+it('displays the authoritative single-elimination final vacancy when the bronze slot came through a semifinal bye', async () => {
+  const baseStage = stageFixture('singleElimination', 'prior-vacancy-stage')
+  const teamIds = Array.from({ length: 8 }, (_, index) => `team-${index + 1}`)
+  const match = (roundNumber: number, sequence: number, participants: string[], result: Record<string, unknown>) => ({
+    matchId: `prior-vacancy-stage-r${roundNumber}-m${sequence}`,
+    stageId: 'prior-vacancy-stage', roundNumber, sequence, kind: 'main', participants,
+    status: 'completed', result, cancellationReason: null, started: result.type !== 'bye',
+  })
+  const outcome = (winnerId: string, loserId: string) => ({
+    type: 'win', winnerId, loserId, winnerGames: 1, loserGames: 0,
+  })
+  const standings = [
+    [teamIds[0]!, 0, 0, 1, 0, 0, true, null],
+    [teamIds[1]!, 6, 2, 1, 2, 0, true, null],
+    [teamIds[2]!, 3, 1, 1, 1, 1, false, 3],
+    [teamIds[3]!, 3, 1, 1, 1, 0, true, null],
+    [teamIds[4]!, 0, 0, 1, 0, 1, false, 5],
+    [teamIds[5]!, 0, 0, 1, 0, 1, false, 5],
+    [teamIds[6]!, 0, 0, 1, 0, 1, false, 5],
+    [teamIds[7]!, 0, 0, 1, 0, 0, true, null],
+  ].map(([teamId, points, wins, losses, gameWins, gameLosses, dropped, rank]) => ({
+    teamId, matchPoints: String(points), wins, draws: 0, losses, gameWins, gameLosses,
+    netGameWins: Number(gameWins) - Number(gameLosses), opponentWinRateBasisPoints: null,
+    opponentWinScore: '0', opponentLossScore: '0', dropped, rank,
+  }))
+  const priorVacancyStage = {
+    ...baseStage,
+    config: { ...baseStage.config, teams: teamIds.map((teamId, index) => ({ teamId, seed: index + 1 })) },
+    status: 'finished',
+    rounds: [
+      { roundNumber: 1, kind: 'main', matches: [
+        match(1, 1, [teamIds[0]!, teamIds[7]!], { type: 'doubleLoss' }),
+        match(1, 2, [teamIds[3]!, teamIds[4]!], outcome(teamIds[3]!, teamIds[4]!)),
+        match(1, 3, [teamIds[1]!, teamIds[6]!], outcome(teamIds[1]!, teamIds[6]!)),
+        match(1, 4, [teamIds[2]!, teamIds[5]!], outcome(teamIds[2]!, teamIds[5]!)),
+      ] },
+      { roundNumber: 2, kind: 'main', matches: [
+        match(2, 1, [teamIds[3]!], { type: 'bye', teamId: teamIds[3]! }),
+        match(2, 2, [teamIds[1]!, teamIds[2]!], outcome(teamIds[1]!, teamIds[2]!)),
+      ] },
+      { roundNumber: 3, kind: 'main', matches: [
+        match(3, 1, [teamIds[3]!, teamIds[1]!], { type: 'doubleLoss' }),
+      ] },
+    ],
+    standings,
+    rankingTieDecisions: [],
+    corrections: [],
+    lastScheduleError: null,
+    scheduleGeneration: 0,
+    supersededRounds: [],
+    teams: Object.fromEntries(teamIds.map((teamId, index) => [teamId, {
+      seed: index + 1, dropped: false, hadBye: index === 3,
+    }])),
+    doubleState: null,
+  }
+  const response: unknown = {
+    competitionId: 'competition a',
+    revision: 13,
+    projection: { ok: true, operation: 'tournamentView', public: {
+      tournamentId: 'competition a', stages: [priorVacancyStage],
+    } },
+  }
+  fetchMock.mockResolvedValueOnce(response)
+  const wrapper = await mountSuspended(CompetitionTournamentView, { props: props() })
+  try {
+    await flushPromises()
+    const stage = wrapper.get('article[aria-labelledby="tournament-stage-prior-vacancy-stage"]')
+    expect(stage.findAll('[role="status"]').map(note => note.text())).toEqual([
+      '決賽雙負，冠軍空缺',
+      '決賽雙負後，唯一合格半決賽敗隊沿原季軍空位取得第三名；冠亞軍空缺',
+    ])
+    expect(stage.get('.rounds-section').text()).toContain('輪空')
+    expect(stage.get('.rounds-section').text()).not.toContain('季軍賽')
+    const bronzeStanding = stage.findAll('.standing-card').find(card => card.get('h5').text() === teamIds[2])
+    expect(bronzeStanding?.get('.rank-label').text()).toBe('第 3 名')
+    expect(stage.text()).not.toContain('第 2 名')
   } finally {
     await wrapper.unmount()
   }

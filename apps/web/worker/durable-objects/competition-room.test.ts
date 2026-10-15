@@ -3,6 +3,7 @@ import { expect, mock, test } from 'bun:test'
 import type {
   CompetitionEngineResponse,
   CompetitionRequest,
+  CompetitionServerState,
   CompetitionRuling,
   CompetitionAnnouncementPlan,
   GameTerminalEvidence,
@@ -47,6 +48,7 @@ import type {
 } from '../../shared/competition-room'
 import { isCompetitionRoomInitialGameStartedRequest } from '../../shared/competition-room'
 import { emptyPublicState } from '../../shared/game-room'
+import { parseCompetitionTournamentViewResponse } from '../../app/lib/competition-tournament-view'
 import {
   createCompetitionAnnouncementDraftFixture,
   createCompetitionAnnouncementFixture,
@@ -452,7 +454,7 @@ function createdTournament(stage: StageConfig, tournamentId: string): JsonObject
         phase: 'winners',
         winnersPool: [...stage.teams].sort((left, right) => left.seed - right.seed).map(team => team.teamId),
         losersWaiting: [], lowerPool: [], winnersChampion: null, losersChampion: null,
-        grandFinalWinner: null,
+        grandFinalWinner: null, winnersOutputSlotCount: pairsByRound[0]!.length,
       } : null,
     }],
   }
@@ -596,6 +598,7 @@ async function wasmTournamentRoom(
   commandId = 'create-tournament-1',
 ) {
   const sql = new MemorySql()
+  const alarm: TestAlarmState = { scheduledAt: null }
   const calls: CompetitionRequest[] = []
   const gameCalls: Array<{ gameId: string; binding: CompetitionGameBinding }> = []
   const adapter: CompetitionEngineAdapter = async request => {
@@ -604,6 +607,7 @@ async function wasmTournamentRoom(
       || request.operation.type === 'tournamentCreate'
       || request.operation.type === 'tournamentStartMatch'
       || request.operation.type === 'tournamentSubmitResult'
+      || request.operation.type === 'tournamentView'
       || request.operation.type === 'matchCreate'
       || request.operation.type === 'clockCreate'
       || request.operation.type === 'clockRuleGame'
@@ -629,7 +633,7 @@ async function wasmTournamentRoom(
     gameCalls.push(structuredClone(request))
     return testGameRoomReadyAck(request)
   }) } : {}
-  const room = new CompetitionRoomClass(stateFor(sql), env, adapter, randomBit)
+  const room = new CompetitionRoomClass(stateFor(sql, alarm), env, adapter, randomBit)
   const initializeRequest = validInitialize({
     announcement: { ...validInitialize().announcement, ruleset: 'base' },
   })
@@ -638,7 +642,7 @@ async function wasmTournamentRoom(
     throw new Error(`WASM registrationCreate failed: ${initialized.error.code} ${initialized.error.message}`)
   }
   persistLockedCreateFixture(sql, stage, commandId)
-  return { room, sql, calls, gameCalls }
+  return { room, sql, alarm, calls, gameCalls, adapter }
 }
 
 function persistTestPublishedRound(sql: MemorySql, stageId: string, round: JsonObject) {
@@ -1306,6 +1310,7 @@ function terminalPublicMatch(checkpoint: JsonObject): JsonObject {
   const teams = config.teams as string[]
   const score = [0, 0]
   let pendingReferee: JsonObject | null = null
+  let terminalDoubleLoss: JsonObject | null = null
   const games: JsonValue[] = []
   const rulings: JsonValue[] = []
   const corrections: JsonValue[] = []
@@ -1361,18 +1366,18 @@ function terminalPublicMatch(checkpoint: JsonObject): JsonObject {
       const winner = teams.find(team => team !== active.ruling.loser)
       if (winner) score[teams.indexOf(winner)] += 1
     } else if (active.ruling.type === 'doubleTimeoutLoss') {
-      pendingReferee = { type: 'doubleLoss', teams: active.ruling.teams,
-        progression: { type: 'pendingReferee', reason: 'DoubleLoss 待裁判處理' } }
+      terminalDoubleLoss = { type: 'doubleLoss', teams: active.ruling.teams,
+        progression: { type: 'stageExit' } }
     } else if (active.ruling.type === 'needsDecision') {
       pendingReferee = { type: 'pendingReferee', gameRecordId: game.gameRecordId, reason: active.ruling.reason }
     }
   }
   const format = config.format as JsonObject
-  const completed = format.type === 'fixedGames'
+  const completed = terminalDoubleLoss !== null || (format.type === 'fixedGames'
     ? submissions.length >= (format.value as number)
-    : score.some(value => value >= (format.value as number))
+    : score.some(value => value >= (format.value as number)))
   const status = pendingReferee ? 'awaitingReferee' : completed ? 'completed' : 'open'
-  const outcome = pendingReferee ?? (completed
+  const outcome = pendingReferee ?? terminalDoubleLoss ?? (completed
     ? score[0] === score[1]
       ? { type: 'draw', score }
       : {
@@ -1428,6 +1433,13 @@ function configureTerminalSchedule(
     ?? (options.matchFormat.type === 'fixedGames' ? 'roundRobin' : 'singleElimination')
   config.format = tournamentFormat
   if (tournamentFormat === 'doubleElimination') {
+    tournamentStage.doubleState = {
+      phase: 'winners',
+      winnersPool: (config.teams as JsonObject[]).map(team => team.teamId as string),
+      winnersOutputSlotCount: 1,
+      losersWaiting: [], lowerPool: [],
+      winnersChampion: null, losersChampion: null, grandFinalWinner: null,
+    }
     const round = (tournamentStage.rounds as JsonValue[])[0] as JsonObject
     round.kind = 'winners'
     const scheduled = (round.matches as JsonValue[])[0] as JsonObject
@@ -2399,7 +2411,7 @@ async function provisionableRoom(options: {
     if (options.wasmTerminal && [
       'matchCreate', 'matchView', 'matchAssignFirstPlayer', 'clockCreate',
       'clockRuleGame', 'clockBeginAction', 'clockEndWindow', 'clockNewGame',
-      'matchSubmitGame', 'matchCorrectRuling',
+      'matchSubmitGame', 'matchCorrectRuling', 'tournamentSubmitResult',
     ].includes(request.operation.type)) {
       const response = await callCompetitionEngine(request, realCompetitionWasm)
       return request.operation.type === 'matchSubmitGame' && options.mutateMatchSubmit
@@ -4443,7 +4455,7 @@ test('referee correction atomically replaces a completed decisive tournament res
   expect(calls.filter(call => call.operation.type === 'tournamentCorrectResult')).toHaveLength(1)
 })
 
-test('pending referee correction submits on first completion and leaves unresolved rulings pending', async () => {
+test('referee correction can replace a submitted double loss or resolve an awaiting decision', async () => {
   for (const replacement of [
     { type: 'gameAccepted', outcome: { winner: 'team-b' } },
     { type: 'doubleTimeoutLoss', teams: ['team-a', 'team-b'] },
@@ -4464,16 +4476,18 @@ test('pending referee correction submits on first completion and leaves unresolv
     const correctedExisting = calls.filter(call => call.operation.type === 'tournamentCorrectResult')
     if (replacement.type === 'gameAccepted') {
       expect(submitted).toHaveLength(1)
-      expect(submitted[0]?.serverActor).toEqual({ type: 'referee', playerId: 'referee-1' })
-      expect(correctedExisting).toHaveLength(0)
+      expect(submitted[0]?.serverActor).toEqual({ type: 'organizer', playerId: 'organizer-1' })
+      expect(correctedExisting).toHaveLength(1)
+      expect(correctedExisting[0]?.serverActor).toEqual({ type: 'referee', playerId: 'referee-1' })
     } else {
-      expect(submitted).toHaveLength(0)
+      expect(submitted).toHaveLength(1)
+      expect(submitted[0]?.serverActor).toEqual({ type: 'referee', playerId: 'referee-1' })
       expect(correctedExisting).toHaveLength(0)
       const tournament = JSON.parse((sql.database.query(
         'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
       ).get() as { server_state_json: string }).server_state_json) as JsonObject
       expect(tournament.tournament).toMatchObject({
-        stages: [{ rounds: [{ matches: [{ status: 'inProgress', result: null }] }] }],
+        stages: [{ rounds: [{ matches: [{ status: 'completed', result: { type: 'doubleLoss' } }] }] }],
       })
     }
   }
@@ -4648,7 +4662,7 @@ test('downstream rejection, engine protocol violations, and late SQL failure pre
   expect(await room.executeMatch(request)).toMatchObject({ ok: true })
 })
 
-test('DoubleLoss stores pending-referee state in the match projection without advancing tournament', async () => {
+test('DoubleLoss completes the match, exits both teams from the tournament, and retries once', async () => {
   const calls: CompetitionRequest[] = []
   const { room, sql } = await terminalRoom({ calls })
   sql.database.query('UPDATE competition_meta SET updated_trusted_time_ms = ? WHERE singleton = 1').run(300)
@@ -4668,22 +4682,29 @@ test('DoubleLoss stores pending-referee state in the match projection without ad
   })
   expect(await room.ingestGameTerminal(request)).toMatchObject({
     ok: true,
-    value: { matchProjection: { public: { match: { status: 'awaitingReferee', outcome: {
-      type: 'doubleLoss', progression: { type: 'pendingReferee' },
+    value: { matchProjection: { public: { match: { status: 'completed', outcome: {
+      type: 'doubleLoss', progression: { type: 'stageExit' },
     } } } } },
   })
-  expect(calls.some(call => call.operation.type === 'tournamentSubmitResult')).toBe(false)
+  expect(calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(1)
+  expect(calls.find(call => call.operation.type === 'tournamentSubmitResult')?.operation).toMatchObject({
+    type: 'tournamentSubmitResult', result: { type: 'doubleLoss' },
+  })
   const state = JSON.parse((sql.database.query(
     'SELECT server_state_json FROM competition_meta WHERE singleton = 1',
   ).get() as { server_state_json: string }).server_state_json) as JsonObject
   expect(state.tournament).toMatchObject({
-    stages: [{ rounds: [{ matches: [{ status: 'inProgress', result: null }] }] }],
+    stages: [{ rounds: [{ matches: [{ matchId: 'terminal-match', status: 'completed', result: { type: 'doubleLoss' } }] }] }],
   })
   expect(state.matches).toMatchObject({
     'terminal-match': { history: [{ type: 'submitGame', submission: {
       ruling: { type: 'doubleTimeoutLoss' },
     } }] },
   })
+  expect(await room.ingestGameTerminal({ ...request, trustedTimeMs: 999 })).toMatchObject({
+    ok: true, value: { idempotent: true },
+  })
+  expect(calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(1)
 })
 
 test('terminal ingest rejects persisted team, stage, and match-format mismatches', async () => {
@@ -5753,12 +5774,922 @@ test('ticket 16 accepts a finished single-elimination double loss with a complet
   const finalMatches = rounds.at(-1)!.matches as JsonObject[]
   expect(finalMatches).toHaveLength(2)
   expect(finalMatches.every(match => match.status === 'completed')).toBe(true)
-  expect(finalMatches.filter(match => !Object.hasOwn(match, 'purpose'))).toHaveLength(1)
-  expect(finalMatches.find(match => !Object.hasOwn(match, 'purpose'))?.result).toEqual({ type: 'doubleLoss' })
-  expect(finalMatches.find(match => match.purpose === 'bronze')?.result).toMatchObject({ type: 'win' })
-  expect((stage.standings as JsonObject[]).every(standing => standing.rank === null)).toBe(true)
+  const championship = finalMatches.find(match => !Object.hasOwn(match, 'purpose'))
+  const bronze = finalMatches.find(match => match.purpose === 'bronze')
+  if (!championship || !bronze || !Array.isArray(championship.participants)) {
+    throw new Error('completed championship and bronze matches are missing')
+  }
+  expect(championship.result).toEqual({ type: 'doubleLoss' })
+  expect(bronze.result).toMatchObject({ type: 'win' })
+  const ranks = new Map((stage.standings as JsonObject[]).map(standing => [
+    standing.teamId as string, standing.rank,
+  ]))
+  for (const finalist of championship.participants) expect(ranks.get(finalist as string)).toBeNull()
+  const bronzeResult = bronze.result as JsonObject
+  expect(ranks.get(bronzeResult.winnerId as string)).toBe(3)
+  expect(ranks.get(bronzeResult.loserId as string)).toBe(4)
   expect((setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
     .isCompletionCandidateStage(stage)).toBe(true)
+})
+
+test('ticket 20 accepts a true final double loss after an earlier semifinal bye without inventing a bronze match', async () => {
+  const setup = await e6c2aLockedMatch({ teamCount: 8, format: 'singleElimination',
+    matchFormat: { type: 'firstToWins', value: 1 } })
+  let state = JSON.parse(setup.meta().server_state_json) as CompetitionServerState
+  let now = setup.meta().updated_trusted_time_ms
+  let bronzeByeTeam: string | null = null
+  let doubleLossCount = 0
+
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const tournament = state.tournament
+    if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+      throw new Error('single-elimination fixture has no tournament')
+    }
+    const stage = tournament.stages.find(value => isJsonObject(value)
+      && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+    if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) {
+      throw new Error('single-elimination stage is missing')
+    }
+    if (stage.status === 'finished') break
+    const round = [...stage.rounds].reverse().find(value => isJsonObject(value)
+      && Array.isArray(value.matches) && value.matches.some(match => isJsonObject(match)
+        && (match.status === 'pending' || match.status === 'inProgress')))
+    if (!isJsonObject(round) || !Array.isArray(round.matches)) {
+      throw new Error('single-elimination stage has no open round')
+    }
+    const match = round.matches.find(value => isJsonObject(value)
+      && (value.status === 'pending' || value.status === 'inProgress'))
+    if (!isJsonObject(match) || typeof match.matchId !== 'string'
+      || !Array.isArray(match.participants)) throw new Error('single-elimination round has no open match')
+    const participants = match.participants.filter((value): value is string => (
+      typeof value === 'string' && value.trim().length > 0
+    ))
+    if (participants.length !== 2) throw new Error('single-elimination match has invalid participants')
+    if (round.roundNumber === 2 && match.sequence === 2) bronzeByeTeam = participants[1]!
+    const targetDoubleLoss = round.roundNumber === 1 && match.sequence === 1
+      || round.roundNumber === 3 && match.purpose !== 'bronze'
+    if (match.status === 'pending') {
+      const started = await setup.adapter({
+        serverActor: { type: 'organizer', playerId: 'organizer-1' },
+        trustedTimeMs: ++now,
+        operation: { type: 'tournamentStartMatch', stageId: setup.stage.stageId, matchId: match.matchId },
+        serverState: state,
+      })
+      if (!started.ok) throw new Error(`single-elimination match start failed: ${started.error.code}`)
+      state = started.serverState as CompetitionServerState
+    }
+    const result = targetDoubleLoss
+      ? { type: 'doubleLoss' as const }
+      : { type: 'win' as const, winnerId: participants[0]!, loserId: participants[1]!, winnerGames: 1, loserGames: 0 }
+    const submitted = await setup.adapter({
+      serverActor: { type: 'organizer', playerId: 'organizer-1' },
+      trustedTimeMs: ++now,
+      operation: { type: 'tournamentSubmitResult', stageId: setup.stage.stageId, matchId: match.matchId, result },
+      serverState: state,
+    })
+    if (!submitted.ok) throw new Error(`single-elimination match result failed: ${submitted.error.code}`)
+    state = submitted.serverState as CompetitionServerState
+    if (targetDoubleLoss) doubleLossCount += 1
+  }
+
+  const tournament = state.tournament
+  if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+    throw new Error('completed single-elimination fixture has no tournament')
+  }
+  const stage = tournament.stages.find(value => isJsonObject(value)
+    && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+  if (!isJsonObject(stage) || !Array.isArray(stage.rounds) || !Array.isArray(stage.standings)) {
+    throw new Error('completed single-elimination stage is missing')
+  }
+  expect(doubleLossCount).toBe(2)
+  expect(bronzeByeTeam).not.toBeNull()
+  expect(stage).toMatchObject({ status: 'finished', lastScheduleError: null })
+  const rounds = stage.rounds as JsonObject[]
+  expect(rounds.at(-1)?.matches).toHaveLength(1)
+  expect((rounds.at(-1)?.matches as JsonObject[])[0]?.result).toEqual({ type: 'doubleLoss' })
+  expect((rounds.flatMap(round => round.matches as JsonValue[]))
+    .every(match => isJsonObject(match) && match.status === 'completed')).toBe(true)
+  const standings = stage.standings as JsonObject[]
+  expect(standings.find(standing => standing.teamId === bronzeByeTeam)?.rank).toBe(3)
+  expect(standings.some(standing => standing.rank === 1 || standing.rank === 2)).toBe(false)
+  const isCompletionCandidate = (candidate: unknown) => (
+    (setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
+      .isCompletionCandidateStage(candidate)
+  )
+  expect(isCompletionCandidate(stage)).toBe(true)
+
+  const pendingMatch = structuredClone(stage)
+  const priorRound = (pendingMatch.rounds as JsonObject[])[0]!
+  const firstMatch = (priorRound.matches as JsonObject[])[0]!
+  firstMatch.status = 'pending'
+  firstMatch.result = null
+  expect(isCompletionCandidate(pendingMatch)).toBe(false)
+
+  const unresolvedSchedule = structuredClone(stage)
+  unresolvedSchedule.lastScheduleError = '待裁判處理'
+  expect(isCompletionCandidate(unresolvedSchedule)).toBe(false)
+})
+
+test('ticket 20 accepts closed double-elimination vacancy brackets as completion candidates', async () => {
+  for (const terminalKind of ['lowerFinal', 'grandFinal'] as const) {
+    const setup = await e6c2aLockedMatch({ teamCount: 4, format: 'doubleElimination',
+      matchFormat: { type: 'firstToWins', value: 1 } })
+    let state = JSON.parse(setup.meta().server_state_json) as CompetitionServerState
+    let now = setup.meta().updated_trusted_time_ms
+    let terminalDoubleLossRecorded = false
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const tournament = state.tournament
+      if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+        throw new Error('double-elimination fixture has no tournament')
+      }
+      const stage = tournament.stages.find(value => isJsonObject(value)
+        && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+      if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) {
+        throw new Error('double-elimination stage is missing')
+      }
+      if (stage.status === 'finished') break
+      const rounds = stage.rounds as JsonObject[]
+      const round = rounds.at(-1)
+      if (!isJsonObject(round) || !Array.isArray(round.matches)) {
+        throw new Error('double-elimination current round is missing')
+      }
+      const match = round.matches.find(value => isJsonObject(value)
+        && (value.status === 'pending' || value.status === 'inProgress'))
+      if (!isJsonObject(match) || typeof match.matchId !== 'string' || !Array.isArray(match.participants)) {
+        throw new Error('double-elimination round has no open match')
+      }
+      const targetDoubleLoss = terminalKind === 'lowerFinal'
+        ? round.kind === 'losers' && round.roundNumber === 4
+        : round.kind === 'grandFinal'
+      const participants = match.participants.filter((value): value is string => (
+        typeof value === 'string' && value.trim().length > 0
+      ))
+      if (participants.length !== 2) throw new Error('double-elimination match does not have two teams')
+      if (match.status === 'pending') {
+        const started = await setup.adapter({
+          serverActor: { type: 'organizer', playerId: 'organizer-1' },
+          trustedTimeMs: ++now,
+          operation: { type: 'tournamentStartMatch', stageId: setup.stage.stageId, matchId: match.matchId },
+          serverState: state,
+        })
+        if (!started.ok) throw new Error(`double-elimination fixture start failed: ${started.error.code}`)
+        state = started.serverState as CompetitionServerState
+      }
+      const result = targetDoubleLoss
+        ? { type: 'doubleLoss' as const }
+        : { type: 'win' as const, winnerId: participants[0]!, loserId: participants[1]!, winnerGames: 1, loserGames: 0 }
+      const response = await setup.adapter({
+        serverActor: { type: 'organizer', playerId: 'organizer-1' },
+        trustedTimeMs: ++now,
+        operation: { type: 'tournamentSubmitResult', stageId: setup.stage.stageId, matchId: match.matchId,
+          result },
+        serverState: state,
+      })
+      if (!response.ok) throw new Error(`double-elimination fixture result failed: ${response.error.code}`)
+      state = response.serverState as CompetitionServerState
+      if (targetDoubleLoss) terminalDoubleLossRecorded = true
+    }
+
+    const tournament = state.tournament
+    if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+      throw new Error('completed double-elimination fixture lost its tournament')
+    }
+    const stage = tournament.stages.find(value => isJsonObject(value)
+      && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+    expect(terminalDoubleLossRecorded).toBe(true)
+    expect(stage).toMatchObject({ status: 'finished', lastScheduleError: null })
+    expect((setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
+      .isCompletionCandidateStage(stage)).toBe(true)
+  }
+})
+
+test('ticket 20 accepts eight-team elimination vacancies and legitimate shared lower ranks', async () => {
+  for (const format of ['singleElimination', 'doubleElimination'] as const) {
+    const setup = await e6c2aLockedMatch({ teamCount: 8, format,
+      matchFormat: { type: 'firstToWins', value: 1 } })
+    let state = JSON.parse(setup.meta().server_state_json) as CompetitionServerState
+    let now = setup.meta().updated_trusted_time_ms
+    let doubleLossCount = 0
+
+    for (let attempt = 0; attempt < 32; attempt += 1) {
+      const tournament = state.tournament
+      if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+        throw new Error('eight-team fixture has no tournament')
+      }
+      const stage = tournament.stages.find(value => isJsonObject(value)
+        && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+      if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) {
+        throw new Error('eight-team elimination stage is missing')
+      }
+      if (stage.status === 'finished') break
+      const round = [...stage.rounds].reverse().find(value => isJsonObject(value)
+        && Array.isArray(value.matches) && value.matches.some(match => isJsonObject(match)
+          && (match.status === 'pending' || match.status === 'inProgress')))
+      if (!isJsonObject(round) || !Array.isArray(round.matches)) {
+        throw new Error('eight-team active stage has no open round')
+      }
+      const match = round.matches.find(value => isJsonObject(value)
+        && (value.status === 'pending' || value.status === 'inProgress'))
+      if (!isJsonObject(match) || typeof match.matchId !== 'string'
+        || !Array.isArray(match.participants)) throw new Error('eight-team round has no open match')
+      const participants = match.participants.filter((value): value is string => (
+        typeof value === 'string' && value.trim().length > 0
+      ))
+      if (participants.length !== 2) throw new Error('eight-team open match has invalid participants')
+      const targetDoubleLoss = format === 'singleElimination'
+        ? round.roundNumber === 3 && match.purpose !== 'bronze'
+        : round.kind === 'losers' && isJsonObject(stage.doubleState)
+          && stage.doubleState.winnersChampion !== null && round.matches.length === 1
+      if (match.status === 'pending') {
+        const started = await setup.adapter({
+          serverActor: { type: 'organizer', playerId: 'organizer-1' },
+          trustedTimeMs: ++now,
+          operation: { type: 'tournamentStartMatch', stageId: setup.stage.stageId, matchId: match.matchId },
+          serverState: state,
+        })
+        if (!started.ok) throw new Error(`eight-team match start failed: ${started.error.code}`)
+        state = started.serverState as CompetitionServerState
+      }
+      const result = targetDoubleLoss
+        ? { type: 'doubleLoss' as const }
+        : { type: 'win' as const, winnerId: participants[0]!, loserId: participants[1]!, winnerGames: 1, loserGames: 0 }
+      const response = await setup.adapter({
+        serverActor: { type: 'organizer', playerId: 'organizer-1' },
+        trustedTimeMs: ++now,
+        operation: { type: 'tournamentSubmitResult', stageId: setup.stage.stageId,
+          matchId: match.matchId, result },
+        serverState: state,
+      })
+      if (!response.ok) throw new Error(`eight-team fixture result failed: ${response.error.code}`)
+      state = response.serverState as CompetitionServerState
+      if (targetDoubleLoss) doubleLossCount += 1
+    }
+
+    const tournament = state.tournament
+    if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+      throw new Error('completed eight-team fixture has no tournament')
+    }
+    const stage = tournament.stages.find(value => isJsonObject(value)
+      && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+    if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) {
+      throw new Error('completed eight-team stage is missing')
+    }
+    expect(doubleLossCount).toBe(1)
+    expect(stage.status).toBe('finished')
+    expect(stage.lastScheduleError).toBeNull()
+    expect((stage.rounds as JsonObject[]).flatMap(round => round.matches as JsonValue[])
+      .every(match => isJsonObject(match) && match.status === 'completed')).toBe(true)
+    const completedRounds = stage.rounds as JsonObject[]
+    const finalRound = completedRounds.at(-1)!
+    const finalMatches = finalRound.matches as JsonObject[]
+    const standings = stage.standings as JsonObject[]
+    if (format === 'singleElimination') {
+      const finalMatch = finalMatches.find(match => !Object.hasOwn(match, 'purpose'))
+      const bronzeMatch = finalMatches.find(match => match.purpose === 'bronze')
+      expect(finalMatches).toHaveLength(2)
+      expect(finalMatch?.result).toEqual({ type: 'doubleLoss' })
+      expect(bronzeMatch?.status).toBe('completed')
+      expect(standings.some(standing => standing.dropped === false && standing.rank === 5)).toBe(true)
+    } else {
+      const rankCounts = new Map<number, number>()
+      for (const standing of standings) {
+        if (typeof standing.rank !== 'number') continue
+        rankCounts.set(standing.rank, (rankCounts.get(standing.rank) ?? 0) + 1)
+      }
+      expect(finalRound.kind).toBe('losers')
+      expect(standings.some(standing => standing.rank === 1 && standing.dropped === false)).toBe(true)
+      expect([...rankCounts.values()].some(count => count > 1)).toBe(true)
+    }
+    const isCompletionCandidateStage = (candidate: unknown) => (
+      (setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
+        .isCompletionCandidateStage(candidate)
+    )
+    expect(isCompletionCandidateStage(stage)).toBe(true)
+    if (format === 'doubleElimination') {
+      const missingSettledLowerRank = structuredClone(stage)
+      const fourthPlace = (missingSettledLowerRank.standings as JsonObject[]).find(standing => (
+        standing.rank === 4 && standing.dropped === false
+      ))
+      if (!fourthPlace) throw new Error('double-elimination fixture has no settled fourth-place row')
+      fourthPlace.rank = null
+      expect(isCompletionCandidateStage(missingSettledLowerRank)).toBe(false)
+    }
+    const malformed = structuredClone(stage)
+    if (format === 'singleElimination') {
+      const finalRound = (malformed.rounds as JsonObject[]).at(-1)!
+      const finalMatch = (finalRound.matches as JsonObject[]).find(match => !Object.hasOwn(match, 'purpose'))!
+      const participants = finalMatch.participants as string[]
+      finalMatch.result = {
+        type: 'win', winnerId: participants[0]!, loserId: participants[1]!, winnerGames: 1, loserGames: 0,
+      }
+    } else {
+      const misplacedSilver = (malformed.standings as JsonObject[]).find(standing => (
+        standing.dropped === false && standing.teamId !== (stage.doubleState as JsonObject).grandFinalWinner
+      ))
+      if (!misplacedSilver) throw new Error('double-elimination fixture has no lower finisher')
+      misplacedSilver.rank = 2
+    }
+    expect(isCompletionCandidateStage(malformed)).toBe(false)
+  }
+})
+
+test('ticket 20 does not promote a lower-bracket loser to silver after both winners semifinals double-loss', async () => {
+  const setup = await e6c2aLockedMatch({ teamCount: 8, format: 'doubleElimination',
+    matchFormat: { type: 'firstToWins', value: 1 } })
+  let state = JSON.parse(setup.meta().server_state_json) as CompetitionServerState
+  let now = setup.meta().updated_trusted_time_ms
+  let semifinalDoubleLosses = 0
+  let lowerRoundFourLoser: string | null = null
+
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const tournament = state.tournament
+    if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+      throw new Error('double-elimination fixture has no tournament')
+    }
+    const stage = tournament.stages.find(value => isJsonObject(value)
+      && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+    if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) {
+      throw new Error('double-elimination stage is missing')
+    }
+    if (stage.status === 'finished') break
+    const round = [...stage.rounds].reverse().find(value => isJsonObject(value)
+      && Array.isArray(value.matches) && value.matches.some(match => isJsonObject(match)
+        && (match.status === 'pending' || match.status === 'inProgress')))
+    if (!isJsonObject(round) || !Array.isArray(round.matches)) {
+      throw new Error('double-elimination stage has no open round')
+    }
+    const match = round.matches.find(value => isJsonObject(value)
+      && (value.status === 'pending' || value.status === 'inProgress'))
+    if (!isJsonObject(match) || typeof match.matchId !== 'string'
+      || !Array.isArray(match.participants)) throw new Error('double-elimination round has no open match')
+    const participants = match.participants.filter((value): value is string => (
+      typeof value === 'string' && value.trim().length > 0
+    ))
+    if (participants.length !== 2) throw new Error('double-elimination match has invalid participants')
+    const semifinalDoubleLoss = round.kind === 'winners' && round.roundNumber === 3
+    if (match.status === 'pending') {
+      const started = await setup.adapter({
+        serverActor: { type: 'organizer', playerId: 'organizer-1' },
+        trustedTimeMs: ++now,
+        operation: { type: 'tournamentStartMatch', stageId: setup.stage.stageId, matchId: match.matchId },
+        serverState: state,
+      })
+      if (!started.ok) throw new Error(`double-elimination match start failed: ${started.error.code}`)
+      state = started.serverState as CompetitionServerState
+    }
+    const result = semifinalDoubleLoss
+      ? { type: 'doubleLoss' as const }
+      : { type: 'win' as const, winnerId: participants[0]!, loserId: participants[1]!, winnerGames: 1, loserGames: 0 }
+    if (round.kind === 'losers' && round.roundNumber === 4 && result.type === 'win') {
+      lowerRoundFourLoser = result.loserId
+    }
+    const submitted = await setup.adapter({
+      serverActor: { type: 'organizer', playerId: 'organizer-1' },
+      trustedTimeMs: ++now,
+      operation: { type: 'tournamentSubmitResult', stageId: setup.stage.stageId, matchId: match.matchId, result },
+      serverState: state,
+    })
+    if (!submitted.ok) throw new Error(`double-elimination result failed: ${submitted.error.code}`)
+    state = submitted.serverState as CompetitionServerState
+    if (semifinalDoubleLoss) semifinalDoubleLosses += 1
+  }
+
+  const tournament = state.tournament
+  if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+    throw new Error('completed double-elimination fixture has no tournament')
+  }
+  const stage = tournament.stages.find(value => isJsonObject(value)
+    && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+  if (!isJsonObject(stage) || !Array.isArray(stage.rounds) || !Array.isArray(stage.standings)
+    || !isJsonObject(stage.doubleState)) throw new Error('completed double-elimination stage is missing')
+  const champion = stage.doubleState.grandFinalWinner
+  expect(semifinalDoubleLosses).toBe(2)
+  expect(lowerRoundFourLoser).not.toBeNull()
+  expect(stage).toMatchObject({ status: 'finished', lastScheduleError: null })
+  expect((stage.rounds as JsonObject[]).some(round => (
+    round.kind === 'grandFinal' || round.kind === 'grandFinalReset'
+  ))).toBe(false)
+  expect((stage.standings as JsonObject[]).some(standing => (
+    standing.teamId === champion && standing.rank === 1
+  ))).toBe(true)
+  expect((stage.standings as JsonObject[]).some(standing => standing.rank === 2)).toBe(false)
+  expect((stage.standings as JsonObject[]).find(standing => standing.teamId === lowerRoundFourLoser)?.rank).toBe(5)
+  const isCompletionCandidate = (candidate: unknown) => (
+    (setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
+      .isCompletionCandidateStage(candidate)
+  )
+  expect(isCompletionCandidate(stage)).toBe(true)
+
+  const misplacedSilver = structuredClone(stage)
+  const nonChampion = (misplacedSilver.standings as JsonObject[]).find(standing => (
+    standing.dropped === false && standing.teamId !== champion
+  ))
+  if (!nonChampion) throw new Error('double-elimination fixture has no lower finisher')
+  nonChampion.rank = 2
+  expect(isCompletionCandidate(misplacedSilver)).toBe(false)
+})
+
+test('ticket 20 preserves DE16 lower-bracket ranks through later and skipped rounds', async () => {
+  const setup = await e6c2aLockedMatch({ teamCount: 16, format: 'doubleElimination',
+    matchFormat: { type: 'firstToWins', value: 1 } })
+  let state = JSON.parse(setup.meta().server_state_json) as CompetitionServerState
+  let now = setup.meta().updated_trusted_time_ms
+  let semifinalDoubleLosses = 0
+  const thirdLowerLosers: string[] = []
+  let fourthLowerLoser: string | null = null
+
+  for (let attempt = 0; attempt < 128; attempt += 1) {
+    const tournament = state.tournament
+    if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+      throw new Error('16-team double-elimination fixture has no tournament')
+    }
+    const stage = tournament.stages.find(value => isJsonObject(value)
+      && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+    if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) {
+      throw new Error('16-team double-elimination stage is missing')
+    }
+    if (stage.status === 'finished') break
+    const round = stage.rounds.find(value => isJsonObject(value)
+      && Array.isArray(value.matches) && value.matches.some(match => isJsonObject(match)
+        && (match.status === 'pending' || match.status === 'inProgress')))
+    if (!isJsonObject(round) || !Array.isArray(round.matches)) {
+      throw new Error('16-team double-elimination stage has no open round')
+    }
+    const match = round.matches.find(value => isJsonObject(value)
+      && (value.status === 'pending' || value.status === 'inProgress'))
+    if (!isJsonObject(match) || typeof match.matchId !== 'string'
+      || !Array.isArray(match.participants)) throw new Error('16-team open match is malformed')
+    const participants = match.participants.filter((value): value is string => (
+      typeof value === 'string' && value.trim().length > 0
+    ))
+    if (participants.length !== 2) throw new Error('16-team pending match has invalid participants')
+    const lowerRoundOrdinal = round.kind === 'losers'
+      ? stage.rounds.filter(value => isJsonObject(value) && value.kind === 'losers').length
+      : 0
+    const semifinalDoubleLoss = round.kind === 'winners' && round.roundNumber === 5
+    if (match.status === 'pending') {
+      const started = await setup.adapter({
+        serverActor: { type: 'organizer', playerId: 'organizer-1' },
+        trustedTimeMs: ++now,
+        operation: { type: 'tournamentStartMatch', stageId: setup.stage.stageId, matchId: match.matchId },
+        serverState: state,
+      })
+      if (!started.ok) throw new Error(`16-team match start failed: ${started.error.code}`)
+      state = started.serverState as CompetitionServerState
+    }
+    const result = semifinalDoubleLoss
+      ? { type: 'doubleLoss' as const }
+      : { type: 'win' as const, winnerId: participants[0]!, loserId: participants[1]!, winnerGames: 1, loserGames: 0 }
+    if (round.kind === 'losers' && result.type === 'win') {
+      if (lowerRoundOrdinal === 3) thirdLowerLosers.push(result.loserId)
+      if (lowerRoundOrdinal === 4) fourthLowerLoser = result.loserId
+    }
+    const submitted = await setup.adapter({
+      serverActor: { type: 'organizer', playerId: 'organizer-1' },
+      trustedTimeMs: ++now,
+      operation: { type: 'tournamentSubmitResult', stageId: setup.stage.stageId, matchId: match.matchId, result },
+      serverState: state,
+    })
+    if (!submitted.ok) throw new Error(`16-team result failed: ${submitted.error.code}`)
+    state = submitted.serverState as CompetitionServerState
+    if (semifinalDoubleLoss) semifinalDoubleLosses += 1
+  }
+
+  const tournament = state.tournament
+  if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+    throw new Error('completed 16-team double-elimination fixture has no tournament')
+  }
+  const stage = tournament.stages.find(value => isJsonObject(value)
+    && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+  if (!isJsonObject(stage) || !Array.isArray(stage.rounds) || !Array.isArray(stage.standings)
+    || !isJsonObject(stage.doubleState)) throw new Error('completed 16-team stage is missing')
+  const lowerRounds = (stage.rounds as JsonObject[]).filter(round => round.kind === 'losers')
+  expect(semifinalDoubleLosses).toBe(2)
+  expect(thirdLowerLosers).toHaveLength(2)
+  expect(fourthLowerLoser).not.toBeNull()
+  expect(lowerRounds[2]?.roundNumber).toBe(6)
+  expect(lowerRounds[3]?.roundNumber).toBe(7)
+  expect(stage).toMatchObject({ status: 'finished', lastScheduleError: null })
+  expect((stage.rounds as JsonObject[]).flatMap(round => round.matches as JsonValue[])
+    .every(match => isJsonObject(match) && match.status === 'completed')).toBe(true)
+  const standings = stage.standings as JsonObject[]
+  for (const teamId of thirdLowerLosers) {
+    expect(standings.find(standing => standing.teamId === teamId)?.rank).toBe(6)
+  }
+  expect(standings.find(standing => standing.teamId === fourthLowerLoser)?.rank).toBe(4)
+  expect(standings.some(standing => standing.rank === 2)).toBe(false)
+  const isCompletionCandidate = (candidate: unknown) => (
+    (setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
+      .isCompletionCandidateStage(candidate)
+  )
+  expect(isCompletionCandidate(stage)).toBe(true)
+
+  const missingSettledRank = structuredClone(stage)
+  const fourthPlace = (missingSettledRank.standings as JsonObject[]).find(standing => (
+    standing.teamId === fourthLowerLoser
+  ))
+  if (!fourthPlace) throw new Error('16-team fixture has no settled fourth-place row')
+  fourthPlace.rank = null
+  expect(isCompletionCandidate(missingSettledRank)).toBe(false)
+})
+
+test('ticket 20 preserves decided lower ranks after early and championless double-elimination exits', async () => {
+  const finish = async (scenario: 'normal' | 'openingDoubleLoss' | 'noChampion') => {
+    const setup = await e6c2aLockedMatch({ teamCount: 8, format: 'doubleElimination',
+      matchFormat: { type: 'firstToWins', value: 1 } })
+    let state = JSON.parse(setup.meta().server_state_json) as CompetitionServerState
+    let now = setup.meta().updated_trusted_time_ms
+
+    for (let attempt = 0; attempt < 64; attempt += 1) {
+      const tournament = state.tournament
+      if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+        throw new Error(`${scenario}: tournament is missing`)
+      }
+      const stage = tournament.stages.find(value => isJsonObject(value)
+        && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+      if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) {
+        throw new Error(`${scenario}: stage is missing`)
+      }
+      if (stage.status === 'finished') break
+      const round = [...stage.rounds].reverse().find(value => isJsonObject(value)
+        && Array.isArray(value.matches) && value.matches.some(match => isJsonObject(match)
+          && (match.status === 'pending' || match.status === 'inProgress')))
+      if (!isJsonObject(round) || !Array.isArray(round.matches)) {
+        throw new Error(`${scenario}: stage has no open round`)
+      }
+      const match = round.matches.find(value => isJsonObject(value)
+        && (value.status === 'pending' || value.status === 'inProgress'))
+      if (!isJsonObject(match) || typeof match.matchId !== 'string'
+        || !Array.isArray(match.participants)) throw new Error(`${scenario}: open match is malformed`)
+      const participants = match.participants.filter((value): value is string => (
+        typeof value === 'string' && value.trim().length > 0
+      ))
+      if (participants.length !== 2) throw new Error(`${scenario}: match participants are malformed`)
+      const doubleLoss = scenario === 'openingDoubleLoss'
+        ? round.kind === 'winners' && round.roundNumber === 1 && match.sequence === 1
+        : scenario === 'noChampion'
+          ? (round.kind === 'winners' && round.roundNumber === 3)
+            || (round.kind === 'losers' && round.roundNumber === 4)
+          : false
+      if (match.status === 'pending') {
+        const started = await setup.adapter({
+          serverActor: { type: 'organizer', playerId: 'organizer-1' },
+          trustedTimeMs: ++now,
+          operation: { type: 'tournamentStartMatch', stageId: setup.stage.stageId, matchId: match.matchId },
+          serverState: state,
+        })
+        if (!started.ok) throw new Error(`${scenario}: match start failed (${started.error.code})`)
+        state = started.serverState as CompetitionServerState
+      }
+      const result = doubleLoss
+        ? { type: 'doubleLoss' as const }
+        : { type: 'win' as const, winnerId: participants[0]!, loserId: participants[1]!, winnerGames: 1, loserGames: 0 }
+      const submitted = await setup.adapter({
+        serverActor: { type: 'organizer', playerId: 'organizer-1' },
+        trustedTimeMs: ++now,
+        operation: { type: 'tournamentSubmitResult', stageId: setup.stage.stageId, matchId: match.matchId, result },
+        serverState: state,
+      })
+      if (!submitted.ok) throw new Error(`${scenario}: result failed (${submitted.error.code})`)
+      state = submitted.serverState as CompetitionServerState
+    }
+
+    const tournament = state.tournament
+    if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+      throw new Error(`${scenario}: completed tournament is missing`)
+    }
+    const stage = tournament.stages.find(value => isJsonObject(value)
+      && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+    if (!isJsonObject(stage) || !Array.isArray(stage.rounds) || !Array.isArray(stage.standings)) {
+      throw new Error(`${scenario}: completed stage is missing`)
+    }
+    expect(stage).toMatchObject({ status: 'finished', lastScheduleError: null })
+    expect((stage.rounds as JsonObject[]).flatMap(round => round.matches as JsonValue[])
+      .every(match => isJsonObject(match) && match.status === 'completed')).toBe(true)
+    const isCompletionCandidate = (candidate: unknown) => (
+      (setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
+        .isCompletionCandidateStage(candidate)
+    )
+    return { isCompletionCandidate, stage }
+  }
+
+  const normal = await finish('normal')
+  for (const scenario of ['openingDoubleLoss', 'noChampion'] as const) {
+    const vacant = await finish(scenario)
+    const stage = vacant.stage
+    const lowerExitMatch = (matches: JsonValue[]) => matches.find(match => isJsonObject(match)
+      && match.kind === 'losers' && match.roundNumber === 2 && match.sequence === 2)
+    const stageMatches = (stage.rounds as JsonObject[]).flatMap(round => round.matches as JsonValue[])
+    const controlMatches = (normal.stage.rounds as JsonObject[]).flatMap(round => round.matches as JsonValue[])
+    const lowerMatch = lowerExitMatch(stageMatches)
+    const controlMatch = lowerExitMatch(controlMatches)
+    expect(lowerMatch).toEqual(controlMatch)
+    if (!isJsonObject(controlMatch) || !isJsonObject(lowerMatch)
+      || !isJsonObject(controlMatch.result) || typeof controlMatch.result.loserId !== 'string') {
+      throw new Error(`${scenario}: lower-bracket control match is malformed`)
+    }
+    const loserId = controlMatch.result.loserId
+    const lowerExit = (stage.standings as JsonObject[]).find(standing => standing.teamId === loserId)
+    const normalExit = (normal.stage.standings as JsonObject[]).find(standing => standing.teamId === loserId)
+    expect(normalExit?.rank).toBe(7)
+    expect(lowerExit?.rank).toBe(7)
+    expect(vacant.isCompletionCandidate(stage)).toBe(true)
+    if (scenario === 'noChampion') {
+      expect(isJsonObject(stage.doubleState) && stage.doubleState.grandFinalWinner === null).toBe(true)
+      expect((stage.rounds as JsonObject[]).some(round => (
+        round.kind === 'grandFinal' || round.kind === 'grandFinalReset'
+      ))).toBe(false)
+    }
+
+    const wrongRank = structuredClone(stage)
+    const wrongRow = (wrongRank.standings as JsonObject[]).find(standing => standing.teamId === loserId)
+    if (!wrongRow) throw new Error(`${scenario}: lower-bracket loser standing is missing`)
+    wrongRow.rank = scenario === 'openingDoubleLoss' ? 6 : null
+    expect(vacant.isCompletionCandidate(wrongRank)).toBe(false)
+  }
+})
+
+test('ticket 20 preserves DE13 lower slots through fresh losers and empty layers', async () => {
+  const finish = async (doubleLossSequences: number[] = []) => {
+    const setup = await e6c2aLockedMatch({ teamCount: 13, format: 'doubleElimination',
+      matchFormat: { type: 'firstToWins', value: 1 } })
+    let state = JSON.parse(setup.meta().server_state_json) as CompetitionServerState
+    let now = setup.meta().updated_trusted_time_ms
+
+    for (let attempt = 0; attempt < 128; attempt += 1) {
+      const tournament = state.tournament
+      if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+        throw new Error('13-team double-elimination fixture has no tournament')
+      }
+      const stage = tournament.stages.find(value => isJsonObject(value)
+        && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+      if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) {
+        throw new Error('13-team double-elimination stage is missing')
+      }
+      if (stage.status === 'finished') break
+      const round = [...stage.rounds].reverse().find(value => isJsonObject(value)
+        && Array.isArray(value.matches) && value.matches.some(match => isJsonObject(match)
+          && (match.status === 'pending' || match.status === 'inProgress')))
+      if (!isJsonObject(round) || !Array.isArray(round.matches)) {
+        throw new Error('13-team double-elimination stage has no open round')
+      }
+      const match = round.matches.find(value => isJsonObject(value)
+        && (value.status === 'pending' || value.status === 'inProgress'))
+      if (!isJsonObject(match) || typeof match.matchId !== 'string'
+        || !Array.isArray(match.participants)) throw new Error('13-team open match is malformed')
+      const participants = match.participants.filter((value): value is string => (
+        typeof value === 'string' && value.trim().length > 0
+      ))
+      if (participants.length !== 2) throw new Error('13-team match participants are malformed')
+      const doubleLoss = round.kind === 'winners'
+        && round.roundNumber === 1 && typeof match.sequence === 'number'
+        && doubleLossSequences.includes(match.sequence)
+      if (match.status === 'pending') {
+        const started = await setup.adapter({
+          serverActor: { type: 'organizer', playerId: 'organizer-1' },
+          trustedTimeMs: ++now,
+          operation: { type: 'tournamentStartMatch', stageId: setup.stage.stageId, matchId: match.matchId },
+          serverState: state,
+        })
+        if (!started.ok) throw new Error(`13-team match start failed: ${started.error.code}`)
+        state = started.serverState as CompetitionServerState
+      }
+      const result = doubleLoss
+        ? { type: 'doubleLoss' as const }
+        : { type: 'win' as const, winnerId: participants[0]!, loserId: participants[1]!, winnerGames: 1, loserGames: 0 }
+      const submitted = await setup.adapter({
+        serverActor: { type: 'organizer', playerId: 'organizer-1' },
+        trustedTimeMs: ++now,
+        operation: { type: 'tournamentSubmitResult', stageId: setup.stage.stageId, matchId: match.matchId, result },
+        serverState: state,
+      })
+      if (!submitted.ok) throw new Error(`13-team result failed: ${submitted.error.code}`)
+      state = submitted.serverState as CompetitionServerState
+    }
+
+    const tournament = state.tournament
+    if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+      throw new Error('completed 13-team tournament is missing')
+    }
+    const stage = tournament.stages.find(value => isJsonObject(value)
+      && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+    if (!isJsonObject(stage) || !Array.isArray(stage.rounds) || !Array.isArray(stage.standings)) {
+      throw new Error('completed 13-team stage is missing')
+    }
+    const isCompletionCandidate = (candidate: unknown) => (
+      (setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
+        .isCompletionCandidateStage(candidate)
+    )
+    return { isCompletionCandidate, stage }
+  }
+
+  const normal = await finish()
+  const vacant = await finish([2, 3, 4, 6])
+  const vacantConfig = vacant.stage.config
+  const normalConfig = normal.stage.config
+  if (!isJsonObject(vacantConfig) || !Array.isArray(vacantConfig.teams)
+    || !isJsonObject(normalConfig)) throw new Error('13-team frozen seed configuration is missing')
+  const seededTeams = vacantConfig.teams
+  expect(normalConfig.teams).toEqual(seededTeams)
+  // 依實際抽籤後的固定種子辨識隊伍，不把字母 ID 當成種子。
+  const teamForSeed = (seed: number): string => {
+    const entry = seededTeams.find(value => isJsonObject(value) && value.seed === seed)
+    if (!isJsonObject(entry) || typeof entry.teamId !== 'string') {
+      throw new Error('13-team frozen seed entry is missing')
+    }
+    return entry.teamId
+  }
+  expect(vacant.stage).toMatchObject({ status: 'finished', lastScheduleError: null })
+  expect((vacant.stage.rounds as JsonObject[]).flatMap(round => round.matches as JsonValue[])
+    .every(match => isJsonObject(match) && match.status === 'completed')).toBe(true)
+  const lowerRounds = (vacant.stage.rounds as JsonObject[]).filter(round => round.kind === 'losers')
+  const slotTrace = lowerRounds.map(round => ({
+    roundNumber: round.roundNumber,
+    pairings: (round.matches as JsonObject[]).map(match => ({
+      sequence: match.sequence,
+      participants: match.participants,
+    })),
+  }))
+  expect(slotTrace).toEqual([
+    { roundNumber: 2, pairings: [{ sequence: 4, participants: [teamForSeed(11)] }] },
+    { roundNumber: 4, pairings: [
+      { sequence: 2, participants: [teamForSeed(11)] }, { sequence: 4, participants: [teamForSeed(6)] },
+    ] },
+    { roundNumber: 6, pairings: [
+      { sequence: 1, participants: [teamForSeed(11)] }, { sequence: 2, participants: [teamForSeed(6)] },
+      { sequence: 3, participants: [teamForSeed(3)] },
+    ] },
+    { roundNumber: 8, pairings: [
+      { sequence: 1, participants: [teamForSeed(11), teamForSeed(6)] },
+      { sequence: 2, participants: [teamForSeed(3), teamForSeed(2)] },
+    ] },
+    { roundNumber: 9, pairings: [{ sequence: 1, participants: [teamForSeed(11), teamForSeed(3)] }] },
+  ])
+  const rank = (stage: JsonObject, teamId: string) => (
+    (stage.standings as JsonObject[]).find(standing => standing.teamId === teamId)?.rank
+  )
+  expect([rank(normal.stage, teamForSeed(6)), rank(normal.stage, teamForSeed(2)), rank(normal.stage, teamForSeed(3))])
+    .toEqual([9, 4, 6])
+  expect([rank(vacant.stage, teamForSeed(6)), rank(vacant.stage, teamForSeed(2)), rank(vacant.stage, teamForSeed(3))])
+    .toEqual([4, 4, 3])
+  expect(vacant.isCompletionCandidate(vacant.stage)).toBe(true)
+
+  const wrongRanks = structuredClone(vacant.stage)
+  const teamTwo = (wrongRanks.standings as JsonObject[]).find(standing => standing.teamId === teamForSeed(2))
+  const teamThree = (wrongRanks.standings as JsonObject[]).find(standing => standing.teamId === teamForSeed(3))
+  if (!teamTwo || !teamThree) throw new Error('13-team lower exits are missing')
+  teamTwo.rank = 9
+  teamThree.rank = 6
+  expect(vacant.isCompletionCandidate(wrongRanks)).toBe(false)
+
+  const emptyLowerLayers = await finish([2, 3, 4, 6, 8])
+  const emptyConfig = emptyLowerLayers.stage.config
+  if (!isJsonObject(emptyConfig) || !Array.isArray(emptyConfig.teams)
+    || !Array.isArray(normalConfig.teams)) {
+    throw new Error('13-team frozen seed configuration is missing')
+  }
+  expect(emptyConfig.teams).toEqual(normalConfig.teams)
+  const emptyTeamForSeed = (seed: number): string => {
+    const entry = emptyConfig.teams.find(value => isJsonObject(value) && value.seed === seed)
+    if (!isJsonObject(entry) || typeof entry.teamId !== 'string') {
+      throw new Error('13-team frozen seed entry is missing')
+    }
+    return entry.teamId
+  }
+  expect(emptyLowerLayers.stage).toMatchObject({ status: 'finished', lastScheduleError: null })
+  expect((emptyLowerLayers.stage.rounds as JsonObject[]).flatMap(round => round.matches as JsonValue[])
+    .every(match => isJsonObject(match) && match.status === 'completed')).toBe(true)
+  expect((emptyLowerLayers.stage.rounds as JsonObject[])
+    .flatMap(round => round.matches as JsonObject[])
+    .filter(match => isJsonObject(match.result) && match.result.type === 'doubleLoss')).toHaveLength(5)
+  const emptyLowerRounds = (emptyLowerLayers.stage.rounds as JsonObject[])
+    .filter(round => round.kind === 'losers')
+  expect(emptyLowerRounds.map(round => round.roundNumber)).toEqual([4, 6])
+  expect(emptyLowerRounds.map(round => ({
+    roundNumber: round.roundNumber,
+    pairings: (round.matches as JsonObject[]).map(match => ({
+      sequence: match.sequence,
+      participants: match.participants,
+      resultType: isJsonObject(match.result) ? match.result.type : null,
+    })),
+  }))).toEqual([
+    { roundNumber: 4, pairings: [
+      { sequence: 3, participants: [emptyTeamForSeed(3)], resultType: 'bye' },
+    ] },
+    { roundNumber: 6, pairings: [
+      { sequence: 2, participants: [emptyTeamForSeed(3), emptyTeamForSeed(2)], resultType: 'win' },
+    ] },
+  ])
+  const emptyTeamTwo = (emptyLowerLayers.stage.standings as JsonObject[])
+    .find(standing => standing.teamId === emptyTeamForSeed(2))
+  expect(emptyTeamTwo?.rank).toBe(4)
+  expect(emptyLowerLayers.isCompletionCandidate(emptyLowerLayers.stage)).toBe(true)
+  const compressedRank = structuredClone(emptyLowerLayers.stage)
+  const compressedTeamTwo = (compressedRank.standings as JsonObject[])
+    .find(standing => standing.teamId === emptyTeamForSeed(2))
+  if (!compressedTeamTwo) throw new Error('13-team fourth-place lower exit is missing')
+  compressedTeamTwo.rank = 9
+  expect(emptyLowerLayers.isCompletionCandidate(compressedRank)).toBe(false)
+})
+
+test('ticket 20 accepts settled single-elimination vacancies and same-round lower-place ties', async () => {
+  const scenarios = [
+    { name: 'both finals double-loss', teamCount: 4, kind: 'bothFinalsDoubleLoss' },
+    { name: 'earlier vacancy and normal final', teamCount: 8, kind: 'priorVacancyNormalFinal' },
+    { name: 'double empty branch', teamCount: 8, kind: 'doubleEmptyBranch' },
+    { name: 'both semifinals double-loss', teamCount: 8, kind: 'bothSemifinalsDoubleLoss' },
+  ] as const
+
+  for (const scenario of scenarios) {
+    const setup = await e6c2aLockedMatch({ teamCount: scenario.teamCount, format: 'singleElimination',
+      matchFormat: { type: 'firstToWins', value: 1 } })
+    let state = JSON.parse(setup.meta().server_state_json) as CompetitionServerState
+    let now = setup.meta().updated_trusted_time_ms
+    let doubleLossCount = 0
+
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      const tournament = state.tournament
+      if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+        throw new Error(`${scenario.name}: tournament is missing`)
+      }
+      const stage = tournament.stages.find(value => isJsonObject(value)
+        && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+      if (!isJsonObject(stage) || !Array.isArray(stage.rounds)) {
+        throw new Error(`${scenario.name}: stage is missing`)
+      }
+      if (stage.status === 'finished') break
+      const round = [...stage.rounds].reverse().find(value => isJsonObject(value)
+        && Array.isArray(value.matches) && value.matches.some(match => isJsonObject(match)
+          && (match.status === 'pending' || match.status === 'inProgress')))
+      if (!isJsonObject(round) || !Array.isArray(round.matches)) {
+        throw new Error(`${scenario.name}: no open round`)
+      }
+      const match = round.matches.find(value => isJsonObject(value)
+        && (value.status === 'pending' || value.status === 'inProgress'))
+      if (!isJsonObject(match) || typeof match.matchId !== 'string'
+        || !Array.isArray(match.participants)) throw new Error(`${scenario.name}: no open match`)
+      const participants = match.participants.filter((value): value is string => (
+        typeof value === 'string' && value.trim().length > 0
+      ))
+      if (participants.length !== 2) throw new Error(`${scenario.name}: invalid participants`)
+      const doubleLoss = scenario.kind === 'bothFinalsDoubleLoss'
+        ? round.roundNumber === 2
+        : scenario.kind === 'priorVacancyNormalFinal'
+          ? round.roundNumber === 1 && match.sequence === 1
+          : scenario.kind === 'doubleEmptyBranch'
+            ? round.roundNumber === 1 && match.sequence <= 2
+            : round.roundNumber === 2
+      if (match.status === 'pending') {
+        const started = await setup.adapter({
+          serverActor: { type: 'organizer', playerId: 'organizer-1' },
+          trustedTimeMs: ++now,
+          operation: { type: 'tournamentStartMatch', stageId: setup.stage.stageId, matchId: match.matchId },
+          serverState: state,
+        })
+        if (!started.ok) throw new Error(`${scenario.name}: match start failed (${started.error.code})`)
+        state = started.serverState as CompetitionServerState
+      }
+      const result = doubleLoss
+        ? { type: 'doubleLoss' as const }
+        : { type: 'win' as const, winnerId: participants[0]!, loserId: participants[1]!, winnerGames: 1, loserGames: 0 }
+      const submitted = await setup.adapter({
+        serverActor: { type: 'organizer', playerId: 'organizer-1' },
+        trustedTimeMs: ++now,
+        operation: { type: 'tournamentSubmitResult', stageId: setup.stage.stageId, matchId: match.matchId, result },
+        serverState: state,
+      })
+      if (!submitted.ok) throw new Error(`${scenario.name}: result failed (${submitted.error.code})`)
+      state = submitted.serverState as CompetitionServerState
+      if (doubleLoss) doubleLossCount += 1
+    }
+
+    const tournament = state.tournament
+    if (!isJsonObject(tournament) || !Array.isArray(tournament.stages)) {
+      throw new Error(`${scenario.name}: completed tournament is missing`)
+    }
+    const stage = tournament.stages.find(value => isJsonObject(value)
+      && isJsonObject(value.config) && value.config.stageId === setup.stage.stageId)
+    if (!isJsonObject(stage) || !Array.isArray(stage.rounds) || !Array.isArray(stage.standings)) {
+      throw new Error(`${scenario.name}: completed stage is missing`)
+    }
+    expect(stage).toMatchObject({ status: 'finished', lastScheduleError: null })
+    expect((stage.rounds as JsonObject[]).flatMap(round => round.matches as JsonValue[])
+      .every(match => isJsonObject(match) && match.status === 'completed')).toBe(true)
+    expect(doubleLossCount).toBe(scenario.kind === 'priorVacancyNormalFinal' ? 1 : 2)
+    expect((setup.room as unknown as { isCompletionCandidateStage(stage: unknown): boolean })
+      .isCompletionCandidateStage(stage)).toBe(true)
+
+    const ranks = (stage.standings as JsonObject[]).map(standing => standing.rank)
+    if (scenario.kind === 'bothFinalsDoubleLoss') {
+      expect(ranks.every(rank => rank === null)).toBe(true)
+    } else if (scenario.kind === 'bothSemifinalsDoubleLoss') {
+      expect(ranks.filter(rank => rank === 5)).toHaveLength(4)
+      expect(ranks.some(rank => rank === 1 || rank === 2)).toBe(false)
+    } else {
+      expect(ranks.filter(rank => rank === 5).length).toBeGreaterThan(0)
+    }
+  }
 })
 
 test('assigned provision derives a 1v1 preconstructed-deck binding for the next game', async () => {
@@ -7991,11 +8922,13 @@ test('ordinary draw cannot authorize a losing-team captain choice', async () => 
   })
 })
 
-test('double timeout pending referee state is not a captain-selection ruling', async () => {
+test('double timeout stage exit is terminal and does not request a captain choice', async () => {
   const { setup, terminal } = await createFormalContinuation({ doubleTimeout: true })
   expect(terminal).toMatchObject({
     ok: true,
-    value: { matchProjection: { public: { match: { status: 'awaitingReferee' } } } },
+    value: { matchProjection: { public: { match: { status: 'completed', outcome: {
+      type: 'doubleLoss', progression: { type: 'stageExit' },
+    } } } } },
   })
   expect(await setup.room.assignNextFirstPlayerByCaptain(captainFirstPlayerRequest({
     commandId: 'double-timeout-captain-choice',
@@ -8643,6 +9576,138 @@ test('locked-roster tournament entry supports 1v1 and 2v2 across all formats and
     .toEqual(orderedStage.teams)
 })
 
+test('real Rust/WASM double-elimination slot widths pass create and live projection contracts', async () => {
+  const teams = Array.from({ length: 4 }, (_, index) => ({
+    teamId: `slot-team-${index + 1}`,
+    seed: index + 1,
+  }))
+  const stage: StageConfig = {
+    ...stageConfig({ format: 'doubleElimination', teams }),
+    matchFormat: { type: 'firstToWins', value: 1 },
+  }
+  const setup = await wasmTournamentRoom(
+    lockedRoster(1, false, teams.map(team => team.teamId)),
+    () => 0,
+    false,
+    stage,
+    'wasm-de-slot-width-contract',
+  )
+  const created = await setup.room.createTournamentFromLockedRoster(createTournamentRequest({
+    commandId: 'wasm-de-slot-width-contract', stage,
+  }))
+  if (!created.ok) throw new Error(`Rust/WASM double-elimination create failed: ${created.error.code}`)
+
+  const meta = setup.sql.database.query(
+    'SELECT server_state_json, updated_trusted_time_ms FROM competition_meta WHERE singleton = 1',
+  ).get() as { server_state_json: string; updated_trusted_time_ms: number }
+  let state = JSON.parse(meta.server_state_json) as CompetitionServerState
+  let trustedTimeMs = meta.updated_trusted_time_ms
+  const query = async (serverState: CompetitionServerState) => {
+    const response = await setup.adapter({
+      serverActor: { type: 'organizer', playerId: 'organizer-1' },
+      trustedTimeMs: ++trustedTimeMs,
+      operation: { type: 'tournamentView' },
+      serverState,
+    })
+    if (!response.ok || response.operation !== 'tournamentView') {
+      throw new Error('Rust/WASM double-elimination view query failed')
+    }
+    const parsed = parseCompetitionTournamentViewResponse({
+      competitionId: 'competition-1',
+      revision: 1,
+      projection: { ok: true, operation: 'tournamentView', public: response.public },
+    }, 'competition-1')
+    return { raw: response.public as JsonObject, parsed }
+  }
+  const initial = await query(state)
+  const initialTournament = initial.raw
+  const initialStage = (initialTournament.stages as JsonObject[])[0]!
+  const initialDoubleState = initialStage.doubleState as JsonObject
+  expect(initialDoubleState.winnersOutputSlotCount).toBe(2)
+  expect(initialDoubleState).not.toHaveProperty('lowerOutputSlotCount')
+  expect(initial.parsed.stages[0]).not.toHaveProperty('doubleState')
+
+  const currentTournament = state.tournament as JsonObject
+  const currentStage = (currentTournament.stages as JsonObject[])[0]!
+  const firstRound = (currentStage.rounds as JsonObject[])[0]!
+  const pendingMatches = (firstRound.matches as JsonObject[])
+    .filter(match => match.status === 'pending')
+  expect(pendingMatches).toHaveLength(2)
+  for (const match of pendingMatches) {
+    if (typeof match.matchId !== 'string' || !Array.isArray(match.participants)
+      || match.participants.length !== 2
+      || !match.participants.every((teamId): teamId is string => typeof teamId === 'string')) {
+      throw new Error('Rust/WASM opening match fixture is malformed')
+    }
+    const started = await setup.adapter({
+      serverActor: { type: 'organizer', playerId: 'organizer-1' },
+      trustedTimeMs: ++trustedTimeMs,
+      operation: { type: 'tournamentStartMatch', stageId: stage.stageId, matchId: match.matchId },
+      serverState: state,
+    })
+    if (!started.ok) throw new Error(`Rust/WASM match start failed: ${started.error.code}`)
+    state = started.serverState
+    const [winnerId, loserId] = match.participants as [string, string]
+    const submitted = await setup.adapter({
+      serverActor: { type: 'organizer', playerId: 'organizer-1' },
+      trustedTimeMs: ++trustedTimeMs,
+      operation: {
+        type: 'tournamentSubmitResult', stageId: stage.stageId, matchId: match.matchId,
+        result: { type: 'win', winnerId, loserId, winnerGames: 1, loserGames: 0 },
+      },
+      serverState: state,
+    })
+    if (!submitted.ok) throw new Error(`Rust/WASM match result failed: ${submitted.error.code}`)
+    state = submitted.serverState
+  }
+
+  const inProgress = await query(state)
+  const inProgressTournament = inProgress.raw
+  const inProgressStage = (inProgressTournament.stages as JsonObject[])[0]!
+  const lowerDoubleState = inProgressStage.doubleState as JsonObject
+  expect(lowerDoubleState.phase).toBe('losers')
+  expect(lowerDoubleState.lowerOutputSlotCount).toBe(1)
+  expect(lowerDoubleState).not.toHaveProperty('winnersOutputSlotCount')
+  expect(inProgress.parsed.stages[0]).not.toHaveProperty('doubleState')
+
+  const currentStageRounds = (state.tournament as JsonObject).stages as JsonObject[]
+  const lowerRound = (currentStageRounds[0]!.rounds as JsonObject[])
+    .find(round => round.kind === 'losers')!
+  const lowerMatch = (lowerRound.matches as JsonObject[]).find(match => match.status === 'pending')!
+  if (typeof lowerMatch.matchId !== 'string') throw new Error('Rust/WASM lower match id is missing')
+  const persistState = (serverState: CompetitionServerState) => setup.sql.database.query(
+    'UPDATE competition_meta SET server_state_json = ? WHERE singleton = 1',
+  ).run(JSON.stringify(serverState))
+  const currentMeta = setup.sql.database.query(
+    'SELECT revision, updated_trusted_time_ms FROM competition_meta WHERE singleton = 1',
+  ).get() as { revision: number; updated_trusted_time_ms: number }
+  const malformedState = structuredClone(state)
+  const malformedStage = ((malformedState.tournament as JsonObject).stages as JsonObject[])[0]!
+  ;(malformedStage.doubleState as JsonObject).lowerOutputSlotCount = '1'
+  persistState(malformedState)
+  const beforeMalformedStart = e6c2aSnapshot(setup)
+  expect(await setup.room.startScheduledMatch({
+    competitionId: 'competition-1', stageId: stage.stageId, matchId: lowerMatch.matchId,
+    callerUserId: 'organizer-1', commandId: 'wasm-de-slot-width-invalid-start',
+    expectedRevision: currentMeta.revision, trustedTimeMs: currentMeta.updated_trusted_time_ms + 1,
+    referees: [],
+  })).toMatchObject({ ok: false, error: { code: 'invalidTournamentCheckpoint' } })
+  expect(e6c2aSnapshot(setup)).toEqual(beforeMalformedStart)
+
+  persistState(state)
+  const acceptedStart = await setup.room.startScheduledMatch({
+    competitionId: 'competition-1', stageId: stage.stageId, matchId: lowerMatch.matchId,
+    callerUserId: 'organizer-1', commandId: 'wasm-de-slot-width-valid-start',
+    expectedRevision: currentMeta.revision, trustedTimeMs: currentMeta.updated_trusted_time_ms + 2,
+    referees: [],
+  })
+  if (!acceptedStart.ok) throw new Error(`Worker rejected live lower-slot checkpoint: ${acceptedStart.error.code}`)
+  const acceptedResponse = acceptedStart.value.tournamentProjection.public as JsonObject
+  const acceptedTournament = acceptedResponse.tournament as JsonObject
+  const acceptedStage = (acceptedTournament.stages as JsonObject[])[0]!
+  expect((acceptedStage.doubleState as JsonObject).lowerOutputSlotCount).toBe(1)
+})
+
 test('real Rust WASM tournament start and match/clock checkpoints pass for 2, 3, and 5 teams', async () => {
   for (const teamCount of [2, 3, 5]) {
     const teams = Array.from({ length: teamCount }, (_, index) => ({
@@ -9096,7 +10161,7 @@ test('invalid StageConfig and an existing tournament stop before locked-roster e
 async function e6c2aLockedMatch(options: {
   teamSize?: 1 | 2
   personalDeck?: boolean
-  teamCount?: 2 | 3 | 4 | 5
+  teamCount?: 2 | 3 | 4 | 5 | 8 | 13 | 16
   format?: StageConfig['format']
   matchFormat?: StageConfig['matchFormat']
   randomUint32?: () => number
@@ -9149,7 +10214,8 @@ async function e6c2aLockedMatch(options: {
   const cards = ['metal', 'wood', 'water', 'fire', 'earth'].flatMap(element => (
     [3, 2, 3, 2, 2].flatMap((copies, index) => Array.from({ length: copies }, () => `${element}-${index + 1}`))
   ))
-  for (const prefix of ['a', 'b', 'c', 'd', 'e'].slice(0, teamCount)) {
+  const prefixes = Array.from({ length: teamCount }, (_, index) => String.fromCharCode(97 + index))
+  for (const prefix of prefixes) {
     const members = Array.from({ length: teamSize }, (_, index) => `${prefix}-${index + 1}`)
     const teamId = `team-${prefix}`
     await accepted({ type: 'registerTeam', teamId, captain: members[0]!, members }, members[0])
@@ -10296,6 +11362,27 @@ test('malformed tournament success output is rejected without changing persisted
   expect((JSON.parse((doubleSetup.sql.database.query(
     'SELECT server_state_json FROM competition_meta',
   ).get() as { server_state_json: string }).server_state_json) as JsonObject).tournament).toBeNull()
+
+  const invalidInitialDoubleStates: Array<(state: JsonObject) => void> = [
+    state => { delete state.winnersOutputSlotCount },
+    state => { state.winnersOutputSlotCount = '1' },
+    state => { state.winnersOutputSlotCount = 0 },
+    state => { state.winnersOutputSlotCount = 2 },
+    state => { state.lowerOutputSlotCount = 1 },
+    state => { state.unrecognizedSlotWidth = 1 },
+  ]
+  for (const mutate of invalidInitialDoubleStates) {
+    const invalid = await tournamentRoom({ stage: doubleStage, createResponse: request => mutateCreatedStage(
+      request,
+      stage => {
+        if (!isJsonObject(stage.doubleState)) throw new Error('double-state fixture is missing')
+        mutate(stage.doubleState)
+      },
+    ) })
+    expect((await invalid.room.createTournamentFromLockedRoster(
+      createTournamentRequest({ stage: doubleStage }),
+    )).ok).toBe(false)
+  }
 })
 
 function validCreateResponse(request: CompetitionRequest): CompetitionEngineResponse {
@@ -10537,7 +11624,7 @@ test('E6c2a formal first-game win awaiting captain selection never returns the o
   expect(e6c2aSnapshot(setup)).toEqual(before)
 })
 
-test('E6c2a formal double-timeout awaiting referee never returns the terminal game', async () => {
+test('E6c2a formal simultaneous timeout exits the teams and closes the single-elimination stage', async () => {
   const setup = await e6c2aLockedMatch()
   const row = setup.sql.database.query(
     'SELECT revision, last_trusted_time_ms, match_projection_json FROM competition_matches WHERE match_id = ?',
@@ -10585,13 +11672,23 @@ test('E6c2a formal double-timeout awaiting referee never returns the terminal ga
   expect(terminal).toMatchObject({
     ok: true,
     value: { matchProjection: { public: { match: {
-      status: 'awaitingReferee',
+      status: 'completed',
       games: [{ gameNumber: 1 }],
-      outcome: { type: 'doubleLoss', progression: { type: 'pendingReferee' } },
+      outcome: { type: 'doubleLoss', progression: { type: 'stageExit' } },
       nextGame: null,
     } } } },
   })
   if (!terminal.ok) throw new Error(`formal double-timeout terminal failed: ${terminal.error.code}`)
+  expect(setup.calls.filter(call => call.operation.type === 'tournamentSubmitResult')).toHaveLength(1)
+  expect(setup.calls.find(call => call.operation.type === 'tournamentSubmitResult')?.operation).toMatchObject({
+    type: 'tournamentSubmitResult', result: { type: 'doubleLoss' },
+  })
+  const tournament = (JSON.parse(setup.meta().server_state_json) as JsonObject).tournament as JsonObject
+  expect(tournament.stages).toMatchObject([{
+    status: 'finished', doubleState: null,
+    rounds: [{ matches: [{ status: 'completed', result: { type: 'doubleLoss' } }] }],
+    standings: [{ dropped: true, rank: null }, { dropped: true, rank: null }],
+  }])
   expect(setup.sql.database.query(
     'SELECT game_number, status FROM competition_game_provision WHERE match_id = ?',
   ).all(setup.matchId)).toEqual([{ game_number: 1, status: 'provisioned' }])
@@ -12689,7 +13786,7 @@ test('E6e2a legal waiting, pending, blocked and completed states never return an
   }
 })
 
-test('E6e2a formal double expiry is readable awaitingReferee without exposing rulings or making decisions', async () => {
+test('E6e2a formal double expiry closes the match without exposing rulings', async () => {
   const setup = await e6c2aLockedMatch({ clockConfig: {
     mainTimeMs: 1_000, actionTimeMs: 100, outOfTurnChoiceTimeMs: 20,
   } })
@@ -12701,7 +13798,7 @@ test('E6e2a formal double expiry is readable awaitingReferee without exposing ru
   if (!observed.timeoutEvidence) throw new Error('formal timeout evidence missing')
   expect((await e6e2aSubmitTerminal(setup, 4_101, 'draw', observed.timeoutEvidence)).ok).toBe(true)
   const value = await e6e2aCheckedRead(setup, 4_102)
-  expect(value.matchStatus).toBe('awaitingReferee')
+  expect(value.matchStatus).toBe('completed')
   expect(value.game).toBeNull()
   expect(value.clock.awaitingAuthority).toBe(true)
   expect(value.clock.teams).toEqual([

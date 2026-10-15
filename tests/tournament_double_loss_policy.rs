@@ -978,7 +978,7 @@ fn single_elimination_nonfinal_double_loss_preserves_vacant_bracket_position() {
 }
 
 #[test]
-fn single_elimination_final_double_loss_after_prior_vacancy_finishes_without_ranks() {
+fn single_elimination_final_double_loss_after_prior_vacancy_preserves_decided_ranks() {
     let stage_id = StageId::from("prior-vacancy-final");
     let config = StageConfig {
         stage_id: stage_id.clone(),
@@ -1320,17 +1320,23 @@ fn single_elimination_final_double_loss_after_prior_vacancy_finishes_without_ran
         }));
     }
 
-    // 全部八隊仍在 standings；僅抑制未知名次，不清除真勝負或把別隊升成冠亞。
+    // 決賽雙負只讓冠亞空缺；已正常決出的季軍與早輪第五名仍保留。
     assert_eq!(finished.standings().len(), 8);
-    for team in &config.teams {
-        let rows: Vec<_> = finished
+    let standing_rank = |team_id: &TeamId| {
+        finished
             .standings()
             .iter()
-            .filter(|row| row.team_id == team.team_id)
-            .collect();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].rank, None, "冠軍空缺不填任何未確認名次");
-    }
+            .find(|row| &row.team_id == team_id)
+            .unwrap()
+            .rank
+    };
+    assert_eq!(standing_rank(&bye_team), None, "決賽雙負不決出冠軍");
+    assert_eq!(standing_rank(&third_winner), None, "決賽雙負不決出亞軍");
+    assert_eq!(
+        standing_rank(&fourth_winner),
+        Some(3),
+        "半決賽敗方沿空位取得季軍"
+    );
     // 同一 trace 的 literal 統計：輪空隊一真勝，另一 finalist 兩真勝，各加決賽一負。
     for (team_id, wins, losses, points, game_wins, game_losses, net) in [
         (&bye_team, 1, 1, 3, 1, 0, 1),
@@ -1351,6 +1357,11 @@ fn single_elimination_final_double_loss_after_prior_vacancy_finishes_without_ran
         assert_eq!(row.net_game_wins, net);
     }
     for original in &original_first_round.matches[1..] {
+        assert_eq!(
+            standing_rank(&original.participants[1]),
+            Some(5),
+            "早輪正常敗方保留第五名"
+        );
         let row = finished
             .standings()
             .iter()
@@ -1383,8 +1394,35 @@ fn single_elimination_final_double_loss_after_prior_vacancy_finishes_without_ran
     let snapshot = serde_json::to_value(&tournament).unwrap();
     let serialized_rows = snapshot["stages"][0]["standings"].as_array().unwrap();
     assert_eq!(serialized_rows.len(), 8);
-    for row in serialized_rows {
-        assert_eq!(row.get("rank"), Some(&serde_json::Value::Null));
+    for (team_id, rank) in [
+        (&bye_team, None::<u32>),
+        (&third_winner, None),
+        (&fourth_winner, Some(3)),
+    ] {
+        assert_eq!(
+            serialized_rows
+                .iter()
+                .find(|row| {
+                    row.get("teamId").and_then(serde_json::Value::as_str)
+                        == Some(team_id.0.as_str())
+                })
+                .and_then(|row| row.get("rank"))
+                .cloned(),
+            Some(serde_json::to_value(rank).unwrap())
+        );
+    }
+    for original in &original_first_round.matches[1..] {
+        assert_eq!(
+            serialized_rows
+                .iter()
+                .find(|row| {
+                    row.get("teamId").and_then(serde_json::Value::as_str)
+                        == Some(original.participants[1].0.as_str())
+                })
+                .and_then(|row| row.get("rank"))
+                .cloned(),
+            Some(serde_json::json!(5))
+        );
     }
     let mut restored: Tournament = serde_json::from_value(snapshot.clone())
         .expect("合法前輪雙負、輪空及真決賽雙負的 current Tournament 必須能還原");
@@ -1393,12 +1431,26 @@ fn single_elimination_final_double_loss_after_prior_vacancy_finishes_without_ran
     assert_eq!(restored_stage.status(), StageStatus::Finished);
     assert_eq!(restored_stage.winner(), None);
     assert_eq!(restored_stage.last_schedule_error(), None);
-    assert!(
+    assert_eq!(
         restored_stage
             .standings()
             .iter()
-            .all(|row| row.rank.is_none())
+            .find(|row| row.team_id == fourth_winner)
+            .unwrap()
+            .rank,
+        Some(3)
     );
+    for original in &original_first_round.matches[1..] {
+        assert_eq!(
+            restored_stage
+                .standings()
+                .iter()
+                .find(|row| row.team_id == original.participants[1])
+                .unwrap()
+                .rank,
+            Some(5)
+        );
+    }
     assert_eq!(
         restored
             .submit_result(&stage_id, &original_final.match_id, MatchResult::DoubleLoss)
@@ -1408,6 +1460,379 @@ fn single_elimination_final_double_loss_after_prior_vacancy_finishes_without_ran
     assert_eq!(
         serde_json::to_value(&restored).unwrap(),
         snapshot,
-        "原雙負、輪空、身分、start、真統計與無名次投影不得因同結果 retry 改變"
+        "原雙負、輪空、身分、start、真統計與空缺名次投影不得因同結果 retry 改變"
+    );
+}
+
+#[test]
+fn single_elimination_propagates_two_empty_positions_without_creating_an_empty_match() {
+    let stage_id = StageId::from("single-double-empty");
+    let teams = (1..=8)
+        .map(|seed| SeededTeam {
+            team_id: TeamId::from(format!("double-empty-team-{seed}")),
+            seed,
+        })
+        .collect::<Vec<_>>();
+    let mut tournament = Tournament::new(TournamentConfig {
+        tournament_id: "single-double-empty".into(),
+        stage: StageConfig {
+            stage_id: stage_id.clone(),
+            format: TournamentFormat::SingleElimination,
+            teams: teams.clone(),
+            random_seed: 7,
+            match_format: MatchFormat::FirstToWins(1),
+            clock_config: ClockConfig::default(),
+            swiss_rounds: None,
+            swiss_policy: None,
+        },
+    })
+    .unwrap();
+
+    let first_round = tournament.stage(&stage_id).unwrap().rounds()[0].clone();
+    assert_eq!(first_round.matches.len(), 4);
+    let first_double_loss = first_round.matches[0].clone();
+    let second_double_loss = first_round.matches[1].clone();
+    for match_ in [&first_double_loss, &second_double_loss] {
+        tournament.start_match(&stage_id, &match_.match_id).unwrap();
+        assert_eq!(
+            tournament
+                .submit_result(&stage_id, &match_.match_id, MatchResult::DoubleLoss)
+                .unwrap(),
+            UpdateOutcome::Applied
+        );
+    }
+    assert_eq!(tournament.stage(&stage_id).unwrap().rounds().len(), 1);
+    for match_ in &first_round.matches[2..] {
+        let winner = match_.participants[0].clone();
+        tournament.start_match(&stage_id, &match_.match_id).unwrap();
+        tournament
+            .submit_result(
+                &stage_id,
+                &match_.match_id,
+                MatchResult::win(winner, match_.participants[1].clone()),
+            )
+            .unwrap();
+    }
+
+    let stage = tournament.stage(&stage_id).unwrap();
+    assert_eq!(stage.rounds().len(), 2);
+    let second_round = &stage.rounds()[1];
+    assert_eq!(second_round.matches.len(), 1);
+    assert_eq!(
+        second_round.matches[0].sequence, 2,
+        "首個雙空位只保留結構序號，不造空交手"
+    );
+    assert_eq!(second_round.matches[0].participants.len(), 2);
+    assert!(
+        !second_round.matches[0]
+            .participants
+            .iter()
+            .any(|team_id| first_double_loss.participants.contains(team_id)
+                || second_double_loss.participants.contains(team_id))
+    );
+    let final_survivor = second_round.matches[0].participants[0].clone();
+    let final_match = second_round.matches[0].clone();
+    let other = final_match.participants[1].clone();
+    tournament
+        .start_match(&stage_id, &final_match.match_id)
+        .unwrap();
+    tournament
+        .submit_result(
+            &stage_id,
+            &final_match.match_id,
+            MatchResult::win(final_survivor.clone(), other.clone()),
+        )
+        .unwrap();
+
+    let stage = tournament.stage(&stage_id).unwrap();
+    assert_eq!(stage.status(), StageStatus::Finished);
+    assert_eq!(stage.winner(), Some(final_survivor.clone()));
+    assert_eq!(
+        stage.rounds().len(),
+        2,
+        "只剩唯一勝者時直接收尾，不造空位交手"
+    );
+    assert_eq!(stage.rounds()[1].matches[0].participants.len(), 2);
+    assert_eq!(
+        stage.rounds()[1].matches[0].result,
+        Some(MatchResult::win(final_survivor.clone(), other))
+    );
+    assert!(
+        stage
+            .rounds()
+            .iter()
+            .flat_map(|round| &round.matches)
+            .all(|match_| !match_.participants.is_empty())
+    );
+    let before_retry = serde_json::to_value(&tournament).unwrap();
+    assert_eq!(
+        tournament
+            .submit_result(
+                &stage_id,
+                &first_double_loss.match_id,
+                MatchResult::DoubleLoss
+            )
+            .unwrap(),
+        UpdateOutcome::AlreadyRecorded
+    );
+    assert_eq!(serde_json::to_value(&tournament).unwrap(), before_retry);
+}
+
+fn single_eight_team_tournament(id: &str) -> (StageId, Tournament) {
+    let stage_id = StageId::from(id);
+    let tournament = Tournament::new(TournamentConfig {
+        tournament_id: id.into(),
+        stage: StageConfig {
+            stage_id: stage_id.clone(),
+            format: TournamentFormat::SingleElimination,
+            teams: (1..=8)
+                .map(|seed| SeededTeam {
+                    team_id: TeamId::from(format!("{id}-team-{seed}")),
+                    seed,
+                })
+                .collect(),
+            random_seed: 7,
+            match_format: MatchFormat::FirstToWins(1),
+            clock_config: ClockConfig::default(),
+            swiss_rounds: None,
+            swiss_policy: None,
+        },
+    })
+    .unwrap();
+    (stage_id, tournament)
+}
+
+#[test]
+fn single_elimination_retains_the_only_semifinal_loser_after_an_earlier_bye_and_final_double_loss()
+{
+    let (stage_id, mut tournament) = single_eight_team_tournament("single-prior-vacancy-final");
+    let first_round = tournament.stage(&stage_id).unwrap().rounds()[0].clone();
+    let mut bronze_candidate = None;
+
+    for _ in 0..16 {
+        let stage = tournament.stage(&stage_id).unwrap();
+        if stage.status() == StageStatus::Finished {
+            break;
+        }
+        let (round_number, match_) = stage
+            .rounds()
+            .iter()
+            .find_map(|round| {
+                round
+                    .matches
+                    .iter()
+                    .find(|match_| match_.status == MatchStatus::Pending)
+                    .map(|match_| (round.round_number, match_.clone()))
+            })
+            .expect("未完成階段必須有待賽交手");
+        if round_number == 2 && match_.sequence == 2 {
+            bronze_candidate = Some(match_.participants[1].clone());
+        }
+        tournament.start_match(&stage_id, &match_.match_id).unwrap();
+        let result = if round_number == 1 && match_.sequence == 1
+            || round_number == 3 && match_.purpose == MatchPurpose::Standard
+        {
+            MatchResult::DoubleLoss
+        } else {
+            MatchResult::win(
+                match_.participants[0].clone(),
+                match_.participants[1].clone(),
+            )
+        };
+        tournament
+            .submit_result(&stage_id, &match_.match_id, result)
+            .unwrap();
+    }
+
+    let stage = tournament.stage(&stage_id).unwrap();
+    let bronze_candidate = bronze_candidate.expect("原半決賽敗方必須可辨識");
+    assert_eq!(stage.status(), StageStatus::Finished);
+    assert_eq!(stage.last_schedule_error(), None);
+    assert_eq!(stage.winner(), None);
+    assert_eq!(stage.rounds().len(), 3);
+    assert_eq!(
+        stage.rounds()[1].matches[0].result,
+        Some(MatchResult::Bye {
+            team_id: stage.rounds()[1].matches[0].participants[0].clone(),
+        })
+    );
+    assert_eq!(stage.rounds()[1].matches.len(), 2);
+    assert_eq!(stage.rounds()[2].matches.len(), 1, "不虛構季軍交手");
+    assert_eq!(
+        stage
+            .standings()
+            .iter()
+            .find(|row| row.team_id == bronze_candidate)
+            .unwrap()
+            .rank,
+        Some(3)
+    );
+    for match_ in &first_round.matches[1..] {
+        let earlier_loser = &match_.participants[1];
+        assert_eq!(
+            stage
+                .standings()
+                .iter()
+                .find(|row| &row.team_id == earlier_loser)
+                .unwrap()
+                .rank,
+            Some(5),
+            "較早輪次名次沿原 bracket 深度保留"
+        );
+    }
+    assert!(
+        stage
+            .rounds()
+            .iter()
+            .flat_map(|round| &round.matches)
+            .all(|match_| match_.status == MatchStatus::Completed)
+    );
+}
+
+#[test]
+fn single_elimination_semifinal_loser_keeps_bronze_slot_after_a_double_empty_branch() {
+    let (stage_id, mut tournament) = single_eight_team_tournament("single-double-empty-bronze");
+    let first_round = tournament.stage(&stage_id).unwrap().rounds()[0].clone();
+    let mut bronze_candidate = None;
+
+    for _ in 0..16 {
+        let stage = tournament.stage(&stage_id).unwrap();
+        if stage.status() == StageStatus::Finished {
+            break;
+        }
+        let (round_number, match_) = stage
+            .rounds()
+            .iter()
+            .find_map(|round| {
+                round
+                    .matches
+                    .iter()
+                    .find(|match_| match_.status == MatchStatus::Pending)
+                    .map(|match_| (round.round_number, match_.clone()))
+            })
+            .expect("未完成階段必須有待賽交手");
+        if round_number == 2 {
+            bronze_candidate = Some(match_.participants[1].clone());
+        }
+        tournament.start_match(&stage_id, &match_.match_id).unwrap();
+        let result = if round_number == 1 && match_.sequence <= 2 {
+            MatchResult::DoubleLoss
+        } else {
+            MatchResult::win(
+                match_.participants[0].clone(),
+                match_.participants[1].clone(),
+            )
+        };
+        tournament
+            .submit_result(&stage_id, &match_.match_id, result)
+            .unwrap();
+    }
+
+    let stage = tournament.stage(&stage_id).unwrap();
+    let bronze_candidate = bronze_candidate.expect("準決賽敗方必須可辨識");
+    assert_eq!(stage.status(), StageStatus::Finished);
+    assert_eq!(stage.rounds().len(), 2, "空缺不得生成假的決賽");
+    assert_eq!(stage.rounds()[1].matches.len(), 1);
+    let final_winner = match stage.rounds()[1].matches[0].result.as_ref().unwrap() {
+        MatchResult::Win { winner_id, .. } | MatchResult::Forfeit { winner_id, .. } => winner_id,
+        result => panic!("真正敗者必須由一般勝負決定，收到 {result:?}"),
+    };
+    assert_eq!(stage.winner(), Some(final_winner.clone()));
+    assert_eq!(
+        stage
+            .standings()
+            .iter()
+            .find(|row| row.team_id == bronze_candidate)
+            .unwrap()
+            .rank,
+        Some(3)
+    );
+    for match_ in &first_round.matches[2..] {
+        let earlier_loser = &match_.participants[1];
+        assert_eq!(
+            stage
+                .standings()
+                .iter()
+                .find(|row| &row.team_id == earlier_loser)
+                .unwrap()
+                .rank,
+            Some(5),
+            "較早敗者不得因半決賽空位壓縮名次"
+        );
+    }
+}
+
+#[test]
+fn single_elimination_semifinal_double_loss_awards_the_surviving_title_and_bronze_bye() {
+    let stage_id = StageId::from("single-semi-double-loss");
+    let mut tournament = Tournament::new(TournamentConfig {
+        tournament_id: "single-semi-double-loss".into(),
+        stage: StageConfig {
+            stage_id: stage_id.clone(),
+            format: TournamentFormat::SingleElimination,
+            teams: (1..=4)
+                .map(|seed| SeededTeam {
+                    team_id: TeamId::from(format!("team-{seed}")),
+                    seed,
+                })
+                .collect(),
+            random_seed: 7,
+            match_format: MatchFormat::FirstToWins(1),
+            clock_config: ClockConfig::default(),
+            swiss_rounds: None,
+            swiss_policy: None,
+        },
+    })
+    .unwrap();
+    let semifinals = tournament.stage(&stage_id).unwrap().rounds()[0].clone();
+    let vacant_branch = &semifinals.matches[0];
+    let played_branch = &semifinals.matches[1];
+    let champion = played_branch.participants[0].clone();
+    let bronze_bye = played_branch.participants[1].clone();
+
+    for semifinal in [vacant_branch, played_branch] {
+        tournament
+            .start_match(&stage_id, &semifinal.match_id)
+            .unwrap();
+        let result = if semifinal.match_id == vacant_branch.match_id {
+            MatchResult::DoubleLoss
+        } else {
+            MatchResult::win_with_games(champion.clone(), bronze_bye.clone(), 1, 0)
+        };
+        tournament
+            .submit_result(&stage_id, &semifinal.match_id, result)
+            .unwrap();
+    }
+
+    let stage = tournament.stage(&stage_id).unwrap();
+    assert_eq!(stage.status(), StageStatus::Finished);
+    assert_eq!(stage.winner(), Some(champion.clone()));
+    assert_eq!(stage.rounds().len(), 1, "不造決賽或季軍交手");
+    assert_eq!(stage.rounds()[0].matches.len(), 2);
+    assert_eq!(
+        stage
+            .standings()
+            .iter()
+            .find(|standing| standing.team_id == champion)
+            .unwrap()
+            .rank,
+        Some(1)
+    );
+    assert_eq!(
+        stage
+            .standings()
+            .iter()
+            .find(|standing| standing.team_id == bronze_bye)
+            .unwrap()
+            .rank,
+        Some(3)
+    );
+    assert!(
+        vacant_branch
+            .participants
+            .iter()
+            .all(|team_id| stage.standings().iter().any(|standing| {
+                standing.team_id == *team_id && standing.dropped && standing.rank.is_none()
+            }))
     );
 }

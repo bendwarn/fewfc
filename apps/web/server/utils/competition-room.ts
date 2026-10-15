@@ -521,8 +521,9 @@ function isClockControlMatchProjection(value: unknown, matchId: string): boolean
         && team(input.winnerId) && team(input.loserId) && input.winnerId !== input.loserId && score(input.score)
       case 'draw': return isExactClockRecord(input, ['type', 'score']) && score(input.score)
       case 'doubleLoss': return isExactClockRecord(input, ['type', 'teams', 'progression']) && pair(input.teams)
-        && isExactClockRecord(input.progression, ['type', 'reason'])
-        && input.progression.type === 'pendingReferee' && isClockString(input.progression.reason)
+        && (isExactClockRecord(input.progression, ['type']) && input.progression.type === 'stageExit'
+          || (isExactClockRecord(input.progression, ['type', 'reason'])
+            && input.progression.type === 'pendingReferee' && isClockString(input.progression.reason)))
       case 'pendingReferee': return isExactClockRecord(input, ['type', 'gameRecordId', 'reason'])
         && isClockString(input.gameRecordId) && decisionReason(input.reason)
       default: return false

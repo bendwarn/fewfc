@@ -1,7 +1,10 @@
 import { expect, test } from 'bun:test'
 import {
   parseCompetitionTournamentViewResponse,
+  doubleEliminationVacancySummary,
   presentCompetitionTournamentViewError,
+  singleEliminationDoubleLossFinal,
+  singleEliminationVacancySummary,
   tournamentFormatLabel,
   tournamentMatchResultLabel,
   tournamentTimeLimitLabel,
@@ -388,6 +391,231 @@ test('preserves server bye and double-loss states and never renders raw schedule
   expect(tournamentMatchResultLabel(forfeit)).toBe('team-b 棄權判定勝出（對手 team-a）')
 })
 
+test('parses structural double-elimination vacancies and explains a lower-final double loss', () => {
+  const base = response()
+  const stage = base.projection.public.stages[2]!
+  const stageId = stage.config.stageId
+  const teams = ['team-a', 'team-b', 'team-c', 'team-d']
+  const standings = teams.map((teamId, index) => ({
+    teamId,
+    matchPoints: '0', wins: 0, draws: 0, losses: index === 1 || index === 2 ? 1 : 0,
+    gameWins: 0, gameLosses: 0, netGameWins: 0,
+    opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0',
+    dropped: index === 1 || index === 2, rank: index === 0 ? 1 : index === 3 ? 4 : null,
+  }))
+  const winnersMatch = {
+    matchId: `${stageId}-winners-final`, stageId, roundNumber: 1, sequence: 1, kind: 'winners',
+    participants: ['team-a', 'team-d'], status: 'completed',
+    result: { type: 'win', winnerId: 'team-a', loserId: 'team-d', winnerGames: 1, loserGames: 0 },
+    cancellationReason: null, started: true,
+  }
+  const doubleLoss = {
+    matchId: `${stageId}-lower-final`, stageId, roundNumber: 2, sequence: 1, kind: 'losers',
+    participants: ['team-b', 'team-c'], status: 'completed', result: { type: 'doubleLoss' },
+    cancellationReason: null, started: true,
+  }
+  const input = responseWithStageOverrides(2, {
+    config: { ...stage.config, teams: teams.map((teamId, index) => ({ teamId, seed: index + 1 })) },
+    teams: Object.fromEntries(teams.map((teamId, index) => [teamId, {
+      seed: index + 1,
+      dropped: index === 1 || index === 2,
+      hadBye: false,
+    }])),
+    status: 'finished',
+    rounds: [
+      { roundNumber: 1, kind: 'winners', matches: [winnersMatch] },
+      { roundNumber: 2, kind: 'losers', matches: [doubleLoss] },
+    ],
+    standings,
+    doubleState: {
+      phase: 'finished', winnersPool: ['team-a', null], losersWaiting: [], lowerPool: [null],
+      winnersChampion: 'team-a', losersChampion: null, grandFinalWinner: 'team-a',
+    },
+  })
+  const parsed = parseCompetitionTournamentViewResponse(input, 'competition-a')
+  const doubleStage = parsed.stages[2]!
+  expect(doubleStage).not.toHaveProperty('doubleState')
+  expect(doubleEliminationVacancySummary(doubleStage))
+    .toBe('勝部冠軍沿空位取得冠軍，亞軍與季軍空缺')
+
+  const malformed = responseWithStageOverrides(2, {
+    doubleState: { ...stage.doubleState, winnersPool: [null, 'unknown-team'] },
+  })
+  expect(() => parseCompetitionTournamentViewResponse(malformed, 'competition-a')).toThrow()
+})
+
+test('explains when the lower-bracket champion takes the vacant grand-final position', () => {
+  const source = response().projection.public.stages[2]!
+  const stageId = source.config.stageId
+  const teams = Array.from({ length: 8 }, (_, index) => `team-${String.fromCharCode(97 + index)}`)
+  const standings = teams.map((teamId, index) => ({
+    teamId,
+    matchPoints: '0', wins: 0, draws: 0, losses: index < 4 ? 1 : 0,
+    gameWins: 0, gameLosses: 0, netGameWins: 0,
+    opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0',
+    dropped: index < 4, rank: index === 4 ? 1 : null,
+  }))
+  const doubleLossMatch = (sequence: number, participants: [string, string]) => ({
+    matchId: `${stageId}-winners-${sequence}`, stageId, roundNumber: 3, sequence, kind: 'winners',
+    participants, status: 'completed', result: { type: 'doubleLoss' }, cancellationReason: null, started: true,
+  })
+  const input = responseWithStageOverrides(2, {
+    config: { ...source.config, teams: teams.map((teamId, index) => ({ teamId, seed: index + 1 })) },
+    teams: Object.fromEntries(teams.map((teamId, index) => [teamId, {
+      seed: index + 1,
+      dropped: index < 4,
+      hadBye: false,
+    }])),
+    status: 'finished',
+    rounds: [
+      { roundNumber: 3, kind: 'winners', matches: [
+        doubleLossMatch(1, ['team-a', 'team-b']),
+        doubleLossMatch(2, ['team-c', 'team-d']),
+      ] },
+      { roundNumber: 6, kind: 'losers', matches: [{
+        matchId: `${stageId}-lower-final`, stageId, roundNumber: 6, sequence: 1, kind: 'losers',
+        participants: ['team-e', 'team-f'], status: 'completed',
+        result: { type: 'win', winnerId: 'team-e', loserId: 'team-f', winnerGames: 1, loserGames: 0 },
+        cancellationReason: null, started: true,
+      }] },
+    ],
+    standings,
+    doubleState: {
+      phase: 'finished', winnersPool: [null, null], losersWaiting: [], lowerPool: ['team-e'],
+      winnersChampion: null, losersChampion: 'team-e', grandFinalWinner: 'team-e',
+    },
+  })
+  const parsed = parseCompetitionTournamentViewResponse(input, 'competition-a')
+  expect(doubleEliminationVacancySummary(parsed.stages[2]!))
+    .toBe('敗部冠軍沿總決賽空位取得冠軍，亞軍與季軍空缺')
+  expect(parsed.stages[2]!.standings.some(standing => standing.rank === 2)).toBe(false)
+})
+
+test('does not announce a vacancy for an ordinary finished double-elimination final', () => {
+  const stage = response().projection.public.stages[2]!
+  const finished = parseCompetitionTournamentViewResponse(responseWithStageOverrides(2, {
+    status: 'finished',
+    doubleState: { ...stage.doubleState!, phase: 'finished', grandFinalWinner: 'team-a' },
+  }), 'competition-a').stages[2]!
+  expect(doubleEliminationVacancySummary(finished)).toBeNull()
+})
+
+test('explains a semifinal double loss with a surviving champion and bronze bye', () => {
+  const source = response().projection.public.stages[0]!
+  const teams = ['team-a', 'team-b', 'team-c', 'team-d']
+  const standings = teams.map((teamId, index) => ({
+    teamId,
+    matchPoints: '0', wins: 0, draws: 0, losses: index < 2 ? 1 : 0,
+    gameWins: 0, gameLosses: 0, netGameWins: 0,
+    opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0',
+    dropped: index < 2, rank: index === 2 ? 1 : index === 3 ? 3 : null,
+  }))
+  const parsed = parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, {
+    config: { ...source.config, teams: teams.map((teamId, index) => ({ teamId, seed: index + 1 })) },
+    teams: Object.fromEntries(teams.map((teamId, index) => [teamId, {
+      seed: index + 1,
+      dropped: index < 2,
+      hadBye: false,
+    }])),
+    status: 'finished',
+    rounds: [{
+      roundNumber: 1, kind: 'main', matches: [
+        { matchId: 'single-semi-dl', stageId: source.config.stageId, roundNumber: 1,
+          sequence: 1, kind: 'main', participants: ['team-a', 'team-b'], status: 'completed',
+          result: { type: 'doubleLoss' }, cancellationReason: null, started: true },
+        { matchId: 'single-semi-win', stageId: source.config.stageId, roundNumber: 1,
+          sequence: 2, kind: 'main', participants: ['team-c', 'team-d'], status: 'completed',
+          result: { type: 'win', winnerId: 'team-c', loserId: 'team-d', winnerGames: 1, loserGames: 0 },
+          cancellationReason: null, started: true },
+      ],
+    }],
+    standings,
+  }), 'competition-a')
+  expect(singleEliminationVacancySummary(parsed.stages[0]!))
+    .toBe('半決賽雙負後，唯一勝者輪空取得冠軍；正常敗者輪空取得季軍，亞軍空缺')
+})
+
+test('recognizes a true final double loss while keeping the completed bronze result', () => {
+  const source = response().projection.public.stages[0]!
+  const stageId = source.config.stageId
+  const teams = ['team-a', 'team-b', 'team-c', 'team-d']
+  const standings = teams.map((teamId, index) => ({
+    teamId,
+    matchPoints: '0', wins: 0, draws: 0, losses: index < 2 ? 1 : 0,
+    gameWins: 0, gameLosses: 0, netGameWins: 0,
+    opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0',
+    dropped: index < 2, rank: index === 2 ? 3 : index === 3 ? 4 : null,
+  }))
+  const parsed = parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, {
+    config: { ...source.config, teams: teams.map((teamId, index) => ({ teamId, seed: index + 1 })) },
+    teams: Object.fromEntries(teams.map((teamId, index) => [teamId, {
+      seed: index + 1,
+      dropped: index < 2,
+      hadBye: false,
+    }])),
+    status: 'finished',
+    rounds: [{ roundNumber: 2, kind: 'main', matches: [
+      { matchId: 'single-final-dl', stageId, roundNumber: 2, sequence: 1, kind: 'main',
+        participants: ['team-a', 'team-b'], status: 'completed', result: { type: 'doubleLoss' },
+        cancellationReason: null, started: true },
+      { matchId: 'single-bronze', stageId, roundNumber: 2, sequence: 2, kind: 'main', purpose: 'bronze',
+        participants: ['team-c', 'team-d'], status: 'completed',
+        result: { type: 'win', winnerId: 'team-c', loserId: 'team-d', winnerGames: 1, loserGames: 0 },
+        cancellationReason: null, started: true },
+    ] }],
+    standings,
+  }), 'competition-a')
+  expect(singleEliminationDoubleLossFinal(parsed.stages[0]!)?.matchId).toBe('single-final-dl')
+})
+
+test('recognizes a true final double loss when the sole semifinal bronze candidate advanced by bye', () => {
+  const source = response().projection.public.stages[0]!
+  const stageId = source.config.stageId
+  const teams = Array.from({ length: 8 }, (_, index) => `team-${String.fromCharCode(97 + index)}`)
+  const match = (
+    roundNumber: number,
+    sequence: number,
+    participants: string[],
+    result: Record<string, unknown>,
+  ) => ({
+    matchId: `${stageId}-r${roundNumber}-m${sequence}`, stageId, roundNumber, sequence, kind: 'main',
+    participants, status: 'completed', result, cancellationReason: null, started: result.type !== 'bye',
+  })
+  const standings = teams.map((teamId, index) => ({
+    teamId, matchPoints: '0', wins: 0, draws: 0, losses: index === 2 || index === 4 || index === 5 || index === 6 ? 1 : 0,
+    gameWins: 0, gameLosses: 0, netGameWins: 0,
+    opponentWinRateBasisPoints: null, opponentWinScore: '0', opponentLossScore: '0',
+    dropped: index === 0 || index === 1 || index === 3 || index === 7,
+    rank: index === 2 ? 3 : index === 4 || index === 5 || index === 6 ? 5 : null,
+  }))
+  const parsed = parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, {
+    config: { ...source.config, teams: teams.map((teamId, index) => ({ teamId, seed: index + 1 })) },
+    teams: Object.fromEntries(teams.map((teamId, index) => [teamId, {
+      seed: index + 1, dropped: false, hadBye: index === 3,
+    }])),
+    status: 'finished',
+    rounds: [
+      { roundNumber: 1, kind: 'main', matches: [
+        match(1, 1, [teams[0]!, teams[7]!], { type: 'doubleLoss' }),
+        match(1, 2, [teams[3]!, teams[4]!], { type: 'win', winnerId: teams[3], loserId: teams[4], winnerGames: 1, loserGames: 0 }),
+        match(1, 3, [teams[1]!, teams[6]!], { type: 'win', winnerId: teams[1], loserId: teams[6], winnerGames: 1, loserGames: 0 }),
+        match(1, 4, [teams[2]!, teams[5]!], { type: 'win', winnerId: teams[2], loserId: teams[5], winnerGames: 1, loserGames: 0 }),
+      ] },
+      { roundNumber: 2, kind: 'main', matches: [
+        match(2, 1, [teams[3]!], { type: 'bye', teamId: teams[3] }),
+        match(2, 2, [teams[1]!, teams[2]!], { type: 'win', winnerId: teams[1], loserId: teams[2], winnerGames: 1, loserGames: 0 }),
+      ] },
+      { roundNumber: 3, kind: 'main', matches: [match(3, 1, [teams[3]!, teams[1]!], { type: 'doubleLoss' })] },
+    ],
+    standings,
+  }), 'competition-a')
+  const stage = parsed.stages[0]!
+  expect(singleEliminationDoubleLossFinal(stage)?.matchId).toBe(`${stageId}-r3-m1`)
+  expect(singleEliminationVacancySummary(stage))
+    .toBe('決賽雙負後，唯一合格半決賽敗隊沿原季軍空位取得第三名；冠亞軍空缺')
+  expect(stage.standings.find(standing => standing.teamId === teams[2])?.rank).toBe(3)
+})
+
 test('公開賽程顯示報到缺席原因與判負隊伍，且不把它標成已開局', () => {
   const noShowInput = responseWithMatchOverrides(0, {
     status: 'completed',
@@ -630,6 +858,52 @@ test('accepts actual serialized scheduler fields but rejects malformed or privat
   expect(() => parseCompetitionTournamentViewResponse(responseWithStageOverrides(0, {
     doubleState: doubleStage.doubleState,
   }), 'competition-a')).toThrow()
+})
+
+test('accepts phase-specific double-elimination slot widths and keeps them inside the checkpoint', () => {
+  const source = response().projection.public.stages[2]!
+  if (!source.doubleState) throw new Error('missing double-elimination state fixture')
+  const winnersState = { ...source.doubleState, winnersOutputSlotCount: 1 }
+  const winners = parseCompetitionTournamentViewResponse(responseWithStageOverrides(2, {
+    doubleState: winnersState,
+  }), 'competition-a')
+  expect(winners.stages[2]).not.toHaveProperty('doubleState')
+
+  const lowerState = { ...source.doubleState, phase: 'losers', lowerOutputSlotCount: 1 }
+  const lower = parseCompetitionTournamentViewResponse(responseWithStageOverrides(2, {
+    doubleState: lowerState,
+  }), 'competition-a')
+  expect(lower.stages[2]).not.toHaveProperty('doubleState')
+
+  const legacyState = { ...source.doubleState }
+  const legacy = parseCompetitionTournamentViewResponse(responseWithStageOverrides(2, {
+    doubleState: legacyState,
+  }), 'competition-a')
+  expect(legacy.stages[2]).not.toHaveProperty('doubleState')
+
+  const finishedState = {
+    ...source.doubleState,
+    phase: 'finished',
+    winnersChampion: 'team-a',
+    grandFinalWinner: 'team-a',
+  }
+  expect(parseCompetitionTournamentViewResponse(responseWithStageOverrides(2, {
+    doubleState: finishedState,
+  }), 'competition-a').stages[2]).not.toHaveProperty('doubleState')
+
+  for (const doubleState of [
+    { ...winnersState, winnersOutputSlotCount: '1' },
+    { ...winnersState, winnersOutputSlotCount: 0 },
+    { ...winnersState, winnersOutputSlotCount: 2 },
+    { ...lowerState, lowerOutputSlotCount: Number.MAX_SAFE_INTEGER + 1 },
+    { ...winnersState, lowerOutputSlotCount: 1 },
+    { ...lowerState, winnersOutputSlotCount: 1 },
+    { ...source.doubleState, unrecognizedSlotWidth: 1 },
+  ]) {
+    expect(() => parseCompetitionTournamentViewResponse(responseWithStageOverrides(2, {
+      doubleState,
+    }), 'competition-a')).toThrow()
+  }
 })
 
 test('guards consumed nested numbers and identity without coercion and copies public values', () => {

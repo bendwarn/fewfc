@@ -194,6 +194,12 @@
         <p v-if="singleEliminationDoubleLossFinal(stage)" class="review-note" role="status">
           決賽雙負，冠軍空缺
         </p>
+        <p v-if="singleEliminationVacancySummary(stage)" class="review-note" role="status">
+          {{ singleEliminationVacancySummary(stage) }}
+        </p>
+        <p v-if="doubleEliminationVacancySummary(stage)" class="review-note" role="status">
+          {{ doubleEliminationVacancySummary(stage) }}
+        </p>
         <p v-if="stage.correctionCount > 0" class="muted correction-note">
           有 {{ stage.correctionCount }} 筆賽果更正紀錄；更正理由與歷史內容不在此頁展開。
         </p>
@@ -223,12 +229,6 @@
                   </p>
                   <p class="match-fact">
                     賽果：{{ tournamentResultLabel(stage.config, match.result) }}
-                    <span
-                      v-if="match.result?.type === 'doubleLoss' && isEliminationFormat(stage.config.format)
-                        && singleEliminationDoubleLossFinal(stage)?.matchId !== match.matchId"
-                    >
-                      （淘汰賽待裁判處理）
-                    </span>
                   </p>
                   <p class="match-fact">開局狀態：{{ match.started ? '已開始' : '尚未開始' }}</p>
                   <CompetitionParticipantGameEntry
@@ -387,8 +387,10 @@
 <script setup lang="ts">
 import {
   parseCompetitionTournamentViewResponse,
+  doubleEliminationVacancySummary,
   presentCompetitionTournamentViewError,
   singleEliminationDoubleLossFinal,
+  singleEliminationVacancySummary,
   swissTieBreakerLabel,
   tournamentFormatLabel,
   tournamentMatchResultLabel,
@@ -661,10 +663,6 @@ function supersededHeadingId(stageId: string): string {
 
 function matchFormatLabel(value: TournamentViewStageConfig['matchFormat']): string {
   return value.type === 'fixedGames' ? `固定 ${value.value} 局` : `先取得 ${value.value} 勝`
-}
-
-function isEliminationFormat(format: CompetitionTournamentViewData['stages'][number]['config']['format']): boolean {
-  return format === 'singleElimination' || format === 'doubleElimination'
 }
 
 function percentLabel(value: number | null): string {

@@ -2600,7 +2600,7 @@ fn match_authorization_and_referee_conflict_are_enforced() {
 }
 
 #[test]
-fn double_loss_stays_pending_for_referee() {
+fn double_loss_completes_with_stage_exit_and_without_a_winner() {
     let config = json!({
         "matchId": "m1",
         "teams": ["a", "b"],
@@ -2625,16 +2625,24 @@ fn double_loss_stays_pending_for_referee() {
         created["serverState"].clone(),
     );
     assert_eq!(result["ok"], true);
-    assert_eq!(result["public"]["match"]["status"], "awaitingReferee");
+    assert_eq!(result["public"]["match"]["status"], "completed");
     assert_eq!(result["public"]["match"]["outcome"]["type"], "doubleLoss");
     assert_eq!(
         result["public"]["match"]["outcome"]["progression"]["type"],
-        "pendingReferee"
+        "stageExit"
     );
     assert!(
         result["public"]["match"]["outcome"]
             .get("winnerId")
             .is_none()
+    );
+    assert_eq!(
+        result["public"]["match"]["nextGame"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        result["public"]["match"]["nextFirstPlayer"],
+        serde_json::Value::Null
     );
 }
 

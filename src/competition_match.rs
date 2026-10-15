@@ -190,7 +190,7 @@ pub enum MatchOutcome {
     Draw {
         score: [u16; 2],
     },
-    /// DoubleLoss 沒有勝者；此狀態必須等待裁判或上層賽事政策。
+    /// DoubleLoss 沒有勝者；兩隊退出目前階段，由賽程依原位置處理空缺。
     DoubleLoss {
         teams: [TeamId; 2],
         progression: DoubleLossProgression,
@@ -201,7 +201,7 @@ pub enum MatchOutcome {
     },
 }
 
-/// DoubleLoss 的晉級、決賽名次與空缺政策不在本模組自行推定。
+/// 對局層只確認兩隊退出；各賽制的名次空缺由賽程處理。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     rename_all = "camelCase",
@@ -209,7 +209,11 @@ pub enum MatchOutcome {
     rename_all_fields = "camelCase"
 )]
 pub enum DoubleLossProgression {
-    PendingReferee { reason: String },
+    StageExit,
+    /// 舊 checkpoint 的讀取相容；新 DoubleLoss 不再等待裁判處理。
+    PendingReferee {
+        reason: String,
+    },
 }
 
 /// 一份原始遊戲紀錄；競賽判定只以 `ruling_record_id` 間接引用。
@@ -771,16 +775,14 @@ impl CompetitionMatch {
                 GameResolution::DoubleLoss { teams } => {
                     self.outcome = Some(MatchOutcome::DoubleLoss {
                         teams,
-                        progression: DoubleLossProgression::PendingReferee {
-                            reason: "DoubleLoss 的晉級與決賽名次政策待裁判裁定".to_string(),
-                        },
+                        progression: DoubleLossProgression::StageExit,
                     });
                     if index + 1 != self.games.len() {
                         return Err(MatchError::CorrectionWouldInvalidateLaterGames(
                             game.game_record_id.clone(),
                         ));
                     }
-                    self.status = MatchStatus::AwaitingReferee;
+                    self.status = MatchStatus::Completed;
                     self.next_game = None;
                     return Ok(());
                 }

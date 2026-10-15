@@ -35,7 +35,7 @@ interface CorrectionRecord {
 type MatchOutcome =
   | { type: 'winner'; winnerId: string; loserId: string; score: [number, number] }
   | { type: 'draw'; score: [number, number] }
-  | { type: 'doubleLoss'; teams: [string, string]; progression: { type: 'pendingReferee'; reason: string } }
+  | { type: 'doubleLoss'; teams: [string, string]; progression: { type: 'stageExit' } | { type: 'pendingReferee'; reason: string } }
   | { type: 'pendingReferee'; gameRecordId: string; reason: Extract<CompetitionRuling, { type: 'needsDecision' }>['reason'] }
 interface MatchView {
   config: CompetitionMatchConfig
@@ -212,6 +212,10 @@ function outcome(value: unknown, teams: readonly string[]): MatchOutcome | null 
   }
   if (exact(value, ['type', 'score']) && value.type === 'draw') return { type: 'draw', score: score(value.score) }
   if (exact(value, ['type', 'teams', 'progression']) && value.type === 'doubleLoss'
+    && exact(value.progression, ['type']) && value.progression.type === 'stageExit') {
+    return { type: 'doubleLoss', teams: pair(value.teams, teams), progression: { type: 'stageExit' } }
+  }
+  if (exact(value, ['type', 'teams', 'progression']) && value.type === 'doubleLoss'
     && exact(value.progression, ['type', 'reason']) && value.progression.type === 'pendingReferee' && text(value.progression.reason)) {
     return { type: 'doubleLoss', teams: pair(value.teams, teams), progression: { type: 'pendingReferee', reason: value.progression.reason } }
   }
@@ -307,11 +311,17 @@ function parseMatch(value: unknown, matchId: string): MatchView {
   if (parsedOutcome?.type === 'pendingReferee' && !byGame.has(parsedOutcome.gameRecordId)) reject()
   if (parsedOutcome?.type === 'winner' || parsedOutcome?.type === 'draw') {
     if (value.status !== 'completed' || parsedOutcome.score[0] !== parsedScore[0] || parsedOutcome.score[1] !== parsedScore[1]) reject()
+  } else if (parsedOutcome?.type === 'doubleLoss') {
+    if (parsedOutcome.progression.type === 'stageExit') {
+      if (value.status !== 'completed') reject()
+    } else if (value.status !== 'awaitingReferee') reject()
   } else if (value.status === 'completed') reject()
-  if ((parsedOutcome?.type === 'doubleLoss' || parsedOutcome?.type === 'pendingReferee') && value.status !== 'awaitingReferee') reject()
+  if (parsedOutcome?.type === 'pendingReferee' && value.status !== 'awaitingReferee') reject()
   if ((value.status === 'completed' || value.status === 'awaitingReferee') && nextGame !== null) reject()
   if (value.status === 'completed' && nextFirstPlayer !== null) reject()
-  if (value.status === 'awaitingReferee' && !(parsedOutcome?.type === 'doubleLoss' || parsedOutcome?.type === 'pendingReferee')) reject()
+  if (value.status === 'awaitingReferee'
+    && !(parsedOutcome?.type === 'pendingReferee'
+      || (parsedOutcome?.type === 'doubleLoss' && parsedOutcome.progression.type === 'pendingReferee'))) reject()
   if (value.status === 'open' || value.status === 'awaitingFirstPlayer') {
     if (parsedOutcome !== null || nextGame === null || nextGame.gameNumber !== games.length + 1
       || (value.status === 'open') !== (nextGame.firstPlayer.type === 'assigned')) reject()

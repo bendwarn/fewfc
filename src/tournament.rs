@@ -862,9 +862,13 @@ enum DoublePhase {
 #[serde(rename_all = "camelCase")]
 struct DoubleState {
     phase: DoublePhase,
-    winners_pool: Vec<TeamId>,
-    losers_waiting: Vec<TeamId>,
-    lower_pool: Vec<TeamId>,
+    winners_pool: Vec<Option<TeamId>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    winners_output_slot_count: Option<usize>,
+    losers_waiting: Vec<Option<TeamId>>,
+    lower_pool: Vec<Option<TeamId>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lower_output_slot_count: Option<usize>,
     winners_champion: Option<TeamId>,
     losers_champion: Option<TeamId>,
     grand_final_winner: Option<TeamId>,
@@ -1454,25 +1458,6 @@ impl Tournament {
 fn ensure_stage_qualification_source_is_closed(
     stage: &Stage,
 ) -> Result<(), StageQualificationBlocker> {
-    if matches!(
-        stage.config.format,
-        TournamentFormat::SingleElimination | TournamentFormat::DoubleElimination
-    ) && let Some(match_) = stage
-        .rounds
-        .iter()
-        .flat_map(|round| &round.matches)
-        .find(|match_| {
-            match_
-                .result
-                .as_ref()
-                .is_some_and(MatchResult::is_double_loss)
-        })
-    {
-        return Err(StageQualificationBlocker::DoubleLossNeedsReferee {
-            source_stage_id: stage.config.stage_id.clone(),
-            match_id: match_.match_id.clone(),
-        });
-    }
     if stage.last_schedule_error.is_some() {
         return Err(StageQualificationBlocker::SourceScheduleUnresolved {
             source_stage_id: stage.config.stage_id.clone(),
@@ -1810,11 +1795,7 @@ impl Stage {
             return None;
         }
         match self.config.format {
-            TournamentFormat::SingleElimination => self
-                .rounds
-                .last()
-                .and_then(|round| completed_winners(round).ok())
-                .and_then(|winners| winners.into_iter().next()),
+            TournamentFormat::SingleElimination => self.elimination_champion(),
             TournamentFormat::DoubleElimination => self
                 .double_state
                 .as_ref()
@@ -1849,6 +1830,7 @@ impl Stage {
         let mut match_ids = BTreeSet::new();
         for round in &self.rounds {
             let mut teams_in_round = BTreeSet::new();
+            let mut sequences_in_round = BTreeSet::new();
             for match_ in &round.matches {
                 if match_.stage_id != self.config.stage_id
                     || match_.round_number != round.round_number
@@ -1870,6 +1852,11 @@ impl Stage {
                 if !match_ids.insert(match_.match_id.clone()) {
                     return Err(ScheduleError::InvalidSnapshot(
                         "matchId 不可重複".to_string(),
+                    ));
+                }
+                if match_.sequence == 0 || !sequences_in_round.insert(match_.sequence) {
+                    return Err(ScheduleError::InvalidSnapshot(
+                        "同一輪的交手序號必須是唯一正整數".to_string(),
                     ));
                 }
                 if !(1..=2).contains(&match_.participants.len()) {
@@ -2070,15 +2057,28 @@ impl Stage {
     }
 
     fn start_match(&mut self, match_id: &MatchId) -> Result<(), ScheduleError> {
-        let match_ = self.find_match_mut(match_id)?;
-        if match_.status != MatchStatus::Pending {
+        let (status, participants) = {
+            let match_ = self.find_match(match_id)?;
+            (match_.status, match_.participants.clone())
+        };
+        if status != MatchStatus::Pending {
             return Err(ScheduleError::MatchAlreadyStarted(match_id.clone()));
         }
-        if match_.participants.len() != 2 {
+        if participants.len() != 2 {
             return Err(ScheduleError::InvalidOperation(
                 "沒有兩隊參賽者的交手不能開始".to_string(),
             ));
         }
+        let double_loss_exits = self.double_loss_exits();
+        if participants
+            .iter()
+            .any(|team_id| double_loss_exits.contains(team_id))
+        {
+            return Err(ScheduleError::InvalidOperation(
+                "雙方判負退出本階段的隊伍不能開始後續交手".to_string(),
+            ));
+        }
+        let match_ = self.find_match_mut(match_id)?;
         match_.started = true;
         match_.status = MatchStatus::InProgress;
         Ok(())
@@ -2358,16 +2358,19 @@ impl Stage {
 
     fn initialize_double(&mut self) -> Result<(), ScheduleError> {
         let order = seeded_order(&self.config.teams);
+        let pairs = seeded_bracket_pairs(&order);
         self.double_state = Some(DoubleState {
             phase: DoublePhase::Winners,
-            winners_pool: order.clone(),
+            winners_pool: order.iter().cloned().map(Some).collect(),
+            winners_output_slot_count: Some(pairs.len()),
             losers_waiting: vec![],
             lower_pool: vec![],
+            lower_output_slot_count: None,
             winners_champion: None,
             losers_champion: None,
             grand_final_winner: None,
         });
-        self.append_elimination_round(RoundKind::Winners, seeded_bracket_pairs(&order), true);
+        self.append_elimination_round(RoundKind::Winners, pairs, true);
         Ok(())
     }
 
@@ -2411,9 +2414,6 @@ impl Stage {
             self.status = StageStatus::Finished;
             return Ok(());
         }
-        if self.config.format != TournamentFormat::SingleElimination {
-            self.ensure_elimination_progression()?;
-        }
         loop {
             if self.status == StageStatus::Finished {
                 return Ok(());
@@ -2452,89 +2452,41 @@ impl Stage {
         }
     }
 
-    fn ensure_elimination_progression(&self) -> Result<(), ScheduleError> {
-        if matches!(
-            self.config.format,
-            TournamentFormat::SingleElimination | TournamentFormat::DoubleElimination
-        ) {
-            if let Some(match_) =
-                self.rounds
-                    .iter()
-                    .flat_map(|round| &round.matches)
-                    .find(|match_| {
-                        match_
-                            .result
-                            .as_ref()
-                            .is_some_and(MatchResult::is_double_loss)
-                    })
-            {
-                return Err(ScheduleError::DoubleLossNeedsReferee(
-                    match_.match_id.clone(),
-                ));
-            }
-        }
-        Ok(())
-    }
-
     fn progress_single(&mut self) -> Result<(), ScheduleError> {
         let round = self.rounds.last().expect("至少有一輪");
-        if let Some(double_loss) = round.matches.iter().find(|match_| {
-            match_.purpose == MatchPurpose::Standard
-                && match_
-                    .result
-                    .as_ref()
-                    .is_some_and(MatchResult::is_double_loss)
-        }) {
-            // 先依原交手位置組分支，才移除無 winner 的空位，不能壓縮全部勝者。
-            let pairs = round
-                .matches
-                .chunks(2)
-                .map(|branch| {
-                    let participants = branch
-                        .iter()
-                        .filter_map(|match_| match &match_.result {
-                            Some(result) if result.is_double_loss() => None,
-                            None => None,
-                            Some(result) => Some(result.winner().cloned().ok_or_else(|| {
-                                ScheduleError::InvalidOperation("和局沒有晉級隊伍".to_string())
-                            })),
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    if participants.is_empty() {
-                        // 雙空位傳播留待後續 slice，先保留雙負而不建立零隊交手。
-                        return Err(ScheduleError::DoubleLossNeedsReferee(
-                            double_loss.match_id.clone(),
-                        ));
-                    }
-                    Ok(participants)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            self.append_elimination_round(RoundKind::Main, pairs, true);
-            return Ok(());
-        }
-        let winners = completed_winners(round)?;
-        if winners.len() <= 1 {
+        let winner_slots = completed_winner_slots(round)?;
+        let winner_count = slot_team_count(&winner_slots);
+        if winner_count == 0 {
             self.status = StageStatus::Finished;
             return Ok(());
         }
-        let can_schedule_bronze = winners.len() == 2
-            && round
-                .matches
-                .iter()
-                .filter(|match_| match_.purpose == MatchPurpose::Standard)
-                .count()
-                == 2;
+        if winner_count == 1 {
+            self.status = StageStatus::Finished;
+            return Ok(());
+        }
+        let standard_matches = round
+            .matches
+            .iter()
+            .filter(|match_| match_.purpose == MatchPurpose::Standard)
+            .count();
+        let can_schedule_bronze = winner_count == 2 && standard_matches == 2;
         let semifinal_losers = if can_schedule_bronze {
             completed_losers(round)?
         } else {
             Vec::new()
         };
+        let double_loss_exits = self.double_loss_exits();
         let can_schedule_bronze = can_schedule_bronze
             && semifinal_losers.len() == 2
-            && semifinal_losers
-                .iter()
-                .all(|team_id| self.teams.get(team_id).is_some_and(|entry| !entry.dropped));
-        self.append_elimination_round(RoundKind::Main, pair_adjacent_with_byes(&winners), true);
+            && semifinal_losers.iter().all(|team_id| {
+                self.teams.get(team_id).is_some_and(|entry| !entry.dropped)
+                    && !double_loss_exits.contains(team_id)
+            });
+        if pair_adjacent_slots(&winner_slots).is_empty() {
+            self.status = StageStatus::Finished;
+            return Ok(());
+        }
+        self.append_elimination_slot_round(RoundKind::Main, winner_slots);
         if can_schedule_bronze {
             self.append_bronze_match(semifinal_losers);
         }
@@ -2556,57 +2508,123 @@ impl Stage {
 
     fn progress_double_winners(&mut self) -> Result<(), ScheduleError> {
         let round = self.rounds.last().expect("至少有一輪");
-        let winners = completed_winners(round)?;
-        let losers = completed_losers(round)?;
-        let state = self.double_state.as_mut().expect("雙敗狀態存在");
-        state.winners_pool = winners;
-        state.losers_waiting.extend(losers);
-        if state.winners_pool.len() > 1 {
-            if state.losers_waiting.len() >= 2 {
+        let (winner_slots, loser_slots) = {
+            let state = self.double_state.as_mut().expect("雙敗狀態存在");
+            let mut winner_slots = completed_winner_slots(round)?;
+            let mut loser_slots = completed_loser_slots(round)?;
+            let expected_slot_count = state
+                .winners_output_slot_count
+                .take()
+                .unwrap_or(winner_slots.len());
+            winner_slots.resize(winner_slots.len().max(expected_slot_count), None);
+            loser_slots.resize(loser_slots.len().max(expected_slot_count), None);
+            (winner_slots, loser_slots)
+        };
+        let winner_count = slot_team_count(&winner_slots);
+        {
+            let state = self.double_state.as_mut().expect("雙敗狀態存在");
+            state.winners_pool = winner_slots;
+            state.losers_waiting.extend(loser_slots);
+        }
+
+        if winner_count > 1 {
+            let lower_count = {
+                let state = self.double_state.as_ref().expect("雙敗狀態存在");
+                slot_team_count(&state.lower_pool) + slot_team_count(&state.losers_waiting)
+            };
+            // 原敗部層即使全空也要傳遞槽寬，讓後續新敗者留在原始位置。
+            if lower_count > 0 {
+                let lower = take_lower_pairing(self.double_state.as_mut().unwrap());
+                let state = self.double_state.as_mut().unwrap();
                 state.phase = DoublePhase::Losers;
-                let lower = take_lower_pairing(state);
-                self.append_elimination_round(RoundKind::Losers, lower, true);
+                state.lower_output_slot_count = Some(lower.len().div_ceil(2));
+                self.append_elimination_slot_round(RoundKind::Losers, lower);
             } else {
+                let state = self.double_state.as_mut().unwrap();
+                let empty_lower = take_lower_pairing(state);
+                state.lower_pool = vec![None; empty_lower.len().div_ceil(2)];
+                let winners = state.winners_pool.clone();
                 state.phase = DoublePhase::Winners;
-                let pairs = pair_adjacent_with_byes(&state.winners_pool);
-                self.append_elimination_round(RoundKind::Winners, pairs, true);
+                state.winners_output_slot_count = Some(winners.len().div_ceil(2));
+                self.append_elimination_slot_round(RoundKind::Winners, winners);
             }
+            return Ok(());
+        }
+
+        let lower_count = {
+            let state = self.double_state.as_mut().expect("雙敗狀態存在");
+            state.winners_champion = first_slot_team(&state.winners_pool);
+            slot_team_count(&state.lower_pool) + slot_team_count(&state.losers_waiting)
+        };
+        if lower_count > 1 {
+            let lower = take_lower_pairing(self.double_state.as_mut().unwrap());
+            let state = self.double_state.as_mut().unwrap();
+            state.phase = DoublePhase::Losers;
+            state.lower_output_slot_count = Some(lower.len().div_ceil(2));
+            self.append_elimination_slot_round(RoundKind::Losers, lower);
         } else {
-            state.winners_champion = state.winners_pool.first().cloned();
-            if state.losers_waiting.len() + state.lower_pool.len() > 1 {
-                state.phase = DoublePhase::Losers;
-                let lower = take_lower_pairing(state);
-                self.append_elimination_round(RoundKind::Losers, lower, true);
-            } else {
-                state.losers_champion = state
-                    .losers_waiting
-                    .first()
-                    .cloned()
-                    .or_else(|| state.lower_pool.first().cloned());
-                self.schedule_grand_final(false)?;
-            }
+            let state = self.double_state.as_mut().unwrap();
+            state.losers_champion = first_slot_team(&state.lower_pool)
+                .or_else(|| first_slot_team(&state.losers_waiting));
+            self.finish_or_schedule_double_final()?;
         }
         Ok(())
     }
 
     fn progress_double_losers(&mut self) -> Result<(), ScheduleError> {
         let round = self.rounds.last().expect("至少有一輪");
-        let winners = completed_winners(round)?;
-        let state = self.double_state.as_mut().expect("雙敗狀態存在");
-        state.lower_pool = winners;
-        if state.winners_pool.len() > 1 {
+        let mut winner_slots = completed_winner_slots(round)?;
+        let winners_pool_count;
+        let lower_count;
+        {
+            let state = self.double_state.as_mut().expect("雙敗狀態存在");
+            if let Some(expected_slot_count) = state.lower_output_slot_count.take() {
+                winner_slots.resize(winner_slots.len().max(expected_slot_count), None);
+            }
+            state.lower_pool = winner_slots;
+            winners_pool_count = slot_team_count(&state.winners_pool);
+            lower_count =
+                slot_team_count(&state.lower_pool) + slot_team_count(&state.losers_waiting);
+        }
+        if winners_pool_count > 1 {
+            let state = self.double_state.as_mut().unwrap();
+            let winners = state.winners_pool.clone();
             state.phase = DoublePhase::Winners;
-            let pairs = pair_adjacent_with_byes(&state.winners_pool);
-            self.append_elimination_round(RoundKind::Winners, pairs, true);
-        } else if state.losers_waiting.len() + state.lower_pool.len() > 1 {
+            state.winners_output_slot_count = Some(winners.len().div_ceil(2));
+            self.append_elimination_slot_round(RoundKind::Winners, winners);
+        } else if lower_count > 1 {
+            let lower = take_lower_pairing(self.double_state.as_mut().unwrap());
+            let state = self.double_state.as_mut().unwrap();
             state.phase = DoublePhase::Losers;
-            let lower = take_lower_pairing(state);
-            self.append_elimination_round(RoundKind::Losers, lower, true);
+            state.lower_output_slot_count = Some(lower.len().div_ceil(2));
+            self.append_elimination_slot_round(RoundKind::Losers, lower);
         } else {
-            state.losers_champion = state.lower_pool.first().cloned();
-            self.schedule_grand_final(false)?;
+            let state = self.double_state.as_mut().unwrap();
+            state.losers_champion = first_slot_team(&state.lower_pool)
+                .or_else(|| first_slot_team(&state.losers_waiting));
+            self.finish_or_schedule_double_final()?;
         }
         Ok(())
+    }
+
+    fn finish_or_schedule_double_final(&mut self) -> Result<(), ScheduleError> {
+        let (winners_champion, losers_champion) = {
+            let state = self.double_state.as_ref().expect("雙敗狀態存在");
+            (
+                state.winners_champion.clone(),
+                state.losers_champion.clone(),
+            )
+        };
+        if winners_champion.is_some() && losers_champion.is_some() {
+            self.schedule_grand_final(false)
+        } else {
+            let state = self.double_state.as_mut().unwrap();
+            // 唯一存活的冠軍沿自己原有的總決賽位置輪空；不把敗部隊伍遞補進勝部。
+            state.grand_final_winner = winners_champion.or(losers_champion);
+            state.phase = DoublePhase::Finished;
+            self.status = StageStatus::Finished;
+            Ok(())
+        }
     }
 
     fn schedule_grand_final(&mut self, reset: bool) -> Result<(), ScheduleError> {
@@ -2637,6 +2655,27 @@ impl Stage {
     }
 
     fn progress_double_grand_final(&mut self, reset: bool) -> Result<(), ScheduleError> {
+        let final_match = self
+            .rounds
+            .last()
+            .and_then(|round| {
+                round
+                    .matches
+                    .iter()
+                    .find(|match_| match_.purpose == MatchPurpose::Standard)
+            })
+            .ok_or_else(|| ScheduleError::InvalidOperation("總決賽缺少交手".to_string()))?;
+        if final_match
+            .result
+            .as_ref()
+            .is_some_and(MatchResult::is_double_loss)
+        {
+            let state = self.double_state.as_mut().expect("雙敗狀態存在");
+            state.grand_final_winner = None;
+            state.phase = DoublePhase::Finished;
+            self.status = StageStatus::Finished;
+            return Ok(());
+        }
         let winner = completed_winners(self.rounds.last().expect("至少有一輪"))?
             .into_iter()
             .next()
@@ -2674,6 +2713,15 @@ impl Stage {
         self.append_round(kind, round_number, pairs, auto_byes);
     }
 
+    fn append_elimination_slot_round(&mut self, kind: RoundKind, slots: Vec<Option<TeamId>>) {
+        let pairs = pair_adjacent_slots(&slots);
+        if pairs.is_empty() {
+            return;
+        }
+        let round_number = self.rounds.len() as u32 + 1;
+        self.append_round_with_sequences(kind, round_number, pairs, true);
+    }
+
     fn append_round(
         &mut self,
         kind: RoundKind,
@@ -2681,23 +2729,34 @@ impl Stage {
         pairs: Vec<Vec<TeamId>>,
         auto_byes: bool,
     ) {
+        let pairs = pairs
+            .into_iter()
+            .enumerate()
+            .map(|(index, participants)| (index as u32 + 1, participants))
+            .collect();
+        self.append_round_with_sequences(kind, round_number, pairs, auto_byes);
+    }
+
+    fn append_round_with_sequences(
+        &mut self,
+        kind: RoundKind,
+        round_number: u32,
+        pairs: Vec<(u32, Vec<TeamId>)>,
+        auto_byes: bool,
+    ) {
         let stage_id = self.config.stage_id.clone();
         let matches = pairs
             .into_iter()
-            .enumerate()
-            .map(|(index, participants)| {
+            .map(|(sequence, participants)| {
                 let match_id = MatchId(format!(
                     "{}-g{}-r{}-m{}",
-                    stage_id.0,
-                    self.schedule_generation,
-                    round_number,
-                    index + 1
+                    stage_id.0, self.schedule_generation, round_number, sequence
                 ));
                 let mut match_ = ScheduledMatch {
                     match_id,
                     stage_id: stage_id.clone(),
                     round_number,
-                    sequence: index as u32 + 1,
+                    sequence,
                     kind,
                     purpose: MatchPurpose::Standard,
                     participants,
@@ -2725,7 +2784,13 @@ impl Stage {
     fn append_bronze_match(&mut self, participants: Vec<TeamId>) {
         let stage_id = self.config.stage_id.clone();
         let round = self.rounds.last_mut().expect("季軍賽須接在冠軍賽後");
-        let sequence = round.matches.len() as u32 + 1;
+        let sequence = round
+            .matches
+            .iter()
+            .map(|match_| match_.sequence)
+            .max()
+            .unwrap_or(0)
+            + 1;
         let match_id = MatchId(format!(
             "{}-g{}-r{}-m{}",
             stage_id.0, self.schedule_generation, round.round_number, sequence
@@ -2810,9 +2875,7 @@ impl Stage {
             for (index, round) in retained.iter().enumerate() {
                 rebuilt.rounds.truncate(index);
                 rebuilt.rounds.push(round.clone());
-                if round.matches.iter().all(is_closed)
-                    && rebuilt.ensure_elimination_progression().is_ok()
-                {
+                if round.matches.iter().all(is_closed) {
                     rebuilt.progress_double()?;
                 }
             }
@@ -2834,7 +2897,7 @@ impl Stage {
     }
 
     fn swiss_order(&self) -> Vec<TeamId> {
-        let double_loss_exits = self.swiss_double_loss_exits();
+        let double_loss_exits = self.double_loss_exits();
         let mut order: Vec<TeamId> = self
             .teams
             .iter()
@@ -2853,7 +2916,7 @@ impl Stage {
     }
 
     fn swiss_pairing(&self, ordered: &[TeamId]) -> Result<Vec<Vec<TeamId>>, ScheduleError> {
-        let double_loss_exits = self.swiss_double_loss_exits();
+        let double_loss_exits = self.double_loss_exits();
         let mut active: Vec<TeamId> = ordered
             .iter()
             .filter(|team_id| self.is_swiss_team_eligible(team_id, &double_loss_exits))
@@ -2954,10 +3017,7 @@ impl Stage {
             && !double_loss_exits.contains(team_id)
     }
 
-    fn swiss_double_loss_exits(&self) -> BTreeSet<TeamId> {
-        if self.config.format != TournamentFormat::Swiss {
-            return BTreeSet::new();
-        }
+    fn double_loss_exits(&self) -> BTreeSet<TeamId> {
         self.rounds
             .iter()
             .flat_map(|round| &round.matches)
@@ -3026,8 +3086,44 @@ impl Stage {
 
     fn refresh_standings(&mut self) {
         self.standings = self.compute_standings();
-        if self.has_single_elimination_final_double_loss() {
-            // 冠軍空缺階段的其餘名次也未確認；保留真實統計，不填不可靠名次。
+        if self.config.format == TournamentFormat::SingleElimination
+            && self.status == StageStatus::Finished
+        {
+            let ranks = self
+                .standings
+                .iter()
+                .map(|row| {
+                    (
+                        row.team_id.clone(),
+                        self.single_elimination_bracket_rank(&row.team_id),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            for row in &mut self.standings {
+                row.rank = ranks.get(&row.team_id).copied().flatten();
+            }
+            self.standings
+                .sort_by_key(|row| row.rank.unwrap_or(u32::MAX));
+            return;
+        }
+        let finished_double_elimination = self.config.format == TournamentFormat::DoubleElimination
+            && self.status == StageStatus::Finished;
+        if self.is_double_elimination_finished_without_champion()
+            && !self.has_double_elimination_final_double_loss()
+        {
+            let bracket_ranks = self
+                .standings
+                .iter()
+                .filter_map(|row| {
+                    self.double_elimination_lower_exit_rank(&row.team_id)
+                        .map(|rank| (row.team_id.clone(), rank))
+                })
+                .collect::<BTreeMap<_, _>>();
+            for row in &mut self.standings {
+                row.rank = bracket_ranks.get(&row.team_id).copied();
+            }
+            self.standings
+                .sort_by_key(|row| row.rank.unwrap_or(u32::MAX));
             return;
         }
         let ordered = self.standing_order_for_rank(&self.standings);
@@ -3051,8 +3147,14 @@ impl Stage {
                     .iter_mut()
                     .find(|row| &row.team_id == team_id)
                 {
+                    let unawarded_elimination_place = row.dropped
+                        && matches!(
+                            self.config.format,
+                            TournamentFormat::SingleElimination
+                                | TournamentFormat::DoubleElimination
+                        );
                     // 全項相同時名次未決；不能自動並列或讓 seed／ID 決定排序。
-                    row.rank = if unresolved_formal_tie {
+                    row.rank = if unawarded_elimination_place || unresolved_formal_tie {
                         None
                     } else {
                         Some(start as u32 + 1)
@@ -3063,6 +3165,34 @@ impl Stage {
         }
         self.standings
             .sort_by_key(|row| row.rank.unwrap_or(u32::MAX));
+
+        if finished_double_elimination {
+            let bracket_ranks = self
+                .standings
+                .iter()
+                .filter_map(|row| {
+                    self.double_elimination_lower_exit_rank(&row.team_id)
+                        .map(|rank| (row.team_id.clone(), rank))
+                })
+                .collect::<BTreeMap<_, _>>();
+            for row in &mut self.standings {
+                if let Some(rank) = bracket_ranks.get(&row.team_id) {
+                    row.rank = Some(*rank);
+                }
+            }
+            if self
+                .double_elimination_vacant_grand_final_champion()
+                .is_some()
+            {
+                for row in &mut self.standings {
+                    if row.rank == Some(2) {
+                        row.rank = None;
+                    }
+                }
+            }
+            self.standings
+                .sort_by_key(|row| row.rank.unwrap_or(u32::MAX));
+        }
     }
 
     fn standing_order_for_rank(&self, standings: &[Standing]) -> Vec<TeamId> {
@@ -3150,6 +3280,28 @@ impl Stage {
                 (None, None) => {}
             }
         }
+        if self.has_double_elimination_final_double_loss() {
+            let final_participants = self
+                .rounds
+                .last()
+                .into_iter()
+                .flat_map(|round| &round.matches)
+                .find(|match_| match_.purpose == MatchPurpose::Standard)
+                .map(|match_| match_.participants.iter().cloned().collect::<BTreeSet<_>>())
+                .unwrap_or_default();
+            match (
+                final_participants.contains(left),
+                final_participants.contains(right),
+            ) {
+                (true, false) => return Ordering::Less,
+                (false, true) => return Ordering::Greater,
+                (true, true) => return Ordering::Equal,
+                (false, false) => {}
+            }
+            return self
+                .elimination_exit_round(right)
+                .cmp(&self.elimination_exit_round(left));
+        }
         if let Some(champion) = self.elimination_champion() {
             if left == &champion && right != &champion {
                 return Ordering::Less;
@@ -3158,22 +3310,9 @@ impl Stage {
                 return Ordering::Greater;
             }
             // 淘汰賽名次依淘汰輪次，不以累積勝場壓過決賽敗方；同輪淘汰並列。
-            let exit_round = |team: &TeamId| {
-                self.rounds.iter().rev().find_map(|round| {
-                    round
-                        .matches
-                        .iter()
-                        .any(|match_| match &match_.result {
-                            Some(
-                                MatchResult::Win { loser_id, .. }
-                                | MatchResult::Forfeit { loser_id, .. },
-                            ) => loser_id == team,
-                            _ => false,
-                        })
-                        .then_some(round.round_number)
-                })
-            };
-            return exit_round(right).cmp(&exit_round(left));
+            return self
+                .elimination_exit_round(right)
+                .cmp(&self.elimination_exit_round(left));
         }
         let mut ordering = right_row.match_points.cmp(&left_row.match_points);
         if ordering != Ordering::Equal {
@@ -3224,32 +3363,244 @@ impl Stage {
     }
 
     fn single_elimination_placement(&self, team_id: &TeamId) -> Option<u32> {
-        let round = self.rounds.last()?;
-        let final_match = round
-            .matches
-            .iter()
-            .find(|match_| match_.purpose == MatchPurpose::Standard)?;
-        let bronze_match = round
-            .matches
-            .iter()
-            .find(|match_| match_.purpose == MatchPurpose::Bronze)?;
-        let final_result = final_match.result.as_ref()?;
-        let bronze_result = bronze_match.result.as_ref()?;
-        let champion = final_result.winner()?;
-        let finalist = final_result.loser()?;
-        let bronze_winner = bronze_result.winner()?;
-        let bronze_loser = bronze_result.loser()?;
-        if team_id == champion {
-            Some(1)
-        } else if team_id == finalist {
-            Some(2)
-        } else if team_id == bronze_winner {
-            Some(3)
-        } else if team_id == bronze_loser {
-            Some(4)
-        } else {
-            None
+        self.single_elimination_bracket_rank(team_id)
+    }
+
+    fn single_elimination_bracket_rank(&self, team_id: &TeamId) -> Option<u32> {
+        if self.config.teams.len() == 1 {
+            return self
+                .config
+                .teams
+                .first()
+                .filter(|team| &team.team_id == team_id)
+                .map(|_| 1);
         }
+        if self.teams.get(team_id).is_some_and(|entry| entry.dropped)
+            || self.double_loss_exits().contains(team_id)
+        {
+            return None;
+        }
+        if self.elimination_champion().as_ref() == Some(team_id) {
+            return Some(1);
+        }
+
+        let final_round_number = self.config.teams.len().next_power_of_two().ilog2();
+        let final_round = self
+            .rounds
+            .iter()
+            .find(|round| round.round_number == final_round_number);
+        if let Some(result) = final_round
+            .into_iter()
+            .flat_map(|round| &round.matches)
+            .find(|match_| match_.purpose == MatchPurpose::Bronze)
+            .and_then(|match_| match_.result.as_ref())
+        {
+            if result.winner() == Some(team_id) {
+                return Some(3);
+            }
+            if result.loser() == Some(team_id) {
+                return Some(4);
+            }
+        }
+        if self.single_elimination_semifinal_bye_loser().as_ref() == Some(team_id) {
+            return Some(3);
+        }
+        if let Some(result) = final_round
+            .into_iter()
+            .flat_map(|round| &round.matches)
+            .find(|match_| match_.purpose == MatchPurpose::Standard)
+            .and_then(|match_| match_.result.as_ref())
+        {
+            if result.loser() == Some(team_id) {
+                return Some(2);
+            }
+        }
+
+        let exit_round = self.elimination_exit_round(team_id)?;
+        let vacant_slots = final_round_number.checked_sub(exit_round)?;
+        1_u32.checked_shl(vacant_slots)?.checked_add(1)
+    }
+
+    fn has_double_elimination_final_double_loss(&self) -> bool {
+        if self.config.format != TournamentFormat::DoubleElimination
+            || self.status != StageStatus::Finished
+        {
+            return false;
+        }
+        let Some(round) = self.rounds.last() else {
+            return false;
+        };
+        matches!(
+            round.kind,
+            RoundKind::GrandFinal | RoundKind::GrandFinalReset
+        ) && round.matches.len() == 1
+            && round.matches[0].purpose == MatchPurpose::Standard
+            && round.matches[0]
+                .result
+                .as_ref()
+                .is_some_and(MatchResult::is_double_loss)
+    }
+
+    fn is_double_elimination_finished_without_champion(&self) -> bool {
+        self.config.format == TournamentFormat::DoubleElimination
+            && self.status == StageStatus::Finished
+            && self.elimination_champion().is_none()
+    }
+
+    fn double_elimination_vacant_grand_final_champion(&self) -> Option<TeamId> {
+        if self.config.format != TournamentFormat::DoubleElimination
+            || self.status != StageStatus::Finished
+            || self.rounds.iter().any(|round| {
+                matches!(
+                    round.kind,
+                    RoundKind::GrandFinal | RoundKind::GrandFinalReset
+                )
+            })
+        {
+            return None;
+        }
+        let state = self.double_state.as_ref()?;
+        let champion = state.grand_final_winner.as_ref()?;
+        let one_bracket_champion =
+            state.winners_champion.is_some() ^ state.losers_champion.is_some();
+        (one_bracket_champion
+            && (state.winners_champion.as_ref() == Some(champion)
+                || state.losers_champion.as_ref() == Some(champion)))
+        .then(|| champion.clone())
+    }
+
+    fn double_elimination_lower_exit_rank(&self, team_id: &TeamId) -> Option<u32> {
+        let exit_round_index = self.rounds.iter().position(|round| {
+            round.kind == RoundKind::Losers
+                && round.matches.iter().any(|match_| {
+                    match_
+                        .result
+                        .as_ref()
+                        .is_some_and(|result| result.loser() == Some(team_id))
+                })
+        })?;
+        let mut winners_depth = 0usize;
+        let mut lower_depth = 0usize;
+        for round in &self.rounds[..=exit_round_index] {
+            match round.kind {
+                RoundKind::Winners => winners_depth += 1,
+                RoundKind::Losers => {
+                    lower_depth = lower_depth.saturating_add(1).max(winners_depth);
+                }
+                RoundKind::Main | RoundKind::GrandFinal | RoundKind::GrandFinalReset => {}
+            }
+        }
+        self.double_elimination_lower_rank_at_depth(lower_depth)
+    }
+
+    fn double_elimination_lower_rank_at_depth(&self, lower_depth: usize) -> Option<u32> {
+        // 依種子槽位重建無空缺時的敗部深度，避免全賽程輪號位移壓縮名次。
+        let initial_pairs = seeded_bracket_pairs(&seeded_order(&self.config.teams));
+        let mut winners_pool = initial_pairs
+            .iter()
+            .map(|pair| (!pair.is_empty()).then_some(()))
+            .collect::<Vec<_>>();
+        let mut fresh_losers = initial_pairs
+            .iter()
+            .map(|pair| (pair.len() == 2).then_some(()))
+            .collect::<Vec<_>>();
+        let mut losers_waiting = Vec::new();
+        let mut lower_pool = Vec::new();
+        let mut lower_ranks = Vec::new();
+        let mut lower_eliminations = 0usize;
+        let mut phase = DoublePhase::Winners;
+
+        for _ in 0..self.config.teams.len().saturating_mul(4).saturating_add(16) {
+            match phase {
+                DoublePhase::Winners => {
+                    losers_waiting.append(&mut fresh_losers);
+                    let winners_count = winners_pool.iter().flatten().count();
+                    let waiting_count = losers_waiting.iter().flatten().count();
+                    let lower_count = lower_pool.iter().flatten().count() + waiting_count;
+                    if winners_count > 1 || lower_count > 1 {
+                        let mut lower_slots = std::mem::take(&mut lower_pool);
+                        lower_slots.append(&mut losers_waiting);
+                        let (next_lower_pool, _, eliminations) = pair_presence_slots(&lower_slots);
+                        lower_eliminations = lower_eliminations.checked_add(eliminations)?;
+                        lower_pool = next_lower_pool;
+                        lower_ranks.push(
+                            self.double_elimination_lower_rank_after_eliminations(
+                                lower_eliminations,
+                            ),
+                        );
+                        phase = DoublePhase::Losers;
+                    } else {
+                        break;
+                    }
+                }
+                DoublePhase::Losers => {
+                    let winners_count = winners_pool.iter().flatten().count();
+                    let lower_count = lower_pool.iter().flatten().count()
+                        + losers_waiting.iter().flatten().count();
+                    if winners_count > 1 {
+                        let (next_winners_pool, next_fresh_losers, _) =
+                            pair_presence_slots(&winners_pool);
+                        winners_pool = next_winners_pool;
+                        fresh_losers = next_fresh_losers;
+                        phase = DoublePhase::Winners;
+                    } else if lower_count > 1 {
+                        let mut lower_slots = std::mem::take(&mut lower_pool);
+                        lower_slots.append(&mut losers_waiting);
+                        let (next_lower_pool, _, eliminations) = pair_presence_slots(&lower_slots);
+                        lower_eliminations = lower_eliminations.checked_add(eliminations)?;
+                        lower_pool = next_lower_pool;
+                        lower_ranks.push(
+                            self.double_elimination_lower_rank_after_eliminations(
+                                lower_eliminations,
+                            ),
+                        );
+                    } else {
+                        break;
+                    }
+                }
+                DoublePhase::Finished | DoublePhase::GrandFinal | DoublePhase::GrandFinalReset => {
+                    break;
+                }
+            }
+            if lower_ranks.len() >= lower_depth {
+                break;
+            }
+        }
+
+        lower_ranks
+            .get(lower_depth.checked_sub(1)?)
+            .copied()
+            .flatten()
+    }
+
+    fn double_elimination_lower_rank_after_eliminations(
+        &self,
+        lower_eliminations: usize,
+    ) -> Option<u32> {
+        let rank = self
+            .config
+            .teams
+            .len()
+            .checked_sub(lower_eliminations)?
+            .checked_add(1)?;
+        (rank <= self.config.teams.len())
+            .then(|| u32::try_from(rank).ok())
+            .flatten()
+    }
+
+    fn elimination_exit_round(&self, team_id: &TeamId) -> Option<u32> {
+        self.rounds.iter().rev().find_map(|round| {
+            round
+                .matches
+                .iter()
+                .any(|match_| {
+                    match_.result.as_ref().is_some_and(|result| {
+                        result.loser() == Some(team_id)
+                            || (result.is_double_loss() && match_.participants.contains(team_id))
+                    })
+                })
+                .then_some(round.round_number)
+        })
     }
 
     fn elimination_champion(&self) -> Option<TeamId> {
@@ -3257,14 +3608,61 @@ impl Stage {
             TournamentFormat::SingleElimination if self.status == StageStatus::Finished => self
                 .rounds
                 .last()
-                .and_then(|round| completed_winners(round).ok())
-                .and_then(|winners| winners.into_iter().next()),
+                .and_then(|round| completed_winner_slots(round).ok())
+                .and_then(|slots| first_slot_team(&slots)),
             TournamentFormat::DoubleElimination => self
                 .double_state
                 .as_ref()
                 .and_then(|state| state.grand_final_winner.clone()),
             _ => None,
         }
+    }
+
+    fn single_elimination_semifinal_bye_loser(&self) -> Option<TeamId> {
+        if self.config.format != TournamentFormat::SingleElimination
+            || self.status != StageStatus::Finished
+            || self.config.teams.len() <= 3
+        {
+            return None;
+        }
+        let semifinal_round = self.config.teams.len().next_power_of_two().ilog2() - 1;
+        let round = self
+            .rounds
+            .iter()
+            .find(|round| round.round_number == semifinal_round)?;
+        let standard_matches: Vec<_> = round
+            .matches
+            .iter()
+            .filter(|match_| match_.purpose == MatchPurpose::Standard)
+            .collect();
+        if standard_matches.is_empty()
+            || standard_matches.len() > 2
+            || standard_matches
+                .iter()
+                .any(|match_| match_.result.is_none())
+            || slot_team_count(&completed_winner_slots(round).ok()?) == 0
+        {
+            return None;
+        }
+        let has_vacant_semifinal_path = standard_matches.len() == 1
+            || standard_matches.iter().any(|match_| {
+                match_.result.as_ref().is_some_and(|result| {
+                    result.is_double_loss() || matches!(result, MatchResult::Bye { .. })
+                })
+            });
+        if !has_vacant_semifinal_path {
+            return None;
+        }
+        let double_loss_exits = self.double_loss_exits();
+        let eligible_losers: Vec<_> = completed_losers(round)
+            .ok()?
+            .into_iter()
+            .filter(|team_id| {
+                self.teams.get(team_id).is_some_and(|entry| !entry.dropped)
+                    && !double_loss_exits.contains(team_id)
+            })
+            .collect();
+        (eligible_losers.len() == 1).then(|| eligible_losers[0].clone())
     }
 
     fn head_to_head_points(&self, team_id: &TeamId, standings: &[Standing]) -> u64 {
@@ -3297,7 +3695,7 @@ impl Stage {
     }
 
     fn compute_standings(&self) -> Vec<Standing> {
-        let double_loss_exits = self.swiss_double_loss_exits();
+        let double_loss_exits = self.double_loss_exits();
         let mut rows: BTreeMap<TeamId, Standing> = self
             .teams
             .iter()
@@ -3603,20 +4001,6 @@ fn split_mix64(mut value: u64) -> u64 {
     result ^ (result >> 31)
 }
 
-fn pair_adjacent_with_byes(order: &[TeamId]) -> Vec<Vec<TeamId>> {
-    let mut pairs = vec![];
-    let mut index = 0;
-    while index < order.len() {
-        if index + 1 < order.len() {
-            pairs.push(vec![order[index].clone(), order[index + 1].clone()]);
-        } else {
-            pairs.push(vec![order[index].clone()]);
-        }
-        index += 2;
-    }
-    pairs
-}
-
 fn seeded_bracket_pairs(order: &[TeamId]) -> Vec<Vec<TeamId>> {
     let bracket_size = order.len().next_power_of_two();
     let mut seed_positions = vec![1usize];
@@ -3639,10 +4023,95 @@ fn seeded_bracket_pairs(order: &[TeamId]) -> Vec<Vec<TeamId>> {
         .collect()
 }
 
-fn take_lower_pairing(state: &mut DoubleState) -> Vec<Vec<TeamId>> {
+fn take_lower_pairing(state: &mut DoubleState) -> Vec<Option<TeamId>> {
     let mut pool = std::mem::take(&mut state.lower_pool);
     pool.append(&mut state.losers_waiting);
-    pair_adjacent_with_byes(&pool)
+    pool
+}
+
+fn slot_team_count(slots: &[Option<TeamId>]) -> usize {
+    slots.iter().filter(|slot| slot.is_some()).count()
+}
+
+fn first_slot_team(slots: &[Option<TeamId>]) -> Option<TeamId> {
+    slots.iter().find_map(Clone::clone)
+}
+
+fn pair_adjacent_slots(slots: &[Option<TeamId>]) -> Vec<(u32, Vec<TeamId>)> {
+    slots
+        .chunks(2)
+        .enumerate()
+        .filter_map(|(index, pair)| {
+            let participants = pair.iter().filter_map(Clone::clone).collect::<Vec<_>>();
+            (!participants.is_empty()).then_some((index as u32 + 1, participants))
+        })
+        .collect()
+}
+
+fn pair_presence_slots(slots: &[Option<()>]) -> (Vec<Option<()>>, Vec<Option<()>>, usize) {
+    let output_slot_count = slots.len().div_ceil(2);
+    let mut winners = vec![None; output_slot_count];
+    let mut losers = vec![None; output_slot_count];
+    let mut eliminations = 0;
+    for (index, pair) in slots.chunks(2).enumerate() {
+        let occupied = pair.iter().flatten().count();
+        if occupied == 0 {
+            continue;
+        }
+        winners[index] = Some(());
+        if occupied == 2 {
+            losers[index] = Some(());
+            eliminations += 1;
+        }
+    }
+    (winners, losers, eliminations)
+}
+
+fn completed_winner_slots(round: &Round) -> Result<Vec<Option<TeamId>>, ScheduleError> {
+    let standard_matches: Vec<_> = round
+        .matches
+        .iter()
+        .filter(|match_| match_.purpose == MatchPurpose::Standard)
+        .collect();
+    let slot_count = standard_matches
+        .iter()
+        .map(|match_| match_.sequence as usize)
+        .max()
+        .unwrap_or(0);
+    let mut slots = vec![None; slot_count];
+    for match_ in standard_matches {
+        let Some(result) = &match_.result else {
+            continue;
+        };
+        if let Some(winner) = result.winner() {
+            slots[match_.sequence as usize - 1] = Some(winner.clone());
+        } else if !result.is_double_loss() {
+            return Err(ScheduleError::InvalidOperation(
+                "和局沒有晉級隊伍".to_string(),
+            ));
+        }
+    }
+    Ok(slots)
+}
+
+fn completed_loser_slots(round: &Round) -> Result<Vec<Option<TeamId>>, ScheduleError> {
+    let standard_matches: Vec<_> = round
+        .matches
+        .iter()
+        .filter(|match_| match_.purpose == MatchPurpose::Standard)
+        .collect();
+    let slot_count = standard_matches
+        .iter()
+        .map(|match_| match_.sequence as usize)
+        .max()
+        .unwrap_or(0);
+    let mut slots = vec![None; slot_count];
+    for match_ in standard_matches {
+        if let Some(result) = &match_.result {
+            slots[match_.sequence as usize - 1] = result.loser().cloned();
+        }
+    }
+    Ok(slots)
 }
 
 fn completed_winners(round: &Round) -> Result<Vec<TeamId>, ScheduleError> {
@@ -6090,7 +6559,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_qualification_blocks_schedule_match_and_double_loss_unresolved_facts() {
+    fn stage_qualification_blocks_schedule_match_but_treats_double_loss_vacancy_as_closed() {
         let mut schedule_error_stage = stage_qualification_finish_with_winner(
             Stage::new(config(TournamentFormat::RoundRobin, 2)).unwrap(),
             &TeamId::from("t1"),
@@ -6133,10 +6602,11 @@ mod tests {
         let mut double_loss_stage =
             Stage::new(config(TournamentFormat::DoubleElimination, 2)).unwrap();
         let double_loss_match = double_loss_stage.rounds()[0].matches[0].match_id.clone();
-        assert!(matches!(
+        assert_eq!(
             double_loss_stage.submit_result(&double_loss_match, MatchResult::DoubleLoss),
-            Ok(UpdateOutcome::AppliedWithScheduleError(_))
-        ));
+            Ok(UpdateOutcome::Applied)
+        );
+        assert_eq!(double_loss_stage.status(), StageStatus::Finished);
         let double_loss_tournament = stage_qualification_tournament(double_loss_stage);
         assert_eq!(
             double_loss_tournament.resolve_stage_qualification(&[
@@ -6151,9 +6621,8 @@ mod tests {
                     2,
                 ),
             ]),
-            Err(StageQualificationBlocker::DoubleLossNeedsReferee {
+            Err(StageQualificationBlocker::WinnerNotDetermined {
                 source_stage_id: StageId::from("stage"),
-                match_id: double_loss_match,
             })
         );
     }
