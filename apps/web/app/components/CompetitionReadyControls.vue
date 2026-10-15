@@ -15,7 +15,7 @@
 
     <template v-else>
       <p class="explanation">
-        所有固定參賽者都要各自明示準備，隊長與其他隊員使用相同流程。準備狀態以房間伺服器更新為準。
+        所有固定參賽者都要各自按下「準備」，隊長與其他隊員都一樣。準備狀態以房間伺服器更新為準。
       </p>
       <p class="current-status" role="status" aria-live="polite">
         目前狀態：{{ memberReady ? '已準備' : '尚未準備' }}
@@ -43,7 +43,7 @@
           :disabled="!canOperate || pendingDesired !== null || sending"
           @click="submitDesired(!memberReady)"
         >
-          {{ memberReady ? '明示取消準備' : '明示已準備' }}
+          {{ memberReady ? '取消準備' : '我準備好了' }}
         </button>
         <button
           v-if="pendingDesired !== null && retryable"
@@ -63,7 +63,7 @@
         >
           重新查詢目前狀態
         </button>
-        <p v-if="sending" class="state-note" role="status" aria-live="polite">正在送出明示準備狀態…</p>
+        <p v-if="sending" class="state-note" role="status" aria-live="polite">正在更新準備狀態…</p>
       </div>
     </template>
   </section>

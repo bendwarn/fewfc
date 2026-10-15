@@ -262,7 +262,7 @@ onBeforeUnmount(() => {
     <form v-if="draft && draftScope === scope && context && (readKind === 'notReady' || pendingInScope)"
       data-testid="tournament-form" @submit.prevent="reviewDraft">
       <fieldset :disabled="locked">
-        <legend>明示賽制、種子與時計政策</legend>
+        <legend>賽制、種子與時計政策</legend>
         <div class="fields">
           <label :for="fieldId('format')">賽制
             <select :id="fieldId('format')" v-model="draft.format" data-testid="tournament-format" required>
@@ -276,13 +276,13 @@ onBeforeUnmount(() => {
           </label>
         </div>
         <h3>已鎖定參賽隊伍的種子</h3>
-        <p>第幾隊僅依名單順序標示，不是既有排名；種子必須由主辦明示指定。</p>
+        <p>第幾隊僅依名單順序標示，不是既有排名；種子必須由主辦指定。</p>
         <div class="fields">
           <label v-for="(team, index) in draft.teams" :key="team.teamId" :for="fieldId(`seed-${index}`)">{{ teamLabel(team.teamId) }}種子
             <input :id="fieldId(`seed-${index}`)" v-model="team.seed" :data-testid="`tournament-team-seed-${index}`" inputmode="numeric" required>
           </label>
         </div>
-        <button type="button" data-testid="tournament-assign-seeds" @click="assignSeeds">明示依名單順序指定種子 1 至 {{ draft.teams.length }}</button>
+        <button type="button" data-testid="tournament-assign-seeds" @click="assignSeeds">依名單順序指定種子 1 至 {{ draft.teams.length }}</button>
         <label :for="fieldId('random')">排程亂數種子（非負整數，公開設定）
           <input :id="fieldId('random')" v-model="draft.randomSeed" data-testid="tournament-random-seed" inputmode="numeric" required>
         </label>
@@ -312,7 +312,7 @@ onBeforeUnmount(() => {
             <div v-for="field in percentFields" :key="field.key">
               <label :for="fieldId(field.key)">{{ field.label }}
                 <select :id="fieldId(field.key)" v-model="draft.swiss[field.key].mode" :data-testid="`tournament-${field.key}-mode`" required>
-                  <option value="" disabled>請明示選擇</option><option value="none">不設定</option><option value="value">指定百分比</option>
+                  <option value="" disabled>請選擇</option><option value="none">不設定</option><option value="value">指定百分比</option>
                 </select>
               </label>
               <label v-if="draft.swiss[field.key].mode === 'value'" :for="fieldId(`${field.key}-value`)">{{ field.label }}百分比（零至一百）
@@ -321,12 +321,12 @@ onBeforeUnmount(() => {
             </div>
             <label :for="fieldId('byes')">計算對手勝率時是否排除輪空
               <select :id="fieldId('byes')" v-model="draft.swiss.excludeByes" data-testid="tournament-exclude-byes" required>
-                <option value="" disabled>請明示選擇</option><option value="yes">排除輪空</option><option value="no">不排除輪空</option>
+                <option value="" disabled>請選擇</option><option value="yes">排除輪空</option><option value="no">不排除輪空</option>
               </select>
             </label>
             <label :for="fieldId('ties')">同分比較政策
               <select :id="fieldId('ties')" v-model="draft.swiss.tieMode" data-testid="tournament-tie-mode" required @change="selectTieMode">
-                <option value="" disabled>請明示選擇</option><option value="none">不設定同分比較</option><option value="configured">明示比較順序</option>
+                  <option value="" disabled>請選擇</option><option value="none">不設定同分比較</option><option value="configured">自訂比較順序</option>
               </select>
             </label>
           </div>
@@ -365,7 +365,7 @@ onBeforeUnmount(() => {
         <p>同分比較：{{ summary.swissPolicy.tieBreakers.length ? summary.swissPolicy.tieBreakers.map(swissTieBreakerLabel).join(' → ') : '不設定' }}</p>
       </template>
       <template v-if="!pending">
-        <label class="check"><input v-model="acknowledged" type="checkbox" data-testid="tournament-acknowledge" :disabled="locked">我已核對全部設定與明示種子，確認建立單階段賽程。</label>
+        <label class="check"><input v-model="acknowledged" type="checkbox" data-testid="tournament-acknowledge" :disabled="locked">我已核對全部設定與種子，確認建立單階段賽程。</label>
         <button type="button" data-testid="tournament-confirm-create" :disabled="locked || !acknowledged || readKind !== 'notReady'" @click="confirmCreate">確認建立賽程</button>
       </template>
     </div>

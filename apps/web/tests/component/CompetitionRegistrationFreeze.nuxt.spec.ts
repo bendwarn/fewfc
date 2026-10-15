@@ -85,7 +85,7 @@ function acceptMutation(options: unknown) {
   if (!options || typeof options !== 'object' || !('body' in options)) throw new Error('需要命令 body')
   const body = options.body
   if (!body || typeof body !== 'object' || !('commandId' in body) || typeof body.commandId !== 'string') {
-    throw new Error('需要明示 commandId')
+    throw new Error('需要 commandId')
   }
   const response = registrationResponse()
   return { ...response, commandId: body.commandId, idempotent: false,

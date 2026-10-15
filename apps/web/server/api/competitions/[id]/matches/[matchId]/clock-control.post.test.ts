@@ -246,7 +246,7 @@ test('malformed RPC envelopes, values, and clock projections fail closed with 50
   expect((await post(body, 'referee')).status).toBe(502)
 })
 
-// 直接載入正式 ABI，不替換全程序 rules-engine mock；明示路徑優先，否則用既有 bundled WASM。
+// 直接載入正式 ABI，不替換全程序 rules-engine mock；指定路徑優先，否則用既有 bundled WASM。
 async function formalClockControlFixture(submitted: boolean) {
   const path = process.env.FEWC_COMPETITION_TEST_WASM
     ?? new URL('../../../../../../worker/wasm/fewfc.wasm', import.meta.url)

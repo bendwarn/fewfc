@@ -15,7 +15,7 @@ import type {
   GameRoomResponse,
   GameRoomSocketMessage,
   OnlineGameAction,
-} from '../../shared/game-room'
+} from '#shared/game-room'
 import type { CardsChoiceAnswer, VisibleCardPendingChoice } from '~/lib/pending-choice-interaction'
 import {
   cardChoiceAnswer,
@@ -37,6 +37,7 @@ import { reconcileActionDraft, toggleActionDraftCard } from '~/lib/action-draft'
 import {
   nextHighestActiveGameVersion,
   shouldApplyActiveGameVersion,
+  shouldApplyRoomMetadataVersion,
 } from '~/lib/active-game-version'
 import { isInitialPouchAlreadyChosen } from '~/lib/initial-pouch-selection'
 import { presentApiError } from '~/lib/api-error-presentation'
@@ -207,6 +208,9 @@ export function useGameRoom(viewer: ViewerRef) {
   ) {
     const version = response.activeGameVersion
     if (!shouldApplyActiveGameVersion(highestAppliedActiveGameVersion, version)) {
+      return
+    }
+    if (!shouldApplyRoomMetadataVersion(metadata.value ?? undefined, response.metadata)) {
       return
     }
     highestAppliedActiveGameVersion = nextHighestActiveGameVersion(

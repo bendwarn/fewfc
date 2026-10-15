@@ -66,7 +66,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('已指派無衝突裁判明示送出七欄命令，matching 五欄 ACK 後 readonly refresh，不改原始結論', async () => {
+it('已指派無衝突裁判送出七欄命令，matching 五欄 ACK 後 readonly refresh，不改原始結論', async () => {
   fetchMock.mockResolvedValueOnce(response()).mockResolvedValueOnce(ack()).mockResolvedValueOnce(response(5))
   const wrapper = await mountCorrection()
   expect(wrapper.text()).toContain('甲隊')
@@ -90,7 +90,7 @@ it('已指派無衝突裁判明示送出七欄命令，matching 五欄 ACK 後 r
   expect(wrapper.find('[data-testid="same-command-retry"]').exists()).toBe(false)
 })
 
-it('POST 未完成時鎖草稿與 double-submit；只有明示操作才送出一次', async () => {
+it('POST 未完成時鎖草稿與 double-submit；只有按下送出才會送出一次', async () => {
   const post = deferred()
   fetchMock.mockResolvedValueOnce(response()).mockReturnValueOnce(post.promise)
   const wrapper = await mountCorrection()
@@ -153,7 +153,7 @@ it('malformed 2xx/錯收據不作成功、不回顯 private，也不換命令', 
   expect(wrapper.find('[data-testid="same-command-retry"]').exists()).toBe(true)
 })
 
-it('首次明確409只refresh而不 replay，重新檢視後仍需另一個明示操作', async () => {
+it('首次收到409只refresh而不 replay，重新檢視後還要再按一次送出', async () => {
   fetchMock.mockResolvedValueOnce(response()).mockRejectedValueOnce({ statusCode: 409 }).mockResolvedValueOnce(response(5))
   const wrapper = await mountCorrection()
   await draft(wrapper)
@@ -275,7 +275,7 @@ it.each(['null', 'malformed'])('%s projection安全停用；不 render私密值/
   expect(wrapper.find('[data-testid="correction-form"]').exists()).toBe(false)
 })
 
-it('pending卸載中止request且回報未確認，不假稱server取消；beforeunload明示阻止無提示離開', async () => {
+it('pending卸載中止request且回報未確認，不假稱server取消；beforeunload阻止無提示離開', async () => {
   const post = deferred()
   fetchMock.mockResolvedValueOnce(response()).mockReturnValueOnce(post.promise)
   const wrapper = await mountCorrection()

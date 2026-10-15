@@ -1,17 +1,17 @@
 import {
   isExactCompetitionJson,
   isJsonObject,
-} from '../../shared/competition'
+} from '#shared/competition'
 import {
   COMPETITION_ROUND_ROOM_LEAD_TIME_MS,
   competitionRoundReadyCutoffMs,
-} from '../../shared/competition-game-room'
+} from '#shared/competition-game-room'
 import {
   isCompetitionRoomRoundPublication,
   isCompetitionRoomRoundPublicationReadValue,
   type CompetitionRoomRoundPublication,
   type CompetitionRoomRoundPublicationReadRequest,
-} from '../../shared/competition-room'
+} from '#shared/competition-room'
 import {
   formatCompetitionDeadline,
   localMinuteDateTimeToEpochMs,

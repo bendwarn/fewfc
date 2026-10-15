@@ -1,8 +1,8 @@
 import type { RuleModuleSpec } from '../types/fewfc'
 import { createRuleModulePolicy } from '#shared/utils/rule-modules'
 import { modulesForVersion } from '#shared/utils/rule-versions'
-import { buildCompetitionAnnouncementPlan, parseCompetitionAnnouncementPlan, type CompetitionAnnouncementStageDraft } from '../../shared/competition-announcement-plan'
-import type { CompetitionAnnouncementPlan } from '../../shared/competition'
+import { buildCompetitionAnnouncementPlan, parseCompetitionAnnouncementPlan, type CompetitionAnnouncementStageDraft } from '#shared/competition-announcement-plan'
+import type { CompetitionAnnouncementPlan } from '#shared/competition'
 
 export type CompetitionRuleVersion = '5.16' | '5.17'
 export type CompetitionTeamStatus = 'registered' | 'checkedIn' | 'withdrawn' | 'notCheckedIn'

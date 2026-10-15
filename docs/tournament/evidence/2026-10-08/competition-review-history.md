@@ -166,7 +166,7 @@ Timing 的產品政策已確認：[開賽與裁判](../competitive-play-design.m
 - 原生 harness 的 async waitForFunction 在此環境以永遠 false predicate 仍 **48ms resolved=false**，不能作 Finished／completed 的完成證據。已改真 HTTP 有界輪詢，撤回先前 early-return 推論；沒有為腳本錯誤放寬產品 ACL 或結果判定。
 - E6c2b source 主審 **13／168**、修後全 Nuxt typecheck 通過；兩軸正在審核，participant GET 本身尚未 native 驗證，不能借 ready RPC 的平台觀測宣稱已放行。
 - E6d1b 主審 owned **192／2941**、Standards0；Spec 發現 DE／Swiss 缺正式 finished＋restart 前綴測試，已交 owner 補齊，未證實 query 產品缺陷。補測與終審通過前不啟動相依 HTTP／管理 UI。
-- E6c3／E6c2b 已通過最終主審：ready修後兩軸0、participant GET兩軸0皆完整讀；final無TEMP build/type與真native harness **91300 exit0**，固定成員 GET／ACL、明示準備／重試、真alarm主時間＋讀秒判負、terminal跨DO、validcommand409永久凍結、canonical recordSequence不變、完成後game=null及earlyreplay403皆過。超時不合成canonical Finished，之前腳本期待已修正；尚未實作時計顯示或賽後公開。
+- E6c3／E6c2b 已通過最終主審：ready修後兩軸0、participant GET兩軸0皆完整讀；final無TEMP build/type與真native harness **91300 exit0**，固定成員 GET／ACL、準備及重試、真alarm主時間＋讀秒判負、terminal跨DO、validcommand409永久凍結、canonical recordSequence不變、完成後game=null及earlyreplay403皆過。超時不合成canonical Finished，之前腳本期待已修正；尚未實作時計顯示或賽後公開。
 - Jason 已解除 E6c4 source hold，接續安全competition context與metadata唯讀red；Einstein接互斥E6c5a固定玩家目前房間入口 UI（新helper/component＋原競賽頁），只依已過participant GET，不接未審E6c4／準備 UI。提供可重用matchId props供後續賽程card沿用，不把客戶端ID當授權。
 - E6d1b 補 DE總決賽／Swiss五隊三輪實際完成、finished query＋restart全表alarm不變回歸後，主審 owned **193／3043** 通過；query產品未變，兩軸正重核缺測關閉，尚未放行相依HTTP。
 - E6d1b 補測兩軸終審皆0且已完整讀，原coverage P2關閉；DO/RPC唯讀切片放行。Maxwell 接互斥E6d1c目前賽程 GET／新safe helper＋tests，只依專用readTournament、不fallback舊globalprojection，不改DO/shared/Rust/UI。HTTP通過才啟動賽程／管理介面。
@@ -175,19 +175,19 @@ Timing 的產品政策已確認：[開賽與裁判](../competitive-play-design.m
 - E6c4 主審 focused **73／3094**、完整 shared＋DO＋bridge **310／6335** 通過；Spec完整現況0已讀，Standards待回報。E6c5a 修後主審 lib **5／33**、單檔component **5／5** 通過，Spec bounded終審0已讀；兩項仍須最新集中type/build及修後native驗證。
 - E6d1c 主審 focused **12／156** 通過，但最新全Nuxt typecheck exit2：新增測試的DE round.kind array[index]推成string或undefined，不能符合JsonValue。已交原Luna最小修fixture，不以cast／放寬契約或忽略matcher掩蓋；此輪不宣稱全型別green。
 - E6c4／E6c5a／E6d1c 已通過最終主審：修後兩軸皆0且報告完整讀，最新Nuxt typecheck exit0、第九production build exit0；D1c focused重跑 **12／160**。真local-only Worker／D1／SQLite DO／bundled Rust／Brave harness **17148 exit0**（賽事75019ea9-b9cc-49f7-931d-cbd3b49d869e）走實際賽事頁查當局→進房、HTTP與WS最小competition context；新GET notReady409、兩位固定玩家200、outsider403、forgedquery400、重查revision不變及實際alarm完賽後current finished賽程均過。不借舊91300證明修後功能，尚不宣稱準備按鈕、時計顯示或整場辦賽管理完成。
-- Einstein 接 E6c5b 競賽房明示準備UI，只改app新lib/component、useGameRoom的context接線與房頁bounded分支；依已過C4/C3，不與後端共寫。普通房仍走原流程，競賽unknown retry保留同desired boolean，模式不由URL造、不改canonical timeout Finished。
+- Einstein 接 E6c5b 競賽房準備操作介面，只改app新lib/component、useGameRoom的context接線與房頁bounded分支；依已過C4/C3，不與後端共寫。普通房仍走原流程，競賽unknown retry保留同desired boolean，模式不由URL造、不改canonical timeout Finished。
 - Jason 接互斥 E6e1 唯讀時計顯示Rust／WASM契約：嚴格checkpoint，可信query取樣，在獨立clone使用既有core計算顯示剩餘時間，原serverState不變；不把虛擬超時／進讀秒順序提交為競賽判定。尚未放行，不啟動DO／HTTP／倒數相依。
 - Maxwell 接互斥 E7a1 裁判更正HTTP，只寫新route/helper/tests，依已過E4e2的matchCorrectRuling；actor/refereeId與可信時間由server衍生，最小safe ACK，權限、冲突及downstream failclosed由權威DO/Rust判定。不實作未定雙敗名次、forfeit或rematch。
 - 2026-10-01 E6b補真平台驗收：native personal harness **33052 exit0**，賽事214b8d4a-07b3-4fac-8867-d46161aa1b04；五獨立身份、兩隊2v2，四位本人實際UI submitDeck後各改合法帳號牌組，鎖定及開房交付仍保存原名稱／cards並經GameRoom ACK，四人原生進房／WS connected、無observer。檢查限定本機CompetitionRoom SELECT且rows_written=0，不讀受限GameRoom KV、不新增HTTPprivate欄位；未啟動本局，不宣稱已驗canonical抽牌或新準備按鈕。
 - E7a1交付後主審focused **11／110** green；獨立H3 scratch **0／1／1** 重現actual `engine:scheduleError` 被當unknown502而非safe409。Rust／DO固定typedcode已實讀，不以internal subreason假造新碼或parse私密message；已交原Luna窄修map並補正式fixture，修後主審／兩軸/native前不放行。
 - 2026-10-01 E7a1 scheduleError修後主審原scratch **1／2**、formal **11／129** green；Standards新增rawmalformedJSON須fixedsafeenvelope P2與集中type的四處ownedfixture型別red，均交同owner最小修，尚未gatepass。
 - E6e1 集中Rust focused **33＋30**、全Rust **653** green；release及bundledWASM同步新query，真WASM/shared/bridge **22／171**（零skip），八檔shared＋DO＋bridge **302／6357** green。完整snapshot兩軸尚待審，未先啟動DO/HTTP/倒數。
-- E6c5b owner交付後main pure **10／43**、Nuxt component＋composable共 **10／10** green；普通房控制隔離／明示ready與same-desired重試兩軸及原生UI仍待驗。新全type阻於E7a1 testfixture窄修，未冒用前輪type/build成功。
+- E6c5b owner交付後main pure **10／43**、Nuxt component＋composable共 **10／10** green；普通房控制隔離／準備狀態及同值重試兩軸及原生UI仍待驗。新全type阻於E7a1 testfixture窄修，未冒用前輪type/build成功。
 - E7a1上述兩項P2及test型別窄修後main **12／137**、原scratch **1／2** green；全type及第十productionbuild exit0，兩軸boundedreport皆0。native仍待本機驗收，尚未gatepass。
 - E6e1 Spec新增positive main＋zero action的exactdeadline等待旗標P2：main獨立正式WASM **0／1／1**真red，合法prefix100ms回awaitingAuthorityfalse。已交Jasondisplay-only窄修與formalcase，不改核心判負或zero政策；全組green不能替代本回歸，DO/HTTP/countdown仍不啟動。
 - E6e1 P2修後正式放行：兩軸bounded全文已讀／0，mainfocused **35＋31**、全Rust **656**、freshrelease／bundledWASM同sha ，formalshared/bridge23＋獨立scratch1共 **24／242**零skip、八檔shared/DO/bridge **303／6426**、全Nuxttype97372 exit0。原scratch partial-array matcher另有harness錯誤，改強化完整two-team strict DTO後green；原awaitfalse產品red及fixture錯分開記。只放行core purequery，不宣稱DO/HTTP/countdown已完成。
 - 相依 E6e2a 改派熟悉core及CompetitionRoom的Luna Jason：僅shared room contract／CompetitionRoom DO／tests建立權威唯讀clock RPC，與Maxwell正在修的新裁判HTTP/helper互斥；不改Rust/bridge/GameRoom/UI。HTTP及倒數等此RPC審核通過再啟動。
-- E6c5b reconnect P2修後main正式Nuxt＋原獨立tracer三檔 **13／13** green、type97372 exit0；Spec bounded0，Standards及新穩定bundle/native仍待。第十bundle實際Brave已驗明示true/false/true/Btrue、ordinarycontrols隱藏及原生超時，但不是修後reconnect native證據。
+- E6c5b reconnect P2修後main正式Nuxt＋原獨立tracer三檔 **13／13** green、type97372 exit0；Spec bounded0，Standards及新穩定bundle/native仍待。第十bundle實際以Brave驗證準備、取消準備、再準備，以及 B 已準備的狀態；ordinary controls 隱藏及原生超時，但不是修後reconnect native證據。
 - E7a1平台未放行：main原生55900到首筆主辦（非actingreferee）更正應403實503；獨立class-likenamespace/stub的真helper/H3第二case亦expected403 actual503（整組1pass/1fail/3 assertions）。capability不可套plainJSONDTOprototypeguard是強候選，交同Maxwell窄修/補formalcase，保持body/root/nested exact guard；新native重驗前仍hold。
 - E6c5b 正式放行：兩軸bounded全文0＋修後main Nuxt三檔 **13／13**、type22586/build70042 exit0；第十一穩定artifact真Brave/native31587 exit0，兩位固定玩家UI送exact true/false/true/Btrue、權威ready確認／autoStart、ordinarycontrols隔離／local返回，並保留nativealarm與canonical凍結契約。同房response-loss/重連意圖回歸由真正Nuxt案例驗證，不冒稱此native另注入網路失敗。
 - E7a1能力窄修 main **13／147**、原scratch **2／4**、第十一type/build exit0；原生31587 exit0（賽事0cda643d-06f0-4f88-9a79-b0e55f188404），org/player/outsider非actingreferee403、forged400、不合法timeout勝者更正422、assignedreferee合法同判定更正200、同commandretry不加revision/correction、證據／canonical保存皆過。原native503症狀已清；不是直接取得nativeprototype或所有影響下輪更正的完整平台前綴。Spec bounded0，Standards最末capability窄修終核仍待，未先宣告E7gatepass。
@@ -228,12 +228,12 @@ Timing 的產品政策已確認：[開賽與裁判](../competitive-play-design.m
 - build83053已exit0，但E6e3a暫不放行：Spec修後0完整已讀，Standards完整報告1P2指clock cards/window直接以隊伍UUID作玩家標籤。main已核web AGENTS全文及正常registerTeam以crypto.randomUUID產ID，接受finding並收回之前允許rawteamID的代理指導（不是人類例外）。交Einstein僅以已驗teams順序統一甲隊／乙隊呈現cards/preparation/action/choice/paused，保ID內部關聯、不猜本隊對手／隊名、不添private查詢或DTO，19cases與所有race要求保持。修後type/build/native待重驗；noHPspecial。
 - E6e3a 中性標籤修後 main17940 原正式 **19／19** 通過（含合法UUID／card與所有window一致映射／原race斷言）；全type31474 exit0。component7233f954…／specb5265859…freeze，其餘三檔未改、沿既有pure11／117證據不重跑；兩軸窄終核與本次正常build仍進行，native尚未執行，沒有生命專項測試。
 - E6e3a source關卡通過：Maxwell Standards窄追加全文已讀，原UUID P2 source關閉、hard／12smell0；Hume Spec窄追加全文已讀0，新五hash一致。配合19／19、type31474、正常build32261 exit0及release/bundled9f836207…一致，允許真Worker／Brave驗收，未提前宣稱native已過。所有產品freeze，計時／Waiting guard與新GET同鏈驗收中；Hume只平行primary-source輪次政策調研。
-- 真native main40683 actualexit1：Waiting pause/resume409且完整投影不變、時計GET exact6／ACL、兩隊中文主時間／甲乙／390px、明示ready與HTTP/WS context均已走到通過，但正式Active/running action後裁判pause仍409 gameRoomNotProvisioned，沒有成功ACK。暫停／恢復、超時完整鏈與paused/completed時計UI尚未通過；r3／r4 source/fixture證據保留但依賴native gate HOLD。localWrangler48332已退出0，禁止source/artifact熱換；Lagrange僅GameRoom source/test診斷formal red→minimalfix，Jason只readonly RPC/caller分析，不與其他產品共寫。不得用mock true或目前post-finally timeout推定當時拒絕原因。
+- 真native main40683 actualexit1：Waiting pause/resume409且完整投影不變、時計GET exact6／ACL、兩隊中文主時間／甲乙／390px、準備操作與 HTTP／WS context 均已通過，但正式Active/running action後裁判pause仍409 gameRoomNotProvisioned，沒有成功ACK。暫停／恢復、超時完整鏈與paused/completed時計UI尚未通過；r3／r4 source/fixture證據保留但依賴native gate HOLD。localWrangler48332已退出0，禁止source/artifact熱換；Lagrange僅GameRoom source/test診斷formal red→minimalfix，Jason只readonly RPC/caller分析，不與其他產品共寫。不得用mock true或目前post-finally timeout推定當時拒絕原因。
 - 原生RPC根因已隔離確認：main188931真Miniflare/workerd同compatdate，直接method／Reflect.apply各true，method.call實際TypeError「RPC receiver does not implement method call」。故r4 `.call`不是可靠原receiver呼叫，而是RPC代理遠端屬性鏈，catch後錯拒Active；不因這點放寬r3資料驗證。改交Jason2檔formalred→Reflect.apply窄修，Lagrange停止非根因產品修復、維持r3freeze。main後續focused／兩軸／typebuild／originalnative皆須重核，未宣稱已修好。
 - r4 native caller窄修凍結bb04215a…／84268fa0…：owner完整診斷及formal red0/1/2→green1/17log全文已讀、source與新增test實讀。main78475相同clockfocused **55tests／1059assertions exit0**，173明確filtered／noHPspecial，原54所有拒絕／receipt／strictACK與新callable案例保留。Maxwell Standards與Lagrange Spec只bounded窄核新seam；集中type開始，原native尚待重驗，沒有放寬GameRoom資格或更動timepolicy。
 - r4新caller type62807／build85824皆exit0，Lagrange極窄Spec報告全文已讀0、sha一致；Standards尚待，不提前放整鏈。原真Worker／Braveharness50571重驗中。每輪時間primary研究已保存competition-round-timing-reference.md/main完整已讀並再查官方三頁；外部不提供本站五分鐘延誤的統一政策，已向人類新async確認人工重新公布或系統自動順延，不默認任一答案，也不因此停時計獨立驗收。
 - r4／時計 GET＋UI 原生關卡正式放行：Maxwell新Standards完整追加全文已讀hard／12smell0、Lagrange Spec0，修後兩sha與UI／r3／release/bundled全部freeze一致。main50571原完整真Worker／Braveharnessactualexit0，comp c663f81b-aff8-48d0-a4fa-fc11184b7cd9：Waiting雙control拒絕完整投影不變、GET exact6／ACL／readonly、甲乙與主時間／390px、Activepause／resume及同receipt重試、暫停11秒超過舊8+2deadline仍凍結、恢復真alarmtimeout／跨DOterminal與canonicalrecord不變、paused/completed UI、目前賽程與更正HTTP/證據/ACL/receipt／earlyreplay403全部通過。這是RR1v1單局真鏈，不宣稱native所有format／2v2／restart全矩陣、五分鐘排程或管理UI完成；Worker20117已退出0、本機資料保留，noHPspecial。
-- 穩定改判HTTP有本次native再次佐證，允許同Einstein獨占新app裁判更正helper/component及tests、[id].vue最小mount。最小選項為同局已保存判定及與canonical一致gameAccepted（draw僅fixedGames），不新造歷史讀秒/加賽時間/DoubleLoss名次或下游政策。GET指派只作顯示提示而非activeACL承諾；已unknown命令不能靠新GET/後續4xx解決，exactreceiptACK／同bodyID明示retry。此片開始實作，未審/驗收；共用排程時間仍等新policy選擇，不停独立UI。
+- 穩定改判HTTP有本次native再次佐證，允許同Einstein獨占新app裁判更正helper/component及tests、[id].vue最小mount。最小選項為同局已保存判定及與canonical一致gameAccepted（draw僅fixedGames），不新造歷史讀秒/加賽時間/DoubleLoss名次或下游政策。GET指派只作顯示提示而非activeACL承諾；已unknown命令不能靠新GET/後續4xx解決，exact receipt ACK／以相同 body ID 重試。此片開始實作，未審/驗收；共用排程時間仍等新policy選擇，不停独立UI。
 - 人類回覆輪次時間問題：前輪未結束卻開始下輪不應發生，屬賽程問題。依此把前輪完成／配對確定／全輪提前五分鐘房間就緒列為硬性開賽前置，不靠時間觸發越過前序，不默認人工或自動順延已獲選。未滿足就 fail closed、不回填 ACK／猜勝者／靜默改時間；共同 binding／release／失效／初始交付協議仍須閉合後才啟用，不以正常時程假設放寬。舊政策提問已收到回覆，後續不重複詢問同一問題；獨立裁判 UI 繼續。
 - 裁判自隊邊界唯讀盤點已完成並全文讀；main核對start／execute與正常locked fixture後接受1項靜態缺口：conflictedTeam=null只靠主辦annotation，未衍生權威members。尚非actual red／原生漏洞或已修復，現只授權Jason獨占DO test新增正式合法前綴聚焦重現，產品仍freeze；不以participant flag禁全賽裁判、不改r4 primitive/native既有結論、不混HP／兼容／排程。新UI資格僅提示、server權威仍必須核實。
 - 自隊裁判正式 tracer 已 owner red 並由 main94691獨立重現 **0pass／1fail／10assertions、228filtered**：真registration→lock→tournament→grant member→current provision→有限clock action，null conflict的自身裁判pause成功、1次WASM mutation/1次控制交付且全DB/alarm快照改變。平台primitive/ACK是清楚限定adapter，這是parent/WASM actualred，不冒作nativeGameRoom證據。已授權Jason僅DO source/test唯一新mutation守衛修復，三裁判操作從權威兩隊/locked members核自己，保成功receipt-first、跨交手合法ref與非captain；產品未修前此hard-policy gate HOLD，UI獨立實作不中斷。noHP/兼容/全suite。
@@ -256,7 +256,7 @@ timeout evidence 修後 helper ／pure test ，其餘三 UI 檔維持凍結。�
 
 最新兩軸最末 annotation 窄核皆 0，產品七檔保持原 freeze。main53708 後續實際 exit1 在精確選局 locator；隔離真 DOM probe證 `getByLabel exact` 無匹配、同名 `combobox exact` 可匹配，前述 prefix 是另個來源確證的 latent fixture錯，不能當已證runtime首因。原owner僅換兩個角色locator，新script 的真 native42421 已通過選局、替代選項完整文案及鍵盤焦點，但仍 exit1 於 POST／ACK／refresh 廣義段，正增加固定子stage定位；UI 原生關卡仍不放行、不擅改產品或削斷言。
 
-固定子stage新版 的 main23671 真native已確認明示keypress產生POST，exit1定位於exact-body compound guard；目前細分原欄位及只輸出布林的差異判別，不先假設是產品或key-order問題。裁判介面仍HOLD。與其無相依的設定／種子／建立片可獨立進行：主審全文讀 Einstein160行方案，另直接讀固定Bracket modal及activation正式test（晉級隊伍assertion被註解，不視為已證成）；只採確認／權威重讀流程，不翻譯外部碼／加依賴。已批准Einstein四個新management helper／component／tests檔，禁止修改既有頁面／shared／server／DO，不mount、不使用中央編譯／測試槽；回合外及Swiss未定預設一律明示輸入，開始時間依賴另待契約。此派工不代表更正native或新管理UI已放行。
+固定子stage新版 的 main23671 真 native 已確認按下按鈕後會送出 POST，exit1定位於exact-body compound guard；目前細分原欄位及只輸出布林的差異判別，不先假設是產品或key-order問題。裁判介面仍HOLD。與其無相依的設定／種子／建立片可獨立進行：主審全文讀 Einstein160行方案，另直接讀固定Bracket modal及activation正式test（晉級隊伍assertion被註解，不視為已證成）；只採確認／權威重讀流程，不翻譯外部碼／加依賴。已批准Einstein四個新management helper／component／tests檔，禁止修改既有頁面／shared／server／DO，不mount、不使用中央編譯／測試槽；回合外設定與 Swiss 未定欄位都必須填寫，開始時間依賴另待契約。此派工不代表更正native或新管理UI已放行。
 
 自隊裁判後端防護切片獨立放行：兩檔freeze ／、正式66／960、fresh一般type／build與兩軸0，真RR1v1原生多次已走完三個self403／全public match不變、獨立positive／receipt重試、真alarm timeout／evidence／canonical保留。2v2全成員及other-match正例來自formal，不冒稱全賽制／DB／native矩陣；更正UI仍在後續POST比較診斷，兩個gate不可混用。本機驗收服務／自有瀏覽器已正常關閉，持久測試資料保留，沒有commit／push／部署。中央槽回主審，代理僅在明確互斥檔案寫實作／測試，不能自行編譯或測試。
 
@@ -274,13 +274,13 @@ timeout evidence 修後 helper ／pure test ，其餘三 UI 檔維持凍結。�
 
 管理 A 父頁／真原生關卡已通過：parent ／new spec ，原A4不變。首次新Nuxt的2項fixture失敗已窄修；Spec另P3父mutation互斥缺測以不同賽事A locked unknown→B合法open補公開DOM／HTTP正反對照，原12cases逐位元保留。最新三正式檔 main15018／d6fc00 **54／54、exit0**、一般type78889 **exit0**，產品仍同正常build6192／release-bundled，兩軸終核0，來源未變。真Worker／Brave main19600／a16984 **exit0**：設定摘要／keyboard／單次POST3及Stage8／两UUID／matchingACK5後雙權威refresh／相同managedDOM／非主辦停用／繁中privacy與390px皆過。native前兩次只因CLI VM與Playwright JSON realm不同造成harness exact4誤拒，真安全probe確認wire同值／欄位／descriptor均正確；主審僅窄修native nativeObject prototype判別，原closedkeys／所有驗收要求保留，自有actualexact scratch3／18及nodecheck0。只RR1v1單階段建立，不當開房／全賽制native／五分鐘或整場辦賽完成。自有Brave32193／Worker43759退出0，資料保留。
 
-上述管理關卡後，正式shared下一切片已交Lagrange唯一兩檔實作：required17、完整strict validation/equality及唯一完整fingerprint helper。staging patch已主審全文讀、readonly apply-check0；尚不表示shared新tests或Timing通過。父／子DO與HTTP仍等shared正式freeze／審核後明示互斥授權，未同步時不部署、不做optional／legacy回退。
+上述管理關卡後，正式shared下一切片已交Lagrange唯一兩檔實作：required17、完整strict validation/equality及唯一完整fingerprint helper。staging patch已主審全文讀、readonly apply-check0；尚不表示shared新tests或Timing通過。父／子DO與HTTP仍等shared正式freeze／審核後互斥授權，未同步時不部署、不做optional／legacy回退。
 
 required17 shared 限定關卡現已通過：兩正式檔 ／，主審全文讀批准diff及actual修改seams，readonly reverse-check0、whitespace0；集中 `round-release` **29 tests／1066 assertions、exit0**（其他14項未執行），沿Nuxt strict基底、既有Bun／Node型別的隔離兩檔檢查exit0。首次只缺測試型別路徑，修檢查環境而非產品；原28cases保留、新增15，沒有HP專項或舊紀錄相容。獨立Standards hard／smell0、Spec0，完整report已核，來源未變。此關卡只放行完整資料／內容比較，不證current manifest／實體全房ACK／ACL／GameStarted；最新wholeproject type／build及Timing仍HOLD，不能部署半套。
 
-主審依此明示啟動互斥相依實作：Jason唯一父 `shared/competition-room`及父DO／tests，Lagrange唯一子DO及competition／start-clock tests／fixture，Maxwell唯一既有HTTP helper／tests與start route test。完整binding兩shared檔保持freeze；先收斂父首次開局交付exact介面，再讓子FIFO接入，禁止各自猜wire。子release／revoke已定caps可先獨立實作；父需完成持久整輪manifest／實際全部ACK與cutoff／到T release／Waiting撤銷共同更正／fresh主辦公告；HTTP此片只同步required17驗證、不啟用新公告route或回假已start。Einstein作獨立審核准备／合法延遲clock anchor證據盤點，產品不改。所有執行仍由主審集中，未freeze／審核不得放行下游HTTP或UI。
+主審依此啟動互斥相依實作：Jason唯一父 `shared/competition-room`及父DO／tests，Lagrange唯一子DO及competition／start-clock tests／fixture，Maxwell唯一既有HTTP helper／tests與start route test。完整binding兩shared檔保持freeze；先收斂父首次開局交付exact介面，再讓子FIFO接入，禁止各自猜wire。子release／revoke已定caps可先獨立實作；父需完成持久整輪manifest／實際全部ACK與cutoff／到T release／Waiting撤銷共同更正／fresh主辦公告；HTTP此片只同步required17驗證、不啟用新公告route或回假已start。Einstein作獨立審核准备／合法延遲clock anchor證據盤點，產品不改。所有執行仍由主審集中，未freeze／審核不得放行下游HTTP或UI。
 
-首輪仍有已核實相依缺口：`competition_registration.rs:842`的Lock只接受開始期限後，detail頁也仍顯示此限制。不能直接把同一開始時間當父manifest的T又宣稱提前五分鐘全房就緒；首輪公告wire／提前名單與牌組凍結須另接專用流程。當前父切片可先處理真locked roster→主辦明示futureT，但不因此放行首輪全流程、不假取可信now、不靜默延T。此缺口不阻止互斥父／子／HTTP實作進行，也不准任一owner越界改核心或前端。
+首輪仍有已核實相依缺口：`competition_registration.rs:842`的Lock只接受開始期限後，detail頁也仍顯示此限制。不能直接把同一開始時間當父manifest的T又宣稱提前五分鐘全房就緒；首輪公告wire／提前名單與牌組凍結須另接專用流程。當前父切片可先處理真locked roster→主辦設定 future T，但不因此放行首輪全流程、不假取可信now、不靜默延T。此缺口不阻止互斥父／子／HTTP實作進行，也不准任一owner越界改核心或前端。
 
 HTTP required17 三檔通過限定關卡：freeze ／／，集中daf319 **40 tests／418 assertions、exit0**（原32＋新8）。唯一完整shared validator先驗raw binding，再核linkage；公開八欄及root平台RPC cleanup範圍保留，route source不改。獨立Standards hard／heuristic0、Spec0，主審全文讀兩report及實際整合seam／cases，來源未變、直接搜尋無trailing空白／conflictmarker。這只證HTTP資料接線與mock RPC/H3邊界，不證native、首輪公告／release或提前開房；父／子source仍在互斥實作，wholeproject型別／建置等同步freeze後才驗，新公告HTTP／UI等待專用父RPC關卡。
 
@@ -294,19 +294,19 @@ Admission 最小delta兩軸完整report現已主審全文核、來源未變，St
 
 首輪freeze研究已全文核：[primary參考](competition-opening-roster-freeze-reference.md)明確分離參賽資料凍結與真正入房/ready。主審另查Limitless官方四頁，不照搬外部自動排除/早開局/改T。現只非阻塞詢問人類「何時凍結」與「未完成資料隊伍處置」；未回覆不當建議已批准。此首輪跨層slice待決，其他父/子已批准範圍持續，不重派既有核心/HP/舊相容工作。
 
-人類現已明確選定：**報名截止時一併凍結參賽資料**；未完成成員確認、必要牌組提交或隊長資料完成確認的隊伍**不納入賽程，明示原因**。隊長確認與房間連線／準備仍分開；不能以截止後仍可修改或等待原比賽開始時間才鎖定的舊邏輯替代。Maxwell先補研究及互斥切片規劃，未授權越界寫入Rust或前端；父／子已批准工作继续。
+人類現已選定：**報名截止時一併凍結參賽資料**；未完成成員確認、必要牌組提交或隊長資料完成確認的隊伍**不納入賽程，並說明排除原因**。隊長確認與房間連線／準備仍分開；不能以截止後仍可修改或等待原比賽開始時間才鎖定的舊邏輯替代。Maxwell先補研究及互斥切片規劃，未授權越界寫入Rust或前端；父／子已批准工作继续。
 
 子房間bounded檢查點第一次集中驗證未通過：逐案輸出有3pass／13fail，其中10項逾時；runner未正常結束，由主審停止並取得exit130，**不當作完整正常總結**。隔離「未release、玩家準備」正式案例58c446 actual0pass／1fail／2assertions、exit1，沒有逾時。正式normalizer與正式raw snapshot guard的自有診斷771018 actual1／5、exit0，確認ready流程新增own `gameInstanceId: undefined`，下一次讀取會被原strict guard拒絕；不能因此放寬guard、假設其他逾時同一原因或放行initial交付。修正仍由唯一child owner負責。
 
 父共同wire退修限定關卡現已通過：新freeze ／，formal16df2f **9／138、exit0**、原red tracer另e0c970 **6／19、exit0**、isolatedstrict1c3aae **exit0**。完整兩軸報告主審全文核：Standards hard／heuristic0、Spec原P2已閉且無open finding、來源未變。只放行共同interface及 truthful `announceRound` auditliteral，父runtime／childlocal／Timing未通過；child先退修local，再接唯一初局FIFO。Bun pending拒絕matcher在解barrier前先阻塞的自有有界diagnostic55f24a actual0／1、exit1，證明另一測試死鎖原因；不以此推其他案例已綠或改產品競態協議。
 
-子房間兩根因限定修正freeze ／（正式clockfixture ／wrapper 不變）：中央1ca558 **16／222、exit0，其他70項filtered**。競賽metadata改validated owned clone，普通房normalizer與strictguard不動；三競態case普通Promise capture後真entered／revoke／unblock，再驗settled，保70＋16原案例及own-undefined正反control。Standards／Spec全文審正在進行；首局FIFO仍明示HOLD，不部署。
+子房間兩根因限定修正freeze ／（正式clockfixture ／wrapper 不變）：中央1ca558 **16／222、exit0，其他70項filtered**。競賽metadata改validated owned clone，普通房normalizer與strictguard不動；三競態case普通Promise capture後真entered／revoke／unblock，再驗settled，保70＋16原案例及own-undefined正反control。Standards／Spec全文審正在進行；首局FIFO仍HOLD，不部署。
 
 父P0a publication／ledger／純read檢查點freeze ／：中央c967c2以原正式WASM **22／214、exit0，其他242项filtered**。正常報名Lock／tournament前綴、全輪Pending物化計畫、atomic保存／receipt／audit及corruption讀取拒絕有證據；平台只阻dispatch，沒有child ACK、release或GameStarted證據。此片兩軸全文審中，下一步claims／實際確認／初局S-A／更正仍HOLD；Rust首輪freeze另由互斥owner實作，舊WASM結果不當新凍結語意已過。
 
 | 項目 | 尚缺的接線／能力 | 放行相依 |
 | --- | --- | --- |
-| 固定玩家進房／準備 | 入口、context、專用 HTTP、明示準備 UI／同 desired 重試及時計整合已過；保留後續排程與整場流程驗收 | E6c5b／E6c4／E6c3／E6e3a 已過 |
+| 固定玩家進房／準備 | 入口、context、專用 HTTP、準備 UI／同 desired 重試及時計整合已過；保留後續排程與整場流程驗收 | E6c5b／E6c4／E6c3／E6e3a 已過 |
 | 計時顯示 | 權威查詢、房間時計 UI 與暫停／恢復目前 RR 1v1 原生鏈已過；後續只驗新排程／多階段整合，不重做已完成切片，瀏覽器仍不得判負 | E6e2b／E6e3a／E4d3c-r4 已過 |
 | 賽程／排名管理 | 目前完整賽程GET、四賽制單階段設定／種子／建立介面已過（native限定RR1v1）；尚缺輪次開始時間／開交手與下一局選先手管理UI | E6d1c／管理A已過；時間管理依新父子協議 |
 | 多階段／自動開賽 | 目前核心只建立單一 stage；後續 stage 生命週期、階段獨立時計、最早開賽時間與依賽程自動串接仍需實作 | 賽程共用模型／查詢關卡 |

@@ -264,7 +264,7 @@ pub enum StageResolution {
     Cancelled { reason: StageCancellationReason },
 }
 
-/// 階段取消的明示原因。
+/// 階段取消的原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StageCancellationReason {
@@ -603,7 +603,7 @@ pub fn validate_competition_announcement_plan(
                 validate_swiss_policy(policy).map_err(|error| error.to_string())?;
             }
             (TournamentFormat::Swiss, _, _) => {
-                return Err("瑞士階段必須明示正整數輪數與完整瑞士政策".to_string());
+                return Err("瑞士階段必須提供正整數輪數與完整的瑞士政策".to_string());
             }
             (_, None, None) => {}
             _ => return Err("非瑞士階段不可設定瑞士輪數或政策".to_string()),
@@ -615,7 +615,7 @@ pub fn validate_competition_announcement_plan(
                 return Err("首階段必須納入全部合格隊伍".to_string());
             }
             (AnnouncedStageQualification::AllEligibleTeams, _) => {
-                return Err("後續階段必須明示晉級來源".to_string());
+                return Err("後續階段必須設定晉級來源".to_string());
             }
             (AnnouncedStageQualification::SourceSlots { slots }, _) if slots.is_empty() => {
                 return Err("後續階段至少要設定一個晉級來源名額".to_string());
@@ -2038,7 +2038,7 @@ impl Stage {
             None => {
                 if self.config.teams.len() < 2 {
                     return Err(ScheduleError::InvalidSnapshot(
-                        "零隊或一隊階段必須記錄明示終局處置".to_string(),
+                        "零隊或一隊階段必須記錄終局處置".to_string(),
                     ));
                 }
             }

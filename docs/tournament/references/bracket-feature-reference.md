@@ -33,7 +33,7 @@ manager 的 double_forfeit 下游設 BYE。這是該庫行為，不取代本站 
 
 - manager 以勝部、敗部及決賽群組表示雙敗。`grandFinal: 'double'` 在建賽程時預留兩場邏輯交手，第二場先放待定人選，不是建立遠端遊戲房。[creator](https://github.com/Drarig29/brackets-manager.js/blob/02027cff5d687068719bebbc765072f382e81390/src/base/stage/creator.ts#L201-L214)、[第二場預留](https://github.com/Drarig29/brackets-manager.js/blob/02027cff5d687068719bebbc765072f382e81390/src/base/stage/creator.ts#L907-L920)
 - 更新結果時分別推進勝方與敗方；決賽群組的後繼更新會把原兩位對手放入下一場。選擇決勝交手另有明確判斷：第一場敗部側 `opponent2` 勝才取第二場，否則取第一場。不能將「第二場已有參賽資料」誤當「第二場必須開房」。[updater](https://github.com/Drarig29/brackets-manager.js/blob/02027cff5d687068719bebbc765072f382e81390/src/base/updater.ts#L326-L360)、[decisive match](https://github.com/Drarig29/brackets-manager.js/blob/02027cff5d687068719bebbc765072f382e81390/src/helpers.ts#L994-L1007)
-- manager 官方文件明示交手的開始／結束日期不在庫的範圍；Ready／Running 等是賽程資料狀態，沒有替應用端完成房間建置、玩家報到、五分鐘就緒或跨房收據。[Match 範圍](https://drarig29.github.io/brackets-docs/user-guide/glossary/#match)
+- manager 官方文件沒有涵蓋交手的開始／結束日期；Ready／Running 等是賽程資料狀態，沒有替應用端完成房間建置、玩家報到、五分鐘就緒或跨房收據。[Match 範圍](https://drarig29.github.io/brackets-docs/user-guide/glossary/#match)
 
 本站可借其後繼映射、待定名額及決勝條件；共用 GameRoom，僅由編排層為真正需要的交手呼叫既有開房／結果回收。改判保護與跨房協議的差異見上節，不另實作「重置賽房型」，也不以資料庫更新成功推定遠端房間已撤銷或已開局。
 

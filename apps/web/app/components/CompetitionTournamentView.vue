@@ -311,7 +311,7 @@
             :aria-labelledby="`${tie.key}-title`"
           >
             <h5 :id="`${tie.key}-title`">同分順序待裁決</h5>
-            <p class="muted">本群組的三項比較值完全相同，相關資格與前三名尚未確定。請主辦或無利益衝突的指定裁判明示完整順序並填寫公開理由。</p>
+            <p class="muted">本群組的三項比較值完全相同，相關資格與前三名尚未確定。請主辦或無利益衝突的指定裁判選定比較順序，並填寫公開理由。</p>
             <p class="tie-score">積分 {{ tie.matchPoints }}・勝分 {{ tie.opponentWinScore }}・負分 {{ tie.opponentLossScore }}</p>
             <ol class="tie-order-list" :aria-label="`裁決${tie.tiedTeamIds.join('、')}的完整順序`">
               <li v-for="(teamId, position) in tie.tiedTeamIds" :key="teamId">

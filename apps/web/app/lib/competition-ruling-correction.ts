@@ -416,7 +416,7 @@ function freezeTree(value: unknown): void {
   for (const child of Object.values(value)) freezeTree(child)
   Object.freeze(value)
 }
-/** 三個 ID 只於明示送出建立一次；草稿、view 與後續 GET 不共享可修改的巢狀物件。 */
+/** 三個 ID 只於送出建立一次；草稿、view 與後續 GET 不共享可修改的巢狀物件。 */
 export function buildCompetitionRulingCorrection(view: CompetitionCorrectionMatch, scope: CompetitionCorrectionScope,
   gameRecordId: string, candidateKey: string, reason: string, uuid: () => string = () => crypto.randomUUID()): Readonly<CompetitionCorrectionCommand> {
   if (view.competitionId !== scope.competitionId || view.matchId !== scope.matchId || !isAssignedCompetitionReferee(view, scope.sessionUserId)

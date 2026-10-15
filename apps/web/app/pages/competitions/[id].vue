@@ -75,7 +75,7 @@
           <div><dt>個人牌組政策</dt><dd>{{ registration.personalDecks === 'required' ? '需要提交' : '不使用' }}</dd></div>
         </dl>
 
-        <p class="muted">報名截止時，名單、成員確認、必要牌組與隊長資料完成確認一併凍結。資料完成確認不是房間報到或準備；進房後仍須另外連線並明示準備。</p>
+        <p class="muted">報名截止時，名單、成員確認、必要牌組與隊長資料完成確認一併凍結。資料完成確認不是房間報到或準備；進房後仍須另外連線，再按下「準備」。</p>
 
         <div v-if="isOrganizer" class="organizer-actions" aria-label="主辦方操作">
           <p v-if="registration.lifecycle === 'draft'" class="muted">公告建立完成；開放報名後，符合條件的隊長即可登記隊伍。</p>

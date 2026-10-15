@@ -29,7 +29,7 @@ fn swiss_double_loss_exits_both_teams_before_second_round_and_preserves_history(
                 loss: 0,
                 bye: 3,
             },
-            draw_credit: DrawCredit::new(1, 2).expect("半勝和局額度必須是合法明示政策"),
+            draw_credit: DrawCredit::new(1, 2).expect("半勝和局額度必須是合法政策"),
             opponent_win_rate_floor_percent: None,
             opponent_win_rate_cap_percent: None,
             exclude_byes_from_opponent_win_rate: true,
@@ -40,7 +40,7 @@ fn swiss_double_loss_exits_both_teams_before_second_round_and_preserves_history(
         tournament_id: "swiss-two-round-double-loss-exit".into(),
         stage: config.clone(),
     })
-    .expect("六隊、兩輪、明示 Swiss policy 與 fixedGames(1) 必須能公開建立");
+    .expect("六隊、兩輪、完整 Swiss policy 與 fixedGames(1) 必須能公開建立");
 
     assert_eq!(tournament.stages().len(), 1);
     let initial_stage = tournament.stage(&stage_id).unwrap();

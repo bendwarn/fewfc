@@ -23,7 +23,7 @@ import {
 import { formatCompetitionDeadline, localMinuteDateTimeToEpochMs } from '../lib/competition-registration'
 import {
   competitionRoundReadyCutoffMs,
-} from '../../shared/competition-game-room'
+} from '#shared/competition-game-room'
 import {
   parseCompetitionTournamentViewResponse,
   presentCompetitionTournamentViewError,
@@ -416,7 +416,7 @@ onBeforeUnmount(() => {
       <p>本元件不含裁判指派編輯，送出合法空指派；裁判身分不會自動取得主辦權限。</p>
       <p v-if="validationMessage" role="alert">{{ validationMessage }}</p>
       <button type="submit" data-testid="round-announcement-submit" :disabled="!canAnnounce || !roundStartLocal">
-        明示公告此輪
+        公告此輪
       </button>
     </form>
 

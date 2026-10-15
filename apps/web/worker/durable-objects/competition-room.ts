@@ -138,6 +138,8 @@ import {
 
 interface CompetitionRoomEnv {
   GAME_ROOM?: GameRoomNamespace
+  APP_ENV?: 'development' | 'staging' | 'production'
+  TICKET22_ISOLATED_INITIAL_HP?: string
 }
 
 interface GameRoomNamespace {
@@ -446,6 +448,21 @@ export type CompetitionEngineAdapter = (
   request: CompetitionRequest,
 ) => Promise<CompetitionEngineResponse>
 
+function competitionEngineForRoom(
+  env: CompetitionRoomEnv,
+  engine: CompetitionEngineAdapter,
+): CompetitionEngineAdapter {
+  if (env.APP_ENV !== 'development' || env.TICKET22_ISOLATED_INITIAL_HP !== '20') return engine
+
+  return async (request) => {
+    const response = await engine(request)
+    if (request.operation.type !== 'registrationResolveSettings' || !response.ok
+      || !isResolvedCompetitionSettings(response.public)) return response
+    // 僅供隔離的票 22 本機流程縮短對局；其他環境仍使用 WASM 衍生值。
+    return { ...response, public: { initialHp: 20 } }
+  }
+}
+
 type ExecuteOperation = CompetitionRoomExecuteRequest['operation']
 type MatchExecuteOperation = CompetitionRoomMatchOperation
 type RoomFailure = { ok: false; error: { code: string; message: string } }
@@ -526,14 +543,14 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
   constructor(
     ctx: DurableObjectState,
     env: CompetitionRoomEnv,
-    engine: CompetitionEngineAdapter = callCompetitionEngine,
+    engine?: CompetitionEngineAdapter,
     randomBit: () => number = secureRandomBit,
     randomUint32: () => number = secureRandomUint32,
   ) {
     super(ctx, env)
     this.storage = ctx.storage
     this.roomEnv = env
-    this.engine = engine
+    this.engine = competitionEngineForRoom(env, engine ?? callCompetitionEngine)
     this.randomBit = randomBit
     this.randomUint32 = randomUint32
     void ctx.blockConcurrencyWhile(async () => {
@@ -555,7 +572,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
 
   async execute(request: CompetitionRoomExecuteRequest): Promise<CompetitionRoomExecuteResult> {
     const result = await this.serialized(async () => {
-      // 明示 Lock 本身就是截止凍結，避免先自動鎖定再讓原命令遇到過期版號。
+      //  Lock 本身就是截止凍結，避免先自動鎖定再讓原命令遇到過期版號。
       const rawOperation: unknown = request?.operation
       const isExplicitLock = isJsonObject(rawOperation)
         && rawOperation.type === 'registrationExecute'
@@ -2634,14 +2651,14 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
           const method = stub.createCompetitionGame
           if (typeof method !== 'function') throw new Error('round create capability unavailable')
           const result: unknown = await Reflect.apply(method, stub, [structuredClone(claim.request)])
-          accepted = consumeRoundReadyAck(result, claim.bindingRef) !== null
+          accepted = consumeGameRoomReadyAck(result, claim.bindingRef) !== null
         } else {
           const method = stub.releaseCompetitionGame
           if (typeof method !== 'function') throw new Error('round release capability unavailable')
           const result: unknown = await Reflect.apply(method, stub, [structuredClone(claim.request)])
           accepted = isCompetitionGameReleaseResult(result) && result === true
           // 例外 object 回傳依然釋放窄 transport 資源，但絕不當 boolean 成功。
-          if (typeof result === 'object' && result !== null) consumeRoundReadyAck(result, claim.request.bindingRef)
+          if (typeof result === 'object' && result !== null) consumeGameRoomReadyAck(result, claim.request.bindingRef)
         }
       } catch {
         // 技術失敗只保留 durable 工作；不反射 remote message、private binding 或假的成功 receipt。
@@ -3153,16 +3170,33 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
         const namespace = this.roomEnv.GAME_ROOM
         if (!namespace) throw new Error('game room binding unavailable')
         const stub = namespace.get(namespace.idFromName(claim.row.game_id))
-        const ack = await stub.createCompetitionGame({
+        const create = stub.createCompetitionGame
+        if (typeof create !== 'function') throw new Error('game room create capability unavailable')
+        const ack = await Reflect.apply(create, stub, [{
           gameId: claim.row.game_id,
           binding: structuredClone(claim.binding),
-        })
+        }])
         const bindingRef = await competitionGameBindingRefForRequest({
           gameId: claim.row.game_id,
           binding: claim.binding,
         })
-        accepted = isCompetitionRoomReadyAck(ack, bindingRef)
+        accepted = consumeGameRoomReadyAck(ack, bindingRef) !== null
         if (!accepted) errorCode = 'invalidGameRoomAck'
+        else if (claim.row.game_number > 1) {
+          accepted = false
+          const release = stub.releaseCompetitionGame
+          if (typeof release !== 'function') throw new Error('game room release capability unavailable')
+          const releaseResult: unknown = await Reflect.apply(release, stub, [{
+            bindingRef,
+            commandId: `game-provision-release:${claim.row.command_id}`,
+          } satisfies CompetitionGameAdmissionRequest])
+          accepted = isCompetitionGameReleaseResult(releaseResult) && releaseResult === true
+          // release 預期回傳 boolean；若 RPC transport 回傳可釋放資源的物件，仍需關閉它。
+          if (typeof releaseResult === 'object' && releaseResult !== null) {
+            consumeGameRoomReadyAck(releaseResult, bindingRef)
+          }
+          if (!accepted) errorCode = 'invalidGameRoomReleaseAck'
+        }
       } catch {
         // 失敗保留同一持久 linkage，晚 ACK 只由原 claim 收斂。
       }
@@ -6610,12 +6644,30 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
              WHERE match_id = ? AND game_number = ?`,
             scheduled.matchId, game.gameNumber,
           ).toArray()[0]
-          if (!provision || provision.status !== 'provisioned' || !nonEmpty(provision.game_id)) return null
+          let gameId: string | null = null
+          if (provision) {
+            if (provision.status !== 'provisioned' || !nonEmpty(provision.game_id)) return null
+            gameId = provision.game_id
+          } else {
+            // 首局由整輪 ledger 持有；後續局數則由 game provision outbox 持有。
+            const roundRoom = this.storage.sql.exec<{
+              [key: string]: ArrayBuffer | string | number | null
+              game_id: string
+              status: RoundRoomLedgerRow['status']
+            }>(
+              `SELECT game_id, status FROM competition_round_room_ledger
+               WHERE match_id = ? AND game_number = ?`,
+              scheduled.matchId, game.gameNumber,
+            ).toArray()[0]
+            if (!roundRoom || (roundRoom.status !== 'confirmed' && roundRoom.status !== 'started')
+              || !nonEmpty(roundRoom.game_id)) return null
+            gameId = roundRoom.game_id
+          }
           refs.push({
             matchId: scheduled.matchId,
-            gameId: provision.game_id,
+            gameId,
             gameNumber: game.gameNumber,
-            replayId: competitionReplayId(competitionId, provision.game_id),
+            replayId: competitionReplayId(competitionId, gameId),
           })
         }
       }
@@ -7952,7 +8004,7 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     } catch {
       return roomFailure('invalidMatchCheckpoint', 'participant game state is unavailable')
     }
-    const matchTeams = participantMatchTeams(row, serverState)
+    const matchTeams = participantMatchTeams(row, serverState, true)
     if (!isValidStoredMatchView(matchView, serverState, row) || !matchTeams) {
       return roomFailure('invalidMatchCheckpoint', 'participant game state is unavailable')
     }
@@ -8020,7 +8072,21 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
       })
     }
 
-    const intent = deriveProvisionIntent(row, serverState, null, null)
+    let scheduleStatus: 'pending' | 'inProgress' = 'inProgress'
+    try {
+      if (findScheduledMatch(serverState.tournament, row.match_id, false, false, 'pending')) {
+        scheduleStatus = 'pending'
+      }
+    } catch {
+      try {
+        if (!findScheduledMatch(serverState.tournament, row.match_id, false, false, 'inProgress')) {
+          return roomFailure('invalidMatchCheckpoint', 'participant game state is unavailable')
+        }
+      } catch {
+        return roomFailure('invalidMatchCheckpoint', 'participant game state is unavailable')
+      }
+    }
+    const intent = deriveProvisionIntent(row, serverState, null, null, scheduleStatus)
     if (!intent.ok) {
       if (intent.code === 'firstPlayerPending') {
         return roomSuccess({
@@ -8043,8 +8109,10 @@ export class CompetitionRoom extends DurableObject<CompetitionRoomEnv> {
     if (!rosterBinding.ok) {
       return roomFailure('invalidLockedRoster', 'participant game roster is unavailable')
     }
-    const linked = this.gameProvision(request.matchId, intent.value.gameNumber)
-      ?? await this.confirmedRoundParticipantLink(request.matchId, intent.value.gameNumber)
+    const linked = scheduleStatus === 'pending'
+      ? await this.confirmedRoundParticipantLink(request.matchId, intent.value.gameNumber)
+      : this.gameProvision(request.matchId, intent.value.gameNumber)
+        ?? await this.confirmedRoundParticipantLink(request.matchId, intent.value.gameNumber)
     if (!linked) {
       return roomSuccess({
         competitionId: request.competitionId,
@@ -9349,7 +9417,7 @@ function noShowTournamentResult(
 }
 
 /** RPC disposer 是 transport 資源；只抽 exact 三個 data 欄位，不放寬 shared JSON guard。 */
-function consumeRoundReadyAck(value: unknown, expected: CompetitionGameBindingRef): CompetitionRoomReadyAck | null {
+function consumeGameRoomReadyAck(value: unknown, expected: CompetitionGameBindingRef): CompetitionRoomReadyAck | null {
   let disposer: ((...args: never[]) => unknown) | null = null
   let snapshot: CompetitionRoomReadyAck | null = null
   try {
@@ -12803,6 +12871,7 @@ function parseParticipantServerState(value: string): CompetitionServerState | nu
 function participantMatchTeams(
   row: MatchRow,
   serverState: CompetitionServerState,
+  allowPendingRound = false,
 ): [string, string] | null {
   try {
     const checkpoint = parseJsonObject(row.match_checkpoint_json, 'match checkpoint')
@@ -12828,10 +12897,20 @@ function participantMatchTeams(
       || !Array.isArray(match.corrections)) return null
 
     const teams = config.teams
-    const scheduled = findScheduledMatch(serverState.tournament, row.match_id, true, true)
+    let pending: ScheduledMatchMaterialization | null = null
+    if (allowPendingRound) {
+      try {
+        pending = findScheduledMatch(serverState.tournament, row.match_id, false, false, 'pending')
+      } catch {
+        // 已開始的合法交手會拒絕 pending 查詢，再由 in-progress 查詢核實。
+      }
+    }
+    const scheduled = pending ?? findScheduledMatch(serverState.tournament, row.match_id, true, true)
     if (!scheduled || row.stage_id !== scheduled.stageId
       || !sameJson(scheduled.teams, teams) || !sameJson(scheduled.format, config.format)
-      || scheduled.started !== true
+      || (pending
+        ? scheduled.status !== 'pending' || scheduled.started !== false
+        : scheduled.started !== true)
       || (match.status === 'completed') !== (scheduled.status === 'completed')) return null
 
     if (match.status === 'completed' || match.status === 'awaitingReferee') {

@@ -776,7 +776,7 @@ impl RegistrationState {
                 let deck = validate_personal_deck(actor, name, cards)?;
                 let team = self.teams.get_mut(team_id).expect("team checked above");
                 // 隊長確認後重交牌組，須在報名截止前重新確認資料完成；
-                // 名單確認仍可沿用，但這不是房間到場或明示準備。
+                // 名單確認仍可沿用，但這不是房間到場或準備。
                 if team.status == TeamStatus::CheckedIn {
                     team.status = TeamStatus::Registered;
                 }

@@ -20,7 +20,7 @@
 - Lagrange、Dirac：分別 parent P0a Standards／Spec，只寫自己的報告，不改 frozen 四檔。
 - Jason：P0a 等審核，先在自己的 tmp 收斂下一個 ACK／release slice 與元件邊界，不默改 frozen wire／產品。
 
-首輪人類已決定 F＝報名截止，所有資料同時不可再改；未齊者排除並明示安全原因；隊長資料確認與房間 connected／ready 分離。不重問上述決策，不自動延期，不猜淘汰 DoubleLoss 名次。
+首輪人類已決定 F＝報名截止，所有資料同時不可再改；未齊者排除，並說明安全原因；隊長資料確認與房間 connected／ready 分離。不重問上述決策，不自動延期，不猜淘汰 DoubleLoss 名次。
 
 ## 恢復時快照
 
@@ -61,7 +61,7 @@ Jason交付source ／test ，shared兩檔未變。主審讀全部新receipt分�
 
 ## 文末政策訪談與事實盤點
 
-使用者明示 grill-with-docs。主審完整讀 grilling／domain-modeling，先同步已確認的F凍結與排除原因，不重問已決的同時讀秒耗盡雙負／RR基本積分。當前只更新政策文件與已解析的詞彙，不在未完成訪談前改相關產品。
+使用者要求以 grill-with-docs 方式進行。主審完整讀 grilling／domain-modeling，先同步已確認的F凍結與排除原因，不重問已決的同時讀秒耗盡雙負／RR基本積分。當前只更新政策文件與已解析的詞彙，不在未完成訪談前改相關產品。
 
 實際派工失敗：對原Dirac直接send回not found；首次新fact-agent spawn遭thread limit。正常close已完成的Descartes（沒有中止實作／刪資料），再以無model／effort override的新Peirce成功收斂純讀fact。這些是協調失敗，不是產品red。Descartes的stage-qualification與Mencius HTTP交付已收到，仍待元件執行及兩軸審核，不以completed通知當gate PASS。
 
@@ -73,6 +73,6 @@ Peirce自有 `competition-open-decisions-facts.md` 原稿及時間單位附節�
 
 Peirce回合外附節已主審全文讀，另直接核rule的裂地崩山段、實際tribulation producer的指定player／一張合法Card choice與共同時計分流。證實不是純預留能力：A回合裂地可依序要求B及同隊C答，current仍A；當回合TurnDraw則為反例。現行helper按player不同而非team不同分類，core out-of-turn只扣獨立額度，未先扣主時間。這是source fact，不批准該計時政策；補glossary與具體例，時鐘修正仍待user確認，未執行測試或改產品。
 
-最新human「皆同意」已批准Q12／14／15／16：他隊必答選擇先扣作答隊主時間、耗盡再用該選擇的獨立讀秒；同隊隊友沿用原行動回合額度，不給新讀秒；同階段一種30／60／180秒讀秒、不另設回合外欄位、主時間輸入0涵蓋全部視窗不限時。DoubleLoss兩隊退出當前Stage，雙敗亦不落敗部；真正決賽雙負明示冠軍空缺，不造冠亞軍或並列。賽後可保留原紀錄及原因更正賽果／名次，但首版拒絕必須新增比賽或重賽的更正，不重開完成賽程。同步design及現有詞彙，不更改產品或執行測試；一般空缺傳播與後續階段不足的處理尚需human決定，最後共享理解仍待確認。
+最新human「皆同意」已批准Q12／14／15／16：他隊必答選擇先扣作答隊主時間、耗盡再用該選擇的獨立讀秒；同隊隊友沿用原行動回合額度，不給新讀秒；同階段一種30／60／180秒讀秒、不另設回合外欄位、主時間輸入0涵蓋全部視窗不限時。DoubleLoss兩隊退出當前Stage，雙敗亦不落敗部；真正決賽雙負時，冠軍空缺，不造冠亞軍或並列。賽後可保留原紀錄及原因更正賽果／名次，但首版拒絕必須新增比賽或重賽的更正，不重開完成賽程。同步design及現有詞彙，不更改產品或執行測試；一般空缺傳播與後續階段不足的處理尚需human決定，最後共享理解仍待確認。
 
-接續human「皆同意」已批准Q17／18：既有淘汰空位由另一合法隊伍輪空晉級，雙空位繼續傳播空缺，不遞補／復活／造Game勝局或紀錄。尚未開始的已公告後續Stage於前階段及資格確定後，至少2隊按實際資格與原seed來源進行；1隊直接為Stage勝者而不造比賽；0隊明示無合格參賽者、記取消原因且無winner。明確取消須納入整場完成處置，不能默默略過尚未建立的Stage；未決賽果／裁判案件不當作0隊。design、glossary及gate的新政策提示同步，文末訪談frontier已空，依grill-with-docs只待最後整份共識確認後啟動相依產品實作。本輪只改文件，沒有測試／build／commit／push／部署。
+接續human「皆同意」已批准Q17／18：既有淘汰空位由另一合法隊伍輪空晉級，雙空位繼續傳播空缺，不遞補／復活／造Game勝局或紀錄。尚未開始的已公告後續Stage於前階段及資格確定後，至少2隊按實際資格與原seed來源進行；1隊直接為Stage勝者而不造比賽；0隊沒有合格參賽者，記下取消原因且不設 winner。明確取消須納入整場完成處置，不能默默略過尚未建立的Stage；未決賽果／裁判案件不當作0隊。design、glossary及gate的新政策提示同步，文末訪談frontier已空，依grill-with-docs只待最後整份共識確認後啟動相依產品實作。本輪只改文件，沒有測試／build／commit／push／部署。

@@ -37,6 +37,7 @@ function stage(): StageConfig {
 function publicSnapshot(config: StageConfig = stage()) {
   return { tournamentId: 'competition a', stages: [{ config, status: 'active', rounds: [], standings: [], corrections: [],
     lastScheduleError: null, scheduleGeneration: 0, supersededRounds: [],
+    rankingTieDecisions: [], resolution: null,
     teams: Object.fromEntries(config.teams.map(team => [team.teamId, { seed: team.seed, dropped: false, hadBye: false }])),
     doubleState: config.format === 'doubleElimination' ? { phase: 'winners', winnersPool: [...teamIds], losersWaiting: [],
       lowerPool: [], winnersChampion: null, losersChampion: null, grandFinalWinner: null } : null }] }
@@ -46,7 +47,7 @@ function ack() {
     projection: { ok: true, operation: 'tournamentCreate', public: publicSnapshot() } }
 }
 
-test('明示種子／設定建立 exact 八欄 stage、三欄 POST，原五欄 ACK 確認後才可完成', () => {
+test('種子／設定建立 exact 八欄 stage、三欄 POST，原五欄 ACK 確認後才可完成', () => {
   const ids = [stageId, commandId]
   const intent = buildTournamentCreateIntent(context(), draft(), () => {
     const value = ids.shift()
@@ -101,7 +102,7 @@ test('只以已驗主辦／locked checkedIn 同集合建立 context，白名單�
   expect(createTournamentManagementContext('competition a', 'organizer-a', getter)).toBeNull()
 })
 
-test('只預填五分鐘主時間與三十秒讀秒，其餘必須明示；驗證失敗不消耗 UUID', () => {
+test('只預填五分鐘主時間與三十秒讀秒，其餘欄位必填；驗證失敗不消耗 UUID', () => {
   const empty = createTournamentManagementDraft(context())
   expect(empty.clock).toEqual({ mainMinutes: '5', byoyomiSeconds: '30' })
   expect(empty.randomSeed).toBe('')
@@ -133,7 +134,7 @@ test('整數分鐘轉毫秒、零表示不限時且讀秒共用；拒絕非整�
   }
 })
 
-test('完整鎖定隊伍同集合、unique u32 正種子，允許明示非連續種子與重排', () => {
+test('完整鎖定隊伍同集合、unique u32 正種子，允許非連續種子與重排', () => {
   const input = draft()
   input.teams.reverse()
   const first = input.teams[0]
@@ -150,7 +151,7 @@ test('完整鎖定隊伍同集合、unique u32 正種子，允許明示非連續
   }
 })
 
-test('Swiss 完整政策原樣序列化，明示無同分比較可為空；未決政策不默補', () => {
+test('Swiss 完整政策原樣序列化，無同分比較可為空；未決政策不默補', () => {
   const input = swissDraft()
   expect(intent(input).body.stage.swissPolicy).toEqual({ matchPoints: { win: 3, draw: 1, loss: 0, bye: 3 }, drawCredit: { numerator: 1, denominator: 2 },
     opponentWinRateFloorPercent: 33, opponentWinRateCapPercent: null, excludeByesFromOpponentWinRate: true, tieBreakers: ['matchPoints', 'opponentWinRate'] })
@@ -177,7 +178,7 @@ test('runtime 表單不以 cast／coercion 接受損壞值；非 Swiss 明列 nu
   expect(() => parseTournamentStageDraft(context(), accessor)).toThrow('賽程設定')
 })
 
-test('公開排程亂數由明示呼叫取 Uint32 一次，不從時間／fixture 產生', () => {
+test('每次產生公開排程亂數只呼叫一次 Uint32，不從時間／fixture 產生', () => {
   let calls = 0
   expect(generateTournamentScheduleRandomSeed(target => { calls += 1; expect(target).toHaveLength(1); target[0] = 0xffff_ffff })).toBe(4294967295)
   expect(calls).toBe(1)

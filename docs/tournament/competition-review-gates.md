@@ -100,7 +100,7 @@ P2 的 [17–21](tickets/README.md#逐票入口與功能相依) 是正式辦賽�
 
 [初審](../../scratch/ticket20-review-2026-10-15/report.md)、[第一次](../../scratch/ticket20-retry-review-2026-10-15/report.md)、[第二次](../../scratch/ticket20-second-retry-review-2026-10-15/report.md)、[第三次](../../scratch/ticket20-third-retry-review-2026-10-15/report.md)、[第四次](../../scratch/ticket20-fourth-retry-review-2026-10-15/report.md)、[第五次](../../scratch/ticket20-fifth-retry-review-2026-10-15/report.md)、[第六次](../../scratch/ticket20-sixth-retry-review-2026-10-15/report.md)、[第七次](../../scratch/ticket20-seventh-retry-review-2026-10-15/report.md)及[第八次複審](../../scratch/ticket20-eighth-retry-review-2026-10-15/report.md)證據保留。前輪原槽位、全空層、跨Rust／TS checkpoint契約與UI宣告問題均已在本輪目前版本重新驗證閉合；不以歷史PASS替代目前來源驗收。
 
-[21](tickets/21-zero-one-team-stage-completion.md) **限定 PASS**：2026-10-15 第二次複審完整目前13檔，Standards 硬性0／Low建議1（非阻擋），Spec 0，見[本輪兩軸末審與完整證據](../../scratch/ticket21-second-retry-review-2026-10-15/report.md)。資格確定後零隊明示取消且無勝者，一隊直接勝出且不造Match或Game；保留來源mapping／seed、不遞補及真正未決封鎖，網站、階段權威、整場完成及一般重試一致。正常淘汰前綴後空冠軍P2閉合，原10例及4／8／16隊控制與反例合計13／0。主審新跑正式1,433／0、0skip（Cargo778、父房386、子房144、bridge37、helpers63、Nuxt25），build／typecheck／fmt／diff全通過。舊時計fixture單一預期3020改4020經既有因果證據校正，產品時計未改，已納兩軸補審。修後13來源摘要與兩份WASM一致，四項驗收勾選，本票及關卡合計14檔納入提交。限定本票指定元件／純模組，不外推native Worker／Brave與22／28集中矩陣。
+[21](tickets/21-zero-one-team-stage-completion.md) **限定 PASS**：2026-10-15 第二次複審完整目前13檔，Standards 硬性0／Low建議1（非阻擋），Spec 0，見[本輪兩軸末審與完整證據](../../scratch/ticket21-second-retry-review-2026-10-15/report.md)。資格確定後，零隊時取消階段且不設勝者；一隊直接勝出且不造Match或Game。保留來源mapping／seed、不遞補及真正未決封鎖，網站、階段權威、整場完成及一般重試一致。正常淘汰前綴後空冠軍P2閉合，原10例及4／8／16隊控制與反例合計13／0。主審新跑正式1,433／0、0skip（Cargo778、父房386、子房144、bridge37、helpers63、Nuxt25），build／typecheck／fmt／diff全通過。舊時計fixture單一預期3020改4020經既有因果證據校正，產品時計未改，已納兩軸補審。修後13來源摘要與兩份WASM一致，四項驗收勾選，本票及關卡合計14檔納入提交。限定本票指定元件／純模組，不外推native Worker／Brave與22／28集中矩陣。
 
 [初審 HOLD](../../scratch/ticket21-review-2026-10-15/report.md)與[第一次複審 HOLD](../../scratch/ticket21-retry-review-2026-10-15/report.md)原始證據保留。已裁決循環／瑞士退出名額、繁中文案、四隊與正常前綴後單敗空勝者等問題，均由本輪目前來源與原反例重新驗證閉合；作者測試與主審放行分別記錄，不以歷史PASS代替目前驗收。
 
@@ -112,7 +112,9 @@ P3 範圍及相依只見[票據索引](tickets/README.md#優先級與首場界�
 
 ### 首場賽事驗收
 
-[22](tickets/22-first-event-integration-validation.md) 的 01–21 前置全部實作並通過指定元件／純模組關卡後，才由主審集中執行 Cargo、WASM／跨模組、專案型別與打包、真 Worker／Brave／端到端驗收。驗收報告明列賽制、參賽型態、規則與階段覆蓋範圍，不能把單一 RR 1v1 成功外推完整矩陣。具體分支只在 22 維護；沒有實證或相關案件／名次仍未決時，不得宣告正式辦賽範圍通過。
+[22](tickets/22-first-event-integration-validation.md) 的 01–21 前置全部實作並通過指定元件／純模組關卡後，才由主審集中執行 Cargo、WASM／跨模組、專案型別與打包、真 Worker／Brave 多 session 整合驗收。驗收報告明列賽制、參賽型態、規則與階段覆蓋範圍，不能把單一 RR 1v1 成功外推完整矩陣。具體分支只在 22 維護；沒有實證或相關案件／名次仍未決時，不得宣告正式辦賽範圍通過。
+
+2026-10-16 票 22 本輪 **HOLD**：[整合報告與原始命令／產物紀錄](../../scratch/tour-attempt/ticket22-first-event-2026-10-16/report.md)。Rust 全量 `cargo test`、格式檢查、Nuxt typecheck、fresh WASM／Nuxt build、CompetitionRoom／GameRoom 元件測例及專用 Brave 多 session 真 Worker 流程通過；Web unit suite 為 954 pass／6 skip／0 fail。主辦開放報名後即關閉 session，兩個玩家 session 從 F 走到結束；Round Robin、Swiss、單敗及雙敗都有實際 1v1 對局並自動完成。隔離 Worker 把初始血量設定回應覆寫為 20，不改正式規則；階段入口仍於 E+5 分鐘發布，入口一開且玩家準備後立即開賽，不等 T。票 22 第 2、6、7 項限定通過；2v2、完整 Swiss 排名／同分、淘汰 Draw、季軍、雙敗重置與缺席／超時／退出／空缺等矩陣未放行，故整票維持 HOLD。P3 仍非前置。
 
 ## 歷史能力與證據
 

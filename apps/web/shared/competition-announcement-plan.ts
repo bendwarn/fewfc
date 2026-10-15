@@ -183,16 +183,16 @@ function buildSwissPolicy(
   const cap = draftPercent(draft.swissPolicy.opponentWinRateCapPercent, '瑞士對手勝率上限')
   if (floor !== null && cap !== null && floor > cap) invalid('瑞士對手勝率下限不可高於上限。')
   if (draft.swissPolicy.excludeByesFromOpponentWinRate !== 'yes'
-    && draft.swissPolicy.excludeByesFromOpponentWinRate !== 'no') invalid('請明示計算對手勝率時是否排除輪空。')
+    && draft.swissPolicy.excludeByesFromOpponentWinRate !== 'no') invalid('請選擇計算對手勝率時是否排除輪空。')
   const tieBreakers: SwissTieBreaker[] = []
   if (draft.swissPolicy.tieMode === 'configured') {
     for (const tieBreaker of draft.swissPolicy.tieBreakers) {
-      if (!isTieBreaker(tieBreaker) || tieBreakers.includes(tieBreaker)) invalid('瑞士同分比較順序必須明示且不可重複。')
+      if (!isTieBreaker(tieBreaker) || tieBreakers.includes(tieBreaker)) invalid('瑞士同分比較順序不可重複。')
       tieBreakers.push(tieBreaker)
     }
-    if (tieBreakers.length === 0) invalid('請明示瑞士同分比較順序，或選擇不設定。')
+    if (tieBreakers.length === 0) invalid('請設定瑞士同分比較順序，或選擇不設定。')
   } else if (draft.swissPolicy.tieMode !== 'none' || draft.swissPolicy.tieBreakers.length !== 0) {
-    invalid('請明示瑞士同分比較順序，或選擇不設定。')
+    invalid('請設定瑞士同分比較順序，或選擇不設定。')
   }
   return {
     matchPoints,
@@ -240,7 +240,7 @@ function draftPercent(
   label: string,
 ): number | null {
   if (draft.mode === 'none') return null
-  if (draft.mode !== 'value') invalid(`${label}請明示選擇是否設定。`)
+  if (draft.mode !== 'value') invalid(`請選擇${label}要不要設定。`)
   const value = u32(draft.value, label)
   if (value > 100) invalid(`${label}必須介於零到一百。`)
   return value

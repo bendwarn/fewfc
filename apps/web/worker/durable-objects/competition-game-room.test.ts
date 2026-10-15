@@ -25,6 +25,7 @@ let rulesEngineMode:
   | 'finishedWithoutConclusion'
   | 'finishedMismatchedRecord'
   | 'finishedGameEndedFollowedByEvent'
+  | 'finishedWithTrailingEmptyDecision'
   | 'finishedWithoutGameEnded'
   | 'randomFinished'
   | 'randomInterrupted'
@@ -139,6 +140,7 @@ mock.module('../rules-engine', () => ({
       || rulesEngineMode === 'finishedWithoutConclusion'
       || rulesEngineMode === 'finishedMismatchedRecord'
       || rulesEngineMode === 'finishedGameEndedFollowedByEvent'
+      || rulesEngineMode === 'finishedWithTrailingEmptyDecision'
       || rulesEngineMode === 'finishedWithoutGameEnded'
       || (rulesEngineMode === 'randomFinished'
         && (request.action?.type === 'resolveRandomness' || request.action?.type === 'refresh')))
@@ -150,13 +152,16 @@ mock.module('../rules-engine', () => ({
     const recordConclusion = rulesEngineMode === 'finishedMismatchedRecord'
       ? { outcome: { type: 'winner', team: 'team-b' }, causes: [{ type: 'directVictory', rule: 'test', team: 'team-b' }] }
       : stateConclusion
+    const rulesRecordConclusion = rulesEngineMode === 'finishedWithTrailingEmptyDecision'
+      ? { outcome: { Winner: 'team-a' }, causes: [{ DirectVictory: { rule: 'test', team: 'team-a' } }] }
+      : recordConclusion
     const recordEvents = rulesEngineMode === 'finishedWithoutConclusion'
       ? [{ GameEnded: {} }]
       : rulesEngineMode === 'finishedWithoutGameEnded'
         ? []
       : recordConclusion
         ? [
-            { GameEnded: { conclusion: recordConclusion } },
+            { GameEnded: { conclusion: rulesRecordConclusion } },
             ...(rulesEngineMode === 'finishedGameEndedFollowedByEvent' ? [{ AfterGameEnded: {} }] : []),
           ]
         : []
@@ -209,7 +214,14 @@ mock.module('../rules-engine', () => ({
       : state
     return {
       type: 'ready',
-      record: finished ? [{ source: 'Automatic', events: recordEvents }] : [],
+      record: finished
+        ? [
+            { source: 'Automatic', events: recordEvents },
+            ...(rulesEngineMode === 'finishedWithTrailingEmptyDecision'
+              ? [{ source: 'Automatic', events: [] }]
+              : []),
+          ]
+        : [],
       state: returnedState,
       battleRecord: { preparation: { entries: [] }, turns: [] },
       playableActions: [],
@@ -1131,6 +1143,26 @@ test('round-release child records one pre-game no-show decision from the fixed r
       .toEqual({ ok: false, code: 'checkInDeadlinePassed' })
     roundReleaseNoStart(fixture.storage)
   } finally { Date.now = realNow }
+})
+
+test('round continuation remains enterable and ready after the initial check-in deadline', async () => {
+  const fixture = await roundReleaseFixture({
+    gameNumber: 3,
+    roundStartMs: Date.now() - 10_000,
+    deckSeed: 'competition-1:match-1:game-3',
+  })
+  expect(await fixture.room.releaseCompetitionGame(fixture.release)).toBe(true)
+
+  for (const userId of ['user-a', 'user-b']) {
+    await connectCompetitionMember(fixture.room, fixture.sockets, userId, true)
+    expect(await fixture.room.setCompetitionReady({ actorUserId: userId, ready: true }))
+      .toEqual({ ok: true, ready: true })
+  }
+  await drainWaitUntil(fixture.pendingWaits)
+
+  expect(fixture.storage.values.has('competitionNoShowDecision')).toBe(false)
+  expect(fixture.storage.values.get('competitionGameAdmission')).toMatchObject({ status: 'started' })
+  expect(fixture.storage.values.get('metadata')).toMatchObject({ status: 'Active' })
 })
 
 test('round-release child treats a team as absent when any fixed member missed check-in', async () => {
@@ -2901,6 +2933,7 @@ test('multi-game start batch or alarm failure rolls back the complete start and 
   await createReleasedCompetitionGame(room, request)
   await prepareAllMembers(storage)
   const initialEvents = storedRoomEvents(storage)
+  const initialAlarm = storage.alarm
 
   storage.failNextBatch = true
   await expect(room.startCompetitionGame(request)).rejects.toThrow('simulated atomic storage failure')
@@ -2908,7 +2941,7 @@ test('multi-game start batch or alarm failure rolls back the complete start and 
   expect(await storage.get('gameRecord')).toBeUndefined()
   expect(storedRoomEvents(storage)).toEqual(initialEvents)
   expect((await storage.get<Record<string, unknown>>('competitionDeliveryQueue'))?.entries).toEqual([])
-  expect(storage.alarm).toBe(request.binding.roundStartMs)
+  expect(storage.alarm).toBe(initialAlarm)
 
   storage.failNextAlarm = true
   await expect(room.startCompetitionGame(request)).rejects.toThrow('simulated alarm transaction failure')
@@ -2916,7 +2949,7 @@ test('multi-game start batch or alarm failure rolls back the complete start and 
   expect(await storage.get('gameRecord')).toBeUndefined()
   expect(storedRoomEvents(storage)).toEqual(initialEvents)
   expect((await storage.get<Record<string, unknown>>('competitionDeliveryQueue'))?.entries).toEqual([])
-  expect(storage.alarm).toBe(request.binding.roundStartMs)
+  expect(storage.alarm).toBe(initialAlarm)
 
   await room.startCompetitionGame(request)
   expect((await storage.get<Record<string, unknown>>('competitionDeliveryQueue'))?.entries)
@@ -4303,8 +4336,8 @@ test.serial('ticket 16 builds a stable public replay draft from the finished roo
   }
 })
 
-test('canonical Finished commits game record, metadata, receipt, event, terminal outbox and alarm atomically', async () => {
-  rulesEngineMode = 'finished'
+test('canonical Finished commits terminal state when an empty automatic decision follows GameEnded', async () => {
+  rulesEngineMode = 'finishedWithTrailingEmptyDecision'
   const storage = new MemoryStorage()
   const before = new Map(storage.values)
   const { room, request } = await startTerminalRoom(storage)

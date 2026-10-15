@@ -3,7 +3,7 @@ import { flushPromises } from '@vue/test-utils'
 import { expect, it, vi } from 'vitest'
 import CompetitionReadyControls from '~/components/CompetitionReadyControls.vue'
 
-// 主審獨立回歸：同房斷線僅失效 transport，不代表未知明示狀態已被確認。
+// 主審獨立回歸：同房斷線僅失效 transport，不代表未知狀態已被確認。
 const fetchMock = vi.hoisted(() => vi.fn())
 mockNuxtImport('$fetch', () => fetchMock)
 
@@ -19,7 +19,7 @@ it('shows a fresh ready action when the authoritative room clears readiness on d
   })
   try {
     expect(wrapper.text()).toContain('目前狀態：已準備')
-    expect(wrapper.get('button.ready-action').text()).toBe('明示取消準備')
+    expect(wrapper.get('button.ready-action').text()).toBe('取消準備')
 
     await wrapper.setProps({ memberReady: false, memberConnected: false, socketConnected: false })
     expect(wrapper.text()).toContain('目前狀態：尚未準備')
@@ -27,7 +27,7 @@ it('shows a fresh ready action when the authoritative room clears readiness on d
 
     await wrapper.setProps({ memberConnected: true, socketConnected: true })
     expect(wrapper.text()).toContain('目前狀態：尚未準備')
-    expect(wrapper.get('button.ready-action').text()).toBe('明示已準備')
+    expect(wrapper.get('button.ready-action').text()).toBe('我準備好了')
     expect(wrapper.get('button.ready-action').attributes('disabled')).toBeUndefined()
     expect(wrapper.find('button.same-state-retry').exists()).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()

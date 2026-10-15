@@ -71,7 +71,7 @@ function rulingFixture(ruling: CompetitionRuling) {
 }
 
 describe('競賽裁判更正 app 契約', () => {
-  test('正常交手讀取、明示已保存候選建立七欄固定命令，再驗最小 receipt ACK', () => {
+  test('正常交手讀取、已保存候選建立七欄固定命令，再驗最小 receipt ACK', () => {
     const identity = scope()
     const view = parseCompetitionCorrectionMatch(fixture(), identity)
     expect(competitionCorrectionPath(identity)).toBe('/api/competitions/competition%20a/matches/match%2Fone')

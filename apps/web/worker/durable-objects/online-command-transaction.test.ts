@@ -115,6 +115,61 @@ describe('executePlayerCommand', () => {
     expect(JSON.stringify(result.response)).not.toContain('needsRandomness')
   })
 
+  test('queues the competition clock transition with the final trusted-randomness checkpoint', async () => {
+    const room = randomnessRoom()
+
+    await executePlayerCommand(room, {
+      commandId: 'command-random-clock', gameInstanceId: 'game-1', transactionId: 'transaction-random-clock',
+      actorUserId: 'alice-user', action: { type: 'passAction', reason: 'NoCardsInHand' },
+    })
+
+    expect(room.competitionTransitions).toHaveLength(1)
+    const [, previous, next, sourceCommandId, sequence] = room.competitionTransitions[0] as [
+      unknown,
+      { status: string; phase: string; turnNumber: number; currentPlayer: string },
+      { state: { status: string; currentPlayer: string } },
+      string,
+      number,
+    ]
+    expect(previous).toMatchObject({
+      status: 'InProgress', phase: 'Action', turnNumber: 1, currentPlayer: 'alice',
+    })
+    expect(next.state).toMatchObject({ status: 'InProgress', currentPlayer: 'bob' })
+    expect(sourceCommandId).toBe('trusted-randomness:shuffle-2')
+    expect(sequence).toBe(10)
+  })
+
+  test('retains the clock transition source when trusted randomness resumes after a failed attempt', async () => {
+    const room = randomnessRoom({ failFirstRandomnessResolution: true })
+    const request = {
+      commandId: 'command-random-clock-retry', gameInstanceId: 'game-1',
+      transactionId: 'transaction-random-clock-retry', actorUserId: 'alice-user',
+      action: { type: 'passAction' as const, reason: 'NoCardsInHand' as const },
+    }
+
+    await expect(executePlayerCommand(room, request)).rejects.toThrow('temporary randomness failure')
+    expect(await room.storage.get('transaction:game-1')).toMatchObject({
+      clockTransitionState: {
+        status: 'InProgress', phase: 'Action', turnNumber: 1, currentPlayer: 'alice',
+      },
+    })
+
+    await executePlayerCommand(room, request)
+
+    expect(room.competitionTransitions).toHaveLength(1)
+    const [, previous, next, sourceCommandId, sequence] = room.competitionTransitions[0] as [
+      unknown,
+      { status: string; phase: string; turnNumber: number; currentPlayer: string },
+      { state: { status: string; currentPlayer: string } },
+      string,
+      number,
+    ]
+    expect(previous).toMatchObject({ currentPlayer: 'alice', phase: 'Action' })
+    expect(next.state).toMatchObject({ currentPlayer: 'bob' })
+    expect(sourceCommandId).toBe('trusted-randomness:shuffle-2')
+    expect(sequence).toBe(10)
+  })
+
   test('keeps a deterministic validation failure as a noncanonical rejection receipt', async () => {
     const room = fakeRoom()
     room.callRules = async (action: { type: string }) => {
@@ -177,7 +232,7 @@ function fakeRoom() {
   }
 }
 
-function randomnessRoom() {
+function randomnessRoom(options: { failFirstRandomnessResolution?: boolean } = {}) {
   const values = new Map<string, unknown>()
   const metadata = {
     schemaVersion: 4 as const, gameId: 'room-1', gameInstanceId: 'game-1', name: 'Room',
@@ -193,6 +248,9 @@ function randomnessRoom() {
   const randomnessRequests: string[] = []
   const committedSequences: number[] = []
   const commandActions: string[] = []
+  const competitionTransitions: unknown[][] = []
+  let pendingRequestId: string | null = null
+  let failFirstRandomnessResolution = options.failFirstRandomnessResolution ?? false
   values.set('nextSequence', 8)
   values.set('gameRecord', record)
 
@@ -215,6 +273,7 @@ function randomnessRoom() {
     randomnessRequests,
     committedSequences,
     commandActions,
+    competitionTransitions,
     storage: {
       async get<T>(key: string) { return values.get(key) as T | undefined },
       async put(entries: Record<string, unknown>) {
@@ -231,12 +290,33 @@ function randomnessRoom() {
     playerFor(_metadata: unknown, userId: string) { return userId === 'alice-user' ? 'alice' : undefined },
     actionForPlayer(action: unknown) { return action },
     async callRules(action: { type: string; requestId?: string }) {
+      if (action.type === 'refresh') {
+        if (pendingRequestId) return needs(pendingRequestId, [1, 2])
+        return {
+          type: 'ready' as const,
+          record: [],
+          state: {
+            status: 'InProgress', phase: 'Action', turnNumber: 1, currentPlayer: 'alice',
+            initialPouchSelection: null, pendingChoice: null,
+          },
+        }
+      }
       if (action.type === 'resolveRandomness') {
         randomnessRequests.push(action.requestId as string)
-        return action.requestId === 'shuffle-1' ? needs('shuffle-2', [3, 4]) : ready
+        if (failFirstRandomnessResolution) {
+          failFirstRandomnessResolution = false
+          throw new Error('temporary randomness failure')
+        }
+        if (action.requestId === 'shuffle-1') {
+          pendingRequestId = 'shuffle-2'
+          return needs('shuffle-2', [3, 4])
+        }
+        pendingRequestId = null
+        return ready
       }
       if (action.type === 'passAction') {
         commandActions.push(action.type)
+        pendingRequestId = 'shuffle-1'
         return needs('shuffle-1', [1, 2])
       }
       return ready
@@ -249,6 +329,10 @@ function randomnessRoom() {
           { eventType: 'RustedForestCompleted' },
         ],
       }
+    },
+    competitionDelivery(...args: unknown[]) {
+      competitionTransitions.push(args)
+      return undefined
     },
     shuffle<T>(cards: T[]) { return [...cards].reverse() },
   }

@@ -275,7 +275,7 @@ fn single_elimination_final_double_loss_leaves_both_finalists_unranked() {
         assert_eq!(
             serialized_standing.get("rank"),
             Some(&serde_json::Value::Null),
-            "finalist {team_id} 的公開 rank 必須明示 null，不能缺欄位或造假名次"
+            "finalist {team_id} 的公開 rank 必須是 null，不能缺欄位或造假名次"
         );
     }
 }

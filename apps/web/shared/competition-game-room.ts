@@ -1,5 +1,5 @@
 import type { GameConclusion, GameStartKind } from './competition'
-import type { PlayerId, PublicGameState, PublicPendingChoice } from '../app/types/fewfc'
+import type { PlayerId, PublicGameState } from '../app/types/fewfc'
 import type { PlayerDeckList, RuleVersion, RulesGameSetup } from './game-room'
 import type {
   CompetitionRoomMatchOperation,
@@ -18,11 +18,44 @@ export type CompetitionClockOperation = Extract<CompetitionRoomMatchOperation, {
     | 'clockNewGame'
 }>
 
+/** 時鐘轉換所需的最小公開狀態，不保留手牌或選項內容。 */
+export interface CompetitionClockTransitionState {
+  status: PublicGameState['status']
+  phase: PublicGameState['phase']
+  turnNumber: number
+  currentPlayer: PlayerId | null
+  initialPouchSelection: PublicGameState['initialPouchSelection']
+  pendingChoice: CompetitionClockPendingChoice | null
+}
+
+export type CompetitionClockPendingChoice =
+  | { visibility: 'visible'; choiceId: number; player: PlayerId }
+  | { visibility: 'hidden'; player: PlayerId }
+
+/** 保存 randomness 前的 clock boundary 時，只複製非私密的轉換欄位。 */
+export function competitionClockTransitionState(state: PublicGameState): CompetitionClockTransitionState {
+  const choice = state.pendingChoice
+  return {
+    status: state.status,
+    phase: state.phase,
+    turnNumber: state.turnNumber,
+    currentPlayer: state.currentPlayer,
+    initialPouchSelection: state.initialPouchSelection
+      ? { remainingPlayers: [...state.initialPouchSelection.remainingPlayers] }
+      : null,
+    pendingChoice: choice === null
+      ? null
+      : choice.visibility === 'visible'
+        ? { visibility: 'visible', choiceId: choice.choiceId, player: choice.player }
+        : { visibility: 'hidden', player: choice.player },
+  }
+}
+
 /** 從相鄰的 canonical 公開狀態推導時鐘視窗轉換；不讀取或重算時間。 */
 export function competitionClockOperationsForTransition(
   binding: CompetitionGameBinding,
-  previous: PublicGameState,
-  next: PublicGameState,
+  previous: CompetitionClockTransitionState,
+  next: CompetitionClockTransitionState,
 ): CompetitionClockOperation[] {
   const operations: CompetitionClockOperation[] = []
   if (next.status === 'Finished') {
@@ -43,9 +76,10 @@ export function competitionClockOperationsForTransition(
       operations.push({ type: 'clockFinishPreparation', matchId: binding.matchId, team })
     }
   }
-  if (previous.initialPouchSelection !== null
-    && next.initialPouchSelection === null
-    && next.status === 'InProgress') {
+  const firstActionStarted = next.status === 'InProgress'
+    && ((previous.initialPouchSelection !== null && next.initialPouchSelection === null)
+      || (previous.status === 'Preparing' && previous.initialPouchSelection === null))
+  if (firstActionStarted) {
     const player = requireCurrentPlayer(binding, next)
     const team = teamForPlayer(binding, player)
     operations.push({
@@ -100,7 +134,7 @@ export function competitionClockOperationsForTransition(
 /** 只選取需獨立時計視窗的回合外選擇；同隊隊友仍屬回合外選擇。 */
 function independentClockChoice(
   binding: CompetitionGameBinding,
-  choice: PublicPendingChoice | null,
+  choice: CompetitionClockPendingChoice | null,
   currentPlayer: PlayerId | null,
 ): { team: string; choiceId: string } | null {
   if (!choice || choice.player === currentPlayer) return null
@@ -116,7 +150,7 @@ function independentClockChoice(
   }
 }
 
-function requireCurrentPlayer(binding: CompetitionGameBinding, state: PublicGameState): PlayerId {
+function requireCurrentPlayer(binding: CompetitionGameBinding, state: CompetitionClockTransitionState): PlayerId {
   if (state.currentPlayer === null) throw new Error('competition action transition has no current player')
   teamForPlayer(binding, state.currentPlayer)
   return state.currentPlayer

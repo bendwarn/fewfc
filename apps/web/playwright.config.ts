@@ -28,13 +28,16 @@ const baseURL = `http://localhost:${port("FEWFC_E2E_PORT", 8727)}`
 const browserName = browserNameFromEnvironment()
 const browserPath = process.env.PLAYWRIGHT_BROWSER_PATH
 const reuseExistingServer = !process.env.CI && process.env.PLAYWRIGHT_REUSE_SERVER === "1"
+const testDir = process.env.FEWFC_TICKET22_MULTISESSION === '1'
+  ? './tests/multisession'
+  : './tests/e2e'
 const e2eServerCommand =
   process.env.FEWFC_E2E_PREBUILT === "1"
     ? "bun run test:e2e:server:built"
     : "bun run test:e2e:server";
 
 export default defineConfig({
-  testDir: "./tests/e2e",
+  testDir,
   workers: process.env.CI ? undefined : 1,
   use: {
     baseURL,

@@ -60,7 +60,7 @@
           </label>
           <label :for="`${inputId}-candidate`">替代競賽判定
             <select :id="`${inputId}-candidate`" v-model="selectedCandidate" data-testid="correction-candidate" :disabled="draftLocked || !candidates.length" required>
-              <option value="" disabled>請明示選擇替代判定</option>
+              <option value="" disabled>請選擇替代判定</option>
               <option v-for="candidate in candidates" :key="candidate.key" :value="candidate.key">{{ candidate.label }}</option>
             </select>
           </label>
@@ -69,7 +69,7 @@
             <textarea :id="`${inputId}-reason`" v-model="reason" data-testid="correction-reason" rows="3" :disabled="draftLocked" required />
           </label>
           <p class="hint">請核對原始終局證據及替代判定。更正可能因後續局或賽程狀態遭拒；本頁不會自動改其他判定或暫停下游。</p>
-          <button class="primary-button" data-testid="correction-submit" type="submit" :disabled="!canSubmit">明示提交更正</button>
+          <button class="primary-button" data-testid="correction-submit" type="submit" :disabled="!canSubmit">提交更正</button>
         </form>
       </template>
     </template>

@@ -82,7 +82,7 @@ export function createTournamentManagementDraft(context: TournamentManagementCon
   }
 }
 
-/** 收集設定而非排程／排名演算法；未明示的政策不能從 fixture 補值。 */
+/** 收集設定而非排程／排名演算法；尚未選定的政策不能從 fixture 補值。 */
 export function parseTournamentStageDraft(context: TournamentManagementContext, input: unknown): TournamentStageSettings {
   try {
     const value = exact(input, ['format', 'teams', 'randomSeed', 'matchGames', 'clock', 'swiss'])
@@ -157,7 +157,7 @@ export function parseTournamentCreateAck(input: unknown, intent: TournamentCreat
   } catch { throw new TournamentCreateProtocolError() }
 }
 
-/** 僅由明示按鈕呼叫一次；公開排程 seed 與牌組／房間的秘密 seed 無關。 */
+/** 按鈕每次只呼叫一次；公開排程 seed 與牌組／房間的秘密 seed 無關。 */
 export function generateTournamentScheduleRandomSeed(
   fill: (target: Uint32Array) => void = target => { crypto.getRandomValues(target) },
 ): number {
@@ -212,10 +212,10 @@ function swissPolicy(input: unknown): SwissStandingPolicy {
   const tieBreakers: SwissTieBreaker[] = []
   if (value.tieMode === 'configured') {
     for (const tie of value.tieBreakers) {
-      if (!isTieBreaker(tie) || tieBreakers.includes(tie)) invalid('同分比較順序必須明示且不可重複。')
+      if (!isTieBreaker(tie) || tieBreakers.includes(tie)) invalid('同分比較順序不可重複。')
       tieBreakers.push(tie)
     }
-    if (tieBreakers.length === 0) invalid('請明示同分比較順序，或選擇不設定。')
+    if (tieBreakers.length === 0) invalid('請設定同分比較順序，或選擇不設定。')
   } else if (value.tieBreakers.length !== 0) invalid()
   return { matchPoints: { win: integerText(points.win, 0, 0xffff_ffff), draw: integerText(points.draw, 0, 0xffff_ffff),
     loss: integerText(points.loss, 0, 0xffff_ffff), bye: integerText(points.bye, 0, 0xffff_ffff) },
@@ -226,7 +226,7 @@ function percent(input: unknown): number | null {
   const value = exact(input, ['mode', 'value'])
   if (!value) invalid()
   if (value.mode === 'none') return null
-  if (value.mode !== 'value') invalid('請明示對手勝率上下限是否設定。')
+  if (value.mode !== 'value') invalid('請選擇是否設定對手勝率上下限。')
   return integerText(value.value, 0, 100)
 }
 function byoyomiTime(input: unknown): number {
@@ -234,7 +234,7 @@ function byoyomiTime(input: unknown): number {
   return Number(input) * 1000
 }
 function integerText(input: unknown, min: number, max: number): number {
-  if (typeof input !== 'string' || !/^\d+$/.test(input.trim())) invalid('請明示各項整數設定，不可留空或填入小數。')
+  if (typeof input !== 'string' || !/^\d+$/.test(input.trim())) invalid('各項設定都必須是整數，不能留空或填小數。')
   const number = Number(input.trim())
   if (!Number.isSafeInteger(number) || number < min || number > max) invalid('整數設定超出允許範圍。')
   return number

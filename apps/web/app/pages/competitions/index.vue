@@ -194,7 +194,7 @@
                 </label>
                 <label :for="`stage-swiss-tie-mode-${index}`">瑞士同分比較
                   <select :id="`stage-swiss-tie-mode-${index}`" v-model="stage.swissPolicy.tieMode" class="text-input" required :disabled="creating || createOutcomeUnknown" @change="selectSwissTieMode(stage)">
-                    <option value="none">不設定</option><option value="configured">明示比較順序</option>
+                    <option value="none">不設定</option><option value="configured">自訂比較順序</option>
                   </select>
                 </label>
               </div>

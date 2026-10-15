@@ -1,7 +1,7 @@
 import type {
   PlayerNotification,
   PlayerNotificationSocketMessage,
-} from '../../shared/game-room'
+} from '#shared/game-room'
 import {
   isTransientPlayerNotification,
   mergePlayerNotification,

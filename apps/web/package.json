@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "pnpm@12.3.4",
   "imports": {
+    "#shared/*": "./shared/*.ts",
     "#shared/utils/rule-modules": "./shared/utils/rule-modules.ts",
     "#shared/utils/rule-versions": "./shared/utils/rule-versions.ts"
   },
@@ -28,6 +29,7 @@
     "test:unit": "bun test app shared worker scripts migrations",
     "test:e2e": "playwright test",
     "test:e2e:built": "FEWFC_E2E_PREBUILT=1 playwright test",
+    "test:ticket22:multisession": "bun scripts/run-ticket22-multisession.ts",
     "test:e2e:server": "bun scripts/local-server.ts --e2e",
     "test:e2e:server:built": "bun scripts/local-server.ts --e2e --built",
     "typecheck": "nuxt typecheck",

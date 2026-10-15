@@ -8,11 +8,14 @@ import {
   type GameRoomResponse,
   type OnlineGameAction,
   type RulesEngineResult,
-  type RulesNeedsRandomnessResult,
   type RulesReadyResult,
   type TrustedRandomnessAction,
 } from '../../shared/game-room'
 import type { PlayerId } from '../../app/types/fewfc'
+import {
+  competitionClockTransitionState,
+  type CompetitionClockTransitionState,
+} from '../../shared/competition-game-room'
 import { RulesEngineError } from '../rules-engine-error'
 
 type PlayerCommandRequest = Extract<GameRoomRequest, { type: 'submitCommand' }>
@@ -28,6 +31,7 @@ interface ResolutionTransaction {
   transactionId: string
   rootActorUserId: string
   rootActor: PlayerId
+  clockTransitionState?: CompetitionClockTransitionState
 }
 
 interface TransactionStorage {
@@ -73,7 +77,7 @@ interface OnlineCommandTransactionHost {
   shuffle<T>(values: T[]): T[]
   competitionDelivery?(
     record: GameRecord,
-    previous: RulesReadyResult,
+    previous: CompetitionClockTransitionState,
     result: RulesReadyResult,
     commandId: string,
     nextSequence: number,
@@ -235,11 +239,28 @@ export async function executePlayerCommand(
     actor,
     action,
     payloadIdentity,
+    clockTransitionState: current.type === 'needsRandomness' && previousRules
+      ? competitionClockTransitionState(previousRules.state)
+      : undefined,
     competitionDelivery: current.type === 'ready' && previousRules
-      ? await host.competitionDelivery?.(record, previousRules, current, request.commandId, record.sequence + 1)
+      ? await host.competitionDelivery?.(
+          record,
+          competitionClockTransitionState(previousRules.state),
+          current,
+          request.commandId,
+          record.sequence + 1,
+        )
       : undefined,
   })
-  const finalCheckpoint = await drainTrustedRandomness(host, accepted.metadata, accepted.record, current)
+  const finalCheckpoint = await drainTrustedRandomness(
+    host,
+    accepted.metadata,
+    accepted.record,
+    current,
+    current.type === 'needsRandomness' && previousRules
+      ? competitionClockTransitionState(previousRules.state)
+      : undefined,
+  )
   const finalMetadata = finalCheckpoint.metadata
 
   return {
@@ -309,6 +330,7 @@ async function commitPlayerCheckpoint(
     actor: PlayerId
     action: OnlineGameAction
     payloadIdentity: string
+    clockTransitionState?: CompetitionClockTransitionState
     competitionDelivery?: CanonicalCompetitionDeliveryCommit
   },
 ) {
@@ -352,6 +374,7 @@ async function commitPlayerCheckpoint(
     rootActorUserId: input.actorUserId,
     rootActor: input.actor,
   }
+  if (input.clockTransitionState) transaction.clockTransitionState = input.clockTransitionState
 
   await commitCanonical(host, {
     expectedSequence: input.record.sequence,
@@ -378,6 +401,7 @@ async function drainTrustedRandomness(
   metadata: GameRoomMetadata,
   record: GameRecord,
   initial: RulesEngineResult,
+  initialClockTransitionState?: CompetitionClockTransitionState,
 ): Promise<{ record: GameRecord; metadata: GameRoomMetadata; nextPlayer?: PlayerId | null }> {
   if (initial.type === 'ready') {
     return { record, metadata, nextPlayer: initial.state.currentPlayer }
@@ -386,6 +410,7 @@ async function drainTrustedRandomness(
   let pending = initial
   let currentRecord = record
   let currentMetadata = metadata
+  let clockTransitionState = initialClockTransitionState
 
   while (true) {
     if (await host.competitionCommandFrozen?.()) {
@@ -401,7 +426,6 @@ async function drainTrustedRandomness(
       requestId: request.requestId,
       shuffledOrder: host.shuffle(request.currentOrder),
     }
-    const previous = await host.callRules({ type: 'refresh' }, 'observer', currentRecord)
     const result = await host.callRules(answer, 'observer', currentRecord)
     const nextSequence = currentRecord.sequence + 1
     const now = new Date().toISOString()
@@ -417,6 +441,7 @@ async function drainTrustedRandomness(
     else checkpoint.finishedAt = finishedAt
     const transactionStatus = statusFor(result)
     const transaction = await requireTransaction(host, currentRecord.gameInstanceId)
+    clockTransitionState ??= transaction.clockTransitionState
     const checkpointMetadata: GameRoomMetadata = {
       ...currentMetadata,
       status: result.type === 'ready' && result.state.status === 'Finished' ? 'Finished' : 'Active',
@@ -445,10 +470,10 @@ async function drainTrustedRandomness(
       transaction: transactionStatus === 'complete'
         ? undefined
         : transaction,
-      competitionDelivery: result.type === 'ready' && previous.type === 'ready'
+      competitionDelivery: result.type === 'ready' && clockTransitionState
         ? await host.competitionDelivery?.(
             currentRecord,
-            previous,
+            clockTransitionState,
             result,
             `trusted-randomness:${request.requestId}`,
             nextSequence,
@@ -475,7 +500,7 @@ async function resumeTrustedRandomnessIfNeeded(
   if (current.type !== 'needsRandomness') return
   const transaction = await host.storage.get<ResolutionTransaction>(transactionKey(record.gameInstanceId))
   if (!transaction || transaction.transactionId !== receipt.transactionId) return
-  await drainTrustedRandomness(host, metadata, record, current)
+  await drainTrustedRandomness(host, metadata, record, current, transaction.clockTransitionState)
 }
 
 async function commitRejectedReceipt(

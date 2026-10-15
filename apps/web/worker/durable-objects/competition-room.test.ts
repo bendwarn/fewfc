@@ -2339,11 +2339,13 @@ function gameRoomNamespace(
     value: { ...request, idempotent: false },
   }),
   eligibility?: (request: CompetitionGameClockControlEligibilityRequest) => Promise<unknown>,
+  release: (request: CompetitionGameAdmissionRequest) => Promise<unknown> = async () => true,
 ) {
   return {
     idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
     get: () => ({
       createCompetitionGame: create,
+      releaseCompetitionGame: release,
       synchronizeCompetitionClock: synchronize,
       ...(eligibility ? { getCompetitionClockControlEligibility: eligibility } : {}),
     }),
@@ -2359,6 +2361,7 @@ async function provisionableRoom(options: {
   teamSize?: 1 | 2
   personalDeck?: boolean
   create?: (request: { gameId: string; binding: CompetitionGameBinding }) => Promise<unknown>
+  release?: (request: CompetitionGameAdmissionRequest) => Promise<unknown>
   synchronize?: (request: CompetitionClockControlRequest) => Promise<unknown>
   eligibility?: (request: CompetitionGameClockControlEligibilityRequest) => Promise<unknown>
   assigned?: boolean
@@ -2374,6 +2377,7 @@ async function provisionableRoom(options: {
   const sql = new MemorySql()
   const alarm: TestAlarmState = { scheduledAt: null }
   const calls: Array<{ gameId: string; binding: CompetitionGameBinding }> = []
+  const releaseCalls: CompetitionGameAdmissionRequest[] = []
   const controlCalls: CompetitionClockControlRequest[] = []
   const engineOperations: string[] = []
   let currentRoster = options.roster ?? lockedRoster(teamSize, personalDeck)
@@ -2426,7 +2430,11 @@ async function provisionableRoom(options: {
     controlCalls.push(structuredClone(request))
     return { ok: true, value: { ...request, idempotent: false } }
   })
-  const env = { GAME_ROOM: gameRoomNamespace(create, synchronize, options.eligibility) }
+  const release = options.release ?? (async () => true)
+  const env = { GAME_ROOM: gameRoomNamespace(create, synchronize, options.eligibility, async request => {
+    releaseCalls.push(structuredClone(request))
+    return release(request)
+  }) }
   const room = new CompetitionRoomClass(stateFor(sql, alarm), env, adapter, options.randomBit)
   expect((await room.initialize(validInitialize())).ok).toBe(true)
   if (options.referee) {
@@ -2614,7 +2622,7 @@ async function provisionableRoom(options: {
   }
 
   return {
-    room, sql, alarm, calls, controlCalls, engineOperations, adapter, env,
+    room, sql, alarm, calls, releaseCalls, controlCalls, engineOperations, adapter, env,
     setRoster: (roster: JsonObject) => { currentRoster = roster },
     setExportMutation: (mutation: 'extra' | 'state' | null) => { exportMutation = mutation },
   }
@@ -7365,6 +7373,7 @@ async function createFormalContinuation(options: {
   preexistingSecondGameLinkage?: boolean
   malformedExportAfterInitial?: 'extra' | 'state'
   create?: (request: { gameId: string; binding: CompetitionGameBinding }) => Promise<unknown>
+  release?: (request: CompetitionGameAdmissionRequest) => Promise<unknown>
   failAutomaticLinkInsert?: boolean
   allowTerminalFailure?: boolean
   failFirstAutomaticAlarm?: boolean
@@ -7379,6 +7388,7 @@ async function createFormalContinuation(options: {
     randomBit: () => 0,
     referee: options.referee,
     create: options.create,
+    release: options.release,
     mutateMatchSubmit: options.mutateMatchSubmit,
   })
   const lockedParticipants = options.teamSize === 2
@@ -8579,6 +8589,89 @@ test('captain provision retries after response loss and restart with the same du
   expect(await setup.room.provisionCaptainAssignedScheduledGame({
     ...request, expectedMatchRevision: request.expectedMatchRevision + 1,
   })).toMatchObject({ ok: false, error: { code: 'commandIdConflict' } })
+})
+
+test('captain provision consumes the Durable Object RPC dispose field before validating its ready ACK', async () => {
+  let disposed = 0
+  const create = async (request: { gameId: string; binding: CompetitionGameBinding }) => {
+    const ack = await testGameRoomReadyAck(request)
+    if (request.binding.gameNumber === 2) {
+      Object.defineProperty(ack, Symbol.dispose, { value() { disposed += 1 } })
+    }
+    return ack
+  }
+  const { setup } = await createFormalContinuation({ winner: 'team-a', create })
+  const assignment = captainFirstPlayerRequest()
+  expect((await setup.room.assignNextFirstPlayerByCaptain(assignment)).ok).toBe(true)
+
+  const provisioned = await setup.room.provisionCaptainAssignedScheduledGame(
+    captainGameProvisionRequest({ assignmentCommandId: assignment.commandId }),
+  )
+
+  expect(provisioned).toMatchObject({
+    ok: true,
+    value: { gameNumber: 2, idempotent: false, status: 'provisioned' },
+  })
+  expect(disposed).toBe(1)
+  expect(setup.releaseCalls).toHaveLength(1)
+  expect(setup.releaseCalls[0]).toMatchObject({
+    bindingRef: { gameId: provisioned.ok ? provisioned.value.gameId : '', gameNumber: 2 },
+  })
+  const linkage = setup.sql.database.query(
+    'SELECT command_id FROM competition_game_provision WHERE game_number = 2',
+  ).get() as { command_id: string }
+  expect(setup.releaseCalls[0]?.commandId).toBe(`game-provision-release:${linkage.command_id}`)
+  expect(setup.sql.database.query(
+    'SELECT status, error_code FROM competition_game_provision WHERE game_number = 2',
+  ).get()).toEqual({ status: 'provisioned', error_code: null })
+})
+
+test('captain provision releases admission and retries with the same durable release identity', async () => {
+  let releaseAttempts = 0
+  const { setup, terminal } = await createFormalContinuation({
+    winner: 'team-a',
+    release: async () => {
+      releaseAttempts += 1
+      return releaseAttempts > 1
+    },
+  })
+  expect(terminal).toMatchObject({ ok: true, value: { matchRevision: 3 } })
+  const assignment = captainFirstPlayerRequest()
+  expect((await setup.room.assignNextFirstPlayerByCaptain(assignment)).ok).toBe(true)
+  const provisionRequest = captainGameProvisionRequest({ assignmentCommandId: assignment.commandId })
+  expect(await setup.room.provisionCaptainAssignedScheduledGame(provisionRequest)).toMatchObject({
+    ok: true, value: { status: 'pending', gameNumber: 2 },
+  })
+  expect(releaseAttempts).toBe(1)
+  expect(setup.sql.database.query(
+    'SELECT status, error_code FROM competition_game_provision WHERE game_number = 2',
+  ).get()).toEqual({ status: 'pending', error_code: 'invalidGameRoomReleaseAck' })
+
+  const linkage = setup.sql.database.query(
+    'SELECT command_id, game_id, binding_json FROM competition_game_provision WHERE game_number = 2',
+  ).get() as { command_id: string; game_id: string; binding_json: string }
+  const binding = JSON.parse(linkage.binding_json) as CompetitionGameBinding
+  const expectedBindingRef = await competitionGameBindingRefForRequest({ gameId: linkage.game_id, binding })
+  expect(setup.releaseCalls).toEqual([{
+    bindingRef: expectedBindingRef,
+    commandId: `game-provision-release:${linkage.command_id}`,
+  }])
+
+  setup.sql.database.query(
+    'UPDATE competition_game_provision SET next_attempt_at_ms = 0 WHERE game_number = 2',
+  ).run()
+  const restarted = new CompetitionRoomClass(stateFor(setup.sql, setup.alarm), setup.env, setup.adapter)
+  expect(await restarted.provisionCaptainAssignedScheduledGame(provisionRequest)).toMatchObject({
+    ok: true, value: { idempotent: true, status: 'provisioned', matchRevision: 4 },
+  })
+  expect(releaseAttempts).toBe(2)
+  expect(setup.releaseCalls).toEqual([
+    { bindingRef: expectedBindingRef, commandId: `game-provision-release:${linkage.command_id}` },
+    { bindingRef: expectedBindingRef, commandId: `game-provision-release:${linkage.command_id}` },
+  ])
+  expect(setup.sql.database.query(
+    'SELECT status, error_code FROM competition_game_provision WHERE game_number = 2',
+  ).get()).toEqual({ status: 'provisioned', error_code: null })
 })
 
 test('captain provision request rejects caller-owned lineup, binding and seed fields', async () => {
@@ -11713,10 +11806,24 @@ test('E6c2a returns null after an accepted final game with a null authoritative 
   expect(e6c2aSnapshot(setup)).toEqual(before)
 })
 
-test('E6c2a formal first-game win awaiting captain selection never returns the old game', async () => {
+test('E6c2a formal first-game completion never returns the old game', async () => {
+  const scenarios = [
+    {
+      name: 'first-to-wins awaits captain selection',
+      format: 'singleElimination' as const,
+      matchFormat: { type: 'firstToWins' as const, value: 2 },
+    },
+    {
+      name: 'fixed-games round robin awaits its next game',
+      format: 'roundRobin' as const,
+      matchFormat: { type: 'fixedGames' as const, value: 3 },
+    },
+  ]
+
+  for (const [index, scenario] of scenarios.entries()) {
   const setup = await e6c2aLockedMatch({
-    format: 'singleElimination',
-    matchFormat: { type: 'firstToWins', value: 2 },
+    format: scenario.format,
+    matchFormat: scenario.matchFormat,
   })
   const row = setup.sql.database.query(
     'SELECT revision, last_trusted_time_ms, match_projection_json FROM competition_matches WHERE match_id = ?',
@@ -11728,12 +11835,12 @@ test('E6c2a formal first-game win awaiting captain selection never returns the o
     competitionId: 'competition-1',
     matchId: setup.matchId,
     callerUserId: 'organizer-1',
-    commandId: 'e6c2a-first-win-terminal',
+    commandId: `e6c2a-first-win-terminal-${index}`,
     expectedMatchRevision: row.revision,
     trustedTimeMs: Math.max(row.last_trusted_time_ms, setup.meta().updated_trusted_time_ms) + 1,
-    submissionId: 'e6c2a-first-win-submission',
-    gameRecordId: 'e6c2a-first-win-record',
-    rulingRecordId: 'e6c2a-first-win-ruling',
+    submissionId: `e6c2a-first-win-submission-${index}`,
+    gameRecordId: `e6c2a-first-win-record-${index}`,
+    rulingRecordId: `e6c2a-first-win-ruling-${index}`,
     startKind: { type: 'ordinaryNewGame' },
     firstPlayer: match.nextFirstPlayer as string,
     terminalEvidence: {
@@ -11764,6 +11871,7 @@ test('E6c2a formal first-game win awaiting captain selection never returns the o
   const result = await setup.room.readParticipantGame(e6c2aReadRequest(setup.matchId, 'a-1'))
   expect(result).toMatchObject({ ok: true, value: { game: null } })
   expect(e6c2aSnapshot(setup)).toEqual(before)
+  }
 })
 
 test('E6c2a formal simultaneous timeout exits the teams and closes the single-elimination stage', async () => {
@@ -12292,6 +12400,48 @@ test.serial('ticket 16 completes a uniquely ranked single-stage tournament and p
   const beforeRestartRead = e6c2aSnapshot(setup)
   expect(await restarted.readTournament(e6d1bReadRequest(null))).toEqual(firstPublicRead)
   expect(e6c2aSnapshot(setup)).toEqual(beforeRestartRead)
+})
+
+test.serial('ticket 22 completion resolves the initial game replay through its confirmed round ledger', async () => {
+  const setup = await e6c2aLockedMatch({
+    format: 'roundRobin',
+    matchFormat: { type: 'fixedGames', value: 1 },
+    personalDeck: true,
+    automaticRoundProgression: true,
+  })
+  expect(await e6d1bSubmitWinner(setup, 'ticket22-ledger-replay-terminal')).toMatchObject({ ok: true })
+  expect(setup.sql.database.query('SELECT 1 FROM competition_completion WHERE competition_id = ?')
+    .get('competition-1')).toBeDefined()
+
+  const initial = setup.sql.database.query(`SELECT game_id, binding_json, next_game_json, match_revision
+    FROM competition_game_provision WHERE match_id = ? AND game_number = 1`).get(setup.matchId) as {
+      game_id: string; binding_json: string; next_game_json: string; match_revision: number
+    } | undefined
+  if (!initial) throw new Error('formal first game provision is missing')
+  const binding = JSON.parse(initial.binding_json) as CompetitionGameBinding
+  const bindingRef = await competitionGameBindingRefForRequest({ gameId: initial.game_id, binding })
+  setup.sql.database.query('DELETE FROM competition_completion WHERE competition_id = ?').run('competition-1')
+  setup.sql.database.query(
+    'DELETE FROM competition_game_provision WHERE match_id = ? AND game_number = 1',
+  ).run(setup.matchId)
+  setup.sql.database.query(`INSERT INTO competition_round_room_ledger
+    (game_id, round_generation_id, match_id, game_number, binding_json, binding_ref_json,
+     next_game_json, match_revision, status, ack_confirmed_at_ms, claim_id, claim_version,
+     attempts, next_attempt_at_ms)
+    VALUES (?, 'ticket22-replay-ledger', ?, 1, ?, ?, ?, ?, 'confirmed', 1, NULL, 0, 0, 0)`)
+    .run(initial.game_id, setup.matchId, initial.binding_json, JSON.stringify(bindingRef),
+      initial.next_game_json, initial.match_revision)
+
+  await (setup.room as unknown as { completeCompetitionIfReady: () => Promise<void> })
+    .completeCompetitionIfReady()
+
+  const completion = setup.sql.database.query(
+    'SELECT replay_refs_json FROM competition_completion WHERE competition_id = ?',
+  ).get('competition-1') as { replay_refs_json: string } | undefined
+  expect(completion).toBeDefined()
+  expect(JSON.parse(completion!.replay_refs_json)).toMatchObject([
+    { matchId: setup.matchId, gameId: initial.game_id, gameNumber: 1 },
+  ])
 })
 
 test('ticket 16 withholds publication when a completed stage has unresolved podium ranks', async () => {
@@ -18038,6 +18188,24 @@ test(`round-release parent ingests an early ${preparing ? 'Pouch preparation' : 
   expect(childRequest.binding.gameNumber).toBe(1)
   expect(childRequest.binding.enabledRuleModules).toEqual(preparing ? roundReleasePouchModules : [])
   expect(childRequest.binding.expectedMatchRevision).toBe(2)
+
+  const firstPlayer = childRequest.binding.players[0]
+  if (!firstPlayer) throw new Error('released first-game binding has no player')
+  const beforeParticipantRead = e6c2aSnapshot(setup)
+  const participantGame = await at(cutoffMs, () => parent.readParticipantGame({
+    competitionId: announcement.competitionId,
+    matchId: targetRoom.matchId,
+    callerUserId: firstPlayer.userId,
+  }))
+  expect(participantGame).toMatchObject({
+    ok: true,
+    value: {
+      competitionId: announcement.competitionId,
+      matchId: targetRoom.matchId,
+      game: { gameId: targetRoom.gameId, gameNumber: 1 },
+    },
+  })
+  expect(e6c2aSnapshot(setup)).toEqual(beforeParticipantRead)
 
   const connectAndReady = async (userId: string) => {
     const globals = globalThis as unknown as Record<string, unknown>

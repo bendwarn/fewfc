@@ -309,6 +309,18 @@ test('clock transition maps team preparation completion and then starts the firs
   ])
 })
 
+test('clock transition starts the first action after randomness has cleared preparation', () => {
+  expect(competitionClockOperationsForTransition(
+    binding(),
+    publicState({ status: 'Preparing', initialPouchSelection: null }),
+    publicState({
+      status: 'InProgress', currentPlayer: 'player-a', turnNumber: 1, initialPouchSelection: null,
+    }),
+  )).toEqual([
+    { type: 'clockBeginAction', matchId: 'match-1', team: 'team-a', turn: 1 },
+  ])
+})
+
 test('clock transition ends the old action window before switching player and team', () => {
   expect(competitionClockOperationsForTransition(
     binding(),

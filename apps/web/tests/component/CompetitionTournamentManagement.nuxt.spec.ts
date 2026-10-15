@@ -105,7 +105,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('摘要與明示確認後才 POST exact3／stage8；五欄 ACK 後才 emit 並 readonly refresh', async () => {
+it('摘要與確認後才 POST exact3／stage8；五欄 ACK 後才 emit 並 readonly refresh', async () => {
   fetchMock.mockRejectedValueOnce(notReady).mockResolvedValueOnce(ack()).mockResolvedValueOnce(read())
   const wrapper = await mountManagement()
   expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/competitions/competition%20a/tournament')
@@ -149,7 +149,7 @@ it('預填五分鐘主時間與三十秒讀秒；必填與四賽制標籤／勝�
   expect(wrapper.text()).toContain('不是既有排名')
 })
 
-it('明示指定 1..N 與一次公開 Uint32 種子，摘要顯示數字且未確認前不送出', async () => {
+it('指定 1..N 與一次公開 Uint32 種子，摘要顯示數字且未確認前不送出', async () => {
   fetchMock.mockRejectedValueOnce(notReady)
   const fill = vi.spyOn(crypto, 'getRandomValues').mockImplementation(target => {
     if (!(target instanceof Uint32Array)) throw new Error('需要 Uint32 排程種子')
@@ -170,7 +170,7 @@ it('明示指定 1..N 與一次公開 Uint32 種子，摘要顯示數字且未�
   expect(fetchMock).toHaveBeenCalledTimes(1)
 })
 
-it('摘要後修改草稿必須重新檢視及明示確認，不能送過期摘要', async () => {
+it('摘要後修改草稿必須重新檢視及確認，不能送過期摘要', async () => {
   fetchMock.mockRejectedValueOnce(notReady)
   const wrapper = await mountManagement()
   await review(wrapper)
@@ -182,7 +182,7 @@ it('摘要後修改草稿必須重新檢視及明示確認，不能送過期摘�
   expect(crypto.randomUUID).toHaveBeenCalledTimes(0)
 })
 
-it('瑞士制要求明示完整政策並原樣送出，和局折算不混和局積分', async () => {
+it('瑞士制要求完整政策並原樣送出，和局折算不混和局積分', async () => {
   const config: StageConfig = { ...stage(), format: 'swiss', swissRounds: 3,
     swissPolicy: { matchPoints: { win: 3, draw: 1, loss: 0, bye: 3 }, drawCredit: { numerator: 1, denominator: 2 },
       opponentWinRateFloorPercent: 33, opponentWinRateCapPercent: null, excludeByesFromOpponentWinRate: true,
@@ -525,7 +525,7 @@ it('表單 label／可鍵盤操作的確認與窄 viewport 狀態保留；幾何
     }
     await review(wrapper)
     const confirm = wrapper.get('[data-testid="tournament-confirm-create"]').element
-    if (!(confirm instanceof HTMLButtonElement)) throw new Error('明示確認必須為按鈕')
+    if (!(confirm instanceof HTMLButtonElement)) throw new Error('確認必須為按鈕')
     confirm.focus()
     expect(document.activeElement).toBe(confirm)
     expect(confirm.disabled).toBe(false)
