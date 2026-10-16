@@ -34,6 +34,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import GameCard from '~/components/GameCard.vue'
 import type { PublicCard } from '~/types/fewfc'
 
 const props = withDefaults(defineProps<{

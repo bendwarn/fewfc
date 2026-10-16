@@ -113,6 +113,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { presentApiError } from '~/lib/api-error-presentation'
 import { useRulesCatalog } from '~/lib/rules-catalog'
 import {

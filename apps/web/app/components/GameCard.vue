@@ -61,6 +61,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed, onBeforeUnmount, ref, useAttrs } from 'vue'
 import type { CardInterpretationPresentation, PublicCard } from '~/types/fewfc'
 import {
   CARD_BACK_IMAGE_PATH,

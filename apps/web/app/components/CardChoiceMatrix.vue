@@ -49,6 +49,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { CardInstanceId, PublicCard } from '~/types/fewfc'
 import {
   buildCardComposition,

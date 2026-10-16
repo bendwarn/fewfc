@@ -388,6 +388,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick, reactive } from 'vue'
+import CompetitionParticipantGameEntry from './CompetitionParticipantGameEntry.vue'
 import {
   parseCompetitionTournamentViewResponse,
   doubleEliminationVacancySummary,

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick, useId, shallowRef } from 'vue'
 import type { SwissTieBreaker } from '../../shared/competition'
 import type { CompetitionRegistrationState } from '../lib/competition-registration'
 import {

@@ -18,6 +18,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed, reactive, watch, onBeforeUnmount, nextTick, ref } from 'vue'
 interface AnchorRect {
   top: number
   right: number

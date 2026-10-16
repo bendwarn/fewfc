@@ -70,6 +70,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { canSetCompetitionReady, competitionReadyErrorMessage, isExactCompetitionReadyAck, type CompetitionRoomMode } from '~/lib/competition-ready'
 
 const props = defineProps<{

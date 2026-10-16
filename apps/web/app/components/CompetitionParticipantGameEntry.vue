@@ -80,6 +80,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref, watch, shallowRef, onMounted, onBeforeUnmount, useId } from 'vue'
 import {
   competitionParticipantGameErrorMessage,
   competitionParticipantRoomPath,

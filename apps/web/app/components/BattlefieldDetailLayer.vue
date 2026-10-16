@@ -64,6 +64,8 @@
 </template>
 
 <script setup lang="ts">
+import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import AnchoredSurface from './AnchoredSurface.vue'
 interface AnchorRect {
   top: number
   right: number

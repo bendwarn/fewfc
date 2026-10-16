@@ -45,6 +45,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import type { FormationChoiceGroup } from '~/types/fewfc'
 import { splitEarthRuleLabel } from '#shared/utils/split-earth-formation-choice'
 

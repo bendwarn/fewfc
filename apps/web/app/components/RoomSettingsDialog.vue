@@ -97,6 +97,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import ModalShell from './ModalShell.vue'
 type RoomMode = 'duel' | 'team'
 
 const props = defineProps<{

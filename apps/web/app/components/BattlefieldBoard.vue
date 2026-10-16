@@ -237,6 +237,12 @@
 </template>
 
 <script setup lang="ts">
+import { computed, watch, nextTick, ref } from 'vue'
+import AnchoredSurface from './AnchoredSurface.vue'
+import BattlefieldDetailLayer from './BattlefieldDetailLayer.vue'
+import CardChoiceMatrix from './CardChoiceMatrix.vue'
+import DiscardPileControl from './DiscardPileControl.vue'
+import GameCard from './GameCard.vue'
 import { presentTotem } from '~/lib/totem-presentation'
 import type { CardInstanceId, Element, PlayerId, PublicCard, PublicCardRefs, PublicGameState, SpiritKind, TeamId } from '~/types/fewfc'
 import { cardElementGlyph } from '~/lib/card-face-presentation'

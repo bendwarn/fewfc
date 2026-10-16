@@ -35,6 +35,7 @@
 </template>
 
 <script setup lang="ts">
+import { watch, onBeforeUnmount, nextTick, ref } from 'vue'
 const props = withDefaults(defineProps<{
   open: boolean
   labelledby?: string

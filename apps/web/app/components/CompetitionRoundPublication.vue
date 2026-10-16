@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick, shallowRef } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import type { CompetitionRegistrationState } from '../lib/competition-registration'
 import {

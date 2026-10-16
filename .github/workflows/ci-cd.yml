@@ -30,7 +30,7 @@ jobs:
   web:
     name: Web checks
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     concurrency:
       group: pnpm-cache-writer
       cancel-in-progress: false
@@ -58,6 +58,8 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: pnpm exec playwright install --with-deps chromium
+      - run: bun run test:storybook
+      - run: bun run build:storybook
       - run: bun run test:e2e
       - run: bun run test:unit
       - run: bun run typecheck

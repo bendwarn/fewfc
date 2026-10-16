@@ -31,6 +31,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { modulesForVersion } from '#shared/utils/rule-versions'
 import type { RuleModuleSpec } from '~/types/fewfc'
 import { createRuleModulePolicy, presentationForRuleModule } from '#shared/utils/rule-modules'

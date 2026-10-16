@@ -77,6 +77,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref, watch, onMounted, onBeforeUnmount, useId, shallowRef } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import {
   buildCompetitionRulingCorrection, competitionCorrectionCandidates, competitionCorrectionErrorMessage,

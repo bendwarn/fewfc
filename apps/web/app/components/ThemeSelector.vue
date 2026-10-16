@@ -31,6 +31,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
+import { useColorTheme } from '~/composables/useColorTheme'
 import type { ColorThemePreference } from '~/lib/color-theme'
 
 const theme = useColorTheme()

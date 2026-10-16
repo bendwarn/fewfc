@@ -31,6 +31,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import GameCard from './GameCard.vue'
 import type { PublicCard, PublicCardRefs, PublicGameState, TeamId } from '~/types/fewfc'
 
 const props = defineProps<{

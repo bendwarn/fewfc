@@ -57,6 +57,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick, useId, shallowRef } from 'vue'
 import type { ClockCheckpointWindow } from '../../shared/competition'
 import type { CompetitionRoomMatchClockReadValue } from '../../shared/competition-room'
 import type { CompetitionRoomMode } from '../lib/competition-ready'
