@@ -1744,11 +1744,14 @@ selected Card Instances; it does not enumerate every possible hand combination
 or choose Cards for the Player. A separate teaching-mode projection may show
 the full Profession progression graph, requirements, and ability changes.
 
-The battlefield's current Formation control area is divided vertically at every
-viewport size. The upper **Ability** panel contains Active-Effect Commands and
-states that they do not enter `Action`. The lower **Action** panel contains
+The battlefield's context-sensitive Formation control surface keeps **Ability**
+and **Action** distinguishable. The **Ability** group contains Active-Effect
+Commands and states that they do not enter `Action`. The **Action** group contains
 Formation Uses, Profession Changes, and Pass Action, and states that choosing
-one enters `Action`. Do not add a separate Profession panel. Automatic
+one enters `Action`. The presentation follows the
+[battlefield UI design](ui-battlefield-design.md), replacing the earlier
+requirement for two permanently stacked panels at every viewport size.
+Do not add a separate Profession panel. Automatic
 Profession Abilities and Formation Proficiencies appear through legal options
 and their explanations rather than as controls.
 

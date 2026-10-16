@@ -169,7 +169,14 @@ test('Lobby navigation reloads Game state, resets parameter-local state, and tea
     const eventSummary = page.locator('.mobile-event-summary')
     await expect(eventSummary).toBeVisible()
     await eventSummary.click()
-    await expect(page.getByRole('dialog', { name: '戰局紀錄' })).toBeVisible()
+    const eventSheet = page.getByRole('dialog', { name: '戰局紀錄' })
+    await expect(eventSheet).toBeVisible()
+    await expect(eventSheet.getByText(/^第 1 回合・/)).toBeVisible()
+    await eventSheet.getByRole('button', { name: '關閉戰局紀錄' }).click()
+    await expect(eventSummary).toBeFocused()
+    await expect(eventSheet).toHaveCount(0)
+    await eventSummary.click()
+    await expect(eventSheet).toBeVisible()
 
     await page.evaluate((path) => {
       history.replaceState(history.state, '', path)

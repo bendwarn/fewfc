@@ -2,6 +2,10 @@
 
 Read the matching symptom when debugging browser flows or preparing endgame tests.
 
+Use this guide for representative flows through real application services.
+For Storybook visual acceptance, UI interaction tests, and the boundary with
+unit/integration and E2E coverage, read [Storybook](storybook.md#validation-scope).
+
 - A Playwright `click()` waits for the browser click action, not for an async Vue
   handler's command request to commit. Before reload or reconnect assertions,
   wait for the specific `/commands` response and identify it by request action

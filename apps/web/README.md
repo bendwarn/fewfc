@@ -75,6 +75,13 @@ Online rooms support:
 - WebSocket-synchronized membership, readiness, game state, and notifications.
 - Durable Object WebSocket Hibernation without client polling.
 
+## UI Development and Validation
+
+See [Storybook](docs/storybook.md) for visual acceptance, component and page
+interaction tests, commands, and the boundary between UI, unit/integration, and
+representative E2E coverage. The repository's acceptance requirements are in
+[Web App Agent Instructions](AGENTS.md#ui-browser-and-e2e-validation).
+
 ## Production
 
 Build the application for production:

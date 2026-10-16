@@ -3,6 +3,8 @@
 ## Repository Validation
 
 - This repository is a Rust crate. Prefer `cargo test` for the main validation path unless the task specifically touches package tooling.
+- For Web UI work, read the Storybook visual acceptance and test-layer rules in
+  [Web App Agent Instructions](apps/web/AGENTS.md#ui-browser-and-e2e-validation).
 
 ## Online Game Commands
 

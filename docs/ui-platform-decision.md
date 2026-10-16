@@ -6,6 +6,10 @@ Build the website UI with Nuxt, backed by the existing Rust rules engine.
 
 The Rust crate remains the authoritative rules engine for validation, event emission, replay, hidden information, and Public View derivation. Nuxt is an adapter layer for presentation, local interaction, and later online play.
 
+The confirmed battle-screen presentation and interaction direction is recorded
+in [Battlefield UI Design](ui-battlefield-design.md), including contextual player
+details, persistent Team HP, and the live, observer, and replay layouts.
+
 ## Frontend Stack
 
 - Nuxt with Vue and TypeScript for the website application.
@@ -14,6 +18,14 @@ The Rust crate remains the authoritative rules engine for validation, event emis
 - Public Game State and Public Event Feed DTOs as the UI-facing data model.
 
 Do not expose canonical Game State or canonical Game Events directly to browser clients as replay sources. The UI consumes viewer-filtered Public View data and submits Commands.
+
+## UI Validation
+
+The [Web App Agent Instructions](../apps/web/AGENTS.md#ui-browser-and-e2e-validation)
+define visual acceptance in Storybook and the responsibilities of UI and E2E
+tests. See the [Storybook guide](../apps/web/docs/storybook.md#validation-scope)
+for page composition, interaction coverage, and the unit/integration and real
+service boundaries.
 
 ## Deployment Platform
 

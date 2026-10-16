@@ -21,10 +21,24 @@
   API 的機器 ID、enum 值與原始英文錯誤保留供程式處理及診斷，
   不直接作為玩家文案；未知值提供可理解的繁體中文備援訊息。
 - 修改動態文案時，追查從 API／規則引擎到 UI 的顯示路徑，檢查正常、
-  停用及錯誤分支。修正漏譯時，以對應單元或元件測試驗證實際中文文案，
+  停用及錯誤分支。修正漏譯時，以對應單元、Storybook 互動或 Nuxt 整合測試驗證實際中文文案，
   包含造成漏譯的分支，而不只檢查靜態模板。
 
-## Browser and E2E Validation
+## UI, Browser, and E2E Validation
+
+- Perform visual acceptance exclusively in Storybook, using manual review or
+  automated screenshot comparisons against reviewed baselines. Cover full-page
+  appearance and layout with page or composed-component stories at the relevant
+  viewport sizes and themes.
+- Keep UI presentation states and isolated interactions in Storybook. Validate
+  DOM state, accessible roles and names, focus, events, and element geometry with
+  story interaction tests or Playwright assertions against stories. For fixtures,
+  existing coverage, and test-layer boundaries, read [Storybook](docs/storybook.md).
+- Keep E2E tests focused on representative flows through real authentication,
+  room APIs, Rust rules execution, WebSocket synchronization, reload/reconnect,
+  and viewer-filtered privacy. Cover UI variants in stories and logic or service
+  contracts in unit/integration tests; preserve each unique assertion claim when
+  migrating or consolidating existing tests.
 
 - Keep E2E tests on Playwright's default timeouts whenever possible. If a test
   times out, inspect the error, retained trace, console, or network evidence to
@@ -34,9 +48,6 @@
   retry random outcomes, or rely on probability to reach the required state. When
   a scenario needs specific Cards, use a fixed Rules Engine-owned deck order and
   still reach the state through normal start, command, event, and replay paths.
-- Do not use manual visual inspection or screenshot comparison as acceptance
-  validation. Prefer repeatable Playwright assertions against routes, DOM state,
-  accessible roles and names, focus, and element geometry.
 - Run Worker/Durable Object browser flows with `bun test:e2e`. Tests start
   their own server by default and fail if its assigned port is occupied.
   `PLAYWRIGHT_REUSE_SERVER=1` explicitly reuses a compatible local E2E server,

@@ -10,3 +10,25 @@ export const exampleCards: PublicCard[] = [
 export function createExampleGameState(): PublicGameState {
   return emptyPublicState(['alice', 'bob'])
 }
+
+export function createFourPlayerGameState(): PublicGameState {
+  const players = ['alice', 'bob', 'carol', 'dave']
+  const state = emptyPublicState(players)
+  state.players = [
+    { id: 'alice', team: 'sun' },
+    { id: 'bob', team: 'moon' },
+    { id: 'carol', team: 'sun' },
+    { id: 'dave', team: 'moon' },
+  ]
+  state.hp = [{ team: 'sun', hp: 150 }, { team: 'moon', hp: 132 }]
+  state.hands = players.map((player, index) => ({
+    player,
+    cards: index === 0
+      ? { kind: 'known', cards: exampleCards.slice(0, 2) }
+      : { kind: 'hidden', count: 5 },
+  }))
+  state.currentPlayer = 'bob'
+  state.phase = 'Action'
+  state.environment = 'Fire'
+  return state
+}

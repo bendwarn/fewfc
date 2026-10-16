@@ -182,9 +182,9 @@ Local dependency management remains pnpm (see `../README.md`), and dependency
 changes must update `pnpm-lock.yaml`. GitHub Actions uses the stable
 `pnpm/action-setup` action for pnpm and `oven-sh/setup-bun` for the repository's
 Bun-based scripts. Each job installs from the checked-in lockfile with frozen
-arguments passed through `run_install`. The `Web checks` job is the pnpm cache
-writer; browser tests wait for it, and deployment jobs follow the browser tests
-so parallel jobs do not race while creating the same cache.
+arguments passed through `run_install`. The `Web checks` job runs Storybook and
+browser checks and writes the pnpm cache; deployment jobs wait for both Rust and
+Web checks.
 
 Wrangler is pinned to `4.130.0` in `package.json`. Code deployment uses its
 standard `deploy` command; the local cutover wizard uses `versions secret` and
@@ -192,8 +192,12 @@ standard `deploy` command; the local cutover wizard uses `versions secret` and
 
 `.github/workflows/ci-cd.yml` is the deployment source of truth:
 
-- Pull requests and pushes to `main` run Rust tests, Web unit tests and type
-  checking, and the Worker-backed Playwright suite.
+- Pull requests and pushes to `main` run Rust tests, Storybook render and
+  interaction tests, the Storybook build, Web unit tests and type checking, and
+  the Worker-backed Playwright E2E suite. Storybook visual acceptance and the
+  responsibilities of each test layer are documented in
+  [Storybook](storybook.md#validation-scope); the current CI commands do not run
+  automated screenshot comparisons.
 - A successful push to `main` deploys `staging` automatically after the normal
   Rust, Web, browser, and type checks.
 - Production deploys only from a manually dispatched run with
