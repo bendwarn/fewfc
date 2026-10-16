@@ -638,6 +638,8 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .battlefield { grid-template-rows: 96px minmax(0, 1fr) minmax(120px, auto); padding-top: 39px; }
   .player-seat:not(.seat-bottom) { height: 96px; }
   .seat-bottom { @apply gap-1; }
+  .seat-bottom .player-heading { flex-wrap: wrap; }
+  .seat-bottom .player-name-block { flex: 0 0 100%; }
   .seat-bottom .avatar { @apply size-7 text-xs; }
   .seat-bottom .player-identity { @apply max-w-[38%]; }
   .seat-bottom .player-facts { @apply text-[8px]; }
