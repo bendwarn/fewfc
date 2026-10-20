@@ -1,19 +1,21 @@
 <template>
   <Teleport to="body">
-    <div
-      v-if="open"
-      :id="id"
-      ref="surface"
-      class="anchored-surface"
-      :class="surfaceClass"
-      :style="surfaceStyle"
-      :role="role"
-      :aria-labelledby="labelledby"
-      :aria-describedby="describedby"
-      @keydown="handleKeydown"
-    >
-      <slot />
-    </div>
+    <Transition name="anchored-surface" appear>
+      <div
+        v-if="open"
+        :id="id"
+        ref="surface"
+        class="anchored-surface"
+        :class="surfaceClass"
+        :style="surfaceStyle"
+        :role="role"
+        :aria-labelledby="labelledby"
+        :aria-describedby="describedby"
+        @keydown="handleKeydown"
+      >
+        <slot />
+      </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -55,6 +57,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   close: []
   keydown: [event: KeyboardEvent]
+  positioned: []
 }>()
 
 const surface = ref<HTMLElement | null>(null)
@@ -126,9 +129,13 @@ function updatePosition() {
     left = anchor.left - width - gap
   }
 
+  const wasReady = position.ready
   position.left = Math.min(Math.max(pad, left), Math.max(pad, viewportWidth - width - pad))
   position.top = Math.min(Math.max(pad, top), Math.max(pad, viewportHeight - height - pad))
   position.ready = true
+  if (!wasReady) void nextTick(() => {
+    if (props.open && position.ready) emit('positioned')
+  })
 }
 
 function focusableElements() {
@@ -184,7 +191,6 @@ watch(() => props.open, async (open) => {
     window.removeEventListener('scroll', schedulePosition, true)
     resizeObserver?.disconnect()
     resizeObserver = undefined
-    position.ready = false
     if (props.returnFocus) void nextTick(() => returnFocusTarget?.focus())
   }
 }, { immediate: true })
@@ -218,5 +224,10 @@ defineExpose({ surface, updatePosition, focusableElements })
   z-index: 60;
   max-width: calc(100vw - 24px);
   max-height: calc(100dvh - 24px);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .anchored-surface-enter-active, .anchored-surface-appear-active, .anchored-surface-leave-active { transition: opacity 140ms ease, transform 160ms cubic-bezier(.2,.75,.25,1); }
+  .anchored-surface-enter-from, .anchored-surface-appear-from, .anchored-surface-leave-to { opacity: 0; transform: translateY(5px) scale(.985); }
 }
 </style>

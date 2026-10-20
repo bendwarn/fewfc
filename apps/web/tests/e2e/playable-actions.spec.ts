@@ -24,9 +24,9 @@ test('selected cards expose rule-backed actions in vertically ordered control pa
     const ability = active.getByRole('region', { name: '能力' })
     const action = active.getByRole('region', { name: '行動' })
 
-    await expect(ability).toContainText('不結束行動階段')
+    await expect(ability).toContainText('使用後仍可行動')
     await expect(ability).toContainText('目前沒有可用能力')
-    await expect(action).toContainText('使用後結束行動階段')
+    await expect(action).toContainText('本回合擇一')
     await expect(action).toContainText('選擇手牌以尋找可用行動')
     await expectVerticalPanels(active)
 

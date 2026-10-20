@@ -264,6 +264,7 @@ export interface PublicGameState {
   players: PublicPlayer[]
   turnOrder: PlayerId[]
   hp: TeamHp[]
+  initialHp: TeamHp[]
   hands: PublicPlayerHand[]
   deckCount?: number
   discard: PublicCard[]

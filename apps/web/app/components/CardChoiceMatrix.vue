@@ -125,9 +125,28 @@ function selectCell(cardIds: CardInstanceId[]) {
 .card-composition tbody th { @apply w-7 text-[10px] font-normal text-muted; }
 .card-composition td strong { @apply font-serif text-sm text-[#e4c47d]; }
 .card-composition td.empty strong { color: var(--app-text-soft); }
-.pouch-composition { @apply mx-auto mt-5 w-[min(390px,calc(100vw-64px))] border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3.5 text-[var(--app-text)] shadow-[0_18px_48px_rgba(0,0,0,.52)]; }
-.pouch-composition td { @apply p-0; }
-.pouch-composition td button { @apply grid size-full min-h-8 place-items-center border-0 bg-transparent text-[#e4c47d] hover:bg-[rgba(185,149,80,.16)] disabled:cursor-not-allowed disabled:opacity-45; }
-.pouch-composition td button[aria-pressed="true"] { @apply bg-[rgba(185,149,80,.3)] shadow-[inset_0_0_0_2px_#d1ad62]; }
+.pouch-composition {
+  --app-surface: #10221b;
+  --app-surface-raised: #142820;
+  --app-text: #f2f0e8;
+  --app-text-muted: rgba(242, 240, 232, .72);
+  --app-text-soft: rgba(242, 240, 232, .5);
+  --app-border: rgba(245, 253, 247, .17);
+  --app-border-strong: rgba(245, 253, 247, .3);
+  --app-accent: #c9a34f;
+  @apply mx-auto mt-5 w-[min(390px,calc(100vw-64px))] border p-3.5 text-[var(--app-text)];
+  border-color: rgba(245,253,247,.25);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(239,255,246,.15), rgba(122,174,143,.025) 44%, transparent 72%), color-mix(in srgb, var(--app-surface-raised) 76%, transparent);
+  box-shadow: inset 0 1px rgba(255,255,255,.24), inset 0 -1px rgba(228,248,235,.06), 0 18px 42px rgba(0,0,0,.34);
+  -webkit-backdrop-filter: saturate(1.28) blur(20px);
+  backdrop-filter: saturate(1.28) blur(20px);
+}
+.pouch-composition th, .pouch-composition td { border-color: rgba(245,253,247,.2); }
+.pouch-composition tbody th { color: rgba(242,240,232,.74); }
+.pouch-composition td { @apply p-0; background: rgba(237,255,244,.025); }
+.pouch-composition td button { @apply grid size-full min-h-8 place-items-center border-0 text-[#e4c47d] disabled:cursor-not-allowed disabled:opacity-45; background: rgba(237,255,244,.025); transition: background .16s ease, box-shadow .16s ease; }
+.pouch-composition td button:hover:not(:disabled) { background: rgba(237,255,244,.12); }
+.pouch-composition td button[aria-pressed="true"] { background: rgba(185,149,80,.3); box-shadow: inset 0 0 0 2px #d1ad62; }
 .choice-card-matrix td button small { @apply text-[8px] font-normal text-[#f0d99e]; }
 </style>

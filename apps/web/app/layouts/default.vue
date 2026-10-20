@@ -115,8 +115,10 @@ onBeforeUnmount(() => {
 .app-shell { @apply flex min-h-screen flex-col bg-ink; color: var(--app-text); }
 .app-shell:has(> .game-page) { @apply h-dvh min-h-0 overflow-hidden; }
 .site-header { @apply relative z-20 flex min-h-[84px] items-center justify-between border-b border-line; padding: 10px clamp(14px, 4vw, 64px); background: var(--app-header); box-shadow: var(--app-shadow-sm); }
+.app-shell:has(> .game-page) .site-header { min-height: 56px; padding: 5px clamp(14px, 2vw, 28px); background: color-mix(in srgb, var(--app-header) 84%, transparent); }
 .brand { @apply flex min-w-0 items-center border-0 bg-transparent p-0; }
 .brand-banner { @apply block h-auto w-[min(52vw,456px)] max-w-full rounded-md shadow-[0_10px_28px_rgba(0,0,0,.32)]; }
+.app-shell:has(> .game-page) .brand-banner { width: min(28vw, 230px); max-height: 46px; object-fit: contain; box-shadow: none; }
 .header-actions { @apply relative flex items-center gap-[18px]; }
 .connection { @apply text-xs text-[#98a39c]; }
 .connection i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #62b585; margin-right: 6px; box-shadow: 0 0 8px #62b585; }
@@ -149,7 +151,9 @@ onBeforeUnmount(() => {
 
 @media (max-width: 600px) {
   .site-header { min-height: 68px; padding: 8px 12px; }
+  .app-shell:has(> .game-page) .site-header { min-height: 48px; padding: 4px 10px; }
   .brand-banner { width: min(70vw, 300px); }
+  .app-shell:has(> .game-page) .brand-banner { width: min(39vw, 150px); max-height: 38px; }
   .connection, .profile-button > span:nth-child(2) { display: none; }
   .notification-stack { top: 76px; right: 16px; }
 }

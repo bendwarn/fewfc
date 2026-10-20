@@ -61,6 +61,7 @@ function emptyState(): PublicGameState {
     players: [],
     turnOrder: [],
     hp: [],
+    initialHp: [],
     hands: [],
     deckCount: 0,
     discard: [],

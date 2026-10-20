@@ -21,6 +21,7 @@ export function createFourPlayerGameState(): PublicGameState {
     { id: 'dave', team: 'moon' },
   ]
   state.hp = [{ team: 'sun', hp: 150 }, { team: 'moon', hp: 132 }]
+  state.initialHp = [{ team: 'sun', hp: 150 }, { team: 'moon', hp: 150 }]
   state.hands = players.map((player, index) => ({
     player,
     cards: index === 0

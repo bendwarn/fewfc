@@ -1,12 +1,69 @@
 import { spawn } from 'node:child_process'
 import { createConnection, createServer } from 'node:net'
-import { mkdir, unlink } from 'node:fs/promises'
+import { lstat, mkdir, unlink } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 export const serverNames = ['dev', 'e2e', 'component'] as const
 export type ServerName = typeof serverNames[number]
 export const stateDirectory = resolve(import.meta.dir, '../.wrangler/servers')
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+async function removeStaleControlSocket(socketPath: string): Promise<boolean> {
+  let previous
+  try {
+    previous = await lstat(socketPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true
+    throw error
+  }
+  if (!previous.isSocket()) return false
+
+  const isActive = await new Promise<boolean>((resolve) => {
+    const probe = createConnection(socketPath)
+    let settled = false
+    const finish = (active: boolean) => {
+      if (settled) return
+      settled = true
+      probe.setTimeout(0)
+      probe.destroy()
+      resolve(active)
+    }
+    probe.once('connect', () => finish(true))
+    probe.once('error', (error: NodeJS.ErrnoException) => {
+      finish(error.code !== 'ECONNREFUSED' && error.code !== 'ENOENT')
+    })
+    probe.setTimeout(1000, () => finish(true))
+  })
+  if (isActive) return false
+
+  let current
+  try {
+    current = await lstat(socketPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true
+    throw error
+  }
+  if (!current.isSocket() || current.dev !== previous.dev || current.ino !== previous.ino) return false
+
+  await unlink(socketPath).catch(error => { if (error.code !== 'ENOENT') throw error })
+  return true
+}
+
+function listen(controller: ReturnType<typeof createServer>, socketPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onListening = () => {
+      controller.off('error', onError)
+      resolve()
+    }
+    const onError = (error: Error) => {
+      controller.off('listening', onListening)
+      reject(error)
+    }
+    controller.once('error', onError)
+    controller.once('listening', onListening)
+    controller.listen(socketPath)
+  })
+}
 
 export async function stopServer(name: ServerName, directory = stateDirectory): Promise<boolean> {
   return new Promise((resolve, reject) => {
@@ -67,11 +124,15 @@ export async function withManagedServer(
       } else if (request.length > 5) socket.destroy()
     })
   })
-  // socket 的獨占綁定避免同一 worktree 重複啟動；殘留 socket 明確報錯，避免搶走現有服務。
-  await new Promise<void>((resolve, reject) => {
-    controller.once('error', reject)
-    controller.listen(socketPath, resolve)
-  })
+  // 控制 socket 的獨占綁定避免同一 worktree 重複啟動；只移除已確認沒有 listener 的舊 socket。
+  try {
+    await listen(controller, socketPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE' || !await removeStaleControlSocket(socketPath)) {
+      throw error
+    }
+    await listen(controller, socketPath)
+  }
   const onSignal = () => { void stop() }
   process.on('SIGINT', onSignal)
   process.on('SIGTERM', onSignal)

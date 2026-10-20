@@ -29,6 +29,7 @@ pub struct PublicGameState {
     pub players: Vec<Player>,
     pub turn_order: Vec<PlayerId>,
     pub hp: Vec<TeamHp>,
+    pub initial_hp: Vec<TeamHp>,
     pub hands: Vec<PublicPlayerHand>,
     pub deck_count: usize,
     pub discard: Vec<CardInstanceId>,
@@ -406,6 +407,7 @@ pub fn state_for(state: &GameState, viewer: Viewer) -> PublicGameState {
         players: state.players.clone(),
         turn_order: state.turn_order.clone(),
         hp: state.hp.clone(),
+        initial_hp: state.initial_hp.clone(),
         hands: state
             .hands
             .iter()

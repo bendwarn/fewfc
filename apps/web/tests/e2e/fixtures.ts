@@ -57,6 +57,14 @@ export async function activePlayerPage(pages: Page[]) {
   throw new Error('No active player page')
 }
 
+export async function expectTeamHp(page: Page, expectedHp: readonly number[]) {
+  const meters = page.getByRole('group', { name: '隊伍生命值' }).getByRole('meter')
+  await expect(meters).toHaveCount(expectedHp.length)
+  await Promise.all(expectedHp.map((hp, index) => (
+    expect(meters.nth(index)).toHaveAttribute('aria-valuenow', String(hp))
+  )))
+}
+
 type CreateRoomOptions = {
   access?: 'private' | 'public'
   teamMode?: boolean
@@ -269,7 +277,7 @@ export async function battleRecordEntry(page: Page, title: string) {
   // event panel 作為同步依據，不應透過可存取樹判斷被 modal 暫時遮住的 heading。
   const heading = page.locator('.game-sidebar .event-panel .panel-title h2')
   await expect(heading).toHaveText('戰局紀錄')
-  const entry = page.locator('.game-sidebar .event-feed li').filter({ hasText: title })
+  const entry = page.locator('.game-sidebar .battle-record-events > li').filter({ hasText: title })
   await expect(entry).toBeVisible()
   return entry
 }

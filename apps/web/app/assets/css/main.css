@@ -1,5 +1,6 @@
 @import url("https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700;800&family=Noto+Serif+TC:wght@700;900&display=swap");
 @import "tailwindcss";
+@import "./battle.css";
 
 @theme {
   --font-sans: "Noto Sans TC", ui-sans-serif, system-ui, sans-serif;

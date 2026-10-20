@@ -20,7 +20,31 @@
       :session-user-id="session.userId.value || null"
       :member-user-id="currentMember?.userId ?? null"
     />
-    <div class="battle-layout">
+    <div class="battle-layout battle-scene" :style="battleLayoutStyle">
+        <div class="battlefield-nav" aria-label="戰局導覽">
+          <NuxtLink
+            v-if="competitionReturnPath"
+            class="back-button battlefield-back"
+            :to="competitionReturnPath"
+            aria-label="返回賽事"
+            title="返回賽事"
+          >←</NuxtLink>
+          <button
+            v-else-if="ordinaryRoomMode"
+            class="back-button battlefield-back"
+            type="button"
+            aria-label="返回房間列表"
+            title="返回房間列表"
+            @click="leaveGame"
+          >←</button>
+          <button
+            v-if="ordinaryRoomMode && !roomWaiting && !currentMember"
+            class="ghost-button observer-leave"
+            type="button"
+            :disabled="game.isLoading.value"
+            @click="leaveWaitingRoom"
+          >離開觀戰</button>
+        </div>
         <BattlefieldBoard
           ref="battlefield"
           :state="state"
@@ -34,31 +58,9 @@
           :reconnecting-player="game.connectionState.value === 'reconnecting' ? ownPlayer : null"
           :show-turn-controls="!roomWaiting && !gameFinished && viewer === state.currentPlayer"
           @select-card="game.toggleCardSelection"
+          @respond-to-choice="openPendingChoiceFromDetails"
+          @detail-state-change="detailsOpen = $event"
         >
-          <template #before>
-            <NuxtLink
-              v-if="competitionReturnPath"
-              class="back-button battlefield-back"
-              :to="competitionReturnPath"
-              aria-label="返回賽事"
-              title="返回賽事"
-            >←</NuxtLink>
-            <button
-              v-else-if="ordinaryRoomMode"
-              class="back-button battlefield-back"
-              type="button"
-              aria-label="返回房間列表"
-              title="返回房間列表"
-              @click="leaveGame"
-            >←</button>
-            <button
-              v-if="ordinaryRoomMode && !roomWaiting && !currentMember"
-              class="ghost-button observer-leave"
-              type="button"
-              :disabled="game.isLoading.value"
-              @click="leaveWaitingRoom"
-            >離開觀戰</button>
-          </template>
           <template #terminal-resolution>
             <GameConclusionPanel
               v-if="gameFinished"
@@ -82,19 +84,19 @@
           <template #turn-controls>
               <div
                 v-if="!roomWaiting && !gameFinished && viewer === state.currentPlayer"
-                class="turn-controls"
+                class="turn-controls battle-turn-controls"
               >
                 <p v-if="game.isLoading.value" class="action-processing">處理中</p>
                 <p v-else-if="game.errorMessage.value" class="action-error">
                   {{ game.errorMessage.value }}
                 </p>
 
-                <section class="ability-panel" aria-labelledby="ability-panel-title">
+                <section class="ability-panel battle-action-group battle-glass" aria-labelledby="ability-panel-title">
                   <header>
                     <h3 id="ability-panel-title">能力</h3>
-                    <small>不結束行動階段</small>
+                    <small>使用後仍可行動</small>
                   </header>
-                  <div class="action-candidates">
+                  <div class="action-candidates battle-action-options">
                     <button
                       v-for="(pouchAction, abilityIndex) in pouchStrategyActions"
                       :key="`pouch-${pouchAction.label}`"
@@ -197,7 +199,7 @@
                     >
                       <button
                         ref="splendorMenuTrigger"
-                        class="spirit-level-trigger"
+                        class="spirit-level-trigger splendor-level-trigger"
                         type="button"
                         :title="playableActionDetail(splendorPicker.representative) || undefined"
                         :aria-label="playableActionAccessibleLabel(splendorPicker.representative)"
@@ -224,7 +226,7 @@
                         role="menu"
                         placement="top-start"
                         :return-focus="false"
-                        surface-class="spirit-level-options"
+                        surface-class="spirit-level-options splendor-level-options"
                         @keydown="event => handleSpiritMenuKeydown(event, 'splendor')"
                         @close="closeSplendorMenu"
                       >
@@ -261,7 +263,7 @@
                       @mouseleave="hideActionDetail"
                       @focus="showTextActionDetail(discardRetrievalDetail)"
                       @blur="hideActionDetail"
-                      @click="game.performPlayableAction(game.playableDiscardRetrieval.value)"
+                      @click="submitPlayableAction(game.playableDiscardRetrieval.value)"
                     >
                       棄牌回收
                     </button>
@@ -271,12 +273,12 @@
                   </div>
                 </section>
 
-                <section class="action-panel" aria-labelledby="action-panel-title">
+                <section class="action-panel battle-action-group battle-action-group--primary battle-glass" aria-labelledby="action-panel-title">
                   <header>
                     <h3 id="action-panel-title">行動</h3>
-                    <small>使用後結束行動階段</small>
+                    <small>本回合擇一</small>
                   </header>
-                  <div v-if="!game.isLoading.value" class="action-candidates">
+                  <div v-if="!game.isLoading.value" class="action-candidates battle-action-options">
                     <button
                       v-for="(action, actionIndex) in game.playableMainActions.value"
                       :key="`${action.type}:${action.id}:${action.cards.join('-')}:${action.type === 'performFormation' ? `${action.starSubstitution?.card ?? 'printed'}:${action.matchOption?.role ?? 'default'}:${action.matchOption?.card ?? ''}` : 'profession'}`"
@@ -306,7 +308,7 @@
                         game.playableMainActions.value.length,
                       )"
                       data-keyboard-shortcut="action"
-                      @click="game.playablePass.value && game.performPlayableAction(game.playablePass.value)"
+                      @click="game.playablePass.value && submitPlayableAction(game.playablePass.value)"
                     >
                       跳過
                     </button>
@@ -319,7 +321,7 @@
                   </p>
                 </section>
 
-                <p v-if="actionDetail" class="action-detail">{{ actionDetail }}</p>
+                <p v-if="actionDetail" class="action-detail battle-action-note">{{ actionDetail }}</p>
               </div>
           </template>
           <template #overlay>
@@ -437,7 +439,7 @@
           >
             <div>
               <h2>秘計‧{{ strategyLabel(secretStrategyOptionStrategy(secretStrategyDraft)) }}</h2>
-              <p class="action-detail">{{ presentSecretStrategyOption(secretStrategyDraft) }}</p>
+              <p class="action-detail battle-action-note">{{ presentSecretStrategyOption(secretStrategyDraft) }}</p>
 
               <div
                 v-if="secretStrategyDraft.type === 'targetPlayer'"
@@ -528,7 +530,7 @@
           </ModalShell>
 
           <ModalShell
-            v-if="pouchChoiceKind"
+            v-if="pouchChoiceKind && !detailsOpen"
             :open="true"
             root-class="choice-overlay"
             panel-class="choice-overlay-panel"
@@ -615,7 +617,8 @@
           <ModalShell
             v-if="state.pendingChoice?.visibility === 'visible'
               && !pouchChoiceKind
-              && viewer === state.pendingChoice.player"
+              && viewer === state.pendingChoice.player
+              && !detailsOpen"
             :open="true"
             root-class="choice-overlay"
             panel-class="choice-overlay-panel"
@@ -945,7 +948,7 @@
           </WaitingRoomLayout>
 
         <aside class="game-sidebar">
-          <section ref="desktopEventFeed" class="event-panel">
+          <section ref="desktopEventFeed" class="event-panel battle-glass">
             <div class="panel-title">
               <h2>戰局紀錄 <button v-if="roomWaiting && game.savableReplay.value" class="ghost-button" type="button" :disabled="replaySaving" @click="saveCurrentReplay">{{ replaySaved ? '已儲存' : '儲存本局' }}</button></h2>
             </div>
@@ -953,12 +956,7 @@
               {{ replayError }}
               <button class="ghost-button" type="button" :disabled="replaySaving" @click="saveCurrentReplay">重試</button>
             </p>
-            <ol class="event-feed">
-              <template v-for="group in battleRecordGroups" :key="group.id">
-                <li class="event-group-title"><strong>{{ group.title }}</strong></li>
-                <li v-for="entry in group.entries" :key="entry.id"><i /><div><span>{{ entry.title }}</span><p v-if="entry.summary">{{ entry.summary }}</p></div></li>
-              </template>
-            </ol>
+            <BattleRecordTimeline :groups="battleRecordGroups" :current-turn-number="currentBattleTurnNumber" />
           </section>
         </aside>
       </div>
@@ -981,12 +979,9 @@
             <button v-if="unseenEventCount" class="new-event-button" type="button" @click="scrollEventSheetToBottom">
               {{ unseenEventCount }} 筆新紀錄
             </button>
-            <ol ref="eventSheetFeed" class="event-feed event-sheet-feed" @scroll.passive="updateEventSheetFollow">
-              <template v-for="group in battleRecordGroups" :key="`mobile-${group.id}`">
-                <li class="event-group-title"><strong>{{ group.title }}</strong></li>
-                <li v-for="entry in group.entries" :key="`mobile-${entry.id}`"><i /><div><span>{{ entry.title }}</span><p v-if="entry.summary">{{ entry.summary }}</p></div></li>
-              </template>
-            </ol>
+            <div ref="eventSheetFeed" class="event-sheet-feed" @scroll.passive="updateEventSheetFollow">
+              <BattleRecordTimeline :groups="battleRecordGroups" :current-turn-number="currentBattleTurnNumber" />
+            </div>
           </section>
         </div>
       </Teleport>
@@ -1022,6 +1017,7 @@ import { presentApiError } from '~/lib/api-error-presentation'
 import { competitionWaitingMemberStatus } from '~/lib/competition-ready'
 import { abilityLevelPicker } from '~/lib/ability-level-picker'
 import { battleRecordContentRevision, scrollBattleRecordToLatest } from '~/lib/battle-record-scroll'
+import { battleRecordCurrentTurnNumber } from '~/lib/battle-record-timeline'
 import {
   completeVirtualFormationCardOffer,
   isVirtualFormationCardOffer,
@@ -1053,11 +1049,17 @@ const battlefield = ref<{
   root: HTMLElement | null
   hasOpenDetail: () => boolean
   closeDetail: () => void
+  captureCardFlights: (cardIds: readonly number[]) => Array<{ cardId: number, src: string, left: number, top: number, width: number, height: number }>
+  animateCardFlights: (flights: readonly { cardId: number, src: string, left: number, top: number, width: number, height: number }[]) => void
 } | null>(null)
+const detailsOpen = ref(false)
 
 const viewer = ref<ViewerId>('observer')
 const game = useGameRoom(viewer)
 const state = game.state
+const battleLayoutStyle = computed(() => ({
+  '--battle-page-background': `url('/backgrounds/${state.value.environment?.toLowerCase() ?? 'void'}.webp')`,
+}))
 const splendorPicker = computed(() => abilityLevelPicker(
   game.playableAbilities.value,
   'useSpiritSkill',
@@ -1334,17 +1336,46 @@ async function submitSecretStrategyDraft() {
   }
 }
 
+function visibleHandCardIds(player: NonNullable<typeof state.value.currentPlayer>): Set<number> {
+  const cards = state.value.hands.find(hand => hand.player === player)?.cards
+  if (!cards) return new Set()
+  if (cards.kind === 'known') return new Set(cards.cards.map(card => card.id))
+  if (cards.kind === 'partiallyKnown') return new Set(cards.cards.flatMap(card => card ? [card.id] : []))
+  return new Set()
+}
+
+async function submitPlayableAction(action: PlayableAction): Promise<boolean> {
+  const player = state.value.currentPlayer
+  const actionCards = 'cards' in action ? [...action.cards] : []
+  if (action.type === 'useSpiritSkill' && action.selectedCard !== null) actionCards.push(action.selectedCard)
+  const visibleBefore = player ? visibleHandCardIds(player) : new Set<number>()
+  const candidates = [...new Set(actionCards)].filter(card => visibleBefore.has(card))
+  const capturedFlights = battlefield.value?.captureCardFlights(candidates) ?? []
+
+  const submitted = await game.performPlayableAction(action)
+  if (!submitted || !player || !capturedFlights.length) return submitted
+
+  const visibleAfter = visibleHandCardIds(player)
+  const consumedFlights = capturedFlights.filter(flight => !visibleAfter.has(flight.cardId))
+  battlefield.value?.animateCardFlights(consumedFlights)
+  return true
+}
+
 function startPlayableAction(action: PlayableAction) {
   if (action.type === 'performFormation' && action.id === 'pouch:chain') {
     resetPouchChoice()
-    void game.performPlayableAction(action).then((submitted) => {
+    void submitPlayableAction(action).then((submitted) => {
       if (submitted) {
         pouchChoiceKind.value = 'chain'
       }
     })
     return
   }
-  void game.performPlayableAction(action)
+  void submitPlayableAction(action)
+}
+
+function openPendingChoiceFromDetails() {
+  battlefield.value?.closeDetail()
 }
 
 async function submitPouchChoice() {
@@ -1434,7 +1465,7 @@ const showSetupReveal = ref(false)
 const eventSheetOpen = ref(false)
 const eventSheetTrigger = ref<HTMLButtonElement | null>(null)
 const eventSheetClose = ref<HTMLButtonElement | null>(null)
-const eventSheetFeed = ref<HTMLOListElement | null>(null)
+const eventSheetFeed = ref<HTMLElement | null>(null)
 const desktopEventFeed = ref<HTMLElement | null>(null)
 const eventSheetFollowing = ref(true)
 const unseenEventCount = ref(0)
@@ -1530,11 +1561,22 @@ const connectedPlayers = computed(() => (onlineMetadata.value?.members ?? [])
   .map(member => member.player))
 const battleRecordGroups = computed(() => {
   const record = game.battleRecord.value
-  return [
-    { id: 'preparation', title: '對局準備', entries: record.preparation.entries },
-    ...record.turns.map(group => ({ id: `turn-${group.turnNumber}`, title: group.title, entries: group.entries })),
+  const groups = [
+    { id: 'preparation', title: '對局準備', turnNumber: null, entries: record.preparation.entries },
+    ...record.turns.map(group => ({ id: `turn-${group.turnNumber}`, title: group.title, turnNumber: group.turnNumber, entries: group.entries })),
   ].filter(group => group.id !== 'preparation' || group.entries.length > 0)
+  const turnNumber = currentBattleTurnNumber.value
+  if (turnNumber !== null && !groups.some(group => group.turnNumber === turnNumber)) {
+    groups.push({
+      id: `turn-${turnNumber}`,
+      title: `第 ${turnNumber} 回合 · ${playerLabel(state.value.currentPlayer)}的回合`,
+      turnNumber,
+      entries: [],
+    })
+  }
+  return groups
 })
+const currentBattleTurnNumber = computed(() => battleRecordCurrentTurnNumber(state.value.status, state.value.turnNumber))
 const latestVisibleEvent = computed(() => battleRecordGroups.value.flatMap(group => group.entries).at(-1) ?? null)
 const canStartOnlineRoom = computed(() => {
   const metadata = onlineMetadata.value
@@ -1655,19 +1697,19 @@ function handleSpiritMenuKeydown(event: KeyboardEvent, menu: 'dark' | 'splendor'
 
 function startSplendorAction(ability: PlayableAction) {
   closeSplendorMenu(true)
-  void game.performPlayableAction(ability)
+  void submitPlayableAction(ability)
 }
 
 function startDarkSpiritAction(ability: PlayableAction) {
   closeDarkSpiritMenu(true)
-  void game.performPlayableAction(ability)
+  void submitPlayableAction(ability)
 }
 
 function startDirectAbility(
   ability: Extract<PlayableAction, { type: 'activateProfessionAbility' | 'useSpiritSkill' }>,
 ) {
   if (ability.type !== 'activateProfessionAbility' || !isVirtualFormationCardOffer(ability)) {
-    void game.performPlayableAction(ability)
+    void submitPlayableAction(ability)
     return
   }
 
@@ -1706,7 +1748,7 @@ function chooseVirtualFormationCard(element: Element, level: number) {
   }
 
   closeVirtualFormationCardDraft(false)
-  void game.performPlayableAction(completed)
+  void submitPlayableAction(completed)
 }
 
 function handlePageClick() {
@@ -2319,27 +2361,24 @@ function formationChoiceLabel(formationId: string): string {
 @scope (.game-page) {
 :scope { @apply flex min-h-0 flex-1 flex-col overflow-hidden; }
 .back-button { @apply grid size-9 place-items-center border border-[var(--app-border-strong)] bg-[rgba(17,23,19,.88)] text-base text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light; }
-.battlefield-back { @apply absolute top-4 left-4 z-20; }
-.battle-layout { @apply grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px]; }
+.battlefield-back { @apply pointer-events-auto absolute top-4 left-4; }
+.battle-layout { @apply relative grid min-h-0 flex-1; grid-template-columns: minmax(0, 1fr) clamp(260px, 25vw, 360px); gap: 10px; padding: 10px; }
+.battlefield-nav { @apply pointer-events-none absolute z-20; inset: 10px calc(clamp(260px, 25vw, 360px) + 20px) 10px 10px; }
+.battlefield-nav > * { pointer-events: auto; }
 .mobile-event-summary { @apply hidden; }
-.turn-controls { @apply relative grid min-h-full min-w-0 content-start gap-2 border-l border-[rgba(166,141,86,.14)] pl-2; }
-.ability-panel, .action-panel { @apply grid min-w-0 gap-1.5 border p-2; border-color: color-mix(in srgb, var(--app-accent) 24%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--app-surface-muted) 84%, transparent); }
-.ability-panel header, .action-panel header { @apply flex flex-wrap items-baseline justify-between gap-x-2 text-left; }
-.ability-panel h3, .action-panel h3 { @apply font-serif text-xs text-gold-light; }
-.ability-panel small, .action-panel small { @apply text-[9px] text-muted; }
-.action-candidates { @apply flex min-w-0 max-w-full flex-wrap justify-center gap-1.5; }
-.action-candidates button { @apply min-h-8 max-w-full border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2.5 py-1.5 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
-.action-candidates p { @apply text-[9px] text-[var(--app-text-muted)]; }
+.action-candidates p { color: var(--battle-text-secondary); font-size: 12px; }
 .spirit-level-picker { @apply relative; }
 .spirit-level-trigger { @apply grid min-h-8 min-w-12 place-items-center border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2.5 py-1.5 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
 .spirit-level-trigger:focus-visible { outline: 2px solid #d1ad62; outline-offset: 2px; }
+.spirit-level-picker .splendor-level-trigger { border-color: rgba(232,140,93,.62); border-radius: 10px; background: radial-gradient(ellipse at 12% 0%, rgba(232,140,93,.25), transparent 72%), linear-gradient(140deg, rgba(239,255,246,.13), transparent 62%), color-mix(in srgb, var(--app-surface-raised) 78%, transparent); color: #ffc091; box-shadow: inset 0 1px rgba(255,255,255,.2), 0 0 14px rgba(232,140,93,.1); }
+.spirit-level-picker .splendor-level-trigger:hover, .spirit-level-picker .splendor-level-trigger:focus-visible { border-color: #f3a16f; background: radial-gradient(ellipse at 12% 0%, rgba(232,140,93,.36), transparent 72%), rgba(255,255,255,.12); color: #ffd0aa; box-shadow: inset 0 1px rgba(255,255,255,.28), 0 0 18px rgba(232,140,93,.2); }
 .spirit-level-options { @apply absolute bottom-[calc(100%+5px)] left-1/2 z-10 grid min-w-20 -translate-x-1/2 gap-1 border border-[var(--app-accent)] bg-[var(--app-surface-muted)] p-1 shadow-[0_10px_24px_rgba(0,0,0,.45)]; }
 .action-candidates .spirit-level-options button { @apply min-h-7 whitespace-nowrap px-2 py-1; }
 .action-candidates .skip-action { @apply border-[var(--app-accent)] text-gold-light; }
-.action-processing { @apply text-[#d0aa5e]; }
+.action-processing { @apply rounded-full px-3 py-1 text-center text-[10px]; color: #f0d18a; background: rgba(119,89,30,.3); }
 .action-error { @apply text-[#d79587]; }
 .action-prompt { @apply text-[var(--app-text-muted)]; }
-.action-detail { @apply pointer-events-none sticky bottom-0 z-8 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
+.action-detail { @apply pointer-events-none sticky bottom-0 z-8 text-left; }
 .action-detail strong { @apply mr-2 text-gold-light; }
 .choice-overlay,
 .choice-waiting-overlay { @apply absolute inset-0 z-12 grid place-items-center bg-[var(--app-choice-overlay)] text-center; }
@@ -2385,68 +2424,62 @@ function formationChoiceLabel(formationId: string): string {
 .waiting-observers span { @apply flex items-center gap-2 border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-2 text-xs; }
 .waiting-observers small { @apply text-[10px] text-muted; }
 .waiting-observers button { @apply ml-auto border-0 bg-transparent text-[9px] text-[#c98e82]; }
-.observer-leave { @apply absolute top-3 right-3 z-10; }
+.observer-leave { @apply absolute top-3 right-3; }
 .invite-link { @apply justify-self-start border-0 bg-transparent text-xs text-gold-light; }
 .result-actions { @apply mt-2 grid grid-cols-2 gap-3; }
 .result-actions .ghost-button { @apply border-[var(--app-border-strong)] text-[var(--app-text)]; }
 .result-actions .primary-button { @apply justify-between; }
 
-.game-sidebar { @apply grid min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden border-l border-line bg-panel max-[900px]:border-l-0; }
+.game-sidebar { @apply grid min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden; }
 .panel-title { @apply flex items-start justify-between; }
-.event-panel { @apply min-h-0 overflow-auto border-b border-line p-5; }
+.event-panel { @apply relative min-h-0 overflow-auto rounded-[24px] p-5; }
 .panel-title h2 { @apply font-serif text-[15px]; }
-.event-feed { @apply mt-4 grid list-none gap-[13px] p-0; }
-.event-feed li { @apply grid grid-cols-[10px_1fr] gap-[7px]; }
-.event-feed li.event-group-title { grid-template-columns: minmax(0, 1fr); }
-.event-feed li > i { width: 5px; height: 5px; border-radius: 50%; background: #b79550; margin-top: 6px; box-shadow: 0 0 0 4px rgba(183, 149, 80, .08); }
-.event-feed span { color: var(--app-text); font-size: 10px; font-weight: 700; }
-.event-feed p { color: var(--app-text-muted); font-size: 9px; line-height: 1.45; margin-top: 2px; }
 @media (min-width: 901px) {
-  .action-candidates button { font-size: 12px; }
   .panel-title h2 { font-size: 17px; }
-  .event-feed span { font-size: 12px; }
-  .event-feed p { font-size: 11px; }
 }
 
 @media (max-width: 900px) {
-  .battle-layout { @apply grid-cols-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden; }
+  .battle-layout { @apply grid-cols-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden; gap: 0; padding: 0; }
+  .battlefield-nav { inset: 0; }
   .game-sidebar { @apply hidden; }
-  .mobile-event-summary { @apply flex min-w-0 items-center gap-2 border-x-0 border-b-0 border-t border-line bg-panel px-3 py-2 text-left; }
+  .mobile-event-summary { @apply flex min-w-0 items-center gap-2 border-0 px-3 py-2 text-left; background: linear-gradient(135deg, rgba(239,255,246,.14), transparent 60%), color-mix(in srgb, var(--app-surface-raised) 70%, transparent); box-shadow: 0 -8px 22px rgba(0,0,0,.18); -webkit-backdrop-filter: blur(20px) saturate(1.24); backdrop-filter: blur(20px) saturate(1.24); }
   .mobile-event-summary strong { @apply shrink-0 font-serif text-[11px] text-gold-light; }
   .mobile-event-summary span { @apply min-w-0 flex-1 truncate text-[9px] text-muted; }
 }
 
 @media (max-width: 600px) {
   .battlefield-back { top: 10px; left: 10px; }
-  .action-candidates button { min-height: 30px; padding: 4px 7px; }
   .waiting-members { grid-template-columns: 1fr 1fr; }
 }
 }
 
-.event-sheet-portal { @apply fixed inset-0 z-50; }
-.event-sheet-portal .event-sheet-backdrop { @apply absolute inset-0 size-full cursor-default border-0 bg-[var(--app-overlay)] p-0 backdrop-blur-[3px]; }
-.event-sheet-portal .event-sheet { @apply fixed right-0 bottom-0 left-0 z-1 grid max-h-[72dvh] grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden rounded-t-2xl border-x-0 border-b-0 border-t border-[var(--app-accent)] bg-[var(--app-surface-raised)] text-[var(--app-text)] shadow-[0_-18px_48px_rgba(0,0,0,.45)]; }
+.event-sheet-portal {
+  @apply fixed inset-0 z-50;
+}
+.event-sheet-portal .event-sheet-backdrop { @apply absolute inset-0 size-full cursor-default border-0 bg-[var(--app-overlay)] p-0 backdrop-blur-[5px]; }
+.event-sheet-portal .event-sheet { @apply fixed right-0 bottom-0 left-0 z-1 grid max-h-[72dvh] grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden rounded-t-2xl border-x-0 border-b-0 border-t text-[var(--app-text)]; border-color: rgba(245,253,247,.28); border-radius: 20px 20px 0 0; background: radial-gradient(ellipse at 90% 100%, rgba(114,172,137,.14), transparent 58%), linear-gradient(140deg, rgba(239,255,246,.18), rgba(122,174,143,.035) 45%, transparent 76%), color-mix(in srgb, var(--app-surface-raised) 78%, transparent); box-shadow: inset 0 1px rgba(255,255,255,.27), 0 -18px 48px rgba(0,0,0,.4); -webkit-backdrop-filter: blur(22px) saturate(1.3); backdrop-filter: blur(22px) saturate(1.3); }
 .event-sheet-portal .event-sheet > header { @apply flex items-center justify-between border-b border-line px-4 py-3; }
 .event-sheet-portal .event-sheet h2 { @apply font-serif text-base text-gold-light; }
 .event-sheet-portal .event-sheet header button { @apply grid size-8 place-items-center border border-[var(--app-border-strong)] bg-transparent text-xl text-muted; }
-.event-sheet-portal .event-sheet-feed { @apply m-0 grid min-h-0 list-none gap-3 overflow-y-auto p-4; overscroll-behavior: contain; }
-.event-sheet-portal .event-sheet-feed li { @apply grid grid-cols-[10px_1fr] gap-2; }
-.event-sheet-portal .event-sheet-feed li.event-group-title { grid-template-columns: minmax(0, 1fr); }
-.event-sheet-portal .event-sheet-feed li > i { @apply mt-1.5 size-[5px] rounded-full bg-[#b79550] shadow-[0_0_0_4px_rgba(183,149,80,.08)]; }
-.event-sheet-portal .event-sheet-feed span { @apply text-[11px] font-bold text-[var(--app-text)]; }
-.event-sheet-portal .event-sheet-feed p { @apply mt-0.5 text-[10px] leading-5 text-[var(--app-text-muted)]; }
+.event-sheet-portal .event-sheet-feed { @apply min-h-0 overflow-y-auto p-4; overscroll-behavior: contain; }
 .event-sheet-portal .new-event-button { @apply mx-auto mt-2 border border-[var(--app-accent)] bg-[var(--app-surface-muted)] px-3 py-1.5 text-[10px] text-gold-light; }
 
 /* Teleport 後的選單已不再位於 action-dock，仍沿用原本的視覺樣式。 */
-.anchored-surface.spirit-level-options { @apply grid min-w-20 gap-1 border border-[var(--app-accent)] bg-[var(--app-surface-muted)] p-1 shadow-[0_10px_24px_rgba(0,0,0,.45)]; }
-.anchored-surface.spirit-level-options button { @apply min-h-7 whitespace-nowrap border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-2 py-1 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
+:global(.anchored-surface.spirit-level-options) { @apply grid min-w-20 gap-1 p-1; border: 1px solid color-mix(in srgb, var(--app-border-strong) 82%, transparent); border-radius: 12px; background: linear-gradient(140deg, color-mix(in srgb, var(--app-text) 9%, transparent), transparent 64%), color-mix(in srgb, var(--app-surface-muted) 88%, transparent); box-shadow: inset 0 1px color-mix(in srgb, var(--app-text) 12%, transparent), var(--app-shadow-md); -webkit-backdrop-filter: blur(18px) saturate(1.25); backdrop-filter: blur(18px) saturate(1.25); }
+:global(.anchored-surface.spirit-level-options button) { @apply min-h-7 whitespace-nowrap px-2 py-1 text-[10px] text-[var(--app-text)]; border: 1px solid rgba(245,253,247,.18); border-radius: 8px; background: rgba(237,255,244,.07); transition: transform .16s ease, background .16s ease, border-color .16s ease, color .16s ease; }
+:global(.anchored-surface.spirit-level-options button:hover), :global(.anchored-surface.spirit-level-options button:focus-visible) { border-color: rgba(226,196,111,.8); background: rgba(255,255,255,.13); outline-color: #d1ad62; }
+:global(.anchored-surface.spirit-level-options button:hover) { transform: translateY(-1px); }
+:global(.anchored-surface.spirit-level-options.splendor-level-options) { border-color: rgba(232,140,93,.62); background: radial-gradient(ellipse at 12% 0%, rgba(232,140,93,.2), transparent 70%), linear-gradient(140deg, rgba(239,255,246,.15), transparent 64%), color-mix(in srgb, #142820 84%, transparent); box-shadow: inset 0 1px rgba(255,255,255,.22), 0 0 18px rgba(232,140,93,.12), 0 10px 24px rgba(0,0,0,.38); }
+:global(.anchored-surface.spirit-level-options.splendor-level-options button:hover), :global(.anchored-surface.spirit-level-options.splendor-level-options button:focus-visible) { border-color: #f3a16f; background: rgba(232,140,93,.18); color: #ffd0aa; outline-color: #f3a16f; }
+:global(.anchored-surface.spirit-level-options.splendor-level-options button:hover) { transform: translateY(-1px); }
 .modal-shell.choice-overlay { @apply fixed inset-0 z-[70] grid place-items-center text-center; background: transparent; }
-.modal-shell.choice-overlay > .modal-shell-backdrop { background: var(--app-choice-overlay); backdrop-filter: none; }
-.modal-shell.choice-overlay > .modal-shell-panel.choice-overlay-panel { @apply relative z-1 max-h-[calc(100dvh-32px)] min-w-0 w-[min(560px,calc(100vw-32px))] max-w-[calc(100vw-32px)] overflow-y-auto border border-[var(--app-accent)] p-[30px]; border-radius: 16px; background: var(--app-surface-raised); box-shadow: var(--app-shadow-lg); }
+.modal-shell.choice-overlay > .modal-shell-backdrop { background: var(--app-choice-overlay); backdrop-filter: blur(5px); }
+.modal-shell.choice-overlay > .modal-shell-panel.choice-overlay-panel { @apply relative z-1 max-h-[calc(100dvh-32px)] min-w-0 w-[min(560px,calc(100vw-32px))] max-w-[calc(100vw-32px)] overflow-y-auto p-[30px] text-[var(--app-text)]; border: 1px solid rgba(245,253,247,.28); border-radius: 20px; background: radial-gradient(ellipse at 90% 100%, rgba(114,172,137,.12), transparent 58%), linear-gradient(140deg, rgba(239,255,246,.19), rgba(122,174,143,.035) 45%, transparent 76%), color-mix(in srgb, var(--app-surface-raised) 78%, transparent); box-shadow: inset 0 1px rgba(255,255,255,.28), var(--app-shadow-lg); -webkit-backdrop-filter: blur(24px) saturate(1.32); backdrop-filter: blur(24px) saturate(1.32); }
 .modal-shell.choice-overlay > .modal-shell-panel.choice-overlay-panel h2 { @apply mt-2.5 mb-5 font-serif; }
 .modal-shell.choice-overlay .choice-selection-summary { @apply mx-auto mb-1 flex max-w-[390px] items-center justify-between gap-3 text-xs text-gold-light; }
-.modal-shell.choice-overlay .choice-selection-summary button { @apply border border-[var(--app-accent)] bg-[var(--app-surface-raised)] px-2 py-1 text-[10px] text-[var(--app-text)] hover:border-[var(--app-accent)]; }
-.modal-shell.choice-overlay .action-detail { @apply pointer-events-none sticky bottom-0 z-8 border border-[var(--app-accent)] bg-[var(--app-surface-raised)] p-3 text-left text-xs leading-5 text-muted shadow-[0_12px_28px_rgba(0,0,0,.4)]; }
+.modal-shell.choice-overlay .choice-selection-summary button { @apply border px-2 py-1 text-[10px] text-[var(--app-text)]; border-color: rgba(245,253,247,.25); border-radius: 8px; background: rgba(237,255,244,.08); }
+.modal-shell.choice-overlay .choice-selection-summary button:hover { border-color: rgba(226,196,111,.8); background: rgba(255,255,255,.13); }
+.modal-shell.choice-overlay .action-detail { @apply pointer-events-none sticky bottom-0 z-8 p-3 text-left text-xs leading-5 text-muted; border: 1px solid rgba(245,253,247,.24); border-radius: 12px; background: linear-gradient(135deg, rgba(239,255,246,.14), transparent 65%), rgba(20,40,32,.92); box-shadow: 0 12px 28px rgba(0,0,0,.4); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
 .modal-shell.choice-overlay .action-detail strong { @apply mr-2 text-gold-light; }
 .modal-shell.choice-overlay .virtual-formation-card-dialog { @apply max-w-[min(560px,calc(100vw-32px))]; }
 .modal-shell.choice-overlay .virtual-formation-card-matrix { @apply mx-auto border-collapse text-xs; }
@@ -2459,7 +2492,8 @@ function formationChoiceLabel(formationId: string): string {
 .modal-shell.choice-overlay .choice-cards { @apply flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
 .modal-shell.choice-overlay .choice-cards .choice-card { width: clamp(76px, 11vw, 112px); }
 .modal-shell.choice-overlay .choice-options { @apply mt-3 flex max-w-[min(620px,calc(100vw-48px))] flex-wrap justify-center gap-2; }
-.modal-shell.choice-overlay .choice-options button { @apply min-h-10 border border-[var(--app-border-strong)] bg-[var(--app-surface-raised)] px-3 py-2 text-xs text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light disabled:cursor-not-allowed disabled:opacity-45; }
+.modal-shell.choice-overlay .choice-options button { @apply min-h-10 border px-3 py-2 text-xs text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-45; border-color: rgba(245,253,247,.23); border-radius: 10px; background: linear-gradient(135deg, rgba(239,255,246,.13), transparent 64%), rgba(237,255,244,.07); box-shadow: inset 0 1px rgba(255,255,255,.14); transition: background .16s ease, border-color .16s ease, transform .16s ease; }
+.modal-shell.choice-overlay .choice-options button:hover:not(:disabled) { transform: translateY(-1px); border-color: rgba(226,196,111,.78); background-color: rgba(255,255,255,.13); color: #f4d78b; }
 .modal-shell.choice-overlay .choice-options button:focus-visible { @apply border-[#d1ad62] outline-2 outline-offset-2 outline-[#d1ad62]; }
 .modal-shell.choice-overlay .choice-options button.selected, .modal-shell.choice-overlay .choice-options button[aria-pressed="true"] { @apply font-bold; border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); box-shadow: 0 0 0 2px var(--app-accent-soft); }
 .modal-shell.choice-overlay .choice-actions { @apply mt-5; }

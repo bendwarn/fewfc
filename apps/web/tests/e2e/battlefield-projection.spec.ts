@@ -11,9 +11,9 @@ test('four-player room projects the authoritative turn and round record', async 
     await expect(page.locator('.player-seat')).toHaveCount(4)
     await expect(page.locator('.player-seat[aria-current="true"]')).toHaveCount(1)
 
-    const eventFeed = page.locator('.game-sidebar .event-feed')
-    await expect(eventFeed.locator('.event-group-title strong').first()).toBeVisible()
-    await expect(eventFeed).toContainText(/第 1 回合/u)
+    const eventTimeline = page.locator('.game-sidebar .battle-record-timeline')
+    await expect(eventTimeline.locator('.battle-record-group-heading strong').first()).toBeVisible()
+    await expect(eventTimeline).toContainText(/第 1 回合/u)
   } finally {
     await game.close()
   }

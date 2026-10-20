@@ -14,6 +14,7 @@ function state(overrides: Partial<PublicGameState> = {}): PublicGameState {
     players: [],
     turnOrder: ['alice', 'bob'],
     hp: [],
+    initialHp: [],
     hands: [],
     discard: [],
     playerDecks: [],

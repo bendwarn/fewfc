@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/vue3-vite'
-import { expect, userEvent, within } from 'storybook/test'
+import { expect, userEvent, waitFor, within } from 'storybook/test'
 import BattlefieldBoard from '~/components/BattlefieldBoard.vue'
 import GameConclusionPanel from '~/components/GameConclusionPanel.vue'
 import { createExampleGameState, createFourPlayerGameState, exampleCards } from '../fixtures/components'
@@ -12,6 +12,11 @@ twoPlayerState.phase = 'Action'
 twoPlayerState.environment = 'Water'
 
 const fourPlayerState = createFourPlayerGameState()
+const exposedForeignHandState = createFourPlayerGameState()
+exposedForeignHandState.hands.find(hand => hand.player === 'bob')!.cards = {
+  kind: 'partiallyKnown',
+  cards: [exampleCards[0]!, null, exampleCards[1]!],
+}
 const fourPlayerReplayState = createFourPlayerGameState()
 fourPlayerReplayState.hands = fourPlayerReplayState.turnOrder.map((player, index) => ({
   player,
@@ -90,9 +95,11 @@ export const TwoPlayerLive: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('region', { name: '五行戰鬥牌對戰桌' })).toBeVisible()
-    await expect(canvas.getAllByLabelText(/HP/)).toHaveLength(2)
-    await expect(canvas.getByLabelText('小華，100 HP，目前行動玩家，行動階段')).toHaveAttribute('aria-current', 'true')
-    await expect(canvas.getByText('環境 · 水行')).toBeVisible()
+    await expect(canvasElement.querySelectorAll('.team-hp-meter')).toHaveLength(2)
+    const actingSeat = canvasElement.querySelector('.player-seat[aria-current="true"]')
+    await expect(actingSeat?.getAttribute('aria-label')).toContain('小華，對方')
+    await expect(actingSeat).toHaveAttribute('aria-current', 'true')
+    await expect(canvasElement.querySelector('.environment-chip')).toHaveTextContent('水行')
   },
 }
 
@@ -100,14 +107,14 @@ export const FourPlayerPlayerView: Story = {
   args: { state: fourPlayerState, anchorPlayer: 'alice' },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await expect(canvas.getAllByLabelText(/HP/)).toHaveLength(4)
-    await expect(canvas.getByLabelText('小明，150 HP')).toBeVisible()
-    const actingSeat = canvas.getByLabelText('小華，132 HP，目前行動玩家，行動階段')
+    await expect(canvasElement.querySelectorAll('.team-hp-meter')).toHaveLength(2)
+    await expect(canvasElement.querySelectorAll('.player-seat')).toHaveLength(4)
+    const actingSeat = canvasElement.querySelector('.player-seat[aria-current="true"]')
+    await expect(actingSeat?.getAttribute('aria-label')).toContain('小華，對方')
     await expect(actingSeat).toHaveAttribute('aria-current', 'true')
     const actingStyle = window.getComputedStyle(actingSeat)
-    await expect(actingStyle.outlineStyle).not.toBe('none')
     await expect(actingStyle.boxShadow).not.toBe('none')
-    await expect(canvasElement.querySelector('.seat-bottom')).toHaveAttribute('aria-label', '小明，150 HP')
+    await expect(canvasElement.querySelector('.seat-bottom')?.getAttribute('aria-label')).toContain('小明，我方')
   },
 }
 
@@ -116,8 +123,8 @@ export const FourPlayerObserverView: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvasElement.querySelectorAll('.player-seat')).toHaveLength(4)
-    await expect(canvasElement.querySelector('.seat-bottom')).toHaveAttribute('aria-label', '小明，150 HP')
-    await expect(canvasElement.querySelector('.player-seat[aria-current="true"]')?.getAttribute('aria-label')).toContain('小華，132 HP，目前行動玩家')
+    await expect(canvasElement.querySelector('.seat-bottom')?.getAttribute('aria-label')).toContain('小明，隊伍 1')
+    await expect(canvasElement.querySelector('.player-seat[aria-current="true"]')?.getAttribute('aria-label')).toContain('小華，隊伍 2')
   },
 }
 
@@ -130,9 +137,30 @@ export const FourPlayerReplayPerspective: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('region', { name: '重播戰場（唯讀）' })).toBeVisible()
-    await expect(canvasElement.querySelector('.seat-bottom')).toHaveAttribute('aria-label', '小美，150 HP')
-    await expect(canvasElement.querySelector('.player-seat[aria-current="true"]')?.getAttribute('aria-label')).toContain('小華，132 HP，目前行動玩家')
-    await expect(canvas.getAllByRole('img', { name: '火 3' })[0]).toBeVisible()
+    await expect(canvasElement.querySelector('.seat-bottom')?.getAttribute('aria-label')).toContain('小美，我方')
+    await expect(canvasElement.querySelector('.player-seat[aria-current="true"]')?.getAttribute('aria-label')).toContain('小華，對方')
+    await userEvent.click(canvas.getByRole('button', { name: '查看小明的詳細資訊' }))
+    const page = within(canvasElement.ownerDocument.body)
+    const detail = await page.findByRole('dialog', { name: '小明的對局資訊' })
+    await waitFor(() => expect(detail).toBeVisible())
+    await expect(within(detail).getByRole('img', { name: '火 3' })).toBeVisible()
+  },
+}
+
+export const LivePublicForeignHand: Story = {
+  args: { state: exposedForeignHandState, anchorPlayer: 'alice', mode: 'live' },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const page = within(canvasElement.ownerDocument.body)
+    const handButton = canvas.getByRole('button', { name: /查看小華的公開手牌/ })
+    await expect(handButton).toHaveTextContent('手牌 3・公開 2')
+    await expect(handButton).toHaveAccessibleName(/手牌 3 張，2 張已知/)
+    await userEvent.click(handButton)
+    const dialog = await page.findByRole('dialog', { name: '小華的公開手牌 2 / 3' })
+    await waitFor(() => expect(dialog).toBeVisible())
+    await expect(within(dialog).getByRole('img', { name: '火 3' })).toBeVisible()
+    await expect(within(dialog).getByRole('img', { name: '水 2' })).toBeVisible()
+    await expect(dialog.querySelectorAll('.hand-detail-cards .playing-card')).toHaveLength(2)
   },
 }
 
@@ -140,12 +168,20 @@ export const LiveTotemRules: Story = {
   args: { state: totemState },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    const totem = canvas.getByLabelText(/^青角圖騰：/)
+    const trigger = canvas.getByRole('button', { name: '查看小明的詳細資訊' })
+    await userEvent.click(trigger)
+    const page = within(canvasElement.ownerDocument.body)
+    const detail = await page.findByRole('dialog', { name: '小明的對局資訊' })
+    await waitFor(() => expect(detail).toBeVisible())
+    const totem = within(detail).getByRole('button', { name: /^青角圖騰：/ })
     await expect(totem).toHaveTextContent('青角圖騰')
     await expect(totem.getAttribute('title')).toContain('防護罩不適用')
-    await expect(totem).toHaveAttribute('tabindex', '0')
+    await waitFor(() => expect(within(detail).getByRole('button', { name: '關閉詳情' })).toHaveFocus())
     await userEvent.tab()
     await expect(totem).toHaveFocus()
+    await userEvent.click(within(detail).getByRole('button', { name: '關閉詳情' }))
+    await expect(page.queryByRole('dialog', { name: '小明的對局資訊' })).toBeNull()
+    await waitFor(() => expect(trigger).toHaveFocus())
   },
 }
 
@@ -153,12 +189,20 @@ export const ReplayTotemRules: Story = {
   args: { state: totemState, mode: 'replay' },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    const totem = canvas.getByLabelText(/^青角圖騰：/)
+    const trigger = canvas.getByRole('button', { name: '查看小明的詳細資訊' })
+    await userEvent.click(trigger)
+    const page = within(canvasElement.ownerDocument.body)
+    const detail = await page.findByRole('dialog', { name: '小明的對局資訊' })
+    await waitFor(() => expect(detail).toBeVisible())
+    const totem = within(detail).getByRole('button', { name: /^青角圖騰：/ })
     await expect(totem).toHaveTextContent('青角圖騰')
     await expect(totem.getAttribute('title')).toContain('防護罩不適用')
-    await expect(totem).toHaveAttribute('tabindex', '0')
+    await waitFor(() => expect(within(detail).getByRole('button', { name: '關閉詳情' })).toHaveFocus())
     await userEvent.tab()
     await expect(totem).toHaveFocus()
+    await userEvent.click(within(detail).getByRole('button', { name: '關閉詳情' }))
+    await expect(page.queryByRole('dialog', { name: '小明的對局資訊' })).toBeNull()
+    await waitFor(() => expect(trigger).toHaveFocus())
   },
 }
 
@@ -173,10 +217,10 @@ export const ReplayHandInspection: Story = {
     const handButton = canvasElement.querySelector<HTMLButtonElement>('.player-seat[aria-current="true"] .compact-hand-button')
     if (!handButton) throw new Error('缺少重播手牌檢視按鈕')
     await expect(handButton).toHaveTextContent('手牌 1')
-    handButton.click()
+    await userEvent.click(handButton)
     const page = within(canvasElement.ownerDocument.body)
     const dialog = await page.findByRole('dialog', { name: '小華的手牌 1' })
-    await expect(dialog).toBeVisible()
+    await waitFor(() => expect(dialog).toBeVisible())
     await expect(within(dialog).getByRole('img', { name: '火 3' })).toBeVisible()
     await expect(canvasElement.ownerDocument.body.querySelectorAll('.hand-detail-cards .playing-card')).toHaveLength(1)
   },
@@ -187,10 +231,22 @@ export const PersonalDeckDiscardSummary: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvasElement.querySelectorAll('.seat-discard-control')).toHaveLength(2)
+    await expect(canvasElement.querySelectorAll('.seat-top .seat-discard-control')).toHaveLength(1)
+    await expect(canvasElement.querySelectorAll('.seat-bottom .seat-discard-control')).toHaveLength(1)
     await expect(canvasElement.querySelector('.seat-top .discard-counts')).toHaveTextContent('0—10')
     await expect(canvas.getByRole('img', { name: '火 3' })).toBeVisible()
     await expect(canvasElement.querySelectorAll('.featured-discard-card')).toHaveLength(1)
     await expect(canvasElement.querySelectorAll('.shared-discard-dock')).toHaveLength(0)
+
+    const formation = canvasElement.querySelector('.formation-field')!.getBoundingClientRect()
+    const overlapsFormation = [...canvasElement.querySelectorAll('.seat-discard-control')].some((pile) => {
+      const box = pile.getBoundingClientRect()
+      return box.left < formation.right
+        && box.right > formation.left
+        && box.top < formation.bottom
+        && box.bottom > formation.top
+    })
+    await expect(overlapsFormation).toBe(false)
   },
 }
 

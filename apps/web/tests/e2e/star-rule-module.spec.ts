@@ -2,12 +2,22 @@ import { type Locator, type Page } from '@playwright/test'
 import {
   battleRecordRuleEntry,
   expect,
+  expectTeamHp,
   reloadFastGameRoute,
   seedDevelopmentScenario,
   setupFastFourPlayerGame,
   setupFastTwoPlayerGame,
   test,
 } from './fixtures'
+
+async function expectPlayerDetails(page: Page) {
+  await page.getByRole('button', { name: /查看.*的詳細資訊/ }).first().click()
+  const facts = page.locator('.player-detail-facts')
+  await expect(facts).toBeVisible()
+  await expect(facts).toContainText('隊伍')
+  await page.keyboard.press('Escape')
+  await expect(facts).toHaveCount(0)
+}
 
 async function indexedModules(page: Page, roomName: string): Promise<string[]> {
   const response = await page.context().request.get('/api/games')
@@ -114,7 +124,7 @@ test('Star defaults on, survives reconnect, and is immutable after a two-player 
       const rules = await battleRecordRuleEntry(page)
       await expect(rules).toContainText('基礎規則')
       await expect(rules).toContainText('星辰圖記規則')
-      await expect(page.locator('.player-identity').filter({ hasText: '召星' })).toHaveCount(0)
+      await expectPlayerDetails(page)
     }))
 
     const updateResponse = await hostContext.request.put(`/api/games/${roomId}/rules`, {
@@ -152,7 +162,7 @@ test('disabling Star invalidates readiness and locked decks while preserving Bas
     await Promise.all([host, guest].map(async (page) => {
       await expect(await battleRecordRuleEntry(page))
         .not.toContainText('星辰圖記規則')
-      await expect(page.locator('.player-identity').filter({ hasText: '召星' })).toHaveCount(0)
+      await expectPlayerDetails(page)
     }))
 
     const active = (await host.locator('.playing-card:enabled:not(.hidden)').count()) ? host : guest
@@ -192,11 +202,10 @@ test('a four-player team room starts with one shared immutable Star configuratio
         .toContainText('星辰圖記規則')
       await expect(page.locator('.player-seat')).toHaveCount(4)
       await expect(page.locator('.seat-discard-control')).toHaveCount(4)
-      await expect(page.locator('.discard-position-top')).toHaveCount(1)
-      await expect(page.locator('.discard-position-left')).toHaveCount(1)
-      await expect(page.locator('.discard-position-right')).toHaveCount(1)
+      await expect(page.locator('.discard-position-top')).toHaveCount(3)
+      await expect(page.locator('.discard-position-left, .discard-position-right')).toHaveCount(0)
       await expect(page.locator('.discard-position-bottom')).toHaveCount(1)
-      await expect(page.locator('.player-identity').filter({ hasText: '召星' })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: /查看.*的詳細資訊/ })).toHaveCount(4)
     }))
   } finally {
     await game.close()
@@ -212,9 +221,7 @@ test('a Star endgame fixture finishes through normal UI play and resets with its
   try {
     await seedDevelopmentScenario(host, { name: 'star-endgame' })
 
-    await Promise.all(pages.map(page => (
-      expect(page.locator('.player-identity')).toContainText(['1 HP', '1 HP'])
-    )))
+    await Promise.all(pages.map(page => expectTeamHp(page, [1, 1])))
     const active = (await host.locator('.playing-card:enabled:not(.hidden)').count()) ? host : guest
     await active.locator('.playing-card:enabled:not(.hidden)').first().click()
     const attack = active.locator(

@@ -1,0 +1,135 @@
+<svg width="760" height="120" viewBox="0 0 760 120" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">五行戰鬥牌</title>
+  <desc id="desc">一排卡牌拼成的五行戰鬥牌標題。</desc>
+  <defs>
+    <filter id="letterShadow" x="-20%" y="-20%" width="140%" height="150%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="2" dy="3" stdDeviation="1.2" flood-color="#000" flood-opacity=".9"/>
+      <feDropShadow dx="-1" dy="1" stdDeviation=".6" flood-color="#fff" flood-opacity=".55"/>
+    </filter>
+    <radialGradient id="cardBackGlow" cx="50%" cy="42%" r="58%">
+      <stop stop-color="#8FC7E6"/>
+      <stop offset=".5" stop-color="#2F74B7"/>
+      <stop offset="1" stop-color="#173C83"/>
+    </radialGradient>
+    <linearGradient id="woodCard" x1="0" y1="0" x2="0" y2="120">
+      <stop stop-color="#817B48"/>
+      <stop offset=".42" stop-color="#E0D599"/>
+      <stop offset=".5" stop-color="#2D291B"/>
+      <stop offset="1" stop-color="#706A39"/>
+    </linearGradient>
+    <linearGradient id="grassCard" x1="0" y1="0" x2="0" y2="120">
+      <stop stop-color="#EFF4F1"/>
+      <stop offset=".48" stop-color="#9ACBA2"/>
+      <stop offset="1" stop-color="#1E5F2F"/>
+    </linearGradient>
+    <linearGradient id="starCard" x1="0" y1="0" x2="0" y2="120">
+      <stop stop-color="#F2ECFF"/>
+      <stop offset=".48" stop-color="#897EC1"/>
+      <stop offset="1" stop-color="#222048"/>
+    </linearGradient>
+    <linearGradient id="fireCard" x1="0" y1="0" x2="0" y2="120">
+      <stop stop-color="#1A130E"/>
+      <stop offset=".45" stop-color="#FFB037"/>
+      <stop offset=".62" stop-color="#C43621"/>
+      <stop offset="1" stop-color="#160A08"/>
+    </linearGradient>
+    <linearGradient id="skyCard" x1="0" y1="0" x2="0" y2="120">
+      <stop stop-color="#CFEFFF"/>
+      <stop offset=".42" stop-color="#6DB6D6"/>
+      <stop offset=".7" stop-color="#F5E7A7"/>
+      <stop offset="1" stop-color="#9FC2D0"/>
+    </linearGradient>
+    <pattern id="backLines" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(24)">
+      <path d="M0 0H8" stroke="#fff" stroke-opacity=".13"/>
+    </pattern>
+    <style>
+      .card { rx: 6; stroke: #070908; stroke-width: 2; }
+      .title-char {
+        font-family: "Noto Serif TC", "Source Han Serif TC", "PingFang TC", serif;
+        font-size: 82px;
+        font-weight: 900;
+        fill: #f7f5eb;
+        stroke: #060606;
+        stroke-width: 7;
+        paint-order: stroke fill;
+        filter: url(#letterShadow);
+      }
+      .corner {
+        font-family: "Noto Serif TC", "PingFang TC", serif;
+        font-size: 18px;
+        font-weight: 900;
+        paint-order: stroke fill;
+        stroke: #0b0d0c;
+        stroke-width: 2;
+      }
+    </style>
+  </defs>
+
+  <rect width="760" height="120" rx="8" fill="#080B09"/>
+
+  <g transform="translate(0 0)">
+    <rect class="card" width="100" height="120" fill="url(#cardBackGlow)"/>
+    <rect width="100" height="120" fill="url(#backLines)" opacity=".9"/>
+    <circle cx="50" cy="57" r="25" fill="#F3F6EE" fill-opacity=".88"/>
+    <g transform="translate(50 57)" stroke-linecap="round">
+      <circle r="18" stroke="#E46B5F" stroke-width="3" fill="none"/>
+      <circle r="13" stroke="#77B65F" stroke-width="3" fill="none"/>
+      <circle r="8" stroke="#4688D5" stroke-width="3" fill="none"/>
+      <path d="M0-29V29M-29 0H29M-20-20L20 20M20-20L-20 20" stroke="#fff" stroke-opacity=".72" stroke-width="2"/>
+    </g>
+    <text x="50" y="101" text-anchor="middle" font-family="serif" font-size="11" font-weight="900" fill="#F8F2DC">五行戰鬥牌</text>
+  </g>
+
+  <g transform="translate(112 0)">
+    <rect class="card" width="100" height="120" fill="url(#woodCard)"/>
+    <ellipse cx="50" cy="58" rx="23" ry="38" fill="#F6E8B0" fill-opacity=".7"/>
+    <path d="M18 10C38 23 59 22 82 9M17 106C39 91 61 92 84 108" stroke="#17120D" stroke-opacity=".45" stroke-width="3"/>
+    <text class="corner" x="12" y="22" fill="#EAD29A">金</text>
+    <text class="title-char" x="50" y="88" text-anchor="middle">五</text>
+  </g>
+
+  <g transform="translate(224 0)">
+    <rect class="card" width="100" height="120" fill="url(#grassCard)"/>
+    <path d="M0 91C22 72 45 74 69 88C82 96 91 99 100 95V120H0Z" fill="#15391D" opacity=".75"/>
+    <circle cx="72" cy="28" r="21" fill="#fff" fill-opacity=".38"/>
+    <text class="corner" x="12" y="22" fill="#66E55F">木</text>
+    <text class="title-char" x="50" y="88" text-anchor="middle">行</text>
+  </g>
+
+  <g transform="translate(336 0)">
+    <rect class="card" width="100" height="120" fill="url(#starCard)"/>
+    <circle cx="78" cy="24" r="30" fill="#F7E7FF" fill-opacity=".55"/>
+    <path d="M14 96C32 79 52 74 83 82" stroke="#D1C7FF" stroke-opacity=".5" stroke-width="9"/>
+    <text class="corner" x="12" y="22" fill="#66C8EF">水</text>
+    <text class="title-char" x="50" y="88" text-anchor="middle">戰</text>
+  </g>
+
+  <g transform="translate(448 0)">
+    <rect class="card" width="100" height="120" fill="url(#fireCard)"/>
+    <path d="M52 104C30 80 53 64 43 43C62 57 56 37 72 20C71 44 96 57 76 84C71 93 65 100 52 104Z" fill="#FFF4B8" fill-opacity=".9"/>
+    <path d="M36 111C9 89 29 66 19 44C42 59 43 29 58 8C61 43 91 45 94 77C96 99 74 115 36 111Z" fill="#E23B22" fill-opacity=".42"/>
+    <text class="corner" x="12" y="22" fill="#FF766A">火</text>
+    <text class="title-char" x="50" y="88" text-anchor="middle">鬥</text>
+  </g>
+
+  <g transform="translate(560 0)">
+    <rect class="card" width="100" height="120" fill="url(#skyCard)"/>
+    <path d="M0 83C20 70 35 75 49 84C67 97 82 93 100 79V120H0Z" fill="#F1D98B" opacity=".72"/>
+    <circle cx="24" cy="30" r="23" fill="#fff" fill-opacity=".5"/>
+    <text class="corner" x="12" y="22" fill="#F0C85A">土</text>
+    <text class="title-char" x="50" y="88" text-anchor="middle">牌</text>
+  </g>
+
+  <g transform="translate(660 0)">
+    <rect class="card" width="100" height="120" fill="url(#cardBackGlow)"/>
+    <rect width="100" height="120" fill="url(#backLines)" opacity=".9"/>
+    <circle cx="50" cy="57" r="25" fill="#F3F6EE" fill-opacity=".88"/>
+    <g transform="translate(50 57)" stroke-linecap="round">
+      <circle r="18" stroke="#E46B5F" stroke-width="3" fill="none"/>
+      <circle r="13" stroke="#77B65F" stroke-width="3" fill="none"/>
+      <circle r="8" stroke="#4688D5" stroke-width="3" fill="none"/>
+      <path d="M0-29V29M-29 0H29M-20-20L20 20M20-20L-20 20" stroke="#fff" stroke-opacity=".72" stroke-width="2"/>
+    </g>
+    <text x="50" y="101" text-anchor="middle" font-family="serif" font-size="11" font-weight="900" fill="#F8F2DC">五行戰鬥牌</text>
+  </g>
+</svg>

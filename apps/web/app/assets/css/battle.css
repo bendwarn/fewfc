@@ -1,0 +1,166 @@
+/* 對局、重播與完整畫面預覽共用材質；單獨呈現棋盤時仍有完整背景。 */
+.battle-scene,
+.battlefield {
+  --battle-text: var(--app-text);
+  --battle-text-secondary: color-mix(in srgb, var(--app-text) 84%, var(--app-surface));
+  --glass-surface: color-mix(in srgb, color-mix(in srgb, var(--app-surface) 65%, #567f84) 72%, transparent);
+  --glass-surface-strong: color-mix(in srgb, var(--app-surface-raised) 90%, transparent);
+  --glass-light: rgba(225, 246, 239, .12);
+  --glass-stroke: color-mix(in srgb, var(--app-border-strong) 42%, #e1f2e9);
+  --battle-glass-fill:
+    radial-gradient(ellipse at 0 0, rgba(233, 255, 246, .23), transparent 46%),
+    radial-gradient(ellipse at 100% 100%, rgba(179, 221, 203, .13), transparent 44%),
+    linear-gradient(160deg, var(--glass-light), transparent 48%),
+    linear-gradient(var(--glass-surface), var(--glass-surface));
+  --battle-glass-shadow:
+    inset 0 1px 1px rgba(255, 255, 245, .82),
+    inset 1px 0 2px rgba(228, 255, 243, .32),
+    inset 0 -1px 1px rgba(230, 255, 240, .38),
+    inset 0 0 14px rgba(220, 251, 235, .08),
+    0 12px 28px rgba(3, 15, 12, .24);
+  background-color: var(--app-canvas);
+  background-image:
+    linear-gradient(180deg, rgba(7, 19, 17, .06), rgba(7, 19, 17, .12) 52%, rgba(7, 19, 17, .32)),
+    var(--battle-page-background, var(--battle-background));
+  background-position: center;
+  background-size: cover;
+  color: var(--battle-text);
+}
+
+/* 只由整頁繪製場景，避免棋盤與紀錄區各自裁切同一張圖。 */
+.battle-scene > .battlefield {
+  background: transparent;
+}
+
+.battle-glass {
+  position: relative;
+  border: 1px solid var(--glass-stroke);
+  background: var(--battle-glass-fill);
+  box-shadow: var(--battle-glass-shadow);
+  -webkit-backdrop-filter: blur(18px) saturate(1.16);
+  backdrop-filter: blur(18px) saturate(1.16);
+}
+
+.battle-glass::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 8px rgba(226, 255, 242, .12);
+  pointer-events: none;
+  content: "";
+}
+
+.battle-turn-controls {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 12px;
+  padding: 2px;
+}
+
+.battle-action-group {
+  display: grid;
+  min-width: 0;
+  gap: 16px;
+  padding: clamp(14px, 1.4vw, 22px);
+  border-radius: 24px;
+}
+
+.battle-action-group > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--glass-stroke) 42%, transparent);
+}
+
+.battle-action-group > header :is(h2, h3) {
+  margin: 0;
+  color: var(--battle-text);
+  font: 700 clamp(16px, 1.25vw, 20px) var(--font-serif);
+}
+
+.battle-action-group > header :is(small, span) {
+  color: var(--battle-text-secondary);
+  font-size: 12px;
+}
+
+.battle-action-options {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.battle-action-options > button,
+.battle-action-options > div > button {
+  min-height: 46px;
+  max-width: 100%;
+  padding: 10px 16px;
+  border: 1px solid var(--glass-stroke);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--app-surface) 36%, transparent);
+  color: var(--battle-text);
+  font-size: 14px;
+  line-height: 1.5;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .24);
+  transition: transform .18s ease, background .18s ease, box-shadow .18s ease;
+}
+
+.battle-action-group--primary .battle-action-options > button {
+  background: linear-gradient(145deg, rgba(219, 244, 232, .16), transparent 62%), var(--glass-surface-strong);
+}
+
+.battle-action-options button:hover:not(:disabled),
+.battle-action-options button:focus-visible {
+  border-color: var(--app-accent-strong);
+  background: color-mix(in srgb, var(--app-accent) 20%, var(--glass-surface-strong));
+  box-shadow: inset 0 1px rgba(255, 249, 223, .7), 0 0 20px rgba(213, 177, 88, .2);
+}
+
+.battle-action-options button:focus-visible {
+  outline: 2px solid var(--app-accent-strong);
+  outline-offset: 3px;
+}
+
+.battle-action-note {
+  padding: 14px 16px;
+  border: 1px solid var(--glass-stroke, var(--app-border-strong));
+  border-radius: 16px;
+  background: var(--glass-surface-strong, var(--app-surface-raised));
+  color: var(--battle-text-secondary, var(--app-text-muted));
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+@media (min-width: 601px) and (max-height: 800px) {
+  .battle-turn-controls { gap: 10px; }
+  .battle-action-group { gap: 10px; padding: 12px; }
+  .battle-action-group > header { padding-bottom: 8px; }
+}
+
+@media (max-width: 600px) {
+  .battle-turn-controls { gap: 6px; padding: 1px; }
+  .battle-action-group { gap: 7px; padding: 9px; border-radius: 16px; }
+  .battle-action-group > header { gap: 4px; padding-bottom: 6px; }
+  .battle-action-group > header :is(h2, h3) { font-size: 13px; }
+  .battle-action-group > header :is(small, span) { font-size: 10px; }
+  .battle-action-options { gap: 6px; }
+  .battle-action-options > button,
+  .battle-action-options > div > button { min-height: 36px; padding: 6px 10px; border-radius: 10px; font-size: 12px; }
+  .battle-action-note { padding: 10px; font-size: 12px; }
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .battle-glass { background: var(--app-surface); }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .battle-glass { background: var(--app-surface); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .battle-action-options button { transition: none; }
+}

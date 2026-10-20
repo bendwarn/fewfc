@@ -491,6 +491,10 @@ export function emptyPublicState(players: PlayerId[] = ['alice', 'bob']): Public
       team: `team:${player}`,
       hp: players.length === 2 ? 100 : 150,
     })),
+    initialHp: players.map((player) => ({
+      team: `team:${player}`,
+      hp: players.length === 2 ? 100 : 150,
+    })),
     hands: players.map((player) => ({
       player,
       cards: {

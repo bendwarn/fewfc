@@ -199,6 +199,30 @@ const emit = defineEmits<{
 </script>
 
 <style scoped>
-/* CardChoiceMatrix 會隨本元件進入 Teleport 的 modal；間距由使用情境擁有。 */
+.chain-choice {
+  --app-surface: #10221b;
+  --app-surface-raised: #142820;
+  --app-text: #f2f0e8;
+  --app-text-muted: rgba(242, 240, 232, .72);
+  --app-text-soft: rgba(242, 240, 232, .5);
+  --app-border: rgba(245, 253, 247, .17);
+  --app-border-strong: rgba(245, 253, 247, .3);
+  --app-accent: #c9a34f;
+  display: grid;
+  gap: .45rem;
+  max-width: 100%;
+  text-align: left;
+}
+.chain-choice h3 { margin: .8rem 0 .1rem; color: #e2c46f; font-family: Georgia, 'Noto Serif TC', serif; font-size: 12px; }
+.chain-choice > p { margin: .1rem 0; color: var(--app-text-muted); font-size: 11px; line-height: 1.6; }
+.chain-choice .choice-selection-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 auto; max-width: 390px; color: #e2c46f; font-size: 11px; }
+.chain-choice .choice-selection-summary button { min-height: 30px; padding: 5px 9px; border: 1px solid rgba(245,253,247,.24); border-radius: 9px; background: rgba(237,255,244,.08); color: var(--app-text); font-size: 10px; }
+.chain-choice .choice-options { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: min(620px, calc(100vw - 48px)); margin-top: 8px; }
+.chain-choice .choice-options button { min-height: 38px; padding: 8px 12px; border: 1px solid rgba(245,253,247,.24); border-radius: 10px; background: linear-gradient(135deg, rgba(239,255,246,.13), transparent 65%), rgba(237,255,244,.07); color: var(--app-text); font-size: 11px; box-shadow: inset 0 1px rgba(255,255,255,.13); transition: background .16s ease, border-color .16s ease, transform .16s ease; }
+.chain-choice .choice-options button:hover { transform: translateY(-1px); border-color: rgba(226,196,111,.75); background-color: rgba(255,255,255,.13); }
+.chain-choice .choice-options button:focus-visible, .chain-choice .choice-selection-summary button:focus-visible { outline: 2px solid #d1ad62; outline-offset: 2px; }
+.chain-choice .choice-options button.selected, .chain-choice .choice-options button[aria-pressed="true"] { border-color: #e2c46f; background: linear-gradient(135deg, rgba(255,239,189,.96), rgba(201,163,79,.94)); color: #172019; font-weight: 700; box-shadow: 0 0 0 2px rgba(201,163,79,.25), inset 0 1px rgba(255,255,255,.34); }
+.chain-choice .action-detail { position: sticky; bottom: 0; z-index: 8; padding: 12px; border: 1px solid rgba(245,253,247,.22); border-radius: 12px; background: linear-gradient(135deg, rgba(239,255,246,.14), transparent 65%), rgba(20,40,32,.9); color: var(--app-text-muted); font-size: 11px; line-height: 1.6; box-shadow: 0 12px 28px rgba(0,0,0,.3); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+.chain-choice .action-detail strong { margin-right: 8px; color: #e2c46f; }
 .chain-choice :deep(.chain-composition) { margin-top: .5rem; }
 </style>

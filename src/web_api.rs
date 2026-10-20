@@ -1749,6 +1749,7 @@ struct WebPublicGameState {
     players: Vec<WebPlayer>,
     turn_order: Vec<String>,
     hp: Vec<WebTeamHp>,
+    initial_hp: Vec<WebTeamHp>,
     hands: Vec<WebPlayerHand>,
     deck_count: usize,
     discard: Vec<WebCard>,
@@ -1926,6 +1927,18 @@ impl WebPublicGameState {
                 .collect(),
             hp: state
                 .hp
+                .into_iter()
+                .map(|hp| WebTeamHp {
+                    team: serde_json::to_value(hp.team)
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                    hp: hp.hp,
+                })
+                .collect(),
+            initial_hp: state
+                .initial_hp
                 .into_iter()
                 .map(|hp| WebTeamHp {
                     team: serde_json::to_value(hp.team)
@@ -8633,6 +8646,14 @@ mod tests {
 
         assert_eq!(json["status"], "Finished");
         assert_eq!(json["winnerTeam"], setup.players[0].team.as_str());
+        assert_eq!(
+            json["initialHp"],
+            serde_json::json!([
+                { "team": setup.players[0].team.as_str(), "hp": setup.hp[0].hp },
+                { "team": setup.players[1].team.as_str(), "hp": setup.hp[1].hp },
+            ])
+        );
+        assert!(json.get("initial_hp").is_none());
         assert_eq!(json["terminalResolution"]["type"], "automatic");
         assert_eq!(json["terminalResolution"]["label"], "自動效果結算");
         assert!(json.get("terminal_resolution").is_none());

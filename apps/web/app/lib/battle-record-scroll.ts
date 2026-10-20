@@ -4,7 +4,7 @@
  */
 export function battleRecordContentRevision(groups: ReadonlyArray<{
   title?: string
-  entries: ReadonlyArray<{ id?: string, title?: string, summary?: string }>
+  entries: ReadonlyArray<{ id?: string, title?: string, summary?: string | null }>
 }>): string {
   return JSON.stringify(groups.map(group => ({
     title: group.title ?? '',

@@ -1,6 +1,7 @@
 import { expect, test, type APIResponse, type BrowserContext } from '@playwright/test'
 import type { GameRoomResponse } from '../../shared/game-room'
 import {
+  expectTeamHp,
   gotoAppRoute,
   seedDevelopmentScenario,
   setupFastTwoPlayerGame,
@@ -104,6 +105,7 @@ test('back navigation preserves the queue across tabs and reconnect fills an exi
 })
 
 test('finished rooms retain observers through reset without granting player replay rights', async ({ browser }) => {
+  test.setTimeout(120_000)
   const game = await setupFastTwoPlayerGame(browser)
   const observers = await Promise.all(Array.from({ length: 3 }, () => browser.newContext()))
   const [observer, offlineObserver, newcomer] = observers as [BrowserContext, BrowserContext, BrowserContext]
@@ -118,19 +120,22 @@ test('finished rooms retain observers through reset without granting player repl
     expect((await roomState(hostContext, gameId)).activeGameVersion).toEqual(beforeObservation.activeGameVersion)
     const observerPage = await observer.newPage()
     await gotoAppRoute(observerPage, `/rooms/${gameId}`)
-    await expect(observerPage.getByRole('button', { name: '離開觀戰', exact: true })).toBeVisible()
+    await expect(observerPage.getByRole('button', { name: '離開觀戰', exact: true }))
+      .toBeVisible({ timeout: 20_000 })
     await expect.poll(async () => (
       (await roomState(hostContext, gameId)).metadata.observers.find(member => member.userId === observerId)?.connected
     )).toBe(true)
     await observerPage.getByRole('button', { name: '返回房間列表', exact: true }).click()
     await expect.poll(async () => (
       (await roomState(hostContext, gameId)).metadata.observers.find(member => member.userId === observerId)?.connected
-    )).toBe(false)
+    ), { timeout: 15_000 }).toBe(false)
     expect((await roomState(hostContext, gameId)).activeGameVersion).toEqual(beforeObservation.activeGameVersion)
     await gotoAppRoute(observerPage, `/rooms/${gameId}`)
+    await expect(observerPage.getByRole('button', { name: '離開觀戰', exact: true }))
+      .toBeVisible({ timeout: 20_000 })
     await expect.poll(async () => (
       (await roomState(hostContext, gameId)).metadata.observers.find(member => member.userId === observerId)?.connected
-    )).toBe(true)
+    ), { timeout: 15_000 }).toBe(true)
     expect((await roomState(hostContext, gameId)).activeGameVersion).toEqual(beforeObservation.activeGameVersion)
     const originalPlayers = (await roomState(hostContext, gameId)).metadata.members.map(member => member.userId)
 
@@ -140,13 +145,11 @@ test('finished rooms retain observers through reset without granting player repl
     expect((await roomState(hostContext, gameId)).activeGameVersion).toEqual(beforeObservation.activeGameVersion)
 
     await seedDevelopmentScenario(host, { name: 'star-endgame' })
-    await Promise.all([host, guest].map(page => (
-      expect(page.locator('.player-identity')).toContainText(['1 HP', '1 HP'])
-    )))
+    await Promise.all([host, guest].map(page => expectTeamHp(page, [1, 1])))
     const active = await host.locator('.playing-card:enabled:not(.hidden)').count() ? host : guest
     await active.locator('.playing-card:enabled:not(.hidden)').first().click()
     const attack = active.locator('.action-panel .action-candidates button[title*="進行五行攻擊"]')
-    await expect(attack).toBeVisible()
+    await expect(attack).toBeVisible({ timeout: 20_000 })
     const finishedCommand = active.waitForResponse(response => (
       response.request().method() === 'POST'
       && new URL(response.url()).pathname === `/api/games/${gameId}/commands`

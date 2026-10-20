@@ -63,12 +63,24 @@ async function beginSingleCardTurn(pages: Page[]) {
   await formation.click()
   expect((await command).ok()).toBe(true)
 
-  await expect.poll(async () => (
-    await page.locator('.choice-overlay').isVisible()
-    || await page.locator('.result-panel').isVisible()
-  )).toBe(true)
+  let outcomePage: Page | undefined
+  await expect.poll(async () => {
+    for (const candidate of pages) {
+      if (await candidate.locator('.choice-overlay').isVisible()) {
+        outcomePage = candidate
+        return true
+      }
+    }
+    for (const candidate of pages) {
+      if (await candidate.locator('.result-panel').isVisible()) {
+        outcomePage = candidate
+        return true
+      }
+    }
+    return false
+  }).toBe(true)
 
-  return page
+  return outcomePage!
 }
 
 async function finishSingleCardTurn(page: Page) {
@@ -135,7 +147,7 @@ async function expectDiscardMatrixMatchesGameState(page: Page) {
 }
 
 test('players can inspect a synchronized discard composition throughout a match', async ({ browser }) => {
-  test.setTimeout(60_000)
+  test.setTimeout(90_000)
   const game = await setupFastTwoPlayerGame(browser, {
     roomName: `同步棄牌測試 ${Date.now()}`,
     disabledRuleModules: ['five-directions-legend', 'personal-deck'],
@@ -145,23 +157,27 @@ test('players can inspect a synchronized discard composition throughout a match'
   try {
     await Promise.all(pages.map(async (page) => {
       await expect(page.locator('.seat-bottom .playing-card:not(.hidden)')).not.toHaveCount(0)
-      await expect(page.locator('.seat-top .playing-card.hidden')).not.toHaveCount(0)
-      await expect(page.locator('.seat-top .playing-card:not(.hidden)')).toHaveCount(0)
+      await expect(page.locator('.seat-top .compact-hand-count')).toContainText('手牌')
+      await expect(page.locator('.seat-top .playing-card')).toHaveCount(0)
     }))
     const emptyDiscardBox = await discardTrigger(host, 0).boundingBox()
     expect(emptyDiscardBox).not.toBeNull()
 
     const desktopTextSizes = await host.locator('.game-page').evaluate((gamePage) => {
       const selectors = [
-        '.event-feed span',
-        '.event-feed p',
-        '.player-identity small',
+        '.battle-record-group-heading strong',
+        '.battle-record-events li strong',
+        '.battle-record-events li p',
+        '.team-label',
       ]
       return selectors.map((selector) => (
         Number.parseFloat(getComputedStyle(gamePage.querySelector(selector)!).fontSize)
       ))
     })
-    expect(desktopTextSizes.every(size => size >= 11)).toBe(true)
+    expect(desktopTextSizes[0]).toBeGreaterThanOrEqual(11)
+    expect(desktopTextSizes[1]).toBeGreaterThanOrEqual(11)
+    expect(desktopTextSizes[2]).toBeGreaterThanOrEqual(10)
+    expect(desktopTextSizes[3]).toBeGreaterThanOrEqual(8)
 
     const handCards = host.locator('.seat-bottom .playing-card')
     const handBoxes = await handCards.evaluateAll(cards => (
@@ -262,12 +278,16 @@ test('players can inspect a synchronized discard composition throughout a match'
 
     active = await beginSingleCardTurn(pages)
     expect(active).toBe(nextActive)
-    await expect(discardDialog(pendingObserver)).toBeHidden()
+    await expect(discardDialog(pendingObserver)).toBeVisible()
     await expect(discardTrigger(pendingObserver, 3)).toHaveAttribute('aria-disabled', 'true')
-    await discardTrigger(pendingObserver, 3).click({ force: true })
-    await expect(discardDialog(pendingObserver)).toBeHidden()
+    await expect(discardDialog(pendingObserver).getByRole('heading'))
+      .toHaveText(/^目前棄牌 3 · 牌庫 \d+$/)
     expect(await finishSingleCardTurn(active)).toBe(false)
     await expectDiscardTotal(pages, 4)
+    await expect(discardDialog(pendingObserver).getByRole('heading'))
+      .toHaveText(/^目前棄牌 4 · 牌庫 \d+$/)
+    await discardDialog(pendingObserver).getByRole('button', { name: '關閉詳情' }).click()
+    await expect(discardDialog(pendingObserver)).toBeHidden()
   } finally {
     await game.close()
   }

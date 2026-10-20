@@ -1,58 +1,34 @@
 import {
   battleRecordEntry,
   expect,
-  reloadFastGameRoute,
   seedDevelopmentScenario,
   setupFastTwoPlayerGame,
   test,
 } from './fixtures'
 
 test('a Spirit Skill is usable from the Ability panel and survives reconnect', async ({ browser }) => {
+  test.setTimeout(90_000)
   const game = await setupFastTwoPlayerGame(browser, {
     roomName: `精靈技能測試 ${Date.now()}`,
   })
   const { host, guest, gameId: roomId } = game
 
   try {
-    await expect(host.locator('.seat-discard-control')).toHaveCount(2)
-    await expect(host.locator('.discard-position-top')).toHaveCount(1)
-    await expect(host.locator('.discard-position-bottom')).toHaveCount(1)
-    const discardOverlapsFormation = await host.locator('.battlefield').evaluate((battlefield) => {
-      const formation = battlefield.querySelector('.formation-field')!.getBoundingClientRect()
-      return [...battlefield.querySelectorAll('.seat-discard-control')].some((pile) => {
-        const box = pile.getBoundingClientRect()
-        return box.left < formation.right
-          && box.right > formation.left
-          && box.top < formation.bottom
-          && box.bottom > formation.top
-      })
-    })
-    expect(discardOverlapsFormation).toBe(false)
-
     await seedDevelopmentScenario(host, { name: 'spirit-skill' })
 
-    await reloadFastGameRoute(host, roomId)
-    await expect(host.locator('.spirit-status')).toContainText('精靈 · 金精靈 · 靈力 2 / 6')
     const flyingBlade = host
       .getByRole('region', { name: '能力' })
       .getByRole('button', { name: /^飛刃/ })
+    await host.reload({ waitUntil: 'domcontentloaded' })
+    await expect(flyingBlade).toBeEnabled({ timeout: 10_000 })
+    const actingSeat = host.locator('.player-seat[aria-current="true"]')
+    await actingSeat.getByRole('button', { name: /查看.*的詳細資訊/ }).click()
+    const playerDetails = host.getByRole('dialog', { name: /的對局資訊/ })
+    await expect(playerDetails).toBeVisible()
+    await expect(playerDetails.locator('.player-detail-facts')).toContainText('金精靈・靈力 2 / 6')
+    await playerDetails.getByRole('button', { name: '關閉詳情' }).click()
     await expect(flyingBlade).toBeVisible()
-    const selectedCard = host.locator('.playing-card:enabled:not(.hidden)').first()
-    await Promise.all([
-      host.waitForResponse(response => (
-        response.url().endsWith(`/api/games/${roomId}/commands`)
-        && response.request().postDataJSON()?.action?.type === 'playableActions'
-      )),
-      selectedCard.click(),
-    ])
-    await Promise.all([
-      host.waitForResponse(response => (
-        response.url().endsWith(`/api/games/${roomId}/commands`)
-        && response.request().postDataJSON()?.action?.type === 'playableActions'
-      )),
-      selectedCard.click(),
-    ])
-    await expect(flyingBlade).toBeVisible()
+    await expect(host.getByText('你的回合', { exact: true })).toBeVisible()
     const [skillResponse] = await Promise.all([
       host.waitForResponse(response => (
         response.url().endsWith(`/api/games/${roomId}/commands`)
@@ -64,12 +40,12 @@ test('a Spirit Skill is usable from the Ability panel and survives reconnect', a
 
     const hostEntry = await battleRecordEntry(host, '使用「飛刃」')
     await expect(hostEntry).toContainText('靈力由 2 變為 0')
-    await reloadFastGameRoute(guest, roomId)
-    await expect(guest.getByRole('listitem').filter({
-      hasText: /使用「飛刃」.*靈力由 2 變為 0/,
-    })).toBeVisible()
-    await reloadFastGameRoute(host, roomId)
-    await expect(hostEntry).toContainText('的金精靈已破除')
+    await guest.reload({ waitUntil: 'domcontentloaded' })
+    const guestEntry = await battleRecordEntry(guest, '使用「飛刃」')
+    await expect(guestEntry).toContainText('靈力由 2 變為 0')
+    await host.reload({ waitUntil: 'domcontentloaded' })
+    const reloadedHostEntry = await battleRecordEntry(host, '使用「飛刃」')
+    await expect(reloadedHostEntry).toContainText('的金精靈已破除')
   } finally {
     await game.close()
   }

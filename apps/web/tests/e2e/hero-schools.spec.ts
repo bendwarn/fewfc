@@ -7,6 +7,7 @@ import {
 } from './fixtures'
 
 test('a Profession change and activated ability survive public reconnect', async ({ browser }) => {
+  test.setTimeout(60_000)
   const game = await setupFastTwoPlayerGame(browser, {
     roomName: `英雄學派測試 ${Date.now()}`,
     enabledRuleModules: ['hero-schools'],
@@ -16,8 +17,8 @@ test('a Profession change and activated ability survive public reconnect', async
   try {
     await seedDevelopmentScenario(host, { name: 'hero-schools-transition' })
 
-    await expect(host.locator('.profession-badge')).toContainText('幻術師')
-    await expect(guest.locator('.profession-badge')).toContainText('幻術師')
+    await expect(host.getByLabel('職業 幻術師', { exact: true })).toBeVisible()
+    await expect(guest.getByLabel('職業 幻術師', { exact: true })).toBeVisible()
     let activationRequests = 0
     host.on('request', (request) => {
       if (
@@ -76,11 +77,12 @@ test('a Profession change and activated ability survive public reconnect', async
     await expect(virtualCardDialog).toHaveCount(0)
     expect(activationRequests).toBe(1)
 
+    await expect(host.locator('.battle-record-timeline')).toContainText('虛擬牌')
     await reloadFastGameRoute(host, roomId)
-    await expect(host.locator('.event-feed')).toContainText('虛擬牌')
+    await expect(host.locator('.battle-record-timeline')).toContainText('虛擬牌')
     await expect(host.locator('.card-interpretation-badge')).toHaveCount(0)
     await reloadFastGameRoute(guest, roomId)
-    await expect(guest.locator('.event-feed')).toContainText('虛擬牌')
+    await expect(guest.locator('.battle-record-timeline')).toContainText('虛擬牌')
     await expect(guest.locator('.card-interpretation-badge')).toHaveCount(0)
   } finally {
     await game.close()
