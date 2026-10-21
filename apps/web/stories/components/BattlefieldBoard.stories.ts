@@ -37,6 +37,93 @@ replayHandState.statuses.push({
 const totemState = createExampleGameState()
 totemState.totems = [{ player: 'alice', totem: 'AzureHorn', name: '青角圖騰' }]
 
+const multiModulePlayerDetailState = createExampleGameState()
+multiModulePlayerDetailState.ruleVersion = '5.17'
+multiModulePlayerDetailState.enabledRuleModules = [
+  'star',
+  'hero-schools',
+  'discard-retrieval',
+  'personal-deck',
+  'five-directions-legend',
+  'spirit',
+  'jianghu',
+  'confluence-generation',
+  'dark-glimmer',
+  'echo',
+  'tribulation',
+  'pouch',
+  'totem-formation',
+]
+multiModulePlayerDetailState.turnNumber = 3
+multiModulePlayerDetailState.currentPlayer = 'alice'
+multiModulePlayerDetailState.phase = 'Action'
+multiModulePlayerDetailState.hands = [
+  { player: 'alice', cards: { kind: 'known', cards: exampleCards.slice(0, 2) } },
+  { player: 'bob', cards: { kind: 'hidden', count: 5 } },
+]
+multiModulePlayerDetailState.teamStars = [{ team: 'team:alice', star: 'Metal' }]
+multiModulePlayerDetailState.starHistories = [{ player: 'alice', stars: ['Fire', 'Wood'] }]
+multiModulePlayerDetailState.spirits = [{ player: 'alice', spirit: 'Fire', power: 2 }]
+multiModulePlayerDetailState.totems = [{ player: 'alice', totem: 'AzureHorn', name: '青角圖騰' }]
+multiModulePlayerDetailState.professions = [{
+  player: 'alice',
+  id: 'ink-seeker',
+  name: '尋墨客',
+  abilities: ['觀星', '借勢'],
+}]
+multiModulePlayerDetailState.pouches = [
+  { owner: 'alice', card: exampleCards[2]! },
+  { owner: 'bob', card: null },
+]
+multiModulePlayerDetailState.coveredPassives = [{
+  owner: 'alice',
+  formationId: null,
+  cards: { kind: 'hidden', count: 2 },
+  starSubstitution: null,
+}]
+multiModulePlayerDetailState.playerDecks = [
+  { player: 'alice', cards: { kind: 'partiallyKnown', cards: [exampleCards[1]!, null] } },
+  { player: 'bob', cards: { kind: 'hidden', count: 10 } },
+]
+multiModulePlayerDetailState.jianghuStates = [{
+  owner: 'alice',
+  kind: 'ThousandBlades',
+  remainingTurns: 1,
+  expiresOnTurn: 3,
+}]
+multiModulePlayerDetailState.statuses = [{
+  id: 'dark-glimmer-gale-rain',
+  owner: { kind: 'player', id: 'alice' },
+  kind: 'GaleRain',
+  presentation: 'galeRain',
+  duration: { type: 'untilTurnEnd', player: 'alice' },
+}]
+multiModulePlayerDetailState.limitedUses = [{
+  owner: 'alice',
+  key: 'confluence-tailwind',
+  presentation: 'tailwind',
+  remaining: 0,
+  maximum: 1,
+}]
+multiModulePlayerDetailState.confluenceCardObligations = [{
+  owner: 'alice',
+  card: exampleCards[1]!.id,
+  allowProfessionFormation: true,
+}]
+multiModulePlayerDetailState.scheduledEchoes = [{
+  player: 'alice',
+  melody: 'warFire',
+  dueTurnNumber: 5,
+}]
+multiModulePlayerDetailState.flowStates = [{ player: 'alice', layers: 2 }]
+multiModulePlayerDetailState.formationSuppressions = [{
+  source: 'bob',
+  target: 'alice',
+  formationName: '烈焰陣',
+  expiresOnTurnNumber: 4,
+}]
+multiModulePlayerDetailState.scheduledPlantEarth = [{ player: 'alice', dueTurnNumber: 5 }]
+
 const personalDeckState = createExampleGameState()
 personalDeckState.enabledRuleModules = ['personal-deck']
 personalDeckState.turnNumber = 3
@@ -182,6 +269,54 @@ export const LiveTotemRules: Story = {
     await userEvent.click(within(detail).getByRole('button', { name: '關閉詳情' }))
     await expect(page.queryByRole('dialog', { name: '小明的對局資訊' })).toBeNull()
     await waitFor(() => expect(trigger).toHaveFocus())
+  },
+}
+
+export const MultiModulePlayerDetail: Story = {
+  args: { state: multiModulePlayerDetailState },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const page = within(canvasElement.ownerDocument.body)
+    const aliceTrigger = canvas.getByRole('button', { name: '查看小明的詳細資訊' })
+    await userEvent.click(aliceTrigger)
+    const aliceDetail = await page.findByRole('dialog', { name: '小明的對局資訊' })
+    await waitFor(() => expect(aliceDetail).toBeVisible())
+    const aliceFacts = aliceDetail.querySelector('.player-detail-facts')
+    if (!aliceFacts) throw new Error('玩家詳情應顯示資料清單')
+    await expect(aliceFacts).toHaveTextContent('金星‧太白')
+    await expect(aliceFacts).toHaveTextContent('火、木')
+    await expect(aliceFacts).toHaveTextContent('火精靈・靈力 2 / 6')
+    await expect(aliceFacts).toHaveTextContent('青角圖騰')
+    await expect(aliceFacts).toHaveTextContent('木 1')
+    await expect(aliceFacts).toHaveTextContent('2 張')
+    await expect(aliceFacts).toHaveTextContent('尋墨客')
+    await expect([...aliceFacts.querySelectorAll('dt')].some(label => label.textContent === '公開牌')).toBe(true)
+    const aliceStatuses = aliceDetail.querySelector('.player-detail-statuses')
+    if (!aliceStatuses) throw new Error('玩家詳情應顯示狀態清單')
+    await expect(aliceStatuses).toHaveTextContent('烈風暴雨')
+    await expect(aliceStatuses).toHaveTextContent('江湖狀態：千鋒')
+    await expect(aliceStatuses).toHaveTextContent('順風 · 0/1')
+    await expect(aliceStatuses).toHaveTextContent('調律牌 · 水 2')
+    await expect(aliceStatuses).toHaveTextContent('迴響 · 徵調‧戰火 · 第 5 回合')
+    await expect(aliceStatuses).toHaveTextContent('流水 · 2 層')
+    await expect(aliceStatuses).toHaveTextContent('烈焰陣')
+    await expect(aliceStatuses).toHaveTextContent('植土')
+    await expect(aliceStatuses.textContent?.match(/江湖狀態：千鋒/g) ?? []).toHaveLength(1)
+
+    await userEvent.click(within(aliceDetail).getByRole('button', { name: '關閉詳情' }))
+    const bobTrigger = canvas.getByRole('button', { name: '查看小華的詳細資訊' })
+    await userEvent.click(bobTrigger)
+    const bobDetail = await page.findByRole('dialog', { name: '小華的對局資訊' })
+    await waitFor(() => expect(bobDetail).toBeVisible())
+    const bobFacts = bobDetail.querySelector('.player-detail-facts')
+    if (!bobFacts) throw new Error('玩家詳情應顯示資料清單')
+    await expect(bobFacts).toHaveTextContent('覆蓋牌')
+    const bobFactLabels = [...bobFacts.querySelectorAll('dt')].map(label => label.textContent)
+    await expect(bobFactLabels).not.toContain('星辰')
+    await expect(bobFactLabels).not.toContain('精靈')
+    await expect(bobFactLabels).not.toContain('圖騰')
+    await expect(bobFactLabels).not.toContain('公開牌')
+    await expect(bobFacts.textContent).not.toContain('木 2')
   },
 }
 

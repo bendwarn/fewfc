@@ -336,9 +336,8 @@
         <ul class="player-detail-statuses">
           <li v-for="counter in counterEffectsFor(playerDetailPlayer)" :key="`detail-${counter.effectId}`">反制・{{ counter.effectName }}</li>
           <li v-if="shieldFor(playerDetailPlayer) > 0">防護罩・{{ shieldFor(playerDetailPlayer) }}</li>
-          <li v-for="state in playerJianghuStates(playerDetailPlayer)" :key="`jianghu-${state.kind}`">{{ jianghuStateLabel(state.kind) }}・剩餘 {{ state.remainingTurns }} 回合</li>
           <li v-for="effect in persistentEffectsFor(playerDetailPlayer)" :key="`player-effect-${effect.key}`">{{ effect.label }}</li>
-          <li v-if="!counterEffectsFor(playerDetailPlayer).length && shieldFor(playerDetailPlayer) === 0 && !playerJianghuStates(playerDetailPlayer).length && !persistentEffectsFor(playerDetailPlayer).length">目前沒有持續狀態</li>
+          <li v-if="!counterEffectsFor(playerDetailPlayer).length && shieldFor(playerDetailPlayer) === 0 && !persistentEffectsFor(playerDetailPlayer).length">目前沒有持續狀態</li>
         </ul>
         <p v-if="professionFor(playerDetailPlayer)?.abilities.length" class="player-profession-summary">
           <strong>職業能力</strong>{{ professionFor(playerDetailPlayer)!.abilities.join('、') }}
@@ -789,10 +788,6 @@ function teamAriaLabel(team: TeamId, index: number) {
     ? team === anchorTeam ? '我方' : '對方'
     : `第 ${index + 1} 隊`
   return `${relation}隊伍 HP`
-}
-function playerJianghuStates(player: PlayerId) { return props.state.jianghuStates.filter(entry => entry.owner === player) }
-function jianghuStateLabel(kind: 'ThousandBlades' | 'SnowTreading' | 'Poison') {
-  return { ThousandBlades: '千鋒', SnowTreading: '踏雪', Poison: '中毒' }[kind]
 }
 function handCount(player: PlayerId) { const cards = props.state.hands.find(entry => entry.player === player)?.cards; return !cards ? 0 : cards.kind === 'hidden' ? cards.count : cards.cards.length }
 function teamStar(team: TeamId) { return props.state.teamStars.find(entry => entry.team === team)?.star }
