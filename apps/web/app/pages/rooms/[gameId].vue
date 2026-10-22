@@ -2363,7 +2363,7 @@ function formationChoiceLabel(formationId: string): string {
 .back-button { @apply grid size-9 place-items-center border border-[var(--app-border-strong)] bg-[rgba(17,23,19,.88)] text-base text-[var(--app-text)] hover:border-[var(--app-accent)] hover:text-gold-light; }
 .battlefield-back { @apply pointer-events-auto absolute top-4 left-4; }
 .battle-layout { @apply relative grid min-h-0 flex-1; grid-template-columns: minmax(0, 1fr) clamp(260px, 25vw, 360px); gap: 10px; padding: 10px; }
-.battlefield-nav { @apply pointer-events-none absolute z-20; inset: 10px calc(clamp(260px, 25vw, 360px) + 20px) 10px 10px; }
+.battlefield-nav { @apply pointer-events-none absolute z-[46]; inset: 10px calc(clamp(260px, 25vw, 360px) + 20px) 10px 10px; }
 .battlefield-nav > * { pointer-events: auto; }
 .mobile-event-summary { @apply hidden; }
 .action-candidates p { color: var(--battle-text-secondary); font-size: 12px; }

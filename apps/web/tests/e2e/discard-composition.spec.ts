@@ -147,6 +147,7 @@ async function expectDiscardMatrixMatchesGameState(page: Page) {
 }
 
 test('players can inspect a synchronized discard composition throughout a match', async ({ browser }) => {
+  // 完整棄牌對局包含多次回合操作與跨分頁同步，完整套件負載下超過預設 30 秒。
   test.setTimeout(90_000)
   const game = await setupFastTwoPlayerGame(browser, {
     roomName: `同步棄牌測試 ${Date.now()}`,
@@ -262,13 +263,21 @@ test('players can inspect a synchronized discard composition throughout a match'
 
     await observer.setViewportSize({ width: 1280, height: 720 })
     await trigger.click()
+    await expect.poll(async () => {
+      const [dialogBox, anchorBox] = await Promise.all([
+        discardDialog(observer).boundingBox(),
+        trigger.boundingBox(),
+      ])
+      if (!dialogBox || !anchorBox) return false
+      const dialogBottom = dialogBox.y + dialogBox.height
+      const anchorBottom = anchorBox.y + anchorBox.height
+      return dialogBottom <= anchorBox.y || dialogBox.y >= anchorBottom
+    }).toBe(true)
     const desktopBox = await discardDialog(observer).boundingBox()
     const triggerBox = await trigger.boundingBox()
     expect(desktopBox).not.toBeNull()
     expect(triggerBox).not.toBeNull()
     const desktopBottom = desktopBox!.y + desktopBox!.height
-    const triggerBottom = triggerBox!.y + triggerBox!.height
-    expect(desktopBottom <= triggerBox!.y || desktopBox!.y >= triggerBottom).toBe(true)
     expect(desktopBox!.x).toBeGreaterThanOrEqual(0)
     expect(desktopBox!.x + desktopBox!.width).toBeLessThanOrEqual(1280)
     expect(desktopBox!.y).toBeGreaterThanOrEqual(0)

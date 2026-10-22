@@ -24,6 +24,7 @@ function initialPouchCommit(page: Page) {
 }
 
 test('full and active rooms admit observers, skip offline FIFO entries, and promote a connected observer', async ({ browser }) => {
+  // 流程同時建立五個瀏覽器工作階段並完成開局、補位與觀戰檢查。
   test.setTimeout(120_000)
   const contexts = await Promise.all(Array.from({ length: 5 }, () => browser.newContext()))
   const [host, guest, offlineObserver, connectedObserver, activeObserver] = contexts

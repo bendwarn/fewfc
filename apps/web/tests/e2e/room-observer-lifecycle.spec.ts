@@ -105,6 +105,7 @@ test('back navigation preserves the queue across tabs and reconnect fills an exi
 })
 
 test('finished rooms retain observers through reset without granting player replay rights', async ({ browser }) => {
+  // 流程涵蓋多個觀戰連線、重連、結束與重置房間，需保留較長的單測上限。
   test.setTimeout(120_000)
   const game = await setupFastTwoPlayerGame(browser)
   const observers = await Promise.all(Array.from({ length: 3 }, () => browser.newContext()))
