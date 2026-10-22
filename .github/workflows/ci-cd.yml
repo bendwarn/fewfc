@@ -19,6 +19,7 @@ permissions:
 jobs:
   rust:
     name: Rust tests
+    if: github.event_name != 'workflow_dispatch' || inputs.deploy_production != true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -29,6 +30,7 @@ jobs:
 
   web:
     name: Web checks
+    if: github.event_name != 'workflow_dispatch' || inputs.deploy_production != true
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -63,6 +65,38 @@ jobs:
       - run: bun run test:e2e
       - run: bun run test:unit
       - run: bun run typecheck
+
+  verify-staging:
+    name: Verify staging checks for this revision
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_production == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require the latest main push run for this SHA to pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci-cd.yml/runs?branch=main&event=push&head_sha=${GITHUB_SHA}&status=completed&per_page=100" \
+            | jq -r --arg sha "$GITHUB_SHA" '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push")] | sort_by(.updated_at) | last | select(.conclusion == "success") | .id // empty')"
+
+          if [[ -z "$run_id" ]]; then
+            echo "::error::找不到這個 SHA 對應的成功 main push workflow；請先讓此版本通過 staging。"
+            exit 1
+          fi
+
+          if ! gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
+            | jq -e '[.jobs[] | select(.name == "Rust tests" or .name == "Web checks" or .name == "Deploy staging")] | length == 3 and all(.[]; .conclusion == "success")' >/dev/null; then
+            echo "::error::此 SHA 的 Rust tests、Web checks 或 Deploy staging 未全部成功。"
+            exit 1
+          fi
+
+          echo "已驗證 ${GITHUB_SHA} 的 Rust tests、Web checks 與 Deploy staging 均成功。"
+          echo "驗證來源：https://github.com/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
 
   deploy-staging:
     name: Deploy staging
@@ -118,8 +152,7 @@ jobs:
   deploy-production:
     name: Deploy production
     needs:
-      - rust
-      - web
+      - verify-staging
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_production == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -138,6 +171,8 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
