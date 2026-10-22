@@ -157,7 +157,7 @@ test('players can inspect a synchronized discard composition throughout a match'
   try {
     await Promise.all(pages.map(async (page) => {
       await expect(page.locator('.seat-bottom .playing-card:not(.hidden)')).not.toHaveCount(0)
-      await expect(page.locator('.seat-top .compact-hand-count')).toContainText('手牌')
+      await expect(page.locator('.seat-top').getByRole('img', { name: /的手牌 \d+ 張$/ })).toBeVisible()
       await expect(page.locator('.seat-top .playing-card')).toHaveCount(0)
     }))
     const emptyDiscardBox = await discardTrigger(host, 0).boundingBox()

@@ -209,7 +209,8 @@ test('Lobby navigation reloads Game state, resets parameter-local state, and tea
 })
 
 fastPageTest('leaving a loading Game route cannot recreate its room session', async ({ page }) => {
-  const gameId = await createWaitingRoomViaRequest(page, `離開載入中的房間 ${Date.now()}`)
+  const roomName = `離開載入中的房間 ${Date.now()}`
+  const gameId = await createWaitingRoomViaRequest(page, roomName)
   await page.goto('/rooms')
 
   const openedSockets: string[] = []
@@ -230,7 +231,9 @@ fastPageTest('leaving a loading Game route cannot recreate its room session', as
   })
 
   try {
-    await page.locator('.my-rooms-card .public-room-list button').filter({ hasText: gameId.slice(0, 8) }).click()
+    const roomButton = page.getByRole('region', { name: '我的房間' }).getByRole('button').filter({ hasText: roomName })
+    await expect(roomButton).toBeVisible()
+    await roomButton.click()
     await expect(page).toHaveURL(new RegExp(`/rooms/${gameId}$`))
     await expect(page.getByRole('heading', { name: '正在載入' })).toBeVisible()
 
@@ -238,7 +241,7 @@ fastPageTest('leaving a loading Game route cannot recreate its room session', as
     await expect(page).toHaveURL(/\/rooms$/)
   } finally {
     releaseRoomFetch?.()
-    await page.unroute(roomUrl)
+    if (!page.isClosed()) await page.unroute(roomUrl)
   }
 
   await page.waitForTimeout(250)
