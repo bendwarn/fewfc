@@ -96,6 +96,8 @@ export async function withManagedServer(
     const signal = (value: NodeJS.Signals | 0) => {
       try { process.kill(-pid, value); return true } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false
+        // kill(pid, 0) 回報 EPERM 代表群組仍存在，只是目前程序無法探測其權限。
+        if (value === 0 && (error as NodeJS.ErrnoException).code === 'EPERM') return true
         throw error
       }
     }
