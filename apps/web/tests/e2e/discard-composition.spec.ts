@@ -266,9 +266,13 @@ test('players can inspect a synchronized discard composition throughout a match'
     const triggerBox = await trigger.boundingBox()
     expect(desktopBox).not.toBeNull()
     expect(triggerBox).not.toBeNull()
-    expect(desktopBox!.y).toBeGreaterThanOrEqual(triggerBox!.y)
+    const desktopBottom = desktopBox!.y + desktopBox!.height
+    const triggerBottom = triggerBox!.y + triggerBox!.height
+    expect(desktopBottom <= triggerBox!.y || desktopBox!.y >= triggerBottom).toBe(true)
     expect(desktopBox!.x).toBeGreaterThanOrEqual(0)
     expect(desktopBox!.x + desktopBox!.width).toBeLessThanOrEqual(1280)
+    expect(desktopBox!.y).toBeGreaterThanOrEqual(0)
+    expect(desktopBottom).toBeLessThanOrEqual(720)
     await observer.keyboard.press('Escape')
 
     const nextActive = await activePlayerPage(pages)
