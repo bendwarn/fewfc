@@ -5,7 +5,7 @@
   <main v-else-if="roomRouteError" class="route-state">
     <div class="route-state-content"><h1>{{ roomRouteError }}</h1><button class="primary-button" type="button" @click="returnToLobby">返回房間大廳</button></div>
   </main>
-  <main v-else class="game-page">
+  <main v-else class="game-page" :data-in-game="!roomWaiting">
     <p v-if="invalidCompetitionMode" class="form-error" role="alert">
       競賽房間資訊無法確認，已停用房間管理操作。
       <button class="ghost-button" type="button" :disabled="game.isLoading.value" @click="game.refreshOnlineGame()">
@@ -92,10 +92,10 @@
                 </p>
 
                 <section class="ability-panel battle-action-group battle-glass" aria-labelledby="ability-panel-title">
-                  <header>
+                  <div class="battle-action-label">
                     <h3 id="ability-panel-title">能力</h3>
                     <small>使用後仍可行動</small>
-                  </header>
+                  </div>
                   <div class="action-candidates battle-action-options">
                     <button
                       v-for="(pouchAction, abilityIndex) in pouchStrategyActions"
@@ -274,10 +274,10 @@
                 </section>
 
                 <section class="action-panel battle-action-group battle-action-group--primary battle-glass" aria-labelledby="action-panel-title">
-                  <header>
+                  <div class="battle-action-label">
                     <h3 id="action-panel-title">行動</h3>
                     <small>本回合擇一</small>
-                  </header>
+                  </div>
                   <div v-if="!game.isLoading.value" class="action-candidates battle-action-options">
                     <button
                       v-for="(action, actionIndex) in game.playableMainActions.value"

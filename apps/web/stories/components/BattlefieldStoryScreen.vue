@@ -1,5 +1,10 @@
 <template>
-  <main class="battlefield-story-screen">
+  <div class="battlefield-story-shell" :class="{ 'app-shell': showSiteHeader }">
+    <BattleHeader v-if="showSiteHeader">
+      <button class="story-brand" type="button" aria-label="回到首頁"><img :src="'/header-banner.svg'" alt="五行戰鬥牌"></button>
+      <nav aria-label="帳號選單"><ThemeSelector /><button type="button">小明 · 帳號設定</button></nav>
+    </BattleHeader>
+  <main class="battlefield-story-screen game-page" data-in-game="true">
     <div class="battlefield-story-layout battle-scene" :style="battleLayoutStyle">
       <BattlefieldBoard
         class="battlefield-story-board"
@@ -18,7 +23,7 @@
         <template #turn-controls>
           <div class="story-turn-controls battle-turn-controls">
             <section class="story-action-group story-abilities battle-action-group battle-glass">
-              <header><h2>能力</h2><span>使用後仍可行動</span></header>
+              <div class="battle-action-label"><h2>能力</h2><span>使用後仍可行動</span></div>
               <div class="battle-action-options">
                 <button type="button">棄牌回收</button>
                 <div class="story-spirit-picker">
@@ -50,7 +55,7 @@
               </div>
             </section>
             <section class="story-action-group story-actions battle-action-group battle-action-group--primary battle-glass">
-              <header><h2>行動</h2><span>本回合擇一</span></header>
+              <div class="battle-action-label"><h2>行動</h2><span>本回合擇一</span></div>
               <div class="battle-action-options">
                 <button type="button">施展火陣</button>
                 <button type="button">轉職</button>
@@ -104,10 +109,13 @@
       </div>
     </ModalShell>
   </main>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, ref, toRaw, watch } from 'vue'
+import BattleHeader from '~/components/BattleHeader.vue'
+import ThemeSelector from '~/components/ThemeSelector.vue'
 import AnchoredSurface from '~/components/AnchoredSurface.vue'
 import BattleRecordTimeline from '~/components/BattleRecordTimeline.vue'
 import BattlefieldBoard from '~/components/BattlefieldBoard.vue'
@@ -122,6 +130,7 @@ const props = defineProps<{
   mode: 'live' | 'replay'
   showSplendorMenu?: boolean
   showMotionDemo?: boolean
+  showSiteHeader?: boolean
 }>()
 
 const storyRounds = [
@@ -266,7 +275,18 @@ function openPendingChoice() {
 </script>
 
 <style scoped>
-.battlefield-story-screen { width: 100%; height: 100dvh; min-height: 600px; overflow: hidden; background: var(--app-canvas); color: var(--app-text); }
+.battlefield-story-shell { display: flex; flex-direction: column; width: 100%; height: 100dvh; }
+.battlefield-story-shell :deep(.site-header) { position: relative; display: flex; min-height: 56px; align-items: center; justify-content: space-between; padding: 5px 28px; color: var(--app-text); background: var(--app-header); border-bottom: 1px solid var(--app-border); box-shadow: var(--app-shadow-sm); }
+.story-brand { border: 0; padding: 0; background: transparent; }
+.story-brand img { width: 230px; max-height: 46px; }
+.battlefield-story-shell :deep(.site-header nav) { display: flex; align-items: center; gap: 18px; }
+.battlefield-story-shell :deep(.site-header nav > button) { padding: 8px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); color: var(--app-text); }
+@media (max-width: 600px) {
+  .battlefield-story-shell :deep(.site-header) { min-height: 48px; padding: 4px 10px; }
+  .story-brand img { width: 140px; }
+  .battlefield-story-shell :deep(.site-header nav) { gap: 6px; }
+}
+.battlefield-story-screen { flex: 1; width: 100%; min-height: 0; overflow: hidden; background: var(--app-canvas); color: var(--app-text); }
 .battlefield-story-layout { display: grid; width: 100%; height: 100%; min-height: 0; grid-template-columns: minmax(0, 1fr) clamp(270px, 26vw, 360px); gap: 10px; padding: 10px; }
 .battlefield-story-board { min-height: 0; border: 0; border-radius: 0; box-shadow: none; }
 .battlefield-story-record { display: grid; min-height: 0; grid-template-rows: auto minmax(0, 1fr); gap: 18px; overflow: hidden; padding: 20px; border-radius: 24px; }

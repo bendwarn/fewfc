@@ -24,7 +24,7 @@
             <div class="turn-capsule-heading">
               <span class="turn-number">第 {{ state.turnNumber }} 回合</span>
               <strong>{{ turnHeadline }}</strong>
-              <span class="turn-phase">{{ phaseHeadline }}</span>
+              <span class="turn-phase" :title="phaseHeadline">{{ phaseHeadline }}</span>
             </div>
           </div>
         </Transition>
@@ -66,7 +66,7 @@
       :class="[`seat-${seat.position}`, {
         acting: isActing(seat.player),
         'needs-response': decisionPlayer === seat.player,
-        'is-expanded': autoExpandedPlayer === seat.player || playerDetailPlayer === seat.player,
+        'is-expanded': isSeatExpanded(seat.player, seat.position),
       }]"
       :style="{ '--compact-column': seat.compactColumn }"
       :aria-label="seatAriaLabel(seat.player)"
@@ -119,6 +119,19 @@
             效果 {{ persistentEffectsFor(seat.player).length }}
           </button>
         </div>
+        <div v-if="isSeatExpanded(seat.player, seat.position)" class="player-expanded-summary">
+          <span v-for="fact in playerSummary(seat.player)" :key="fact" :title="fact">{{ fact }}</span>
+        </div>
+      </div>
+
+      <div
+        v-if="seat.position === 'top' && isSeatExpanded(seat.player, seat.position)"
+        class="seat-hand-backs"
+        role="img"
+        :aria-label="`${playerLabel(seat.player)}的手牌 ${handCount(seat.player)} 張`"
+      >
+        <img v-for="index in handCount(seat.player)" :key="index" :src="CARD_BACK_IMAGE_PATH" alt="" aria-hidden="true" draggable="false">
+        <span v-if="!handCount(seat.player)" class="empty-hand">無手牌</span>
       </div>
 
       <DiscardPileControl
@@ -145,9 +158,10 @@
         :aria-label="`查看${playerLabel(seat.player)}的公開手牌，手牌 ${handCount(seat.player)} 張，${visibleHandCards(seat.player).length} 張已知`"
         @click.stop="openHandDetail(seat.player, $event.currentTarget as HTMLButtonElement)"
       >
-        手牌 {{ handCount(seat.player) }}・公開 {{ visibleHandCards(seat.player).length }}
+        <template v-if="isSeatExpanded(seat.player, seat.position)">公開手牌</template>
+        <template v-else>手牌 {{ handCount(seat.player) }}・公開 {{ visibleHandCards(seat.player).length }}</template>
       </button>
-      <span v-else-if="seat.position !== 'bottom'" class="compact-hand-count">手牌 {{ handCount(seat.player) }}</span>
+      <span v-else-if="!isSeatExpanded(seat.player, seat.position)" class="compact-hand-count">手牌 {{ handCount(seat.player) }}</span>
       <button
         class="player-detail-toggle"
         type="button"
@@ -357,7 +371,7 @@ import GameCard from './GameCard.vue'
 import { presentTotem } from '~/lib/totem-presentation'
 import { presentPendingChoice } from '~/lib/pending-choice-presentation'
 import type { CardInstanceId, Element, PlayerId, PublicCard, PublicCardRefs, PublicGameState, SpiritKind, TeamId } from '~/types/fewfc'
-import { cardElementGlyph } from '~/lib/card-face-presentation'
+import { CARD_BACK_IMAGE_PATH, cardElementGlyph } from '~/lib/card-face-presentation'
 import {
   lastCompletedTurnDiscardForPlayer,
   latestSharedTurnDiscard,
@@ -437,11 +451,13 @@ const seats = computed(() => {
   })
 })
 const decisionPlayer = computed(() => props.state.pendingChoice?.player ?? null)
-const autoExpandedPlayer = computed(() => decisionPlayer.value ?? props.state.currentPlayer ?? null)
+function isSeatExpanded(player: PlayerId, position: SeatPosition) {
+  return position === 'bottom' || seats.value.length === 2 || player === props.state.currentPlayer
+}
 const expandedSeatColumns = computed(() => {
   const topSeats = seats.value.filter(seat => seat.position === 'top')
   if (topSeats.length !== 3) return ''
-  return topSeats.map(seat => seat.player === autoExpandedPlayer.value ? '1.24fr' : '1fr').join(' ')
+  return topSeats.map(seat => seat.player === props.state.currentPlayer ? '1.65fr' : '1fr').join(' ')
 })
 const teamHpEntries = computed(() => props.state.hp.map((entry, index) => {
   const initialHp = props.state.initialHp.find(candidate => candidate.team === entry.team)?.hp ?? 0
@@ -796,6 +812,18 @@ function totemFor(player: PlayerId) { return props.state.totems?.find(entry => e
 function spiritFor(player: PlayerId) { return props.state.spirits.find(entry => entry.player === player) }
 function spiritLabel(spirit: SpiritKind) { return { Metal: '金精靈', Wood: '木精靈', Water: '水精靈', Fire: '火精靈', Earth: '土精靈', Evil: '惡精靈', Death: '死精靈' }[spirit] }
 function pouchFor(player: PlayerId) { return props.state.pouches.find(pouch => pouch.owner === player) }
+function playerSummary(player: PlayerId) {
+  const star = teamStar(teamForPlayer(player))
+  const spirit = spiritFor(player)
+  const history = starHistoryLabel(player)
+  const pouch = pouchFor(player)
+  return [
+    star ? `星辰・${starLabel(star)}` : null,
+    spirit ? `${spiritLabel(spirit.spirit)}・靈力 ${spirit.power} / 6` : null,
+    history ? `召星・${history}` : null,
+    `錦囊・${pouch?.card?.label ?? (pouch ? '覆蓋牌' : '無')}`,
+  ].filter((fact): fact is string => Boolean(fact))
+}
 function coveredPassiveSummary(player: PlayerId) {
   const passives = props.state.coveredPassives.filter(passive => passive.owner === player)
   const visible = passives.flatMap((passive) => {
@@ -835,7 +863,7 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   --stage-text-soft: var(--battle-text-secondary);
   @apply relative grid size-full min-h-0 min-w-0 overflow-hidden;
   grid-template-columns: var(--seat-grid-columns, repeat(3, minmax(0, 1fr)));
-  grid-template-rows: 72px 36px clamp(92px, 12dvh, 116px) minmax(200px, 1fr) clamp(180px, 26dvh, 232px);
+  grid-template-rows: 52px 36px clamp(92px, 12dvh, 116px) minmax(200px, 1fr) clamp(180px, 26dvh, 232px);
   gap: 12px;
   padding: 14px 18px 18px;
   color: var(--app-text);
@@ -844,11 +872,11 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 }
 .battlefield::before { content: ''; @apply pointer-events-none absolute inset-0 -z-1; background: radial-gradient(ellipse at 50% 44%, rgba(111, 171, 139, .08), transparent 62%), radial-gradient(ellipse at center, transparent 24%, rgba(3, 8, 7, .12) 100%); }
 .battlefield.detail-open { z-index: 25; }
-.battle-stage-strip { @apply relative z-1 col-span-3 flex min-w-0 items-center justify-center; grid-row: 1; height: 72px; min-height: 72px; }
+.battle-stage-strip { @apply relative z-1 col-span-3 flex min-w-0 items-center justify-center; grid-row: 1; height: 52px; min-height: 52px; }
 .turn-capsule {
   @apply relative isolate grid min-w-0 justify-items-center text-center;
-  min-width: min(340px, 70%);
-  padding: 10px 26px;
+  max-width: calc(100% - 100px);
+  padding: 10px 22px;
   border-radius: 999px;
 }
 .turn-capsule.is-your-turn {
@@ -861,10 +889,10 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 .turn-capsule-update-enter-from, .turn-capsule-update-leave-to { opacity: 0; transform: translateY(3px) scale(.97); }
 .turn-capsule-update-enter-active { transition-duration: .16s; }
 .turn-capsule-update-leave-active { transition-duration: .1s; }
-.turn-capsule-heading { display: grid; min-width: 0; grid-template-columns: auto auto; align-items: baseline; justify-content: center; gap: 5px 12px; white-space: nowrap; }
+.turn-capsule-heading { display: grid; min-width: 0; grid-template-columns: auto minmax(0, auto) minmax(0, auto); align-items: center; justify-content: center; gap: 12px; white-space: nowrap; }
 .turn-number { color: var(--app-text); font-family: var(--font-serif); font-size: 22px; font-weight: 700; white-space: nowrap; }
-.turn-capsule strong { overflow: hidden; color: var(--app-text); font-family: var(--font-serif); font-size: 24px; line-height: 1.25; text-overflow: ellipsis; }
-.turn-phase { grid-column: 1 / -1; color: var(--stage-text-soft); font-size: 12px; white-space: nowrap; }
+.turn-capsule strong { min-width: 0; overflow: hidden; color: var(--app-text); font-family: var(--font-serif); font-size: 24px; line-height: 1.25; text-overflow: ellipsis; }
+.turn-phase { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--stage-text-soft); font-size: 12px; white-space: nowrap; }
 .environment-chip { @apply absolute right-0 inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] font-semibold; border: 1px solid color-mix(in srgb, var(--battle-accent) 46%, var(--glass-stroke)); background: var(--glass-surface); color: var(--app-text); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
 .environment-chip i { @apply grid size-5 place-items-center rounded-full not-italic; background: color-mix(in srgb, var(--battle-accent) 22%, transparent); color: var(--battle-accent); }
 .team-hp-strip { @apply relative z-1 col-span-3 flex min-w-0 items-center justify-center gap-3; grid-row: 2; }
@@ -876,9 +904,9 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 .team-hp-meter { height: 8px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--app-text) 13%, transparent); }
 .team-hp-meter span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #b65f56, #e69b86); transition: width .24s ease; }
 .team-hp-1 .team-hp-meter span { background: linear-gradient(90deg, #478a83, #8dcbbc); }
-.player-seat { @apply relative z-1 grid min-h-0 min-w-0 items-center gap-x-2; border-radius: 24px; padding: 12px 16px; transition: border-color .2s ease, box-shadow .2s ease; }
+.player-seat { @apply relative z-1 grid min-h-0 min-w-0 items-center gap-x-2; --player-identity-width: clamp(100px, 10vw, 148px); border-radius: 24px; padding: 12px 16px; transition: border-color .2s ease, box-shadow .2s ease; }
 .seat-top { grid-row: 3; grid-column: var(--compact-column); grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr) auto; }
-.seat-bottom { grid-row: 5; grid-column: 1 / -1; grid-template-columns: clamp(150px, 15vw, 220px) minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr); gap: 10px; }
+.seat-bottom { grid-row: 5; grid-column: 1 / -1; grid-template-columns: var(--player-identity-width) minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr); gap: 6px; }
 .battlefield:not(.four-player) .seat-top { grid-column: 1 / -1; }
 .player-seat.acting { border-color: color-mix(in srgb, var(--battle-accent) 82%, white); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--battle-accent) 56%, transparent), 0 0 20px color-mix(in srgb, var(--battle-accent) 20%, transparent), 0 10px 24px rgba(0,0,0,.14); }
 .player-seat.needs-response { border-color: #69c3b0; box-shadow: inset 0 0 0 1px rgba(105,195,176,.42), 0 0 20px rgba(105,195,176,.21); }
@@ -904,24 +932,41 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 .player-detail-toggle, .compact-hand-button { @apply inline-flex min-h-8 items-center justify-center rounded-lg px-3 text-xs whitespace-nowrap; border: 1px solid var(--glass-stroke); background: color-mix(in srgb, var(--glass-surface-strong) 78%, transparent); color: var(--app-text); }
 .player-detail-toggle:hover, .compact-hand-button:hover { border-color: var(--battle-accent); color: var(--battle-accent); }
 .player-detail-toggle:focus-visible, .compact-hand-button:focus-visible { outline: 2px solid var(--battle-accent); outline-offset: 2px; }
+.player-expanded-summary { display: flex; flex-basis: 100%; flex-wrap: wrap; gap: 2px 10px; max-height: 32px; overflow: hidden; color: var(--stage-text-soft); font-size: 11px; line-height: 15px; }
+.player-expanded-summary span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seat-top.is-expanded { grid-template-columns: var(--player-identity-width) minmax(0, 1fr) auto; column-gap: 6px; }
+.seat-top.is-expanded .player-identity { grid-column: 1; grid-row: 1 / 3; max-height: 100%; overflow: hidden; }
+.seat-top.is-expanded .compact-hand-button { grid-column: 3; grid-row: 2; }
+.seat-top.is-expanded .player-detail-toggle { grid-column: 3; grid-row: 1; align-self: start; }
+.seat-hand-backs { grid-column: 2; grid-row: 1 / 3; display: flex; align-items: center; width: max-content; max-width: 100%; height: 44px; min-width: 0; overflow: auto hidden; padding: 2px 6px; scrollbar-width: thin; scrollbar-color: var(--glass-stroke) transparent; }
+.seat-hand-backs img { flex: 0 0 26px; width: 26px; height: 39px; object-fit: cover; border: 1px solid var(--glass-stroke); border-radius: 3px; }
+.seat-hand-backs img + img { margin-left: -10px; }
+.empty-hand { color: var(--stage-text-soft); font-size: 11px; }
 .seat-top .compact-hand-count { @apply block self-center; grid-row: 2; grid-column: 1; color: var(--stage-text-soft); font-size: 12px; }
 .seat-top .compact-hand-button { justify-self: start; }
 .seat-top .player-detail-toggle { grid-row: 2; grid-column: 2; }
 .seat-bottom .player-identity { @apply content-center; grid-column: 1; grid-row: 1; }
+.player-seat.is-expanded .player-heading { max-width: 100%; }
+.player-seat.is-expanded .player-name-block strong { max-width: 100%; }
 .seat-bottom .player-detail-toggle { grid-column: 3; grid-row: 1; align-self: start; }
 .seat-bottom .compact-hand-count { @apply hidden; }
 .seat-bottom .player-statuses { @apply mt-1; }
 .seat-discard-control { @apply shrink-0; }
 .personal-deck .seat-top { grid-template-columns: minmax(0, 1fr) auto auto; }
 .personal-deck .seat-top .player-identity { grid-column: 1 / 3; }
+.personal-deck .seat-top.is-expanded { grid-template-columns: var(--player-identity-width) minmax(0, 1fr) auto auto; }
+.personal-deck .seat-top.is-expanded .player-identity { grid-column: 1; }
+.personal-deck .seat-top.is-expanded .seat-discard-control { grid-column: 3; }
+.personal-deck .seat-top.is-expanded :is(.player-detail-toggle, .compact-hand-button) { grid-column: 4; }
 .seat-top .seat-discard-control { grid-column: 3; grid-row: 1 / 3; }
 .seat-top .seat-discard-control :deep(.discard-pile-trigger) { width: 32px; }
-.personal-deck .seat-bottom { grid-template-columns: clamp(150px, 15vw, 220px) minmax(0, 1fr) auto auto; }
+.personal-deck .seat-bottom { grid-template-columns: var(--player-identity-width) minmax(0, 1fr) auto auto; }
 .personal-deck .seat-bottom .player-detail-toggle { grid-column: 4; }
 .seat-bottom .seat-discard-control { grid-column: 3; grid-row: 1; }
-.hand { @apply flex min-w-0 items-center gap-3; justify-content: safe center; }
-.seat-hand { @apply relative z-2 min-h-0; grid-column: 2; grid-row: 1; overflow-x: auto; overflow-y: hidden; padding: 22px 10px 12px; scrollbar-width: thin; scrollbar-color: var(--glass-stroke) transparent; }
-.seat-bottom .seat-hand :deep(.playing-card) { width: clamp(80px, min(8vw, 16dvh), 124px); }
+.hand { @apply flex min-w-0 items-center; justify-content: flex-start; }
+.seat-hand { @apply relative z-2 min-h-0; grid-column: 2; grid-row: 1; gap: 8px; overflow-x: auto; overflow-y: hidden; padding: 22px 6px 12px; scrollbar-width: thin; scrollbar-color: var(--glass-stroke) transparent; }
+/* 手牌靠左並依可用寬度縮小，保留選牌上浮與外框所需的內距。 */
+.seat-bottom .seat-hand :deep(.playing-card) { width: clamp(80px, min(8vw, 16dvh), 124px); min-width: 0; flex-shrink: 1; }
 .seat-top .seat-hand { @apply hidden; }
 .seat-hand :deep(.playing-card:hover) { transform: translateY(-8px); }
 .seat-hand :deep(.playing-card.selected) { transform: translateY(-14px) scale(1.04); border-color: var(--battle-accent); box-shadow: 0 0 0 2px #f0d894, 0 0 18px rgba(255, 219, 133, .5), 0 15px 26px rgba(0,0,0,.32); }
@@ -990,15 +1035,7 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .turn-capsule.has-active-turn { animation: turn-border-flow 3.2s linear infinite; }
   .turn-capsule.is-your-turn { animation: your-turn-border-flow 2.2s linear infinite; }
-}
-
-@keyframes turn-border-flow {
-  0%, 100% { border-color: rgba(255, 245, 207, .96) rgba(244, 211, 130, .48) rgba(245, 253, 247, .2) rgba(244, 211, 130, .14); }
-  25% { border-color: rgba(244, 211, 130, .48) rgba(255, 245, 207, .96) rgba(244, 211, 130, .48) rgba(245, 253, 247, .2); }
-  50% { border-color: rgba(245, 253, 247, .2) rgba(244, 211, 130, .48) rgba(255, 245, 207, .96) rgba(244, 211, 130, .48); }
-  75% { border-color: rgba(244, 211, 130, .48) rgba(245, 253, 247, .2) rgba(244, 211, 130, .48) rgba(255, 245, 207, .96); }
 }
 
 @keyframes your-turn-border-flow {
@@ -1020,6 +1057,16 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   }
 }
 
+/* 桌機雙人對局共用左右欄線：左側放對手與陣法，右側行動區跨越兩列。 */
+@media (min-width: 901px) {
+  .battlefield:not(.four-player) { grid-template-columns: minmax(0, 1fr) minmax(300px, .96fr); column-gap: 8px; }
+  .battlefield:not(.four-player) :is(.battle-stage-strip, .team-hp-strip) { grid-column: 1 / -1; }
+  .battlefield:not(.four-player) .seat-top { grid-column: 1; }
+  .battlefield:not(.four-player) .center-stack { grid-row: 3 / 5; grid-template-columns: subgrid; grid-template-rows: subgrid; gap: inherit; }
+  .battlefield:not(.four-player) .board-center { grid-column: 1; grid-row: 2; }
+  .battlefield:not(.four-player) .action-dock-slot { grid-column: 2; grid-row: 1 / 3; }
+}
+
 @media (max-width: 900px) {
   .battlefield { padding: 12px 12px 14px; gap: 7px; }
   .center-stack { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(112px, .72fr) minmax(156px, 1fr); }
@@ -1028,11 +1075,20 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .action-dock { max-height: 100%; }
 }
 
+@media (min-width: 601px) {
+  .seat-top.is-expanded .player-identity { gap: 2px 6px; }
+  .seat-top.is-expanded .avatar { width: 28px; height: 28px; }
+  .seat-top.is-expanded .player-name-block { line-height: 1.2; }
+  .seat-top.is-expanded .player-name-block strong { font-size: 14px; }
+  .seat-top.is-expanded :is(.profession-badge, .turn-status, .response-status) { padding: 2px 6px; font-size: 10px; }
+  .seat-top.is-expanded .player-expanded-summary { font-size: 10px; line-height: 12px; max-height: 24px; }
+}
+
 @media (max-width: 600px) {
   .battlefield { grid-template-rows: 44px 32px minmax(80px, .26fr) minmax(196px, 1fr) clamp(128px, 19dvh, 160px); gap: 6px; padding: 8px 8px 10px; }
   .battle-stage-strip { height: 44px; min-height: 44px; justify-content: center; }
-  .turn-capsule { min-width: 0; gap: 0; padding: 7px 12px; }
-  .turn-capsule-heading { display: flex; gap: 0 6px; }
+  .turn-capsule { max-width: calc(100% - 32px); min-width: 0; gap: 0; padding: 7px 12px; }
+  .turn-capsule-heading { gap: 0 6px; }
   .turn-capsule strong { font-size: 12px; }
   .turn-capsule.is-your-turn strong { font-size: 13px; }
   .turn-number { font-size: 10px; }
@@ -1045,8 +1101,9 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .team-hp-value { font-size: 10px; }
   .team-hp-value small { font-size: 8px; }
   .team-hp-meter { height: 5px; }
-  .player-seat { border-radius: 14px; padding: 6px; }
+  .player-seat { --player-identity-width: 64px; border-radius: 14px; padding: 6px; }
   .seat-top { grid-template-rows: minmax(0, 1fr) auto; gap: 2px; }
+  .seat-top.is-expanded { column-gap: 5px; }
   .seat-top .player-identity { gap: 2px 5px; }
   .seat-top .avatar { display: none; }
   .seat-top .player-heading { width: 100%; gap: 4px; }
@@ -1056,9 +1113,12 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .seat-top .profession-badge, .seat-top .effect-summary, .seat-top .counter-badge, .seat-top .shield-badge, .seat-top .turn-status, .seat-top .response-status { padding: 2px 4px; font-size: 7px; }
   .seat-top .player-statuses { max-height: 20px; flex-wrap: nowrap; overflow: hidden; }
   .seat-top .compact-hand-count { font-size: 8px; }
+  .seat-hand-backs { height: 30px; padding-inline: 5px; }
+  .seat-hand-backs img { flex-basis: 18px; width: 18px; height: 27px; }
+  .seat-hand-backs img + img { margin-left: -10px; }
+  .player-expanded-summary { max-height: 24px; gap: 0 5px; font-size: 8px; line-height: 12px; }
   .player-detail-toggle, .compact-hand-button { min-height: 22px; padding: 0 6px; font-size: 8px; }
-  .seat-bottom { grid-template-columns: minmax(76px, .34fr) minmax(0, 1fr) auto; gap: 5px; }
-  .personal-deck .seat-bottom { grid-template-columns: 76px minmax(0, 1fr) auto auto; }
+  .seat-bottom { gap: 5px; }
   .seat-top .seat-discard-control :deep(.discard-pile-trigger) { width: 20px; }
   .seat-discard-control :deep(.discard-pile-label) { max-width: 38px; font-size: 7px; }
   .seat-bottom .player-heading { align-items: flex-start; gap: 4px; }
@@ -1069,7 +1129,7 @@ function phaseLabel(value: string) { return { TurnStart: '回合開始', ActiveE
   .seat-bottom .profession-badge, .seat-bottom .effect-summary, .seat-bottom .counter-badge, .seat-bottom .shield-badge, .seat-bottom .turn-status, .seat-bottom .response-status { padding: 2px 4px; font-size: 7px; }
   .seat-bottom .player-statuses { max-height: 20px; flex-wrap: nowrap; overflow: hidden; }
   .seat-bottom .seat-hand { gap: 3px; padding: 16px 5px 8px; }
-  .seat-bottom .seat-hand :deep(.playing-card) { width: clamp(36px, 12vw, 52px); }
+  .seat-bottom .seat-hand :deep(.playing-card) { width: clamp(36px, 12vw, 52px); min-width: 32px; }
   .shared-discard-dock { top: 4px; right: 4px; }
   .shared-discard-dock :deep(.discard-pile-label) { display: none; }
   .shared-discard-dock :deep(.discard-pile-trigger) { width: 30px; }

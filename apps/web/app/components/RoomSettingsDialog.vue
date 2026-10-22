@@ -8,7 +8,7 @@
     @close="requestClose"
   >
     <form
-      class="setup-card room-settings-dialog"
+      class="setup-card room-settings-dialog lobby-theme battle-glass"
       @submit.prevent="$emit('submit')"
     >
       <div class="card-heading">
@@ -37,6 +37,7 @@
             type="button"
             class="mode-option"
             :class="{ selected: mode === option.id }"
+            :aria-pressed="mode === option.id"
             @click="$emit('update:mode', option.id)"
           >
             <span class="mode-icon">{{ option.icon }}</span>
@@ -52,6 +53,7 @@
           <button
             type="button"
             :class="{ active: access === 'private' }"
+            :aria-pressed="access === 'private'"
             @click="$emit('update:access', 'private')"
           >
             私人房間
@@ -59,6 +61,7 @@
           <button
             type="button"
             :class="{ active: access === 'public' }"
+            :aria-pressed="access === 'public'"
             @click="$emit('update:access', 'public')"
           >
             公開房間
@@ -139,21 +142,34 @@ function requestClose() {
 @reference "../assets/css/main.css";
 
 :global(.room-settings-dialog-shell) { width: min(720px, 100%); }
-.room-settings-dialog { @apply my-auto w-full max-w-[720px] shadow-[0_24px_70px_rgba(0,0,0,.5)]; }
+.room-settings-dialog { margin: auto; width: 100%; max-width: 720px; border: 1px solid var(--glass-stroke); border-radius: 28px; background: var(--battle-glass-fill); box-shadow: var(--battle-glass-shadow); }
+.card-heading { margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid color-mix(in srgb, var(--glass-stroke) 40%, transparent); }
+.step-number { border-color: var(--glass-stroke); border-radius: 50%; color: var(--app-accent-strong); background: color-mix(in srgb, var(--app-accent) 12%, transparent); }
+.card-heading p { color: var(--battle-text-secondary); }
+.room-settings-dialog > label, legend { display: block; margin-bottom: 9px; font-size: 13px; font-weight: 600; }
+.text-input { width: 100%; border-color: var(--glass-stroke); background: color-mix(in srgb, var(--app-input) 55%, transparent); border-radius: 12px; }
+.room-settings-dialog :is(input, button, summary):focus-visible { outline: 2px solid var(--app-accent-strong); outline-offset: 3px; }
 fieldset { @apply mb-[26px] border-0 p-0; }
 .option-grid { @apply grid grid-cols-2 gap-3 max-[600px]:grid-cols-1; }
-.mode-option { @apply relative grid min-h-27 grid-cols-[42px_1fr] p-4 text-left; border: 1px solid var(--app-border); border-radius: 12px; background: var(--app-surface-muted); color: var(--app-text); }
-.mode-option.selected { border-color: var(--app-accent); background: var(--app-accent-soft); box-shadow: inset 0 0 0 1px var(--app-accent); }
+.mode-option { @apply relative grid min-h-27 grid-cols-[42px_1fr] p-4 text-left; border: 1px solid var(--glass-stroke); border-radius: 16px; background: color-mix(in srgb, var(--glass-surface-strong) 65%, transparent); color: var(--app-text); }
+.mode-option.selected { border-color: var(--app-accent); background: color-mix(in srgb, var(--app-accent) 16%, var(--glass-surface-strong)); box-shadow: inset 0 0 0 1px var(--app-accent), 0 0 20px color-mix(in srgb, var(--app-accent) 15%, transparent); }
 .mode-icon { @apply row-span-2 grid size-8 place-items-center rounded-full; background: var(--app-control); color: var(--app-accent-strong); }
-.mode-option small { color: var(--app-text-muted); }
-.segmented { @apply grid grid-cols-2 p-1; border-radius: 10px; background: var(--app-surface-muted); }
+.mode-option small { color: var(--battle-text-secondary); }
+.segmented { @apply grid grid-cols-2 p-1; border: 1px solid var(--glass-stroke); border-radius: 14px; background: color-mix(in srgb, var(--glass-surface-strong) 65%, transparent); }
 .segmented button { @apply min-h-10 border-0 bg-transparent text-muted; }
-.segmented button.active { background: var(--app-surface-raised); color: var(--app-accent-strong); box-shadow: var(--app-shadow-sm); }
-.setup-summary { @apply mb-5 grid gap-2 p-4; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface-muted); }
+.segmented button.active { border-radius: 10px; background: color-mix(in srgb, var(--app-accent) 14%, transparent); color: var(--app-accent-strong); box-shadow: inset 0 1px color-mix(in srgb, var(--glass-stroke) 50%, transparent); }
+.setup-summary { @apply mb-5 grid gap-2 p-4; border: 1px solid var(--glass-stroke); border-radius: 16px; background: color-mix(in srgb, var(--glass-surface-strong) 65%, transparent); }
 .setup-summary div { @apply flex items-center justify-between gap-4 max-[600px]:grid; }
 .setup-summary span { @apply text-[10px] tracking-[.18em] text-muted; }
 .setup-summary strong { @apply text-sm text-gold-light; }
-.setup-summary p { @apply text-xs text-muted; }
+.setup-summary p { font-size: 12px; color: var(--battle-text-secondary); }
+.room-settings-dialog > p { font-size: 13px; }
+details { margin: 8px 0 22px; color: var(--battle-text-secondary); font-size: 12px; }
+summary { width: fit-content; cursor: pointer; padding: 4px 0; }
+details label { display: inline-flex; align-items: center; gap: 7px; margin: 8px 18px 0 0; }
+.primary-button { border-radius: 14px; border-color: #ead69e; color: #28372c; background: linear-gradient(140deg, #f1e3b6, #c5a463); box-shadow: inset 0 1px rgba(255,255,239,.65); }
+.primary-button:hover:not(:disabled) { background: linear-gradient(140deg, #fff1c5, #dac080); }
+.secondary-button { border-radius: 14px; border-color: var(--glass-stroke); color: var(--app-text); }
 .start-button { @apply w-full; }
 .setup-actions { @apply mt-5 grid grid-cols-[auto_1fr] gap-3; }
 

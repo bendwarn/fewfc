@@ -1,6 +1,7 @@
 /* 對局、重播與完整畫面預覽共用材質；單獨呈現棋盤時仍有完整背景。 */
 .battle-scene,
-.battlefield {
+.battlefield,
+.lobby-theme {
   --battle-text: var(--app-text);
   --battle-text-secondary: color-mix(in srgb, var(--app-text) 84%, var(--app-surface));
   --glass-surface: color-mix(in srgb, color-mix(in srgb, var(--app-surface) 65%, #567f84) 72%, transparent);
@@ -18,6 +19,10 @@
     inset 0 -1px 1px rgba(230, 255, 240, .38),
     inset 0 0 14px rgba(220, 251, 235, .08),
     0 12px 28px rgba(3, 15, 12, .24);
+}
+
+.battle-scene,
+.battlefield {
   background-color: var(--app-canvas);
   background-image:
     linear-gradient(180deg, rgba(7, 19, 17, .06), rgba(7, 19, 17, .12) 52%, rgba(7, 19, 17, .32)),
@@ -61,31 +66,40 @@
 .battle-action-group {
   display: grid;
   min-width: 0;
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 16px;
+  row-gap: 8px;
   padding: clamp(14px, 1.4vw, 22px);
   border-radius: 24px;
 }
 
-.battle-action-group > header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--glass-stroke) 42%, transparent);
+.battle-action-label {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: grid;
+  align-content: center;
+  justify-items: end;
+  gap: 5px;
+  padding-left: 14px;
+  border-left: 1px solid color-mix(in srgb, var(--glass-stroke) 42%, transparent);
+  text-align: right;
 }
 
-.battle-action-group > header :is(h2, h3) {
+.battle-action-label :is(h2, h3) {
   margin: 0;
   color: var(--battle-text);
   font: 700 clamp(16px, 1.25vw, 20px) var(--font-serif);
 }
 
-.battle-action-group > header :is(small, span) {
+.battle-action-label :is(small, span) {
+  max-width: 8em;
   color: var(--battle-text-secondary);
-  font-size: 12px;
+  font-size: 11px;
 }
+
+.battle-action-group > :not(.battle-action-label) { grid-column: 1; }
+.battle-action-group > .battle-action-options { grid-row: 1; }
 
 .battle-action-options {
   display: flex;
@@ -138,15 +152,14 @@
 @media (min-width: 601px) and (max-height: 800px) {
   .battle-turn-controls { gap: 10px; }
   .battle-action-group { gap: 10px; padding: 12px; }
-  .battle-action-group > header { padding-bottom: 8px; }
 }
 
 @media (max-width: 600px) {
   .battle-turn-controls { gap: 6px; padding: 1px; }
   .battle-action-group { gap: 7px; padding: 9px; border-radius: 16px; }
-  .battle-action-group > header { gap: 4px; padding-bottom: 6px; }
-  .battle-action-group > header :is(h2, h3) { font-size: 13px; }
-  .battle-action-group > header :is(small, span) { font-size: 10px; }
+  .battle-action-label { gap: 3px; padding-left: 7px; }
+  .battle-action-label :is(h2, h3) { font-size: 13px; }
+  .battle-action-label :is(small, span) { font-size: 10px; }
   .battle-action-options { gap: 6px; }
   .battle-action-options > button,
   .battle-action-options > div > button { min-height: 36px; padding: 6px 10px; border-radius: 10px; font-size: 12px; }

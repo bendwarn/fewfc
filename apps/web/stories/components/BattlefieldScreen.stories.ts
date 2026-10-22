@@ -177,7 +177,7 @@ export const CurrentPlayerExpanded: Story = {
   },
 }
 
-export const DecisionPlayerExpanded: Story = {
+export const OffTurnDecision: Story = {
   args: {
     state: choiceRequiredState('dave'),
   },
@@ -187,9 +187,11 @@ export const DecisionPlayerExpanded: Story = {
     if (!bob || !dave) throw new Error('缺少目前回合玩家或決策玩家')
     await expect(bob.getAttribute('aria-label')).toContain('回合玩家')
     await expect(dave.getAttribute('aria-label')).toContain('目前決策者')
-    await expect(dave).toHaveClass(/is-expanded/)
+    await expect(bob).toHaveClass(/is-expanded/)
+    await expect(dave).toHaveClass(/needs-response/)
+    await expect(dave).not.toHaveClass(/is-expanded/)
     await new Promise(resolve => window.setTimeout(resolve, 260))
-    await expect(dave.getBoundingClientRect().width).toBeGreaterThan(bob.getBoundingClientRect().width)
+    await expect(bob.getBoundingClientRect().width).toBeGreaterThan(dave.getBoundingClientRect().width)
     const order = [...canvasElement.querySelectorAll<HTMLElement>('.seat-top')]
       .map(seat => seat.getAttribute('aria-label')?.split('，')[0])
     await expect(order).toEqual(['小華', '小美', '小安'])
@@ -266,6 +268,24 @@ export const LongHandVisual: Story = {
     state: woodVisualState(true, 10),
     displayNames: { ...displayNames, alice: '名字很長的五行旅人', bob: '另一位名字很長的旅人' },
   },
+  decorators: [darkThemeDecorator],
+}
+
+export const DesktopRevealHeader: Story = {
+  args: { state: woodVisualState(), showSiteHeader: true },
+  decorators: [darkThemeDecorator],
+}
+
+export const TwoPlayerAlwaysExpanded: Story = {
+  args: { state: woodVisualState(), showMotionDemo: true },
+  decorators: [darkThemeDecorator],
+}
+
+const manyOpponentCards = woodVisualState(true)
+manyOpponentCards.currentPlayer = 'bob'
+manyOpponentCards.hands.find(hand => hand.player === 'bob')!.cards = { kind: 'hidden', count: 14 }
+export const ExpandedOpponentHand: Story = {
+  args: { state: manyOpponentCards, showMotionDemo: true },
   decorators: [darkThemeDecorator],
 }
 

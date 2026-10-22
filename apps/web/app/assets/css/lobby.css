@@ -1,0 +1,53 @@
+/* 大廳沿用戰場材質，客棧場景固定於整頁，讓導覽與內容共享暖色燈光。 */
+.lobby-page { position: relative; isolation: isolate; flex: 1; min-width: 0; }
+.lobby-page::before { content: ''; position: fixed; z-index: -1; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(21, 15, 10, .16), rgba(22, 21, 16, .26) 45%, rgba(10, 18, 15, .6)), url('/backgrounds/inn.webp') center / cover; }
+.app-shell:has(> .lobby-page) .site-header { min-height: 76px; padding: 10px clamp(18px, 4vw, 64px); border-color: rgba(227, 243, 230, .22); background: linear-gradient(110deg, rgba(25, 49, 43, .7), rgba(24, 40, 37, .48)); backdrop-filter: blur(18px) saturate(1.16); color: #f1ecdc; box-shadow: inset 0 -1px rgba(232, 249, 235, .1); }
+.app-shell:has(> .lobby-page) .brand-banner { width: min(34vw, 290px); box-shadow: none; }
+.app-shell:has(> .lobby-page) .connection { color: #d1e0d6; }
+.app-shell:has(> .lobby-page) .profile-button { padding: 6px 12px 6px 6px; border: 1px solid rgba(233, 246, 235, .28); border-radius: 999px; background: rgba(215, 236, 223, .08); }
+.lobby-content { width: min(1320px, 100%); margin: 0 auto; padding: clamp(28px, 5vw, 68px) 32px 42px; }
+.lobby-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); align-items: center; gap: 40px; margin-bottom: 36px; }
+.lobby-intro { color: #f4f1e5; text-shadow: 0 2px 16px rgba(4, 17, 13, .72); }
+.lobby-eyebrow { display: inline-flex; align-items: center; gap: 10px; font-size: 12px; color: #f0d895; }
+.lobby-eyebrow i { font-size: 22px; font-style: normal; }
+.lobby-intro h1 { margin: 10px 0 14px; font: 900 clamp(36px, 4vw, 52px) / 1.25 var(--font-serif); }
+.lobby-intro p { font-size: 16px; line-height: 1.8; }
+.lobby-intro .lobby-intro-note { margin-top: 4px; font-size: 12px; color: #dbe4d9; }
+.lobby-entry { display: grid; gap: 16px; padding: 22px; border-radius: 24px; }
+.lobby-create-button { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 54px; padding: 12px 18px; border: 1px solid #ead69e; border-radius: 16px; background: linear-gradient(140deg, #f1e3b6, #c5a463); color: #28372c; font-weight: 700; box-shadow: inset 0 1px rgba(255, 255, 239, .85), 0 0 24px rgba(226, 191, 108, .18); }
+.lobby-create-button:hover:not(:disabled) { background: linear-gradient(140deg, #fff1c5, #dac080); box-shadow: 0 0 26px rgba(226, 191, 108, .3); }
+.lobby-create-button > span { font-size: 22px; font-weight: 400; }
+.lobby-entry-divider { display: flex; align-items: center; gap: 12px; color: var(--battle-text-secondary); font-size: 11px; }
+.lobby-entry-divider::before, .lobby-entry-divider::after { content: ''; flex: 1; height: 1px; background: color-mix(in srgb, var(--glass-stroke) 40%, transparent); }
+.room-code-form { display: flex; min-width: 0; min-height: 48px; border: 1px solid var(--glass-stroke); border-radius: 14px; background: color-mix(in srgb, var(--app-input) 40%, transparent); }
+.room-code-form:focus-within { outline: 2px solid var(--app-accent); outline-offset: 3px; }
+.room-code-form .code-input { width: 100%; min-width: 0; border: 0; border-radius: 14px 0 0 14px; padding: 10px 14px; background: transparent; color: var(--app-text); font-size: 14px; outline: none; }
+.room-code-form .code-input::placeholder { color: var(--battle-text-secondary); }
+.room-code-form button { flex: none; display: flex; align-items: center; gap: 12px; border: 0; border-left: 1px solid color-mix(in srgb, var(--glass-stroke) 50%, transparent); border-radius: 0 13px 13px 0; padding: 10px 14px; background: transparent; color: var(--app-accent-strong); font-size: 13px; }
+.room-code-form button:hover:not(:disabled) { background: color-mix(in srgb, var(--app-accent) 14%, transparent); }
+.lobby-room-columns { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); align-items: start; gap: 24px; }
+.lobby-loading, .lobby-error { margin-bottom: 18px; padding: 12px 16px; border-radius: 14px; font-size: 13px; }
+.lobby-loading { display: flex; align-items: center; gap: 10px; color: #f4f1e5; background: rgba(14, 35, 29, .75); }
+.lobby-loading > span { width: 8px; height: 8px; border-radius: 50%; background: #c5e2b8; }
+.lobby-error { display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid var(--app-danger); background: var(--app-danger-surface); color: var(--app-danger); }
+.lobby-error button { flex: none; border: 1px solid currentColor; border-radius: 10px; background: transparent; padding: 7px 14px; }
+.lobby-footnote { display: flex; align-items: baseline; gap: 9px; margin: 22px 4px 0; color: #e1e8dc; font-size: 12px; line-height: 1.8; text-shadow: 0 1px 8px #102c23; }
+.lobby-footnote > span { color: #ead699; }
+.lobby-page button:focus-visible { outline: 2px solid var(--app-accent-strong); outline-offset: 4px; }
+@media (max-width: 900px) {
+  .lobby-heading { gap: 24px; grid-template-columns: minmax(0, 1fr) minmax(270px, 310px); }
+  .lobby-room-columns { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+}
+@media (max-width: 600px) {
+  .app-shell:has(> .lobby-page) .site-header { min-height: 64px; padding: 8px 14px; }
+  .app-shell:has(> .lobby-page) .brand-banner { width: min(48vw, 210px); }
+  .app-shell:has(> .lobby-page) .header-actions { gap: 10px; }
+  .app-shell:has(> .lobby-page) .profile-button { padding: 3px; }
+  .app-shell:has(> .lobby-page) .profile-button > span:last-child { display: none; }
+  .lobby-content { padding: 28px 16px 30px; }
+  .lobby-heading { grid-template-columns: minmax(0, 1fr); gap: 24px; margin-bottom: 24px; }
+  .lobby-intro h1 { margin: 6px 0 10px; }
+  .lobby-intro p { font-size: 14px; }
+  .lobby-entry { gap: 12px; padding: 18px; border-radius: 20px; }
+  .lobby-footnote { font-size: 11px; }
+}

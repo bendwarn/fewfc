@@ -1,77 +1,34 @@
 <template>
-  <main class="lobby-page">
-      <div class="lobby-heading">
-        <div>
-          <h1>房間</h1>
-          <p class="muted">選擇公開房間，或使用房間代碼加入；等待房的觀戰者會在有空位時依順序自動補為玩家。</p>
-        </div>
-        <div class="lobby-actions">
-          <form class="room-code-form" @submit.prevent="joinRoomByCode">
-            <label class="sr-only" for="join-room-code">房間代碼</label>
-            <input
-              id="join-room-code"
-              v-model.trim="joinRoomCode"
-              class="code-input"
-              type="text"
-              placeholder="房間代碼"
-            >
-            <button type="submit" :disabled="lobbyBusy || !joinRoomCode">
-              加入
-            </button>
-          </form>
-          <button
-            ref="createRoomTrigger"
-            class="primary-button create-room-button"
-            type="button"
-            @click="openRoomSettings"
-          >
-            建立房間
-          </button>
-        </div>
-      </div>
-
-      <p v-if="lobbyLoading" class="muted" role="status" aria-live="polite">正在載入房間…</p>
-      <p v-if="lobbyError && !roomSettingsOpen" class="form-error lobby-error" role="alert">
-        {{ lobbyError }}
-        <button class="ghost-button" type="button" @click="refreshRoomLists">重試</button>
-      </p>
-
-      <RoomSettingsDialog
-        v-if="roomSettingsOpen"
-        v-model:name="roomName"
-        v-model:rule-version="roomRuleVersion"
-        v-model:mode="roomMode"
-        v-model:access="roomAccess"
-        :busy="lobbyBusy"
-        :error="lobbyError"
-        @close="closeRoomSettings"
-        @submit="createRoom"
-      />
-
-      <LobbyRoomList
-        heading="公開房間"
-        badge="可加入"
-        empty-message="目前沒有可加入的公開房間。"
-        :loading="lobbyLoading"
-        :busy="lobbyBusy"
-        :items="joinablePublicRoomItems"
-        @open="openJoinedRoom"
-      />
-
-      <LobbyRoomList
-        class="my-rooms-card"
-        heading="我的房間"
-        :badge="myRooms.length"
-        empty-message="尚未加入任何房間。"
-        :loading="lobbyLoading"
-        :busy="lobbyBusy"
-        :items="myRoomItems"
-        @open="openJoinedRoom"
-      />
-  </main>
+  <LobbyScreen
+    ref="lobbyScreen"
+    v-model:room-code="joinRoomCode"
+    :public-rooms="joinablePublicRoomItems"
+    :my-rooms="myRoomItems"
+    :loading="lobbyLoading"
+    :busy="lobbyBusy"
+    :error="roomSettingsOpen ? '' : lobbyError"
+    @create="openRoomSettings"
+    @join="joinRoomByCode"
+    @refresh="refreshRoomLists"
+    @open="openJoinedRoom"
+  >
+    <RoomSettingsDialog
+      v-if="roomSettingsOpen"
+      v-model:name="roomName"
+      v-model:rule-version="roomRuleVersion"
+      v-model:mode="roomMode"
+      v-model:access="roomAccess"
+      :busy="lobbyBusy"
+      :error="lobbyError"
+      @close="closeRoomSettings"
+      @submit="createRoom"
+    />
+  </LobbyScreen>
 </template>
 
 <script setup lang="ts">
+import LobbyScreen from '~/components/LobbyScreen.vue'
+import type { LobbyRoomListItem } from '~/lib/lobby-presentation'
 import { modulesForVersion } from '#shared/utils/rule-versions'
 import type { PlayerId } from '~/types/fewfc'
 import type { GameRoomMember, GameRoomResponse } from '#shared/game-room'
@@ -98,15 +55,6 @@ interface PublicRoomSummary {
   updatedAt: string
 }
 
-interface LobbyRoomListItem {
-  gameId: string
-  code: string
-  name: string
-  detail: string
-  ruleSummary: string
-  actionLabel: string
-  hasNotification: boolean
-}
 
 const router = useRouter()
 const session = usePlayerSession()
@@ -114,7 +62,7 @@ const notifications = useLayoutNotifications()
 const rulesCatalog = useRulesCatalog()
 const roomSettingsOpen = ref(false)
 const roomRuleVersion = ref<'5.16' | '5.17'>('5.17')
-const createRoomTrigger = ref<HTMLButtonElement | null>(null)
+const lobbyScreen = ref<InstanceType<typeof LobbyScreen> | null>(null)
 const roomName = ref('')
 const roomMode = ref<'duel' | 'team'>('duel')
 const roomAccess = ref<'private' | 'public'>('public')
@@ -137,7 +85,7 @@ const joinablePublicRoomItems = computed<LobbyRoomListItem[]>(() => joinablePubl
 })))
 const myRoomItems = computed<LobbyRoomListItem[]>(() => myRooms.value.map(room => ({
   gameId: room.gameId,
-  code: room.gameId.slice(0, 8),
+  code: room.roomCode,
   name: room.name,
   detail: roomStatusLabel(room),
   ruleSummary: roomRuleSummary(room),
@@ -154,7 +102,7 @@ function closeRoomSettings() {
   if (lobbyBusy.value) return
   lobbyError.value = ''
   roomSettingsOpen.value = false
-  void nextTick(() => createRoomTrigger.value?.focus())
+  void nextTick(() => lobbyScreen.value?.focusCreateRoom())
 }
 
 async function createRoom() {
@@ -238,20 +186,3 @@ watch(() => notifications.roomListRevision.value, () => {
   void refreshRoomLists()
 })
 </script>
-
-<style scoped>
-@reference "../../assets/css/main.css";
-
-.lobby-page { @apply mx-auto max-w-[1180px] px-[30px] pt-15 pb-[90px] max-[600px]:px-4 max-[600px]:py-9; }
-.lobby-heading { @apply mb-[38px] flex items-end justify-between gap-6 max-[900px]:flex-col max-[900px]:items-start; }
-.lobby-actions { @apply flex items-stretch gap-3 max-[600px]:w-full max-[600px]:flex-col-reverse; }
-.room-code-form { @apply flex min-h-[50px]; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-input); }
-.room-code-form:focus-within { border-color: var(--app-accent); box-shadow: 0 0 0 3px var(--app-focus-ring); }
-.room-code-form .code-input { @apply h-auto min-w-48 border-0 px-4 text-left tracking-[.08em] max-[600px]:min-w-0; }
-.room-code-form button { @apply border-0 border-l px-4 text-xs text-gold-light disabled:cursor-not-allowed disabled:opacity-45; border-color: var(--app-border); border-radius: 0 9px 9px 0; background: var(--app-control); }
-.create-room-button { @apply min-w-35 justify-center; }
-.lobby-error { @apply mb-2 p-3; border: 1px solid var(--app-danger); border-radius: 10px; background: var(--app-danger-surface); }
-.code-input { max-width: 320px; height: 52px; border: 1px solid var(--app-border); color: var(--app-text); padding: 0 20px; text-align: center; letter-spacing: .2em; }
-.my-rooms-card { @apply mt-6; }
-@media (max-width: 600px) { .lobby-heading { align-items: start; gap: 25px; flex-direction: column; }.lobby-page { padding: 36px 16px; } }
-</style>
