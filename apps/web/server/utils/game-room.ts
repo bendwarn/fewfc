@@ -15,11 +15,11 @@ function gameRoomNamespace(event: H3Event): DurableObjectNamespaceBinding {
   return namespace
 }
 
-export async function callGameRoom(
+export async function callGameRoom<TResponse = GameRoomResponse>(
   event: H3Event,
   gameId: string,
   body: GameRoomRequest,
-): Promise<GameRoomResponse> {
+): Promise<TResponse> {
   const namespace = gameRoomNamespace(event)
   const objectId = namespace.idFromName(gameId)
   const room = namespace.get(objectId)
@@ -40,7 +40,7 @@ export async function callGameRoom(
     })
   }
 
-  return (await response.json()) as GameRoomResponse
+  return (await response.json()) as TResponse
 }
 
 async function readGameRoomError(response: Response): Promise<{ message: string, code?: string }> {

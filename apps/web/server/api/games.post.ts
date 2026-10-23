@@ -1,4 +1,4 @@
-import type { GameRoomAccess, GameRoomCapacity } from '../../shared/game-room'
+import type { GameRoomAccess, GameRoomCapacity, GameRoomEntryResponse } from '../../shared/game-room'
 
 function roomAccess(value: unknown): GameRoomAccess {
   return value === 'public' ? 'public' : 'private'
@@ -63,5 +63,5 @@ export default defineEventHandler(async (event) => {
     name,
   })
 
-  return response
+  return { gameId: response.gameId } satisfies GameRoomEntryResponse
 })

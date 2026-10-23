@@ -11,7 +11,7 @@ export default defineEventHandler(async (event) => {
   const env = workerEnv(event)
   const db = drizzle(env.DB as Parameters<typeof drizzle>[0], { schema })
   const accounts = await db
-    .select({ id: schema.account.id, providerId: schema.account.providerId, createdAt: schema.account.createdAt })
+    .select({ id: schema.account.id, providerId: schema.account.providerId })
     .from(schema.account)
     .where(eq(schema.account.userId, session.user.id))
   const isAnonymous = session.user.isAnonymous === true

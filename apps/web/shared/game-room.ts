@@ -20,6 +20,30 @@ export type GameRoomStatus = 'Waiting' | 'Active' | 'Finished' | 'Dissolved'
 export type GameRoomAccess = 'private' | 'public'
 export type GameRoomCapacity = 2 | 4
 
+export interface GameRoomEntryResponse {
+  gameId: string
+}
+
+/** 大廳只需要房間摘要與目前使用者的參與狀態，不傳送其他成員資料。 */
+export interface GameRoomLobbyItem {
+  gameId: string
+  roomCode: string
+  name: string
+  status: GameRoomStatus
+  memberCount: number
+  observerCount: number
+  capacity: number
+  ruleVersion: RuleVersion
+  enabledRuleModules: string[]
+  isMember: boolean
+  isObserver: boolean
+}
+
+export interface GameRoomLobbyResponse {
+  rooms: GameRoomLobbyItem[]
+  myRooms: GameRoomLobbyItem[]
+}
+
 export interface GameRoomMember {
   userId: string
   displayName: string
@@ -377,6 +401,8 @@ export interface RulesReadyResult extends LocalGameResponse {
 }
 
 export type RulesEngineResult = RulesNeedsRandomnessResult | RulesReadyResult
+
+export type PlayableActionsResponse = Pick<RulesReadyResult, 'playableActions'>
 
 export function requireReadyRulesResult(result: RulesEngineResult): RulesReadyResult {
   switch (result.type) {

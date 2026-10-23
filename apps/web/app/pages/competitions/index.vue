@@ -335,6 +335,7 @@
 import type { RuleModuleSpec } from '~/types/fewfc'
 import type { CompetitionAnnouncementStageDraft } from '#shared/competition-announcement-plan'
 import type { SwissTieBreaker } from '#shared/competition'
+import type { CompetitionCreateAcknowledgement } from '#shared/competition-room'
 import { createRuleModulePolicy, presentationForRuleModule } from '#shared/utils/rule-modules'
 import { modulesForVersion } from '#shared/utils/rule-versions'
 import { presentApiError } from '~/lib/api-error-presentation'
@@ -516,8 +517,8 @@ async function createCompetition() {
   let requestSent = false
   try {
     requestSent = true
-    const response: unknown = await $fetch('/api/competitions', { method: 'POST', body })
-    const id = parseCreatedCompetitionId(response, session.userId.value)
+    const response = await $fetch<CompetitionCreateAcknowledgement>('/api/competitions', { method: 'POST', body })
+    const id = parseCreatedCompetitionId(response)
     await router.push(`/competitions/${encodeURIComponent(id)}`)
   } catch (error) {
     if (requestSent && !isDefinitiveCompetitionCreateRejection(error)) {

@@ -153,22 +153,11 @@ export function parseCompetitionRegistrationResponse(
   }
 }
 
-export function parseCreatedCompetitionId(input: unknown, expectedOrganizerId: string): string {
+export function parseCreatedCompetitionId(input: unknown): string {
   const envelope = asRecord(input)
   if (!envelope
-    || !isExactKeys(envelope, ['competitionId', 'organizerUserId', 'revision', 'projection'])
-    || typeof envelope.competitionId !== 'string' || !envelope.competitionId.trim()
-    || envelope.organizerUserId !== expectedOrganizerId
-    || !isSafeInteger(envelope.revision) || envelope.revision < 1) {
-    throw new CompetitionProtocolError()
-  }
-  const projection = asRecord(envelope.projection)
-  if (!projection || !isExactKeys(projection, ['ok', 'operation', 'public'])
-    || projection.ok !== true || projection.operation !== 'registrationCreate') {
-    throw new CompetitionProtocolError()
-  }
-  const publicView = parsePublicRegistrationView(projection.public)
-  if (publicView.announcement.organizer !== expectedOrganizerId || publicView.lifecycle !== 'draft') {
+    || !isExactKeys(envelope, ['competitionId'])
+    || typeof envelope.competitionId !== 'string' || !envelope.competitionId.trim()) {
     throw new CompetitionProtocolError()
   }
   return envelope.competitionId

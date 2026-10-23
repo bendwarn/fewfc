@@ -1,4 +1,5 @@
 import { createError, defineEventHandler, getRouterParam, readBody } from 'h3'
+import type { CompetitionCommandAcknowledgement } from '../../../../../shared/competition-room'
 import { requireSession } from '../../../../utils/auth'
 import {
   buildExecuteRequest,
@@ -14,5 +15,10 @@ export default defineEventHandler(async (event) => {
   }
   const command = buildRankingTieDecisionCommand(await readBody<unknown>(event))
   const request = buildExecuteRequest(competitionId.trim(), session.user.id, command)
-  return await callCompetitionRoom(event, competitionId.trim(), room => room.execute(request))
+  const result = await callCompetitionRoom(event, competitionId.trim(), room => room.execute(request))
+  return {
+    revision: result.revision,
+    commandId: result.commandId,
+    idempotent: result.idempotent,
+  } satisfies CompetitionCommandAcknowledgement
 })

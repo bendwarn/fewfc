@@ -12,7 +12,7 @@ test('maintenance is explicit and fails closed for Commands and Replay creation 
   expect(maintenanceBlocksPlayerMutation('POST', '/api/games/room-1/start')).toBe(false)
 })
 
-test('deployment preserves the maintenance secret while cutover uses local Wrangler', async () => {
+test('deployment preserves the maintenance variable while cutover uses local Wrangler', async () => {
   const workflow = await readFile(new URL('../../../.github/workflows/ci-cd.yml', import.meta.url), 'utf8')
   expect(workflow).toContain('wrangler deploy --env staging --keep-vars')
   expect(workflow).toContain('wrangler deploy --env production --keep-vars')

@@ -1,3 +1,5 @@
+import type { GameRoomEntryResponse } from '../../../shared/game-room'
+
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
   const body = await readBody<{ code?: string }>(event)
@@ -30,5 +32,5 @@ export default defineEventHandler(async (event) => {
 
   await updatePublicRoom(event, response)
 
-  return response
+  return { gameId: response.gameId } satisfies GameRoomEntryResponse
 })

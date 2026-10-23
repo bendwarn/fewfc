@@ -56,7 +56,6 @@ type SocialProvider = 'google' | 'github'
 interface AccountMethod {
   id: string
   providerId: string
-  createdAt: string
 }
 
 const busy = ref(false)

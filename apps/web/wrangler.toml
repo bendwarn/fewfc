@@ -36,21 +36,21 @@ class_name = "ReplayArchive"
 name = "COMPETITION_ROOM"
 class_name = "CompetitionRoom"
 
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["GameRoom"]
+[exports.GameRoom]
+type = "durable-object"
+storage = "sqlite"
 
-[[migrations]]
-tag = "v2"
-new_sqlite_classes = ["PlayerNotifications"]
+[exports.PlayerNotifications]
+type = "durable-object"
+storage = "sqlite"
 
-[[migrations]]
-tag = "v3"
-new_sqlite_classes = ["ReplayArchive"]
+[exports.ReplayArchive]
+type = "durable-object"
+storage = "sqlite"
 
-[[migrations]]
-tag = "v4"
-new_sqlite_classes = ["CompetitionRoom"]
+[exports.CompetitionRoom]
+type = "durable-object"
+storage = "sqlite"
 
 [env.staging]
 name = "fewfc-web-staging"
@@ -84,21 +84,21 @@ class_name = "ReplayArchive"
 name = "COMPETITION_ROOM"
 class_name = "CompetitionRoom"
 
-[[env.staging.migrations]]
-tag = "v1"
-new_sqlite_classes = ["GameRoom"]
+[env.staging.exports.GameRoom]
+type = "durable-object"
+storage = "sqlite"
 
-[[env.staging.migrations]]
-tag = "v2"
-new_sqlite_classes = ["PlayerNotifications"]
+[env.staging.exports.PlayerNotifications]
+type = "durable-object"
+storage = "sqlite"
 
-[[env.staging.migrations]]
-tag = "v3"
-new_sqlite_classes = ["ReplayArchive"]
+[env.staging.exports.ReplayArchive]
+type = "durable-object"
+storage = "sqlite"
 
-[[env.staging.migrations]]
-tag = "v4"
-new_sqlite_classes = ["CompetitionRoom"]
+[env.staging.exports.CompetitionRoom]
+type = "durable-object"
+storage = "sqlite"
 
 [env.production]
 name = "fewfc"
@@ -132,18 +132,18 @@ class_name = "ReplayArchive"
 name = "COMPETITION_ROOM"
 class_name = "CompetitionRoom"
 
-[[env.production.migrations]]
-tag = "v1"
-new_sqlite_classes = ["GameRoom"]
+[env.production.exports.GameRoom]
+type = "durable-object"
+storage = "sqlite"
 
-[[env.production.migrations]]
-tag = "v2"
-new_sqlite_classes = ["PlayerNotifications"]
+[env.production.exports.PlayerNotifications]
+type = "durable-object"
+storage = "sqlite"
 
-[[env.production.migrations]]
-tag = "v3"
-new_sqlite_classes = ["ReplayArchive"]
+[env.production.exports.ReplayArchive]
+type = "durable-object"
+storage = "sqlite"
 
-[[env.production.migrations]]
-tag = "v4"
-new_sqlite_classes = ["CompetitionRoom"]
+[env.production.exports.CompetitionRoom]
+type = "durable-object"
+storage = "sqlite"

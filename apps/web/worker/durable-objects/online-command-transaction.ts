@@ -7,6 +7,7 @@ import {
   type GameRoomRequest,
   type GameRoomResponse,
   type OnlineGameAction,
+  type PlayableActionsResponse,
   type RulesEngineResult,
   type RulesReadyResult,
   type TrustedRandomnessAction,
@@ -89,7 +90,7 @@ interface OnlineCommandTransactionHost {
 }
 
 export interface ExecutedPlayerCommand {
-  response: GameRoomResponse
+  response: GameRoomResponse | PlayableActionsResponse
   receipt?: CommandReceipt
   metadata: GameRoomMetadata
   previousPlayer?: PlayerId | null
@@ -135,7 +136,7 @@ export async function executePlayerCommand(
   if (action.type === 'playableActions') {
     const rules = await requireReady(host.callRules(action, actor, record))
     return {
-      response: await host.response(metadata, request.actorUserId, rules.playableActions),
+      response: { playableActions: rules.playableActions },
       metadata,
       committed: false,
     }

@@ -2,6 +2,7 @@ import { createError, type H3Event } from 'h3'
 import { isExactCompetitionJson, type JsonObject, type RegistrationMode } from '../../shared/competition'
 import { parseCompetitionAnnouncementPlan } from '../../shared/competition-announcement-plan'
 import type {
+  CompetitionCreateAcknowledgement,
   CompetitionAnnouncementDraft,
   CompetitionRoomInitializeFromRulesRequest,
   CompetitionRoomInitializeValue,
@@ -206,7 +207,7 @@ export async function createCompetitionFromRules(
   event: H3Event,
   body: unknown,
   callerUserId: string,
-): Promise<CompetitionRoomInitializeValue> {
+): Promise<CompetitionCreateAcknowledgement> {
   const announcement = announcementDraft(body)
   if (!nonEmpty(callerUserId)) throw competitionCreateFromRulesError('forbidden')
   let competitionId: string
@@ -219,5 +220,6 @@ export async function createCompetitionFromRules(
     throw competitionCreateFromRulesError('serverSourceUnavailable')
   }
   const request = { competitionId, callerUserId, announcement, trustedTimeMs }
-  return rpcResult(await dispatch(event, request), request)
+  const initialized = rpcResult(await dispatch(event, request), request)
+  return { competitionId: initialized.competitionId }
 }

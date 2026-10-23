@@ -6,6 +6,7 @@ This folder is the local issue tracker for follow-up work derived from `docs/rul
 
 ## Completed Local Issues
 
+- [#78 Manage Durable Object Lifecycle with Wrangler Exports](078-manage-durable-object-lifecycle-with-exports.md)
 - [#77 Retain and surface Player Notifications](077-retain-and-surface-player-notifications.md)
 - [#76 Deepen Secret Strategy Decisions](076-deepen-secret-strategy-decisions.md)
 - [#75 Allow Independent Initial Pouch Selection](075-allow-independent-initial-pouch-selection.md)

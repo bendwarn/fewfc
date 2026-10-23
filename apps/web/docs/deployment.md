@@ -16,7 +16,22 @@ export default defineNuxtConfig({
 })
 ```
 
-Wrangler uses `worker/index.ts` as an authenticated WebSocket gateway around the Nuxt build output. It exports the `GameRoom` and `PlayerNotifications` Durable Object classes required by `wrangler.toml`.
+Wrangler uses `worker/index.ts` as an authenticated WebSocket gateway around the Nuxt build output. It exports the `GameRoom`, `PlayerNotifications`, `ReplayArchive`, and `CompetitionRoom` Durable Object classes declared in `wrangler.toml`.
+
+## Durable Object lifecycle
+
+`wrangler.toml` declares the current Durable Object classes under `exports` for
+the default, staging, and production Workers. All four namespaces use SQLite,
+matching the original `new_sqlite_classes` entries. Switching from the
+Durable Object `migrations` history to `exports` preserves those provisioned
+namespaces and their data; it does not change their storage backend.
+
+The `exports` declaration is the current lifecycle source of truth. The first
+deployment using it is a one-way switch from Durable Object `migrations`;
+review Wrangler's reconciliation output before confirming that deployment.
+Afterward, apply lifecycle changes with `wrangler deploy`. Do not use
+`wrangler versions upload` or gradual deployment for Durable Object lifecycle
+changes. D1 migrations remain configured separately through `migrations_dir`.
 
 Build and run the Cloudflare Worker locally:
 
@@ -42,11 +57,11 @@ bunx wrangler secret put BETTER_AUTH_SECRET --env staging
 bunx wrangler secret put BETTER_AUTH_SECRET --env production
 ```
 
-`MAINTENANCE_MODE` is also a deployed Worker secret. The local cutover wizard
-changes it through Wrangler's configuration-only version commands. Do not add
-it to `wrangler.toml` or pass it as a variable during a code deployment:
-`wrangler deploy --keep-vars` preserves the current value so a normal CI run
-cannot silently reopen traffic.
+`MAINTENANCE_MODE` is a Worker variable managed separately for each deployed
+environment. The local cutover wizard updates the selected Worker's variable
+immediately. CI uses `wrangler deploy --keep-vars` to preserve the
+operator-managed value across code deployments, keeping the maintenance state
+under operator control.
 
 ## Legacy game cutover (schema 7)
 
@@ -88,10 +103,10 @@ protected deployment configuration; it is never sufficient as a credential by
 itself. Do not set `FEWFC_*` target variables.
 
 Run staging first. Start the local cutover wizard and select `staging`. It uses
-the authenticated local Wrangler profile to create a configuration-only Worker
-version from the currently deployed Worker and promote it; the code and build
-are reused, so it does not build or migrate. Then take and review
-a dry-run inventory:
+the authenticated local Wrangler profile to set the `MAINTENANCE_MODE` Worker
+variable to `true` on the selected Worker and applies that configuration update
+immediately. The wizard focuses on the mode change; application builds and D1
+migrations remain separate steps. Then take and review a dry-run inventory:
 
 ```bash
 bun run build:staging
@@ -127,8 +142,8 @@ object returns 404 after deletion, every preserved room remains readable,
 readable Replay archives and unrelated D1 rows remain, and every explicitly
 associated deleted Replay has no archive or selected D1 reference. Reopen
 traffic only after that verification succeeds. The wizard disables maintenance
-with the same configuration-only version flow using `MAINTENANCE_MODE=false`; it
-does not rebuild the application.
+with another immediate Worker variable update using `MAINTENANCE_MODE=false`;
+it does not rebuild the application.
 
 Repeat the same sequence with `production` only after staging verification is
 complete. The script follows the Cloudflare Durable Objects Objects API cursors
@@ -146,19 +161,21 @@ bash tmp/legacy-game-purge-wizard.sh
 ```
 
 It verifies `wrangler whoami`, lets the operator select `staging` or
-`production`, then runs `wrangler versions secret put MAINTENANCE_MODE` with
-the requested value and promotes exactly that tagged version with `wrangler
-versions deploy`. The local Wrangler OAuth login supplies authentication; no
-GitHub Action, API token, application build, migration, or purge is involved
-in this switch. If the profile has multiple accounts, provide the non-secret
+`production`, then updates the `MAINTENANCE_MODE` Worker variable on that
+environment to the requested value. The configuration change takes effect
+immediately; Durable Object `exports` keeps the deployed code/build in place
+for this configuration update. The local Wrangler OAuth login authenticates
+the operation, which runs independently from GitHub Actions, API-token setup,
+application builds, migrations, and the purge. If the profile has multiple
+accounts, provide the non-secret
 `CLOUDFLARE_ACCOUNT_ID` when the wizard asks.
 
 The wizard enables maintenance before the dry-run and confirmed purge, and
 disables it only after the second confirmed run reports `mutationCount: 0`.
-Ordinary CI uses `wrangler deploy --keep-vars` and never supplies
-`MAINTENANCE_MODE`, so a push cannot clear the secret while maintenance is
-active. If the configuration-only version cannot be created or promoted, the
-active deployment is unchanged and the wizard stops.
+Ordinary CI uses `wrangler deploy --keep-vars` to preserve the operator-managed
+`MAINTENANCE_MODE` variable, so active maintenance remains in effect during a
+push. A failed variable update stops the wizard before the purge; verify the
+deployed Worker state before resuming.
 
 Before deployment:
 
@@ -186,9 +203,9 @@ arguments passed through `run_install`. The `Web checks` job runs Storybook and
 browser checks and writes the pnpm cache; deployment jobs wait for both Rust and
 Web checks.
 
-Wrangler is pinned to `4.130.0` in `package.json`. Code deployment uses its
-standard `deploy` command; the local cutover wizard uses `versions secret` and
-`versions deploy` so maintenance changes do not rebuild the application.
+Wrangler is pinned to `4.151.3` in `package.json`. Code deployment uses its
+standard `deploy` command; the local cutover wizard updates the maintenance
+Worker variable without building the application.
 
 `.github/workflows/ci-cd.yml` is the deployment source of truth:
 
@@ -205,11 +222,9 @@ standard `deploy` command; the local cutover wizard uses `versions secret` and
 - Each deployment builds the environment-specific Nuxt/Wasm output once,
   applies pending remote D1 migrations, and deploys one Worker version with
   `wrangler deploy --keep-vars`.
-- `MAINTENANCE_MODE` is intentionally absent from `wrangler.toml` and code
-  deployment arguments. The local cutover wizard changes it through
-  Cloudflare's `versions secret`/`versions deploy` mechanism, preserving the
-  deployed Worker code/build and ensuring normal CI cannot clear an active
-  maintenance flag.
+- The local cutover wizard manages `MAINTENANCE_MODE` as an operator-controlled
+  Worker variable. CI uses `wrangler deploy --keep-vars` to preserve its value
+  throughout code deployments.
 
 Create GitHub Environments named `staging` and `production`. Add these encrypted
 secrets to both environments:

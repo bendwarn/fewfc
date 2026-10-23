@@ -15,6 +15,7 @@ import type {
   GameRoomResponse,
   GameRoomSocketMessage,
   OnlineGameAction,
+  PlayableActionsResponse,
 } from '#shared/game-room'
 import type { CardsChoiceAnswer, VisibleCardPendingChoice } from '~/lib/pending-choice-interaction'
 import {
@@ -496,7 +497,7 @@ export function useGameRoom(viewer: ViewerRef) {
     isLoading.value = true
     errorMessage.value = null
     try {
-      const response = await $fetch<GameRoomResponse>(
+      const response = await $fetch<PlayableActionsResponse>(
         `/api/games/${onlineGameId.value}/commands`,
         {
           method: 'POST',
@@ -516,7 +517,6 @@ export function useGameRoom(viewer: ViewerRef) {
         return
       }
       playableActions.value = response.playableActions
-      interaction.value = response.interaction
     } catch (error) {
       if (revision === playableQueryRevision) {
         errorMessage.value = presentApiError(error, '無法取得可用行動，請稍後再試。')

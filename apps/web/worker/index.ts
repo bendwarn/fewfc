@@ -19,7 +19,7 @@ interface WorkerEnv {
   REPLAY: DurableObjectNamespace
   COMPETITION_ROOM: DurableObjectNamespace<CompetitionRoom>
   APP_ENV: 'development' | 'staging' | 'production'
-  /** 由 Cloudflare Secret 明確控制的維護閘門。 */
+  /** 由 Worker 環境變數控制的非敏感維護模式。 */
   MAINTENANCE_MODE?: string
   /** 從部署帳戶設定注入，僅用來驗證 Wrangler token 的帳戶範圍。 */
   CLOUDFLARE_ACCOUNT_ID?: string

@@ -63,6 +63,10 @@ export interface CompetitionRoomInitializeValue {
   projection: PublicCompetitionSuccess
 }
 
+export interface CompetitionCreateAcknowledgement {
+  competitionId: string
+}
+
 export interface CompetitionRoomStartScheduledMatchRequest {
   competitionId: string
   stageId: string
@@ -126,6 +130,12 @@ export interface CompetitionRoomExecuteValue {
   commandId: string
   idempotent: boolean
   projection: PublicCompetitionSuccess
+}
+
+export interface CompetitionCommandAcknowledgement {
+  revision: number
+  commandId: string
+  idempotent: boolean
 }
 
 export interface CompetitionRoomReadRequest {

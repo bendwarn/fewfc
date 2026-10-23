@@ -90,10 +90,7 @@ test('authenticated route derives caller and trusted time, then sends only the e
   expect(requests[0]?.trustedTimeMs).toBeGreaterThanOrEqual(before)
   expect(requests[0]?.trustedTimeMs).toBeLessThanOrEqual(after)
   const result = await response.json() as Record<string, unknown>
-  expect(result).toMatchObject({
-    revision: 8, commandId: 'decision-1',
-    projection: { ok: true, operation: 'tournamentAdjudicateRankingTie', public: { decided: true } },
-  })
+  expect(result).toEqual({ revision: 8, commandId: 'decision-1', idempotent: false })
   expect(JSON.stringify(requests[0])).not.toMatch(/callerUserId.*attacker|private|serverState/)
 })
 

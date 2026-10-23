@@ -1,4 +1,4 @@
-import type { GameRoomRequest } from '../../../../shared/game-room'
+import type { GameRoomRequest, PlayableActionsResponse } from '../../../../shared/game-room'
 
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
@@ -15,7 +15,7 @@ export default defineEventHandler(async (event) => {
     commandId?: string
     gameInstanceId?: string
     transactionId?: string
-    action?: GameRoomRequest extends { type: 'submitCommand'; action: infer Action } ? Action : never
+    action?: Extract<GameRoomRequest, { type: 'submitCommand' }>['action']
   }>(event)
 
   if (!body.action) {
@@ -31,14 +31,20 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const response = await callGameRoom(event, gameId, {
+  const request: GameRoomRequest = {
     type: 'submitCommand',
     commandId: body.commandId.trim(),
     gameInstanceId: body.gameInstanceId.trim(),
     transactionId: body.transactionId.trim(),
     actorUserId: session.user.id,
     action: body.action,
-  })
+  }
+
+  if (body.action.type === 'playableActions') {
+    return await callGameRoom<PlayableActionsResponse>(event, gameId, request)
+  }
+
+  const response = await callGameRoom(event, gameId, request)
 
   await updatePublicRoom(event, response)
 

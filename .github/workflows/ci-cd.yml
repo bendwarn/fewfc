@@ -144,8 +144,8 @@ jobs:
         run: |
           set -euo pipefail
           pnpm exec wrangler d1 migrations apply fewfc-auth-staging --remote --env staging
-          # keep-vars preserves the separately managed MAINTENANCE_MODE secret;
-          # an ordinary push must never reopen traffic during maintenance.
+          # --keep-vars 保留 Dashboard 獨立管理的 MAINTENANCE_MODE Worker 變數；
+          # 維護期間的一般部署不得重新開放流量。
           pnpm exec wrangler deploy --env staging --keep-vars --var "CLOUDFLARE_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID" --message "Deploy staging ${GITHUB_SHA}"
 
   deploy-production:
@@ -196,6 +196,6 @@ jobs:
         run: |
           set -euo pipefail
           pnpm exec wrangler d1 migrations apply fewfc-auth-production --remote --env production
-          # keep-vars preserves the separately managed MAINTENANCE_MODE secret;
-          # an ordinary production deploy must never reopen traffic during maintenance.
+          # --keep-vars 保留 Dashboard 獨立管理的 MAINTENANCE_MODE Worker 變數；
+          # 維護期間的一般正式環境部署不得重新開放流量。
           pnpm exec wrangler deploy --env production --keep-vars --var "CLOUDFLARE_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID" --message "Deploy production ${GITHUB_SHA}"

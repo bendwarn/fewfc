@@ -383,29 +383,11 @@ describe('competition registration contracts', () => {
     }), 'competition-a', undefined, 'someone-else')).toThrow(CompetitionProtocolError)
   })
 
-  test('validates the initialize response before opening its returned competition ID', () => {
-    const id = parseCreatedCompetitionId({
-      competitionId: 'competition-new',
-      organizerUserId: 'organizer-a',
-      revision: 1,
-      projection: {
-        ok: true,
-        operation: 'registrationCreate',
-        public: { announcement, lifecycle: 'draft', revision: 0, teams: [] },
-      },
-    }, 'organizer-a')
+  test('accepts the exact competition creation acknowledgement', () => {
+    const id = parseCreatedCompetitionId({ competitionId: 'competition-new' })
     expect(id).toBe('competition-new')
-    expect(() => parseCreatedCompetitionId({
-      competitionId: 'competition-new',
-      organizerUserId: 'organizer-a',
-      revision: 1,
-      projection: {
-        ok: true,
-        operation: 'registrationCreate',
-        public: { announcement, lifecycle: 'draft', revision: 0, teams: [] },
-      },
-      serverState: {},
-    }, 'organizer-a')).toThrow(CompetitionProtocolError)
+    expect(() => parseCreatedCompetitionId({ competitionId: 'competition-new', serverState: {} }))
+      .toThrow(CompetitionProtocolError)
   })
 
   test('identifies 409 revision conflicts without trusting message strings', () => {
